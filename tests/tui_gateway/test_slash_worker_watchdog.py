@@ -1,3 +1,5 @@
+import importlib.abc
+import importlib.util
 import io
 import subprocess
 import sys
@@ -31,7 +33,7 @@ def test_is_orphaned_false_when_direct_parent_is_unchanged():
     assert slash_worker._is_orphaned(original_ppid, getppid=lambda: original_ppid) is False
 
 
-def test_main_arms_watchdog_for_spawn_parent_before_cli_startup(monkeypatch):
+def test_main_arms_watchdog_then_imports_cli_before_runtime_prep(monkeypatch):
     parent_pid = 424242
     events = []
 
@@ -39,9 +41,21 @@ def test_main_arms_watchdog_for_spawn_parent_before_cli_startup(monkeypatch):
         def __init__(self, **kwargs):
             events.append(("cli", kwargs["resume"]))
 
-    cli_module = types.ModuleType("cli")
-    setattr(cli_module, "HermesCLI", FakeHermesCLI)
-    monkeypatch.setitem(sys.modules, "cli", cli_module)
+    class FakeCliFinder(importlib.abc.MetaPathFinder, importlib.abc.Loader):
+        # Record when ``cli`` is actually imported, not just when HermesCLI is built:
+        # importing cli loads ~/.hermes/.env, which MCP discovery in runtime prep needs.
+        def find_spec(self, name, path=None, target=None):
+            return importlib.util.spec_from_loader(name, self) if name == "cli" else None
+
+        def create_module(self, spec):
+            return None
+
+        def exec_module(self, module):
+            events.append(("cli-import",))
+            module.HermesCLI = FakeHermesCLI
+
+    monkeypatch.delitem(sys.modules, "cli", raising=False)
+    monkeypatch.setattr(sys, "meta_path", [FakeCliFinder(), *sys.meta_path])
     monkeypatch.setattr(
         slash_worker,
         "_start_parent_death_watchdog",
@@ -75,6 +89,7 @@ def test_main_arms_watchdog_for_spawn_parent_before_cli_startup(monkeypatch):
 
     assert events == [
         ("watchdog", parent_pid),
+        ("cli-import",),
         ("runtime",),
         ("cli", "session-1"),
     ]

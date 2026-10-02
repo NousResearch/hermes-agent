@@ -161,11 +161,12 @@ def main():
     # parent there, so keep the observed PPID or the worker would exit at once.
     orig_ppid = os.getppid() if sys.platform == "win32" else (args.parent_pid or os.getppid())
     _start_parent_death_watchdog(orig_ppid)
-    _prepare_slash_worker_runtime()
-
-    # Keep the heavyweight CLI import behind the watchdog. Importing it at
-    # module load left a reparenting window before main() could snapshot PPID.
+    # Keep the heavyweight CLI import behind the watchdog (importing it at module
+    # load left a reparenting window before main() could snapshot PPID), but ahead
+    # of MCP discovery: importing cli loads ~/.hermes/.env and sets HERMES_QUIET,
+    # which MCP ``${VAR}`` interpolation in the runtime prep depends on.
     from cli import HermesCLI
+    _prepare_slash_worker_runtime()
 
     with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
         # --provider pins the CLI to the parent agent's resolved provider (a MoA session's virtual

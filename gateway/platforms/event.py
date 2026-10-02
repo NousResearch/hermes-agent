@@ -23,6 +23,7 @@ _ATTACHMENT_REF_RE = re.compile(r"^(?:@(?:image|file|url):[^\n]+\n?)+", re.IGNOR
 if TYPE_CHECKING:
     from gateway.platforms.base import BasePlatformAdapter
     from gateway.inbound_context import InboundContextSnapshot, PreparedInboundMessage
+    from gateway.pending_native import PendingNativeInput
 
 
 class MessageType(Enum):
@@ -330,6 +331,7 @@ class MessageEvent:
     _gateway_accepted: bool = field(default=False, init=False, repr=False, compare=False)
     _queue_at_turn_boundary: bool = field(default=False, kw_only=True, repr=False, compare=False)
     _pending_coalesce_key: tuple[str, ...] | None = field(default=None, kw_only=True, repr=False, compare=False)
+    _pending_native_input: Optional["PendingNativeInput"] = field(default=None, init=False, repr=False, compare=False)
     # Run-owned final presentation snapshot; never deserialized from ingress metadata.
     _notification_reply_muted: Optional[bool] = field(default=None, init=False, repr=False, compare=False)
     _prepared_inbound: Optional["PreparedInboundMessage"] = field(default=None, init=False, repr=False, compare=False)

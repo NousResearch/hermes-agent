@@ -3674,7 +3674,7 @@ tips:
   t197: "Trajekstoor (--save-trajectories) vang volledige gereedskapsgebruik-spore vas vir modelopleiding."
   t198: "Drie plugin-tipes: algemeen (gereedskap/hooks), geheueverskaffers en konteksenjins."
   t199: "hermes plugins install owner/repo installeer plugins direk vanaf GitHub."
-  t200: "Eksterne geheueverskaffers: Honcho, OpenViking, Mem0 saamgebundel; Hindsight en meer via hermes plugins install."
+  t200: "Eksterne geheueverskaffers: OpenViking, Mem0 saamgebundel; Honcho, Hindsight en meer via hermes plugins install."
   t201: "Plugin-hooks sluit pre/post_tool_call, pre/post_llm_call en transform_terminal_output vir uitvoer-kanonisering in."
   t202: "Prompt-kasing (Anthropic) verminder koste deur gekasde stelselprompt-voorvoegsels te hergebruik."
   t203: "Die agent genereer sessietitels outomaties in 'n agtergronddraad — nul impak op vertraging."

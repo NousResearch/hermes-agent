@@ -3674,7 +3674,7 @@ tips:
   t197: "軌跡儲存（--save-trajectories）會記錄完整的工具使用軌跡，供模型訓練使用。"
   t198: "外掛有三種類型：一般（工具／hook）、記憶提供方，以及上下文引擎。"
   t199: "hermes plugins install owner/repo 可直接從 GitHub 安裝外掛。"
-  t200: "外部記憶提供方：內建 Honcho、OpenViking、Mem0；Hindsight 等更多可透過 hermes plugins install 安裝。"
+  t200: "外部記憶提供方：內建 OpenViking、Mem0；Honcho、Hindsight 等更多可透過 hermes plugins install 安裝。"
   t201: "外掛 hook 包含 pre/post_tool_call、pre/post_llm_call，以及用來標準化輸出的 transform_terminal_output。"
   t202: "提示快取（Anthropic）透過重用已快取的系統提示詞前綴來降低費用。"
   t203: "代理會在背景執行緒中自動產生工作階段標題 — 完全不影響延遲。"

@@ -3674,7 +3674,7 @@ tips:
   t197: "轨迹保存（--save-trajectories）会记录完整的工具调用轨迹，可用于模型训练。"
   t198: "插件有三种类型：通用插件（工具/钩子）、记忆提供方和上下文引擎。"
   t199: "hermes plugins install owner/repo 可直接从 GitHub 安装插件。"
-  t200: "外部记忆提供方：Honcho、OpenViking、Mem0 已内置；Hindsight 等可通过 hermes plugins install 安装。"
+  t200: "外部记忆提供方：OpenViking、Mem0 已内置；Honcho、Hindsight 等可通过 hermes plugins install 安装。"
   t201: "插件钩子包括 pre/post_tool_call、pre/post_llm_call，以及用于规范化输出的 transform_terminal_output。"
   t202: "提示词缓存（Anthropic）通过复用已缓存的系统提示词前缀来降低成本。"
   t203: "代理会在后台线程中自动生成会话标题——对延迟零影响。"

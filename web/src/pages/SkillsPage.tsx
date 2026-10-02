@@ -434,7 +434,7 @@ export default function SkillsPage() {
                 />
                 <PanelItem
                   icon={Search}
-                  label="Browse hub"
+                  label={t.skills.hubPanel ?? en.skills.hubPanel!}
                   active={view === "hub"}
                   onClick={() => {
                     setView("hub");
@@ -549,7 +549,7 @@ export default function SkillsPage() {
                       onClick={openLearn}
                       prefix={<Sparkles />}
                     >
-                      Learn a skill
+                      {t.skills.learnSkill ?? en.skills.learnSkill!}
                     </Button>
                     <Button
                       size="sm"
@@ -557,7 +557,7 @@ export default function SkillsPage() {
                       onClick={openCreateEditor}
                       prefix={<Plus />}
                     >
-                      New skill
+                      {t.skills.newSkill ?? en.skills.newSkill!}
                     </Button>
                   </div>
                 </div>
@@ -669,7 +669,7 @@ export default function SkillsPage() {
                                   onClick={() => setConfigToolset(ts)}
                                   prefix={<Wrench />}
                                 >
-                                  Configure
+                                  {t.common.configure ?? en.common.configure!}
                                 </Button>
                               </div>
                             </div>
@@ -704,42 +704,39 @@ export default function SkillsPage() {
       <Dialog open={learnOpen} onOpenChange={setLearnOpen}>
         <DialogContent className="max-w-lg">
           <DialogHeader>
-            <DialogTitle>Learn a skill</DialogTitle>
+            <DialogTitle>{t.skills.learnSkill ?? en.skills.learnSkill!}</DialogTitle>
             <DialogDescription>
-              Point Hermes at anything and it will distill a reusable skill —
-              following the house authoring standards. Fill in any combination
-              below; the agent gathers the sources and writes the skill in chat.
+              {t.skills.learnHint ?? en.skills.learnHint!}
             </DialogDescription>
           </DialogHeader>
           <div className="grid gap-3 py-2">
             <div className="grid gap-1.5">
               <label className="text-xs font-medium text-muted-foreground">
-                Local file or directory
+                {t.skills.localFileOrDirectory ?? en.skills.localFileOrDirectory!}
               </label>
               <Input
-                placeholder="~/projects/some-sdk  (read with read_file / search_files)"
+                placeholder={t.skills.learnDirPlaceholder ?? en.skills.learnDirPlaceholder!}
                 value={learnDir}
                 onChange={(e) => setLearnDir(e.target.value)}
               />
             </div>
             <div className="grid gap-1.5">
               <label className="text-xs font-medium text-muted-foreground">
-                URL
+                {t.skills.url ?? en.skills.url!}
               </label>
               <Input
-                placeholder="https://docs.example.com/api  (fetched with web_extract)"
+                placeholder={t.skills.learnUrlPlaceholder ?? en.skills.learnUrlPlaceholder!}
                 value={learnUrl}
                 onChange={(e) => setLearnUrl(e.target.value)}
               />
             </div>
             <div className="grid gap-1.5">
               <label className="text-xs font-medium text-muted-foreground">
-                Anything else — describe the workflow, paste notes, or say
-                "what we just did"
+                {t.skills.anythingElse ?? en.skills.anythingElse!}
               </label>
               <textarea
                 className="min-h-[90px] w-full rounded-md border border-input bg-transparent px-3 py-2 text-sm shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-                placeholder="e.g. how I file an expense report: open the portal, …"
+                placeholder={t.skills.learnTextPlaceholder ?? en.skills.learnTextPlaceholder!}
                 value={learnText}
                 onChange={(e) => setLearnText(e.target.value)}
               />
@@ -747,14 +744,14 @@ export default function SkillsPage() {
           </div>
           <div className="flex justify-end gap-2 pt-1">
             <Button ghost onClick={() => setLearnOpen(false)}>
-              Cancel
+              {t.common.cancel}
             </Button>
             <Button
               onClick={submitLearn}
               prefix={<Sparkles />}
               disabled={!learnDir.trim() && !learnUrl.trim() && !learnText.trim()}
             >
-              Learn it
+              {t.skills.learnIt ?? en.skills.learnIt!}
             </Button>
           </div>
         </DialogContent>
@@ -771,6 +768,7 @@ function SkillRow({
   onEdit,
   noDescriptionLabel,
 }: SkillRowProps) {
+  const { t } = useI18n();
   return (
     <div className="group flex items-start gap-3 px-3 py-2.5 transition-colors hover:bg-muted/40">
       <div className="pt-0.5 shrink-0">
@@ -798,8 +796,8 @@ function SkillRow({
         ghost
         size="icon"
         className="shrink-0 text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100 focus-visible:opacity-100 hover:text-foreground"
-        title="Edit SKILL.md"
-        aria-label={`Edit ${skill.name}`}
+        title={t.skills.editSkillMd ?? en.skills.editSkillMd!}
+        aria-label={(t.skills.editNamed ?? en.skills.editNamed!).replace("{name}", skill.name)}
         onClick={onEdit}
       >
         <Pencil />
@@ -894,6 +892,7 @@ function HubBrowser({
   /** Optional profile scoping installs + installed-state badges. */
   profile?: string;
 }) {
+  const { t } = useI18n();
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<SkillHubResult[]>([]);
   const [searching, setSearching] = useState(false);
@@ -1040,7 +1039,7 @@ function HubBrowser({
               <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
               <Input
                 className="h-8 pl-8 text-sm"
-                placeholder="Search the skill hub (GitHub, official, community)…"
+                placeholder={t.skills.hubSearchPlaceholder ?? en.skills.hubSearchPlaceholder!}
                 value={query}
                 onChange={(e) => setQuery(e.target.value)}
                 onKeyDown={(e) => {
@@ -1054,7 +1053,7 @@ function HubBrowser({
               disabled={searching || !query.trim()}
               prefix={searching ? <Spinner /> : <Search className="h-3.5 w-3.5" />}
             >
-              Search
+              {t.skills.hubSearch ?? en.skills.hubSearch!}
             </Button>
             <Button
               size="sm"
@@ -1062,7 +1061,7 @@ function HubBrowser({
               onClick={() => void updateAll()}
               prefix={<RefreshCw className="h-3.5 w-3.5" />}
             >
-              Update all
+              {t.skills.updateAll ?? en.skills.updateAll!}
             </Button>
           </div>
 
@@ -1089,7 +1088,7 @@ function HubBrowser({
                   size="xs"
                   className="ml-auto text-muted-foreground"
                   onClick={() => setAction(null)}
-                  aria-label="Dismiss"
+                  aria-label={t.app.dismiss ?? en.app.dismiss!}
                 >
                   <X className="h-3.5 w-3.5" />
                 </Button>
@@ -1114,10 +1113,10 @@ function HubBrowser({
               <div className="flex items-center gap-2 px-1">
                 <Sparkles className="h-3.5 w-3.5 text-primary" />
                 <span className="font-mondwest text-display text-xs tracking-[0.12em] text-text-secondary uppercase">
-                  Featured skills
+                  {t.skills.featuredSkills ?? en.skills.featuredSkills!}
                 </span>
                 <span className="text-xs text-text-tertiary">
-                  from the Hermes index — search above for thousands more
+                  {t.skills.featuredHint ?? en.skills.featuredHint!}
                 </span>
               </div>
               {featured.map((r) => (
@@ -1160,7 +1159,7 @@ function HubBrowser({
           {results.length === 0 ? (
             <Card className="rounded-none">
               <CardContent className="py-8 text-center text-sm text-muted-foreground">
-                No matching skills found in the hub.
+                {t.skills.noHubMatches ?? en.skills.noHubMatches!}
               </CardContent>
             </Card>
           ) : (
@@ -1199,6 +1198,7 @@ function ConnectedHubs({
   sources: SkillHubSource[];
   loading: boolean;
 }) {
+  const { t } = useI18n();
   if (loading) {
     return (
       <p className="text-xs text-muted-foreground">Connecting to skill hubs…</p>
@@ -1216,7 +1216,7 @@ function ConnectedHubs({
     <div className="flex flex-wrap items-center gap-1.5">
       <span className="flex items-center gap-1 text-xs text-text-tertiary">
         <Globe className="h-3 w-3" />
-        Connected hubs:
+        {t.skills.connectedHubs ?? en.skills.connectedHubs!}
       </span>
       {sources.map((s) => {
         const down =
@@ -1294,6 +1294,7 @@ function HubResultCard({
   onOpen: () => void;
   onInstall: () => void;
 }) {
+  const { t } = useI18n();
   const trust = trustVisual(result.trust_level);
   return (
     <Card className="rounded-none transition-colors hover:bg-muted/30">
@@ -1344,11 +1345,11 @@ function HubResultCard({
             onClick={onOpen}
             prefix={<FileText className="h-3.5 w-3.5" />}
           >
-            Details
+            {t.skills.details ?? en.skills.details!}
           </Button>
           {installed ? (
             <Button size="sm" ghost disabled prefix={<CheckCircle2 className="h-3.5 w-3.5" />}>
-              Installed
+              {t.common.installed ?? en.common.installed!}
             </Button>
           ) : (
             <Button
@@ -1356,7 +1357,7 @@ function HubResultCard({
               onClick={onInstall}
               prefix={<Download className="h-3.5 w-3.5" />}
             >
-              Install
+              {t.common.install ?? en.common.install!}
             </Button>
           )}
         </div>
@@ -1379,6 +1380,7 @@ function SkillDetailDialog({
   onInstall: () => void;
   showToast: (msg: string, kind: "success" | "error") => void;
 }) {
+  const { t } = useI18n();
   const [tab, setTab] = useState<"readme" | "scan">("readme");
   const [preview, setPreview] = useState<SkillHubPreview | null>(null);
   const [previewLoading, setPreviewLoading] = useState(true);
@@ -1454,7 +1456,7 @@ function SkillDetailDialog({
             onClick={() => setTab("readme")}
             prefix={<FileText className="h-3.5 w-3.5" />}
           >
-            Read SKILL.md
+            {t.skills.readSkillMd ?? en.skills.readSkillMd!}
           </Button>
           <Button
             size="sm"
@@ -1469,7 +1471,9 @@ function SkillDetailDialog({
               )
             }
           >
-            {scan ? "Re-scan" : "Security scan"}
+            {scan
+              ? (t.skills.rescan ?? en.skills.rescan!)
+              : (t.skills.securityScan ?? en.skills.securityScan!)}
           </Button>
           <div className="ml-auto flex items-center gap-3">
             {result.repo && (
@@ -1485,7 +1489,7 @@ function SkillDetailDialog({
             )}
             {installed ? (
               <Button size="sm" ghost disabled prefix={<CheckCircle2 className="h-3.5 w-3.5" />}>
-                Installed
+                {t.common.installed ?? en.common.installed!}
               </Button>
             ) : (
               <Button
@@ -1493,7 +1497,7 @@ function SkillDetailDialog({
                 onClick={onInstall}
                 prefix={<Download className="h-3.5 w-3.5" />}
               >
-                Install
+                {t.common.install ?? en.common.install!}
               </Button>
             )}
           </div>
@@ -1529,12 +1533,12 @@ function SkillDetailDialog({
                   </div>
                 )}
                 <pre className="whitespace-pre-wrap break-words bg-background/50 border border-border p-3 text-xs font-mono text-text-secondary leading-relaxed">
-                  {(preview.skill_md || "").trim() || "(SKILL.md is empty)"}
+                  {(preview.skill_md || "").trim() || (t.skills.skillMdEmpty ?? en.skills.skillMdEmpty!)}
                 </pre>
               </div>
             ) : (
               <p className="text-sm text-muted-foreground text-center py-10">
-                Couldn't load the skill source.
+                {t.skills.sourceLoadFailed ?? en.skills.sourceLoadFailed!}
               </p>
             )
           ) : (
@@ -1554,6 +1558,7 @@ function ScanPanel({
   scan: SkillHubScan | null;
   scanning: boolean;
 }) {
+  const { t } = useI18n();
   if (scanning && !scan) {
     return (
       <div className="flex flex-col items-center justify-center gap-2 py-12">
@@ -1567,8 +1572,7 @@ function ScanPanel({
   if (!scan) {
     return (
       <p className="text-sm text-muted-foreground text-center py-10">
-        Run a security scan to inspect this skill for risky patterns before
-        installing.
+        {t.skills.runScanHint ?? en.skills.runScanHint!}
       </p>
     );
   }
@@ -1582,10 +1586,10 @@ function ScanPanel({
         : "destructive";
   const policyLabel =
     scan.policy === "allow"
-      ? "Install allowed"
+      ? (t.skills.installAllowed ?? en.skills.installAllowed!)
       : scan.policy === "ask"
-        ? "Needs confirmation"
-        : "Install blocked";
+        ? (t.skills.needsConfirmation ?? en.skills.needsConfirmation!)
+        : (t.skills.installBlocked ?? en.skills.installBlocked!);
 
   return (
     <div className="flex flex-col gap-3">
@@ -1632,7 +1636,7 @@ function ScanPanel({
         {scan.findings.length === 0 && (
           <span className="flex items-center gap-1 text-xs text-emerald-400">
             <CheckCircle2 className="h-3.5 w-3.5" />
-            No risky patterns detected
+            {t.skills.noRiskyPatterns ?? en.skills.noRiskyPatterns!}
           </span>
         )}
       </div>

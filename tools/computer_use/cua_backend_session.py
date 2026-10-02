@@ -11,6 +11,7 @@ import contextlib
 import json
 import logging
 import os
+import sys
 import threading
 from typing import Any, Dict, List, Optional
 
@@ -233,7 +234,7 @@ class _CuaDriverSession:
             _t_manifest = _time.monotonic()
             # Telemetry policy first (default: disabled), then strip Hermes secrets.
             params = StdioServerParameters(command=command, args=args, env=_sanitize_subprocess_env(child_env))
-            async with stdio_client(params) as (read, write):
+            async with stdio_client(params, errlog=sys.__stderr__) as (read, write):
                 self._startup_phase = "mcp-initialize"
                 async with ClientSession(read, write) as session:
                     await session.initialize()

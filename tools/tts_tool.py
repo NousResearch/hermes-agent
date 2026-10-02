@@ -432,16 +432,16 @@ def text_to_speech_tool(
     tts_config, provider = _apply_call_overrides(_load_tts_config(), speed, provider)
     command_provider_config = _resolve_command_provider_config(provider, tts_config)
     from utils import is_truthy_value
-    if command_provider_config and is_truthy_value(command_provider_config.get("speech_cues", False)):
-        try:
-            from tools.tts_text_normalize import prepare_command_speech_cues
-            text = prepare_command_speech_cues(text)
-        except Exception as exc:
-            return _tool_failure("TTS cue preprocessing failed", provider, exc)
+    speech_cues = bool(command_provider_config) and is_truthy_value(command_provider_config.get("speech_cues", False))
     try:  # shared cleaner: markdown, emoji, think blocks, verifier footer, units, newlines
         from tools.tts_text_normalize import prepare_spoken_text
-        text = prepare_spoken_text(text, max_chars=None)
-    except Exception:
+        if speech_cues:
+            text = prepare_spoken_text(text, max_chars=None, command_speech_cues=True)
+        else:
+            text = prepare_spoken_text(text, max_chars=None)
+    except Exception as exc:
+        if speech_cues:
+            return _tool_failure("TTS cue preprocessing failed", provider, exc)
         text = text.strip()
     if not text:
         return tool_error("Text is empty after TTS cleanup", success=False)

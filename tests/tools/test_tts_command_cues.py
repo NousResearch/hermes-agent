@@ -17,6 +17,7 @@ from tools import tts_tool
     ('This is <emphasis level="strong">important</emphasis>.', 'This is important.'),
     ('<speak>Hello <unsupported level="high">world</unsupported>.</speak>', 'Hello world.'),
     ('Plain speech stays unchanged.', 'Plain speech stays unchanged.'),
+    ('&amp;lt;break/&amp;gt;Hello', 'and lt;break/ and gt;Hello'),
 ])
 def test_command_cues_reach_local_process(tmp_path, monkeypatch, text, expected):
     command = (
@@ -42,8 +43,8 @@ def test_command_cues_reach_local_process(tmp_path, monkeypatch, text, expected)
     ('', ''),
 ])
 def test_cue_fallback(text, expected):
-    from tools.tts_text_normalize import prepare_command_speech_cues
-    assert prepare_command_speech_cues(text) == expected
+    from tools.tts_text_normalize import strip_markdown_for_tts
+    assert strip_markdown_for_tts(text, command_speech_cues=True) == expected
 
 
 @pytest.mark.parametrize('setting', [False, 'false', None])

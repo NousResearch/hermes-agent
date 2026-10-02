@@ -73,8 +73,9 @@ def prepare_command_speech_cues(text: str) -> str:
     emphasis keeps its words, complete XML/audio tags are not sent to speech.
     No duration or prosody guarantee: those belong to the configured engine.
     Run before generic cleanup, which otherwise mangles closing tags as paths.
+    Accept already entity-decoded text from strip_markdown_for_tts; decode only
+    once in the shared pipeline so escaped prose cannot become fresh markup.
     """
-    text = html.unescape(text)
 
     def replace_tag(match: re.Match[str]) -> str:
         opening = not match.group(0).startswith("</")
@@ -86,11 +87,13 @@ def prepare_command_speech_cues(text: str) -> str:
     )
 
 
-def strip_markdown_for_tts(text: str) -> str:
+def strip_markdown_for_tts(text: str, *, command_speech_cues: bool = False) -> str:
     """Strip Markdown/Telegram formatting while preserving readable words."""
     if not text:
         return ""
     text = html.unescape(str(text))
+    if command_speech_cues:
+        text = prepare_command_speech_cues(text)
     text = _MD_CODE_BLOCK_RE.sub(" ", text)
     text = _MD_IMAGE_RE.sub(lambda m: f" {m.group(1)} " if m.group(1) else " ", text)
     text = _MD_LINK_RE.sub(r"\1", text)
@@ -310,13 +313,16 @@ def flatten_newlines_for_payload(text: str) -> str:
     return text.strip()
 
 
-def prepare_spoken_text(text: str, max_chars: int | None = 4000) -> str:
+def prepare_spoken_text(
+    text: str, max_chars: int | None = 4000, *, command_speech_cues: bool = False,
+) -> str:
     """Return a TTS-friendly script from assistant text (deterministic cleanup, not a rewrite).
     Pipeline: non-spoken blocks > Markdown > symbols/units > identifier-dense tokens >
     line formatting into sentence pauses > single line (for newline-sensitive providers),
     then ``max_chars``."""
-    spoken = text
-    for step in (strip_nonspoken_blocks, strip_markdown_for_tts, normalize_symbols_for_tts,
+    spoken = strip_nonspoken_blocks(text)
+    spoken = strip_markdown_for_tts(spoken, command_speech_cues=command_speech_cues)
+    for step in (normalize_symbols_for_tts,
                  prune_identifier_tokens_for_tts,
                  smooth_whitespace_for_tts, flatten_newlines_for_payload):
         spoken = step(spoken)

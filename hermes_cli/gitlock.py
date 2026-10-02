@@ -159,7 +159,7 @@ def disable_tree0_auto_maintenance(repo_root: Path) -> None:
     lock from this) and never raises: a read-only config must not turn fetch recovery into a
     traceback, matching mark_unmarked_packs_promisor above.
     """
-    _restore_auto_maintenance(repo_root)
+    _migrate_earlier_maintenance_keys(repo_root)
     for key, value in _TREE0_MAINTENANCE_OFF:
         try:
             current = subprocess.run(
@@ -181,31 +181,31 @@ def disable_tree0_auto_maintenance(repo_root: Path) -> None:
             logger.warning("Could not set %s=%s in %s", key, value, repo_root)
 
 
-def _restore_auto_maintenance(repo_root: Path) -> None:
-    """Undo the ``maintenance.auto=false`` an earlier cut of _TREE0_MAINTENANCE_OFF persisted.
+def _migrate_earlier_maintenance_keys(repo_root: Path) -> None:
+    """Undo what earlier cuts of _TREE0_MAINTENANCE_OFF persisted, once.
 
-    It also switched off git's own post-fetch fold (git <= 2.53), so packs piled up until the next
-    update. Nothing records who wrote a lone ``maintenance.auto=false``, so it is removed only
-    with the old cut's fingerprint: its sibling keys present and ``maintenance.commit-graph.enabled``
-    not yet written. The first pass of disable_tree0_auto_maintenance writes that key, which makes
-    this a one-time migration; an operator's own setting is never touched, before or after.
+    ``maintenance.auto=false`` switched off git's own post-fetch fold (git <= 2.53) and the first
+    cut's ``gc.auto=0`` turns ``gc --auto``, the update's own fold, into a no-op. Nothing records
+    who wrote them, so they are removed only under the earlier cuts' fingerprint: both wrote
+    ``maintenance.auto=false`` together with ``fetch.writeCommitGraph=false``, and neither wrote
+    ``maintenance.commit-graph.enabled``. The first pass of disable_tree0_auto_maintenance writes
+    that key, so this runs once; an operator's own lone setting never matches.
     """
     try:
         local = dict(line.split(None, 1) for line in _git_stdout_lines(repo_root, [
             "config", "--local", "--get-regexp",
-            r"^(maintenance\.auto|maintenance\.commit-graph\.enabled|gc\.writecommitgraph|fetch\.writecommitgraph)$"]))
-        old_cut = (local.get("maintenance.auto") == "false"
-                   and local.get("gc.writecommitgraph") == "false"
-                   and local.get("fetch.writecommitgraph") == "false"
-                   and "maintenance.commit-graph.enabled" not in local)
-        if old_cut:
+            r"^(maintenance\.auto|maintenance\.commit-graph\.enabled|fetch\.writecommitgraph|gc\.auto)$"]))
+        if (local.get("maintenance.auto") != "false" or local.get("fetch.writecommitgraph") != "false"
+                or "maintenance.commit-graph.enabled" in local):
+            return
+        for key in ("maintenance.auto", "gc.auto") if local.get("gc.auto") == "0" else ("maintenance.auto",):
             subprocess.run(
-                ["git", "config", "--local", "--unset", "maintenance.auto"],
+                ["git", "config", "--local", "--unset", key],
                 cwd=str(repo_root), check=True, capture_output=True, timeout=30,
                 creationflags=windows_hide_flags(),
             )
     except Exception:
-        logger.warning("Could not restore maintenance.auto in %s", repo_root)
+        logger.warning("Could not migrate earlier maintenance keys in %s", repo_root)
 
 
 def clear_stale_tmp_packs(repo_root: Path, *, min_age_seconds: Optional[int] = None) -> List[str]:

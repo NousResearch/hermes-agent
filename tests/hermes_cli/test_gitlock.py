@@ -318,6 +318,21 @@ def test_an_operators_own_maintenance_auto_false_is_never_erased(repo: Path) -> 
     assert _run_git("config", "--local", "--get", "maintenance.auto", cwd=repo) == "false"
 
 
+def test_a_checkout_the_first_cut_configured_folds_on_update(partial_clone: Path) -> None:
+    """73c17151f61 persisted ``gc.auto=0`` (beside ``maintenance.auto=false`` and
+    ``fetch.writeCommitGraph=false``); left in place, ``gc --auto`` is a no-op and no fold ever runs."""
+    for key, value in (("gc.auto", "0"), ("fetch.writeCommitGraph", "false")):
+        _run_git("config", key, value, cwd=partial_clone)
+    assert len(_packs(partial_clone)) > 2
+
+    consolidate_lazy_fetch_packs(partial_clone)
+
+    assert len(_packs(partial_clone)) == 1
+    left = subprocess.run(["git", "config", "--local", "--get-regexp", r"^(maintenance\.auto|gc\.auto)$"],
+                          cwd=partial_clone, capture_output=True, text=True).stdout
+    assert left == ""
+
+
 def test_non_partial_checkout_is_left_alone(repo: Path) -> None:
     assert consolidate_lazy_fetch_packs(repo) == 0
     keys = subprocess.run(["git", "config", "--local", "--get-regexp", "maintenance|writecommitgraph"], cwd=repo,

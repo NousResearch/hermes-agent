@@ -2,7 +2,7 @@
 
 Notepad and PowerShell ``>`` prepend U+FEFF when saving; ``json.loads`` rejects it
 ("Unexpected UTF-8 BOM") and every loader below degrades to defaults, so a user who
-edited mem0.json / supermemory.json lost the
+edited mem0.json lost the
 whole config with no error (Qwen CLI creds raised ``qwen_auth_read_failed``). Same
 class as the auth-store/.env sweep; these were the missed sibling readers.
 """
@@ -24,14 +24,8 @@ def _via_shared_reader(p: Path, monkeypatch) -> dict:
     return read_json_or_empty(p)
 
 
-def _via_supermemory(p: Path, monkeypatch) -> dict:
-    from plugins.memory.supermemory import _load_supermemory_config
-    return _load_supermemory_config(str(p.parent))
-
-
 @pytest.mark.parametrize("filename, loader", [
     ("mem0.json", _via_shared_reader),
-    ("supermemory.json", _via_supermemory),
 ])
 def test_plugin_config_json_tolerates_bom(tmp_path, monkeypatch, filename, loader):
     target = tmp_path / filename

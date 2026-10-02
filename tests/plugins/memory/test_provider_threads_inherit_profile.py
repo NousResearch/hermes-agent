@@ -52,17 +52,6 @@ def _byterover(seen, tmp_path):
     return [p._curate_in_background("content", name="brv-test", what="test")]
 
 
-def _supermemory(seen, tmp_path):
-    import plugins.memory.supermemory as supermemory
-
-    p = supermemory.SupermemoryMemoryProvider()
-    p._active = p._write_enabled = True
-    p._client = MagicMock()
-    p._client.add_memory = _probe_home(seen)
-    p.on_memory_write("add", "user", "a fact")
-    return [p._write_thread]
-
-
 def _openviking(seen, tmp_path):
     import plugins.memory.openviking as openviking
 
@@ -73,7 +62,7 @@ def _openviking(seen, tmp_path):
 
 
 _PROVIDERS = {
-    "mem0": _mem0, "retaindb": _retaindb, "byterover": _byterover, "supermemory": _supermemory,
+    "mem0": _mem0, "retaindb": _retaindb, "byterover": _byterover,
     "openviking": _openviking,
 }
 

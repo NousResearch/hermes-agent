@@ -104,9 +104,10 @@ def _profile_attachments_storage(profile_home) -> str:
     import contextlib as _contextlib
     home = Path(profile_home) if profile_home else _hermes_home
     with _contextlib.suppress(Exception):
+        from hermes_cli.config_backend import config_exists
         from hermes_cli.config_effective import load_user_config_effective
         cfg_path = home / "config.yaml"
-        if cfg_path.exists():
+        if config_exists(cfg_path):
             attachments_cfg = load_user_config_effective(cfg_path).get("attachments")
             if isinstance(attachments_cfg, dict):
                 return str(attachments_cfg.get("storage") or "").strip().lower()

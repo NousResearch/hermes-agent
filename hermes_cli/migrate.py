@@ -29,6 +29,7 @@ def _fail(message: str) -> int:
 
 def cmd_migrate_xai(args: Any) -> int:
     """Run xAI May-15 model migration in dry-run or apply mode."""
+    from hermes_cli.config_backend import config_exists
     from hermes_cli.xai_retirement import (
         MIGRATION_GUIDE_URL, RETIREMENT_DATE, apply_migration, find_retired_xai_refs, format_issue)
 
@@ -62,7 +63,7 @@ def cmd_migrate_xai(args: Any) -> int:
             Colors.DIM))
         return 0
 
-    if not config_path or not config_path.exists():
+    if not config_path or not config_exists(config_path):
         return _fail(f"Could not locate config.yaml (looked at: {config_path})")
 
     try:

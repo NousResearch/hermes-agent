@@ -7,6 +7,7 @@ step may only persist values that differ from the schema default (plus removals/
 
 from __future__ import annotations
 
+import contextvars
 import copy
 import functools
 import logging
@@ -22,6 +23,18 @@ logger = logging.getLogger(__name__)
 #: untouched — the process continues with defaults deep-merged at read time, matching the
 #: non-fatal posture for unparseable configs — and a message tells the user how to proceed.
 SUPPORT_FLOOR_VERSION = 12
+
+#: True while :func:`run_migrations` runs with ``config_only=True``: the remote config backend's
+#: in-memory migrations (D12) and its write-validation simulation. Such a run transforms the config
+#: document and nothing else: steps that also touch local files (``.env``, profile ``SOUL.md``,
+#: ``logs/``) skip that part, so reading a profile's remote config, or a refused write's check, never
+#: changes a file on disk — a sibling profile's least of all.
+_CONFIG_ONLY: "contextvars.ContextVar[bool]" = contextvars.ContextVar("config_migrations_config_only", default=False)
+
+
+def _local_files_allowed() -> bool:
+    """Whether the running step may change files other than the config document itself."""
+    return not _CONFIG_ONLY.get()
 
 
 def support_floor_message() -> str:
@@ -171,6 +184,8 @@ def _migrate_to_12(results: Dict[str, Any], quiet: bool) -> None:
 def _migrate_to_13(results: Dict[str, Any], quiet: bool) -> None:
     # 12 → 13: clear dead LLM_MODEL / OPENAI_MODEL from .env (written by the old setup wizard;
     # nothing reads them — config.yaml is the sole source of truth).
+    if not _local_files_allowed():
+        return  # .env only
     _c = _cfg()
     for dead_var in ("LLM_MODEL", "OPENAI_MODEL"):
         try:
@@ -336,11 +351,12 @@ def _migrate_to_23(results: Dict[str, Any], quiet: bool) -> None:
     _c = _cfg()
     DEFAULT_CONFIG = _c.DEFAULT_CONFIG
 
-    try:
-        curator_dir = _c.get_hermes_home() / "logs" / "curator"
-        curator_dir.mkdir(parents=True, exist_ok=True)
-    except Exception as e:
-        results["warnings"].append(f"Could not create {curator_dir}: {e}")
+    if _local_files_allowed():
+        try:
+            curator_dir = _c.get_hermes_home() / "logs" / "curator"
+            curator_dir.mkdir(parents=True, exist_ok=True)
+        except Exception as e:
+            results["warnings"].append(f"Could not create {curator_dir}: {e}")
 
     config = read_raw_config()
 
@@ -538,6 +554,8 @@ def _migrate_to_41(results: Dict[str, Any], quiet: bool) -> None:
     # 40 → 41: drop the plugin-era "## Messaging other agents" append from every SOUL.md. The
     # server injects the live Bot Mode section in Bot Chat sessions; the frozen SOUL copy taxed
     # every other session (~600 tok) and shadowed the live roster in Bot Chat itself.
+    if not _local_files_allowed():
+        return  # SOUL.md files only, across the whole roster
     from hermes_constants import get_hermes_home
     from tools.bot_mode_probe import _PROTOCOL_HEADING, _hermes_root, _roster, strip_legacy_protocol
 
@@ -677,6 +695,8 @@ def _migrate_to_49(results: Dict[str, Any], quiet: bool) -> None:
                 f"({DEFAULT_VERCEL_IMAGE})",
     )(results, quiet)
     _c = _cfg()
+    if not _local_files_allowed():
+        return  # the .env mirror is a local file
     if (_c.get_env_value_prefer_dotenv("TERMINAL_VERCEL_RUNTIME") or "").strip() == LEGACY_VERCEL_RUNTIME:
         _c.remove_env_value("TERMINAL_VERCEL_RUNTIME")
         if not quiet:
@@ -829,13 +849,24 @@ LEGACY_KEY_STEPS = frozenset({12, 14, 16, 17, 29, 33, 38, 39, 42, 43, 46})
 
 
 def run_migrations(
-    current_ver: int, results: Dict[str, Any], quiet: bool, *, unversioned: bool = False) -> None:
+    current_ver: int, results: Dict[str, Any], quiet: bool, *, unversioned: bool = False,
+    config_only: bool = False) -> None:
     """Apply every registered migration whose target version exceeds *current_ver*; a config
     with no ``_config_version`` (*unversioned*) gets only :data:`LEGACY_KEY_STEPS`.
 
     *current_ver* is the on-disk schema version captured ONCE before any step runs and does not
     advance between steps — each step is gated on the same initial value.
+
+    *config_only* transforms the config document alone (see :data:`_CONFIG_ONLY`).
     """
+    token = _CONFIG_ONLY.set(config_only)
+    try:
+        _run_steps(current_ver, results, quiet, unversioned)
+    finally:
+        _CONFIG_ONLY.reset(token)
+
+
+def _run_steps(current_ver: int, results: Dict[str, Any], quiet: bool, unversioned: bool) -> None:
     for target_ver, migration_fn in MIGRATIONS:
         if current_ver < target_ver and (target_ver in LEGACY_KEY_STEPS or not unversioned):
             try:

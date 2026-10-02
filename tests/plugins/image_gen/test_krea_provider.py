@@ -373,6 +373,31 @@ class TestGenerateErrors:
         assert "Invalid API key" in result["error"]
 
 
+    @pytest.mark.parametrize("failure, eligible", [
+        ("connection", True), (503, True), (429, True), (422, False), ("timeout", False), ("invalid_json", False),
+    ])
+    def test_submit_failure_marks_whether_a_fal_fallback_is_safe(self, failure, eligible):
+        """Only failures that prove Krea created no job may fall back: connection errors, 429 and 5xx."""
+        import requests as req_lib
+        from plugins.image_gen.krea import KreaImageGenProvider
+
+        if failure == "connection":
+            post = patch("plugins.image_gen.krea.requests.post", side_effect=req_lib.ConnectionError("refused"))
+        elif failure == "timeout":
+            post = patch("plugins.image_gen.krea.requests.post", side_effect=req_lib.Timeout())
+        else:
+            resp = req_lib.Response()
+            resp.status_code = 200 if failure == "invalid_json" else failure
+            resp._content = b"not json" if failure == "invalid_json" else b'{"error": "nope"}'
+            resp.raise_for_status = MagicMock(side_effect=None if failure == "invalid_json" else req_lib.HTTPError(response=resp))
+            post = patch("plugins.image_gen.krea.requests.post", return_value=resp)
+
+        with post:
+            result = KreaImageGenProvider().generate(prompt="test")
+
+        assert result["success"] is False
+        assert result["fallback_eligible"] is eligible
+
     def test_job_failed(self):
         from plugins.image_gen.krea import KreaImageGenProvider
 
@@ -395,6 +420,7 @@ class TestGenerateErrors:
         assert result["success"] is False
         assert result["error_type"] == "api_error"
         assert "NSFW" in result["error"]
+        assert "fallback_eligible" not in result
 
 
     def test_completed_but_missing_urls(self):

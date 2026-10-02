@@ -150,3 +150,51 @@ def test_pool_entry_lands_with_the_reported_window_not_the_hour(monkeypatch):
     assert benched.last_error_reset_at == pytest.approx(now + 30, abs=5)
     # The rotation landed on the healthy spare, not back onto the entry it just benched.
     assert pool.current() is not None and pool.current().id == "spare00"
+
+
+def _pool_entry(provider="anthropic", token="sk-primary"):
+    """A two-entry pool so the rotation has somewhere healthy to land."""
+    return CredentialPool(provider=provider, entries=[
+        PooledCredential.from_dict(provider, {
+            "id": "pref0000", "label": "subscription", "auth_type": "api_key",
+            "priority": 0, "access_token": token, "base_url": _BASE, "source": "manual",
+        }),
+        PooledCredential.from_dict(provider, {
+            "id": "spare00", "label": "spare", "auth_type": "api_key",
+            "priority": 1, "access_token": "sk-spare", "base_url": _BASE, "source": "manual",
+        }),
+    ])
+
+
+def test_generic_body_message_does_not_hide_a_window_stated_beside_it(monkeypatch):
+    """A body whose ``error.message`` is generic still carries the wait in its full text."""
+    now = time.time()
+    body = {"error": {"message": "Rate limit exceeded", "code": 429,
+                      "detail": "quota window exhausted, please retry after 20s"}}
+    pool = _pool_entry()
+    monkeypatch.setattr(ac, "load_pool", lambda _provider: pool)
+    monkeypatch.setattr(ac, "_evict_cached_clients", lambda _provider: None)
+
+    assert ac._recover_provider_pool("anthropic", _err(429, "Error code: 429 - " + repr(body), body=body),
+                                     failed_api_key="sk-primary") is True
+
+    benched = next(e for e in pool.entries() if e.id == "pref0000")
+    assert benched.last_status == "exhausted"
+    assert benched.last_error_reset_at == pytest.approx(now + 20, abs=5)
+    rotated_to = pool.current()
+    assert rotated_to is not None
+    assert rotated_to.id == "spare00"
+
+
+def test_window_past_the_five_hundred_char_truncation_still_sizes_the_bench(monkeypatch):
+    """Providers pad the body; the window sits past the extractor's truncation."""
+    now = time.time()
+    pool = _pool_entry()
+    monkeypatch.setattr(ac, "load_pool", lambda _provider: pool)
+    monkeypatch.setattr(ac, "_evict_cached_clients", lambda _provider: None)
+
+    exc = _err(429, "quota exhausted. " * 40 + "please retry after 90s")
+    assert ac._recover_provider_pool("anthropic", exc, failed_api_key="sk-primary") is True
+
+    benched = next(e for e in pool.entries() if e.id == "pref0000")
+    assert benched.last_error_reset_at == pytest.approx(now + 90, abs=5)

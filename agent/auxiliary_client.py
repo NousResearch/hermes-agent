@@ -3724,8 +3724,10 @@ def _recover_provider_pool(provider: str, exc: Exception, *, failed_api_key: str
         from agent.agent_runtime_helpers import extract_api_error_context
 
         error_context: Dict[str, Any] = dict(extract_api_error_context(exc))
-        if "message" not in error_context:
-            error_context["message"] = str(exc)
+        # The pool parses its window out of ``message``, so this has to stay the whole exception
+        # text: the extractor only sets a message from the body, and a body that spells the wait
+        # anywhere else (``detail``, a padded preamble) would otherwise bench for the blind hour.
+        error_context["message"] = str(exc)
         if status_code is not None:
             error_context["status_code"] = status_code
         next_entry = pool.mark_exhausted_and_rotate(

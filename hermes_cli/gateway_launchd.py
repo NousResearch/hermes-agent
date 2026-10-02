@@ -10,6 +10,7 @@ from pathlib import Path
 import contextlib
 import json
 import os
+import platform
 import shlex
 import subprocess
 import sys
@@ -347,6 +348,25 @@ def _launchd_degrade_or_raise(exc: subprocess.CalledProcessError, what: str) -> 
     _launchd_fallback_to_detached(f"{what} exit {exc.returncode}")
 
 
+def _limit_load_to_session_type_supported() -> bool:
+    """True where the plist's LimitLoadToSessionType key still loads.
+
+    The key pins the agent to Aqua/Background sessions (added for non-Aqua macOS 26
+    sessions in 360630733), but macOS 26.5+ rejects it outright: `launchctl bootstrap
+    gui/<uid>` fails with exit 5 (Input/output error) and the gateway degrades to the
+    detached fallback. User-domain LaunchAgents load in both session types without the
+    key, so emit it only on macOS builds that still accept it (#42376).
+    """
+    if sys.platform != "darwin":
+        return True  # windows-footgun: ok — launchd plist is only ever generated on macOS
+    version = platform.mac_ver()[0]
+    try:
+        major, minor = (int(part) for part in version.split(".")[:2])
+    except ValueError:
+        return True  # unknown version spelling — keep the historical contract
+    return (major, minor) < (26, 5)
+
+
 def generate_launchd_plist() -> str:
     from html import escape
     # Stable cwd anchor — never the volatile source checkout (same rot risk as systemd's WorkingDirectory).
@@ -387,6 +407,17 @@ def generate_launchd_plist() -> str:
     </dict>
 """
 
+    session_type_block = (
+        "\n    <key>LimitLoadToSessionType</key>\n"
+        "    <array>\n"
+        "        <string>Aqua</string>\n"
+        "        <string>Background</string>\n"
+        "    </array>\n"
+        "    \n"
+        if _limit_load_to_session_type_supported()
+        else "\n"
+    )
+
     return f"""<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -412,14 +443,7 @@ def generate_launchd_plist() -> str:
         <key>HERMES_SUPERVISED_CHILD</key>
         <string>1</string>
     </dict>
-
-    <key>LimitLoadToSessionType</key>
-    <array>
-        <string>Aqua</string>
-        <string>Background</string>
-    </array>
-    
-    <key>RunAtLoad</key>
+{session_type_block}    <key>RunAtLoad</key>
     <true/>
     
     <key>KeepAlive</key>

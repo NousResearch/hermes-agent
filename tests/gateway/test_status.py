@@ -1513,6 +1513,50 @@ class TestLaunchdPlistRespawnGovernance:
         # Ask for the whole gui-domain clamp, and leave room for post-drain cleanup inside it.
         assert int(m.group(1)) >= LAUNCHD_GUI_EXIT_TIMEOUT_CLAMP_S > LAUNCHD_STOP_CLEANUP_RESERVE_S
 
+    def test_plist_keeps_session_type_limit_where_supported(self, tmp_path, monkeypatch):
+        """The Aqua/Background session contract (360630733) stays on macOS that accept the key."""
+        from hermes_cli import gateway_launchd
+        from hermes_cli.gateway import generate_launchd_plist
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setattr(gateway_launchd, "_limit_load_to_session_type_supported", lambda: True)
+        plist = generate_launchd_plist()
+        assert "<key>LimitLoadToSessionType</key>" in plist
+        assert "<string>Aqua</string>" in plist
+        assert "<string>Background</string>" in plist
+
+    def test_plist_omits_session_type_limit_on_macos_26_5(self, tmp_path, monkeypatch):
+        """macOS 26.5+ rejects the key with `launchctl bootstrap` exit 5 (#42376).
+
+        User-domain LaunchAgents load in Aqua and Background sessions without it, so
+        emitting the key there only costs supervision (detached fallback).
+        """
+        from hermes_cli import gateway_launchd
+        from hermes_cli.gateway import generate_launchd_plist
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setattr(gateway_launchd, "_limit_load_to_session_type_supported", lambda: False)
+        plist = generate_launchd_plist()
+        assert "<key>LimitLoadToSessionType</key>" not in plist
+        # The plist must stay loadable XML with the surrounding keys intact.
+        assert "<key>RunAtLoad</key>" in plist
+
+    def test_session_type_limit_detection_by_macos_version(self, monkeypatch):
+        from hermes_cli import gateway_launchd as gl
+
+        monkeypatch.setattr(gl.sys, "platform", "darwin")
+        monkeypatch.setattr(gl.platform, "mac_ver", lambda: ("26.5.0", "", ""))
+        assert gl._limit_load_to_session_type_supported() is False
+        monkeypatch.setattr(gl.platform, "mac_ver", lambda: ("26.6", "", ""))
+        assert gl._limit_load_to_session_type_supported() is False
+        monkeypatch.setattr(gl.platform, "mac_ver", lambda: ("26.4.1", "", ""))
+        assert gl._limit_load_to_session_type_supported() is True
+        monkeypatch.setattr(gl.platform, "mac_ver", lambda: ("15.3.1", "", ""))
+        assert gl._limit_load_to_session_type_supported() is True
+        # Unknown version spelling keeps the historical contract instead of dropping the key.
+        monkeypatch.setattr(gl.platform, "mac_ver", lambda: ("", "", ""))
+        assert gl._limit_load_to_session_type_supported() is True
+
 
 class TestPermissionErrorOnLockFile:
     """Stale root-owned lock files from launchd Background sessions must not

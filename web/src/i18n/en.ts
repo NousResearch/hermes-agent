@@ -574,6 +574,72 @@ export const en: Translations = {
       hotReloadHint:
         "ON: each running subagent re-reads the preferred route before its NEXT request — config changes apply with no restart. OFF: a child freezes provider:model when it spawns.",
     },
+    fieldCopy: {
+      model: "Model",
+      model_desc: "Default model for the main agent (e.g. anthropic/claude-sonnet-4.6).",
+      model_context_length: "Context length",
+      model_context_length_desc:
+        "Context window override; 0 auto-detects from model metadata.",
+      toolsets: "Toolsets",
+      toolsets_desc: "Tool groups available to the agent (e.g. hermes-cli, web, files).",
+      max_live_sessions: "Max live sessions",
+      max_live_sessions_desc:
+        "Soft cap on in-memory sessions; detached ones are evicted least-recently-used first. 0 disables.",
+      context_file_read_timeout: "Context file read timeout",
+      context_file_read_timeout_desc:
+        "Seconds to wait when reading a file into the context window.",
+      context_file_max_chars: "Context file max chars",
+      file_read_max_chars: "File read max chars",
+      max_concurrent_sessions: "Max concurrent sessions",
+      timezone: "Timezone",
+      command_allowlist: "Command allowlist",
+      fallback_providers: "Main agent fallback chain",
+      fallback_model: "Main agent fallback model",
+      fallback_model_desc:
+        "Main-agent fallback route (single dict or chain list) tried when the primary route fails.",
+      "delegation.provider": "Subagent provider",
+      "delegation.provider_desc":
+        "Provider delegated subagents start on; empty inherits the parent's provider.",
+      "delegation.model": "Subagent model",
+      "delegation.model_desc":
+        "Model delegated subagents start on; empty inherits the parent's model.",
+      "delegation.fallback_providers": "Subagent fallback chain",
+      "delegation.fallback_providers_desc":
+        "Fallback chain for subagents. Empty inherits the main chain; an explicit empty list disables fallback.",
+      "delegation.hot_reload_model": "Hot-reload subagent model",
+      "delegation.hot_reload_model_desc":
+        "ON: a running subagent re-reads its route before each request (no restart). OFF: the route freezes at spawn.",
+      "delegation.reasoning_effort": "Subagent reasoning effort",
+      "delegation.max_concurrent_children": "Max concurrent subagents",
+      "memory.memory_enabled": "Enable memory",
+      "memory.user_profile_enabled": "Enable user profile",
+      "memory.provider": "Memory provider",
+      "memory.provider_desc":
+        "External memory provider plugin; empty uses the built-in memory only.",
+      "compression.enabled": "Enable compression",
+      "compression.threshold": "Compression threshold",
+      "compression.threshold_desc": "Context usage ratio that triggers compression.",
+      "agent.max_turns": "Max turns",
+      "agent.max_turns_desc": "Turn cap per run; empty or 0 means unlimited.",
+      "agent.service_tier": "Service tier",
+      "agent.service_tier_desc":
+        "Fast-mode policy: always / first N seconds of each turn / first turn only.",
+      "approvals.mode": "Approval mode",
+      "approvals.mode_desc": "How dangerous commands are approved: manual, smart, or off.",
+      "security.redact_secrets": "Redact secrets",
+      "display.compact": "Compact display",
+      "display.compact_desc": "Use the denser CLI layout.",
+      "display.busy_input_mode": "Input behavior while running",
+      "tts.provider": "Text-to-speech provider",
+      "stt.provider": "Speech-to-text provider",
+      "logging.level": "Log level",
+      "logging.level_desc": "Minimum level written to agent.log.",
+      "terminal.backend": "Terminal backend",
+      "browser.backend": "Browser backend",
+      "browser.backend_desc": "Which browser automation backend to use.",
+      "browser.headed": "Headed browser",
+      "updates.check": "Check for updates",
+    },
   },
 
   env: {

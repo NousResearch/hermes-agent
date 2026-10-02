@@ -585,6 +585,15 @@ export interface Translations {
       hotReload: string;
       hotReloadHint: string;
     };
+    /**
+     * Optional — authored copy for the generic config form, keyed by the config
+     * schema key verbatim (`model`, `model_context_length`, `delegation.provider`,
+     * …). Label at `fieldCopy[<key>]`; description at `fieldCopy[<key>_desc]`.
+     * Checked BEFORE the client-synthesized English label and the backend schema
+     * prose, so an untranslated key keeps rendering exactly as before. Only
+     * en/zh seed it; other locales inherit the merged English base.
+     */
+    fieldCopy?: Record<string, string>;
   };
 
   // ── Env / Keys page ──

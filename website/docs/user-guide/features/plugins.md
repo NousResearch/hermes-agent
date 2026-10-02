@@ -180,6 +180,14 @@ plugins:
   # stuck thread is abandoned. Default 10; set 0 to disable; values above 600
   # are clamped.
   load_timeout_seconds: 10
+  # Optional: bounded retries for a plugin whose import + register() failed or
+  # overran the deadline — a transient boot window (e.g. unclean-reboot I/O
+  # contention) must not disable the plugin until the next restart. The first
+  # retry waits load_retry_base_seconds and the delay doubles each attempt
+  # (capped at 300s); a successful retry registers the plugin normally.
+  # Defaults 5 / 30; set load_retry_attempts: 0 to never retry.
+  load_retry_attempts: 5
+  load_retry_base_seconds: 30
 ```
 
 Three ways to flip state:

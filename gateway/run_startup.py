@@ -1196,6 +1196,21 @@ class GatewayStartupMixin:
                         "No adapter for '%s' -- is the plugin installed? "
                         "(platform is enabled in config.yaml but no plugin registered it)", platform.value,
                     )
+                # A missing adapter at boot is most often a platform plugin whose load failed under
+                # startup I/O contention (#126356). The plugin loader retries the load (bounded), and
+                # a mid-run install / reload-plugins re-registers the platform — queue it so the
+                # reconnect watcher re-creates the adapter when that happens instead of stranding
+                # the platform unserved for the process lifetime.
+                self._update_platform_runtime_status(
+                    platform.value, platform_state="retrying", error_code="adapter_unavailable",
+                    error_message="No adapter available (plugin not loaded); retrying in the background.",
+                )
+                entry = self._startup_retry_entry(platform, None, platform_config)
+                # adapter=None records credential_claim=None — reserve the token from the CONFIG so
+                # a same-token secondary scanned before the plugin loads cannot take it first.
+                entry["credential_claim"] = self._config_credential_claim(platform, platform_config)
+                entry["adapter_unavailable"] = True
+                self._failed_platforms[platform] = entry
                 continue
             # Under multiplexing the default profile needs the same whole-handler runtime scope as a
             # secondary (authorization and prompt rendering run before the agent-turn scope).

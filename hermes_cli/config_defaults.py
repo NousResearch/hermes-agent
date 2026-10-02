@@ -1724,6 +1724,13 @@ DEFAULT_CONFIG = {
         # skipped with the reason "load timed out" and the rest keep loading; the stuck worker thread is
         # abandoned. 0 = no deadline (load inline). Max 600.
         "load_timeout_seconds": 10,
+        # Bounded retries for a plugin whose import + register() failed or overran the deadline — a
+        # transient boot window (e.g. unclean-reboot I/O contention) must not disable the plugin for
+        # the process lifetime (#126356). The first retry waits load_retry_base_seconds and the delay
+        # doubles each attempt (cap 300s); success registers the plugin normally and notifies
+        # on_plugin_loaded listeners. 0 = never retry.
+        "load_retry_attempts": 5,
+        "load_retry_base_seconds": 30,
         # Read-only plugin update-check cadence, hours (gateway tick; 0 disables). Applying stays
         # explicit: `hermes plugins update <name>`, or auto_apply below (git-class plugins only,
         # scan-gated by that same pipeline).

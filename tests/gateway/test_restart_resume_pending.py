@@ -748,7 +748,7 @@ async def test_served_profile_reconnect_resumes_what_boot_deferred():
     coder.handle_message = AsyncMock()
     runner._sync_voice_mode_state_to_adapter = MagicMock()
     runner._redeliver_failed_obligations_for_platform = AsyncMock(return_value=0)
-    runner._secondary_reconnect_attempt = AsyncMock(return_value=(coder, True))
+    runner._secondary_reconnect_attempt = AsyncMock(return_value=(coder, True, None))
     await runner._run_secondary_profile_reconnect("coder", Platform.TELEGRAM)
     for _ in range(50):
         await asyncio.sleep(0)

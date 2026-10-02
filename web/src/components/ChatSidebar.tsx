@@ -53,6 +53,15 @@ import { cn } from '@/lib/utils'
 import { AlertCircle, ChevronDown, KeyRound, RefreshCw } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate } from 'react-router'
+import { useI18n } from '@/i18n'
+import { en } from '@/i18n/en'
+import type { Translations } from '@/i18n/types'
+
+/** Chat sidebar copy; en seeds the optional block, other locales fall back. */
+type ChatSidebarCopy = NonNullable<NonNullable<Translations["sharedComponents"]>["chatSidebar"]>;
+function chatSidebarCopy(t: Translations): ChatSidebarCopy {
+  return t.sharedComponents?.chatSidebar ?? (en.sharedComponents!.chatSidebar as ChatSidebarCopy);
+}
 
 interface SessionInfo {
   cwd?: string
@@ -122,6 +131,8 @@ export function ChatSidebar({
   onSessionTitleChange
 }: ChatSidebarProps) {
   const navigate = useNavigate()
+  const { t } = useI18n()
+  const CS = chatSidebarCopy(t)
   // `version` bumps on reconnect (manual button, profile/channel switch) and
   // re-runs the socket effects. The clients themselves live for the whole
   // component: the shared client keeps per-session seq watermarks and asks
@@ -491,9 +502,7 @@ export function ChatSidebar({
             profile={profile}
             refreshKey={modelRefreshKey}
             onChanged={effort =>
-              setModelNotice(
-                `Reasoning effort set to ${effort}. Run /new or refresh the page to apply it to this chat.`
-              )
+              setModelNotice(CS.reasoningNotice.replace('{effort}', effort))
             }
           />
         </Card>
@@ -522,12 +531,12 @@ export function ChatSidebar({
                 onClick={() => window.location.reload()}
                 prefix={<RefreshCw />}
               >
-                Reload page
+                {CS.reloadPage ?? "Reload page"}
               </Button>
             )}
             {error && !showReload && (
               <Button size="sm" outlined className="mt-1" onClick={reconnect} prefix={<RefreshCw />}>
-                Reconnect side panel
+                {CS.reconnectSidePanel ?? "Reconnect side panel"}
               </Button>
             )}
             {!error && credential && (
@@ -541,10 +550,10 @@ export function ChatSidebar({
                   // still lives under ChatPage, so router context is present.)
                   onClick={() => navigate('/env')}
                 >
-                  Add key
+                  {CS.addKey ?? "Add key"}
                 </Button>
                 <Button size="sm" outlined onClick={() => setModelOpen(true)}>
-                  Switch model
+                  {CS.switchModel ?? "Switch model"}
                 </Button>
               </div>
             )}
@@ -592,7 +601,7 @@ export function ChatSidebar({
         onCancel={() => {
           const m = pendingReloadModel
           setPendingReloadModel(null)
-          setModelNotice(`Model set to ${m}. Run /new or refresh the page to apply it to this chat.`)
+          setModelNotice(CS.modelNotice.replace('{model}', m ?? ''))
         }}
       />
     </aside>

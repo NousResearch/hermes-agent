@@ -910,6 +910,44 @@ class CLIModelSwitchMixin:
         if result.success and result.requires_new_session:
             _cprint(f"    {t('cli.model.tip_reset_new_session')}")
 
+    def _handle_subagent_command(self, cmd_original: str) -> bool:
+        """/subagent — inspect or pin the delegation (subagent) provider:model route.
+
+        Usage:
+            /subagent model                        — print the effective delegation route
+            /subagent model set <provider>/<model> — pin delegation.provider + delegation.model
+        """
+        from cli import _cprint, _slash_args, save_config_value
+        from hermes_cli import subagent_model as sm
+        from hermes_cli.config import load_config
+
+        request = sm.parse_args(_slash_args(cmd_original))
+        if request.errors:
+            for err in request.errors:
+                _cprint(f"  ✗ {err}")
+            return True
+
+        config = load_config()
+        if request.action == "show":
+            for line in sm.format_status(config):
+                _cprint(line)
+            return True
+
+        def _persist(cfg: dict) -> bool:
+            delegation = cfg.get("delegation") or {}
+            return bool(
+                save_config_value("delegation.provider", delegation.get("provider", ""))
+                and save_config_value("delegation.model", delegation.get("model", ""))
+            )
+
+        status = sm.apply(config, request.provider, request.model, persist_callback=_persist)
+        prefix = "✓" if status.success else "✗"
+        _cprint(f"  {prefix} {status.message}")
+        if status.success:
+            _cprint("    New delegate_task children spawn on this route; a running child "
+                    "adopts it on its next request only with delegation.hot_reload_model enabled.")
+        return True
+
     def _should_handle_model_command_inline(self, text: str, has_images: bool = False) -> bool:
         """Return True when /model should be handled immediately on the UI thread."""
         from cli import _looks_like_slash_command

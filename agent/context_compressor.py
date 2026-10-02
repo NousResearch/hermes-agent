@@ -1439,6 +1439,11 @@ def _tool_content_has_images(content: Any) -> bool:
     return _content_has_images(_tool_result_parts(content))
 
 
+def _tool_content_has_media(content: Any) -> bool:
+    """True when a tool-result body (part list or ``_multimodal`` envelope) carries image OR audio."""
+    return _content_has_media(_tool_result_parts(content))
+
+
 def _strip_images_from_tool_msg(msg: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     """Copy of a tool message with image payloads replaced (stale ``api_content`` dropped); ``None`` if nothing to strip."""
     content = msg.get("content")
@@ -1568,24 +1573,63 @@ def _strip_images_from_content(content: Any) -> Any:
     return content if stripped is None else stripped
 
 
+#: Content-part types carrying audio — OpenAI chat ``input_audio`` and the generic ``audio``
+#: spelling. Kept in sync with ``agent.audio_routing.AUDIO_PART_TYPES`` (importing that module
+#: at module level would cycle through message_sanitization's lazy imports).
+_AUDIO_PART_TYPES = frozenset({"input_audio", "audio"})
+#: What an aged-out audio clip becomes after compression. Wording mirrors the image
+#: placeholder; the audio payload is base64 like an image, so it must not survive compaction.
+_AUDIO_STRIPPED_PLACEHOLDER = "[Attached audio — stripped after compression]"
+
+
+def _is_audio_part(part: Any) -> bool:
+    """True if ``part`` carries audio (``input_audio`` or the generic ``audio`` block)."""
+    return isinstance(part, dict) and part.get("type") in _AUDIO_PART_TYPES
+
+
+def _content_has_audio(content: Any) -> bool:
+    """True if a message's ``content`` is a multimodal list with audio parts."""
+    return isinstance(content, list) and any(_is_audio_part(p) for p in content)
+
+
+def _content_has_media(content: Any) -> bool:
+    """True when ``content`` carries anything this pass ages out (image OR audio)."""
+    return _content_has_images(content) or _content_has_audio(content)
+
+
+def _replace_audio_parts(parts: Any, placeholder: str) -> Optional[List[Any]]:
+    """New parts list with every audio part replaced by a text placeholder; None if no audio."""
+    if not isinstance(parts, list) or not any(_is_audio_part(p) for p in parts):
+        return None
+    return [{"type": "text", "text": placeholder} if _is_audio_part(p) else p for p in parts]
+
+
+def _strip_audio_from_content(content: Any) -> Any:
+    """``content`` with audio parts replaced by placeholders; unchanged (same object) when none."""
+    stripped = _replace_audio_parts(content, _AUDIO_STRIPPED_PLACEHOLDER)
+    return content if stripped is None else stripped
+
+
 def _strip_historical_media(messages: List[Dict[str, Any]], spared: range = range(0)) -> List[Dict[str, Any]]:
-    """Replace image parts in older messages with placeholder text.
-    Rule 1: strip everything before the newest image-bearing user message. Rule 1b: the opening
-    attachment ages out once a newer tool image exists. Rule 2: keep only the newest tool-result image,
-    except tool results in a spared pending round.
+    """Replace image and audio parts in older messages with placeholder text.
+    Rule 1: strip everything before the newest media-bearing user message. Rule 1b: the opening
+    attachment ages out once a newer tool result exists. Rule 2: keep only the newest tool-result
+    image, except tool results in a spared pending round. Both part kinds age on the same timeline —
+    an ``input_audio`` clip is base64 just like an image, so a stale one would ride every request
+    after compaction.
     Unchanged list when nothing applies; input never mutated."""
     if not messages:
         return messages
 
-    def _newest(role: str, has_images) -> int:
+    def _newest(role: str, has_media) -> int:
         hits = (i for i, m in enumerate(messages) if isinstance(m, dict) and m.get("role") == role)
-        return max((i for i in hits if has_images(messages[i].get("content"))), default=-1)
+        return max((i for i in hits if has_media(messages[i].get("content"))), default=-1)
 
-    # Anchor on image-bearing user messages (not all) so a text follow-up still strips the old image.
-    anchor = _newest("user", _content_has_images)
-    # Tool-result images age on their own timeline: keep only the newest one, wherever it sits.
+    # Anchor on media-bearing user messages (not all) so a text follow-up still strips the old clip.
+    anchor = _newest("user", _content_has_media)
+    # Tool-result media age on their own timeline: keep only the newest one, wherever it sits.
     # Envelope-aware matcher so the native {_multimodal: True} dict shape anchors too.
-    tool_anchor = _newest("tool", _tool_content_has_images)
+    tool_anchor = _newest("tool", _tool_content_has_media)
 
     if anchor <= 0 and tool_anchor < 0:
         # Nothing to strip under any rule.
@@ -1594,12 +1638,12 @@ def _strip_historical_media(messages: List[Dict[str, Any]], spared: range = rang
     def _is_stale(index: int, message: Dict[str, Any]) -> bool:
         if index in spared:
             return False
-        # Rule 1: everything before the newest image-bearing user message. Rule 1b: the opening
+        # Rule 1: everything before the newest media-bearing user message. Rule 1b: the opening
         # attachment ages out once a newer tool image exists (the text placeholder keeps the user row
         # non-empty for the zero-user-turn guard). Rule 2: superseded tool-result image, even in the tail.
         return (
             (0 < anchor and index < anchor)
-            # When the ONLY image-bearing user message is the very first one (``anchor == 0``) and newer
+            # When the ONLY media-bearing user message is the very first one (``anchor == 0``) and newer
             # tool-result images exist, the model has moved on — but the opening base64 blob used to survive
             # every compaction forever, which is half the wedge in #89938 (the reported session opened with
             # a ~200KB poster). When nothing newer exists the opening image IS the newest image and is kept,
@@ -1615,8 +1659,21 @@ def _strip_historical_media(messages: List[Dict[str, Any]], spared: range = rang
         # Native multimodal envelope: route through the tool-message stripper
         # (collapses to text summary, drops stale api_content sidecar).
         if msg.get("role") == "tool" and isinstance(content, dict) and content.get("_multimodal"):
-            return _strip_images_from_tool_msg(msg) if _tool_content_has_images(content) else None
-        return _rewritten(msg, _strip_images_from_content(content)) if _content_has_images(content) else None
+            if _tool_content_has_images(content):
+                return _strip_images_from_tool_msg(msg)
+            inner = content.get("content")
+            # An audio-only envelope keeps its summary and loses the clip.
+            return (
+                _rewritten(msg, {**content, "content": _strip_audio_from_content(inner)})
+                if _content_has_audio(inner) else None
+            )
+        has_images, has_audio = _content_has_images(content), _content_has_audio(content)
+        if not (has_images or has_audio):
+            return None
+        new_content = _strip_images_from_content(content) if has_images else content
+        if has_audio:
+            new_content = _strip_audio_from_content(new_content)
+        return _rewritten(msg, new_content)
 
     result = [(_stripped(i, msg), msg) for i, msg in enumerate(messages)]
     if all(new is None for new, _ in result):

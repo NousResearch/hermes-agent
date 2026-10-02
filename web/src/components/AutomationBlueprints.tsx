@@ -13,6 +13,15 @@ import { api } from "@/lib/api";
 import type { AutomationBlueprint, AutomationBlueprintField } from "@/lib/api";
 import { cn, themedBody } from "@/lib/utils";
 import { errorMessage } from "@/lib/api-error";
+import { useI18n } from "@/i18n";
+import { en } from "@/i18n/en";
+import type { Translations } from "@/i18n/types";
+
+/** Automation blueprints copy; en seeds the optional block, other locales fall back. */
+type BlueprintsCopy = NonNullable<NonNullable<Translations["sharedComponents"]>["blueprints"]>;
+function blueprintsCopy(t: Translations): BlueprintsCopy {
+  return t.sharedComponents?.blueprints ?? (en.sharedComponents!.blueprints as BlueprintsCopy);
+}
 
 interface AutomationBlueprintsProps {
   profile: string;
@@ -83,13 +92,15 @@ function BlueprintCard({
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  const { t } = useI18n();
+  const AB = blueprintsCopy(t);
   const submit = useCallback(async () => {
     setSubmitting(true);
     setError(null);
     try {
       const job = await api.instantiateAutomationBlueprint({ blueprint: blueprint.key, values }, profile);
       const when = job.schedule_display ? ` — ${job.schedule_display}` : "";
-      showToast(`${blueprint.title} scheduled${when}`, "success");
+      showToast(AB.scheduled.replace("{title}", blueprint.title).replace("{when}", when), "success");
       setOpen(false);
       setValues(initialValues(blueprint));
       onCreated?.();
@@ -125,7 +136,7 @@ function BlueprintCard({
             size="sm"
             onClick={() => setOpen((o) => !o)}
           >
-            {open ? "Cancel" : "Set up"}
+            {open ? AB.cancel : AB.setUp}
           </Button>
         </div>
 
@@ -155,7 +166,7 @@ function BlueprintCard({
                 disabled={submitting}
                 prefix={submitting ? <Spinner /> : <Clock />}
               >
-                Schedule it
+                {AB.scheduleIt}
               </Button>
             </div>
           </div>
@@ -173,6 +184,8 @@ function BlueprintCard({
  */
 export function AutomationBlueprints({ profile, onCreated }: AutomationBlueprintsProps) {
   const { toast, showToast } = useToast();
+  const { t } = useI18n();
+  const AB = blueprintsCopy(t);
   const [blueprints, setBlueprints] = useState<AutomationBlueprint[] | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
 
@@ -195,17 +208,21 @@ export function AutomationBlueprints({ profile, onCreated }: AutomationBlueprint
   }, [profile]);
 
   if (loadError) {
-    return <p className="text-sm text-red-500">Couldn't load blueprints: {loadError}</p>;
+    return (
+      <p className="text-sm text-red-500">
+        {AB.loadFailed.replace("{error}", loadError)}
+      </p>
+    );
   }
   if (blueprints === null) {
     return (
       <div className="flex items-center gap-2 opacity-70">
-        <Spinner className="h-4 w-4" /> Loading blueprints…
+        <Spinner className="h-4 w-4" /> {AB.loadingBlueprints}
       </div>
     );
   }
   if (blueprints.length === 0) {
-    return <p className="opacity-70">No automation blueprints available.</p>;
+    return <p className="opacity-70">{AB.noneAvailable}</p>;
   }
 
   return (

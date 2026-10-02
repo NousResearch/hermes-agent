@@ -355,6 +355,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     title: string | null;
   }>({ scope: "", title: null });
   const { t } = useI18n();
+  const C = t.chat;
   const closeMobilePanel = useCallback(() => setMobilePanelOpenRaw(false), []);
   const modelToolsLabel = useMemo(
     () => `${t.app.modelToolsSheetTitle} ${t.app.modelToolsSheetSubtitle}`,
@@ -684,7 +685,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
         const ws = wsRef.current;
         if (!ws || ws.readyState !== WebSocket.OPEN) {
           setBanner(
-            "Image uploaded, but chat is not connected — try again.",
+            (C?.imageUploadDisconnected ?? "Image uploaded, but chat is not connected — try again."),
           );
           return;
         }
@@ -1959,10 +1960,10 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
               <div className="flex max-w-[min(28rem,calc(100vw-3rem))] flex-col items-start gap-2 border border-warning/60 bg-black/80 px-3 py-2 text-xs text-warning shadow-lg">
                 <div className="tracking-wide">
                   {ptyState === "reconnecting"
-                    ? "Chat is reconnecting."
+                    ? (C?.reconnecting ?? "Chat is reconnecting.")
                     : reconnectGaveUp
                       ? PTY_GAVE_UP_BANNER.text
-                      : "Chat disconnected."}
+                      : (C?.disconnected ?? "Chat disconnected.")}
                 </div>
                 <div className="flex flex-wrap gap-2">
                   <Button
@@ -1970,18 +1971,18 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
                     outlined
                     onClick={reconnectPty}
                     prefix={<RotateCcw className="h-4 w-4" />}
-                    aria-label="Reconnect chat"
+                    aria-label={C?.reconnectChat ?? "Reconnect chat"}
                   >
-                    Reconnect now
+                    {C?.reconnectNow ?? "Reconnect now"}
                   </Button>
                   {ptyState === "closed" && reconnectGaveUp && (
                     <Button
                       size="sm"
                       ghost
                       onClick={() => navigate("/system")}
-                      aria-label="Check server status"
+                      aria-label={C?.checkServerStatus ?? "Check server status"}
                     >
-                      Check server status
+                      {C?.checkServerStatus ?? "Check server status"}
                     </Button>
                   )}
                 </div>
@@ -2016,7 +2017,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
                 <Button
                   onClick={startFreshPty}
                   prefix={<RotateCcw className="h-4 w-4" />}
-                  aria-label="Start a new chat session"
+                  aria-label={C?.startNewSessionAria ?? "Start a new chat session"}
                 >
                   Start new session
                 </Button>
@@ -2024,9 +2025,9 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
                   <Button
                     outlined
                     onClick={() => navigate("/logs")}
-                    aria-label="Open logs"
+                    aria-label={C?.openLogs ?? "Open logs"}
                   >
-                    Open logs
+                    {C?.openLogs ?? "Open logs"}
                   </Button>
                 )}
               </div>
@@ -2036,8 +2037,8 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
           <Button
             ghost
             onClick={handleCopyLast}
-            title="Copy last assistant response as raw markdown"
-            aria-label="Copy last assistant response"
+            title={C?.copyLastRawTitle ?? "Copy last assistant response as raw markdown"}
+            aria-label={C?.copyLastTitle ?? "Copy last assistant response"}
             className={cn(
               "absolute z-10",
               "normal-case tracking-normal font-normal",
@@ -2053,7 +2054,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
             <span className="inline-flex items-center gap-1.5">
               <Copy className="h-3 w-3 shrink-0" />
               <span className="hidden min-[400px]:inline tracking-wide">
-                {copyState === "copied" ? "copied" : "copy last response"}
+                {copyState === "copied" ? (C?.copied ?? "copied") : (C?.copyLast ?? "copy last response")}
               </span>
             </span>
           </Button>
@@ -2062,8 +2063,8 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
             <Button
               ghost
               onClick={toggleChatPanel}
-              title="Show side panel (model + sessions)"
-              aria-label="Show chat side panel"
+              title={C?.showSidePanelTitle ?? "Show side panel (model + sessions)"}
+              aria-label={C?.showSidePanelAria ?? "Show chat side panel"}
               className={cn(
                 "absolute z-10",
                 "normal-case tracking-normal font-normal",
@@ -2078,7 +2079,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
               <span className="inline-flex items-center gap-1">
                 <PanelRight className="h-3 w-3 shrink-0" />
                 <span className="hidden min-[400px]:inline tracking-wide">
-                  panel
+                  {C?.panelLabel ?? "panel"}
                 </span>
               </span>
             </Button>
@@ -2097,8 +2098,8 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
                 ghost
                 size="icon"
                 onClick={toggleChatPanel}
-                aria-label="Collapse chat side panel"
-                title="Collapse side panel"
+                aria-label={C?.collapseSidePanelAria ?? "Collapse chat side panel"}
+                title={C?.collapseSidePanelTitle ?? "Collapse side panel"}
                 className="text-text-secondary hover:text-midground"
               >
                 <X />

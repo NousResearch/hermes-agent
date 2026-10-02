@@ -2519,6 +2519,9 @@ def _count_parts(parts: Any, types: set) -> int:
 
 
 _IMAGE_PART_TYPES = frozenset({"image", "image_url", "input_image"})
+#: Content-part types carrying audio (OpenAI chat ``input_audio`` / generic ``audio``); kept in
+#: sync with ``agent.audio_routing.AUDIO_PART_TYPES`` so a clip never enters the estimate as base64.
+_AUDIO_PART_TYPES = frozenset({"input_audio", "audio"})
 
 
 def _count_image_tokens(msg: Dict[str, Any], cost_per_image: int) -> int:
@@ -2549,12 +2552,29 @@ def strip_opaque_replay_items(items: Any) -> Any:
     ]
 
 
+def _shadow_media_part(part: Any) -> Any:
+    """One content part as the provider sees it: image/audio payloads collapse to a marker.
+
+    A native audio clip is base64 in the ``input_audio.data`` field — leaving it in the shadow
+    would price megabytes of bytes as text (the same failure the image marker prevents).
+    """
+    if isinstance(part, dict):
+        ptype = part.get("type")
+        if ptype in _IMAGE_PART_TYPES:
+            return {"type": ptype, "image": "[stripped]"}
+        if ptype in _AUDIO_PART_TYPES:
+            return {"type": ptype, "audio": "[stripped]"}
+    return part
+
+
 def _wire_message_shadow(msg: Dict[str, Any]) -> Dict[str, Any]:
     """Shadow of a message holding only what the provider actually receives.
     * ``api_content`` SUBSTITUTES ``content`` (mirrors ``turn_context.substitute_api_content`` exactly):
       only a non-empty STRING sidecar on a user/assistant row displaces content; substituting any
       other shape would UNDERcount — the dangerous direction.
     * Base64 images become a placeholder; ``_count_image_tokens`` charges them flat.
+    * Base64 audio (``input_audio``) becomes ``{"audio": "[stripped]"}`` — same reason, so a
+      clip rides the estimate as a few tokens instead of its encoded bytes.
     * ``reasoning`` never ships as-is (request builds pop it after optionally promoting it into
       ``reasoning_content``); counting both inflated estimates up to +53%.
     * Opaque provider blobs (``encrypted_content`` on codex reasoning / compaction items) are
@@ -2575,24 +2595,14 @@ def _wire_message_shadow(msg: Dict[str, Any]) -> Dict[str, Any]:
         elif k == "content" and sidecar_wins:
             continue
         elif k == "content" and isinstance(v, list):
-            shadow[k] = [
-                {"type": part.get("type"), "image": "[stripped]"}
-                if isinstance(part, dict) and part.get("type") in _IMAGE_PART_TYPES
-                else part
-                for part in v
-            ]
+            shadow[k] = [_shadow_media_part(part) for part in v]
         elif k == "content" and isinstance(v, dict) and v.get("_multimodal"):
             shadow[k] = v.get("text_summary", "")
         elif k == "output" and isinstance(v, list):
-            # Responses ``function_call_output`` output parts: strip the image
-            # payload like the ``content`` branch above so encoded bytes are
-            # priced by the flat per-image model, never as text.
-            shadow[k] = [
-                {"type": part.get("type"), "image": "[stripped]"}
-                if isinstance(part, dict) and part.get("type") in _IMAGE_PART_TYPES
-                else part
-                for part in v
-            ]
+            # Responses ``function_call_output`` output parts: strip the image/audio
+            # payload like the ``content`` branch above so encoded bytes are never
+            # priced as text.
+            shadow[k] = [_shadow_media_part(part) for part in v]
         elif k == "codex_reasoning_items":
             shadow[k] = strip_opaque_replay_items(v)
         elif k == "encrypted_content":  # a Responses reasoning/compaction item passed as a row

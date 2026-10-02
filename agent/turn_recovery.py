@@ -23,9 +23,10 @@ from agent.model_metadata import is_output_cap_error, parse_available_output_tok
 from agent.retry_utils import is_zai_coding_overload_error, zai_coding_overload_retry_ceiling
 from agent.error_classifier import FailoverReason, classify_api_error
 from agent.message_sanitization import (
-    _looks_like_corrupt_image_rejection, _looks_like_image_content_rejection, _sanitize_messages_non_ascii,
+    _looks_like_audio_content_rejection, _looks_like_corrupt_image_rejection,
+    _looks_like_image_content_rejection, _messages_carry_audio, _sanitize_messages_non_ascii,
     _sanitize_messages_surrogates, _sanitize_structure_non_ascii, _sanitize_structure_surrogates,
-    _strip_images_from_messages, _strip_non_ascii,
+    _strip_audio_from_messages, _strip_images_from_messages, _strip_non_ascii,
     close_interrupted_tool_sequence,
 )
 from agent.thinking_timeout_guidance import build_thinking_timeout_guidance, is_thinking_timeout
@@ -272,6 +273,33 @@ def recover_before_classification(
     # images too, and a turn-wide flag would skip its recovery and fail the turn.
     _model_key = _provider_model_key(agent)
     _rejected = agent._image_rejecting_models
+    # Audio BEFORE images: the shared generic phrases ("only 'text' content type is supported",
+    # DashScope's "unexpected item type in content", ...) must record the model as AUDIO-rejecting
+    # when the turn actually carries audio — otherwise an audio-only turn is logged as
+    # image-rejecting, nothing strips the input_audio part, and the retry loop wedges on the same
+    # 4xx until exhaustion.
+    _audio_rejected = getattr(agent, "_audio_rejecting_models", None)
+    if _audio_rejected is None:
+        _audio_rejected = agent._audio_rejecting_models = set()
+    if (
+        _status_ok
+        and _model_key not in _audio_rejected
+        and _messages_carry_audio(api_messages)
+        and _looks_like_audio_content_rejection(_err_body)
+    ):
+        # Record the model AND strip this attempt: strip_unsupported_audio_parts in
+        # build_api_request covers the main loop, but summary/aux paths that rebuild
+        # api_messages by hand would otherwise re-send the rejected part. Send-path only —
+        # history keeps the clip for a later audio-capable backend.
+        if isinstance(api_messages, list):
+            _strip_audio_from_messages(api_messages)
+        _audio_rejected.add(_model_key)
+        _vlines(
+            agent,
+            "⚠️  Server rejected audio content — sending text only to this model; "
+            "audio stays in the session history.",
+        )
+        return True, active_system_prompt
     _corrupt = _looks_like_corrupt_image_rejection(_err_body)
     if _status_ok and (_corrupt or (_model_key not in _rejected and _looks_like_image_content_rejection(_err_body))):
         # Send-path only. A rejection says what THIS model accepts, not what the conversation

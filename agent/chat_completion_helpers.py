@@ -42,6 +42,7 @@ from agent.gemini_native_adapter import is_native_gemini_base_url
 from agent.model_metadata import is_local_endpoint
 from agent.message_content import flatten_message_text
 from agent.message_metadata import PERSISTENCE_ONLY_MESSAGE_FIELDS, append_message, stamp_message_timestamp
+from agent.audio_routing import strip_unsupported_audio_parts
 from agent.message_sanitization import (
     _sanitize_messages_surrogates, _sanitize_surrogates, _repair_tool_call_arguments,
     normalize_finish_reason as _normalize_finish_reason, sanitize_outbound_kwargs, strip_images_for_rejecting_model,
@@ -2264,6 +2265,9 @@ def _iteration_summary_api_messages(agent, messages: list) -> list:
     # Safe on the shallow row copies: the strip rebinds the row's ``content``, never the
     # nested list shared with history.
     strip_images_for_rejecting_model(agent, api_messages)
+    # Same per-wire audio strip: this hand-built path bypasses build_api_request's gate, so an
+    # input_audio part in history would ride a summary call to a backend that 400s on it.
+    strip_unsupported_audio_parts(agent, api_messages)
     # Thinking-only assistant turns 400 on Anthropic-family providers; _thinking_prefill must
     # survive until here so the drop pass recognizes stubs after reasoning is stripped.
     api_messages = agent._drop_thinking_only_and_merge_users(api_messages)

@@ -1662,24 +1662,74 @@ class TurnRunner:
             ctx.message = build_resume_recovery_note(resume_reason, "", interactive=self._resume_note_interactive())
         return persist_override, ctx.persist_user_timestamp
 
-    def _native_image_run_message(self):
+    def _native_media_run_message(self, agent):
         """Wrap the user turn as an OpenAI-style multimodal content list when
-        _prepare_inbound_message_text buffered image paths; consume-and-clear so later turns on the
-        same runner never re-attach stale images. Falls back to plain text when nothing is readable."""
+        _prepare_inbound_message_text buffered image / audio paths; consume-and-clear both
+        buffers so later turns on the same runner never re-attach stale media. Falls back to
+        plain text when nothing is readable. Result order is ``[text, *image, *audio]`` — the
+        image builder owns the caption+hint text part, audio appends its own hint text then the
+        clips (see agent/audio_routing.build_native_audio_parts)."""
         ctx = self._ctx
-        native_imgs = self._runner._consume_pending_native_image_paths(ctx.session_key)
-        if not native_imgs:
+        # list() coercion: test doubles (MagicMock runners) must not pass a truthy mock through.
+        native_imgs = list(self._runner._consume_pending_native_image_paths(ctx.session_key) or [])
+        native_auds = list(self._runner._consume_pending_native_audio_paths(ctx.session_key) or [])
+        if not native_imgs and not native_auds:
             return ctx.message
+        text = ctx.message
+        image_parts: List[Dict[str, Any]] = []
+        if native_imgs:
+            try:
+                from agent.image_routing import build_native_content_parts
+
+                img_content, skipped = build_native_content_parts(text, native_imgs)
+                if skipped:
+                    logger.warning("Native image attachment: skipped %d unreadable path(s): %s", len(skipped), skipped)
+                image_parts = [p for p in img_content if p.get("type") == "image_url"]
+                if image_parts:
+                    # The image builder merged the caption + per-image hints into one text part;
+                    # keep it so audio hints append to the same text instead of a second copy.
+                    if img_content and isinstance(img_content[0], dict) and img_content[0].get("type") == "text":
+                        text = img_content[0].get("text", text)
+            except Exception as exc:
+                logger.warning("Native image attachment failed, falling back to text: %s", exc)
+                image_parts = []
+        audio_parts: List[Dict[str, Any]] = []
+        if native_auds and self._native_audio_attach_enabled(agent):
+            try:
+                from agent.audio_routing import build_native_audio_parts, is_audio_part
+
+                aud_content, skipped = build_native_audio_parts(text, native_auds)
+                if skipped:
+                    logger.warning("Native audio attachment: skipped %d clip(s): %s", len(skipped), skipped)
+                audio_parts = [p for p in aud_content if is_audio_part(p)]
+                if audio_parts:
+                    if aud_content and isinstance(aud_content[0], dict) and aud_content[0].get("type") == "text":
+                        text = aud_content[0].get("text", text)
+            except Exception as exc:
+                logger.warning("Native audio attachment failed, falling back to text: %s", exc)
+                audio_parts = []
+        if not image_parts and not audio_parts:
+            return ctx.message
+        return [{"type": "text", "text": text}, *image_parts, *audio_parts]
+
+    @staticmethod
+    def _native_audio_attach_enabled(agent) -> bool:
+        """Backend gate for input_audio parts on THIS turn's wire (agent/api_mode + provider).
+
+        Reads the live config each turn so ``media.native_audio`` flips without a restart; a
+        config error degrades to attach-on-unsupported = False (text note), never to a 4xx.
+        """
         try:
-            from agent.image_routing import build_native_content_parts
-            parts, skipped = build_native_content_parts(ctx.message, native_imgs)
-            if skipped:
-                logger.warning("Native image attachment: skipped %d unreadable path(s): %s", len(skipped), skipped)
-            if any(p.get("type") == "image_url" for p in parts):
-                return parts
-        except Exception as exc:
-            logger.warning("Native image attachment failed, falling back to text: %s", exc)
-        return ctx.message
+            from agent.audio_routing import native_audio_supported
+            from hermes_cli.config import load_config_readonly
+
+            return native_audio_supported(
+                load_config_readonly(),
+                api_mode=str(getattr(agent, "api_mode", "") or ""),
+                provider=str(getattr(agent, "provider", "") or ""),
+            )
+        except Exception:  # noqa: BLE001 — degrade to the text note, never fail the turn
+            return False
 
     def _run_conversation_with_approval(self, agent, agent_history, observed_group_context,
                                         persist_user_message_override, persist_user_timestamp_override):
@@ -1693,7 +1743,7 @@ class TurnRunner:
         token = set_current_session_key(session_key)
         register_gateway_notify(session_key, self._approval_notify_sync)
         try:
-            api_message = _wrap_current_message_with_observed_context(self._native_image_run_message(), observed_group_context)
+            api_message = _wrap_current_message_with_observed_context(self._native_media_run_message(agent), observed_group_context)
             kwargs = {"conversation_history": agent_history, "task_id": ctx.session_id}
             if _accepts_keyword(agent.run_conversation, "turn_author"):
                 # Sent on every transport: a provider gating durable writes needs the bot flag in a DM too.

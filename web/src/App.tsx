@@ -193,7 +193,7 @@ const BUILTIN_NAV_REST: NavItem[] = [
     label: "Sessions",
     icon: MessageSquare,
   },
-  { path: "/files", label: "Files", icon: FolderOpen },
+  { path: "/files", labelKey: "files", label: "Files", icon: FolderOpen },
   {
     path: "/analytics",
     labelKey: "analytics",
@@ -210,14 +210,14 @@ const BUILTIN_NAV_REST: NavItem[] = [
   { path: "/cron", labelKey: "cron", label: "Cron", icon: Clock },
   { path: "/skills", labelKey: "skills", label: "Skills", icon: Package },
   { path: "/plugins", labelKey: "plugins", label: "Plugins", icon: Puzzle },
-  { path: "/mcp", label: "MCP", icon: Plug },
-  { path: "/channels", label: "Channels", icon: Radio },
-  { path: "/webhooks", label: "Webhooks", icon: Webhook },
-  { path: "/pairing", label: "Pairing", icon: ShieldCheck },
+  { path: "/mcp", labelKey: "mcp", label: "MCP", icon: Plug },
+  { path: "/channels", labelKey: "channels", label: "Channels", icon: Radio },
+  { path: "/webhooks", labelKey: "webhooks", label: "Webhooks", icon: Webhook },
+  { path: "/pairing", labelKey: "pairing", label: "Pairing", icon: ShieldCheck },
   { path: "/profiles", labelKey: "profiles", label: "Profiles", icon: Users },
   { path: "/config", labelKey: "config", label: "Config", icon: Settings },
   { path: "/env", labelKey: "keys", label: "Keys", icon: KeyRound },
-  { path: "/system", label: "System", icon: Wrench },
+  { path: "/system", labelKey: "system", label: "System", icon: Wrench },
   {
     path: "/docs",
     labelKey: "documentation",
@@ -799,7 +799,7 @@ export default function App() {
                   !chatOverriddenByPlugin &&
                   (pluginsLoading ? (
                     isChatRoute ? (
-                      <RouteFallback label="Loading chat…" />
+                      <RouteFallback label={t.app.loadingChat ?? "Loading chat…"} />
                     ) : null
                   ) : chatHostMounted ? (
                     <div
@@ -813,7 +813,7 @@ export default function App() {
                       <Suspense
                         fallback={
                           isChatRoute ? (
-                            <RouteFallback label="Loading chat…" />
+                            <RouteFallback label={t.app.loadingChat ?? "Loading chat…"} />
                           ) : null
                         }
                       >
@@ -821,7 +821,7 @@ export default function App() {
                       </Suspense>
                     </div>
                   ) : isChatRoute ? (
-                    <RouteFallback label="Loading chat…" />
+                    <RouteFallback label={t.app.loadingChat ?? "Loading chat…"} />
                   ) : null)}
               </div>
               <PluginSlot name="post-main" />
@@ -864,7 +864,7 @@ function SidebarNavLink({
 
   const navLabel = labelKey
     ? ((t.app.nav as Record<string, string>)[labelKey] ?? label)
-    : label;
+    : ((t.app.pluginNav as Record<string, string> | undefined)?.[path] ?? label);
   const showTooltip = (event: MouseEvent<HTMLElement> | FocusEvent<HTMLElement>) => {
     setHovered(true);
     setTooltipAnchor(event.currentTarget);
@@ -983,14 +983,18 @@ function SidebarSystemActions({
     if (updateConfirmInfo?.behind && updateConfirmInfo.behind > 0) {
       const cmd = updateConfirmInfo.update_command;
       const n = updateConfirmInfo.behind;
-      return `This will run 'hermes update' (${cmd}) and pull ${n} new commit${n === 1 ? "" : "s"}. The gateway restarts when the update finishes; the current session keeps its prompt cache until then.`;
+      return (t.app.updateConfirmBehind ??
+        "This will run 'hermes update' ({cmd}) and pull {n} new commit{s}. The gateway restarts when the update finishes; the current session keeps its prompt cache until then.")
+        .replace("{cmd}", cmd)
+        .replace("{n}", String(n))
+        .replace("{s}", n === 1 ? "" : "s");
     }
     const cmd = updateConfirmInfo?.update_command ?? "hermes update";
     return (
       t.status.updateHermesConfirmMessage ??
       `This will run 'hermes update' (${cmd}) and restart the gateway when it finishes.`
     );
-  }, [t.status.updateHermesConfirmMessage, updateConfirmInfo]);
+  }, [t.status.updateHermesConfirmMessage, t.app.updateConfirmBehind, updateConfirmInfo]);
 
   const items: SystemActionItem[] = [
     {
@@ -1083,7 +1087,7 @@ function SidebarSystemActions({
 
     <ConfirmDialog
       cancelLabel={t.common.cancel}
-      confirmLabel={sharedGateway ? "Restart all" : t.status.restartGateway}
+      confirmLabel={sharedGateway ? (t.app.restartAll ?? "Restart all") : t.status.restartGateway}
       description={
         sharedGateway
           ? sharedGatewayRestartDescription(sharedGateway)
@@ -1096,7 +1100,7 @@ function SidebarSystemActions({
       open={restartConfirmOpen}
       title={
         sharedGateway
-          ? "Restart the shared gateway?"
+          ? (t.app.restartSharedGatewayTitle ?? "Restart the shared gateway?")
           : (t.status.restartGatewayConfirmTitle ?? `${t.status.restartGateway}?`)
       }
     />

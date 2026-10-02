@@ -1814,6 +1814,11 @@ delegation:
   #                                           # delegation.model to an inexpensive one — children carry the
   #                                           # vast majority of tokens, so this is where spend is cut while
   #                                           # planning quality stays with the frontier parent.
+  #                                           # Pin from the CLI with `/subagent model set <provider>/<model>`;
+  #                                           # `/subagent model` prints the effective route.
+  # hot_reload_model: false                   # When true, a RUNNING subagent re-reads delegation.provider/model
+  #                                           # before each provider API request and adopts a change on its next
+  #                                           # request without respawning. Default false freezes the route at spawn.
   # fallback_providers:                       # Fallback chain for delegated children (same entry format as the
   #   - provider: "openrouter"                # top-level list). Pinned children use only a declared child chain;
   #     model: "deepseek/deepseek-chat"       # unpinned children inherit when unset. [] disables fallback (#65038).

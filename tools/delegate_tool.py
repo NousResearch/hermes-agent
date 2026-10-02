@@ -265,6 +265,9 @@ def _build_child_agent(
     child._delegate_depth, child._delegate_role = child_depth, effective_role  # post-degrade role
     child._subagent_id, child._parent_subagent_id = subagent_id, parent_subagent_id
     _apply_child_compression_cap(child, delegation_cfg)
+    # Freeze delegation.hot_reload_model at spawn: only when true does the child re-read its
+    # delegation route per provider request (agent/subagent_hot_reload.py).
+    child._delegation_hot_reload_model = bool(delegation_cfg.get("hot_reload_model", False))
     # Ownership chain for action=list/steer/stop; weakref so a finished parent
     # can be collected while a detached child record lingers in the registry.
     try:

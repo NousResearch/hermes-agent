@@ -23,6 +23,16 @@ import { Select, SelectOption } from "@nous-research/ui/ui/components/select";
 import { Brain } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 
+import { useI18n } from "@/i18n";
+import { en } from "@/i18n/en";
+import type { Translations } from "@/i18n/types";
+
+/** Chat sidebar copy; en seeds the optional block, other locales fall back. */
+type ChatSidebarCopy = NonNullable<NonNullable<Translations["sharedComponents"]>["chatSidebar"]>;
+function chatSidebarCopy(t: Translations): ChatSidebarCopy {
+  return t.sharedComponents?.chatSidebar ?? (en.sharedComponents!.chatSidebar as ChatSidebarCopy);
+}
+
 import { api } from "@/lib/api";
 import {
   EFFORT_OPTIONS,
@@ -49,6 +59,8 @@ export function ReasoningPicker({
   refreshKey = 0,
   onChanged,
 }: ReasoningPickerProps) {
+  const { t } = useI18n();
+  const CS = chatSidebarCopy(t);
   const [effort, setEffort] = useState("medium");
   const [loaded, setLoaded] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -98,7 +110,7 @@ export function ReasoningPicker({
     <div className="flex items-center gap-2 px-3 py-2 text-xs">
       <div className="flex items-center gap-1.5 text-text-tertiary">
         <Brain className="h-3.5 w-3.5" />
-        <span className="text-display tracking-wider">reasoning</span>
+        <span className="text-display tracking-wider">{CS.reasoning}</span>
       </div>
       <Select
         className="ml-auto min-w-0"

@@ -103,6 +103,7 @@
   "/statusbar": "terminal",
   "/steer": null,
   "/stop": null,
+  "/subagent": null,
   "/subgoal": null,
   "/subscription": null,
   "/suggest": null,

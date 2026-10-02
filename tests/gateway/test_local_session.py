@@ -8,7 +8,7 @@ import sys
 import pytest
 
 
-@pytest.mark.parametrize('kind', ['approval', 'clarify'])
+@pytest.mark.parametrize('kind', ['approval', 'clarify', 'plumbing-approval'])
 def test_fresh_local_session_owns_execution_across_viewers(tmp_path, kind):
     repo = Path(__file__).resolve().parents[2]
     home, state = tmp_path / 'home', tmp_path / 'state'
@@ -22,7 +22,7 @@ def test_fresh_local_session_owns_execution_across_viewers(tmp_path, kind):
     assert result.returncode == 0, result.stdout + '\n' + result.stderr
     receipt = json.loads((state / 'receipt.json').read_text())
     assert receipt['human_response'] and receipt['same_agent'] and receipt['detached_pending']
-    if kind == 'approval':
+    if kind in {'approval', 'plumbing-approval'}:
         assert receipt['terminal_effect']
     assert receipt['negative_controls'] and receipt['reconnected_identity']
     print(json.dumps(receipt))

@@ -133,7 +133,10 @@ class TestRestorePrimaryRuntime:
             assert agent._restore_primary_runtime() is False
             assert agent._restore_primary_runtime() is True
 
-        # Exactly one restore notice, emitted only by the successful retry.
+        # Rebuilding is only a probe; announce recovery after a usable response.
+        assert emitted == []
+        from agent.fallback_cooldown import confirm_backend_success
+        confirm_backend_success(agent)
         assert len(emitted) == 1
         assert "primary-model" in emitted[0]
         assert "anthropic/claude-sonnet-4" in emitted[0]

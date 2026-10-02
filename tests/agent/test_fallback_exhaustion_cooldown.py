@@ -193,8 +193,8 @@ class TestRateLimitBackoffEscalation:
             agent._try_activate_fallback(reason=FailoverReason.rate_limit)
         assert agent._rate_limited_until == frozen + 14400
 
-    def test_backoff_counter_resets_on_successful_primary_restore(self):
-        """A successful restore_primary_runtime resets the backoff counter,
+    def test_backoff_counter_resets_on_successful_primary_request(self):
+        """A successful primary request resets the backoff counter,
         so the next rate-limit starts back at the 60s base."""
         fbs = [{"provider": "openai", "model": "gpt-4o"}]
         agent = _make_agent(fallback_model=fbs)
@@ -218,6 +218,9 @@ class TestRateLimitBackoffEscalation:
         agent._fallback_activated = True
         agent._rate_limited_until = 0
         assert agent._restore_primary_runtime() is True
+        assert agent._rate_limit_backoff_count == 2
+        from agent.fallback_cooldown import confirm_backend_success
+        confirm_backend_success(agent)
         assert agent._rate_limit_backoff_count == 0
 
         # The next rate-limit is treated as a fresh first failure: 60s.

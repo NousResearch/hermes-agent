@@ -1264,6 +1264,12 @@ def _revert_credential_rotation(agent) -> None:
 def restore_primary_runtime(agent) -> bool:
     """Restore the primary runtime at the start of a new turn so fallback stays turn-scoped
     (long-lived CLI agents and the gateway's cached agents)."""
+    from agent.fallback_cooldown import quota_reset_at, resume_available_fallback
+    rt = agent._primary_runtime or {}
+    shared_reset = quota_reset_at(rt.get("provider", ""), rt.get("model", ""), rt.get("base_url", ""))
+    if shared_reset is not None:
+        resume_available_fallback(agent)
+        return False
     if not agent._fallback_activated:
         # Reset the index even without activation: a failed _try_activate_fallback() can strand
         # _fallback_index past the chain end and silently block future fallbacks.
@@ -1276,6 +1282,7 @@ def restore_primary_runtime(agent) -> bool:
     # skips this block entirely, stranding the index and silently blocking all future fallback attempts for
     # the session. Fixes #20465.
     if getattr(agent, "_rate_limited_until", 0) > time.monotonic():
+        resume_available_fallback(agent)
         return False  # primary still in rate-limit cooldown, stay on fallback
     rt = agent._primary_runtime
     primary_provider = str((rt or {}).get("provider") or "").strip().lower()
@@ -1304,6 +1311,7 @@ def restore_primary_runtime(agent) -> bool:
         agent, rt, primary_provider, primary_runtime_base_url, _matches_primary, _load_primary_pool
     )
     if blocked:
+        resume_available_fallback(agent)
         return False
     agent._restore_wait_logged = False
     fallback_route = getattr(agent, "_provider_fallback_route", None)
@@ -1343,23 +1351,17 @@ def restore_primary_runtime(agent) -> bool:
             agent.reasoning_config = dict(saved_reasoning)
         agent._fallback_activated = False
         agent._fallback_index = 0
-        agent._rate_limit_backoff_count = 0
         # Reset the stale-call circuit breaker: its streak measured the fallback provider.
-        from agent.chat_completion_helpers import _reset_stale_streak, rewrite_prompt_model_identity
+        from agent.chat_completion_helpers import _reset_stale_streak
         _reset_stale_streak(agent)
-        # Undo the fallback's identity rewrite so the prompt is byte-identical to the stored copy
-        # again (prefix cache match).
-        rewrite_prompt_model_identity(agent, rt["model"], rt["provider"])
         logger.info("Primary runtime restored for new turn: %s (%s)", agent.model, agent.provider)
         agent._provider_fallback_active = False
         agent._provider_fallback_route = None
         if provider_fallback_active:
-            # Notification surfaces are best-effort and must never undo a successful restore.
-            with contextlib.suppress(Exception):
-                agent._emit_diagnostic_status(
-                    f"✅ Primary model restored: {agent.model} via {agent.provider}; "
-                    f"fallback {previous_model} via {previous_provider} is no longer active."
-                )
+            agent._pending_primary_recovery_notice = (
+                f"✅ Primary model restored: {agent.model} via {agent.provider}; "
+                f"fallback {previous_model} via {previous_provider} is no longer active."
+            )
         return True
     except Exception as e:
         logger.warning("Failed to restore primary runtime: %s", e)
@@ -2291,6 +2293,7 @@ def _finish_switch(agent, new_provider, old_norm, new_norm) -> None:
     agent._fallback_activated = False
     agent._provider_fallback_active = False
     agent._provider_fallback_route = None
+    agent._pending_primary_recovery_notice = None
     agent._fallback_index = 0
     agent._credential_pool_revert_id = None
     # On a deliberate provider swap, prune fallback entries targeting the OLD or NEW primary;

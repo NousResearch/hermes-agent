@@ -1069,9 +1069,13 @@ def _status_429(c: _Ctx) -> Verdict:
         return _V_BILLING
     # Carry the reset window so the terminal copy can name it instead of "wait a minute" (#89401).
     reset = _rate_limit_reset_seconds(c.msg, c.body, c.headers)
+    # A subscription allowance code stays quota-scoped even when its message
+    # says "try again in ..."; that phrase alone also describes short throttles.
+    allowance_exhausted = c.code == "usage_limit_reached" or (quota_wall and not explicit_rate_limit)
+    ctx = {"quota_exhausted": True} if allowance_exhausted else {}
     if reset:
-        return _v(_R.rate_limit, **_ROTATE_FALLBACK, error_context={"reset_at": time.time() + reset})
-    return _V_RATE_LIMIT
+        ctx["reset_at"] = time.time() + reset
+    return _v(_R.rate_limit, **_ROTATE_FALLBACK, error_context=ctx)
 
 
 def _status_5xx(c: _Ctx) -> Verdict:

@@ -203,6 +203,8 @@ def check_api_response(
         _last_preflight_pressure = None
 
     _retry.has_retried_429 = False
+    from agent.fallback_cooldown import confirm_backend_success
+    confirm_backend_success(agent)
     # Clearing Nous rate-limit state proves the limit reset so other sessions may resume.
     if agent.provider == "nous":
         try:

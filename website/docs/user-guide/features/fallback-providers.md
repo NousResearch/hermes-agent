@@ -39,7 +39,11 @@ fallback_providers:
 
 Each entry requires both `provider` and `model`. Entries missing either field are ignored.
 
-When a rate-limit response names its reset time, the primary is benched until exactly then (a provider that says nothing gets the exponential 60 s → 4 h backoff). Optionally, skip the switch when the primary reopens soon:
+When a rate-limit response names its reset time, the primary is benched until then (a provider that says nothing gets the exponential 60 s → 4 h backoff). Confirmed quota or billing exhaustion also benches fallback backends: agents hosted in the same process share these benches within each profile, so another conversation does not re-probe an exhausted backend. Reset timestamps and `Retry-After` determine eligibility; ordinary throttling, upstream capacity, authentication and request errors do not create a shared quota bench. Credential pools retain their own account cooldowns.
+
+Shared quota cooldowns are process-local per-profile state. They are not fleet-wide, are not shared with other worker processes, and do not persist across restarts. Persistence remains an acceptance gap that must be closed before any rollout.
+
+Optionally, skip the switch when the primary reopens soon:
 
 ```yaml
 fallback:
@@ -123,7 +127,8 @@ fallback_providers:
 
 The fallback activates automatically when the primary model fails with:
 
-- **Rate limits** (HTTP 429) — after exhausting retry attempts
+- **Quota or billing exhaustion** — once credential-pool recovery is spent
+- **Rate limits** (HTTP 429) — eagerly when credential-pool recovery cannot help
 - **Server errors** (HTTP 500, 502, 503) — after exhausting retry attempts
 - **Auth failures** (HTTP 401, 403) — immediately (no point retrying)
 - **Not found** (HTTP 404) — immediately
@@ -145,15 +150,45 @@ The same re-resolution happens when the CLI falls back at **startup** because th
 Prompt caches are keyed to the model (and on most providers, the account) serving the request. When fallback fires, the new provider:model has no cached prefix for your conversation, so the next request re-reads the entire history at full input-token price instead of the ~75–90% discounted cached rate. The same applies when the turn ends and the primary is restored — that first request back on the primary is a full re-read too (unless the primary's cache TTL hasn't expired). This is unavoidable — it's the cost of staying alive through an outage — but it's why a long session that bounces between providers can cost noticeably more than one that stays put.
 :::
 
-:::info Per-Turn, Not Per-Session
-Fallback is **turn-scoped**: each new user message starts with the primary model restored. If the primary fails mid-turn, fallback activates for that turn only. On the next message, Hermes tries the primary again. Within a single turn, fallback activates at most once — if the fallback also fails, normal error handling takes over (retries, then error message). This prevents cascading failover loops within a turn while giving the primary model a fresh chance every turn.
+:::info Ordered fallbacks and reset-aware recovery
+Fallback walks the configured chain in order within a turn. If one fallback fails, the next eligible entry gets a chance, subject to the turn's retry/restart budget. Exhausted backends are skipped until their cooldown expires. Conversation history, completed tool results, tool definitions and cached system-prompt text survive the switch; completed tool writes are not executed again by the retry loop.
 
-The per-turn retry is **reset-aware**: when the primary's credentials report a rate-limit reset time that hasn't elapsed yet (subscription windows like Claude Pro/Max's 5-hour blocks or Codex weekly limits report these as hours or days), Hermes skips the doomed retry and stays on the fallback until the reset passes — avoiding two pointless provider switches (and two prompt-cache invalidations) per turn. Expiry makes the primary eligible for a later retry; it does not schedule a retry or guarantee recovery. Transient 429s without a reset time use an exponential cooldown.
+At the next user turn, Hermes tries the primary when it is eligible. While it remains benched, a higher-priority fallback whose quota window has reopened can be tried ahead of the current fallback. Subscription windows may last hours or days. Expiry makes a backend eligible for a later request; it does not schedule a retry or guarantee recovery. Hermes announces primary recovery only after a usable response from the primary. Transient 429s without a reset time use an exponential cooldown on the affected agent.
 
 When a switch arms that cooldown, the fallback notice includes its approximate remaining duration, for example: `Primary retry eligible in ~60 s; recovery is not guaranteed.` Non-rate-limit switches and switches from an already-active cross-provider fallback do not announce a new primary cooldown.
 :::
 
+For subscription-first routing, configure your preferred subscription as the primary, another subscription as the first `fallback_providers` entry, and an explicitly verified free tool-capable model as the next entry. The built-in `opencode-zen` provider requires `OPENCODE_ZEN_API_KEY`; the keyless route below uses the supported named custom-provider configuration instead.
+
 ### Examples
+
+**Subscription-first routing with an explicit free custom endpoint (illustrative):**
+
+```yaml
+model:
+  provider: openai-codex
+  default: gpt-6.1-sol
+
+providers:
+  opencode-zen-free:
+    base_url: https://opencode.ai/zen/v1
+    api_key: no-key-required
+    transport: chat_completions
+    extra_headers:
+      Authorization: ""
+
+fallback_providers:
+  - provider: xai-oauth
+    model: grok-4.7
+    api_mode: chat_completions
+  - provider: opencode-zen-free
+    model: space-bunny-free
+    api_mode: chat_completions
+```
+
+An existing live check of this custom free route completed a real tool-call/tool-result roundtrip with zero reported cost. Public availability, price and tool support can change; this example is not a maintained free-model catalog or a guarantee of future availability. Treat it as a degraded fallback: its capabilities are not equivalent to the subscription models.
+
+The placeholder `api_key` and explicit empty `Authorization` override belong together; a dummy bearer token failed authentication in that check. Never send paid credentials to this free route or silently add a paid route if it becomes unavailable. Keep the fallback chain explicit and stop when its eligible routes are exhausted.
 
 **OpenRouter as fallback for Anthropic native:**
 ```yaml
@@ -447,7 +482,7 @@ To keep fallback for a job, leave it unpinned and choose its model with `cron.mo
 
 | Feature | Fallback Mechanism | Config Location |
 |---------|-------------------|----------------|
-| Main agent model | `fallback_providers` in config.yaml — per-turn failover on errors (primary restored each turn) | `fallback_providers:` (top-level list) |
+| Main agent model | `fallback_providers` in config.yaml — ordered failover on errors, primary retried when cooldown permits | `fallback_providers:` (top-level list) |
 | Auxiliary tasks (any) — auto users | Full auto-detection chain (main agent model first, then provider chain) on capacity errors | `auxiliary.<task>.provider: auto` |
 | Auxiliary tasks (any) — explicit provider | `fallback_chain` (if set) → main agent model → warn + raise, on capacity errors; auth errors (401) walk `fallback_chain` only | `auxiliary.<task>.fallback_chain` |
 | Vision | Layered (see above) + internal OpenRouter retry | `auxiliary.vision` |

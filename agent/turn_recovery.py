@@ -1879,6 +1879,9 @@ def route_classified_error(
         (is_rate_limited and _wrapped_output_cap_budget is None)
         or (_is_transport_failure and retry_count >= 2)
     )
+    if is_rate_limited and not recovered_with_pool and not _ra()._pool_may_recover_from_rate_limit(agent._credential_pool):
+        from agent.fallback_cooldown import record_quota_exhaustion
+        record_quota_exhaustion(agent, classified, error_context)
     if _should_fallback and agent._fallback_index < len(agent._fallback_chain):
         # No eager fallback while credential pool rotation may recover. Exception: an
         # upstream-aggregator 429 — the pool can't help, always fall back.

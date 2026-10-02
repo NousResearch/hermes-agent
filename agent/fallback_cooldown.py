@@ -1,14 +1,103 @@
-"""Primary rate-limit cooldown arming and per-session model rejection markers, shared by the
-fallback walk (chat_completion_helpers) and restore_primary_runtime (agent_runtime_helpers)."""
+"""Profile/backend quota benches, primary throttling and session entitlement markers."""
 import logging
 import math
 import time
+import threading
 
+from agent.backend_identity import BackendIdentity, should_skip_candidate
 from agent.error_classifier import FailoverReason
 
 logger = logging.getLogger(__name__)
 
 _RATE_LIMIT_FAILOVER_REASONS = frozenset({FailoverReason.rate_limit, FailoverReason.billing, FailoverReason.upstream_rate_limit})
+
+# Credential pools already bench individual accounts. These slots cover a backend
+# after pool recovery is spent, including keyless routes and exhausted fallbacks.
+_QUOTA_BENCHES: dict[tuple[str, BackendIdentity], tuple[float, int]] = {}
+_QUOTA_LOCK = threading.RLock()
+
+
+def _runtime_identity(agent) -> BackendIdentity:
+    return BackendIdentity.build(agent.provider, agent.model, agent.base_url)
+
+
+def quota_reset_at(provider: str, model: str, base_url: str = "") -> float | None:
+    """Active quota reset for this profile's deployment, including configured aliases."""
+    from hermes_constants import hermes_home_key
+    home = hermes_home_key()
+    candidate = BackendIdentity.build(provider, model, base_url)
+    with _QUOTA_LOCK:
+        resets = [until for (scope, backend), (until, _) in _QUOTA_BENCHES.items()
+                  if scope == home and until > time.time() and should_skip_candidate(candidate, backend)]
+    return max(resets) if resets else None
+
+
+def record_quota_exhaustion(agent, classified, error_context) -> None:
+    """Share only proven billing/allowance exhaustion, never a transient or upstream 429."""
+    if not (
+        (classified.reason == FailoverReason.billing and not classified.billing_unverified)
+        or (classified.reason == FailoverReason.rate_limit and classified.error_context.get("quota_exhausted"))
+    ):
+        return
+    from hermes_constants import hermes_home_key
+    key = (hermes_home_key(), _runtime_identity(agent))
+    reset_at = (error_context or {}).get("reset_at") or classified.error_context.get("reset_at")
+    delay = _provider_reset_delay(reset_at)
+    with _QUOTA_LOCK:
+        until, count = _QUOTA_BENCHES.get(key, (0, 0))
+        if until > time.time():
+            return  # another attempt during the same window must not extend the bench
+        delay = delay if delay is not None else min(60 * 2 ** min(count, 8), 14400)
+        _QUOTA_BENCHES[key] = (time.time() + delay, count + 1)
+
+
+def confirm_backend_success(agent) -> None:
+    """Clear exhaustion/backoff and announce a primary recovery only after a usable response."""
+    from hermes_constants import hermes_home_key
+    home, current = hermes_home_key(), _runtime_identity(agent)
+    with _QUOTA_LOCK:
+        for key in list(_QUOTA_BENCHES):
+            if key[0] == home and should_skip_candidate(current, key[1]):
+                del _QUOTA_BENCHES[key]
+    pending = getattr(agent, "_pending_primary_recovery_notice", None)
+    if not agent._fallback_activated:
+        agent._rate_limit_backoff_count = 0
+        agent._rate_limited_until = 0
+    if pending and not agent._fallback_activated:
+        agent._pending_primary_recovery_notice = None
+        try:
+            agent._emit_diagnostic_status(pending)
+        except Exception:
+            logger.debug("Primary recovery notification failed", exc_info=True)
+
+
+def resume_available_fallback(agent) -> bool:
+    """Try the highest configured fallback after a quota reset, retaining a healthy active route."""
+    from agent.chat_completion_helpers import _fallback_entry_key, _should_skip_fallback_candidate
+    current = _runtime_identity(agent)
+    unavailable = getattr(agent, "_unavailable_fallback_keys", None) or set()
+    for index, entry in enumerate(agent._fallback_chain):
+        provider, model = str(entry.get("provider") or "").lower(), str(entry.get("model") or "")
+        candidate = BackendIdentity.build(provider, model, entry.get("base_url") or "")
+        if should_skip_candidate(candidate, current) and quota_reset_at(provider, model, candidate.base_url) is None:
+            return False  # already on the highest usable configured route
+        if _should_skip_fallback_candidate(agent, entry, _fallback_entry_key(entry), provider, model, unavailable):
+            continue
+        agent._fallback_index = index
+        return agent._try_activate_fallback()
+    return False
+
+
+def guard_quota_request(agent) -> None:
+    """Keep an all-exhausted chain from probing a known-empty backend on every retry."""
+    reset = quota_reset_at(agent.provider, agent.model, agent.base_url)
+    if reset is None:
+        return
+    import httpx
+    from openai import RateLimitError
+    body = {"error": {"code": "terminal_quota_exhausted", "message": "Backend quota cooldown is still active", "reset_at": reset}}
+    response = httpx.Response(429, request=httpx.Request("POST", agent.base_url), json=body)
+    raise RateLimitError(body["error"]["message"], response=response, body=body)
 
 
 def _provider_reset_delay(reset_at) -> float | None:
@@ -55,9 +144,9 @@ def _arm_rate_limit_cooldown(
     """
     if reason not in _RATE_LIMIT_FAILOVER_REASONS:
         return None
-    current_provider = (getattr(agent, "provider", "") or "").strip().lower()
-    primary_provider = ((agent._primary_runtime or {}).get("provider") or "").strip().lower()
-    if getattr(agent, "_fallback_activated", False) and not (primary_provider and current_provider == primary_provider):
+    rt = agent._primary_runtime or {}
+    primary = BackendIdentity.build(rt.get("provider"), rt.get("model"), rt.get("base_url"))
+    if getattr(agent, "_fallback_activated", False) and not should_skip_candidate(_runtime_identity(agent), primary):
         return None
     backoff_count = getattr(agent, "_rate_limit_backoff_count", 0)
     agent._rate_limit_backoff_count = backoff_count + 1

@@ -1968,7 +1968,9 @@ def _should_skip_fallback_candidate(agent, fb: dict, fb_key: tuple, fb_provider:
         return True
     if not fb_provider or not fb_model:
         return True
-    from agent.fallback_cooldown import _is_entitlement_rejected
+    from agent.fallback_cooldown import _is_entitlement_rejected, quota_reset_at
+    if quota_reset_at(fb_provider, fb_model, fb.get("base_url") or "") is not None:
+        return True
     if _is_entitlement_rejected(agent, fb_provider, fb_model):
         logger.info("Fallback skip: %s/%s was rejected as unentitled for this account", fb_provider, fb_model)
         return True
@@ -2137,6 +2139,9 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None, reset_a
                     fb_api_mode = _fallback_api_mode_resolved(agent, fb_provider, fb_model, fb_base_url)
 
             old_model, old_provider, old_base_url = agent.model, agent.provider, agent.base_url
+            from agent.fallback_cooldown import quota_reset_at
+            if quota_reset_at(fb_provider, fb_model, fb_base_url) is not None:
+                continue
 
             # Clear the per-config context_length override so the fallback model's own context
             # window is resolved instead of the previous model's stale value.
@@ -2167,7 +2172,7 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None, reset_a
             _update_fallback_context_compressor(agent)
             _reresolve_fallback_reasoning_config(agent)
             _rescope_fallback_extra_body(agent, old_model, old_provider, old_base_url)
-            rewrite_prompt_model_identity(agent, fb_model, fb_provider)
+            agent._pending_primary_recovery_notice = None
 
             notice = (
                 f"⚠️ Model fallback: {old_model} via {old_provider} unavailable "

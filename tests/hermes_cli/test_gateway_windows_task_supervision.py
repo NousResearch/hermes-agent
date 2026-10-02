@@ -63,10 +63,15 @@ def _launchers(monkeypatch, tmp_path, exit_code):
     )
 
     def test_code(supervised):
+        # Only the gateway command is replaced. The overlay keeps _build_gateway_argv's PYTHONPATH
+        # contract: the detached spawn's base env (served_profile_child_env) strips Hermes-owned
+        # PYTHONPATH entries, and the test environment does not install the project itself.
         return (
             "import sys; from pathlib import Path; import hermes_cli.gateway_windows as g; "
+            "from hermes_cli.gateway import PROJECT_ROOT; overlay = {}; "
+            "g._prepend_pythonpath(overlay, [str(PROJECT_ROOT)]); "
             f"g._build_gateway_argv=lambda home=None: ([sys.executable, {str(child)!r}, "
-            f"{str(root)!r}, {str(exit_code)!r}], {str(root)!r}, {{}}); "
+            f"{str(root)!r}, {str(exit_code)!r}], {str(root)!r}, overlay); "
             f"g._hermes_home=lambda: Path({str(root)!r}); "
             f"raise SystemExit(g._run_generated_launcher({supervised!r}))"
         )
@@ -100,10 +105,15 @@ def _exercise_launcher(command, root, exit_code, *, supervised):
         deadline = time.monotonic() + 60
         while not started.exists() and time.monotonic() < deadline:
             time.sleep(0.05)
-        assert started.exists(), (
-            "The generated launcher did not start its child: "
-            + launcher_log.read_text(encoding="utf-8", errors="replace")[-4000:]
-        )
+        if not started.exists():
+            # The child's own stderr goes to the gateway's stdio sidecar, not the launcher log.
+            child_log = root / "logs" / "gateway-stdio.log"
+            child_output = child_log.read_text(encoding="utf-8", errors="replace") if child_log.exists() else ""
+            pytest.fail(
+                "The generated launcher did not start its child: "
+                + launcher_log.read_text(encoding="utf-8", errors="replace")[-4000:]
+                + "\nchild output: " + child_output[-4000:]
+            )
         state = json.loads(started.read_text(encoding="utf-8"))
         child = psutil.Process(state["pid"])
         assert state["visible"] is False, "The launcher exposed a console window"

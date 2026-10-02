@@ -370,12 +370,8 @@ def _media_proxy_host_allowed(host: str) -> bool:
     )
 
 
-@router.get("/api/media/proxy")
-async def proxy_remote_media(url: str, request: Request):
-    """Fetch a remote image URL the gateway can reach but the client cannot
-    (#74564), returning the same ``data_url`` shape as ``/api/media``. Only
-    allowlisted image CDNs; the bytes stay behind the size cap."""
-    _require_token(request)
+def _validate_media_proxy_url(url: str) -> None:
+    """Apply the CDN boundary to the initial URL and every redirect destination."""
     parsed = urllib.parse.urlparse((url or "").strip())
     if parsed.scheme not in ("http", "https") or not parsed.hostname:
         raise HTTPException(status_code=400, detail="A remote image URL is required")
@@ -388,11 +384,35 @@ async def proxy_remote_media(url: str, request: Request):
         if Path(parsed.path).suffix and Path(parsed.path).suffix.lower() not in _MEDIA_CONTENT_TYPES:
             raise HTTPException(status_code=415, detail="Unsupported media type")
 
-    import httpx
+
+async def _media_proxy_request_guard(request: Any) -> None:
+    from tools.url_safety import async_is_safe_url
+
+    url = str(request.url)
+    _validate_media_proxy_url(url)
+    if not await async_is_safe_url(url):
+        raise HTTPException(status_code=403, detail="Image URL targets a private or internal address")
+
+
+@router.get("/api/media/proxy")
+async def proxy_remote_media(url: str, request: Request):
+    """Fetch an authenticated, allowlisted CDN image, guarding every hop and TCP connect."""
+    _require_token(request)
+    _validate_media_proxy_url(url)
+    from tools.url_safety import SSRFConnectionBlocked, create_ssrf_safe_async_client
 
     try:
-        async with httpx.AsyncClient(timeout=_MEDIA_PROXY_TIMEOUT_S, follow_redirects=True) as client:
+        # The request hook covers redirects; the canonical transport resolves and
+        # validates again at connect, then dials the vetted IP without changing Host/SNI.
+        async with create_ssrf_safe_async_client(
+            timeout=_MEDIA_PROXY_TIMEOUT_S, follow_redirects=True,
+            event_hooks={"request": [_media_proxy_request_guard]},
+        ) as client:
             response = await client.get(url)
+    except HTTPException:
+        raise
+    except SSRFConnectionBlocked as exc:
+        raise HTTPException(status_code=403, detail="Image URL targets a private or internal address") from exc
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"Image fetch failed: {exc}")
 

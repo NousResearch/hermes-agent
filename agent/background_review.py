@@ -286,19 +286,12 @@ def _resolve_review_runtime(agent: Any, task_cfg: Optional[Dict[str, Any]] = Non
 def _warn_review_routing_fallback(agent: Any, task_provider: str, task_model: str, error: Exception) -> None:
     """The configured review route could not be resolved, so the fork runs on the main model. That
     was a debug-level line nobody saw (#116055): the misrouted model never ran and nothing said so.
-    User-visible notice once per agent (same rail as the reasoning_effort notice); log every time."""
-    message = (
-        "⚠ The configured auxiliary.background_review route could not be resolved "
-        f"({type(error).__name__}) — background reviews run on the main model instead. "
-        "Run 'hermes doctor' to check auxiliary routing."
-    )
+    User-visible notice once per agent (same rail as the reasoning_effort notice); log every time.
+    Exception text may contain credentials, so both sinks share the same type-only diagnostic."""
+    message = t("display.review.routing_fallback_warning", task_provider="…", task_model="…",
+                error=type(error).__name__, provider=agent.provider, model=agent.model)
+    message += t("gateway.compress.hygiene_timeout_doctor_hint")
     logger.warning("%s", message)
-    error_line = str(error).splitlines()[0] if str(error) else ""
-    logger.warning(
-        "auxiliary.background_review.provider=%r (model %r) could not be resolved: %s — background reviews "
-        "run on the main model %s/%s instead.", task_provider, task_model, error_line, agent.provider, agent.model)
-    message = t("display.review.routing_fallback_warning", task_provider=task_provider, task_model=task_model,
-                error=error_line, provider=agent.provider, model=agent.model)
     if getattr(agent, "_warned_bg_review_routing", False):
         return
     agent._warned_bg_review_routing = True

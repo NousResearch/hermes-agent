@@ -1147,10 +1147,11 @@ CONFIG_SCHEMA = ProviderConfigSchema(
         import hermes_cli.web_routers.files as files_router
 
         monkeypatch.setattr(files_router, "_require_token", lambda request: None, raising=False)
-        # The route imports httpx locally; patch the module it resolves from.
-        import httpx
+        # The positive content fixture uses the factory the real route resolves.
+        # The security invariants below exercise its actual guarded transport.
+        from tools import url_safety
 
-        monkeypatch.setattr(httpx, "AsyncClient", _Client, raising=False)
+        monkeypatch.setattr(url_safety, "create_ssrf_safe_async_client", _Client)
 
         resp = self.client.get(
             "/api/media/proxy", params={"url": "https://v3.fal.media/media/abc123"}
@@ -1181,14 +1182,127 @@ CONFIG_SCHEMA = ProviderConfigSchema(
             async def get(self, url):
                 return _Resp()
 
-        import httpx
+        from tools import url_safety
 
-        monkeypatch.setattr(httpx, "AsyncClient", _Client, raising=False)
+        monkeypatch.setattr(url_safety, "create_ssrf_safe_async_client", _Client)
 
         resp = self.client.get(
             "/api/media/proxy", params={"url": "https://fal.media/media/abc123"}
         )
         assert resp.status_code == 415
+
+    @pytest.mark.parametrize("scenario, expected_status", [
+        ("public", 200),
+        ("public_redirect", 200),
+        ("private_initial", 403),
+        ("mixed_initial", 403),
+        ("private_redirect", 403),
+        ("outside_cdn_redirect", 403),
+        ("metadata_redirect", 403),
+    ])
+    def test_media_proxy_checks_cdn_and_dns_before_each_request(
+        self, monkeypatch, scenario, expected_status,
+    ):
+        """Real router/client/SSRF policy; only DNS and the wire are offline fixtures."""
+        import base64
+        import socket
+
+        from httpcore._backends.auto import AutoBackend
+
+        start = "https://v3.fal.media/media/source"
+        redirect = {
+            "public_redirect": "https://storage.googleapis.com/images/target.png",
+            "private_redirect": "https://storage.googleapis.com/images/target.png",
+            "outside_cdn_redirect": "https://outside.example/images/target.png",
+            "metadata_redirect": "http://169.254.169.254/images/target.png",
+        }.get(scenario)
+        png = b"\x89PNG\r\n\x1a\nsynthetic-image"
+        connections = []
+        writes = []
+        tls_hosts = []
+
+        def dns(host, port=0, *args, **kwargs):
+            if host == "v3.fal.media":
+                ips = ["10.0.0.8"] if scenario == "private_initial" else ["93.184.216.34"]
+                if scenario == "mixed_initial":
+                    ips.append("169.254.169.254")
+            elif host == "storage.googleapis.com":
+                ips = ["10.0.0.8"] if scenario == "private_redirect" else ["93.184.216.35"]
+            else:
+                raise AssertionError(f"Unexpected offline DNS lookup: {host}")
+            return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", (ip, port or 443)) for ip in ips]
+
+        class Wire:
+            def __init__(self, payload):
+                self.payload = payload
+
+            async def read(self, max_bytes, timeout=None):
+                payload, self.payload = self.payload, b""
+                return payload
+
+            async def write(self, buffer, timeout=None):
+                writes.append(buffer)
+
+            async def aclose(self):
+                pass
+
+            async def start_tls(self, ssl_context, server_hostname=None, timeout=None):
+                tls_hosts.append(server_hostname)
+                return self
+
+            def get_extra_info(self, info):
+                return None
+
+        async def connect(_backend, host, port, **kwargs):
+            connections.append((host, port))
+            if redirect and len(connections) == 1:
+                return Wire(f"HTTP/1.1 302 Found\r\nLocation: {redirect}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".encode())
+            return Wire(b"HTTP/1.1 200 OK\r\nContent-Type: image/png\r\nContent-Length: " + str(len(png)).encode() + b"\r\nConnection: close\r\n\r\n" + png)
+
+        monkeypatch.setattr(socket, "getaddrinfo", dns)
+        monkeypatch.setattr(AutoBackend, "connect_tcp", connect)
+        for key in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy"):
+            monkeypatch.delenv(key, raising=False)
+
+        response = self.client.get("/api/media/proxy", params={"url": start})
+        assert response.status_code == expected_status
+        expected_connections = 0 if scenario in ("private_initial", "mixed_initial") else 2 if scenario == "public_redirect" else 1
+        assert len(connections) == expected_connections
+        if expected_status == 200:
+            assert response.json() == {"data_url": "data:image/png;base64," + base64.b64encode(png).decode()}
+            assert connections[0] == ("93.184.216.34", 443)
+            assert tls_hosts[0] == "v3.fal.media"
+            assert b"Host: v3.fal.media" in b"".join(writes)
+
+    @pytest.mark.parametrize("rebound_ip", ["127.0.0.1", "10.0.0.8", "169.254.169.254", "::1"])
+    def test_media_proxy_blocks_dns_rebinding_before_connect(self, monkeypatch, rebound_ip):
+        """A public preflight must not authorize the private answer used at connect."""
+        import socket
+
+        from httpcore._backends.auto import AutoBackend
+
+        lookups = []
+        connections = []
+
+        def dns(host, port=0, *args, **kwargs):
+            assert host == "v3.fal.media"
+            lookups.append(host)
+            ip = "93.184.216.34" if len(lookups) == 1 else rebound_ip
+            return [(socket.AF_INET6 if ":" in ip else socket.AF_INET, socket.SOCK_STREAM, 6, "", (ip, port or 443))]
+
+        async def connect(_backend, host, port, **kwargs):
+            connections.append((host, port))
+            raise AssertionError("A rebinding attempt must not reach the socket")
+
+        monkeypatch.setattr(socket, "getaddrinfo", dns)
+        monkeypatch.setattr(AutoBackend, "connect_tcp", connect)
+        for key in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy"):
+            monkeypatch.delenv(key, raising=False)
+
+        response = self.client.get("/api/media/proxy", params={"url": "https://v3.fal.media/media/source"})
+        assert response.status_code == 403
+        assert len(lookups) == 2
+        assert connections == []
 
     # ── POST /api/chat/image-upload (browser clipboard/drop images) ─────
 

@@ -11,7 +11,10 @@ Pure-function / config-driven; no live model calls.
 from typing import Any
 from unittest.mock import patch
 
+import pytest
+
 from agent import background_review as br
+from agent import i18n
 
 
 def _msg(role, content, tool_calls=None):
@@ -177,6 +180,98 @@ def test_unresolvable_review_provider_falls_back_with_visible_warning(caplog):
     warnings = [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING]
     assert len(warnings) == 2
     assert all("auxiliary.background_review" in w and "AuthError" in w for w in warnings)
-    assert all("background reviews run on the main model" in w and "hermes doctor" in w for w in warnings)
+    from agent.i18n import t
+    expected = t("display.review.routing_fallback_warning", task_provider="…", task_model="…",
+                 error="AuthError", provider=agent.provider, model=agent.model)
+    expected += t("gateway.compress.hygiene_timeout_doctor_hint")
+    assert warnings == [expected, expected]
     assert all("no-such-provider" not in w and "review-model" not in w for w in warnings)
     assert len(emitted) == 1 and emitted[0] == warnings[0]  # once per agent on the user rail
+
+
+def test_routing_fallback_never_sends_exception_contents_to_log_or_ui(caplog):
+    import logging
+
+    fake_credential = "synthetic-review-credential-not-real"
+    fake_url = "https://synthetic-user:synthetic-password@example.invalid/v1?token=synthetic-token"
+    error = RuntimeError(f"routing rejected {fake_credential} at {fake_url}\nprivate second line")
+    agent = _FakeAgent()
+    emitted = []
+    agent._emit_warning = emitted.append
+    task = {"provider": "review-provider", "model": "review-model"}
+    with patch("hermes_cli.runtime_provider.resolve_runtime_provider", side_effect=error), \
+         patch.object(br.logger, "warning", wraps=br.logger.warning) as log_warning:
+        with caplog.at_level(logging.WARNING, logger="agent.background_review"):
+            first = br._resolve_review_runtime(agent, task)
+            second = br._resolve_review_runtime(agent, task)
+
+    assert first == second and first["routed"] is False
+    assert first["provider"] == agent.provider and first["model"] == agent.model
+    warnings = [record.getMessage() for record in caplog.records if record.name == "agent.background_review"]
+    assert len(warnings) == log_warning.call_count == 2
+    assert len(emitted) == 1 and emitted[0] == warnings[0]
+    # Inspect raw logging arguments too: safety must precede any formatter redaction.
+    all_sinks = "\n".join([*warnings, *emitted, str(log_warning.call_args_list)])
+    for raw in (fake_credential, fake_url, "synthetic-user", "synthetic-password", "synthetic-token", "private second line"):
+        assert raw not in all_sinks
+    assert all("RuntimeError" in warning and "hermes doctor" in warning for warning in warnings)
+    assert all(f"{agent.provider}/{agent.model}" in warning for warning in warnings)
+
+
+def test_routing_fallback_does_not_stringify_exception():
+    class SensitiveError(Exception):
+        def __str__(self):
+            raise AssertionError("exception details must not be read")
+
+    agent = _FakeAgent()
+    emitted = []
+    agent._emit_warning = emitted.append
+    with patch.object(br.logger, "warning") as log_warning:
+        br._warn_review_routing_fallback(agent, "review-provider", "review-model", SensitiveError())
+    assert log_warning.call_count == 1
+    assert len(emitted) == 1 and "SensitiveError" in emitted[0]
+
+
+@pytest.mark.parametrize("lang", ["en", "ar"])
+def test_routing_fallback_localizes_safe_diagnostic(lang, caplog, monkeypatch, tmp_path):
+    import logging
+
+    # Exercise real bundled translations without reading a user's profile or overlays.
+    monkeypatch.setattr(i18n, "_current_home", lambda: str(tmp_path))
+    monkeypatch.setattr(i18n, "_resolve_language", lambda home: lang)
+    i18n.reset_language_cache()
+    credential = "synthetic-review-credential-not-real"
+    credential_url = "https://synthetic-user:synthetic-password@example.invalid/v1?token=synthetic-token"
+    error = RuntimeError(f"routing rejected {credential} at {credential_url}\nprivate second line")
+    agent = _FakeAgent()
+    emitted = []
+    agent._emit_warning = emitted.append
+    task = {"provider": credential, "model": credential_url}
+    try:
+        with patch("hermes_cli.runtime_provider.resolve_runtime_provider", side_effect=error), \
+             patch.object(br.logger, "warning", wraps=br.logger.warning) as log_warning:
+            with caplog.at_level(logging.WARNING, logger="agent.background_review"):
+                first = br._resolve_review_runtime(agent, task)
+                second = br._resolve_review_runtime(agent, task)
+
+        expected = i18n.t(
+            "display.review.routing_fallback_warning", task_provider="…", task_model="…",
+            error="RuntimeError", provider=agent.provider, model=agent.model,
+        ) + i18n.t("gateway.compress.hygiene_timeout_doctor_hint")
+        warnings = [record.getMessage() for record in caplog.records if record.name == "agent.background_review"]
+        assert first == second and first["routed"] is False
+        assert first["provider"] == agent.provider and first["model"] == agent.model
+        assert warnings == [expected, expected] and log_warning.call_count == 2
+        assert emitted == [expected]  # one cohesive localized warning, once per agent
+        assert expected.count("⚠") == 1 and expected.count("RuntimeError") == 1
+        assert "auxiliary.background_review" in expected and "hermes doctor" in expected
+        assert f"{agent.provider}/{agent.model}" in expected
+        if lang == "ar":
+            assert "تعذّر توجيه" in expected and "سيتم الرجوع" in expected and "على المضيف" in expected
+        else:
+            assert "could not be routed" in expected and "falling back to" in expected
+        all_sinks = "\n".join([*warnings, *emitted, str(log_warning.call_args_list)])
+        for raw in (credential, credential_url, "synthetic-user", "synthetic-password", "synthetic-token", "private second line"):
+            assert raw not in all_sinks
+    finally:
+        i18n.reset_language_cache()

@@ -331,3 +331,27 @@ def test_in_place_compress_keeps_foreign_rows_above_an_unpersisted_turn(session_
         assert any(content in (m.get("content") or "") for m in model_history)
         assert _flags(session_db, content) == [(0, 0), (1, 0)]
     assert session_db.search_messages("vault 7741")
+
+
+def test_in_place_compress_of_a_branch_does_not_clone_the_copied_history(session_db):
+    """/branch copies the parent's rows into the child under new ids, but the live history keeps the parent's
+    ``_row_id`` stamps. Those ids name none of the child's rows, so exact coverage must not read the child's
+    copies as turns the caller never held and clone them back, live, after the summary."""
+    from agent.context_compressor import _DB_PERSISTED_MARKER
+
+    history = _exchanges(10)
+    session_db.create_session("parent", "cli", model="test/model")
+    for message in history:
+        session_db.append_message("parent", message["role"], message["content"])
+    held = session_db.get_resume_conversations("parent")[0]  # the live list keeps the parent's row ids
+    agent, _ = _stored_agent(session_db, history)  # the branch "sid": the same rows under new ids
+    own_id = session_db.append_message("sid", "user", "first question on the branch")
+    held.append({"role": "user", "content": "first question on the branch",
+                 "_row_id": own_id, _DB_PERSISTED_MARKER: True})
+
+    assert _compress(agent, held, "").status == "compressed"
+
+    for message in history:  # the compacted head/tail may keep a row live once, never twice
+        assert _flags(session_db, message["content"]).count((1, 0)) <= 1, "a copied row came back live"
+    durable = [m["content"] for m in session_db.get_messages_as_conversation("sid")]
+    assert len(set(durable)) == len(durable)

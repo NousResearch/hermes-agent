@@ -2,6 +2,7 @@ import { textWithoutReferenceLines } from '@/components/assistant-ui/reference-k
 import { assistantTextPart, type ChatMessage, chatMessageText, textPart } from '@/lib/chat-messages'
 import { withoutCoveredAssistantPrefix } from '@/lib/chat-messages/coverage'
 import { parseErrorSurface } from '@/lib/error-surface'
+import { dropDuplicateLiveAssistantRows, dropLiveRowsRepresentedByCommitted } from '@/lib/live-row-dedupe'
 import type { SessionMessage, SessionResumeResult } from '@/types/hermes'
 
 import { mergeLiveAssistantRun } from './live-turn-remainder'
@@ -326,5 +327,8 @@ export function reconcilePersistedLiveTurn(
     }
   }
 
-  return result
+  // Restore path: a settled live row whose answer the durable rows already
+  // carry is the reply's second copy (this is where the stored-session-keyed
+  // live row that rendered twice came from).
+  return dropLiveRowsRepresentedByCommitted(dropDuplicateLiveAssistantRows(result))
 }

@@ -11,6 +11,7 @@ import {
   connectionScopeSuffix,
   rescopeConnectionScopedStores
 } from '@/lib/connection-scoped'
+import { dropDuplicateLiveAssistantRows, dropLiveRowsRepresentedByCommitted } from '@/lib/live-row-dedupe'
 import { isMessagingSource } from '@/lib/session-source'
 import type { TileSessionFocusStamp } from '@/lib/session-timer-since'
 import { persistBoolean, persistString, readJson, storedBoolean, storedString, writeJson } from '@/lib/storage'
@@ -1595,7 +1596,22 @@ export const markSessionRead = (storedSessionId: string | null | undefined) => {
   $unreadFinishedSessionIds.set($unreadFinishedSessionIds.get().filter(id => !familyIds.has(id)))
 }
 
-export const setMessages = (next: Updater<ChatMessage[]>) => updateAtom($messages, next)
+/**
+ * Every transcript write funnels through here, so no path - live projection,
+ * cached splice, restore reconcile or overlay - can leave one reply owning two
+ * live rows. A restored mid-turn session is projected twice, by the persisted
+ * live turn (row keyed by the stored session id) and by the inflight snapshot
+ * (row keyed by the runtime session id); both carry the same answer and used to
+ * render the reply twice. See @/lib/live-row-dedupe.
+ */
+export const setMessages = (next: Updater<ChatMessage[]>) =>
+  updateAtom($messages, current =>
+    dropLiveRowsRepresentedByCommitted(
+      dropDuplicateLiveAssistantRows(
+        typeof next === 'function' ? (next as (previous: ChatMessage[]) => ChatMessage[])(current) : next
+      )
+    )
+  )
 export const setFreshDraftReady = (next: Updater<boolean>) => updateAtom($freshDraftReady, next)
 
 // The fresh-draft identity lives in store/composer.ts with the draft stash it

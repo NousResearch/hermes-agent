@@ -13,6 +13,8 @@ import {
 import { normalizePersonalityValue } from '@/lib/chat-runtime'
 import { embeddedImageUrls, textWithoutEmbeddedImages } from '@/lib/embedded-images'
 import { parseErrorSurface } from '@/lib/error-surface'
+// The #80151 answer-text fold and the live-row dedupe are shared with store/session.
+import { dropDuplicateLiveAssistantRows, dropLiveRowsRepresentedByCommitted, foldAnswerTextForCompare } from '@/lib/live-row-dedupe'
 import { isMessagingSource, normalizeSessionSource } from '@/lib/session-source'
 import { isLiveTailReplyId } from '@/lib/spoken-reply'
 import { reconcileApprovalModeForProfile } from '@/store/approval-mode'
@@ -558,13 +560,8 @@ const isGatewaySystemMarker = (message: ChatMessage): boolean =>
 const hasStreamedContent = (message: ChatMessage): boolean =>
   chatMessageText(message).trim().length > 0 || hasStructuralParts(message)
 
-/**
- * #80151: the store's flat projection and the streamed parts join the same
- * segments with different separators (blank lines around folded tool rounds,
- * reference lines), so byte-prefix pairing misses the same turn. Compare the
- * answer text with reference lines stripped and separators folded away.
- */
-const foldAnswerTextForCompare = (text: string): string => textWithoutReferenceLines(text).replace(/\s+/g, '')
+// The #80151 fold used to live here; it moved to @/lib/live-row-dedupe so the
+// store can share it without importing this module back.
 
 /**
  * #80151: may a still-pending local stream claim a COMMITTED row whose answer
@@ -1154,6 +1151,11 @@ type ReconciledSessionResumeResult = SessionResumeResult & {
   [safelyPersistedInflightUser]?: true
 }
 
+// The live-row dedupe and the #80151 fold live in @/lib/live-row-dedupe, so
+// store/session can share them without importing this module back. Re-exported
+// for existing importers (and tests).
+export { dropDuplicateLiveAssistantRows, foldAnswerTextForCompare } from '@/lib/live-row-dedupe'
+
 export function appendLiveSessionProjection(messages: ChatMessage[], projection: LiveSessionProjection): ChatMessage[] {
   const inflightUser = projection.inflight?.user?.trim() ?? ''
   const inflightAssistant = projection.inflight?.assistant ?? ''
@@ -1440,7 +1442,12 @@ export function appendLiveSessionProjection(messages: ChatMessage[], projection:
     return [...messages.slice(0, committedPartialAt), ...projected, ...messages.slice(committedPartialAt + 1)]
   }
 
-  return projected.length ? [...messages, ...projected] : messages
+  const merged = projected.length ? [...messages, ...projected] : messages
+
+  // The persisted live turn projects the same reply under its own live id, and a
+  // settled projection of a finished turn adds nothing the committed rows do not
+  // already carry; two projections of one turn must not render the answer twice.
+  return dropLiveRowsRepresentedByCommitted(dropDuplicateLiveAssistantRows(merged))
 }
 
 function normalizedMessageText(message: ChatMessage): string {
@@ -1650,7 +1657,13 @@ export function overlayConcurrentMessageChanges(
     // earlier turn's answer (a resent prompt can repeat it word for word). An
     // errored row carries a failure the committed text cannot show.
     if (current.role === 'assistant' && current.pending !== true && !current.error && isLiveTailReplyId(current.id)) {
-      const text = textWithoutReferenceLines(chatMessageText(current)).trim()
+      // The durable row folds the turn's segments with different separators
+      // than the streamed parts did (#80151), so the settled row and its
+      // committed twin routinely differ in whitespace while holding the same
+      // reply. Compare the same folded answer text the sibling live-projection
+      // folds use — reference lines stripped, separators collapsed — never raw
+      // bytes, or both rows survive and the one reply renders twice.
+      const text = foldAnswerTextForCompare(chatMessageText(current))
       const lastUser = overlaid.findLastIndex(message => message.role === 'user')
 
       const committed = overlaid.some((message, index) => {
@@ -1668,7 +1681,7 @@ export function overlayConcurrentMessageChanges(
         // guaranteed to be textually identical: accept either as a forward
         // text-extension of the other, the same trade
         // removeRepresentedLocalLiveProjection made in 2494b95929.
-        const candidate = textWithoutReferenceLines(chatMessageText(message)).trim()
+        const candidate = foldAnswerTextForCompare(chatMessageText(message))
 
         return (
           candidate === text ||

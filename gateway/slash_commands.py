@@ -1174,9 +1174,12 @@ class GatewaySlashCommandsMixin(
             return stale
         # Args: "all", "all session", "all always", "session", "always" ("always" beats "session").
         args = event.get_command_args().strip().lower().split()
+        request_id = next((arg for arg in args if re.fullmatch(
+            r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}", arg)), None)
         choices = {_APPROVE_CHOICE_BY_ARG[a] for a in args if a in _APPROVE_CHOICE_BY_ARG}
         choice = "always" if "always" in choices else "session" if "session" in choices else "once"
-        count = resolve_gateway_approval(session_key, choice, resolve_all="all" in args)
+        count = resolve_gateway_approval(session_key, choice, resolve_all="all" in args,
+                                         request_id=request_id)
         if not count:
             return t("gateway.approve.no_pending")
         confirmation_text = t(f"gateway.approve.{choice}_{'plural' if count > 1 else 'singular'}", count=count)
@@ -1200,8 +1203,12 @@ class GatewaySlashCommandsMixin(
         raw_args = event.get_command_args().strip()
         tokens = raw_args.split()
         resolve_all = bool(tokens) and tokens[0].lower() == "all"
-        reason = (raw_args[len(tokens[0]):].strip() if resolve_all else raw_args)[:280].strip()
-        count = resolve_gateway_approval(session_key, "deny", resolve_all=resolve_all, reason=reason or None)
+        request_id = (tokens[0].lower() if tokens and re.fullmatch(
+            r"[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}", tokens[0]) else None)
+        reason = (raw_args[len(tokens[0]):].strip() if (resolve_all or request_id)
+                  else raw_args)[:280].strip()
+        count = resolve_gateway_approval(session_key, "deny", resolve_all=resolve_all,
+                                         reason=reason or None, request_id=request_id)
         if not count:
             return t("gateway.deny.no_pending")
         logger.info("User denied %d dangerous command(s) via /deny%s", count,

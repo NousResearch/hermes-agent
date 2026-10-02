@@ -151,6 +151,26 @@ class TestBlockingGatewayApproval:
         assert not e2.event.is_set()
         assert len(_gateway_queues[session_key]) == 1
 
+    def test_exact_bound_approval_requires_its_request_id(self):
+        """A bulk command or another card cannot approve an exact-bound request."""
+        from tools.approval import resolve_gateway_approval, _gateway_queues
+        from tools.approval_gateway_wait import _ApprovalEntry
+
+        session_key = "test-exact-bound"
+        first = _ApprovalEntry({"request_id": "first", "requires_request_id": True})
+        second = _ApprovalEntry({"request_id": "second", "requires_request_id": True})
+        ordinary = _ApprovalEntry({"request_id": "ordinary"})
+        _gateway_queues[session_key] = [first, second, ordinary]
+        try:
+            assert resolve_gateway_approval(session_key, "once", resolve_all=True) == 1
+            assert ordinary.result == "once"
+            assert resolve_gateway_approval(session_key, "once") == 0
+            assert resolve_gateway_approval(session_key, "once", request_id="second") == 1
+            assert second.result == "once"
+            assert first.result is None
+        finally:
+            _gateway_queues.pop(session_key, None)
+
 
 # ------------------------------------------------------------------
 # /approve command

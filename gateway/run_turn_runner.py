@@ -1459,6 +1459,19 @@ class TurnRunner:
         from gateway.run_turn_runner_approval_settle import register_timeout_notice
         ctx = self._ctx
         adapter = ctx._status_adapter
+        if approval_data.get("informational") is True:
+            from gateway.run import _interim_metadata
+            from agent.redact import redact_sensitive_text
+            message = redact_sensitive_text(str(approval_data.get("message") or ""), force=True)
+            if message:
+                fut = self._schedule(adapter.send(
+                    ctx._status_chat_id, message,
+                    metadata=_interim_metadata({**(ctx._status_thread_metadata or {}),
+                                                "is_approval_prompt": True})),
+                    "approval status scheduling error")
+                if fut is not None:
+                    fut.result(timeout=15)
+            return
         # Slack's assistant_threads_setStatus disables the compose box, so the user can't type
         # /approve while "is thinking..." shows. Pausing stops _keep_typing re-setting it; resumed
         # in approve/deny.
@@ -1469,13 +1482,21 @@ class TurnRunner:
         cmd = _redact_approval_command(approval_data.get("command", ""))
         desc = approval_data.get("description") or ea_default_reason_text()
         flags = {k: approval_data.get(k, d) for k, d in (("allow_permanent", True), ("allow_session", True), ("smart_denied", False))}
+        exact_request_id = (approval_data.get("request_id")
+                            if approval_data.get("requires_request_id") is True else None)
+        if approval_data.get("requires_request_id") is True and not isinstance(exact_request_id, str):
+            raise ValueError("Exact-bound approval requires a request ID")
         # Check the *class*, not the instance — MagicMock auto-creates attributes in tests.
-        if _renders_exec_approval_buttons(type(adapter)):
+        if (_renders_exec_approval_buttons(type(adapter)) and
+                (not exact_request_id or getattr(type(adapter), "supports_exact_approval_request_id", False))):
             try:
+                approval_metadata = dict(ctx._status_thread_metadata or {})
+                if exact_request_id:
+                    approval_metadata["approval_request_id"] = exact_request_id
                 fut = self._schedule(
                     adapter.send_exec_approval(
                         chat_id=ctx._status_chat_id, command=cmd, session_key=ctx.session_key or "",
-                        description=desc, metadata=ctx._status_thread_metadata, **flags,
+                        description=desc, metadata=approval_metadata, **flags,
                     ),
                     "send_exec_approval scheduling error",
                 )
@@ -1534,20 +1555,28 @@ class TurnRunner:
                 logger.warning("Button-based approval failed, falling back to text: %s", e)
         # Plain-text prompt with the adapter's typed prefix (e.g. `!approve`): typed "/" is blocked
         # in Slack threads and reserved by Matrix clients.
-        msg = _format_exec_approval_fallback(cmd, desc, getattr(adapter, "typed_command_prefix", "/"), **flags)
+        msg = _format_exec_approval_fallback(
+            cmd, desc, getattr(adapter, "typed_command_prefix", "/"),
+            request_id=exact_request_id, **flags)
         try:
             # Mark as approval prompt so WeCom routes through the control lane.
             metadata = {**(ctx._status_thread_metadata or {}), "is_approval_prompt": True}
             fut = self._schedule(
                 adapter.send(ctx._status_chat_id, msg, metadata=_interim_metadata(metadata)), "Approval text-send scheduling error",
             )
+            if fut is None and exact_request_id:
+                raise RuntimeError("Approval notification could not be scheduled")
             if fut is not None:
                 fut.result(timeout=15)
+                if exact_request_id and _approval_send_outcome(fut, timeout=0) != "sent":
+                    raise RuntimeError("Approval notification was not delivered")
                 # No card to edit on the text path: the prompt has no buttons to drop and carries
                 # the /approve instructions, so the timeout notice is posted as a new message.
                 register_timeout_notice(self, approval_data, command=cmd, card_message_id=None)
         except Exception as e:
             logger.error("Failed to send approval request: %s", e)
+            if exact_request_id:
+                raise
 
     # ── run_sync phases ─────────────────────────────────────────────────────────────────────
 

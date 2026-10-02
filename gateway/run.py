@@ -595,7 +595,8 @@ def _redact_approval_command(cmd: "str | None") -> str:
 
 def _format_exec_approval_fallback(
     command: str, description: str, command_prefix: str, *, allow_permanent: bool = True,
-    allow_session: bool = True, smart_denied: bool = False) -> str:
+    allow_session: bool = True, smart_denied: bool = False,
+    request_id: str | None = None) -> str:
     """Render the text fallback from approval capabilities, not platform names. Same words as
     the button card (``BasePlatformAdapter._format_exec_approval``), plus the typed ``/approve``
     steps a surface without buttons needs."""
@@ -605,12 +606,20 @@ def _format_exec_approval_fallback(
     heading = (t("gateway.exec_approval.smart_deny_heading") if smart_denied
                else f"⚠️ **{ea_header_text()}**")
 
-    choices = [t("gateway.exec_approval.text_choice_once", prefix=command_prefix)]
-    if not smart_denied and allow_session:
-        choices.append(t("gateway.exec_approval.text_choice_session", prefix=command_prefix))
-        if allow_permanent:
-            choices.append(t("gateway.exec_approval.text_choice_always", prefix=command_prefix))
-    choices.append(t("gateway.exec_approval.text_choice_deny", prefix=command_prefix))
+    if request_id:
+        choices = [f"Reply `{command_prefix}approve {request_id}` to run it once"]
+        if not smart_denied and allow_session:
+            choices.append(f"`{command_prefix}approve {request_id} session` to allow it for this session")
+        if not smart_denied and allow_permanent:
+            choices.append(f"`{command_prefix}approve {request_id} always` to allow it permanently")
+        choices.append(f"`{command_prefix}deny {request_id}` to cancel")
+    else:
+        choices = [t("gateway.exec_approval.text_choice_once", prefix=command_prefix)]
+        if not smart_denied and allow_session:
+            choices.append(t("gateway.exec_approval.text_choice_session", prefix=command_prefix))
+            if allow_permanent:
+                choices.append(t("gateway.exec_approval.text_choice_always", prefix=command_prefix))
+        choices.append(t("gateway.exec_approval.text_choice_deny", prefix=command_prefix))
     return (
         t("gateway.exec_approval.text_body", heading=heading, command=cmd_preview,
           reason_label=ea_reason_label_text(), reason=description)

@@ -365,7 +365,7 @@ class TestCmdUpdateGatewayMode:
         monkeypatch.setattr(main, "_install_hangup_protection", lambda **kw: None)
         monkeypatch.setattr(main, "_finalize_update_output", lambda state: None)
         monkeypatch.setattr(main, "_run_pre_update_backup", lambda args: None)
-        monkeypatch.setattr(main, "_pause_windows_gateways_for_update", lambda: None)
+        monkeypatch.setattr(main, "_pause_windows_gateways_for_update", lambda *_, **__: None)
         monkeypatch.setattr("hermes_cli.update_inventory.collect_runtime_inventory", lambda: None)
         monkeypatch.setattr(update_cmd, "_prepare_git_command", lambda: (False, ["git"], False))
         monkeypatch.setattr(update_cmd, "run_completion", lambda request: {"exit_code": 0, "receipt": None})

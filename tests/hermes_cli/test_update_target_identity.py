@@ -58,7 +58,7 @@ def update_tree(tmp_path, monkeypatch):
     monkeypatch.setattr(cli_main, 'PROJECT_ROOT', clone)
     monkeypatch.setattr(update_receipt, '_code_identity', lambda **_: {'commit': base})
     monkeypatch.setattr(cli_main, '_run_pre_update_backup', lambda *_: 'release-snapshot')
-    monkeypatch.setattr(cli_main, '_pause_windows_gateways_for_update', lambda: None)
+    monkeypatch.setattr(cli_main, '_pause_windows_gateways_for_update', lambda *_, **__: None)
     resumed = []
     monkeypatch.setattr(cli_main, '_resume_windows_gateways_after_update', lambda state: resumed.append(state))
     monkeypatch.setattr(cli_main, '_install_hangup_protection', lambda **_: {'installed': False})
@@ -273,7 +273,7 @@ def test_stable_zip_consumes_the_same_commit_through_the_real_swap(update_tree, 
 
     t = update_tree
     monkeypatch.setattr(cli_main, '_pause_windows_gateways_for_update',
-                        lambda: {"resume_needed": True})
+                        lambda *_, **__: {"resume_needed": True})
     archive = tmp_path / 'source.zip'
     git(t.origin, 'archive', '--format=zip', '--prefix=hermes-agent-source/', f'--output={archive}', t.wanted)
     archive_bytes = archive.read_bytes()

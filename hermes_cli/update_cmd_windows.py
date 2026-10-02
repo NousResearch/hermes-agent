@@ -909,11 +909,13 @@ def _gateway_drain_timeout(socket_acks: list[dict]) -> float:
     return drain_timeout
 
 
-def _pause_windows_gateways_for_update() -> dict | None:
+def _pause_windows_gateways_for_update(*, gateway_mode: bool = False) -> dict | None:
     """Stop running Windows gateways before mutating the checkout or venv.
 
     Scheduled/startup gateways run via pythonw.exe, invisible to the hermes.exe instance guard, yet keep files
-    locked during ``git``/``uv``. Stop only PIDs the gateway discovery code identifies."""
+    locked during ``git``/``uv``. Stop only PIDs the gateway discovery code identifies.
+
+    Refuses (exit 2) before touching anything when a nominated gateway is an ancestor of this updater: force-stopping that tree would kill the update mid-flight. Gateway delivery stays exempt."""
     from hermes_cli.update_cmd import _m
     if not _m()._is_windows():
         return None
@@ -921,6 +923,8 @@ def _pause_windows_gateways_for_update() -> dict | None:
         from gateway.status import get_process_start_time, terminate_pid
         from hermes_cli.gateway import _capture_gateway_argv
     profile_processes, service_gateways, service_gateway_pids, running_pids = _discover_windows_gateways()
+    if _refuse_gateway_ancestor_tree_kill(list(running_pids), gateway_mode=gateway_mode):
+        raise SystemExit(2)
     if not running_pids:
         token = _windows_cold_start_plan()
         # Other profiles may hold a dead attestation even when the active profile owes nothing

@@ -31,23 +31,42 @@ def _wire(messages):
     return [(m["role"], m.get("content"), m.get("tool_call_id")) for m in messages]
 
 
+def _sibling(call):
+    """An earlier call in the same batch that DID get its result, shaped like *call*."""
+    sib = {**call, "id": "call_0" if "call_id" not in call else "fc_item_0",
+           "function": {"name": "read_file", "arguments": json.dumps({"path": "app.log"})}}
+    if "call_id" in call:
+        sib["call_id"] = "call_pair_0"
+    return sib
+
+
+def _key(call):
+    return call.get("call_id", call["id"])
+
+
+@pytest.mark.parametrize("partial", [False, True], ids=["all-unanswered", "partial-answer"])
 @pytest.mark.parametrize("call", [_CALL, _RESPONSES_CALL], ids=["chat-completions", "responses"])
 @pytest.mark.parametrize("resumed_turns", [0, 1], ids=["killed-turn-is-tail", "after-a-resumed-turn"])
-def test_killed_side_effect_call_survives_restore(db, resumed_turns, call):
+def test_killed_side_effect_call_survives_restore(db, resumed_turns, call, partial):
+    calls = [_sibling(call), call] if partial else [call]
     db.create_session("s1", "system prompt")
     db.append_message(session_id="s1", role="user", content="restart the app")
-    db.append_message(session_id="s1", role="assistant", content="", tool_calls=[call])
+    db.append_message(session_id="s1", role="assistant", content="", tool_calls=calls)
+    if partial:
+        db.append_message(session_id="s1", role="tool", content="log ok", tool_call_id=_key(calls[0]))
     for n in range(resumed_turns):
         db.append_message(session_id="s1", role="user", content=f"later ask {n}")
         db.append_message(session_id="s1", role="assistant", content=f"later reply {n}")
 
     restored = db.get_messages_as_conversation("s1", repair_alternation=True)
 
-    assert [m["role"] for m in restored[:3]] == ["user", "assistant", "tool"]
+    run = 2 + len(calls)
+    assert [m["role"] for m in restored[:run]] == ["user", "assistant"] + ["tool"] * len(calls)
     assert restored[0]["content"] == "restart the app"
-    assert restored[1]["tool_calls"][0]["id"] == call["id"]
-    assert restored[2]["tool_call_id"] == call.get("call_id", call["id"])
-    assert restored[2]["effect_disposition"] == "unknown"
+    assert [tc["id"] for tc in restored[1]["tool_calls"]] == [c["id"] for c in calls]
+    # The recovered result lands AFTER the run's real results, in call order.
+    assert [m["tool_call_id"] for m in restored[2:run]] == [_key(c) for c in calls]
+    assert [m.get("effect_disposition") for m in restored[2:run]] == [None] * (len(calls) - 1) + ["unknown"]
     wire = _chat_messages_to_responses_input(restored)
     assert [i["call_id"] for i in wire if i.get("type") == "function_call_output"] == [
         i["call_id"] for i in wire if i.get("type") == "function_call"]
@@ -56,7 +75,7 @@ def test_killed_side_effect_call_survives_restore(db, resumed_turns, call):
     live = list(restored) + [{"role": "user", "content": "next"}]
     assert repair_message_sequence(None, live) == 0
     assert _wire(live[:-1]) == _wire(db.get_messages_as_conversation("s1", repair_alternation=True))
-    assert len(db.get_messages_as_conversation("s1")) == 2 + 2 * resumed_turns
+    assert len(db.get_messages_as_conversation("s1")) == 2 + partial + 2 * resumed_turns
 
 
 def test_gateway_resume_replays_killed_call_as_unknown(tmp_path, monkeypatch):

@@ -240,6 +240,37 @@ class TestResolveTaskProviderModel:
         assert resolved_provider == "anthropic"
         assert model is None
 
+    def test_freellm_auto_is_a_real_model_id(self, monkeypatch):
+        """FreeLLM's catalog id is the word auto. Stripping it substitutes the
+        chat model (GLM-5.3-Flash, grok-4.7) and the router returns 404."""
+        monkeypatch.setattr(
+            "agent.auxiliary_client._get_auxiliary_task_config",
+            lambda task: {"provider": "freellmapi", "model": "auto"},
+        )
+        monkeypatch.setattr(
+            "agent.auxiliary_client._provider_accepts_literal_auto_model",
+            lambda provider: (provider or "").strip().lower() == "freellmapi",
+        )
+
+        resolved_provider, model, _base_url, _api_key, _api_mode = _resolve_task_provider_model(
+            task="compression",
+        )
+
+        assert resolved_provider == "freellmapi"
+        assert model == "auto"
+
+    def test_unset_aux_model_prefers_provider_auto_over_chat_model(self, monkeypatch):
+        monkeypatch.setattr("agent.auxiliary_client._get_aux_model_for_provider", lambda provider: "")
+        monkeypatch.setattr(
+            "agent.auxiliary_client._provider_accepts_literal_auto_model",
+            lambda provider: provider == "freellmapi",
+        )
+        monkeypatch.setattr("agent.auxiliary_client._read_main_model_for_aux", lambda: "GLM-5.3-Flash")
+        from agent.auxiliary_client import _model_when_aux_model_unset
+
+        assert _model_when_aux_model_unset("freellmapi") == "auto"
+        assert _model_when_aux_model_unset("anthropic") == "GLM-5.3-Flash"
+
 
 class TestMoaAggregatorSharedResolution:
     """The shared MoA→aggregator helper and the layers that consume it.

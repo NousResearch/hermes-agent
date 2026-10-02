@@ -5465,7 +5465,7 @@ def resolve_provider_client(
         # here wins over that. The main chat model is routinely text-only (e.g. a ``:free`` chat SKU), so
         # pre-filling it sends the image to a model that cannot accept one and the Portal 404s. Leave
         # ``model`` unset and let the Portal slot through; only an explicit caller model may override it.
-        model = _get_aux_model_for_provider(provider) or _read_main_model_for_aux() or model
+        model = _model_when_aux_model_unset(provider) or model
     req = _ResolveRequest(
         provider, original_provider, model, async_mode, raw_codex,
         explicit_base_url, explicit_api_key, api_mode, main_runtime, is_vision, task,
@@ -6074,6 +6074,38 @@ def _preserve_provider_with_base_url(prov: Optional[str]) -> bool:
         }
 
 
+def _provider_accepts_literal_auto_model(provider: Optional[str]) -> bool:
+    """True when ``auto`` is a real model id on this provider, not Hermes' inherit sentinel.
+
+    FreeLLM's catalog id is the literal string ``auto`` (the cheap router). Hermes otherwise
+    deletes that word and substitutes the live chat model, which 404s when the chat model
+    is not in the FreeLLM catalog.
+    """
+    name = (provider or "").strip().lower()
+    if name.startswith("custom:"):
+        name = name.split(":", 1)[1].strip()
+    if not name or name in {"auto", "custom"}:
+        return False
+    try:
+        from hermes_cli.runtime_provider import _get_named_custom_provider
+        entry = _get_named_custom_provider(name)
+    except Exception:
+        return False
+    if not isinstance(entry, dict):
+        return False
+    return str(entry.get("model") or entry.get("default_model") or "").strip().lower() == "auto"
+
+
+def _model_when_aux_model_unset(provider: str) -> Optional[str]:
+    """Catalog aux model, else a provider whose default model id is ``auto``, else the chat model."""
+    picked = _get_aux_model_for_provider(provider) or ""
+    if not picked and _provider_accepts_literal_auto_model(provider):
+        picked = "auto"
+    if not picked:
+        picked = _read_main_model_for_aux() or ""
+    return picked or None
+
+
 def _resolve_task_provider_model(
     task: str = None, provider: str = None, model: str = None, base_url: Optional[str] = None,
     api_key: Optional[str] = None,
@@ -6101,9 +6133,10 @@ def _resolve_task_provider_model(
     # 'auto' is a sentinel ("inherit / auto-detect"), not a model id — leaking it to the wire
     # yields a 200 with an error-text body that consumers accept as output. The explicit `model`
     # kwarg needs the same normalization: MoA slots forward preset `model:` fields through it.
-    if model and model.lower() == "auto":
+    # A named provider whose own default_model is the catalog id "auto" (FreeLLM) keeps the word.
+    if model and model.lower() == "auto" and not _provider_accepts_literal_auto_model(provider or cfg_provider):
         model = None
-    if cfg_model and cfg_model.lower() == "auto":
+    if cfg_model and cfg_model.lower() == "auto" and not _provider_accepts_literal_auto_model(cfg_provider):
         cfg_model = None
     resolved_model = model or cfg_model
     # Any moa:// facade endpoint belongs to the facade, not the aggregator's real provider —

@@ -424,6 +424,32 @@ def test_apply_nous_managed_defaults_writes_video_gen_config(monkeypatch):
     assert "use_gateway" not in config["video_gen"]
 
 
+def _defaults_for(monkeypatch, account, config):
+    monkeypatch.setattr(tool_backend_helpers, "managed_nous_tools_enabled", lambda **kw: True)
+    monkeypatch.delenv("FAL_KEY", raising=False)
+    monkeypatch.setattr(ns, "fal_key_is_configured", lambda: False)
+    monkeypatch.setattr(ns, "get_nous_portal_account_info", lambda **kw: account)
+    ns.apply_nous_managed_defaults(config, enabled_toolsets=["image_gen"])
+    return config["image_gen"]
+
+
+def test_paid_account_defaults_to_the_krea_image_model(monkeypatch):
+    section = _defaults_for(monkeypatch, _account(logged_in=True, paid=True), {"model": {"provider": "nous"}})
+    assert section == {"provider": "nous", "model": ns.MANAGED_IMAGE_DEFAULT_KREA_MODEL}
+
+
+def test_pool_account_keeps_the_fal_image_default(monkeypatch):
+    section = _defaults_for(monkeypatch, _pool_account(), {"model": {"provider": "nous"}})
+    assert section["provider"] == "nous"
+    assert "model" not in section
+
+
+def test_configured_image_section_is_left_alone(monkeypatch):
+    config = {"model": {"provider": "nous"}, "image_gen": {"provider": "nous", "model": FAL_DEFAULT_MODEL}}
+    section = _defaults_for(monkeypatch, _account(logged_in=True, paid=True), config)
+    assert section["model"] == FAL_DEFAULT_MODEL
+
+
 # ---------------------------------------------------------------------------
 # ensure_nous_portal_access — inline login gate for `hermes tools`
 # ---------------------------------------------------------------------------

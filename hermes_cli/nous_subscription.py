@@ -75,6 +75,7 @@ _ALL_GATEWAY_KEYS = tuple(_GATEWAY_SECTION_FIELDS)
 _GATEWAY_TOOL_LABELS = {k: _FEATURES[k].offer_label for k in _ALL_GATEWAY_KEYS}
 # Sections apply_*_defaults always materialise before writing selections.
 _DEFAULT_SECTIONS = ("web", "tts", "stt", "browser")
+MANAGED_IMAGE_DEFAULT_KREA_MODEL = "krea-2-medium-turbo"
 
 
 def _uses_gateway(section: object) -> bool:
@@ -138,12 +139,14 @@ def _ensure_section(config: Dict[str, object], key: str) -> Dict[str, object]:
     return value
 
 
-def _select_nous(config: Dict[str, object], key: str) -> None:
+def _select_nous(config: Dict[str, object], key: str, model: Optional[str] = None) -> None:
     """Store the managed ``nous`` selection in the ``key`` section (field per _GATEWAY_SECTION_FIELDS)."""
     section_key, field = _GATEWAY_SECTION_FIELDS[key]
     section = _ensure_section(config, section_key)
     section[field] = "nous"
     section.pop("use_gateway", None)
+    if model:
+        section["model"] = model
 
 
 def _norm(value: object, default: str = "") -> str:
@@ -500,7 +503,12 @@ def apply_nous_managed_defaults(config: Dict[str, object], *, enabled_toolsets: 
     # Video gen is not funded by the free tool pool: only wire managed video for entitled (paid) users.
     for key, category in (("image_gen", None), ("video_gen", "fal-video")):
         if key in selected_toolsets and not fal_key_is_configured() and (category is None or account_info.tool_gateway_entitled_for(category)):
-            _select_nous(config, key)
+            # Paid accounts default to Krea; the free pool is not entitled to it and keeps the FAL default.
+            model = None
+            if (key == "image_gen" and not features.features[key].explicit_configured
+                    and not _section(config, key).get("model") and account_info.tool_gateway_entitled_for("krea")):
+                model = MANAGED_IMAGE_DEFAULT_KREA_MODEL
+            _select_nous(config, key, model=model)
             changed.add(key)
     return changed
 

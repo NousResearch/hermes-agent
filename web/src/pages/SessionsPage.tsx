@@ -102,7 +102,6 @@ const SOURCE_CONFIG: Record<string, { icon: typeof Terminal; color: string }> =
 const AUTOMATION_SESSION_SOURCES = [
   "cron",
   "tool",
-  "oneshot",
   "api_server",
   "acp",
   "hermes_flow",
@@ -924,7 +923,7 @@ export default function SessionsPage() {
       return excludedSources.length > 0 ? { excludeSources: excludedSources } : {};
     }
     if (sessionCategory === "chats") {
-      return { excludeSources: AUTOMATION_SESSION_SOURCES.filter((source) => source !== "oneshot") };
+      return { excludeSources: AUTOMATION_SESSION_SOURCES };
     }
     if (sessionCategory === "automation") {
       const excludedSources = allSourceNames.filter(

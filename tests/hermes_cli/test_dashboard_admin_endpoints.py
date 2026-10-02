@@ -390,6 +390,12 @@ class TestWebhookEndpoints:
         subs = self.client.get("/api/webhooks").json()["subscriptions"]
         assert subs[0]["script"] == "todoist_filter.py"
 
+        # A re-POST is a general update, not an enable: an explicit disable must survive it.
+        assert self.client.put("/api/webhooks/todoist/enabled", json={"enabled": False}).status_code == 200
+        assert self.client.post("/api/webhooks", json={"name": "todoist", "deliver": "log"}).status_code == 200
+        from hermes_cli.webhook import _load_subscriptions
+        assert _load_subscriptions()["todoist"]["enabled"] is False
+
     def test_enable_platform_starts_gateway_restart(self, monkeypatch):
         from hermes_cli.config import load_config
 
@@ -417,7 +423,8 @@ class TestWebhookEndpoints:
             "restart_action": "gateway-restart",
             "restart_pid": 4242,
         }
-        assert restart_calls == [(["gateway", "restart"], "gateway-restart")]
+        # The default home is named explicitly: a bare child would re-read the sticky active_profile.
+        assert restart_calls == [(["-p", "default", "gateway", "restart"], "gateway-restart")]
         assert load_config()["platforms"]["webhook"]["enabled"] is True
         assert self.client.get("/api/webhooks").json()["enabled"] is True
 

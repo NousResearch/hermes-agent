@@ -162,6 +162,7 @@ from agent.codex_responses_adapter import (
     _summarize_user_message_for_log,
 )
 from agent.tool_guardrails import ToolGuardrailDecision, append_toolguard_guidance, toolguard_synthetic_result
+from hermes_cli.observability.shared_metrics_harness import record_guardrail_decision, record_guardrail_warnings
 from utils import base_url_host_matches, base_url_hostname, env_float, model_forces_max_completion_tokens
 
 
@@ -495,9 +496,12 @@ class AIAgent(
 
     switch_model = _forward("agent.agent_runtime_helpers", "switch_model")
 
-    def _disable_codex_reasoning_replay(self, messages: Optional[List[Dict[str, Any]]] = None) -> Dict[str, int]:
-        """On HTTP 400 ``invalid_encrypted_content``: disable Responses reasoning replay and pop
-        ``codex_reasoning_items`` from every assistant message. Returns ``{"messages", "items"}`` counts."""
+    def _disable_codex_reasoning_replay(
+        self, messages: Optional[List[Dict[str, Any]]] = None, *, keep_replay: bool = False,
+    ) -> Dict[str, int]:
+        """On HTTP 400 ``invalid_encrypted_content``: pop ``codex_reasoning_items`` from every assistant
+        message and, unless ``keep_replay``, disable Responses reasoning replay. Returns
+        ``{"messages", "items"}`` counts."""
         stripped_messages = stripped_items = 0
         for msg in (messages if isinstance(messages, list) else []):
             if not isinstance(msg, dict) or msg.get("role") != "assistant":
@@ -506,7 +510,8 @@ class AIAgent(
             if isinstance(items, list) and items:
                 stripped_messages += 1
                 stripped_items += len(items)
-        self._codex_reasoning_replay_enabled = False
+        if not keep_replay:
+            self._codex_reasoning_replay_enabled = False
         return {"messages": stripped_messages, "items": stripped_items}
 
     _stream_diag_init = _forward_static("agent.stream_diag", "stream_diag_init")
@@ -1268,6 +1273,8 @@ class AIAgent(
         """Record the first guardrail decision that should stop this turn."""
         if decision.should_halt and self._tool_guardrail_halt_decision is None:
             self._tool_guardrail_halt_decision = decision
+        if decision.should_halt:
+            record_guardrail_decision(self, decision.action, decision.code)
 
     def _toolguard_controlled_halt_response(self, decision: ToolGuardrailDecision) -> str:
         # Shown to the user as the reply, so no decision codes; the code stays in result["guardrail"].
@@ -1283,14 +1290,14 @@ class AIAgent(
         decision = self._tool_guardrails.after_call(tool_name, function_args, function_result, failed=failed)
         # Identical-call stall guards observe the RAW result (before the per-call loop suffix) and are applied
         # at result construction so tool results stay append-only / cache-safe.
-        stall_notice = result_stub = None
+        stall_notice = result_stub = stall_kind = None
         if self._stall_guards_enabled():
             try:
                 observation = self._tool_guardrails.observe_call(
                     tool_name, function_args, function_result if isinstance(function_result, str) else None,
                     tool_call_id=tool_call_id, failed=failed,
                 )
-                stall_notice, result_stub = observation.notice, observation.stub
+                stall_notice, result_stub, stall_kind = observation.notice, observation.stub, observation.kind
             except Exception as exc:
                 logger.debug("stall-guard identical-call observation failed: %s", exc)
         # Result-reference stubbing: a 2nd+ identical call with a byte-identical FRESH result enters
@@ -1299,6 +1306,7 @@ class AIAgent(
             function_result = result_stub
         if decision.action in {"warn", "halt"}:
             function_result = append_toolguard_guidance(function_result, decision)
+        record_guardrail_warnings(self, decision, stall_kind if stall_notice else None)
         if decision.should_halt:
             self._set_tool_guardrail_halt(decision)
         else:
@@ -1576,54 +1584,3 @@ if __name__ == "__main__":
     from agent.legacy_cli import main as _legacy_cli_main
 
     raise SystemExit(_legacy_cli_main(run=main))
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-from types import SimpleNamespace  # noqa: F401,E402
-import asyncio  # noqa: F401,E402
-import base64  # noqa: F401,E402
-import copy  # noqa: F401,E402
-import hashlib  # noqa: F401,E402
-import tempfile  # noqa: F401,E402
-
-
-_PLUGIN_COMPAT_LAZY = {
-    'COMPRESSED_SUMMARY_METADATA_KEY': ('agent.context_compressor', 'COMPRESSED_SUMMARY_METADATA_KEY'),
-    'ContextCompressor': ('agent.context_compressor', 'ContextCompressor'),
-    'DEFAULT_AGENT_IDENTITY': ('agent.prompt_builder', 'DEFAULT_AGENT_IDENTITY'),
-    'FailoverReason': ('agent.error_classifier', 'FailoverReason'),
-    'OpenAI': ('agent.process_bootstrap', 'OpenAI'),
-    'atomic_json_write': ('utils', 'atomic_json_write'),
-    'build_context_files_prompt': ('agent.prompt_builder', 'build_context_files_prompt'),
-    'build_environment_hints': ('agent.prompt_builder', 'build_environment_hints'),
-    'build_skills_system_prompt': ('agent.prompt_builder', 'build_skills_system_prompt'),
-    'check_toolset_requirements': ('model_tools', 'check_toolset_requirements'),
-    'convert_scratchpad_to_think': ('agent.trajectory', 'convert_scratchpad_to_think'),
-    'estimate_request_tokens_rough': ('agent.model_metadata', 'estimate_request_tokens_rough'),
-    'file_mutation_result_landed': ('agent.tool_result_classification', 'file_mutation_result_landed'),
-    'flatten_message_text': ('agent.message_content', 'flatten_message_text'),
-    'get_tool_definitions': ('model_tools', 'get_tool_definitions'),
-    'handle_function_call': ('model_tools', 'handle_function_call'),
-    'is_truthy_value': ('utils', 'is_truthy_value'),
-    'jittered_backoff': ('agent.retry_utils', 'jittered_backoff'),
-    'load_soul_md': ('agent.prompt_builder', 'load_soul_md'),
-    'normalize_usage': ('agent.usage_pricing', 'normalize_usage'),
-    'redact_sensitive_text': ('agent.redact', 'redact_sensitive_text'),
-    'request_hard_interrupt': ('agent.interrupt_compat', 'request_hard_interrupt'),
-    'sanitize_context': ('agent.memory_manager', 'sanitize_context'),
-    'user_originated_turn_view': ('agent.context_compressor', 'user_originated_turn_view'),
-}
-
-
-def __getattr__(name):  # PEP 562 — lazy so no import cycles
-    target = _PLUGIN_COMPAT_LAZY.get(name)
-    if target is None:
-        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-    import importlib
-    from hermes_cli.plugin_compat import warn_once
-    warn_once(__name__, name, *target)
-    return getattr(importlib.import_module(target[0]), target[1])
-# ---- END PLUGIN-COMPAT ----

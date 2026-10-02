@@ -148,6 +148,7 @@ describe('default board event notifications', () => {
       if (path === '/board?board=default' || path === '/board') {
         return { latest_event_id: latest }
       }
+
       throw new Error(`Unexpected REST call: ${path}`)
     })
 

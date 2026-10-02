@@ -1,6 +1,6 @@
 import { GatewayReauthRequiredError } from '@hermes/shared'
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { deferred } from '@/test/deferred'
 
@@ -25,6 +25,14 @@ vi.mock('./connections-registry', async importOriginal => ({
   ...(await importOriginal<any>()),
   ConnectionsRegistrySection: () => null
 }))
+
+// Radix Select calls scrollIntoView / pointer-capture APIs jsdom lacks.
+beforeAll(() => {
+  Element.prototype.scrollIntoView = vi.fn()
+  Element.prototype.hasPointerCapture = vi.fn(() => false)
+  Element.prototype.releasePointerCapture = vi.fn()
+})
+
 const getConnectionConfig = vi.fn()
 const saveConnectionConfig = vi.fn()
 
@@ -527,5 +535,41 @@ describe('GatewaySettings', () => {
       expect(window.hermesDesktop!.cloud!.agentSignIn).toHaveBeenCalledWith(saved.url)
       registry.value = null
     })
+  })
+
+  it('opens a focused, typeable custom SSH host input on the first "Custom" selection', async () => {
+    getConnectionConfig.mockResolvedValue({
+      ...localConnection,
+      mode: 'ssh',
+      sshHost: '',
+      sshUser: '',
+      sshPort: 22,
+      sshKeyPath: '',
+      sshRemoteHermesPath: '',
+      sshRemoteProfile: ''
+    })
+    const sshConfigHosts = vi.fn().mockResolvedValue({ hosts: ['github.com'] })
+    Object.assign(window.hermesDesktop, { sshConfigHosts })
+
+    render(<GatewaySettings />)
+
+    // With ~/.ssh/config aliases available the host field is a dropdown.
+    fireEvent.click(await screen.findByRole('combobox'))
+    fireEvent.click(screen.getByRole('option', { name: 'Custom (enter manually)…' }))
+
+    // The FIRST pick swaps the dropdown for a free-text input, no round-trip
+    // through another option needed.
+    const hostRow = screen.getByText('Host').closest('.grid') as HTMLElement
+    const input = within(hostRow).getByRole('textbox') as HTMLInputElement
+
+    await waitFor(() => expect(document.activeElement).toBe(input))
+    fireEvent.change(input, { target: { value: 'build-box' } })
+    expect(input.value).toBe('build-box')
+
+    // Clearing it and leaving the field backs out of Custom to the dropdown.
+    fireEvent.change(input, { target: { value: '' } })
+    fireEvent.blur(input)
+    expect(await within(hostRow).findByRole('combobox')).toBeTruthy()
+    expect(within(hostRow).queryByRole('textbox')).toBeNull()
   })
 })

@@ -470,6 +470,8 @@ hermes sessions delete 20250305_091523_a1b2c3d4 --yes
 
 Deleting a session that is still open in a running chat does not stop that chat: its next save recreates the session under the same id with the full in-memory transcript. Close the chat first if you want the session gone.
 
+Deleting a session while a turn is actively executing or compressing is refused (exits with code 1) to prevent transcript loss under the live agent. Wait for the active turn or compression to complete before deleting.
+
 ### Rename a Session
 
 ```bash
@@ -597,6 +599,11 @@ so a chat that is still active is never hidden because its history is long.
 Archived sessions are hidden from
 `hermes sessions list` and `/resume` but remain in the database and can be
 unarchived from the Desktop/Dashboard session list.
+
+A chat hidden by the `sessions.auto_archive` idle sweep comes back on its own
+once it is live again — when it is resumed, or when new activity compresses it
+into a fresh continuation. A chat you archived yourself (sidebar, API, or
+`hermes sessions archive`) stays archived until you unarchive it.
 
 ### Session Statistics
 
@@ -952,8 +959,11 @@ That reverts groups/channels to a single shared session per room, which preserve
 
 Gateway conversations do not reset after inactivity or at a daily boundary. Use `/new`
 or `/reset` for an explicit new conversation; context compression remains automatic.
-Legacy `session_reset` settings, reset-policy overrides and reset-timer environment
-variables are ignored. Cached agents may be released to reclaim resources without
+Core ignores legacy `session_reset` settings, reset-policy overrides and reset-timer
+environment variables. If your config still sets `session_reset.mode` to `idle`, `daily`
+or `both`, gateway startup and `hermes doctor` warn about it. To keep time-based resets,
+install the catalog plugin that reads the same block unchanged:
+`hermes plugins install hermes-session-reset-policy`. Cached agents may be released to reclaim resources without
 replacing the durable conversation. Restart-recovery freshness limits automatic
 continuation, not the history loaded when you send a message.
 

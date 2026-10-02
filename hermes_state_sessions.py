@@ -15,10 +15,11 @@ from agent.session_activity import (
     ActivityProvenance, bound_activity_description, normalize_activity_provenance,
 )
 from hermes_startup_watchdog import report_startup_progress
+from hermes_state_errors import SessionActiveWriteGuardError
 from hermes_state_common import (
-    _LISTABLE_CHILD_SQL, _PREVIEW_ELIGIBLE_SQL, _PREVIEW_RAW_SELECT, _RECOVERABLE_END_REASONS,
+    _LISTABLE_CHILD_SQL, _RECOVERABLE_END_REASONS,
     _RECOVERABLE_END_REASONS_SQL, _RESET_CHILD_SQL, _RESET_END_REASONS, _legacy_reset_child_sql, _non_continuation_child_sql,
-    _shape_preview,
+    _shape_preview, _sql_preview_raw, QUEUED_PROMPT_METADATA_KEY,
     _sql_in_window, _sql_json_extract, _sql_session_last_active, _sql_session_last_active_by_id,
     escape_like as _escape_like, _SQL_IN_CHUNK, _id_chunks, _placeholders as _session_ids_placeholders,
 )
@@ -40,6 +41,34 @@ def _delegate_from_json(col: str = "model_config") -> str:
 # _merge_model_config_json's "no such row" result — distinct from the legal None
 # ("merged config is empty → store NULL").
 _MODEL_CONFIG_ROW_MISSING = object()
+
+# ``lineage(id)``: the compression lineage of the session bound twice as ``(?, ?)`` —
+# ancestors through compression-ended parents plus compression continuations after it.
+_LINEAGE_CTE_SQL = """
+            WITH RECURSIVE
+              ancestors(id) AS (
+                SELECT ?
+                UNION
+                SELECT parent.id
+                FROM ancestors a
+                JOIN sessions child ON child.id = a.id
+                JOIN sessions parent ON parent.id = child.parent_session_id
+                WHERE parent.end_reason = 'compression'
+              ),
+              descendants(id) AS (
+                SELECT ?
+                UNION
+                SELECT child.id
+                FROM descendants d
+                JOIN sessions parent ON parent.id = d.id
+                JOIN sessions child ON child.parent_session_id = parent.id
+                WHERE parent.end_reason = 'compression'
+              ),
+              lineage(id) AS (
+                SELECT id FROM ancestors
+                UNION
+                SELECT id FROM descendants
+              )"""
 
 
 def _parse_model_config(raw: Any) -> Dict[str, Any]:
@@ -72,18 +101,6 @@ def _workspace_key_clause(key: str) -> Tuple[str, List[str]]:
         f"(s.git_repo_root = ? OR (COALESCE(s.git_repo_root, '') = '' AND {cwd_clause}))",
         [prefix, *cwd_params],
     )
-
-
-# First user message of a session, shaped by _shape_preview() in Python.
-# The indentation is part of the list_sessions_rich SQL text.
-_PREVIEW_COL_SQL = f"""COALESCE(
-                        (SELECT {_PREVIEW_RAW_SELECT}
-                         FROM messages m
-                         WHERE m.session_id = s.id AND m.role = 'user' AND m.content IS NOT NULL
-                           AND {_PREVIEW_ELIGIBLE_SQL}
-                         ORDER BY m.timestamp, m.id LIMIT 1),
-                        ''
-                    ) AS _preview_raw"""
 
 
 def _where_sql(clauses: List[str], lead: str = "") -> str:
@@ -485,6 +502,18 @@ class SessionSessionsMixin:
         The guard compares against the parent's started_at, not its current ended_at: a parent that was
         reopened and re-ended later still owns reset children from its earlier boundaries."""
         def _do(conn):
+            # Retire busy-queue accept rows that never drained (#125577): a restart discarded the
+            # in-memory queue, so nothing re-placed/deactivated the row written at accept time and
+            # alternation repair would glue the never-run prompt into the previous turn's user
+            # message. The drain's replacement row carries no marker, so still-marked == never
+            # drained; a dispatched-then-interrupted turn's row is never marked (its discard is
+            # handled in-process, #123532). Deactivated, never deleted — the row stays as history.
+            conn.execute(
+                "UPDATE messages SET active = 0 "
+                f"WHERE session_id = ? AND role = 'user' AND active = 1 "
+                f"AND COALESCE({_sql_json_extract('display_metadata', '$.' + QUEUED_PROMPT_METADATA_KEY)}, 0) = 1",
+                (session_id,),
+            )
             conn.execute(
                 "UPDATE sessions AS child SET model_config = json_set("
                 "COALESCE(child.model_config, '{}'), '$._reset_from', child.parent_session_id) "
@@ -499,6 +528,8 @@ class SessionSessionsMixin:
             conn.execute(
                 "UPDATE sessions SET ended_at = NULL, end_reason = NULL WHERE id = ?", (session_id,),
             )
+            # Resuming re-activates the chat: drop the idle sweep's archive (never a manual one).
+            self._unarchive_auto_archived_lineage(conn, session_id)
         self._execute_write(_do)
 
     def promote_to_session_reset(self, session_id: str, reason: str = "session_reset") -> bool:
@@ -863,45 +894,57 @@ class SessionSessionsMixin:
             (),
         ) or 0)
 
-    def _set_lineage_column(self, column: str, session_id: str, value: Any) -> bool:
+    def _set_lineage_column(self, column: str, session_id: str, value: Any, *,
+                            extra_set_sql: str = "") -> bool:
         """Set one ``sessions`` column across a whole compression lineage: Desktop projects roots
-        forward to their tip, so updating only the tip would let the root resurrect it on refresh."""
+        forward to their tip, so updating only the tip would let the root resurrect it on refresh.
+        *extra_set_sql* (trusted literal, ``, col = expr``) rides the same UPDATE."""
         return self._write_rowcount(
-            f"""
-            WITH RECURSIVE
-              ancestors(id) AS (
-                SELECT ?
-                UNION
-                SELECT parent.id
-                FROM ancestors a
-                JOIN sessions child ON child.id = a.id
-                JOIN sessions parent ON parent.id = child.parent_session_id
-                WHERE parent.end_reason = 'compression'
-              ),
-              descendants(id) AS (
-                SELECT ?
-                UNION
-                SELECT child.id
-                FROM descendants d
-                JOIN sessions parent ON parent.id = d.id
-                JOIN sessions child ON child.parent_session_id = parent.id
-                WHERE parent.end_reason = 'compression'
-              ),
-              lineage(id) AS (
-                SELECT id FROM ancestors
-                UNION
-                SELECT id FROM descendants
-              )
+            _LINEAGE_CTE_SQL + f"""
             UPDATE sessions
-            SET {column} = ?
+            SET {column} = ?{extra_set_sql}
             WHERE id IN (SELECT id FROM lineage)
             """,
             (session_id, session_id, value),
         ) > 0
 
     def set_session_archived(self, session_id: str, archived: bool) -> bool:
-        """Soft-hide (or unhide) a session and its compression lineage; messages are kept."""
-        return self._set_lineage_column("archived", session_id, int(archived))
+        """Soft-hide (or unhide) a session and its compression lineage; messages are kept.
+        This is the DELIBERATE archive (user, CLI, API): it clears the ``auto_archived``
+        provenance, so re-activation never un-hides it on the user's behalf."""
+        return self._set_lineage_column(
+            "archived", session_id, int(archived), extra_set_sql=", auto_archived = 0")
+
+    def _auto_archive_lineage(self, session_id: str) -> bool:
+        """The idle sweep's archive: like :meth:`set_session_archived` but stamps
+        ``auto_archived`` on the rows IT hides. A row already archived keeps its provenance, so a
+        deliberately archived ancestor is never relabelled as sweep-owned (SQLite evaluates every
+        SET expression against the pre-update row)."""
+        return self._set_lineage_column(
+            "archived", session_id, 1,
+            extra_set_sql=", auto_archived = CASE WHEN archived = 0 THEN 1 ELSE auto_archived END")
+
+    @staticmethod
+    def _unarchive_auto_archived_lineage(conn, session_id: str) -> bool:
+        """Un-hide a lineage the idle sweep archived, on *conn* (caller's write txn). A tip that is
+        published (compression) or reopened (resume) under it is live again, and the listing admits
+        a lineage by its ROOT's flag, so leaving the sweep's stamp would hide an active chat (#117713).
+        A lineage with ANY deliberately archived row (``archived = 1 AND auto_archived = 0``) is left
+        alone: a manual archive stays until the user un-archives it. True when rows were un-hidden."""
+        params = (session_id, session_id)
+        manual = conn.execute(
+            _LINEAGE_CTE_SQL + """
+            SELECT 1 FROM sessions
+            WHERE id IN (SELECT id FROM lineage) AND archived <> 0 AND COALESCE(auto_archived, 0) = 0
+            LIMIT 1
+            """, params).fetchone()
+        if manual is not None:
+            return False
+        return conn.execute(
+            _LINEAGE_CTE_SQL + """
+            UPDATE sessions SET archived = 0, auto_archived = 0
+            WHERE id IN (SELECT id FROM lineage) AND archived <> 0
+            """, params).rowcount > 0
 
     # Accidental end reasons recovery treats as resumable (also interpolated into
     # the recovery/promotion SQL so literals cannot drift).
@@ -1190,16 +1233,7 @@ class SessionSessionsMixin:
                 tip.message_count,
                 tip.tool_call_count,
                 rt.activity AS last_active,
-                COALESCE(
-                    (SELECT {_PREVIEW_RAW_SELECT}
-                     FROM messages m
-                     WHERE m.session_id = tip.id
-                       AND m.role = 'user'
-                       AND m.content IS NOT NULL
-                       AND {_PREVIEW_ELIGIBLE_SQL}
-                     ORDER BY m.timestamp, m.id LIMIT 1),
-                    ''
-                ) AS _preview_raw,
+                {_sql_preview_raw('tip.id')},
                 CASE WHEN s.id != tip.id THEN s.id ELSE NULL END
                     AS _lineage_root_id
             FROM ranked_tips rt
@@ -1290,7 +1324,7 @@ class SessionSessionsMixin:
         select_head = (
             f"SELECT {self._compact_session_cols() if compact_rows else 's.*'}"
             + ("" if compact_rows else ", COALESCE(sp.prompt, s.system_prompt) AS _system_prompt_resolved")
-            + f",\n                    {_PREVIEW_COL_SQL},\n                    "
+            + f",\n                    {_sql_preview_raw()},\n                    "
         )
         prompt_join = (
             "" if compact_rows else "LEFT JOIN system_prompts sp ON sp.hash = s.system_prompt_hash"
@@ -1563,18 +1597,28 @@ class SessionSessionsMixin:
         self, session_id: str, sessions_dir: Optional[Path] = None,
         expected_delete_ids: Optional[List[str]] = None,
         expected_display_messages: Optional[Dict[str, List[Dict[str, Any]]]] = None,
+        exclude_active_write_guards: bool = False,
     ) -> bool:
         """Delete a session and its messages; delegate children cascade, branch/compression children
         are orphaned. Optional expected ids fence delegate drift; expected display snapshots fence
-        transcript drift. Both checks run inside the same write transaction as deletion."""
+        transcript drift. Both checks run inside the same write transaction as deletion.
+        With ``exclude_active_write_guards``, raises :class:`SessionActiveWriteGuardError` if the row
+        is protected by an active turn lease or compression lock."""
         removed_ids: List[str] = []
         expected_ids = set(expected_delete_ids) if expected_delete_ids is not None else None
         def _do(conn):
             if conn.execute("SELECT 1 FROM sessions WHERE id = ? LIMIT 1", (session_id,)).fetchone() is None:
                 return False
-            if expected_ids is not None and expected_ids != {
-                session_id, *_collect_delegate_child_ids(conn, [session_id])
-            }:
+            target_ids = (
+                [session_id, *_collect_delegate_child_ids(conn, [session_id])]
+                if exclude_active_write_guards or expected_ids is not None else None
+            )
+            if exclude_active_write_guards and self._guarded_ids(conn, target_ids):
+                # Delegate children cascade with the root, so a guard on any of them refuses too.
+                raise SessionActiveWriteGuardError(
+                    f"session '{session_id}' (or a delegate child) has an active turn lease or compression lock"
+                )
+            if expected_ids is not None and expected_ids != set(target_ids):
                 return False
             if expected_display_messages is not None and any(
                 self._display_messages_from_conn(conn, covered_id) != expected
@@ -1622,9 +1666,14 @@ class SessionSessionsMixin:
             self._remove_session_files(sessions_dir, session_id)
         return deleted
 
-    def delete_sessions(self, session_ids: List[str], sessions_dir: Optional[Path] = None) -> int:
+    def delete_sessions(
+        self, session_ids: List[str], sessions_dir: Optional[Path] = None,
+        exclude_active_write_guards: bool = False, skipped_ids: Optional[List[str]] = None,
+    ) -> int:
         """Bulk delete with :meth:`delete_session` semantics per row, in ONE transaction. Unknown ids
-        are skipped (UI selection can race another tab's delete). Returns the number deleted."""
+        are skipped (UI selection can race another tab's delete). With ``exclude_active_write_guards``,
+        rows protected by an active turn lease or compression lock are skipped and, when given, appended
+        to ``skipped_ids`` so callers can tell the user. Returns the number deleted."""
         unique_ids = list({sid for sid in session_ids or () if isinstance(sid, str) and sid})
         if not unique_ids:
             return 0
@@ -1635,6 +1684,21 @@ class SessionSessionsMixin:
             ).fetchall()]
             if not existing:
                 return 0
+            if exclude_active_write_guards:
+                # A root is skipped when it or any delegate child it would cascade is guarded, so the
+                # cascade below never deletes a guarded row reported back as kept.
+                # One batched check first; per-root attribution only when something is guarded.
+                active_ids: set = set()
+                if self._guarded_ids(conn, [*existing, *_collect_delegate_child_ids(conn, existing)]):
+                    active_ids = {
+                        sid for sid in existing
+                        if self._guarded_ids(conn, [sid, *_collect_delegate_child_ids(conn, [sid])])
+                    }
+                existing = [sid for sid in existing if sid not in active_ids]
+                if skipped_ids is not None:
+                    skipped_ids.extend(sorted(active_ids))
+                if not existing:
+                    return 0
             removed_ids.extend(_delete_delegate_children(conn, existing))
             for chunk in _id_chunks(existing):
                 ph = _session_ids_placeholders(chunk)

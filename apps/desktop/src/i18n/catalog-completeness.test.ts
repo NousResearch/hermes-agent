@@ -5,7 +5,7 @@ import { csOverrides } from './cs'
 import { deOverrides } from './de'
 import { esOverrides } from './es'
 import { frOverrides } from './fr'
-import type { Locale } from './types'
+import type { BundledLocale } from './types'
 
 // Locales whose catalog covers the whole English key set today, so no English
 // is visible in the UI. Every locale in the repo is a `defineLocale` overlay
@@ -15,8 +15,8 @@ import type { Locale } from './types'
 // rather than optional. Being listed here asserts only "fully translated as
 // of this commit"; it is deliberately not a promise that a future key can
 // never need a fallback. Adding a locale here also requires it to be a
-// registered `Locale`, so the list cannot drift away from types.ts.
-const COMPLETE_LOCALES = ['fr', 'de', 'es', 'cs'] as const satisfies readonly Locale[]
+// registered bundled locale, so the list cannot drift away from types.ts.
+const COMPLETE_LOCALES = ['fr', 'de', 'es', 'cs'] as const satisfies readonly BundledLocale[]
 const completeOverrides = { fr: frOverrides, de: deOverrides, es: esOverrides, cs: csOverrides }
 
 type Leaf = { path: string; value: unknown }
@@ -39,7 +39,7 @@ const kindOf = (value: unknown) => (Array.isArray(value) ? 'array' : typeof valu
 
 // `intro` is display-only: English lives in intro-copy.jsonl, so its catalog
 // entry is an empty shell. intro.test.tsx covers the translated rotation.
-const catalogLeaves = (locale: Locale) =>
+const catalogLeaves = (locale: BundledLocale) =>
   new Map(
     leaves(TRANSLATIONS[locale])
       .filter(leaf => !leaf.path.startsWith('intro.'))

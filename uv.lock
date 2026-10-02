@@ -14,107 +14,108 @@ exclude-newer = "0001-01-01T00:00:00Z" # This has no effect and is included for 
 exclude-newer-span = "P14D"
 
 [options.exclude-newer-package]
-elevenlabs = false
-langfuse = "2026-09-09T16:01:26Z"
-setuptools = false
-modal = false
-pyyaml = false
-maturin = false
-numpy = false
-pvporcupine = false
-google-auth = false
+agent-client-protocol = false
 aiohttp = false
-starlette = false
-mistralai = false
-firecrawl-py = false
-parallel-web = false
-markdown = false
-opentelemetry-sdk = false
-prompt-toolkit = false
-fastapi = false
-anthropic = false
-pathspec = false
-ruff = false
-defusedxml = false
-websockets = false
-exa-py = false
-mcp = false
-python-olm = false
-wheel = false
-pytest = false
-pillow = false
-setuptools-rust = false
-tenacity = false
-sherpa-onnx-core = "2026-09-10T15:58:47Z"
-pyjwt = false
-slack-bolt = false
-fal-client = false
-asyncpg = false
-boto3 = false
-ruamel-yaml = false
-sherpa-onnx = "2026-09-10T17:00:04Z"
-huggingface-hub = false
-pytest-asyncio = false
-google-cloud-pubsub = false
-slack-sdk = false
-discord-py = false
-honcho-ai = false
-faster-whisper = false
-certifi = false
-debugpy = false
-ddgs = "2026-08-26T21:52:34Z"
-packaging = false
-rich = false
-supermemory = false
-h2 = false
-unpaddedbase64 = false
-youtube-transcript-api = false
-edge-tts = false
-microsoft-teams-apps = false
 aiohttp-socks = false
-sentencepiece = false
-opentelemetry-exporter-otlp-proto-http = false
-croniter = false
-azure-identity = false
-lark-oapi = false
-firecrawl-anydoc = false
-google-api-python-client = false
-brotlicffi = false
-mem0ai = false
-qrcode = false
-soundfile = "2026-06-06T08:58:48Z"
-vercel = false
 aiosqlite = false
-tzdata = false
-python-dotenv = false
+alibabacloud-dingtalk = false
+anthropic = false
+asyncpg = false
+azure-identity = false
+boto3 = false
+brotlicffi = false
+browser-harness = false
+certifi = false
+concurrent-log-handler = false
+croniter = false
+cryptography = false
 daytona = false
-uvicorn = false
-nemo-relay = false
-requests = false
+ddgs = "2026-08-26T21:52:34Z"
+debugpy = false
+defusedxml = false
+dingtalk-stream = false
+discord-py = false
+edge-tts = false
+elevenlabs = false
+exa-py = false
+fal-client = false
+fastapi = false
+faster-whisper = false
+fire = false
+firecrawl-anydoc = false
+firecrawl-py = false
+google-api-python-client = false
+google-auth = false
+google-auth-httplib2 = false
+google-auth-oauthlib = false
+google-cloud-pubsub = false
+h2 = false
+honcho-ai = false
 httplib2 = false
 httpx = false
-piper-tts = "2026-09-04T16:47:32Z"
-pyasn1 = false
-snowballstemmer = false
-concurrent-log-handler = false
-cryptography = false
-pydantic = false
-agent-client-protocol = false
-fire = false
 httpx2 = false
-google-auth-oauthlib = false
-python-multipart = false
-ty = false
-openai = false
-mautrix = false
-neutts = "2026-07-22T14:54:23Z"
-google-auth-httplib2 = false
-psutil = false
-python-telegram-bot = false
+huggingface-hub = false
 jinja2 = false
+langfuse = "2026-09-09T16:01:26Z"
+lark-oapi = false
+markdown = false
+maturin = false
+mautrix = false
+mcp = false
+mem0ai = false
+microsoft-teams-apps = false
+mistralai = false
+modal = false
+nemo-relay = false
+neutts = "2026-07-22T14:54:23Z"
+numpy = false
+openai = false
+opentelemetry-exporter-otlp-proto-http = false
+opentelemetry-sdk = false
+packaging = false
+parallel-web = false
+pathspec = false
+pillow = false
+piper-tts = "2026-09-04T16:47:32Z"
+prompt-toolkit = false
+psutil = false
+pvporcupine = false
+pyasn1 = false
+pydantic = false
+pyjwt = false
+pytest = false
+pytest-asyncio = false
+python-dotenv = false
+python-multipart = false
+python-olm = false
+python-telegram-bot = false
+pyyaml = false
+qrcode = false
+requests = false
+rich = false
+ruamel-yaml = false
+ruff = false
+sentencepiece = false
+setuptools = false
+setuptools-rust = false
+sherpa-onnx = "2026-09-10T17:00:04Z"
+sherpa-onnx-core = "2026-09-10T15:58:47Z"
+slack-bolt = false
+slack-sdk = false
+snowballstemmer = false
 sounddevice = false
-alibabacloud-dingtalk = false
-dingtalk-stream = false
+soundfile = "2026-06-06T08:58:48Z"
+starlette = false
+supermemory = false
+tenacity = false
+ty = false
+tzdata = false
+unpaddedbase64 = false
+uvicorn = false
+vercel = false
+websockets = false
+wheel = false
+youtube-transcript-api = false
 
 [manifest]
 overrides = [
@@ -774,6 +775,21 @@ wheels = [
 ]
 
 [[package]]
+name = "browser-harness"
+version = "0.1.13"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "cdp-use" },
+    { name = "fetch-use" },
+    { name = "pillow" },
+    { name = "websockets" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/7f/fe/59ab493e7cf76731a7f5aabae3821eea6ea82a628c14c30e7aed48adc362/browser_harness-0.1.13.tar.gz", hash = "sha256:284dc547a042c309feafd9a9f4a74b2a8651b7963ea3ac6cb2f2d64889f6a8f3", size = 114905, upload-time = "2026-09-04T02:53:23.133Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/4a/bd/f166cf9a465eff436048d25851ab28b0d798af02b56998127a4165227fc4/browser_harness-0.1.13-py3-none-any.whl", hash = "sha256:2491459e4bfc0ee8aea22dc6c4680fc0f791b7ba553446323c50d2883449d769", size = 121123, upload-time = "2026-09-04T02:53:21.841Z" },
+]
+
+[[package]]
 name = "catalogue"
 version = "2.0.10"
 source = { registry = "https://pypi.org/simple" }
@@ -828,6 +844,20 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/cc/7c/73057e7a38488a816a0d40ff9e7cd9f418800894582e2e48fb2f47ce66a2/cbor2-6.1.4-cp314-cp314t-win32.whl", hash = "sha256:7deccc50fd0b55c4c7dd265b144c5358a645121e457c0ae3722b5ad59832b257", size = 281462, upload-time = "2026-08-01T20:41:35.127Z" },
     { url = "https://files.pythonhosted.org/packages/99/5d/d5db22837cb566de733b9d1c418cdf1912ccb1efc7b179e295430b1d81a2/cbor2-6.1.4-cp314-cp314t-win_amd64.whl", hash = "sha256:f3fc7d15cba4174373df2496070faa4a927fe3ed772130d281808120aec7b61c", size = 309165, upload-time = "2026-08-01T20:41:36.716Z" },
     { url = "https://files.pythonhosted.org/packages/29/5f/ff2c6da83553a692219a0a62a21b57a27ded4405200e50db758a17fbaf15/cbor2-6.1.4-cp314-cp314t-win_arm64.whl", hash = "sha256:164ca22b509408435b2d8236c80c964e4fc77c085ab034569cd04c40d5cc8883", size = 298386, upload-time = "2026-08-01T20:41:38.392Z" },
+]
+
+[[package]]
+name = "cdp-use"
+version = "1.4.5"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "httpx" },
+    { name = "typing-extensions" },
+    { name = "websockets" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/f7/7a/c549417e8c5e4dface6d5d828cd7dc72502dcea33a99f5324abf5a853ce9/cdp_use-1.4.5.tar.gz", hash = "sha256:0da3a32df46336a03ff5a22bc6bc442cd7d2f2d50a118fd4856f29d37f6d26a0", size = 193961, upload-time = "2026-02-22T04:32:50.574Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/56/12/386d8c6bf0448c43674e24d6194c3b57d62e5361e90bca3d58108819ad32/cdp_use-1.4.5-py3-none-any.whl", hash = "sha256:8f8e2435e3a20e4009d2974144192cf3c132f6c2971338e156198814d9b91ecb", size = 350504, upload-time = "2026-02-22T04:32:49.22Z" },
 ]
 
 [[package]]
@@ -1842,6 +1872,15 @@ wheels = [
 ]
 
 [[package]]
+name = "fetch-use"
+version = "0.4.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/5d/2d/66784fa8b66a04f170ad8f6598688b30b3a194dad4185b36d53da4ae1505/fetch_use-0.4.0.tar.gz", hash = "sha256:9511987d4907ec6dac501e21d66946d10098f66b5d21bc2aba4189cd81ba189a", size = 8974, upload-time = "2026-04-09T04:02:44.384Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/57/97/d4104692aa5c99a30fea22b5adffd2ce35b1ad86ae5236766cfc1ae468f1/fetch_use-0.4.0-py3-none-any.whl", hash = "sha256:b7885f2907e7920373fa75dcdb00afd6e603a25a9ee2151aa2881f5465e1a2c0", size = 9468, upload-time = "2026-04-09T04:02:43.458Z" },
+]
+
+[[package]]
 name = "filelock"
 version = "3.32.4"
 source = { registry = "https://pypi.org/simple" }
@@ -2307,6 +2346,7 @@ name = "hermes-agent"
 version = "0.0.0"
 source = { editable = "." }
 dependencies = [
+    { name = "browser-harness" },
     { name = "certifi" },
     { name = "concurrent-log-handler", marker = "sys_platform == 'win32'" },
     { name = "croniter" },
@@ -2634,6 +2674,7 @@ requires-dist = [
     { name = "azure-identity", marker = "extra == 'azure-identity'", specifier = "==1.25.3" },
     { name = "boto3", marker = "extra == 'bedrock'", specifier = "==1.42.89" },
     { name = "brotlicffi", marker = "extra == 'messaging'", specifier = "==1.2.0.2" },
+    { name = "browser-harness", marker = "python_full_version >= '3.14'", specifier = "==0.1.13" },
     { name = "certifi", marker = "python_full_version >= '3.14'", specifier = "==2026.5.20" },
     { name = "concurrent-log-handler", marker = "python_full_version >= '3.14' and sys_platform == 'win32'", specifier = "==0.9.29" },
     { name = "croniter", marker = "python_full_version >= '3.14'", specifier = "==6.0.0" },
@@ -2701,8 +2742,8 @@ requires-dist = [
     { name = "microsoft-teams-apps", marker = "extra == 'teams'", specifier = "==2.0.13.4" },
     { name = "misaki", extras = ["en"], marker = "(platform_machine != 'x86_64' and sys_platform == 'darwin' and extra == 'kittentts') or (platform_machine != 'ARM64' and sys_platform == 'win32' and extra == 'kittentts') or (sys_platform != 'darwin' and sys_platform != 'win32' and extra == 'kittentts')", git = "https://github.com/NousResearch/misaki.git?rev=f03fd2be7346952a83d3d4845c217fc7667f322d" },
     { name = "mistralai", marker = "extra == 'mistral'", specifier = "==2.4.8" },
-    { name = "modal", marker = "extra == 'modal'", specifier = "==1.3.4" },
-    { name = "nemo-relay", marker = "(python_full_version >= '3.14' and platform_machine == 'aarch64' and 'android' not in platform_release and sys_platform == 'linux') or (python_full_version >= '3.14' and platform_machine == 'x86_64' and 'android' not in platform_release and sys_platform == 'linux') or (python_full_version >= '3.14' and platform_machine == 'arm64' and sys_platform == 'darwin') or (python_full_version >= '3.14' and platform_machine == 'AMD64' and sys_platform == 'win32') or (python_full_version >= '3.14' and platform_machine == 'ARM64' and sys_platform == 'win32')", specifier = ">=0.8.3,<0.9" },
+    { name = "modal", marker = "extra == 'modal'", specifier = "==1.5.5" },
+    { name = "nemo-relay", marker = "(python_full_version >= '3.14' and platform_machine == 'aarch64' and 'android' not in platform_release and sys_platform == 'linux') or (python_full_version >= '3.14' and platform_machine == 'x86_64' and 'android' not in platform_release and sys_platform == 'linux') or (python_full_version >= '3.14' and platform_machine == 'arm64' and sys_platform == 'darwin') or (python_full_version >= '3.14' and platform_machine == 'AMD64' and sys_platform == 'win32') or (python_full_version >= '3.14' and platform_machine == 'ARM64' and sys_platform == 'win32')", specifier = ">=0.9,<0.10" },
     { name = "neutts", extras = ["all"], marker = "python_full_version < '3.14' and extra == 'neutts'", specifier = "==1.4.1" },
     { name = "numpy", marker = "extra == 'audio-io'", specifier = "==2.4.3" },
     { name = "numpy", marker = "extra == 'voice'", specifier = "==2.4.3" },
@@ -3666,7 +3707,7 @@ wheels = [
 
 [[package]]
 name = "modal"
-version = "1.3.4"
+version = "1.5.5"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "aiohttp" },
@@ -3678,15 +3719,14 @@ dependencies = [
     { name = "rich" },
     { name = "synchronicity" },
     { name = "toml" },
-    { name = "typer" },
     { name = "types-certifi" },
     { name = "types-toml" },
     { name = "typing-extensions" },
     { name = "watchfiles" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/d6/06/2ec6ebed7e82b45ba386bf8df71e41aa13b6b18253bb6a49dc77a92cbac1/modal-1.3.4.tar.gz", hash = "sha256:9cc7815a57a4f0b62d4027da1a5526a2345af0643fd3354b32977480a87fcff5", size = 674717, upload-time = "2026-02-23T15:44:05.334Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/b9/a5/9e322043716e511b7f6c9120804f33b92e21a818bf4709b2d98b3c76d665/modal-1.5.5.tar.gz", hash = "sha256:30df363ed1898cc3d91a09ff3f95c38ab043f6b6294011b01085312c6a0ac777", size = 870356, upload-time = "2026-08-28T19:51:34.881Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/2c/aa/f0ffbe6bf679a597e8be692ca3cde47de6156435c2b72cf752fec719bb1f/modal-1.3.4-py3-none-any.whl", hash = "sha256:d66a851969f447936b3512f1c3708435ce1ca81171eeddc3eb0678f594493380", size = 773837, upload-time = "2026-02-23T15:44:03.635Z" },
+    { url = "https://files.pythonhosted.org/packages/04/19/b3dca8baec119126058b12ca620e44022e4d08a091956668bd04180c89a7/modal-1.5.5-py3-none-any.whl", hash = "sha256:8d10d3ee09818aaba1973b73ce2521ab8961b63a29b5b52e3ff0d25e7a74808e", size = 985163, upload-time = "2026-08-28T19:51:32.404Z" },
 ]
 
 [[package]]
@@ -3962,17 +4002,17 @@ wheels = [
 
 [[package]]
 name = "nemo-relay"
-version = "0.8.4"
+version = "0.9.3"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/b7/0f/274daf96d674f0611b058ba2cc820cc266624360db086eceaa9e99a4f491/nemo_relay-0.8.4.tar.gz", hash = "sha256:daaa980f1627e88cf1d2c6dbebc5b07bcc778150384323fc99fe52fba8713ce9", size = 1618887, upload-time = "2026-09-05T00:10:14.729Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/a0/62/2da923b93897c98a7f81cc7a004d9ec9388bbc00ba7ea2a0d6a21f8e6ab7/nemo_relay-0.9.3.tar.gz", hash = "sha256:73bb0f17b4b70bf9a26a3b669042771f3157017c74079d74ceed220cb8ee7dc1", size = 1706207, upload-time = "2026-09-28T18:22:35.233Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/16/8a/7137f02f9e9e8b550f6db0e95e5bf5a145071f012d1fd085cee2932beccd/nemo_relay-0.8.4-cp311-abi3-macosx_11_0_arm64.whl", hash = "sha256:542e67a2ad6874450e01193c127ee526f2550b26c3769ab2583b57fab08f70b0", size = 10201056, upload-time = "2026-09-05T00:09:32.854Z" },
-    { url = "https://files.pythonhosted.org/packages/2c/78/5b5d3ae13dd29dda9c0a2dc27490d207c78e47f3dd1901a272783a210e3a/nemo_relay-0.8.4-cp311-abi3-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:eb1e314ed83ab90c614fb4972d79489dd126a15b777004ffebe6b0fa4dab734a", size = 9201085, upload-time = "2026-09-05T00:09:35.533Z" },
-    { url = "https://files.pythonhosted.org/packages/8e/3f/4637c46d565f0cabc5a1426ff04e824de82762941874158a44faeb734321/nemo_relay-0.8.4-cp311-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:1fa379865236beafe2d116e5375f043a7393da8712476b81e8fdc84a1abd6449", size = 9766673, upload-time = "2026-09-05T00:09:38.111Z" },
-    { url = "https://files.pythonhosted.org/packages/31/ea/0f878346fad556b45f59276c80486e256f7dcfe85d99640546509c44729f/nemo_relay-0.8.4-cp311-abi3-musllinux_1_2_aarch64.whl", hash = "sha256:6bd22b891d98f0da5ac302939627e85911b3f8a1647d27a96b52ed854722947b", size = 11291507, upload-time = "2026-09-05T00:09:40.703Z" },
-    { url = "https://files.pythonhosted.org/packages/98/77/c4539b6f00f7a89748738e851847031a4773d8c5dab3c7f338b56823a5d5/nemo_relay-0.8.4-cp311-abi3-musllinux_1_2_x86_64.whl", hash = "sha256:62e51d16e2c0dbe7f2e6ea27213baea3966f9ee5e838e376387cf86bb9a77abc", size = 11723083, upload-time = "2026-09-05T00:09:43.582Z" },
-    { url = "https://files.pythonhosted.org/packages/80/a5/2fbab4fbf2b57e0c9a13b2b47cc45cfcf0c476f4ef3ad40829a34c442192/nemo_relay-0.8.4-cp311-abi3-win_amd64.whl", hash = "sha256:ffea09482334e136189ec7c759902cfde933756e9418d04b32f8bad7550b484f", size = 9660600, upload-time = "2026-09-05T00:09:46.611Z" },
-    { url = "https://files.pythonhosted.org/packages/24/dc/85a8bf6199725c0e582bed7a8956d08d02c3b797a611fe93819bc095aba1/nemo_relay-0.8.4-cp311-abi3-win_arm64.whl", hash = "sha256:89aedb375df24b9f312f1f8fc085898f25b5dceca6fbcbac52d2cce6a8b2678d", size = 9241871, upload-time = "2026-09-05T00:09:49.799Z" },
+    { url = "https://files.pythonhosted.org/packages/2b/72/d789ca7867b3c2e1cd243f6bd7b1ee7fd14165ab0eac95d21cd630602817/nemo_relay-0.9.3-cp311-abi3-macosx_11_0_arm64.whl", hash = "sha256:6c3fc28695a1ffdaca9a60f16bed7fe8aef05aeecc355deb31f01715ff711f64", size = 10326767, upload-time = "2026-09-28T18:22:03.834Z" },
+    { url = "https://files.pythonhosted.org/packages/0f/ec/0fd9311e59e376170dfb5210ca62f9de9f8aa279e42ed0b571a54a91b484/nemo_relay-0.9.3-cp311-abi3-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:567100c80bcd5b364fb7282eecdcf1015abb56da8452901ab2dc8bf14f41f22b", size = 9251743, upload-time = "2026-09-28T18:22:06.12Z" },
+    { url = "https://files.pythonhosted.org/packages/6a/e6/a185302f50b46dab3f753bee9a7be335809de0a8d3d22ed87c3501f78494/nemo_relay-0.9.3-cp311-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:b62db23e2a17fa6b794d03096c5fb120b4c62cdd0336356a6456015f75f08345", size = 9860423, upload-time = "2026-09-28T18:22:08.023Z" },
+    { url = "https://files.pythonhosted.org/packages/10/5f/70f156432560465f173b9f21b315816b1e5f4cf6023b37af41b5a8986165/nemo_relay-0.9.3-cp311-abi3-musllinux_1_2_aarch64.whl", hash = "sha256:2ddd2d9ef3a5e67ffca46f8a2547b32078cbc8a80284a95c09282b0e33ad7b5e", size = 11425678, upload-time = "2026-09-28T18:22:10.048Z" },
+    { url = "https://files.pythonhosted.org/packages/82/67/d31c8dced6327fbd2e6c4d93c911d9267c940c5e08f1a11dcc137adee959/nemo_relay-0.9.3-cp311-abi3-musllinux_1_2_x86_64.whl", hash = "sha256:51a5904b91727e4ef7eb3c7fc9b745a4668b008e19bc29706868978b2dffbae0", size = 11894425, upload-time = "2026-09-28T18:22:12.095Z" },
+    { url = "https://files.pythonhosted.org/packages/c5/d3/60aa9e92d4e40282eb40606fbb0fcb533a9a02ee3c4df089c3b025b50316/nemo_relay-0.9.3-cp311-abi3-win_amd64.whl", hash = "sha256:7cf19aba5067b6e113c701016c9777d9b0246be5fed9a3cc43baa080dfae7863", size = 9821768, upload-time = "2026-09-28T18:22:14.133Z" },
+    { url = "https://files.pythonhosted.org/packages/c6/6e/f373d40d3eca83c3357da8589e012ff3eb66130ca1b0f7bde292919b2d7f/nemo_relay-0.9.3-cp311-abi3-win_arm64.whl", hash = "sha256:18db2ff5543283eb48e9187ca16417a4b77ac0014125eaaa39661505b2da4b43", size = 9408519, upload-time = "2026-09-28T18:22:16.015Z" },
 ]
 
 [[package]]
@@ -6497,14 +6537,14 @@ wheels = [
 
 [[package]]
 name = "synchronicity"
-version = "0.11.1"
+version = "0.12.5"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "typing-extensions" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/a3/26/8874d34755691994266d4a844ba8d53d10c2690ec67f246ca4d6b6f34cbb/synchronicity-0.11.1.tar.gz", hash = "sha256:3628df9ab34bd7be89b729104114841c62612c5d5ec43b76f4b7b243185ec1a8", size = 58131, upload-time = "2025-12-19T18:28:42.291Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/5d/1c/f51dc54bbd302991026a53f9790735540e0e9e1184e9d5939f02446aa5bc/synchronicity-0.12.5.tar.gz", hash = "sha256:94d96b1d85698e3056b96a793b8c0949af6584e4a7d877fabdeb5385efe230aa", size = 60745, upload-time = "2026-06-18T21:06:23.545Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/3f/b9/71153db12f4ad029cfe9b7fbf9792ef3fc9ade4485d31a13470b52954e62/synchronicity-0.11.1-py3-none-any.whl", hash = "sha256:53959c7f8b9b852fb5ea4d3d290a47a04310ede483a4cf0f8452cb4b5fa09db2", size = 40399, upload-time = "2025-12-19T18:28:40.972Z" },
+    { url = "https://files.pythonhosted.org/packages/06/74/ad9b99520f70c0bc3318e582e359d360cfc0f7afd7bf368a7f24013cece7/synchronicity-0.12.5-py3-none-any.whl", hash = "sha256:fdbbb10d437bc08a6b0f814fc66fddd1b58ffed314533d42f1ab555801e781af", size = 41107, upload-time = "2026-06-18T21:06:22.505Z" },
 ]
 
 [[package]]

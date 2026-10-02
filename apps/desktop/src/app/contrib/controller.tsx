@@ -58,6 +58,7 @@ import { isOnboardingEnabled } from '@/lib/onboarding-enabled'
 import { TRANSCRIPT_DIRECTIVE_AREA, type TranscriptDirectiveContribution } from '@/lib/transcript-directives'
 import { setYoloEnabled } from '@/lib/yolo-session'
 import { $connectionsRegistry } from '@/store/connection-registry-state'
+import { watchDeadSessionPrune } from '@/store/dead-session-prune'
 import { $interfaceMode, $showsAdvancedChrome, setModeContext, toggleSimpleMode } from '@/store/interface-mode'
 import {
   $fileBrowserOpen,
@@ -122,6 +123,7 @@ import { BASIC_TREE, DEFAULT_TREE, registerLayoutPresets } from './layout-preset
 import { bindLayoutSides } from './layout-sides'
 import { FilesPane, LogsPane, ReviewPaneContent } from './panes'
 import { ContribWiring, WiredPane } from './wiring'
+import { WorkspacePageHeaderHostContext } from './workspace-page-header'
 
 /**
  * Stripped-down app root (bb/contrib-areas) on the layout TREE model, mounting
@@ -144,7 +146,13 @@ import { ContribWiring, WiredPane } from './wiring'
 
 // ONE render identity for the workspace pane — syncWorkspaceTitle re-registers
 // the contribution (new title) and a fresh closure would remount the chat.
-const renderWorkspacePane = () => <WiredPane part="chatRoutes" />
+// The host context marks this subtree as the one whose zone paints
+// WORKSPACE_PAGE_HEADER_AREA; route tiles and the HUD render outside it.
+const renderWorkspacePane = () => (
+  <WorkspacePageHeaderHostContext.Provider value={true}>
+    <WiredPane part="chatRoutes" />
+  </WorkspacePageHeaderHostContext.Provider>
+)
 
 // Boot-hidden panes mount behind display:none (instant-toggle contract) — defer
 // them to idle so they're off the first-paint path, warm before reveal.
@@ -489,6 +497,10 @@ watchSessionPins()
 
 // Release unread-write guards once a list page confirms the value we wrote.
 watchUnreadWriteGuard()
+
+// Drop local pins/drafts/queued prompts whose sessions no longer exist on the
+// backend — otherwise every boot re-requests the dead ids and 404s on each.
+watchDeadSessionPrune()
 
 // The main tab reads as its SESSION (the loaded title, "New session" on a
 // fresh draft) — a stack of main + tiles is then just a row of session names.

@@ -230,9 +230,9 @@ def test_bedrock_claude_rows_all_carry_cache_pricing():
 
 
 def test_bedrock_current_gen_claude_rows_resolve():
-    """Current-gen Claude models (Opus 4.8/4.7, Opus 5, Sonnet 5, Fable 5)
-    must have Bedrock pricing rows so cached sessions report a dollar cost,
-    not ``unknown``.
+    """Current-gen Claude models (Opus 4.8/4.7, Opus 5, Opus 5.5, Sonnet 5,
+    Fable 5) must have Bedrock pricing rows so cached sessions report a dollar
+    cost, not ``unknown``.
     Assert each resolves via the bare id and a cross-region inference profile
     (us./global. prefix), that every id for a given model resolves to the same
     entry, and that the row carries the cache fields a Bedrock Claude session
@@ -247,6 +247,7 @@ def test_bedrock_current_gen_claude_rows_resolve():
         "anthropic.claude-opus-4-8",
         "anthropic.claude-opus-4-7",
         "anthropic.claude-opus-5",
+        "anthropic.claude-opus-5-5",
         "anthropic.claude-sonnet-5",
         "anthropic.claude-fable-5",
     ):

@@ -72,7 +72,7 @@ def _model_name_is_minimax_adaptive(model: str | None) -> bool:
     if not isinstance(model, str):
         return False
     m = model.strip().lower().rsplit("/", 1)[-1]  # ``minimax/MiniMax-M3.1-...`` -> ``minimax-m3.1-...``
-    return m.startswith(_MINIMAX_ADAPTIVE_MODEL_PREFIXES)
+    return any(m == prefix or m.startswith(prefix + "-") for prefix in _MINIMAX_ADAPTIVE_MODEL_PREFIXES)
 
 
 def _is_kimi_family_endpoint(base_url: str | None, model: str | None = None) -> bool:

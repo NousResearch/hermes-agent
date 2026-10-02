@@ -5,6 +5,8 @@ from __future__ import annotations
 import asyncio
 import json
 import shutil
+from collections.abc import Iterator
+from functools import partial
 from pathlib import Path
 
 import pytest
@@ -16,15 +18,37 @@ from nio import (
     RoomSendResponse,
 )
 from testcontainers.core.container import DockerContainer
+from testcontainers.core.network import Network
 
 from tests.integration.matrix_live.conftest import (
     LiveRoom,
+    _create_live_room,
     _host_route,
     _host_user,
-    _register,
+    _register as _register_account,
+    _synapse_server,
     _wait_for,
 )
 from tests.fakes.fake_llm_provider import FakeLLMServer, Text, write_hermes_home
+
+
+_register = partial(_register_account, unique=True)
+
+
+@pytest.fixture(scope="module")
+def synapse(docker_engine: None) -> Iterator[tuple[DockerContainer, str, Network]]:
+    with _synapse_server(
+        extra_config=(
+            "rc_registration:\n  per_second: 100\n  burst_count: 100\n"
+            "rc_login:\n  address:\n    per_second: 100\n    burst_count: 100\n"
+        )
+    ) as server:
+        yield server
+
+
+@pytest.fixture
+def live_room(synapse: tuple[DockerContainer, str, Network]) -> LiveRoom:
+    return _create_live_room(synapse, unique_accounts=True)
 
 
 _CONTINUE = """

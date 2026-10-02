@@ -7,7 +7,6 @@ import ipaddress
 import json
 import os
 import shutil
-import shlex
 import socket
 import subprocess
 import time
@@ -265,16 +264,20 @@ def _synapse_server(*, extra_config: str = "") -> Iterator[tuple[DockerContainer
             exit_state = generator.get_wrapped_container().wait(timeout=90)
             assert exit_state["StatusCode"] == 0, generator.get_wrapped_container().logs().decode(errors="replace")
 
-        command = "printf '\\nenable_registration: true\\nenable_registration_without_verification: true\\nrc_message:\\n  per_second: 100\\n  burst_count: 100\\n' >> /data/homeserver.yaml"
-        if extra_config:
-            command += f"; printf %s {shlex.quote(extra_config)} >> /data/homeserver.yaml"
-
-        with DockerContainer(
-            SYNAPSE_IMAGE,
-            entrypoint="/bin/sh",
-        ).with_command([
-            "-c", command,
-        ]).with_volume_mapping(volume.name, "/data", "rw") as configure:
+        with (
+            DockerContainer(
+                SYNAPSE_IMAGE,
+                entrypoint="/bin/sh",
+            )
+            .with_command([
+                "-c",
+                "printf '%s' \"$1\" >> /data/homeserver.yaml",
+                "matrix-test-config",
+                "\nenable_registration: true\nenable_registration_without_verification: true\n"
+                "rc_message:\n  per_second: 100\n  burst_count: 100\n" + extra_config,
+            ])
+            .with_volume_mapping(volume.name, "/data", "rw") as configure
+        ):
             exit_state = configure.get_wrapped_container().wait(timeout=30)
             assert exit_state["StatusCode"] == 0, configure.get_wrapped_container().logs().decode(errors="replace")
 

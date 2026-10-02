@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 
 // Host-native: jsdom never reports a Mac platform, so `IS_MAC` is false here.
 // Mac-only Control/Cmd branches are not faked (AGENTS.md "Don't fake the host OS").
-import { actionAllowedInInput, canonicalizeCombo, comboFromEvent } from './combo'
+import { actionAllowedInInput, canonicalizeCombo, comboFromEvent, eventTarget, isFocusWithin } from './combo'
 
 function keydown(init: KeyboardEventInit): KeyboardEvent {
   return new KeyboardEvent('keydown', init)
@@ -209,3 +209,34 @@ describe('comboFromEvent — malformed keyboard events (#91611)', () => {
     expect(comboFromEvent(malformed({ code, ctrlKey: true, key: 'k' }))).toBe('mod+k')
   })
 })
+
+describe('shadow-root keyboard targets', () => {
+  it('uses the original target from a composed event path', () => {
+    const host = document.createElement('div')
+    const shadow = host.attachShadow({ mode: 'open' })
+    const input = document.createElement('input')
+    shadow.append(input)
+    document.body.append(host)
+
+    const event = new Event('keydown')
+    Object.defineProperty(event, 'composedPath', { value: () => [input, shadow, host, document.body, document] })
+
+    expect(eventTarget(event)).toBe(input)
+  })
+
+  it('finds selectors through an open shadow root when focus is inside it', () => {
+    const host = document.createElement('div')
+    const shadow = host.attachShadow({ mode: 'open' })
+    const input = document.createElement('input')
+    const surface = document.createElement('div')
+    surface.dataset.terminal = 'true'
+    surface.append(input)
+    shadow.append(surface)
+    document.body.append(host)
+    input.focus()
+
+    expect(document.activeElement).toBe(host)
+    expect(isFocusWithin('[data-terminal]')).toBe(true)
+  })
+})
+

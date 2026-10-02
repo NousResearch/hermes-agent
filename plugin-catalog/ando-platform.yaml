@@ -1,12 +1,12 @@
 name: ando-platform
 repo: https://github.com/Ando-Corporation/hermes-ando
-sha: ae015d9360d5e1b5467cee9c847acdd63eab4086
+sha: a96494ba68c36b6914c473e8288e4cd92f5775f0
 tier: community
 category: platform
 maintainer: Ando-Corporation
 version: "0.2.0"
 description: Connect a Hermes agent through an existing Ando invitation and receive authorized messages.
-docs_url: https://github.com/Ando-Corporation/hermes-ando/blob/ae015d9360d5e1b5467cee9c847acdd63eab4086/README.md
+docs_url: https://github.com/Ando-Corporation/hermes-ando/blob/a96494ba68c36b6914c473e8288e4cd92f5775f0/README.md
 platforms: [linux, macos]
 capabilities:
   provides_tools: []

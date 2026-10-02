@@ -181,6 +181,7 @@ def _profile_homes(tmp_path, monkeypatch, *names):
     monkeypatch.setattr("hermes_constants.get_default_hermes_root", lambda: root)
     monkeypatch.setattr(mig, "provider_present", lambda name, home: (home / "plugins" / name).is_dir())
     monkeypatch.setattr(mig, "catalog_source", lambda name: name)
+    monkeypatch.setattr(mig, "_LEFT_CORE", frozenset({"twin"}))  # stands in for a formerly bundled provider
     return homes
 
 

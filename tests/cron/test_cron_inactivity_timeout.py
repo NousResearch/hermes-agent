@@ -2,6 +2,7 @@
 
 import threading
 import time
+from types import SimpleNamespace
 
 
 class TestInactivityWatchdogLoop:
@@ -73,3 +74,39 @@ class TestInactivityWatchdogLoop:
         assert result["fired"] is True
         assert not watcher.is_alive()
 
+
+
+class TestHostSleep:
+    """A sleeping host freezes the whole job, so the nap is not job inactivity."""
+
+    def test_sleep_is_not_idle_time_but_awake_idle_still_fires(self, monkeypatch):
+        from agent import session_activity
+        from cron.scheduler import _inactivity_watchdog_loop
+
+        # Wall time keeps running while the host sleeps; monotonic time pauses (macOS, Linux).
+        clock = SimpleNamespace(wall=1_000_000.0, mono=50.0)
+        monkeypatch.setattr(
+            session_activity, "time", SimpleNamespace(time=lambda: clock.wall, monotonic=lambda: clock.mono))
+        last_activity_wall, start_mono = clock.wall, clock.mono
+        polls = []
+
+        class _Stop:
+            def wait(self, timeout):
+                polls.append(timeout)
+                clock.wall += timeout
+                clock.mono += timeout
+                if len(polls) == 3:
+                    clock.wall += 900.0  # the laptop sleeps for 15 minutes mid-job
+                return len(polls) > 1000
+
+        fired = _inactivity_watchdog_loop(
+            get_idle_seconds=lambda: clock.wall - last_activity_wall,
+            limit_s=600.0,
+            poll_s=5.0,
+            stop=_Stop(),
+            future_done=lambda: False,
+        )
+
+        assert fired is True
+        awake_idle = clock.mono - start_mono
+        assert 600.0 <= awake_idle < 605.0

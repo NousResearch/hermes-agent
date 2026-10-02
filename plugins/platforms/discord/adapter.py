@@ -6119,7 +6119,9 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             if hasattr(message.channel, "guild") and message.channel.guild:
                 chat_name = f"{message.channel.guild.name} / #{chat_name}"
         # Channel topic (TextChannels only); forum-parented threads inherit the parent topic.
-        chat_topic = self._get_effective_topic(message.channel, is_thread=is_thread)
+        # Read from the auto-created thread, not the channel the mention was posted in: this turn pins
+        # the thread session's context prompt, and the thread's next message reads its own topic.
+        chat_topic = self._get_effective_topic(effective_channel, is_thread=is_thread)
         guild = getattr(message, "guild", None)
         source = self.build_source(
             chat_id=str(effective_channel.id),

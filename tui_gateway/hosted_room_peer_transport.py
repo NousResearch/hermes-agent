@@ -92,7 +92,8 @@ class FailoverHostedRoomPeerClient:
         call.__name__ = method
         return call
 
-    prepare, dispatch, history, status, stop = map(_delegate, ("prepare", "dispatch", "history", "status", "stop"))
+    prepare, dispatch, history, status, stop, stop_receipt = map(
+        _delegate, ("prepare", "dispatch", "history", "status", "stop", "stop_receipt"))
     del _delegate
 
     def bind_room_scope(self, **kwargs):

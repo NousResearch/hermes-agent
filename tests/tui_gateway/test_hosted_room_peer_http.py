@@ -230,6 +230,34 @@ def test_remote_run_receipt_survives_home_restart(peer_server, tmp_path):
     assert stopped["status"] == "stopping"
 
 
+def test_failover_transport_stops_retained_run_without_replaying_dispatch(peer_server, tmp_path):
+    from tui_gateway.hosted_room_driver import HostedRoomBinding
+    from tui_gateway.hosted_room_peer_transport import (
+        FailoverHostedRoomPeerClient, PeerHostedRoomTransport, PeerMemberRoute, RoomLinkCandidate,
+    )
+    db, dispatch = tmp_path / "state.db", _dispatch()
+    first = PeerRunsHTTPClient(base_url=peer_server, api_key="", receipt_db_path=db)
+    accepted = first.dispatch(dispatch=dispatch, grant="signed.room.grant")
+    restarted = PeerRunsHTTPClient(base_url=peer_server, api_key="", receipt_db_path=db)
+    wrapped = FailoverHostedRoomPeerClient([
+        RoomLinkCandidate("direct", "direct", dispatch["target_install_id"], restarted),
+    ])
+    route = PeerMemberRoute(**{key: dispatch[key] for key in (
+        "home_install_id", "member_id", "target_install_id", "target_profile", "capability_digest",
+        "cancellation_scope_id", "trace_id", "execution_policy_digest")}, grant="signed.room.grant")
+    transport = PeerHostedRoomTransport(
+        binding=HostedRoomBinding(dispatch["room_id"], dispatch["authority_gateway_id"], dispatch["authority_epoch"]),
+        route=route, client=wrapped, task_id=dispatch["task_id"],
+        execution_generation=dispatch["execution_generation"])
+    coords = dict(profile=route.target_profile, session_id=accepted["session_id"], source="bot_room")
+    assert transport.interrupt(**coords, expected_task_id="another-task") is None
+    assert FakePeer.runs[accepted["run_id"]]["status"] == "running"
+    stopped = transport.interrupt(**coords, expected_task_id=dispatch["task_id"])
+    assert stopped is not None and stopped["status"] == "stopping"
+    assert FakePeer.runs[accepted["run_id"]]["status"] == "cancelled"
+    assert len(FakePeer.idempotency) == 1
+
+
 def test_remote_run_receipt_does_not_cross_authority_epochs(tmp_path):
     db = tmp_path / "state.db"
     old = PeerRunsHTTPClient(

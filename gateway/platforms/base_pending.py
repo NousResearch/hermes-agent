@@ -27,6 +27,7 @@ from dataclasses import dataclass, field, fields
 from typing import TYPE_CHECKING, Any, Callable, Dict, Iterator, Optional, Tuple
 
 from gateway.native_message_deletion import NativeMessageDeletion
+from gateway.pending_native import PendingNativeInput
 from gateway.platforms.event import MessageEvent
 from gateway.session_identity import identity_of
 
@@ -118,6 +119,7 @@ class _PendingDispatchReservation:
         if self.includes(event):
             return
         event._merged_parts = self.event._merged_parts
+        event._pending_native_input = self.event._pending_native_input
         for attr in ("_pending_snapshot_uid", "_gateway_input_owner", "_gateway_pending_stt_text", "_gateway_pending_stt_transcripts",
                      "_gateway_pending_stt_clips", "_gateway_pending_stt_input", "_gateway_pending_stt_echoed_paths"):
             if hasattr(self.event, attr):
@@ -143,6 +145,7 @@ class _PendingDispatchReservation:
                     setattr(event, item.name, getattr(remaining, item.name))
             event._merged_parts = remaining._merged_parts
             event._prepared_inbound = None
+            event._pending_native_input = remaining._pending_native_input
             for attr in ("_gateway_pending_stt_text", "_gateway_pending_stt_transcripts", "_gateway_pending_stt_clips", "_gateway_pending_stt_input"):
                 if hasattr(event, attr):
                     delattr(event, attr)
@@ -391,6 +394,9 @@ def withdraw_from_event(
 
 class PendingWithdrawalMixin:
     """``withdraw_pending_message`` for ``BasePlatformAdapter``."""
+
+    def pending_native_input(self, event: MessageEvent) -> PendingNativeInput | None:
+        return None
 
     platform: Platform
     _pending_messages: Dict[str, MessageEvent]

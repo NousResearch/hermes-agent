@@ -11,6 +11,7 @@ from types import UnionType
 from typing import Any, Union, get_args, get_origin
 
 from gateway.config import Platform
+from gateway.pending_native import PendingNativeInput
 from gateway.platforms.base_pending import Merge
 from gateway.platforms import base_pending_merge
 from gateway.platforms.event import MessageEvent, MessageType
@@ -47,6 +48,16 @@ def capture_pending_provenance(event: MessageEvent) -> dict[str, Any]:
     from gateway.input_owner import capture_gateway_input_owner
 
     recorded: dict[str, Any] = {"input_owner": capture_gateway_input_owner(event)}
+    native = event._pending_native_input
+    if native is None:
+        from gateway.session_identity import identity_of
+
+        identity = identity_of(event.source)
+        adapter = identity.adapter() if identity is not None else None
+        capture = getattr(adapter, "pending_native_input", None)
+        native = capture(event) if callable(capture) else None
+    if native is not None:
+        recorded["native"] = native.to_payload()
     if event._merged_parts:
         recorded["attribution"] = [
             {"operation": _OPERATIONS[merge].value if merge is not None else None,
@@ -121,6 +132,8 @@ def decode_pending_event(record: dict[str, Any], *, adapter: Any = None) -> Mess
     event_body["source"] = source
     event = MessageEvent(**_decode_fields(event_body, MessageEvent))
     setattr(event, "_pending_snapshot_uid", uid)
+    if "native" in record:
+        event._pending_native_input = PendingNativeInput.from_payload(record["native"], event)
     if "input_owner" in record:
         from gateway.input_owner import restore_gateway_input_owner
         restore_gateway_input_owner(event, record["input_owner"])

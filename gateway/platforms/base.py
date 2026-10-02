@@ -825,8 +825,10 @@ MEDIA_DELIVERY_SAFE_ROOTS = (
 _MEDIA_DELIVERY_TRUST_RECENT_DEFAULT_SECONDS = 600
 
 # Hard denylist even for "recent" files (credentials, system state, /proc); the cache-dir
-# allowlist still beats it.
-_MEDIA_DELIVERY_DENIED_PREFIXES = (
+# allowlist still beats it. POSIX-only: on Windows (os.name == "nt") ``Path("/dev").resolve()``
+# yields ``<SystemDrive>:\dev``, so a system-path check would case-insensitively deny the whole
+# developer tree (e.g. ``C:\DEV``); the list is therefore empty on Windows.
+_MEDIA_DELIVERY_DENIED_PREFIXES = () if os.name == "nt" else (
     "/etc", "/proc", "/sys", "/dev", "/root", "/boot", "/var/log", "/var/lib", "/var/run")
 
 # Credential / config dirs denied under $HOME (Library/Keychains = macOS), resolved at check time.

@@ -165,6 +165,11 @@ import { singleFlightSessionResume } from '../use-prompt-actions/single-flight-r
 import { sessionCreateOverrideParams, type SessionCreateOverrides, type SessionSeedMessage } from './create-overrides'
 import { markSessionCreatedThisRun, sessionCreatedThisRun } from './created-this-run'
 import { captureDisplayHydration } from './display-hydration'
+import {
+  appendLiveSessionProjection,
+  dedupeInflightUserAgainstTranscript,
+  removeRepresentedLocalLiveProjection
+} from './live-session-projection'
 import { reconcilePersistedLiveTurn } from './persisted-live-turn'
 import { provisionalTranscriptPaint, transcriptRestScope } from './provisional-transcript'
 import { pendingClarifyToolPayload, restorePendingClarifyFromSnapshot } from './restore-pending-clarify'
@@ -176,13 +181,11 @@ import {
   withoutTranscriptProvenance
 } from './transcript-provenance'
 import {
-  appendLiveSessionProjection,
   applyRuntimeInfo,
   applyStoredSessionPreviewRuntimeInfo,
   type BranchMessage,
   cachedSessionRow,
   chatMessageArraysEquivalent,
-  dedupeInflightUserAgainstTranscript,
   dropListedSession,
   findListedSession,
   goneSessionVerdict,
@@ -192,7 +195,6 @@ import {
   preserveEquivalentTranscript,
   preserveLocalPendingTurnMessages,
   reconcileDurableHistory,
-  removeRepresentedLocalLiveProjection,
   resolveResumedBusy,
   resolveSessionProfile,
   resolveStoredSession,

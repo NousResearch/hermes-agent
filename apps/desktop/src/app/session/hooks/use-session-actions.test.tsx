@@ -23,7 +23,7 @@ import {
   type SessionResumeResult,
   setSessionArchived
 } from '@/hermes'
-import { type ChatMessagePart, settlePendingClarifyToolCall } from '@/lib/chat-messages'
+import { type ChatMessagePart, settlePendingClarifyToolCall, toChatMessages } from '@/lib/chat-messages'
 import { clearAllPrompts, sessionApprovalRequest } from '@/store/prompts'
 import { createClientSessionState } from '@/lib/chat-runtime'
 import { $clarifyRequests, clearClarifyRequest, setClarifyRequest } from '@/store/clarify'
@@ -5005,6 +5005,114 @@ describe('resumeSession warm-cache mapping integrity', () => {
     persistedTranscript.resolve({ messages: [], session_id: 'stored-A' } as never)
     await resumePromise
     expect(answerableClarifyRows(viewSyncs.at(-1)?.messages)).toHaveLength(1)
+  })
+
+  it('bridges one matching warm clarify to its provider occurrence while retaining concurrent edits', async () => {
+    const persistedMessages = [
+      { id: 201, content: 'help me choose', role: 'user' as const, timestamp: 1 },
+      {
+        id: 202,
+        content: 'I found two paths.',
+        role: 'assistant' as const,
+        timestamp: 2,
+        tool_calls: [
+          {
+            id: 'call-answered',
+            function: {
+              name: 'clarify',
+              arguments: '{"questions":[{"question":"Which path?","choices":["safe","fast"]}]}'
+            }
+          },
+          { id: 'call-unrelated', function: { name: 'clarify', arguments: '{"question":"Another question?"}' } },
+          {
+            id: 'call-provider',
+            function: {
+              name: 'clarify',
+              arguments: '{"questions":[{"question":"Which path?","choices":["safe","fast"]}]}'
+            }
+          }
+        ]
+      },
+      { id: 203, content: 'Earlier answer', role: 'tool' as const, tool_call_id: 'call-answered', timestamp: 3 }
+    ]
+    const cachedMessages = toChatMessages(persistedMessages).map(message =>
+      message.role === 'assistant' ? { ...message, pending: true } : message
+    )
+    const { persistedTranscript, resumePromise, sessionStateByRuntimeIdRef, viewSyncs } =
+      await resumeClarifyBeforeHydration({ messageCount: 3, messages: cachedMessages })
+    const matchingParts = (messages: ClientSessionState['messages']) =>
+      messages
+        .flatMap(message => message.parts)
+        .filter(
+          part =>
+            part.type === 'tool-call' &&
+            part.toolName === 'clarify' &&
+            part.result === undefined &&
+            (part.toolCallId === 'call-provider' || part.toolCallId === 'req-navigation')
+        )
+    const preHydration = viewSyncs.find(state => state.needsInput)!
+    expect(matchingParts(preHydration.messages)).toHaveLength(1)
+    const earlyState = sessionStateByRuntimeIdRef.current.get('rt-A')!
+    expect(matchingParts(earlyState.messages)).toHaveLength(1)
+    const unrelatedEarly = earlyState.messages
+      .flatMap(message => message.parts)
+      .find(part => part.type === 'tool-call' && part.toolCallId === 'call-unrelated')
+    expect(unrelatedEarly?.type === 'tool-call' && unrelatedEarly.result).toBeUndefined()
+    expect(earlyState.messages.flatMap(message => message.parts)).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ toolCallId: 'call-unrelated' }),
+        expect.objectContaining({ toolCallId: 'call-answered', result: 'Earlier answer' }),
+        expect.objectContaining({ type: 'text', text: 'I found two paths.' })
+      ])
+    )
+
+    sessionStateByRuntimeIdRef.current.set('rt-A', {
+      ...earlyState,
+      messages: [
+        ...earlyState.messages.map(message =>
+          message.role === 'user'
+            ? { ...message, parts: [{ type: 'text' as const, text: 'edited while loading' }] }
+            : message
+        ),
+        {
+          id: 'assistant-stream-concurrent',
+          role: 'assistant',
+          pending: true,
+          parts: [{ type: 'text', text: 'Concurrent live delta' }]
+        }
+      ]
+    })
+    persistedTranscript.resolve({ messages: persistedMessages, session_id: 'stored-A' } as never)
+    await resumePromise
+    const hydrated = sessionStateByRuntimeIdRef.current.get('rt-A')!
+    expect(matchingParts(hydrated.messages)).toEqual([expect.objectContaining({ toolCallId: 'call-provider' })])
+    const providerMessage = hydrated.messages.find(message =>
+      message.parts.some(part => part.type === 'tool-call' && part.toolCallId === 'call-provider')
+    )!
+    expect(providerMessage).toMatchObject({ id: '2-1-assistant', rowId: 202 })
+    const unrelatedHydrated = providerMessage.parts.find(
+      part => part.type === 'tool-call' && part.toolCallId === 'call-unrelated'
+    )
+    expect(unrelatedHydrated?.type === 'tool-call' && unrelatedHydrated.result).toBeUndefined()
+    expect(providerMessage.parts).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ type: 'text', text: 'I found two paths.', sourceRowId: 202 }),
+        expect.objectContaining({ toolCallId: 'call-unrelated' }),
+        expect.objectContaining({ toolCallId: 'call-answered', result: 'Earlier answer' })
+      ])
+    )
+    expect(hydrated.messages.flatMap(message => message.parts)).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ type: 'text', text: 'edited while loading' }),
+        expect.objectContaining({ type: 'text', text: 'Concurrent live delta' })
+      ])
+    )
+    expect(
+      hydrated.messages
+        .flatMap(message => message.parts)
+        .some(part => part.type === 'tool-call' && part.toolCallId === 'req-navigation')
+    ).toBe(false)
+    expect(matchingParts(viewSyncs.at(-1)!.messages)).toHaveLength(1)
   })
 
   it('keeps the snapshot clarify row visible when the unproven warm cache has no prefix (#108718)', async () => {

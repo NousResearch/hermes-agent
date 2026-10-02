@@ -248,6 +248,44 @@ class TestMemoryManager:
         assert result == provider._prefetch_result
         assert not list(tmp_path.rglob("*.txt"))
 
+    def test_raising_prefetch_budget_falls_back_to_shared_cap(self, tmp_path, monkeypatch):
+        """A budget hook that raises (config read failure, network blip) falls back to the
+        shared cap; the failure never propagates out of prefetch_all."""
+        self._set_spill_config(monkeypatch, tmp_path, max_chars=40)
+
+        class RaisingBudgetProvider(FakeMemoryProvider):
+            def prefetch_spill_budget(self):
+                raise RuntimeError("config unavailable")
+
+        mgr = MemoryManager()
+        provider = RaisingBudgetProvider("external")
+        provider._prefetch_result = "recalled " * 20  # 160 chars: past the shared cap
+        mgr.add_provider(provider)
+
+        result = mgr.prefetch_all("what do you remember?", session_id="session-1")
+
+        assert "external memory prefetch output truncated" in result
+        assert len(list((tmp_path / "session-1").glob("*.txt"))) == 1
+
+    def test_declared_budget_is_clamped_above_the_shared_cap(self, tmp_path, monkeypatch):
+        """The widened threshold is clamped at 10x the shared cap: a buggy or poisoned
+        provider can't lift the user-configured cap entirely."""
+        self._set_spill_config(monkeypatch, tmp_path, max_chars=40)
+
+        class HugeBudgetProvider(FakeMemoryProvider):
+            def prefetch_spill_budget(self):
+                return 5_000_000
+
+        mgr = MemoryManager()
+        provider = HugeBudgetProvider("external")
+        provider._prefetch_result = "recalled " * 60  # 480 chars: under the declared budget, past the clamped 400
+        mgr.add_provider(provider)
+
+        result = mgr.prefetch_all("what do you remember?", session_id="session-1")
+
+        assert "external memory prefetch output truncated" in result
+        assert len(list((tmp_path / "session-1").glob("*.txt"))) == 1
+
     def test_builtin_prefetch_is_not_spilled(self, tmp_path, monkeypatch):
         self._set_spill_config(monkeypatch, tmp_path, max_chars=10)
         mgr = MemoryManager()

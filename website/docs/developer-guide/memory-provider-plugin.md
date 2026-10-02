@@ -201,7 +201,9 @@ A provider that already size-controls its recall block can override
 per-token recall cap). The spill threshold then rises to at least that value, so
 a relevance-ranked block that fits the provider's own budget is never re-cut to
 a head/tail preview; the shared cap still applies to undeclared providers and to
-blocks that exceed their declared budget.
+blocks that exceed their declared budget. The widened threshold is clamped at
+10x the shared cap — declare more and the excess is ignored, since only the
+user-configured `hooks.output_spill.max_chars` may lift the limit unbounded.
 
 ## Pre-Compress Checkpoints (fail-closed)
 

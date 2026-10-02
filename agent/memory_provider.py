@@ -136,7 +136,9 @@ class MemoryProvider(ABC):
         that already size-controls its recall block (e.g. Honcho's ``contextTokens`` cap)
         returns that char budget: the manager raises the spill threshold to at least this
         value, so the generic head/tail preview never re-cuts a relevance-ranked block that
-        already fits the provider's own cap."""
+        already fits the provider's own cap. The widened threshold is clamped at 10x the
+        shared cap — a budget beyond that is ignored, since only the user-configured
+        ``max_chars`` may lift it unbounded."""
         return None
 
     def sync_turn(

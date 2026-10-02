@@ -21,13 +21,23 @@ def matrix_room_topic() -> str:
 
 @pytest.fixture
 def gateway_config(gateway_config: str, live_room: LiveRoom) -> str:
-    return gateway_config + (
-        "matrix:\n"
-        "  channel_prompts:\n"
-        f"    {json.dumps(live_room.room_id)}: Follow the configured research method.\n"
-        "  channel_skill_bindings:\n"
-        f"    - id: {json.dumps(live_room.room_id)}\n"
-        "      skills: [matrix-room-method]\n"
+    return gateway_config.replace(
+        "    enabled: true\n",
+        "    enabled: true\n"
+        "    channel_prompts:\n"
+        f"      {json.dumps(live_room.room_id)}: Follow the configured research method.\n"
+        "    channel_skill_bindings:\n"
+        f"      - id: {json.dumps(live_room.room_id)}\n"
+        "        skills: [matrix-room-method]\n",
+        1,
+    )
+
+
+@pytest.fixture
+def gateway_extra_config(live_room: LiveRoom) -> str:
+    return (
+        "platforms:\n  matrix:\n"
+        f"    allowed_users: {json.dumps(live_room.observer.user_id)}\n"
     )
 
 

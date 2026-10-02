@@ -38,10 +38,7 @@ const OPTIONS: ModelOptionsResult = {
   ]
 }
 
-function renderDialog() {
-  const client = new QueryClient({
-    defaultOptions: { queries: { retry: false } }
-  })
+function renderDialog(client = new QueryClient({ defaultOptions: { queries: { retry: false } } })) {
 
   return render(
     <QueryClientProvider client={client}>
@@ -71,6 +68,32 @@ afterEach(() => {
 })
 
 describe('provider focus', () => {
+  it('falls back to an available provider after the selected catalog disappears', async () => {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    renderDialog(client)
+    await screen.findByRole('switch', { name: /gpt-6/i })
+    fireEvent.click(screen.getByRole('button', { name: /^Qwen/ }))
+    client.setQueriesData({ queryKey: [] }, { providers: [OPTIONS.providers![0]] })
+    expect(await screen.findByRole('switch', { name: /gpt-6/i })).toBeTruthy()
+    expect(screen.queryByRole('button', { name: /^Qwen/ })).toBeNull()
+    expect($visibleModels.get()).toBeNull()
+  })
+
+  it.each([false, true])('preserves visibility with an empty or failed catalog (error=%s)', async failed => {
+    const stored = new Set(['qwen::'])
+    $visibleModels.set(stored)
+    if (failed) {
+      vi.mocked(requestModelOptions).mockRejectedValue(new Error('offline'))
+    } else {
+      vi.mocked(requestModelOptions).mockResolvedValue({ providers: [] })
+    }
+    renderDialog()
+    await screen.findByText(/no authenticated providers/i)
+    expect(screen.queryByRole('switch')).toBeNull()
+    expect($visibleModels.get()).toEqual(stored)
+    expect(screen.getByRole('button', { name: /add provider/i })).toBeTruthy()
+  })
+
   it('searches other providers and restores the selected provider when cleared', async () => {
     renderDialog()
     await screen.findByRole('switch', { name: /gpt-6/i })

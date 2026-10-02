@@ -398,64 +398,21 @@ def safety_schema_is_current(conn: sqlite3.Connection) -> bool:
 
 
 def _compact_over_budget_replicas_locked(conn: sqlite3.Connection) -> int:
-    """Bound legacy replica payload without dropping quarantined evidence."""
+    """Reclaim only verified terminal copies; never erase an active prefix.
+
+    Retained excess bytes keep the shared budget full and further writes refused.
+    Capacity is not invented integrity failure: authorized retirement can still
+    clean a valid copy, while genuinely quarantined evidence remains protected.
+    """
     if not table_exists(conn, "hosted_room_replicas"):
         return 0
-    from gateway.hosted_room_replicas import _audit_existing_replicas_locked
-
-    # Classification and deletion share the caller's write transaction. An
-    # absent flag is not proof of safe lineage, including on the first open.
-    _audit_existing_replicas_locked(conn)
-    rows = conn.execute(
-        """SELECT replicas.room_id, replicas.updated_at,
-                  replicas.quarantine_reason,
-                  COALESCE(SUM(
-                      LENGTH(CAST(events.event_id AS BLOB)) +
-                      LENGTH(CAST(events.kind AS BLOB)) +
-                      LENGTH(CAST(events.actor_json AS BLOB)) +
-                      LENGTH(CAST(events.payload_json AS BLOB))
-                  ), 0) AS actual_bytes
-             FROM hosted_room_replicas AS replicas
-             LEFT JOIN hosted_room_replica_events AS events
-               ON events.room_id=replicas.room_id
-            GROUP BY replicas.room_id
-            ORDER BY replicas.updated_at ASC, replicas.room_id ASC"""
-    ).fetchall()
-    replica_bytes = sum(int(row["actual_bytes"]) for row in rows)
-    hosted_bytes = int(
-        conn.execute(
-            """SELECT COALESCE(SUM(
-                       LENGTH(CAST(event_id AS BLOB)) +
-                       LENGTH(CAST(kind AS BLOB)) +
-                       LENGTH(CAST(actor_json AS BLOB)) +
-                       LENGTH(CAST(payload_json AS BLOB))
-                   ), 0) FROM hosted_room_events"""
-        ).fetchone()[0]
-    )
     from gateway import hosted_rooms as limits
 
-    replica_budget = max(0, int(limits.MAX_GATEWAY_EVENT_BYTES) - hosted_bytes)
-    removed = 0
-    for row in rows:
-        if replica_bytes <= replica_budget:
-            break
-        if (row["quarantine_reason"] is not None
-                or _quarantine_reason_locked(conn, str(row["room_id"])) is not None):
-            continue
-        room_id = str(row["room_id"])
-        conn.execute(
-            """INSERT OR IGNORE INTO hosted_room_quarantine
-               (room_id, reason, detected_at)
-               VALUES (?, 'replica_storage_budget_exceeded', ?)""",
-            (room_id, time.time()),
-        )
-        conn.execute(
-            "DELETE FROM hosted_room_replica_events WHERE room_id=?", (room_id,)
-        )
-        conn.execute("DELETE FROM hosted_room_replicas WHERE room_id=?", (room_id,))
-        replica_bytes -= int(row["actual_bytes"])
-        removed += 1
-    return removed
+    hosted_bytes = int(conn.execute("SELECT COALESCE(SUM(event_bytes),0) FROM hosted_rooms").fetchone()[0])
+    # This helper re-audits before selecting only completed, non-quarantined
+    # history under the existing explicit terminal-retention policy.
+    return _prune_disbanded_replicas_locked(
+        conn, now=None, max_replica_event_bytes=max(0, limits.MAX_GATEWAY_EVENT_BYTES - hosted_bytes))
 
 
 def _quarantine_reason_locked(conn: sqlite3.Connection, room_id: str) -> str | None:
@@ -536,7 +493,8 @@ def _prune_disbanded_replicas_locked(
     """
     from gateway import hosted_rooms as limits
     from gateway.hosted_room_replica_retirement import RETIREMENT_TABLE
-    from gateway.hosted_room_replicas import _audit_existing_replicas_locked
+    from gateway.hosted_room_replicas import (
+        _audit_existing_replicas_locked, _replica_header_bounds_sql, _replica_read_envelope_locked)
 
     # Re-audit even if an earlier observation/ingest audited then rolled back,
     # or an old writer committed new history since the last replica read.
@@ -552,6 +510,7 @@ def _prune_disbanded_replicas_locked(
         terminal_at = f"CASE WHEN {canonical} THEN disbanded_at ELSE ({retired}) END"
     eligible += """ AND quarantine_reason IS NULL AND NOT EXISTS (
         SELECT 1 FROM hosted_room_quarantine WHERE hosted_room_quarantine.room_id=hosted_room_replicas.room_id)"""
+    eligible += f" AND ({_replica_header_bounds_sql()})"
     candidates: set[str] = set()
     if now is not None:
         cutoff = now - limits.DISBANDED_REPLICA_RETENTION_SECONDS
@@ -572,7 +531,10 @@ def _prune_disbanded_replicas_locked(
                 f"""SELECT room_id, event_bytes FROM hosted_room_replicas WHERE {eligible}
                      ORDER BY ({terminal_at}) ASC, room_id ASC"""
             ).fetchall():
-                candidates.add(str(row["room_id"]))
+                room_id = str(row["room_id"])
+                if not _replica_read_envelope_locked(conn, room_id):
+                    continue
+                candidates.add(room_id)
                 retained_bytes -= int(row["event_bytes"])
                 if retained_bytes <= max_replica_event_bytes:
                     break
@@ -585,10 +547,14 @@ def _prune_disbanded_replicas_locked(
                 f"""SELECT room_id FROM hosted_room_replicas WHERE {eligible}
                      ORDER BY ({terminal_at}) ASC, room_id ASC"""
             ).fetchall():
-                candidates.add(str(row["room_id"]))
+                room_id = str(row["room_id"])
+                if not _replica_read_envelope_locked(conn, room_id):
+                    continue
+                candidates.add(room_id)
                 retained_rooms -= 1
                 if retained_rooms <= max_replica_rooms:
                     break
+    candidates = {room_id for room_id in candidates if _replica_read_envelope_locked(conn, room_id)}
     if not candidates:
         return 0
     placeholders = ",".join("?" for _ in candidates)

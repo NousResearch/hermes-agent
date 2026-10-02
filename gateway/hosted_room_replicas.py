@@ -21,6 +21,7 @@ from typing import Any, Callable, Iterator
 
 from gateway.hosted_rooms import (
     MAX_ACTOR_ID_CHARS, MAX_EVENT_ID_CHARS, MAX_GATEWAY_EVENT_BYTES, MAX_LOG_LIMIT, MAX_LOG_PAGE_BYTES,
+    MAX_MEMBERS_JSON_BYTES, MAX_ROOM_NAME_CHARS,
     MAX_ROOM_ID_CHARS, HostedRoomError, RoomConflictError, _actor_json, _canonical_json, _payload_json,
     _prune_disbanded_rooms_locked, _room_id, _transaction, _validate_actor, _validate_event_kind,
     _validate_identifier, _validate_members, _validate_room_name, local_authority_gateway_id)
@@ -138,64 +139,145 @@ def _initialize_replica_schema(conn: sqlite3.Connection) -> None:
                    AND kind='room.disbanded')""")
 
 
-def _audit_existing_replicas_locked(conn: sqlite3.Connection) -> None:
-    """Quarantine copies whose stored lineage this module would refuse to write.
+def _replica_header_bounds_sql() -> str:
+    """Fixed-column byte/type preflight; SQL character length is NUL-truncated."""
+    text_limits = {
+        "room_id": MAX_ROOM_ID_CHARS * 4, "name": MAX_ROOM_NAME_CHARS * 4,
+        "authority_gateway_id": MAX_ACTOR_ID_CHARS * 4,
+        "members_json": MAX_MEMBERS_JSON_BYTES, "quarantine_reason": 256 * 4,
+    }
+    checks = []
+    for column, bound in text_limits.items():
+        check = f"(typeof({column})='text' AND LENGTH(CAST({column} AS BLOB))<={int(bound)})"
+        checks.append(f"({column} IS NULL OR {check})" if column == "quarantine_reason" else check)
+    checks.extend(f"typeof({column})='integer'" for column in
+                  ("authority_epoch", "last_seq", "latest_seq", "event_bytes"))
+    checks.extend(f"typeof({column}) IN ('integer','real')" for column in ("created_at", "updated_at"))
+    checks.extend(f"typeof({column}) IN ('null','integer','real')" for column in ("disbanded_at", "quarantined_at"))
+    return " AND ".join(checks)
 
-    Earlier replica code, or an older process still sharing this store, may have stored gaps,
-    duplicates, foreign authority or history after a disband. Flag them before anything reads,
-    extends, promotes or reclaims them, and re-derive their byte counts from the stored rows.
+
+def _audit_existing_replicas_locked(conn: sqlite3.Connection) -> None:
+    """Quarantine invalid copies with bounded, streaming history validation.
+
+    SQL preflights size/count; Python streams bounded individual event rows
+    with the existing validators. Excess bytes are retained, not a pruning permit.
     """
+    from gateway import hosted_rooms as limits
+
     for row in conn.execute(
-        """SELECT room_id, authority_gateway_id, authority_epoch, last_seq,
-                  latest_seq, event_bytes, disbanded_at, quarantine_reason
-             FROM hosted_room_replicas"""
-    ).fetchall():
+        f"""SELECT room_id,authority_gateway_id,authority_epoch,last_seq,
+                   latest_seq,event_bytes,disbanded_at,
+                   CASE WHEN quarantine_reason IS NOT NULL THEN 1 END AS quarantine_reason
+              FROM hosted_room_replicas WHERE {_replica_header_bounds_sql()}"""
+    ):
         room_id = str(row["room_id"])
-        events = conn.execute(
-            """SELECT seq, event_id, authority_epoch, kind, actor_json, payload_json, created_at
-                 FROM hosted_room_replica_events WHERE room_id=? ORDER BY seq""", (room_id,)).fetchall()
+        stats = conn.execute(
+            """SELECT COUNT(*) AS count,
+                COALESCE(SUM(COALESCE(LENGTH(CAST(event_id AS BLOB)),0) +
+                    COALESCE(LENGTH(CAST(kind AS BLOB)),0) +
+                    COALESCE(LENGTH(CAST(actor_json AS BLOB)),0) +
+                    COALESCE(LENGTH(CAST(payload_json AS BLOB)),0)),0) AS bytes,
+                COALESCE(MAX(COALESCE(LENGTH(CAST(event_id AS BLOB)),0) +
+                    COALESCE(LENGTH(CAST(kind AS BLOB)),0) +
+                    COALESCE(LENGTH(CAST(actor_json AS BLOB)),0) +
+                    COALESCE(LENGTH(CAST(payload_json AS BLOB)),0)),0) AS largest,
+                COALESCE(MAX(CASE WHEN typeof(seq)!='integer' OR typeof(authority_epoch)!='integer'
+                    OR typeof(created_at) NOT IN ('integer','real') THEN 1 ELSE 0 END),0) AS bad_scalars
+                FROM hosted_room_replica_events WHERE room_id=?""", (room_id,)).fetchone()
+        stored_bytes = int(stats["bytes"])
+        if stored_bytes != int(row["event_bytes"]):
+            conn.execute("UPDATE hosted_room_replicas SET event_bytes=? WHERE room_id=?", (stored_bytes, room_id))
+        # Previously classified evidence stays opaque and read-only. It is never
+        # necessary to decode a quarantined payload to keep it or report its size.
+        if row["quarantine_reason"] is not None:
+            continue
         reasons: list[str] = []
-        seqs = [int(event["seq"]) for event in events]
-        event_ids = [str(event["event_id"]) for event in events]
         last_seq, latest_seq = int(row["last_seq"]), int(row["latest_seq"])
         if int(row["authority_epoch"]) != 1:
             reasons.append("unverified_authority_epoch")
-        if seqs != list(range(1, last_seq + 1)):
+        if stats["count"] != last_seq:
             reasons.append("non_contiguous_history")
-        if len(set(event_ids)) != len(event_ids):
-            reasons.append("duplicate_event_id")
         if latest_seq < last_seq:
             reasons.append("coverage_regression")
-        disband_positions = [index for index, event in enumerate(events) if event["kind"] == "room.disbanded"]
-        if disband_positions and disband_positions != [len(events) - 1]:
-            reasons.append("events_after_disband")
-        if disband_positions and last_seq != latest_seq:
-            reasons.append("incomplete_terminal_history")
-        if any(event["authority_epoch"] != int(row["authority_epoch"]) for event in events):
-            reasons.append("mixed_authority_lineage")
-        try:
-            _validate_identifier(
-                row["authority_gateway_id"], label="authority_gateway_id", max_chars=MAX_ACTOR_ID_CHARS)
-            for event in events:
-                kind = _validate_event_kind(event["kind"])
-                _validate_identifier(event["event_id"], label="event_id", max_chars=MAX_EVENT_ID_CHARS)
-                actor, _ = _validate_actor(json.loads(event["actor_json"]), kind=kind)
-                if actor["kind"] == "gateway" and actor["id"] != str(row["authority_gateway_id"]):
-                    reasons.append("gateway_actor_authority_mismatch")
-                if not isinstance(json.loads(event["payload_json"]), dict):
-                    raise ReplicaError("event payload is not an object")
-                if not math.isfinite(float(event["created_at"])):
-                    raise ReplicaError("event timestamp is not finite")
-        except (HostedRoomError, TypeError, ValueError, json.JSONDecodeError):
+        if stats["bad_scalars"]:
             reasons.append("invalid_event_shape")
-        stored_bytes = sum(
-            utf8_len(str(event["event_id"]), str(event["kind"]), str(event["actor_json"]), str(event["payload_json"]))
-            for event in events)
-        if stored_bytes != int(row["event_bytes"]):
-            conn.execute("UPDATE hosted_room_replicas SET event_bytes=? WHERE room_id=?", (stored_bytes, room_id))
-        if reasons and row["quarantine_reason"] is None:
+        if (stats["count"] > limits.MAX_EVENTS_PER_ROOM + limits.CONTROL_EVENT_COUNT_RESERVE
+                or stats["largest"] > MAX_LOG_PAGE_BYTES):
+            # A current read envelope is not evidence of corruption. Leave
+            # oversized history unvalidated and held, without inventing an
+            # integrity quarantine that would forbid authorized retirement.
+            pass
+        elif not stats["bad_scalars"]:
+            identities = conn.execute("SELECT COUNT(DISTINCT event_id) FROM hosted_room_replica_events WHERE room_id=?",
+                                      (room_id,)).fetchone()[0]
+            if identities != stats["count"]:
+                reasons.append("duplicate_event_id")
+            try:
+                _validate_identifier(row["authority_gateway_id"], label="authority_gateway_id", max_chars=MAX_ACTOR_ID_CHARS)
+                for index, event in enumerate(conn.execute(
+                    """SELECT seq,event_id,authority_epoch,kind,actor_json,payload_json,created_at
+                       FROM hosted_room_replica_events WHERE room_id=? ORDER BY seq""", (room_id,)), 1):
+                    if int(event["seq"]) != index:
+                        reasons.append("non_contiguous_history")
+                    if event["kind"] == "room.disbanded":
+                        if index != stats["count"]:
+                            reasons.append("events_after_disband")
+                        if last_seq != latest_seq:
+                            reasons.append("incomplete_terminal_history")
+                    if event["authority_epoch"] != int(row["authority_epoch"]):
+                        reasons.append("mixed_authority_lineage")
+                    kind = _validate_event_kind(event["kind"])
+                    _validate_identifier(event["event_id"], label="event_id", max_chars=MAX_EVENT_ID_CHARS)
+                    actor, _ = _validate_actor(json.loads(event["actor_json"]), kind=kind)
+                    if actor["kind"] == "gateway" and actor["id"] != str(row["authority_gateway_id"]):
+                        reasons.append("gateway_actor_authority_mismatch")
+                    if not isinstance(json.loads(event["payload_json"]), dict):
+                        raise ReplicaError("event payload is not an object")
+                    if not math.isfinite(float(event["created_at"])):
+                        raise ReplicaError("event timestamp is not finite")
+            except (HostedRoomError, TypeError, ValueError, json.JSONDecodeError, RecursionError):
+                reasons.append("invalid_event_shape")
+        if reasons:
             conn.execute("UPDATE hosted_room_replicas SET quarantined_at=?, quarantine_reason=? WHERE room_id=?",
                          (clock(None), reasons[0], room_id))
+
+
+def _replica_read_envelope_locked(conn: sqlite3.Connection, room_id: str) -> bool:
+    """Whether current bounded validation can consume this copy, not its validity."""
+    count, largest = conn.execute("""SELECT COUNT(*), COALESCE(MAX(
+        COALESCE(LENGTH(CAST(event_id AS BLOB)),0) + COALESCE(LENGTH(CAST(kind AS BLOB)),0) +
+        COALESCE(LENGTH(CAST(actor_json AS BLOB)),0) + COALESCE(LENGTH(CAST(payload_json AS BLOB)),0)),0)
+        FROM hosted_room_replica_events WHERE room_id=?""", (room_id,)).fetchone()
+    from gateway import hosted_rooms as limits
+    return count <= limits.MAX_EVENTS_PER_ROOM + limits.CONTROL_EVENT_COUNT_RESERVE and largest <= MAX_LOG_PAGE_BYTES
+
+
+def _load_replica_locked(conn: sqlite3.Connection, room_id: str):
+    """Preflight metadata before SELECT*/decode; quota failure retains the copy."""
+    bounded = conn.execute(
+        f"SELECT ({_replica_header_bounds_sql()}) FROM hosted_room_replicas WHERE room_id=?", (room_id,)).fetchone()
+    if bounded is None:
+        return None
+    if not bounded[0]:
+        raise ReplicaError("stored replica metadata exceeds read bounds; history is preserved")
+    if not _replica_read_envelope_locked(conn, room_id):
+        raise ReplicaCapacityError("stored replica exceeds current read capacity; history is preserved")
+    used = conn.execute("""SELECT
+        (SELECT COALESCE(SUM(event_bytes),0) FROM hosted_rooms) +
+        (SELECT COALESCE(SUM(event_bytes),0) FROM hosted_room_replicas)""").fetchone()[0]
+    from gateway import hosted_rooms as limits
+    if used > min(limits.MAX_GATEWAY_EVENT_BYTES, MAX_REPLICA_EVENT_BYTES):
+        raise ReplicaCapacityError("stored replica exceeds current capacity; history is preserved")
+    row = conn.execute(_SELECT_REPLICA, (room_id,)).fetchone()
+    # The physical bound allows every valid UTF-8 character; apply the existing
+    # logical character limits only after the bounded fetch.
+    if (len(row["room_id"]) > MAX_ROOM_ID_CHARS or len(row["name"]) > MAX_ROOM_NAME_CHARS
+            or len(row["authority_gateway_id"]) > MAX_ACTOR_ID_CHARS
+            or len(row["quarantine_reason"] or "") > 256):
+        raise ReplicaError("stored replica metadata exceeds read bounds; history is preserved")
+    return row
+
 
 
 @contextmanager
@@ -329,7 +411,7 @@ def ingest_page(
             raise ReplicaError("room_id is already locally authoritative")
         if conn.execute("SELECT 1 FROM hosted_room_retired_ids WHERE room_id=?", (room_id,)).fetchone():
             raise ReplicaError("room_id is permanently retired on this gateway")
-        row = conn.execute(_SELECT_REPLICA, (room_id,)).fetchone()
+        row = _load_replica_locked(conn, room_id)
         if row is None:
             _prune_disbanded_replicas_locked(conn, now=None, max_replica_rooms=max(0, MAX_REPLICA_ROOMS - 1))
             reservation = conn.execute(
@@ -416,7 +498,7 @@ def _reserve_replica_bytes(conn: sqlite3.Connection, added_bytes: int) -> None:
 
 
 def _read_replica_locked(conn: sqlite3.Connection, room_id: str) -> tuple[sqlite3.Row | None, sqlite3.Row | None]:
-    row = conn.execute(_SELECT_REPLICA, (room_id,)).fetchone()
+    row = _load_replica_locked(conn, room_id)
     reservation = None if row is not None else conn.execute(
         "SELECT owner_kind FROM hosted_room_id_reservations WHERE room_id=?", (room_id,)).fetchone()
     return row, reservation
@@ -485,7 +567,7 @@ def promote_replica(
     now = clock(now)
     local_gateway = local_authority_gateway_id()
     with _replica_transaction(db_path) as conn:
-        replica = conn.execute(_SELECT_REPLICA, (room_id,)).fetchone()
+        replica = _load_replica_locked(conn, room_id)
         if replica is None:
             raise ReplicaError("replica not found")
         if replica["quarantine_reason"] is not None:

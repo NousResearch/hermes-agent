@@ -1414,10 +1414,10 @@ export default function SessionsPage() {
         setOverviewSessions((prev) =>
           prev.map((s) => (s.id === id ? { ...s, title } : s)),
         );
-        showToast(t.sessions.sessionRenamed, "success");
+        showToast(t.sessions.sessionRenamed ?? "Session renamed", "success");
         loadStats();
       } catch {
-        showToast(t.sessions.renameFailed, "error");
+        showToast(t.sessions.renameFailed ?? "Failed to rename session", "error");
       }
     },
     [rowProfile, showToast, loadStats],
@@ -1445,7 +1445,7 @@ export default function SessionsPage() {
         a.click();
         URL.revokeObjectURL(url);
       } catch {
-        showToast(t.sessions.exportFailed, "error");
+        showToast(t.sessions.exportFailed ?? "Failed to export session", "error");
       }
     },
     [rowProfile, showToast],
@@ -1454,7 +1454,7 @@ export default function SessionsPage() {
   const handlePrune = useCallback(async () => {
     const days = parseInt(pruneDays, 10);
     if (!Number.isFinite(days) || days < 0) {
-      showToast(t.sessions.validDaysRequired, "error");
+      showToast(t.sessions.validDaysRequired ?? "Enter a valid number of days", "error");
       return;
     }
     setPruning(true);
@@ -1466,7 +1466,7 @@ export default function SessionsPage() {
       setPage(0);
       loadStats();
     } catch {
-      showToast(t.sessions.pruneFailed, "error");
+      showToast(t.sessions.pruneFailed ?? "Failed to prune sessions", "error");
     } finally {
       setPruning(false);
     }

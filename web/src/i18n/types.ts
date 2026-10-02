@@ -258,31 +258,33 @@ export interface Translations {
       system: string;
       tool: string;
     };
-    renameSession: string;
-    exportSession: string;
-    exportSessionJson: string;
-    sessionTitlePlaceholder: string;
-    saveTitle: string;
-    cancelRename: string;
-    anyChatSource: string;
-    anyAutomationSource: string;
-    chatSources: string;
-    automationSources: string;
-    noSources: string;
-    sessionRenamed: string;
-    renameFailed: string;
-    exportFailed: string;
-    validDaysRequired: string;
-    pruneFailed: string;
-    pruneOldSessions: string;
-    prune: string;
-    total: string;
-    activeInStore: string;
-    archived: string;
-    messages: string;
-    sources: string;
-    importSessions: string;
-    importSessionsTitle: string;
+    // Optional — added in the round-1 page sweep; only en/zh ship real
+    // translations, so older full-locale files fall back to English.
+    renameSession?: string;
+    exportSession?: string;
+    exportSessionJson?: string;
+    sessionTitlePlaceholder?: string;
+    saveTitle?: string;
+    cancelRename?: string;
+    anyChatSource?: string;
+    anyAutomationSource?: string;
+    chatSources?: string;
+    automationSources?: string;
+    noSources?: string;
+    sessionRenamed?: string;
+    renameFailed?: string;
+    exportFailed?: string;
+    validDaysRequired?: string;
+    pruneFailed?: string;
+    pruneOldSessions?: string;
+    prune?: string;
+    total?: string;
+    activeInStore?: string;
+    archived?: string;
+    messages?: string;
+    sources?: string;
+    importSessions?: string;
+    importSessionsTitle?: string;
   };
 
   // ── Analytics page ──
@@ -655,14 +657,16 @@ export interface Translations {
       needsHomeChannel?: string;
       noneConfigured?: string;
     };
-    noToolsets: string;
-    noSkills: string;
-    skillsOptional: string;
-    savedChanges: string;
-    saveChanges: string;
-    editJob: string;
-    jobsTab: string;
-    blueprintsTab: string;
+    // Optional — added in the round-1 page sweep; only en/zh ship real
+    // translations, so older full-locale files fall back to English.
+    noToolsets?: string;
+    noSkills?: string;
+    skillsOptional?: string;
+    savedChanges?: string;
+    saveChanges?: string;
+    editJob?: string;
+    jobsTab?: string;
+    blueprintsTab?: string;
   };
 
   // ── Plugins page ──

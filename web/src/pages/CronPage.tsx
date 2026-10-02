@@ -207,6 +207,7 @@ function CronAdvancedFields({
   modelOptions: ModelOptionsResult | null;
   availableToolsets: ToolsetInfo[];
 }) {
+  const { t } = useI18n();
   const update = <K extends keyof CronJobEditorState,>(
     key: K,
     next: CronJobEditorState[K],

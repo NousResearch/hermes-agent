@@ -31,7 +31,7 @@ import {
 } from './backend-sync'
 import { $chatFontFamily, resolveChatFontFamily } from './chat-font'
 import { harmonize, readableInk } from './color'
-import { BUILTIN_THEME_LIST, DEFAULT_SKIN_NAME, DEFAULT_TYPOGRAPHY, nousTheme } from './presets'
+import { BUILTIN_THEME_LIST, DEFAULT_SKIN_NAME, DEFAULT_TYPOGRAPHY, nousTheme, RETIRED_SKINS } from './presets'
 import { retintTheme } from './retint'
 import type { DesktopTheme, DesktopThemeColors } from './types'
 import { $userThemes, listAllThemes, resolveTheme } from './user-themes'
@@ -48,9 +48,6 @@ const PROFILE_MODES_KEY = 'hermes-desktop-profile-modes-v1'
 // Last active profile, recorded so the boot-time paint can pick that profile's
 // theme before the gateway reports which profile actually launched.
 const LAST_PROFILE_KEY = 'hermes-desktop-active-profile-v1'
-// Skins that no longer exist. A profile still pointing at one falls back to
-// DEFAULT_SKIN_NAME rather than painting a name nothing resolves.
-const RETIRED_SKINS = new Set(['nous-light', 'default', 'gold'])
 
 export type ThemeMode = 'light' | 'dark' | 'system'
 

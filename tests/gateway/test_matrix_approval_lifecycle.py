@@ -5,7 +5,8 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
+from typing import Any
 
 import pytest
 
@@ -15,6 +16,7 @@ from gateway.platforms.base import SendResult
 from gateway.run import _profile_runtime_scope
 from hermes_constants import get_hermes_home
 from plugins.platforms.matrix.adapter import MatrixAdapter
+from plugins.platforms.matrix.approval_lifecycle import _MatrixApprovalPrompt
 from plugins.platforms.matrix.approval_cards import generate_command_summary
 from tools import approval
 from tools.approval_gateway_wait import _ApprovalEntry
@@ -113,7 +115,7 @@ async def test_reaction_and_core_completion_retract_each_seeded_reaction_once(mo
     adapter.send = AsyncMock(return_value=SendResult(success=True, message_id="$card"))
     adapter._send_reaction = AsyncMock(side_effect=[f"$seed-{index}" for index in range(4)])
     redactions = []
-    adapter._schedule_reaction_redaction = lambda room, event_id, reason="": redactions.append(event_id)
+    adapter._schedule_reaction_redaction = MagicMock(side_effect=lambda room, event_id, reason="": redactions.append(event_id))
     session = "agent:main:matrix:room:retract"
     entry = _ApprovalEntry({"command": "rm -rf /tmp/card"})
     with approval._lock:
@@ -122,7 +124,7 @@ async def test_reaction_and_core_completion_retract_each_seeded_reaction_once(mo
     retractions = []
     completion_retracted = asyncio.Event()
 
-    async def observed_retract(room_id, prompt):
+    async def observed_retract(room_id: str, prompt: _MatrixApprovalPrompt) -> None:
         await retract(room_id, prompt)
         retractions.append(room_id)
         if len(retractions) == 2:
@@ -130,11 +132,12 @@ async def test_reaction_and_core_completion_retract_each_seeded_reaction_once(mo
 
     async def edit(room, event_id, body, **kwargs):
         if not completion_retracted.is_set():
+            assert entry.settle is not None
             entry.settle("resolved")
             await asyncio.wait_for(completion_retracted.wait(), timeout=2)
         return SendResult(success=True, message_id="$replacement")
 
-    adapter._redact_bot_approval_reactions = observed_retract
+    monkeypatch.setattr(adapter, "_redact_bot_approval_reactions", observed_retract)
     adapter.edit_message = AsyncMock(side_effect=edit)
     try:
         await adapter.send_exec_approval(
@@ -143,6 +146,7 @@ async def test_reaction_and_core_completion_retract_each_seeded_reaction_once(mo
         )
         prompt = adapter._approval_prompts_by_event["$card"]
         await adapter._handle_approval_reaction("!room:example.org", "$card", "✅", "@owner:example.org")
+        assert prompt.lifecycle_task is not None
         await prompt.lifecycle_task
         assert (redactions, prompt.terminal_visible, adapter.edit_message.await_count) == (
             ["$seed-0", "$seed-1", "$seed-2", "$seed-3"], True, 1,
@@ -255,7 +259,7 @@ async def _card_with_failing_edits(monkeypatch, session: str, send_event: AsyncM
     adapter._client = SimpleNamespace(send_message_event=send_event)
     adapter.send = AsyncMock(return_value=SendResult(success=True, message_id="$card"))
     adapter._send_reaction = AsyncMock(return_value="$seed")
-    adapter._schedule_reaction_redaction = lambda *args, **kwargs: None
+    adapter._schedule_reaction_redaction = MagicMock(return_value=None)
     clock = _FakeClock()
     adapter._approval_clock, adapter._approval_sleep = clock.monotonic, clock.sleep
     entry = _ApprovalEntry({"command": "rm -rf /tmp/card"})
@@ -378,13 +382,13 @@ async def test_card_notices_stay_in_the_card_thread(monkeypatch, notice):
     adapter._client = SimpleNamespace()
     sent = []
 
-    async def send_room_message(room_id, content, *, finalize=True):
-        sent.append(content)
+    async def send_room_message(chat_id: str, msg_content: dict[str, Any], *, finalize: bool = True) -> str:
+        sent.append(msg_content)
         return f"$event-{len(sent)}"
 
-    adapter._send_room_message = send_room_message
+    monkeypatch.setattr(adapter, "_send_room_message", send_room_message)
     adapter._send_reaction = AsyncMock(return_value="$seed")
-    adapter._schedule_reaction_redaction = lambda *args, **kwargs: None
+    adapter._schedule_reaction_redaction = MagicMock(return_value=None)
     adapter.edit_message = AsyncMock(return_value=SendResult(success=notice == "expired", message_id="$edit", error="offline"))
     session = f"agent:main:matrix:room:thread-{notice}"
     entry = _ApprovalEntry({"command": "rm -rf /tmp/card"})
@@ -441,7 +445,7 @@ async def test_card_notices_use_the_active_language(monkeypatch, overlay_languag
     adapter._client = SimpleNamespace()
     adapter.send = AsyncMock(return_value=SendResult(success=True, message_id="$card"))
     adapter._send_reaction = AsyncMock(return_value="$seed")
-    adapter._schedule_reaction_redaction = lambda *args, **kwargs: None
+    adapter._schedule_reaction_redaction = MagicMock(return_value=None)
     edit = SendResult(success=False, error="M_FORBIDDEN", error_kind=edit_error) if edit_error else SendResult(
         success=True, message_id="$edit")
     adapter.edit_message = AsyncMock(return_value=edit)

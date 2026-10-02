@@ -90,7 +90,7 @@ def _make_adapter(**overrides):
 
     # Phase 9 state — interactive-button correlation dicts.
     adapter._clarify_state = {}
-    adapter._exec_approval_state = {}
+    adapter._exec_approval_state = OrderedDict()
     adapter._slash_confirm_state = {}
 
     # BasePlatformAdapter contract — minimum to keep send/lifecycle happy

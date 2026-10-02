@@ -52,10 +52,26 @@ def _stdlib_prefixes():
         archive = (prefix.parent / archive_name).resolve()
         if archive.name == archive_name and archive.parent == prefix.parent and archive in advertised:
             archives.add(archive)
+    executable = Path(getattr(sys, "_base_executable", sys.executable)).resolve()
+    for prefix in tuple(prefixes):
+        dlls = (prefix.parent / "DLLs").resolve()
+        if (prefix.name.lower() == "lib" and executable.parent == prefix.parent
+                and dlls.parent == prefix.parent and dlls in advertised):
+            prefixes.add(dlls)
     return tuple(_normcase(os.fspath(prefix)) for prefix in prefixes | archives)
 
 
+def _stdlib_search_directories(prefixes):
+    # importlib.metadata lists the executable directory while searching sys.path.
+    # Admit that exact corroborated directory listing, never sibling file reads.
+    root = Path(getattr(sys, "_base_executable", sys.executable)).resolve().parent
+    advertised = any(entry and Path(entry).resolve() == root for entry in sys.path)
+    library = any(Path(prefix).parent == root and Path(prefix).name.lower() == "lib" for prefix in prefixes)
+    return (_normcase(os.fspath(root)),) if advertised and library else ()
+
+
 _STDLIB_PREFIX_STRS = _stdlib_prefixes()
+_STDLIB_SEARCH_DIR_STRS = _stdlib_search_directories(_STDLIB_PREFIX_STRS)
 
 
 def _within(path: str, prefix: str) -> bool:
@@ -82,7 +98,7 @@ class HomeIOGuard:
         self.checking = threading.local()
         self.directories: dict[int, Path] = {}
 
-    def check(self, value, *, dir_fd=None, metadata=False, destructive=False, read_only=False):
+    def check(self, value, *, dir_fd=None, metadata=False, destructive=False, read_only=False, directory_listing=False):
         if value is None or isinstance(value, int) or getattr(self.checking, "active", False):
             return
         self.checking.active = True
@@ -134,6 +150,8 @@ class HomeIOGuard:
                 for prefix in _STDLIB_PREFIX_STRS:
                     if _within(resolved, prefix) or (metadata and _contains(resolved, prefix)):
                         return
+                if directory_listing and resolved in _STDLIB_SEARCH_DIR_STRS:
+                    return
             # After the read-only library exception, refuse lexical state paths
             # before the remaining canonical-path checks.
             for root in roots:
@@ -191,7 +209,7 @@ class HomeIOGuard:
         )
 
     def install(self, monkeypatch):
-        def wrap(module, name, parameters, *, metadata=False, destructive=False, read_only=False):
+        def wrap(module, name, parameters, *, metadata=False, destructive=False, read_only=False, directory_listing=False):
             original = getattr(module, name)
 
             @wraps(original)
@@ -200,7 +218,8 @@ class HomeIOGuard:
                     value = args[index] if index < len(args) else kwargs.get(parameter)
                     self.check(value, dir_fd=kwargs.get(descriptor) if descriptor else None, metadata=metadata,
                                destructive=destructive(args, kwargs) if callable(destructive) else destructive,
-                               read_only=read_only(args, kwargs) if callable(read_only) else read_only)
+                               read_only=read_only(args, kwargs) if callable(read_only) else read_only,
+                               directory_listing=directory_listing)
                 return original(*args, **kwargs)
 
             monkeypatch.setattr(module, name, guarded)
@@ -218,7 +237,7 @@ class HomeIOGuard:
             wrap(os, name, (("path", "dir_fd"),), metadata=True, read_only=True)
         for name in ("makedirs", "listdir", "scandir"):
             wrap(os, name, (("name" if name == "makedirs" else "path", None),),
-                 read_only=name != "makedirs")
+                 read_only=name != "makedirs", directory_listing=name != "makedirs")
         for name in ("rename", "replace"):
             wrap(os, name, (("src", "src_dir_fd"), ("dst", "dst_dir_fd")), destructive=True)
         wrap(shutil, "rmtree", (("path", "dir_fd"),), destructive=True)

@@ -367,7 +367,7 @@ class BaseProcessingMixin:
                 delay = self._requeue_backoff_delay(session_key, pending_event, event)
                 if not delay:  # a backed-off event stays queued until the drain task wakes
                     self._pending_messages.pop(session_key)
-                    reserve_pending_dispatch(self, session_key, pending_event).task = asyncio.current_task()
+                    reserve_pending_dispatch(self, session_key, pending_event, from_queue=True).task = asyncio.current_task()
                     self._stage_next_queued_event(session_key, pending_event)
                 logger.debug("[%s] Processing queued follow-up message", self.name)
                 self._clear_session_guard(session_key)
@@ -418,7 +418,7 @@ class BaseProcessingMixin:
         # back-off must survive the slot-empty exit (#48300).
         guard = self._active_sessions.get(session_key)
         if not delay:
-            reserve_pending_dispatch(self, session_key, pending_event)
+            reserve_pending_dispatch(self, session_key, pending_event, from_queue=True)
         self._track_session_task(
             session_key,
             asyncio.create_task(self._drain_after(pending_event, session_key, delay, guard)), pending_event)

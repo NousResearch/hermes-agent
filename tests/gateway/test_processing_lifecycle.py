@@ -1080,7 +1080,7 @@ async def test_processing_reservation_distinguishes_new_input_from_pending_repla
     )
     adapter._pending_messages[key] = first
     if previously_admitted:
-        reserve_pending_dispatch(adapter, key, second)
+        reserve_pending_dispatch(adapter, key, second, from_queue=True)
     entered, release = asyncio.Event(), asyncio.Event()
     observed: list[bool] = []
 

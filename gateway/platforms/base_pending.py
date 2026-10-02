@@ -110,6 +110,7 @@ class _PendingDispatchReservation:
     withdrawn: bool = False
     revision: int = 0
     accepted: bool = True
+    from_queue: bool = False
     task: asyncio.Task | None = None
     previous: _PendingDispatchReservation | None = None
     aliases: list[MessageEvent] = field(default_factory=list)
@@ -120,6 +121,7 @@ class _PendingDispatchReservation:
     def bind(self, event: MessageEvent) -> None:
         if self.includes(event):
             return
+        event._ingress_order = self.event._ingress_order
         event._merged_parts = self.event._merged_parts
         event._pending_native_input = self.event._pending_native_input
         event._pending_execution_owner = self.event._pending_execution_owner
@@ -197,17 +199,18 @@ def pending_dispatch_record(adapter: object, session_key: str,
 
 
 def reserve_pending_dispatch(adapter: object, session_key: str, event: MessageEvent, *,
-                             accepted: bool = True) -> _PendingDispatchReservation:
+                             accepted: bool = True, from_queue: bool = False) -> _PendingDispatchReservation:
     ingress_order(event)
     for record in pending_dispatch_records(adapter, session_key):
         if record.includes(event):
             record.accepted = record.accepted or accepted
+            record.from_queue = record.from_queue or from_queue
             return record
     reservations = getattr(adapter, "_pending_dispatch_reservations", None)
     if reservations is None:
         reservations = {}
         setattr(adapter, "_pending_dispatch_reservations", reservations)
-    record = _PendingDispatchReservation(event, accepted=accepted, previous=reservations.get(session_key))
+    record = _PendingDispatchReservation(event, accepted=accepted, from_queue=from_queue, previous=reservations.get(session_key))
     reservations[session_key] = record
     return record
 
@@ -320,7 +323,7 @@ def is_pending_redispatch(
         or dispatch.task is not asyncio.current_task()
     ):
         return False
-    if dispatch.reservation is None or not dispatch.reservation.accepted:
+    if dispatch.reservation is None or not dispatch.reservation.accepted or not dispatch.reservation.from_queue:
         return False
     original = dispatch.event
     return (

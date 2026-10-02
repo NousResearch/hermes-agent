@@ -108,7 +108,10 @@ def build_update_parser(subparsers, *, cmd_update: Callable) -> None:
     )
     update_parser.add_argument(
         "--no-gateway-restart", action="store_true", default=False,
-        help="Update code and dependencies but defer the fleet restart. Use for updates "
-             "running inside a gateway cgroup, then restart gateways separately.",
+        help=(
+            "Stop the fleet for the update, but defer restarting it. This does not keep "
+            "gateways online: it only suppresses the post-update restart. Run from a "
+            "separate shell, not a gateway child process, then restart gateways separately."
+        ),
     )
     update_parser.set_defaults(func=cmd_update)

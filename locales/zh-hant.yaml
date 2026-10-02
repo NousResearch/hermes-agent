@@ -744,6 +744,7 @@ gateway:
     already_paused: "⏸️ Hermes 已處於暫停狀態{suffix}。使用 `/pause off` 恢復。"
     paused: "⏸️ 已暫停{suffix}。新的排程／kanban／閘道工作將暫緩；進行中的工作會正常完成。使用 `/pause off` 恢復。"
   queue:
+    full: "待處理佇列已滿。此訊息未加入佇列。請等候一個已排隊回合完成後重新傳送。"
     usage: "用法：/queue <prompt>"
     queued: "已排入下一輪佇列。"
     queued_depth: " （{depth} 則排隊中）"

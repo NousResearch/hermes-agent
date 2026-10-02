@@ -399,6 +399,18 @@ export const zh: Translations = {
     installsFrom: "安装自：",
     enable: "启用",
     disable: "禁用",
+      "invalidServer": "无效的 MCP 服务器",
+      "addedOauth": "已添加 — 请使用 OAuth 认证",
+      "added": "已添加 ✓",
+      "restartNote": "启用/禁用将在网关下次重启后生效。",
+      "installingBackground": "正在后台安装…",
+      "addServer": "添加服务器",
+      "adding": "添加中...",
+      "add": "添加",
+      "installing": "安装中...",
+      "install": "安装",
+      "connectedNoTools": "已连接 — 无工具",
+      "failed": "失败",
   },
 
   pairingPage: {

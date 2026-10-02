@@ -414,6 +414,18 @@ export const en: Translations = {
     installsFrom: "Installs from:",
     enable: "Enable",
     disable: "Disable",
+      "invalidServer": "Invalid MCP server",
+      "addedOauth": "Added — authenticate with OAuth",
+      "added": "Add ✓",
+      "restartNote": "Enable/disable takes effect on the next gateway restart.",
+      "installingBackground": "Installing in background…",
+      "addServer": "Add Server",
+      "adding": "Adding...",
+      "add": "Add",
+      "installing": "Installing...",
+      "install": "Install",
+      "connectedNoTools": "Connected — no tools",
+      "failed": "Failed",
   },
 
   pairingPage: {

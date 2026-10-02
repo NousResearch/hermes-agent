@@ -145,7 +145,7 @@ export default function McpPage() {
       });
     } catch (error) {
       showToast(
-        error instanceof Error ? error.message : "Invalid MCP server",
+        error instanceof Error ? error.message : M.invalidServer,
         "error",
       );
       return;
@@ -156,8 +156,8 @@ export default function McpPage() {
       await api.addMcpServer(body);
       showToast(
         transport === "http" && httpAuth === "oauth"
-          ? "Added — authenticate with OAuth"
-          : "Add ✓",
+          ? M.addedOauth
+          : M.added,
         "success",
       );
       setName("");
@@ -185,7 +185,7 @@ export default function McpPage() {
       if (result.ok) {
         showToast(`${server.name}: ${result.tools.length} tool(s)`, "success");
       } else {
-        showToast(`${server.name}: ${result.error ?? "Failed"}`, "error");
+        showToast(`${server.name}: ${result.error ?? M.failed}`, "error");
       }
     } catch (e) {
       showToast(`Could not test the MCP server: ${errorMessage(e)}`, "error");
@@ -224,7 +224,7 @@ export default function McpPage() {
         prev.map((s) => (s.name === server.name ? { ...s, enabled: next } : s)),
       );
       setRestartNote(
-        "Enable/disable takes effect on the next gateway restart.",
+        M.restartNote,
       );
     } catch (e) {
       showToast(`Could not update the MCP server: ${errorMessage(e)}`, "error");
@@ -261,7 +261,7 @@ export default function McpPage() {
       try {
         const res = await api.installMcpCatalogEntry(entry.name, envMap, true);
         if (res.background) {
-          showToast("Installing in background…", "success");
+          showToast(M.installingBackground, "success");
         } else {
           showToast(`Installed: "${truncateText(entry.name, 30)}"`, "success");
         }
@@ -314,7 +314,7 @@ export default function McpPage() {
         size="sm"
         onClick={() => setCreateModalOpen(true)}
       >
-        Add Server
+        {M.addServer}
       </Button>,
     );
     return () => {
@@ -513,7 +513,7 @@ export default function McpPage() {
                   disabled={creating}
                   prefix={creating ? <Spinner /> : undefined}
                 >
-                  {creating ? "Adding..." : "Add"}
+                  {creating ? M.adding : M.add}
                 </Button>
               </div>
             </div>
@@ -594,8 +594,8 @@ export default function McpPage() {
                   }
                 >
                   {installingName === installEntry.name
-                    ? "Installing..."
-                    : "Install"}
+                    ? M.installing
+                    : M.install}
                 </Button>
               </div>
             </div>
@@ -692,7 +692,7 @@ export default function McpPage() {
                       {result.ok ? (
                         <p className="text-success">
                           {result.tools.length === 0
-                            ? "Connected — no tools"
+                            ? M.connectedNoTools
                             : `Tools: ${result.tools
                                 .map((tool) => tool.name)
                                 .join(", ")}`}
@@ -918,7 +918,7 @@ export default function McpPage() {
                       disabled={isInstalling}
                       prefix={isInstalling ? <Spinner /> : undefined}
                     >
-                      {isInstalling ? "Installing..." : "Install"}
+                      {isInstalling ? M.installing : M.install}
                     </Button>
                   )}
                 </div>

@@ -420,6 +420,18 @@ export interface Translations {
     installsFrom: string;
     enable: string;
     disable: string;
+    invalidServer: string;
+    addedOauth: string;
+    added: string;
+    restartNote: string;
+    installingBackground: string;
+    addServer: string;
+    adding: string;
+    add: string;
+    installing: string;
+    install: string;
+    connectedNoTools: string;
+    failed: string;
   };
 
   /** Optional — Pairing page copy. */

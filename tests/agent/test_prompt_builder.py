@@ -19,6 +19,7 @@ from agent.prompt_builder import (
     _cursorrules_candidates,
     _strip_yaml_frontmatter,
     build_skills_system_prompt,
+    get_visible_skill_names,
     build_context_files_prompt,
     CONTEXT_FILE_MAX_CHARS,
     _get_context_file_max_chars,
@@ -1045,3 +1046,17 @@ class TestContextFileReadTimeout:
 
         with pytest.raises(FileNotFoundError):
             _read_text_with_timeout(tmp_path / "missing.md", timeout=1.0)
+
+
+def test_visible_skill_names_and_names_only_rendering(monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    skill_dir = tmp_path / "skills" / "search" / "duckduckgo"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(
+        "---\nname: duckduckgo\ndescription: Free web search\n---\n"
+    )
+
+    assert get_visible_skill_names() == frozenset({"duckduckgo"})
+    rendered = build_skills_system_prompt(names_only=True)
+    assert "duckduckgo" in rendered
+    assert "Free web search" not in rendered

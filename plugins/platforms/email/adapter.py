@@ -82,6 +82,7 @@ _DROP_HINTS = {
     _UNTRUSTED_AUTHSERV_REASON: " Check that platforms.email.authserv_id (EMAIL_AUTHSERV_ID) names your mail server.",
 }
 _MESSAGE_ID_RE = re.compile(r"<[^<>\s]+>")
+_GMAIL_THREAD_ID_RE = re.compile(rb"(?:^|\s)X-GM-THRID\s+(\d+)(?:\s|$)", re.IGNORECASE)
 # One token of a clause: a property we read (``header.from=x``; the value may be or contain a quoted-string), or
 # any other whitespace-delimited token consumed whole, so text inside quotes or other values is never read as a prop.
 _QUOTED = r'"(?:[^"\\]|\\.)*"'
@@ -705,14 +706,25 @@ class EmailAdapter(BasePlatformAdapter):
                     if not accepted:
                         self._mark_uid_consumed(imap, uid)
                         continue
-                    status, msg_data = imap.uid("fetch", uid, "(RFC822)")
+                    # Gmail exposes one durable thread identifier shared by every message in a
+                    # conversation. Prefer it over reconstructing a thread from lossy References
+                    # headers; standards-only servers keep the portable RFC822 fallback.
+                    gmail_imap = "gmail.com" in self._imap_host.lower()
+                    fetch_items = "(X-GM-THRID RFC822)" if gmail_imap else "(RFC822)"
+                    status, msg_data = imap.uid("fetch", uid, fetch_items)
                     if status != "OK":
                         continue  # transient per-UID refusal: leave unseen so the next poll retries
                     # Mark seen once a response arrived (even malformed) so garbage is skipped once, not retried forever —
                     # but NOT before the fetch: a connection failure must leave the rest of the batch eligible for the next poll.
                     self._seen_uids.add(uid)
                     self._trim_seen_uids()
-                    if (raw_email := _imap_payload(msg_data)) is None:
+                    raw_email = _imap_payload(msg_data)
+                    fetch_meta = next(
+                        (item[0] for item in (msg_data or [])
+                         if isinstance(item, tuple) and item and isinstance(item[0], bytes)),
+                        b"",
+                    )
+                    if raw_email is None:
                         logger.warning("[Email] Unexpected IMAP response structure for UID %s, skipping", uid)
                         continue
                     # One poison message (unparseable headers, pathological attachment, DNS hiccup) must not abort the batch or force a reconnect.
@@ -723,6 +735,10 @@ class EmailAdapter(BasePlatformAdapter):
                         logger.error("[Email] Failed to process message UID %s, skipping: %s", uid, parse_exc)
                         continue
                     if parsed is not None:
+                        if isinstance(fetch_meta, bytes):
+                            match = _GMAIL_THREAD_ID_RE.search(fetch_meta)
+                            if match:
+                                parsed["provider_thread_id"] = match.group(1).decode("ascii")
                         results.append(parsed)
         except Exception as e:
             # _close_imap guarantees the socket dies even when logout() raises IMAP4.abort on a broken
@@ -840,9 +856,23 @@ class EmailAdapter(BasePlatformAdapter):
         in_reply_to = str(msg_data.get("in_reply_to") or "").strip()
         previous = self._thread_context.get(sender_addr, {})
         # Email sessions are conversations, not sender-wide mailboxes. References carries the
-        # root Message-ID across standards-compliant replies. The in-process mapping covers a
-        # reply to our immediately preceding SMTP message when a client omits References.
-        if references:
+        # root Message-ID across standards-compliant replies. Resolve every cited Message-ID
+        # through the in-process map first: Gmail can rebuild References from only our preceding
+        # reply, so blindly hashing references[0] split one visible thread into a fresh session
+        # after every exchange.
+        provider_thread_id = str(msg_data.get("provider_thread_id") or "").strip()
+        known_context = next(
+            (self._message_context[token] for token in (*references, in_reply_to)
+             if token and token in self._message_context),
+            None,
+        )
+        if provider_thread_id:
+            thread_root = f"gmail:{provider_thread_id}"
+        elif known_context:
+            thread_root = known_context.get("thread_root") or (
+                references[0] if references else in_reply_to
+            )
+        elif references:
             thread_root = references[0]
         elif in_reply_to and in_reply_to == previous.get("outbound_message_id"):
             thread_root = previous.get("thread_root") or in_reply_to
@@ -907,18 +937,33 @@ class EmailAdapter(BasePlatformAdapter):
                    attach_empty_body: bool = False) -> Tuple[MIMEMultipart, str, str]:
         """Build a threaded reply skeleton. Returns ``(msg, msg_id, subject)``."""
         msg = MIMEMultipart()
-        ctx = self._message_context.get(reply_to_msg_id or "") or self._thread_context.get(to_addr, {})
+        # An explicit reply target belongs only to its exact known context. Falling back to the
+        # recipient's latest thread can splice two unrelated conversations together after a
+        # restart, cache eviction, or delayed send.
+        ctx = (
+            self._message_context.get(reply_to_msg_id, {})
+            if reply_to_msg_id
+            else self._thread_context.get(to_addr, {})
+        )
         subject = ctx.get("subject", "Hermes Agent")
         if not subject.startswith("Re:"):
             subject = f"Re: {subject}"
         original_msg_id = reply_to_msg_id or ctx.get("message_id")
-        threading = (("In-Reply-To", original_msg_id), ("References", original_msg_id)) if original_msg_id else ()
+        thread_root = ctx.get("thread_root")
+        reference_ids = list(dict.fromkeys(token for token in (thread_root, original_msg_id) if token))
+        threading = (
+            ("In-Reply-To", original_msg_id),
+            ("References", " ".join(reference_ids)),
+        ) if original_msg_id else ()
         msg_id = f"<hermes-{uuid.uuid4().hex[:12]}@{self._message_id_domain()}>"
         for key, value in (("From", self._address), ("To", to_addr), ("Subject", subject), *threading,
                            ("Date", formatdate(localtime=True)), ("Message-ID", msg_id)):
             msg[key] = value
         if ctx:
             ctx["outbound_message_id"] = msg_id
+            self._message_context[msg_id] = ctx
+            if len(self._message_context) > 2048:
+                self._message_context.pop(next(iter(self._message_context)))
         if body or attach_empty_body:
             msg.attach(MIMEText(body, "plain", "utf-8"))
         return msg, msg_id, subject

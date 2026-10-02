@@ -343,6 +343,103 @@ class TestDispatchMessage(unittest.TestCase):
         self.assertEqual(subject, "Re: First request")
         self.assertEqual(delayed["In-Reply-To"], "<root-a@test.com>")
 
+    def test_gmail_reply_chain_keeps_one_session_and_root_reference(self):
+        """A Gmail-style chain must not create a fresh session on every customer reply."""
+        import asyncio
+        adapter = self._make_adapter()
+        captured_events = []
+
+        async def capture_handle(event):
+            captured_events.append(event)
+
+        adapter.handle_message = capture_handle
+        base = {
+            "uid": b"20", "sender_addr": "user@test.com", "sender_name": "User",
+            "subject": "Cleaning", "message_id": "<root@test.com>", "in_reply_to": "",
+            "references": "", "body": "First message", "attachments": [], "date": "",
+        }
+        asyncio.run(adapter._dispatch_message(dict(base)))
+        first_thread = captured_events[-1].source.thread_id
+
+        first_outbound, first_outbound_id, _ = adapter._new_reply(
+            "user@test.com", "First answer", reply_to_msg_id="<root@test.com>")
+        self.assertEqual(first_outbound["References"], "<root@test.com>")
+
+        # Gmail may cite only the business reply. The adapter knows that reply's root.
+        asyncio.run(adapter._dispatch_message({
+            **base, "uid": b"21", "subject": "Re: Cleaning", "message_id": "<reply-1@test.com>",
+            "in_reply_to": first_outbound_id, "references": first_outbound_id,
+            "body": "Second message",
+        }))
+        self.assertEqual(captured_events[-1].source.thread_id, first_thread)
+
+        second_outbound, second_outbound_id, _ = adapter._new_reply(
+            "user@test.com", "Second answer", reply_to_msg_id="<reply-1@test.com>")
+        self.assertEqual(
+            second_outbound["References"],
+            "<root@test.com> <reply-1@test.com>",
+        )
+
+        # The stable root in our outgoing References survives an adapter restart.
+        restarted = self._make_adapter()
+        restarted_events = []
+
+        async def capture_restarted(event):
+            restarted_events.append(event)
+
+        restarted.handle_message = capture_restarted
+        asyncio.run(restarted._dispatch_message({
+            **base, "uid": b"22", "subject": "Re: Cleaning", "message_id": "<reply-2@test.com>",
+            "in_reply_to": second_outbound_id,
+            "references": f"<root@test.com> <reply-1@test.com> {second_outbound_id}",
+            "body": "Third message",
+        }))
+        self.assertEqual(restarted_events[-1].source.thread_id, first_thread)
+
+    def test_gmail_provider_thread_id_is_authoritative_across_missing_headers(self):
+        """Gmail's durable thread ID keeps multi-day replies in one persisted session."""
+        import asyncio
+        adapter = self._make_adapter()
+        captured_events = []
+
+        async def capture_handle(event):
+            captured_events.append(event)
+
+        adapter.handle_message = capture_handle
+        base = {
+            "uid": b"30", "sender_addr": "user@test.com", "sender_name": "User",
+            "subject": "Cleaning", "in_reply_to": "", "references": "",
+            "body": "Message", "attachments": [], "date": "",
+            "provider_thread_id": "1876543210123456789",
+        }
+        asyncio.run(adapter._dispatch_message({**base, "message_id": "<first@test.com>"}))
+        first_thread = captured_events[-1].source.thread_id
+
+        # A later adapter instance has no in-memory Message-ID map and the headers may be incomplete.
+        restarted = self._make_adapter()
+        restarted.handle_message = capture_handle
+        asyncio.run(restarted._dispatch_message({
+            **base, "uid": b"31", "subject": "Re: Cleaning",
+            "message_id": "<later@test.com>", "in_reply_to": "<unknown@test.com>",
+        }))
+        self.assertEqual(captured_events[-1].source.thread_id, first_thread)
+
+    def test_unknown_explicit_reply_target_does_not_borrow_latest_thread_root(self):
+        """A delayed explicit reply must not merge into the sender's newest conversation."""
+        adapter = self._make_adapter()
+        adapter._thread_context["user@test.com"] = {
+            "subject": "New request",
+            "message_id": "<new-inbound@test.com>",
+            "thread_root": "<new-root@test.com>",
+        }
+
+        reply, _, _ = adapter._new_reply(
+            "user@test.com", "Delayed answer", reply_to_msg_id="<old-inbound@test.com>")
+
+        self.assertEqual(reply["In-Reply-To"], "<old-inbound@test.com>")
+        self.assertEqual(reply["References"], "<old-inbound@test.com>")
+        self.assertNotIn("<new-root@test.com>", reply["References"])
+
 
     def test_image_attachment_sets_photo_type(self):
         """Email with image attachment should set message type to PHOTO."""

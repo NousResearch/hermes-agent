@@ -5074,12 +5074,19 @@ def _resolve_custom_branch(req: _ResolveRequest) -> _ResolveResult:
             # host base_url names is never intended. Explicit api_key or the placeholder only.
             custom_key = _normalize_api_key(req.explicit_api_key) or "no-key-required"
         else:
-            custom_key = (
-                _normalize_api_key(req.explicit_api_key)
-                or _scoped_key_env("OPENAI_API_KEY")
-                or _read_main_api_key_if_same_host(custom_base)
-                or "no-key-required"  # local servers don't need auth
-            )
+            from hermes_cli.runtime_provider_custom import openai_alias_model_endpoint_key
+            locked, model_key = openai_alias_model_endpoint_key(custom_base)
+            if locked:
+                # This host is model.base_url. Its credential is model.key_env.
+                # OPENAI_API_KEY stays on OPENAI_BASE_URL and api.openai.com.
+                custom_key = _normalize_api_key(req.explicit_api_key) or model_key or "no-key-required"
+            else:
+                custom_key = (
+                    _normalize_api_key(req.explicit_api_key)
+                    or _scoped_key_env("OPENAI_API_KEY")
+                    or _read_main_api_key_if_same_host(custom_base)
+                    or "no-key-required"  # local servers don't need auth
+                )
         if not custom_base:
             logger.warning("resolve_provider_client: explicit custom endpoint requested but base_url is empty")
             return None, None
@@ -6074,6 +6081,21 @@ def _preserve_provider_with_base_url(prov: Optional[str]) -> bool:
         }
 
 
+def _key_after_openai_alias_expansion(named_base, expanded_base, current_key):
+    """A block that did not name a base_url inherits ``model.key_env`` for ``model.base_url``.
+
+    Its own api_key was for the public OpenAI host. An empty ``key_env`` stays empty
+    so ``OPENAI_API_KEY`` is not sent to that proxy.
+    """
+    if str(named_base or "").strip():
+        return current_key
+    from hermes_cli.runtime_provider_custom import openai_alias_model_endpoint_key
+    locked, key = openai_alias_model_endpoint_key(expanded_base or "")
+    if not locked:
+        return current_key
+    return key or None
+
+
 def _resolve_task_provider_model(
     task: str = None, provider: str = None, model: str = None, base_url: Optional[str] = None,
     api_key: Optional[str] = None,
@@ -6123,9 +6145,13 @@ def _resolve_task_provider_model(
     # way here (compression/vision/title) and on the runtime path (background review, curator, MoA).
     from hermes_cli.runtime_provider_custom import expand_direct_api_alias
     if provider:
+        named_base = base_url
         provider, base_url = expand_direct_api_alias(provider, base_url)
+        api_key = _key_after_openai_alias_expansion(named_base, base_url, api_key)
     if cfg_provider:
+        named_cfg_base = cfg_base_url
         cfg_provider, cfg_base_url = expand_direct_api_alias(cfg_provider, cfg_base_url)
+        cfg_api_key = _key_after_openai_alias_expansion(named_cfg_base, cfg_base_url, cfg_api_key)
     # An explicit provider without base_url adopts the task's configured endpoint (same or
     # unnamed provider) so the early return below carries it. Explicit "auto" is excluded — it
     # must keep flowing through auto-resolution.

@@ -2279,3 +2279,115 @@ def test_openai_alias_without_base_url_pairs_openai_key_with_openai_base_url(mon
     runtime = rp.resolve_runtime_provider(requested="openai", target_model="gpt-x")
 
     assert (runtime["provider"], runtime["base_url"], runtime["api_key"]) == ("custom", "https://llm-proxy.corp.example/v1", "sk-proxy-issued")
+
+
+@pytest.mark.parametrize("stale_env_base", [None, "https://stale.example/v1"])
+def test_openai_main_model_runtime_and_discovery_use_the_configured_endpoint(tmp_path, monkeypatch, stale_env_base):
+    """``model.provider: openai`` + ``model.base_url``: inference and model discovery hit the SAME endpoint,
+    the configured one, with the ``model.key_env`` key, whether or not a stale OPENAI_BASE_URL is exported."""
+    from hermes_cli import config as _cfg
+    from hermes_cli import models
+
+    hermes_home = tmp_path / "hermes"
+    hermes_home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    (hermes_home / "config.yaml").write_text(
+        "model:\n  provider: openai\n  default: gpt-x\n"
+        "  base_url: https://proxy.example/v1\n  key_env: PROXY_KEY\n")
+    _cfg._LOAD_CONFIG_CACHE.clear()
+    _cfg._RAW_CONFIG_CACHE.clear()
+    monkeypatch.setenv("PROXY_KEY", "sk-proxy")
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-openai")
+    if stale_env_base:
+        monkeypatch.setenv("OPENAI_BASE_URL", stale_env_base)
+    else:
+        monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+
+    runtime = rp.resolve_runtime_provider()
+
+    assert models._openai_discovery_base_url("openai") == runtime["base_url"] == "https://proxy.example/v1"
+    assert runtime["api_key"] == "sk-proxy"
+    seen = {}
+
+    def _fetch(api_key, base, **kwargs):
+        seen["api_key"] = api_key
+        seen["base"] = base
+        return ["gpt-x"]
+
+    monkeypatch.setattr(models, "fetch_api_models", _fetch)
+    assert models._openai_catalog("openai", False) == ["gpt-x"]
+    assert seen == {"api_key": "sk-proxy", "base": "https://proxy.example/v1"}
+
+
+def _write_openai_proxy_config(tmp_path, monkeypatch, body: str):
+    from hermes_cli import config as _cfg
+
+    hermes_home = tmp_path / "hermes"
+    hermes_home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    (hermes_home / "config.yaml").write_text(body)
+    _cfg._LOAD_CONFIG_CACHE.clear()
+    _cfg._RAW_CONFIG_CACHE.clear()
+
+
+def test_openai_discovery_does_not_post_openai_api_key_to_model_base_url(tmp_path, monkeypatch):
+    """key_env declared but empty: discovery returns no catalog instead of posting OPENAI_API_KEY."""
+    from hermes_cli import models
+
+    _write_openai_proxy_config(tmp_path, monkeypatch, (
+        "model:\n  provider: openai\n  default: gpt-x\n"
+        "  base_url: https://proxy.example/v1\n  key_env: PROXY_KEY\n"
+    ))
+    monkeypatch.delenv("PROXY_KEY", raising=False)
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-openai")
+
+    def _fetch(api_key, base, **kwargs):
+        raise AssertionError(f"discovery posted {api_key} to {base}")
+
+    monkeypatch.setattr(models, "fetch_api_models", _fetch)
+    assert models._openai_catalog("openai", False) is None
+
+
+def test_aux_openai_block_uses_model_key_env_for_model_base_url(tmp_path, monkeypatch):
+    """auxiliary.vision provider openai keeps its api_key off model.base_url."""
+    from agent import auxiliary_client as aux
+
+    _write_openai_proxy_config(tmp_path, monkeypatch, (
+        "model:\n  provider: openai\n  default: gpt-x\n"
+        "  base_url: https://proxy.example/v1\n  key_env: PROXY_KEY\n"
+        "auxiliary:\n  vision:\n    provider: openai\n    model: gpt-x\n"
+        "    api_key: sk-openai-block\n"
+    ))
+    monkeypatch.setenv("PROXY_KEY", "sk-proxy")
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-openai-env")
+    aux._client_cache.clear()
+
+    provider, _model, base, key, _mode = aux._resolve_task_provider_model("vision")
+    assert (provider, base, key) == ("custom", "https://proxy.example/v1", "sk-proxy")
+
+    _provider, client, _resolved = aux.resolve_vision_provider_client()
+    assert client is not None
+    assert str(client.api_key) == "sk-proxy"
+    assert "proxy.example" in str(client.base_url)
+
+
+def test_aux_openai_alias_does_not_fall_through_to_openai_api_key(tmp_path, monkeypatch):
+    from agent import auxiliary_client as aux
+
+    _write_openai_proxy_config(tmp_path, monkeypatch, (
+        "model:\n  provider: openai\n  default: gpt-x\n"
+        "  base_url: https://proxy.example/v1\n  key_env: PROXY_KEY\n"
+        "auxiliary:\n  vision:\n    provider: openai\n    model: gpt-x\n"
+        "    api_key: sk-openai-block\n"
+    ))
+    monkeypatch.delenv("PROXY_KEY", raising=False)
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-openai-env")
+    aux._client_cache.clear()
+
+    _provider, _model, base, key, _mode = aux._resolve_task_provider_model("vision")
+    assert base == "https://proxy.example/v1"
+    assert key in (None, "")
+
+    _resolved, client, _name = aux.resolve_vision_provider_client()
+    assert client is not None
+    assert str(client.api_key) == "no-key-required"

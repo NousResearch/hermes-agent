@@ -66,6 +66,23 @@ def _model_cfg_key_env_for(model_cfg: Dict[str, Any], base_url: str) -> str:
     return _key_env_secret(model_cfg, "model")
 
 
+def openai_alias_model_endpoint_key(base_url: str) -> Tuple[bool, str]:
+    """``(locked, key)`` for an OpenAI alias endpoint.
+
+    Locked when ``base_url`` is the configured ``model.base_url`` of ``provider: openai``.
+    The key is then ``model.key_env`` only, possibly empty. Callers must not substitute
+    ``OPENAI_API_KEY``, which was not issued for that host. Unlocked means this is
+    ``OPENAI_BASE_URL`` or the public host, and the caller keeps its own key.
+    """
+    model_cfg = _rp()._get_model_config() or {}
+    if _clean(model_cfg.get("provider")).lower() != "openai":
+        return False, ""
+    cfg_base_url = _clean(model_cfg.get("base_url")).rstrip("/")
+    if not cfg_base_url or cfg_base_url != _clean(base_url).rstrip("/"):
+        return False, ""
+    return True, _model_cfg_key_env_for(model_cfg, base_url)
+
+
 def _entry_url(entry: Dict[str, Any]) -> str:
     return entry.get("api") or entry.get("url") or entry.get("base_url") or ""
 
@@ -470,15 +487,27 @@ def expand_direct_api_alias(provider: Optional[str], existing_base: Optional[str
     The ONE normalization both aux paths (``agent.auxiliary_client`` and ``resolve_runtime_provider``)
     apply, so the same ``auxiliary.<task>.provider`` value routes identically everywhere. A
     ``providers.openai`` entry keeps the provider name so the named-custom branch applies its base_url
-    and key; otherwise ``OPENAI_BASE_URL`` (a proxy/gateway the OPENAI_API_KEY was issued for) wins over
-    the public endpoint — sending the proxy key to api.openai.com 401s and then quarantines a valid key.
+    and key. Without a block base_url the endpoint is :func:`direct_api_alias_base_url`.
     """
     if not provider:
         return provider, existing_base
-    target_base = _DIRECT_API_BASE_URLS.get(provider.strip().lower())
-    if target_base is None or _rp()._get_named_custom_provider(provider) is not None:
+    alias = provider.strip().lower()
+    if alias not in _DIRECT_API_BASE_URLS or _rp()._get_named_custom_provider(provider) is not None:
         return provider, existing_base
-    return "custom", (existing_base or "").strip() or get_secret_str("OPENAI_BASE_URL", "").strip().rstrip("/") or target_base
+    return "custom", (existing_base or "").strip() or direct_api_alias_base_url(alias)
+
+
+def direct_api_alias_base_url(alias: str) -> str:
+    """Endpoint of a direct-API alias when the block names no base_url.
+
+    ``model.base_url`` when ``model.provider`` is this alias (the main model's own block, whose
+    ``key_env`` then applies), else ``OPENAI_BASE_URL`` (a proxy/gateway the OPENAI_API_KEY was issued
+    for: sending the proxy key to api.openai.com 401s and then quarantines a valid key), else the public
+    endpoint. Model discovery calls this too, so the picker lists the endpoint inference uses.
+    """
+    rp = _rp()
+    return (rp._config_base_url_for_provider(rp._get_model_config(), alias)
+            or get_secret_str("OPENAI_BASE_URL", "").strip().rstrip("/") or _DIRECT_API_BASE_URLS[alias])
 
 
 def _resolve_direct_alias_runtime(requested_provider: str, explicit_api_key: Optional[str],

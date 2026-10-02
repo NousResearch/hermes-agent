@@ -1206,6 +1206,89 @@ export interface Translations {
     authPrefix: string;
   };
 
+  /** Optional — shared component copy. Only en/zh ship it; others fall back. */
+  sharedComponents?: {
+    console: {
+      title: string;
+      reconnect: string;
+      reconnectAria: string;
+      closeAria: string;
+      commandFailed: string;
+      couldNotConnect: string;
+      closed: string;
+      disconnected: string;
+    };
+    authWidget: {
+      statusUnavailable: string;
+      reloadPage: string;
+      loggedInAs: string;
+      viaProvider: string;
+      logOut: string;
+    };
+    skillEditor: {
+      editTitle: string;
+      newTitle: string;
+      editBody: string;
+      createBody: string;
+      nameLabel: string;
+      categoryLabel: string;
+      saving: string;
+      saveChanges: string;
+      createSkill: string;
+      errNameRequired: string;
+      errContentRequired: string;
+    };
+    toolsetDrawer: {
+      active: string;
+      inactive: string;
+      enableAria: string;
+      enabledFor: string;
+      disabledFor: string;
+      noBackends: string;
+      noProviders: string;
+      selected: string;
+      select: string;
+      saved: string;
+      savedPlaceholder: string;
+      getKey: string;
+      saveKeys: string;
+      postSetupNotice: string;
+      installing: string;
+      runSetup: string;
+      postSetupPrefix: string;
+      starting: string;
+      close: string;
+      failedLoad: string;
+      postSetupComplete: string;
+      postSetupErrors: string;
+      lostTrack: string;
+      failedToggle: string;
+      providerSet: string;
+      failedSelect: string;
+      enterAtLeastOne: string;
+      savedCount: string;
+      nothingToSave: string;
+      failedSaveKeys: string;
+      failedStartSetup: string;
+      toggleEnabled: string;
+      toggleDisabled: string;
+    };
+    blueprints: {
+      cancel: string;
+      setUp: string;
+      scheduleIt: string;
+      loadFailed: string;
+      loadingBlueprints: string;
+      noneAvailable: string;
+      scheduled: string;
+    };
+    chatSidebar: {
+      reasoning: string;
+      reasoningNotice: string;
+      modelNotice: string;
+    };
+  };
+
   skills: {
     title: string;
     searchPlaceholder: string;

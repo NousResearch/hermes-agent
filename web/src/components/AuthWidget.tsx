@@ -29,6 +29,15 @@ import { ApiError } from "@/lib/api-error";
 import { shouldHideAuthWidget } from "./auth-widget-visibility";
 import { cn } from "@/lib/utils";
 import { LogOut } from "lucide-react";
+import { useI18n } from "@/i18n";
+import { en } from "@/i18n/en";
+import type { Translations } from "@/i18n/types";
+
+/** Auth widget copy; en seeds the optional block, other locales fall back. */
+type AuthWidgetCopy = NonNullable<NonNullable<Translations["sharedComponents"]>["authWidget"]>;
+function authWidgetCopy(t: Translations): AuthWidgetCopy {
+  return t.sharedComponents?.authWidget ?? (en.sharedComponents!.authWidget as AuthWidgetCopy);
+}
 
 interface AuthWidgetProps {
   className?: string;
@@ -43,6 +52,8 @@ function truncateUserId(id: string): string {
 }
 
 export function AuthWidget({ className }: AuthWidgetProps) {
+  const { t } = useI18n();
+  const AW = authWidgetCopy(t);
   const [me, setMe] = useState<AuthMeResponse | null>(null);
   const [hidden, setHidden] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -87,7 +98,7 @@ export function AuthWidget({ className }: AuthWidgetProps) {
           className,
         )}
       >
-        {error}
+        <span>{AW.statusUnavailable}</span>
       </div>
     );
   }
@@ -127,14 +138,14 @@ export function AuthWidget({ className }: AuthWidgetProps) {
         className,
       )}
       role="status"
-      aria-label={`Logged in as ${label}`}
+      aria-label={AW.loggedInAs.replace("{name}", label)}
     >
       <div className="flex min-w-0 flex-col">
         <span className="truncate font-mono text-foreground/90" title={me.user_id}>
           {label}
         </span>
         <span className="truncate text-muted-foreground/70">
-          via {me.provider}
+          {AW.viaProvider.replace("{provider}", me.provider)}
         </span>
       </div>
       <button
@@ -145,8 +156,8 @@ export function AuthWidget({ className }: AuthWidgetProps) {
           "transition-colors hover:bg-current/10 hover:text-foreground",
           "focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-current/40",
         )}
-        aria-label="Log out"
-        title="Log out"
+        aria-label={AW.logOut}
+        title={AW.logOut}
       >
         <LogOut className="h-3.5 w-3.5" />
       </button>

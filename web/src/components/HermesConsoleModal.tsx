@@ -19,6 +19,15 @@ import {
 import { cn, themedBody } from "@/lib/utils";
 import { useTheme } from "@/themes";
 import { errorMessage } from "@/lib/api-error";
+import { useI18n } from "@/i18n";
+import { en } from "@/i18n/en";
+import type { Translations } from "@/i18n/types";
+
+/** Console copy; en seeds the optional block, other locales fall back. */
+type ConsoleCopy = NonNullable<NonNullable<Translations["sharedComponents"]>["console"]>;
+function consoleCopy(t: Translations): ConsoleCopy {
+  return t.sharedComponents?.console ?? (en.sharedComponents!.console as ConsoleCopy);
+}
 
 type ConsoleFrame =
   | {
@@ -104,6 +113,8 @@ function isPrintable(data: string): boolean {
 }
 
 export function HermesConsoleModal({ open, onClose }: HermesConsoleModalProps) {
+  const { t } = useI18n();
+  const C = consoleCopy(t);
   const modalRef = useModalBehavior({ open, onClose });
   const hostRef = useRef<HTMLDivElement | null>(null);
   const termRef = useRef<XtermTerminal | null>(null);
@@ -299,7 +310,7 @@ export function HermesConsoleModal({ open, onClose }: HermesConsoleModalProps) {
       }
 
       if (frame.type === "error") {
-        writeLine(term, `\x1b[31m${frame.message || "Command failed."}\x1b[0m`);
+        writeLine(term, `\x1b[31m${frame.message || C.commandFailed}\x1b[0m`);
         return;
       }
 
@@ -444,10 +455,10 @@ export function HermesConsoleModal({ open, onClose }: HermesConsoleModalProps) {
           console.warn(`[console] websocket closed code=${ev.code}${ev.reason ? ` reason=${ev.reason}` : ""}`);
           const message =
             ev.code === 1006 && !hasReadyFrameRef.current
-              ? "Console could not connect to the dashboard server. Check that `hermes dashboard` is running, then click Reconnect."
+              ? C.couldNotConnect
               : ev.code === 1000
-                ? "Console closed."
-                : "Console disconnected from the dashboard server. Click Reconnect to try again.";
+                ? C.closed
+                : C.disconnected;
           writeLine(term, `\x1b[31m${message}\x1b[0m`);
         };
       } catch (err) {
@@ -456,7 +467,7 @@ export function HermesConsoleModal({ open, onClose }: HermesConsoleModalProps) {
         console.warn(`[console] connect failed: ${errorMessage(err)}`);
         writeLine(
           term,
-          "\x1b[31mConsole could not connect to the dashboard server. Check that `hermes dashboard` is running, then click Reconnect.\x1b[0m",
+          `\x1b[31m${C.couldNotConnect}\x1b[0m`,
         );
       }
     })();
@@ -523,7 +534,7 @@ export function HermesConsoleModal({ open, onClose }: HermesConsoleModalProps) {
               id="hermes-console-title"
               className="font-mondwest text-display text-base tracking-wider"
             >
-              Hermes Console
+              {C.title}
             </h2>
             <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
               <Badge tone={statusTone}>{connectionState}</Badge>
@@ -536,9 +547,9 @@ export function HermesConsoleModal({ open, onClose }: HermesConsoleModalProps) {
                     setConnectionState("connecting");
                     setConnectNonce((n) => n + 1);
                   }}
-                  aria-label="Reconnect console"
+                  aria-label={C.reconnectAria}
                 >
-                  Reconnect
+                  {C.reconnect}
                 </Button>
               )}
             </div>
@@ -548,7 +559,7 @@ export function HermesConsoleModal({ open, onClose }: HermesConsoleModalProps) {
             size="icon"
             onClick={onClose}
             className="text-muted-foreground hover:text-foreground"
-            aria-label="Close console"
+            aria-label={C.closeAria}
           >
             <X />
           </Button>

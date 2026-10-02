@@ -8,6 +8,7 @@ main -> update_cmd -> update_cmd_*; ``_m()`` resolves ``hermes_cli.main`` at cal
 import logging
 from contextlib import suppress
 import os
+import re
 import shlex
 import shutil  # noqa: F401  (tests patch update_cmd.shutil.*; split modules resolve it here)
 import subprocess
@@ -921,6 +922,7 @@ def _pull_updates(
             encoding="utf-8")
     try:
         try:
+            merge_detail = None
             # merge --ff-only the already-fetched ref instead of `git pull`, which would do a
             # SECOND network fetch; identical in effect given the fresh tracking ref.
             if merge_ref != f"origin/{branch}":
@@ -930,6 +932,24 @@ def _pull_updates(
                 _git_run(git_cmd, ["checkout", "--detach", merge_ref], check=True)
             else:
                 merge_result = _git_run(git_cmd, ["merge", "--ff-only", merge_ref])
+                merge_detail = merge_result.stderr
+                if (
+                    merge_result.returncode == 0
+                    and pre_pull_sha
+                    and _capture_head_sha(git_cmd, _m().PROJECT_ROOT) == pre_pull_sha
+                    and target_sha != pre_pull_sha
+                ):
+                    # A missing commit in a partial clone can make Git report a
+                    # successful no-op. Fetch the missing object(s) and retry
+                    # once instead of blaming a non-detached checkout.
+                    missing_shas = set(re.findall(
+                        r"(?:Could not read|could not parse commit)\s+<?([0-9a-f]{40})>?",
+                        merge_result.stderr or "", re.IGNORECASE))
+                    for missing_sha in missing_shas:
+                        _git_run(git_cmd, ["fetch", "origin", missing_sha])
+                    if missing_shas:
+                        merge_result = _git_run(git_cmd, ["merge", "--ff-only", merge_ref])
+                        merge_detail = merge_result.stderr
                 if merge_result.returncode != 0:
                     ancestry = _git_run(
                         git_cmd, ["merge-base", "--is-ancestor", "HEAD", merge_ref])
@@ -961,13 +981,15 @@ def _pull_updates(
             # unexpected branch. Keep local edits parked through the final check.
             _verify_head_after_pull(
                 git_cmd, branch, movement_baseline, in_place_update=in_place_update,
-                _windows_gateway_resume=_windows_gateway_resume)
+                _windows_gateway_resume=_windows_gateway_resume,
+                pull_detail=merge_detail)
             _m()._sync_with_upstream_if_needed(
                 git_cmd, _m().PROJECT_ROOT, assume_yes=assume_yes, input_fn=gw_input_fn)
         # Refuse an unexpected branch before syntax rollback can reset its ref.
         _verify_head_after_pull(
             git_cmd, branch, movement_baseline, in_place_update=in_place_update,
-            _windows_gateway_resume=_windows_gateway_resume)
+            _windows_gateway_resume=_windows_gateway_resume,
+            pull_detail=merge_detail)
         _rollback_if_pulled_syntax_error(
             git_cmd, pre_sync_sha or pre_pull_sha, rollback_branch=rollback_branch)
         update_succeeded = True
@@ -1290,7 +1312,8 @@ def _prepare_git_command() -> tuple[bool, list, bool]:
 
 
 def _verify_head_after_pull(
-    git_cmd, branch: str, pre_pull_sha, *, in_place_update: bool, _windows_gateway_resume
+    git_cmd, branch: str, pre_pull_sha, *, in_place_update: bool, _windows_gateway_resume,
+    pull_detail: str | None = None
 ) -> str | None:
     """Return the post-pull HEAD SHA; ``sys.exit(1)`` if the pull was a no-op or landed off-branch."""
     # A detached checkout pinned to a SHA can report "N new commit(s)" and a successful
@@ -1306,12 +1329,21 @@ def _verify_head_after_pull(
     if pre_pull_sha and post_pull_sha == pre_pull_sha:
         print()
         print("✗ Code did not move — update was a no-op.")
-        print(
-            f"  HEAD is pinned to {pre_pull_sha[:10]} (detached checkout); "
-            f"origin/{branch} advanced but the working tree stayed put.")
-        print(
-            "  Reattach to the branch and retry: "
-            f"git -C {_m().PROJECT_ROOT} checkout {branch} && hermes update")
+        current_branch = _current_branch_name(git_cmd)
+        if current_branch == "HEAD":
+            print(
+                f"  HEAD is pinned to {pre_pull_sha[:10]} (detached checkout); "
+                f"origin/{branch} advanced but the working tree stayed put.")
+            print(
+                "  Reattach to the branch and retry: "
+                f"git -C {_m().PROJECT_ROOT} checkout {branch} && hermes update")
+        else:
+            print(
+                f"  HEAD stayed at {pre_pull_sha[:10]} on branch '{current_branch}'; "
+                f"origin/{branch} advanced but the working tree stayed put.")
+            detail = (pull_detail or "").strip()
+            if detail:
+                print(f"  Git reported: {detail}")
         _m()._resume_windows_gateways_after_update(_windows_gateway_resume)
         sys.exit(1)
 

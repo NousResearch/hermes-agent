@@ -31,6 +31,13 @@ if _repo not in sys.path:
 # Mock slack-bolt so SlackAdapter can be imported even without the package
 # ---------------------------------------------------------------------------
 
+def _close_scheduled_coroutine(coro):
+    coro.close()
+    future = asyncio.get_running_loop().create_future()
+    future.set_result(None)
+    return future
+
+
 def _ensure_slack_mock() -> None:
     if "slack_bolt" in sys.modules and hasattr(sys.modules["slack_bolt"], "__file__"):
         return
@@ -189,7 +196,7 @@ def _connect_with_recording_app(
          patch("gateway.status.acquire_scoped_lock", return_value=(True, None)), \
          patch("gateway.status.release_scoped_lock"), \
          patch("hermes_cli.plugins.get_plugin_manager", return_value=fake_mgr), \
-         patch("asyncio.create_task"):
+         patch("asyncio.create_task", side_effect=_close_scheduled_coroutine):
         result = asyncio.run(adapter.connect())
 
     return result, registered_actions
@@ -256,7 +263,7 @@ class TestSlackAdapterPluginActionWiring:
              patch("gateway.status.release_scoped_lock"), \
              patch("hermes_cli.plugins.get_plugin_manager",
                    side_effect=RuntimeError("plugins broken")), \
-             patch("asyncio.create_task"):
+             patch("asyncio.create_task", side_effect=_close_scheduled_coroutine):
             result = asyncio.run(adapter.connect())
 
         assert result is True

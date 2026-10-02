@@ -28,6 +28,11 @@ _pricing_provider_cache_keys: dict[tuple[str, str], str] = {}
 # every caller falls back to a curated list meanwhile.
 _FAILED_CATALOG_TTL_SECONDS = 120.0
 
+# A live reference catalog (OpenRouter rates merged over the registry) is display-only data on a
+# moving source: cache it for a bounded window so a weeks-long gateway/desktop process picks up
+# list-price and model-id changes same-day, instead of pinning the first fetch for its lifetime.
+_REFERENCE_CATALOG_TTL_SECONDS = 6 * 3600.0
+
 _pricing_cache_retry_after: dict[str, float] = {}
 
 
@@ -543,7 +548,9 @@ def _strip_custom_prefix(slug: str) -> str:
 
 
 def _configured_endpoint_slug(slug: str) -> bool:
-    """True when *slug* is a user-defined endpoint row (``providers.<slug>.base_url``)."""
+    """True when *slug* is a user-defined endpoint row (``providers.<slug>.base_url``) reachable
+    over a network — loopback endpoints (a model the user self-hosts) are never priced at
+    reseller rates."""
     if not slug or slug.lower().startswith("custom:"):
         return False
     try:
@@ -552,7 +559,29 @@ def _configured_endpoint_slug(slug: str) -> bool:
         row = providers.get(slug) if isinstance(providers, dict) else None
     except Exception:
         return False
-    return isinstance(row, dict) and bool(str(row.get("base_url") or "").strip())
+    if not (isinstance(row, dict) and bool(str(row.get("base_url") or "").strip())):
+        return False
+    return not _is_loopback_base_url(str(row.get("base_url")))
+
+
+def _is_loopback_base_url(base_url: str) -> bool:
+    """True when *base_url* points at this machine (localhost / loopback IP), where an
+    OpenRouter-rate price table would mislabel self-hosted models as paid."""
+    import ipaddress
+    from urllib.parse import urlparse
+
+    try:
+        host = (urlparse(base_url.strip()).hostname or "").strip("[]").lower()
+    except ValueError:
+        return True  # unparseable URL: refuse to price it rather than guess
+    if not host:
+        return True
+    if host in ("localhost", "0.0.0.0"):
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
 
 
 def _models_dev_cost_index() -> dict[str, dict[str, str]]:
@@ -594,20 +623,31 @@ def _models_dev_cost_index() -> dict[str, dict[str, str]]:
 _models_dev_cost_index_cache: Optional[dict[str, dict[str, str]]] = None
 
 
+def _reference_cache_key(slug: str) -> str:
+    """Cache key for a reference catalog: profile- and credential-scoped (a governed endpoint
+    answers each token with the catalog its org may reach — two profiles or two credentials
+    never share an entry), then the endpoint slug."""
+    from hermes_cli.models import _pricing_profile_key
+    fingerprint = _pricing_auth_fingerprint(_resolve_openrouter_api_key())
+    return f"reference:{_pricing_profile_key()}{fingerprint}:{slug}"
+
+
 def _reference_endpoint_pricing(
     slug: str, *, force_refresh: bool = False, cached_only: bool = False
 ) -> dict[str, dict[str, str]]:
     """Pricing for a custom endpoint whose own ``/v1/models`` carries no pricing block
     (TokenRouter-style resellers reuse the OpenRouter model-id namespace): OpenRouter's live
-    catalog merged over the models.dev registry index, cached per slug so ``cached_only``
-    renders the same set the prewarm built. ``{}`` unless *slug* is a configured
+    catalog merged over the models.dev registry index. The cache key folds in the current
+    profile and OpenRouter credential (a governed endpoint answers each token with the catalog
+    its org may reach — two credentials never share an entry), and the merged table expires so
+    a long-lived process picks up catalog/policy changes. ``{}`` unless *slug* is a configured
     ``providers.<slug>`` endpoint — never mislabels a first-party provider with reseller rates."""
     from hermes_cli.models import normalize_provider
     if normalize_provider(slug) in _PRICING_FETCHERS:
         return {}
     if not _configured_endpoint_slug(slug):
         return {}
-    cache_key = "reference:" + slug
+    cache_key = _reference_cache_key(slug)
     if cached_only:
         return _cached_catalog(cache_key) or {}
     if not force_refresh:
@@ -617,8 +657,9 @@ def _reference_endpoint_pricing(
     openrouter = _fetch_openrouter_pricing(force_refresh=force_refresh)
     merged = dict(_models_dev_cost_index())
     merged.update(openrouter)  # live OpenRouter rates win over the static registry
-    # An OpenRouter outage must not pin a registry-only price list for the process's life.
-    ttl = None if openrouter else _FAILED_CATALOG_TTL_SECONDS
+    # Live rates are a moving catalog (list prices, model ids) — pin them for a bounded window,
+    # not the life of the process; a gateway or desktop backend should see a change same-day.
+    ttl = _REFERENCE_CATALOG_TTL_SECONDS if openrouter else _FAILED_CATALOG_TTL_SECONDS
     return _cache_catalog(cache_key, merged, ttl)
 
 

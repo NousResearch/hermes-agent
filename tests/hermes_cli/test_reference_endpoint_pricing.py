@@ -6,6 +6,8 @@
 - ``cached_only`` serves the reference set the prewarm cached without any provider I/O.
 """
 
+import time
+
 import pytest
 
 import hermes_cli.models_pricing as mp
@@ -64,7 +66,8 @@ def test_cached_only_serves_cached_reference_without_fetch(monkeypatch):
     """The picker's cold path reads the prewarm's reference set without dialing."""
     _config_with(monkeypatch, {"tokenrouter": {"base_url": "https://api.example/v1"}})
     cached = {"vendor/model": {"prompt": "1", "completion": "2"}}
-    monkeypatch.setattr(mp, "_pricing_cache", {"reference:tokenrouter": cached})
+    key = mp._reference_cache_key("tokenrouter")
+    monkeypatch.setattr(mp, "_pricing_cache", {key: cached})
     monkeypatch.setattr(mp, "_pricing_cache_retry_after", {})
 
     def no_fetch(**_kwargs):
@@ -99,3 +102,85 @@ def test_cached_only_finds_authenticated_catalog_entries(monkeypatch):
     from hermes_cli.models import _pricing_profile_key
     mp._pricing_provider_cache_keys[(_pricing_profile_key(), "nous")] = root
     assert mp.get_pricing_for_provider("nous", cached_only=True) == authed
+
+
+def _seed_profile(monkeypatch, key):
+    from hermes_cli import models as models_mod
+    monkeypatch.setattr(models_mod, "hermes_home_key", lambda: key, raising=False)
+    import sys
+    hc = sys.modules.get("hermes_constants")
+    if hc is not None:
+        monkeypatch.setattr(hc, "hermes_home_key", lambda: key, raising=False)
+
+
+def test_reference_catalog_is_profile_scoped(monkeypatch, openrouter_fetch):
+    """Two profiles with the same endpoint slug never share a reference entry: the cache key
+    folds in the profile identity, so profile-b's read cannot answer from profile-a's fetch."""
+    _config_with(monkeypatch, {"tokenrouter": {"base_url": "https://api.example/v1"}})
+    _seed_profile(monkeypatch, "profile-a")
+    first = mp.get_pricing_for_provider("tokenrouter")
+    _seed_profile(monkeypatch, "profile-b")
+    monkeypatch.setattr(mp, "_pricing_cache", {})
+    monkeypatch.setattr(mp, "_pricing_cache_retry_after", {})
+    second = mp.get_pricing_for_provider("tokenrouter")
+    assert first == second  # same catalog, freshly fetched
+    assert openrouter_fetch == [False, False]  # profile-b did NOT read profile-a's entry
+
+
+def test_reference_catalog_is_credential_scoped(monkeypatch, openrouter_fetch):
+    """Two OpenRouter credentials in one process never share a reference entry: the key folds
+    in the credential fingerprint, so a second key's read refetches rather than inheriting the
+    first key's org-scoped catalog."""
+    _config_with(monkeypatch, {"tokenrouter": {"base_url": "https://api.example/v1"}})
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-key-a")
+    first = mp.get_pricing_for_provider("tokenrouter")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-key-b")
+    monkeypatch.setattr(mp, "_pricing_cache", {})
+    monkeypatch.setattr(mp, "_pricing_cache_retry_after", {})
+    second = mp.get_pricing_for_provider("tokenrouter")
+    assert first == second
+    assert openrouter_fetch == [False, False]  # key-b did NOT read key-a's entry
+
+
+def test_reference_catalog_entry_expires(monkeypatch, openrouter_fetch):
+    """A live reference catalog is cached for a bounded window, not the life of the process."""
+    _config_with(monkeypatch, {"tokenrouter": {"base_url": "https://api.example/v1"}})
+    mp.get_pricing_for_provider("tokenrouter")
+    key = mp._reference_cache_key("tokenrouter")
+    retry_after = mp._pricing_cache_retry_after[key]
+    assert 0 < retry_after - time.monotonic() <= mp._REFERENCE_CATALOG_TTL_SECONDS
+
+
+def test_loopback_endpoint_is_never_priced_at_reseller_rates(monkeypatch, openrouter_fetch):
+    """A self-hosted loopback endpoint (free on the user's own GPU) must not render OpenRouter
+    retail rates: _configured_endpoint_slug rejects it before the reference catalog is built."""
+    _config_with(monkeypatch, {"selfhosted": {"base_url": "http://127.0.0.1:8000/v1"}})
+    assert mp.get_pricing_for_provider("selfhosted") == {}
+    assert openrouter_fetch == []
+
+
+@pytest.mark.parametrize(
+    "base_url",
+    [
+        "http://localhost:8000/v1",
+        "http://127.0.0.1:8000/v1",
+        "http://[::1]:8000/v1",
+        "http://0.0.0.0:8000/v1",
+        "http://127.255.255.254/v1",
+    ],
+)
+def test_loopback_base_urls_are_rejected(base_url):
+    assert mp._is_loopback_base_url(base_url)
+
+
+@pytest.mark.parametrize(
+    "base_url",
+    [
+        "https://api.example/v1",
+        "https://openrouter.ai/api",
+        "http://192.168.1.10:8000/v1",
+        "http://tokenrouter.example.com/v1",
+    ],
+)
+def test_non_loopback_base_urls_are_accepted(base_url):
+    assert not mp._is_loopback_base_url(base_url)

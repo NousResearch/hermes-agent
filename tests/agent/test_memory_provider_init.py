@@ -120,6 +120,7 @@ def test_aiagent_forwards_user_id_alt_to_memory_provider():
         )
 
     assert agent._memory_manager is not None
+    assert agent._memory_store is not None  # Provider registration is not backend readiness.
     assert provider.init_session_id == "sess-alt"
     assert provider.init_kwargs["user_id"] == "open-id"
     assert provider.init_kwargs["user_id_alt"] == "union-id"

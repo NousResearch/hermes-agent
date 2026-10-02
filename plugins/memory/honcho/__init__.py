@@ -32,6 +32,44 @@ from tools.registry import tool_error
 
 logger = logging.getLogger(__name__)
 
+_REASONING_BLOCK_RE = re.compile(
+    r"<\s*(think|thinking|reasoning|thought|reasoning_scratchpad)\b[^>]*>.*?"
+    r"<\s*/\s*\1\s*>", re.IGNORECASE | re.DOTALL,
+)
+_REASONING_OPEN_RE = re.compile(
+    r"<\s*(?:think|thinking|reasoning|thought|reasoning_scratchpad)\b[^>]*>", re.IGNORECASE,
+)
+_REASONING_CLOSE_RE = re.compile(
+    r"<\s*/\s*(?:think|thinking|reasoning|thought|reasoning_scratchpad)\s*>", re.IGNORECASE,
+)
+
+
+def _normalize_context_text(value: Any, *, max_chars: int) -> str:
+    """Bound provider text and omit model reasoning before it reaches a prompt."""
+    if value is None:
+        return ""
+    text = _REASONING_BLOCK_RE.sub("", str(value))
+    if opening := _REASONING_OPEN_RE.search(text):
+        text = text[:opening.start()]  # An unclosed reasoning span has no safe trailing text.
+    text = _REASONING_CLOSE_RE.sub("", text)
+    text = re.sub(r"[ \t]{2,}", " ", text)
+    text = re.sub(r"\n{3,}", "\n\n", text).strip()
+    return text if len(text) <= max_chars else text[:max_chars - 1].rstrip() + "…"
+
+
+def _format_card_snapshot(card: Any, *, max_items: int, max_item_chars: int) -> str:
+    """Render SDK list or newline-joined card as a bounded set of facts."""
+    if not card:
+        return ""
+    items = card if isinstance(card, (list, tuple)) else str(card).splitlines()
+    cleaned = [_normalize_context_text(item, max_chars=max_item_chars) for item in items]
+    cleaned = [item.removeprefix("- ") for item in cleaned if item]
+    lines = [f"- {item}" for item in cleaned[:max_items]]
+    remaining = len(cleaned) - max_items
+    if remaining > 0:
+        lines.append(f"- … and {remaining} more facts")
+    return "\n".join(lines)
+
 
 # Gateway-internal notifications arrive through the same user-role channel as genuine
 # user messages; they are execution metadata and must never become durable memory.
@@ -439,6 +477,15 @@ class HonchoMemoryProvider(DialecticMixin, MemoryProvider):
                 continue
             if allowed is not None and name not in allowed:
                 suppressed.append(f"{name} ({len(value)}B)")
+                continue
+            if key in ("card", "ai_card"):
+                value = _format_card_snapshot(value, max_items=8 if key == "card" else 6,
+                                              max_item_chars=160 if key == "card" else 140)
+            else:
+                value = _normalize_context_text(value, max_chars={
+                    "summary": 1200, "representation": 700, "ai_representation": 500,
+                }[key])
+            if not value:
                 continue
             parts.append(f"## {header}\n{value}")
         if suppressed:
@@ -964,11 +1011,17 @@ class HonchoMemoryProvider(DialecticMixin, MemoryProvider):
         ctx = self._manager.get_session_context(self._session_key, peer=args.get("peer", "user"))
         if not ctx:
             return json.dumps({"result": "No context available yet."})
-        sections = (("Summary", usable_honcho_summary(ctx.get("summary"))),
-                    ("Representation", ctx.get("representation")), ("Card", ctx.get("card")))
+        sections = (
+            ("Summary", _normalize_context_text(usable_honcho_summary(ctx.get("summary")), max_chars=1600)),
+            ("Representation", _normalize_context_text(ctx.get("representation"), max_chars=900)),
+            ("Card", _format_card_snapshot(ctx.get("card"), max_items=10, max_item_chars=180)),
+        )
         parts = [f"## {header}\n{value}" for header, value in sections if value]
         if recent := ctx.get("recent_messages"):
-            parts.append("## Recent messages\n" + "\n".join(f"  [{m['role']}] {m['content'][:200]}" for m in recent[-5:]))
+            messages = [f"  [{m['role']}] {content}" for m in recent[-5:]
+                        if (content := _normalize_context_text(m.get("content"), max_chars=200))]
+            if messages:
+                parts.append("## Recent messages\n" + "\n".join(messages))
         return json.dumps({"result": "\n\n".join(parts) or "No context available."})
 
     def _tool_conclude(self, args: dict) -> str:

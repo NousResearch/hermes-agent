@@ -196,7 +196,8 @@ def _build_child_system_prompt(
         )
         # Project context files (AGENTS.md / CLAUDE.md / .cursorrules ...) via the SAME discovery/priority/cap logic
         # as the main agent's prompt: children are built with skip_context_files=True, so without this a subagent
-        # works in a repo blind to its conventions. SOUL.md is skipped (identity belongs to the parent).
+        # works in a repo blind to its conventions. SOUL.md is skipped here: it is the identity slot, filled
+        # only when delegation.inherit_soul is set.
         # workspace_path comes only from explicit sources (_resolve_workspace_hint, never bare getcwd), so the
         # install-tree-fallback leak doesn't apply. Best-effort.
         _ctx_files = ""

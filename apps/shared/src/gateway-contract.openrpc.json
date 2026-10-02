@@ -29722,6 +29722,18 @@
             ],
             "default": null,
             "title": "Expected Hosted Task Id"
+          },
+          "expected_hosted_execution_generation": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Expected Hosted Execution Generation"
           }
         },
         "required": [

@@ -599,8 +599,17 @@ def normalize_provider_tool_call_ids(tool_calls: list) -> list:
             # surrogatepass: provider JSON can carry lone surrogates; strict utf-8 would raise,
             # and errors=replace would collapse distinct ids onto one digest.
             digest = hashlib.sha256(primary.encode("utf-8", "surrogatepass")).hexdigest()[:12]
-            _tc_set(tc, key, f"call_{digest}{sep}{item}")
+            _set_provider_tool_id(tc, key, f"call_{digest}{sep}{item}")
     return tool_calls
+
+
+def _set_provider_tool_id(tc: Any, key: str, value: str) -> None:
+    # transports.types.ToolCall exposes call_id as a read-only view of provider_data;
+    # write the backing value so id and call_id stay in agreement.
+    if isinstance(getattr(type(tc), key, None), property) and isinstance(getattr(tc, "provider_data", None), dict):
+        tc.provider_data[key] = value
+    else:
+        _tc_set(tc, key, value)
 
 
 # -- reasoning_content policy: single owner of strip-vs-re-pad; adapters keep only SYNTAX --

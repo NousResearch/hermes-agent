@@ -136,6 +136,36 @@ def test_final_staged_batch_never_reaches_wire_all_provider_prefixed(shape, monk
     assert not any(i.startswith("chatcmpl-tool-") for i in ids), ids
 
 
+@pytest.mark.parametrize("api", ["responses", "chat"])
+def test_real_transport_tool_calls_normalize_without_crashing(api):
+    from agent.transports.chat_completions import ChatCompletionsTransport
+    from agent.transports.codex import ResponsesApiTransport
+    from agent.turn_tool_validation import validate_tool_calls
+
+    if api == "responses":
+        # Production ToolCall exposes call_id as a read-only view of provider_data.
+        response = SimpleNamespace(status="completed", output=[
+            SimpleNamespace(type="function_call", id=f"fc_{n}", call_id=f"chatcmpl-tool-{n}",
+                            name="read_file", arguments="{}") for n in range(2)])
+        message = ResponsesApiTransport().normalize_response(response)
+    else:
+        calls = [SimpleNamespace(id=f"chatcmpl-tool-{n}", function=SimpleNamespace(name="read_file", arguments="{}"))
+                 for n in range(2)]
+        message = ChatCompletionsTransport().normalize_response(SimpleNamespace(choices=[
+            SimpleNamespace(message=SimpleNamespace(content="", tool_calls=calls), finish_reason="tool_calls")]))
+    agent = _agent()
+    verdict = validate_tool_calls(agent, message, "tool_calls", messages=[], conversation_history=[],
+                                  api_call_count=1, effective_task_id="t")
+    assert verdict.action == "ok"
+    rows = [_assistant_tool_call_dict(agent, tc, i) for i, tc in enumerate(message.tool_calls)]
+
+    assert [r["id"] for r in rows] == [AIAgent._get_tool_call_id_static(tc) for tc in message.tool_calls]
+    assert all(r["id"].startswith("call_") for r in rows) and len({r["id"] for r in rows}) == 2
+    if api == "responses":
+        assert [r["response_item_id"] for r in rows] == ["fc_0", "fc_1"]
+        assert [tc.call_id for tc in message.tool_calls] == [r["id"] for r in rows]
+
+
 def test_unencodable_provider_ids_do_not_crash_and_stay_distinct():
     raw = ["chatcmpl-tool-\ud800", "chatcmpl-tool-?"]
     ids = [row["id"] for row in _mint([_tool_call(i, n) for n, i in enumerate(raw)])]

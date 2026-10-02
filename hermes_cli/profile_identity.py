@@ -22,8 +22,11 @@ Checkpoint project state has no live in-memory owner and is rekeyed locally afte
 from __future__ import annotations
 
 import contextlib
+import json
 import sys
 from pathlib import Path
+
+from utils import atomic_json_write
 
 
 def migrate_profile_identity(old_name: str, new_name: str) -> bool:
@@ -136,6 +139,28 @@ def _purge_profile_identity(canon: str, live_mux: bool) -> bool:
             if db is not None:
                 with contextlib.suppress(Exception):
                     release_or_close(db)
+
+    # With no live SessionStore, the CLI owns the legacy mirror as well as the durable DBs.
+    # Leaving it behind lets the next gateway startup import the deleted namespace back into
+    # its routing index.  Preserve the metadata sentinel and use the same atomic writer as the
+    # gateway's SessionStore.
+    sessions_file = root / "sessions" / "sessions.json"
+    if sessions_file.exists():
+        try:
+            data = json.loads(sessions_file.read_text(encoding="utf-8-sig"))
+            if not isinstance(data, dict):
+                raise ValueError("sessions.json root is not an object")
+            ns = f"agent:{canon}:"
+            filtered = {key: value for key, value in data.items()
+                        if str(key).startswith("_") or not str(key).startswith(ns)}
+            if filtered != data:
+                atomic_json_write(sessions_file, filtered, mode=0o600)
+        except Exception as exc:
+            purged = False
+            print(
+                f"⚠ Profile was deleted, but identity purge failed for {sessions_file}: "
+                f"{type(exc).__name__}: {exc}",
+                file=sys.stderr)
     return purged
 
 

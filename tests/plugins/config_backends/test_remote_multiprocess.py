@@ -75,3 +75,28 @@ def test_process_exits_non_zero_when_plane_is_down(plane_env, monkeypatch):
     assert proc.returncode != 0
     assert "Hermes does not start without its remote config" in proc.stderr
     assert "concise" not in proc.stdout  # no default or cached value was served
+
+
+def test_first_config_read_before_dotenv_uses_the_dotenv_deployment(plane_env, tmp_path):
+    """F4: ``hermes_cli.config`` reads config at import time, before ``load_hermes_dotenv`` runs
+    (main.py imports it first). The selector is in the process env; the plane URL and credential
+    are in the home's .env and the instance id only in the managed .env. That first read must
+    already select, address and authenticate from that whole deployment."""
+    plane, env, home = plane_env
+    deployment = remote_env(plane)
+    managed = tmp_path / "managed"
+    managed.mkdir()
+    (managed / ".env").write_text(f"HERMES_CONFIG_INSTANCE_ID={deployment.pop('HERMES_CONFIG_INSTANCE_ID')}\n")
+    (home / ".env").write_text("".join(f"{k}={v}\n" for k, v in deployment.items() if k != "HERMES_CONFIG_BACKEND"))
+    for name in remote_env(plane):
+        env.pop(name, None)
+    env.update(HERMES_CONFIG_BACKEND="remote", HERMES_MANAGED_DIR=str(managed))
+    code = ("import json\n"
+            "import hermes_cli.config\n"
+            "from hermes_cli.env_loader import load_hermes_dotenv\n"
+            "load_hermes_dotenv()\n"
+            "from hermes_cli.config import load_config\n"
+            "print('RESULT=' + json.dumps(load_config()['display']['personality']))\n")
+    assert _result(_run([sys.executable, "-c", code], env)) == "concise"
+    gets = [r for r in plane.requests if r["method"] == "GET"]
+    assert gets and {r["instance"] for r in gets} == {INSTANCE}

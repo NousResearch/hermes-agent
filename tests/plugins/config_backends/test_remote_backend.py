@@ -922,3 +922,367 @@ def test_stub_plane_deep_merge_follows_contract_6_2():
     assert deep_merge(upper, {"display": None}) == upper
     assert deep_merge(upper, {"model": None})["model"] is None
     assert deep_merge(upper, {"tags": [3]})["tags"] == [3]
+
+
+# --- review round 3 regressions -----------------------------------------------------------
+
+def _drop_process_deployment(plane, monkeypatch, tmp_path):
+    """Move the deployment out of the process env (as on a host where it lives in .env files);
+    returns the managed dir. Every name stays recorded by monkeypatch, so whatever a dotenv load
+    publishes is undone at teardown."""
+    from hermes_cli import config_backend
+    for name in remote_env(plane):
+        monkeypatch.delenv(name, raising=False)
+    managed = tmp_path / "managed"
+    managed.mkdir()
+    monkeypatch.setenv("HERMES_MANAGED_DIR", str(managed))
+    monkeypatch.setattr(config_backend, "_BOOTSTRAPPED", True)  # this process is past its first read
+    return managed
+
+
+def test_cas_retry_of_a_document_write_replays_only_its_own_edit(plane, monkeypatch):
+    """F1: another writer commits between our read and our PATCH. The 409 retry re-applies OUR
+    edit to the re-read doc; it must not turn the other writer's changes into edits of ours."""
+    from hermes_cli.config import set_config_value
+    from plugins.config_backends.remote import client
+    plane.profile("default").update(values={"display": {"personality": "concise", "compact": False}}, version=1)
+    real_request = client.request
+    raced = []
+
+    def other_writer_lands_first(method, *args, **kwargs):
+        if method == "PATCH" and not raced:
+            raced.append(True)
+            prof = plane.profile("default")
+            prof["values"]["display"]["compact"] = True
+            prof["values"]["terminal"] = {"timeout": 321}
+            prof["version"] += 1
+        return real_request(method, *args, **kwargs)
+
+    monkeypatch.setattr(client, "request", other_writer_lands_first)
+
+    set_config_value("display.personality", "pirate")
+
+    assert plane.profile("default")["values"] == {
+        "display": {"personality": "pirate", "compact": True}, "terminal": {"timeout": 321}}
+    first, retry = plane.patches()
+    assert first["body"]["expectedVersion"] == 1 and retry["body"]["expectedVersion"] == 2
+    assert "unset" not in retry["body"] and "compact" not in json.dumps(retry["body"])
+
+
+def test_edit_during_an_in_memory_migration_never_sends_the_migration(plane, monkeypatch):
+    """F2: another thread's in-memory migration has run its steps but not finished when a public
+    edit reads and saves. The edit must diff against the doc it read, so the migration's removal
+    of compression.threshold_tokens is not sent (D12)."""
+    import threading
+
+    from hermes_cli import config_migrations
+    from hermes_cli.config import read_raw_config, set_config_value
+    from hermes_cli.config_backend import read_config_doc
+    assert backend_mod._latest_config_version() > 46
+    plane.profile("default").update(values={"compression": {"threshold_tokens": 256000}}, version=1, writer=46)
+    get_config_backend()._state(plane.home)
+    steps_ran, resume = threading.Event(), threading.Event()
+    real_run = config_migrations.run_migrations
+
+    def paused(*args, **kwargs):
+        real_run(*args, **kwargs)
+        if threading.current_thread().name == "migrator":  # the edit's own checks run unpaused
+            steps_ran.set()
+            assert resume.wait(10), "the edit waited for the migration"
+
+    monkeypatch.setattr(config_migrations, "run_migrations", paused)
+    failures = []
+
+    def migrate():  # a lock-free reader (read_config_doc) starts the migration
+        try:
+            read_config_doc(plane.home / "config.yaml")
+        except BaseException as exc:  # noqa: BLE001 — surfaced below
+            failures.append(exc)
+
+    migrator = threading.Thread(target=migrate, name="migrator")
+    migrator.start()
+    try:
+        assert steps_ran.wait(10)
+        set_config_value("display.personality", "pirate")
+    finally:
+        resume.set()
+        migrator.join(10)
+    assert not migrator.is_alive() and not failures, failures
+
+    (patch,) = plane.patches()
+    assert "unset" not in patch["body"] and "compression" not in json.dumps(patch["body"])
+    assert plane.profile("default")["values"]["compression"] == {"threshold_tokens": 256000}
+    later = read_raw_config()
+    assert later["display"]["personality"] == "pirate"
+    assert "threshold_tokens" not in (later.get("compression") or {})  # still migrated, in memory
+
+
+def test_profile_added_while_the_poller_iterates_does_not_kill_it(plane):
+    """F3: a first read of another profile inserts its state while the poll loop walks the
+    roster; the only poller thread must survive it."""
+    import dataclasses
+    import threading
+
+    backend = get_config_backend()
+    st = backend._state(plane.home)
+    work = plane.home / "profiles" / "work"
+    work.mkdir(parents=True)
+    inserted = threading.Event()
+
+    class AddsAProfileMidPass(backend_mod._ProfileState):
+        reads = 0
+
+        @property
+        def next_poll(self):
+            AddsAProfileMidPass.reads += 1
+            if AddsAProfileMidPass.reads == 2 and not inserted.is_set():  # mid-pass: the deadline scan
+                backend._state(work)
+                inserted.set()
+            return time.monotonic() + 1000
+
+        @next_poll.setter
+        def next_poll(self, value):
+            pass
+
+    import time
+    key = backend._key(plane.home)
+    backend._states[key] = AddsAProfileMidPass(**{
+        f.name: getattr(st, f.name) for f in dataclasses.fields(st) if f.name != "next_poll"})
+    loop = threading.Thread(target=backend._poll_loop, daemon=True)
+    loop.start()
+    assert inserted.wait(10)
+    loop.join(2)
+    assert loop.is_alive()
+    assert backend._key(work) in backend._states
+    backend._stop.set()
+
+
+def test_a_dead_poller_is_rearmed_by_a_cached_read(plane):
+    """F3: a poller that died must not leave cached profiles without updates."""
+    import threading
+
+    from hermes_cli.config import load_config
+    load_config()
+    backend = remote_pkg.get_remote_backend()
+    dead = threading.Thread(target=lambda: None)
+    dead.start()
+    dead.join()
+    backend._poller = dead
+    load_config()
+    assert backend._poller is not dead and backend._poller.is_alive()
+
+
+def test_instance_id_from_the_managed_dotenv_boots(plane, monkeypatch, tmp_path):
+    """F4: the deployment in the home's .env, the instance id only in the managed .env."""
+    import os
+
+    from hermes_cli.env_loader import load_hermes_dotenv
+    managed = _drop_process_deployment(plane, monkeypatch, tmp_path)
+    env = remote_env(plane)
+    (managed / ".env").write_text(f"HERMES_CONFIG_INSTANCE_ID={env.pop('HERMES_CONFIG_INSTANCE_ID')}\n")
+    (plane.home / ".env").write_text("".join(f"{k}={v}\n" for k, v in env.items()))
+    plane.upper = {"display": {"personality": "managed"}}
+
+    load_hermes_dotenv(hermes_home=plane.home)
+
+    gets = _gets(plane)
+    assert gets and gets[0]["instance"] == INSTANCE
+    assert os.environ["HERMES_CONFIG_INSTANCE_ID"] == INSTANCE
+
+
+def test_child_for_another_profile_keeps_the_remote_deployment(plane, monkeypatch, tmp_path):
+    """F5: the deployment came from the launch profile's .env. A Hermes child built for another
+    profile must still read that profile's config remotely, never fall back to its local file."""
+    import os
+    import subprocess
+    import sys
+
+    from hermes_cli.env_loader import load_hermes_dotenv
+    from tools.environments.local import served_profile_child_env
+    _drop_process_deployment(plane, monkeypatch, tmp_path)
+    env = remote_env(plane)
+    (plane.home / ".env").write_text("".join(f"{k}={v}\n" for k, v in env.items()))
+    load_hermes_dotenv(hermes_home=plane.home)
+    beta = plane.home / "profiles" / "beta"
+    beta.mkdir(parents=True)
+    (beta / "config.yaml").write_text("display:\n  personality: local-child\n")
+    # beta's own plane credential (credentials are never carried into another profile's child)
+    (beta / ".env").write_text("".join(f"{k}={v}\n" for k, v in env.items() if k.startswith("GATEWAY_RELAY_IDP_")))
+    plane.profile("beta")["values"] = {"display": {"personality": "remote-child"}}
+
+    child_env = served_profile_child_env(target_home=beta, inherit_credentials=True)
+    child_env["PYTHONPATH"] = str(Path(__file__).resolve().parents[3])
+    code = ("import json\n"
+            "from hermes_cli.env_loader import load_hermes_dotenv\n"
+            "load_hermes_dotenv()\n"
+            "from hermes_cli.config_backend import get_config_backend\n"
+            "from hermes_cli.config import load_config\n"
+            "print('RESULT=' + json.dumps([get_config_backend().name, load_config()['display']['personality']]))\n")
+    proc = subprocess.run([sys.executable, "-c", code], env=child_env, capture_output=True, text=True,
+                          timeout=120, stdin=subprocess.DEVNULL, cwd=str(tmp_path))
+    assert proc.returncode == 0, proc.stderr[-3000:]
+    line = [ln for ln in (proc.stdout + proc.stderr).splitlines() if ln.startswith("RESULT=")][-1]
+    assert json.loads(line[len("RESULT="):]) == ["remote", "remote-child"]
+    assert "beta" in {r["profile"] for r in _gets(plane)}
+    assert not any(k.startswith("GATEWAY_RELAY_IDP_") and v != env[k] for k, v in child_env.items())
+    assert os.environ["HERMES_CONFIG_BACKEND"] == "remote"
+
+
+def test_setting_a_value_that_old_schema_migration_rewrites_is_refused(plane, capsys):
+    """F8: on a level stamped 46 (option 1 keeps that stamp), 256000 is exactly what the 46->47
+    step removes on every read: acknowledging it would hide it. Refused, nothing sent. A value
+    the migration keeps is saved as usual."""
+    from hermes_cli.config import read_raw_config
+    assert backend_mod._latest_config_version() > 46
+    plane.profile("default").update(values={"display": {"personality": "old"}}, version=1, writer=46)
+    read_raw_config()
+
+    code, err = _config_cmd(capsys, "set", "compression.threshold_tokens", "256000")
+
+    assert code == 1 and "compression.threshold_tokens" in err and "schema v46" in err
+    assert plane.patches() == []
+    with pytest.raises(ConfigValueError) as exc:
+        write_config_key(plane.home / "config.yaml", "compression.threshold_tokens", 256000)
+    assert exc.value.code == "config_migration_conflict"
+
+    write_config_key(plane.home / "config.yaml", "compression.threshold_tokens", 300000)
+    assert plane.profile("default")["values"]["compression"] == {"threshold_tokens": 300000}
+    remote_pkg._reset_for_tests()  # a fresh process reads it back
+    assert read_raw_config()["compression"]["threshold_tokens"] == 300000
+
+
+# --- profiles, TUI and RPC in remote mode -------------------------------------------------
+
+@pytest.fixture
+def profile_plane(tmp_path, monkeypatch):
+    """``plane`` with a real profiles root (``Path.home()/.hermes``)."""
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    with StubPlane() as p:
+        for k, v in remote_env(p).items():
+            monkeypatch.setenv(k, v)
+        monkeypatch.setattr(backend_mod, "BOOT_RETRY_DELAYS", (0.0, 0.0))
+        remote_pkg._reset_for_tests()
+        cred_mod._IDP_CACHE.clear()
+        p.home = home
+        get_config_backend()._state(home)
+        yield p
+        remote_pkg._reset_for_tests()
+        cred_mod._IDP_CACHE.clear()
+
+
+def test_fresh_profile_creation_succeeds_against_a_healthy_plane(profile_plane):
+    """F6: the staging home is never read through the remote backend."""
+    from hermes_cli.profiles import create_profile
+    before = len(profile_plane.requests)
+
+    path = create_profile("fresh", no_alias=True, no_skills=True)
+
+    assert path.is_dir() and (path / ".env").exists()
+    assert not list(path.parent.glob(".fresh.staging-*"))
+    assert not any(r["profile"].startswith(".") for r in profile_plane.requests[before:])
+
+
+def test_rename_is_refused_before_anything_moves(profile_plane, monkeypatch):
+    """F7: the plane keys settings by profile name and has no rename."""
+    from hermes_cli import profiles
+    for name in ("_check_gateway_running", "_cleanup_gateway_service", "_maybe_unregister_gateway_service",
+                 "_stop_bot_desktop", "_live_default_multiplexer", "_maybe_register_gateway_service"):
+        monkeypatch.setattr(profiles, name, lambda *a, **k: False)
+    old = profile_plane.home / "profiles" / "old"
+    old.mkdir(parents=True)
+    profile_plane.profile("old").update(values={"model": {"default": "profile-model"}}, version=1)
+    profile_plane.profile("new").update(values={"model": {"default": "target-model"}}, version=1)
+
+    with pytest.raises(ValueError, match="not supported"):
+        profiles.rename_profile("old", "new")
+
+    assert old.is_dir() and not (profile_plane.home / "profiles" / "new").exists()
+    assert profile_plane.profile("old")["values"] == {"model": {"default": "profile-model"}}
+    assert profile_plane.patches() == []
+
+
+def test_roster_model_follows_the_remote_layer_not_the_local_file(profile_plane):
+    """F9: a poll changes the profile's model while an ignored local config.yaml stays put."""
+    from hermes_cli.profiles import list_profiles
+    named = profile_plane.home / "profiles" / "roster"
+    named.mkdir(parents=True)
+    (named / "config.yaml").write_text("model:\n  default: ignored-local\n")
+    profile_plane.profile("roster").update(values={"model": {"default": "model-A", "provider": "nous"}}, version=1)
+
+    def roster():
+        return {p.name: (p.model, p.provider) for p in list_profiles()}["roster"]
+
+    assert roster() == ("model-A", "nous")
+    profile_plane.profile("roster").update(values={"model": {"default": "model-B", "provider": "openrouter"}}, version=2)
+    backend = get_config_backend()
+    assert backend.poll_one(backend._state(named))
+    assert roster() == ("model-B", "openrouter")
+
+
+def _tui_server(monkeypatch, home):
+    import hermes_cli.banner as banner
+    monkeypatch.setattr(banner, "prefetch_update_check", lambda: None)
+    from tui_gateway import server
+    monkeypatch.setattr(server, "_hermes_home", home)
+    server._cfg_cache = server._cfg_sig = server._cfg_path = None
+    return server
+
+
+def test_tui_config_set_of_a_locked_key_is_refused_not_reported_saved(plane, monkeypatch):
+    """F10: a keyed TUI edit under a lock answers with the lock, sends nothing, and the raw cache
+    keeps the accepted value."""
+    plane.upper = {"display": {"tui_theme": "dark"}}
+    plane.upper_locks = [{"path": "display.tui_theme", "level": "tenant"}]
+    server = _tui_server(monkeypatch, plane.home)
+
+    answer = server._methods["config.set"](1, {"key": "theme", "value": "light"})
+
+    assert answer["error"]["code"] == 4002 and "locked" in answer["error"]["message"]
+    assert plane.patches() == []
+    assert server._load_cfg_raw()["display"]["tui_theme"] == "dark"
+
+    plane.upper_locks = []
+    backend = get_config_backend()
+    assert backend.poll_one(backend._state(plane.home))
+    assert server._methods["config.set"](2, {"key": "theme", "value": "light"})["result"]["value"] == "light"
+    assert server._load_cfg_raw()["display"]["tui_theme"] == "light"
+    assert plane.profile("default")["values"] == {"display": {"tui_theme": "light"}}
+
+
+def test_rpc_refused_by_the_config_backend_still_gets_its_one_answer(plane, monkeypatch):
+    """F11: ConfigBackendUnavailable is a SystemExit; an admitted request (inline or pooled) still
+    answers once, with its own id."""
+    import copy
+    import threading
+
+    server = _tui_server(monkeypatch, plane.home)
+
+    def refused(rid, params):
+        raise ConfigBackendUnavailable("Remote Config: cannot load the config for profile 'lazy'")
+
+    monkeypatch.setitem(server._methods, "cc.refused", refused)
+    inline = server.handle_request({"jsonrpc": "2.0", "id": "inline-1", "method": "cc.refused", "params": {}})
+    assert inline["id"] == "inline-1" and "cannot load the config" in inline["error"]["message"]
+
+    monkeypatch.setattr(server, "_LONG_HANDLERS", server._LONG_HANDLERS | {"cc.refused"})
+    written = threading.Event()
+
+    class Recorder:
+        frames = []
+
+        def write(self, obj):
+            self.frames.append(copy.deepcopy(obj))
+            written.set()
+            return True
+
+        def close(self):
+            pass
+
+    transport = Recorder()
+    assert server.dispatch({"jsonrpc": "2.0", "id": "pooled-1", "method": "cc.refused", "params": {}}, transport) is None
+    assert written.wait(10)
+    (frame,) = transport.frames
+    assert frame["id"] == "pooled-1" and "cannot load the config" in frame["error"]["message"]

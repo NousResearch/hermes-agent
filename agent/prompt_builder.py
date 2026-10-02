@@ -1554,7 +1554,7 @@ def _build_skills_system_prompt_inner(
         str(skills_dir), tuple(str(d) for d in external_dirs), tuple(str(d) for d in project_dirs),
         tuple(sorted(str(t) for t in (available_tools or set()))),
         tuple(sorted(str(ts) for ts in (available_toolsets or set()))),
-        _platform_hint, tuple(sorted(disabled)), tuple(sorted(compact_categories or ())),
+        _platform_hint, tuple(sorted(disabled)), tuple(sorted(compact_categories or ())), names_only,
         _oneshot_prompt_variant(),
     )
     snapshot = _load_skills_snapshot(skills_dir)

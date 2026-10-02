@@ -208,20 +208,16 @@ class TestRegistryResolution:
         # a typed credential-missing error to the caller.
         assert result.is_available() is False
 
-    def test_unknown_configured_name_falls_back_to_available_provider(
+    def test_unknown_configured_name_does_not_select_another_provider(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Typo / uninstalled plugin → walk legacy preference, pick available."""
+        """A typo or uninstalled plugin must not switch the configured route."""
         _ensure_plugins_loaded()
         from agent.web_search_registry import _resolve
 
         monkeypatch.setenv("EXA_API_KEY", "real")
         result = _resolve("not-a-real-provider", capability="search")
-        # Either ddgs (no-key fallback) or exa (the only available
-        # premium provider) — both are valid. The point is the unknown
-        # name shouldn't return None when SOMETHING is available.
-        assert result is not None
-        assert result.is_available() is True
+        assert result is None
 
 
     def test_no_config_no_credentials_returns_none(
@@ -242,5 +238,4 @@ class TestRegistryResolution:
         result = _resolve(None, capability="search")
         if result is not None:
             assert result.is_available() or result.is_keyless_available()
-
 

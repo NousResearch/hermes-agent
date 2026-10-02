@@ -330,7 +330,18 @@ def _missing_reason(binary: Path, entry: Path) -> str:
     """Why a package's expected binary is not where it should be — the
     diagnosis that tells you whether the pin's layout is wrong."""
     rel = binary.relative_to(entry).as_posix()
-    return f"{rel} missing under {entry}; {_entry_listing(entry)}"
+    try:
+        listing = _entry_listing(entry)
+    except OSError as exc:
+        # is_file() reads an unlistable entry as absent. That entry is
+        # unverifiable, not missing: on Windows it is typically one published
+        # from an elevated session, which a plain reinstall cannot replace.
+        return (
+            f"cannot verify {rel}: {entry} is not readable by this user "
+            f"({exc.strerror or exc}); if it was installed from an elevated (admin) shell, "
+            f"restore this user's access to it or re-run that install elevated"
+        )
+    return f"{rel} missing under {entry}; {listing}"
 
 
 def _probe_reason(binary: Path, proc: "subprocess.CompletedProcess") -> str:

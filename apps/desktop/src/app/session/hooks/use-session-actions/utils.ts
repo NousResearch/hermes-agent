@@ -68,6 +68,8 @@ import type { SessionCreateResponse, SessionInfo, SessionResumeResult, SessionRu
 
 import type { ClientSessionState } from '../../../types'
 
+import { mergeLiveAssistantRun } from './live-turn-remainder'
+
 import {
   acknowledgedTranscriptBoundary,
   conflictingTranscriptIdentity,
@@ -213,6 +215,7 @@ const _chatMessageFieldsExhaustive: {
 
 const COMPARED_FIELDS = [
   'rowId',
+  'queuedPrompt',
   'persistedTurn',
   'durableComplete',
   'recovered',
@@ -339,6 +342,7 @@ export function chatMessagesEquivalent(a: ChatMessage, b: ChatMessage): boolean 
   if (
     a.id !== b.id ||
     a.rowId !== b.rowId ||
+    a.queuedPrompt !== b.queuedPrompt ||
     !persistedTurnsEquivalent(a.persistedTurn, b.persistedTurn) ||
     a.role !== b.role ||
     a.durableComplete !== b.durableComplete ||
@@ -1340,11 +1344,11 @@ export function preserveLocalPendingTurnMessages(
 /**
  * Append the backend-only tail of a live turn to a stored transcript.
  *
- * Session history is committed only when a turn finishes. During a reconnect,
+ * A live turn can persist user and tool rows before its final reply. On reconnect,
  * `inflight` is therefore the authority for the currently running user/assistant
- * pair, while `queued` is an accepted next-turn prompt waiting in gateway
- * memory. Stable ids let repeated activate/resume hydration reconcile instead
- * of growing duplicate rows.
+ * pair, while `queued` is an accepted next-turn prompt that may already
+ * have its own persisted user row. Stable ids let repeated activate/resume
+ * hydration reconcile instead of growing duplicate rows.
  */
 const safelyPersistedInflightUser = Symbol('safelyPersistedInflightUser')
 
@@ -1356,7 +1360,79 @@ type ReconciledSessionResumeResult = SessionResumeResult & {
   [safelyPersistedInflightUser]?: true
 }
 
+/** A marked durable queue is a source occurrence, never an equal-text history row. */
+export function acceptedQueuedPrompt(
+  messages: ChatMessage[],
+  projection: Pick<SessionResumeResult, 'queued'>
+): ChatMessage | undefined {
+  const queued = textWithoutReferenceLines(projection.queued?.user ?? '')
+    .replace(/\s+/g, ' ')
+    .trim()
+  if (!queued) return undefined
+
+  const index = messages.findLastIndex(
+    message =>
+      message.role === 'user' &&
+      message.queuedPrompt === true &&
+      typeof message.rowId === 'number' &&
+      Number.isSafeInteger(message.rowId) &&
+      message.rowId > 0
+  )
+  if (index < 0) return undefined
+
+  const candidate = messages[index]
+  if (textWithoutReferenceLines(chatMessageText(candidate)).replace(/\s+/g, ' ').trim() !== queued) return undefined
+  // An answered historical queue is no longer the accepted next-turn slot.
+  if (
+    messages
+      .slice(index + 1)
+      .some(
+        message =>
+          message.role === 'assistant' &&
+          !isLiveTailRow(message) &&
+          !hasStructuralParts(message) &&
+          chatMessageText(message).trim()
+      )
+  )
+    return undefined
+
+  return candidate
+}
+
+/** Keep divergent occurrences distinct while the marked queue owns the runtime tail. */
+export function mergeQueuedAssistantRun(
+  projected: ChatMessage[],
+  cached: ChatMessage[],
+  sessionId: string,
+  context: ChatMessage[]
+): ChatMessage[] {
+  const canonicalId = `assistant-stream-${sessionId}`
+  // A replay pairs its already-canonical terminal, not the earlier divergence.
+  const merged =
+    cached.length > 1 && cached.at(-1)?.id === canonicalId
+      ? [...cached.slice(0, -1), ...mergeLiveAssistantRun(projected, cached.slice(-1))]
+      : mergeLiveAssistantRun(projected, cached)
+  if (merged.at(-1)?.pending !== true) return merged
+
+  const used = new Set([...context, ...merged].map(message => message.id))
+  let ordinal = 0
+  return merged.map((message, index) => {
+    if (index === merged.length - 1) return { ...message, id: canonicalId }
+    if (message.id !== canonicalId) return message
+    let id: string
+    do {
+      id = `inflight-assistant-segment-queued-${sessionId}-${ordinal++}`
+    } while (used.has(id))
+    used.add(id)
+    return { ...message, id }
+  })
+}
+
 export function appendLiveSessionProjection(messages: ChatMessage[], projection: LiveSessionProjection): ChatMessage[] {
+  const acceptedQueue = acceptedQueuedPrompt(messages, projection)
+  const acceptedQueueIndex = acceptedQueue ? messages.indexOf(acceptedQueue) : -1
+  if (acceptedQueue) messages = messages.filter(message => message !== acceptedQueue)
+
   const inflightUser = projection.inflight?.user?.trim() ?? ''
   const inflightAssistant = projection.inflight?.assistant ?? ''
   const inflightStreaming = Boolean(projection.inflight?.streaming)
@@ -1531,8 +1607,6 @@ export function appendLiveSessionProjection(messages: ChatMessage[], projection:
   const committedPartial =
     liveAssistantOfCurrentTurn && !isLiveTailRow(liveAssistantOfCurrentTurn) ? liveAssistantOfCurrentTurn : null
 
-  const committedPartialAt = committedPartial ? messages.lastIndexOf(committedPartial) : -1
-
   const committedPartialText = committedPartial ? chatMessageText(committedPartial) : ''
 
   const turnPartiallyCommitted = Boolean(
@@ -1547,7 +1621,20 @@ export function appendLiveSessionProjection(messages: ChatMessage[], projection:
       isStrictAnswerTextExtension(inflightAssistant, committedPartialText))
   )
 
-  const foldTarget = turnPartiallyCommitted ? committedPartial : null
+  const cachedAssistantIndex = liveAssistantOfCurrentTurn ? messages.indexOf(liveAssistantOfCurrentTurn) : -1
+  const queuedLiveAssistant =
+    acceptedQueue &&
+    inflightUserAlreadyPersisted &&
+    projectAssistantDump &&
+    !correctionOffsetsUsable &&
+    cachedAssistantIndex > latestUserIndex &&
+    cachedAssistantIndex < acceptedQueueIndex &&
+    liveAssistantOfCurrentTurn?.pending === true &&
+    liveAssistantOfCurrentTurn.parts.every(part => part.type === 'text')
+      ? liveAssistantOfCurrentTurn
+      : null
+  const foldTarget = queuedLiveAssistant ?? (turnPartiallyCommitted ? committedPartial : null)
+  const foldTargetAt = foldTarget ? messages.indexOf(foldTarget) : -1
 
   const pushCorrection = (correction: string, index: number): void => {
     if (persistedInLatestRun(correction)) {
@@ -1617,7 +1704,11 @@ export function appendLiveSessionProjection(messages: ChatMessage[], projection:
         // Structure the flat dump cannot express (tool calls, reasoning)
         // carries over; row id and reactions stay so nothing blinks off
         // mid-turn and a reaction toggle still reaches the persisted row.
-        projected.push(carryRowIdentity(preserveStructuralParts(liveRow, foldTarget), foldTarget))
+        if (queuedLiveAssistant) {
+          projected.push(...mergeQueuedAssistantRun([liveRow], [queuedLiveAssistant], sessionId, messages))
+        } else {
+          projected.push(carryRowIdentity(preserveStructuralParts(liveRow, foldTarget), foldTarget))
+        }
       } else {
         projected.push(liveRow)
       }
@@ -1629,17 +1720,17 @@ export function appendLiveSessionProjection(messages: ChatMessage[], projection:
   }
 
   if (queuedUser) {
-    projected.push({
-      id: `user-queued-${sessionId}`,
-      role: 'user',
-      parts: [textPart(queuedUser)]
-    })
+    projected.push(
+      acceptedQueue
+        ? { ...acceptedQueue, id: `user-queued-${sessionId}` }
+        : { id: `user-queued-${sessionId}`, role: 'user', parts: [textPart(queuedUser)] }
+    )
   }
 
   if (foldTarget) {
     // Splice the folded live row (plus any corrections/queued tail) into the
     // committed partial's slot instead of appending beside it.
-    return [...messages.slice(0, committedPartialAt), ...projected, ...messages.slice(committedPartialAt + 1)]
+    return [...messages.slice(0, foldTargetAt), ...projected, ...messages.slice(foldTargetAt + 1)]
   }
 
   return projected.length ? [...messages, ...projected] : messages
@@ -1740,7 +1831,8 @@ export function dedupeInflightUserAgainstTranscript(
     suffixStart = persistedAnchorIndex + 1
   }
 
-  const persistedTail = persistedMessages.slice(suffixStart)
+  const acceptedQueue = acceptedQueuedPrompt(persistedMessages, projection)
+  const persistedTail = persistedMessages.slice(suffixStart).filter(message => message !== acceptedQueue)
   const lastPersistedMessage = persistedTail[persistedTail.length - 1]
 
   const persistedUserPresent =

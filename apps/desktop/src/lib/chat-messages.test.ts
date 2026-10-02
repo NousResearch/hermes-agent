@@ -59,6 +59,44 @@ describe('withUniqueToolCallIdsWithinMessage', () => {
 })
 
 describe('toChatMessages', () => {
+  it('hydrates accepted queue markers only from strict user metadata without losing attachments or identity', () => {
+    const metadata = [
+      { _queued_prompt: true },
+      JSON.stringify({ _queued_prompt: true }),
+      { _queued_prompt: false },
+      { _queued_prompt: 'true' },
+      { _queued_prompt: 1 },
+      '{bad json',
+      null
+    ]
+    for (const [index, display_metadata] of metadata.entries()) {
+      const rows = toChatMessages([
+        {
+          id: 10,
+          role: 'user',
+          timestamp: 1,
+          content: '@file:/tmp/input.txt\n@image:/tmp/image.png\n\nnext prompt',
+          display_metadata: display_metadata as never
+        },
+        {
+          id: 11,
+          role: 'assistant',
+          timestamp: 2,
+          content: 'History stays visible.',
+          display_metadata: { _queued_prompt: true } as never
+        }
+      ])
+      expect(rows.map(chatMessageText)).toEqual(['next prompt', 'History stays visible.'])
+      expect(rows[0]).toMatchObject({
+        id: '1-0-user',
+        rowId: 10,
+        attachmentRefs: ['@file:/tmp/input.txt', '@image:/tmp/image.png']
+      })
+      expect(rows[0].queuedPrompt).toBe(index < 2 ? true : undefined)
+      expect(rows[1].queuedPrompt).toBeUndefined()
+    }
+  })
+
   it('does not render an opaque native_assistant reasoning_details carrier as Thought (#126588)', () => {
     const carrier = JSON.stringify([
       {

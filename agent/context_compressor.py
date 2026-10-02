@@ -1867,10 +1867,19 @@ def _skill_result_failure_suffix(content: str) -> str:
 
 
 def _sum_template(template: str, **defaults):
-    """Summarizer formatting ``template`` from the parsed args (``defaults`` fill missing keys) plus ``content_len``."""
-    return lambda name, args, content, content_len, line_count: template.format_map(
-        {**defaults, **args, "content_len": content_len}
-    )
+    """Summarizer formatting ``template`` from the parsed args (``defaults`` fill missing keys) plus
+    ``content_len`` and the result's outcome.
+
+    Every mutation routed through here lost its outcome, so a refused read, a rate-limited search, a
+    rejected cronjob or a silent ``memory`` write compressed into the same stub as the success it
+    never was, and the post-compaction agent reported the success (#131244).
+    """
+    def summarize(name, args, content, content_len, line_count):
+        return (
+            template.format_map({**defaults, **args, "content_len": content_len})
+            + _skill_result_failure_suffix(content)
+        )
+    return summarize
 
 
 # tool_name -> (name, args, content, content_len, line_count) -> one-line summary.

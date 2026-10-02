@@ -9,10 +9,12 @@ import {
   $activeSessionId,
   $currentModel,
   $currentProvider,
+  $currentReasoningEffortWire,
   getCurrentModelSource,
   setCurrentModel,
   setCurrentModelSource,
-  setCurrentProvider
+  setCurrentProvider,
+  setCurrentReasoningEffortWire
 } from '@/store/session'
 import * as SessionStates from '@/store/session-states'
 
@@ -432,6 +434,7 @@ describe('useModelControls', () => {
     $activeSessionId.set('session-1')
     setCurrentModel('fable-5')
     setCurrentProvider('nous')
+    setCurrentReasoningEffortWire('max')
 
     const requestGateway = vi.fn(async () => {
       throw new Error('no such model')
@@ -445,6 +448,8 @@ describe('useModelControls', () => {
 
     expect($currentModel.get()).toBe('fable-5')
     expect($currentProvider.get()).toBe('nous')
+    // The old route's clamp is true again once the switch is undone.
+    expect($currentReasoningEffortWire.get()).toBe('max')
     expect(notifyError).toHaveBeenCalled()
   })
 

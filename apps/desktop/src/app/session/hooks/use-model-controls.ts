@@ -19,12 +19,14 @@ import {
   $activeSessionId,
   $currentModel,
   $currentProvider,
+  $currentReasoningEffortWire,
   getComposerSelectionGeneration,
   getCurrentModelSource,
   markComposerSelectionManual,
   setCurrentModel,
   setCurrentModelSource,
-  setCurrentProvider
+  setCurrentProvider,
+  setCurrentReasoningEffortWire
 } from '@/store/session'
 import { $sessionStates, sessionTileDelegate } from '@/store/session-states'
 
@@ -261,7 +263,9 @@ export function useModelControls({
         ? $currentProvider.get()
         : ($sessionStates.get()[liveSessionId!]?.provider ?? '')
 
-      const prevTileWire = touchesPrimary ? '' : ($sessionStates.get()[liveSessionId!]?.reasoningEffortWire ?? '')
+      const prevWire = touchesPrimary
+        ? $currentReasoningEffortWire.get()
+        : ($sessionStates.get()[liveSessionId!]?.reasoningEffortWire ?? '')
 
       const prevSource = getCurrentModelSource()
       const liveGatewayProfile = cacheProfile || $activeGatewayProfile.get()
@@ -291,13 +295,15 @@ export function useModelControls({
         if (touchesPrimary) {
           setCurrentModel(prevModel)
           setCurrentProvider(prevProvider)
+          // The setters withdraw the wire stamp on a change; the old route's stamp is still true.
+          setCurrentReasoningEffortWire(prevWire)
           setCurrentModelSource(prevSource)
         } else if (liveSessionId) {
           sessionTileDelegate()?.updateSession(liveSessionId, state => ({
             ...state,
             model: prevModel,
             provider: prevProvider,
-            reasoningEffortWire: prevTileWire
+            reasoningEffortWire: prevWire
           }))
         }
 

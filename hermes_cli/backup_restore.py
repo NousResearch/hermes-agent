@@ -484,3 +484,25 @@ def _import_db_member(
             os.unlink(tmp_name)
         except OSError:
             pass
+
+
+def _revive_restored_profiles(hermes_root: Path, restored: List[Tuple[str, ...]]) -> List[str]:
+    """Clear the ``profile delete`` tombstone of every named profile the import restored.
+
+    The tombstone lives beside the profile dir (``profiles/.deleted/<name>``), so it outlives the
+    delete and hides any later tree under that name from listing, ``-p`` and serving. Restoring a
+    backup is the user bringing the profile back; only the archive's own tombstone (the profile was
+    already deleted when the backup was taken) keeps it deleted. Returns the revived names.
+    """
+    from hermes_constants import (
+        PROFILE_ID_RE, clear_named_profile_deleted, named_profile_has_identity, named_profile_is_deleted,
+    )
+    archived_tombstones = {p[2] for p in restored if len(p) == 3 and p[:2] == ("profiles", ".deleted")}
+    names = {p[1] for p in restored if len(p) >= 3 and p[0] == "profiles" and PROFILE_ID_RE.match(p[1])}
+    revived = []
+    for name in sorted(names - archived_tombstones):
+        profile_dir = hermes_root / "profiles" / name
+        if named_profile_is_deleted(profile_dir) and named_profile_has_identity(profile_dir):
+            clear_named_profile_deleted(profile_dir)
+            revived.append(name)
+    return revived

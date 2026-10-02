@@ -317,14 +317,17 @@ def test_serve_resume_child_reuses_respawn_without_updater_or_supervisors(tmp_pa
                                   "stopped_serves": {"pending": True, "entries": entries}}))
     program = tmp_path / "probe.py"
     program.write_text(
-        "import json, os, runpy, subprocess, sys\nfrom pathlib import Path\n"
+        "import json, os, runpy, subprocess, sys, time\nfrom pathlib import Path\n"
         "calls = []\n"
+        "time.sleep = lambda *_: None\n"
         "def forbidden(*args, **kwargs):\n    raise AssertionError('updater/process control ran')\n"
+        "class _Proc:\n    def poll(self):\n        return None\n"
         "def spawn(command, **kwargs):\n"
         "    assert kwargs['start_new_session'] is True\n"
         "    assert kwargs['stdin'] == subprocess.DEVNULL\n"
         "    calls.append(command)\n"
         f"    if {spawn_fails!r}:\n        raise OSError('probe spawn failed')\n"
+        "    return _Proc()\n"
         "subprocess.Popen = spawn\nsubprocess.run = os.system = os.kill = forbidden\n"
         f"sys.argv = [{str(root / 'hermes_cli/update_serve_resume.py')!r}, {str(context)!r}, {str(result_path)!r}]\n"
         "try:\n    runpy.run_path(sys.argv[0], run_name='__main__')\n"

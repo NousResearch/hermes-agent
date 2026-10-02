@@ -159,7 +159,8 @@ python scripts/release.py abandon --version 0.21.5 --remote origin
 
 `publish` performs a synchronous supersession preflight, then dispatches the same
 ordered controller used by automatic recovery. It refuses a known burned version
-below a newer published release. `abandon` deletes the draft when one exists,
+below a newer published release. `abandon` force-cancels the attempt's
+in-progress `Stable Release` runs, deletes the draft when one exists,
 writes an `abandoned-rc.<N>-vX.Y.Z` marker ref, and keeps the attempt ref. The
 marker is the record of abandonment; the attempt ref is never deleted. The
 version is not spent, so the next cut is `rc.<N+1>-vX.Y.Z`.
@@ -350,6 +351,19 @@ selected repository; no R2 credentials are required.
 python scripts/release.py --channel pm-preview --build-commit my-branch --remote origin
 python scripts/release.py --channel pm-preview --build-commit my-branch --remote origin --publish
 python scripts/release.py --channels --remote origin
+```
+
+By default a preview channel installs as its own side-by-side app (`Hermes
+NAME`, its own package ID). To test an exact commit as the regular app instead,
+create the channel with `--branding stable`: it copies the published stable
+channel's name, icon and package ID, so the build installs over the official
+app, shares its desktop settings, and later updates follow the channel. Branding is fixed when the channel is
+created; repeat the flag on every dispatch of that channel and use a new channel
+name to change it. `--branding` needs `--channel`, since a plain one-off commit
+build always carries its `Hermes Agent <sha>` identity.
+
+```sh
+python scripts/release.py --channel my-commit --branding stable --build-commit SHA --remote origin --publish
 ```
 
 Disposable R2 scoping is opt-in, for test runs only. Dispatch the desktop

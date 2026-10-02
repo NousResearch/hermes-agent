@@ -130,6 +130,27 @@ a fix.** A reproduction on current `main` plus a line-level account beats a plau
 rationale. When unsure about intent, asking is cheaper than shipping a fix that fights the
 design.
 
+### Security reports and fixes — follow `SECURITY.md`
+
+Read `SECURITY.md` before filing an issue or opening a PR with a security angle. It is the
+scope authority; these are the rules that matter at submission time:
+
+- **Undisclosed vulnerabilities go private, never public.** If a finding is in scope under
+  `SECURITY.md` §3.1 (isolation escape, unauthorized external-surface access, credential
+  exfiltration, trust-model documentation violation), report it via
+  [GitHub Security Advisories](https://github.com/NousResearch/hermes-agent/security/advisories/new)
+  or security@nousresearch.com. Do not open a public issue or PR for it, and keep
+  reproduction or exploit details out of commit messages, PR bodies, and comments.
+- **Out-of-scope hardening is ordinary public work.** §3.2 items — approval-gate, redaction,
+  or Skills Guard bypasses; prompt injection without a chained §3.1 outcome; consequences of
+  the chosen isolation posture; break-glass settings; third-party skills/plugins — are not
+  vulnerabilities. File them as regular issues/PRs; don't route them through the private
+  channel or describe them as vulnerabilities.
+- **Name the boundary.** A security issue or PR states which §2 trust boundary is crossed,
+  with `path/to/file.py:line` references and a reproduction on current `main`.
+- **Sweeper:** a public issue or PR that discloses an apparent §3.1 vulnerability is never a
+  sweeper close or merge candidate; leave it for a maintainer.
+
 ### The Footprint Ladder (new capability decision)
 
 Choose the highest (least-footprint) rung that correctly solves the problem:
@@ -217,7 +238,7 @@ hermes-agent/
 ├── acp_adapter/          # ACP server (VS Code / Zed / JetBrains)
 ├── cron/                 # jobs.py + scheduler.py (+ scheduler_*.py)
 ├── evals/                # Offline benchmarks (codebase_navigability/, compaction/, ...)
-├── scripts/              # run_tests.sh, release.py, check_compat_pointers.py, ci/
+├── scripts/              # run_tests.sh, release.py, ci/
 ├── website/              # Docusaurus docs (developer-guide/ holds the long-form area docs)
 └── tests/                # Pytest suite (~39k tests / ~3.7k files, Sep 2026)
 ```
@@ -246,18 +267,14 @@ families: `hermes_state.py` (21), `gateway/run.py` (15), `tools/mcp_tool.py` (15
   function so `monkeypatch.setattr(facade, "name", ...)` is the seam; a patch on the defining
   module passes silently. Check the call site's binding before writing a patch target
   (blind repointing to defining modules broke 130+ tests).
-- **Compat pointers are OFF LIMITS in-tree.** Old import paths kept alive for external plugins
-  (`PLUGIN-COMPAT` blocks, `COMPAT_MANIFEST.md`, `compat_manifest.json`) must not be used by
-  in-tree code or tests; `scripts/check_compat_pointers.py` runs in CI, and
-  `-W error::hermes_cli.plugin_compat.HermesPluginCompatWarning` catches them in the suite.
-  They are removed 2026-09-14 by reverting one commit. Import from the defining module.
 - **Don't recreate god files.** A file passing ~2,000 lines or a function passing ~300 lines /
   cyclomatic complexity 30 is the signal to split along `<stem>_<topic>` FIRST, in its own
   commit. New behaviour goes in a new or topical sibling — never appended to a facade.
 - **No `if/elif` ladders ≥ 4 branches keyed on a name/kind** — use a dict/table → handler
   (`_SLASH_DISPATCH` in `cli.py`, `_command_handler_table` in the gateway are the shape).
 - **No re-export shims for internal moves** ("keep the old name importable"). Internal paths
-  are not API; external compat is handled ONCE by the compat layer, not per PR.
+  are not API: plugins build on `ctx` and the documented ABCs. The one-time Sep 2026
+  decomposition compat layer for external plugins has been removed; never reintroduce one.
 - **Moving a symbol means fixing its docs in the same PR:** grep `website/docs`,
   `skills/`, and every `AGENTS.md` for the old `path.py` + symbol (23 doc files went stale
   after the refactor). `evals/codebase_navigability/static_metrics.py <tree> <label>` measures
@@ -513,7 +530,8 @@ extract, not to regex around it.
 | `cli.py`, `hermes_cli/`, `main.py` | `hermes_cli/AGENTS.md` | CLI mixins, `_SLASH_DISPATCH`, slash registry, config system + loaders, skins, `hermes update` pipeline, profiles / multiplex |
 | `gateway/` | `gateway/AGENTS.md` | Adapters, two message guards, streaming contract, background notifications, gateway vs desktop lifecycle, token locks, scoped secrets |
 | `tools/`, `toolsets.py`, `model_tools.py` | `tools/AGENTS.md` | Adding tools, registry, toolsets, delegation, cross-tool references, backends |
-| `plugins/`, `hermes_cli/plugins*.py` | `plugins/AGENTS.md` | Plugin kinds, native compat contract, in-tree policy, Sep-2026 compat window |
+| `plugins/`, `hermes_cli/plugins*.py` | `plugins/AGENTS.md` | Plugin kinds, native compat contract, in-tree policy |
+| `plugin-catalog/` entries, catalog reviews | `plugin-catalog/README.md` (canonical admission rules), `website/docs/developer-guide/plugins/catalog-submission.md` (mirror + submission guide) | What a listed plugin may do; keep the two rule blocks identical |
 | `tui_gateway/`, `ui-tui/` | `tui_gateway/AGENTS.md` | Process model, JSON-RPC transport, key surfaces, slash flow, dev commands |
 | `web/`, `hermes_cli/web_routers/` | `web/AGENTS.md` | Dashboard embeds the real TUI; what React may and may not rebuild |
 | `apps/desktop/` | `apps/desktop/AGENTS.md`, `apps/desktop/src/AGENTS.md` | Desktop judgment guide; `serve` backend, slash palette curation, Bot Mode canonical chat |

@@ -249,8 +249,8 @@ def _real_profile_cdp() -> tuple:
         return None, (_RP + "browser.engine is set to 'lightpanda', which cannot load a real Chromium profile. "
                       "Set browser.engine to 'auto' or 'chrome' to use real-profile browsing, or turn the toggle off.")
 
-    from hermes_cli.browser_connect import (chromium_executable, detect_default_chromium,
-                                            real_profile_copy_dir, snapshot_real_profile)
+    from hermes_cli.browser_connect import (chromium_executable, real_profile_copy_dir,
+                                            resolve_real_profile_browser, snapshot_real_profile)
 
     with _bt._real_profile_cdp_lock:
         cached = _bt._real_profile_cdp_cache.get("cdp")
@@ -261,7 +261,11 @@ def _real_profile_cdp() -> tuple:
             return cached, None
         _bt._real_profile_cdp_cache.pop("cdp", None)
 
-        browser = detect_default_chromium()
+        # A pin resolves the browser itself (#131589): without one this is the plain OS
+        # default (None / channel sentinel fail closed in _real_profile_unsupported_reason).
+        browser, pin_err = resolve_real_profile_browser()
+        if pin_err:
+            return None, _RP + pin_err
         unsupported = _real_profile_unsupported_reason(browser)
         if unsupported:
             return None, unsupported

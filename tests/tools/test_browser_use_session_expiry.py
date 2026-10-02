@@ -43,6 +43,19 @@ def test_browser_use_preserves_provider_timeout(monkeypatch):
     assert session["expires_at"] == "2030-01-01T00:05:00Z"
 
 
+def test_uuid_browser_session_uses_compact_socket_directory(monkeypatch, tmp_path):
+    monkeypatch.setattr(bt_session._bt, "_socket_safe_tmpdir", lambda: str(tmp_path))
+    monkeypatch.setattr(bt_session.os, "makedirs", Mock())
+    monkeypatch.setattr(bt_session._lifecycle, "_write_owner_pid", Mock())
+    session_name = "hermes_12345678-1234-5678-1234-567812345678_ab12cd34"
+
+    socket_dir = bt_session._prepare_session_socket_dir(session_name)
+
+    assert len(socket_dir.rsplit("/", 1)[-1]) == len("agent-browser-") + 16
+    assert socket_dir.endswith("agent-browser-" + bt_session.hashlib.sha256(
+        session_name.encode("utf-8")).hexdigest()[:16])
+
+
 def test_live_cloud_session_is_reused(monkeypatch):
     _isolate_browser_state(monkeypatch)
     existing = {

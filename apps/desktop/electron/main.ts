@@ -72,8 +72,8 @@ import {
 import { dashboardFallbackArgs, serveBackendArgs } from './backend-command'
 import { createBackendConnectionState } from './backend-connection-state'
 import { BackendDialClaims, runForegroundRetryingDialClaim } from './backend-dial-claim'
-import { buildDesktopBackendEnv, normalizeHermesHomeRoot, profileBackendParentEnv } from './backend-env'
 import type { HostBackendRecord } from './backend-discovery'
+import { buildDesktopBackendEnv, profileBackendParentEnv } from './backend-env'
 import { createBackendExitRecoveryLatch } from './backend-exit-recovery'
 import { isReauthRequiredError, waitForHermesReady } from './backend-health'
 import {
@@ -208,7 +208,6 @@ import type { RegistryConnection } from './connection-registry'
 import type { RosterProfileMetadata } from './connection-registry'
 import { liveWindowState, overlayWindowState } from './connection-window-state'
 import { describeCrashReason, installCrashForensics } from './crash-forensics'
-import { registerDeepLinkProtocolOutsideTests } from './deep-link-protocol-registration'
 import {
   adoptServedDashboardToken,
   isAttachedBackendTokenDrifted,
@@ -216,6 +215,7 @@ import {
 } from './dashboard-token'
 import { resolveDashboardWebDist } from './dashboard-web-dist'
 import { resolveDesktopHermesHome, resolveDesktopUserData } from './data-paths'
+import { registerDeepLinkProtocolOutsideTests } from './deep-link-protocol-registration'
 import { loadOrCreateInstallationId, sshOwnershipId } from './desktop-installation'
 import { formatDesktopLogLine, formatLogStamp } from './desktop-log-line'
 import {
@@ -549,8 +549,8 @@ import { planLaunchSwitches, readDesktopLaunchConfig } from './renderer-heap-fla
 import { loadRendererLoadErrorPage } from './renderer-load-error-page'
 import { attachRendererConsoleCapture, formatRendererBoundaryReport } from './renderer-log'
 import { fetchRosterSourceData } from './roster-source-fetch'
-import { isPackagedDesktopRuntime } from './runtime-mode'
 import { rosterSourceStatus } from './roster-source-status'
+import { isPackagedDesktopRuntime } from './runtime-mode'
 import {
   classifyStoredSecret,
   readSecretStoragePolicy,
@@ -11142,6 +11142,7 @@ async function ensureBackend(
     // A hard slot is released only after the evicted child exits.
     await evictLruPoolBackends(poolMaxBackends() - 1)
   }
+
   // The hard slot is released only after the evicted child exits. Wait for
   // that teardown before entering the spawn queue; otherwise a successful LRU
   // choice still leaves this wake racing the old child for the slot. A
@@ -15772,6 +15773,7 @@ async function connectDesktopProfileRoute(
 ipcMain.handle('hermes:connection:for', async (event, payload) => {
   const { connectionId, profile, priority, speculative } =
     payload && typeof payload === 'object' ? (payload as any) : ({} as any)
+
   const registry = readDesktopConnectionsRegistry()
   const id = registryDialConnectionId(connectionId, registry.primary)
   const spawnPriority = spawnPriorityFrom(priority)

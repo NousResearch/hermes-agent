@@ -24,21 +24,28 @@ type Handler = (...args: any[]) => Promise<any>
 function fixture() {
   const source = fs.readFileSync(new URL('./main.ts', import.meta.url), 'utf8')
   const ast = ts.createSourceFile('main.ts', source, ts.ScriptTarget.Latest, true)
+
   const declarations = ast.statements.filter(
     node =>
       ts.isFunctionDeclaration(node) &&
       ['spawnPriorityFrom', 'connectDesktopProfileRoute'].includes(node.name?.text ?? '')
   )
+
   const channels = ['hermes:connection', 'hermes:connection:for']
+
   const registrations = ast.statements.filter(node => {
-    if (!ts.isExpressionStatement(node) || !ts.isCallExpression(node.expression)) return false
+    if (!ts.isExpressionStatement(node) || !ts.isCallExpression(node.expression)) {
+      return false
+    }
     const call = node.expression
+
     return (
       call.expression.getText(ast) === 'ipcMain.handle' &&
       ts.isStringLiteral(call.arguments[0]) &&
       channels.includes(call.arguments[0].text)
     )
   })
+
   assert.equal(declarations.length, 2)
   assert.equal(registrations.length, 2)
   const handlers = new Map<string, Handler>()
@@ -49,11 +56,14 @@ function fixture() {
   const registry: any = { primary: 'remote-primary', connections: [] }
   const descriptor = { url: 'http://127.0.0.1:8080', isFullscreen: false }
   const ensureBackend = vi.fn(async (_profile: unknown, _opts: unknown): Promise<any> => ({ ...descriptor }))
+
   const ensureRegistryBackend = vi.fn(
     async (_id: unknown, _profile: unknown, _correlation: unknown, _opts: unknown): Promise<any> => ({ ...descriptor })
   )
+
   const released: string[] = []
   const routes = new Map<number, any>()
+
   const deps = {
     ipcMain: {
       handle: (channel: string, handler: Handler) => {
@@ -81,13 +91,17 @@ function fixture() {
     registryDialConnectionId,
     resolvedConnectionId
   }
+
   const code = [...declarations, ...registrations].map(node => node.getText(ast)).join('\n')
+
   const javascript = ts.transpileModule(code, {
     compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.None }
   }).outputText
+
   const connect = new Function(...Object.keys(deps), `${javascript}\nreturn connectDesktopProfileRoute;`)(
     ...Object.values(deps)
   ) as Handler
+
   return {
     connect,
     handlers,
@@ -114,6 +128,7 @@ test('main registers each connection IPC exactly once and forwards priority/spec
   const sender = { id: 7 }
   const window = { isDestroyed: () => false, state: { isFullscreen: true, isMaximized: true } }
   f.windows.set(sender, window)
+
   const result = await f.handlers.get('hermes:connection:for')!(
     { sender },
     {
@@ -123,6 +138,7 @@ test('main registers each connection IPC exactly once and forwards priority/spec
       speculative: true
     }
   )
+
   assert.deepEqual(f.ensureRegistryBackend.mock.calls, [
     ['remote-work', 'work', '', { spawnPriority: 'background', speculative: true }]
   ])
@@ -152,12 +168,15 @@ test('main connection follows the requesting window route and samples window sta
   f.routes.set(sender.id, { connectionId: 'pinned-source', profile: 'research', registryScoped: true })
   f.ensureRegistryBackend.mockImplementationOnce(async () => {
     window.state.isFullscreen = true
+
     return { url: 'http://127.0.0.1:8080', isFullscreen: false }
   })
+
   const result = await f.handlers.get('hermes:connection')!({ sender }, undefined, {
     priority: 'foreground',
     speculative: false
   })
+
   assert.deepEqual(f.ensureRegistryBackend.mock.calls[0], [
     'pinned-source',
     'research',

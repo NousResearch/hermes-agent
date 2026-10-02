@@ -1,13 +1,14 @@
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { MemoryRouter } from 'react-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type * as HermesApi from '@/hermes'
-import { getActionStatus, getLogs, getStatus, restartGateway, updateHermes } from '@/hermes'
+import { getActionStatus, getLogs, getStatus, updateHermes } from '@/hermes'
 import { $desktopActionTasks } from '@/store/activity'
 
 import { MaintenancePanel } from './maintenance'
+
 import { CommandCenterView } from './index'
-import { MemoryRouter } from 'react-router'
 
 const memoryOracle = vi.hoisted(() => ({
   downloadGatewayMediaFile: vi.fn(),
@@ -230,6 +231,7 @@ describe('fork durable system actions', () => {
     cleanup()
     vi.useRealTimers()
   })
+
   const mount = async () => {
     await act(async () => {
       render(

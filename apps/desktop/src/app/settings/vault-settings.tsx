@@ -11,12 +11,12 @@ import { $activeConnectionId } from '@/store/connections'
 import { $settingsScopeProfile } from '@/store/settings-scope'
 
 import { ListRow, Pill, SectionHeading, SettingsContent } from './primitives'
+import { SettingsProfileScope } from './profile-scope'
 import { useVaultAdd } from './vault-settings-add'
 import { VaultAddDialog } from './vault-settings-add-dialog'
 import { useVaultData, type VaultItem, type VaultSourceName } from './vault-settings-data'
 import type { VaultKind } from './vault-settings-form'
 import { VaultSources } from './vault-settings-sources'
-import { SettingsProfileScope } from './profile-scope'
 
 // Vault data is private to one (connection, profile); the cache key carries that owner so a
 // late response from profile A can never paint under profile B.

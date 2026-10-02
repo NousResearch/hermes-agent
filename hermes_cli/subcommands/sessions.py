@@ -87,7 +87,6 @@ def build_sessions_parser(subparsers, *, cmd_sessions: Callable) -> None:
     sessions_export.add_argument("--only", choices=["user-prompts"],
         help="Export only a filtered view (user-prompts: one prompt record "
             "per line for jsonl, headed sections for md)")
-    sessions_export.add_argument("--session-id", help="Session ID or unique prefix to export")
     _add_session_filter_args(
         sessions_export, "Only export sessions older than AGE (duration like '5h'/'2d', "
         "bare number of days, or an ISO timestamp)")

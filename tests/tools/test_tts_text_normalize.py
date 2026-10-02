@@ -97,3 +97,10 @@ def test_money_magnitude_is_spoken_before_the_currency_and_never_as_metres(raw, 
     assert spoken in prepare_spoken_text(raw)
     assert "metres" not in prepare_spoken_text(raw + " We hit 10M users.")
     assert "5 metres" in prepare_spoken_text(raw + " The pool is 5 m deep.")
+
+
+def test_tilde_is_about_only_before_an_amount():
+    """"~5 km" is "about 5 km", but the "~" of a home path is part of the path (silenced like
+    any path), never the spoken word "about"."""
+    assert prepare_spoken_text("It is ~5 km away, roughly ~$20.") == "It is about 5 km away, roughly about 20 dollars."
+    assert "about" not in prepare_spoken_text("Saved to ~/notes/todo.md for later.")

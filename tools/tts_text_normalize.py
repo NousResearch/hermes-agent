@@ -136,8 +136,11 @@ def normalize_symbols_for_tts(text: str) -> str:
     text = re.sub(r"(?<=\d)\s*%", " percent", text)
     # Operators and separators that commonly leak from formatted answers.
     text = re.sub("[•◦▪▫]", " ", text.replace("&", " and "))  # bullet glyphs
-    for symbol, word in (("→", " to "), ("⇒", " to "), ("≈", " about "), ("~", " about ")):
+    for symbol, word in (("→", " to "), ("⇒", " to "), ("≈", " about ")):
         text = text.replace(symbol, word)
+    # "~" means "about" only before an amount ("~5 km", "~$20"). Elsewhere it is a home path
+    # ("~/notes.md", silenced as an identifier below) or a code fence, never the word "about".
+    text = re.sub(r"~(?=\s*(?:[-+]|NZ\$|A\$|US\$|[$€£])?\d)", " about ", text)
     return _EMOJI_RE.sub("", _VARIATION_SELECTOR_RE.sub("", text))
 
 

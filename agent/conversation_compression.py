@@ -4068,7 +4068,7 @@ def compress_context(
     task_id: str = "default", focus_topic: Optional[str] = None, force: bool = False,
     bypass_cooldown: bool = False, defer_context_engine_notification: bool = False,
     commit_fence: Optional[CompressionCommitFence] = None, verbatim_tail: Optional[list] = None,
-    trigger: Optional[str] = None,
+    trigger: Optional[str] = None, snapshot_is_current: Optional[Callable[[], bool]] = None,
 ) -> Tuple[list, str]:
     """Compress conversation context and split the session in SQLite.
     ``force`` (manual /compress) clears the summary-failure cooldown; ``bypass_cooldown`` (provider-proven
@@ -4093,6 +4093,8 @@ def compress_context(
     after ``messages``; an in-place commit stores them after the compacted head and returns head + tail.
     trigger: Why this attempt runs (``"overflow"`` for provider-rejected requests); defaults to manual/auto
     from ``force``. Feeds attempt telemetry only.
+    snapshot_is_current: Optional host snapshot validation after durable lease admission. This protects
+    edits completed before admission; it is not a substitute for the host's final publication fence.
     """
     attempt = _begin_compression_attempt(
         agent, force=force, defer_notification=defer_context_engine_notification, trigger=trigger,
@@ -4149,6 +4151,13 @@ def compress_context(
     # Publish the holder-qualified release hook before a timeout can win the
     # fence. If no durable lock was acquired there is no hook to publish.
     lease.finish_lock_setup()
+    try:
+        if snapshot_is_current is not None and not snapshot_is_current():
+            lease.release()
+            return messages, _existing_system_prompt(agent, system_message)
+    except BaseException:
+        lease.release()
+        raise
     _adopted = _adopt_if_parent_rotated(agent, lease, messages, system_message)
     if _adopted is not None:
         return _adopted

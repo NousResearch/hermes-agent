@@ -220,7 +220,7 @@ def hatch_pet(
 ) -> HatchResult:
     """Turn an approved base image into a full, installed Hermes pet.
 
-    Idle reuses the approved base look without another paid image call. Raises
+    Idle reuses the approved base when keying leaves a visible frame. Raises
     :class:`GenerationError` on failure. Once *is_cancelled* trips, aborts before
     composing/saving so a stopped hatch never writes a half-built pet.
     """
@@ -234,17 +234,22 @@ def hatch_pet(
     if cancelled():
         raise GenerationError("hatch cancelled")
     # Decode before paid work: a corrupt base must not burn row generations.
-    frames_by_state: dict[str, list] = {"idle": [atlas.single_frame(base, fit=False)]}
+    idle = atlas.single_frame(base, fit=False)
+    frames_by_state: dict[str, list] = {}
     total_rows = len(atlas.ROW_SPECS)
-    progress("row", f"idle:1:{total_rows}")
-    logger.info("pet hatch %r: idle reuses the approved base image", slug)
+    if idle.getchannel("A").getbbox() is not None:
+        frames_by_state["idle"] = [idle]
+        progress("row", f"idle:1:{total_rows}")
+        logger.info("pet hatch %r: idle reuses the approved base image", slug)
+    else:
+        logger.info("pet hatch %r: base has no visible idle after keying; generating idle", slug)
 
     def _gen_row(spec: tuple[str, int, int]) -> tuple[str, list | None]:
         return _generate_row(spec, base=base, label=label, style=style, slug=slug, sprite=sprite, cancelled=cancelled)
 
-    # Idle already has an approved identity anchor; don't pay to regenerate it.
+    # Reuse a visible identity anchor, but preserve generation when keying erased it.
     # running-left is mirrored from running-right (consistent, one fewer generation).
-    generated_specs = [spec for spec in atlas.ROW_SPECS if spec[0] not in {"idle", "running-left"}]
+    generated_specs = [spec for spec in atlas.ROW_SPECS if spec[0] != "running-left" and spec[0] not in frames_by_state]
     cancel_log = f"pet hatch {slug!r}: cancelled — dropping remaining rows"
     done = len(frames_by_state)
     for state, frames in _run_parallel(_gen_row, generated_specs, cancelled=cancelled, on_cancel_log=cancel_log):

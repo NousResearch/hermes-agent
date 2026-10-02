@@ -84,7 +84,6 @@ def _speed_up_command_sync_mutation_pacing(monkeypatch):
 class FakeTree:
     def __init__(self):
         self.sync = AsyncMock(return_value=[])
-        self.fetch_commands = AsyncMock(return_value=[])
         self._commands = []
 
     def command(self, *args, **kwargs):
@@ -103,6 +102,7 @@ class FakeBot:
         self._events = {}
         self.tree = FakeTree()
         self.http = SimpleNamespace(
+            get_global_commands=AsyncMock(return_value=[]),
             upsert_global_command=AsyncMock(),
             edit_global_command=AsyncMock(),
             delete_global_command=AsyncMock(),
@@ -365,21 +365,6 @@ async def test_safe_sync_slash_commands_only_mutates_diffs():
             assert tree is not None
             return dict(self._payload)
 
-    class _ExistingCommand:
-        def __init__(self, command_id, payload):
-            self.id = command_id
-            self.name = payload["name"]
-            self.type = SimpleNamespace(value=payload["type"])
-            self._payload = payload
-
-        def to_dict(self):
-            return {
-                "id": self.id,
-                "application_id": 999,
-                **self._payload,
-                "name_localizations": {},
-                "description_localizations": {},
-            }
 
     desired_same = {
         "name": "status",
@@ -408,15 +393,15 @@ async def test_safe_sync_slash_commands_only_mutates_diffs():
         "dm_permission": True,
         "default_member_permissions": None,
     }
-    existing_same = _ExistingCommand(11, desired_same)
-    existing_updated = _ExistingCommand(
+    existing_same = _registry_entry(11, desired_same)
+    existing_updated = _registry_entry(
         12,
         {
             **desired_updated,
             "description": "Old help text",
         },
     )
-    existing_deleted = _ExistingCommand(
+    existing_deleted = _registry_entry(
         13,
         {
             "name": "old-command",
@@ -435,9 +420,9 @@ async def test_safe_sync_slash_commands_only_mutates_diffs():
             _DesiredCommand(desired_updated),
             _DesiredCommand(desired_created),
         ],
-        fetch_commands=AsyncMock(return_value=[existing_same, existing_updated, existing_deleted]),
     )
     fake_http = SimpleNamespace(
+        get_global_commands=AsyncMock(return_value=[existing_same, existing_updated, existing_deleted]),
         upsert_global_command=AsyncMock(),
         edit_global_command=AsyncMock(),
         delete_global_command=AsyncMock(),
@@ -530,100 +515,108 @@ async def test_post_connect_initialization_retries_fingerprint_after_timeout(tmp
     assert recovered_entry["summary"] == summary
 
 
-@pytest.mark.asyncio
-async def test_safe_sync_reads_permission_attrs_from_existing_command():
-    """Regression: AppCommand.to_dict() in discord.py does NOT include
-    nsfw, dm_permission, or default_member_permissions — they live only
-    on the attributes. Without reading those attrs, any command with
-    non-default permissions false-diffs on every startup.
-    """
-    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="test-token"))
-
-    class _DesiredCommand:
-        def __init__(self, payload):
-            self._payload = payload
-
-        def to_dict(self, tree):
-            return dict(self._payload)
-
-    class _ExistingCommand:
-        """Mirrors discord.py's AppCommand — to_dict() omits nsfw/dm/perms."""
-
-        def __init__(self, command_id, name, description, *, nsfw, guild_only, default_permissions):
-            self.id = command_id
-            self.name = name
-            self.description = description
-            self.type = SimpleNamespace(value=1)
-            self.nsfw = nsfw
-            self.guild_only = guild_only
-            self.default_member_permissions = (
-                SimpleNamespace(value=default_permissions)
-                if default_permissions is not None
-                else None
-            )
-
-        def to_dict(self):
-            # Match real AppCommand.to_dict() — no nsfw/dm_permission/default_member_permissions
-            return {
-                "id": self.id,
-                "type": 1,
-                "application_id": 999,
-                "name": self.name,
-                "description": self.description,
-                "name_localizations": {},
-                "description_localizations": {},
-                "options": [],
-            }
-
-    desired = {
-        "name": "admin",
-        "description": "Admin-only command",
-        "type": 1,
-        "options": [],
-        "nsfw": True,
-        "dm_permission": False,
-        "default_member_permissions": "8",
+def _registry_entry(command_id, payload):
+    return {
+        "id": command_id,
+        "application_id": 999,
+        "version": "1",
+        "name_localizations": None,
+        "description_localizations": None,
+        **payload,
     }
-    # Existing command has matching attrs — should report unchanged, NOT falsely diff.
-    existing = _ExistingCommand(
-        42,
-        "admin",
-        "Admin-only command",
-        nsfw=True,
-        guild_only=True,
-        default_permissions=8,
-    )
 
-    fake_tree = SimpleNamespace(
-        get_commands=lambda: [_DesiredCommand(desired)],
-        fetch_commands=AsyncMock(return_value=[existing]),
-    )
+
+def _sync_adapter(desired_payloads, registry):
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="test-token"))
     fake_http = SimpleNamespace(
+        get_global_commands=AsyncMock(return_value=registry),
         upsert_global_command=AsyncMock(),
         edit_global_command=AsyncMock(),
         delete_global_command=AsyncMock(),
     )
     adapter._client = SimpleNamespace(
-        tree=fake_tree,
+        tree=SimpleNamespace(
+            get_commands=lambda: [
+                SimpleNamespace(to_dict=lambda tree, payload=payload: dict(payload))
+                for payload in desired_payloads
+            ],
+        ),
         http=fake_http,
         application_id=999,
         user=SimpleNamespace(id=999),
     )
+    return adapter, fake_http
 
-    summary = await adapter._safe_sync_slash_commands()
 
-    # Without the fix, this would be unchanged=0, recreated=1 (false diff).
-    assert summary == {
-        "total": 1,
-        "unchanged": 1,
-        "updated": 0,
-        "recreated": 0,
-        "created": 0,
-        "deleted": 0,
-    }
+_ADMIN_COMMAND = {
+    "name": "admin",
+    "description": "Admin-only command",
+    "type": 1,
+    "options": [],
+    "nsfw": True,
+    "dm_permission": False,
+    "default_member_permissions": "8",
+}
+_UNCHANGED_SUMMARY = {
+    "total": 1,
+    "unchanged": 1,
+    "updated": 0,
+    "recreated": 0,
+    "created": 0,
+    "deleted": 0,
+}
+
+
+def _assert_no_mutations(fake_http):
     fake_http.edit_global_command.assert_not_awaited()
     fake_http.delete_global_command.assert_not_awaited()
     fake_http.upsert_global_command.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_safe_sync_compares_registry_permission_fields():
+    adapter, fake_http = _sync_adapter(
+        [_ADMIN_COMMAND],
+        [_registry_entry(42, {**_ADMIN_COMMAND, "contexts": None, "integration_types": [0]})],
+    )
+
+    assert await adapter._safe_sync_slash_commands() == _UNCHANGED_SUMMARY
+    _assert_no_mutations(fake_http)
+
+
+@pytest.mark.asyncio
+async def test_safe_sync_ignores_install_defaults_discord_fills_in():
+    adapter, fake_http = _sync_adapter(
+        [_ADMIN_COMMAND],
+        [_registry_entry(42, {**_ADMIN_COMMAND, "contexts": [0, 1, 2], "integration_types": [0, 1]})],
+    )
+
+    assert await adapter._safe_sync_slash_commands() == _UNCHANGED_SUMMARY
+    _assert_no_mutations(fake_http)
+
+
+@pytest.mark.asyncio
+async def test_safe_sync_keeps_zero_based_install_flags_from_registry():
+    desired = {**_ADMIN_COMMAND, "contexts": [0, 1, 2], "integration_types": [0, 1]}
+    adapter, fake_http = _sync_adapter([desired], [_registry_entry(42, desired)])
+
+    assert await adapter._safe_sync_slash_commands() == _UNCHANGED_SUMMARY
+    _assert_no_mutations(fake_http)
+
+
+@pytest.mark.asyncio
+async def test_safe_sync_recreates_when_managed_install_flags_differ():
+    desired = {**_ADMIN_COMMAND, "integration_types": [0, 1]}
+    adapter, fake_http = _sync_adapter(
+        [desired],
+        [_registry_entry(42, {**_ADMIN_COMMAND, "integration_types": [0]})],
+    )
+
+    summary = await adapter._safe_sync_slash_commands()
+
+    assert summary["recreated"] == 1
+    fake_http.delete_global_command.assert_awaited_once_with(999, 42)
+    fake_http.upsert_global_command.assert_awaited_once_with(999, desired)
 
 
 # ============================================================================

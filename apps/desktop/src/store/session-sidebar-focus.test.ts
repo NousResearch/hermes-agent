@@ -1,3 +1,7 @@
+// Loaded for its primary-follow wiring: a new primary selection re-fronts the
+// workspace, which the last case asserts through the focus derivation.
+import '@/store/session-states'
+
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
 import { group, split } from '@/components/pane-shell/tree/model'
@@ -9,7 +13,7 @@ import {
 } from '@/components/pane-shell/tree/store'
 import { setWorkspaceScope } from '@/components/pane-shell/workspace-scope'
 import { $selectedStoredSessionId } from '@/store/session'
-import { $focusedStoredSessionId } from '@/store/session-states'
+import { $focusedStoredSessionId } from '@/store/session-focus'
 
 const pane = (id: string) => `session-tile:${id}`
 

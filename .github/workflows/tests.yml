@@ -27,9 +27,18 @@ concurrency:
 
 jobs:
   test:
-    name: Run tests
+    # Two 32-core slices instead of one box: on one runner the suite is ~10 min of
+    # nearly fully packed work, and a single bigger runner (96-core) scaled ~1.8x for
+    # 3x the price because files contend for the shared machine. Separate machines
+    # scale linearly. run_tests_parallel.py partitions from the checkout alone, so
+    # both slices agree on the split without a planning job.
+    name: Run tests (${{ matrix.slice }}/2)
     runs-on: ubuntu-latest-32-core
     timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        slice: [1, 2]
     steps:
       - name: Checkout code
         uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
@@ -91,6 +100,7 @@ jobs:
         run: |
           scripts/run_tests.sh
         env:
+          HERMES_TEST_SLICE: ${{ matrix.slice }}/2
           HERMES_TEST_WORKERS: 32
           HERMES_TEST_FILE_TIMEOUT: 600
           # Ensure tests don't accidentally call real APIs
@@ -105,7 +115,9 @@ jobs:
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: test_durations.json
-          key: test-durations-${{ github.run_id }}
+          # Per-slice key: each slice's file keeps the restored entries for the other
+          # slice's files and refreshes its own, so the cache stays complete.
+          key: test-durations-${{ github.run_id }}-${{ matrix.slice }}
 
   e2e:
     # The core suites spawn real serve / gateway / tui_gateway / MCP / SQLite

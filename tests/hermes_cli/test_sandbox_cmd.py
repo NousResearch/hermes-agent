@@ -1,11 +1,15 @@
 """`hermes sandbox run`: the container lock cannot be loosened, and the export runs nothing the code carries."""
 
+import argparse
 import os
 import subprocess
 
 import pytest
 
-from hermes_cli.sandbox_cmd import export_path, export_ref, sandbox_run_argv, sandbox_settings
+from hermes_cli.sandbox_cmd import (
+    NO_RUNTIME_EXIT, cmd_sandbox_run, export_path, export_ref, sandbox_run_argv, sandbox_settings, sandbox_steps,
+)
+from hermes_cli.subcommands.sandbox import build_sandbox_parser
 
 # Everything the terminal's docker backend would otherwise pass along.
 _HOSTILE_CONFIG = {"terminal": {
@@ -16,7 +20,14 @@ _HOSTILE_CONFIG = {"terminal": {
     "container_cpu": 2, "container_memory": 2048}}
 
 
-@pytest.mark.parametrize("network", [False, True], ids=["run", "setup"])
+def _parse(argv):
+    parser = argparse.ArgumentParser()
+    build_sandbox_parser(parser.add_subparsers(dest="command"))
+    return parser.parse_args(argv)
+
+
+@pytest.mark.parametrize("setup_flags", [[], ["--setup-network", "none"], ["--setup-network", "open"]],
+                         ids=["setup-default", "setup-none", "setup-open"])
 @pytest.mark.parametrize("limits", [True, False])
 @pytest.mark.parametrize("image", [None, "attacker/image:latest"])
 @pytest.mark.parametrize("command", [
@@ -24,26 +35,41 @@ _HOSTILE_CONFIG = {"terminal": {
     ["sh", "-c", "cat ~/.ssh/id_rsa"],
     ["-v", "/:/host", "-e", "GITHUB_TOKEN", "--network", "host", "--privileged"],
 ])
-def test_run_argv_is_locked_whatever_the_options(monkeypatch, network, limits, image, command):
+def test_run_argv_is_locked_whatever_the_options(monkeypatch, setup_flags, limits, image, command):
     monkeypatch.setenv("GITHUB_TOKEN", "ghp_fake")
-    chosen, cpus, memory_mb = sandbox_settings(_HOSTILE_CONFIG, image)
-    argv = sandbox_run_argv("docker", chosen, "/scratch/x", command, network=network,
-                            limits=limits, cpus=cpus, memory_mb=memory_mb, name="hermes-sandbox-t")
+    args = _parse(["sandbox", "run", "--path", ".", "--setup", "pip install -e .", *setup_flags,
+                   *(["--image", image] if image else []), "--", *command])
+    chosen, cpus, memory_mb = sandbox_settings(_HOSTILE_CONFIG, args.image)
+    steps = sandbox_steps(args.setup, args.setup_network, args.run_command[1:])
+    assert [cmd for cmd, _ in steps] == [["sh", "-c", "pip install -e ."], command]
 
-    split = argv.index("--entrypoint")
-    flags, tail = argv[:split], argv[split:]
-    assert tail == ["--entrypoint", "env", chosen, "HOME=/sandbox/home", *command]
-    pairs = list(zip(flags, flags[1:]))
-    for pair in [("--cap-drop", "ALL"), ("--security-opt", "no-new-privileges"),
-                 ("--user", "65534:65534"), ("-v", "/scratch/x:/sandbox")]:
-        assert pair in pairs
-    assert {"--rm", "--read-only"} <= set(flags)
-    assert flags.count("-v") == 1 and flags.count("--security-opt") == 1
-    assert not set(flags) & {"-e", "--env", "--env-file", "--privileged", "--cap-add", "--mount",
-                             "--volume", "--volumes-from", "--device", "--pid", "--ipc", "--userns"}
-    assert not any("GITHUB_TOKEN" in a or "LEAK" in a or "/host" in a for a in flags)
-    # Only the setup step may reach a network, and then only the runtime's default one.
-    assert [b for a, b in pairs if a == "--network"] == ([] if network else ["none"])
+    for index, (step_command, network) in enumerate(steps):
+        argv = sandbox_run_argv("docker", chosen, "/scratch/x", step_command, network=network,
+                                limits=limits, cpus=cpus, memory_mb=memory_mb, name="hermes-sandbox-t")
+        split = argv.index("--entrypoint")
+        flags, tail = argv[:split], argv[split:]
+        assert tail == ["--entrypoint", "env", chosen, "HOME=/sandbox/home", *step_command]
+        pairs = list(zip(flags, flags[1:]))
+        for pair in [("--cap-drop", "ALL"), ("--security-opt", "no-new-privileges"),
+                     ("--user", "65534:65534"), ("-v", "/scratch/x:/sandbox")]:
+            assert pair in pairs
+        assert {"--rm", "--read-only"} <= set(flags)
+        assert flags.count("-v") == 1 and flags.count("--security-opt") == 1
+        assert not set(flags) & {"-e", "--env", "--env-file", "--privileged", "--cap-add", "--mount",
+                                 "--volume", "--volumes-from", "--device", "--pid", "--ipc", "--userns"}
+        assert not any("GITHUB_TOKEN" in a or "LEAK" in a or "/host" in a for a in flags)
+        # The run step never has a network; setup only when "open" was asked for explicitly.
+        setup_open = index == 0 and setup_flags == ["--setup-network", "open"]
+        assert [b for a, b in pairs if a == "--network"] == ([] if setup_open else ["none"])
+
+    # No runtime: a distinct exit code, and nothing is run on the host instead.
+    import tools.environments.docker as docker_env
+
+    spawned = []
+    monkeypatch.setattr(docker_env, "find_docker", lambda: None)
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: spawned.append(a))
+    monkeypatch.setattr(subprocess, "Popen", lambda *a, **k: spawned.append(a))
+    assert cmd_sandbox_run(args) == NO_RUNTIME_EXIT != 0 and spawned == []
 
 
 def _git(repo, *args):

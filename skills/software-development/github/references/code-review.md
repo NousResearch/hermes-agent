@@ -376,17 +376,19 @@ For each changed file, use `read_file` to see full context around the changes â€
 
 ### Step 5: Run automated checks in the sandbox (if applicable)
 
-Run the PR's code only inside `hermes sandbox run`. It copies the PR without executing anything from it (no checkout, no hooks), then runs your command in a throwaway container with no network, no credentials or host environment, a read-only root and no access to your files. Put dependency installs in `--setup`: that step has network but still no credentials.
+Run the PR's code only inside `hermes sandbox run`. It copies the PR without executing anything from it (no checkout, no hooks), then runs your command in a throwaway container with no network, no credentials or host environment, a read-only root and no access to your files. Put dependency installs in `--setup`. It runs in its own container with no credentials and, by default, no network. When the install must download packages, add `--setup-network open`: the setup step then gets the container runtime's ordinary network, so the PR's install scripts (`setup.py`, npm lifecycle scripts) can reach the internet, your local network and services on this machine. The test run itself never has a network.
 
 ```bash
 # Python
-hermes sandbox run --pr $PR_NUMBER --setup 'pip install --user -e .' -- python -m pytest -q 2>&1 | tail -20
+hermes sandbox run --pr $PR_NUMBER --setup 'pip install --user -e .' --setup-network open -- python -m pytest -q 2>&1 | tail -20
 # Node
-hermes sandbox run --pr $PR_NUMBER --setup 'npm ci' -- npm test 2>&1 | tail -20
+hermes sandbox run --pr $PR_NUMBER --setup 'npm ci' --setup-network open -- npm test 2>&1 | tail -20
 # or: cargo test, go test ./..., the same way
 ```
 
-The exit status is the command's (124 = timed out). If `hermes sandbox run` reports that Docker or Podman is missing, do not fall back to running the PR on the host: review the diff statically and say in the review that the tests were not run.
+The exit status is the command's (124 = timed out).
+
+**No container runtime: fail closed.** If `hermes sandbox run` exits 69 or reports that no container runtime is available (it needs Docker or Podman), do NOT check out and run the PR's code on the host, and do not offer to. Review statically (diff and source only) and tell the user plainly: "tests not run: no isolated runtime available (needs Docker or Podman)".
 
 Linters that only parse code (`ruff check`) can run on the checkout. Tools that load project config or build scripts as code (eslint, tsc plugins, clippy, anything that compiles) go through the sandbox too.
 

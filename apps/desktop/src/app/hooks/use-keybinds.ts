@@ -25,7 +25,7 @@ import {
   TAB_SLOT_COUNT
 } from '@/lib/keybinds/actions'
 import { handleApprovalKey, releaseApprovalKey } from '@/lib/keybinds/approval-keys'
-import { actionAllowedInInput, comboFromEvent, IS_MAC, isEditableTarget, isFocusWithin } from '@/lib/keybinds/combo'
+import { actionAllowedInInput, comboFromEvent, hasTextSelection, IS_MAC, isEditableTarget, isFocusWithin } from '@/lib/keybinds/combo'
 import { composerFocusKeysAllowed, isComposerFocusSoftCombo, typeToFocusChar } from '@/lib/keybinds/composer-focus-keys'
 import { stepReasoningEffort, writeSessionReasoningEffort } from '@/lib/reasoning-step'
 import { openWorktreeDialog } from '@/store/coding-status'
@@ -124,6 +124,9 @@ export interface KeybindRuntimeDeps {
   toggleSelectedPin: () => void
   /** Archive the active session. */
   archiveSelectedSession: () => void
+  /** True while the ACTIVE session's turn is running — the gate for the
+   *  `session.stop` chord, which must fall through to copy while idle. */
+  isActiveRunBusy: () => boolean
 }
 
 /** A handler returns `false` to decline the chord (see `passthrough`); any other
@@ -324,6 +327,11 @@ export function useKeybinds(deps: KeybindRuntimeDeps): void {
     'session.focusSearch': requestSessionSearchFocus,
     'session.togglePin': deps.toggleSelectedPin,
     'session.archive': deps.archiveSelectedSession,
+    // The dispatcher (below) gates the chord to a live active turn and to
+    // non-copy contexts; the event re-broadcast lets the primary chat surface
+    // run its own halt (park queued prompts + cancel) with the queue scope
+    // only it knows — the same path the Stop button takes.
+    'session.stop': () => window.dispatchEvent(new CustomEvent('hermes:stop-active-run')),
     'conversation.scrollPageUp': () => requestThreadPageScroll(-1, $focusedStoredSessionId.get()),
     'conversation.scrollPageDown': () => requestThreadPageScroll(1, $focusedStoredSessionId.get()),
     // openWorktreeDialog resolves the target. There is no test for a repo
@@ -572,6 +580,25 @@ export function useKeybinds(deps: KeybindRuntimeDeps): void {
           isFocusWithin('[data-interactive-terminal]')
         ) {
           return
+        }
+
+        // session.stop (Ctrl+C, the CLI interrupt): the chord only stops while
+        // a turn is actually running, and it must yield where it already means
+        // something — copy when the user has a text selection (the ⌘C/Ctrl+C
+        // chord), and the PTY's own ^C when a user terminal owns focus.
+        // Declining WITHOUT preventDefault hands the key to those owners.
+        if (actionId === 'session.stop') {
+          if (!deps.isActiveRunBusy()) {
+            return
+          }
+
+          if (combo === 'mod+c' && hasTextSelection()) {
+            return
+          }
+
+          if (isFocusWithin('[data-interactive-terminal]')) {
+            return
+          }
         }
 
         // Built-in handlers first (they carry React context); contributed

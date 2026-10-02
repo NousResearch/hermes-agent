@@ -615,6 +615,25 @@ const ChatViewContent = memo(function ChatViewContent({
     return onCancel()
   }, [activeSessionId, onCancel, queueSessionKey])
 
+  // Ctrl+C stop (the `session.stop` keybind): the global dispatcher has no
+  // React context for a chat surface, so it re-broadcasts; the PRIMARY surface
+  // turns the event into its own halt — the same park-then-cancel path the Stop
+  // button and transcript-side stops take. Tiles ignore it: the active run is
+  // the primary's, and a stop must not cascade into every mounted surface.
+  useEffect(() => {
+    if (!isPrimary) {
+      return
+    }
+
+    const onStopActiveRun = () => {
+      void Promise.resolve(haltRun())
+    }
+
+    window.addEventListener('hermes:stop-active-run', onStopActiveRun)
+
+    return () => window.removeEventListener('hermes:stop-active-run', onStopActiveRun)
+  }, [haltRun, isPrimary])
+
   // A tile IS its session — no route involved, never "mismatched".
   const routedSessionId = isPrimary ? routeSessionId(location.pathname) : selectedSessionId
   const isRoutedSessionView = Boolean(routedSessionId)

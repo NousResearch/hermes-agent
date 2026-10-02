@@ -345,7 +345,9 @@ button prompts (`/model`'s picker, a confirmation or approval) fall back to
 their text form, and files (such as `/save`'s export) are not sent — run the
 command in a DM with the bot to get them. In a DM, which is already private,
 only the reply that replaces the placeholder is ephemeral and the rest of the
-answer stays in the conversation history. (Commands typed as regular messages
+answer stays in the conversation history. A channel slash command interrupted by
+a gateway restart is not resumed automatically, so its answer cannot reach the
+channel afterwards; run it again. (Commands typed as regular messages
 — `!cmd` in threads, `@Hermes /cmd` — reply as normal visible messages
 instead.)
 

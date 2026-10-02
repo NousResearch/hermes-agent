@@ -6296,14 +6296,12 @@ class SlackAdapter(SlackSocketLifecycleMixin, SlackVaultCodeMixin, BasePlatformA
         with self._reply_owner_bound(event):
             await super()._process_message_background(event, session_key)
 
-    async def _record_delivery_obligation(self, event: MessageEvent, *args, **kwargs) -> Optional[str]:
-        # The ledger replays through the public lane (it keeps no recipient), and a prompt-rewrite
-        # command (/plan, /learn) no longer starts with "/" when its final is ledgered.
+    def reply_is_private(self, event: MessageEvent) -> bool:
+        # Keyed on the owner, not the text: a prompt-rewrite command (/plan, /learn) no longer
+        # starts with "/" by the time its final is ledgered. A DM is private on any lane.
         raw = getattr(event, "raw_message", None)
-        if (isinstance(raw, dict) and raw.get(_REPLY_OWNER_KEY)
-                and not str(event.source.chat_id).startswith("D")):
-            return None
-        return await super()._record_delivery_obligation(event, *args, **kwargs)
+        return bool(isinstance(raw, dict) and raw.get(_REPLY_OWNER_KEY)
+                    and not str(event.source.chat_id).startswith("D"))
 
     def _build_thread_session_key(
         self, channel_id: str, thread_ts: str, user_id: str, team_id: str = "", *,

@@ -48,7 +48,7 @@ async def record_final_obligation(adapter: Any, event: Any, session_key: str, te
     """Ledger the final response BEFORE the send so a crash before platform ACK redelivers on
     next boot; best-effort, skips slash-command and ephemeral replies. Returns the obligation id
     or None."""
-    if is_ephemeral_response or str(event.text or "").lstrip().startswith(
+    if is_ephemeral_response or adapter.reply_is_private(event) or str(event.text or "").lstrip().startswith(
         ("/", adapter.typed_command_prefix or "!")):
         return None
     try:

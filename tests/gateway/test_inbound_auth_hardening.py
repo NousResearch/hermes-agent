@@ -92,8 +92,27 @@ def _a2a(presented: str) -> bool:
     return ctx.authenticate(f"Bearer {presented}", "10.0.0.1") is not None
 
 
-@pytest.mark.parametrize("accepts", [_bluebubbles, _google_meet, _wecom_signature, _a2a],
-                         ids=["bluebubbles", "google_meet", "wecom", "a2a"])
+def _dashboard_basic(presented: str) -> bool:
+    from hermes_cli.dashboard_auth import InvalidCredentialsError
+    from plugins.dashboard_auth.basic import BasicAuthProvider, hash_password
+    provider = BasicAuthProvider(username=SECRET, password_hash=hash_password("pw"), secret=b"k" * 16)
+    try:
+        provider.complete_password_login(username=presented, password="pw")
+    except InvalidCredentialsError:
+        return False
+    return True
+
+
+def _dashboard_drain(presented: str) -> bool:
+    from plugins.dashboard_auth.drain import DrainSecretProvider
+    strong = "Zq8-rT2vLk9wXy4pBn7mC3sDf6gHj1KaQ0eW5uI8oP7aS2dF4"  # the provider refuses a weak secret
+    token = strong if presented == SECRET else presented
+    return DrainSecretProvider(secret=strong).verify_token(token=token) is not None
+
+
+@pytest.mark.parametrize("accepts", [_bluebubbles, _google_meet, _wecom_signature, _a2a, _dashboard_basic,
+                                     _dashboard_drain],
+                         ids=["bluebubbles", "google_meet", "wecom", "a2a", "dashboard_basic", "dashboard_drain"])
 def test_presented_secret_is_compared_timing_safe_and_fails_closed(accepts, monkeypatch):
     calls = []
     real = hmac.compare_digest

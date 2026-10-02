@@ -67,6 +67,14 @@ class Proxy(BaseHTTPRequestHandler):
             except (BrokenPipeError, ConnectionResetError): pass
 
 
+def proxy_server(target, *, mode='', address=('127.0.0.1', 0)):
+    server = ThreadingHTTPServer(address, Proxy)
+    server.mode, server.target, server.acks, server.run_posts = mode, target, 0, 0
+    server.entered, server.release, server.unknown_observed = threading.Event(), threading.Event(), threading.Event()
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    return server
+
+
 @contextmanager
 def pair(tmp_path, mode):
     from types import SimpleNamespace
@@ -79,10 +87,7 @@ def pair(tmp_path, mode):
     pm.path = peer / 'checklist.md'
     configure(home, lambda c: c['platform_toolsets'].update(bot_room=['file']))
     configure(peer, lambda c: c['platform_toolsets'].update(api_server=['file', 'bot_room']))
-    proxy = ThreadingHTTPServer(('127.0.0.1', 0), Proxy)
-    proxy.mode, proxy.target, proxy.acks, proxy.run_posts = mode, f'http://127.0.0.1:{port}', 0, 0
-    proxy.entered, proxy.release, proxy.unknown_observed = threading.Event(), threading.Event(), threading.Event()
-    threading.Thread(target=proxy.serve_forever, daemon=True).start()
+    proxy = proxy_server(f'http://127.0.0.1:{port}', mode=mode)
     try:
         yield SimpleNamespace(root=root, home=home, peer=peer, he=he, pe=pe, hm=hm, pm=pm, proxy=proxy,
                               url=f'http://127.0.0.1:{proxy.server_port}')
@@ -215,10 +220,7 @@ def test_proven_unreceived_output_intent_does_not_block_healthy_member_or_contro
                         state = (await rpc(hw, 'groups.state', room_id='linked'))['result']
                         pending = next(a for a in state['driver_status']['pending_actions'] if a['kind'] == 'discard')
                         if action == 'retry':
-                            replacement = ThreadingHTTPServer(p.proxy.server_address, Proxy)
-                            replacement.mode, replacement.target, replacement.acks = '', p.proxy.target, 0
-                            replacement.entered, replacement.release = threading.Event(), threading.Event()
-                            threading.Thread(target=replacement.serve_forever, daemon=True).start()
+                            replacement = proxy_server(p.proxy.target, address=p.proxy.server_address)
                             p.pm.release.set()
                         control = await rpc(hw, 'groups.' + action, room_id='linked',
                             **{k: pending[k] for k in ('member_id', 'task_id', 'execution_generation')})

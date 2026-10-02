@@ -119,6 +119,143 @@ afterEach(() => {
 })
 
 describe('Install from Git entry flow', () => {
+  it.each(['Cancel', 'Close'] as const)(
+    'releases replacement B controls and %s after pending A completes without publishing A results',
+    async close => {
+      const repoA = 'https://github.com/example/pending-a'
+      const repoB = 'https://github.com/example/replacement-b'
+      let finishA!: (value: unknown) => void
+      probePluginRepo.mockResolvedValue({ ok: true, agent: true, desktop: false, warnings: [] })
+      scopedGateway.mockImplementation(async (_connection, _profile, _method, params) => {
+        if (params.action === 'install') {
+          return new Promise(resolve => {
+            finishA = resolve
+          })
+        }
+
+        return { plugins: [] }
+      })
+      renderFlow()
+      act(() => openPluginInstallRequest({ repo: repoA, profile: { connectionId: 'pinned-A', profile: 'default' } }))
+      await screen.findByText('This package includes')
+      fireEvent.click(screen.getByRole('button', { name: 'Install' }))
+      await waitFor(() =>
+        expect(scopedGateway).toHaveBeenCalledWith(
+          'pinned-A',
+          'default',
+          'plugins.manage',
+          expect.objectContaining({ action: 'install', identifier: repoA }),
+          120000,
+          undefined,
+          { spawnPriority: 'foreground' }
+        )
+      )
+      act(() => openPluginInstallRequest({ repo: repoB, profile: { connectionId: 'pinned-B', profile: 'default' } }))
+      await screen.findByText('This package includes')
+      expect(screen.getByRole<HTMLButtonElement>('button', { name: 'Install' }).disabled).toBe(false)
+      expect(screen.getByRole<HTMLButtonElement>('button', { name: 'Cancel' }).disabled).toBe(false)
+      await act(async () => {
+        finishA({ ok: true, plugin_name: 'old-A', missing_env: ['SYNTHETIC_A_KEY'], warnings: ['old-A-warning'] })
+      })
+      expect($pluginInstallRequest.get()?.repo).toBe(repoB)
+      expect(screen.getByRole<HTMLButtonElement>('button', { name: 'Install' }).disabled).toBe(false)
+      expect(screen.getByRole<HTMLButtonElement>('button', { name: 'Cancel' }).disabled).toBe(false)
+      expect($notifications.get()).toEqual([])
+      expect(installDesktopPlugin).not.toHaveBeenCalled()
+      fireEvent.click(screen.getByRole('button', { name: close }))
+      await waitFor(() => expect($pluginInstallRequest.get()).toBeNull())
+    }
+  )
+
+  it('keeps replacement B busy when A finishes and publishes only the B install result', async () => {
+    const repoA = 'https://github.com/example/pending-a'
+    const repoB = 'https://github.com/example/replacement-b'
+    let finishA!: (value: unknown) => void
+    let finishB!: (value: unknown) => void
+    probePluginRepo.mockResolvedValue({ ok: true, agent: true, desktop: false, warnings: [] })
+    scopedGateway.mockImplementation(async (connection, _profile, _method, params) => {
+      if (params.action === 'install') {
+        return new Promise(resolve => {
+          if (connection === 'pinned-A') {
+            finishA = resolve
+          } else {
+            finishB = resolve
+          }
+        })
+      }
+
+      return { plugins: [] }
+    })
+    renderFlow()
+    act(() => openPluginInstallRequest({ repo: repoA, profile: { connectionId: 'pinned-A', profile: 'default' } }))
+    await screen.findByText('This package includes')
+    fireEvent.click(screen.getByRole('button', { name: 'Install' }))
+    await waitFor(() => expect(finishA).toBeTypeOf('function'))
+    act(() => openPluginInstallRequest({ repo: repoB, profile: { connectionId: 'pinned-B', profile: 'default' } }))
+    await screen.findByText('This package includes')
+    expect(screen.getByRole<HTMLButtonElement>('button', { name: 'Install' }).disabled).toBe(false)
+    fireEvent.click(screen.getByRole('button', { name: 'Install' }))
+    await waitFor(() =>
+      expect(scopedGateway).toHaveBeenCalledWith(
+        'pinned-B',
+        'default',
+        'plugins.manage',
+        expect.objectContaining({ action: 'install', identifier: repoB }),
+        120000,
+        undefined,
+        { spawnPriority: 'foreground' }
+      )
+    )
+    await act(async () => {
+      finishA({ ok: false, error: 'old-A-error' })
+    })
+    expect($pluginInstallRequest.get()?.repo).toBe(repoB)
+    expect(screen.getByRole<HTMLButtonElement>('button', { name: 'Cancel' }).disabled).toBe(true)
+    fireEvent.keyDown(screen.getByRole('dialog'), { key: 'Escape' })
+    expect($pluginInstallRequest.get()?.repo).toBe(repoB)
+    expect(screen.queryByText('old-A-error')).toBeNull()
+    expect($notifications.get()).toEqual([])
+    await act(async () => {
+      finishB({ ok: false, error: 'current-B-error' })
+    })
+    expect(await screen.findByText('current-B-error')).toBeTruthy()
+    expect(screen.getByRole<HTMLButtonElement>('button', { name: 'Install' }).disabled).toBe(false)
+    expect(screen.getByRole<HTMLButtonElement>('button', { name: 'Cancel' }).disabled).toBe(false)
+    fireEvent.keyDown(screen.getByRole('dialog'), { key: 'Escape' })
+    await waitFor(() => expect($pluginInstallRequest.get()).toBeNull())
+  })
+
+  it('keeps the same request busy when only its initial profile changes', async () => {
+    let finish!: (value: unknown) => void
+    probePluginRepo.mockResolvedValue({ ok: true, agent: true, desktop: false, warnings: [] })
+    requestGateway.mockImplementation(async (_method, params) => {
+      if (params?.action === 'install') {
+        return new Promise(resolve => {
+          finish = resolve
+        })
+      }
+
+      return { plugins: [] }
+    })
+    renderFlow()
+    act(() => openPluginInstallRequest({ repo: 'https://github.com/example/same-request' }))
+    await screen.findByText('This package includes')
+    fireEvent.click(screen.getByRole('button', { name: 'Install' }))
+    await waitFor(() => expect(finish).toBeTypeOf('function'))
+    const request = $pluginInstallRequest.get()
+    act(() => $activeGatewayProfile.set('research'))
+    await waitFor(() => expect(probePluginRepo).toHaveBeenCalledTimes(2))
+    expect(screen.getByRole<HTMLButtonElement>('button', { name: 'Cancel' }).disabled).toBe(true)
+    fireEvent.keyDown(screen.getByRole('dialog'), { key: 'Escape' })
+    expect($pluginInstallRequest.get()).toBe(request)
+    expect(requestGateway.mock.calls.filter(([, params]) => params?.action === 'install')).toHaveLength(1)
+    await act(async () => {
+      finish({ ok: false, error: 'same-request-error' })
+    })
+    expect(await screen.findByText('same-request-error')).toBeTruthy()
+    expect(screen.getByRole<HTMLButtonElement>('button', { name: 'Cancel' }).disabled).toBe(false)
+  })
+
   it('does not redirect a pinned remote missing credential into the active local Keys page', async () => {
     publishConnection({ mode: 'local', connectionId: 'local' } as NonNullable<ReturnType<typeof $connection.get>>)
     probePluginRepo.mockResolvedValue({ ok: true, agent: true, desktop: false, warnings: [] })

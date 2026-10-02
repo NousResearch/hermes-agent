@@ -117,7 +117,8 @@ export function PluginInstallModal() {
   const [enableAgent, setEnableAgent] = useState(true)
   const [forceReinstall, setForceReinstall] = useState(false)
   const [pinRef, setPinRef] = useState('')
-  const [installing, setInstalling] = useState(false)
+  const [installingRequest, setInstallingRequest] = useState<PluginInstallRequest | null>(null)
+  const installing = request !== null && installingRequest === request
   const [installError, setInstallError] = useState<string | null>(null)
   const [installUncertain, setInstallUncertain] = useState(false)
   const probeToken = useRef(0)
@@ -131,7 +132,7 @@ export function PluginInstallModal() {
     setEnableAgent(true)
     setForceReinstall(false)
     setPinRef('')
-    setInstalling(false)
+    setInstallingRequest(null)
     setInstallError(null)
     setInstallUncertain(false)
   }, [])
@@ -286,7 +287,7 @@ export function PluginInstallModal() {
       return
     }
 
-    setInstalling(true)
+    setInstallingRequest(request)
     setInstallError(null)
     setInstallUncertain(false)
 
@@ -436,7 +437,7 @@ export function PluginInstallModal() {
       setInstallError(errors.join('\n'))
     } finally {
       if ($pluginInstallRequest.get() === request) {
-        setInstalling(false)
+        setInstallingRequest(null)
       }
     }
   }

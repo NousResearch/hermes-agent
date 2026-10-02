@@ -136,15 +136,15 @@ def test_sole_addressee_text_stays_clean_and_prompt_is_session_stable(trigger):
         first, second = events
         expected_text = {"mention": "😀 2", "approval": "ok", "prefixed_command": "/status",
                          "prefixed_addressed_command": "/group@hermes_bot list",
-                         "prefixed_command_argument": "/group 1 send @hermes_bot hello\nagain",
-                         "repeated_prefix_command": "/group 1 send @hermes_bot hello",
+                         "prefixed_command_argument": "/group 1 send @hermes_bot hello\nagain  ",
+                         "repeated_prefix_command": "/group 1 send @hermes_bot hello ",
                          "ordinary_text_prefix": "explain /group list", "punctuated_prefix": "! /group list",
                          "code": "@hermes_bot"}.get(trigger, msg.text)
         assert first.text == expected_text
         command_cases = {"command": ("new", ""), "prefixed_command": ("status", ""),
                          "prefixed_addressed_command": ("group", "list"),
-                         "prefixed_command_argument": ("group", "1 send @hermes_bot hello\nagain"),
-                         "repeated_prefix_command": ("group", "1 send @hermes_bot hello")}
+                         "prefixed_command_argument": ("group", "1 send @hermes_bot hello\nagain  "),
+                         "repeated_prefix_command": ("group", "1 send @hermes_bot hello ")}
         if trigger in command_cases:
             assert (first.get_command(), first.get_command_args()) == command_cases[trigger]
         if trigger in {"ordinary_text_prefix", "punctuated_prefix", "other_bot_prefix"}:

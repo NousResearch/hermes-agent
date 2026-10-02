@@ -39,11 +39,11 @@ def group_trigger_text(adapter: "TelegramAdapter", message: "Message", text: Opt
     if adapter._is_group_chat(message) and mentions_other_participants(adapter, message):
         return text
     # A supported mention-prefixed command loses only its leading address(es),
-    # not its suffix or argument mentions. Keep the cleaner's outer strip rule.
+    # not its suffix or argument bytes.
     own = adapter._current_bot_username()
     prefix = re.match(rf"(?i)^\s*(?:@{re.escape(own)}\b[,:\-]*\s*)+(?=/)", text or "") if own else None
     if prefix:
-        return text[prefix.end():].strip()
+        return text[prefix.end():]
     return adapter._clean_bot_trigger_text(text)
 
 

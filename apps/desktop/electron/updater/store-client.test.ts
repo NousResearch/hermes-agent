@@ -55,7 +55,9 @@ it('the production runner passes modes, full HWND and isolated payload imports',
   )
   expect(calls.every(call => call.python === 'packaged-python.exe')).toBe(true)
   expect(
-    calls.every(call => call.env?.PYTHONPATH === 'payload-core;payload-deps' && !call.env.PYTHONHOME && !call.env.VIRTUAL_ENV)
+    calls.every(
+      call => call.env?.PYTHONPATH === 'payload-core;payload-deps' && !call.env.PYTHONHOME && !call.env.VIRTUAL_ENV
+    )
   ).toBe(true)
   expect(calls[1].timeout).toBeGreaterThan(calls[0].timeout!)
   expect(calls.map(call => call.waitForExit)).toEqual([false, true, true])

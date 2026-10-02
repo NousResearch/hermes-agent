@@ -860,6 +860,9 @@ def _api_key_provider_runtime(provider, pconfig, requested_provider, model_cfg, 
 # ── the resolution ladder ──────────────────────────────────────────────────────────────────
 
 _VERTEX_NAMES = ("vertex", "google-vertex", "vertex-ai", "gcp-vertex", "vertexai")
+# Solstice is a hidden (pre-release) OAuth provider deliberately kept out of PROVIDER_REGISTRY,
+# so resolve_provider() would raise "Unknown provider" before any provider-specific rung ran.
+_SOLSTICE_NAMES = ("solstice", "solstice-oauth")
 _LOCAL_BYPASS_CLOUD_HOSTS = ("openrouter.ai", "anthropic.com", "openai.com")
 
 
@@ -939,6 +942,16 @@ def _resolve_requested_shortcuts(requested_provider, explicit_api_key, explicit_
                                               target_model=target_model)
     if requested_provider in _VERTEX_NAMES:
         return _resolve_vertex_runtime(requested_provider)
+    # Resolve on the REQUESTED name alone: the provider is absent from the registry by design.
+    if requested_provider in _SOLSTICE_NAMES:
+        from hermes_cli.solstice import resolve_solstice_runtime_credentials
+
+        creds = resolve_solstice_runtime_credentials()
+        return _runtime(
+            "solstice", "chat_completions", str(creds.get("base_url", "")).rstrip("/"),
+            creds.get("api_key", ""), source=creds.get("source", "hermes-auth-store"),
+            last_refresh=creds.get("last_refresh"), expires_at_ms=creds.get("expires_at_ms"),
+            requested_provider=requested_provider)
     return None
 
 

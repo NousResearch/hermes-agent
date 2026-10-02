@@ -245,6 +245,19 @@ def build_write_approval_paths(home: str) -> set[str]:
 # deliberately NOT here (#45947): read-denied, but the user may ask to edit them.
 _HERMES_PROTECTED_SUBPATHS = ("state.db", "sessions", "mcp-tokens", "pairing", "vault", "browser-profile")
 
+# The ``vault`` subpath is one credential only while vault.key + vault.json.enc
+# sit in it side by side. When neither exists the user has repurposed the dir
+# as their own space (e.g. an Obsidian vault, #131781): the guards then deny
+# just the two credential filenames instead of the whole tree. While the pair
+# exists, deleting either file is itself whole-dir write-denied, so the agent
+# cannot manufacture this downgrade by removing the files first.
+_VAULT_CREDENTIAL_NAMES = frozenset({"vault.key", "vault.json.enc"})
+
+
+def _vault_credentials_present(vault_dir: str | Path) -> bool:
+    """True when ``vault.key`` or ``vault.json.enc`` exists in ``vault_dir``."""
+    return any(os.path.exists(os.path.join(str(vault_dir), name)) for name in _VAULT_CREDENTIAL_NAMES)
+
 
 def _classify_write_denial(path: str, *, entry: bool = False) -> Optional[str]:
     """Return ``'credential'``, ``'safe_root'``, ``'nt_namespace'``, or ``None`` if writes are allowed.
@@ -291,8 +304,16 @@ def _classify_resolved_write_denial(homes: set[str], resolved: str) -> Optional[
     for base in _hermes_dirs():
         for sub in _HERMES_PROTECTED_SUBPATHS:
             with suppress(Exception):
-                if _is_under(resolved, os.path.realpath(os.path.join(str(base), sub))):
-                    return "credential"
+                sub_dir = os.path.realpath(os.path.join(str(base), sub))
+                if not _is_under(resolved, sub_dir):
+                    continue
+                if sub == "vault" and not _vault_credentials_present(sub_dir):
+                    # No credential pair inside: user-owned dir (#131781) — but
+                    # creating or deleting either credential filename stays denied.
+                    if os.path.basename(resolved).lower() in _VAULT_CREDENTIAL_NAMES:
+                        return "credential"
+                    continue
+                return "credential"
 
     safe_roots = get_safe_write_roots()
     if safe_roots and not any(_is_under(resolved, root) for root in safe_roots):
@@ -398,9 +419,16 @@ def get_read_block_error(path: str) -> Optional[str]:
     else:
         for subdir, dir_msg, file_msg in _READ_DENIED_DIRS:
             for blocked_dir in _resolve_each(hd / subdir for hd in hermes_dirs):
-                if _is_under(resolved, blocked_dir):
-                    reason = (dir_msg if resolved == blocked_dir else file_msg) + _DID_SUFFIX
+                if not _is_under(resolved, blocked_dir):
+                    continue
+                if subdir == "vault" and not _vault_credentials_present(blocked_dir):
+                    # User-owned dir without the credential pair (#131781):
+                    # only the two credential filenames stay read-denied.
+                    if resolved.name.lower() in _VAULT_CREDENTIAL_NAMES:
+                        reason = file_msg + _DID_SUFFIX
                     break
+                reason = (dir_msg if resolved == blocked_dir else file_msg) + _DID_SUFFIX
+                break
             if reason:
                 break
         if reason is None and resolved.name.lower() in _BLOCKED_PROJECT_ENV_BASENAMES:

@@ -41,7 +41,11 @@ import { getNestedValue, setNestedValue } from "@/lib/nested";
 import { useToast } from "@nous-research/ui/hooks/use-toast";
 import { Toast } from "@nous-research/ui/ui/components/toast";
 import { AutoField } from "@/components/AutoField";
-import { configFieldSearchHaystack, configFieldSectionLabel } from "@/lib/config-labels";
+import {
+  configFieldSearchHaystack,
+  configFieldSectionLabel,
+  lookupConfigFieldLabel,
+} from "@/lib/config-labels";
 import { Button } from "@nous-research/ui/ui/components/button";
 import { ListItem } from "@nous-research/ui/ui/components/list-item";
 import { Spinner } from "@nous-research/ui/ui/components/spinner";
@@ -160,7 +164,13 @@ export default function ConfigPage() {
   function prettyCategoryName(cat: string): string {
     const key = cat as keyof typeof t.config.categories;
     if (t.config.categories[key]) return t.config.categories[key];
-    return cat.charAt(0).toUpperCase() + cat.slice(1);
+    // Schema categories beyond the fixed `t.config.categories` rails (Attachments,
+    // Bedrock, Curator, Matrix, …) are authored in `config.fieldCopy` under the
+    // category key verbatim — same whole-key lookup the form's section headings
+    // use. Misses keep the original Title-cased fallback, byte-for-byte.
+    return (
+      lookupConfigFieldLabel(t, cat) ?? cat.charAt(0).toUpperCase() + cat.slice(1)
+    );
   }
 
   useEffect(() => {

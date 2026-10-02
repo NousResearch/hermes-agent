@@ -295,11 +295,11 @@ export const UserMessage: FC<{
   const lineHeightRef = useRef(0)
 
   // Watch windows spectate a subagent run driven elsewhere — prompts can't be
-  // edited, restored, or stopped from here. The bubble stays a button that
-  // toggles the 2-line clamp so long prompts are still fully readable.
+  // edited, restored, or stopped from here. Both watch and main windows can keep
+  // long prompts expanded without relying on hover or focus.
   const readOnly = isWatchWindow()
   const [expanded, setExpanded] = useState(false)
-  const clampActive = !(readOnly && expanded)
+  const clampActive = !expanded
 
   const measureClamp = useCallback((entries: readonly ResizeObserverEntry[]) => {
     const inner = clampInnerRef.current
@@ -451,6 +451,21 @@ export const UserMessage: FC<{
                       }
                 }
               >
+                {bodyClamped ? (
+                  <button
+                    aria-expanded={expanded}
+                    aria-label={copy.expandMessage}
+                    className="absolute top-2 right-2 z-20 size-5 rounded-md text-xs text-foreground/70 opacity-70 transition-opacity hover:bg-black/10 hover:opacity-100 focus-visible:opacity-100"
+                    onClick={event => {
+                      event.preventDefault()
+                      event.stopPropagation()
+                      setExpanded(value => !value)
+                    }}
+                    type="button"
+                  >
+                    {expanded ? '⌃' : '⌄'}
+                  </button>
+                ) : null}
                 {readOnly ? (
                   // Spectator transcript: clicking only toggles the clamp so the
                   // full prompt is readable — never opens an edit composer.

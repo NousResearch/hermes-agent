@@ -11771,7 +11771,7 @@ def test_prompt_submit_expands_context_refs(monkeypatch):
 
 
 def test_image_attach_appends_local_image(monkeypatch):
-    fake_cli = types.ModuleType("cli")
+    fake_cli = types.ModuleType('hermes_cli.attachment_paths')
     fake_cli._IMAGE_EXTENSIONS = {".png"}
     fake_cli._detect_file_drop = lambda raw: {
         "path": Path("/tmp/cat.png"),
@@ -11782,7 +11782,7 @@ def test_image_attach_appends_local_image(monkeypatch):
     fake_cli._resolve_attachment_path = lambda raw: Path("/tmp/cat.png")
 
     server._sessions["sid"] = _session()
-    monkeypatch.setitem(sys.modules, "cli", fake_cli)
+    monkeypatch.setitem(sys.modules, 'hermes_cli.attachment_paths', fake_cli)
 
     resp = server.handle_request(
         {
@@ -11799,7 +11799,7 @@ def test_image_attach_appends_local_image(monkeypatch):
 
 def test_image_attach_accepts_unquoted_screenshot_path_with_spaces(monkeypatch):
     screenshot = Path("/tmp/Screenshot 2026-04-21 at 1.04.43 PM.png")
-    fake_cli = types.ModuleType("cli")
+    fake_cli = types.ModuleType('hermes_cli.attachment_paths')
     fake_cli._IMAGE_EXTENSIONS = {".png"}
     fake_cli._detect_file_drop = lambda raw: {
         "path": screenshot,
@@ -11813,7 +11813,7 @@ def test_image_attach_accepts_unquoted_screenshot_path_with_spaces(monkeypatch):
     fake_cli._resolve_attachment_path = lambda raw: None
 
     server._sessions["sid"] = _session()
-    monkeypatch.setitem(sys.modules, "cli", fake_cli)
+    monkeypatch.setitem(sys.modules, 'hermes_cli.attachment_paths', fake_cli)
 
     resp = server.handle_request(
         {
@@ -11838,13 +11838,13 @@ def test_file_attach_uploads_remote_file_into_session_workspace(monkeypatch, tmp
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     home = tmp_path / "home"
-    fake_cli = types.ModuleType("cli")
+    fake_cli = types.ModuleType('hermes_cli.attachment_paths')
     fake_cli._detect_file_drop = lambda raw: None
     fake_cli._split_path_input = lambda raw: (raw, "")
     fake_cli._resolve_attachment_path = lambda raw: None
 
     server._sessions["sid"] = _session(cwd=str(workspace), profile_home=str(home))
-    monkeypatch.setitem(sys.modules, "cli", fake_cli)
+    monkeypatch.setitem(sys.modules, 'hermes_cli.attachment_paths', fake_cli)
 
     try:
         resp = server.handle_request(
@@ -11877,13 +11877,13 @@ def test_file_attach_copies_gateway_visible_file_outside_workspace(monkeypatch, 
     home = tmp_path / "home"
     source = tmp_path / "outside.txt"
     source.write_text("outside workspace", encoding="utf-8")
-    fake_cli = types.ModuleType("cli")
+    fake_cli = types.ModuleType('hermes_cli.attachment_paths')
     fake_cli._detect_file_drop = lambda raw: None
     fake_cli._split_path_input = lambda raw: (raw, "")
     fake_cli._resolve_attachment_path = lambda raw: source
 
     server._sessions["sid"] = _session(cwd=str(workspace), profile_home=str(home))
-    monkeypatch.setitem(sys.modules, "cli", fake_cli)
+    monkeypatch.setitem(sys.modules, 'hermes_cli.attachment_paths', fake_cli)
 
     try:
         resp = server.handle_request(
@@ -11909,13 +11909,13 @@ def test_file_attach_uses_in_workspace_file_without_copying(monkeypatch, tmp_pat
     (workspace / "data").mkdir(parents=True)
     source = workspace / "data" / "exam.csv"
     source.write_text("a,b,c\n1,2,3\n", encoding="utf-8")
-    fake_cli = types.ModuleType("cli")
+    fake_cli = types.ModuleType('hermes_cli.attachment_paths')
     fake_cli._detect_file_drop = lambda raw: None
     fake_cli._split_path_input = lambda raw: (raw, "")
     fake_cli._resolve_attachment_path = lambda raw: source
 
     server._sessions["sid"] = _session(cwd=str(workspace))
-    monkeypatch.setitem(sys.modules, "cli", fake_cli)
+    monkeypatch.setitem(sys.modules, 'hermes_cli.attachment_paths', fake_cli)
 
     try:
         resp = server.handle_request(
@@ -11941,13 +11941,13 @@ def test_file_attach_errors_when_unresolvable_and_no_bytes(monkeypatch, tmp_path
     """Remote path not on gateway and no data_url → actionable error, not a stage."""
     workspace = tmp_path / "workspace"
     workspace.mkdir()
-    fake_cli = types.ModuleType("cli")
+    fake_cli = types.ModuleType('hermes_cli.attachment_paths')
     fake_cli._detect_file_drop = lambda raw: None
     fake_cli._split_path_input = lambda raw: (raw, "")
     fake_cli._resolve_attachment_path = lambda raw: None
 
     server._sessions["sid"] = _session(cwd=str(workspace))
-    monkeypatch.setitem(sys.modules, "cli", fake_cli)
+    monkeypatch.setitem(sys.modules, 'hermes_cli.attachment_paths', fake_cli)
 
     try:
         resp = server.handle_request(
@@ -11967,13 +11967,13 @@ def test_file_attach_quotes_ref_with_spaces(monkeypatch, tmp_path):
     """Staged names with spaces must be backtick-quoted so the @file: ref parses."""
     workspace = tmp_path / "workspace"
     workspace.mkdir()
-    fake_cli = types.ModuleType("cli")
+    fake_cli = types.ModuleType('hermes_cli.attachment_paths')
     fake_cli._detect_file_drop = lambda raw: None
     fake_cli._split_path_input = lambda raw: (raw, "")
     fake_cli._resolve_attachment_path = lambda raw: None
 
     server._sessions["sid"] = _session(cwd=str(workspace), profile_home=str(tmp_path / "home"))
-    monkeypatch.setitem(sys.modules, "cli", fake_cli)
+    monkeypatch.setitem(sys.modules, 'hermes_cli.attachment_paths', fake_cli)
 
     try:
         resp = server.handle_request(
@@ -12013,11 +12013,11 @@ def test_file_attach_workspace_storage_follows_the_owning_profiles_config(monkey
     def fake_resolve(raw):
         return None
 
-    fake_cli = types.ModuleType("cli")
+    fake_cli = types.ModuleType('hermes_cli.attachment_paths')
     fake_cli._detect_file_drop = lambda raw: None
     fake_cli._split_path_input = lambda raw: (raw, "")
     fake_cli._resolve_attachment_path = fake_resolve
-    monkeypatch.setitem(sys.modules, "cli", fake_cli)
+    monkeypatch.setitem(sys.modules, 'hermes_cli.attachment_paths', fake_cli)
 
     def attach(sid: str, params: dict) -> dict:
         return server.handle_request(
@@ -12080,11 +12080,11 @@ def test_file_attach_workspace_storage_falls_back_for_non_local_workspace(monkey
     home.mkdir()
     (home / "config.yaml").write_text("attachments:\n  storage: workspace\n", encoding="utf-8")
     remote_cwd = str(tmp_path / "remote-host" / "agent-a")  # does not exist here
-    fake_cli = types.ModuleType("cli")
+    fake_cli = types.ModuleType('hermes_cli.attachment_paths')
     fake_cli._detect_file_drop = lambda raw: None
     fake_cli._split_path_input = lambda raw: (raw, "")
     fake_cli._resolve_attachment_path = lambda raw: None
-    monkeypatch.setitem(sys.modules, "cli", fake_cli)
+    monkeypatch.setitem(sys.modules, 'hermes_cli.attachment_paths', fake_cli)
 
     server._sessions["sid"] = _session(cwd=remote_cwd, profile_home=str(home))
 
@@ -19536,9 +19536,9 @@ _PNG_1X1_B64 = (
 
 
 def _attach_bytes_cli(monkeypatch):
-    fake_cli = types.ModuleType("cli")
+    fake_cli = types.ModuleType('hermes_cli.attachment_paths')
     fake_cli._IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"}
-    monkeypatch.setitem(sys.modules, "cli", fake_cli)
+    monkeypatch.setitem(sys.modules, 'hermes_cli.attachment_paths', fake_cli)
 
 
 def test_image_attach_bytes_writes_to_gateway_dir(monkeypatch, tmp_path):

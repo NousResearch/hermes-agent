@@ -72,11 +72,8 @@ def _sniff_image_ext(img_bytes: bytes, filename: str = "") -> str:
 
 
 def _allowed_image_extensions() -> frozenset[str]:
-    try:
-        from cli import _IMAGE_EXTENSIONS
-        return frozenset(_IMAGE_EXTENSIONS)
-    except Exception:
-        return frozenset({".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"})
+    from hermes_cli.attachment_paths import _IMAGE_EXTENSIONS
+    return _IMAGE_EXTENSIONS
 
 
 def _session_home_dir(session: dict, name: str) -> Path:
@@ -184,18 +181,14 @@ def _stage_session_file_attachment(
     workspace = Path(_session_cwd(session)).resolve()
     resolved = None
     if raw_path:
-        try:
-            from cli import _detect_file_drop, _resolve_attachment_path, _split_path_input
-        except Exception:
-            _detect_file_drop = None
-        if _detect_file_drop is not None:
-            dropped = _detect_file_drop(raw_path)
-            if dropped:
-                resolved = Path(dropped["path"]).resolve()
-            else:
-                path_token, _remainder = _split_path_input(raw_path)
-                found = _resolve_attachment_path(path_token)
-                resolved = Path(found).resolve() if found is not None else None
+        from hermes_cli.attachment_paths import _detect_file_drop, _resolve_attachment_path, _split_path_input
+        dropped = _detect_file_drop(raw_path)
+        if dropped:
+            resolved = Path(dropped["path"]).resolve()
+        else:
+            path_token, _remainder = _split_path_input(raw_path)
+            found = _resolve_attachment_path(path_token)
+            resolved = Path(found).resolve() if found is not None else None
     if resolved is not None:
         try:
             resolved.relative_to(workspace)

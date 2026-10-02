@@ -635,7 +635,6 @@ DELEGATE_TASK_SCHEMA = {
     "name": "delegate_task",
     # description / tasks.description are placeholders: the real text is built per get_definitions() call by
     # _build_dynamic_schema_overrides() so the model sees the user's actual max_concurrent_children / max_spawn_depth.
-    # Lazy (not at import) so cli.CLI_CONFIG isn't forced to load before the test conftest redirects HERMES_HOME.
     "description": (
         "Spawn one or more subagents in isolated contexts. "
         "Description is rebuilt at every get_definitions() call to reflect the user's current delegation limits."

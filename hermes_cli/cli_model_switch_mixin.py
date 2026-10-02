@@ -234,7 +234,8 @@ def _apply_reasoning_after_switch(cli, effort: str, *, persist_global: bool) -> 
     """Apply a ``--reasoning <level>`` that rode along with a model pick. Runs AFTER the swap: the
     agent's ``switch_model`` re-resolves ``reasoning_config`` from config.yaml, so an earlier write
     would be clobbered. Session-scoped unless the pick itself persists (``--global``)."""
-    from cli import CLI_CONFIG, _cprint, _parse_reasoning_config, save_config_value
+    from cli import CLI_CONFIG, _cprint, _parse_reasoning_config
+    from hermes_cli.config_values import save_config_value
     parsed = _parse_reasoning_config(effort)
     if parsed is None:
         return

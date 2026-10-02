@@ -115,7 +115,7 @@ def test_fast_auto_and_cold_parse_and_slash_command(monkeypatch):
     assert {"auto", "cold"} <= set(fast_cmd.subcommands)
     printed = []
     monkeypatch.setattr(cli_mod, "_cprint", lambda *a, **k: printed.append(" ".join(map(str, a))))
-    monkeypatch.setattr(cli_mod, "save_config_value", lambda *a, **k: (_ for _ in ()).throw(AssertionError("no config write")))
+    monkeypatch.setattr("hermes_cli.config_values.save_config_value", lambda *a, **k: (_ for _ in ()).throw(AssertionError("no config write")))
     stub = SimpleNamespace(
         service_tier=None, model="gpt-5.4", agent=object(), _fast_command_available=lambda: True
     )

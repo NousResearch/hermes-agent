@@ -158,7 +158,6 @@ from hermes_cli.cli_terminal_input import (  # noqa: F401,E402
     _DSR_CPR_ESC_RE,
     _DSR_CPR_VISIBLE_RE,
     _EXTENDED_ENTER_KEYS_SEQ,
-    _IMAGE_EXTENSIONS,
     _KITTY_KEYBOARD_PUSH_SEQ,
     _MODIFY_OTHER_KEYS_SEQ,
     _SGR_MOUSE_BARE_RE,
@@ -171,20 +170,16 @@ from hermes_cli.cli_terminal_input import (  # noqa: F401,E402
     _build_cpr_disabled_output,
     _cli_multiline_shortcuts_enabled,
     _collect_query_images,
-    _detect_file_drop,
     _disable_prompt_toolkit_cpr_warning,
     _enable_extended_enter_keys,
     _estimate_tui_input_height,
-    _file_drop_result,
     _format_image_attachment_badges,
     _hermes_call_output_screen_diff,
     _is_backslash_line_continuation,
     _is_ghostty_terminal,
     _preserve_ctrl_enter_newline,
-    _resolve_attachment_path,
     _select_classic_cli_pt_output,
     _should_auto_attach_clipboard_image_on_paste,
-    _split_path_input,
     _status_bar_visible_from_display_config,
     _strip_leaked_terminal_responses_with_meta,
     _terminal_may_leak_cpr,
@@ -778,26 +773,6 @@ def _parse_skills_argument(skills: str | list[str] | tuple[str, ...] | None) -> 
     return list(dict.fromkeys(p for p in parts if p))
 
 
-def save_config_value(key_path: str, value: any) -> bool:
-    """Persist dot-separated ``key_path`` = value into HERMES_HOME/config.yaml; True on success.
-
-    Never the repo's cli-config.yaml: no config reader loads it, so the value would vanish.
-    """
-    config_path = get_hermes_home() / 'config.yaml'
-
-    try:
-        from hermes_constants import mkdir_under_hermes_home
-        mkdir_under_hermes_home(config_path.parent)
-        from utils import atomic_roundtrip_yaml_update
-        atomic_roundtrip_yaml_update(config_path, key_path, value)
-        try:  # owner-only: config files contain API keys
-            os.chmod(config_path, 0o600)
-        except (OSError, NotImplementedError):
-            pass
-        return True
-    except Exception as e:
-        logger.error("Failed to save config: %s", e)
-        return False
 
 
 def _normalize_moa_model(model: Optional[str]) -> tuple[Optional[str], Optional[str]]:

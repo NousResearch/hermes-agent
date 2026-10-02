@@ -64,7 +64,11 @@ def test_multi_bot_addressing_survives_real_handlers(media, observe):
     asyncio.run(run())
 
 
-@pytest.mark.parametrize("trigger", ["mention", "approval", "prefixed_command", "text_mention", "reply", "wake_word", "open", "code", "command", "dm"])
+@pytest.mark.parametrize("trigger", [
+    "mention", "approval", "prefixed_command", "prefixed_addressed_command", "prefixed_command_argument",
+    "repeated_prefix_command", "ordinary_text_prefix", "punctuated_prefix", "other_bot_prefix",
+    "text_mention", "reply", "wake_word", "open", "code", "command", "dm",
+])
 def test_sole_addressee_text_stays_clean_and_prompt_is_session_stable(trigger):
     """Our own handle is still stripped when nobody else is named (clarify answers like ``@bot 2``
     keep resolving), and the identity block is identical across turns: it rides the cached-agent
@@ -83,11 +87,34 @@ def test_sole_addressee_text_stays_clean_and_prompt_is_session_stable(trigger):
             msg = _group_message("/new@hermes_bot", entities=[SimpleNamespace(type="bot_command", offset=0, length=15)])
         elif trigger == "text_mention":
             msg = _group_message("Hermes hello", entities=[SimpleNamespace(type="text_mention", offset=0, length=6, user=SimpleNamespace(id=999))])
-        elif trigger in {"mention", "approval", "prefixed_command"}:
+        elif trigger in {
+            "mention", "approval", "prefixed_command", "prefixed_addressed_command", "prefixed_command_argument",
+            "repeated_prefix_command", "ordinary_text_prefix", "punctuated_prefix", "other_bot_prefix",
+        }:
             text = {"mention": "😀 @hermes_bot 2", "approval": "@hermes_bot ok",
-                    "prefixed_command": "@hermes_bot /status"}[trigger]
-            offset = 3 if trigger == "mention" else 0
-            msg = _group_message(text, entities=[SimpleNamespace(type="mention", offset=offset, length=11)])
+                    "prefixed_command": "@hermes_bot /status",
+                    "prefixed_addressed_command": "@hermes_bot /group@hermes_bot list",
+                    "prefixed_command_argument": "@hermes_bot /group 1 send @hermes_bot hello\nagain  ",
+                    "repeated_prefix_command": " @HeRmEs_BoT, @hermes_bot: /group 1 send @hermes_bot hello ",
+                    "ordinary_text_prefix": "@hermes_bot explain /group list",
+                    "punctuated_prefix": "@hermes_bot ! /group list",
+                    "other_bot_prefix": "@hermes_bot @ops_bot /group list"}[trigger]
+            offset = 3 if trigger == "mention" else (1 if trigger == "repeated_prefix_command" else 0)
+            entities = [SimpleNamespace(type="mention", offset=offset, length=11)]
+            if trigger in {"prefixed_addressed_command", "prefixed_command_argument"}:
+                token = text.split(maxsplit=1)[1].split(maxsplit=1)[0]
+                entities.append(_bot_command_entity(text, token))
+                if trigger == "prefixed_command_argument":
+                    entities.append(SimpleNamespace(type="mention", offset=text.rfind("@hermes_bot"), length=11))
+            elif trigger == "repeated_prefix_command":
+                entities.extend([
+                    SimpleNamespace(type="mention", offset=text.index("@hermes_bot"), length=11),
+                    _bot_command_entity(text, "/group"),
+                    SimpleNamespace(type="mention", offset=text.rfind("@hermes_bot"), length=11),
+                ])
+            elif trigger == "other_bot_prefix":
+                entities.append(SimpleNamespace(type="mention", offset=text.index("@ops_bot"), length=8))
+            msg = _group_message(text, entities=entities)
         elif trigger == "code":
             # Telegram says this is code, not a mention; a reply admits the turn.
             msg = _group_message("@hermes_bot", reply_to_bot=True, entities=[SimpleNamespace(type="code", offset=0, length=11)])
@@ -107,11 +134,22 @@ def test_sole_addressee_text_stays_clean_and_prompt_is_session_stable(trigger):
 
         assert len(events) == 2
         first, second = events
-        expected_text = {"mention": "😀 2", "approval": "ok", "prefixed_command": "/status", "code": "@hermes_bot"}.get(trigger, msg.text)
+        expected_text = {"mention": "😀 2", "approval": "ok", "prefixed_command": "/status",
+                         "prefixed_addressed_command": "/group@hermes_bot list",
+                         "prefixed_command_argument": "/group 1 send @hermes_bot hello\nagain",
+                         "repeated_prefix_command": "/group 1 send @hermes_bot hello",
+                         "ordinary_text_prefix": "explain /group list", "punctuated_prefix": "! /group list",
+                         "code": "@hermes_bot"}.get(trigger, msg.text)
         assert first.text == expected_text
-        if trigger in {"command", "prefixed_command"}:
-            assert first.get_command() == ("new" if trigger == "command" else "status")
-            assert first.get_command_args() == ""
+        command_cases = {"command": ("new", ""), "prefixed_command": ("status", ""),
+                         "prefixed_addressed_command": ("group", "list"),
+                         "prefixed_command_argument": ("group", "1 send @hermes_bot hello\nagain"),
+                         "repeated_prefix_command": ("group", "1 send @hermes_bot hello")}
+        if trigger in command_cases:
+            assert (first.get_command(), first.get_command_args()) == command_cases[trigger]
+        if trigger in {"ordinary_text_prefix", "punctuated_prefix", "other_bot_prefix"}:
+            assert not first.is_command()
+            assert first.get_command() is None
         if trigger == "dm":
             assert not first.channel_prompt
         else:

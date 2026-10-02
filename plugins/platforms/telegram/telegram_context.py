@@ -4,6 +4,7 @@ The identity line lives in ``channel_prompt`` and therefore in the cached-agent 
 must be stable for the life of a session (username only — never a per-message fact).
 """
 
+import re
 from typing import TYPE_CHECKING, Optional
 
 if TYPE_CHECKING:
@@ -37,6 +38,12 @@ def group_trigger_text(adapter: "TelegramAdapter", message: "Message", text: Opt
         return text
     if adapter._is_group_chat(message) and mentions_other_participants(adapter, message):
         return text
+    # A supported mention-prefixed command loses only its leading address(es),
+    # not its suffix or argument mentions. Keep the cleaner's outer strip rule.
+    own = adapter._current_bot_username()
+    prefix = re.match(rf"(?i)^\s*(?:@{re.escape(own)}\b[,:\-]*\s*)+(?=/)", text or "") if own else None
+    if prefix:
+        return text[prefix.end():].strip()
     return adapter._clean_bot_trigger_text(text)
 
 

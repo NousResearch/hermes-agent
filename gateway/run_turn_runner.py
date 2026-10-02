@@ -1720,8 +1720,19 @@ class TurnRunner:
             if ctx.inbound_message_id is not None:
                 kwargs["persist_user_platform_id"] = str(ctx.inbound_message_id)
             from agent.notification_presentation import notification_turn
-            with notification_turn(agent, muted=ctx.mute_notification_reply, session_id=ctx.session_id or ""):
-                return agent.run_conversation(api_message, **kwargs)
+            from agent.tool_execution_observer import observe_tool_execution
+            from gateway.request_lifecycle import tool_observer_for_run, request_for_run
+            with notification_turn(agent, muted=ctx.mute_notification_reply, session_id=ctx.session_id or ""), observe_tool_execution(
+                factory=lambda: tool_observer_for_run(self._runner, ctx.session_key, ctx.run_generation)
+            ):
+                try:
+                    return agent.run_conversation(api_message, **kwargs)
+                except Exception as exc:
+                    if request_for_run(self._runner, ctx.session_key, ctx.run_generation) is None:
+                        raise
+                    logger.error("Request execution failed for session %s (%s)", ctx.session_key, type(exc).__name__)
+                    return {"final_response": "Request execution failed.", "messages": [],
+                            "failed": True, "completed": False, "failure_reason": "execution"}
         finally:
             unregister_gateway_notify(session_key)
             # Cancel pending clarify entries so blocked agent threads don't hang past the end of the
@@ -1743,7 +1754,8 @@ class TurnRunner:
         ctx.request_context = request_for_run(self._runner, ctx.session_key, ctx.run_generation)
         if isinstance(result, dict) and isinstance(result.get("final_response"), str):
             result["final_response"] = final_response(
-                self._runner, ctx.session_key, ctx.run_generation, result["final_response"])
+                self._runner, ctx.session_key, ctx.run_generation, result["final_response"],
+                failure=("execution" if result.get("failure_reason") == "execution" else "provider") if result.get("failed") else None)
         ctx.result_holder[0] = result
         if stream_consumer is None:
             return
@@ -1926,6 +1938,10 @@ class TurnRunner:
             # Model/credential resolution failed before the turn began; the raw text (URLs, status
             # codes) belongs in the log, and the chat gets the commands that fix it.
             logger.warning("Model resolution failed for session %s: %s", ctx.session_key or "", exc)
+            from gateway.request_lifecycle import request_for_run
+            request = request_for_run(runner, ctx.session_key, ctx.run_generation)
+            if request is not None:
+                request.state["failure"] = "provider_resolution"
             from hermes_cli.auth import is_rate_limited_auth_error
             if is_rate_limited_auth_error(exc.__cause__):
                 # Quota cap with valid credentials: /login cannot help; name the reset window (#89401).

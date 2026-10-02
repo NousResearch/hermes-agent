@@ -837,9 +837,23 @@ def _execute_tool(function_name: str, function_args: Dict[str, Any], original_ar
 
     def _dispatch(next_args: Dict[str, Any]) -> Any:
         from tools.connectors import dispatch_connector_call, is_connector_name
-        if is_connector_name(function_name):
-            return dispatch_connector_call(function_name, next_args, ids.tool_call_id)
-        return registry.dispatch(function_name, next_args, **dispatch_kwargs)
+        from agent.tool_execution_observer import execution_observer, emit_tool_execution
+        observer = execution_observer()
+        event = dict(tool_name=function_name, args=next_args)
+        if observer is not None:
+            emit_tool_execution(callback=observer, stage="started", **event)
+        try:
+            if is_connector_name(function_name):
+                result = dispatch_connector_call(function_name, next_args, ids.tool_call_id)
+            else:
+                result = registry.dispatch(function_name, next_args, **dispatch_kwargs)
+        except Exception:
+            if observer is not None:
+                emit_tool_execution(callback=observer, stage="failed", **event)
+            raise
+        if observer is not None:
+            emit_tool_execution(callback=observer, stage="completed", result=result, **event)
+        return result
 
     with _approval_observability(ids):
         if skip_tool_execution_middleware:

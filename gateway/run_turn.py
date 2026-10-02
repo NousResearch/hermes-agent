@@ -4321,7 +4321,8 @@ class GatewayTurnMixin:
             # Early provider-resolution returns do not pass the normal worker final boundary.
             from gateway.request_lifecycle import final_response
             if isinstance(response, dict) and isinstance(response.get("final_response"), str):
-                response["final_response"] = final_response(self, session_key, run_generation, response["final_response"])
+                response["final_response"] = final_response(self, session_key, run_generation, response["final_response"],
+                    failure="provider" if response.get("failed") else None)
             if isinstance(response, dict):
                 response["_notification_reply_muted"] = turn_ctx.mute_notification_reply
             self._run_agent_evict_on_fallback(turn_ctx)

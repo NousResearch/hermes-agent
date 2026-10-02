@@ -16,7 +16,7 @@ from typing import Any
 from hermes_constants import get_hermes_home
 
 logger = logging.getLogger(__name__)
-HOOKS = ("gateway_request_lifecycle", "gateway_request_control", "gateway_request_final")
+HOOKS = ("gateway_request_lifecycle", "gateway_request_control", "gateway_request_final", "gateway_request_tool")
 TERMINAL = frozenset({"final_ready", "completed", "failed", "cancelled", "superseded", "merged", "rejected"})
 
 
@@ -311,11 +311,13 @@ def fold_request(runner, event, session_key):
     begin_request(runner, event, generation)
 
 
-def final_response(runner, session_key, generation, response):
+def final_response(runner, session_key, generation, response, *, failure=None):
     """Latest plugin state at the output boundary; no model/tools/prompt/history mutation."""
     request = request_for_run(runner, session_key, generation)
     if request is None:
         return response
+    if failure is not None:
+        request.state["failure"] = failure
     from hermes_cli.plugins import invoke_hook
     with _scope(runner, request._source):
         for value in invoke_hook("gateway_request_final", request=request, response=response):
@@ -410,3 +412,19 @@ def separate_queue_owners(pending_messages, session_key, incoming):
         return False
     new._runner._enqueue_fifo(session_key, incoming, new._adapter)
     return True
+
+
+def tool_observer_for_run(runner, session_key, generation):
+    """Resolve ownership at handler start; the returned completion callback keeps that handle."""
+    request = request_for_run(runner, session_key, generation)
+    if request is None:
+        return None
+
+    def observe(**event):
+        from hermes_cli.plugins import invoke_hook
+        with request._lock:
+            if not request.active or not runner._is_session_run_current(session_key, generation):
+                return
+        with _scope(runner, request._source):
+            invoke_hook("gateway_request_tool", request=request, **event)
+    return observe

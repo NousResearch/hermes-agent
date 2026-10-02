@@ -17,6 +17,7 @@ def register(ctx):
     ctx.register_hook("gateway_request_lifecycle", on_request)
     ctx.register_hook("gateway_request_control", on_control)
     ctx.register_hook("gateway_request_final", format_final)
+    ctx.register_hook("gateway_request_tool", observe_tool)
 ```
 
 The supported handle is the `request` supplied by these hooks. Plugins do not call runner methods,
@@ -103,7 +104,7 @@ requires an unambiguous request. A reply to settled work must not retarget anoth
 Mixed business corrections and ordinary questions must fall through. No terminal handle is a
 candidate. The generic core contains no language-specific detail phrases or profile policy.
 
-## Final formatting and evidence extension
+## Tool evidence and final formatting
 
 `gateway_request_final(request, response)` returns an optional string. It receives the latest
 request state at the output boundary before final-ready closure and stream sealing. It can format
@@ -112,11 +113,34 @@ system prefix or transcript, inject a synthetic user turn, or replay the control
 The final string is shared by streaming and non-streaming delivery. No subscriber preserves the
 original response.
 
-`TurnContext.request_context` is the optional owning handle for downstream turn callbacks. Tool
-facts remain subject to existing authorization and tool boundaries. A consumer of evidence must
-validate returned findings and retain missing fields as unknown before any public narration.
-The separate evidence integration may use the current request handle and the same guarded sender;
-the request API does not expose raw arguments or hidden reasoning as public progress.
+`gateway_request_tool(request, stage, tool_name, args, result=None)` observes registry handler
+invocation. `started` occurs inside the tool-execution middleware's dispatch closure, after tool
+request middleware and existing pre-dispatch guards. A pre-tool veto or execution-middleware block
+emits no execution observation. `completed` carries the returned result; it does **not** establish
+success or authorize a public completion claim. Handler-level authorization refusals and error
+results still require validation. `failed` means invocation raised. Agent-inline tools and catalog
+bridge reads are outside this seam; it adds no model tool, permissions or tool schema.
+
+The turn binds a ContextVar observer factory. Each invocation resolves the currently active trusted
+request for the session/generation at **start**, then retains that exact handle through completion.
+A successful correction/redirect can bind later checks to its replacement request; a late old check
+cannot publish into the new owner. Tool-worker context propagation preserves profile and generation.
+Synchronous observers run under the original request profile and the existing plugin timeout policy.
+They should validate/project findings promptly and schedule guarded sends on the admission loop.
+The Tito consumer captures that loop during admission; it reads latest detail when publication runs.
+
+`args` and `result` are private tool data, potentially containing staff records and credentials.
+Never copy raw fields into public messages or persistent state. Consumers must project validated
+public findings and retain missing fields as unknown. A permitted start supports only checking;
+returned employee rows do not prove availability, hours, acceptance, outreach or assignment.
+
+Before the final formatter runs, `request.state["failure"]` is set to `provider` for failed model
+results or `execution` for a request-bound escaping execution exception. Early provider/credential
+resolution failures set `provider_resolution` before their existing reply reaches final formatting. These safe failure kinds
+never contain raw exception text. Normal failure delivery retains the existing failed flag and
+stream error behavior, while a consuming formatter can close with acquired facts and unresolved
+checks. Without a request subscriber, escaping exceptions keep their original behavior.
+`TurnContext.request_context` remains the optional owning handle for downstream turn callbacks.
 
 Related upstream [PR 130904](https://github.com/NousResearch/hermes-agent/pull/130904) proposes an
 idle post-admission consuming hook for durable plugin work. This capability supplies ongoing

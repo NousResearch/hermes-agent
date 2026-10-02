@@ -2206,6 +2206,58 @@ describe('overlayConcurrentMessageChanges', () => {
     ])
   })
 
+  // A turn persists its assistant row mid-turn (before the tool round runs), so
+  // a window that re-attaches while the turn is STILL streaming can hold a
+  // pending live row whose reply — and tool occurrences — the committed row
+  // already carries. Exempting pending rows from the fold painted that reply
+  // twice (#127288 follow-up: steer, no re-attach).
+  it('folds a still-pending live row the committed row already carries in full', () => {
+    const committed = {
+      ...msg('4-assistant', 'assistant', 'A2 finished', { rowId: 4 }),
+      parts: [
+        { type: 'text', text: 'A2 finished' },
+        { type: 'tool-call', toolCallId: 'call-1', toolName: 'terminal' }
+      ]
+    } as ChatMessage
+
+    const page = [msg('3-user', 'user', 'prompt b', { rowId: 3 }), committed]
+
+    const live = {
+      id: 'assistant-stream-1-2',
+      role: 'assistant',
+      pending: true,
+      parts: [
+        { type: 'tool-call', toolCallId: 'call-1', toolName: 'terminal', result: 'done' },
+        { type: 'text', text: 'A2 finished' }
+      ]
+    } as ChatMessage
+
+    const overlaid = overlayConcurrentMessageChanges(page, [page[0]], [page[0], live])
+
+    expect(overlaid.map(message => message.id)).toEqual(['3-user', '4-assistant'])
+  })
+
+  it('keeps a pending live row whose tool occurrences the page does not carry', () => {
+    const page = [
+      msg('3-user', 'user', 'prompt b', { rowId: 3 }),
+      msg('4-assistant', 'assistant', 'A2 finished', { rowId: 4 })
+    ]
+
+    const live = {
+      id: 'assistant-stream-1-2',
+      role: 'assistant',
+      pending: true,
+      parts: [
+        { type: 'tool-call', toolCallId: 'call-1', toolName: 'terminal' },
+        { type: 'text', text: 'A2 finished' }
+      ]
+    } as ChatMessage
+
+    const overlaid = overlayConcurrentMessageChanges(page, [page[0]], [page[0], live])
+
+    expect(overlaid.at(-1)?.id).toBe('assistant-stream-1-2')
+  })
+
   it('folds a settled live row that ran past the committed row into one reply', () => {
     const page = [
       msg('3-user', 'user', 'prompt b', { rowId: 3 }),

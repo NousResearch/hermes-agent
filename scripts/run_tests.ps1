@@ -22,7 +22,7 @@ function New-TestProcessInfo([string]$Executable, [string[]]$Arguments) {
     # Keep this allowlist in parity with run_tests.sh; never forward credentials.
     foreach ($name in @(
         'PATH', 'USERPROFILE', 'HOMEDRIVE', 'HOMEPATH', 'LOCALAPPDATA', 'APPDATA',
-        'SYSTEMROOT', 'TEMP', 'TMP', 'HERMES_TEST_IMAGE', 'HERMES_TEST_WORKERS',
+        'SYSTEMROOT', 'TEMP', 'TMP', 'PATHEXT', 'HERMES_TEST_IMAGE', 'HERMES_TEST_WORKERS',
         'HERMES_TEST_PATHS', 'HERMES_TEST_FILE_TIMEOUT', 'HERMES_TEST_FILE_RETRIES',
         'HERMES_TEST_SLICE', 'HERMES_GATEWAY_LOCK_DIR', 'HERMES_RUN_SLOW_PET_TESTS',
         'HERMES_E2E_BROWSER'

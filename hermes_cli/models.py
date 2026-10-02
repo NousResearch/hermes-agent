@@ -1339,8 +1339,6 @@ def _codex_catalog(normalized: str, force_refresh: bool) -> list[str]:
             access_token = None
     except Exception:
         access_token = None
-    # A failed live fetch returns ``CuratedFallbackModels``: account-gated rows such as Astra are
-    # absent from the offline hints, so they must never replace a verified row.
     return get_codex_model_ids(access_token=access_token, base_url=base_url)
 
 

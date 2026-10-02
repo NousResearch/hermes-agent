@@ -215,7 +215,9 @@ def get_codex_model_ids(access_token: Optional[str] = None, base_url: Optional[s
     """Available Codex model IDs: live API (if token) > config.toml default > local cache > defaults.
 
     Pass the ``base_url`` resolved together with ``access_token`` (runtime/pool route) so live
-    discovery asks the credential's own host."""
+    discovery asks the credential's own host. Without a live answer the result is
+    ``CuratedFallbackModels``: a cache placeholder that never replaces a verified catalog, since
+    account-gated rows such as Astra are absent from the offline hints."""
     codex_home = Path(os.getenv("CODEX_HOME", "").strip() or str(Path.home() / ".codex")).expanduser()
     if access_token:
         api_models = _fetch_models_from_api(access_token, base_url=base_url)

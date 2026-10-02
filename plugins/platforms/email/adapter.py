@@ -43,6 +43,10 @@ _AUTOMATED_HEADERS = {"Auto-Submitted": lambda v: v.lower() != "no",
                       "X-Auto-Response-Suppress": lambda v: bool(v), "List-Unsubscribe": lambda v: bool(v)}
 MAX_MESSAGE_LENGTH = 50_000  # Gmail-safe max length per email body
 SMTP_CONNECT_TIMEOUT = 30
+# Outer budget for one IMAP poll in the executor: imaplib's own socket timeout is 30s, so 3x
+# headroom for a slow-but-progressing fetch while a wedged thread can no longer stall the poll
+# loop silently for tens of minutes (#87128).
+IMAP_FETCH_TIMEOUT_S = 90
 _TRUTHY = {"true", "1", "yes"}
 _IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".gif", ".webp"}
 # Charset labels seen in the wild that Python's codec registry doesn't know: "unknown-8bit"/"x-unknown" are
@@ -471,6 +475,45 @@ class EmailAdapter(BasePlatformAdapter):
         except (ValueError, TypeError):
             self._seen_uids = set(list(self._seen_uids)[-self._seen_uids_max // 2:])
 
+    def _mark_seen(self, uid: bytes) -> None:
+        """Record one UID as handled: a message that was dispatched, or a payload that can never be dispatched.
+
+        Dispatched mail is committed by the caller *after* hand-over — an abandoned (timed-out) fetch must not
+        write off mail it never handed over, so the fetch thread never records a message it is about to return
+        (#87128). Terminally non-dispatchable payloads go through ``_discard_undispatchable`` instead."""
+        self._seen_uids.add(uid)
+        self._trim_seen_uids()
+
+    def _remember_seen_uids(self) -> None:
+        """Keep the reconnect snapshot current so a mid-outage adapter recreation does not re-dispatch messages already handled."""
+        self._seen_uids_snapshot[self._address] = set(self._seen_uids)
+
+    def _discard_undispatchable(self, imap: imaplib.IMAP4, uid: bytes) -> None:
+        """Write off a payload that can never be dispatched (malformed / non-bytes / unparseable / filtered).
+
+        Committed here in the fetch thread — unlike dispatched mail, nothing is lost by writing it off now — and
+        persisted in two places so a reconnect cannot resurrect it: the reconnect snapshot, and a best-effort
+        server-side ``\\Seen``. With neither, ``_probe_imap(is_reconnect=True)`` restored an older snapshot while the
+        message stayed server-UNSEEN, so the same poison payload was fetched and re-parsed on every reconnect."""
+        self._mark_seen(uid)
+        self._remember_seen_uids()
+        try:
+            imap.uid("store", uid, "+FLAGS", "(\\Seen)")
+        except Exception as exc:
+            logger.debug("[Email] Could not flag discarded UID %s \\Seen: %s", uid, exc)
+
+    def _flag_seen_on_server(self, uids: List[bytes]) -> None:
+        """Best-effort server-side ``\\Seen`` for messages already dispatched, preserving what the previous bare
+        ``RFC822`` fetch did implicitly (the mailbox shows what the gateway consumed, and the UNSEEN backlog cannot
+        outgrow the local seen-UID cap). Runs after hand-over, so a failure here can never lose mail — mail left
+        UNSEEN is simply re-fetched and matched against ``_seen_uids``."""
+        try:
+            with self._inbox() as imap:
+                for uid in uids:
+                    imap.uid("store", uid, "+FLAGS", "(\\Seen)")
+        except Exception as exc:
+            logger.debug("[Email] Could not flag %d handled message(s) \\Seen: %s", len(uids), exc)
+
     def _connect_imap(self) -> imaplib.IMAP4:
         """Create an IMAP connection using implicit TLS, STARTTLS, or plaintext."""
         if self._imap_security == "tls":
@@ -599,10 +642,31 @@ class EmailAdapter(BasePlatformAdapter):
 
     async def _check_inbox(self) -> None:
         """Check INBOX for unseen messages and dispatch them."""
-        messages = await asyncio.get_running_loop().run_in_executor(None, self._fetch_new_messages)
-        # Dispatch partial results BEFORE escalating a failure — a mid-batch exception returns what was fetched (already marked seen).
+        try:
+            messages = await asyncio.wait_for(
+                asyncio.get_running_loop().run_in_executor(None, self._fetch_new_messages),
+                timeout=IMAP_FETCH_TIMEOUT_S)
+        except (asyncio.TimeoutError, TimeoutError):
+            # ponytail: wait_for cancels only the wrapper; the wedged thread lingers until
+            # imaplib's own timeout fires — one leaked thread per timed-out poll, next poll retries.
+            logger.warning("[Email] IMAP fetch exceeded %ss budget; treating as retryable failure",
+                           IMAP_FETCH_TIMEOUT_S)
+            self._last_fetch_failed, self._last_fetch_error = (
+                True, f"IMAP fetch timed out after {IMAP_FETCH_TIMEOUT_S}s")
+            messages = []
+        # Dispatch partial results BEFORE escalating a failure — a mid-batch exception returns what was fetched.
+        dispatched_uids: List[bytes] = []
         for msg_data in messages:
             await self._dispatch_message(msg_data)
+            # Commit only after hand-over: a fetch abandoned at the budget below must not have written this UID off,
+            # or the message is dispatched by nobody and (being \Seen server-side) fetched by nobody again (#87128).
+            self._mark_seen(msg_data["uid"])
+            dispatched_uids.append(msg_data["uid"])
+        if dispatched_uids:
+            self._remember_seen_uids()
+            # Server-side \Seen moved here, after dispatch: the fetch itself no longer touches flags, so the
+            # abandoned-run window above is closed at the source rather than rolled back afterwards.
+            await asyncio.get_running_loop().run_in_executor(None, self._flag_seen_on_server, dispatched_uids)
         if self._last_fetch_failed:
             # The IMAP check itself failed (not an empty inbox): route through the fatal-error hook so the gateway's
             # reconnect/backoff re-establishes the mailbox. The handler runs detached (gateway/run.py), so awaiting it is safe.
@@ -613,7 +677,10 @@ class EmailAdapter(BasePlatformAdapter):
             await self._notify_fatal_error()
 
     def _fetch_new_messages(self) -> List[Dict[str, Any]]:
-        """Fetch new (unseen) messages from IMAP. Runs in executor thread."""
+        """Fetch new (unseen) messages from IMAP. Runs in executor thread.
+
+        Never records a message it is about to return: the caller commits a UID after dispatch, so a run abandoned
+        at the poll budget cannot mark mail seen that it never handed over (#87128)."""
         results = []
         try:
             with self._inbox() as imap:
@@ -621,22 +688,25 @@ class EmailAdapter(BasePlatformAdapter):
                 for uid in (data[0].split() if status == "OK" and data and data[0] else []):
                     if uid in self._seen_uids:
                         continue
-                    status, msg_data = imap.uid("fetch", uid, "(RFC822)")
+                    # BODY.PEEK[] rather than RFC822: the bare fetch sets \Seen server-side, which would make a
+                    # message pulled by an abandoned run invisible to the next poll (#87128).
+                    status, msg_data = imap.uid("fetch", uid, "(BODY.PEEK[])")
                     if status != "OK":
                         continue  # transient per-UID refusal: leave unseen so the next poll retries
-                    # Mark seen once a response arrived (even malformed) so garbage is skipped once, not retried forever —
-                    # but NOT before the fetch: a connection failure must leave the rest of the batch eligible for the next poll.
+                    # Everything below can never be dispatched, so it is written off right here — garbage skipped
+                    # once, not retried forever, and (see ``_discard_undispatchable``) not re-parsed on reconnect.
+                    # See #80032.
                     # IMAP fetch can return unexpected structures (e.g. a single bytes item instead of a
                     # list of tuples). See #80032.
-                    self._seen_uids.add(uid)
-                    self._trim_seen_uids()
                     try:
                         raw_email = msg_data[0][1]
                     except (IndexError, TypeError):
                         logger.warning("[Email] Unexpected IMAP response structure for UID %s, skipping", uid)
+                        self._discard_undispatchable(imap, uid)
                         continue
                     if not isinstance(raw_email, (bytes, bytearray)):
                         logger.warning("[Email] Non-bytes IMAP payload for UID %s, skipping", uid)
+                        self._discard_undispatchable(imap, uid)
                         continue
                     # One poison message (unparseable headers, pathological attachment, DNS hiccup) must not abort the batch or force a reconnect.
                     try:
@@ -644,16 +714,17 @@ class EmailAdapter(BasePlatformAdapter):
                         parsed = self._parse_fetched_message(uid, raw_email)
                     except Exception as parse_exc:
                         logger.error("[Email] Failed to process message UID %s, skipping: %s", uid, parse_exc)
+                        self._discard_undispatchable(imap, uid)
                         continue
-                    if parsed is not None:
-                        results.append(parsed)
+                    if parsed is None:  # no parseable From / automated sender: nothing to dispatch, ever
+                        self._discard_undispatchable(imap, uid)
+                        continue
+                    results.append(parsed)
         except Exception as e:
             # _close_imap guarantees the socket dies even when logout() raises IMAP4.abort on a broken
             # connection (#79889).
             logger.error("[Email] IMAP fetch error: %s", e)
             self._last_fetch_failed, self._last_fetch_error = True, str(e)
-        # Keep the reconnect snapshot current so a mid-outage adapter recreation does not re-dispatch messages already processed.
-        self._seen_uids_snapshot[self._address] = set(self._seen_uids)
         return results
 
     def _parse_fetched_message(self, uid: bytes, raw_email: "bytes | bytearray") -> Optional[Dict[str, Any]]:

@@ -652,10 +652,11 @@ class TestFetchNewMessages(unittest.TestCase):
         with patch("imaplib.IMAP4_SSL", return_value=mock_imap):
             results = adapter._fetch_new_messages()
 
-        # Only UID 3 should be fetched (1 and 2 already seen)
+        # Only UID 3 should be fetched (1 and 2 already seen). The fetch itself no longer commits it —
+        # _check_inbox does, once the message has been dispatched (#87128).
         self.assertEqual(len(results), 1)
         self.assertEqual(results[0]["sender_addr"], "user@test.com")
-        self.assertIn(b"3", adapter._seen_uids)
+        self.assertNotIn(b"3", adapter._seen_uids)
 
 
 class TestPollLoop(unittest.TestCase):
@@ -732,6 +733,167 @@ class TestPollLoop(unittest.TestCase):
         self.assertTrue(adapter.fatal_error_retryable)
         self.assertIn("read operation timed out", adapter.fatal_error_message)
 
+    def test_check_inbox_times_out_wedged_fetch(self):
+        """A wedged executor thread must not stall the poll loop silently —
+        the fetch is bounded by IMAP_FETCH_TIMEOUT_S and escalates retryable
+        so reconnect/backoff re-establishes the mailbox (#87128)."""
+        import asyncio
+        import threading
+        import time
+        import plugins.platforms.email.adapter as email_adapter
+        adapter = self._make_adapter()
+        notified = []
+
+        async def mock_fatal_handler(a):
+            notified.append(a)
+
+        adapter.set_fatal_error_handler(mock_fatal_handler)
+        release = threading.Event()
+
+        def wedged_fetch():
+            release.wait(timeout=30)
+            return []
+
+        async def scenario():
+            t0 = time.monotonic()
+            await adapter._check_inbox()
+            return time.monotonic() - t0
+
+        with patch.object(email_adapter, "IMAP_FETCH_TIMEOUT_S", 0.2, create=True):
+            with patch.object(adapter, "_fetch_new_messages", wedged_fetch):
+                # Free the wedged thread after the check returns so asyncio.run's
+                # default-executor shutdown does not hold the suite open.
+                threading.Timer(5.0, release.set).start()
+                elapsed = asyncio.run(asyncio.wait_for(scenario(), timeout=10.0))
+
+        self.assertLess(elapsed, 10.0)
+        self.assertEqual(len(notified), 1)
+        self.assertEqual(adapter.fatal_error_code, "email_imap_fetch_failed")
+        self.assertTrue(adapter.fatal_error_retryable)
+
+    def test_timed_out_fetch_leaves_the_message_for_the_next_poll(self):
+        """A fetch abandoned at the poll budget must not write its message off: it fetches
+        BODY.PEEK[] (no server-side \\Seen) and the UID is committed only after dispatch, so
+        the next poll re-fetches and dispatches the mail instead of losing it for good
+        (#87128 review)."""
+        import asyncio
+        import threading
+        import plugins.platforms.email.adapter as email_adapter
+        from plugins.platforms.email.adapter import EmailAdapter
+
+        EmailAdapter._seen_uids_snapshot.clear()
+        adapter = self._make_adapter()
+        dispatched, notified, fetch_specs = [], [], []
+        stall = threading.Event()
+
+        async def mock_dispatch(msg_data):
+            dispatched.append(msg_data)
+
+        async def mock_fatal_handler(a):
+            notified.append(a)
+
+        adapter._dispatch_message = mock_dispatch
+        adapter.set_fatal_error_handler(mock_fatal_handler)
+
+        raw_email = MIMEText("Body", "plain", "utf-8")
+        raw_email["From"] = "sender@test.com"
+        raw_email["Subject"] = "Stalled"
+        raw_email["Message-ID"] = "<stalled@test.com>"
+
+        mock_imap = MagicMock()
+
+        def uid_handler(command, *args):
+            if command == "search":
+                return ("OK", [b"42"])
+            if command == "fetch":
+                fetch_specs.append(args[1])
+                stall.wait(timeout=30)  # wedges the in-flight poll past its budget
+                return ("OK", [(b"42", raw_email.as_bytes())])
+            return ("NO", [])
+
+        mock_imap.uid.side_effect = uid_handler
+
+        run_done = threading.Event()
+        real_fetch = adapter._fetch_new_messages
+
+        def fetch_then_signal():
+            try:
+                return real_fetch()
+            finally:
+                run_done.set()  # after the run's own bookkeeping, however it ends
+
+        def release_and_settle():
+            stall.set()
+            run_done.wait(timeout=10)
+
+        async def first_poll():
+            await adapter._check_inbox()
+            # Let the abandoned executor thread finish before asyncio.run tears the executor down.
+            await asyncio.get_running_loop().run_in_executor(None, release_and_settle)
+
+        with patch("imaplib.IMAP4_SSL", return_value=mock_imap), patch.object(
+            adapter, "_fetch_new_messages", fetch_then_signal
+        ), patch.object(email_adapter, "IMAP_FETCH_TIMEOUT_S", 0.2, create=True):
+            asyncio.run(first_poll())
+
+        # Poll 1: nothing dispatched, failure escalated, message not written off.
+        self.assertEqual(dispatched, [])
+        self.assertEqual(len(notified), 1)
+        self.assertNotIn(b"42", adapter._seen_uids)
+        self.assertNotIn(adapter._address, EmailAdapter._seen_uids_snapshot)
+        self.assertEqual(fetch_specs, ["(BODY.PEEK[])"])  # RFC822 would have set \Seen server-side
+
+        # Poll 2: still UNSEEN, so the mail is fetched and dispatched rather than lost.
+        with patch("imaplib.IMAP4_SSL", return_value=mock_imap), patch.object(
+            email_adapter, "IMAP_FETCH_TIMEOUT_S", 0.2, create=True
+        ):
+            asyncio.run(adapter._check_inbox())
+
+        self.assertEqual([m["subject"] for m in dispatched], ["Stalled"])
+        self.assertIn(b"42", adapter._seen_uids)
+        self.assertEqual(EmailAdapter._seen_uids_snapshot[adapter._address], {b"42"})
+
+    def test_discarded_poison_uid_survives_a_reconnect(self):
+        """A payload that can never be dispatched must stay written off across a reconnect. Marking the UID in the
+        fetch thread only, without snapshotting it or flagging it server-side, meant `_probe_imap(is_reconnect=True)`
+        restored an older snapshot while the message stayed server-UNSEEN — so the same poison payload was fetched
+        and re-parsed on every reconnect (#87128 review)."""
+        from plugins.platforms.email.adapter import EmailAdapter
+
+        EmailAdapter._seen_uids_snapshot.clear()
+        adapter = self._make_adapter()
+        fetched = []
+
+        mock_imap = MagicMock()
+
+        def uid_handler(command, *args):
+            if command == "search":
+                return ("OK", [b"7"])
+            if command == "fetch":
+                fetched.append(args[0])
+                return ("OK", [None])  # unexpected structure: terminally non-dispatchable
+            return ("OK", [])
+
+        mock_imap.uid.side_effect = uid_handler
+
+        with patch("imaplib.IMAP4_SSL", return_value=mock_imap):
+            self.assertEqual(adapter._fetch_new_messages(), [])
+
+        # Written off locally, snapshotted for the reconnect, and flagged server-side so it is no longer UNSEEN.
+        self.assertIn(b"7", adapter._seen_uids)
+        self.assertEqual(EmailAdapter._seen_uids_snapshot[adapter._address], {b"7"})
+        mock_imap.uid.assert_any_call("store", b"7", "+FLAGS", "(\\Seen)")
+
+        # A fresh adapter reconnecting on the same mailbox restores the snapshot and never fetches UID 7 again.
+        reconnected = self._make_adapter()
+        fetched.clear()
+        with patch("imaplib.IMAP4_SSL", return_value=mock_imap):
+            self.assertTrue(reconnected._probe_imap(is_reconnect=True))
+            self.assertEqual(reconnected._fetch_new_messages(), [])
+
+        self.assertIn(b"7", reconnected._seen_uids)
+        self.assertEqual(fetched, [])  # the poison message is suppressed, not re-parsed
+
     def test_partial_batch_dispatched_before_escalation(self):
         """A mid-batch IMAP failure must dispatch the messages already
         fetched BEFORE escalating — dropping them would lose mail, since
@@ -780,10 +942,21 @@ class TestPollLoop(unittest.TestCase):
         self.assertEqual(adapter.fatal_error_code, "email_imap_fetch_failed")
 
     def test_mid_batch_failure_leaves_unfetched_uids_eligible(self):
-        """UIDs are marked seen only after their fetch returns — a
-        connection failure mid-batch must leave the remaining UIDs eligible
-        for the next poll instead of permanently skipping them."""
+        """A connection failure mid-batch must leave the remaining UIDs eligible
+        for the next poll, while the message that was fetched and handed over is
+        committed so it is not dispatched twice."""
+        import asyncio
         adapter = self._make_adapter()
+        dispatched = []
+
+        async def mock_dispatch(msg_data):
+            dispatched.append(msg_data)
+
+        async def mock_fatal_handler(a):  # the mid-batch failure still escalates
+            pass
+
+        adapter._dispatch_message = mock_dispatch
+        adapter.set_fatal_error_handler(mock_fatal_handler)
 
         raw_email = MIMEText("Body", "plain", "utf-8")
         raw_email["From"] = "sender@test.com"
@@ -806,13 +979,15 @@ class TestPollLoop(unittest.TestCase):
         mock_imap.uid.side_effect = uid_handler
 
         with patch("imaplib.IMAP4_SSL", return_value=mock_imap):
-            results = adapter._fetch_new_messages()
+            asyncio.run(adapter._check_inbox())
 
-        self.assertEqual(len(results), 1)
-        self.assertIn(b"1", adapter._seen_uids)     # fetched → seen
+        self.assertEqual([m["uid"] for m in dispatched], [b"1"])
+        self.assertIn(b"1", adapter._seen_uids)     # fetched + dispatched → seen
         self.assertNotIn(b"2", adapter._seen_uids)  # fetch raised → retry next poll
         self.assertNotIn(b"3", adapter._seen_uids)  # never reached → retry next poll
-        self.assertTrue(adapter._last_fetch_failed)
+        # The mid-batch failure still escalates (which clears _last_fetch_failed).
+        self.assertEqual(adapter.fatal_error_code, "email_imap_fetch_failed")
+        self.assertTrue(adapter.fatal_error_retryable)
 
     def test_poison_message_skipped_once_without_escalation(self):
         """A message whose processing raises is marked seen and skipped —
@@ -845,10 +1020,11 @@ class TestPollLoop(unittest.TestCase):
         ):
             results = adapter._fetch_new_messages()
 
-        # Poison message consumed (seen, skipped); good message survived.
+        # Poison message consumed (seen, skipped) inside the fetch; the good message is handed back and is only
+        # committed once _check_inbox has dispatched it (#87128).
         self.assertEqual(len(results), 1)
         self.assertIn(b"1", adapter._seen_uids)
-        self.assertIn(b"2", adapter._seen_uids)
+        self.assertNotIn(b"2", adapter._seen_uids)
         self.assertFalse(adapter._last_fetch_failed)
 
 

@@ -44,13 +44,16 @@ def _is_hermes_provider_credential(name: str) -> bool:
     registerable. Fails closed when the blocklist cannot be imported."""
     try:
         from tools.environments.local_env_policy import (
-            _HERMES_PROVIDER_ENV_BLOCKLIST, _is_hermes_internal_secret)
+            _is_hermes_internal_secret, _is_provider_env_blocklisted)
     except Exception as e:
         logger.warning(
             "env passthrough: provider credential blocklist import failed; "
             "failing closed and refusing passthrough registration for %r: %s", name, e)
         return True
-    return _is_hermes_internal_secret(name) or name in _HERMES_PROVIDER_ENV_BLOCKLIST
+    # Case-folded membership too: the remote-exec env builder resolves each
+    # registered name via os.getenv(), which is case-insensitive on Windows, so
+    # ``openai_api_key`` would tunnel the real OPENAI_API_KEY into children.
+    return _is_hermes_internal_secret(name) or _is_provider_env_blocklisted(name)
 
 
 def register_env_passthrough(var_names: Iterable[str]) -> None:
@@ -113,13 +116,19 @@ def _load_config_passthrough() -> frozenset[str]:
 
 
 def is_env_passthrough(var_name: str) -> bool:
-    """True if *var_name* was registered by a skill or listed in config."""
-    return var_name in _get_allowed() or var_name in _load_config_passthrough()
+    """True if *var_name* was registered by a skill or listed in config and is not a
+    Hermes-managed credential NOW. Ownership changes after acceptance (a platform plugin
+    registered later declares the name in its ``required_env`` or manifest), so the refusal applied at registration
+    is re-applied here, where every child builder consumes the allowlist."""
+    return ((var_name in _get_allowed() or var_name in _load_config_passthrough())
+            and not _is_hermes_provider_credential(var_name))
 
 
 def get_all_passthrough() -> frozenset[str]:
-    """Return the union of skill-registered and config-based passthrough vars."""
-    return frozenset(_get_allowed()) | _load_config_passthrough()
+    """Return the union of skill-registered and config-based passthrough vars, minus names
+    that have become Hermes-managed credentials since they were accepted."""
+    return frozenset(name for name in frozenset(_get_allowed()) | _load_config_passthrough()
+                     if not _is_hermes_provider_credential(name))
 
 
 def resolve_passthrough_value(name: str, fallback: str | None = None) -> str | None:
@@ -139,6 +148,29 @@ def resolve_passthrough_value(name: str, fallback: str | None = None) -> str | N
     if current_secret_scope() is None:
         return get_secret(name) if multiplex_active else fallback
     return get_secret(name, None if multiplex_active else fallback)
+
+
+def scoped_passthrough_additions(present: Iterable[str]) -> dict[str, str]:
+    """Declared passthrough names the bound profile secret scope supplies but the env being
+    filtered (*present*) lacks. A routed profile's ``.env`` and hydrated sources never enter
+    ``os.environ`` (``load_hermes_dotenv`` skips the process-global load for a routed home), so a
+    name-by-name filter over the process env can only forward a declared name the LAUNCH profile
+    also happens to define — the served profile's own value has no way in (#114209). Reads the
+    bound scope alone: never ``os.environ``, never another profile. Empty without a scope, so
+    single-profile spawns are byte-identical."""
+    from agent.secret_scope import _is_global_env, current_secret_scope
+    scope = current_secret_scope()
+    if not scope:
+        return {}
+    present = set(present)
+    additions: dict[str, str] = {}
+    for name in get_all_passthrough():
+        if name in present or _is_global_env(name):
+            continue
+        value = scope.get(name)
+        if value is not None:
+            additions[name] = value
+    return additions
 
 
 def clear_env_passthrough() -> None:

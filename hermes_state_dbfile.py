@@ -136,9 +136,24 @@ def _stat_sqlite_sidecar_identity(db_path: Path) -> Dict[str, tuple]:
 def _watched_sqlite_sidecar_paths(db_path) -> Dict[str, str]:
     """Map each sidecar's canonical (/proc-comparable) form to its literal, still-named path,
     so a canonical match can be re-``stat``'d for identity rather than trusted as text."""
-    base = os.path.abspath(os.fspath(db_path))
-    literal = (base + "-wal", base + "-shm")
-    return {canonical_sqlite_path(path): path for path in literal}
+    literal_base = os.path.abspath(os.fspath(db_path))
+    literal = (literal_base + "-wal", literal_base + "-shm")
+    watched = {canonical_sqlite_path(path): path for path in literal}
+    # /proc reports the kernel-resolved dentry, so the watched canonicals must also resolve
+    # symlinks -- with abspath alone a symlinked HERMES_HOME makes every deleted sidecar
+    # invisible to the scan. Both spellings are watched: the fully resolved path, which is
+    # where current SQLite places -wal/-shm when the database file itself is a symlink, and
+    # the realpath'd parent with the literal basename, which is where they land when SQLite
+    # names the sidecars after the path it was opened through.
+    resolved_bases = (
+        os.path.join(os.path.realpath(os.path.dirname(literal_base)),
+                     os.path.basename(literal_base)),
+        os.path.realpath(literal_base),
+    )
+    for base in resolved_bases:
+        for suffix in ("-wal", "-shm"):
+            watched.setdefault(canonical_sqlite_path(base + suffix), base + suffix)
+    return watched
 
 
 def _identity_is_truly_unlinked(identity: "Tuple[int, int]", watched_path: str) -> bool:
@@ -216,6 +231,13 @@ _DARWIN_FD_DEV_OFFSET = 24
 _DARWIN_FD_INO_OFFSET = 32
 _DARWIN_FD_PATH_OFFSET = 176
 _DARWIN_LIBPROC = None
+
+# Wall-clock budget for one darwin holder-scan pass (#113187). A single
+# proc_pidfdinfo call can block uninterruptibly in the kernel (a process stuck
+# in uninterruptible I/O on a dead network share), so no per-iteration check
+# can bound it: the whole pass runs in a daemon thread and is abandoned on
+# expiry, failing open per the guard's contract.
+_DARWIN_FD_SCAN_TIMEOUT_SECONDS = 5.0
 
 
 def _darwin_libproc():
@@ -301,10 +323,32 @@ def _iter_darwin_sidecar_holders(db_path) -> List[Tuple[int, str]]:
     # spelled it; ``os.path.normcase`` is the identity on darwin, so fold case here.
     watched = {path.casefold(): path for path in (base + "-wal", base + "-shm")}
     holders: List[Tuple[int, str]] = []
-    for pid, _fd, target, identity in _iter_darwin_fd_targets():
-        literal = watched.get(target.casefold())
-        if literal is not None and _identity_is_truly_unlinked(identity, literal):
-            holders.append((pid, target))
+    errors: List[BaseException] = []
+
+    def _scan() -> None:
+        try:
+            for pid, _fd, target, identity in _iter_darwin_fd_targets():
+                literal = watched.get(target.casefold())
+                if literal is not None and _identity_is_truly_unlinked(identity, literal):
+                    holders.append((pid, target))
+        except BaseException as exc:
+            errors.append(exc)
+
+    # ponytail: abandoned daemon thread per timed-out scan; a kernel-blocked
+    # proc_pidfdinfo cannot be interrupted, so expiry leaks one thread that
+    # dies with the process. Fail open: partial/empty holders, never a refusal.
+    worker = threading.Thread(target=_scan, daemon=True)
+    worker.start()
+    worker.join(_DARWIN_FD_SCAN_TIMEOUT_SECONDS)
+    if worker.is_alive():
+        logger.warning(
+            "deleted-WAL holder scan timed out after %.1fs for %s; continuing fail-open",
+            _DARWIN_FD_SCAN_TIMEOUT_SECONDS,
+            db_path,
+        )
+        return []
+    if errors:
+        raise errors[0]
     return holders
 
 

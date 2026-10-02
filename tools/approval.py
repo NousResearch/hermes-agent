@@ -20,6 +20,7 @@ import threading
 from typing import Optional
 
 from utils import env_var_enabled, is_truthy_value
+from agent.i18n import t
 from tools import approval_context
 from tools.approval_context import (
     _get_session_platform, _is_cron_approval_context,
@@ -131,9 +132,8 @@ def unregister_gateway_notify(session_key: str) -> None:
     they don't hang forever (agent run finished or interrupted)."""
     with _lock:
         _gateway_notify_cbs.pop(session_key, None)
-        entries = _gateway_queues.pop(session_key, [])
-    for entry in entries:
-        entry.event.set()
+        for entry in _gateway_queues.pop(session_key, []):
+            entry.event.set()
 
 
 def resolve_gateway_approval(session_key: str, choice: str,
@@ -162,13 +162,32 @@ def resolve_gateway_approval(session_key: str, choice: str,
             targets = [queue.pop(0)]
         if not queue:
             _gateway_queues.pop(session_key, None)
-
-    for entry in targets:
-        entry.result = choice
-        if reason:
-            entry.reason = reason
-        entry.event.set()
+        # Popping the entry and committing its outcome are ONE critical section: the waiter's
+        # ``_drop_entry`` reads ``entry.result`` under this same lock after its deadline check, so a
+        # choice acked to the client here can never be popped-and-lost as a timeout (#112548).
+        for entry in targets:
+            entry.result = choice
+            if reason:
+                entry.reason = reason
+            entry.event.set()
     return len(targets)
+
+
+def withdraw_gateway_approval(session_key: str, request_id: str, cause: str) -> bool:
+    """Withdraw one pending approval nobody can answer (the only attached client cannot render it).
+    The waiter wakes at once with ``cancelled=cause`` — a withdrawal, never a user deny — instead of
+    idling for the whole approvals.timeout (#112548). False when it is no longer pending."""
+    with _lock:
+        queue = _gateway_queues.get(session_key, [])
+        entry = next((e for e in queue if e.data.get("request_id") == request_id), None)
+        if entry is None:
+            return False
+        queue.remove(entry)
+        if not queue:
+            _gateway_queues.pop(session_key, None)
+        entry.cancelled = cause
+        entry.event.set()
+    return True
 
 
 def list_gateway_approvals(session_key: str) -> list[dict]:
@@ -202,6 +221,12 @@ def has_blocking_approval(session_key: str) -> bool:
     """Check if a session has one or more blocking gateway approvals waiting."""
     with _lock:
         return bool(_gateway_queues.get(session_key))
+
+
+def pending_gateway_approval_count() -> int:
+    """Unresolved gateway approvals across every session — a backend blocked on one is not idle."""
+    with _lock:
+        return sum(len(queue) for queue in _gateway_queues.values())
 
 
 def get_pending_gateway_approval(session_key: str) -> dict | None:
@@ -266,12 +291,11 @@ def clear_session(session_key: str) -> None:
         _session_approved.pop(session_key, None)
         _session_yolo.discard(session_key)
         _pending.pop(session_key, None)
-        entries = _gateway_queues.pop(session_key, [])
-    for entry in entries:
-        # Cancel blocked waits now so the old run unwinds instead of idling until timeout;
-        # the prompt was withdrawn, nobody denied it.
-        entry.cancelled = "the session ended before the prompt was answered"
-        entry.event.set()
+        for entry in _gateway_queues.pop(session_key, []):
+            # Cancel blocked waits now so the old run unwinds instead of idling until timeout;
+            # the prompt was withdrawn, nobody denied it.
+            entry.cancelled = "the session ended before the prompt was answered"
+            entry.event.set()
     _release_permission_mode_dependents(session_key)
     # Session-persistent code kernels (local and remote) share this owner key and die at the same boundary so a
     # finished conversation cannot leak a live interpreter.
@@ -379,7 +403,7 @@ def _read_permanent_allowlist() -> set:
     legacy = isinstance(raw, str)
     if legacy:
         # Old config-set versions serialized list values as scalar strings.
-        import yaml
+        import hermes_yaml as yaml
         try:
             raw = yaml.safe_load(raw)
         except yaml.YAMLError:
@@ -476,28 +500,27 @@ def _approved() -> dict:
     return {"approved": True, "message": None}
 
 
-# ``outcome`` -> one plain sentence for the person who just answered (or did not). ``message`` is
+# ``outcome`` -> one plain sentence for the person who just answered (or did not), keyed as
+# ``approval.summary.<outcome>`` (``approval.summary.default`` for unknown outcomes). ``message`` is
 # addressed to the model ("Do NOT retry ..."); surfaces render ``user_summary`` first and fold the
 # model text away, so a Reject click does not read like an error the user caused.
-_USER_SUMMARIES = {
-    "denied": "You denied this {noun} — it did not run.",
-    "timeout": "No answer within {minutes} — the {noun} did not run.",
-    "notify_failed": "The approval request could not be delivered — the {noun} did not run.",
-    "cancelled": "The approval prompt was withdrawn or never reached you — the {noun} did not run.",
-    "blocked": "This {noun} is not allowed in an unattended session — it did not run.",
-}
+_USER_SUMMARY_OUTCOMES = frozenset({"denied", "timeout", "notify_failed", "cancelled", "blocked"})
+# ``_GateSpec.noun`` values (identifiers) -> ``approval.noun.<noun>`` for the human sentence.
+_USER_SUMMARY_NOUNS = frozenset({"command", "code", "action"})
 
 
 def _user_summary(outcome: str, noun: str = "command") -> str:
     from tools.approval_context import _get_approval_timeout, format_approval_window
     window = format_approval_window(_get_approval_timeout())
-    return _USER_SUMMARIES.get(outcome, "This {noun} did not run.").format(noun=noun, minutes=window)
+    key = f"approval.summary.{outcome}" if outcome in _USER_SUMMARY_OUTCOMES else "approval.summary.default"
+    noun_text = t(f"approval.noun.{noun}") if noun in _USER_SUMMARY_NOUNS else noun
+    return t(key, noun=noun_text, window=window)
 
 
 def _denied(message: str, *, pattern_key: str, description: str, outcome: str, noun: str = "command",
             **extra) -> dict:
     """Standard non-consent result: the agent must not retry or rephrase. ``user_summary`` is the
-    one-line human reading of the same outcome (see ``_USER_SUMMARIES``)."""
+    one-line human reading of the same outcome (see ``_user_summary``)."""
     return {"approved": False, "message": message, "pattern_key": pattern_key,
             "description": description, "outcome": outcome, "user_consent": False,
             "user_summary": _user_summary(outcome, noun), **extra}
@@ -938,7 +961,8 @@ def _run_approval_gate(
     Order: yolo bypass → session-cache short-circuit → interactive/gateway/unattended branch →
     prompt → persistence. Input-shape checks (hardline, allowlist, pattern detection) are the
     caller's job. ``fail_closed_when_no_human``: a non-interactive, non-gateway, non-cron
-    context BLOCKS instead of auto-approving, so a plugin-flagged action never runs ungated.
+    context without an ask bridge BLOCKS instead of auto-approving, so a plugin-flagged action
+    never runs ungated.
     Unattended deny text is ``ctx.block_message(subject, noun, advice)`` unless the caller passes
     an explicit ``*_deny_message`` (the file-tool write gates word their own).
     """
@@ -953,7 +977,7 @@ def _run_approval_gate(
         return _approved()
 
     approval_callback, is_cli, is_gateway, is_ask = _presence(approval_callback)
-    if not is_cli and not is_gateway:
+    if not is_cli and not is_gateway and not is_ask:
         log_args = (autoapprove_log_prefix, pattern_key, description)
         # Every unattended context resolves instantly — never a pending approval nobody can answer.
         deny_messages = {
@@ -1002,7 +1026,16 @@ def _should_skip_container_guards(env_type: str, has_host_access: bool = False) 
     exception once host paths are bind-mounted: ``rm -rf /workspace`` then reaches host files."""
     if env_type == "docker":
         return not has_host_access
-    return env_type in ("singularity", "modal", "daytona", "vercel_sandbox")
+    if env_type in ("singularity", "modal", "daytona", "vercel_sandbox"):
+        return True
+    # Plugin backends declare the same classification through the provider ABI (#94400);
+    # fail-soft to False so an unknown or raising backend — or a raising registry
+    # lookup — keeps the guards on rather than propagating out of the approval predicate.
+    try:
+        from agent.terminal_env_registry import provider_flag
+        return bool(provider_flag(env_type, "skip_container_guards", False))
+    except Exception:
+        return False
 
 
 def _user_deny_block(command: str) -> dict | None:
@@ -1020,11 +1053,20 @@ def _floor_block(command: str, *, sudo_guard: bool = False) -> dict | None:
     """Unconditional floors, BEFORE yolo / mode=off / cron approve-mode so no
     session-level setting can bypass them: hardline catastrophic commands,
     password-piping to ``sudo -S`` with no SUDO_PASSWORD configured (full guard
-    only), and the user's own approvals.deny rules ("never, even under yolo")."""
+    only), the user's own approvals.deny rules ("never, even under yolo"), and
+    deletion of the Python interpreter/venv this very runtime boots from (a
+    delete the agent cannot walk back — the next start fails before any tool
+    can run, #58748)."""
+    from agent.runtime_self_protection import command_deletes_runtime
+
     is_hardline, hardline_desc = detect_hardline_command(command)
     if is_hardline:
         logger.warning("Hardline block: %s (command: %s)", hardline_desc, command[:200])
         return _hardline_block_result(hardline_desc, command)
+    runtime_target = command_deletes_runtime(command)
+    if runtime_target:
+        logger.warning("Runtime self-delete block: %s (command: %s)", runtime_target, command[:200])
+        return _hardline_block_result(f"recursive/any delete of {runtime_target}", command)
     if sudo_guard:
         is_sudo_guess, sudo_guess_desc = _check_sudo_stdin_guard(command)
         if is_sudo_guess:
@@ -1066,9 +1108,9 @@ def request_tool_approval(tool_name: str, reason: str, *, rule_key: str = "", ap
     it asks the SAME human gate as Tier-2 dangerous shell patterns (session/permanent
     allowlist, CLI prompt, gateway pending, once/session/always/deny, timeout fail-closed), so
     the LLM cannot skip it. Cron honors ``approvals.cron_mode``; any OTHER non-interactive
-    non-gateway context fails CLOSED. ``rule_key`` controls the ``[a]lways`` allowlist grain;
-    when empty it is ``tool_name`` + a hash of ``reason`` so DISTINCT reasons on the same tool
-    persist independently. Returns the ``check_dangerous_command`` result shape.
+    context without an approval bridge fails CLOSED. ``rule_key`` controls the ``[a]lways``
+    allowlist grain; when empty it is ``tool_name`` + a hash of ``reason`` so DISTINCT reasons
+    on the same tool persist independently. Returns the ``check_dangerous_command`` result shape.
     """
     description = reason or f"Plugin requires approval for {tool_name}"
     if not rule_key:
@@ -1269,53 +1311,3 @@ def check_execute_code_guard(code: str, env_type: str, has_host_access: bool = F
 
 # Load permanent allowlist from config on module import
 load_permanent_allowlist()
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-import contextlib  # noqa: F401,E402
-import contextvars  # noqa: F401,E402
-import fnmatch  # noqa: F401,E402
-import functools  # noqa: F401,E402
-import re  # noqa: F401,E402
-import shlex  # noqa: F401,E402
-import sys  # noqa: F401,E402
-import tempfile  # noqa: F401,E402
-import time  # noqa: F401,E402
-import unicodedata  # noqa: F401,E402
-import uuid  # noqa: F401,E402
-
-
-_PLUGIN_COMPAT_LAZY = {
-    'DANGEROUS_PATTERNS': ('tools.approval_detection', 'DANGEROUS_PATTERNS'),
-    'DANGEROUS_PATTERNS_COMPILED': ('tools.approval_detection', 'DANGEROUS_PATTERNS_COMPILED'),
-    'HARDLINE_PATTERNS': ('tools.approval_detection', 'HARDLINE_PATTERNS'),
-    'HARDLINE_PATTERNS_COMPILED': ('tools.approval_detection', 'HARDLINE_PATTERNS_COMPILED'),
-    'HUMAN_WAIT_MARGIN_S': ('tools.approval_human_wait', 'HUMAN_WAIT_MARGIN_S'),
-    'cfg_get': ('hermes_cli.config', 'cfg_get'),
-    'get_plugin_manager': ('tools.approval_prompt', 'get_plugin_manager'),
-    'human_wait_ceiling': ('tools.approval_human_wait', 'human_wait_ceiling'),
-    'human_wait_seconds': ('tools.approval_human_wait', 'human_wait_seconds'),
-    'human_wait_window': ('tools.approval_human_wait', 'human_wait_window'),
-    'is_interrupted': ('tools.interrupt', 'is_interrupted'),
-    'request_elicitation_consent': ('tools.approval_prompt', 'request_elicitation_consent'),
-    'reset_current_observability_context': ('tools.approval_context', 'reset_current_observability_context'),
-    'reset_current_session_key': ('tools.approval_context', 'reset_current_session_key'),
-    'reset_hermes_interactive_context': ('tools.approval_context', 'reset_hermes_interactive_context'),
-    'set_current_observability_context': ('tools.approval_context', 'set_current_observability_context'),
-    'set_current_session_key': ('tools.approval_context', 'set_current_session_key'),
-    'set_hermes_interactive_context': ('tools.approval_context', 'set_hermes_interactive_context'),
-}
-
-
-def __getattr__(name):  # PEP 562 — lazy so no import cycles
-    target = _PLUGIN_COMPAT_LAZY.get(name)
-    if target is None:
-        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-    import importlib
-    from hermes_cli.plugin_compat import warn_once
-    warn_once(__name__, name, *target)
-    return getattr(importlib.import_module(target[0]), target[1])
-# ---- END PLUGIN-COMPAT ----

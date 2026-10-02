@@ -47,7 +47,8 @@ _YOLO_MODE_FROZEN: bool = is_truthy_value(os.getenv("HERMES_YOLO_MODE", ""))
 
 # --- Per-session approval state (thread-safe) -----------------------------------------------------------------------
 
-_lock = threading.Lock()
+# Permanent-grant transactions compose the same guarded load/save helpers.
+_lock = threading.RLock()
 _pending: dict[str, dict] = {}
 _session_approved: dict[str, set] = {}
 _session_yolo: set[str] = set()
@@ -343,6 +344,8 @@ def _permanent_set() -> set:
     if approved is None:
         try:
             approved = _read_permanent_allowlist()
+            # A lazy profile load is a disk sync too, not a set of new grants.
+            _permanent_baseline_by_home[home_key] = set(approved)
         except Exception as e:
             logger.warning("Failed to load permanent allowlist: %s", e)
             approved = set()
@@ -389,10 +392,7 @@ def _persist_choice(session_key: str, choice: str, warnings: list[tuple]) -> Non
             continue
         approve_session(session_key, key)
         if choice == "always" and not is_tirith:
-            approve_permanent(key)
-            with _lock:
-                snapshot = set(_permanent_set())
-            save_permanent_allowlist(snapshot)
+            add_permanent_allowlist({key})
 
 
 # --- Config persistence for permanent allowlist ---------------------------------------------------------------------
@@ -438,9 +438,9 @@ def load_permanent_allowlist() -> set:
     """Load ``command_allowlist`` from config and sync it into the approval state
     so is_approved() honors 'always' choices from previous sessions."""
     try:
-        patterns = _read_permanent_allowlist()
-        load_permanent(patterns)
         with _lock:
+            patterns = _read_permanent_allowlist()
+            load_permanent(patterns)
             _permanent_baseline_by_home[_baseline_key()] = set(patterns)
         return patterns
     except Exception as e:
@@ -466,9 +466,9 @@ def save_permanent_allowlist(patterns: set):
     """
     try:
         from hermes_cli.config import load_config, save_config
-        config = load_config()
-        on_disk = set(config.get("command_allowlist", []) or [])
         with _lock:
+            config = load_config()
+            on_disk = set(config.get("command_allowlist", []) or [])
             key = _baseline_key()
             baseline = _permanent_baseline_by_home.get(key, set())
             merged = on_disk | (set(patterns) - baseline)
@@ -480,6 +480,14 @@ def save_permanent_allowlist(patterns: set):
             governing.update(merged)
     except Exception as e:
         logger.warning("Could not save allowlist: %s", e)
+
+
+def add_permanent_allowlist(patterns: set) -> set:
+    """Persist explicit new grants without reusing a snapshot across another approval's save."""
+    with _lock:
+        merged = load_permanent_allowlist() | set(patterns)
+        save_permanent_allowlist(merged)
+        return set(_permanent_set())
 
 
 # --- Bypass check (yolo / mode=off) ---------------------------------------------------------------------------------

@@ -848,8 +848,13 @@ def _kill_process_group_posix(proc) -> None:
     try:
         pgid = os.getpgid(proc.pid)
     except ProcessLookupError:
+        # Zombie window: a bounded child (rg at the fetch limit) is already dead-but-
+        # unreaped when poll() says alive (#116855 on Linux, here on Darwin too). The
+        # group is dying on its own — nothing to signal, the caller owns its drained
+        # output. _hermes_pgid fallback covers a wrapper that raced the same window
+        # under the gateway's posix_spawn shim.
         if (pgid := getattr(proc, "_hermes_pgid", None)) is None:
-            raise
+            return
     try:  # psutil children snapshot; empty on any failure (must never break the kill)
         import psutil
         descendants = psutil.Process(proc.pid).children(recursive=True)

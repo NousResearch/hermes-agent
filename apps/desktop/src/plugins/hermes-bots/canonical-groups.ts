@@ -47,6 +47,13 @@ export interface CanonicalPendingAction {
   execution_generation: number
   request_id?: string
   approval?: CanonicalApprovalDetails
+  operation?: 'ack' | 'discard'
+  blocked?: boolean
+}
+
+export function isPendingFileAction(action: CanonicalPendingAction): boolean {
+  return action.kind === 'output_retry' && action.blocked === false &&
+    (action.operation === 'ack' || action.operation === 'discard')
 }
 
 function requireRoute(route: CanonicalGroupRoute): void {

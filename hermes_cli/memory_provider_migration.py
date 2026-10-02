@@ -25,6 +25,11 @@ logger = logging.getLogger(__name__)
 
 _attempted: set[tuple[str, str]] = set()
 
+# Providers that shipped bundled in core. Unattended consent covers only these: their users already
+# accepted the deps when they picked the built-in. Any other catalog plugin named in memory.provider
+# (a synced config, a cloned profile) still needs an explicit install.
+_LEFT_CORE = frozenset({"hindsight", "honcho", "mem0", "supermemory", "openviking", "retaindb", "byterover", "holographic"})
+
 
 def configured_provider(home: Path) -> str:
     """``memory.provider`` of *home*'s effective config, or ``""``."""
@@ -100,7 +105,7 @@ def _install_into(home: Path) -> Callable[[str], dict]:
         token = set_hermes_home_override(home)
         try:
             return dashboard_install_plugin("", force=False, enable=True, catalog_name=name,
-                                            assume_deps_consent=_unattended_consent())
+                                            assume_deps_consent=name in _LEFT_CORE and _unattended_consent())
         finally:
             reset_hermes_home_override(token)
     return _install

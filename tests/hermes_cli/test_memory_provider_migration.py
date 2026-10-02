@@ -95,12 +95,13 @@ def test_startup_recovery_attempts_each_profile_home(tmp_path, monkeypatch):
     assert installed == homes
 
 
-@pytest.mark.parametrize(("tty", "lazy", "consent"), [
-    (False, True, True),    # Desktop/gateway/scripted update: nobody can answer the prompt
-    (False, False, False),  # allow_lazy_installs off: still refused, with the install hint
-    (True, True, False),    # a terminal: the user is asked
+@pytest.mark.parametrize(("name", "tty", "lazy", "consent"), [
+    ("hindsight", False, True, True),    # Desktop/gateway/scripted update: nobody can answer the prompt
+    ("hindsight", False, False, False),  # allow_lazy_installs off: still refused, with the install hint
+    ("hindsight", True, True, False),    # a terminal: the user is asked
+    ("someplugin", False, True, False),  # never bundled: a config naming it is not consent to install it
 ])
-def test_unattended_migration_install_carries_lazy_install_consent(tmp_path, monkeypatch, tty, lazy, consent):
+def test_unattended_migration_install_carries_lazy_install_consent(tmp_path, monkeypatch, name, tty, lazy, consent):
     """Every provider still in core declares Python deps; without this, no non-interactive migration
     (the whole point of the agent-start hook) can ever publish one."""
     import io
@@ -117,6 +118,6 @@ def test_unattended_migration_install_carries_lazy_install_consent(tmp_path, mon
     monkeypatch.setattr(pm_install, "lazy_installs_allowed", lambda: lazy)
     seen = {}
     monkeypatch.setattr(plugins_cmd, "dashboard_install_plugin", lambda *a, **kw: seen.update(kw) or {"ok": True})
-    assert mig._install_into(tmp_path)("hindsight") == {"ok": True}
-    assert seen["catalog_name"] == "hindsight"
+    assert mig._install_into(tmp_path)(name) == {"ok": True}
+    assert seen["catalog_name"] == name
     assert seen.get("assume_deps_consent", False) is consent

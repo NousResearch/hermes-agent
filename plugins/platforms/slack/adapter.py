@@ -6109,15 +6109,19 @@ class SlackAdapter(BasePlatformAdapter):
             # ContextVar lets send() match the right response_url under
             # concurrent slashes from multiple users.
             slash_user_token = _slash_user_id.set(user_id or None)
-            # Released before the call, not after: the next slash needs this one handed over
-            # first, not answered (an inline command's reply is another Slack round trip).
-            self._release_slash_handoff(lane, handed_off)
+            # The lane opens only once handle_message returns: the gateway can still suspend
+            # (pre_gateway_dispatch) before it queues this event, and a later /queue that
+            # overtook it there would take the pending slot first.
             await self.handle_message(event)
         finally:
             if slash_user_token is not None:
                 _slash_user_id.reset(slash_user_token)
-            # A slash cancelled before its handoff must not strand the ones behind it.
-            self._release_slash_handoff(lane, handed_off)
+            if ahead is not None and not ahead.done():
+                # Cancelled while waiting: the slash behind this one must still wait for the
+                # one ahead of it, or it reaches the gateway before unfinished earlier work.
+                ahead.add_done_callback(lambda _f: self._release_slash_handoff(lane, handed_off))
+            else:
+                self._release_slash_handoff(lane, handed_off)
 
     def _release_slash_handoff(self, lane: Optional[str], handed_off: Optional[asyncio.Future]) -> None:
         if handed_off is None or handed_off.done():

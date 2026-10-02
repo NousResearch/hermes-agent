@@ -110,6 +110,68 @@ async def test_slash_turns_reach_the_gateway_in_order_with_message_inputs(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("hold", ["dispatch", "lookup-middle-cancelled"])
+async def test_busy_session_queue_keeps_slash_arrival_order(hold):
+    """``/queue`` on a busy session, through the real busy path into the runner's FIFO: the pending
+    slot and overflow keep arrival order. ``dispatch``: the first is held inside the gateway after
+    the adapter handed it over (where ``pre_gateway_dispatch`` awaits) while the second arrives.
+    ``lookup-middle-cancelled``: the first is held on a cold ``users.info``; of the two behind it,
+    the middle one is cancelled while it waits, and the third still waits for the first."""
+    from gateway.platforms.base import MessageEvent
+    from gateway.run_busy import GatewayBusySessionMixin
+    from gateway.session_state import SessionState
+
+    adapter = _adapter("C_OPS")
+    base = {"command": "/queue", "user_id": "U_ALICE", "channel_id": "C_OPS", "team_id": "T1"}
+    key = adapter._event_session_key(MessageEvent(text="x", source=adapter.build_source(
+        chat_id="C_OPS", chat_type="group", user_id="U_ALICE",
+        thread_id=adapter._slash_thread_id(base), scope_id="T1")))
+    owner = asyncio.create_task(asyncio.Event().wait())
+    adapter._active_sessions[key], adapter._session_tasks[key] = asyncio.Event(), owner
+
+    class _Runner(GatewayBusySessionMixin):
+        states: dict = {}
+        def _session_state(self, k):
+            return self.states.setdefault(k, SessionState())
+        def _peek_session_state(self, k):
+            return self.states.get(k)
+
+    runner, held, release = _Runner(), asyncio.Event(), asyncio.Event()
+
+    async def gateway(event):
+        if hold == "dispatch" and event.text.endswith("first"):
+            held.set()
+            await release.wait()
+        runner._enqueue_fifo(key, event, adapter)
+
+    async def users_info(**_kwargs):
+        if hold != "dispatch" and not held.is_set():
+            held.set()
+            await release.wait()
+        return {"user": {"profile": {"display_name": "Alice"}, "real_name": "Alice"}}
+
+    del adapter.handle_message  # the real base path, not the mock
+    adapter._message_handler = gateway
+    adapter._app.client.users_info = AsyncMock(side_effect=users_info)
+    slash = lambda text: asyncio.create_task(adapter._handle_slash_command({**base, "text": text}))
+
+    tasks = [slash("first")]
+    await asyncio.wait_for(held.wait(), 5)
+    tasks += [slash("middle"), slash("last")] if hold != "dispatch" else [slash("last")]
+    for _ in range(10):
+        await asyncio.sleep(0)
+    if hold != "dispatch":
+        tasks[1].cancel()
+        for _ in range(10):
+            await asyncio.sleep(0)
+    release.set()
+    await asyncio.wait_for(asyncio.gather(*tasks, return_exceptions=True), 5)
+    owner.cancel()
+    queued = [adapter._pending_messages[key], *runner.states[key].conversation.queued_events]
+    assert [e.text for e in queued] == ["/queue first", "/queue last"]
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("channel_id, authorized, command, reaches_runner", [
     ("C_OPS", False, "/hermes", 0), ("D_ALICE", False, "/hermes", 1),
     ("C_OPS", True, "/stop", 1), ("C_OPS", True, "/approve", 1), ("C_OPS", True, "/pause", 1),

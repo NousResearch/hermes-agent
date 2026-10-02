@@ -16,6 +16,7 @@ import time
 import urllib.parse
 from dataclasses import dataclass
 from typing import Optional
+from agent.proxy_bypass import is_loopback_host
 from gateway.platforms._shared import profile_scoped as _profile_scoped
 
 logger = logging.getLogger(__name__)
@@ -99,11 +100,19 @@ class A2ASecurityContext:
             return f"ip:{client_ip or 'unknown'}"
         return None
 
+    def is_loopback_bind(self) -> bool:
+        return is_loopback_host(self.resolve_bind_host())
+
+    def dispatch_fails_closed(self) -> bool:
+        """Network-exposed token bind with no allow-list and no allow-all: refuse every peer."""
+        return not (self.allow_all_users or self.localhost_only() or self.trusted_peers or self.is_loopback_bind())
+
     def is_trusted_peer(self, identity: str) -> bool:
-        """Open when allow-all or localhost-only; else the allow-list (if any) must contain identity."""
-        if self.allow_all_users or self.localhost_only() or not self.trusted_peers:
-            return True
-        return identity in self.trusted_peers
+        """Fail closed on network-exposed binds with no allow-list; loopback
+        binds without an allow-list stay open for backward compatibility."""
+        if self.dispatch_fails_closed():
+            return False  # the misconfiguration is logged once in A2AAdapter.connect()
+        return self.allow_all_users or self.localhost_only() or not self.trusted_peers or identity in self.trusted_peers
 
     def sign_push_payload(self, payload: dict) -> str:
         """HMAC-SHA256 hex over the sorted-key JSON body; "" when no secret."""
@@ -208,86 +217,3 @@ def audit(direction: str, peer: str, task_id: str, summary: str) -> None:
             fh.write(json.dumps(rec, ensure_ascii=False) + "\n")
     except Exception:
         logger.debug("A2A: audit write failed", exc_info=True)
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-from pathlib import Path  # noqa: F401,E402
-
-def authenticate(auth_header: Optional[str], client_ip: str = "") -> Optional[str]:
-    """Authenticate an inbound request; return the peer identity or None.
-
-    - No tokens configured (localhost-only mode): identity is ``ip:<addr>``.
-    - Token matches an A2A_PEER_TOKENS entry: identity is that peer's name.
-    - Token matches the shared A2A_BEARER_TOKEN: identity is ``ip:<addr>``.
-    - Otherwise: None (reject with 401).
-
-    Comparisons are constant-time (hmac.compare_digest).
-    """
-    return A2ASecurityContext.capture().authenticate(auth_header, client_ip)
-
-def get_bearer_token() -> str:
-    """Return the configured shared inbound bearer token (empty if none)."""
-    return _startup_env("A2A_BEARER_TOKEN")
-
-def get_peer_tokens() -> dict[str, str]:
-    """Parse A2A_PEER_TOKENS ("alice:tok1,bob:tok2") into {token: peer_name}.
-
-    Per-peer tokens give each remote agent its own credential, so the identity
-    used for rate limiting, trust, and audit is authenticated — not whatever
-    the request body claims.
-    """
-    return _parse_peer_tokens(_startup_env("A2A_PEER_TOKENS"))
-
-def get_push_secret() -> str:
-    """Return the secret used for HMAC-SHA256 push notification signing.
-
-    Falls back to the bearer token if no dedicated push secret is set.
-    If neither is configured, push notifications are unsigned (localhost-only mode).
-    """
-    return A2ASecurityContext.capture().push_secret
-
-def get_trusted_peers() -> set[str]:
-    """Return the configured trusted-peer allow-list (empty = no restriction).
-
-    Configured via A2A_TRUSTED_PEERS env var (comma-separated identities) or
-    config.yaml under a2a.trusted_peers. Identities are the *authenticated*
-    names from ``authenticate()`` — peer-token names, or ``ip:<addr>`` for
-    shared-token callers.
-    """
-    return set(_configured_trusted_peers())
-
-def is_trusted_peer(identity: str) -> bool:
-    """Check whether an authenticated identity may run tasks.
-
-    Open when A2A_ALLOW_ALL_USERS is set or in localhost-only mode. When a
-    trusted-peer allow-list is configured, the identity must be on it;
-    otherwise any *authenticated* identity is allowed (authentication is the
-    primary gate — the allow-list is an optional restriction on top).
-    """
-    return A2ASecurityContext.capture().is_trusted_peer(identity)
-
-def resolve_bind_host() -> str:
-    """Resolve the safe inbound bind host.
-
-    Rule: localhost unless the operator BOTH configured a token (shared or
-    per-peer) AND explicitly asked for a wider host. A token alone does not
-    widen the bind — opting into remote exposure must be deliberate.
-    """
-    return A2ASecurityContext.capture().resolve_bind_host()
-
-def sign_push_payload(payload: dict) -> str:
-    """HMAC-SHA256 sign a push notification payload.
-
-    Returns hex-encoded signature. Empty string if no secret configured.
-    Receivers verify by HMAC-ing the JSON body (sorted keys) with the shared
-    secret and comparing against the X-A2A-Signature header.
-    """
-    secret = get_push_secret()
-    if not secret:
-        return ""
-    body = json.dumps(payload, sort_keys=True, ensure_ascii=False).encode("utf-8")
-    return hmac.new(secret.encode("utf-8"), body, hashlib.sha256).hexdigest()
-# ---- END PLUGIN-COMPAT ----

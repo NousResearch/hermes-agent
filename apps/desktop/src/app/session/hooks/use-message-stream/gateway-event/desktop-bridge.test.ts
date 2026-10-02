@@ -1,95 +1,44 @@
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { $gateway } from '@/store/gateway'
-import { $toursEnabled } from '@/store/tours'
+import { $activeTip, $retiredTips, $tipsEnabled, dismissTip, resetTips, retireActiveTip } from '@/store/tips'
 
 import { handleDesktopBridgeEvent } from './desktop-bridge'
 import type { GatewayEventContext } from './types'
 
-function previewActContext({
-  explicitSid,
-  isActiveEvent
-}: {
-  explicitSid: string
-  isActiveEvent: boolean
-}): GatewayEventContext {
-  return {
-    event: { session_id: explicitSid || undefined, type: 'preview.act.request' },
-    explicitSid,
-    isActiveEvent,
-    payload: { action: 'elements', request_id: 'request-1' }
-  } as GatewayEventContext
-}
+vi.mock('@/app/right-sidebar/terminal/agent-terminal-stream', () => ({ writeAgentTerminalChunk: vi.fn() }))
+vi.mock('@/app/right-sidebar/terminal/terminals', () => ({ closeAgentTerminalByProc: vi.fn() }))
+vi.mock('@/store/pane-focus', () => ({ applyDesktopLayoutPreset: vi.fn(), revealDesktopPane: vi.fn() }))
+vi.mock('@/store/reactions-local', () => ({ recordAgentReaction: vi.fn() }))
+vi.mock('@/store/session', () => ({ setMessages: vi.fn() }))
 
-describe('preview action bridge routing', () => {
-  afterEach(() => {
-    $gateway.set(null)
-  })
+const tipShow = (text: string): GatewayEventContext =>
+  ({
+    event: { type: 'tip.show' },
+    isActiveEvent: true,
+    payload: { selector: '[data-tour="model-pill"]', text }
+  }) as unknown as GatewayEventContext
 
-  it('leaves a scoped action request unanswered in a window showing another session', () => {
-    const request = vi.fn()
-    $gateway.set({ request } as never)
-
-    expect(handleDesktopBridgeEvent(previewActContext({ explicitSid: 'session-a', isActiveEvent: false }))).toBe(true)
-    expect(request).not.toHaveBeenCalled()
-  })
-
-  it('keeps the legacy fail-fast response for an unscoped inactive request', () => {
-    const request = vi.fn()
-    $gateway.set({ request } as never)
-
-    expect(handleDesktopBridgeEvent(previewActContext({ explicitSid: '', isActiveEvent: false }))).toBe(true)
-    expect(request).toHaveBeenCalledWith('preview.act.respond', {
-      request_id: 'request-1',
-      text: JSON.stringify({
-        error: 'The in-app browser only takes actions in the session the user is looking at.',
-        success: false
-      })
-    })
-  })
+beforeEach(() => {
+  dismissTip()
+  resetTips()
+  $tipsEnabled.set(true)
 })
 
-function tourContext({
-  explicitSid,
-  isActiveEvent
-}: {
-  explicitSid: string
-  isActiveEvent: boolean
-}): GatewayEventContext {
-  return {
-    event: { session_id: explicitSid || undefined, type: 'tour.request' },
-    explicitSid,
-    isActiveEvent,
-    payload: { action: 'discover', request_id: 'tour-request-1' }
-  } as GatewayEventContext
-}
+describe('tip.show bridge (#117216)', () => {
+  it('a ✕-closed agent tip does not come back on the next tip.show of the same content', () => {
+    handleDesktopBridgeEvent(tipShow('Choose a model here.'))
+    const tipId = $activeTip.get()?.tipId
 
-describe('tour bridge routing', () => {
-  afterEach(() => {
-    $gateway.set(null)
-    $toursEnabled.set(true)
-  })
+    expect(tipId).toMatch(/^agent:/)
 
-  it('leaves a scoped request unanswered in another session even when tours are disabled', () => {
-    const request = vi.fn()
-    $gateway.set({ request } as never)
-    $toursEnabled.set(false)
+    retireActiveTip()
+    expect($retiredTips.get()).toContain(tipId)
 
-    expect(handleDesktopBridgeEvent(tourContext({ explicitSid: 'session-a', isActiveEvent: false }))).toBe(true)
-    expect(request).not.toHaveBeenCalled()
-  })
+    handleDesktopBridgeEvent(tipShow('Choose a model here.'))
+    expect($activeTip.get()).toBeNull()
 
-  it('keeps the legacy fail-fast response for an unscoped inactive request', () => {
-    const request = vi.fn()
-    $gateway.set({ request } as never)
-
-    expect(handleDesktopBridgeEvent(tourContext({ explicitSid: '', isActiveEvent: false }))).toBe(true)
-    expect(request).toHaveBeenCalledWith('tour.respond', {
-      request_id: 'tour-request-1',
-      text: JSON.stringify({
-        error: 'Tours only run in the session the user is looking at.',
-        success: false
-      })
-    })
+    // Different content is a different tip and still shows.
+    handleDesktopBridgeEvent(tipShow('Attach files with the paperclip.'))
+    expect($activeTip.get()?.text).toBe('Attach files with the paperclip.')
   })
 })

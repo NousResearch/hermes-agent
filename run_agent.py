@@ -9,15 +9,25 @@
 # hermes_bootstrap must be the very first import (UTF-8 stdio on Windows; no-op on POSIX).
 try:
     import hermes_bootstrap  # noqa: F401
-except ModuleNotFoundError:
-    pass  # partial `hermes update` — only skips the Windows UTF-8 stdio setup
+except ModuleNotFoundError as exc:  # partial `hermes update` left the bootstrap unregistered
+    if exc.name != "hermes_bootstrap":
+        raise  # the bootstrap exists but cannot load: skipping it would skip PM activation
+
+import sys
+
+# `hermes-agent` runs this module without hermes_cli.main, which repairs a `hermes update` killed
+# while git wrote the new tree; do it here, before importing anything else from the checkout.
+if "hermes_cli.main" not in sys.modules:
+    from hermes_cli import _early_recovery
+
+    if _early_recovery.restore_interrupted_pull():
+        _early_recovery.relaunch_after_restore()
 
 import json
 import logging
 logger = logging.getLogger(__name__)
 import os
 import re
-import sys
 import time
 import threading
 import uuid
@@ -35,7 +45,7 @@ def _launch_cwd_for_session(source: str) -> Optional[str]:
     Only local CLI sessions record one: gateway/cron/remote backends (non-"local" ``TERMINAL_ENV``) have no
     stable host cwd for the agent's tools.
     """
-    if source != "cli" or (os.environ.get("TERMINAL_ENV") or "local").strip().lower() not in ("", "local"):
+    if source not in CLI_FAMILY_SOURCES or (os.environ.get("TERMINAL_ENV") or "local").strip().lower() not in ("", "local"):
         return None
     try:
         return os.getcwd()
@@ -43,14 +53,32 @@ def _launch_cwd_for_session(source: str) -> Optional[str]:
         return None
 
 
+# Sources that label the human conversation an interactive UI transport hosts. A finite ``hermes chat -q`` /
+# one-shot child spawned from such a session inherits HERMES_SESSION_SOURCE (the terminal tool bridges the
+# session env into child processes) but is NOT that conversation: labelling it ``tui``/``desktop`` lists it
+# in the TUI/WebUI pickers as a resumable chat and lets ``hermes -c`` in the TUI continue it (#112550).
+# Automation sources (kanban, tool, cron, a2a, ...) are inherited on purpose.
+_UI_TRANSPORT_SOURCES = frozenset({"tui", "desktop"})
+
+# Finite non-interactive CLI runs (``hermes chat -q``/``--oneshot``, ``hermes -z``) get their own source so human
+# pickers hide them without title/cwd heuristics; ``hermes -c`` still treats them as CLI history.
+ONESHOT_SOURCE = "oneshot"
+CLI_FAMILY_SOURCES = frozenset({"cli", ONESHOT_SOURCE})
+
+
 def _session_source_for_agent(platform: Optional[str]) -> str:
     try:
         from gateway.session_context import get_session_env
-
-        source = get_session_env("HERMES_SESSION_SOURCE", "")
     except Exception:
-        source = os.environ.get("HERMES_SESSION_SOURCE", "")
-    return str(source or "").strip() or platform or "cli"
+        get_session_env = os.environ.get
+    source = str(get_session_env("HERMES_SESSION_SOURCE", "") or "").strip()
+    single_query = get_session_env("HERMES_SINGLE_QUERY_SESSION", "") == "1"
+    explicit = get_session_env("HERMES_SESSION_SOURCE_EXPLICIT", "") == "1"
+    if single_query and not explicit and source in _UI_TRANSPORT_SOURCES:
+        source = ""
+    if single_query and not source and (platform or "cli") == "cli":
+        return ONESHOT_SOURCE
+    return source or platform or "cli"
 
 
 def _gateway_origin_json(agent: "AIAgent") -> Optional[str]:
@@ -103,13 +131,14 @@ from model_tools import get_toolset_for_tool
 from tools.terminal_tool_lifecycle import cleanup_vm, get_active_env
 from tools.interrupt import set_interrupt as _set_interrupt
 from tools.browser_tool_lifecycle import cleanup_browser
+from tools.connectors.turn import agent_connection_surface, scoped_connection_surface
 
 from agent.memory_provider import is_trivial_prompt
 from agent.client_lifecycle import ClientLifecycleMixin
 from agent.stream_delivery import StreamDeliveryMixin
 from agent.status_output import StatusOutputMixin
 from agent.api_request_hooks import ApiRequestHooksMixin
-from agent.api_error_summary import ApiErrorSummaryMixin
+from agent.api_error_summary import ApiErrorSummaryMixin, is_provider_stream_parse_error
 from agent.interrupt_control import InterruptControlMixin
 from agent.turn_explainers import TurnExplainersMixin
 from agent.activity_tracking import ActivityTrackingMixin
@@ -133,6 +162,7 @@ from agent.codex_responses_adapter import (
     _summarize_user_message_for_log,
 )
 from agent.tool_guardrails import ToolGuardrailDecision, append_toolguard_guidance, toolguard_synthetic_result
+from hermes_cli.observability.shared_metrics_harness import record_guardrail_decision, record_guardrail_warnings
 from utils import base_url_host_matches, base_url_hostname, env_float, model_forces_max_completion_tokens
 
 
@@ -250,7 +280,7 @@ class AIAgent(
         reasoning_callback: callable = None, clarify_callback: callable = None,
         read_terminal_callback: callable = None, read_preview_callback: callable = None,
         drive_preview_callback: callable = None, read_window_below_callback: callable = None,
-        setup_mcp_callback: callable = None, tour_callback: callable = None, step_callback: callable = None,
+        connection_callback: callable = None, tour_callback: callable = None, step_callback: callable = None,
         stream_delta_callback: callable = None, interim_assistant_callback: callable = None,
         tool_gen_callback: callable = None, status_callback: callable = None,
         notice_callback: callable = None, notice_clear_callback: callable = None,
@@ -269,7 +299,9 @@ class AIAgent(
         checkpoints_enabled: bool = False, checkpoint_max_snapshots: int = 20,
         checkpoint_max_total_size_mb: int = 500, checkpoint_max_file_size_mb: int = 10,
         pass_session_id: bool = False, requested_provider: str = None,
-        capabilities: Dict[str, bool] | None = None,
+        capabilities: Dict[str, bool] | None = None, cwd: str | None = None,
+        side_agent: bool = False, memory_manager=None,
+        tool_result_metadata_callback: Optional[Callable[..., dict]] = None,
     ):
         """Forwarder — see ``agent.agent_init.init_agent`` (same keyword parameters, minus ``tool_delay``)."""
         init_kwargs = {k: v for k, v in locals().items() if k not in ("self", "tool_delay")}
@@ -404,6 +436,8 @@ class AIAgent(
 
         # Turn counter (added after reset_session_state was first written — #2635)
         self._user_turn_count = 0
+        # The drifted-prompt compaction INFO is once per session, so a /new or /resume re-arms it.
+        self._compaction_prompt_drift_logged = False
         # Who wrote the current turn. build_turn_context() sets it at the start of every turn.
         self._turn_author = None
         # Copilot x-initiator: True for the first API call of a user turn, False for tool-loop follow-ups.
@@ -462,9 +496,12 @@ class AIAgent(
 
     switch_model = _forward("agent.agent_runtime_helpers", "switch_model")
 
-    def _disable_codex_reasoning_replay(self, messages: Optional[List[Dict[str, Any]]] = None) -> Dict[str, int]:
-        """On HTTP 400 ``invalid_encrypted_content``: disable Responses reasoning replay and pop
-        ``codex_reasoning_items`` from every assistant message. Returns ``{"messages", "items"}`` counts."""
+    def _disable_codex_reasoning_replay(
+        self, messages: Optional[List[Dict[str, Any]]] = None, *, keep_replay: bool = False,
+    ) -> Dict[str, int]:
+        """On HTTP 400 ``invalid_encrypted_content``: pop ``codex_reasoning_items`` from every assistant
+        message and, unless ``keep_replay``, disable Responses reasoning replay. Returns
+        ``{"messages", "items"}`` counts."""
         stripped_messages = stripped_items = 0
         for msg in (messages if isinstance(messages, list) else []):
             if not isinstance(msg, dict) or msg.get("role") != "assistant":
@@ -473,7 +510,8 @@ class AIAgent(
             if isinstance(items, list) and items:
                 stripped_messages += 1
                 stripped_items += len(items)
-        self._codex_reasoning_replay_enabled = False
+        if not keep_replay:
+            self._codex_reasoning_replay_enabled = False
         return {"messages": stripped_messages, "items": stripped_items}
 
     _stream_diag_init = _forward_static("agent.stream_diag", "stream_diag_init")
@@ -483,9 +521,7 @@ class AIAgent(
     def _is_provider_stream_parse_error(self, error: BaseException) -> bool:
         """True for a malformed Anthropic event-stream frame (surfaced by the SDK as a plain ``ValueError``);
         that is wire trouble, not local validation, so it follows the truncated-JSON retry path."""
-        return (getattr(self, "api_mode", None) == "anthropic_messages" and isinstance(error, ValueError)
-                and not isinstance(error, (UnicodeEncodeError, json.JSONDecodeError))
-                and "expected ident at line" in str(error).strip().lower())
+        return getattr(self, "api_mode", None) == "anthropic_messages" and is_provider_stream_parse_error(error)
 
     _log_stream_retry = _forward("agent.stream_diag", "log_stream_retry")
     _emit_stream_drop = _forward("agent.stream_diag", "emit_stream_drop")
@@ -503,7 +539,10 @@ class AIAgent(
 
     def _current_main_runtime(self) -> Dict[str, str]:
         """Return the live main runtime for session-scoped auxiliary routing."""
-        return {key: getattr(self, key, "") or "" for key in ("model", "provider", "base_url", "api_key", "api_mode", "auth_mode")}
+        return {
+            key: getattr(self, key, "") or ""
+            for key in ("model", "provider", "base_url", "api_key", "api_mode", "auth_mode", "session_id")
+        }
 
     _check_compression_model_feasibility = _forward("agent.conversation_compression", "check_compression_model_feasibility")
     _replay_compression_warning = _forward("agent.conversation_compression", "replay_compression_warning")
@@ -563,16 +602,18 @@ class AIAgent(
         if uses_implicit_default and base_url and is_local_endpoint(base_url):
             return float("inf")
 
-        from agent.chat_completion_helpers import estimate_request_context_tokens
+        from agent.chat_completion_helpers import _high_effort_silence_floor, cap_to_run_budget, estimate_request_context_tokens
         est_tokens = estimate_request_context_tokens(api_payload)
         timeout = max(stale_base, 240.0) if est_tokens > 100_000 else max(stale_base, 150.0) if est_tokens > 50_000 else stale_base
+        explicit = self._stale_timeout_is_explicit()
+        # High-effort Codex reasoning (#112909) floors the IMPLICIT stale timeout before the run-budget
+        # cap below, so the floor can never outlive the run budget.
+        if self.api_mode == "codex_responses" and not explicit:
+            timeout = max(timeout, _high_effort_silence_floor(self))
         # Run-budget cap: an implicit stale timeout is capped at half the remaining budget (>= 60s) so one
         # hung call cannot eat the run. Never raises the timeout; explicit user config still wins.
-        run_budget = getattr(self, "run_budget_seconds", None)
-        started = getattr(self, "_run_budget_started_at", None)
-        if run_budget and started and not self._stale_timeout_is_explicit():
-            remaining = float(run_budget) - (time.time() - started)
-            timeout = min(timeout, max(60.0, remaining * 0.5))
+        if not explicit:
+            timeout = cap_to_run_budget(self, timeout)
         return timeout
 
     def _stale_timeout_is_explicit(self) -> bool:
@@ -599,7 +640,7 @@ class AIAgent(
             "on chatgpt.com/backend-api/codex (no stream events, no error). "
             "This is a known backend-side pattern that has affected ChatGPT "
             "Plus accounts intermittently. "
-            "Workaround: try `gpt-5.4` on the same OAuth profile, or `gpt-5.3-codex`, "
+            "Workaround: try `gpt-5.4` on the same OAuth profile, "
             "or switch to a different model/provider in your fallback chain. "
             "Some ChatGPT Codex accounts do not support `gpt-5.4-codex`. "
             "See hermes-agent#21444 for symptom history."
@@ -641,6 +682,13 @@ class AIAgent(
         # Nous serves GPT-5.x via chat completions (its /v1/responses returns 404); generic custom endpoints
         # may relay GPT-5 without full Responses semantics — only direct OpenAI/xAI URLs auto-upgrade.
         if normalized_provider in ("nous", "custom") or is_actual_route(provider):
+            return False
+        # ACP facades expose the OpenAI-compatible chat.completions shape regardless of model
+        # family and have no ``responses`` attribute, so neither primary routing nor GPT-5
+        # fallback activation may upgrade them. Keyed on the profile's auth_type: every
+        # external-process provider, not one vendor's names.
+        from hermes_cli.runtime_provider_backends import _is_external_process_provider
+        if _is_external_process_provider(normalized_provider):
             return False
         if normalized_provider == "copilot":
             try:
@@ -914,6 +962,9 @@ class AIAgent(
         # and a cross-thread close can release TLS FDs under a still-unwinding worker.
         _quietly(self._drop_shared_client, lambda c: self._retire_shared_openai_client(c, reason="cache_evict"))
         self._close_request_clients("cache_evict")
+        # The Codex app-server child is an LLM client, not session tool state: the evicted instance is popped
+        # from the cache and a rebuilt agent spawns its own child, so an unclosed one leaks for the gateway's life.
+        _quietly(self._close_codex_session)
 
     def close(self) -> None:
         """Release every resource this agent holds (idempotent); each phase is guarded so one failure never
@@ -1004,7 +1055,7 @@ class AIAgent(
 
     def _hydrate_todo_store(self, history: List[Dict[str, Any]]) -> None:
         """Replay the most recent todo tool response (the gateway builds a fresh AIAgent per message). Only
-        results paired with an earlier assistant ``todo`` call count — a forged bare ``role: tool`` message
+        results paired with an earlier assistant Todo-tool call count — a forged bare ``role: tool`` message
         must not seed the store (GHSA-5g4g-6jrg-mw3g)."""
         found = self._latest_todo_response(history)
         if found is not None:
@@ -1046,8 +1097,9 @@ class AIAgent(
 
     @classmethod
     def _tool_response_matches_todo_call(cls, history: List[Dict[str, Any]], tool_index: int) -> bool:
-        """True when the nearest prior assistant message issued a ``todo`` call with this ``tool_call_id``; a
-        ``user``/``system`` boundary or missing id means unpaired → must not hydrate."""
+        """True when the nearest prior assistant message issued a Todo-tool call (legacy aliases and the
+        ``tool_call`` bridge canonicalized) with this ``tool_call_id``; a ``user``/``system`` boundary or
+        missing id means unpaired → must not hydrate."""
         tool_call_id = history[tool_index].get("tool_call_id") if 0 <= tool_index < len(history) else None
         if not tool_call_id:
             return False
@@ -1061,11 +1113,12 @@ class AIAgent(
 
     @classmethod
     def _assistant_has_todo_tool_call(cls, assistant_msg: Dict[str, Any], tool_call_id: str) -> bool:
-        """True when the assistant message issued a ``todo`` call with this id."""
+        """True when the paired call resolves to the registered Todo tool."""
+        from tools.todo_tool import is_todo_tool_call
+
         tool_calls = assistant_msg.get("tool_calls")
         return isinstance(tool_calls, list) and any(
-            cls._get_tool_call_id_static(tc) == tool_call_id and cls._get_tool_call_name_static(tc) == "todo"
-            for tc in tool_calls
+            cls._get_tool_call_id_static(tc) == tool_call_id and is_todo_tool_call(tc) for tc in tool_calls
         )
 
     @property
@@ -1220,13 +1273,16 @@ class AIAgent(
         """Record the first guardrail decision that should stop this turn."""
         if decision.should_halt and self._tool_guardrail_halt_decision is None:
             self._tool_guardrail_halt_decision = decision
+        if decision.should_halt:
+            record_guardrail_decision(self, decision.action, decision.code)
 
     def _toolguard_controlled_halt_response(self, decision: ToolGuardrailDecision) -> str:
+        # Shown to the user as the reply, so no decision codes; the code stays in result["guardrail"].
         return (
-            f"I stopped retrying {decision.tool_name or 'a tool'} because it hit the tool-call guardrail "
-            f"({decision.code}) after {decision.count} repeated non-progressing "
-            "attempts. The last tool result explains the blocker; the next step is "
-            "to change strategy instead of repeating the same call."
+            f"I stopped retrying because I kept running {decision.tool_name or 'the same tool'} "
+            f"{decision.count} times without making progress. The last result above shows what "
+            "blocked it. Tell me how you'd like to proceed, or send `continue` and I'll try a "
+            "different approach."
         )
 
     def _append_guardrail_observation(self, tool_name: str, function_args: dict, function_result: str, *,
@@ -1234,14 +1290,14 @@ class AIAgent(
         decision = self._tool_guardrails.after_call(tool_name, function_args, function_result, failed=failed)
         # Identical-call stall guards observe the RAW result (before the per-call loop suffix) and are applied
         # at result construction so tool results stay append-only / cache-safe.
-        stall_notice = result_stub = None
+        stall_notice = result_stub = stall_kind = None
         if self._stall_guards_enabled():
             try:
                 observation = self._tool_guardrails.observe_call(
                     tool_name, function_args, function_result if isinstance(function_result, str) else None,
                     tool_call_id=tool_call_id, failed=failed,
                 )
-                stall_notice, result_stub = observation.notice, observation.stub
+                stall_notice, result_stub, stall_kind = observation.notice, observation.stub, observation.kind
             except Exception as exc:
                 logger.debug("stall-guard identical-call observation failed: %s", exc)
         # Result-reference stubbing: a 2nd+ identical call with a byte-identical FRESH result enters
@@ -1250,6 +1306,7 @@ class AIAgent(
             function_result = result_stub
         if decision.action in {"warn", "halt"}:
             function_result = append_toolguard_guidance(function_result, decision)
+        record_guardrail_warnings(self, decision, stall_kind if stall_notice else None)
         if decision.should_halt:
             self._set_tool_guardrail_halt(decision)
         else:
@@ -1280,20 +1337,31 @@ class AIAgent(
         args = (assistant_message, messages, effective_task_id, api_call_count)
         self._executing_tools = True  # allow _vprint during tool execution even with stream consumers
         try:
-            if len(tool_calls) <= 1:
-                return self._execute_tool_calls_sequential(*args)
-
-            from agent.tool_dispatch_helpers import _plan_tool_batch_segments
-            active_env = get_active_env(effective_task_id)
-            exec_cwd = Path(active_env.cwd) if active_env is not None and active_env.cwd else None
-            segments = _plan_tool_batch_segments(tool_calls, execution_cwd=exec_cwd)
-            if len(segments) == 1:
-                run = self._execute_tool_calls_concurrent if segments[0][0] == "parallel" else self._execute_tool_calls_sequential
-                return run(*args)
-            from agent.tool_executor import execute_tool_calls_segmented
-            return execute_tool_calls_segmented(self, *args, segments=segments)
+            with scoped_connection_surface(agent_connection_surface(self)):
+                if len(tool_calls) <= 1:
+                    self._execute_tool_calls_sequential(*args)
+                else:
+                    from agent.tool_dispatch_helpers import _plan_tool_batch_segments
+                    active_env = get_active_env(effective_task_id)
+                    exec_cwd = Path(active_env.cwd) if active_env is not None and active_env.cwd else None
+                    segments = _plan_tool_batch_segments(tool_calls, execution_cwd=exec_cwd)
+                    if len(segments) == 1:
+                        run = self._execute_tool_calls_concurrent if segments[0][0] == "parallel" else self._execute_tool_calls_sequential
+                        run(*args)
+                    else:
+                        from agent.tool_executor import execute_tool_calls_segmented
+                        execute_tool_calls_segmented(self, *args, segments=segments)
         finally:
             self._executing_tools = False
+        # getattr: test stubs built without _set_defaults drive this method too
+        if getattr(self, "_trim_after_tool_batch", False):
+            # Only on normal completion: every executor frame that held a >=1 MB raw result has
+            # unwound and just the spilled preview lives in ``messages``. An in-flight exception
+            # would pin those frames via its traceback, so that path leaves the flag for the
+            # next completed batch (agent/tool_executor.py, #70684).
+            self._trim_after_tool_batch = False
+            from hermes_cli.mem_trim import trim_memory
+            trim_memory(reason="large tool result")
 
     def _dispatch_delegate_task(self, function_args: dict) -> str:
         """Single call site for delegate_task dispatch; new DELEGATE_TASK_SCHEMA fields are added only here."""
@@ -1333,6 +1401,9 @@ class AIAgent(
     def _conversation_root_id(self) -> Optional[str]:
         """Session-lineage ROOT id for Portal usage attribution, so one conversation keeps a single
         ``conversation=`` tag across compression rotation; subagents resolve via ``_parent_session_id``."""
+        cached = getattr(self, "_cached_conversation_root", None)
+        if cached:
+            return str(cached)
         sid = getattr(self, "session_id", None)
         if not sid:
             return None
@@ -1468,6 +1539,14 @@ def main(
     if list_tools:
         return _print_tool_listing()
 
+    # One TLS authority: trust the OS store before any outbound call (bare
+    # requests/urllib included) resolves a CA bundle — see agent/ssl_verify.py.
+    # The `hermes` CLI does this in hermes_cli.main; this console script
+    # bypasses it. Never raises.
+    from agent.ssl_verify import install_truststore
+
+    install_truststore()
+
     enabled_toolsets_list = _parse_toolset_arg(enabled_toolsets, "🎯 Enabled toolsets")
     disabled_toolsets_list = _parse_toolset_arg(disabled_toolsets, "🚫 Disabled toolsets")
     if save_trajectories:
@@ -1502,56 +1581,6 @@ def main(
 
 
 if __name__ == "__main__":
-    import fire
-    fire.Fire(main)
+    from agent.legacy_cli import main as _legacy_cli_main
 
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-from types import SimpleNamespace  # noqa: F401,E402
-import asyncio  # noqa: F401,E402
-import base64  # noqa: F401,E402
-import copy  # noqa: F401,E402
-import hashlib  # noqa: F401,E402
-import tempfile  # noqa: F401,E402
-
-
-_PLUGIN_COMPAT_LAZY = {
-    'COMPRESSED_SUMMARY_METADATA_KEY': ('agent.context_compressor', 'COMPRESSED_SUMMARY_METADATA_KEY'),
-    'ContextCompressor': ('agent.context_compressor', 'ContextCompressor'),
-    'DEFAULT_AGENT_IDENTITY': ('agent.prompt_builder', 'DEFAULT_AGENT_IDENTITY'),
-    'FailoverReason': ('agent.error_classifier', 'FailoverReason'),
-    'OpenAI': ('agent.process_bootstrap', 'OpenAI'),
-    'atomic_json_write': ('utils', 'atomic_json_write'),
-    'build_context_files_prompt': ('agent.prompt_builder', 'build_context_files_prompt'),
-    'build_environment_hints': ('agent.prompt_builder', 'build_environment_hints'),
-    'build_skills_system_prompt': ('agent.prompt_builder', 'build_skills_system_prompt'),
-    'check_toolset_requirements': ('model_tools', 'check_toolset_requirements'),
-    'convert_scratchpad_to_think': ('agent.trajectory', 'convert_scratchpad_to_think'),
-    'estimate_request_tokens_rough': ('agent.model_metadata', 'estimate_request_tokens_rough'),
-    'file_mutation_result_landed': ('agent.tool_result_classification', 'file_mutation_result_landed'),
-    'flatten_message_text': ('agent.message_content', 'flatten_message_text'),
-    'get_tool_definitions': ('model_tools', 'get_tool_definitions'),
-    'handle_function_call': ('model_tools', 'handle_function_call'),
-    'is_truthy_value': ('utils', 'is_truthy_value'),
-    'jittered_backoff': ('agent.retry_utils', 'jittered_backoff'),
-    'load_soul_md': ('agent.prompt_builder', 'load_soul_md'),
-    'normalize_usage': ('agent.usage_pricing', 'normalize_usage'),
-    'redact_sensitive_text': ('agent.redact', 'redact_sensitive_text'),
-    'request_hard_interrupt': ('agent.interrupt_compat', 'request_hard_interrupt'),
-    'sanitize_context': ('agent.memory_manager', 'sanitize_context'),
-    'user_originated_turn_view': ('agent.context_compressor', 'user_originated_turn_view'),
-}
-
-
-def __getattr__(name):  # PEP 562 — lazy so no import cycles
-    target = _PLUGIN_COMPAT_LAZY.get(name)
-    if target is None:
-        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-    import importlib
-    from hermes_cli.plugin_compat import warn_once
-    warn_once(__name__, name, *target)
-    return getattr(importlib.import_module(target[0]), target[1])
-# ---- END PLUGIN-COMPAT ----
+    raise SystemExit(_legacy_cli_main(run=main))

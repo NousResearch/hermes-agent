@@ -138,7 +138,11 @@ def test_desktop_ticker_gates_on_profile_gateway_running(tmp_path, monkeypatch, 
 
     web_server._start_desktop_cron_ticker(threading.Event(), interval=0)
 
-    assert captured.get("profile_homes") == homes
+    # The Desktop hands the scheduler a live enumerator, not a startup snapshot,
+    # so profiles created or deleted while the app runs are picked up per tick.
+    profile_homes = captured.get("profile_homes")
+    assert callable(profile_homes)
+    assert profile_homes() == homes
     gate = captured.get("profile_gate")
     assert gate is not None, "desktop ticker did not install a profile gate"
     for name, home in homes:
@@ -150,3 +154,151 @@ def test_desktop_ticker_gates_on_profile_gateway_running(tmp_path, monkeypatch, 
     assert all(gate(name, home) for name, home in homes)
     running.update(home for _, home in homes)
     assert not any(gate(name, home) for name, home in homes)
+
+
+def test_a_routed_profile_fire_runs_under_multiplex_semantics_for_exactly_its_scope(tmp_path, monkeypatch):
+    """The desktop ticker fires a SIBLING profile's job from a process that is not a multiplexer.
+    The tick only MARKS the fire as routed; multiplex semantics switch on where run_one_job
+    installs the profile's secret scope and off with it — so the routed .env stays out of the
+    shared os.environ, a scope miss never falls back to the launch profile's credentials, and
+    the parent process env is byte-identical after the tick (#107692)."""
+    import os
+
+    import cron.scheduler as scheduler
+    from agent import secret_scope
+    from cron.scheduler_provider import _profile_cron_scope, routed_profile_fire
+    from hermes_cli.env_loader import load_hermes_dotenv
+
+    launch, routed = tmp_path / "launch", tmp_path / "launch" / "profiles" / "ops"
+    for home in (launch, routed):
+        (home / "cron").mkdir(parents=True)
+    (launch / ".env").write_text("XAI_API_KEY=launch-key\nDISCORD_BOT_TOKEN=launch-bot\n", encoding="utf-8")
+    (routed / ".env").write_text("XAI_API_KEY=routed-key\nROUTED_ONLY=routed-only\n", encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(launch))
+    monkeypatch.setenv("XAI_API_KEY", "launch-key")
+    monkeypatch.setenv("DISCORD_BOT_TOKEN", "launch-bot")
+    monkeypatch.delenv("ROUTED_ONLY", raising=False)
+    secret_scope.set_multiplex_active(False)  # the desktop backend never sets the process flag
+    environ_before = dict(os.environ)
+
+    with _profile_cron_scope(routed):
+        # Before the scope exists — where run_one_job's restart-safe handoff runs — the marker is
+        # set, the semantics are not.
+        assert routed_profile_fire() is True
+        assert secret_scope.is_multiplex_active() is False
+
+        tokens = scheduler._install_fire_secret_scope()
+        try:
+            assert secret_scope.is_multiplex_active() is True
+            # The job's per-run dotenv reload, exactly as cron/scheduler does it: hydrate-only.
+            assert load_hermes_dotenv(hermes_home=routed, load_external_secrets=False) == []
+            assert secret_scope.get_secret("XAI_API_KEY") == "routed-key"
+            assert secret_scope.get_secret("DISCORD_BOT_TOKEN") is None  # never the launch bot
+        finally:
+            scheduler._reset_fire_secret_scope(tokens)
+        assert secret_scope.is_multiplex_active() is False  # off with the scope, not later
+
+    assert routed_profile_fire() is False
+    assert dict(os.environ) == environ_before
+
+
+@pytest.mark.parametrize(
+    ("routed_env_line", "expected"),
+    [
+        ("", "managed-key"),  # managed-only credential: resolvable, not absent
+        ("ORG_API_KEY=user-key\n", "managed-key"),  # managed-vs-user collision: policy wins
+    ],
+    ids=["managed-only", "managed-beats-user"],
+)
+def test_routed_fire_scope_carries_managed_env_authority(tmp_path, monkeypatch, routed_env_line, expected):
+    """Under multiplex semantics get_secret never falls back to os.environ, so the routed fire's
+    scope itself must carry the administrator-managed .env with the precedence _apply_managed_env
+    gives it in the launch process: a managed-only key is present and a managed value beats the
+    routed profile's own (#111187 review)."""
+    import cron.scheduler as scheduler
+    from agent import secret_scope
+    from cron.scheduler_provider import _profile_cron_scope
+    from hermes_cli import managed_scope
+
+    launch, routed = tmp_path / "launch", tmp_path / "launch" / "profiles" / "ops"
+    managed = tmp_path / "managed"
+    for home in (launch, routed, managed):
+        (home / "cron").mkdir(parents=True)
+    (routed / ".env").write_text(routed_env_line, encoding="utf-8")
+    (managed / ".env").write_text("ORG_API_KEY=managed-key\n", encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(launch))
+    monkeypatch.setenv("HERMES_MANAGED_DIR", str(managed))
+    monkeypatch.setenv("ORG_API_KEY", "managed-key")  # what _apply_managed_env left in the launch env
+    managed_scope.invalidate_managed_cache()
+    secret_scope.set_multiplex_active(False)
+
+    with _profile_cron_scope(routed):
+        tokens = scheduler._install_fire_secret_scope()
+        try:
+            assert secret_scope.is_multiplex_active() is True
+            assert secret_scope.get_secret("ORG_API_KEY") == expected
+        finally:
+            scheduler._reset_fire_secret_scope(tokens)
+
+
+def test_dashboard_run_now_isolates_a_sibling_profile_fire_like_the_ticker(tmp_path, monkeypatch):
+    """The dashboard's manual Run now binds the sibling profile through ``_cron_store_scope``, not the
+    ticker's ``_profile_cron_scope`` (#126982 review). Routed-fire detection follows the fire's HOME,
+    so this entry point gets the same isolation: the routed ``.env`` reaches the job but never the
+    shared ``os.environ``, the launch profile's own credential never reaches the routed job, and the
+    launch profile's own fire afterwards (A -> B -> A) keeps single-profile semantics."""
+    import os
+
+    import cron.scheduler as scheduler
+    import hermes_cli.web_server_cron as web_server_cron
+    from agent import secret_scope
+    from cron.jobs import create_job
+    from cron.scheduler_provider import InProcessCronScheduler
+    from hermes_cli import profiles
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+    launch = tmp_path / ".hermes"
+    routed = launch / "profiles" / "ops"
+    probe = tmp_path / "probe"
+    probe.mkdir()
+    for home in (launch, routed):
+        (home / "cron").mkdir(parents=True, exist_ok=True)
+        (home / "scripts").mkdir(parents=True, exist_ok=True)
+        (home / "config.yaml").write_text("model: test-model\n", encoding="utf-8")
+    (launch / ".env").write_text("LAUNCH_ONLY_SECRET=launch-secret\n", encoding="utf-8")
+    (routed / ".env").write_text("ROUTED_ONLY_SECRET=routed-secret\n", encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(launch))
+    monkeypatch.setenv("LAUNCH_ONLY_SECRET", "launch-secret")
+    monkeypatch.delenv("ROUTED_ONLY_SECRET", raising=False)
+    monkeypatch.setattr(profiles, "_get_default_hermes_home", lambda: launch)
+    monkeypatch.setattr(profiles, "_get_profiles_root", lambda: launch / "profiles")
+    monkeypatch.setattr(scheduler, "_hermes_home", None)
+    monkeypatch.setattr("cron.scheduler_provider.resolve_cron_scheduler", lambda: InProcessCronScheduler())
+    secret_scope.set_multiplex_active(False)  # the desktop backend never sets the process flag
+
+    def _job_for(home, name):
+        (home / "scripts" / f"{name}.sh").write_text(
+            "#!/usr/bin/env bash\n"
+            f'echo "${{ROUTED_ONLY_SECRET:-<unset>}}|${{LAUNCH_ONLY_SECRET:-<unset>}}" > "{probe / name}"\n',
+            encoding="utf-8")
+        token = set_hermes_home_override(str(home))
+        try:
+            return create_job(prompt=None, schedule="every 1h", script=f"{name}.sh",
+                              no_agent=True, deliver="local")["id"]
+        finally:
+            reset_hermes_home_override(token)
+
+    routed_job, launch_job = _job_for(routed, "routed"), _job_for(launch, "launch")
+    environ_before = dict(os.environ)
+
+    # B: the sibling profile, fired from the launch process's dashboard.
+    assert web_server_cron._fire_cron_job_for_profile("ops", routed_job) is True
+    assert (probe / "routed").read_text().strip() == "routed-secret|<unset>"
+    assert "ROUTED_ONLY_SECRET" not in os.environ
+    assert dict(os.environ) == environ_before
+    assert secret_scope.is_multiplex_active() is False
+
+    # A again: the launch profile's own fire is not routed and still sees its own env.
+    assert web_server_cron._fire_cron_job_for_profile("default", launch_job) is True
+    assert (probe / "launch").read_text().strip() == "<unset>|launch-secret"
+    assert "ROUTED_ONLY_SECRET" not in os.environ

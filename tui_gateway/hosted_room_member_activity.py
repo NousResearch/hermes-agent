@@ -23,7 +23,6 @@ KIND_BY_FRAME_TYPE: Mapping[str, str] = {
     "tool.start": "tool.started",
     "tool.complete": "tool.completed",
     "tool.output_risk": "tool.output_risk",
-    "approval.request": "request.opened",
     "message.delta": "message.delta",
     "message.interim": "message.interim",
     "reasoning.delta": "reasoning.delta",
@@ -42,20 +41,29 @@ def emit_room_member_activity(hosted_task: Mapping[str, Any], *, kind: str, payl
     return enqueue_plugin_stream_hook(HOOK_NAME, **coordinates, kind=kind, seq=seq, payload=dict(payload or {}))
 
 
+# Server→client request frames (``{"id": "srq-…", "method": …}``) that are member activity.
+KIND_BY_REQUEST_METHOD: Mapping[str, str] = {"approval": "request.opened"}
+
+
 def project_room_member_activity(frame: Mapping[str, Any], sessions: Mapping[str, Mapping[str, Any]]) -> bool:
-    """Fire the hook for an outgoing session event frame when its session is running a room turn."""
-    if frame.get("method") != "event":
-        return False
+    """Fire the hook for an outgoing session frame (event notification or server→client request) when its
+    session is running a room turn."""
     params = frame.get("params")
     if not isinstance(params, Mapping):
         return False
-    kind = KIND_BY_FRAME_TYPE.get(str(params.get("type") or ""))
+    if frame.get("method") == "event":
+        kind = KIND_BY_FRAME_TYPE.get(str(params.get("type") or ""))
+        payload = params.get("payload")
+    elif "id" in frame:
+        kind = KIND_BY_REQUEST_METHOD.get(str(frame.get("method") or ""))
+        payload = {k: v for k, v in params.items() if k != "session_id"}
+    else:
+        return False
     if kind is None:
         return False
     session = sessions.get(str(params.get("session_id") or ""))
     hosted_task = session.get("_hosted_room_task") if isinstance(session, Mapping) else None
     if not isinstance(hosted_task, Mapping):
         return False
-    payload = params.get("payload")
     return emit_room_member_activity(
         hosted_task, kind=kind, payload=payload if isinstance(payload, Mapping) else None, seq=params.get("seq"))

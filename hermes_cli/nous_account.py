@@ -74,7 +74,14 @@ FREE_TIER_NEEDS_ACCOUNT_CHAT = "This needs a Nous account. Use /login to sign in
 
 
 def _is_anonymous_tier(account_info: Optional["NousPortalAccountInfo"]) -> bool:
-    return account_info is not None and account_info.account_tier == _ANON_ACCOUNT_TIER
+    return account_info is not None and account_info.is_anonymous_tier
+
+
+def _normalize_tier(value: object) -> str:
+    """Tier claims arrive verbatim from the JWT claim or the account payload, neither of which
+    strips or casefolds. Compare them normalized so casing or padding can never turn the
+    anonymous tier into a registered one."""
+    return value.strip().lower() if isinstance(value, str) else ""
 
 
 @dataclass(frozen=True)
@@ -105,6 +112,9 @@ class NousPortalAccountInfo:
     error: Optional[str] = None
     # NAS account tier claim; ``"anonymous"`` is the free tier (no Nous account behind it).
     account_tier: Optional[str] = None
+    # Portal ``managed_tools`` (JWT claim and account API): the portal has enabled connectors for
+    # this account. ``None`` = the portal did not say (a token minted before the claim shipped).
+    managed_tools: Optional[bool] = None
 
     @property
     def is_paid(self) -> bool:
@@ -112,8 +122,9 @@ class NousPortalAccountInfo:
 
     @property
     def is_anonymous_tier(self) -> bool:
-        """The free tier: no Nous account, so no billing, credits, or entitlement to speak of."""
-        return self.account_tier == _ANON_ACCOUNT_TIER
+        """The free tier: no Nous account, so no billing, credits, or entitlement to speak of.
+        Compared case- and whitespace-insensitively — the claim is wire data."""
+        return _normalize_tier(self.account_tier) == _ANON_ACCOUNT_TIER
 
     @property
     def is_free_tier(self) -> bool:
@@ -128,6 +139,11 @@ class NousPortalAccountInfo:
         """Paid users are entitled everywhere; pool users only where ``coverage[category]`` is true."""
         ta = self.tool_access
         return self.paid_service_access is True or bool(ta and ta.enabled and ta.coverage.get(category) is True)
+
+    @property
+    def managed_tools_rolled_out(self) -> bool:
+        """Only a literal ``true`` from the portal counts; absent and unknown both read as out."""
+        return self.managed_tools is True
 
 
 def nous_portal_billing_url(account_info: Optional[NousPortalAccountInfo] = None) -> str:
@@ -365,7 +381,8 @@ def _fresh_account_info(state: dict[str, Any], force_fresh: bool, portal_base_ur
                 _account_info_cache = (cache_key, time.monotonic(), info)
         return info
     except Exception as exc:
-        return _error_info(error=exc, logged_in=bool(state.get("access_token")), portal_base_url=portal_base_url)
+        return _error_info(error=exc, logged_in=bool(state.get("access_token")),
+                           portal_base_url=portal_base_url, account_tier=_coerce_str(state.get("account_tier")))
 
 
 def _info_from_inference_key_pool(portal_base_url: Optional[str]) -> Optional[NousPortalAccountInfo]:
@@ -412,7 +429,8 @@ def _info_from_oauth_pool(
     try:
         return _info_from_fetched_account(access_token, state, entry_portal_url)
     except Exception as exc:
-        return _error_info(error=exc, logged_in=True, portal_base_url=entry_portal_url)
+        return _error_info(error=exc, logged_in=True, portal_base_url=entry_portal_url,
+                           account_tier=_coerce_str(state.get("account_tier")))
 
 
 def _info_from_fetched_account(
@@ -420,12 +438,14 @@ def _info_from_fetched_account(
 ) -> NousPortalAccountInfo:
     """Call ``/api/oauth/account`` and normalize; empty or ``error`` payloads become error infos."""
     payload = _fetch_nous_account_info(access_token, portal_base_url)
+    tier = _coerce_str(state.get("account_tier"))
     if not payload:
-        return _error_info(error="empty_account_response", logged_in=True, portal_base_url=portal_base_url)
+        return _error_info(error="empty_account_response", logged_in=True,
+                           portal_base_url=portal_base_url, account_tier=tier)
     if isinstance(payload.get("error"), str):
         return _error_info(
             error=payload["error"] or "account_response_error", logged_in=True,
-            portal_base_url=portal_base_url, raw_account=payload,
+            portal_base_url=portal_base_url, raw_account=payload, account_tier=tier,
         )
     return _info_from_account_payload(payload, state=state, portal_base_url=portal_base_url)
 
@@ -503,6 +523,7 @@ def _info_from_valid_jwt(
         tool_access=_tool_access_from_value(claims.get("tool_access")),
         raw_claims=dict(claims),
         account_tier=_coerce_str(claims.get("account_tier")) or _coerce_str(state.get("account_tier")),
+        managed_tools=_coerce_bool(claims.get("managed_tools")),
     )
 
 
@@ -533,6 +554,7 @@ def _info_from_account_payload(
         raw_account=dict(payload),
         account_tier=_coerce_str(payload.get("account_tier")) or _coerce_str(user.get("account_tier"))
         or _coerce_str(state.get("account_tier")),
+        managed_tools=_coerce_bool(payload.get("managed_tools")),
     )
 
 
@@ -558,11 +580,14 @@ def _subscription_from_payload(value: Any) -> Optional[NousPortalSubscriptionInf
 
 
 def _error_info(
-    *, error: object, logged_in: bool, portal_base_url: Optional[str] = None, raw_account: Optional[dict[str, Any]] = None
+    *, error: object, logged_in: bool, portal_base_url: Optional[str] = None,
+    raw_account: Optional[dict[str, Any]] = None, account_tier: Optional[str] = None,
 ) -> NousPortalAccountInfo:
+    """A failed-lookup snapshot. ``account_tier`` is carried through when the caller still holds the
+    stored state: without it a guest whose lookup failed reads as a registered identity."""
     return NousPortalAccountInfo(
         logged_in=logged_in, source="error", fresh=False, portal_base_url=portal_base_url,
-        raw_account=raw_account, error=str(error),
+        raw_account=raw_account, error=str(error), account_tier=account_tier,
     )
 
 
@@ -572,6 +597,12 @@ def _nonblank(value: Any) -> bool:
 
 def _dict_or_empty(value: Any) -> dict[str, Any]:
     return value if isinstance(value, dict) else {}
+
+
+def resolve_nous_portal_base_url() -> str:
+    from hermes_cli.auth import _nous_portal_base_url, get_provider_auth_state
+
+    return _nous_portal_base_url(get_provider_auth_state("nous") or {})
 
 
 def _portal_base_url(state: dict[str, Any]) -> Optional[str]:

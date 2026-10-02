@@ -949,6 +949,7 @@ async def test_queued_room_note_uses_current_state_for_next_turn(tmp_path):
 async def test_room_state_note_reaches_queued_follow_up_and_its_saved_row(tmp_path):
     from gateway.platforms.event import MessageEvent
     from gateway.run import GatewayRunner
+    from gateway.turn_context import TurnContext
 
     store, source = _room_session(tmp_path)
     entry = store.get_or_create_session(source)
@@ -961,8 +962,6 @@ async def test_room_state_note_reaches_queued_follow_up_and_its_saved_row(tmp_pa
     runner._delivery_adapter_for = lambda source: None
     runner._refresh_agent_cache_message_count = AsyncMock()
     pending = MessageEvent(text="queued", source=source, message_id="$queued")
-    from gateway.turn_context import TurnContext
-
     turn_ctx = TurnContext(
         source=source, session_id=entry.session_id, session_key=entry.session_key, run_generation=1,
         _interrupt_depth=0, history=[], _status_thread_metadata=None, context_prompt=None,

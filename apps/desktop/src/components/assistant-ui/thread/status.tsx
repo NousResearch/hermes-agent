@@ -323,12 +323,14 @@ export const TurnActivityIndicator: FC = () => {
   // (`todo`, reactions) render nothing, so they narrate nothing.
   const toolNarrating = useAuiState(s => toolNarratesWait(s.message.content))
 
-  // Streaming counts as working too, and it leads busy by a flush on the first
-  // turn of a fresh chat — so the row can't wait for the store to catch up.
+  // Streaming can lead busy by one view flush on the first turn of a fresh
+  // chat. Honor that lead only while this session still has an armed turn
+  // clock: a pending bubble can outlive the backend's busy=false settle and
+  // must not keep its tail timer running after the turn ends.
   const messageRunning = useAuiState(s => s.message.status?.type === 'running')
+  const working = busy || (messageRunning && turnStartedAt !== undefined)
 
   // Renderer-synthesized load bar (see ResponseLoadingIndicator).
-  const working = busy || messageRunning
   const localLoad = useLocalModelLoad(working && !hint && !toolNarrating)
 
   useEffect(() => {

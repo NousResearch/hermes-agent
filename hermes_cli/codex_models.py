@@ -8,7 +8,10 @@ import os
 from pathlib import Path
 from typing import List, Optional
 
+from hermes_cli.route_identity import normalize_route_base_url
+
 logger = logging.getLogger(__name__)
+
 
 # Curated offline fallback (first-run, transient API failure). Only slugs the ChatGPT Codex
 # OAuth backend actually accepts: the public API's "-pro" variants and the retired
@@ -106,25 +109,28 @@ def codex_catalog_credential_identity() -> str:
     """Identity of the credential live discovery would use right now, for the catalog cache key.
 
     Access/refresh tokens rotate in place while the account-scoped catalog stays authoritative for
-    the same ChatGPT principal, so the key is ``(chatgpt_account_id, sub)``, not the token. An
-    expired token is its own state: ``_codex_catalog`` serves the static fallback for it, and that
-    fallback must not outlive the refresh under the healthy principal's key. Opaque non-JWT tokens
+    the same ChatGPT principal and route, so the key includes the principal and resolved base URL,
+    not the rotating token. An expired token is its own state (per route): ``_codex_catalog`` serves
+    the static fallback for it, and that fallback must not outlive the refresh under the healthy
+    principal's key. Opaque non-JWT tokens
     fall back to the token itself (the caller hashes every part before anything is persisted).
     """
     from hermes_cli.auth import _codex_access_token_is_expiring, resolve_codex_runtime_credentials
 
     try:
-        token = str(resolve_codex_runtime_credentials(read_only=True).get("api_key") or "")
+        creds = resolve_codex_runtime_credentials(read_only=True)
+        token = str(creds.get("api_key") or "")
+        route = normalize_route_base_url(str(creds.get("base_url") or "").strip())
     except Exception:  # AuthError (no/exhausted creds) or the pytest seat belt: no live catalog either way
         token = ""
     if not token:
         return "missing"
     if _codex_access_token_is_expiring(token, 0):
-        return "expired"
+        return "expired\n" + route
     from agent.credential_pool import _codex_principal_identity
 
     principal = _codex_principal_identity(token)
-    return "/".join(principal) if principal else token
+    return ("/".join(principal) if principal else token) + "\n" + route
 
 
 def _ranked_slugs(entries: object) -> List[str]:
@@ -209,13 +215,18 @@ def get_codex_model_ids(access_token: Optional[str] = None, base_url: Optional[s
     """Available Codex model IDs: live API (if token) > config.toml default > local cache > defaults.
 
     Pass the ``base_url`` resolved together with ``access_token`` (runtime/pool route) so live
-    discovery asks the credential's own host."""
+    discovery asks the credential's own host. Without a live answer the result is
+    ``CuratedFallbackModels``: a cache placeholder that never replaces a verified catalog, since
+    account-gated rows such as Astra are absent from the offline hints."""
     codex_home = Path(os.getenv("CODEX_HOME", "").strip() or str(Path.home() / ".codex")).expanduser()
     if access_token:
         api_models = _fetch_models_from_api(access_token, base_url=base_url)
         if api_models:
             return _finalize_codex_models(api_models)
+    # Late: models_catalog_static builds its codex table from this module at import time.
+    from hermes_cli.models_catalog_static import CuratedFallbackModels
+
     default_model = _read_default_model(codex_home)
-    return _finalize_codex_models(_drop_undiscovered_astra(_dedupe([
+    return CuratedFallbackModels(_finalize_codex_models(_drop_undiscovered_astra(_dedupe([
         *([default_model] if default_model else []), *_read_cache_models(codex_home),
-        *DEFAULT_CODEX_MODELS])))
+        *DEFAULT_CODEX_MODELS]))))

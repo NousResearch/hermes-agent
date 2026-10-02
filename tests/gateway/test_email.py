@@ -1300,5 +1300,28 @@ class TestSenderAuthentication(unittest.TestCase):
         self.assertFalse(ok, reason)
 
 
+def test_oversized_cron_output_is_delivered_as_one_whole_email():
+    """No 4000-char truncation footer pointing at a file on the gateway host: the router hands
+    the whole cron payload to the email adapter, which sends it as a single message."""
+    import asyncio
+    from gateway.config import GatewayConfig, PlatformConfig
+    from gateway.delivery import DeliveryRouter
+
+    with patch.dict(os.environ, {"EMAIL_ADDRESS": "hermes@test.com", "EMAIL_PASSWORD": "secret",
+                                 "EMAIL_IMAP_HOST": "imap.test.com", "EMAIL_SMTP_HOST": "smtp.test.com"}):
+        from plugins.platforms.email.adapter import EmailAdapter
+        adapter = EmailAdapter(PlatformConfig(enabled=True))
+    sent = []
+    smtp = MagicMock()
+    smtp.send_message.side_effect = lambda msg: sent.append(msg.get_payload()[0].get_payload(decode=True).decode())
+    adapter._connect_smtp = lambda: smtp
+    content = "\n\n".join(f"line {i} " + "x" * 200 for i in range(60))
+    payload = DeliveryRouter(GatewayConfig())._cap_oversized_output(adapter, content, "job")
+    result = asyncio.run(adapter.send("user@test.com", payload))
+
+    assert result.success
+    assert sent == [content]
+
+
 if __name__ == "__main__":
     unittest.main()

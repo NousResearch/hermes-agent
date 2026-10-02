@@ -104,17 +104,14 @@ IMG_URL = taskmod.IMG_URL
 
 _clarify_answers = list(TASK.get("clarify_answers") or [])
 
-def clarify_cb(question, choices, multi_select=False):
-    CALLBACK_LOG.append({"name": "clarify", "question": question, "choices": choices})
-    if _clarify_answers:
-        ans = _clarify_answers.pop(0)
-    else:
-        ans = "Use your best judgement."
-    if choices:
-        for c in choices:
-            if ans.lower() in str(c).lower():
-                return str(c)
-    return ans
+def clarify_cb(questions):
+    answers = {}
+    for entry in questions:
+        CALLBACK_LOG.append({"name": "clarify", "question": entry["question"], "choices": entry["choices"]})
+        ans = _clarify_answers.pop(0) if _clarify_answers else "Use your best judgement."
+        match = next((str(c) for c in entry["choices"] or [] if ans.lower() in str(c).lower()), None)
+        answers[entry["qid"]] = match or ans
+    return {"answers": answers, "outcome": "submitted"}
 
 def tour_cb(payload):
     CALLBACK_LOG.append({"name": "tour", "payload": payload})

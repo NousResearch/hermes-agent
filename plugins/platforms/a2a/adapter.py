@@ -330,6 +330,10 @@ class A2AAdapter(BasePlatformAdapter):
         self._mark_connected()
         logger.info("A2A: serving Agent Card + JSON-RPC on http://%s:%s (%s) as %r; %d routed agent(s)", self.host, self.port,
                     "localhost-only" if self._security_context.localhost_only() else "REMOTE (bearer auth)", self.agent_name, len(self._agents))
+        sec = self._security_context
+        if sec.dispatch_fails_closed():
+            logger.error("A2A: exposed on non-loopback bind %s with no A2A_TRUSTED_PEERS; every dispatch will be refused (403). "
+                         "Set A2A_TRUSTED_PEERS, or A2A_ALLOW_ALL_USERS=true for a trusted network.", self.host)
         self._wire_plugin_handlers(None)  # plugin-registered native handlers
         return True
 

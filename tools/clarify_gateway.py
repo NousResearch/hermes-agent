@@ -41,6 +41,9 @@ TEXT_RESOLVED = "resolved"
 TEXT_REJECTED_PROSE = "rejected_prose"
 TEXT_REJECTED_SELECTION = "rejected_selection"
 TEXT_NO_PENDING = "no_pending"
+SKIP_WORD = "skip"
+SKIPPED = "\x00skipped"
+CANCELLED = "\x00cancelled"
 
 
 def register(clarify_id: str, session_key: str, question: str, choices: Optional[List[str]],
@@ -167,8 +170,9 @@ def _coerce_text_response_detailed(entry: _ClarifyEntry, response: str) -> tuple
     ``awaiting_text`` accept any text; numeric picks and exact labels always resolve; multi-select
     returns a JSON array string (decoded tool-side); one bad token rejects the whole reply."""
     text = str(response).strip()
+    is_skip = text.casefold() == SKIP_WORD
     if not entry.choices:
-        return text, None
+        return (SKIPPED if is_skip else text), None
     if entry.multi_select:
         coerced = _coerce_multi_select_text(entry, text)
         selection_shaped = _selection_attempt_tokens(text, entry.choices) is not None
@@ -179,6 +183,8 @@ def _coerce_text_response_detailed(entry: _ClarifyEntry, response: str) -> tuple
         coerced = entry.choices[idx] if 0 <= idx < len(entry.choices) else _match_label(text, entry.choices)
     if coerced is not None:
         return coerced, None
+    if is_skip:
+        return SKIPPED, None
     if entry.awaiting_text:
         return text, None
     return None, "invalid_selection" if selection_shaped else "prose"
@@ -239,9 +245,7 @@ def has_pending(session_key: str) -> bool:
 
 def clear_session(session_key: str) -> int:
     """Drop every pending clarify for a session (``/new``, shutdown, cached-agent eviction) so
-    blocked agent threads don't outlive it; returns how many were cancelled. Cancelled waiters
-    see "" (callers tell it from a real reply only via their own timeout bookkeeping; most treat
-    any falsy result as no response). First-writer-wins: an already-set entry was answered for
+    blocked agent threads don't outlive it; returns how many were cancelled. First-writer-wins: an already-set entry was answered for
     real, so it is dropped but its response preserved. The loop stays inside the lock so a button
     callback cannot slip between pop and check; entries go regardless of state so a cleared
     session is never resurrected by late callbacks."""
@@ -250,7 +254,7 @@ def clear_session(session_key: str) -> int:
         for entry in (_entries.pop(cid, None) for cid in list(_session_index.pop(session_key, []) or [])):
             if entry is None or entry.event.is_set():
                 continue
-            entry.response = ""
+            entry.response = CANCELLED
             entry.event.set()
             cancelled += 1
     return cancelled

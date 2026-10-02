@@ -67,7 +67,7 @@ def test_plugins_manage_list_reports_desktop_half(tmp_path):
     with patch("hermes_cli.plugins_cmd._discover_all_plugins", return_value=rows), \
          patch("hermes_cli.plugins_cmd._get_enabled_set", return_value=set()), \
          patch("hermes_cli.plugins_cmd._get_disabled_set", return_value=set()), \
-         patch("hermes_cli.plugins_cmd_catalog.catalog_pins", return_value={}):
+         patch("hermes_cli.plugins_cmd_catalog.catalog_rows_maps", return_value=({}, {}, {})):
         resp = server.handle_request({"id": "1", "method": "plugins.manage", "params": {"action": "list"}})
 
     by_name = {r["name"]: r for r in resp["result"]["plugins"]}
@@ -113,8 +113,6 @@ def test_plugins_manage_list_resolves_the_live_catalog_once_per_listing(tmp_path
     with patch.object(plugins_cmd, "_discover_all_plugins", return_value=rows), \
          patch.object(plugins_cmd, "_get_enabled_set", return_value=set()), \
          patch.object(plugins_cmd, "_get_disabled_set", return_value=set()), \
-         patch.object(plugins_cmd_catalog, "catalog_pins", return_value={}), \
-         patch.object(plugins_cmd_catalog, "catalog_versions", return_value={}), \
          patch.object(plugins_cmd_catalog, "catalog_install_record",
                       side_effect=lambda d: {"catalog_name": f"example-{d.name.removeprefix('plug')}"}), \
          patch.object(plugin_catalog, "load_catalog_live", side_effect=counting_load), \

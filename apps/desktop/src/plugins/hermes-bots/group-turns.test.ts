@@ -614,7 +614,11 @@ describe('clarify and approvals (#90694)', () => {
   const CLARIFY = {
     id: 'req-clarify-1',
     method: 'clarify',
-    params: { choices: ['staging', 'prod'], multi_select: false, question: 'Which env should I target?' }
+    params: {
+      questions: [
+        { choices: ['staging', 'prod'], multi_select: false, qid: 'q0', question: 'Which env should I target?' }
+      ]
+    }
   }
 
   const APPROVAL = {
@@ -673,8 +677,7 @@ describe('clarify and approvals (#90694)', () => {
 
     expect(mirrored).toHaveLength(1)
     expect(mirrored[0].requestId).toBe('req-clarify-1')
-    expect(mirrored[0].question).toBe('Which env should I target?')
-    expect(mirrored[0].choices).toEqual(['staging', 'prod'])
+    expect(mirrored[0]).toMatchObject({ kind: 'clarify', questions: CLARIFY.params.questions })
     // Badge is derived from $groupClarify, not a copy — nothing writes
     // $groupNeedsYou here, so there is nothing to keep in sync.
     expect(turns.groupHasPendingClarify(chat.$groupClarify.get(), 'Core')).toBe(true)
@@ -696,19 +699,6 @@ describe('clarify and approvals (#90694)', () => {
 
     expect(turns.syncGroupClarify('Core', { name: 'research' }, 't1', { messages: [] })).toBe(false)
     expect(Object.keys(chat.$groupClarify.get())).toHaveLength(0)
-  })
-
-  it('answers the open request by id through request.answer and clears the mirror', async () => {
-    const room = await loadRoom()
-    const member: GroupMember = { name: 'research', title: '' }
-
-    room.turns.syncGroupClarify('Core', member, 't1', { open_requests: [CLARIFY] })
-    await room.turns.answerGroupClarify(Object.values(room.chat.$groupClarify.get())[0], member, 'staging')
-
-    expect(room.gateway.rpcFor('request.answer').map(call => call.params)).toEqual([
-      { id: 'req-clarify-1', result: { answer: 'staging' } }
-    ])
-    expect(Object.keys(room.chat.$groupClarify.get())).toHaveLength(0)
   })
 
   it('locks one batch question per clarify.lock call, in order', async () => {
@@ -811,7 +801,7 @@ describe('clarify and approvals (#90694)', () => {
             submitted = true
           }
 
-          if (method === 'request.answer') {
+          if (method === 'clarify.lock') {
             answered = true
           }
 
@@ -855,7 +845,7 @@ describe('clarify and approvals (#90694)', () => {
           await mirrored
           const [prompt] = Object.values(room.chat.$groupClarify.get())
           const correctRoom = prompt.group
-          await room.turns.answerGroupClarify(prompt, member, 'staging')
+          await room.turns.answerGroupClarify(prompt, member, { q0: 'staging' })
           await drive
           expect(correctRoom).toBe('Renamed')
           expect(Object.keys(room.chat.$groupChats.get())).toEqual(['Renamed'])
@@ -1131,11 +1121,13 @@ describe('clarify and approvals (#90694)', () => {
 
     const entry = Object.values(chat.$groupClarify.get())[0]
 
-    expect(entry.kind).toBe('approval')
-    expect(entry.command).toBe('rm -rf ./build')
-    expect(entry.question).toBe('Clean the build directory')
-    expect(entry.choices).toEqual(['once', 'session', 'deny'])
-    expect(entry.sessionId).toBe('rt-research-1')
+    expect(entry).toMatchObject({
+      choices: ['once', 'session', 'deny'],
+      command: 'rm -rf ./build',
+      kind: 'approval',
+      question: 'Clean the build directory',
+      sessionId: 'rt-research-1'
+    })
   })
 
   it('falls back to once/deny when the server sends no choice set', async () => {
@@ -1145,7 +1137,7 @@ describe('clarify and approvals (#90694)', () => {
       pending_approval: { command: 'ls', request_id: 'req-a2' }
     })
 
-    expect(Object.values(chat.$groupClarify.get())[0].choices).toEqual(['once', 'deny'])
+    expect(Object.values(chat.$groupClarify.get())[0]).toMatchObject({ choices: ['once', 'deny'] })
   })
 
   it('routes approvals through approval.respond with the session and choice', async () => {

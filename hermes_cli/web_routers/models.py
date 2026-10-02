@@ -327,6 +327,14 @@ async def set_model_assignment(body: ModelAssignment, profile: Optional[str] = N
         raise HTTPException(status_code=400, detail="scope must be 'main' or 'auxiliary'")
 
     with http_failure("POST /api/model/set failed", 500, detail="Failed to save model assignment"):
+        # #99859 (R2): the options picker already refuses on code skew; the WRITE path
+        # must too — a stale process persisting a post-update model string is the
+        # invalid-model-serving failure the reporter hit.
+        skew_msg = _dashboard_code_skew_guard()
+        if skew_msg:
+            _log.warning("POST /api/model/set refused: %s", skew_msg)
+            raise HTTPException(status_code=503, detail=f"Restart required: {skew_msg}")
+
         # Expensive-model warning runs BEFORE the profile scope is entered: _profile_scope
         # must never be held across an await (the RLock is reentrant per-thread, so a second
         # coroutine interleaving on the event-loop thread could cross-restore module globals).

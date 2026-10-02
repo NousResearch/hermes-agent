@@ -376,7 +376,7 @@ def _nous_shared_store_lock(timeout_seconds: float = AUTH_LOCK_TIMEOUT_SECONDS):
         return
     with _file_lock(
         lock_path, _nous_shared_lock_holder, timeout_seconds,
-        "Timed out waiting for shared Nous auth lock"):
+        f"Timed out waiting for shared Nous auth lock ({lock_path})"):
         yield
 
 

@@ -602,8 +602,8 @@ def _route_model_for_banner(provider: Any) -> str:
     no network. Empty when nothing resolves, so the caller keeps its "no model configured" line."""
     if (provider or "auto").strip().lower() not in ("auto", "nous"):
         return ""
-    from hermes_cli.anon_auth import GUEST_MODEL, guest_carries_inference
-    return GUEST_MODEL if guest_carries_inference() else ""
+    from hermes_cli.anon_auth import GUEST_MODEL, free_tier_route
+    return GUEST_MODEL if free_tier_route() else ""
 
 
 def _banner_left_lines(model: str, cwd: str, session_id, context_length, provider, *, accent: str, dim: str,

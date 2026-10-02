@@ -66,6 +66,19 @@ def hermes_home(tmp_path, monkeypatch):
     return home
 
 
+@pytest.fixture
+def liveness_clock(monkeypatch):
+    """Drive the router's liveness-check clock so tests can cross the recheck interval
+    without sleeping. Returns ``advance()``, which jumps past the interval."""
+    now = [1000.0]
+    monkeypatch.setattr(hermes_logging, "_monotonic", lambda: now[0])
+
+    def advance():
+        now[0] += hermes_logging._PROFILE_LIVENESS_RECHECK_S
+
+    return advance
+
+
 @pytest.mark.parametrize("mode,component", [("cli", None), ("gateway", "gateway.log"), ("gui", "gui.log")])
 @pytest.mark.parametrize("configured,explicit,minimum", [(None, None, logging.INFO), ("DEBUG", "WARNING", logging.WARNING), ("DEBUG", None, logging.DEBUG)])
 def test_repeated_setup_routes_records_once(hermes_home, mode, component, configured, explicit, minimum):
@@ -278,8 +291,166 @@ class TestSetupLogging:
         assert "gw-a" in a_log and "gw-b" not in a_log
         assert "gw-b" in (profile_home / "logs" / "gateway.log").read_text()
 
+    def test_profile_routing_falls_back_when_profile_home_deleted(
+        self, hermes_home, tmp_path, capsys
+    ):
+        """A profile deleted underneath a long-lived dashboard must not loop.
 
+        ``_profile_homes`` is a startup snapshot, so a ``hermes profile delete``
+        leaves the routing set naming a home whose directory no longer exists.
+        Records for that home must fall back to the default home instead of
+        retrying (and stderr-spamming) the vanished logs/ path on every record
+        (#103777).
+        """
+        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
 
+        profile_home = tmp_path / "profile-deleted"
+        profile_home.mkdir()
+        hermes_logging.setup_logging(hermes_home=hermes_home)
+        assert hermes_logging.enable_profile_log_routing(
+            [hermes_home, profile_home]
+        ) is True
+
+        logger = logging.getLogger("cron.scheduler.profile-routing-deleted-test")
+        # The default home's agent.log must exist before the fallback assertion
+        # can mean anything (lazy-opening handlers may not have created it yet).
+        logger.info("routing fallback default-home probe record")
+        hermes_logging.flush_log_queue()
+        default_log = hermes_home / "logs" / "agent.log"
+        assert "default-home probe record" in default_log.read_text()
+
+        token = set_hermes_home_override(profile_home)
+        try:
+            logger.info("profile-routed record before deletion")
+        finally:
+            reset_hermes_home_override(token)
+        hermes_logging.flush_log_queue()
+        assert "record before deletion" in (
+            profile_home / "logs" / "agent.log"
+        ).read_text()
+
+        # `hermes profile delete` removes the home while the dashboard process
+        # (and its static routing snapshot) keeps running.
+        import shutil
+
+        shutil.rmtree(profile_home)
+
+        token = set_hermes_home_override(profile_home)
+        try:
+            logger.info("profile-routed record after deletion")
+        finally:
+            reset_hermes_home_override(token)
+        hermes_logging.flush_log_queue()
+
+        assert "record after deletion" in default_log.read_text()
+        # The deleted profile's directory must not be resurrected on disk.
+        assert not profile_home.exists()
+        # No "--- Logging error ---" FileNotFoundError loop on stderr.
+        assert "FileNotFoundError" not in capsys.readouterr().err
+
+    @pytest.mark.parametrize("removal", ["tombstone", "rmtree", "logs-only"])
+    def test_out_of_band_profile_delete_releases_routed_handler(
+        self, hermes_home, capsys, liveness_clock, removal
+    ):
+        """A CLI delete tombstones then removes the home behind a running serve: the router must
+        stop writing there on either signal alone and close the stale file, like an in-process
+        delete. The rmtree case has no tombstone so it exercises the missing-dir branch; logs-only
+        removes just logs/ of a live profile, whose records must still land somewhere."""
+        import shutil
+
+        from hermes_constants import (
+            mark_named_profile_deleted, reset_hermes_home_override, set_hermes_home_override,
+        )
+
+        profile_home = (hermes_home / "profiles" / "worker").resolve()
+        profile_home.mkdir(parents=True)
+        hermes_logging.setup_logging(hermes_home=hermes_home)
+        assert hermes_logging.enable_profile_log_routing([hermes_home, profile_home]) is True
+        logger = logging.getLogger("cron.scheduler.out-of-band-delete-test")
+
+        def emit(message):
+            token = set_hermes_home_override(profile_home)
+            try:
+                logger.warning(message)
+            finally:
+                reset_hermes_home_override(token)
+            hermes_logging.flush_log_queue()
+
+        emit("before delete")
+        routed = [h._profile_handlers[profile_home] for h in hermes_logging._queued_file_handlers
+                  if isinstance(h, hermes_logging._ProfileRoutingFileHandler)]
+        assert routed
+        if removal == "tombstone":
+            mark_named_profile_deleted(profile_home)
+            liveness_clock()  # a tombstone alone is seen on the next interval check
+        elif removal == "rmtree":
+            shutil.rmtree(profile_home)  # caught by the write itself, inside the interval
+        else:
+            shutil.rmtree(profile_home / "logs")
+        capsys.readouterr()
+        for i in range(3):
+            emit(f"after delete {i}")
+
+        assert "Logging error" not in capsys.readouterr().err
+        assert all(h.stream is None or h.stream.closed for h in routed), "stale profile log fd kept open"
+        default_log = (hermes_home / "logs" / "agent.log").read_text(encoding="utf-8-sig")
+        assert all(f"after delete {i}" in default_log for i in range(3))
+        profile_log = profile_home / "logs" / "agent.log"
+        assert not profile_log.exists() or "after delete" not in profile_log.read_text(encoding="utf-8-sig")
+
+    @pytest.mark.parametrize("stream_closed_after_write", [False, True], ids=["kept-open", "closed-per-write"])
+    def test_live_profile_liveness_checked_at_most_once_per_interval(
+        self, hermes_home, liveness_clock, monkeypatch, stream_closed_after_write
+    ):
+        """A live routed profile must not pay the delete check (two stats) on every record.
+
+        ``closed-per-write`` is how concurrent-log-handler behaves on Windows: the stream is
+        closed after every write, which must not read as a skipped write.
+        """
+        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+        if stream_closed_after_write:
+            real_emit = hermes_logging._ManagedRotatingFileHandler.emit
+
+            def emit_then_close(handler, record):
+                real_emit(handler, record)
+                if handler.stream is not None:
+                    handler.stream.close()
+                    handler.stream = None
+
+            monkeypatch.setattr(hermes_logging._ManagedRotatingFileHandler, "emit", emit_then_close)
+
+        profile_home = (hermes_home / "profiles" / "worker").resolve()
+        profile_home.mkdir(parents=True)
+        hermes_logging.setup_logging(hermes_home=hermes_home)
+        assert hermes_logging.enable_profile_log_routing([hermes_home, profile_home]) is True
+        logger = logging.getLogger("cron.scheduler.liveness-rate-limit-test")
+        calls = []
+        real = hermes_logging.named_profile_is_deleted
+
+        def counting(home):
+            calls.append(home)
+            return real(home)
+
+        def emit_many(n):
+            token = set_hermes_home_override(profile_home)
+            try:
+                for i in range(n):
+                    logger.warning("live %d", i)
+            finally:
+                reset_hermes_home_override(token)
+            hermes_logging.flush_log_queue()
+
+        with patch.object(hermes_logging, "named_profile_is_deleted", counting):
+            emit_many(5)
+            first = len(calls)
+            liveness_clock()
+            emit_many(5)
+        routers = sum(isinstance(h, hermes_logging._ProfileRoutingFileHandler)
+                      for h in hermes_logging._queued_file_handlers)
+        assert routers and first == routers, "first sighting checks once per router, then rate-limits"
+        assert len(calls) == 2 * routers
+        assert "live 4" in (profile_home / "logs" / "agent.log").read_text(encoding="utf-8-sig")
 
     def test_explicit_params_override_config(self, hermes_home):
         """Explicit function params take precedence over config.yaml."""

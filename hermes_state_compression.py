@@ -75,6 +75,12 @@ def _claim_lease_row(conn, table: str, key_col: str, key: str, holder: str, now:
     return owner is not None and owner["holder"] == holder, reclaimed_holder
 
 
+# Defensive bound on the forward compression-chain walk; ``seen`` guards cycles.
+# 100 truncated real compression lineages (~180 deep), stranding root→tip walks
+# on a stale mid id (#125041). Named so tests can simulate the REAL walk.
+_CHAIN_CAP = 1000
+
+
 class SessionCompressionMixin:
     """Compression lineage, cooldown/streak counters, locks and turn leases."""
 
@@ -722,7 +728,10 @@ class SessionCompressionMixin:
         current = session_id
         chain = [current] if current else []
         seen = set(chain)
-        for _ in range(100):  # defensive bound; chains this deep are pathological
+        # Defensive bound; ``seen`` guards cycles. 100 truncated real
+        # compression lineages (~180 deep), stranding root→tip walks on a
+        # stale mid id (#125041).
+        for _ in range(_CHAIN_CAP):
             with self._read_ctx() as conn:
                 row = conn.execute(_CHAIN_STEP_SQL, (current,)).fetchone()
             child_id = row["id"] if row is not None else None

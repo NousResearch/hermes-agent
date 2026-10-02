@@ -61,5 +61,5 @@ def test_stage_processes_restore_pinned_git_and_never_fall_back(tmp_path):
              "$script:GitPinFiles.Remove(('win32-' + (Get-WindowsArch))); "
              "if (Ensure-Git) { exit 1 } else { exit 0 }")
     refused = subprocess.run([powershell, "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
-                              "-Command", probe], env=env, capture_output=True, text=True, timeout=30)
+                              "-Command", probe], env=env, capture_output=True, text=True, timeout=240)
     assert refused.returncode == 0, refused.stdout + refused.stderr

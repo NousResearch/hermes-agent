@@ -48,8 +48,11 @@ def _string_list(value: Any) -> List[str]:
 
 def _memory_provider_setup_manifest(name: str) -> tuple[dict, dict]:
     from hermes_cli.memory_setup import memory_provider_dependency_inputs
+    from plugins.memory import find_provider_dir
+    from pm.plugin_declarations import read_python_declaration
 
     manifest, inputs = memory_provider_dependency_inputs(name)
+    plugin_dir = find_provider_dir(name)
     external_dependencies: List[Dict[str, str]] = []
     for raw in manifest.get("external_dependencies") or []:
         if not isinstance(raw, dict):
@@ -58,9 +61,9 @@ def _memory_provider_setup_manifest(name: str) -> tuple[dict, dict]:
         if any(dep.values()):
             external_dependencies.append(dep)
     return {
-        # Display only; neither import names nor these labels determine readiness.
-        "pip_dependencies": list(dict.fromkeys(
-            _string_list(manifest.get("pip_dependencies")) + _string_list(manifest.get("python_dependencies")))),
+        # Display only; neither import names nor these labels determine readiness. Shown from the
+        # same declaration PM installs (an authored pyproject.toml wins over the manifest lists).
+        "pip_dependencies": list(read_python_declaration(plugin_dir).install_requirements) if plugin_dir else [],
         "python_dependencies_declared": bool(inputs),
         "external_dependencies": external_dependencies,
         "required_env": _string_list(manifest.get("requires_env")),

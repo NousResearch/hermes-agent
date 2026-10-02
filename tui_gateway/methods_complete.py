@@ -336,10 +336,31 @@ def _session_agent(params: dict):
     return session.get("agent") if session else None
 
 
+def _model_skew_err(rid) -> dict | None:
+    """#99859 (R2): refuse model-serving/holding RPCs when this process runs stale
+    code — the TUI/desktop would otherwise resolve a post-update model string against
+    stale cached modules (the reporter's agent_init_failed). Mirrors the dashboard's
+    ``_dashboard_code_skew_guard`` and the gateway's ``_model_switch_skew_guard``;
+    never a false positive (non-git installs detect nothing)."""
+    from gateway.code_skew import detect_code_skew
+
+    skew = detect_code_skew()
+    if not skew:
+        return None
+    boot_rev, disk_rev = skew
+    from agent.i18n import t
+
+    return _err(rid, 5098, t("gateway.model.error_prefix", error=t(
+        "gateway.model.err_skew", boot_rev=boot_rev, disk_rev=disk_rev)))
+
+
 @method("model.options")
 @_profile_scoped
 @_catch(5033)
 def _(rid, params: dict) -> dict:
+    skew = _model_skew_err(rid)
+    if skew is not None:
+        return skew
     from hermes_cli.inventory import build_model_options_payload
     # A spawned agent owns the live provider/model/base_url; empty attributes must
     # NOT clobber disk config (with_overrides is truthy-only).
@@ -353,6 +374,9 @@ def _(rid, params: dict) -> dict:
 @_catch(5034)
 def _(rid, params: dict) -> dict:
     """Save an API key for ``slug``; return its refreshed provider row (model.options shape + ``authenticated``)."""
+    skew = _model_skew_err(rid)
+    if skew is not None:
+        return skew
     from hermes_cli.auth import PROVIDER_REGISTRY
     from hermes_cli.config import is_managed
     slug, api_key = (params.get("slug") or "").strip(), (params.get("api_key") or "").strip()

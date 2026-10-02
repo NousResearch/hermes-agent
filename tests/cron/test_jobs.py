@@ -876,6 +876,59 @@ class TestMarkJobRun:
         assert updated["last_error"]
         assert "croniter" in updated["last_error"].lower()
 
+    def test_transient_croniter_import_error_not_latched(self, tmp_cron_dir, monkeypatch):
+        """Regression test for issue #127182.
+
+        A single transient croniter ImportError must not latch HAS_CRONITER=False for
+        the process lifetime: once the import succeeds again (wrong interpreter
+        restarted, shadowed path fixed), _ensure_croniter() has to report True again
+        so compute_next_run() and the due-scan recovery can re-arm recurring jobs
+        without a gateway restart.
+        """
+        pytest.importorskip("croniter")  # need it to make the import succeed again
+        import builtins
+
+        import cron.jobs as jobs_mod
+
+        job = create_job(prompt="Recurring", schedule="0 7,15,23 * * *")
+        assert job["schedule"]["kind"] == "cron"
+
+        # Simulate the transient failure window: the croniter import raises while patched in.
+        real_import = builtins.__import__
+
+        def failing_import(name, *args, **kwargs):
+            if name == "croniter":
+                raise ImportError("No module named 'croniter'")
+            return real_import(name, *args, **kwargs)
+
+        monkeypatch.setattr(builtins, "__import__", failing_import)
+        monkeypatch.setattr(jobs_mod, "croniter", None)
+        monkeypatch.setattr(jobs_mod, "HAS_CRONITER", None)
+        monkeypatch.setattr(jobs_mod, "_croniter_retry_at", 0.0)
+        assert jobs_mod._ensure_croniter() is False
+        assert jobs_mod.compute_next_run(job["schedule"]) is None
+        # The in-flight guard's cadence cache must not pin the import-failure None either.
+        import cron.scheduler as sched_mod
+        expr = job["schedule"]["expr"]
+        sched_mod._cron_interval_cache.pop(expr, None)
+        assert sched_mod._cron_interval_minutes(expr) is None
+        assert expr not in sched_mod._cron_interval_cache, "import-failure None was cached"
+        mark_job_run(job["id"], success=True)  # leaves state=error, next_run_at=None
+
+        # Window over (import works again); HAS_CRONITER is left untouched.
+        monkeypatch.setattr(builtins, "__import__", real_import)
+        # Inside the retry backoff the failed probe is not re-run on every call...
+        assert jobs_mod._ensure_croniter() is False
+        # ...but once the backoff elapses it is re-evaluated, not latched.
+        monkeypatch.setattr(jobs_mod, "_croniter_retry_at", 0.0)
+        assert jobs_mod._ensure_croniter() is True, (
+            "a transient ImportError was latched: every recurring job would stay "
+            "next_run_at=None until a gateway restart"
+        )
+        assert jobs_mod.compute_next_run(job["schedule"]) is not None
+        get_due_jobs()  # due-scan recovery re-arms the job
+        assert get_job(job["id"])["state"] == "scheduled"
+
 
 class TestAdvanceNextRun:
     """Tests for advance_next_run() — crash-safety for recurring jobs."""

@@ -113,17 +113,21 @@ method("config.set", params=ConfigSetParams, result=ConfigSetResult,
 
 class SetupStatusResult(Result):
     """``provider_configured`` is the loose answer; the boot record's fields (``ready``,
-    ``free_tier``, ``other_providers``, ``inference_provider``) ride along on the launch profile.
-    An unknown ``profile`` answers ``ok=False`` + ``error``."""
+    ``free_tier_account``, ``free_tier_route``, ``other_providers``, ``inference_provider``) ride along
+    on the launch profile. An unknown ``profile`` answers ``ok=False`` + ``error``."""
 
     provider_configured: bool | None = None
     ready: bool | None = None
-    free_tier: bool | None = None
+    free_tier_account: bool | None = None
+    free_tier_route: bool | None = None
     other_providers: bool | None = None
     inference_provider: str | None = None
     profile: str | None = None
     ok: bool | None = None
     error: str | None = None
+    error_code: str | None = None
+    retryable: bool | None = None
+    retry_after: int | None = None
 
 
 method("setup.status", params=ProfileParams, result=SetupStatusResult,
@@ -135,7 +139,7 @@ class SetupRuntimeCheckParams(ProfileParams):
 
 
 class SetupRuntimeCheckResult(Result):
-    """``ok=False`` + ``error`` when the resolved model can't be served; ``free_tier`` says the
+    """``ok=False`` + ``error`` when the resolved model can't be served; ``free_tier_route`` says the
     selected route is the welcome host."""
 
     ok: bool
@@ -143,7 +147,7 @@ class SetupRuntimeCheckResult(Result):
     model: str | None = None
     source: str | None = None
     error: str | None = None
-    free_tier: bool | None = None
+    free_tier_route: bool | None = None
     profile: str | None = None
 
 
@@ -179,7 +183,7 @@ method("diagnostics.share_nous", params=DiagnosticsShareNousParams, result=Diagn
 
 class FreeTierStatusResult(Result):
     """``available`` = an identity exists AND the tier is on; whether inference runs on it is
-    ``setup.runtime_check.free_tier``'s question."""
+    ``setup.runtime_check.free_tier_route``'s question."""
 
     has_guest: bool
     enabled: bool
@@ -187,6 +191,10 @@ class FreeTierStatusResult(Result):
     notice_pending: bool
     model: str
     label: str
+    error: str | None = None
+    error_code: str | None = None
+    retryable: bool | None = None
+    retry_after: int | None = None
 
 
 method("free_tier.status", params=ProfileParams, result=FreeTierStatusResult,
@@ -197,6 +205,9 @@ class FreeTierProvisionResult(Result):
     has_guest: bool
     enabled: bool
     error: str | None = None
+    error_code: str | None = None
+    retryable: bool | None = None
+    retry_after: int | None = None
 
 
 method("free_tier.provision", params=ProfileParams, result=FreeTierProvisionResult,

@@ -713,9 +713,39 @@ def curated_report() -> List[Dict[str, Any]]:
     return [_report_row(n, data.get(n), _persisted=n in data, provenance=provenance(n)) for n in sorted(names)]
 
 
+def is_external_only(skill_name: str) -> bool:
+    """Present under ``skills.external_dirs`` and NOT in the local store (the local copy wins on
+    name clashes, mirroring ``is_agent_created``'s external exclusion). An external-only skill is
+    externally authored: it was mounted, not learned."""
+    return (_find_skill_dir(skill_name) is None and _find_external_skill_dir(skill_name) is not None)
+
+
+def _external_skill_names() -> set:
+    """Frontmatter names of all skills under configured external dirs (one scan per call; the
+    router's set-based provenance uses this instead of a per-skill dir lookup)."""
+    from agent.skill_utils import get_all_skills_dirs
+    names: set = set()
+    for base in get_all_skills_dirs()[1:]:
+        if not base.exists():
+            continue
+        for skill_md in base.rglob("SKILL.md"):
+            if not is_excluded_skill_path(skill_md):
+                names.add(_read_skill_name(skill_md, fallback=skill_md.parent.name))
+    return names
+
+
 def provenance(skill_name: str) -> str:
-    """'hub' | 'bundled' | 'agent' (the latter also covers local manually-authored skills)."""
-    return "hub" if is_hub_installed(skill_name) else "bundled" if is_bundled(skill_name) else "agent"
+    """'hub' | 'bundled' | 'external' | 'agent'.
+
+    'external' covers skills mounted from ``skills.external_dirs`` and absent from the local
+    store — externally authored, not learned from the user (#108032). 'agent' keeps covering
+    agent-authored AND local hand-made skills — the ones the user may edit/delete from the UI
+    (external skills stay foreground-editable in place by design, commit 8c8fc6c1ec; the label
+    split is about origin, not mutability)."""
+    return ("hub" if is_hub_installed(skill_name)
+            else "bundled" if is_bundled(skill_name)
+            else "external" if is_external_only(skill_name)
+            else "agent")
 
 
 def usage_report() -> List[Dict[str, Any]]:

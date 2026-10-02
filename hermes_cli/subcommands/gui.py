@@ -54,4 +54,9 @@ def build_gui_parser(subparsers, *, cmd_gui: Callable) -> None:
         "--identity", default="Hermes Local Signing",
         help="Certificate name to create/use for --setup-tcc-identity (default: Hermes Local Signing)",
     )
+    gui_parser.add_argument(
+        "--close-preview",
+        action="store_true",
+        help="Close the preview pane and exit its fullscreen (out-of-band escape hatch when the pane captured all input)",
+    )
     gui_parser.set_defaults(func=cmd_gui)

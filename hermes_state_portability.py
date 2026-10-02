@@ -11,11 +11,11 @@ from collections import Counter
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
-from agent.skill_commands import SKILL_SCAFFOLD_SQL_LIKE
+from agent.skill_commands import AUTO_LOAD_SCAFFOLD_SQL_LIKE, SKILL_SCAFFOLD_SQL_LIKE
 from utils import safe_json_loads
 from hermes_cli.timefmt import coerce_epoch
 from hermes_state_ids import new_session_id
-from hermes_state_common import SCHEMA_SQL, _PREVIEW_RAW_SUBQUERY_SQL, _shape_preview, _sql_session_last_active
+from hermes_state_common import SCHEMA_SQL, _shape_preview, _sql_preview_raw, _sql_session_last_active
 from hermes_state_messages import _parse_tool_calls, _tool_calls_count
 
 # Pre-split logger identity so log filtering/capture is unchanged.
@@ -73,7 +73,7 @@ def _rich_select(select_cols: str, where: str, tail: str = "", prompt_select: Op
     prompt_join = "" if prompt_select is None else "LEFT JOIN system_prompts sp ON sp.hash = s.system_prompt_hash"
     return f"""
             SELECT {select_cols}{prompt_select or ""},
-                {_PREVIEW_RAW_SUBQUERY_SQL},
+                {_sql_preview_raw()},
                 {_sql_session_last_active("s")} AS last_active
             FROM sessions s
             {prompt_join}
@@ -259,9 +259,10 @@ class SessionPortabilityMixin:
         return {s["id"]: s for s in map(self._rich_row, self._read_rows(query, ids))}
 
     def list_skill_scaffolded_sessions(self, limit: int = 200) -> List[Dict[str, Any]]:
-        """Titled sessions whose first user turn was a ``/skill`` invocation (their titles
-        describe the expanded skill body, not the request). Returns ``id``, ``title`` and
-        the first-turn ``content`` so callers can re-derive what was typed. Newest first."""
+        """Titled sessions whose first user turn was a ``/skill`` invocation or a gateway
+        auto-load scaffold (their titles describe the expanded skill body, not the
+        request). Returns ``id``, ``title`` and the first-turn ``content`` so callers can
+        re-derive what was typed. Newest first."""
         rows = self._read_rows("""
                 SELECT s.id, s.title, m.content
                 FROM sessions s
@@ -271,10 +272,10 @@ class SessionPortabilityMixin:
                       AND m2.content IS NOT NULL
                     ORDER BY m2.timestamp, m2.id LIMIT 1
                 )
-                WHERE s.title IS NOT NULL AND m.content LIKE ?
+                WHERE s.title IS NOT NULL AND (m.content LIKE ? OR m.content LIKE ?)
                 ORDER BY s.started_at DESC
                 LIMIT ?
-                """, (SKILL_SCAFFOLD_SQL_LIKE, int(limit)))
+                """, (SKILL_SCAFFOLD_SQL_LIKE, AUTO_LOAD_SCAFFOLD_SQL_LIKE, int(limit)))
         return [dict(row) for row in rows]
 
     # ── Export ─────────────────────────────────────────────────────────────

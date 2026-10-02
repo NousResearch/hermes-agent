@@ -215,18 +215,45 @@ async def auth_login(request: Request, provider: str, next: str = ""):
 
 # --- Public: RFC 8252 native-app authorization (system browser + loopback + PKCE)
 
+# RFC 8252 loopback IP literals -> their canonical URL authority spelling.
+_LOOPBACK_NETLOC_HOSTS = {"127.0.0.1": "127.0.0.1", "::1": "[::1]"}
+
+
 def _validate_loopback_redirect_uri(raw: str) -> str:
-    """Accept only ``http://127.0.0.1[:port]/…`` / ``http://[::1][:port]/…``. Security boundary:
-    the route is public, so a non-loopback host would make the callback an open redirect leaking
-    a live code. ``localhost`` is rejected (RFC 8252 §8.3)."""
+    """Return a canonical RFC 8252 loopback URI or reject it.
+
+    Both the server parser and the system browser must see the same authority: URL userinfo,
+    backslashes, fragments, controls, and non-canonical host/port spellings are rejected before
+    the URI is persisted. ``localhost`` is rejected in favour of IP literals (RFC 8252 §8.3).
+    """
     if not raw:
         raise _http(400, "redirect_uri required")
-    parsed = urlparse(raw)
+    if (
+        not raw.isascii()
+        or "\\" in raw
+        or any(ord(ch) <= 0x20 or ord(ch) == 0x7F for ch in raw)
+    ):
+        raise _http(400, "native redirect_uri must use a canonical loopback URL")
+    try:
+        parsed = urlparse(raw)
+        hostname = parsed.hostname
+        port = parsed.port
+    except ValueError:
+        raise _http(400, "native redirect_uri must use a canonical loopback URL")
     if parsed.scheme != "http":
         raise _http(400, "native redirect_uri must be http:// on the loopback interface")
-    if (parsed.hostname or "").lower() not in ("127.0.0.1", "::1"):
+    if "#" in raw:
+        raise _http(400, "native redirect_uri must not contain a fragment")
+    if parsed.username is not None or parsed.password is not None:
+        raise _http(400, "native redirect_uri must not contain userinfo")
+    canonical_host = _LOOPBACK_NETLOC_HOSTS.get(hostname)
+    if canonical_host is None:
         raise _http(400, "native redirect_uri host must be a loopback IP literal (127.0.0.1 / ::1)")
-    return raw
+    canonical_netloc = canonical_host + (f":{port}" if port is not None else "")
+    if parsed.netloc != canonical_netloc:
+        raise _http(400, "native redirect_uri must use a canonical loopback authority")
+    # scheme/netloc are already canonical and fragments rejected; only an empty path needs "/".
+    return urlunparse(parsed._replace(path=parsed.path or "/"))
 
 
 def _select_native_provider(provider: str):
@@ -251,7 +278,7 @@ async def auth_native_authorize(
         raise _http(400, "code_challenge_method must be S256")
     if not code_challenge:
         raise _http(400, "code_challenge required")
-    _validate_loopback_redirect_uri(redirect_uri)
+    redirect_uri = _validate_loopback_redirect_uri(redirect_uri)
     p = _select_native_provider(provider)
     if p is None and not provider:
         candidates = list_session_providers()

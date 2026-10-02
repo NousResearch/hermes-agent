@@ -84,6 +84,12 @@ def run_tool_round(
     if _tvv.action == "continue":
         return _verdict("continue")
 
+    # Normalize only this unpersisted turn. Each local bridge entry must pass
+    # through the same scope, approvals, state and scheduling as a singleton.
+    from agent.tool_call_batches import expand_local_tool_batches
+    assistant_message.tool_calls = expand_local_tool_batches(
+        assistant_message.tool_calls, provider_data=getattr(assistant_message, "provider_data", None))
+
     # Post-call guardrails.
     assistant_message.tool_calls = agent._deduplicate_tool_calls(
         agent._cap_delegate_task_calls(assistant_message.tool_calls)

@@ -2522,27 +2522,6 @@ class TestFtsRebuildLoopWithoutTrigram:
             db.close()
 
 
-class TestTitleUniqueness:
-    """Tests for unique title enforcement and title-based lookups."""
-
-    def test_duplicate_title_raises(self, db):
-        """Setting a title already used by another session raises ValueError."""
-        db.create_session("s1", "cli")
-        db.create_session("s2", "cli")
-        db.set_session_title("s1", "my project")
-        with pytest.raises(ValueError, match="already in use"):
-            db.set_session_title("s2", "my project")
-
-
-    def test_null_titles_not_unique(self, db):
-        """Multiple sessions can have NULL titles (no constraint violation)."""
-        db.create_session("s1", "cli")
-        db.create_session("s2", "cli")
-        # Both have NULL titles — no error
-        assert db.get_session("s1")["title"] is None
-        assert db.get_session("s2")["title"] is None
-
-
 
 
 

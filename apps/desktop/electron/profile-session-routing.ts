@@ -367,9 +367,7 @@ async function fetchSessionRowsInPages(
       const page = await getPage(`${basePath}?${pageParams}`)
       const pageRows = rowsOf(page)
 
-      const total = nonNegativeNumber(
-        page && typeof page === 'object' ? (page as { total?: unknown }).total : null
-      )
+      const total = nonNegativeNumber(page && typeof page === 'object' ? (page as { total?: unknown }).total : null)
 
       const windowedCount =
         total !== null ? Math.min(pageLimit, Math.max(0, total - pageOffset)) : Math.min(pageLimit, pageRows.length)

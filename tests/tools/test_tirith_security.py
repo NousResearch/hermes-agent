@@ -348,8 +348,11 @@ class TestPmInstall:
         ensure.side_effect = lambda *_a, **_k: setattr(
             installed, "return_value", MagicMock(binary="/pm/tirith"))
 
-        assert _tirith_mod._resolve_tirith_path("tirith") == "/pm/tirith"
+        assert _tirith_mod._resolve_tirith_path("tirith") == "tirith"
+        for thread in _tirith_mod._install_threads.values():
+            thread.join(5)
         ensure.assert_called_once_with("tirith")
+        assert _tirith_mod._resolve_tirith_path("tirith") == "/pm/tirith"
 
     def test_failed_install_is_not_retried(self, pm_tirith):
         """After a failed install, subsequent resolves fall back without retrying."""
@@ -357,6 +360,8 @@ class TestPmInstall:
         ensure.side_effect = RuntimeError("download failed")
 
         assert _tirith_mod._resolve_tirith_path("tirith") == "tirith"
+        for thread in _tirith_mod._install_threads.values():
+            thread.join(5)
         assert _tirith_mod._resolve_tirith_path("tirith") == "tirith"
         assert ensure.call_count == 1
 

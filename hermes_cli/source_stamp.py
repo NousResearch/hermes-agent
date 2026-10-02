@@ -12,8 +12,11 @@ import tempfile
 from hermes_cli.version_info import _git_version_info, _reset_version_info_cache
 
 
-def write_source_stamp(root: Path) -> dict | None:
+def write_source_stamp(root: Path, *, adopted: bool = False) -> dict | None:
     """Replace ``install-stamp.json`` with identity read from ``root`` itself.
+
+    *adopted* marks a boot-time adoption (``adoptedAt``): identity only, nothing
+    built, so it must never read as a completed install/update of this commit.
 
     A root git cannot identify -- the ZIP update fallback runs precisely because
     git is unusable -- publishes no identity: the old stamp is removed rather
@@ -42,6 +45,8 @@ def write_source_stamp(root: Path) -> dict | None:
         "payload": "bootstrap",
         "tag": None,
     }
+    if adopted:
+        stamp["adoptedAt"] = stamp["builtAt"]
     stamp_path = root / "install-stamp.json"
     fd, tmp_name = tempfile.mkstemp(dir=root, prefix=".install-stamp.", suffix=".tmp")
     try:

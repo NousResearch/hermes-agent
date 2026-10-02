@@ -90,10 +90,10 @@ def _emit_ordinary_and_essential_tools(sid):
     server._on_tool_complete(sid, "tool-read", "read_file", {"path": "README.md"}, "contents")
     server._agent_cbs(sid)["tool_gen_callback"]("terminal")
 
-    clarify_args = {"question": "Pick one", "choices": ["A", "B"]}
+    clarify_args = {"questions": [{"question": "Pick one", "choices": ["A", "B"]}]}
     server._on_tool_start(sid, "tool-clarify", "clarify", clarify_args)
     server._on_tool_complete(
-        sid, "tool-clarify", "clarify", clarify_args, json.dumps({"question": "Pick one", "user_response": "A"})
+        sid, "tool-clarify", "clarify", clarify_args, json.dumps({"responses": [{"question": "Pick one", "status": "answered", "user_response": "A"}], "outcome": "submitted"})
     )
     server._on_tool_complete(sid, "tool-fail", "terminal", {"command": "deploy"}, json.dumps({"error": "disk full"}))
 
@@ -292,9 +292,12 @@ def test_gateway_lifecycle_set_covers_desktop_card_tools():
     source = ts_path.read_text(encoding="utf-8")
 
     def set_literal(var: str) -> set[str]:
-        match = re.search(rf"const {var} = new Set\(\[(.*?)\]\)", source, re.DOTALL)
+        # Either a `new Set([...])` or a `[...] as const` tuple.
+        match = re.search(rf"const {var} = (?:new Set\()?\[(.*?)\]", source, re.DOTALL)
         assert match, f"{var} not found in {ts_path.name}"
-        return set(re.findall(r"'([^']+)'", match.group(1)))
+        names = set(re.findall(r"'([^']+)'", match.group(1)))
+        assert names, f"{var} is empty in {ts_path.name}"
+        return names
 
     # CONNECTION_CARD_KEY is the run-splitter's alias for a manage_connections
     # part, not a tool name the gateway ever sees.

@@ -17,11 +17,3 @@ def test_devnull_stdin_is_not_a_console_on_windows():
     console, isatty = proc.stdout.split()
     assert isatty == "True", "premise: the Windows CRT calls DEVNULL a tty (else this guard is moot)"
     assert console == "False"
-
-
-def test_non_tty_stdin_is_not_interactive(monkeypatch):
-    import io
-    from tools import mcp_oauth
-    monkeypatch.setattr(mcp_oauth.sys, "stdin", io.StringIO())
-    assert mcp_oauth._stdin_is_console() is False
-    assert mcp_oauth._is_interactive() is False

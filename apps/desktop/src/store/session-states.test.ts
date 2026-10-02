@@ -17,14 +17,17 @@ import {
   $activeSessionId,
   $connection,
   $selectedStoredSessionId,
+  $workspaceCwdOwner,
+  setCurrentCwd,
   setSessionOwnerHint,
   setSessions
 } from '@/store/session'
+import { $focusedStoredSessionId } from '@/store/session-focus'
 import type { SessionProfileRoute } from '@/store/session-request-router'
 import type { SessionTile } from '@/store/session-states'
 import type * as SessionStatesModule from '@/store/session-states'
 import {
-  $focusedStoredSessionId,
+  $focusedWorkspaceCwd,
   $sessionStates,
   $sessionTiles,
   blankDraftTile,
@@ -35,6 +38,7 @@ import {
   focusOpenSession,
   focusWorkspaceOwnerSessionTile,
   foregroundSessionScopes,
+  frontMainIfSelected,
   isSessionRemote,
   knownOwnerForSession,
   markSelectionRestore,
@@ -272,6 +276,7 @@ function runtimeBindingDelegate(
   return {
     archiveSession: vi.fn(),
     branchSession: vi.fn(),
+    branchSessionAtMessage: vi.fn(async () => true),
     deleteSession: vi.fn(),
     executeSlash: vi.fn(),
     interruptSession: vi.fn(),
@@ -552,6 +557,51 @@ describe('SessionTile workspace scope', () => {
       workspaceMode: 'bots',
       workspaceOwnerKey: 'connection-a::default'
     })
+  })
+})
+
+describe('frontMainIfSelected (#125899 — Bot row click while its chat sits in main)', () => {
+  const activePane = () => {
+    const tree = $layoutTree.get()
+
+    return tree?.type === 'group' ? tree.active : null
+  }
+
+  afterEach(() => {
+    $layoutTree.set(null)
+    $selectedStoredSessionId.set(null)
+    $sessionTiles.set([])
+  })
+
+  it('fronts the workspace pane over another bot tile when main holds the chat', () => {
+    // The promoted-into-main state: closing main dropped the bot tile and
+    // loaded its chat as the primary; the zone sits on another bot tile.
+    $selectedStoredSessionId.set('bot-chat')
+    $layoutTree.set(group(['workspace', tilePane('other-bot')], { active: tilePane('other-bot'), id: 'main' }))
+
+    expect(frontMainIfSelected('bot-chat')).toBe(true)
+    expect(activePane()).toBe('workspace')
+  })
+
+  it('matches a compression-lineage alias of the chat main holds', () => {
+    setSessions([{ _lineage_ids: ['seg-1', 'seg-2'], _lineage_root_id: 'seg-1', id: 'seg-2' } as never])
+    $selectedStoredSessionId.set('seg-2')
+    $layoutTree.set(group(['workspace'], { id: 'main' }))
+
+    expect(frontMainIfSelected('seg-1')).toBe(true)
+    setSessions([])
+  })
+
+  it('reports false and fronts nothing when main holds another chat', () => {
+    $selectedStoredSessionId.set('other-chat')
+    $layoutTree.set(group(['workspace', tilePane('other-bot')], { active: tilePane('other-bot'), id: 'main' }))
+
+    expect(frontMainIfSelected('bot-chat')).toBe(false)
+    expect(activePane()).toBe(tilePane('other-bot'))
+  })
+
+  it('reports false when main holds nothing', () => {
+    expect(frontMainIfSelected('bot-chat')).toBe(false)
   })
 })
 
@@ -1178,7 +1228,7 @@ describe('$focusedStoredSessionId in Bot Mode (#96062)', () => {
     expect($focusedStoredSessionId.get()).toBeNull()
   })
 
-  it('sessions-sidebar focus follows the visible main tab instead of a hidden primary selection', () => {
+  it('sessions mode retains the active main-zone tile when the tracker sits on side chrome', () => {
     $selectedStoredSessionId.set('primary-1')
     $layoutTree.set(
       split('row', [
@@ -1190,6 +1240,39 @@ describe('$focusedStoredSessionId in Bot Mode (#96062)', () => {
 
     expect($workspaceMode.get()).toBe('sessions')
     expect($focusedStoredSessionId.get()).toBe('stacked')
+  })
+
+  it('computes $focusedWorkspaceCwd from the focused tile session state or sessions list', () => {
+    $selectedStoredSessionId.set('primary-1')
+    setSessions([{ cwd: '/repo-stacked', id: 'stacked' } as any])
+    $sessionTiles.set([{ storedSessionId: 'stacked', runtimeId: 'rt-stacked', workspaceMode: 'sessions' } as any])
+    $sessionStates.set({
+      'rt-stacked': { cwd: '/repo-stacked' } as any
+    })
+    $layoutTree.set(
+      split('row', [
+        group(['files'], { active: 'files', id: 'grp-files' }),
+        group(['workspace', tilePane('stacked')], { active: tilePane('stacked'), id: 'grp-main' })
+      ])
+    )
+    noteActiveTreeGroup('grp-files')
+
+    expect($focusedStoredSessionId.get()).toBe('stacked')
+    expect($focusedWorkspaceCwd.get()).toBe('/repo-stacked')
+  })
+
+  it('falls back to sessions list cwd for primary session when workspaceCwdOwner is mismatched', () => {
+    $selectedStoredSessionId.set('primary-1')
+    $workspaceCwdOwner.set('other-session-from-different-project')
+    setCurrentCwd('/repo-other')
+    setSessions([{ cwd: '/repo-primary-project', id: 'primary-1' } as any])
+    $sessionTiles.set([])
+    $sessionStates.set({})
+    $layoutTree.set(split('row', [group(['workspace'], { active: 'workspace', id: 'grp-main' })]))
+    noteActiveTreeGroup('grp-main')
+
+    expect($focusedStoredSessionId.get()).toBe('primary-1')
+    expect($focusedWorkspaceCwd.get()).toBe('/repo-primary-project')
   })
 })
 
@@ -1267,6 +1350,7 @@ describe('reopenLastClosedTile focuses the restored tab', () => {
     const { registry } = await import('@/contrib/registry')
     const session = await import('@/store/session')
     const states = await import('@/store/session-states')
+    const { $focusedStoredSessionId } = await import('@/store/session-focus')
 
     registry.register({
       area: 'panes',
@@ -1298,11 +1382,11 @@ describe('reopenLastClosedTile focuses the restored tab', () => {
     tree.noteActiveTreeGroup('grp-main')
     expect(findGroupOfPane(tree.$layoutTree.get()!, tilePane('closed'))?.active).toBe(tilePane('closed'))
 
-    return { states, tree }
+    return { $focusedStoredSessionId, states, tree }
   }
 
   it('restores the live strip slot after reordering and retains the exact owner', async () => {
-    const { states, tree } = await setup()
+    const { $focusedStoredSessionId, states, tree } = await setup()
     states.openSessionTile('after', 'center', 'workspace')
     tree.moveTreePane(tilePane('closed'), { groupId: 'grp-main', pos: 'center', before: 'workspace' })
     const order = findGroupOfPane(tree.$layoutTree.get()!, 'workspace')!.panes
@@ -1312,17 +1396,17 @@ describe('reopenLastClosedTile focuses the restored tab', () => {
     tree.noteActiveTreeGroup(null)
     states.reopenLastClosedTile()
     expect(findGroupOfPane(tree.$layoutTree.get()!, 'workspace')!.panes).toEqual(order)
-    expect(states.$focusedStoredSessionId.get()).toBe('closed')
+    expect($focusedStoredSessionId.get()).toBe('closed')
     expect(states.sessionTileOwnerRoute('closed')).toEqual(ownerRoute)
   })
 
   it('fronts a palette-opened tab from sidebar focus without replacing main', async () => {
-    const { states, tree } = await setup()
+    const { $focusedStoredSessionId, tree } = await setup()
     const { openSession } = await import('@/app/open-session')
     const navigate = vi.fn()
     tree.noteActiveTreeGroup('sidebar')
     openSession('palette-result', navigate, 'stack')
-    expect(states.$focusedStoredSessionId.get()).toBe('palette-result')
+    expect($focusedStoredSessionId.get()).toBe('palette-result')
     expect(findGroupOfPane(tree.$layoutTree.get()!, 'workspace')!.active).toBe(tilePane('palette-result'))
     expect(navigate).not.toHaveBeenCalled()
   })

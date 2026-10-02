@@ -45,8 +45,7 @@ def _install_skill(tmp_path, monkeypatch, name="work", body=SKILL_BODY):
         f"---\nname: {name}\ndescription: Description for {name}\n---\n\n# {name}\n\n{body}\n"
     )
     monkeypatch.setattr(skills_tool, "SKILLS_DIR", skills_dir)
-    monkeypatch.setattr(skill_commands, "_skill_commands", {})
-    monkeypatch.setattr(skill_commands, "_skill_commands_platform", None)
+    monkeypatch.setattr(skill_commands, "_skill_commands_by_key", {})
     skill_commands.scan_skill_commands()
     return skills_dir
 
@@ -210,5 +209,26 @@ class TestSkillScaffoldedSessionLookup:
         for i in range(3):
             _seed(db, f"s{i}", message, title=f"Title {i}")
         assert len(db.list_skill_scaffolded_sessions(limit=2)) == 2
+
+    def test_finds_gateway_auto_load_sessions(self, db, tmp_path, monkeypatch):
+        """#48359: a session whose first turn is a gateway auto-load scaffold (channel-bound
+        skill, '[IMPORTANT: The "X" skill is auto-loaded. …]') has the same retitle need —
+        its title describes the skill, not the request."""
+        _install_skill(tmp_path, monkeypatch)
+        loaded = skill_commands._load_skill_payload("work")
+        payload = skill_commands._build_skill_message(
+            loaded[0], loaded[1],
+            '[IMPORTANT: The "work" skill is auto-loaded. '
+            "Follow its instructions for this session.]",
+        )
+        message = f"{payload}\n\nwhy is my deploy timing out?"
+        _seed(db, "auto", message, title="Example Skill Instructions")
+        _seed(db, "plain", "why is my deploy timing out?", title="Deploy Timeout")
+
+        rows = db.list_skill_scaffolded_sessions()
+        assert [row["id"] for row in rows] == ["auto"]
+        # The caller re-derives the typed request through the describer.
+        from agent.skill_commands import describe_skill_invocation
+        assert describe_skill_invocation(rows[0]["content"]) == "why is my deploy timing out?"
 
 

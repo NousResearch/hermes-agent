@@ -276,6 +276,27 @@ def test_update_builds_selected_products_after_one_union_preparation(source_prod
 
 
 @pytest.mark.platforms("linux")
+def test_update_recompiles_only_products_whose_inputs_changed(source_products):
+    from hermes_cli.source_build import build_update_products
+
+    root, _ = source_products
+
+    def products():
+        return [event["step"] for event in _events(root) if event["step"] != "deps"]
+
+    build_update_products(root, desktop=True)
+    (root / "events.jsonl").unlink()
+    build_update_products(root, desktop=True)
+    assert products() == ["desktop"]
+
+    (root / "events.jsonl").unlink()
+    (root / "web/src").mkdir(parents=True, exist_ok=True)
+    (root / "web/src/changed.ts").write_text("export {}\n", encoding="utf-8")
+    build_update_products(root, desktop=False)
+    assert products() == ["web"]
+
+
+@pytest.mark.platforms("linux")
 @pytest.mark.parametrize("step", ["tui", "web", "desktop"])
 def test_update_failure_raises_without_retries_or_replacing_live_app(source_products, step):
     from hermes_cli.source_build import build_update_products

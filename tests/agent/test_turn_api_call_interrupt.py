@@ -72,4 +72,5 @@ def test_ordinary_partial_is_kept_as_the_interrupted_row():
     messages, verdict = _interrupt("Visible draft.")
 
     assert (messages[-1]["role"], messages[-1]["content"]) == ("assistant", "Visible draft.")
+    assert messages[-1]["display_metadata"] == {"interrupted": True}
     assert verdict.final_response == "Visible draft."

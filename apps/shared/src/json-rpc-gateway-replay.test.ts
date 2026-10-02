@@ -545,6 +545,61 @@ describe('JsonRpcGatewayClient event-seq tracking + replay resume', () => {
     }
   )
 
+  // The ring evicted part of the gap (#100122): the retained tail has a hole,
+  // so dispatching it paints a response missing its prefix/tool state. The
+  // client must skip the window and let waiting history reads resync instead.
+  it('never dispatches a truncated replay tail; history reads proceed after fresh parked frames', async () => {
+    const client = makeClient()
+    const seen: number[] = []
+    client.on('message.delta', event => seen.push(event.seq!))
+
+    try {
+      const first = client.connect('ws://x')
+      sockets[0].open()
+      await first
+      sockets[0].serverFrame({ jsonrpc: '2.0', method: 'event', params: { type: 'message.delta', session_id: 's1', seq: 3 } })
+
+      client.invalidate('drop')
+      const second = client.connect('ws://x')
+      sockets[1].open()
+      await second
+      const barrier = client.sessionReplayBarrier('s1')!
+      expect(barrier).toBeInstanceOf(Promise)
+      await vi.waitFor(() => expect(sockets[1].lastRequest().method).toBe('session.events.since'))
+      const req = sockets[1].lastRequest()
+
+      // Live frames race the replay: 700 is inside the evicted window's
+      // retained tail, 701 is newer than the server's head.
+      for (const seq of [700, 701]) {
+        sockets[1].serverFrame({ jsonrpc: '2.0', method: 'event', params: { type: 'message.delta', session_id: 's1', seq } })
+      }
+
+      const seenAtResolve = barrier.then(valid => ({ valid, seen: [...seen] }))
+
+      sockets[1].serverFrame({
+        jsonrpc: '2.0',
+        id: req.id,
+        result: {
+          events: [
+            { type: 'message.delta', session_id: 's1', seq: 699 },
+            { type: 'message.delta', session_id: 's1', seq: 700 }
+          ],
+          latest_seq: 700,
+          truncated: true,
+          count: 2
+        }
+      })
+
+      // No partial tail (699/700); the barrier resolves true so the reconnect
+      // backstop's REST read is authoritative, and only the post-head live frame flows.
+      await expect(seenAtResolve).resolves.toEqual({ valid: true, seen: [3, 701] })
+      expect(client.sessionReplayBarrier('s1')).toBeUndefined()
+      expect(client.getSeqWatermarks()).toEqual({ s1: 701 })
+    } finally {
+      client.close()
+    }
+  })
+
   it('clears stale watermarks when the backend epoch changes (restart poisoning)', async () => {
     const client = makeClient()
 

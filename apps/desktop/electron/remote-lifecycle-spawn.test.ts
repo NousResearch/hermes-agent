@@ -260,7 +260,11 @@ test.skipIf(process.platform === 'win32').each(variants)(
       await fixture.run(
         `python3 -c 'import fcntl,sys;f=open(sys.argv[1],"a");fcntl.flock(f,fcntl.LOCK_EX|fcntl.LOCK_NB)' ${expandRemotePath(`${fixture.marker}.mutex`)}`
       )
-      const lock: SpawnLock = { ...fixture.lock, pid: report.pid }
+      // The published ownership record carries the profile the spawn argv
+      // actually pinned — normalized like the CLI would (#88842) — never the
+      // raw roster/bridge label the fixture passed in. Derive the working lock
+      // from the published record exactly the way a reconnecting client does.
+      const lock: SpawnLock = { ...fixture.lock, pid: report.pid, profile: 'ops__pid__' }
 
       if (owned) {
         assert.deepEqual(JSON.parse(await readFile(fixture.localPath(lockfilePath(ownershipId)), 'utf8')), lock)

@@ -84,10 +84,10 @@ export function ModelSettingsSkeleton({ subpage }: Pick<ModelSettingsProps, 'sub
   )
 }
 
-// agent.service_tier stores "fast"/"priority"/"on" for fast; anything else is
-// normal (mirrors tui_gateway _load_service_tier).
+// agent.service_tier stores "fast"/"priority"/"on" for fast and "ultrafast" for OpenAI
+// Ultrafast; anything else is normal (mirrors agent.fast_mode.parse_service_tier).
 const isFastTier = (tier: unknown): boolean =>
-  ['fast', 'priority', 'on'].includes(
+  ['fast', 'priority', 'on', 'ultrafast'].includes(
     String(tier ?? '')
       .trim()
       .toLowerCase()

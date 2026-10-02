@@ -109,18 +109,14 @@ export const libTextEn = {
       errorLabel: 'Error',
       /** {0} = pre-formatted line count; sits inside a `[[ … ]]` composer token */
       pasteLinesChip: (count: string) => `[${count} lines]`,
-      /** {0} = the question text */
-      clarifyHead: (question: string) => `ask ${question}`,
-      /** {0} = why the prompt ended ("timed out", "cancelled") */
-      clarifyNoSelection: (reason: string) => `(${reason} — no selection)`,
       /** {0} = question count */
-      clarifyBatchHead: (count: string) => `ask (${count} questions)`,
+      clarifyHead: (count: string) => `ask (${count} questions)`,
       /** {0} = question, {1} = locked answer */
       clarifyAnswered: (question: string, answer: string) => `✓ ${question} → ${answer}`,
       /** {0} = question */
       clarifyUnanswered: (question: string) => `· ${question} (no answer)`,
       /** {0} = why the batch ended */
-      clarifyBatchReason: (reason: string) => `(${reason})`
+      clarifyReason: (reason: string) => `(${reason})`
     },
 
     // lib/agentRows.ts — docked agents panel row fallbacks.

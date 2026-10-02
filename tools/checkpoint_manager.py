@@ -55,8 +55,9 @@ import os
 import re
 import shutil
 import subprocess
+import tempfile
 import time
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from hermes_constants import get_hermes_home
 from hermes_cli._subprocess_compat import selected_git_env, windows_hide_flags
 from hermes_cli.gitlock import clear_stale_tmp_packs
@@ -284,6 +285,24 @@ def _save_ledger(store: Path, dir_hash: str, ledger: Dict[str, Dict]) -> None:
 
 def _ref_name(dir_hash: str) -> str:
     return f"{_REFS_PREFIX}/{dir_hash}"
+
+
+def _gitlink_paths(ls_tree_z: str) -> List[str]:
+    """Paths of gitlinks (nested repositories stored as a commit reference, not
+    their files) in ``git ls-tree -r -z`` output."""
+    return [
+        record.split("\t", 1)[1]
+        for record in ls_tree_z.split("\x00")
+        if record.startswith("160000 commit ") and "\t" in record
+    ]
+
+
+def _uncaptured_note(nested_repos: List[str]) -> str:
+    """Checkpoint-message suffix naming nested repositories whose files were
+    not captured, so every /rollback listing discloses it."""
+    shown = ", ".join(nested_repos[:3])
+    more = f" (+{len(nested_repos) - 3})" if len(nested_repos) > 3 else ""
+    return f" [nested git repos not captured: {shown}{more}]"
 
 
 def _project_meta_path(store: Path, dir_hash: str) -> Path:
@@ -1143,6 +1162,90 @@ class CheckpointManager:
             return {"success": False, "error": f"Checkpoint '{commit_hash}' not found",
                     "debug": err or None}
 
+        ok, tree_out, err = _run_git(
+            ["ls-tree", "-r", "-z", commit_hash], store, abs_dir,
+        )
+        if not ok:
+            return {"success": False, "error": f"Could not inspect checkpoint: {err}"}
+        nested_repos = _gitlink_paths(tree_out)
+        selected_paths: Optional[List[str]] = None
+        if nested_repos:
+            blocked_repos = nested_repos
+            if file_path:
+                # Select by the path as recorded in the checkpoint, not by
+                # where it points now: a captured file later replaced by a
+                # symlink into a nested repo is still recoverable. Resolved
+                # confinement is enforced separately by _validate_file_path.
+                root_path = Path(abs_dir)
+                requested_path = Path(os.path.normpath(root_path / file_path))
+                try:
+                    requested_rel = requested_path.relative_to(root_path)
+                except ValueError:
+                    requested_rel = Path(file_path)
+                requested_parts = tuple(requested_rel.parts)
+
+                def _scope_intersects_nested_repo(repo_path: str) -> bool:
+                    repo_parts = tuple(PurePosixPath(repo_path).parts)
+                    return (
+                        requested_parts[:len(repo_parts)] == repo_parts
+                        or repo_parts[:len(requested_parts)] == requested_parts
+                    )
+
+                blocked_repos = [
+                    repo for repo in nested_repos
+                    if _scope_intersects_nested_repo(repo)
+                ]
+
+                # Literal paths below a gitlink have no tree entry to match.
+                # Keep the explicit refusal above, but let Git resolve all
+                # other selections exactly as checkout does (glob, icase,
+                # top, exclude, literal, etc.). ls-tree lacks that pathspec
+                # support. A disposable index avoids touching the project's
+                # index, refs or files before we know rollback is possible.
+                if not blocked_repos:
+                    with tempfile.TemporaryDirectory(prefix="restore-inspect-", dir=store) as scratch:
+                        inspect_index = Path(scratch) / "index"
+                        ok, _, err = _run_git(
+                            ["read-tree", commit_hash], store, abs_dir,
+                            index_file=inspect_index,
+                        )
+                        if ok:
+                            ok, selected, err = _run_git(
+                                ["ls-files", "--stage", "--error-unmatch", "-z", "--", file_path],
+                                store, abs_dir, index_file=inspect_index,
+                            )
+                        if not ok:
+                            return {"success": False, "error": f"Could not inspect restore selection: {err}"}
+                    blocked_repos = [
+                        record.split("\t", 1)[1]
+                        for record in selected.split("\x00")
+                        if record.startswith("160000 ") and "\t" in record
+                    ]
+                    selected_paths = [
+                        record.split("\t", 1)[1]
+                        for record in selected.split("\x00")
+                        if "\t" in record
+                    ]
+                    if not selected_paths:
+                        # An exclusion-only spec can match nothing. Checkout
+                        # with no paths would switch the store's HEAD instead
+                        # of restoring files, so refuse before the snapshot.
+                        return {
+                            "success": False,
+                            "error": f"Restore selection matched no files in checkpoint: {file_path}",
+                        }
+
+            if blocked_repos:
+                paths = ", ".join(blocked_repos)
+                return {
+                    "success": False,
+                    "error": (
+                        "Checkpoint contains nested git repositories that were not captured "
+                        f"({paths}); rollback was not performed"
+                    ),
+                    "nested_repositories": blocked_repos,
+                }
+
         skipped_user_edits: List[str] = []
         kept_oversize: List[str] = []
         failed_deletes: List[str] = []
@@ -1216,6 +1319,22 @@ class CheckpointManager:
                     ["checkout", commit_hash, "--", *checkout_targets],
                     store, abs_dir, timeout=_GIT_TIMEOUT * 2,
                     index_file=index_file,
+                )
+        elif selected_paths is not None:
+            # Check out exactly the entries inspected above. Re-evaluating
+            # file_path here could select something else: _take() has just
+            # restaged the project index, and attribute pathspecs read
+            # .gitattributes from it. A NUL-separated literal pathspec file
+            # keeps long selections off the command line.
+            with tempfile.TemporaryDirectory(prefix="restore-select-", dir=store) as scratch:
+                spec_file = Path(scratch) / "pathspec"
+                spec_file.write_bytes(b"".join(os.fsencode(p) + b"\0" for p in selected_paths))
+                ok, stdout, err = _run_git(
+                    ["checkout", commit_hash, f"--pathspec-from-file={spec_file}",
+                     "--pathspec-file-nul"],
+                    store, abs_dir, timeout=_GIT_TIMEOUT * 2,
+                    index_file=index_file,
+                    extra_env={"GIT_LITERAL_PATHSPECS": "1"},
                 )
         else:
             ok, stdout, err = _run_git(
@@ -1394,6 +1513,20 @@ class CheckpointManager:
         if not ok_tree or not tree_sha:
             logger.debug("Checkpoint write-tree failed: %s", err)
             return False
+
+        # A nested repository is stored as a gitlink, not its files: say so in
+        # the checkpoint itself rather than only when a rollback is refused.
+        ok_ls, tree_out, _ = _run_git(["ls-tree", "-r", "-z", tree_sha], store, working_dir)
+        nested_repos = _gitlink_paths(tree_out) if ok_ls else []
+        if nested_repos:
+            logger.info("Checkpoint of %s does not capture nested git repositories: %s",
+                        working_dir, ", ".join(nested_repos))
+            # Listings read the subject (%s), which ends at the first blank
+            # line, so keep a multiline reason (a terminal command) on one
+            # line or the note falls outside every listing.
+            reason = " ".join(
+                line.strip() for line in reason.splitlines() if line.strip()
+            ) + _uncaptured_note(nested_repos)
 
         # Build commit (parent = current ref tip, if any).
         commit_args = ["commit-tree", tree_sha, "-m", reason, "--no-gpg-sign"]

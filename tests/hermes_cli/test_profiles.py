@@ -75,6 +75,21 @@ class TestNormalizeProfileName:
         assert normalize_profile_name("Jules") == "jules"
         assert normalize_profile_name("  Librarian ") == "librarian"
 
+    def test_non_string_name_rejected(self):
+        # A numeric profile id (DB row id / falsy sentinel) must not be
+        # silently coerced into a real on-disk profile directory (#88842).
+        with pytest.raises(ValueError):
+            normalize_profile_name(0)
+        with pytest.raises(ValueError):
+            normalize_profile_name(None)
+        with pytest.raises(ValueError):
+            normalize_profile_name(42)
+
+    def test_literal_zero_string_is_a_valid_explicit_name(self):
+        # A literal "0" typed by the user is a legal profile id; only the
+        # non-string coercion created the phantom profile.
+        assert normalize_profile_name("0") == "0"
+
 
 class TestValidateProfileName:
     """Tests for validate_profile_name()."""
@@ -237,6 +252,41 @@ class TestCreateProfile:
         if os.name != "nt":
             assert stat.S_IMODE(cloned.stat().st_mode) == 0o600
         assert not (profile_dir / "mem0.json").exists()
+
+    def test_clone_config_copies_source_plugins(self, profile_env):
+        tmp_path = profile_env
+        default_home = tmp_path / ".hermes"
+        plugin_dir = default_home / "plugins" / "example-plugin"
+        plugin_dir.mkdir(parents=True)
+        (plugin_dir / "plugin.yaml").write_text("name: example-plugin\n")
+
+        profile_dir = create_profile("coder", clone_config=True, no_alias=True)
+
+        assert (
+            profile_dir
+            / "plugins"
+            / "example-plugin"
+            / "plugin.yaml"
+        ).read_text() == "name: example-plugin\n"
+
+    def test_clone_config_keeps_plugin_provenance_and_skips_install_staging(self, profile_env):
+        """A catalog-installed memory provider keeps its install record in the clone, so the clone
+        runs (and updates) the source's exact revision; an in-flight install staging dir stays behind."""
+        plugins = profile_env / ".hermes" / "plugins"
+        (plugins / "acme-memory").mkdir(parents=True)
+        (plugins / "acme-memory" / "plugin.yaml").write_text("name: acme-memory\nkind: memory\n")
+        (plugins / "acme-memory" / "__pycache__").mkdir()
+        (plugins / ".install-abc123" / "plugin").mkdir(parents=True)
+        record = '{"acme-memory": {"pinned": true, "revision": "%s", "source": "https://example.invalid/a.git"}}' % ("a" * 40)
+        (plugins / ".install-metadata.json").write_text(record)
+        (profile_env / ".hermes" / "config.yaml").write_text("memory:\n  provider: acme-memory\n")
+
+        cloned = create_profile("coder", clone_config=True, no_alias=True) / "plugins"
+
+        assert (cloned / ".install-metadata.json").read_text() == record
+        assert (cloned / "acme-memory" / "plugin.yaml").is_file()
+        assert not (cloned / "acme-memory" / "__pycache__").exists()
+        assert not (cloned / ".install-abc123").exists()
 
     @pytest.mark.parametrize("provider", ["../outside", "a/b", "..", "hind sight"])
     def test_clone_config_ignores_unsafe_memory_provider_names(self, profile_env, provider):

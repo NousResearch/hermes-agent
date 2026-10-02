@@ -242,6 +242,26 @@ class ThreadParticipationTracker:
             self._threads.clear()
 
 
+async def send_chunks(chunks: list, send_one) -> Any:
+    """Send ``chunks`` in order through ``send_one(chunk) -> SendResult``, stopping at the first failure.
+
+    A failure after earlier chunks landed carries the ``partial_overflow`` contract that
+    ``BasePlatformAdapter._is_partial_delivery`` reads, so no caller (send retry, plain-text
+    fallback, cron standalone fallback) re-sends the head the recipient already has.
+    """
+    from gateway.platforms.base import SendResult
+    result = SendResult(success=False, error="nothing to send")
+    for delivered, chunk in enumerate(chunks):
+        result = await send_one(chunk)
+        if not result.success:
+            if delivered:
+                raw = dict(result.raw_response) if isinstance(result.raw_response, dict) else {}
+                raw.update(partial_overflow=True, delivered_chunks=delivered, total_chunks=len(chunks))
+                result.raw_response = raw
+            break
+    return result
+
+
 def redact_phone(phone: str) -> str:
     """Redact a phone number for logging, preserving country code and last 4."""
     if not phone:

@@ -113,9 +113,10 @@ class TestSaveUrlImage:
 
         assert path.exists()
         assert path.read_bytes() == PNG_1PX
-        # The cache directory must be under HERMES_HOME — gateway cleanup
-        # relies on this being the canonical location.
-        assert os.path.join("cache", "images") in str(path)
+        # Durable generated-media dir: under HERMES_HOME but OUTSIDE the swept
+        # inbound caches — gateway cleanup must never delete the only copy of a
+        # generated deliverable (#126445).
+        assert os.path.join("cache", "generated", "images") in str(path)
         assert path.suffix == ".png"
 
     def test_404_raises(self, http_server):

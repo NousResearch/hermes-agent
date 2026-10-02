@@ -101,7 +101,7 @@ reads/writes a stored pointer), `canonical-chat-creation.test.ts`, `canonical-ch
 ## Free tier surfaces (`src/store/free-tier*.ts`, Billing, statusbar chip, onboarding ready screen)
 
 `$freeTierStatus` mirrors `free_tier.status` (pull; refreshed with the status snapshot and after a
-sign-in). `deriveBillingView` branches on `billing.free_tier` BEFORE `logged_in` (status
+sign-in). `deriveBillingView` branches on `billing.free_tier_account` BEFORE `logged_in` (status
 `free_tier`: notice + one Sign in, Plan/Model/Connectors summary, no payment or usage rows); the
 `logged_out` notice's Sign in opens the same dialog, never a portal link (a link writes no
 credential). The sign-in dialog is a single claimed owner (first mount wins, like the

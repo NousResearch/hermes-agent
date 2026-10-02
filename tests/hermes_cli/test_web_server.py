@@ -931,15 +931,16 @@ CONFIG_SCHEMA = ProviderConfigSchema(
             return real_run(command, **kwargs)
 
         monkeypatch.setattr(web_server.subprocess, "run", guarded_run)
+        self._install_flatprov()
 
-        resp = self.client.post("/api/memory/providers/honcho/setup", json={"values": {}})
+        resp = self.client.post("/api/memory/providers/flatprov/setup", json={"values": {}})
 
         assert resp.status_code == 200
         data = resp.json()
         pip_rows = [row for row in data["results"] if row["kind"] == "pip"]
         assert pip_rows and pip_rows[0]["status"] == "installed"
         assert pip_rows[0]["command"] == "hermes pm install"
-        assert prepared == ["honcho"]
+        assert prepared == ["flatprov"]
 
 
     def test_put_memory_provider_config_writes_config_and_secret(self):
@@ -999,42 +1000,103 @@ CONFIG_SCHEMA = ProviderConfigSchema(
         assert "secret-value" not in json.dumps(data)
 
 
-    # ── Memory provider config (Honcho host-block backend) ──────────────
+    # ── Memory provider config (host-block backend) ─────────────────────
+    # ``honcho_host_block`` storage is a host contract a catalog provider opts into. The core
+    # router reaches four names in the provider's own modules; this fixture is that contract.
 
-    @pytest.fixture(autouse=True)
-    def _isolate_honcho_config(self):
-        # Honcho tests write the suite-wide HERMES_HOME honcho.json; snapshot and
-        # restore it so provider status/config state never leaks across tests.
+    _HOSTPROV_INIT = """
+from agent.memory_provider import MemoryProvider
+
+
+class HostProv(MemoryProvider):
+    name = "hostprov"
+
+    def is_available(self):
+        return True
+
+    def initialize(self, session_id, **kwargs):
+        pass
+
+    def get_tool_schemas(self):
+        return []
+
+
+def register(ctx):
+    ctx.register_memory_provider(HostProv())
+"""
+    _HOSTPROV_CLIENT = """
+from hermes_constants import get_hermes_home
+
+
+def resolve_active_host():
+    return "hermes"
+
+
+def resolve_config_path():
+    return get_hermes_home() / "hostprov.json"
+
+
+def _host_block(cfg, host):
+    return (cfg.get("hosts") or {}).get(host) or {}
+"""
+    _HOSTPROV_OAUTH = """
+import contextlib
+import json
+import threading
+
+ACCESS_TOKEN_PREFIX = "oat_"
+_refresh_lock = threading.Lock()
+
+
+@contextlib.contextmanager
+def _config_refresh_lock(path):
+    yield
+
+
+def _read_config_strict(path):
+    return json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+"""
+    _HOSTPROV_SCHEMA = """
+from plugins.memory.config_schema import (
+    KIND_SECRET, KIND_SELECT, KIND_TEXT, STORAGE_HONCHO_HOST_BLOCK, ProviderConfigSchema, ProviderField,
+    ProviderFieldOption,
+)
+
+CONFIG_SCHEMA = ProviderConfigSchema(
+    name="hostprov",
+    label="Host-block Provider",
+    storage=STORAGE_HONCHO_HOST_BLOCK,
+    fields=(
+        ProviderField(key="apiKey", label="API key", kind=KIND_SECRET, description="", env_key="HOSTPROV_API_KEY"),
+        ProviderField(key="baseUrl", label="Base URL", kind=KIND_TEXT, description="", scope="root"),
+        ProviderField(key="environment", label="Environment", kind=KIND_SELECT, description="", default="production",
+                      options=(ProviderFieldOption("production", "Cloud"), ProviderFieldOption("local", "Local"))),
+        ProviderField(key="workspace", label="Workspace", kind=KIND_TEXT, description=""),
+        ProviderField(key="peerName", label="Peer name", kind=KIND_TEXT, description=""),
+        ProviderField(key="aiPeer", label="AI peer", kind=KIND_TEXT, description=""),
+        ProviderField(key="sessionStrategy", label="Session strategy", kind=KIND_TEXT, description=""),
+    ),
+)
+"""
+
+    def _install_hostprov(self):
         from hermes_constants import get_hermes_home
 
-        path = get_hermes_home() / "honcho.json"
-        before = path.read_bytes() if path.exists() else None
-        yield
-        if before is None:
-            path.unlink(missing_ok=True)
-        else:
-            path.write_bytes(before)
+        plugin_dir = get_hermes_home() / "plugins" / "hostprov"
+        plugin_dir.mkdir(parents=True, exist_ok=True)
+        for module, source in (("__init__", self._HOSTPROV_INIT), ("client", self._HOSTPROV_CLIENT),
+                               ("oauth", self._HOSTPROV_OAUTH), ("config_schema", self._HOSTPROV_SCHEMA)):
+            (plugin_dir / f"{module}.py").write_text(source, encoding="utf-8")
+        config_path = get_hermes_home() / "hostprov.json"
+        config_path.write_text("{}", encoding="utf-8")
+        return config_path
 
-    @staticmethod
-    def _seed_local_honcho(cfg=None):
-        from hermes_constants import get_hermes_home
-
-        path = get_hermes_home() / "honcho.json"
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(cfg if cfg is not None else {}), encoding="utf-8")
-        return path
-
-
-    def test_put_honcho_writes_host_block_root_and_secret(self, monkeypatch, tmp_path):
-        monkeypatch.setenv("HOME", str(tmp_path))
-        monkeypatch.setenv("HONCHO_API_KEY", "guard")
-        monkeypatch.delenv("HONCHO_API_KEY")
-        self._seed_local_honcho()
-        from hermes_constants import get_hermes_home
+    def test_put_host_block_writes_host_block_root_and_secret(self):
         from hermes_cli.config import load_config, load_env
 
+        config_path = self._install_hostprov()
         resp = self.client.put(
-            "/api/memory/providers/honcho/config?surface=declared",
+            "/api/memory/providers/hostprov/config?surface=declared",
             json={
                 "values": {
                     "apiKey": "hch-test-key",
@@ -1050,10 +1112,10 @@ CONFIG_SCHEMA = ProviderConfigSchema(
 
         assert resp.status_code == 200
         assert resp.json() == {"ok": True}
-        assert load_config()["memory"]["provider"] == "honcho"
-        assert load_env()["HONCHO_API_KEY"] == "hch-test-key"
+        assert load_config()["memory"]["provider"] == "hostprov"
+        assert load_env()["HOSTPROV_API_KEY"] == "hch-test-key"
 
-        cfg = json.loads((get_hermes_home() / "honcho.json").read_text(encoding="utf-8"))
+        cfg = json.loads(config_path.read_text(encoding="utf-8"))
         # baseUrl is root-scoped; the rest live in the active host block.
         assert cfg["baseUrl"] == "https://honcho.example.dev"
         assert cfg["hosts"]["hermes"]["workspace"] == "myws"
@@ -1064,18 +1126,14 @@ CONFIG_SCHEMA = ProviderConfigSchema(
         assert cfg["hosts"]["hermes"]["apiKey"] == "hch-test-key"
 
 
-    def test_get_honcho_config_does_not_return_secret(self, monkeypatch, tmp_path):
-        monkeypatch.setenv("HOME", str(tmp_path))
-        monkeypatch.setenv("HONCHO_API_KEY", "guard")
-        monkeypatch.delenv("HONCHO_API_KEY")
-        self._seed_local_honcho()
-
+    def test_get_host_block_config_does_not_return_secret(self):
+        self._install_hostprov()
         self.client.put(
-            "/api/memory/providers/honcho/config?surface=declared",
+            "/api/memory/providers/hostprov/config?surface=declared",
             json={"values": {"apiKey": "secret-value"}},
         )
 
-        resp = self.client.get("/api/memory/providers/honcho/config?surface=declared")
+        resp = self.client.get("/api/memory/providers/hostprov/config?surface=declared")
 
         assert resp.status_code == 200
         data = resp.json()
@@ -1083,6 +1141,30 @@ CONFIG_SCHEMA = ProviderConfigSchema(
         assert fields["apiKey"]["is_set"] is True
         assert fields["apiKey"]["value"] == ""
         assert "secret-value" not in json.dumps(data)
+
+
+    @pytest.mark.parametrize("corrupt", [True, False], ids=["unparseable-file-is-left-alone", "parseable-file-is-merged"])
+    def test_put_host_block_never_replaces_an_unparseable_config(self, corrupt):
+        # The router reads the provider's config strictly: a file that exists but does not parse must
+        # not be replaced by this host's block alone (that would wipe every other host's keys).
+        from hermes_cli.config import load_config
+
+        config_path = self._install_hostprov()
+        before = "{not json" if corrupt else json.dumps({"hosts": {"other": {"apiKey": "keep-me"}}})
+        config_path.write_text(before, encoding="utf-8")
+
+        resp = self.client.put("/api/memory/providers/hostprov/config?surface=declared",
+                               json={"values": {"workspace": "myws"}})
+
+        if corrupt:
+            assert resp.status_code == 400
+            assert config_path.read_text(encoding="utf-8") == before
+            assert (load_config().get("memory") or {}).get("provider") != "hostprov"
+            return
+        assert resp.status_code == 200
+        cfg = json.loads(config_path.read_text(encoding="utf-8"))
+        assert cfg["hosts"]["other"]["apiKey"] == "keep-me"
+        assert cfg["hosts"]["hermes"]["workspace"] == "myws"
 
 
     # ── GET /api/media (remote image display) ───────────────────────────
@@ -1097,6 +1179,98 @@ CONFIG_SCHEMA = ProviderConfigSchema(
             headers={_SESSION_HEADER_NAME: "wrong-token"},
         )
         assert resp.status_code == 401
+
+    # ── GET /api/media/proxy (client-blocked CDN fallback, #74564) ──────
+
+
+    def test_media_proxy_requires_auth(self):
+        from hermes_cli.web_server import _SESSION_HEADER_NAME
+
+        resp = self.client.get(
+            "/api/media/proxy",
+            params={"url": "https://v3.fal.media/x.png"},
+            headers={_SESSION_HEADER_NAME: "wrong-token"},
+        )
+        assert resp.status_code == 401
+
+    def test_media_proxy_rejects_disallowed_hosts_and_schemes(self):
+        for bad in (
+            "https://evil.example.com/img.png",
+            "https://sub.fal.media.evil.com/img.png",
+            "file:///etc/passwd",
+            "not a url",
+            "",
+        ):
+            resp = self.client.get("/api/media/proxy", params={"url": bad})
+            assert resp.status_code in (400, 403), (bad, resp.status_code)
+
+    def test_media_proxy_fetches_allowlisted_image_and_returns_data_url(self, monkeypatch):
+        png_bytes = b"\x89PNG\r\n\x1a\n" + b"0" * 8
+
+        class _Resp:
+            status_code = 200
+            headers = {"content-type": "image/png"}
+            content = png_bytes
+
+        class _Client:
+            def __init__(self, *a, **k):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *a):
+                return False
+
+            async def get(self, url):
+                assert url == "https://v3.fal.media/media/abc123"
+                return _Resp()
+
+        import hermes_cli.web_routers.files as files_router
+
+        monkeypatch.setattr(files_router, "_require_token", lambda request: None, raising=False)
+        # The route imports httpx locally; patch the module it resolves from.
+        import httpx
+
+        monkeypatch.setattr(httpx, "AsyncClient", _Client, raising=False)
+
+        resp = self.client.get(
+            "/api/media/proxy", params={"url": "https://v3.fal.media/media/abc123"}
+        )
+        assert resp.status_code == 200
+        import base64
+
+        assert resp.json()["data_url"] == (
+            "data:image/png;base64," + base64.b64encode(png_bytes).decode("ascii")
+        )
+
+    def test_media_proxy_rejects_non_image_content_type(self, monkeypatch):
+        class _Resp:
+            status_code = 200
+            headers = {"content-type": "text/html"}
+            content = b"<html>nope</html>"
+
+        class _Client:
+            def __init__(self, *a, **k):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *a):
+                return False
+
+            async def get(self, url):
+                return _Resp()
+
+        import httpx
+
+        monkeypatch.setattr(httpx, "AsyncClient", _Client, raising=False)
+
+        resp = self.client.get(
+            "/api/media/proxy", params={"url": "https://fal.media/media/abc123"}
+        )
+        assert resp.status_code == 415
 
     # ── POST /api/chat/image-upload (browser clipboard/drop images) ─────
 
@@ -1414,7 +1588,7 @@ CONFIG_SCHEMA = ProviderConfigSchema(
         broadcasts = []
         monkeypatch.setattr(fb, "_broadcast", broadcasts.append)
         with fb._lock:
-            fb._record = fb.SetupRecord(provider_configured=False, inference_provider="", free_tier=False,
+            fb._record = fb.SetupRecord(provider_configured=False, inference_provider="", free_tier_account=False,
                                         has_identity=False, other_providers=False)
             fb._started = True
             fb._done.set()
@@ -4413,6 +4587,25 @@ class TestDeleteEmptySessionsEndpoint:
             assert db.count_empty_sessions() == 0
         finally:
             db.close()
+
+    def test_delete_removes_on_disk_files_of_deleted_sessions_only(self):
+        """Deleting an empty session also removes its files in ``sessions/``.
+        A kept session's files stay."""
+        from hermes_constants import get_hermes_home
+
+        self._seed()
+        sessions_dir = get_hermes_home() / "sessions"
+        sessions_dir.mkdir(parents=True, exist_ok=True)
+        deleted_files = [sessions_dir / "session_empty1.json", sessions_dir / "request_dump_empty2_1.json"]
+        kept_file = sessions_dir / "session_hasmsg.json"
+        for path in (*deleted_files, kept_file):
+            path.write_text("{}", encoding="utf-8")
+
+        resp = self.auth_client.delete("/api/sessions/empty")
+
+        assert resp.json() == {"ok": True, "deleted": 2}
+        assert [p for p in deleted_files if p.exists()] == []
+        assert kept_file.exists()
 
 
 class TestPluginAPIAuth:

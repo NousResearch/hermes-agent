@@ -110,6 +110,58 @@ def test_session_count_bounded_with_fifo_eviction():
     assert latest_seq(f"s{event_replay._REPLAY_SESSIONS_MAX + 9}") == 1
 
 
+def test_fifo_eviction_keeps_seq_monotonic_within_epoch():
+    """#100122: FIFO eviction must not reset a revisited session's seq under
+    the same process-wide replay epoch — clients hold their old watermark, and
+    both the replay response and live parked frames with a reset (lower) seq
+    are silently dropped by the client's dispatchIfNewer gate."""
+    first = _frame("s0")
+    second = _frame("s0")
+    event_replay._stamp_event(first)
+    event_replay._stamp_event(second)
+    assert second["params"]["seq"] == 2
+
+    # Evict s0's ring by pushing _REPLAY_SESSIONS_MAX newer sessions through.
+    for index in range(1, event_replay._REPLAY_SESSIONS_MAX + 1):
+        event_replay._stamp_event(_frame(f"s{index}"))
+
+    assert "s0" not in event_replay._replay_buffers
+
+    revisited = _frame("s0")
+    event_replay._stamp_event(revisited)
+    # Same epoch (no restart happened): the revisited session CONTINUES its
+    # sequence instead of restarting at 1.
+    assert revisited["params"]["seq"] == 3
+
+    # A client holding the pre-eviction watermark still sees the new event…
+    assert [event["seq"] for event in events_since("s0", 2)] == [3]
+    # …while a client that saw only seq 1 is told the ring dropped what it
+    # missed (seq 2 went out live but is no longer replayable): truncated,
+    # refetch history.
+    assert event_replay.is_truncated("s0", 1)
+    # A client that saw seq 2 lost nothing: the ring resumes at 3 with no hole.
+    assert not event_replay.is_truncated("s0", 2)
+    assert not event_replay.is_truncated("s0", 3)
+
+
+def test_fifo_eviction_marks_truncation_for_old_watermarks():
+    """The whole retained ring is gone once a session is FIFO-evicted, so any
+    client watermark below its latest stamped seq reports truncation —
+    without the raise, a revisited session answers truncated=false and the
+    client trusts a tail with a hole in it (#100122)."""
+    frames = [_frame("s0") for _ in range(3)]
+    for f in frames:
+        event_replay._stamp_event(f)
+    assert latest_seq("s0") == 3
+
+    for index in range(1, event_replay._REPLAY_SESSIONS_MAX + 1):
+        event_replay._stamp_event(_frame(f"s{index}"))
+
+    assert event_replay.is_truncated("s0", 0)
+    assert event_replay.is_truncated("s0", 2)
+    assert not event_replay.is_truncated("s0", 3)  # saw everything before eviction
+
+
 def test_concurrent_stamping_never_drops_or_duplicates_seq():
     errors = []
 

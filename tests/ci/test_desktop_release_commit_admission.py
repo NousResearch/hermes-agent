@@ -8,6 +8,7 @@ import subprocess
 import sys
 
 from scripts.releases.commit_build import publish_receipt, receipt_tag
+from scripts.releases.versioning import tag_record
 from tests.ci.test_desktop_release_tag_admission import _child_env, _git, _seed_repo, _workflow, _BASH
 
 
@@ -142,7 +143,7 @@ def test_post_build_receipts_bind_kind_commit_and_run_without_same_second_collis
         'v0.0.0+commit.20260922T012345Z.123',
         'v0.0.0+commit.20260922T012345Z.124',
     ]
-    assert json.loads(_git('tag', '-l', first['tag'], '--format=%(contents)', cwd=clone)) == first
+    assert tag_record(_git('tag', '-l', first['tag'], '--format=%(contents)', cwd=clone)) == first
     assert _git('rev-parse', f"{first['tag']}^{{commit}}", cwd=clone) == commit
     assert publish_receipt(
         'commit', base, version='0.0.0', commit=commit,

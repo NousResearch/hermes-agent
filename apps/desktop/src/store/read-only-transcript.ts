@@ -14,6 +14,12 @@
  * Every other failure keeps its existing semantics. Rows whose owner IS
  * resolvable never take this path, and a later successful live resume (e.g.
  * after the single-match owner backfill stamps the row) clears the flag.
+ *
+ * A second, unrelated reason a stored transcript is read-only lives here too:
+ * a cron run the scheduler no longer owns but never closed (#88443). It keeps
+ * its own verdict (see `$cronRunReadOnlyVerdicts` below) so a live resume
+ * cannot clear it, and `isStoredTranscriptReadOnly` reports both, so every
+ * write path gets one answer.
  */
 import { atom } from 'nanostores'
 
@@ -49,7 +55,51 @@ export function clearStoredTranscriptReadOnly(storedSessionId: string): void {
 }
 
 export function isStoredTranscriptReadOnly(storedSessionId: null | string | undefined): boolean {
-  return Boolean(storedSessionId && $readOnlyStoredTranscripts.get().has(storedSessionId.trim()))
+  if (!storedSessionId) {
+    return false
+  }
+
+  const id = storedSessionId.trim()
+
+  return $readOnlyStoredTranscripts.get().has(id) || isCronRunReadOnly(id)
+}
+
+/**
+ * Cron run write gate (#88443), one VERDICT per run session the desktop has
+ * evaluated — never a permanent latch.
+ *
+ * A cron run is an autonomous scheduled execution. A run whose `ended_at` is
+ * NULL while the scheduler no longer owns it is a ZOMBIE (watchdog kill,
+ * crash, connection drop): resuming it as a desktop chat routes the user's
+ * messages into a dead `source='cron'` session. A zombie's verdict is `true`
+ * (read-only); a live or closed run's is `false`.
+ *
+ * The verdict is RE-EVALUATED whenever fresher run data arrives — every Cron
+ * surface poll and, authoritatively, right before any send
+ * (`refreshCronRunWriteGate`) — so a run that looked idle during a long tool
+ * call, then ticked or closed, becomes writable again. It is deliberately
+ * separate from the owner-recovery set above: a successful live resume of a
+ * zombie must not clear it.
+ */
+export const $cronRunReadOnlyVerdicts = atom<ReadonlyMap<string, boolean>>(new Map())
+
+export function recordCronRunVerdict(storedSessionId: string, readOnly: boolean): void {
+  const id = storedSessionId.trim()
+  const current = $cronRunReadOnlyVerdicts.get()
+
+  if (!id || current.get(id) === readOnly) {
+    return
+  }
+
+  $cronRunReadOnlyVerdicts.set(new Map(current).set(id, readOnly))
+}
+
+export function hasCronRunVerdict(storedSessionId: null | string | undefined): boolean {
+  return Boolean(storedSessionId && $cronRunReadOnlyVerdicts.get().has(storedSessionId.trim()))
+}
+
+export function isCronRunReadOnly(storedSessionId: null | string | undefined): boolean {
+  return Boolean(storedSessionId && $cronRunReadOnlyVerdicts.get().get(storedSessionId.trim()) === true)
 }
 
 /** Synthetic runtime-id namespace for read-only tiles: a stored transcript

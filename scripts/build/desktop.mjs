@@ -59,11 +59,15 @@ export async function buildDesktop({ source, out, icons, stamp, nativeDeps, type
       cacheDir: join(scratch, 'vite-cache'),
       build: { outDir: product, emptyOutDir: true },
     })
-    await bundleElectronMain({ source, out: product, stamp })
+    // The receipt must carry the clock this output BAKED, not whatever the live
+    // stamp says by now: electron-builder copies that live file into the bundle
+    // after the receipt is written, and productCurrent must be able to tell that
+    // the two disagree (#123308).
+    const { stampClock } = await bundleElectronMain({ source, out: product, stamp })
     copyNativeTree({ nativeDeps, out: join(product, 'node_modules') })
     const result = checkDistBuilt(product)
     if (!result.ok) throw new Error(result.error)
-    recordProduct({ source, product: 'desktop', out: product, inputs })
+    recordProduct({ source, product: 'desktop', out: product, inputs, stampClock })
   }, { source })
   return { out }
 }

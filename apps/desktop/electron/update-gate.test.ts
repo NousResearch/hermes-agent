@@ -171,3 +171,99 @@ test('returns timeout when the gate never opens', async () => {
 
   assert.equal(outcome, 'timeout')
 })
+
+// ---------------------------------------------------------------------------
+// failed-receipt signal (#122206)
+// ---------------------------------------------------------------------------
+
+test('a failed receipt outranks a live marker as the reported reason', () => {
+  assert.equal(updateGateReason({ ...deps(true, false), hasFailedReceipt: () => true }), 'failed-receipt')
+})
+
+test('a failed receipt without a live marker keeps the gate open', () => {
+  // The receipt only RECLASSIFIES a closed gate; it must not close an open
+  // one — a failed update from last week must not defer any boot.
+  assert.equal(updateGateReason({ ...deps(false, false), hasFailedReceipt: () => true }), null)
+})
+
+test('a running or partial receipt keeps the marker reason', () => {
+  // Only a TERMINAL failure is actionable: "running" must keep parking.
+  assert.equal(updateGateReason({ ...deps(true, false), hasFailedReceipt: () => false }), 'marker')
+})
+
+test('abandonOn returns abandoned instead of parking on a failed receipt', async () => {
+  let slept = 0
+
+  const outcome = await waitForUpdateClearance(
+    { ...deps(true, false), hasFailedReceipt: () => true },
+    {
+      abandonOn: reason => reason === 'failed-receipt',
+      pollMs: 10,
+      sleep: async () => {
+        slept += 1
+      },
+      timeoutMs: 10_000
+    }
+  )
+
+  assert.equal(outcome, 'abandoned')
+  assert.equal(slept, 0)
+})
+
+test('a mid-wait receipt finalization abandons the park', async () => {
+  // The gate closed on a live marker (update running); the update then fails
+  // and finalizes its receipt while we are parked. The wait must abandon on
+  // the next poll instead of counting down to the 20-minute deadline.
+  let failedReceipt = false
+  let polls = 0
+
+  const outcome = await waitForUpdateClearance(
+    { ...deps(true, false), hasFailedReceipt: () => failedReceipt },
+    {
+      abandonOn: reason => reason === 'failed-receipt',
+      onWaitTick: () => {
+        polls += 1
+
+        if (polls === 3) {
+          failedReceipt = true
+        }
+      },
+      pollMs: 1,
+      sleep: async () => {},
+      timeoutMs: 10_000
+    }
+  )
+
+  assert.equal(outcome, 'abandoned')
+  assert.equal(polls, 3)
+})
+
+test('abandonOn declining keeps the historical parking', async () => {
+  let ticks = 0
+  let marker = true
+
+  const outcome = await waitForUpdateClearance(
+    {
+      hasLiveMarker: () => marker,
+      isUpdateInFlight: () => false,
+      isHandoffActive: () => false,
+      hasFailedReceipt: () => true
+    },
+    {
+      abandonOn: () => false,
+      onWaitTick: () => {
+        ticks += 1
+
+        if (ticks === 2) {
+          marker = false
+        }
+      },
+      pollMs: 1,
+      sleep: async () => {},
+      timeoutMs: 10_000
+    }
+  )
+
+  assert.equal(outcome, 'finished')
+  assert.equal(ticks, 2)
+})

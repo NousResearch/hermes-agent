@@ -1,6 +1,6 @@
 """disk-cleanup plugin — auto-cleanup of ephemeral Hermes session files.
 
-``post_tool_call`` silently tracks test/temp paths created by write_file/patch/terminal;
+``pre_tool_call`` + ``post_tool_call`` silently track test/temp paths CREATED by write_file/patch/terminal;
 ``on_session_end`` runs :func:`disk_cleanup.quick` when any test file was tracked this turn;
 ``/disk-cleanup`` exposes status / dry-run / quick / deep / track / forget.
 """
@@ -12,8 +12,9 @@ import os
 import re
 import shlex
 import threading
+import time
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Set
+from typing import Any, Callable, Dict, FrozenSet, List, Optional, Set, Tuple
 
 from . import disk_cleanup as dg
 
@@ -26,21 +27,14 @@ _recent_test_tracks: Dict[str, Set[str]] = {}
 _lock = threading.Lock()
 
 
-# Tool-call result shapes we can parse
-_WRITE_FILE_PATH_KEY = "path"
-_TERMINAL_PATH_REGEX = re.compile(
-    r"(?:^|\s)(/[^\s'\"`]+|~/[^\s'\"`]+|[A-Za-z]:[\\/][^\s'\"`]+)"
-)
-
-
-def _extract_path_arg(args: Dict[str, Any], result: str) -> Set[str]:
-    """write_file/patch: the single ``path`` arg (re-tracking existing files is a no-op)."""
+def _extract_path_arg(args: Dict[str, Any]) -> Set[str]:
+    """write_file/patch: the single ``path`` arg."""
     path = args.get("path")
     return {path} if isinstance(path, str) and path else set()
 
 
-def _extract_paths_from_terminal(args: Dict[str, Any], result: str) -> Set[str]:
-    """Candidate paths from a terminal command + output; guess_category/is_safe_path filter later."""
+def _extract_paths_from_terminal(args: Dict[str, Any]) -> Set[str]:
+    """Candidate paths named in a terminal command; guess_category/is_safe_path filter later."""
     paths: Set[str] = set()
     cmd = args.get("command") or ""
     if isinstance(cmd, str) and cmd:
@@ -57,33 +51,72 @@ def _extract_paths_from_terminal(args: Dict[str, Any], result: str) -> Set[str]:
                     paths.add(tok)
         except ValueError:
             pass
-    # Only scan the result text if it's a reasonable size (avoid 50KB dumps).
-    if isinstance(result, str) and len(result) < 4096:
-        paths.update(_TERMINAL_PATH_REGEX.findall(result))
     return paths
 
 
-_PATH_EXTRACTORS: Dict[str, Callable[[Dict[str, Any], str], Set[str]]] = {
+_PATH_EXTRACTORS: Dict[str, Callable[[Dict[str, Any]], Set[str]]] = {
     "write_file": _extract_path_arg,
     "patch": _extract_path_arg,
     "terminal": _extract_paths_from_terminal}
 
 
-def _on_post_tool_call(tool_name: str = "", args: Optional[Dict[str, Any]] = None, result: Any = None,
-                       task_id: str = "", session_id: str = "", tool_call_id: str = "", **_: Any) -> None:
-    """Auto-track ephemeral files created by recent tool calls. Best-effort, never raises."""
+# (owner, tool_call_id) -> (snapshot time, argument paths absent before the call). Post tracks only
+# these, so pre-existing files and paths swapped in after the snapshot (another hook's modify) fail closed.
+_pre_call: Dict[Tuple[str, str], Tuple[float, FrozenSet[str]]] = {}
+_PRE_CALL_TTL_S = 3600.0  # a call whose post hook never fires (blocked) must not leak its entry
+
+
+def _owner(task_id: str, session_id: str) -> str:
+    return task_id or session_id or "default"
+
+
+def _pre_call_key(task_id: str, session_id: str, tool_call_id: str) -> Tuple[str, str]:
+    # tool_call_id alone is not unique (llama.cpp sends one constant id), so scope it by owner.
+    return (_owner(task_id, session_id), tool_call_id)
+
+
+def _on_pre_tool_call(tool_name: str = "", args: Optional[Dict[str, Any]] = None, task_id: str = "",
+                      session_id: str = "", tool_call_id: str = "", **_: Any) -> None:
+    """Snapshot which argument paths are absent before the call. Never raises: pre_tool_call hooks
+    fail CLOSED (a raise would block the tool), so an error records no absent path."""
     extractor = _PATH_EXTRACTORS.get(tool_name)
-    if not isinstance(args, dict) or extractor is None:
+    if not tool_call_id or extractor is None or not isinstance(args, dict):
+        return None
+    now = time.time()
+    try:
+        absent = frozenset(str(p) for p in (Path(s).expanduser() for s in extractor(args)) if not p.exists())
+    except Exception:
+        absent = frozenset()
+    with _lock:
+        for key in [k for k, (taken, _a) in _pre_call.items() if now - taken > _PRE_CALL_TTL_S]:
+            del _pre_call[key]
+        _pre_call[_pre_call_key(task_id, session_id, tool_call_id)] = (now, absent)
+    return None
+
+
+def _on_post_tool_call(tool_name: str = "", args: Optional[Dict[str, Any]] = None,
+                       task_id: str = "", session_id: str = "", tool_call_id: str = "", **_: Any) -> None:
+    """Auto-track ephemeral files THIS call created: a path from the call's final arguments that
+    this call's own pre-call snapshot saw absent and that exists now. Paths seen only in terminal
+    OUTPUT (a `find` or `ls` listing), or absent from the snapshot, carry no such proof and are
+    never tracked. Best-effort, never raises."""
+    extractor = _PATH_EXTRACTORS.get(tool_name)
+    if not isinstance(args, dict) or extractor is None or not tool_call_id:
         return
-    for path_str in extractor(args, result if isinstance(result, str) else ""):
+    with _lock:
+        absent = _pre_call.pop(_pre_call_key(task_id, session_id, tool_call_id), (0.0, frozenset()))[1]
+    if not absent:
+        return
+    for path_str in extractor(args):
         try:
             p = Path(path_str).expanduser()
+            created = str(p) in absent and p.exists()
         except Exception:
             continue
-        category = dg.guess_category(p) if p.exists() else None
+        category = dg.guess_category(p) if created else None
         if category is not None and dg.track(str(p), category, silent=True) and category == "test":
             with _lock:
-                _recent_test_tracks.setdefault(task_id or session_id or "default", set()).add(str(p))
+                _recent_test_tracks.setdefault(_owner(task_id, session_id), set()).add(str(p))
 
 
 def _on_session_end(
@@ -196,6 +229,7 @@ def _handle_slash(raw_args: str) -> Optional[str]:
 
 
 def register(ctx) -> None:
+    ctx.register_hook("pre_tool_call", _on_pre_tool_call)
     ctx.register_hook("post_tool_call", _on_post_tool_call)
     ctx.register_hook("on_session_end", _on_session_end)
     ctx.register_command("disk-cleanup", handler=_handle_slash,

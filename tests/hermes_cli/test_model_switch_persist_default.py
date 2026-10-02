@@ -1,7 +1,6 @@
 """Tests for session-scoped-by-default model switching.
 
 Covers:
-- ``parse_model_flags`` recognises ``--session`` (and keeps ``--global``).
 - ``resolve_persist_behavior`` applies the config-gated default and the
   ``--session`` / ``--global`` overrides.
 - The default (no flags) is session-only, which is the user-facing fix: a
@@ -11,28 +10,7 @@ Covers:
 
 from unittest.mock import patch
 
-from hermes_cli.model_switch import parse_model_flags, resolve_persist_behavior
-
-
-# ---------------------------------------------------------------------------
-# parse_model_flags
-# ---------------------------------------------------------------------------
-
-
-class TestParseModelFlagsSession:
-    def test_no_flags(self):
-        assert parse_model_flags("sonnet") == ("sonnet", "", False, False, False)
-
-
-    def test_unicode_dash_session_normalized(self):
-        # Telegram/iOS auto-converts -- to en/em dashes.
-        assert parse_model_flags("sonnet \u2013session") == (
-            "sonnet",
-            "",
-            False,
-            False,
-            True,
-        )
+from hermes_cli.model_switch import resolve_persist_behavior
 
 
 # ---------------------------------------------------------------------------

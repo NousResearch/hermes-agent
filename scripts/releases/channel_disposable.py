@@ -90,6 +90,9 @@ def allocate(env: dict[str, str]) -> dict:
     if disposable_name and channel_name:
         raise ValueError("Choose disposable_channel or channel, not both")
     disposable = bool(disposable_name)
+    branding = env.get("BRANDING") or "preview"
+    if disposable and branding != "preview":
+        raise ValueError("Disposable namespaces have no published stable identity to copy")
     name = validate_name(disposable_name or channel_name)
     if disposable:
         if name in {"ci-cas-probe", "stable", "canary", "main"}:
@@ -119,7 +122,7 @@ def allocate(env: dict[str, str]) -> dict:
                                  base, authorize=authorize)
     if disposable:
         probe(publisher, admitted["sha"], admitted["payload-version"], controller)
-    publisher.create(name)
+    publisher.create(name, branding)
     from scripts.releases.bundle_env import decode
     request = publisher.allocate(name, admitted["sha"], admitted["payload-version"],
                                   decode(env.get("BUNDLE_ENV_JSON", "")), controller)

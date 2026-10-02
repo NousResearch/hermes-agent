@@ -1134,6 +1134,9 @@ export const frOverrides = {
       }
     },
     appearance: {
+      chatTextScaleTitle: 'Taille du texte du chat',
+      chatTextScaleDesc:
+        'Ajuste le texte des conversations et de la saisie par rapport à l’échelle de l’interface. Les barres latérales et les contrôles gardent leur taille.',
       title: 'Apparence',
       intro:
         'Exclusif au desktop. Le mode contrôle la luminosité ; le thème contrôle la palette et le chrome de la conversation.',
@@ -4061,6 +4064,8 @@ export const frOverrides = {
       reveal: 'Afficher dans le dossier',
       copyPath: 'Copier le chemin',
       removeFromSidebar: 'Masquer de la barre latérale',
+      createdInPreviousContext:
+        "Le projet a été créé sur la connexion ou le profil précédent. Revenez-y ; IDEA.md n'a pas été écrit.",
       createFailed: 'Impossible de créer le projet',
       staleBackend:
         'Mettez à jour le backend Hermes pour créer des projets — votre backend est plus ancien que cette application de bureau (Paramètres → Mises à jour → Backend).',
@@ -5055,6 +5060,10 @@ export const frOverrides = {
       editModels: 'Modifier les modèles…',
       followDefault: 'Utiliser le modèle par défaut des Réglages',
       refreshModels: 'Actualiser les modèles',
+      favorites: 'Favoris',
+      addFavorite: 'Ajouter aux favoris',
+      removeFavorite: 'Retirer des favoris',
+      favoriteShortcut: '⇧ Clic',
       fast: 'Rapide',
       free: 'gratuit',
       cacheRead: 'lecture en cache',
@@ -5252,6 +5261,8 @@ export const frOverrides = {
   },
   preview: {
     tab: 'Aperçu',
+    pin: "Épingler à l'espace de travail",
+    unpin: "Détacher de l'espace de travail",
     closePane: "Fermer le panneau d'aperçu",
     loading: "Chargement de l'aperçu",
     unavailable: 'Aperçu indisponible',
@@ -5280,6 +5291,7 @@ export const frOverrides = {
     editing: 'Modification',
     unsavedChanges: 'Modifications non enregistrées',
     saveFailed: message => `Impossible d'enregistrer : ${message}`,
+    saveScopeChanged: 'Revenez à la connexion et au profil d’origine pour enregistrer ce brouillon.',
     diskChangedTitle: 'Fichier modifié sur le disque',
     diskChangedBody:
       "Ce fichier a changé depuis que vous l'avez ouvert. L'écraser avec votre version, ou abandonner vos modifications et recharger ?",
@@ -5475,6 +5487,7 @@ export const frOverrides = {
       branchNewChat: 'Créer une branche dans une nouvelle conversation',
       react: 'Réagir',
       dismissError: "Ignorer l'erreur",
+      responseStopped: 'Réponse interrompue',
       errorLayers: {
         auth: "Erreur d'authentification",
         billing: 'Crédits épuisés',
@@ -5541,6 +5554,10 @@ export const frOverrides = {
           title: 'Service d’IA injoignable',
           body: provider =>
             `${provider} est injoignable ou n'a pas répondu à temps. Vérifiez votre connexion internet, puis réessayez.`
+        },
+        no_reply: {
+          title: "La réponse n'a pas abouti",
+          body: 'Hermes a terminé ce tour sans réponse. Réessayez pour la renvoyer.'
         },
         stream_drop: {
           title: 'La réponse a été interrompue',
@@ -5723,14 +5740,11 @@ export const frOverrides = {
       placeholder: 'Saisissez votre réponse…',
       skip: 'Passer',
       skipped: 'Ignoré',
-      continueLabel: 'Continuer',
+      noAnswer: 'Pas de réponse',
       confirmAndContinueLabel: 'Confirmer et continuer',
-      answeredBadge: 'Répondu',
+      singleSelectHint: 'Choisir une réponse',
+      multiSelectHint: 'Choisir toutes les réponses qui s’appliquent',
       questionProgress: (answered, total) => `${answered} réponse${answered === 1 ? '' : 's'} sur ${total}`,
-      lateAnswer: (question, choice) => `Re : « ${question} » — ma réponse : ${choice}`,
-      lateAnswerTip: 'Rédiger cette réponse comme message de suivi',
-      lateAnswerHint:
-        "Cette invite n'attend plus de réponse. Choisissez une option pour la rédiger comme message de suivi.",
       notDelivered:
         "Cette question n'a pas atteint l'app, elle ne peut donc pas être répondue ici. Appuyez sur Arrêter pour terminer le tour, puis répondez dans le chat."
     },

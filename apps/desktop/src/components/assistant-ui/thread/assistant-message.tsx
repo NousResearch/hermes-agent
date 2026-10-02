@@ -308,6 +308,7 @@ const AssistantMessageBody: FC<AssistantMessageProps & { collapsedNotice?: null 
           >
             {/* Todos render in the composer status stack now, not inline. */}
             {MESSAGE_PARTS}
+            <StoppedNotice />
             <AssistantStatusSlot />
             <AssistantPreviewEmbeds />
             <MessagePrimitive.Error>
@@ -359,6 +360,28 @@ const AssistantMessageBody: FC<AssistantMessageProps & { collapsedNotice?: null 
         </>
       )}
     </MessagePrimitive.Root>
+  )
+}
+
+const StoppedNotice: FC = () => {
+  const { t } = useI18n()
+
+  const stopped = useAuiState(
+    s => s.message.status?.type !== 'running' && s.message.metadata?.custom?.interrupted === true
+  )
+
+  if (!stopped) {
+    return null
+  }
+
+  return (
+    <div
+      className="flex items-center gap-1 px-(--message-text-indent) pt-1 text-[0.72rem] text-(--ui-text-tertiary)"
+      data-slot="aui_assistant-message-stopped"
+    >
+      <Codicon className="size-3" name="debug-stop" />
+      {t.assistant.thread.responseStopped}
+    </div>
   )
 }
 
@@ -615,12 +638,12 @@ const SwitchProviderAction: FC<{ label: string }> = ({ label }) => {
   )
 }
 
-// Settings → Keys deep link for a rejected API key: `?tab=keys` plus
-// `&key=<ENV>` when the descriptor names the env var (keys-settings.tsx
-// scrolls to and expands that row). Older backends omit `api_key_env`; the
-// tab alone is still the right place.
+// Settings → Providers → API keys deep link for a rejected API key, plus
+// `&key=<ENV>` when the descriptor names the env var (providers-settings.tsx
+// scrolls to and expands that provider). Older backends omit `api_key_env`;
+// the API-keys list alone is still the right place.
 const updateApiKeyRoute = (surface: ErrorSurface | undefined) => {
-  const params = new URLSearchParams({ tab: 'keys' })
+  const params = new URLSearchParams({ tab: 'providers', pview: 'keys' })
 
   if (surface?.apiKeyEnv) {
     params.set('key', surface.apiKeyEnv)

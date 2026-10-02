@@ -378,10 +378,7 @@ test('registry sources: forced-local backends are read per profile', async () =>
     }
   )
 
-  assert.deepEqual(calls, [
-    'default-desc /api/sessions?limit=10',
-    'work-desc /api/sessions?limit=10'
-  ])
+  assert.deepEqual(calls, ['default-desc /api/sessions?limit=10', 'work-desc /api/sessions?limit=10'])
   assert.deepEqual(
     rows.map(row => [(row as any).id, (row as any).profile, (row as any).connection_id]),
     [
@@ -451,7 +448,10 @@ test('registry sources: large aggregate reads stay within the backend page cap',
   )
 
   assert.deepEqual(
-    calls.map(path => [Number(new URL(path, 'http://desktop.test').searchParams.get('limit')), Number(new URL(path, 'http://desktop.test').searchParams.get('offset'))]),
+    calls.map(path => [
+      Number(new URL(path, 'http://desktop.test').searchParams.get('limit')),
+      Number(new URL(path, 'http://desktop.test').searchParams.get('offset'))
+    ]),
     [
       [100, 0],
       [100, 100],

@@ -23,6 +23,11 @@ from gateway.platforms.base import SendResult
 from gateway.platforms.event import MessageEvent
 from gateway.run import GatewayRunner
 from gateway.session import SessionEntry, SessionSource, build_session_key
+from hermes_cli.version_info import _reset_version_info_cache
+
+# E2E tests compare against real hermes processes, which resolve the checkout's real
+# identity; drop the root conftest's seeded version so in-process lookups agree.
+_reset_version_info_cache()
 
 E2E_MESSAGE_SETTLE_DELAY = 0.3
 

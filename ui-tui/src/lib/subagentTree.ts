@@ -246,7 +246,10 @@ export function formatSummary(totals: SubagentAggregate): string {
 
   if (totals.totalTools > 0) {
     pieces.push(
-      t(totals.totalTools === 1 ? 'libText.subagentTree.toolsOne' : 'libText.subagentTree.toolsOther', totals.totalTools)
+      t(
+        totals.totalTools === 1 ? 'libText.subagentTree.toolsOne' : 'libText.subagentTree.toolsOther',
+        totals.totalTools
+      )
     )
   }
 

@@ -534,6 +534,29 @@ def _start_codex_thread(agent) -> str:
         return agent._codex_session.ensure_started()
 
 
+def _codex_model_provider(agent) -> str | None:
+    """codex's ``[model_providers.<id>]`` for a named custom provider (``providers.<name>``); None means codex's
+    own provider. Only the stable id is sent and codex resolves base_url/env_key itself, so Hermes' credential
+    never enters the JSON-RPC payload (#75186)."""
+    if str(getattr(agent, "provider", "") or "").strip().lower() != "custom":
+        return None
+    from hermes_cli.runtime_provider_custom import codex_model_provider_id
+    return codex_model_provider_id(str(getattr(agent, "requested_provider", "") or ""))
+
+
+def _codex_wire_model(agent, model_provider: str | None) -> str | None:
+    """The slug codex should run. ``-900k`` picker variants are Hermes-side aliases the backend rejects
+    ("not supported when using Codex with a ChatGPT account"); codex applies the catalog's extended window
+    to the base slug itself. On codex's own provider the slug is bare (``openai/gpt-5.5`` -> ``gpt-5.5``),
+    as for openai-codex; a named custom provider's model ids are its own and pass through."""
+    from agent.model_metadata import strip_codex_context_variant_suffix
+    model = strip_codex_context_variant_suffix(getattr(agent, "model", None)) or None
+    if model and model_provider is None:
+        from hermes_cli.model_normalize import normalize_model_for_provider
+        model = normalize_model_for_provider(model, "openai-codex")
+    return model
+
+
 def _ensure_codex_session(agent, messages: List[Dict[str, Any]] | None = None) -> None:
     """Lazily spawn one CodexAppServerSession per AIAgent (reused across turns, closed by the _cleanup hook).
     A live session whose thread was started with a different prompt composition (TUI/Desktop ``/personality``
@@ -542,10 +565,14 @@ def _ensure_codex_session(agent, messages: List[Dict[str, Any]] | None = None) -
     today's fresh-thread behaviour and overwrites the binding once its turn is committed. ``messages`` is the
     turn's transcript (current user row last); a thread started from scratch is seeded with the prior turns."""
     developer_instructions = _codex_developer_instructions(agent)
+    model_provider = _codex_model_provider(agent)
     if getattr(agent, "_codex_session", None) is not None:
         # Only a session whose recorded composition differs is stale; one attached without a record is kept.
+        # The provider is fixed per thread (turn/start can switch the model, not the provider), so an
+        # in-place switch to or from a named custom provider retires the thread too.
         recorded = getattr(agent, "_codex_session_prompt", None)
-        if recorded is None or recorded == developer_instructions:
+        if recorded is None or (recorded == developer_instructions
+                                and getattr(agent, "_codex_session_model_provider", None) == model_provider):
             return
         _close_codex_session(agent)
     resume_thread_id = None if getattr(agent, "_codex_session_prompt", None) is not None else _stored_codex_thread_id(agent)
@@ -578,22 +605,18 @@ def _ensure_codex_session(agent, messages: List[Dict[str, Any]] | None = None) -
     # once, so a /model switch into codex or a retired thread does not start blind (#74712, #26035).
     # The recorded composition stays the bare prompt: the seed must not make the next turn retire the thread.
     agent._codex_session_prompt = developer_instructions
+    agent._codex_session_model_provider = model_provider
     from agent.codex_runtime_history_seed import render_history_seed
     history_seed = render_history_seed(messages) or None
-    # A named custom provider (``providers.<name>``) maps onto codex's own ``[model_providers.<name>]``
-    # table: send the stable id plus the active model and let codex resolve base_url/env_key itself, so
-    # Hermes' credential never enters the JSON-RPC payload (#75186). openai/openai-codex keep codex's defaults.
-    model_provider = None
-    if str(getattr(agent, "provider", "") or "").strip().lower() == "custom":
-        from hermes_cli.runtime_provider_custom import codex_model_provider_id
-        model_provider = codex_model_provider_id(str(getattr(agent, "requested_provider", "") or ""))
+    # The model always rides along: codex's home is shared, while the Hermes model is per profile/session,
+    # so omitting it ran codex's own default instead of the selection.
     agent._codex_session = CodexAppServerSession(
         cwd=getattr(agent, "session_cwd", None) or str(resolve_agent_cwd()), approval_callback=approval_callback,
         codex_bin=get_configured_codex_binary(load_config()),
         request_routing=_ServerRequestRouting(auto_approve_exec=auto_approve_requests, auto_approve_apply_patch=auto_approve_requests),
         on_event=make_codex_app_server_event_bridge(agent),
         developer_instructions=developer_instructions or None,
-        model=getattr(agent, "model", None) if model_provider else None, model_provider=model_provider,
+        model=_codex_wire_model(agent, model_provider), model_provider=model_provider,
         resume_thread_id=resume_thread_id, history_seed=history_seed,
     )
 
@@ -670,7 +693,9 @@ def run_codex_app_server_turn(agent, *, user_message: str, original_user_message
     _ensure_codex_session(agent, messages)
     try:
         _start_codex_thread(agent)
-        turn = agent._codex_session.run_turn(user_input=user_message)
+        turn = agent._codex_session.run_turn(
+            user_input=user_message,
+            model=_codex_wire_model(agent, getattr(agent, "_codex_session_model_provider", None)))
     except Exception as exc:
         logger.exception("codex app-server turn failed")
         _close_codex_session(agent)
@@ -779,7 +804,7 @@ def _output_text_of(item: Any) -> str:
 class _CodexResponseAssembler:
     """Assemble a Response-shaped ``SimpleNamespace`` from raw Responses SSE events.
 
-    Only ``usage`` / ``status`` / ``id`` are read from the terminal frame — never ``response.output``. Output
+    Only ``usage`` / ``status`` / ``id`` / ``service_tier`` are read from the terminal frame — never ``response.output``. Output
     items come from ``output_item.done``, or are synthesized from text deltas, or settled from function calls
     announced via ``output_item.added`` but never confirmed (some backends omit per-item done events on success)."""
 
@@ -790,6 +815,7 @@ class _CodexResponseAssembler:
     active_summary_index: Any = None
     terminal_status: str = "completed"
     terminal_usage = terminal_response_id = terminal_incomplete_details = terminal_error = None
+    terminal_service_tier = None  # the tier the backend SERVED (may differ from the one requested)
     # terminal_status defaults to "completed", so settlement needs an explicitly observed response.completed frame.
     saw_response_completed = False
 
@@ -911,6 +937,7 @@ class _CodexResponseAssembler:
         resp_obj = _event_field(event, "response")
         if resp_obj is not None:
             self.terminal_usage, self.terminal_response_id = _event_field(resp_obj, "usage"), _event_field(resp_obj, "id")
+            self.terminal_service_tier = _event_field(resp_obj, "service_tier")
             rstatus = _event_field(resp_obj, "status")
             if isinstance(rstatus, str):
                 self.terminal_status = rstatus
@@ -978,7 +1005,7 @@ class _CodexResponseAssembler:
         return SimpleNamespace(
             output=output, output_text="".join(self.text_deltas), usage=self.terminal_usage, status=self.terminal_status,
             id=self.terminal_response_id, model=self.model, incomplete_details=self.terminal_incomplete_details,
-            error=self.terminal_error)
+            error=self.terminal_error, service_tier=self.terminal_service_tier)
 
 
 def _consume_codex_event_stream(

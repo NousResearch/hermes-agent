@@ -118,6 +118,19 @@ class TestDynamicParamGating(unittest.TestCase):
         )
         self.assertIn("upscale", props)
 
+    def test_creative_controls_follow_the_active_backend(self):
+        """A managed Krea model renders exactly the controls the Krea plugin declares; FAL renders none."""
+        from plugins.image_gen.krea import KreaImageGenProvider
+
+        with patch.object(ig, "_read_configured_image_provider", return_value="nous"), \
+             patch.object(ig, "_read_configured_image_model", return_value="krea-2-medium"):
+            props = _build_dynamic_image_schema()["parameters"]["properties"]
+        declared = KreaImageGenProvider().capabilities()["creative_controls"]
+        self.assertTrue(declared)
+        self.assertLessEqual(set(declared), set(props))
+        for model in (self._t2i_only(), self._edit_multi_ref()):
+            self.assertFalse(set(ig._CREATIVE_CONTROL_PARAMS) & set(self._schema_for(model)["parameters"]["properties"]))
+
     def test_static_schema_carries_no_capability_args(self):
         """The registration-time placeholder must stay minimal — dynamic
         overrides own the capability args (do-not-re-add guard)."""

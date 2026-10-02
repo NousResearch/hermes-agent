@@ -38,8 +38,11 @@ ABSORBED_MESSAGE_UIDS = "_absorbed_message_uids"
 TOOL_CALL_UIDS = "_tool_call_uids"
 TOOL_CALL_UID = "_tool_call_uid"
 PERSISTENCE_ONLY_MESSAGE_FIELDS = frozenset(
-    {"timestamp", "display_kind", "display_metadata", "_row_id", MERGED_TURN_PREFIX, MESSAGE_UID,
-     ABSORBED_MESSAGE_UIDS, TOOL_CALL_UIDS, TOOL_CALL_UID}
+    # Membership is the real contract, NOT the leading underscore: the chat-completions transport happens
+    # to sweep underscore keys, but turn_context.py pops this set from every outgoing copy and a strict
+    # backend 400s on any key it does not know.
+    {"timestamp", "display_kind", "display_metadata", "_row_id", "_submit_row_session_id",
+     MERGED_TURN_PREFIX, MESSAGE_UID, ABSORBED_MESSAGE_UIDS, TOOL_CALL_UIDS, TOOL_CALL_UID}
 ) | REPAIR_BOOKKEEPING_FIELDS
 
 

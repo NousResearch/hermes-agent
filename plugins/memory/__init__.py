@@ -524,7 +524,7 @@ def discover_plugin_cli_commands() -> List[dict]:
             "help": desc or f"Manage {active_provider} memory plugin",
             "description": desc or "",
             "setup_fn": register_cli,
-            "handler_fn": getattr(cli_mod, f"{active_provider}_command", None) or getattr(cli_mod, "honcho_command", None),
+            "handler_fn": getattr(cli_mod, f"{active_provider}_command", None),
             "plugin": active_provider,
         }]
     except Exception as e:

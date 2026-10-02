@@ -399,9 +399,13 @@ test.runIf(process.platform !== 'win32').each([0, 23])(
 
       const log: string = await readFile(logPath, 'utf8')
       assert.match(stdout, /MANAGED_UPDATE_STARTED/)
-      assert.equal(stderr, '')
+      assert.match(log, /managed-update start pid=/)
+      assert.match(log, new RegExp(`managed-update exit rc=${exitCode}`))
       assert.equal(status, String(exitCode), `updater output: ${log}`)
-      assert.deepEqual(log.trimEnd().split('\n'), ['update', '--yes', home, CORRELATION, 'default', home, logPath])
+      const logLines: string[] = log.trimEnd().split('\n')
+      assert.match(logLines.shift() ?? '', /managed-update start pid=/)
+      assert.match(logLines.pop() ?? '', new RegExp(`managed-update exit rc=${exitCode}`))
+      assert.deepEqual(logLines, ['update', '--yes', home, CORRELATION, 'default', home, logPath])
       assert.equal((await stat(statusPath)).mode & 0o777, 0o600)
       assert.equal(
         (await readdir(home)).some((name: string): boolean => name.endsWith('.tmp')),
@@ -412,7 +416,6 @@ test.runIf(process.platform !== 'win32').each([0, 23])(
     }
   }
 )
-
 test('Windows managed launcher starts a hidden child and leaves exit 75 to the external coordinator', () => {
   const command = buildWindowsManagedUpdateLaunch(
     {

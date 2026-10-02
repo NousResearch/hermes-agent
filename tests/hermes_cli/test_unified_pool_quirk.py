@@ -31,6 +31,9 @@ UMA_RAM = 48 * GIB
 
 def _no_cache(monkeypatch):
     monkeypatch.setattr(hw, "_pool_probe_cache", None)
+    # One shared cached nvidia-smi query (see _cached_nvidia_gpu_query): a stale
+    # TTL entry from a previous test would suppress this test's own spawn.
+    monkeypatch.setattr(hw, "_gpu_query_cache", None)
 
 
 # ── _unified_pool_bytes: the classification gate ─────────────
@@ -94,7 +97,7 @@ def test_no_probe_available_stays_discrete(monkeypatch):
 def _uma_machine(monkeypatch, *, view):
     _no_cache(monkeypatch)
     monkeypatch.setattr(hw, "_nvidia_vram",
-                        lambda: (UMA_SMI_TOTAL, 14848 << 20, ""))
+                        lambda: (UMA_SMI_TOTAL, 14848 << 20, "", None))
     monkeypatch.setattr(hw, "_ram_bytes",
                         lambda: (UMA_RAM, 32 * GIB))
     monkeypatch.setattr(hw, "_device_pool_view", lambda: view)
@@ -198,18 +201,21 @@ def test_memory_probe_carries_identity_without_another_process(monkeypatch):
     calls = []
     name = "NVIDIA RTX Spark N1X (5120-core Blackwell RTX GPU)"
     monkeypatch.setattr(hw, "_nvidia_smi_path", lambda: "nvidia-smi")
+    monkeypatch.setattr(hw, "_gpu_query_cache", None)
     monkeypatch.setattr(hw, "_ram_bytes", lambda: (64 * GIB, 22 * GIB))
     monkeypatch.setattr(hw, "_device_pool_view", lambda: (UMA_POOL, True))
 
     def run(argv, **kwargs):
         calls.append(argv)
         assert argv[0] == "nvidia-smi"
-        output = f"32704, 31423, {name}\n" if argv[1].endswith(",name") else "32704, 31423\n"
+        # Column order matches _cached_nvidia_gpu_query: total, free, name, pci, used, util.
+        output = f"32704, 31423, {name}, 0x2E0310DE, 2048, 7\n"
         return SimpleNamespace(returncode=0, stdout=output)
 
     monkeypatch.setattr(hw.subprocess, "run", run)
     budget = hw.probe_budget(planning=True)
     assert budget.gpu_name == name
+    assert budget.gpu_pci_id == 0x2E0310DE
     assert budget.platform == sys.platform
     assert budget.total_device_bytes == UMA_POOL
     assert budget.usable_vram_bytes == int(UMA_POOL * .8)

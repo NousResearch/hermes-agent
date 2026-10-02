@@ -20,13 +20,20 @@ from hermes_cli.release_channels import (
 )
 from scripts.releases import commit_build, r2
 from scripts.releases.bundle_env import parse_assignments, validate
-from scripts.releases.channels import ChannelPublisher, R2ChannelStore
+from scripts.releases.channels import BRANDINGS, ChannelPublisher, R2ChannelStore
 
 
 def dispatch_command(
-    name: str, commit: str, repository: str, branch: str, bundle_env: dict | None = None
+    name: str,
+    commit: str,
+    repository: str,
+    branch: str,
+    bundle_env: dict | None = None,
+    branding: str = "preview",
 ) -> list[str]:
     validate_name(name)
+    if branding not in BRANDINGS:
+        raise ChannelError(f"Unknown channel branding: {branding}")
     validate_repository(repository)
     commit_build.require_commit(commit)
     if not branch or branch.startswith("-"):
@@ -53,6 +60,8 @@ def dispatch_command(
     ]
     if bundle_env:
         command += ["-f", "bundle_env=" + json.dumps(bundle_env, sort_keys=True)]
+    if branding != "preview":
+        command += ["-f", "branding=" + branding]
     return command
 
 
@@ -67,6 +76,7 @@ def prepare_build(
     dispatch,
     bundle_env: dict | None = None,
     publish: bool = False,
+    branding: str = "preview",
 ) -> dict:
     validate_name(name)
     validate_repository(repository)
@@ -75,9 +85,10 @@ def prepare_build(
     version = commit_build.version_at(repo, commit)
     if not default_branch or default_branch.startswith("-"):
         raise ChannelError("Missing repository default branch")
-    command = dispatch_command(name, commit, repository, default_branch, bundle_env)
+    command = dispatch_command(name, commit, repository, default_branch, bundle_env, branding)
     result = {
         "channel": name,
+        "branding": branding,
         "repository": repository,
         "commit": commit,
         "sourceVersion": version,
@@ -173,6 +184,7 @@ def cmd_channel(args) -> None:
                 ),
                 bundle_env=bundle_env,
                 publish=args.publish,
+                branding=args.branding,
             )
             print(json.dumps(result, sort_keys=True, indent=2))
             if not args.publish:
@@ -237,6 +249,14 @@ def add_arguments(parser) -> None:
         help="Set HERMES_HOME et al to a directory specific for this channel",
     )
     parser.add_argument(
+        "--branding",
+        choices=BRANDINGS,
+        default="preview",
+        help="App name, icon and package ID for --channel: 'stable' installs as the "
+        "regular Hermes app (fixed when the channel is created), 'preview' as "
+        "its own side-by-side app",
+    )
+    parser.add_argument(
         "--channels", action="store_true", help="List authenticated R2 channel records"
     )
     parser.add_argument(
@@ -268,6 +288,8 @@ def validate_arguments(parser, args) -> bool:
         if getattr(args, key)
     ]
     retirement = (args.to, args.minimum_version)
+    if args.branding != "preview" and not args.channel:
+        parser.error("--branding requires --channel")
     if any(retirement) and not args.retire_channel:
         parser.error("Retirement options require --retire-channel")
     if len(selected) > 1:

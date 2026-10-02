@@ -179,11 +179,13 @@ gateway:
     label_normal: "NORMAL"
     status_fast: "schnell"
     status_normal: "normal"
-    picker_title: "⚡ **Priority Processing**\\n\\nAktueller Modus: `{mode}`\\n\\nOption wählen:"
+    picker_title: "⚡ **Priority Processing**\n\nAktueller Modus: `{mode}`\n\nOption wählen:"
     choice_fast: "fast — Priority Processing an"
     choice_normal: "normal — Standardverarbeitung"
     choice_auto: "auto — schnell in den ersten Sekunden jedes Zugs"
     choice_cold: "cold — schnell nur im ersten Zug einer Sitzung"
+    choice_ultrafast: "ultrafast — OpenAI Ultrafast (GPT-6 Astra, 6-facher Preis)"
+    ultrafast_not_supported: "⚡ Ultrafast ist nur für GPT-6 Astra verfügbar (aktuelles Modell: `{model}`)."
   footer:
     status: "📎 Laufzeit-Fußzeile: **{state}**\nFelder: `{fields}`\nPlattform: `{platform}`"
     usage: "Verwendung: `/footer [on|off|status]`"
@@ -280,7 +282,7 @@ gateway:
     reset_global_unsupported: "⚠️ `/reasoning reset --global` wird nicht unterstützt. Verwenden Sie `/reasoning <level> --global`, um den globalen Standard zu ändern."
     reset_done: "🧠 ✓ Sitzungs-Reasoning-Override gelöscht; Rückfall auf globale Konfiguration."
     unknown_arg: "⚠️ Unbekanntes Argument: `{arg}`\n\n**Gültige Stärken:** none, minimal, low, medium, high, xhigh, max, ultra\n**Anzeige:** show, hide\n**Speichern:** `--global` hinzufügen, um über die Sitzung hinaus zu speichern"
-    picker_title: "🧠 **Reasoning-Einstellungen**\\n\\n**Stärke:** `{level}`\\n**Geltungsbereich:** {scope}\\n**Anzeige:** {display}\\n\\nOption wählen:"
+    picker_title: "🧠 **Reasoning-Einstellungen**\n\n**Stärke:** `{level}`\n**Geltungsbereich:** {scope}\n**Anzeige:** {display}\n\nOption wählen:"
     choice_none: "none — Reasoning deaktivieren"
     choice_reset: "reset — Sitzungs-Override löschen"
     choice_show: "Reasoning in Antworten anzeigen"
@@ -653,6 +655,7 @@ gateway:
     cancelled: "↩️ Rückfrage abgebrochen — Ihre Nachricht wird als Folgenachricht behandelt."
     expired: "⏳ Diese Abfrage ist abgelaufen — bitte senden Sie eine neue Anfrage."
     native_stream_placeholder: "💬 Warte auf Ihre Auswahl..."
+    skip_hint: 'Antworte mit „skip“, um diese Frage zu überspringen.'
   errors:
     rate_limited: "⏱️ Der KI-Modelldienst begrenzt derzeit die Anfragerate. Warten Sie einen Moment und verwenden Sie dann /retry."
     auth_failed: "⚠️ Die Anmeldung beim KI-Modelldienst ist fehlgeschlagen. Verwenden Sie /login, um sich erneut anzumelden, oder bitten Sie den Betreiber dieses Bots, `hermes doctor` auf dem Host auszuführen."
@@ -1597,7 +1600,7 @@ slash:
   reasoning:
     description: "Reasoning-Stärke und -Anzeige verwalten"
   fast:
-    description: "Schnellmodus — OpenAI Priority Processing / Anthropic Fast Mode (normal/fast/auto/cold)"
+    description: "Schnellmodus — OpenAI Priority Processing / Anthropic Fast Mode (normal/fast/auto/cold/ultrafast)"
   skin:
     description: "Anzeige-Skin/Theme anzeigen oder ändern"
   indicator:
@@ -2032,7 +2035,6 @@ cli:
     clarify_other_type_below: "Sonstiges (unten eingeben)"
     clarify_other_type_answer: "Sonstiges (eigene Antwort eingeben)"
     clarify_guidance: "Geben Sie Ihre Antwort unten ein und drücken Sie Enter."
-    clarify_question_truncated: "… (Frage gekürzt)"
     picker_title_provider: "⚙ Modellauswahl — Anbieter wählen"
     picker_provider_row_one: "{name} ({count} Modell)"
     picker_provider_row_other: "{name} ({count} Modelle)"
@@ -2077,7 +2079,6 @@ cli:
     hint_vault_username: "sichtbar beim Tippen · Enter zum Fortfahren"
     hint_clarify_freetext: "Antwort eingeben und Enter drücken"
     hint_clarify_batch: "↑/↓ zum Auswählen, Enter zum Festlegen, Tab nächste Frage"
-    hint_clarify_choice: "↑/↓ zum Auswählen, Enter zum Bestätigen"
     hint_input_disabled: "Eingabe vorübergehend deaktiviert"
     hint_input_queues: "Eingabe bleibt aktiv; Enter reiht ein"
     hint_command_running: "{frame} Befehl wird ausgeführt · {detail}"
@@ -2260,7 +2261,6 @@ cli:
   clarify:
     bell_context: "Rückfrage"
     label: "Rückfrage"
-    timed_out_agent_decides: "(Rückfrage nach {timeout}s abgelaufen — der Agent entscheidet)"
     timed_out_locked_answers: "(Rückfrage nach {timeout}s abgelaufen — festgelegte Antworten zurückgegeben)"
   connect:
     bell_context: "Verbindungseinrichtung"
@@ -2653,7 +2653,9 @@ cli:
       feature_generic: "Schnellmodus"
       feature_anthropic: "Anthropic Fast Mode"
       feature_openai: "Priority Processing"
-      usage: "Verwendung: /fast [normal|fast|auto|cold|status] [--global]"
+      feature_ultrafast: "OpenAI Ultrafast"
+      ultrafast_not_supported: "(._.) Ultrafast ist nur für GPT-6 Astra verfügbar (aktuelles Modell: {model})."
+      usage: "Verwendung: /fast [normal|fast|auto|cold|ultrafast|status] [--global]"
       status: "{feature}: {status}"
       set_to: "✓ {feature} auf {value} gesetzt {scope}"
     hatch:
@@ -3285,6 +3287,7 @@ cli:
     shallow_clone_keeping: "⚠ Flacher Klon — Push-Status kann nicht geprüft werden, wird behalten: {path}"
     next_session_deepens: "Die nächste `hermes -w`-Sitzung vertieft den Klon und entfernt gemergte Worktrees automatisch."
     unpushed_keeping: "⚠ Worktree hat nicht gepushte Commits, wird behalten: {path}"
+    uncommitted_keeping: "⚠ Worktree hat nicht committete Änderungen, wird behalten: {path}"
     clean_up_manually: "Manuell aufräumen mit: git worktree remove --force {path}"
     cleaned_up: "✓ Worktree aufgeräumt: {path}"
 display:
@@ -3671,7 +3674,7 @@ tips:
   t197: "Das Speichern von Trajektorien (--save-trajectories) erfasst vollständige Tool-Nutzungsprotokolle für das Modelltraining."
   t198: "Drei Plugin-Typen: allgemein (Tools/Hooks), Memory-Anbieter und Kontext-Engines."
   t199: "hermes plugins install owner/repo installiert Plugins direkt von GitHub."
-  t200: "Externe Memory-Anbieter: Honcho, OpenViking, Mem0 sind mitgeliefert; Hindsight und weitere über hermes plugins install."
+  t200: "Externe Memory-Anbieter: OpenViking, Mem0 sind mitgeliefert; Honcho, Hindsight und weitere über hermes plugins install."
   t201: "Plugin-Hooks umfassen pre/post_tool_call, pre/post_llm_call und transform_terminal_output zur Kanonisierung von Ausgaben."
   t202: "Prompt-Caching (Anthropic) senkt die Kosten, indem zwischengespeicherte Präfixe des System-Prompts wiederverwendet werden."
   t203: "Der Agent erzeugt Sitzungstitel automatisch in einem Hintergrund-Thread — ohne Auswirkung auf die Latenz."

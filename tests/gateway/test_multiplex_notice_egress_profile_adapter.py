@@ -73,7 +73,10 @@ async def test_restart_marker_from_secondary_session_notifies_via_its_own_bot(tm
 
 @pytest.mark.asyncio
 async def test_loop_wakeup_from_secondary_route_fires_through_its_own_bot(monkeypatch):
+    from agent import estop
     from hermes_cli import loops
+
+    fired = []
 
     class _Mgr:
         state = SimpleNamespace(ticks_fired=1)
@@ -85,6 +88,7 @@ async def test_loop_wakeup_from_secondary_route_fires_through_its_own_bot(monkey
             return True
 
         def fire_tick(self):
+            fired.append(1)
             return "tick"
 
         def complete_tick(self, *_):
@@ -97,11 +101,21 @@ async def test_loop_wakeup_from_secondary_route_fires_through_its_own_bot(monkey
     route = {"platform": "telegram", "chat_id": "42", "chat_type": "dm", "user_id": "42", "profile": "sec"}
     state = SimpleNamespace(awaiting_response=False, next_due_at=0, route=route)
 
+    # `hermes pause`: loop wakeups are internal events that bypass the inbound estop gate, so the
+    # watcher itself must hold the tick — unclaimed (fire_tick never runs), so it stays due for resume.
+    estop.engage(reason="maintenance")
+    try:
+        await r._loop_wakeup_fire_one("sid", state, 1e12, set())
+        assert (fired, r._profile_adapters["sec"][Platform.TELEGRAM].handled) == ([], [])
+    finally:
+        estop.disengage()
+
     await r._loop_wakeup_fire_one("sid", state, 1e12, set())
     await r._loop_wakeup_fire_one("sid2", SimpleNamespace(**{**vars(state), "route": {**route, "profile": "nobot"}}), 1e12, set())
 
     assert r._profile_adapters["sec"][Platform.TELEGRAM].handled == ["tick"]
     assert r.adapters[Platform.TELEGRAM].handled == []
+    assert fired == [1]  # resume: the held tick fires once; the bot-less route never claims one
 
 
 def _home_config(platform: Platform, chat_id: str, *, notify: bool = True) -> GatewayConfig:

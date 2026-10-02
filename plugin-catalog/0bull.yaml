@@ -1,0 +1,27 @@
+name: 0bull
+repo: https://github.com/0bull/agent-plugin
+sha: 240890a71715375bc877b238491e414517e9d902
+description: >-
+  Control real iPhones rented from 0bull (screenshots, on-screen text, taps, typing,
+  device commands, recorded macros, an on-phone agent) and publish videos to TikTok and
+  YouTube Shorts from them, through the hosted 0bull Streamable HTTP MCP server plus three
+  workflow skills. Portable Agent Plugins v1 package (mcp.json + skills/), no plugin code.
+  Requires a 0bull account with a rented phone and browser OAuth consent (add the server
+  with auth: oauth, then hermes mcp login 0bull); no API key or client secret is stored in
+  the plugin. Posting sends the user's video and caption to TikTok or YouTube through the
+  phone's own apps. Disclosure — hosted-only connector; screenshots, on-screen text,
+  anything typed on the phone (including passwords or codes you hand the agent) and your
+  videos and captions go to 0bull.net; posts publish publicly to TikTok or YouTube; the
+  server also exposes rental tools that spend money, which the skills tell the model never
+  to call but Hermes does not block.
+maintainer: 0bull
+tier: community
+category: tools
+docs_url: https://github.com/0bull/agent-plugin#readme
+version: "1.0.0"
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

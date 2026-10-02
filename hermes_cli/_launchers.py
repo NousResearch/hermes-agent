@@ -23,6 +23,14 @@ if __name__ == "__main__":
 from pm.environments import store_root
 
 
+def _inline_string_literal(value: str) -> str:
+    """Keep inline Python source intact through Windows PowerShell's native argv quoting."""
+    if os.name != "nt":
+        return repr(value)
+    escaped = value.encode("unicode_escape").decode("ascii")
+    return "'" + escaped.replace("'", "\\x27").replace('"', "\\x22") + "'"
+
+
 def runtime_command(repo_root: Path, args=(), *, module: str = "hermes_cli.main",
                     code: str | None = None, python: str | Path | None = None,
                     home: str | Path | None = None) -> list[str]:
@@ -34,15 +42,15 @@ def runtime_command(repo_root: Path, args=(), *, module: str = "hermes_cli.main"
     """
     root = Path(repo_root).resolve()
     python = python or resolve_store_python(root) or Path(sys.executable)
-    entry = f"exec({code!r})" if code is not None else (
-        f"runpy.run_module({module!r}, run_name='__main__', alter_sys=True)")
-    default_home = (f"{str(home)!r}" if home is not None else
+    entry = f"exec({_inline_string_literal(code)})" if code is not None else (
+        f"runpy.run_module({_inline_string_literal(module)}, run_name='__main__', alter_sys=True)")
+    default_home = (_inline_string_literal(str(home)) if home is not None else
                     "str(__import__('hermes_constants').get_default_hermes_root())")
     bootstrap = (
         "import os, sys, runpy; "
         "os.environ.pop('PYTHONHOME', None); os.environ.pop('PYTHONPATH', None); "
         "os.environ.pop('VIRTUAL_ENV', None); "
-        f"sys.path.insert(0, {str(root)!r}); "
+        f"sys.path.insert(0, {_inline_string_literal(str(root))}); "
         f"os.environ['HERMES_HOME'] = os.environ.get('HERMES_HOME') or {default_home}; "
         "import hermes_bootstrap; "
         + entry
@@ -327,6 +335,7 @@ def _owns_launcher(target: Path, root: Path) -> bool:
         return False
     paths = {str(root / p) for p in (
         "hermes", "run_agent.py", "venv/bin/python", "venv/bin/python3",
+        "venv/bin/hermes",
         ".hermes/bin/hermes", ".hermes/bin/hermes-acp",
     )}
     # Current store launchers pass this Python bootstrap as one shell argument.

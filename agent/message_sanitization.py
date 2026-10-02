@@ -631,7 +631,63 @@ def stale_thinking_reaches_wire(api_mode: Any, provider: Any, model: Any, base_u
     to preflight yet fully tail-protected to the walk — an infinite compaction loop.
     ``codex_responses`` never reads the text keys (continuity rides the encrypted sidecar).
     """
+    if (api_mode or "") == "anthropic_messages":
+        from agent.anthropic_thinking_policy import native_anthropic_preserves_prior_thinking
+        if native_anthropic_preserves_prior_thinking(base_url, model):
+            return True
     return (api_mode or "") != "codex_responses" and needs_reasoning_echo(provider, model, base_url)
+
+
+def native_anthropic_accounting_projection(messages: Any) -> tuple[Any, tuple[str, ...]]:
+    """Return the native Anthropic wire shadow plus readable replay thinking out-of-band.
+
+    Canonical history may retain storage-only reasoning alongside signed replay carriers.
+    Native conversion prefers ordered anthropic_content_blocks over reasoning_details and
+    never sends reasoning itself. The generic message estimator therefore receives only
+    ordinary wire-shaped fields, while readable thinking is returned separately for the
+    explicit Anthropic accounting seam. Opaque signature/data bytes are never priced.
+    """
+    if not isinstance(messages, list):
+        return messages, ()
+
+    from agent.anthropic_message_convert import assistant_replay_carrier
+
+    projected = []
+    replayed_thinking: list[str] = []
+    for message in messages:
+        if not isinstance(message, dict) or message.get("role") != "assistant":
+            projected.append(message)
+            continue
+
+        # Mirror _convert_assistant_message's actual inputs instead of starting
+        # from canonical storage. Context selection is allowed to return canonical
+        # rows, which can contain timestamp/finish_reason/api_content and other
+        # local metadata that native Anthropic never sees.
+        shadow = {"role": "assistant"}
+        for key in ("content", "tool_calls", "reasoning_content", "cache_control"):
+            if key in message:
+                shadow[key] = message[key]
+        # Canonical input (preflight, tail walk) still holds the api_content sidecar that
+        # build_api_messages substitutes into content; post-build input already carries it in
+        # content. Charge it either way: an ordered turn, or a context-selection clone the
+        # converter reads raw, then overcounts, never undercounts.
+        sidecar = message.get("api_content")
+        if isinstance(sidecar, str) and sidecar:
+            shadow["content"] = sidecar
+
+        _, carrier = assistant_replay_carrier(message)
+        # The converter ignores reasoning_content for an ordered turn and only injects it when the
+        # details carrier holds no thinking, so it must not be charged in addition to the carrier.
+        if carrier:
+            shadow.pop("reasoning_content", None)
+
+        replayed_thinking.extend(
+            block["thinking"]
+            for block in carrier
+            if block.get("type") == "thinking" and isinstance(block.get("thinking"), str) and block["thinking"]
+        )
+        projected.append(shadow)
+    return projected, tuple(replayed_thinking)
 
 
 def apply_reasoning_content_policy(source_msg: dict, api_msg: dict, needs_thinking_pad: bool) -> None:

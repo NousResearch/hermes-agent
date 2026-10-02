@@ -886,7 +886,10 @@ def _slice_files(
 ) -> List[Path]:
     """Return the subset of *files* belonging to slice *slice_index*.
 
-    Uses :func:`_compute_lpt_slices` for LPT distribution.
+    Every slice job computes the partition on its own, so it must come only from
+    the checkout: a duration cache restored separately per job can differ (a main
+    push saves a newer one in between) and silently drop or double-run files.
+    Sorted round-robin balances within seconds of timed LPT at this suite size.
 
     ``slice_index`` is 1-indexed (1..slice_count) for ergonomics —
     ``--slice 1/4`` reads more naturally than ``--slice 0/4``.
@@ -900,7 +903,7 @@ def _slice_files(
         )
         sys.exit(2)
 
-    bucket_files = _compute_lpt_slices(files, slice_count, durations, repo_root)
+    bucket_files = _compute_lpt_slices(sorted(files), slice_count, {}, repo_root)
 
     target = bucket_files[slice_index - 1]
     target_dur = sum(
@@ -1208,6 +1211,9 @@ def main() -> int:
     # Parse --slice (or HERMES_TEST_SLICE) early so we can exit on bad input
     # before doing any expensive discovery.
     slice_raw = args.slice or os.environ.get("HERMES_TEST_SLICE")
+    # Read once, here: test processes inherit this env, and a runner they start (the
+    # runner's own probe tests) must run its whole file set, not "its" slice of it.
+    os.environ.pop("HERMES_TEST_SLICE", None)
     slice_index: int | None = None
     slice_count: int = 1
     if slice_raw:
@@ -1276,8 +1282,7 @@ def main() -> int:
     test_counts = _approximately_count_tests(files, repo_root)
     approx_total_tests = sum(test_counts.values())
 
-    # Apply slicing if requested — distribute files across CI jobs by
-    # estimated duration so no one job gets all the slow files.
+    # Apply slicing if requested (partition from the checkout alone; see _slice_files).
     if slice_index is not None:
         durations = _load_durations(repo_root)
         files = _slice_files(files, slice_index, slice_count, durations, repo_root)

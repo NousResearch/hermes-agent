@@ -32,7 +32,7 @@ def _memory_provider_options() -> List[str]:
     """Discovered memory providers for the ``memory.provider`` select.
 
     Directory-scan only (no provider imports), so safe at module import time. ``""``
-    (built-in only) is always first; discovery failures degrade to the bundled defaults.
+    (built-in only) is always first; a discovery failure leaves only that.
     The literal ``builtin`` alias is deliberately NOT offered — built-in memory is not a
     provider plugin; ``_normalize_memory_provider_name`` maps legacy aliases back to ``""``.
 
@@ -44,7 +44,7 @@ def _memory_provider_options() -> List[str]:
 
         options.extend(list_memory_provider_names())
     except Exception:
-        options.extend(["honcho"])
+        _log.debug("memory provider discovery failed", exc_info=True)
     return list(dict.fromkeys(options))
 
 

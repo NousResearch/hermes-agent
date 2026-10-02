@@ -83,7 +83,7 @@ If the user asks for a different layout (e.g., images alongside the article, or 
 ```
 - [ ] Step 1: Detect reference images (if provided)
 - [ ] Step 2: Analyze content
-- [ ] Step 3: Confirm settings (clarify tool, one question at a time)
+- [ ] Step 3: Confirm settings (clarify tool)
 - [ ] Step 4: Generate outline
 - [ ] Step 5: Generate prompts
 - [ ] Step 6: Generate images (image_generate)
@@ -115,7 +115,7 @@ Full procedures: [references/workflow.md](references/workflow.md#step-2-analyze)
 
 ### Step 3: Confirm Settings
 
-Use the `clarify` tool. Since `clarify` handles one question at a time, ask the most important question first. Skip any question whose answer is already present in the user's request.
+Use the `clarify` tool. Put the independent questions in one `questions` array (up to 5). Skip any question whose answer is already present in the user's request.
 
 | Order | Question | Options |
 |-------|----------|---------|

@@ -17,22 +17,11 @@ method = _registry.method
 _profile_scoped = _registry.profile_scoped
 
 
-def _shared_metrics_section(cfg) -> dict:
-    telemetry = cfg.get("telemetry") if isinstance(cfg, dict) else None
-    section = telemetry.get("shared_metrics") if isinstance(telemetry, dict) else None
-    return section if isinstance(section, dict) else {}
-
-
 def _shared_metrics_consent(cfg) -> dict:
-    """``decided`` = the user answered somewhere (either key written explicitly); the shipped
-    defaults are not an answer, so a profile that never saw the question reads undecided."""
-    section = _shared_metrics_section(cfg)
-    enabled = section.get("enabled") is True
-    return {
-        "enabled": enabled,
-        "send": enabled and section.get("send") is True,
-        "decided": "enabled" in section or "send" in section,
-    }
+    """The one ``{enabled, send, decided}`` reading every surface shares (CLI offer included)."""
+    from hermes_cli.observability.shared_metrics_consent import consent_state
+
+    return consent_state(cfg)
 
 
 def _shared_metrics_record_setup_completed(cfg) -> None:

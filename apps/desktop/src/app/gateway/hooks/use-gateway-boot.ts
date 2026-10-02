@@ -56,11 +56,7 @@ import {
   setPrimaryGatewayConnection,
   touchSecondaryGateways
 } from '@/store/gateway'
-import {
-  type GatewayReconnectOptions,
-  reconnectGateway,
-  registerGatewayReconnect
-} from '@/store/gateway-reconnect'
+import { type GatewayReconnectOptions, reconnectGateway, registerGatewayReconnect } from '@/store/gateway-reconnect'
 import {
   $gatewaySwitching,
   beginGatewaySwitch,
@@ -1243,6 +1239,7 @@ export function useGatewayBoot({
 
         livenessProbeFailures = 0
       }
+
       ownCloseReason = 'manual'
       gateway.close()
       clearReconnectTimer()

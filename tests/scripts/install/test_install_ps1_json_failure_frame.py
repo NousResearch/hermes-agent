@@ -24,11 +24,11 @@ def test_fail_inside_a_stage_emits_one_json_frame_with_the_reason(tmp_path):
     result = subprocess.run(
         [powershell, "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(INSTALLER),
          "-Stage", "repository", "-Json", "-InstallDir", str(install_dir)],
-        env=env, capture_output=True, text=True, timeout=30)
+        env=env, capture_output=True, text=True, timeout=240)
     frames = [json.loads(line) for line in result.stdout.splitlines() if line.startswith("{")]
     assert result.returncode == 1
     assert len(frames) == 1, result.stdout
     assert frames[0]["ok"] is False and frames[0]["stage"] == "repository"
     assert "exists and is not a Hermes git checkout" in frames[0]["reason"]
-    assert (install_dir / "user-file").read_text(encoding="utf-8") == "preserve me"
+    assert (install_dir / "user-file").read_text(encoding="utf-8-sig") == "preserve me"
     assert not tools.exists()

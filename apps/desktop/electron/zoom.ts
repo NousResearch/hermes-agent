@@ -15,7 +15,7 @@ const MAX_ZOOM_LEVEL = 9
 /** Half Chromium's default step; matching the shortcuts and View menu. */
 export const ZOOM_STEP = 0.1
 
-export const DEFAULT_ZOOM_LEVEL = Math.log(1.1) / Math.log(ZOOM_FACTOR_BASE)
+export const DEFAULT_ZOOM_LEVEL = Math.log(0.9) / Math.log(ZOOM_FACTOR_BASE)
 
 export function clampZoomLevel(value) {
   if (!Number.isFinite(value)) {
@@ -74,9 +74,15 @@ export const ZOOM_REASSERT_SETTLE_DELAY_MS = 300
 export const ZOOM_REASSERT_MAX_SETTLE_CHECKS = 3
 
 export function zoomReassertWindowEvents(platform = process.platform) {
-  return platform === 'linux'
-    ? ['show', 'restore', 'focus', 'resize', 'move']
-    : ['show', 'restore', 'focus', 'resized', 'moved']
+  if (platform === 'linux') {
+    return ['show', 'restore', 'focus', 'resize', 'move']
+  }
+
+  if (platform === 'win32') {
+    return ['show', 'restore', 'focus', 'maximize', 'unmaximize', 'resized', 'moved']
+  }
+
+  return ['show', 'restore', 'focus', 'resized', 'moved']
 }
 
 // Linux/Wayland fires `focus` on intra-app focus shifts (sidebar clicks,

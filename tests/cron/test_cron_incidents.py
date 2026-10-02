@@ -305,6 +305,26 @@ def test_ack_suppresses_alert_until_signature_changes(monkeypatch, tmp_path):
         assert inc.count_incidents() == 2
 
 
+def test_ack_holds_when_only_a_measured_duration_differs(monkeypatch, tmp_path):
+    """The inactivity watchdog polls every few seconds, so the same stall reports a slightly
+    different idle time each run. That is the same failure: the ack must keep it silent."""
+    inc = _point_db(monkeypatch, tmp_path)
+    deliveries = []
+    job = _job()
+    stall = "Cron job 'x' idle for {}s (limit 600s) — last activity: waiting for tool"
+    with cron_jobs.use_cron_store(tmp_path):
+        cron_jobs.save_jobs([job])
+        _tick_failing(job, tmp_path, deliveries, error=stall.format(601))
+        assert len(deliveries) == 1
+        (first,) = inc.list_incidents()
+        assert inc.ack_incident(first["id"]) is True
+
+        _tick_failing(job, tmp_path, deliveries, error=stall.format(604))
+
+        assert len(deliveries) == 1, "acked stall must not re-ping on a new idle reading"
+        assert [row["id"] for row in inc.list_incidents()] == [first["id"]]
+
+
 def test_mark_incident_alerted_sets_state_never_resurrects(monkeypatch, tmp_path):
     """The post-delivery 'alerted' transition records that a ping went out,
     and is a no-op on a closed (acked) incident — it can never resurrect one."""

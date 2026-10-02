@@ -109,14 +109,15 @@ def catalog_cap(finding: Finding) -> Optional[str]:
 
 
 # A README "Uninstall" section removing the plugin's OWN install directory
-# (``rm -rf "$HOME/.hermes/plugins/<name>"``) is the one destructive shape that is harmless by
-# construction: one ``rm``, one argument rooted at ``$HOME/.hermes/plugins/`` or ``skills/``
+# (``rm -rf "$HOME/.hermes/plugins/<name>"``, ``rm -rf ~/.hermes/plugins/<name>`` before a reinstall
+# ``cp``) is the one destructive shape that is harmless by construction: one ``rm``, one argument
+# rooted at ``$HOME``/``${HOME}``/``~`` + ``/.hermes/plugins/`` or ``skills/``
 # with a plain leaf — no glob, no ``..``, nothing chained. It lands at medium (a note). Any
 # wider target (``$HOME``, ``$HOME/.hermes``, ``$HOME/.hermes/plugins/*``) only gets the
 # generic prose step (high, caution) and the same line in a ``.sh`` stays critical (#115353).
 _SELF_UNINSTALL_RM = re.compile(
     r'^(?:\$\s*)?rm\s+(?:-[a-zA-Z]+\s+)*'
-    r'(?P<q>["\']?)\$HOME/\.hermes/(?:plugins|skills)/[A-Za-z0-9][A-Za-z0-9._-]*/?(?P=q)'
+    r'(?P<q>["\']?)(?:\$HOME|\$\{HOME\}|~)/\.hermes/(?:plugins|skills)/[A-Za-z0-9][A-Za-z0-9._-]*/?(?P=q)'
     r'\s*(?:#.*)?$'
 )
 
@@ -148,11 +149,24 @@ _EXEC_ON_LINE = re.compile(
     r"|spawnSync|child_process|source|os\.startfile|open)\s*\(|\$\(|(?<![\w\\])`", re.IGNORECASE)
 
 
-def is_inert_fixture_line(finding: Finding, line: str, is_code: bool) -> bool:
+# In Python/JS/TS a quote never runs a command, so ``$(whoami)`` or a backtick INSIDE a string
+# literal (``'; rm -rf / ; $(whoami) `id`'`` in a hostile-input table) is data, not an exec marker;
+# the call that would run it (``os.system(``, ``exec(``) sits outside the literal and still counts.
+# Shell-like files keep the raw line: there ``"$(id)"`` executes inside double quotes.
+_QUOTES_NEVER_EXECUTE_SUFFIXES = {".py", ".pyi", ".js", ".mjs", ".cjs", ".jsx", ".ts", ".mts", ".cts", ".tsx"}
+
+
+def _executes(line: str, rel_path: str) -> bool:
+    if Path(rel_path).suffix.lower() in _QUOTES_NEVER_EXECUTE_SUFFIXES:
+        line = _LITERAL_SPANS.sub(lambda m: m.group(0)[0] + " " * (len(m.group(0)) - 2) + m.group(0)[-1], line)
+    return _EXEC_ON_LINE.search(line) is not None
+
+
+def is_inert_fixture_line(finding: Finding, line: str, is_code: bool, rel_path: str = "") -> bool:
     """The finding's text is quoted test data on a line that does not execute anything."""
     if not is_code:
         return True
-    if _EXEC_ON_LINE.search(line):
+    if _executes(line, rel_path):
         return False
     rx = _PATTERN_BY_ID.get(finding.pattern_id)
     hits = list(rx.finditer(line)) if rx else []
@@ -201,13 +215,16 @@ def is_base64_media(line: str) -> bool:
 # ── (5)/(6) alternation tokens inside string or regex literals in code ──────────────────────
 # ``sudo`` in ``/clarify|approval|sudo|secret/.test(value)`` classifies an event name; ``env|``
 # in ``re.compile(r"(?:api[_-]?key|…|env|headers)")`` is a redaction regex; ``"printenv",`` in
-# ``_READ_ONLY_COMMANDS = frozenset({"pwd", "ls", …, "printenv"})`` is a denylist/allowlist entry.
+# ``_READ_ONLY_COMMANDS = frozenset({"pwd", "ls", …, "printenv"})`` is a denylist/allowlist entry;
+# ``mkfs`` in ``re.compile(r"\b(?:rm|rmdir|shred|mkfs|dd)\b")`` is a guard plugin's OWN denylist
+# (an un-overridable ``dangerous`` on the plugin whose job is to refuse that command).
 # The shape that is inert is narrow: the word sits inside a quoted string or regex literal AND is
 # either an alternation member (``|sudo|``, ``(sudo|``, ``|env|``) or the ENTIRE literal
 # (``"printenv"``, ``'sudo'``) on a line that executes nothing. A command string such as
-# ``"sudo apt install x"`` or ``"env | grep KEY"`` inside a ``subprocess.run(...)`` literal is how
-# an attack is written and never qualifies. Only word-shaped patterns are eligible.
-LITERAL_INERT_PATTERN_IDS = {"sudo_usage", "dump_all_env"}
+# ``"sudo apt install x"``, ``"env | grep KEY"`` or ``"mkfs.ext4 /dev/sda1"`` inside a
+# ``subprocess.run(...)`` literal is how an attack is written and never qualifies. Only
+# word-shaped patterns are eligible.
+LITERAL_INERT_PATTERN_IDS = {"sudo_usage", "dump_all_env", "format_filesystem"}
 _LITERAL_SPANS = re.compile(
     r"""(?P<s>[rRbBuUfF]{0,2}"(?:[^"\\\n]|\\.)*"|[rRbBuUfF]{0,2}'(?:[^'\\\n]|\\.)*'|`(?:[^`\\\n]|\\.)*`)"""
     r"""|(?P<rx>(?<![\w)\]])/(?:[^/\\\n\[]|\\.|\[(?:[^\]\\\n]|\\.)*\])+/[dgimsuvy]*(?![A-Za-z]))"""  # js regex literal
@@ -215,7 +232,10 @@ _LITERAL_SPANS = re.compile(
 # The regex-literal branch accepts only real JS flags: with ``[a-z]*`` a bare Unix path lexed as a
 # literal (``/etc/`` + flags ``passwd``) and an unquoted ``cat /etc/passwd | curl …`` in a test
 # script scored as inert data.
-_PATTERN_TOKEN = {"sudo_usage": re.compile(r"\bsudo\b"), "dump_all_env": re.compile(r"printenv|env\s*\|")}
+_PATTERN_TOKEN = {
+    "sudo_usage": re.compile(r"\bsudo\b"), "dump_all_env": re.compile(r"printenv|env\s*\|"),
+    "format_filesystem": re.compile(r"\bmkfs\b"),
+}
 
 
 def _is_alternation_member(line: str, start: int, end: int) -> bool:
@@ -310,9 +330,130 @@ def is_pip_install_in_prose_literal(finding: Finding, line: str) -> bool:
     return bool(hits) and all(prose(h) for h in hits)
 
 
+# ── (9) ``\xHH`` escapes inside a regex character class ──────────────────────────────────────
+# ``hex_encoded_string`` (three ``\xHH`` escapes on one line) describes an obfuscated payload —
+# ``eval("\x63\x75\x72\x6c")``. A control-character or ANSI-escape *filter* is written with the
+# same escapes as RANGES inside a bracket class: ``/[\x00-\x1F\x7F]/``, ``[\x1b\x9b][[\]()#;?]*``.
+# Bytes named inside ``[...]`` are matched, never assembled into a string, so when every escape
+# on the line sits inside a character class the finding is informational. One ``\xHH`` outside a
+# class (a payload beside a filter) keeps the pattern's severity, and so does a bracket span that
+# holds a quote — ``[b"\x01\x00" * 200]`` is a Python LIST of byte strings, not a class.
+_HEX_ESCAPE = re.compile(r"\\x[0-9a-fA-F]{2}")
+_CHAR_CLASS = re.compile(r"\[(?:[^\]\\\n\"'`]|\\.)*\]")
+
+
+def is_hex_in_char_class(finding: Finding, line: str) -> bool:
+    """Every ``\\xHH`` on the line is inside a ``[...]`` regex character class."""
+    if finding.pattern_id != "hex_encoded_string":
+        return False
+    classes = [m.span() for m in _CHAR_CLASS.finditer(line)]
+    hits = list(_HEX_ESCAPE.finditer(line))
+    return bool(hits) and all(any(a <= h.start() and h.end() <= b for a, b in classes) for h in hits)
+
+
+# ── (10) loopback ``curl``/``wget`` target on a shell continuation line ──────────────────────
+# ``env_exfil_curl`` / ``env_exfil_wget`` already exempt a same-line loopback destination
+# (``curl -H "Bearer $KEY" http://localhost:8080/health`` produces no finding). A README health
+# check writes the same command over two lines with a trailing ``\``, so the scanner sees only
+# ``curl -H "Authorization: Bearer $KEY" \`` and the loopback URL never enters the regex. Re-run
+# the pattern over the logical line (the finding's line plus its ``\``-continuations): when it no
+# longer matches AND every ``http(s)://`` host on the logical line is loopback, the finding is
+# informational. A routable host anywhere on the logical line keeps the severity.
+_CONTINUATION_PATTERN_IDS = {"env_exfil_curl", "env_exfil_wget"}
+_URL_HOST = re.compile(r"https?://(\[[0-9a-fA-F:]+\]|[^\s/:\"'`)\]]+)")
+_LOOPBACK_HOSTS = {"localhost", "127.0.0.1", "[::1]"}    # the pattern's own same-line exemption
+
+
+def logical_line(lines: list[str], index: int) -> str:
+    """``lines[index]`` joined with the lines a trailing backslash continues onto (max 8)."""
+    out = [lines[index]]
+    i = index
+    while i + 1 < len(lines) and len(out) <= 8 and lines[i].rstrip().endswith("\\"):
+        i += 1
+        out.append(lines[i])
+    return " ".join(part.rstrip().rstrip("\\") for part in out)
+
+
+def is_loopback_continuation(finding: Finding, line: str, joined: str) -> bool:
+    """The line continues with ``\\``, the finding's own pattern stops matching on the logical
+    line, and every ``http(s)://`` host on it is loopback."""
+    if finding.pattern_id not in _CONTINUATION_PATTERN_IDS or not line.rstrip().endswith("\\"):
+        return False
+    rx = _PATTERN_BY_ID.get(finding.pattern_id)
+    hosts = [m.group(1).lower() for m in _URL_HOST.finditer(joined)]
+    return rx is not None and rx.search(joined) is None and bool(hosts) and all(h in _LOOPBACK_HOSTS for h in hosts)
+
+
+# ── (11) prose string values in a JSON data file ────────────────────────────────────────────
+# A translation table or tips file (``tips_zh.json``: ``"en": "Bare sudo commands are
+# auto-rewritten …"`` and a ``"tips": [ … ]`` list of sentences) is read with ``json.load`` and
+# shown to a human. On a ``"key": "value"`` line whose key is a sentence or a plain data name, or a
+# bare string list element, a token in the MIDDLE of the string is prose
+# and takes the README prose cap for a ``high`` finding (one step down; agent-facing shapes keep
+# full severity, and a ``critical`` stays critical — data a plugin's code may still hand to a
+# shell can lose a confirm prompt here, never a block). A string
+# that starts with the command (``"cleanup": "rm -rf /"``) or names it after a shell separator or
+# ``sudo``/``exec`` (``"sudo",`` in an ``args`` array), keys that name something executed
+# (``"command"``, ``"postinstall"``, ``"run"``, ``"args"`` …) and ``package.json`` (npm runs its
+# ``scripts``) keep the severity.
+_JSON_STRING_LINE = re.compile(r'^\s*(?:"(?P<k>(?:[^"\\]|\\.)*)"\s*:\s*)?"(?P<v>(?:[^"\\]|\\.)*)"\s*,?\s*$')
+_JSON_COMMAND_KEY = re.compile(r"cmd|command|script|exec|run|shell|install|hook|arg|entry|bin|start|setup", re.IGNORECASE)
+_JSON_EXECUTED_FILES = {"package.json"}
+_COMMAND_POSITION = re.compile(r"(?:^|[;&|`(]|\$\(|\b(?:sudo|exec|eval|do|then|xargs|bash|sh|-c))\s*$", re.IGNORECASE)
+
+
+def is_json_prose_value(finding: Finding, rel_path: str, line: str) -> bool:
+    """Every hit sits mid-sentence inside the key or value of a ``"key": "string"`` pair (or a bare
+    string list element) in a ``.json`` data file, under a key that does not name something executed."""
+    p = Path(rel_path)
+    if finding.severity != "high" or p.suffix.lower() != ".json" or p.name.lower() in _JSON_EXECUTED_FILES:
+        return False
+    m = _JSON_STRING_LINE.match(line)
+    rx = _PATTERN_BY_ID.get(finding.pattern_id)
+    if m is None or rx is None:
+        return False
+    key = m.group("k")
+    if key is not None and not re.search(r"\s", key) and _JSON_COMMAND_KEY.search(key):
+        return False
+
+    def prose(h: "re.Match[str]") -> bool:
+        part = next((g for g in ("k", "v") if m.start(g) <= h.start() and h.end() <= m.end(g)), None)
+        return part is not None and _COMMAND_POSITION.search(line[m.start(part):h.start()]) is None
+
+    hits = list(rx.finditer(line))
+    return bool(hits) and all(prose(h) for h in hits)
+
+
+# ── (12) a coin NAME without any mining machinery ───────────────────────────────────────────
+# ``crypto_mining`` keys on miner software and pool protocols (``xmrig``, ``stratum+tcp``,
+# ``coinhive``, ``cryptonight``) plus the bare coin name ``monero``. The name alone is a keyword
+# in a connector catalog or search index (``"monero gateway"``, ``… monero multimodal …``), not a
+# miner: with no miner binary, pool, algorithm or mining verb on the line it lands at medium
+# (reported, verdict-neutral). Any of those beside it keeps the pattern's severity.
+_MINING_MACHINERY = re.compile(
+    r"xmrig|stratum|coinhive|cryptonight|randomx|cpuminer|minerd|nicehash|hashrate|donate-level"
+    r"|\bmin(?:e[sd]?|ers?|ing)\b|--(?:coin|algo)\b", re.IGNORECASE)
+
+
+def _is_standalone_coin_name(line: str, start: int, end: int) -> bool:
+    return (line[start:end].lower() == "monero" and (start == 0 or not line[start - 1].isalnum())
+            and (end == len(line) or not line[end].isalnum()))
+
+
+def is_coin_name_only(finding: Finding, line: str) -> bool:
+    """Every ``crypto_mining`` hit on the line is the standalone word ``monero`` and nothing on
+    the line names mining software, a pool or the act of mining."""
+    if finding.pattern_id != "crypto_mining" or _MINING_MACHINERY.search(line):
+        return False
+    rx = _PATTERN_BY_ID.get(finding.pattern_id)
+    hits = list(rx.finditer(line)) if rx else []
+    return bool(hits) and all(_is_standalone_coin_name(line, h.start(), h.end()) for h in hits)
+
+
 __all__ = [
     "STEP_DOWN", "DOC_PROSE_EXTENSIONS", "TEST_TREE_DIRS", "LITERAL_INERT_PATTERN_IDS",
     "is_doc_prose", "is_ci_workflow", "is_agent_facing", "prose_cap", "is_self_uninstall_doc", "is_test_tree",
     "is_inert_fixture_line", "is_base64_media",
     "is_regex_alternation_token", "is_data_decode", "is_loopback_only", "is_pip_install_in_prose_literal",
+    "is_hex_in_char_class", "logical_line", "is_loopback_continuation", "is_json_prose_value", "is_coin_name_only",
 ]

@@ -78,6 +78,12 @@ def _restore_snapshot_safety_nets(pre_update_snapshot_id) -> None:
             f"cron/jobs.json lost jobs during this update — restored {r['job_count']} job(s) "
             f"from pre-update snapshot {r['snapshot_id']}.")
 
+    def _prompt_line(r):
+        return (
+            f"cron/jobs.json had agent-job prompt(s) replaced by the job name during this "
+            f"update — restored {r['prompts']} prompt(s) from pre-update snapshot "
+            f"{r['snapshot_id']}.")
+
     def _cfg_line(r):
         return (
             f"config.yaml user model settings were rewritten during this update — restored "
@@ -93,6 +99,15 @@ def _restore_snapshot_safety_nets(pre_update_snapshot_id) -> None:
         if cron_restore:
             print()
             print(f"  ⚠️  {_cron_line(cron_restore)}")
+    with _best_effort("Cron prompt-field auto-restore check failed: %s"):
+        # Safety net: a writer in the update's mutation window replaced agent-job prompts
+        # with the job NAME while the count stayed identical, so the count-based net above
+        # passed it undetected (issue #82990). Restore only the degraded prompt fields.
+        from hermes_cli.backup import restore_cron_prompt_fields_if_degraded
+        prompt_restore = restore_cron_prompt_fields_if_degraded(pre_update_snapshot_id)
+        if prompt_restore:
+            print()
+            print(f"  ⚠️  {_prompt_line(prompt_restore)}")
     with _best_effort("Config model-settings auto-restore check failed: %s"):
         from hermes_cli.backup import restore_config_model_settings_if_rewritten
         cfg_restore = restore_config_model_settings_if_rewritten(pre_update_snapshot_id)
@@ -104,6 +119,11 @@ def _restore_snapshot_safety_nets(pre_update_snapshot_id) -> None:
         for _restored in restore_cron_jobs_all_profiles(_LAST_SIBLING_SNAPSHOTS):
             print()
             print(f"  ⚠️  Profile '{_restored['profile']}': {_cron_line(_restored)}")
+    with _best_effort('Sibling cron prompt-field auto-restore check failed: %s'):
+        from hermes_cli.backup import restore_cron_prompt_fields_all_profiles
+        for _prompt_restored in restore_cron_prompt_fields_all_profiles(_LAST_SIBLING_SNAPSHOTS):
+            print()
+            print(f"  ⚠️  Profile '{_prompt_restored['profile']}': {_prompt_line(_prompt_restored)}")
     with _best_effort('Sibling config auto-restore check failed: %s'):
         from hermes_cli.backup import restore_config_model_settings_all_profiles
         for _cfg_restored in restore_config_model_settings_all_profiles(_LAST_SIBLING_SNAPSHOTS):

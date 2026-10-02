@@ -534,7 +534,9 @@ export function isSessionGoneError(error: GatewayErrorLike | null | undefined): 
   }
 
   if (error.code === 4001) {
-    return true
+    // Legacy runtimes used this code for reaped sessions. Canonical errors
+    // carry an exact reason; a submit refusal is never a recovery retry.
+    return error.data?.reason === undefined || error.data.reason === 'not_found'
   }
 
   // Duck-typed (not instanceof): gateway errors can cross realm boundaries.
@@ -582,9 +584,12 @@ async function submitGroupTurnPrompt(
   stored: null | string | true | undefined,
   text: string
 ): Promise<string> {
+  // One intended member submission keeps its identity across session recovery.
+  const submissionId = crypto.randomUUID()
   try {
     await requestForBot(member, 'prompt.submit', {
       session_id: runtime,
+      submission_id: submissionId,
       text
     })
 
@@ -608,6 +613,7 @@ async function submitGroupTurnPrompt(
 
     await requestForBot(member, 'prompt.submit', {
       session_id: fresh,
+      submission_id: submissionId,
       text
     })
 

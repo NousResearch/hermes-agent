@@ -65,6 +65,9 @@ class _RecordingClient:
     def __init__(self, **kwargs):
         type(self).captured = dict(kwargs)
 
+    def sse(self, *args, **kwargs):  # the real client's SSE reader; the transport rebinds it
+        raise AssertionError("no SSE stream is opened in these tests")
+
     async def __aenter__(self):
         return self
 

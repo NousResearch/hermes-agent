@@ -32,6 +32,9 @@ class _DummyAsyncClient:
     def __init__(self, **kwargs):
         pass
 
+    def sse(self, *args, **kwargs):  # the real client's SSE reader; the transport rebinds it
+        raise AssertionError("no SSE stream is opened in these tests")
+
     async def __aenter__(self):
         return self
 

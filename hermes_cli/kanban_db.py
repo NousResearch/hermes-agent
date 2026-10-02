@@ -103,6 +103,44 @@ def _git_out(cwd: Path, *args: str, timeout: int = 30) -> Optional[str]:
 VALID_STATUSES = {"triage", "todo", "scheduled", "ready", "running", "blocked", "review", "done", "archived"}
 VALID_INITIAL_STATUSES = {"running", "blocked"}
 
+# Terminal task statuses for Wake-Guard decisions (t_bdd69e28, port of PR #91):
+# a worker session whose task sits in one of these has outlived its card and must
+# not be nudged, budget-recorded, pinged or woken as if the card were still live.
+# Superset on purpose: this line persists "done"/"archived" only, while
+# "completed"/"cancelled" are legacy aliases found in boards written by older
+# lines (the live shared board included) — the guard covers them for free.
+TASK_TERMINAL_STATUSES = ("done", "archived", "completed", "cancelled")
+
+
+def task_is_terminal(status: object) -> bool:
+    """True when a task status is terminal for Wake-Guard purposes."""
+    return str(status or "").strip().lower() in TASK_TERMINAL_STATUSES
+
+
+def get_scoping_freshness(
+    conn: sqlite3.Connection, task_id: str, run_id: Optional[int]
+) -> Optional[dict]:
+    """Fresh status proof for a worker's scoping: task row + run row in one read.
+
+    Returns ``{"status": <task status>, "run_ended_at": <int|None>}``, or ``None``
+    when the task row is missing (unknown freshness — callers fail open toward the
+    legacy behavior instead of guessing). ``run_ended_at`` is the pinned run's
+    ``ended_at``; ``None`` when ``run_id`` is None or the run row does not exist
+    (an unknown run is never treated as ended).
+    """
+    row = conn.execute("SELECT status FROM tasks WHERE id = ?", (task_id,)).fetchone()
+    if row is None:
+        return None
+    run_ended_at: Optional[int] = None
+    if run_id is not None:
+        run_row = conn.execute(
+            "SELECT ended_at FROM task_runs WHERE id = ? AND task_id = ?",
+            (run_id, task_id),
+        ).fetchone()
+        if run_row is not None:
+            run_ended_at = run_row["ended_at"]
+    return {"status": row["status"], "run_ended_at": run_ended_at}
+
 # Typed block reasons (routing in ``_route_block``); ``None`` = legacy un-typed.
 VALID_BLOCK_KINDS = {"dependency", "needs_input", "capability", "transient"}
 

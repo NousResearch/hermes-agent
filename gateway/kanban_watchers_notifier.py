@@ -38,6 +38,11 @@ TERMINAL_KINDS = ("completed", "blocked", "gave_up", "crashed", "timed_out", "st
 # status/archived/unblocked are bookkeeping.
 _WAKE_KINDS = ("completed", "gave_up", "crashed", "timed_out", "blocked", "review_requested", "changes_requested", "block_loop_detected")
 
+# Terminal catch-up brake (t_bdd69e28, port of PR #91): running count of stale
+# events deliberately not surfaced because the card went terminal before the
+# subscription caught up. Exposed for tests; log lines carry the same counter.
+_terminal_skip_count = 0
+
 
 def diagnostic_event(ev) -> bool:
     """Infrastructure attention is distinct from an explicit owner decision."""
@@ -304,6 +309,34 @@ class _Collector:
         if not events:
             return None
         task = self.kb.get_task(conn, sub["task_id"])
+        if task is not None and self.kb.task_is_terminal(task.status):
+            # Terminal catch-up brake (t_bdd69e28, port of PR #91): a subscription
+            # whose cursor lagged behind a card that has since gone terminal must
+            # not surface stale pings/wakes for a finished card. The claim above
+            # already advanced the cursor, so dropping the delivery skips the
+            # events deliberately. A batch that CONTAINS the terminal transition
+            # itself still delivers in full — the brake never suppresses real
+            # transitions. Upstream terminal transitions are ``completed`` (→ done)
+            # and ``archived``; ``gave_up``/``timed_out`` leave the card live
+            # (blocked/retry), so they are not transitions here. A ``status`` event
+            # naming a terminal state counts defensively for legacy boards.
+            transition_in_batch = any(
+                ev.kind in ("completed", "archived")
+                or (
+                    ev.kind == "status"
+                    and ev.payload
+                    and self.kb.task_is_terminal(str(ev.payload.get("status") or ""))
+                )
+                for ev in events
+            )
+            if not transition_in_batch:
+                global _terminal_skip_count
+                _terminal_skip_count += len(events)
+                logger.info(
+                    "kanban notifier: skipped %d stale event(s) on terminal card %s "
+                    "(terminal_skipped=%d)", len(events), sub["task_id"], _terminal_skip_count,
+                )
+                return None
         logger.debug("kanban notifier: claimed %d event(s) for %s on board %s cursor %s→%s",
                      len(events), sub["task_id"], slug, old_cursor, cursor)
         return {"sub": sub, "old_cursor": old_cursor, "cursor": cursor, "events": events, "task": task, "board": slug}

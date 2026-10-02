@@ -150,7 +150,8 @@ def _purge_profile_identity(canon: str, live_mux: bool) -> bool:
             data = json.loads(sessions_file.read_text(encoding="utf-8-sig"))
             if not isinstance(data, dict):
                 raise ValueError("sessions.json root is not an object")
-            ns = f"agent:{canon}:"
+            from gateway.session import _session_key_namespace
+            ns = f"{_session_key_namespace(canon)}:"
             filtered = {key: value for key, value in data.items()
                         if str(key).startswith("_") or not str(key).startswith(ns)}
             if filtered != data:

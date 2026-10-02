@@ -1,7 +1,7 @@
 name: tool-slimmer
 repo: https://github.com/aliasocracy/hermes-tool-slimmer
 sha: 1b90aa592f7423233ea6cdfd44c7188e14ca7ccf
-description: Reduce Hermes tool-schema overhead and show selector savings in the dashboard.
+description: "Reduce Hermes tool-schema overhead and show selector savings in the dashboard. Disclosure — optional mode jev (off by default; needs TYPESAFE_API_KEY) sends each turn's request text and up to 32 candidate tool names and descriptions to TypeSafe (api.typesafe.ai); all other modes run locally. Optional user-run scripts can patch Hermes core on older Hermes and install a systemd user self-heal unit; the dashboard advisor edits the tool_slimmer section of config.yaml with a backup."
 maintainer: aliasocracy
 tier: community
 category: tools

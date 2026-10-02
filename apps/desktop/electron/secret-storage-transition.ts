@@ -1,7 +1,7 @@
 /** One explicit policy change across the Desktop's fixed credential stores. */
+import { createHash } from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
-import { createHash } from 'node:crypto'
 
 import { writeSecretFileAtomic } from './hardening'
 import { SECRET_STORAGE_POLICY_FILE, type SecretStoragePolicy } from './secret-storage-policy'

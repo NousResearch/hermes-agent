@@ -2221,6 +2221,30 @@ describe('overlayConcurrentMessageChanges', () => {
       ['4-assistant', 'A2 finished']
     ])
   })
+
+  // The durable row folds the turn's segments with DIFFERENT separators than the
+  // streamed parts did (blank lines around folded tool rounds, reference lines
+  // — #80151), so the settled live row's text is not a byte-prefix of its
+  // committed twin even though both capture the same reply. Comparing bytes
+  // alone left BOTH rows on screen: the one reply rendered twice.
+  it('folds a settled live row whose committed twin differs only in segment separators', () => {
+    const page = [
+      msg('3-user', 'user', 'prompt b', { rowId: 3 }),
+      msg('4-assistant', 'assistant', 'Let me check the config.\nThe answer is 42.', { rowId: 4 })
+    ]
+
+    const current = [
+      page[0],
+      msg('assistant-stream-1-2', 'assistant', 'Let me check the config.\n\nThe answer is 42.', { pending: false })
+    ]
+
+    const overlaid = overlayConcurrentMessageChanges(page, [], current)
+
+    expect(overlaid.map(message => [message.id, chatMessageText(message)])).toEqual([
+      ['3-user', 'prompt b'],
+      ['4-assistant', 'Let me check the config.\nThe answer is 42.']
+    ])
+  })
 })
 
 describe('preserveEquivalentTranscript', () => {

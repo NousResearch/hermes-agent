@@ -1650,7 +1650,13 @@ export function overlayConcurrentMessageChanges(
     // earlier turn's answer (a resent prompt can repeat it word for word). An
     // errored row carries a failure the committed text cannot show.
     if (current.role === 'assistant' && current.pending !== true && !current.error && isLiveTailReplyId(current.id)) {
-      const text = textWithoutReferenceLines(chatMessageText(current)).trim()
+      // The durable row folds the turn's segments with different separators
+      // than the streamed parts did (#80151), so the settled row and its
+      // committed twin routinely differ in whitespace while holding the same
+      // reply. Compare the same folded answer text the sibling live-projection
+      // folds use — reference lines stripped, separators collapsed — never raw
+      // bytes, or both rows survive and the one reply renders twice.
+      const text = foldAnswerTextForCompare(chatMessageText(current))
       const lastUser = overlaid.findLastIndex(message => message.role === 'user')
 
       const committed = overlaid.some((message, index) => {
@@ -1668,7 +1674,7 @@ export function overlayConcurrentMessageChanges(
         // guaranteed to be textually identical: accept either as a forward
         // text-extension of the other, the same trade
         // removeRepresentedLocalLiveProjection made in 2494b95929.
-        const candidate = textWithoutReferenceLines(chatMessageText(message)).trim()
+        const candidate = foldAnswerTextForCompare(chatMessageText(message))
 
         return (
           candidate === text ||

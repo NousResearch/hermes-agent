@@ -1862,6 +1862,11 @@ DEFAULT_CONFIG = {
         # timeout of its own against a wedged sqlite3.connect, and an unbounded hang wedges the
         # job's dispatch guard forever. Env: HERMES_CRON_SESSION_DB_TIMEOUT. 0 = unlimited.
         "session_db_timeout_seconds": 10,
+        # Seconds an inactivity-timed-out job waits for its hard-interrupted run to actually exit
+        # before releasing its parallel slot, so max_parallel_jobs=1 cannot overlap the next job
+        # with a still-draining model call. Env: HERMES_CRON_CANCEL_GRACE. 0 = don't wait.
+        # Keep in sync with cron.scheduler_script._DEFAULT_CANCEL_GRACE_SECONDS.
+        "cancel_grace_seconds": 60,
         # Timeout (seconds) per media attachment send during gateway delivery; large attachments
         # (long TTS audio, big exports) need more than 30s. Env: HERMES_CRON_MEDIA_SEND_TIMEOUT.
         # Keep in sync with cron.scheduler._DEFAULT_MEDIA_SEND_TIMEOUT.

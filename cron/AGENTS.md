@@ -18,7 +18,10 @@ Hardening invariants — each guards a real failure; don't weaken without answer
 - **Inactivity watchdog** on cron agent sessions (`_cron_inactivity_seconds()`): default 600s idle,
   `HERMES_CRON_TIMEOUT` overrides, `0` = unlimited. It is idle time, not wall-clock — a stalled
   session is hard-interrupted so it cannot monopolise the scheduler, while a long-but-active job
-  is never cut off. Attached scripts (pre-run or `no_agent`) are bounded separately by the script
+  is never cut off. After the interrupt, `run_job` waits up to the cancel grace
+  (`HERMES_CRON_CANCEL_GRACE` / `cron.cancel_grace_seconds`, default 60s) for the worker to leave
+  `run_conversation` before returning — returning releases the parallel slot, so an early return
+  lets the next job overlap a still-draining model call. Attached scripts (pre-run or `no_agent`) are bounded separately by the script
   timeout (`_DEFAULT_SCRIPT_TIMEOUT`, 3600s).
 - Catch-up window = half the period, clamped to 120s–2h; 120s grace for missed one-shots.
 - Every recurring occurrence is accounted for: `tick()` advances `next_run_at` BEFORE dispatch

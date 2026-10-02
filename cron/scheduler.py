@@ -1940,8 +1940,39 @@ def _open_cron_session_db(job: dict):
     return None
 
 
-def _raise_inactivity_timeout(agent, job_name: str, limit_s: float) -> None:
-    """Log the agent's last activity, hard-interrupt it and raise TimeoutError."""
+def _await_interrupted_worker(
+    future: concurrent.futures.Future, job_name: str, poll_s: float, keep_alive: Callable[[], None],
+) -> None:
+    """Wait (bounded by the cancel grace) for a hard-interrupted worker to leave run_conversation.
+
+    ``Future.cancel()`` / ``shutdown(wait=False)`` cannot stop a running worker, and returning
+    from ``run_job`` releases the job's in-flight guard and parallel-pool slot. Without this wait
+    the next queued job (``max_parallel_jobs: 1`` on a single local model) starts while the
+    interrupted model call is still draining. ``keep_alive`` refreshes the one-shot run_claim.
+    """
+    grace_s = _get_cancel_grace_seconds()
+    if grace_s <= 0 or future.done():
+        return
+    deadline = time.monotonic() + grace_s
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            logger.warning(
+                "Job '%s': interrupted worker still running after %.0fs cancel grace; "
+                "releasing its slot anyway", job_name, grace_s)
+            return
+        done, _ = concurrent.futures.wait({future}, timeout=min(poll_s, remaining))
+        if done:
+            logger.info("Job '%s': interrupted worker exited within the cancel grace", job_name)
+            return
+        keep_alive()
+
+
+def _raise_inactivity_timeout(
+    agent, job_name: str, limit_s: float, await_worker_exit: Optional[Callable[[], None]] = None,
+) -> None:
+    """Log the agent's last activity, hard-interrupt it, wait for the worker (see
+    ``_await_interrupted_worker``) and raise TimeoutError."""
     _activity = {}
     if hasattr(agent, "get_activity_summary"):
         with contextlib.suppress(Exception):
@@ -1955,6 +1986,8 @@ def _raise_inactivity_timeout(agent, job_name: str, limit_s: float) -> None:
         _last_desc, _activity.get("api_call_count", 0), _activity.get("max_iterations", 0),
         _activity.get("current_tool") or "none")
     request_hard_interrupt(agent, "Cron job timed out (inactivity)", tool_reason="cron inactivity watchdog")
+    if await_worker_exit is not None:
+        await_worker_exit()
     raise TimeoutError(
         f"Cron job '{job_name}' idle for "
         f"{int(_secs_ago)}s (limit {int(limit_s)}s) "
@@ -2062,7 +2095,10 @@ def _run_agent_with_watchdog(
         _cron_pool.shutdown(wait=False, cancel_futures=True)
 
     if _inactivity_timeout:
-        _raise_inactivity_timeout(agent, job_name, _cron_inactivity_limit)
+        _raise_inactivity_timeout(
+            agent, job_name, _cron_inactivity_limit,
+            await_worker_exit=lambda: _await_interrupted_worker(
+                _cron_future, job_name, _POLL_INTERVAL, _heartbeat_run_claim_if_due))
 
     if not isinstance(result, dict):
         raise RuntimeError(
@@ -4364,7 +4400,8 @@ from cron.scheduler_delivery import (  # noqa: E402
     _resolve_delivery_targets,
 )
 from cron.scheduler_script import (  # noqa: E402
-    _get_session_db_timeout, _run_job_script_with_claim_heartbeat, _start_heartbeat_thread,
+    _get_cancel_grace_seconds, _get_session_db_timeout, _run_job_script_with_claim_heartbeat,
+    _start_heartbeat_thread,
 )
 from cron.scheduler_prompt import (  # noqa: E402
     _PROMPT_FRAME, _PROMPT_HEADING, _PROMPT_SEPARATOR, _RESPONSE_FRAME, _RESPONSE_HEADING,

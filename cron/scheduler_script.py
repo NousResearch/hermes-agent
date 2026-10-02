@@ -11,6 +11,7 @@ from __future__ import annotations
 import contextlib
 import contextvars
 import logging
+import math
 import os
 import shutil
 import signal
@@ -102,6 +103,29 @@ def _get_session_db_timeout() -> float:
         "HERMES_CRON_SESSION_DB_TIMEOUT", "session_db_timeout_seconds", float,
         "cron.session_db_timeout_seconds")
     return 10.0 if resolved is None else resolved
+
+
+_DEFAULT_CANCEL_GRACE_SECONDS = 60.0
+
+
+def _cancel_grace_seconds(raw) -> float:
+    """Finite, non-negative seconds (0 = don't wait); raises on anything else."""
+    if isinstance(raw, bool):
+        raise ValueError("boolean is not a duration")
+    value = float(raw)
+    if not math.isfinite(value) or value < 0:
+        raise ValueError("cancel grace must be a finite, non-negative number")
+    return value
+
+
+def _get_cancel_grace_seconds() -> float:
+    """How long an inactivity-timed-out run waits for its hard-interrupted worker to leave
+    ``run_conversation`` before ``run_job`` returns: HERMES_CRON_CANCEL_GRACE env, then
+    ``cron.cancel_grace_seconds``, then 60s. 0 restores the immediate return."""
+    resolved = _timeout_from_env_or_config(
+        "HERMES_CRON_CANCEL_GRACE", "cancel_grace_seconds", _cancel_grace_seconds,
+        "cron.cancel_grace_seconds")
+    return _DEFAULT_CANCEL_GRACE_SECONDS if resolved is None else resolved
 
 
 def _read_windows_pyvenv_cfg(venv_dir: Path) -> dict[str, str]:

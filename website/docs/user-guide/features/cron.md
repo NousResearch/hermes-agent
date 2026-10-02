@@ -847,6 +847,18 @@ cron:
 
 Set `cleanup_timeout_seconds: 0` only to restore the legacy unbounded cleanup behavior.
 
+## Cancel grace after an inactivity timeout
+
+When a job hits the inactivity limit (`HERMES_CRON_TIMEOUT`, default 600s idle), the scheduler interrupts the agent and records the run as timed out. It then waits up to 60 seconds for the interrupted run to actually wind down before it releases the job's slot, so the next queued job cannot start while the aborted model call or tool is still draining. This matters most with `max_parallel_jobs: 1` on a single local model. The wait ends as soon as the run exits; a run that ignores the interrupt keeps its slot for at most the grace.
+
+```yaml
+# ~/.hermes/config.yaml
+cron:
+  cancel_grace_seconds: 60   # 0 = release the slot immediately
+```
+
+Or set the `HERMES_CRON_CANCEL_GRACE` environment variable. The resolution order is: env var → config.yaml → 60s default.
+
 ## Media send timeout
 
 When a cron delivery includes media attachments (a generated PDF, TTS audio, an exported report) sent through a live gateway adapter, each attachment upload is bounded by a timeout — 300 seconds by default. Large files on slow uplinks can need more:

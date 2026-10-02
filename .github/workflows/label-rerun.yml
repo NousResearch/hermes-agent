@@ -43,6 +43,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO: ${{ github.repository }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR: ${{ github.event.pull_request.number }}
         run: |
           set -uo pipefail
 
@@ -88,6 +89,15 @@ jobs:
             fi
           fi
 
+          # A push while we waited cancelled this run (that is the "completed"
+          # we saw). Rerunning it would rejoin the PR's CI concurrency group and
+          # cancel the new head's run, which already sees the label.
+          CURRENT_HEAD=$(gh pr view "$PR" --repo "$REPO" --json headRefOid --jq .headRefOid || true)
+          if [ "$CURRENT_HEAD" != "$HEAD_SHA" ]; then
+            echo "PR head moved to $CURRENT_HEAD; not rerunning superseded run $RUN_ID."
+            exit 0
+          fi
+
           echo "Run completed. Rerunning all failed jobs..."
           gh run rerun "$RUN_ID" --repo "$REPO" --failed || true
           echo "Done. GitHub will rerun review-labels and all dependent jobs."
@@ -103,6 +113,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO: ${{ github.repository }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR: ${{ github.event.pull_request.number }}
         run: |
           set -uo pipefail
           for workflow in ci.yaml docker.yml nix.yml; do
@@ -122,6 +133,12 @@ jobs:
                 [ "$STATUS" = completed ] && break
                 sleep 5
               done
+            fi
+            # Same supersede guard as above: never rerun a run for an old head.
+            CURRENT_HEAD=$(gh pr view "$PR" --repo "$REPO" --json headRefOid --jq .headRefOid || true)
+            if [ "$CURRENT_HEAD" != "$HEAD_SHA" ]; then
+              echo "PR head moved to $CURRENT_HEAD; not rerunning superseded $workflow run $RUN_ID."
+              exit 0
             fi
             if gh run rerun "$RUN_ID" --repo "$REPO"; then
               echo "$workflow: rerunning $RUN_ID"

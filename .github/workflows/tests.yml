@@ -29,6 +29,9 @@ jobs:
     name: Prepare test slices
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    outputs:
+      matrix: ${{ steps.plan.outputs.matrix }}
+      slice-count: ${{ steps.plan.outputs.slice-count }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Restore shared duration estimates
@@ -39,7 +42,21 @@ jobs:
           restore-keys: |
             test-durations-
       - name: Discover the suite once
-        run: python3 scripts/run_tests_parallel.py --generate-slices 4 > test-slices.json
+        id: plan
+        env:
+          SLICE_COUNT: ${{ github.repository == 'NousResearch/hermes-agent' && '2' || '12' }}
+        run: |
+          set -euo pipefail
+          python3 scripts/run_tests_parallel.py --generate-slices "$SLICE_COUNT" > test-slices.json
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          slices = json.loads(Path('test-slices.json').read_text())['slice']
+          assert slices and all(s['files'] for s in slices), 'Empty test slice'
+          with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as output:
+              output.write('matrix=' + json.dumps({'slice': [s['index'] for s in slices]}) + '\n')
+              output.write(f'slice-count={len(slices)}\n')
+          PY
       - name: Publish the immutable slice assignment
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
@@ -51,9 +68,15 @@ jobs:
           retention-days: 3
 
   test:
-    name: Run tests
-    runs-on: ubuntu-latest-32-core
+    # Every runner consumes the same immutable file assignment and duration snapshot.
+    # The fork uses smaller slices and bounded workers on standard hosted runners.
+    name: Run tests (${{ matrix.slice }}/${{ needs.prepare.outputs.slice-count }})
+    needs: prepare
+    runs-on: ${{ github.repository == 'NousResearch/hermes-agent' && 'ubuntu-latest-32-core' || 'ubuntu-latest' }}
     timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.prepare.outputs.matrix) }}
     steps:
       - name: Checkout code
         uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
@@ -88,16 +111,8 @@ jobs:
         run: |
           "$HERMES_PYTHON" -c "import sqlite3, sys, hermes_state_wal as w; v = w.is_sqlite_wal_reset_vulnerable(); print(f'Python {sys.version.split()[0]}, SQLite {sqlite3.sqlite_version}, WAL-reset vulnerable: {v}'); sys.exit(1 if v else 0)"
 
-      - name: Restore per-file duration cache
-        # scripts/run_tests_parallel.py raises a file's timeout to
-        # 3x its last healthy duration (_effective_file_timeout) so a
-        # known-slow file dilated by load is not SIGKILL'd at the flat cap
-        # and laundered into a FLAKY retry. The scaler reads
-        # test_durations.json from the checkout; without this restore the
-        # file is absent on a fresh runner and the scaler is inert.
-        # Exact key never matches (run_id differs); restore-keys picks the
-        # most recent cache saved by a main push. PRs read, only main writes.
-        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      - name: Download slice assignment and duration snapshot
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: python-test-slices
 
@@ -116,9 +131,9 @@ jobs:
 
       - name: Run tests
         run: |
-          scripts/run_tests.sh
+          scripts/run_tests.sh --files-from test-slice-files.txt
         env:
-          HERMES_TEST_WORKERS: 32
+          HERMES_TEST_WORKERS: ${{ github.repository == 'NousResearch/hermes-agent' && '32' || '2' }}
           HERMES_TEST_FILE_TIMEOUT: 600
           # Ensure tests don't accidentally call real APIs
           OPENROUTER_API_KEY: ""
@@ -132,14 +147,16 @@ jobs:
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: test_durations.json
+          # Per-slice key: each slice's file keeps the restored entries for the other
+          # slice's files and refreshes its own, so the cache stays complete.
           key: test-durations-${{ github.run_id }}-${{ matrix.slice }}
 
   e2e:
     # The core suites spawn real serve / gateway / tui_gateway / MCP / SQLite
     # writer processes per test; a 4-vCPU runner serialises them into timeouts.
     if: inputs.e2e
-    runs-on: ubuntu-latest-32-core
-    timeout-minutes: 30
+    runs-on: ${{ github.repository == 'NousResearch/hermes-agent' && 'ubuntu-latest-32-core' || 'ubuntu-latest' }}
+    timeout-minutes: 60
     steps:
       - name: Checkout code
         uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
@@ -203,7 +220,7 @@ jobs:
           # across unrelated SQLite, tenancy, provider and terminal suites.
           # Bound the trees, not the child readiness/turn timeouts. At 4 the
           # PTY turn and serve-SIGTERM deadlines still starved intermittently.
-          HERMES_TEST_WORKERS: "3"
+          HERMES_TEST_WORKERS: ${{ github.repository == 'NousResearch/hermes-agent' && '3' || '2' }}
           # Multi-process episodes (torture chamber, compaction kill -9,
           # gateway liveness, delivery exactly-once through a real gateway,
           # the cron virtual-clock soak) legitimately run past the 300 s default.
@@ -258,7 +275,7 @@ jobs:
     # runs ~5-15 min. Sharded by suite directory (see e2e-upgrade-plan).
     name: e2e-upgrade (${{ matrix.shard }})
     needs: e2e-upgrade-plan
-    runs-on: ubuntu-latest-32-core
+    runs-on: ${{ github.repository == 'NousResearch/hermes-agent' && 'ubuntu-latest-32-core' || 'ubuntu-latest' }}
     timeout-minutes: 60
     strategy:
       fail-fast: false
@@ -272,63 +289,14 @@ jobs:
           fetch-depth: 0
           fetch-tags: true
 
-      - name: Set up Node
-        # `hermes update` builds the web UI / TUI workspaces.
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # 7.0.0
+      - name: Set up locked Python, Node and test dependencies
+        uses: ./.github/actions/setup-pm
         with:
-          node-version: 26
-
-      - name: Install ripgrep (prebuilt binary)
-        run: |
-          set -euo pipefail
-          RG_VERSION=15.1.0
-          RG_SHA256=1c9297be4a084eea7ecaedf93eb03d058d6faae29bbc57ecdaf5063921491599
-          RG_TARBALL=ripgrep-${RG_VERSION}-x86_64-unknown-linux-musl.tar.gz
-          curl -sSfL --retry 3 --retry-delay 5 -o "$RG_TARBALL" \
-            "https://github.com/BurntSushi/ripgrep/releases/download/${RG_VERSION}/${RG_TARBALL}"
-          echo "${RG_SHA256}  ${RG_TARBALL}" | sha256sum -c -
-          tar -xzf "$RG_TARBALL"
-          sudo mv "ripgrep-${RG_VERSION}-x86_64-unknown-linux-musl/rg" /usr/local/bin/rg
-          rm -rf "$RG_TARBALL" "ripgrep-${RG_VERSION}-x86_64-unknown-linux-musl"
-          rg --version
-
-      - name: Install uv
-        uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # 8.2.0
-        with:
-          # Pin the uv version: unpinned, setup-uv resolves "latest" by
-          # fetching a manifest from raw.githubusercontent.com on EVERY job —
-          # a transient fetch failure fails the whole job (2026-07-28 slice-5
-          # incident). Pinned, the binary downloads directly; no manifest hop.
-          # Newer than the unit job's pin on purpose: 0.9.28 only knows CPython
-          # 3.11.14, whose bundled SQLite has the WAL-reset bug, so Hermes runs
-          # state.db in DELETE mode and the WAL torture chamber would skip.
-          version: "0.12.13"
-          # Persist uv's download/wheel cache (~/.cache/uv) across runs.
-          # Keyed on the dependency manifests, so the cache is reused until
-          # pyproject.toml or uv.lock changes. `uv sync` still runs every
-          # time, but resolves from the warm cache instead of re-downloading
-          # and re-building wheels.
-          enable-cache: true
-          cache-dependency-glob: |
-            pyproject.toml
-            uv.lock
-
-      - name: Set up Python 3.14
-        run: uv python install 3.14
-
-      - name: Install dependencies
-        # `uv sync --locked` installs the exact pinned set from uv.lock (and
-        # fails if the lock is out of sync with pyproject.toml), giving a
-        # reproducible env. It also creates .venv itself, so no separate
-        # `uv venv` step is needed.
-        #
-        # Same extras as the test job's sync above: the hermetic test env
-        # forbids mid-run pip installs (HERMES_DISABLE_LAZY_INSTALLS=1 in
-        # tests/conftest.py), so lazy-install SDKs exercised by tests must be
-        # in the venv up front.
-        uses: ./.github/actions/retry
-        with:
-          command: uv sync --locked --python 3.14 --extra all --group dev --extra anthropic --extra mistral --extra fal --extra modal --extra daytona --extra parallel-web
+          toolchain: all
+          packages: ripgrep
+          extras: '["all", "anthropic", "mistral", "fal", "modal", "daytona", "parallel-web"]'
+          test-environment: 'true'
+          prune-python-cache: true
 
       - name: Install bubblewrap
         # Every spawned updater runs in bwrap (own PID namespace, no user
@@ -340,20 +308,17 @@ jobs:
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
           # The suite's own probe (_bwrap_usable, same flags as every sandboxed
           # run): without it the suite silently runs the updater unsandboxed.
-          source .venv/bin/activate
-          python -c "from tests.e2e.core.upgrade._helpers import BWRAP_OK; assert BWRAP_OK, 'bwrap unusable'" && echo "bwrap ok"
+          "$HERMES_PYTHON" -c "from tests.e2e.core.upgrade._helpers import BWRAP_OK; assert BWRAP_OK, 'bwrap unusable'" && echo "bwrap ok"
 
       - name: Require a WAL-capable SQLite
         # The state.db suites skip on a WAL-reset-vulnerable SQLite; fail
         # instead of reporting green over zero coverage.
         run: |
-          source .venv/bin/activate
-          python -c "import sqlite3, hermes_state_wal as w; print('sqlite', sqlite3.sqlite_version); assert not w.is_sqlite_wal_reset_vulnerable()"
+          "$HERMES_PYTHON" -c "import sqlite3, hermes_state_wal as w; print('sqlite', sqlite3.sqlite_version); assert not w.is_sqlite_wal_reset_vulnerable()"
 
       - name: Run upgrade e2e tests (${{ matrix.shard }})
         run: |
           set -euo pipefail
-          source .venv/bin/activate
           if [ "$SHARD" = core ]; then
             mapfile -t files < <(find tests/e2e/core/upgrade -maxdepth 1 -name 'test_*.py' | sort)
           else
@@ -368,7 +333,7 @@ jobs:
           # Each file drives real installs/updaters (process trees plus uv and
           # git I/O); cpu_count of them at once starves their deadlines. A
           # shard holds at most ~7 files, so this runs each shard in one wave.
-          HERMES_TEST_WORKERS: "6"
+          HERMES_TEST_WORKERS: ${{ github.repository == 'NousResearch/hermes-agent' && '6' || '2' }}
           HERMES_TEST_FILE_TIMEOUT: "3000"
           OPENROUTER_API_KEY: ""
           OPENAI_API_KEY: ""

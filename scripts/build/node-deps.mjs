@@ -11,7 +11,11 @@ import { parseArgs } from 'node:util'
 // npm.cmd needs a shell. Use npm's JS entrypoint so paths remain argv on Windows.
 export function npmCommand({ env = process.env } = {}) {
   const names = process.platform === 'win32' ? ['npm.cmd', 'npm'] : ['npm']
-  const candidates = [env.npm_execpath]
+  // A copied Windows environment is a plain case-sensitive object, unlike process.env.
+  const execpath = env.npm_execpath || (process.platform === 'win32'
+    ? Object.entries(env).find(([name]) => name.toLowerCase() === 'npm_execpath')?.[1]
+    : undefined)
+  const candidates = [execpath]
   for (const dir of (env.PATH || env.Path || '').split(delimiter)) {
     for (const name of names) {
       const bin = join(dir, name)
@@ -60,6 +64,27 @@ function completedInstallMatches({ source, receipt, hiddenLock, key, nativeKey }
     .every(path => existsSync(join(source, path)))
 }
 
+function npmFailureDiagnostic(logsDir) {
+  // npm ci wraps loadVirtual errors in long usage output. Its debug log keeps
+  // the cause, but contains paths, URLs and possibly credentials: emit only
+  // fixed descriptions/codes, after the usage, before the logs are removed.
+  const knownCodes = new Set(['EOVERRIDE', 'EUSAGE', 'EINTEGRITY', 'EBADENGINE', 'ERESOLVE',
+    'ENOTEMPTY', 'EBUSY', 'EPERM', 'EACCES', 'ENOENT', 'E404', 'E401', 'E403', 'ETARGET',
+    'ETIMEDOUT', 'EAI_AGAIN', 'ECONNRESET'])
+  try {
+    for (const name of readdirSync(logsDir).filter(name => name.endsWith('.log')).sort().reverse()) {
+      const log = readFileSync(join(logsDir, name), 'utf8')
+      if (/Override for [^\r\n]+ conflicts with direct dependency/.test(log)) {
+        return 'node-deps: npm ci failed (EOVERRIDE: a dependency override conflicts with a direct dependency)'
+      }
+      for (const match of log.matchAll(/\b(?:error|verbose) code (E[A-Z0-9_]{1,30})\b/g)) {
+        if (knownCodes.has(match[1])) return `node-deps: npm ci failed (${match[1]})`
+      }
+    }
+  } catch { /* Diagnostic I/O must not replace the original child failure. */ }
+  return 'node-deps: npm ci failed (no short diagnostic available)'
+}
+
 // An interrupted Windows update can leave a nested .bin that npm ci's own rmdir
 // cannot clear (ENOTEMPTY, #75584); only deleting node_modules recovers it. npm's
 // debug log names the code while stdio stays on the terminal, so give each run
@@ -68,8 +93,15 @@ function runNpmCi(node, npm, args, { source, env }) {
   const logsDir = mkdtempSync(join(tmpdir(), 'hermes-npm-logs-'))
   // Builders set CI=1, which turns npm's spinner off. Ask for it back: npm
   // still shows it only on a terminal. Kept out of `args`, which keys the receipt.
-  const run = () => execFileSync(node, [npm, ...args, '--progress=true', `--logs-dir=${logsDir}`],
-    { cwd: source, env, stdio: 'inherit' })
+  const run = () => {
+    try {
+      execFileSync(node, [npm, ...args, '--progress=true', `--logs-dir=${logsDir}`],
+        { cwd: source, env, stdio: 'inherit' })
+    } catch (error) {
+      console.error(npmFailureDiagnostic(logsDir))
+      throw error
+    }
+  }
   try {
     run()
   } catch (error) {

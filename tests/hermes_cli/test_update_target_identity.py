@@ -439,4 +439,3 @@ def test_update_syntax_failure_restores_pre_update_head(update_tree, monkeypatch
         assert local.read_bytes() == unstaged
         assert git(t.clone, 'show', ':.gitignore') == staged.decode().strip()
         assert (t.clone / 'notes.txt').read_bytes() == b'untracked local work\n'
-

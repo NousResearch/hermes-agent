@@ -43,4 +43,3 @@ def test_current_packaged_launch_does_not_require_npm(tmp_path, monkeypatch):
     assert exited.value.code == 0
     npm.assert_not_called()
     run.assert_called_once()
-

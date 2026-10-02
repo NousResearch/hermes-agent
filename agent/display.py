@@ -1252,4 +1252,3 @@ def get_cute_tool_message(tool_name: str, args: dict, duration: float, result: s
         safe_name = tool_name[:9] if isinstance(tool_name, str) and tool_name else t("display.cute.fallback_tool_name")
         safe_duration = f"{duration:.1f}s" if isinstance(duration, (int, float)) else t("display.cute.fallback_done")
         return t("display.cute.completed", tool=f"{safe_name:9}", duration=safe_duration)
-

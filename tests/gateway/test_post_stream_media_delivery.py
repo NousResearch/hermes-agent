@@ -114,5 +114,3 @@ async def test_explicit_media_tag_still_delivers_post_stream(tmp_path, monkeypat
     assert images_kwargs["images"][0][0] == (
         f"file://{quote(media_file.as_posix(), safe='/:')}")
     assert str(media_file) in unquote(images_kwargs["images"][0][0])
-
-

@@ -94,4 +94,3 @@ def test_scheduled_and_main_r2_consumers_skip_without_credentials():
                                       ("", False, False)):
         needs = {native["needs"]: {"result": "success", "outputs": {"configured": configured}}}
         assert gate(native["if"], {"release": release}, needs) is runs, (configured, release)
-

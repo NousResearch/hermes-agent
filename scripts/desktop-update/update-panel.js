@@ -230,7 +230,7 @@ function run (argv) {
       );
     }
   }
-  
+
   closeButton.enabled = true
 
   // Terminal states: swap the loader for the glyph; title/line verbatim

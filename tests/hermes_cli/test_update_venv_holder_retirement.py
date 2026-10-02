@@ -109,4 +109,3 @@ def test_command_reaches_checkout_preparation_without_holder_gates(monkeypatch, 
         main.cmd_update(SimpleNamespace(gateway=False, check=False, yes=True, force=False, force_venv=False))
     assert reached == ["backup", "pause", "checkout"]
     forbidden.assert_not_called()
-

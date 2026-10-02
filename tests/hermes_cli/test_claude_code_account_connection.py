@@ -66,4 +66,3 @@ def test_disconnect_failure_does_not_echo_the_store_error(monkeypatch):
 
     assert resp.status_code == 500, resp.text
     assert secret not in resp.text
-

@@ -73,4 +73,3 @@ def test_scan_claims_a_bare_gateway_only_for_the_home_its_environment_names(tmp_
     finally:
         proc.terminate()
         proc.wait(timeout=10)
-

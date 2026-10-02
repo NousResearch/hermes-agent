@@ -100,7 +100,7 @@ def find_shell_configs() -> list:
     """Find shell configuration files that might have PATH entries."""
     home = Path.home()
     configs = []
-    
+
     candidates = [
         home / ".bashrc",
         home / ".bash_profile",
@@ -108,11 +108,11 @@ def find_shell_configs() -> list:
         home / ".zshrc",
         home / ".zprofile",
     ]
-    
+
     for config in candidates:
         if config.exists():
             configs.append(config)
-    
+
     return configs
 
 
@@ -123,11 +123,11 @@ def remove_path_from_shell_configs():
         try:
             content = config_path.read_text(encoding="utf-8-sig")
             original_content = content
-            
+
             # Remove lines containing hermes-agent or hermes PATH entries
             new_lines = []
             skip_next = False
-            
+
             for line in content.split('\n'):
                 # Skip the "# Hermes Agent" comment and following line
                 if '# Hermes Agent' in line or '# hermes-agent' in line:
@@ -137,19 +137,19 @@ def remove_path_from_shell_configs():
                     skip_next = False
                     continue
                 skip_next = False
-                
+
                 # Remove any PATH line containing hermes
                 if 'hermes' in line.lower() and ('PATH=' in line or 'path=' in line.lower()):
                     continue
-                    
+
                 new_lines.append(line)
-            
+
             new_content = '\n'.join(new_lines)
-            
+
             # Clean up multiple blank lines
             while '\n\n\n' in new_content:
                 new_content = new_content.replace('\n\n\n', '\n\n')
-            
+
             if new_content != original_content:
                 from utils import atomic_write_text
                 # The user's own rc, never backed up: a bare write_text() truncates before the new
@@ -172,7 +172,7 @@ def remove_wrapper_script():
         Path("/usr/local/bin/hermes-acp"),
         Path("/usr/local/bin/hermes-agent"),
     ]
-    
+
     removed = []
     for wrapper in wrapper_paths:
         if wrapper.exists():
@@ -184,7 +184,7 @@ def remove_wrapper_script():
                     removed.append(wrapper)
             except Exception as e:
                 log_warn(f"Could not remove {wrapper}: {e}")
-    
+
     return removed
 
 
@@ -747,7 +747,7 @@ def run_gui_uninstall(args):
 def run_uninstall(args):
     """
     Run the uninstall process.
-    
+
     Options:
     - Full uninstall: removes code + ~/.hermes/ (configs, data, logs)
     - Keep data: removes code but keeps ~/.hermes/ for future reinstall

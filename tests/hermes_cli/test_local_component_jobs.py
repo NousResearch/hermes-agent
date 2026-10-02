@@ -104,4 +104,3 @@ def test_component_job_pause_retains_pin_and_stops_sequence(client, monkeypatch,
     if endpoint == "quickstart":
         assert calls == ["server", "default"] and model.read_bytes() == RangeHandler.payloads["/model"]
     assert job_id not in lm._RUNNING
-

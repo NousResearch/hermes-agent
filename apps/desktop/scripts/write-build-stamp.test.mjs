@@ -138,4 +138,3 @@ test('commit builds retain exact provenance without entering an update channel',
     assert.throws(() => buildStampPayload(baseStamp, { ...env, HERMES_PAYLOAD_TAG: 'v1.2.3' }, platform, { runtime }), /tag/i)
   }
 })
-

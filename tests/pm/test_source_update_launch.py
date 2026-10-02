@@ -590,4 +590,3 @@ def test_failed_tail_attempt_is_counted_and_success_clears_it(source_launch, tmp
     assert venv_sync.prepare_launch(root, []) == store_python
     assert not completion_pending_path(root).exists()
     assert not _completion_attempts_path(root).exists(), "success cleared the attempt record"
-

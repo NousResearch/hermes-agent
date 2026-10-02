@@ -50,7 +50,7 @@ function runPosix(installRoot: string, startedAt?: string) {
 }
 
 function runWindows(installRoot: string, startedAt?: string) {
-  const env = { ...process.env }
+  const env: NodeJS.ProcessEnv = { ...process.env, HERMES_HOME: path.dirname(installRoot) }
 
   if (startedAt === undefined) {
     delete env.HERMES_UPDATE_STARTED_AT

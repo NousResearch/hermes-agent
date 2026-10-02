@@ -551,7 +551,7 @@ def _dashboard_entrypoint(plugin_dir: Path) -> Optional[str]:
         root.relative_to(plugin_dir.resolve())
         manifest = dashboard / "manifest.json"
         manifest.resolve().relative_to(root)
-        data = json.loads(manifest.read_text(encoding="utf-8"))
+        data = json.loads(manifest.read_text(encoding="utf-8-sig"))
         if not isinstance(data, dict):
             return None
         entry = data.get("entry", "dist/index.js")

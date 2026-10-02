@@ -653,11 +653,11 @@ def _run_delivery(argv: list[str], dm_file: str, *, stdin_file: bool,
                 inherit_profile_home=False,
                 extra={"PYTHONIOENCODING": "utf-8"},
             )
-            with open(dm_file, "r", encoding="utf-8") as stream:
-                return subprocess.run(argv, stdin=stream, check=False, env={**child_env, **env}).returncode
             with open(dm_file, "r", encoding="utf-8-sig") as stream:
                 # Passing the file descriptor as stdin bypasses the BOM-aware decoder.
-                return subprocess.run(argv, input=stream.read().encode("utf-8"), check=False, env=env).returncode
+                return subprocess.run(
+                    argv, input=stream.read().encode("utf-8"), check=False, env={**child_env, **env}
+                ).returncode
     finally:
         _unlink_dm_file(dm_file)
 

@@ -2087,7 +2087,7 @@ def _load_contributor_dir(directory: "Path | None" = None) -> dict:
         if not path.is_file() or path.name.startswith("."):
             continue
         try:
-            for line in path.read_text(encoding="utf-8").splitlines():
+            for line in path.read_text(encoding="utf-8-sig").splitlines():
                 line = line.strip()
                 if line and not line.startswith("#"):
                     mapping[path.name] = line.lstrip("@")
@@ -2184,7 +2184,7 @@ def dispatch_desktop_build(tag: str, gh_repo: str | None) -> bool:
     # dependency resolutions or contacting the registry.
     package_lock = REPO_ROOT / "package-lock.json"
     if package_lock.exists():
-        lock_data = json.loads(package_lock.read_text(encoding="utf-8"))
+        lock_data = json.loads(package_lock.read_text(encoding="utf-8-sig"))
         packages = lock_data.get("packages", {})
         changed = False
         for workspace in ("apps/desktop", "apps/bootstrap-installer"):
@@ -2199,7 +2199,7 @@ def dispatch_desktop_build(tag: str, gh_repo: str | None) -> bool:
         REPO_ROOT / "apps" / "bootstrap-installer" / "src-tauri" / "tauri.conf.json"
     )
     if installer_tauri.exists():
-        pkg_text = installer_tauri.read_text(encoding="utf-8")
+        pkg_text = installer_tauri.read_text(encoding="utf-8-sig")
         pkg_text = re.sub(
             r'("version"\s*:\s*)"[^"]+"',
             rf'\g<1>"{semver}"',

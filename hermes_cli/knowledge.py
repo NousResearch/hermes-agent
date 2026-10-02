@@ -615,7 +615,7 @@ def _load_memory_entries() -> tuple[str, list[str]]:
     if not path.exists():
         return "", []
     try:
-        raw = path.read_text(encoding="utf-8")
+        raw = path.read_text(encoding="utf-8-sig")
     except (OSError, UnicodeError) as exc:
         raise KnowledgeError(f"cannot read MEMORY.md: {exc}") from exc
     return raw, MemoryStore._parse_entries(raw)
@@ -695,7 +695,7 @@ def _write_managed_memory(
                 )
             try:
                 MemoryStore._write_file(path, entries)
-                raw_after = path.read_text(encoding="utf-8")
+                raw_after = path.read_text(encoding="utf-8-sig")
                 if raw_after != expected_after:
                     raise KnowledgeError(
                         "MEMORY.md changed during apply; rollback refused"
@@ -981,7 +981,7 @@ def _append_audit(event: dict[str, Any]) -> None:
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         with MemoryStore._file_lock(path):
-            previous = path.read_text(encoding="utf-8") if path.exists() else ""
+            previous = path.read_text(encoding="utf-8-sig") if path.exists() else ""
             _assert_run_manifest_consistency(
                 previous,
                 run_id=event["run_id"],
@@ -1175,7 +1175,7 @@ def _verify(args: Any) -> int:
         event = events[-1]
         memory = event.get("memory") or {}
         memory_path = _verified_memory_path(memory)
-        current = memory_path.read_text(encoding="utf-8") if memory_path.exists() else ""
+        current = memory_path.read_text(encoding="utf-8-sig") if memory_path.exists() else ""
         managed = any(entry.startswith(MANAGED_HEADER) and args.run_id in entry for entry in MemoryStore._parse_entries(current))
         after_sha = _sha256_text(current)
         result = {

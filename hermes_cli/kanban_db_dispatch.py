@@ -267,14 +267,18 @@ def _worker_log_exit_code(task_id: str, board: Optional[str] = None) -> Optional
 
     The durable twin of ``_recent_worker_exits``: written by the worker itself
     (``hermes_cli.quiet_single_query.exit_single_query``), so it is there whether
-    or not the process running this sweep ever reaped the worker. Last trailer
-    wins — the log is append-mode across re-runs.
+    or not the process running this sweep ever reaped the worker. Only the CURRENT
+    run's segment counts: the log is append-mode across re-runs, so reading the last
+    trailer of the whole file read the PREVIOUS run's trailer for a worker that died
+    before writing one, booking its crash as a clean protocol violation.
     """
+    segment = _worker_current_run_text(task_id, board=board)
     try:
-        raw = _kb.read_worker_log(task_id, tail_bytes=4000, board=board)
+        raw = segment if segment is not None else _kb.read_worker_log(
+            task_id, tail_bytes=4000, board=board)
     except Exception:
         return None
-    matches = _EXIT_TRAILER_RE.findall(raw or "")
+    matches = _EXIT_TRAILER_RE.findall((raw or "")[-4000:])
     return int(matches[-1]) if matches else None
 
 
@@ -989,6 +993,52 @@ def _log_noise_prefixes() -> tuple[str, ...]:
     return ("session_id:", "Query:", t("cli.chat.initializing_agent"))
 
 
+# Every spawn stamps a start line into the (append-mode, cross-run) worker log, so a
+# reaper can tell THIS run's bytes from every earlier run's. Without it a run that died
+# producing no output is indistinguishable from its predecessor's tail: the board quoted
+# a dead run's PREVIOUS output, and a crash that wrote no exit trailer was read as the
+# earlier run's trailer — booked as a clean "protocol violation" instead of a crash.
+_WORKER_RUN_MARKER = "=== hermes kanban worker run "
+_WORKER_RUN_MARKER_BYTES = _WORKER_RUN_MARKER.encode("utf-8")
+_LOG_SEGMENT_CHUNK_BYTES = 64 * 1024
+_LOG_SEGMENT_MAX_BYTES = 4 * 1024 * 1024
+
+
+def _read_log_since_last_marker(path: Path, marker: bytes) -> Optional[str]:
+    """Log text after the LAST ``marker`` line; ``None`` when the log carries no marker.
+
+    Scans backwards in chunks (bounded by ``_LOG_SEGMENT_MAX_BYTES``) so one huge run
+    cannot hide its own marker behind a small tail window. An empty string means the
+    marker is the last thing in the file — this run wrote nothing.
+    """
+    try:
+        offset = path.stat().st_size
+        scanned = b""
+        with open(path, "rb") as fh:
+            while offset > 0 and len(scanned) < _LOG_SEGMENT_MAX_BYTES:
+                span = min(_LOG_SEGMENT_CHUNK_BYTES, offset)
+                offset -= span
+                fh.seek(offset)
+                scanned = fh.read(span) + scanned
+                idx = scanned.rfind(marker)
+                if idx == -1:
+                    continue
+                line_end = scanned.find(b"\n", idx)
+                return "" if line_end == -1 else scanned[line_end + 1:].decode("utf-8", "replace")
+        return None
+    except OSError:
+        return None
+
+
+def _worker_current_run_text(task_id: str, board: Optional[str] = None) -> Optional[str]:
+    """What this task's CURRENT run wrote to its log (``None``: log predates markers)."""
+    try:
+        path = _kb.worker_log_path(task_id, board=board)
+    except Exception:
+        return None
+    return _read_log_since_last_marker(path, _WORKER_RUN_MARKER_BYTES)
+
+
 def _worker_final_output(task_id: str, board: Optional[str] = None) -> str:
     """Best-effort read of a dead worker's last printed text, for the board diagnostic.
 
@@ -1004,10 +1054,14 @@ def _worker_final_output(task_id: str, board: Optional[str] = None) -> str:
     is wrong for every board but the one the dispatcher thread happens to call
     "current", so the log would silently not be found.
     """
-    try:
-        raw = _kb.read_worker_log(task_id, tail_bytes=4000, board=board)
-    except Exception:
-        return ""
+    segment = _worker_current_run_text(task_id, board=board)
+    if segment is None:
+        # Log predates run markers (or was rotated away): best-effort tail, as before.
+        try:
+            segment = _kb.read_worker_log(task_id, tail_bytes=4000, board=board)
+        except Exception:
+            return ""
+    raw = segment or ""
     if not raw:
         return ""
     raw = _EXIT_TRAILER_RE.sub("", raw)
@@ -1059,6 +1113,10 @@ def _classify_dead_worker(
         if worker_output:
             dead.error_text += f" Worker's last output: {worker_output!r}"
             dead.event_payload["worker_output"] = worker_output
+        else:
+            # Say so explicitly: a bare label is what let a poisoned workspace burn
+            # eight retries, each one re-reading the previous run's log.
+            dead.error_text += " Worker wrote no output for this run."
     return dead
 
 
@@ -2491,8 +2549,17 @@ def _rotate_worker_log(
 
 def _module_hermes_argv() -> list[str]:
     """Interpreter-bound Hermes CLI invocation (``hermes_cli.main`` is the
-    console-script target — there is no top-level ``hermes`` package)."""
-    return [sys.executable, "-m", "hermes_cli.main"]
+    console-script target — there is no top-level ``hermes`` package).
+
+    ``-P`` keeps the task workspace off ``sys.path[0]``. A worker's cwd is a scratch
+    directory it writes into itself, and ``-m`` would otherwise put it ahead of the
+    stdlib: a helper file named ``inspect.py``/``json.py``/``runpy.py`` then wins that
+    import and the process dies during boot, before it can print a line (or be fixed by
+    any Python-level guard — ``runpy`` itself is imported before user code runs). The
+    flag is on the argv, so a worker's own subprocesses are unaffected.
+    ``requires-python`` is ``>=3.11``, where ``-P``/``PYTHONSAFEPATH`` exist.
+    """
+    return [sys.executable, "-P", "-m", "hermes_cli.main"]
 
 
 def _propagate_module_import_root(cmd: list[str], env: dict[str, str]) -> None:
@@ -2508,7 +2575,7 @@ def _propagate_module_import_root(cmd: list[str], env: dict[str, str]) -> None:
     then owns dependency activation as usual. A resolved shim path owns its
     imports and is left alone. Same pin cron's external worker uses (#112729).
     """
-    if cmd[1:3] != ["-m", "hermes_cli.main"]:
+    if "hermes_cli.main" not in cmd[1:]:
         return
     from cron.scheduler_worker_env import pin_hermes_tree_on_pythonpath
 
@@ -2781,13 +2848,25 @@ def _open_worker_log(task: Task, board: Optional[str]):
     """Append-mode per-task log (a re-run on unblock appends, never overwrites),
     rotated first. Anchored at the board root (not the shared kanban root) so
     `hermes kanban log` reads its own file and boards sharing task ids don't
-    collide."""
+    collide.
+
+    Stamps the run's start line before the child inherits the descriptor: the reaper
+    reads only the bytes after the last marker, so a run that dies silently is never
+    reported with its predecessor's output or exit trailer.
+    """
     log_dir = _kb.worker_logs_dir(board=board)
     log_dir.mkdir(parents=True, exist_ok=True)
     log_path = log_dir / f"{task.id}.log"
     rotate_bytes, backup_count = worker_log_rotation_config()
     _rotate_worker_log(log_path, rotate_bytes, backup_count)
-    return open(log_path, "ab")
+    log_f = open(log_path, "ab")
+    run_id = task.current_run_id if task.current_run_id is not None else "?"
+    marker = (f"{_WORKER_RUN_MARKER}{run_id} @ {time.strftime('%Y-%m-%dT%H:%M:%S%z')} ===\n")
+    # Flush before the child gets the fd (and before its own first byte), so the marker
+    # can never land after the output it frames.
+    log_f.write(marker.encode("utf-8"))
+    log_f.flush()
+    return log_f
 
 
 def _restart_safe_worker_argv(task: Task, command: list[str]) -> list[str]:

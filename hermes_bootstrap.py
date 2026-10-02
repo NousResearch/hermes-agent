@@ -10,18 +10,87 @@ process still needs an explicit ``encoding="utf-8"`` (ruff ``PLW1514``). POSIX i
 alone deliberately — users' ``LANG``/``LC_*`` choices are respected.
 
 Stdlib only: entry points import this before ``harden_import_path()`` runs, so nothing
-here may pull in a Hermes package that a project-local directory could shadow.
+here may pull in a Hermes package that a project-local directory could shadow. The same
+constraint is why the shadow guard below runs before this module's own imports.
 """
 
 from __future__ import annotations
 
+# ``os`` and ``sys`` are preloaded into ``sys.modules`` at interpreter start, so these two
+# imports cannot resolve to a shadowing file and are safe to hoist above the guard below.
+import os
+import sys
+
+# ---------------------------------------------------------------------------------------
+# Shadow guard. MUST run before the imports below.
+#
+# ``python -m <module>`` (the ``hermes_cli.main`` launch every Kanban worker and the
+# ``hermes`` console script use) puts the CURRENT WORKING DIRECTORY at ``sys.path[0]``.
+# A file sitting in that directory which shares a name with a stdlib module — a worker's
+# own ``inspect.py``/``types.py``/``logging.py`` helper, a user's scratch file — then wins
+# every later ``import inspect``, and the process dies during boot, before it can print a
+# single line. One Kanban worker's helper file bricked eight consecutive runs that way,
+# every one of them booked as an unrelated "worker exited without calling kanban_complete".
+#
+# This may only touch ``os`` and ``sys``: Python preloads both into ``sys.modules`` at
+# interpreter start, so they cannot be shadowed. Everything else (``errno``, let alone
+# ``importlib.abc``, which imports ``inspect``) is exactly what the guard protects.
+def _is_cwd_path_entry(entry: str) -> bool:
+    """True for the sys.path entries Python inserts for the launch directory."""
+    if entry in ("", "."):
+        return True
+    if not entry:
+        return False
+    try:
+        return os.path.abspath(entry) == os.getcwd()
+    except OSError:  # pragma: no cover - only pathological cwd removal
+        return False
+
+
+def _entry_shadows_stdlib(entry: str, stdlib_names) -> bool:
+    """True when a cwd entry holds a top-level module/package name the stdlib owns."""
+    try:
+        names = os.listdir(entry or ".")
+    except OSError:
+        return False
+    for name in names:
+        base, is_module = (name[:-3], True) if name.endswith(".py") else (name, False)
+        if base not in stdlib_names:
+            continue
+        if is_module or os.path.isfile(os.path.join(entry or ".", name, "__init__.py")):
+            return True
+    return False
+
+
+def _demote_stdlib_shadowing_paths() -> list[str]:
+    """Move cwd path entries that shadow the stdlib to the END of ``sys.path``.
+
+    Demoted, never dropped: the stdlib wins the name while the directory's own modules
+    stay importable — removing the entry (as ``harden_import_path`` does for ``""``/
+    ``"."``) would break a workspace script that imports a sibling. Returns the demoted
+    entries; ``sys.path`` is untouched when nothing shadows.
+    """
+    stdlib_names = getattr(sys, "stdlib_module_names", None)
+    if not stdlib_names:  # < 3.10; nothing to compare against
+        return []
+    demoted, kept = [], []
+    for entry in sys.path:
+        if _is_cwd_path_entry(entry) and _entry_shadows_stdlib(entry, stdlib_names):
+            demoted.append(entry)
+        else:
+            kept.append(entry)
+    if demoted:
+        sys.path[:] = kept + demoted
+    return demoted
+
+
+_DEMOTED_SHADOW_PATHS = _demote_stdlib_shadowing_paths()
+
 import errno
 import importlib.abc
 import importlib.util
-import os
 import selectors
 import socket
-import sys
 import time
 
 _IS_WINDOWS = sys.platform == "win32"

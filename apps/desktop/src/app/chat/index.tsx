@@ -62,6 +62,7 @@ import { ChatBar, ChatBarFallback } from './composer'
 import { FloatingComposerSurface } from './composer/floating-surface'
 import { requestComposerInsert } from './composer/focus'
 import { droppedFileInlineRefs } from './composer/inline-refs'
+import { deriveProfileSessionStarted } from './composer/profile-selection'
 import {
   ComposerScopeProvider,
   ComposerSurfaceProvider,
@@ -572,6 +573,21 @@ const ChatViewContent = memo(function ChatViewContent({
   const lastVisibleIsUser = useStore(view.$lastVisibleIsUser)
   const selectedSessionId = useStore(view.$storedId)
   const sessions = useStore($sessions)
+
+  // Only a durable selected stored-session row proves a resumed owner here.
+  // A draft may carry an internal runtime/preview id before its first user turn.
+  const activeStoredSession = selectedSessionId
+    ? sessions.find(session => sessionMatchesStoredId(session, selectedSessionId)) || null
+    : null
+
+  const sessionOwnerRoute = selectedSessionId ? getSessionOwnerHint(selectedSessionId) : undefined
+
+  const profileSessionStarted = deriveProfileSessionStarted({
+    hasMessages: !messagesEmpty,
+    hasPersistedSession: Boolean(activeStoredSession),
+    isSessionTile: view.kind === 'tile'
+  })
+
   const resumeExhaustedSessionId = useStore($resumeExhaustedSessionId)
 
   // Durable composer/queue scope (lineage root) so auto-compression tip rotation
@@ -908,7 +924,23 @@ const ChatViewContent = memo(function ChatViewContent({
                 onSteerHidden={onSteerHidden}
                 onSubmit={onSubmit}
                 onTranscribeAudio={onTranscribeAudio}
-                profile={modelOptionsProfile || activeGatewayProfile}
+                profile={
+                  activeStoredSession?.profile ||
+                  sessionOwnerRoute?.targetProfile ||
+                  sessionOwnerRoute?.profile ||
+                  modelOptionsProfile ||
+                  activeGatewayProfile
+                }
+                profileOwnerConnectionId={
+                  activeStoredSession?.connection_id ??
+                  sessionOwnerRoute?.connectionId ??
+                  modelOptionsOwnerConnectionId ??
+                  null
+                }
+                profileOwnerPersisted={
+                  view.kind === 'tile' || Boolean(activeStoredSession || (profileSessionStarted && sessionOwnerRoute))
+                }
+                profileSessionStarted={profileSessionStarted}
                 queueSessionKey={queueSessionKey}
                 sessionId={activeSessionId}
                 state={chatBarState}

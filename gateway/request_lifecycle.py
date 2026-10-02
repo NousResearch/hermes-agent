@@ -187,7 +187,8 @@ async def admit_request(runner, event, session_key):
         return None
     admitted_at = time.monotonic()
     with _scope(runner, source):
-        if not capability_enabled(runner, source):
+        from hermes_cli.plugins import has_hook, ainvoke_hook
+        if not any(has_hook(hook) for hook in HOOKS):
             return None
         from gateway.session_identity import identity_of
         identity = identity_of(source)
@@ -206,7 +207,7 @@ async def admit_request(runner, event, session_key):
         request = RequestContext(runner, event, facts, adapter, asyncio.get_running_loop())
         event._gateway_request_context = request
         _requests(runner)[facts.request_id] = request
-        await _notify(request, "admitted")
+        await ainvoke_hook("gateway_request_lifecycle", request=request, stage="admitted")
         return request
 
 

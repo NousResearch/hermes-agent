@@ -343,7 +343,7 @@ export default function WebhooksPage() {
                 id="create-webhook-title"
                 className="font-mondwest text-display text-base tracking-wider"
               >
-                New subscription
+                {W.newSubscription}
               </h2>
             </header>
 

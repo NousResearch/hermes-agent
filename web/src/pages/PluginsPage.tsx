@@ -812,7 +812,7 @@ export default function PluginsPage() {
                     onClick={() => void onSaveMemoryProvider()}
                     prefix={memoryBusy ? <Spinner /> : undefined}
                   >
-                    Save memory provider
+                    {t.pluginsPage.saveMemoryProvider ?? "Save memory provider"}
                   </Button>
                 </div>
 
@@ -843,7 +843,7 @@ export default function PluginsPage() {
                     onClick={() => void onSaveContextEngine()}
                     prefix={contextBusy ? <Spinner /> : undefined}
                   >
-                    Save context engine
+                    {t.pluginsPage.saveContextEngine ?? "Save context engine"}
                   </Button>
                 </div>
               </div>

@@ -386,7 +386,7 @@ export default function McpPage() {
                 id="create-mcp-title"
                 className="font-mondwest text-display text-base tracking-wider"
               >
-                Add MCP server
+                {M.createTitle ?? "Add MCP server"}
               </h2>
             </header>
 
@@ -464,9 +464,8 @@ export default function McpPage() {
                   )}
                   {httpAuth === "oauth" && (
                     <p className="text-xs text-muted-foreground">
-                      Add the server, then use Authenticate. Hermes opens the
-                      OAuth browser on the machine running the Dashboard
-                      backend.
+                      {M.oauthNote ??
+                        "Add the server, then use Authenticate. Hermes opens the OAuth browser on the machine running the Dashboard backend."}
                     </p>
                   )}
                 </>
@@ -633,7 +632,7 @@ export default function McpPage() {
                 }
                 prefix={<Package className="h-3.5 w-3.5" />}
               >
-                Browse catalog
+                {M.browseCatalog ?? "Browse catalog"}
               </Button>
             </CardContent>
           </Card>
@@ -788,7 +787,7 @@ export default function McpPage() {
         {catalog.length === 0 && (
           <Card>
             <CardContent className="py-8 text-center text-sm text-muted-foreground">
-              No catalog entries available.
+              {M.noCatalogEntries ?? "No catalog entries available."}
             </CardContent>
           </Card>
         )}
@@ -890,7 +889,7 @@ export default function McpPage() {
                   {entry.post_install && (
                     <details className="mt-1 text-xs text-muted-foreground">
                       <summary className="cursor-pointer select-none">
-                        Setup notes
+                        {M.setupNotes ?? "Setup notes"}
                       </summary>
                       <p className="mt-1 whitespace-pre-wrap">
                         {entry.post_install.trim()}

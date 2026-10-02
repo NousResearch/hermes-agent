@@ -457,6 +457,11 @@ export const zh: Translations = {
     "install": "安装",
     "connectedNoTools": "已连接 — 无工具",
     "failed": "失败",
+    "createTitle": "添加 MCP 服务器",
+    "browseCatalog": "浏览目录",
+    "setupNotes": "安装说明",
+    "noCatalogEntries": "暂无可用的目录条目。",
+    "oauthNote": "先添加服务器，再点击「认证」。Hermes 会在运行仪表盘后端的机器上打开 OAuth 浏览器。",
   },
 
   pairingPage: {
@@ -862,6 +867,8 @@ export const zh: Translations = {
     runtimeHeading: "网关运行时（YAML 插件）",
     saveProviders: "保存提供方设置",
     savedProviders: "提供方设置已保存。",
+    saveMemoryProvider: "保存记忆提供方",
+    saveContextEngine: "保存上下文引擎",
     sourceBadge: "来源",
     authRequired: "需要认证",
     authRequiredHint: "运行此命令以完成认证：",
@@ -1191,6 +1198,9 @@ export const zh: Translations = {
     created: "配置「{name}」已创建",
     createFailed: "创建失败：{error}",
     authPrefix: "认证：",
+    urlLabel: "URL",
+    mcpTransportAria: "MCP 传输方式",
+    httpAuthAria: "HTTP 认证",
   },
 
   sharedComponents: {

@@ -569,7 +569,7 @@ export default function ProfileBuilderPage() {
                     <div
                       className="grid grid-cols-2 border border-border bg-background/30 p-0.5"
                       role="group"
-                      aria-label="MCP transport"
+                      aria-label={PB.mcpTransportAria ?? "MCP transport"}
                     >
                       {(
                         [
@@ -599,7 +599,7 @@ export default function ProfileBuilderPage() {
                 {mcpDraft.transport === "http" ? (
                   <>
                     <div className="grid gap-1.5">
-                      <Label htmlFor="pb-mcp-url">URL</Label>
+                      <Label htmlFor="pb-mcp-url">{PB.urlLabel ?? "URL"}</Label>
                       <Input
                         id="pb-mcp-url"
                         placeholder="https://example.com/mcp"
@@ -614,7 +614,7 @@ export default function ProfileBuilderPage() {
                       <div
                         className="grid grid-cols-3 border border-border bg-background/30 p-0.5 md:max-w-md"
                         role="group"
-                        aria-label="HTTP authentication"
+                        aria-label={PB.httpAuthAria ?? "HTTP authentication"}
                       >
                         {(
                           [

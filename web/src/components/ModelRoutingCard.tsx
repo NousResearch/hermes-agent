@@ -194,7 +194,7 @@ function RouteRow({
  * fallback (`fallback_model`) and the `delegation.hot_reload_model` toggle.
  *
  * Every control is schema-gated: it only renders when the served config schema
- * exposes the key (the same rule the Waifu page follows). All reads/writes go
+ * exposes the key (the same rule the config pages follow). All reads/writes go
  * through the generic config GET/save path — this block never invents an
  * endpoint. The host page owns saving (Config page: its Save button; Models
  * page: the Save button under this card).

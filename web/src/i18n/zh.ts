@@ -894,7 +894,6 @@ export const zh: Translations = {
       vertex: "Vertex",
       vision: "视觉",
       voice: "语音",
-      waifu: "Waifu 模式",
       wake_word: "唤醒词",
       web: "网页",
       x_search: "X 搜索",

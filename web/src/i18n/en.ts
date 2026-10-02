@@ -935,7 +935,6 @@ export const en: Translations = {
       vertex: "Vertex",
       vision: "Vision",
       voice: "Voice",
-      waifu: "Waifu",
       wake_word: "Wake Word",
       web: "Web",
       x_search: "X Search",

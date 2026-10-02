@@ -22,7 +22,7 @@ export interface FallbackRoute {
 
 /**
  * Schema keys the routing block reads. Each control is gated on the served
- * config schema exposing its key (same rule as the /waifu page) — we never
+ * config schema exposing its key (same rule as the config pages) — we never
  * invent a control for a key the backend does not serve.
  */
 export const ROUTING_KEYS = {

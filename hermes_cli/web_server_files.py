@@ -36,6 +36,11 @@ def _fs_path(raw_path: str, *, cwd: str | None = None) -> Path:
                     raise ValueError
                 uri_path = f"//{parsed.netloc}{uri_path}"
             raw = urllib.request.url2pathname(uri_path)
+        elif os.name == "nt":
+            # MEDIA links can reuse Git Bash paths; native Path would read /c/ as C:\c\.
+            from tools.environments.local import _msys_to_windows_path
+
+            raw = _msys_to_windows_path(raw)
         candidate = Path(raw).expanduser()
         if not candidate.is_absolute():
             base = Path(cwd).expanduser() if cwd is not None else Path.cwd()

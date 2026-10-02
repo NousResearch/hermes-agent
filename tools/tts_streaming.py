@@ -68,12 +68,17 @@ SENTENCE_BOUNDARY_RE = re.compile(r"(?<=[.!?])(?:\s|\n)|(?:\n\n)")
 _THINK_NAMES = "|".join(re.escape(name) for name in THINK_TAG_NAMES)
 _THINK_BLOCK_RE = re.compile(rf"<({_THINK_NAMES})[\s>].*?</\1>", flags=re.DOTALL | re.IGNORECASE)
 _THINK_OPEN_RE = re.compile(rf"<(?:{_THINK_NAMES})(?=[\s>]|$)", flags=re.IGNORECASE)
+# Fenced code is shown, never spoken: prepare_spoken_text drops it from a whole reply, but a
+# streamed reply is cut into sentences first, so each piece of a fence would reach the voice.
+_CODE_BLOCK_RE = re.compile(r"```[\s\S]*?```")
+_CODE_FENCE = "```"
 
 
 class SentenceChunker:
     """Incremental sentence cutter for LLM token deltas, shared by the speaker pipeline and the
-    speak-stream WebSocket so every surface cuts speech identically. Strips ``<think>`` blocks (even
-    split across deltas) and merges fragments shorter than *min_len* into the following sentence."""
+    speak-stream WebSocket so every surface cuts speech identically. Strips ``<think>`` blocks and
+    code fences (even split across deltas) and merges fragments shorter than *min_len* into the
+    following sentence."""
 
     def __init__(self, min_len: int = 20):
         self.min_len = min_len
@@ -91,12 +96,12 @@ class SentenceChunker:
 
     def feed(self, delta: str) -> List[str]:
         """Absorb *delta*; return every complete sentence now ready to speak."""
-        self.buf = _THINK_BLOCK_RE.sub("", self.buf + delta)
+        self.buf = _CODE_BLOCK_RE.sub("\n", _THINK_BLOCK_RE.sub("", self.buf + delta))
         if _THINK_OPEN_RE.search(self.buf):
             return []  # open think tag — the closing tag may arrive next delta
         out: List[str] = []
         start = 0  # skip boundaries that would leave the head too short
-        while m := SENTENCE_BOUNDARY_RE.search(self.buf, start):
+        while m := SENTENCE_BOUNDARY_RE.search(self.buf, start, self._speakable_end()):
             head = self.buf[: m.end()]
             if len(head.strip()) < self.min_len:
                 start = m.end()
@@ -108,11 +113,19 @@ class SentenceChunker:
 
     def flush(self) -> List[str]:
         """Drain the tail (end-of-text or long-idle flush)."""
-        tail, self.buf = _THINK_BLOCK_RE.sub("", self.buf), ""
-        if m := _THINK_OPEN_RE.search(tail):
-            tail = tail[: m.start()]  # unterminated reasoning block: never speak it
-        tail = tail.strip()
+        self.buf = _CODE_BLOCK_RE.sub("\n", _THINK_BLOCK_RE.sub("", self.buf))
+        # An open reasoning block or code fence is never spoken. An idle flush is not end-of-text,
+        # so the open part stays buffered: dropping it would speak the rest of the block, and a
+        # dropped opening fence would turn the closing one into an opener for the prose after it.
+        end = self._speakable_end()
+        tail, self.buf = self.buf[:end].strip(), self.buf[end:]
         return [tail] if tail else []
+
+    def _speakable_end(self) -> int:
+        """Index where an unterminated reasoning block or code fence starts, else ``len(buf)``."""
+        think = _THINK_OPEN_RE.search(self.buf)
+        fence = self.buf.find(_CODE_FENCE)
+        return min(think.start() if think else len(self.buf), fence if fence >= 0 else len(self.buf))
 
 
 class StreamingTTSProvider(ABC):

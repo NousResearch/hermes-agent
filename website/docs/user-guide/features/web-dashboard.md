@@ -751,6 +751,7 @@ dashboard:
     # password: "s3cret"
     secret: "<32+ random bytes, base64 or hex>"  # token-signing key
     session_ttl_seconds: 43200                    # optional; access-token lifetime (default 12h)
+    refresh_ttl_seconds: 2592000                  # optional; refresh-token lifetime (default 30d)
 ```
 
 **Environment overrides:**
@@ -762,6 +763,7 @@ dashboard:
 | `HERMES_DASHBOARD_BASIC_AUTH_PASSWORD` | `dashboard.basic_auth.password` | plaintext; **wins over a config `password_hash`** so you can rotate via env |
 | `HERMES_DASHBOARD_BASIC_AUTH_SECRET` | `dashboard.basic_auth.secret` | token-signing key |
 | `HERMES_DASHBOARD_BASIC_AUTH_TTL_SECONDS` | `dashboard.basic_auth.session_ttl_seconds` | access-token lifetime |
+| `HERMES_DASHBOARD_BASIC_AUTH_REFRESH_TTL_SECONDS` | `dashboard.basic_auth.refresh_ttl_seconds` | refresh-token lifetime (default 30d); set it longer than the access-token lifetime |
 
 :::caution Set an explicit `secret` for stable sessions
 When `secret` is empty, a random per-process signing key is generated. That's fine for a single process, but it means **every session is invalidated on restart** and sessions **don't span multiple workers**. Set an explicit `secret` for restart-surviving / multi-worker deployments.

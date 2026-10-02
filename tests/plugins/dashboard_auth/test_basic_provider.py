@@ -34,6 +34,7 @@ def _clear_basic_env(monkeypatch):
         "HERMES_DASHBOARD_BASIC_AUTH_PASSWORD_HASH",
         "HERMES_DASHBOARD_BASIC_AUTH_SECRET",
         "HERMES_DASHBOARD_BASIC_AUTH_TTL_SECONDS",
+        "HERMES_DASHBOARD_BASIC_AUTH_REFRESH_TTL_SECONDS",
     ):
         monkeypatch.delenv(var, raising=False)
 
@@ -219,3 +220,51 @@ class TestRegister:
         p2 = ctx2.register_dashboard_auth_provider.call_args.args[0]
         s = p1.complete_password_login(username="admin", password="hunter2")
         assert p2.verify_session(access_token=s.access_token) is not None
+
+
+# ---------------------------------------------------------------------------
+# Refresh-token lifetime
+# ---------------------------------------------------------------------------
+
+
+class TestRefreshTtl:
+    """The refresh token's lifetime used to be a hard-coded 30 days, so a client
+    that refreshes could not be kept signed in longer than that no matter what
+    session_ttl_seconds said. It is now configurable, mirroring the access-token
+    TTL: same env/config precedence, same 60s floor.
+    """
+
+    def _provider(self, basic, monkeypatch, **env):
+        monkeypatch.setattr(basic, "_load_config_basic_auth_section", lambda: {})
+        monkeypatch.setenv("HERMES_DASHBOARD_BASIC_AUTH_USERNAME", "admin")
+        monkeypatch.setenv("HERMES_DASHBOARD_BASIC_AUTH_PASSWORD", "hunter2")
+        for k, v in env.items():
+            monkeypatch.setenv(f"HERMES_DASHBOARD_BASIC_AUTH_{k}", v)
+        ctx = MagicMock()
+        basic.register(ctx)
+        return ctx.register_dashboard_auth_provider.call_args.args[0]
+
+    def test_defaults_to_the_builtin_constant(self, basic, monkeypatch):
+        provider = self._provider(basic, monkeypatch)
+        assert provider._refresh_ttl == basic._REFRESH_TTL_SECONDS
+
+    def test_env_overrides_the_refresh_ttl(self, basic, monkeypatch):
+        provider = self._provider(basic, monkeypatch, REFRESH_TTL_SECONDS="3153600000")
+        assert provider._refresh_ttl == 3153600000
+
+    def test_refresh_ttl_has_the_same_60s_floor(self, basic, monkeypatch):
+        provider = self._provider(basic, monkeypatch, REFRESH_TTL_SECONDS="0")
+        assert provider._refresh_ttl == 60
+
+    def test_non_numeric_falls_back_to_the_default(self, basic, monkeypatch):
+        provider = self._provider(basic, monkeypatch, REFRESH_TTL_SECONDS="not-a-number")
+        assert provider._refresh_ttl == basic._REFRESH_TTL_SECONDS
+
+    def test_refresh_token_expiry_follows_the_setting(self, basic, monkeypatch):
+        import time
+        provider = self._provider(basic, monkeypatch, REFRESH_TTL_SECONDS="3600", TTL_SECONDS="7200")
+        s = provider.complete_password_login(username="admin", password="hunter2")
+        payload = basic._unsign(s.refresh_token, provider._secret, "refresh")
+        assert payload is not None
+        # refresh exp tracks its own setting, not the access-token TTL
+        assert 3590 <= payload["exp"] - int(time.time()) <= 3600

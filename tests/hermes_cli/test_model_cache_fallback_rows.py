@@ -123,3 +123,14 @@ def test_codex_cold_fallback_retries_after_short_ttl(monkeypatch, tmp_path):
         assert "gpt-6-astra" in mod.cached_provider_model_ids("openai-codex")
         assert "fallback" not in cache["openai-codex"]
     spawn.assert_not_called()
+
+
+def test_anthropic_catalog_marks_the_curated_list_as_fallback_on_a_failed_live_fetch():
+    # _anthropic_catalog used to `return curated` (a plain list) on a failed live fetch, so a
+    # transient outage on a proxy base_url cached the generic curated list over the account's/
+    # proxy's real catalog for a full hour (same class of bug as #107391, just missed by 3fb8b3f6).
+    with patch.object(mod, "_get_model_config_dict", return_value={}), \
+         patch.object(mod, "_fetch_anthropic_models", return_value=None):
+        rows = mod.provider_model_ids("anthropic")
+    assert isinstance(rows, mod.CuratedFallbackModels)
+    assert rows == list(mod._PROVIDER_MODELS["anthropic"])

@@ -29,6 +29,7 @@ import { isTodoToolName, nextTodosFromToolEvent, parseTodoRevision } from '@/lib
 import type { ScopedServerRequest } from '@/store/gateway'
 import { dispatchNativeNotification } from '@/store/native-notifications'
 import { isDiskFullErrorMessage, notifyError } from '@/store/notifications'
+import { $showReasoning } from '@/store/reasoning-disclosure'
 import { broadcastSessionsChanged } from '@/store/session-sync'
 import { upsertSubagent } from '@/store/subagents'
 import { $todosBySession, setSessionTodos } from '@/store/todos'
@@ -506,7 +507,11 @@ export function useMessageStream({
 
   const appendReasoningDelta = useCallback(
     (sessionId: string, delta: string, replace = false, occurredAt = Date.now() / 1000) => {
-      if (!delta) {
+      // Reasoning Blocks off: keep reasoning out of the reply, as the gateway
+      // does when its per-session flag is current. That flag is copied at
+      // session start, so a Settings change leaves it streaming, and a hidden
+      // part would still count as content (the loading row goes away).
+      if (!delta || !$showReasoning.get()) {
         return
       }
 

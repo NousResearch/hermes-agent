@@ -1185,6 +1185,9 @@ def _start_agent_build(sid: str, session: dict) -> None:
             # an agent that did not exist yet. Release the orphan immediately and do not keep wiring
             # workers/callbacks for a dead session (#49852).
             if not _attach_built_agent(sid, current, agent):
+                # Same contract as the replaced-before-attach exit above: a turn admitted against
+                # this record must refuse with the real reason rather than a generic missing agent.
+                current["agent_error"] = AGENT_BUILD_ABANDONED
                 with contextlib.suppress(Exception):
                     if hasattr(agent, "close"):
                         agent.close()

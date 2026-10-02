@@ -208,3 +208,45 @@ describe('pet gallery pet.info sync', () => {
     expect($petInfo.get().spritesheetBase64).toBe('large-sprite-payload')
   })
 })
+
+describe('pet gallery across a profile switch', () => {
+  afterEach(() => {
+    resetPetGallery()
+    setPetInfo({ enabled: false })
+  })
+
+  it('loads the new profile gallery when the previous profile load lands after the switch', async () => {
+    const galleryOf = (slug: string) => ({
+      enabled: true,
+      active: slug,
+      pets: [{ slug, displayName: slug, installed: true }]
+    })
+
+    const servedBy = (gallery: Promise<unknown>) =>
+      vi.fn(async (method: string) => {
+        if (method === 'pet.gallery') {
+          return gallery
+        }
+
+        if (method === 'pet.info.meta') {
+          return { enabled: false }
+        }
+
+        throw new Error(`unexpected method: ${method}`)
+      }) as unknown as GatewayRequest
+
+    let landOldGallery!: () => void
+
+    const oldLoad = loadPetGallery(
+      servedBy(new Promise(resolve => (landOldGallery = () => resolve(galleryOf('old-pet')))))
+    )
+
+    resetPetGallery()
+    landOldGallery()
+    await oldLoad
+
+    await loadPetGallery(servedBy(Promise.resolve(galleryOf('new-pet'))))
+
+    expect($petGallery.get()?.active).toBe('new-pet')
+  })
+})

@@ -98,3 +98,39 @@ async def test_success_resets_outage_and_disabled_voice_has_no_notice(tmp_path):
             await adapter._process_message_background(event, key)
     assert [item["content"] for item in adapter.sent].count("reply text") == 5
     assert len(adapter.sent) == 7
+
+
+@pytest.mark.asyncio
+async def test_cancelled_notice_can_be_retried():
+    from gateway.platforms.base import SendResult
+
+    adapter = _DummyAdapter(Platform.TELEGRAM)
+    event = _make_voice_event(Platform.TELEGRAM)
+    key = build_session_key(event.source)
+    adapter.send = AsyncMock(side_effect=asyncio.CancelledError())
+    with pytest.raises(asyncio.CancelledError):
+        await adapter._notify_auto_tts_failure(event, key, {})
+    adapter.send.side_effect = None
+    adapter.send.return_value = SendResult(success=True)
+    await adapter._notify_auto_tts_failure(event, key, {})
+    assert adapter.send.await_count == 2
+    assert "delivered" not in adapter.send.call_args.args[1]
+
+
+@pytest.mark.asyncio
+async def test_notice_does_not_claim_failed_text_delivery_succeeded():
+    from gateway.platforms.base import SendResult
+
+    adapter = _DummyAdapter(Platform.TELEGRAM)
+    adapter._keep_typing = _hold_typing()
+    adapter._should_auto_tts_for_chat = lambda _: True
+    adapter.set_message_handler(lambda _: asyncio.sleep(0, result="reply text"))
+    event = _make_voice_event(Platform.TELEGRAM)
+    adapter.send = AsyncMock(return_value=SendResult(success=False, error="offline"))
+    with patch("tools.tts_tool.check_tts_requirements", return_value=False):
+        await adapter._process_message_background(event, build_session_key(event.source))
+    contents = [call.args[1] if len(call.args) > 1 else call.kwargs["content"]
+                for call in adapter.send.call_args_list]
+    notices = [content for content in contents if "Voice reply unavailable" in content]
+    assert len(notices) == 1
+    assert "delivered" not in notices[0]

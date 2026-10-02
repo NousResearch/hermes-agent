@@ -4219,11 +4219,14 @@ class BasePlatformAdapter(ABC):
             bounded_put(self._auto_tts_failure_notices, session_key, True, 2000)
             result = await self.send(
                 event.source.chat_id,
-                "Voice reply unavailable; the text reply is still delivered. "
+                "Voice reply unavailable; falling back to text. "
                 "Ask the operator to check the configured TTS provider and its dependencies.",
                 reply_to=event.message_id, metadata=warning_metadata)
             if result is None or not result.success:
                 self._auto_tts_failure_notices.pop(session_key, None)
+        except asyncio.CancelledError:
+            self._auto_tts_failure_notices.pop(session_key, None)
+            raise
         except Exception:
             self._auto_tts_failure_notices.pop(session_key, None)
             logger.debug("[%s] Could not send auto-TTS failure notice", self.name, exc_info=True)

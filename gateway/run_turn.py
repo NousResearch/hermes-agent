@@ -172,6 +172,7 @@ class GatewayTurnMixin:
 
     if TYPE_CHECKING:
         _delivery_adapter_for = GatewayRunner._delivery_adapter_for
+        _deliver_platform_notice = GatewayRunner._deliver_platform_notice
         from gateway.session_state import SessionState
 
         _session_state: Callable[[str], SessionState]

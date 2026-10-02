@@ -894,7 +894,7 @@ export function useMessageStream({
             // (mergeFinalAssistantText, via completeMessage, does the real
             // text merge — replaces the interim's text with the full final.)
             const finalContinuesInterim = Boolean(
-              existing.interim &&
+              (existing.interim || (!existing.completedAt && !existing.durableComplete && !existing.error)) &&
               finalText &&
               existingText &&
               (finalText === existingText ||

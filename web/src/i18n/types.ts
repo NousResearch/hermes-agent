@@ -258,6 +258,31 @@ export interface Translations {
       system: string;
       tool: string;
     };
+    renameSession: string;
+    exportSession: string;
+    exportSessionJson: string;
+    sessionTitlePlaceholder: string;
+    saveTitle: string;
+    cancelRename: string;
+    anyChatSource: string;
+    anyAutomationSource: string;
+    chatSources: string;
+    automationSources: string;
+    noSources: string;
+    sessionRenamed: string;
+    renameFailed: string;
+    exportFailed: string;
+    validDaysRequired: string;
+    pruneFailed: string;
+    pruneOldSessions: string;
+    prune: string;
+    total: string;
+    activeInStore: string;
+    archived: string;
+    messages: string;
+    sources: string;
+    importSessions: string;
+    importSessionsTitle: string;
   };
 
   // ── Analytics page ──

@@ -317,17 +317,25 @@ class BaseEnvironment(ABC):
         ``indeterminate``. Transport/probe failures never collapse into a safe result.
         """
         marker = f"__HERMES_DEVICE_ID_{uuid.uuid4().hex[:12]}__"
-        quoted = shlex.quote(remote_path)
-        script = (
-            f'p={quoted}; '
-            f'm={shlex.quote(marker)}; '
-            'if [ ! -e "$p" ] && [ ! -L "$p" ]; then printf "%s:missing\\n" "$m"; exit 0; fi; '
-            'rp="$(readlink -f "$p" 2>/dev/null || realpath "$p" 2>/dev/null)" || '
-            '{ printf "%s:indeterminate\\n" "$m"; exit 0; }; '
-            'if [ -z "$rp" ]; then printf "%s:indeterminate\\n" "$m"; '
-            'elif [ -b "$rp" ] || [ -c "$rp" ]; then printf "%s:device\\t%s\\n" "$m" "$rp"; '
-            'else printf "%s:not_device\\t%s\\n" "$m" "$rp"; fi'
-        )
+        # Python preserves errno from pathname traversal; shell -e/-L tests erase it.
+        # An unavailable interpreter or any unsupported probe is indeterminate.
+        probe = """
+import errno, os, stat, sys
+path, marker = sys.argv[1:]
+try:
+    info = os.stat(path)
+    resolved = os.path.realpath(path, strict=True)
+    mode = info.st_mode
+    status = ('device' if stat.S_ISBLK(mode) or stat.S_ISCHR(mode) else
+              'directory' if stat.S_ISDIR(mode) else 'not_device')
+except OSError as exc:
+    status = 'missing' if exc.errno == errno.ENOENT else 'indeterminate'
+    resolved = ''
+except Exception:
+    status, resolved = 'indeterminate', ''
+print(marker + ':' + status + ('\\t' + resolved if resolved else ''))
+"""
+        script = "python3 -c " + shlex.quote(probe) + " " + shlex.quote(remote_path) + " " + shlex.quote(marker)
         result = self.execute(script, rewrite_compound_background=False)
         if int(result.get("returncode") or 0) != 0:
             return ("indeterminate", None)
@@ -342,7 +350,7 @@ class BaseEnvironment(ABC):
         status, _tab, resolved = line[len(prefix):].partition("\t")
         if status == "device":
             return ("device", resolved or None)
-        if status in {"not_device", "missing"}:
+        if status in {"directory", "not_device", "missing"}:
             return (status, resolved or None)
         return ("indeterminate", None)
 

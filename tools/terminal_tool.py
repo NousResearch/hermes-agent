@@ -29,7 +29,7 @@ import time
 import threading
 import atexit
 from dataclasses import dataclass
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any, List, Literal
 
 logger = logging.getLogger(__name__)
 
@@ -913,6 +913,37 @@ class _ApprovalVerdict:
 class _GuardTargetIndeterminate(RuntimeError):
     """The raw-device floor could not prove a mutation target safe."""
 
+    def __init__(self, reason: str):
+        super().__init__(reason)
+        self.verdict = _TargetVerdict("", "indeterminate", reason)
+
+
+@dataclass(frozen=True)
+class _MutationTarget:
+    start: int
+    end: int
+    path: str
+    prefix: str = ""
+    inert: bool = False
+    sources: tuple = ()
+    directory: bool = False
+    no_target_directory: bool = False
+    spelling: str = ""
+
+
+@dataclass(frozen=True)
+class _TargetVerdict:
+    """Identity evidence independent of an optional diagnostic command rewrite."""
+    path: str
+    status: Literal["safe", "prohibited_device", "indeterminate"]
+    diagnostic: str = ""
+
+
+def _is_formatter(executable: str) -> bool:
+    return executable in {"mkfs", "mke2fs", "mkswap", "newfs"} or executable.startswith(
+        ("mkfs.", "newfs_")
+    )
+
 
 _DISK_MUTATION_HINT_RE = re.compile(
     r'(?:\b(?:wipefs|blkdiscard|sgdisk|shred|dd|mkfs(?:\.[a-z0-9]+)?|mke2fs|mkswap|'
@@ -923,6 +954,10 @@ _DEVICE_TARGET_OPTION_VALUES = {
     "wipefs": {"-o", "--offset", "-t", "--types", "-O", "--output"},
     "blkdiscard": {"-o", "--offset", "-l", "--length", "-p", "--step"},
     "shred": {"-n", "--iterations", "-s", "--size", "--random-source"},
+    "mkswap": {"-L", "--label", "-U", "--uuid", "-p", "--pagesize", "-v", "--swapversion",
+               "-o", "--offset", "-s", "--size"},
+    "newfs": {"-a", "-b", "-c", "-d", "-e", "-f", "-g", "-h", "-i", "-k",
+              "-m", "-o", "-r", "-s", "-u", "-L", "-O", "-S"},
 }
 _RESOLUTION_CONTEXT_MUTATORS = {
     "bash", "cd", "cp", "dash", "fish", "install", "ln", "mkdir", "mount", "mv",
@@ -991,8 +1026,117 @@ def _literal_operands(tokens, options_with_values=frozenset()):
     return operands
 
 
+def _cp_destination(args):
+    """Model cp's two-operand and target-directory layouts; refuse unsupported layouts."""
+    operands, destination = [], None
+    options, no_directory = True, False
+    index = 0
+    while index < len(args):
+        token = args[index]
+        value = token[0]
+        index += 1
+        if options and value == "--":
+            options = False
+            continue
+        if options and value.startswith("--"):
+            option, separator, attached = value.partition("=")
+            if option == "--target-directory":
+                if separator:
+                    destination = (attached, token[1], token[2], token[3])
+                elif index < len(args):
+                    destination = args[index]
+                    index += 1
+                else:
+                    raise _GuardTargetIndeterminate("cp target directory is missing")
+            elif option == "--no-target-directory":
+                no_directory = True
+            elif option in {"--suffix"}:
+                if not separator:
+                    if index >= len(args):
+                        raise _GuardTargetIndeterminate("cp option value is missing")
+                    index += 1
+            elif option not in {"--force", "--interactive", "--no-clobber", "--verbose",
+                                "--backup", "--preserve", "--no-preserve", "--dereference",
+                                "--no-dereference", "--remove-destination"}:
+                raise _GuardTargetIndeterminate("unsupported cp destination layout")
+            continue
+        if options and value.startswith("-") and value != "-":
+            chars = value[1:]
+            while chars:
+                flag, chars = chars[0], chars[1:]
+                if flag in {"t", "S"}:
+                    if chars:
+                        argument = (chars, token[1], token[2], token[3])
+                        chars = ""
+                    elif index < len(args):
+                        argument = args[index]
+                        index += 1
+                    else:
+                        raise _GuardTargetIndeterminate("cp option value is missing")
+                    if flag == "t":
+                        destination = argument
+                elif flag == "T":
+                    no_directory = True
+                elif flag not in "bdfHiLnPpvx":
+                    # Recursive/archive and symbolic-link copies need a tree-level proof.
+                    raise _GuardTargetIndeterminate("unsupported cp destination layout")
+            continue
+        operands.append(token)
+    if destination is not None:
+        if no_directory or not operands or not destination[0]:
+            raise _GuardTargetIndeterminate("invalid cp target-directory layout")
+        return destination, tuple(operands), True, False
+    if len(operands) < 2 or (no_directory and len(operands) != 2):
+        raise _GuardTargetIndeterminate("cp destination layout cannot be proven safe")
+    return operands[-1], tuple(operands[:-1]), False, no_directory
+
+
+def _formatter_operands(args, executable):
+    """Parse mkswap/newfs option values separately from the special-file operand."""
+    values = _DEVICE_TARGET_OPTION_VALUES[executable]
+    flags = ({"-c", "--check", "-f", "--force", "-q", "--quiet", "--verbose",
+              "--lock", "--file", "-h", "--help", "-V", "--version"}
+             if executable == "mkswap" else
+             {"-E", "-J", "-N", "-U", "-j", "-l", "-n", "-t"})
+    operands, options, no_write = [], True, False
+    index = 0
+    while index < len(args):
+        token = args[index]
+        value = token[0]
+        index += 1
+        if options and value == "--":
+            options = False
+            continue
+        if not options or not value.startswith("-") or value == "-":
+            operands.append(token)
+            continue
+        if value.startswith("--"):
+            option, separator, _attached = value.partition("=")
+            if option in values:
+                if not separator:
+                    if index >= len(args):
+                        raise _GuardTargetIndeterminate("formatter option value is missing")
+                    index += 1
+            elif option not in flags:
+                raise _GuardTargetIndeterminate("unsupported formatter option grammar")
+            continue
+        chars = value[1:]
+        while chars:
+            option, chars = "-" + chars[0], chars[1:]
+            if option in values:
+                if not chars:
+                    if index >= len(args):
+                        raise _GuardTargetIndeterminate("formatter option value is missing")
+                    index += 1
+                break
+            if option not in flags:
+                raise _GuardTargetIndeterminate("unsupported formatter option grammar")
+            no_write = no_write or (executable == "newfs" and option == "-N")
+    return operands, no_write
+
+
 def _mutation_target_spans(segment: str):
-    """Return exact mutation target words as ``(start, end, path, prefix, inert)``.
+    """Return exact mutation target words and any effective-destination mapping.
 
     Parsing reuses the approval scanner so quoted and escaped shell words retain their source
     spans. ``prefix`` is empty for an argv operand, ``of=`` for dd, or a redirection operator.
@@ -1015,7 +1159,7 @@ def _mutation_target_spans(segment: str):
         value, start, end, inert = token
         path = value[len(prefix):] if prefix else value
         if path:
-            targets.append((start, end, path, prefix, inert))
+            targets.append(_MutationTarget(start, end, path, prefix, inert))
 
     # Parse every redirection before applying utility operand grammars. Shell lexing otherwise
     # leaves forms such as ``2> err`` in the argv-shaped token stream, where a last-operand rule
@@ -1026,8 +1170,8 @@ def _mutation_target_spans(segment: str):
             continue
         redirect = _SHELL_REDIRECTION_RE.match(segment, index)
         if redirect is None and segment.startswith("&>", index):
-            end_operator = index + 2
-            operator = "&>"
+            operator = "&>>" if segment.startswith("&>>", index) else "&>"
+            end_operator = index + len(operator)
         elif redirect is not None:
             end_operator = redirect.end()
             operator = redirect.group(0)
@@ -1048,19 +1192,17 @@ def _mutation_target_spans(segment: str):
             path.isdigit() or path == "-" or
             (path.endswith("-") and path[:-1].isdigit())
         )
-        mutates = bare_operator in {">", ">>", ">|", ">&", "&>", "<>"}
+        mutates = bare_operator in {">", ">>", ">|", ">&", "&>", "&>>", "<>"}
         if mutates and not descriptor:
             # Canonicalize only in the detection projection; the executed command is unchanged.
-            targets.append((index, end, path, "> ", inert))
+            targets.append(_MutationTarget(index, end, path, "> ", inert, spelling=word))
 
     mutation_executables = {
         "wipefs", "blkdiscard", "sgdisk", "shred", "dd", "diskutil",
         "cp", "mv", "install", "tee",
     }
     for executable, command_tokens in _device_projection_commands(segment):
-        is_mkfs = executable in {"mke2fs", "mkswap", "mkfs"} or (
-            executable.startswith("mkfs.") or executable.startswith("newfs_")
-        )
+        is_mkfs = _is_formatter(executable)
         if executable not in mutation_executables and not is_mkfs:
             continue
 
@@ -1071,6 +1213,12 @@ def _mutation_target_spans(segment: str):
         ]
         values = [token[0] for token in args]
 
+        if executable == "cp":
+            token, sources, directory, no_directory = _cp_destination(args)
+            value, start, end, inert = token
+            targets.append(_MutationTarget(start, end, value, inert=inert, sources=sources,
+                                           directory=directory, no_target_directory=no_directory))
+            continue
         if executable == "dd":
             for token in args:
                 if token[0].startswith("of=") and len(token[0]) > 3:
@@ -1101,12 +1249,25 @@ def _mutation_target_spans(segment: str):
             } for value in values):
                 continue
 
-        operands = _literal_operands(
-            args, _DEVICE_TARGET_OPTION_VALUES.get(executable, frozenset())
-        )
+        if executable in {"mkswap", "newfs"}:
+            operands, no_write = _formatter_operands(args, executable)
+            if no_write:
+                continue
+        else:
+            operands = _literal_operands(
+                args, _DEVICE_TARGET_OPTION_VALUES.get(executable, frozenset())
+            )
         if not operands:
             continue
-        if executable in {"shred", "tee", "wipefs"}:
+        if executable == "mkswap":
+            if len(operands) not in {1, 2} or (len(operands) == 2 and not operands[1][0].isdigit()):
+                raise _GuardTargetIndeterminate("unsupported mkswap device/size layout")
+            add(operands[0])
+        elif executable == "newfs":
+            if len(operands) != 1:
+                raise _GuardTargetIndeterminate("unsupported newfs special-file layout")
+            add(operands[0])
+        elif executable in {"shred", "tee", "wipefs"}:
             for token in operands:
                 add(token)
         else:
@@ -1115,7 +1276,7 @@ def _mutation_target_spans(segment: str):
     # A target can be discovered both as an argv operand and as a redirection.
     dedup = {}
     for item in targets:
-        dedup[(item[0], item[1])] = item
+        dedup[(item.start, item.end)] = item
     return [dedup[key] for key in sorted(dedup)]
 
 
@@ -1173,14 +1334,14 @@ def _target_spelling_has_active_expansion(source: str) -> bool:
             quote = char
             index += 1
             continue
-        if char in "$`*?[]{}":
+        if char in "$`*?[]{}" or (char == "~" and (index == 0 or source[index - 1] in "=:")):
             return True
         index += 1
     return False
 
 
-def _resolved_guard_variants(command: str, env: Any, cwd: str, *,
-                             _depth: int = 0, _prior_context_change: bool = False) -> List[str]:
+def _resolved_guard_targets(command: str, env: Any, cwd: str, *,
+                            _depth: int = 0, _prior_context_change: bool = False) -> List[_TargetVerdict]:
     """Project exact mutation targets through the backend before approval matching.
 
     Resolution is typed: device, proven non-device/missing, or indeterminate. The latter fails
@@ -1214,7 +1375,7 @@ def _resolved_guard_variants(command: str, env: Any, cwd: str, *,
                         "wipefs", "blkdiscard", "sgdisk", "shred", "dd", "diskutil",
                         "cp", "mv", "install", "tee", "mke2fs", "mkswap", "mkfs",
                     }
-                    or executable.startswith(("mkfs.", "newfs_"))
+                    or _is_formatter(executable)
                 ):
                     structural_hint = True
                     break
@@ -1227,9 +1388,35 @@ def _resolved_guard_variants(command: str, env: Any, cwd: str, *,
 
     edits = []
     identities = {}
-    payload_variants = []
+    verdicts = []
+    payload_verdicts = []
     search_from = 0
     resolver = getattr(env, "fetch_device_identity", None)
+
+    def identity(candidate):
+        if not callable(resolver):
+            raise _GuardTargetIndeterminate("execution backend has no device-identity resolver")
+        try:
+            if candidate not in identities:
+                identities[candidate] = resolver(candidate)
+            outcome = identities[candidate]
+        except Exception as exc:
+            raise _GuardTargetIndeterminate(f"device-target resolution failed for {candidate!r}") from exc
+        if (not isinstance(outcome, tuple) or len(outcome) != 2
+                or outcome[0] not in {"device", "directory", "not_device", "missing", "indeterminate"}):
+            raise _GuardTargetIndeterminate(f"invalid device-target resolution outcome for {candidate!r}")
+        status, resolved = outcome
+        if status == "indeterminate":
+            raise _GuardTargetIndeterminate(f"device-target identity is indeterminate for {candidate!r}")
+        if status in {"device", "directory"} and (
+                not isinstance(resolved, str) or not resolved.startswith("/")):
+            raise _GuardTargetIndeterminate(f"device-target resolver returned an invalid path for {candidate!r}")
+        return status, resolved
+
+    def literal_path(path, spelling):
+        if _target_spelling_has_active_expansion(spelling):
+            raise _GuardTargetIndeterminate(f"dynamic mutation target cannot be proven safe: {path!r}")
+        return path if path.startswith("/") else posixpath.join(cwd or "/", path)
 
     prior_can_change_resolution = _prior_context_change
     for segment in _iter_top_level_shell_segments(command):
@@ -1241,6 +1428,10 @@ def _resolved_guard_variants(command: str, env: Any, cwd: str, *,
         for executable, tokens in _device_projection_commands(segment):
             args = [token[0] for token in tokens[1:]]
             payload = None
+            if executable in {"su", "doas", "runuser", "setpriv", "pkexec"}:
+                raise _GuardTargetIndeterminate(
+                    "privilege-changing mutation context cannot be proven safe"
+                )
             if executable in _SHELL_NAMES:
                 _found, payload = _bash_exec_payload(args)
             elif executable == "eval":
@@ -1248,29 +1439,20 @@ def _resolved_guard_variants(command: str, env: Any, cwd: str, *,
             elif executable == "env":
                 payload = _env_split_payload([token[0] for token in tokens])
             if payload:
-                payload_variants.extend(_resolved_guard_variants(
+                payload_verdicts.extend(_resolved_guard_targets(
                     payload, env, cwd, _depth=_depth + 1,
                     _prior_context_change=(prior_can_change_resolution or
-                                           _wrapper_changes_cwd(segment)),
+                                           _wrapper_changes_cwd(segment) or
+                                           any(name == "sudo" for name, _ in
+                                               _device_projection_commands(segment))),
                 ))
 
         substitution_changes_resolution = _substitution_can_change_resolution(segment)
-        for start, end, raw_path, prefix, inert in _mutation_target_spans(segment):
+        for target in _mutation_target_spans(segment):
+            start, end, raw_path, prefix = target.start, target.end, target.path, target.prefix
             if not raw_path or (raw_path == "-" and prefix != "> "):
                 continue
-            if (
-                not inert
-                and any(char in raw_path for char in "$`*?[]{}")
-                and _target_spelling_has_active_expansion(segment[start:end])
-            ):
-                raise _GuardTargetIndeterminate(
-                    f"dynamic mutation target cannot be proven safe: {raw_path!r}"
-                )
-            candidate = (
-                raw_path
-                if raw_path.startswith("/")
-                else posixpath.join(cwd or "/", raw_path)
-            )
+            candidate = literal_path(raw_path, target.spelling or segment[start:end])
             # Even /dev/shm can contain aliases created after this probe. Check context
             # before deduplication: a later use of the same path may resolve differently.
             if (prior_can_change_resolution or _wrapper_changes_cwd(segment)
@@ -1278,61 +1460,63 @@ def _resolved_guard_variants(command: str, env: Any, cwd: str, *,
                 raise _GuardTargetIndeterminate(
                     "compound command can change device-target resolution before mutation"
                 )
-            if not callable(resolver):
+            if any(executable in {"sudo", "su", "doas", "runuser", "setpriv", "pkexec"}
+                   for executable, _tokens in _device_projection_commands(segment)):
                 raise _GuardTargetIndeterminate(
-                    "execution backend has no device-identity resolver"
+                    "privilege-changing mutation context cannot be proven safe"
                 )
-            try:
-                if candidate not in identities:
-                    identities[candidate] = resolver(candidate)
-                outcome = identities[candidate]
-            except Exception as exc:
-                raise _GuardTargetIndeterminate(
-                    f"device-target resolution failed for {candidate!r}"
-                ) from exc
-            if (
-                not isinstance(outcome, tuple)
-                or len(outcome) != 2
-                or outcome[0] not in {"device", "not_device", "missing", "indeterminate"}
-            ):
-                raise _GuardTargetIndeterminate(
-                    f"invalid device-target resolution outcome for {candidate!r}"
-                )
-            status, resolved = outcome
-            if status == "indeterminate":
-                raise _GuardTargetIndeterminate(
-                    f"device-target identity is indeterminate for {candidate!r}"
-                )
-            if status != "device":
-                continue
-            if not isinstance(resolved, str) or not resolved.startswith("/"):
-                raise _GuardTargetIndeterminate(
-                    f"device-target resolver returned an invalid path for {candidate!r}"
-                )
-            resolved = resolved.strip()
-            # These standard character-device sinks/streams are deliberately runnable;
-            # normalizing a >| / >& operator must not turn them into raw-disk refusals.
-            if resolved in {"/dev/null", "/dev/zero", "/dev/random", "/dev/urandom",
-                            "/dev/stdin", "/dev/stdout", "/dev/stderr", "/dev/tty"}:
-                continue
-            if resolved == raw_path and prefix != "> ":
-                continue
-            replacement = prefix + shlex.quote(resolved)
-            edits.append((segment_at + start, segment_at + end, replacement))
+            outcome = identity(candidate)
+            effective = [(candidate, outcome)]
+            if target.sources:
+                if target.directory and outcome[0] != "directory":
+                    raise _GuardTargetIndeterminate("cp target directory cannot be established")
+                if not target.no_target_directory and outcome[0] == "directory":
+                    effective = []
+                    for source, source_start, source_end, _inert in target.sources:
+                        source_path = literal_path(source, segment[source_start:source_end])
+                        if identity(source_path)[0] == "directory":
+                            raise _GuardTargetIndeterminate("cp directory source needs a tree-level identity proof")
+                        basename = posixpath.basename(source.rstrip("/"))
+                        if basename in {"", ".", ".."}:
+                            raise _GuardTargetIndeterminate("cp source basename cannot be established")
+                        child = posixpath.join(candidate, basename)
+                        effective.append((child, identity(child)))
+                elif len(target.sources) != 1:
+                    raise _GuardTargetIndeterminate("cp multiple sources require a destination directory")
+            for path, (status, resolved) in effective:
+                # Deliberately allowed standard character streams remain safe.
+                prohibited = status == "device" and resolved not in {
+                    "/dev/null", "/dev/zero", "/dev/random", "/dev/urandom",
+                    "/dev/stdin", "/dev/stdout", "/dev/stderr", "/dev/tty",
+                }
+                verdicts.append(_TargetVerdict(path, "prohibited_device" if prohibited else "safe"))
+                if prohibited:
+                    edits.append((segment_at + start, segment_at + end, prefix + shlex.quote(resolved)))
 
         prior_can_change_resolution = (
             prior_can_change_resolution or _segment_can_change_resolution(segment)
         )
 
-    if not edits:
-        return payload_variants
     parts, cursor = [], 0
-    for start, end, replacement in sorted(edits):
+    for start, end, replacement in sorted(set(edits)):
+        if start < cursor:
+            continue  # Multiple cp children share one diagnostic operand span.
         parts.extend((command[cursor:start], replacement))
         cursor = end
     parts.append(command[cursor:])
     variant = "".join(parts)
-    return payload_variants + ([variant] if variant != command else [])
+    return payload_verdicts + [
+        _TargetVerdict(item.path, item.status, variant if item.status == "prohibited_device" else "")
+        for item in verdicts
+    ]
+
+
+def _resolved_guard_variants(command: str, env: Any, cwd: str, **kwargs) -> List[str]:
+    """Compatibility diagnostic projection; approval consumes typed evidence directly."""
+    return list(dict.fromkeys(
+        verdict.diagnostic for verdict in _resolved_guard_targets(command, env, cwd, **kwargs)
+        if verdict.status == "prohibited_device"
+    ))
 
 
 def _raise_rejected_approval(approval: dict, command: str) -> None:
@@ -1370,18 +1554,15 @@ def _run_approval_guards(
     block device.
     """
     try:
-        resolved_variants = _resolved_guard_variants(command, env, cwd) if env is not None else []
+        targets = _resolved_guard_targets(command, env, cwd) if env is not None else []
     except _GuardTargetIndeterminate as exc:
         raise _Rejected(_error_json(
             f"Command denied: {exc}.",
             status="blocked",
             description="raw-device target identity could not be proven safe",
         )) from exc
-    for resolved_command in resolved_variants:
-        resolved_approval = _check_all_guards(
-            resolved_command, env_type, has_host_access=_docker_has_host_access(config)
-        )
-        if resolved_approval["approved"]:
+    for target in targets:
+        if target.status == "prohibited_device":
             resolved_approval = {
                 "approved": False,
                 "hardline": True,
@@ -1389,7 +1570,7 @@ def _run_approval_guards(
                 "message": "Command denied: mutation target resolves to a block device.",
                 "description": "mutation target resolves to a block device",
             }
-        _raise_rejected_approval(resolved_approval, command)
+            _raise_rejected_approval(resolved_approval, command)
 
     if force:
         return _ApprovalVerdict(approved_run=True)

@@ -3,11 +3,13 @@ import { afterEach, expect, it, vi } from 'vitest'
 import {
   $browserPages,
   $previewTabs,
+  $visiblePreviewTabs,
   closeRightRailTab,
   noteBrowserPage,
-  previewTabsForAgent,
+  previewTabsFor,
   setPreviewScope
 } from '@/store/preview'
+import { $selectedStoredSessionId } from '@/store/session'
 import { $sessionTiles } from '@/store/session-states'
 
 import { openPluginPreview } from './preview'
@@ -18,18 +20,24 @@ afterEach(() => {
   $previewTabs.set([])
   $browserPages.set({})
   $sessionTiles.set([])
+  $selectedStoredSessionId.set(null)
   vi.clearAllTimers()
   vi.useRealTimers()
 })
-it('binds viewer ownership to the validated session, not the profile currently focused', async () => {
+it('binds viewer ownership to the validated session, not the profile or session currently focused', async () => {
   $sessionTiles.set([
     { storedSessionId: 'stored', runtimeId: 'runtime', ownerRoute: { connectionId: 'local', profile: 'worker' } }
   ])
   setPreviewScope('other')
+  $selectedStoredSessionId.set('elsewhere')
   expect(await openPluginPreview({ url: 'https://viewer.example/view#ticket=fixture', session })).toBe(true)
-  expect(previewTabsForAgent()).toEqual([])
+  expect($previewTabs.get()[0]?.sessionId).toBe('stored')
+  expect(previewTabsFor()).toEqual([])
+  expect($visiblePreviewTabs.get()).toEqual([])
   setPreviewScope('worker')
-  expect(previewTabsForAgent()).toHaveLength(1)
+  $selectedStoredSessionId.set('stored')
+  expect(previewTabsFor()).toHaveLength(1)
+  expect($visiblePreviewTabs.get()).toHaveLength(1)
 })
 
 it('keeps the SAME mounted viewer document renewing across profile away/back', async () => {

@@ -6,6 +6,7 @@ import { readActivePreview, registerPreviewPageReader } from '@/app/chat/right-r
 import { activePreviewScriptRunner, registerPreviewScriptRunner } from '@/app/chat/right-rail/preview-script-runner'
 
 import * as preview from './preview'
+import { $selectedStoredSessionId } from './session'
 
 const disposers: Array<() => void> = []
 afterEach(() => {
@@ -14,19 +15,23 @@ afterEach(() => {
   preview.dropPreviewTabsForProfile('tool-owner')
   preview.dropPreviewTabsForProfile('tool-other')
   preview.setPreviewScope('default')
+  $selectedStoredSessionId.set(null)
 })
 
-it('keeps a viewer mounted but excludes it from another profile’s agent readers and input', async () => {
-  preview.setPreviewScope('tool-owner')
+const viewerTarget = {
+  kind: 'url',
+  label: 'Viewer',
+  source: 'viewer',
+  url: 'https://viewer.example/view#ticket=fixture',
+  transient: true,
+  browserContext: 'isolated'
+} as const
 
-  const tab = preview.openPreview({
-    kind: 'url',
-    label: 'Viewer',
-    source: 'viewer',
-    url: 'https://viewer.example/view#ticket=fixture',
-    transient: true,
-    browserContext: 'isolated'
-  })
+it('keeps a viewer mounted but excludes it from another session’s agent readers and input', async () => {
+  preview.setPreviewScope('tool-owner')
+  $selectedStoredSessionId.set('sess-owner')
+
+  const tab = preview.openPreview(viewerTarget)
 
   const reader = vi.fn(async () => ({ text: 'Private viewer', title: 'Viewer', url: tab.target.url }))
   const runner = vi.fn(async () => null)
@@ -43,18 +48,22 @@ it('keeps a viewer mounted but excludes it from another profile’s agent reader
   expect(activePreviewInput()).toBe(input)
   expect(activePreviewNav()).toBe(nav)
 
+  // Another profile's chat on screen: the viewer stays in the window (and
+  // mounted), but it is not that session's tab.
   preview.setPreviewScope('tool-other')
+  $selectedStoredSessionId.set('sess-other')
   expect(preview.$previewTabs.get()[0]).toBe(tab)
   expect(await readActivePreview()).toBeNull()
   expect(activePreviewScriptRunner()).toBeNull()
   expect(activePreviewInput()).toBeNull()
   expect(activePreviewNav()).toBeNull()
   expect(reader).toHaveBeenCalledOnce()
-  expect(preview.closeAgentPreviews('Viewer')).toBe(false)
-  preview.closeAgentPreviews()
+  preview.closeAgentPreview('sess-other', ['Viewer'])
+  preview.closeAgentPreview('sess-other', [])
   expect(preview.$previewTabs.get()[0]).toBe(tab)
 
   preview.setPreviewScope('tool-owner')
+  $selectedStoredSessionId.set('sess-owner')
   expect(activePreviewScriptRunner()).toBe(runner)
   expect(activePreviewInput()).toBe(input)
   expect(activePreviewNav()).toBe(nav)
@@ -62,15 +71,10 @@ it('keeps a viewer mounted but excludes it from another profile’s agent reader
 
 it('excludes a foreign viewer from the tab inventory when reading an ordinary tab', async () => {
   preview.setPreviewScope('tool-owner')
-  preview.openPreview({
-    kind: 'url',
-    label: 'Private',
-    source: 'private',
-    url: 'https://viewer.example/view#ticket=fixture',
-    transient: true,
-    browserContext: 'isolated'
-  })
+  $selectedStoredSessionId.set('sess-owner')
+  preview.openPreview({ ...viewerTarget, label: 'Private', source: 'private' })
   preview.setPreviewScope('tool-other')
+  $selectedStoredSessionId.set('sess-other')
 
   const tab = preview.openPreview({
     kind: 'file',

@@ -39,7 +39,8 @@ export function currentPluginSession(session: PluginSessionContext): boolean {
   )
 }
 
-/** Explicit UI action, not an event handler. Ticket-bearing tabs never persist. */
+/** Explicit UI action, not an event handler. Ticket-bearing tabs never persist.
+ *  The tab belongs to the plugin's session, like any tab that session opens. */
 export async function openPluginPreview(input: PluginPreviewInput): Promise<boolean> {
   const url = safeViewerUrl(input?.url)
 
@@ -58,12 +59,16 @@ export async function openPluginPreview(input: PluginPreviewInput): Promise<bool
       transient: true,
       browserContext: 'isolated'
     },
+    input.session.storedSessionId,
+    input.session.runtimeSessionId,
     input.session.profile
   )
 
   // A new ticket on a reused tab rebuilds its guest; never bind to the outgoing one.
   const prior = before.find(item => item.id === tab.id)
   const replaced = prior && prior.target.url !== url ? $browserPages.get()[tab.id]?.document : undefined
+  // Owner rekeys and pins copy the tab but keep its target; a re-open replaces it.
+  const stillOpen = () => $previewTabs.get().some(item => item.id === tab.id && item.target === tab.target)
 
   if (input.onKeepAlive) {
     const onKeepAlive = input.onKeepAlive
@@ -87,7 +92,7 @@ export async function openPluginPreview(input: PluginPreviewInput): Promise<bool
 
       return (
         !stopped &&
-        $previewTabs.get().includes(tab) &&
+        stillOpen() &&
         tab.target.transient === true &&
         document !== undefined &&
         page?.document === document &&
@@ -101,7 +106,7 @@ export async function openPluginPreview(input: PluginPreviewInput): Promise<bool
         return
       }
 
-      if (!$previewTabs.get().includes(tab)) {
+      if (!stillOpen()) {
         stop()
 
         return

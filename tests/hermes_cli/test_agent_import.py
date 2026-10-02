@@ -365,18 +365,28 @@ class TestMalformedInputs:
 
 class TestMergeSemantics:
 
-    def test_existing_mcp_server_conflicts_without_overwrite(
+    def test_existing_mcp_server_conflicts_without_overwrite_and_is_replaced_with_it(
             self, claude_tree, hermes_home):
+        # An HTTP server the import replaces with a stdio one: --overwrite drops url/headers on
+        # purpose, so the write is a full-state replacement, not an omission to refuse.
         (hermes_home / "config.yaml").write_text(
-            yaml.safe_dump({"mcp_servers": {"github": {"command": "mine"}}}),
+            yaml.safe_dump({"display": {"theme": "dark"}, "mcp_servers": {"github": {
+                "url": "https://example.invalid/mcp", "headers": {"X-Region": "eu"}}}}),
             encoding="utf-8")
         report = run_import("claude-code", claude_tree, hermes_home, execute=True)
         config = yaml.safe_load((hermes_home / "config.yaml").read_text(encoding="utf-8"))
-        assert config["mcp_servers"]["github"]["command"] == "mine"
+        assert config["mcp_servers"]["github"]["url"] == "https://example.invalid/mcp"
         assert any(
             i["status"] == "conflict" and i["source"] == "github"
             for i in report["items"]
         )
+
+        run_import("claude-code", claude_tree, hermes_home, execute=True, overwrite=True)
+        config = yaml.safe_load((hermes_home / "config.yaml").read_text(encoding="utf-8"))
+        assert "url" not in config["mcp_servers"]["github"]
+        assert "headers" not in config["mcp_servers"]["github"]
+        assert config["mcp_servers"]["github"]["command"]
+        assert config["display"] == {"theme": "dark"}
 
 
     def test_existing_skill_conflicts_without_overwrite(

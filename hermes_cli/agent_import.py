@@ -84,10 +84,11 @@ def load_yaml_file(path: Path) -> Dict[str, Any]:
 
 def dump_yaml_file(path: Path, data: Dict[str, Any]) -> None:
     """Atomic ``config.yaml`` write (readability guard + operator settings lock); only reached after
-    :func:`load_yaml_file` succeeded on the same path."""
-    from hermes_cli.config import atomic_config_write
+    :func:`load_yaml_file` succeeded on the same path. *data* is the complete desired document: an
+    ``--overwrite`` replacing an MCP server's transport deletes its old fields on purpose."""
+    from hermes_cli.config import atomic_config_replace
 
-    atomic_config_write(path, data)
+    atomic_config_replace(path, data)
 
 
 def extract_markdown_entries(text: str) -> List[str]:

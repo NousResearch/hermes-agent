@@ -12,10 +12,9 @@ export interface QueueItem {
   // interpolation. Captured over the live composer tokens at enqueue so
   // `sendQueued` can re-expand the paste AFTER it resolves the visible
   // interpolation on the display — the live tokens are cleared before the
-  // queue drains, so the queue must carry its own expand. Absent on items
-  // whose `text` already carries the expanded paste (the prompt.submit
-  // re-queue path enqueues already-expanded text); those drain with an
-  // identity expand.
+  // queue drains, so the queue must carry its own expand. The prompt.submit
+  // busy re-queue passes that same expand with the collapsed display; an item
+  // that omits expand drains with an identity expand.
   expand?: QueueExpand
 }
 

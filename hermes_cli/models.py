@@ -287,7 +287,9 @@ def union_with_nous_on_sale_models(curated_ids: list[str], pricing: dict[str, di
     Portal recommendations omit. Free rows stay with ``freeRecommendedModels``; rows the gateway
     marks tool-less (``"tools": False``) are skipped because Hermes is tool-calling-first, and
     image/video generation rows are skipped because they are not chat models."""
-    from hermes_cli.models_pricing import compute_sale_discount
+    from math import isfinite
+
+    from hermes_cli.models_pricing import _price_float, compute_sale_discount
 
     seen = set(curated_ids)
     on_sale: list[tuple[int, str]] = []
@@ -295,7 +297,12 @@ def union_with_nous_on_sale_models(curated_ids: list[str], pricing: dict[str, di
         if mid in seen or not isinstance(entry, dict) or entry.get("tools") is False or entry.get("generation"):
             continue
         sale = compute_sale_discount(entry.get("prompt", ""), entry.get("completion", ""), entry.get("original"))
-        if sale is not None and isinstance(entry.get("original"), dict) and sale[0] < 100:
+        # Badge percentages are rounded: a nearly-free paid row can display 100% off.
+        paid = any(
+            (rate := _price_float(entry.get(key), positive=True)) is not None and isfinite(rate)
+            for key in ("prompt", "completion")
+        )
+        if sale is not None and isinstance(entry.get("original"), dict) and paid:
             on_sale.append((-sale[0], mid))
     return list(curated_ids) + [mid for _, mid in sorted(on_sale)]
 

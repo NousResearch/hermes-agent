@@ -166,3 +166,27 @@ def test_skips_generation_models_on_sale(monkeypatch):
     nous = fetch_models_with_pricing(api_key="sk-test", base_url="https://example.test",
                                      force_refresh=True, include_sale_original=True)
     assert union_with_nous_on_sale_models([], nous) == ["chat/ok"]
+
+
+def test_nonzero_sale_rounding_to_full_discount_is_still_paid():
+    """A rounded -100% badge does not make a positive-price model free."""
+    pricing = {
+        "sale/almost-free": {"prompt": "0.000000001", "completion": "0.000000001", "original": dict(_LIST)},
+        "free/zero": {"prompt": "0", "completion": "0", "original": dict(_LIST)},
+    }
+    assert union_with_nous_on_sale_models([], pricing) == ["sale/almost-free"]
+
+
+def test_zero_prompt_with_missing_or_invalid_completion_is_not_a_paid_sale(monkeypatch):
+    """The real parser normalizes absent completion to an empty string."""
+    mp._pricing_cache.clear()
+    rows = [
+        {"id": "free/missing", "pricing": {"prompt": "0", "original": dict(_LIST)}},
+        *[{"id": f"free/invalid-{i}",
+           "pricing": {"prompt": "0", "completion": value, "original": dict(_LIST)}}
+          for i, value in enumerate(("", None, "not-a-price", "NaN", "Infinity", "-1", "0"))],
+    ]
+    _serve(monkeypatch, {"data": rows})
+    pricing = fetch_models_with_pricing(api_key="synthetic", base_url="https://example.test",
+                                        force_refresh=True, include_sale_original=True)
+    assert union_with_nous_on_sale_models([], pricing) == []

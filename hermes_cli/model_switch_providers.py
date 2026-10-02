@@ -447,8 +447,8 @@ def _aws_live_or_curated_ids(slug: str, curated: dict, *fallback_keys: str,
 
 def _nous_picker_model_ids(curated: dict, force_fresh_nous_tier: bool) -> list:
     """Nous serves a huge live catalog; the picker shows ONLY the curated agentic list, augmented
-    with the Portal's free/paid recommendations (new models surface without a CLI release) and
-    narrowed by org policy. Mirrors ``_model_flow_nous`` so GUI pickers match the CLI. A failed
+    with the Portal's free/paid recommendations and paid-tier sale models, then narrowed by org
+    policy. Mirrors ``_model_flow_nous`` so GUI pickers match the CLI. A failed
     recommendation fetch still yields a policy-filtered curated list."""
     model_ids = curated.get("nous", [])
     try:

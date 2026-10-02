@@ -40,6 +40,19 @@ class TestSessionSocketDir:
         with patch("tools.browser_tool._socket_safe_tmpdir", return_value="/scratch"):
             assert bt_session._session_socket_roots() == ("/scratch", "/tmp")
 
+    def test_windows_has_no_tmp_fallback_and_overflows_stay_on_the_scratch_root(self):
+        """A bare ``/tmp/...`` path resolves onto the cwd's drive on Windows (outside
+        %TEMP%), and the AF_UNIX budget is a POSIX constraint that never binds there,
+        so the scratch root is the only root even for an overflowing session name."""
+        root = "C:/Users/admin/AppData/Local/Temp"  # 35 chars — fits the tmpdir bound
+        session_name = "hermes_" + "x" * 14 + "-abcdefg_h1234567"  # 38 chars, the truncation shape
+        assert len(root) + 2 * len(session_name) + 21 > 103  # would overflow on POSIX
+        with patch("tools.browser_tool._socket_safe_tmpdir", return_value=root), \
+             patch("tools.browser_tool_session._IS_WINDOWS", True):
+            assert bt_session._session_socket_roots() == (root,)
+            assert bt_session._session_socket_dir(session_name) == \
+                os.path.join(root, f"agent-browser-{session_name}")
+
 
 class TestSessionNameBound:
     def _session_name(self, task_id):

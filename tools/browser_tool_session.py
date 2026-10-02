@@ -10,6 +10,7 @@ import logging
 import os
 import shutil
 import subprocess
+import sys
 import uuid
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
@@ -149,23 +150,32 @@ def _unwrap_batch_result(result: Any, command: str) -> Dict[str, Any]:
 # len(root) + "/agent-browser-<name>" + "/<name>.sock" = len(root) + 2*len(name) + 21.
 _AGENT_BROWSER_SOCKET_PATH_MAX = 103
 
+_IS_WINDOWS = sys.platform == "win32"
+
 
 def _session_socket_roots() -> tuple:
     """Socket roots in preference order: the scratch tmpdir, then the OS short root as
     fallback for sessions whose full socket path overflows the budget on the scratch root.
-    Cleanup and the orphan reaper must scan every root listed here."""
+    Cleanup and the orphan reaper must scan every root listed here.
+    Windows has no short ``/tmp`` — a bare ``/tmp/...`` path resolves onto the cwd's drive
+    (outside %TEMP%), and the AF_UNIX budget is a POSIX constraint that never binds there —
+    so the scratch root is the only root (mirrors ``gateway/control_socket._fallback_socket_path``)."""
     root = _bt._socket_safe_tmpdir()
-    return (root, "/tmp") if root != "/tmp" else (root,)
+    if root != "/tmp" and not _IS_WINDOWS:
+        return (root, "/tmp")
+    return (root,)
 
 
 def _session_socket_dir(session_name: str) -> str:
     """Socket dir for one session on the first root whose FULL socket path (this dir plus
     ``<name>.sock``) fits agent-browser's 103-byte AF_UNIX budget (#131231) — the scratch
-    root only when it actually fits, else /tmp."""
-    for root in _session_socket_roots():
+    root only when it actually fits, else the short root (or the scratch root itself when
+    there is no short root, i.e. on Windows)."""
+    roots = _session_socket_roots()
+    for root in roots:
         if len(root) + 2 * len(session_name) + 21 <= _AGENT_BROWSER_SOCKET_PATH_MAX:
             return os.path.join(root, f"agent-browser-{session_name}")
-    return os.path.join("/tmp", f"agent-browser-{session_name}")
+    return os.path.join(roots[0], f"agent-browser-{session_name}")
 
 
 def _prepare_session_socket_dir(session_name: str) -> str:

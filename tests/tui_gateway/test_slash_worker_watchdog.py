@@ -53,7 +53,9 @@ def test_main_arms_watchdog_then_imports_cli_before_runtime_prep(monkeypatch):
             events.append(("cli-import",))
             module.HermesCLI = FakeHermesCLI
 
-    monkeypatch.delitem(sys.modules, "cli", raising=False)
+    # setitem first so teardown also removes the stub module the import below inserts.
+    monkeypatch.setitem(sys.modules, "cli", None)
+    monkeypatch.delitem(sys.modules, "cli")
     monkeypatch.setattr(sys, "meta_path", [FakeCliFinder(), *sys.meta_path])
     monkeypatch.setattr(
         slash_worker,

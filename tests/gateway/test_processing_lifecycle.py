@@ -1050,3 +1050,64 @@ async def test_profile_removal_completes_its_started_messages_in_the_runners_fif
 
     assert {m: _lifecycle(adapter, m) for m in ("queued-1", "queued-2")} == {
         "queued-1": ["start", _CANCELLED], "queued-2": ["start", _CANCELLED]}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("previously_admitted", [False, True])
+async def test_processing_reservation_distinguishes_new_input_from_pending_replay(
+    monkeypatch, previously_admitted
+):
+    from gateway.platforms.base_pending import (
+        reserve_pending_dispatch,
+        pending_dispatch_record,
+    )
+
+    runner, adapter = _priority_runner(monkeypatch, "queue")
+    source = SessionSource(
+        platform=Platform.SLACK, chat_id="C1", chat_type="dm", user_id="U1"
+    )
+    key = adapter._event_session_key(MessageEvent(text="", source=source))
+    first = MessageEvent(text="queued", source=source, message_id="first")
+    second = MessageEvent(
+        text="photo",
+        source=source,
+        message_id="second",
+        message_type=MessageType.PHOTO,
+        media_urls=["image.png"],
+        media_types=["image/png"],
+    )
+    adapter._pending_messages[key] = first
+    if previously_admitted:
+        reserve_pending_dispatch(adapter, key, second)
+    entered, release = asyncio.Event(), asyncio.Event()
+    observed: list[bool] = []
+
+    async def consume(event: MessageEvent):
+        record = pending_dispatch_record(adapter, key, event)
+        assert record is not None
+        observed.append(record.accepted)
+        runner._hm_merge_pending_for_source(source, key, event)
+        entered.set()
+        await release.wait()
+
+    adapter.set_message_handler(consume)
+    try:
+        assert adapter._start_session_processing(second, key)
+        await asyncio.wait_for(entered.wait(), 2)
+        pending = [adapter._pending_messages[key], *(runner._overflow_queue(key) or ())]
+        actual = (
+            observed,
+            [(event.message_id, event.text, event.media_urls) for event in pending],
+        )
+        expected = (
+            ([True], [("second", "photo", ["image.png"]), ("first", "queued", [])])
+            if previously_admitted
+            else ([False], [("first", "queued\n\nphoto", ["image.png"])])
+        )
+        assert actual == expected
+    finally:
+        adapter._pending_messages.clear()
+        runner._session_state(key).conversation.queued_events.clear()
+        release.set()
+        await asyncio.gather(*adapter._background_tasks)
+        await adapter.cancel_background_tasks()

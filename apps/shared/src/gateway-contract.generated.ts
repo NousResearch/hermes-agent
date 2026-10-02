@@ -2134,6 +2134,8 @@ export interface VaultSource {
   needs_unlock: boolean
   unlocked: boolean
   installed: boolean
+  manual_unlock?: boolean
+  setup_hint?: string
 }
 export interface VaultSourceSetParams {
   profile?: string | null

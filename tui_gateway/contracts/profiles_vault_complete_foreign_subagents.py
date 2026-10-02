@@ -445,6 +445,8 @@ class VaultSource(Result):
     needs_unlock: bool
     unlocked: bool
     installed: bool
+    manual_unlock: bool = False
+    setup_hint: str = ""
 
 
 class VaultSourcesResult(Result):

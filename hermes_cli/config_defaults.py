@@ -2445,9 +2445,16 @@ DEFAULT_CONFIG = {
     # them in ~/.hermes/.env.
     # Browser credential vault: which login sources browser_vault_list/fill may draw from. The local
     # encrypted vault (`hermes vault add`, Desktop → Settings → Credential Vault) is always on.
-    # External password managers are unlocked per session with a masked master-password prompt;
-    # headless sessions (cron, webhook, API) never prompt and see them as locked.
+    # 1Password/Bitwarden use per-session masked unlock prompts (never in headless sessions).
+    # Dashlane is opt-in and uses manually managed dcli unlock state, including in headless sessions.
     "vault": {
+        "dashlane": {
+            "enabled": False,       # Opt-in; enrollment/unlock managed in the user's own dcli terminal.
+            "binary_path": "",      # Absolute dcli executable path; empty = PATH.
+            "account": "",          # Exact Dashlane account email reported by dcli status.
+            "items": [],            # Explicit id/label/origin/identifier/identifier_type metadata.
+            "search_hosts": [],     # Opt-in exact hosts; trusted dcli full-record projection (e.g. service.test).
+        },
         "onepassword": {
             # Detected managers are login sources unless the user opts out (vault.<name>.enabled: false).
             "enabled": True,        # `op` CLI: Login items with a website URL become fillable handles.

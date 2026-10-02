@@ -67,6 +67,119 @@ origins; nothing is inferred beyond the URLs saved on the item.
 Prefer not to use a detected manager? `hermes vault sources --disable bitwarden`,
 or the switch in **Settings → Passwords & Logins**.
 
+## Dashlane (explicit opt-in)
+
+Dashlane is **off by default**, even when `dcli` is installed. This integration
+supports explicitly opted-in exact-host discovery or fixed login metadata.
+Install and enroll Dashlane CLI yourself, then run `dcli sync` in your own
+terminal to unlock it. Never send your master password, device keys or codes
+to the agent. Hermes does not run enrollment, sync or lock commands for you.
+
+Edit the active profile's `config.yaml` with metadata only:
+
+```yaml
+vault:
+  dashlane:
+    enabled: true
+    binary_path: ""  # PATH lookup; alternatively an absolute trusted dcli executable path
+    account: "owner@example.test"  # exact Login value from your own dcli status
+    search_hosts: [service.test]  # explicit trusted-provider projection opt-in; no UUID needed
+    items: []
+```
+
+`browser_vault_list` now discovers saved logins for the configured exact hosts
+without asking you for a UUID. Up to five lowercase ASCII hosts are allowed.
+This opt-in accepts a specific trust cost: dcli decrypts all logins internally,
+then sends complete URL-substring-matching records (including their secrets)
+to the trusted Hermes backend. Hermes independently filters exact hosts and
+returns **only allowlisted metadata and opaque handles**. There is no vendor
+metadata-only API and `--field` does not strip secrets from its JSON. Never run
+the provider password JSON command in an agent terminal. No all-record export,
+clipboard, plaintext secret file, title lookup or alternate fill helper is used.
+
+Review the returned identifier and exact saved origin. If several logins match,
+the agent must ask you to select one, never choose the first. Handles expire after
+five minutes or a process restart; list again if needed. At most 20 vendor
+matches per host and 256 KiB stdout per subprocess are allowed; excess fails
+closed rather than returning a partial list. Only `browser_vault_fill` consumes
+the selected password, on its bound exact origin. `service.test` does **not** authorize
+`login.other-service.test`, `www.service.test`, another scheme or another port.
+See the [trusted projection security review](../../developer-guide/dashlane-vault-security.md).
+
+Existing users may instead leave `search_hosts: []` and configure fixed `items`
+with `id`, `label`, `origin`, `identifier`, and `identifier_type` (`email` or
+`username`). No search occurs unless hosts are explicitly configured.
+
+### Saved bare hostnames: explicit origin binding
+
+A saved website such as `service.test` has no scheme and therefore no exact origin.
+Hermes does **not** infer `https://service.test` or authorize a related login domain.
+Instead, listing returns `unfillable_candidates`: allowlisted `backend`, exact
+`source_id` (UUID), `website_host`, `identifier`, and `identifier_type`, with
+`available: false`, `fillable: false`, `stage: search_projection`,
+`reason: invalid_origin`, and `status: explicit_origin_binding_required`.
+These are metadata only, with no fill handle. Several candidates require user
+selection; no candidate is automatically enrolled or selected.
+
+After selecting the exact record and explicitly approving its destination,
+the user may configure an `items` entry with those exact identity fields,
+a label, an exact normalized destination `origin`, and `source_host` equal to
+the provider's saved bare hostname. For example (synthetic metadata):
+
+```yaml
+items:
+  - id: "ABCDEF01-2345-4567-89AB-0123456789AB"
+    label: "Selected login"
+    identifier: "person@example.test"
+    identifier_type: email
+    source_host: service.test
+    origin: "https://sso.example.test"
+```
+
+This is an explicit per-record authorization, not automatic URL repair or a
+domain alias rule. `source_host` must be a lowercase ASCII bare hostname, not
+a URL, wildcard or path. Fill re-reads the exact UUID and requires its identifier
+and saved website string to still match exactly. A change to `https://service.test`,
+capitalization, a subdomain or a path fails closed. The browser must still match
+the configured destination's exact scheme, host and port; page-side origin
+revalidation remains in force. Without `source_host`, fixed items continue to
+require the provider's saved URL origin to match `origin`.
+
+IDs must be uppercase UUIDs without braces or a `dl://` prefix;
+the inspected CLI accepts UUID version digits 0–5. Hermes rejects invalid IDs
+rather than converting them into title searches. Origins must be normalized
+HTTP(S) origins: no path, trailing slash, user info, query or fragment. Explicit
+default ports are normalized away. Use ASCII DNS/IPv4 hosts (punycode for IDNs);
+IPv6 literals and escaped/backslash hosts are not supported. At most 100 items may be enrolled; duplicates
+and unknown configuration/metadata fields are rejected. Do not put passwords,
+TOTP seeds or API keys in this configuration. Labels and identifiers are visible
+to the agent. The account identifies your Dashlane vault, not the website login.
+
+`hermes vault sources --enable dashlane` (or the Desktop switch) enables use;
+it does not enroll items or unlock Dashlane. Disable with
+`hermes vault sources --disable dashlane`. Desktop displays manual terminal
+instructions instead of unsupported Unlock/Lock buttons. `vault.unlock` and
+named `vault.lock` for Dashlane refuse with those instructions. An unnamed
+`vault.lock` only forgets Hermes-managed session tokens; it **does not lock
+Dashlane**. Disabling the source does not lock Dashlane either. To lock it,
+run `dcli lock` yourself. Dashlane's unlock lifetime belongs to dcli, not
+Hermes's 30-minute idle token policy, and can be shared across Hermes profiles.
+
+An already unlocked, correctly enrolled source can fill in headless sessions;
+a locked source reports `manual_cli` guidance. Hermes checks dcli account/lock
+status before and after each selected-item read, then validates its exact ID,
+website identifier and origin. These separate subprocess checks are **not an
+atomic account pin**: do not switch Dashlane accounts concurrently with fills.
+`status` can access OS Keychain; search and selected reads may trigger Dashlane
+sync and network access. Without search hosts, listing uses enrolled metadata
+plus status checks. Search uses the trusted projection described above.
+A selected read returns the complete selected record internally,
+including other secret fields; only the password is used and none are returned
+to the model. No Dashlane automatic TOTP, payment/address import, vault writes,
+SSO enrollment automation or native Chrome integration is provided. This feature
+uses the existing supervised browser/CDP fill path; native Chrome is unverified.
+See the [security review](../../developer-guide/dashlane-vault-security.md).
+
 ## Paying and filling addresses
 
 Cards and addresses work the same way as logins: saved once (**Settings →

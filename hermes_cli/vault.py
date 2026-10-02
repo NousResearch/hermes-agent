@@ -118,7 +118,7 @@ def _cmd_list(args) -> None:
     rows, locked = [], []
     for backend in enabled_backends():
         if backend.needs_unlock and not backend.is_unlocked():
-            locked.append(backend.display_name)
+            locked.append(backend)
             continue
         rows.extend((backend.display_name, meta) for meta in backend.list_items())
     if not rows and not locked:
@@ -134,8 +134,9 @@ def _cmd_list(args) -> None:
             table.add_row(meta.id, source, meta.kind, meta.label, meta.identifier or "-", meta.origin or "-")
         c.print(table)
         c.print("[dim]Passwords are never shown; the agent fills them server-side from the handle.[/]")
-    for name in locked:
-        c.print(f"[yellow]{name}[/] is enabled but locked — the agent will ask you to unlock it when it needs a login.")
+    for backend in locked:
+        hint = backend.setup_hint if backend.manual_unlock else "The agent will ask you to unlock it when it needs a login."
+        c.print(f"[yellow]{backend.display_name}[/] is unavailable. {hint}")
 
 
 def _cmd_sources(args) -> None:
@@ -154,7 +155,7 @@ def _cmd_sources(args) -> None:
         cfg = load_config()
         section = _ensure_dict(_ensure_dict(cfg, "vault"), name)
         if args.enable:
-            section.pop("enabled", None)  # detected managers are on by default; drop the opt-out
+            section["enabled"] = True  # also supports explicitly opt-in sources
         else:
             section["enabled"] = False
         save_config(cfg)
@@ -163,7 +164,8 @@ def _cmd_sources(args) -> None:
     enabled = {b.name for b in enabled_backends()}
     for name, cls in classes.items():
         if name in enabled:
-            status = "[green]detected[/] · the agent asks you to unlock it when it needs a login"
+            status = ("[green]enabled[/] · " + cls.setup_hint if cls.manual_unlock else
+                      "[green]detected[/] · the agent asks you to unlock it when it needs a login")
         elif is_installed(name):
             status = "[dim]turned off[/] (`hermes vault sources --enable {name}` to use it)".format(name=name)
         else:
@@ -203,9 +205,9 @@ def register_cli(subparser) -> None:
     p_rm.add_argument("handle", help="Item handle (see `hermes vault list`)")
     p_rm.set_defaults(_vault_handler=_cmd_rm)
 
-    p_src = subs.add_parser("sources", help="Show detected password managers (1Password, Bitwarden); they are on automatically")
+    p_src = subs.add_parser("sources", help="Show password managers (Dashlane requires explicit enrollment)")
     group = p_src.add_mutually_exclusive_group()
-    group.add_argument("--disable", metavar="NAME", help="Stop using a detected manager: onepassword | bitwarden")
+    group.add_argument("--disable", metavar="NAME", help="Stop using a detected manager: onepassword | bitwarden | dashlane")
     group.add_argument("--enable", metavar="NAME", help="Undo --disable")
     p_src.set_defaults(_vault_handler=_cmd_sources)
 

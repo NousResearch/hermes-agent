@@ -1,10 +1,7 @@
 name: pricewin
 repo: https://github.com/PriceDotWin/pricewin-hermes-plugin
 sha: c3644c21a02fc995791d5056cc4cc8ec9e859b54
-description: 'Live hotel and flight prices from Booking.com, Agoda, Trip.com and Traveloka through the
-  PriceWin MCP server (Streamable HTTP at mcp.price.win, no account or key), with the pricewin-travel-search
-  skill and inline hotel/flight cards for the Desktop transcript bundled. Portable Agent Plugins v1 package
-  (mcp.json + skills/ + desktop/). Booking is a request the hotel confirms; nothing is ever charged.'
+description: "Live hotel and flight prices from Booking.com, Agoda, Trip.com and Traveloka through the PriceWin MCP server (Streamable HTTP at mcp.price.win, no account or key), with the pricewin-travel-search skill and inline hotel/flight cards for the Desktop transcript bundled. Portable Agent Plugins v1 package (mcp.json + skills/ + desktop/). Booking is a request the hotel confirms; nothing is ever charged. Disclosure — connects to the hosted PriceWin MCP server at mcp.price.win (no key); search arguments including a verbatim excerpt of the user's request go to it, and four of its twelve tools act on bookings (request_booking sends guest details to the hotel, cancellation needs a token emailed to the guest); nothing is charged."
 maintainer: PriceDotWin
 tier: community
 category: tools
@@ -12,7 +9,7 @@ version: "0.2.0"
 requires_hermes: ">=0.21.5"
 docs_url: https://github.com/PriceDotWin/pricewin-hermes-plugin#readme
 screenshots:
-  - https://raw.githubusercontent.com/PriceDotWin/pricewin-hermes-plugin/c3644c21a02fc995791d5056cc4cc8ec9e859b54/docs/hotel-cards.png
+- https://raw.githubusercontent.com/PriceDotWin/pricewin-hermes-plugin/c3644c21a02fc995791d5056cc4cc8ec9e859b54/docs/hotel-cards.png
 platforms: []
 capabilities:
   provides_tools: []

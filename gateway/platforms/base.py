@@ -4202,6 +4202,12 @@ class BasePlatformAdapter(ABC):
             logger.warning("[%s] Auto-TTS failed: %s", self.name, tts_err)
         return paths, requested_path
 
+    def _auto_tts_notice_state(self) -> Dict[str, bool]:
+        # Gateway ownership survives transport replacement; standalone adapters own
+        # their local lifecycle. Keys retain the canonical profile/conversation identity.
+        owner = self.gateway_runner if self.gateway_runner is not None else self
+        return _lazy_attr(owner, "_auto_tts_failure_notices", dict)
+
     async def _notify_auto_tts_failure(
         self, event: MessageEvent, session_key: str, metadata: Dict[str, Any],
     ) -> None:
@@ -4209,7 +4215,7 @@ class BasePlatformAdapter(ABC):
         from gateway.platforms.helpers import bounded_put
 
         delivery_adapter = self._final_delivery_adapter(event.source)
-        notices = delivery_adapter._auto_tts_failure_notices
+        notices = self._auto_tts_notice_state()
         if session_key in notices:
             return
         warning_metadata = {**metadata, "_interim_send": True}
@@ -4619,8 +4625,7 @@ class BasePlatformAdapter(ABC):
                     _tts_paths, _tts_requested_path = await self._synthesize_auto_tts(text_content)
                     _auto_tts_failed = not _tts_paths
                     if _tts_paths:
-                        self._final_delivery_adapter(event.source)._auto_tts_failure_notices.pop(
-                            session_key, None)
+                        self._auto_tts_notice_state().pop(session_key, None)
                 # TTS plays before text; generated files are removed afterwards.
                 _tts_caption_delivered = False
                 for _tts_index, _tts_path in enumerate(_tts_paths):

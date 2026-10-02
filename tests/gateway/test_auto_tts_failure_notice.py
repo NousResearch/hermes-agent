@@ -74,8 +74,14 @@ async def test_reconnected_transport_receives_failure_notice():
     live = _DummyAdapter(Platform.TELEGRAM)
     event = _make_voice_event(Platform.TELEGRAM)
     stale.gateway_runner = SimpleNamespace(_delivery_adapter_for=lambda source: live)
+    live.gateway_runner = stale.gateway_runner
     await stale._notify_auto_tts_failure(event, build_session_key(event.source), {})
     await live._notify_auto_tts_failure(event, build_session_key(event.source), {})
+    replacement = _DummyAdapter(Platform.TELEGRAM)
+    replacement.gateway_runner = live.gateway_runner
+    replacement.gateway_runner._delivery_adapter_for = lambda source: replacement
+    await replacement._notify_auto_tts_failure(event, build_session_key(event.source), {})
+    assert not replacement.sent
     assert not stale.sent
     assert len(live.sent) == 1
 

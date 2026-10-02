@@ -58,6 +58,7 @@ export function CanonicalGroupRoomActions({ binding, name, latestFileSeq = 0, vi
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
   const pending = useRef(false)
+  const disbandIntent = useRef<string | null>(null)
   // One intended name keeps one event id across retries; a different name is a new intent.
   const renameIntent = useRef<null | { name: string; eventId: string }>(null)
 
@@ -108,12 +109,13 @@ export function CanonicalGroupRoomActions({ binding, name, latestFileSeq = 0, vi
   const disband = async () => {
     if (pending.current) {throw new Error(labels.actionInFlight)}
     pending.current = true
+    disbandIntent.current ??= crypto.randomUUID()
     setBusy(true)
     setError('')
 
     try {
       const result = await canonicalGroupRequest<{ tombstone?: { room_id: string; disbanded_at: number } } | undefined>(binding, 'groups.disband', {
-        room_id: binding.roomId, cancel_id: crypto.randomUUID()
+        room_id: binding.roomId, cancel_id: disbandIntent.current
       })
 
       const tombstone = result?.tombstone
@@ -122,6 +124,7 @@ export function CanonicalGroupRoomActions({ binding, name, latestFileSeq = 0, vi
         throw new Error(labels.disbandUnconfirmed)
       }
 
+      disbandIntent.current = null
       onDisbanded?.()
     } catch (error) {
       setError(error instanceof Error ? error.message : String(error))

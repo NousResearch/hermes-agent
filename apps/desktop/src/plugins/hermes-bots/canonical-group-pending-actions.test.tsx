@@ -159,3 +159,26 @@ test.each(['', '<terminal> (plugin approval rule)'])('a description without an o
   await act(async () => {fireEvent.click(screen.getByRole('button', { name: 'Don’t allow' }))})
   expect(onAction).toHaveBeenCalledWith(action, 'deny')
 })
+
+test('never invents approval choices in the card or exact action dispatcher', async () => {
+  for (const choices of [undefined, [], ['session', 'always']]) {
+    const approval = { request_id: 'unsupported', command: 'pytest -q tests/focused', choices }
+    const action: CanonicalPendingAction = { ...target, kind: 'approval', request_id: 'unsupported', approval }
+    const view = render(
+      <CanonicalGroupPendingActions
+        actions={[action]}
+        members={members}
+        onAction={noop}
+        onDiscard={noop}
+        onRefresh={noop}
+      />
+    )
+    expect(screen.queryByRole('button', { name: 'Allow once' })).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Don’t allow' })).toBeNull()
+    expect(screen.getByRole('button', { name: 'Refresh' })).toBeTruthy()
+    await expect(actCanonicalGroup(binding, action, 'once')).rejects.toThrow(/choice/)
+    await expect(actCanonicalGroup(binding, action, 'deny')).rejects.toThrow(/choice/)
+    expect(request).not.toHaveBeenCalled()
+    view.unmount()
+  }
+})

@@ -1,6 +1,7 @@
 import { Button, ConfirmDialog } from '@hermes/plugin-sdk'
 import { useRef, useState } from 'react'
 
+import { canonicalApprovalDetails } from './canonical-group-approval'
 import { CanonicalMemberFace, canonicalMemberName } from './canonical-group-identity'
 import { useCanonicalGroupLabels } from './canonical-group-labels'
 import { isPendingFileAction } from './canonical-groups'
@@ -24,52 +25,6 @@ const validAttempt = (action: CanonicalPendingAction) => Boolean(text(action.mem
   Number.isSafeInteger(action.execution_generation) && action.execution_generation > 0)
 const snapshot = (action: CanonicalPendingAction): CanonicalPendingAction => ({ ...action })
 
-interface EditPreview { path: string; before: string | null; after: string; patch: boolean }
-function editPreview(value: unknown): EditPreview | null {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) {return null}
-  const edit = value as Record<string, unknown>
-  if (!text(edit.path) || !['write_file', 'patch'].includes(String(edit.tool_name)) ||
-      typeof edit.new_text !== 'string' || (edit.old_text !== null && typeof edit.old_text !== 'string')) {return null}
-  const patch = edit.tool_name === 'patch' && edit.old_text === null
-  if (patch && !edit.new_text.trimStart().startsWith('*** Begin Patch')) {return null}
-  return { path: text(edit.path), before: edit.old_text as string | null, after: edit.new_text, patch }
-}
-
-function approvalDetails({ action, labels }: { action: CanonicalPendingAction; labels: Labels }) {
-  const approval = action.approval
-  const command = text(approval?.command)
-  const description = text(approval?.description)
-  // The ordinary chat approval card uses descriptions for synthetic plugin
-  // labels too. A tool label alone is not an operation the user can review.
-  const actualCommand = /^<[^>]+> \(/.test(command) ? '' : command
-  const edit = approval?.edit === undefined ? undefined : editPreview(approval.edit)
-  const matching = Boolean(text(action.request_id)) && (!approval?.request_id || approval.request_id === action.request_id) &&
-    (!approval?.prompt_id || approval.prompt_id === action.request_id)
-  const reviewable = matching && edit !== null && Boolean(actualCommand || edit)
-
-  return { reviewable, content: <div className="grid min-w-0 gap-2">
-    {description && description !== actualCommand && <div>
-      <p className="text-xs text-(--ui-text-secondary)">{labels.approvalAction}</p>
-      <p className="whitespace-pre-wrap break-words text-sm">{description}</p>
-    </div>}
-    {actualCommand && !edit && <div>
-      <p className="text-xs text-(--ui-text-secondary)">{labels.approvalCommand}</p>
-      <pre className="m-0 max-h-40 overflow-auto whitespace-pre-wrap break-words py-2 font-mono text-xs leading-relaxed text-(--ui-text-primary)">{actualCommand}</pre>
-    </div>}
-    {edit && <div className="grid min-w-0 gap-2">
-      <p className="text-xs text-(--ui-text-secondary)">{labels.approvalChanges}</p>
-      <p className="break-all font-mono text-xs">{edit.path}</p>
-      {edit.before !== null && <div>
-        <p className="text-xs text-(--ui-text-secondary)">{labels.approvalBefore}</p>
-        <pre className="max-h-40 overflow-auto whitespace-pre-wrap break-words font-mono text-xs">{edit.before || labels.approvalEmptyFile}</pre>
-      </div>}
-      {!edit.patch && <p className="text-xs text-(--ui-text-secondary)">{labels.approvalAfter}</p>}
-      <pre className="max-h-40 overflow-auto whitespace-pre-wrap break-words font-mono text-xs">{edit.after || labels.approvalEmptyFile}</pre>
-    </div>}
-    {!reviewable && <p className="text-sm text-(--ui-text-secondary)" role="status">{labels.approvalDetailsMissing}</p>}
-  </div> }
-}
-
 function PendingActionRow({ action, member, memberName, canSkip, busy, labels, onAction, onSkip, onRefresh }: {
   action: CanonicalPendingAction; member?: CanonicalRoomMember; memberName: string; canSkip: boolean; busy: boolean; labels: Labels
   onAction: CanonicalGroupPendingActionsProps['onAction']; onSkip: () => void
@@ -85,8 +40,8 @@ function PendingActionRow({ action, member, memberName, canSkip, busy, labels, o
     finally {pending.current = false; setSubmitting(false)}
   }
   const disabled = busy || submitting || !validAttempt(action)
-  const approval = action.kind === 'approval' ? approvalDetails({ action, labels }) : null
-  const choices = action.approval?.choices
+  const approval = action.kind === 'approval' ? canonicalApprovalDetails({ action, labels }) : null
+  const choices = Array.isArray(action.approval?.choices) ? action.approval.choices : []
   const fileOutput = action.kind === 'output_retry'
   const filePending = isPendingFileAction(action)
   const title = fileOutput ? (!filePending ? labels.pendingFilesBlockedTitle : action.operation === 'discard' ? labels.pendingFilesCleanupTitle : labels.pendingFilesTitle)
@@ -102,11 +57,11 @@ function PendingActionRow({ action, member, memberName, canSkip, busy, labels, o
     {fileOutput && !filePending && <p className="text-sm text-(--ui-text-secondary)" role="status">{labels.pendingFilesBlockedHelp}</p>}
     <div className="flex flex-wrap items-center justify-end gap-2">
       {approval && <>
-        {(!choices || choices.includes('deny')) && <Button disabled={disabled || !text(action.request_id)}
+        {choices.includes('deny') && <Button disabled={disabled || !text(action.request_id)}
           onClick={() => void invoke(() => onAction(snapshot(action), 'deny'))} size="sm" type="button" variant="secondary">{labels.deny}</Button>}
-        {approval.reviewable && (!choices || choices.includes('once')) && <Button disabled={disabled}
+        {approval.reviewable && choices.includes('once') && <Button disabled={disabled}
           onClick={() => void invoke(() => onAction(snapshot(action), 'once'))} size="sm" type="button">{labels.allowOnce}</Button>}
-        {!approval.reviewable && onRefresh && <Button disabled={busy || submitting}
+        {(!approval.reviewable || !choices.some(choice => choice === 'once' || choice === 'deny')) && onRefresh && <Button disabled={busy || submitting}
           onClick={() => void invoke(onRefresh)} size="sm" type="button" variant="secondary">{labels.refresh}</Button>}
       </>}
       {fileOutput && !filePending && onRefresh && <Button disabled={busy || submitting}

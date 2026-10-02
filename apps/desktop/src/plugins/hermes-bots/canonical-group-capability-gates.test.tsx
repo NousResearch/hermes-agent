@@ -251,7 +251,7 @@ it('explains a hosted-profile create refusal in the dialog and room gate without
   await act(async () => { fireEvent.click(screen.getByRole('button', { name: CANONICAL_GROUP_LOCALES.en.startGatewayGroup })) })
   expect(screen.getByRole('alert').textContent).toContain(CANONICAL_GROUP_LOCALES.en.createRefused)
   expect(screen.getByRole('link').getAttribute('href')).toBe('https://hermes-agent.nousresearch.com/docs/developer-guide/hosted-profile-owners')
-  expect(screen.queryByRole('textbox')).toBeNull()
+  expect(screen.getByRole('textbox')).toBeTruthy()
   expect(updateGroupChat).not.toHaveBeenCalled()
   expect(openWorkspace).not.toHaveBeenCalled()
 })
@@ -401,4 +401,29 @@ it('reconciles a late discovery with creation, rename and retirement that happen
   expect(screen.queryByRole('button', { name: transient.name })).toBeNull()
   expect($canonicalGroupBindings.get()[endedKey]).toBeUndefined()
   expect($canonicalGroupBindings.get()[transientKey]).toBeUndefined()
+})
+
+it('keeps the existing classic transcript and composer when explicitly starting a separate gateway group', async () => {
+  answer(CANONICAL_GROUP_CAPABILITIES)
+  const log = [
+    { id: 'classic-message', from: { kind: 'user' as const, name: 'You' }, text: 'Earlier classic conversation', at: 1 }
+  ]
+  $groupChats.set({ Existing: { log, watermarks: {}, sessions: {} } })
+  await act(async () => {
+    render(<GroupChatWorkspace group="Existing" members={roster} />)
+  })
+  expect(screen.getByText('Earlier classic conversation')).toBeTruthy()
+  const composer = screen.getByRole('textbox') as HTMLTextAreaElement
+  fireEvent.change(composer, { target: { value: 'Continue classic draft' } })
+  expect(composer.disabled).toBe(false)
+  await act(async () => {
+    fireEvent.click(screen.getByRole('button', { name: CANONICAL_GROUP_LOCALES.en.startGatewayGroup }))
+  })
+  expect($groupChats.get().Existing.log).toEqual(log)
+  expect(composer.value).toBe('Continue classic draft')
+  const create = request.mock.calls.find(call => call[1] === 'groups.create')!
+  expect(create[2]).not.toHaveProperty('history')
+  expect(create[2]).not.toHaveProperty('messages')
+  expect(Object.keys($canonicalGroupBindings.get())[0]).not.toBe('Existing')
+  expect(request.mock.calls.some(call => call[1] === 'groups.send')).toBe(false)
 })

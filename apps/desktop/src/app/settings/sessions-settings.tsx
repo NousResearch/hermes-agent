@@ -18,6 +18,7 @@ import { sessionTitle } from '@/lib/chat-runtime'
 import { pathLeaf } from '@/lib/display-path'
 import { triggerHaptic } from '@/lib/haptics'
 import { Archive, ArchiveOff, FolderOpen, Loader2, Trash2 } from '@/lib/icons'
+import { purgeInFlightTurnJournals } from '@/lib/inflight-turn-journal'
 import { confirm } from '@/store/confirm'
 import { notify, notifyError } from '@/store/notifications'
 import { applyConfiguredDefaultProjectDir, ensureDefaultWorkspaceCwd } from '@/store/session'
@@ -117,6 +118,12 @@ function ArchivedSessionsSettings({ includeDefaultDirectory }: { includeDefaultD
         // Permanent delete bypasses removeSession, so retire the persisted
         // unread state here too rather than leaving it to rot.
         forgetSessionUnread([session.id, session._lineage_root_id], session.profile)
+        // Same for the journaled in-flight tail: it holds this session's
+        // prompt and tool calls in localStorage, and a deleted session must
+        // not leave that copy behind to age out on its own. Both ids — the
+        // stored tip and the durable lineage root — the journal keys on the
+        // stored id and the row may carry either.
+        purgeInFlightTurnJournals([session.id, session._lineage_root_id])
         setLocalSessions(prev => prev.filter(s => s.id !== session.id))
         triggerHaptic('warning')
       } catch (err) {

@@ -21,6 +21,12 @@ export interface TerminalMenuHandle {
    *  terminal, and the app-level reload fallback must not fire there. */
   reload: () => void
   selectAll: () => void
+  /** Re-deliver the close-tab chord main claimed (#65457). User terminals
+   *  write the ^W byte into their PTY (readline unix-word-rubout) instead of
+   *  closing the pane and killing the shell; false when there is no live
+   *  session, so the caller falls back to closing. Null on the read-only
+   *  agent mirror — no PTY, and its tab stays deliberately closeable. */
+  wordErase: (() => boolean) | null
 }
 
 const handles = new WeakMap<Element, TerminalMenuHandle>()
@@ -39,6 +45,19 @@ export function registerTerminalContextMenu(host: Element, handle: TerminalMenuH
       handles.delete(scope)
     }
   }
+}
+
+/** Run the close-tab chord on the interactive terminal holding DOM focus —
+ *  the terminal rung of the close-tab routing (use-desktop-integrations).
+ *  Only a user terminal carries [data-interactive-terminal]; the read-only
+ *  agent mirror stays closeable. False = nothing consumed the chord (focus is
+ *  elsewhere, on a mirror, or the terminal has no live session), so the
+ *  caller falls back to closing the tab. */
+export function wordEraseFocusedTerminal(): boolean {
+  const host = document.activeElement?.closest('[data-interactive-terminal]')
+  const handle = host ? handles.get(host) : undefined
+
+  return handle?.wordErase?.() ?? false
 }
 
 /** The handle owning `element`, when the click landed inside a terminal. */

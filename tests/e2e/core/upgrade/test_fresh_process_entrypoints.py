@@ -85,7 +85,7 @@ _OPTIONAL_IMPORTS = {
     "opentelemetry": "opentelemetry-sdk", "parallel": "parallel-web", "pvporcupine": "pvporcupine",
     "pyasn1": "pyasn1", "qrcode": "qrcode", "sentencepiece": "sentencepiece", "sherpa_onnx": "sherpa-onnx",
     "slack_bolt": "slack-bolt", "slack_sdk": "slack-sdk", "sounddevice": "sounddevice",
-    "supermemory": "supermemory", "telegram": "python-telegram-bot", "uvloop": "uvloop",
+    "telegram": "python-telegram-bot", "uvloop": "uvloop",
     "vercel": "vercel", "youtube_transcript_api": "youtube-transcript-api",
     # Windows-only core requirements (their markers exclude Linux).
     "pywintypes": "pywin32", "win32api": "pywin32", "win32con": "pywin32", "win32event": "pywin32",

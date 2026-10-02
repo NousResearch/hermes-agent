@@ -10,6 +10,7 @@ import asyncio
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+import pytest_asyncio
 
 from gateway.config import Platform
 
@@ -340,6 +341,112 @@ class TestBridgeEventMetadata:
         assert event.reply_to_is_own_message is True
         assert event.media_urls == [str(image)]
         assert event.media_types == ["image/png"]
+
+# ---------------------------------------------------------------------------
+# Every outbound text path renders like send() (streamed edits, captions, out-of-process sends)
+# ---------------------------------------------------------------------------
+
+_MARKDOWN_REPLY = "## Plan\n\n**Step one** done, see [docs](https://example.invalid/x)."
+
+
+@pytest_asyncio.fixture
+async def fake_bridge():
+    """A local stand-in for the Node bridge that records every POST body it receives."""
+    from aiohttp import web
+
+    posts = []
+
+    async def _record(request):
+        posts.append((request.path, await request.json()))
+        return web.json_response({"messageId": f"m{len(posts)}"})
+
+    app = web.Application()
+    for route in ("/send", "/edit", "/send-media"):
+        app.router.add_post(route, _record)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, "127.0.0.1", 0)
+    await site.start()
+    yield site._server.sockets[0].getsockname()[1], posts
+    await runner.cleanup()
+
+
+@pytest_asyncio.fixture
+async def live_adapter(fake_bridge):
+    import aiohttp
+
+    from gateway.config import PlatformConfig
+    from plugins.platforms.whatsapp.adapter import WhatsAppAdapter
+
+    port, _ = fake_bridge
+    adapter = WhatsAppAdapter(PlatformConfig(enabled=True, extra={"bridge_port": port}))
+    adapter._running = True
+    adapter._http_session = aiohttp.ClientSession()
+    adapter._check_managed_bridge_exit = AsyncMock(return_value=None)
+    yield adapter
+    await adapter._http_session.close()
+
+
+async def _sent_text(adapter, posts, text):
+    """What a plain, unstreamed send() delivers for ``text`` — the rendering every other path must match."""
+    await adapter.send("15551234567", text)
+    return posts.pop()[1]["message"]
+
+
+class TestOutboundPathsFormatLikeSend:
+
+    @pytest.mark.asyncio
+    async def test_streamed_reply_ends_identical_to_a_sent_reply(self, fake_bridge, live_adapter):
+        from gateway.stream_consumer import GatewayStreamConsumer, StreamConsumerConfig
+
+        _, posts = fake_bridge
+        expected = await _sent_text(live_adapter, posts, _MARKDOWN_REPLY)
+        consumer = GatewayStreamConsumer(
+            live_adapter, "15551234567", StreamConsumerConfig(edit_interval=0.01, buffer_threshold=1, cursor=""))
+        task = asyncio.create_task(consumer.run())
+        for piece in ("## Plan\n\n", "**Step one** done, ", "see [docs](https://example.invalid/x)."):
+            consumer.on_delta(piece)
+            await asyncio.sleep(0.05)
+        consumer.finish(_MARKDOWN_REPLY)
+        await task
+
+        assert posts[-1][0] == "/edit"
+        assert posts[-1][1]["message"] == expected
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("path", ["media_caption", "standalone_text", "standalone_caption", "cloud_caption"])
+    async def test_out_of_band_text_formats_like_send(self, fake_bridge, live_adapter, tmp_path, path):
+        from types import SimpleNamespace
+
+        from plugins.platforms.whatsapp.adapter import _standalone_send
+
+        port, posts = fake_bridge
+        expected = await _sent_text(live_adapter, posts, _MARKDOWN_REPLY)
+        image = tmp_path / "chart.png"
+        image.write_bytes(b"\x89PNG fake")
+        if path == "media_caption":
+            await live_adapter.send_image_file("15551234567", str(image), caption=_MARKDOWN_REPLY)
+            delivered = posts[-1][1]["caption"]
+        elif path == "standalone_text":
+            await _standalone_send(SimpleNamespace(extra={"bridge_port": port}), "15551234567", _MARKDOWN_REPLY)
+            delivered = posts[-1][1]["message"]
+        elif path == "standalone_caption":
+            await _standalone_send(SimpleNamespace(extra={"bridge_port": port}), "15551234567", "",
+                                   media_files=[(str(image), False)], caption=_MARKDOWN_REPLY)
+            delivered = posts[-1][1]["caption"]
+        else:
+            from gateway.platforms.base import SendResult
+            from gateway.platforms.whatsapp_cloud import WhatsAppCloudAdapter
+
+            cloud = WhatsAppCloudAdapter.__new__(WhatsAppCloudAdapter)
+            cloud._http_client = MagicMock()
+            cloud._post_message_result = AsyncMock(return_value=SendResult(success=True, message_id="w1"))
+            await cloud._send_media("15551234567", "image", media_link="https://cdn.example.invalid/c.png",
+                                    caption=_MARKDOWN_REPLY)
+            delivered = cloud._post_message_result.call_args.args[0]["image"]["caption"]
+
+        assert delivered == expected
+
 
 # ---------------------------------------------------------------------------
 # display_config tier classification

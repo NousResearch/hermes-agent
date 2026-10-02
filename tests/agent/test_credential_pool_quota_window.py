@@ -58,17 +58,21 @@ class TestSpentQuotaResetAt:
         assert spent_quota_reset_at(None) is None
 
 
-def _seed_pool(tmp_path, monkeypatch):
+def _seed_pool(tmp_path, monkeypatch, *, twin=False):
+    """``twin`` adds a second entry backed by the spent entry's token (one account, two rows)."""
     hermes_home = tmp_path / "hermes"
     hermes_home.mkdir(parents=True, exist_ok=True)
-    entry = lambda cid, prio: {  # noqa: E731
+    entry = lambda cid, prio, token=None: {  # noqa: E731
         "id": cid, "label": cid, "auth_type": "oauth", "priority": prio,
-        "source": "manual:hermes_pkce", "access_token": f"tok-{cid}",
+        "source": "manual:hermes_pkce", "access_token": token or f"tok-{cid}",
         "refresh_token": f"ref-{cid}", "expires_at_ms": int((time.time() + 86400) * 1000),
     }
+    entries = [entry("spent", 0), entry("fresh", 2)]
+    if twin:
+        entries.insert(1, entry("twin", 1, token="tok-spent"))
     (hermes_home / "auth.json").write_text(json.dumps({
         "version": 1, "providers": {},
-        "credential_pool": {"anthropic": [entry("spent", 0), entry("fresh", 1)]},
+        "credential_pool": {"anthropic": entries},
     }))
     monkeypatch.setenv("HERMES_HOME", str(hermes_home))
     from agent.credential_pool import load_pool
@@ -104,6 +108,20 @@ class TestBenchOnSuccessfulResponse:
         reloaded = load_pool("anthropic")
         assert reloaded.select().id == "fresh"
         assert reloaded.select(model="claude-sonnet-x").id == "fresh"
+
+    def test_bench_covers_every_entry_backed_by_the_spent_token(self, tmp_path, monkeypatch):
+        """The window belongs to the account, so a second row on the same token is spent too;
+        leaving it selectable hands the spent account straight back."""
+        pool = _seed_pool(tmp_path, monkeypatch, twin=True)
+        agent = self._agent(pool, "spent", "tok-spent")
+
+        agent._bench_spent_subscription_window(
+            SimpleNamespace(headers=_unified(week_status="rejected", week_util="1.0")))
+
+        from agent.credential_pool import _exhausted_until, load_pool
+        assert _exhausted_until(_status(pool, "twin")) == WEEK_RESET
+        assert _status(pool, "fresh").last_status in (None, "ok")
+        assert load_pool("anthropic").select().id == "fresh"
 
     def test_healthy_headers_change_nothing(self, tmp_path, monkeypatch):
         pool = _seed_pool(tmp_path, monkeypatch)

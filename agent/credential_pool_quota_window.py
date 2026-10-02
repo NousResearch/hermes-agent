@@ -72,11 +72,26 @@ class CredentialPoolQuotaWindowMixin:
             entry = self._identify_failed_entry(credential_id, api_key_hint)
             if entry is None:
                 return False
-            if entry.last_status == STATUS_EXHAUSTED and _parse_absolute_timestamp(entry.last_error_reset_at) == reset_at:
+            # The quota belongs to the key, and one key can back several entries; a twin left
+            # unbenched is selected next and hands the spent account straight back.
+            spent_key = entry.runtime_api_key
+            targets = [
+                e for e in self._entries if e.id == entry.id or (spent_key and e.runtime_api_key == spent_key)
+            ]
+            stale = [
+                e for e in targets
+                if not (e.last_status == STATUS_EXHAUSTED and _parse_absolute_timestamp(e.last_error_reset_at) == reset_at)
+            ]
+            if not stale:
                 return False
-            self._mark_exhausted(entry, 429, {"reason": QUOTA_EXHAUSTED_REASON, "reset_at": reset_at})
+            for target in stale:
+                self._mark_exhausted(
+                    target, 429, {"reason": QUOTA_EXHAUSTED_REASON, "reset_at": reset_at}, persist=False,
+                )
+            self._persist()
             logger.info(
-                "credential pool: %s subscription window spent; benched until %s",
-                entry.label or entry.id[:8], time.strftime("%Y-%m-%d %H:%M", time.localtime(reset_at)),
+                "credential pool: %s subscription window spent; benched %d entr%s until %s",
+                entry.label or entry.id[:8], len(stale), "y" if len(stale) == 1 else "ies",
+                time.strftime("%Y-%m-%d %H:%M", time.localtime(reset_at)),
             )
             return True

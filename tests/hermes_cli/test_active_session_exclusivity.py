@@ -303,28 +303,26 @@ class TestOptInSessionTakeover:
         assert gw.to_dict().get("allow_session_takeover") is True
 
     def test_evict_other_session_leases_clears_sibling(self, monkeypatch):
+        import threading
         from tui_gateway.session_lifecycle import _evict_other_session_leases
-        from tui_gateway.server import _sessions, _sessions_lock
-        with _sessions_lock:
-            _sessions.clear()
-            _sessions["s1"] = {
+        fake_sessions = {
+            "s1": {
                 "session_key": "chat-42",
                 "active_session_lease": object(),
-            }
-            _sessions["s2"] = {
+            },
+            "s2": {
                 "session_key": "chat-42",
                 "active_session_lease": None,
-            }
-            _sessions["s3"] = {
+            },
+            "s3": {
                 "session_key": "chat-unrelated",
                 "active_session_lease": object(),
-            }
+            },
+        }
+        lock = threading.RLock()
+        _evict_other_session_leases("s2", "chat-42", sessions_dict=fake_sessions, lock=lock)
 
-        _evict_other_session_leases("s2", "chat-42")
-
-        with _sessions_lock:
-            assert "active_session_lease" not in _sessions["s1"]
-            assert _sessions["s1"].get("_lease_taken_over") is True
-            assert _sessions["s3"].get("active_session_lease") is not None
-            _sessions.clear()
+        assert "active_session_lease" not in fake_sessions["s1"]
+        assert fake_sessions["s1"].get("_lease_taken_over") is True
+        assert fake_sessions["s3"].get("active_session_lease") is not None
 

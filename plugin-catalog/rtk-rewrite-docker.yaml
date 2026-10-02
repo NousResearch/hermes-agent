@@ -1,16 +1,7 @@
 name: rtk-rewrite-docker
 repo: https://github.com/petertaras/hermes-rtk-rewrite-with-docker-support
 sha: 929c8f5f86fc544a523f94a92f95a57d4c0d7d40
-description: >-
-  Community plugin that rewrites Hermes terminal commands through RTK (rtk-ai/rtk,
-  Apache-2.0) so the model sees compact output. Adds a backend gate: it rewrites only
-  for terminal backends a profile opts in to (default local), so a Docker or remote
-  backend without rtk never receives an rtk command. Fail-open pre_tool_call hook
-  (2s timeout). Disclosure - every terminal command is passed to the rtk binary found
-  on PATH of the Hermes host (installed separately) and replaced with its rewrite
-  before approval and execution. The plugin downloads nothing. The repo has an
-  optional Containerfile that adds a checksum-verified RTK release to a Docker image.
-  Not affiliated with rtk-ai.
+description: "Community plugin that rewrites Hermes terminal commands through RTK (rtk-ai/rtk, Apache-2.0) so the model sees compact output. Adds a backend gate: it rewrites only for terminal backends a profile opts in to (default local), so a Docker or remote backend without rtk never receives an rtk command. Fail-open pre_tool_call hook (2s timeout). Disclosure — every terminal command on an opted-in backend (default local) is passed to the rtk binary on the Hermes host's PATH (or RTK_BIN) and replaced with rtk's stdout before approval and execution; the plugin does not validate the rewrite, fails open on timeout or error, and downloads nothing (the repo's optional Containerfile fetches a checksum-pinned RTK release only when you build it). Not affiliated with rtk-ai."
 maintainer: petertaras
 tier: community
 category: tools
@@ -21,6 +12,6 @@ platforms: [linux, macos]
 capabilities:
   provides_tools: []
   provides_hooks:
-    - pre_tool_call
+  - pre_tool_call
   provides_middleware: []
   requires_env: []

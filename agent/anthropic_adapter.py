@@ -391,7 +391,7 @@ def _build_anthropic_client_with_bearer_hook(
         # identity is answered with 429 rate_limit_error "Error" (#114967) — same headers as the
         # static "oauth" style in build_anthropic_client.
         headers = _beta_header(betas + _OAUTH_ONLY_BETAS)
-        headers["user-agent"] = f"claude-code/{_get_claude_code_version()} (external, cli)"
+        headers["User-Agent"] = f"claude-code/{_get_claude_code_version()} (external, cli)"
         headers["x-app"] = "cli"
     else:
         headers = _beta_header(betas)
@@ -418,9 +418,31 @@ def _new_sdk_client(sdk, kwargs: Dict[str, Any], headers: Dict[str, str], route:
     # over the SDK User-Agent and the attribution/beta sets above, on every builder path (init,
     # /model switch, rebuild, auxiliary) — the OpenAI-wire clients already do this (#24293, #9721).
     merged.update(_custom_provider_extra_headers(route or kwargs.get("base_url")))
+    merged = _canonicalize_sdk_header_names(merged)
     if merged:
         kwargs["default_headers"] = merged
     return sdk.Anthropic(**kwargs)
+
+
+# Header names the Anthropic SDK sets itself, in the SDK's own spelling. The SDK merges
+# ``default_headers`` over its defaults as a plain, case-SENSITIVE dict, and httpx keeps both
+# spellings — so ``user-agent`` next to the SDK's ``User-Agent`` puts TWO User-Agent headers on the
+# wire instead of overriding it, and a lowercase ``x-api-key`` escapes the SDK's case-sensitive
+# auth-header checks.
+_SDK_HEADER_NAMES = {name.lower(): name for name in (
+    "Accept", "Content-Type", "User-Agent", "Authorization", "X-Api-Key",
+)}
+
+
+def _canonicalize_sdk_header_names(headers: Dict[str, Any]) -> Dict[str, Any]:
+    """Respell SDK-owned header names the way the SDK does so they override its defaults; for
+    case-variants of the same name, the last one wins (``custom_providers`` extra_headers last)."""
+    out: Dict[str, Any] = {}
+    for name, value in headers.items():
+        canonical = _SDK_HEADER_NAMES.get(name.lower(), name)
+        out.pop(canonical, None)
+        out[canonical] = value
+    return out
 
 
 def _custom_provider_extra_headers(base_url) -> Dict[str, str]:
@@ -477,7 +499,7 @@ def build_anthropic_client(api_key, base_url: str = None, timeout: float = None,
     if style == "kimi":
         headers = {**_attribution_headers(), **headers}
     elif style == "oauth":
-        headers["user-agent"] = f"claude-code/{_get_claude_code_version()} (external, cli)"
+        headers["User-Agent"] = f"claude-code/{_get_claude_code_version()} (external, cli)"
         headers["x-app"] = "cli"
     if _is_opencode_endpoint(base_url):
         # OpenCode identifies clients by request headers (like OpenRouter). The OpenAI-wire paths

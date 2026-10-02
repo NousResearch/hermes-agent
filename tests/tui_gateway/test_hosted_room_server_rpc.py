@@ -138,6 +138,8 @@ def test_local_approval_snapshot_and_response_use_exact_request():
         session_id="runtime",
         request_id="approval-1",
         choice="once",
+        expected_task_id="task-a",
+        expected_execution_generation=2,
     ) == {"resolved": 1}
     params = next(params for method, params in calls if method == "approval.respond")
     assert params == {
@@ -145,6 +147,8 @@ def test_local_approval_snapshot_and_response_use_exact_request():
         "request_id": "approval-1",
         "choice": "once",
         "all": False,
+        "expected_hosted_task_id": "task-a",
+        "expected_hosted_execution_generation": 2,
     }
 
 

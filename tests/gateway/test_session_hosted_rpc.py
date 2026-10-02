@@ -279,9 +279,23 @@ def test_controls_are_exact_current_admission_and_loop_safe(owner):
     assert pending['request_id'] == 'approve-me'
     assert pending['choices'] == ['once', 'deny']
     with pytest.raises(RuntimeStoreError, match='invalid_params'):
-        rpc.approve(session_id=sid, request_id='approve-me', choice='always')
+        rpc.approve(session_id=sid, request_id='approve-me', choice='always',
+            expected_task_id='task', expected_execution_generation=1)
     assert not answers
-    assert rpc.approve(session_id=sid, request_id='approve-me', choice='once')['status'] == 'resolved'
+    for choice in ('once', 'deny'):
+        for change in ({'expected_task_id': 'other'}, {'expected_execution_generation': 2}):
+            with pytest.raises(RuntimeStoreError, match='stale_generation'):
+                rpc.approve(**(dict(session_id=sid, request_id='approve-me', choice=choice,
+                    expected_task_id='task', expected_execution_generation=1) | change))
+    for generation in (None, True, 0):
+        with pytest.raises(RuntimeStoreError, match='invalid_params'):
+            rpc.approve(session_id=sid, request_id='approve-me', choice='once',
+                expected_task_id='task', expected_execution_generation=generation)
+    with pytest.raises(RuntimeStoreError, match='invalid_params'):
+        rpc._call('approve', session_id=sid, request_id='approve-me', choice='once')
+    assert not answers
+    assert rpc.approve(session_id=sid, request_id='approve-me', choice='once',
+        expected_task_id='task', expected_execution_generation=1)['status'] == 'resolved'
     assert answers == [('approval', 'approve-me', 'once')]
     with pytest.raises(RuntimeStoreError, match='stale_generation'):
         rpc.interrupt(**coords, session_id=sid, expected_task_id='other')
@@ -292,7 +306,8 @@ def test_controls_are_exact_current_admission_and_loop_safe(owner):
     # The request alone does not end the turn: the admission is still running.
     assert rpc.info(**coords, session_id=sid)['status'] == 'started'
     with pytest.raises(RuntimeStoreError):
-        rpc.approve(session_id=sid, request_id='missing', choice='once')
+        rpc.approve(session_id=sid, request_id='missing', choice='once',
+            expected_task_id='task', expected_execution_generation=1)
     async def same_loop():
         with pytest.raises(RuntimeStoreError, match='invalid_params'):
             rpc.info(**coords, session_id=sid)

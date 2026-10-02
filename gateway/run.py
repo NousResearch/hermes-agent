@@ -2168,6 +2168,7 @@ from gateway.delivery import DeliveryRouter
 from gateway.turn_lease import SessionTurnLeaseRegistry
 from gateway.session_state import SessionState, legacy_dict_property, legacy_lease_token_property
 from gateway.authz_mixin import GatewayAuthorizationMixin
+from gateway.run_source_profiles import GatewaySourceProfilesMixin
 from gateway.kanban_watchers import GatewayKanbanWatchersMixin
 from gateway.slash_commands import GatewaySlashCommandsMixin
 from gateway.run_voice import GatewayVoiceMixin
@@ -3351,7 +3352,7 @@ def _instantiate_builtin_adapter(platform: Platform, config: Any) -> Optional[Ba
 
 
 class GatewayRunner(
-    GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, GatewaySlashCommandsMixin,
+    GatewayAuthorizationMixin, GatewaySourceProfilesMixin, GatewayKanbanWatchersMixin, GatewaySlashCommandsMixin,
     GatewayVoiceMixin, GatewayAdapterLifecycleMixin, GatewayTopicThreadsMixin, GatewayTurnMixin,
     GatewayShutdownMixin, GatewayBusySessionMixin, GatewayConfigLoadersMixin, GatewayStartupMixin,
     GatewaySessionWatchersMixin, GatewayNotificationsMixin, GatewayInboundMixin, GatewayGoalsMixin,
@@ -4432,41 +4433,6 @@ class GatewayRunner(
             getattr(source, "thread_id", None), getattr(source, "parent_chat_id", None))
         return None
 
-    def _resolve_profile_home_for_source(self, source: SessionSource) -> Path:
-        """Resolve which profile's HERMES_HOME serves this source: the pinned identity's runtime
-        home, else ``source.profile``, then ``_profile_name_for_source`` (sources bypassing
-        ``build_source``), then the active profile."""
-        from gateway.profile_routing import ProfileRouteRejected
-        from gateway.session_identity import identity_of
-        from hermes_cli.profiles import get_active_profile_name, get_profile_dir, profile_exists
-        from hermes_constants import get_hermes_home
-        identity = identity_of(source)
-        if identity is not None:
-            return identity.runtime_home
-        explicit_profile = None  # explicitly requested (source or routing) vs. default fallback
-        try:
-            name = (source.profile or "").strip() or self._profile_name_for_source(source)
-            explicit_profile = name or None
-            if not name:
-                name = get_active_profile_name() or "default"
-            profile_dir = get_profile_dir(name)
-            if explicit_profile and not profile_exists(name):
-                logger.warning(
-                    "Profile %r does not exist for source %s/%s (guild_id=%s), "
-                    "falling back to global HERMES_HOME",
-                    explicit_profile, source.platform.value, source.chat_id,
-                    getattr(source, "guild_id", None))
-                return get_hermes_home()
-            return profile_dir
-        except ProfileRouteRejected:
-            raise
-        except Exception:
-            logger.warning(
-                "Failed to resolve profile directory for source %s/%s (guild_id=%s), "
-                "falling back to global HERMES_HOME: %s",
-                source.platform.value, source.chat_id, getattr(source, "guild_id", None),
-                explicit_profile or "(no profile)", exc_info=True)
-            return get_hermes_home()
 
     @dataclasses.dataclass
     class _RunAgentDisplay:

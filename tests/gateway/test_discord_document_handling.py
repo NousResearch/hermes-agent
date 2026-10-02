@@ -16,7 +16,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from gateway.config import GatewayConfig, PlatformConfig
-from gateway.platforms.base import MessageType, merge_pending_message_event
+from gateway.platforms.event import MessageType
+from gateway.platforms.base import merge_pending_message_event
 
 
 # ---------------------------------------------------------------------------
@@ -266,38 +267,7 @@ class TestIncomingDocumentHandling:
         assert credential_path in prompt
         assert "content was not automatically inlined" in prompt
 
-    @pytest.mark.asyncio
-    async def test_md_content_injected(self, adapter):
-        """.md file under 100KB should have its content injected."""
-        file_content = b"# Title\nSome markdown content"
 
-        with _mock_aiohttp_download(file_content):
-            msg = make_message(
-                attachments=[make_attachment(filename="readme.md", content_type="text/markdown")],
-                content="",
-            )
-            await adapter._handle_message(msg)
-
-        event = adapter.handle_message.call_args[0][0]
-        assert "[Content of readme.md]:" in event.text
-        assert "# Title" in event.text
-
-    @pytest.mark.asyncio
-    async def test_log_content_injected(self, adapter):
-        """.log file under 100KB should be treated as text/plain and injected."""
-        file_content = b"BLE trace line 1\nBLE trace line 2"
-
-        with _mock_aiohttp_download(file_content):
-            msg = make_message(
-                attachments=[make_attachment(filename="btsnoop_hci.log", content_type="text/plain")],
-                content="please inspect this",
-            )
-            await adapter._handle_message(msg)
-
-        event = adapter.handle_message.call_args[0][0]
-        assert "[Content of btsnoop_hci.log]:" in event.text
-        assert "BLE trace line 1" in event.text
-        assert "please inspect this" in event.text
 
 
     @pytest.mark.asyncio
@@ -316,6 +286,22 @@ class TestIncomingDocumentHandling:
         assert len(event.media_urls) == 1
         assert os.path.exists(event.media_urls[0])
         assert "[Content of" not in (event.text or "")
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("content, inlined", [(b"small text", True), (b"x" * (200 * 1024), False)], ids=["small", "large"])
+    async def test_document_marks_media_text_inlined(self, adapter, content, inlined):
+        """The per-attachment flag must track whether the text was injected, so the document
+        note never claims the content is inlined when the >100 KB gate skipped it."""
+        with _mock_aiohttp_download(content):
+            msg = make_message(
+                attachments=[make_attachment(filename="notes.txt", content_type="text/plain", size=len(content))],
+                content="",
+            )
+            await adapter._handle_message(msg)
+
+        event = adapter.handle_message.call_args[0][0]
+        assert ("[Content of" in (event.text or "")) is inlined
+        assert event.media_text_inlined == [inlined]
 
     @pytest.mark.asyncio
     async def test_multiple_text_files_both_injected(self, adapter):

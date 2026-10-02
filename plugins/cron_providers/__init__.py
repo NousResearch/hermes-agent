@@ -24,7 +24,7 @@ def _is_cron_provider_dir(path: Path) -> bool:
     if not init_file.exists():
         return False
     try:
-        source = init_file.read_text(errors="replace", encoding="utf-8")[:8192]
+        source = init_file.read_text(errors="replace", encoding="utf-8-sig")[:8192]
         return "register_cron_scheduler" in source or "CronScheduler" in source
     except Exception:
         return False
@@ -94,12 +94,3 @@ class _ProviderCollector(_loader.NoopPluginContext):
 
     def register_cron_scheduler(self, provider):
         self.provider = provider
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-import importlib.util  # noqa: F401,E402
-import sys  # noqa: F401,E402
-# ---- END PLUGIN-COMPAT ----

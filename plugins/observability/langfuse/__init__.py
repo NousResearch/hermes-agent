@@ -2,7 +2,7 @@
 
 Activated via ``plugins.enabled``; hooks are inert without the ``langfuse`` SDK
 and credentials. Env: HERMES_LANGFUSE_PUBLIC_KEY / SECRET_KEY (required),
-BASE_URL, ENV, RELEASE, SAMPLE_RATE, MAX_CHARS (12000), DEBUG, and CAPTURE =
+BASE_URL, ENV, RELEASE, SAMPLE_RATE, MAX_CHARS (12000), MAX_DEPTH (4), DEBUG, and CAPTURE =
 metadata (sizes/ids/usage only) | sanitized (default: secret redaction +
 truncation) | full (truncated raw content). See README.md.
 """
@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import atexit
 import contextlib
+import functools
 import json
 import logging
 import os
@@ -52,6 +53,10 @@ _TRACE_STATE: Dict[str, TraceState] = {}
 # Bounds the leak, not concurrency.
 _MAX_TRACE_STATE = 256
 _LANGFUSE_CLIENT = None
+# Under a multiplexed profile override, one settled client (or _INIT_FAILED) per Hermes home: the
+# keys live in each profile's .env, so a single slot would trace profile B into profile A's project
+# (or pin B to A's failed init). The slot above stays for the unscoped single-profile path.
+_LANGFUSE_CLIENT_BY_HOME: Dict[str, Any] = {}
 # Separate from _STATE_LOCK (hot path) so the two never nest; serializes the
 # first client build so racing callers can't each construct a client.
 _LANGFUSE_CLIENT_LOCK = threading.Lock()
@@ -81,6 +86,15 @@ _USAGE_FIELDS = (
 
 def _env(name: str, default: str = "") -> str:
     return os.environ.get(name, default).strip()
+
+
+def _secret(name: str) -> str:
+    """Credential read through the profile secret scope. A scope-less multiplex caller raises
+    (``UnscopedSecretError``): that is a spawn-site bug, and reading ``os.environ`` instead would
+    ship this profile's traces with the DEFAULT profile's keys."""
+    from agent.secret_scope import get_secret
+
+    return (get_secret(name) or "").strip()
 
 
 def _debug(message: str) -> None:
@@ -181,24 +195,48 @@ def _validate_langfuse_key(env_name: str, value: str) -> Optional[str]:
     return f"{env_name}={preview} (expected {expected!r} prefix)"
 
 
+def _settled_client() -> Any:
+    """The active profile's settled client slot value (client, ``_INIT_FAILED`` or ``None`` = never
+    built). Never initializes."""
+    from hermes_constants import get_hermes_home_override, hermes_home_key
+
+    if get_hermes_home_override() is None:
+        return _LANGFUSE_CLIENT
+    return _LANGFUSE_CLIENT_BY_HOME.get(hermes_home_key())
+
+
+def _settle_client() -> Any:
+    """Build once and store for the active profile. Caller holds ``_LANGFUSE_CLIENT_LOCK``."""
+    global _LANGFUSE_CLIENT
+    from hermes_constants import get_hermes_home_override, hermes_home_key
+
+    client = _build_client()
+    settled = _INIT_FAILED if client is None else client
+    if get_hermes_home_override() is None:
+        _LANGFUSE_CLIENT = settled
+    else:
+        _LANGFUSE_CLIENT_BY_HOME[hermes_home_key()] = settled
+    if client is not None:
+        # atexit is LIFO: registering AFTER the SDK's constructor means our
+        # finalizer runs first, so root spans ended there still get flushed
+        # by the SDK (short-lived processes: kanban workers, chat -q, cron).
+        atexit.register(_finalize_all_traces)
+    return settled
+
+
 def _get_langfuse() -> Optional[Langfuse]:
     """Cached Langfuse client, or ``None`` if the SDK/credentials are unavailable.
     The first build is serialized so racing callers can't each construct a client
     and leak the loser's HTTP connection + flush thread."""
-    global _LANGFUSE_CLIENT
     # Fast path — already settled (success or _INIT_FAILED) needs no lock;
     # re-check under it since a racing thread may have finished init.
-    if _LANGFUSE_CLIENT is None:
+    settled = _settled_client()
+    if settled is None:
         with _LANGFUSE_CLIENT_LOCK:
-            if _LANGFUSE_CLIENT is None:
-                client = _build_client()
-                _LANGFUSE_CLIENT = _INIT_FAILED if client is None else client
-                if client is not None:
-                    # atexit is LIFO: registering AFTER the SDK's constructor means our
-                    # finalizer runs first, so root spans ended there still get flushed
-                    # by the SDK (short-lived processes: kanban workers, chat -q, cron).
-                    atexit.register(_finalize_all_traces)
-    return None if _LANGFUSE_CLIENT is _INIT_FAILED else _LANGFUSE_CLIENT
+            settled = _settled_client()
+            if settled is None:
+                settled = _settle_client()
+    return None if settled is _INIT_FAILED else settled
 
 
 def _build_client() -> Optional[Langfuse]:
@@ -211,7 +249,7 @@ def _build_client() -> Optional[Langfuse]:
         )
         return None
 
-    public_key, secret_key = (_env(f"HERMES_LANGFUSE_{n}") or _env(f"LANGFUSE_{n}") for n in ("PUBLIC_KEY", "SECRET_KEY"))
+    public_key, secret_key = (_secret(f"HERMES_LANGFUSE_{n}") or _secret(f"LANGFUSE_{n}") for n in ("PUBLIC_KEY", "SECRET_KEY"))
     if not (public_key and secret_key):
         return None
 
@@ -234,10 +272,10 @@ def _build_client() -> Optional[Langfuse]:
     kwargs: Dict[str, Any] = {"public_key": public_key, "secret_key": secret_key}
     for key, name, default in (("base_url", "BASE_URL", "https://cloud.langfuse.com"), ("environment", "ENV", ""),
                                ("release", "RELEASE", "")):
-        value = _env(f"HERMES_LANGFUSE_{name}") or _env(f"LANGFUSE_{name}") or default
+        value = _secret(f"HERMES_LANGFUSE_{name}") or _secret(f"LANGFUSE_{name}") or default
         if value:
             kwargs[key] = value
-    sample_rate = _env("HERMES_LANGFUSE_SAMPLE_RATE")
+    sample_rate = _secret("HERMES_LANGFUSE_SAMPLE_RATE")
     if sample_rate:
         try:
             kwargs["sample_rate"] = float(sample_rate)
@@ -346,16 +384,33 @@ def _normalize_payload(value: Any, *, tool_name: str = "", args: Any = None) -> 
     return normalized
 
 
+@functools.lru_cache(maxsize=8)
+def _resolve_max_depth(configured_depth: str) -> int:
+    """Parse ``HERMES_LANGFUSE_MAX_DEPTH``; an invalid value warns ONCE per distinct value.
+    Cached on the raw string (not at import) so a long-lived process still picks up a changed
+    env var, while a bad value no longer logs one warning per captured prompt/tool payload."""
+    try:
+        max_depth = int(configured_depth)
+        if max_depth < 0:
+            raise ValueError
+        return max_depth
+    except ValueError:
+        logger.warning("Invalid HERMES_LANGFUSE_MAX_DEPTH=%r; use a non-negative integer. Falling back to 4.", configured_depth)
+        return 4
+
+
 def _safe_value(value: Any, *, max_chars: Optional[int] = None, depth: int = 0,
-                parse_json_strings: bool = False) -> Any:
+                parse_json_strings: bool = False, max_depth: Optional[int] = None) -> Any:
     max_chars = max_chars if max_chars is not None else int(_env("HERMES_LANGFUSE_MAX_CHARS", "12000") or "12000")
-    if depth > 4:
+    if max_depth is None:
+        max_depth = _resolve_max_depth(_env("HERMES_LANGFUSE_MAX_DEPTH", "4") or "4")
+    if depth > max_depth:
         return "<max-depth>"
     if value is None or isinstance(value, (int, float, bool)):
         return value
     if isinstance(value, bytes):
         return {"type": "bytes", "len": len(value)}
-    recurse = lambda v, d: _safe_value(v, max_chars=max_chars, depth=d, parse_json_strings=parse_json_strings)  # noqa: E731
+    recurse = lambda v, d: _safe_value(v, max_chars=max_chars, depth=d, parse_json_strings=parse_json_strings, max_depth=max_depth)  # noqa: E731
     if isinstance(value, str):
         parsed = _maybe_parse_json_string(value) if parse_json_strings else value
         return recurse(parsed, depth) if parsed is not value else _truncate_text(value, max_chars)
@@ -596,7 +651,12 @@ def _finalize_all_traces() -> None:
             _end_children(state, include_subagents=True)
             _end_root(state, f"atexit finalize for {key}")
     if states:
-        _flush(_get_langfuse())
+        # atexit runs with NO profile scope, so it must never build a client (a credential read
+        # here raises UnscopedSecretError under multiplex and would skip every flush). Flush only
+        # the clients that settled during the run — the launch profile's slot plus one per home.
+        for client in (_LANGFUSE_CLIENT, *_LANGFUSE_CLIENT_BY_HOME.values()):
+            if client is not None and client is not _INIT_FAILED:
+                _flush(client)
 
 
 def _flush(client: Any) -> None:
@@ -909,7 +969,7 @@ def on_session_finalize(*, session_id: str = "", reason: str = "", **_: Any) -> 
     tool-only or empty final response never reaches ``_finish_trace``; its root
     would dangle until eviction and queued events could be lost on exit."""
     # Never lazily initialize a client here — if init never happened there are no traces.
-    client = _LANGFUSE_CLIENT
+    client = _settled_client()
     if client is None or client is _INIT_FAILED or not hasattr(client, "flush"):
         return
 

@@ -26,6 +26,7 @@ import urllib.request
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from agent.proxy_bypass import is_loopback_host
 from hermes_constants import get_hermes_home
 
 logger = logging.getLogger(__name__)
@@ -356,7 +357,7 @@ def _last_used_profile(src: str) -> str:
     """Profile dir Chrome last used (``Local State`` → profile.last_used), else ``Default``. The
     signed-in session usually lives in the profile actually browsed (``Profile 6``), not Default."""
     try:
-        with open(os.path.join(src, "Local State"), encoding="utf-8", errors="replace") as fh:
+        with open(os.path.join(src, "Local State"), encoding="utf-8-sig", errors="replace") as fh:
             state = json.load(fh)
         last = ((state.get("profile") or {}).get("last_used")) or "Default"
     except (OSError, ValueError, AttributeError):
@@ -390,44 +391,80 @@ def _secure_snapshot(path: str, *, contents: bool = False) -> None:
 # exclusive lock, so a raw copy raises WinError 32 and a best-effort skip leaves the copy
 # signed-out. They are copied via SQLite's online-backup API instead. Matched by basename.
 _SQLITE_AUTH_DBS = frozenset({"Cookies", "Login Data", "Login Data For Account", "Web Data"})
+# Budget for one auth DB's online backup. A running browser holds Login Data / Login Data For
+# Account / Web Data with a hot write lock, so backup makes no progress and this deadline is
+# what fails — the reason users see, so it is a named constant rather than a bare string.
+_AUTH_BACKUP_DEADLINE_S = 5.0
+_AUTH_DB_LOCKED = ("SQLite backup made no progress within five seconds — "
+                   "a running browser holds a write lock on it")
 
 
-def _copy_auth_file(src_file: str, dst_file: str) -> bool:
-    """Copy one auth file, lock-aware; True on success. SQLite DBs use the online-backup API (works
-    under a Windows write lock), falling through to a raw copy; failure only if BOTH fail."""
+def _copy_auth_file(src_file: str, dst_file: str) -> str | None:
+    """Copy auth state; returns None on success, else WHY the file could not be snapshotted.
+    A DB that cannot be backed up consistently within the deadline is refused, never raw-copied."""
     os.makedirs(os.path.dirname(dst_file), exist_ok=True)
-    if os.path.basename(src_file) in _SQLITE_AUTH_DBS:
-        # With a live Chrome on macOS, mode=ro WITHOUT immutable=1 can hang connect/backup
-        # forever (blocked inside lock negotiation, so the busy-timeout never fires).
-        # immutable=1 reads instantly and is correct: we want a committed snapshot, not
-        # coordinated writes. A torn read raises → next mode, then the plain-copy fallback.
-        for uri in (f"file:{src_file}?mode=ro&immutable=1", f"file:{src_file}?mode=ro"):
-            try:
-                # Short busy timeout so a truly wedged DB fails fast rather than hanging.
-                with contextlib.closing(sqlite3.connect(uri, uri=True, timeout=5)) as source:
-                    with contextlib.closing(sqlite3.connect(dst_file)) as out, out:
-                        source.backup(out)
-                return True
-            except Exception as e:
-                logger.debug("real-profile: sqlite-backup of %s failed (%s); trying next mode",
-                             src_file, e)
     try:
-        shutil.copy2(src_file, dst_file)
-        return True
-    except OSError as e:
+        if os.path.basename(src_file) in _SQLITE_AUTH_DBS:
+            deadline = time.monotonic() + _AUTH_BACKUP_DEADLINE_S
+            last_remaining: list[int | None] = [None]
+
+            def check_deadline(_status: int, remaining: int, total: int) -> None:
+                # A held write lock makes every step fail with ``remaining`` unchanged; a
+                # large DB on a slow disk keeps shrinking it. Only the former is "locked" —
+                # the all-locked message tells the user to quit the browser.
+                before = total if last_remaining[0] is None else last_remaining[0]
+                last_remaining[0] = remaining
+                if _status != sqlite3.SQLITE_DONE and time.monotonic() >= deadline:
+                    if remaining < before:
+                        raise TimeoutError(f"SQLite backup exceeded {_AUTH_BACKUP_DEADLINE_S:g}s "
+                                           "while still making progress")
+                    raise TimeoutError(_AUTH_DB_LOCKED)
+
+            # SQLite must coordinate both ends: immutable ignores committed source WAL,
+            # while replacing only the destination file can replay its abandoned WAL.
+            # Connection busy timeouts do not bound backup's retry loop; its callback does.
+            with contextlib.closing(sqlite3.connect(
+                    Path(src_file).resolve().as_uri() + "?mode=ro", uri=True, timeout=0.0)) as source:
+                with contextlib.closing(sqlite3.connect(dst_file, timeout=0.0)) as out:
+                    source.backup(out, pages=256, progress=check_deadline, sleep=0.1)
+        else:
+            shutil.copy2(src_file, dst_file)
+        return None
+    except (OSError, sqlite3.Error) as e:
+        # A raw DB copy can lose committed WAL or overwrite a locked destination.
         logger.debug("real-profile: could not copy %s: %s", src_file, e)
-        return False
+        return str(e) or type(e).__name__
 
 
-def _mirror_profile_auth(src: str, dst: str, source_profile: str) -> int:
+def _mirror_profile_auth(src: str, dst: str, source_profile: str) -> dict[str, str]:
     """Mirror ``source_profile``'s auth files into the copy's ``Default`` (agent-browser opens it);
-    returns the number of DB auth files that could NOT be copied (0 = clean)."""
-    failed_dbs = 0
+    returns ``{relative name: reason}`` for the DB auth files that could NOT be copied ({} = clean)."""
+    failed: dict[str, str] = {}
     for rel in _AUTH_REFRESH_PROFILE_FILES:
         s = os.path.join(src, source_profile, rel)
-        if os.path.isfile(s) and not _copy_auth_file(s, os.path.join(dst, "Default", rel)):
-            failed_dbs += os.path.basename(rel) in _SQLITE_AUTH_DBS
-    return failed_dbs
+        if not os.path.isfile(s):
+            continue
+        reason = _copy_auth_file(s, os.path.join(dst, "Default", rel))
+        if reason and os.path.basename(rel) in _SQLITE_AUTH_DBS:
+            failed[rel] = reason
+    return failed
+
+
+def _unavailable_auth_dbs_error(browser: str, failed: dict[str, str]) -> str:
+    """Fail-closed message naming WHICH auth databases could not be snapshotted and WHY. On
+    macOS/Linux a running browser typically lets Cookies back up but holds Login Data / Login Data
+    For Account / Web Data with a write lock, so the message must not read as "close the browser"
+    when the real cause is an unreadable file (and vice versa)."""
+    names = ", ".join(failed)
+    if all(reason == _AUTH_DB_LOCKED for reason in failed.values()):
+        return (f"{browser} is running and holds the profile's {names} with a write lock, so their "
+                "SQLite backup made no progress within five seconds. Hermes does not fall back to a "
+                "raw file copy (it could lose committed logins). Fully quit "
+                f"{browser} (including any background instance) and retry, or turn "
+                "browser.use_real_profile off.")
+    details = "; ".join(f"{name}: {reason}" for name, reason in failed.items())
+    return (f"could not read the '{browser}' profile's login data ({details}). "
+            f"Close {browser} and retry, or turn browser.use_real_profile off.")
 
 
 _SNAPSHOT_DONE_MARKER = ".hermes-snapshot-complete"
@@ -569,7 +606,7 @@ def _sync_local_state(src: str, dst: str, source_profile: str) -> None:
         except OSError as e:
             logger.debug("real-profile snapshot: skipped Local State: %s", e)
     try:
-        with open(ls_dst, encoding="utf-8") as fh:
+        with open(ls_dst, encoding="utf-8-sig") as fh:
             state = json.load(fh)
         prof = state.get("profile")
         if isinstance(prof, dict):
@@ -641,7 +678,8 @@ def snapshot_real_profile(browser: str, src: str | None = None) -> tuple[str | N
         return None, resolve_err
     dst = real_profile_copy_dir(browser)
     # Fast lock probe BEFORE any copy: a blocking file op on a Windows-locked cookie DB can
-    # hang the launch for minutes. Never trips on POSIX, so copy-while-running still works.
+    # hang the launch for minutes. Never trips on POSIX; there a running browser surfaces later as
+    # auth DB backups that miss their deadline (``_unavailable_auth_dbs_error``).
     if _profile_is_locked(src, source_profile):
         return None, _locked_profile_error(browser)
     marker = os.path.join(dst, _SNAPSHOT_DONE_MARKER)
@@ -660,9 +698,7 @@ def snapshot_real_profile(browser: str, src: str | None = None) -> tuple[str | N
         # Both paths: lock-aware auth DB copy into Default — also the per-launch re-sync.
         failed_dbs = _mirror_profile_auth(src, dst, source_profile)
         if failed_dbs:  # even online-backup failed: never launch a silently signed-out session
-            return None, (f"could not read the '{browser}' profile's login data ({failed_dbs} "
-                          f"database(s) locked). Close {browser} and retry, or turn "
-                          "browser.use_real_profile off.")
+            return None, _unavailable_auth_dbs_error(browser, failed_dbs)
         # Never carry live-instance leftovers into the copy.
         for leftover in ("SingletonLock", "SingletonSocket", "SingletonCookie"):
             with contextlib.suppress(OSError):
@@ -725,6 +761,135 @@ def chrome_debug_data_dir() -> str:
     return str(get_hermes_home() / "chrome-debug")
 
 
+def _managed_install() -> bool:
+    """True when a package manager (NixOS) owns this install's modes.
+
+    Read once per creation so the *creation* mode honours the same carve-out
+    ``hermes_cli.config._secure_dir`` applies to reconciliation. Import is
+    local and failure means "not managed": an unimportable config module is
+    the single-user source-install case, where 0700 is the right default.
+    """
+    try:
+        from hermes_cli.config import is_managed
+
+        return bool(is_managed())
+    except Exception:  # pragma: no cover - defensive
+        return False
+
+
+def _ensure_chrome_debug_data_dir(data_dir: str) -> None:
+    """Create the Chromium user-data-dir owner-only (0700), except managed.
+
+    ``chrome-debug`` is a real Chromium profile: Cookies, Login Data, and
+    Local Storage live here. Created with a bare ``os.makedirs`` it inherits
+    the umask and lands 0755, so every other local account could list and
+    read those stores. ``HERMES_HOME`` is 0700 by default, which contains the
+    damage — but the documented ``HERMES_HOME_MODE=0701`` hatch (so nginx can
+    traverse to a served subdirectory) makes a 0755 child genuinely
+    world-readable.
+
+    The mode is passed to ``os.makedirs`` so it is set *at creation* — no
+    window where the profile sits world-readable before a follow-up chmod.
+    Policy is then reconciled by ``hermes_cli.config._secure_dir``, the house
+    helper, rather than a hand-rolled chmod: it skips managed/NixOS installs,
+    honours ``HERMES_HOME_MODE``, and applies ``HERMES_UID``/``HERMES_GID``
+    ownership so a root-created dir does not lock out uid-mapped Docker
+    workers (#34107).
+
+    **Managed installs are skipped at creation too, not just at
+    reconciliation.** ``_secure_dir`` returns early under ``is_managed()``
+    because the NixOS module deliberately shares state group-wise, and
+    ``chrome-debug`` is *not* one of the directories its ``systemd.tmpfiles``
+    rules pre-create — it is made lazily at runtime, so a hardcoded 0700 here
+    would be the only thing setting its mode and would silently override that
+    design. On such a host the gateway and a hostUsers CLI share one
+    ``$HERMES_HOME`` through the hermes group, so a 0700 profile created by
+    whichever ran first locks the other out of the browser entirely.
+    Omitting the explicit mode there lets the inherited setgid + umask decide,
+    matching ``ensure_hermes_home``'s managed branch.
+
+    Reconciling unconditionally also heals a profile an older Hermes left at
+    0755, which is the whole point — the exposure is on disk already. It is
+    safe against a *running* browser: only group/other bits are dropped, the
+    owner keeps ``rwx``, and POSIX checks the mode at ``open()`` rather than
+    on already-open descriptors, so an attached Chromium keeps reading and
+    writing its profile. On Windows POSIX mode bits are advisory (``chmod``
+    only toggles the read-only flag), so this is best-effort there.
+    """
+    if _managed_install():
+        # Managed mode: the NixOS-configured umask/setgid owns the mode, and
+        # _secure_dir would no-op here anyway.
+        os.makedirs(data_dir, exist_ok=True)
+        return
+    os.makedirs(data_dir, mode=0o700, exist_ok=True)
+    try:
+        from hermes_cli.config import _secure_dir
+
+        _secure_dir(data_dir)
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.debug("browser debug launch: profile dir chmod skipped: %s", exc)
+
+
+def _open_launch_stderr_log(path: str):
+    """Open the launch stderr log owner-only (0600), truncating as before.
+
+    Opened with a plain ``open(path, "wb")`` this lands 0644 under a default
+    umask — a fixed, guessable name inside the profile dir hardened just
+    above. Under ``HERMES_HOME_MODE=0701`` the directory is traversable but
+    unlistable, so a predictable filename is exactly the case that stays
+    reachable; the uuid-named files elsewhere in the profile do not.
+
+    Two halves, covering different installs:
+
+    * **At creation** the mode is passed to ``os.open``, so the file is never
+      briefly group/other-readable. ``O_TRUNC`` keeps the existing
+      per-candidate overwrite semantics.
+    * **On an already-existing log** ``O_CREAT`` applies ``mode`` only to a
+      file it actually creates, so the inode keeps whatever it had. An older
+      Hermes left this file at 0644 on disk, so creation-time hardening alone
+      would leave every *upgrading* install exposed at the one path in this
+      change with a guessable name. ``hermes_cli.config._secure_file``
+      reconciles it, for the same reason ``_ensure_chrome_debug_data_dir``
+      delegates to ``_secure_dir``: that helper is the single owner of the
+      owner-only file policy — it skips managed/NixOS installs and containers
+      and is where Windows ACL enforcement lands (#77527). Ordering: the
+      reconcile runs *after* the truncating open and *before* any bytes are
+      written, so the tighten lands while the file is empty.
+
+    The managed/NixOS carve-out applies at creation here too — the same defect
+    the profile directory had. This log is created lazily at runtime and is
+    not covered by the module's ``systemd.tmpfiles`` rules; the gateway and an
+    interactive ``hostUsers`` CLI share one ``$HERMES_HOME`` at two uids
+    through the hermes group, and a 0600 log created by whichever ran first
+    makes the other's truncating open fail with ``EACCES`` — and because every
+    candidate binary reuses this one path, that fails *the whole launch*.
+    There the inherited ``UMask = "0007"`` decides, like the merge base's
+    plain ``open()``.
+    """
+    managed = _managed_install()
+    # 0o666 rather than 0o600 on managed installs so the configured umask
+    # decides, matching the merge base's plain open() and the carve-out
+    # _ensure_chrome_debug_data_dir applies to the directory.
+    create_mode = 0o666 if managed else 0o600
+    flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC
+    try:
+        fd = os.open(path, flags, create_mode)
+    except OSError:
+        # Same fallback the pre-fix code had: let a genuinely unopenable path
+        # surface to launch_chrome_debug's per-candidate handler.
+        handle = open(path, "wb")
+    else:
+        handle = os.fdopen(fd, "wb")
+    if not managed:
+        try:
+            from hermes_cli.config import _secure_file
+
+            _secure_file(path)
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.debug("browser debug launch: stderr log chmod skipped: %s", exc)
+    return handle
+
+
 def _chrome_debug_args(port: int) -> list[str]:
     return [f"--remote-debugging-port={port}", f"--user-data-dir={chrome_debug_data_dir()}",
             "--no-first-run", "--no-default-browser-check"]
@@ -751,9 +916,12 @@ def is_browser_debug_ready(url: str, timeout: float = 1.0) -> bool:
     if scheme not in {"http", "https"} or not parsed.netloc:
         return False
     root = f"{scheme}://{parsed.netloc}".rstrip("/")
+    # Loopback readiness must not route through getproxies() (env or macOS system proxy, #110565).
+    handlers = [urllib.request.ProxyHandler({})] if is_loopback_host(parsed.hostname) else []
+    opener = urllib.request.build_opener(*handlers)
     for probe in (f"{root}/json/version", f"{root}/json"):
         try:
-            with urllib.request.urlopen(probe, timeout=timeout) as resp:
+            with opener.open(probe, timeout=timeout) as resp:
                 if 200 <= getattr(resp, "status", 200) < 300:
                     return True
         except Exception:
@@ -892,11 +1060,11 @@ def launch_chrome_debug(
         return result
 
     data_dir = chrome_debug_data_dir()
-    os.makedirs(data_dir, exist_ok=True)
+    _ensure_chrome_debug_data_dir(data_dir)
     stderr_path = os.path.join(data_dir, _LAUNCH_STDERR_LOG)
     for candidate in candidates:
         try:
-            with open(stderr_path, "wb") as stderr_file:
+            with _open_launch_stderr_log(stderr_path) as stderr_file:
                 proc = subprocess.Popen(
                     [candidate, *_chrome_debug_args(port)],
                     stdout=subprocess.DEVNULL, stderr=stderr_file, **_detach_kwargs(system))
@@ -920,13 +1088,3 @@ def launch_chrome_debug(
             candidate, attempt.returncode, port,
             f"; stderr tail: {attempt.stderr_tail}" if attempt.stderr_tail else "")
     return result
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-
-def try_launch_chrome_debug(port: int = DEFAULT_BROWSER_CDP_PORT, system: str | None = None) -> bool:
-    return launch_chrome_debug(port, system).launched
-# ---- END PLUGIN-COMPAT ----

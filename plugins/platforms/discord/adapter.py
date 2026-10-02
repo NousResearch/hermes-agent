@@ -1080,6 +1080,7 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         self._client: Optional[commands.Bot] = None
         self._ready_event = asyncio.Event()
         self._allowed_user_ids: set = set()  # For button approval authorization
+        self._username_resolved_ids: set = set()  # IDs resolved from username entries (gateway authz union)
         self._allowed_role_ids: set = set()  # For DISCORD_ALLOWED_ROLES filtering
         # Gate env snapshot captured in connect() inside the owning profile's scope; None until then.
         # None until then; accessors fall back to live scope-aware reads (issue #72348).
@@ -4334,6 +4335,7 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             return
         numeric_ids = set()
         to_resolve = set()
+        self._username_resolved_ids = set()
         for entry in self._allowed_user_ids:
             if entry.isdigit():
                 numeric_ids.add(entry)
@@ -4361,6 +4363,7 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                 if name_lower in to_resolve:
                     uid = str(member.id)
                     numeric_ids.add(uid)
+                    self._username_resolved_ids.add(uid)
                     resolved_count += 1
                     to_resolve.discard(name_lower)
                     print(f"[{self.name}] Resolved '{name_lower}' -> {uid} ({member.name}#{member.discriminator})")
@@ -4962,9 +4965,12 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
     def resolved_allowlist_user_ids(self) -> set:
         """Numeric IDs from connect-time username resolution.
         The env mirror of ``_allowed_user_ids`` doesn't survive the per-turn .env hot-reload, so the
-        gateway authz layer unions these in. Numeric only: passing "*" through would widen access."""
-        allowed = getattr(self, "_allowed_user_ids", None) or set()
-        return {str(uid) for uid in allowed if str(uid).isdigit()}
+        gateway authz layer unions these in. Only IDs resolved from username entries: numeric entries
+        are read live from the reloaded env, so one removed there (``hermes pairing revoke``, a hand
+        edit) must not stay authorized from this connect-time snapshot until restart. Numeric only:
+        passing "*" through would widen access."""
+        resolved = getattr(self, "_username_resolved_ids", None) or set()
+        return {str(uid) for uid in resolved if str(uid).isdigit()}
 
     def _discord_allow_all_users(self) -> bool:
         """Per-profile DISCORD_ALLOW_ALL_USERS flag."""

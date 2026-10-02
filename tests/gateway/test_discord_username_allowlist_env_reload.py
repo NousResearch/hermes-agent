@@ -142,7 +142,8 @@ class TestDiscordAdapterResolvedAccessor:
         from plugins.platforms.discord.adapter import DiscordAdapter
 
         adapter = object.__new__(DiscordAdapter)
-        adapter._allowed_user_ids = allowed_ids
+        adapter._allowed_user_ids = set(allowed_ids)
+        adapter._username_resolved_ids = set(allowed_ids)
         return adapter
 
     def test_returns_numeric_ids_as_strings(self):
@@ -158,3 +159,49 @@ class TestDiscordAdapterResolvedAccessor:
         gateway layer to allow-everyone from adapter memory alone."""
         adapter = self._adapter({"teknium", "*", OPERATOR_ID})
         assert adapter.resolved_allowlist_user_ids() == {OPERATOR_ID}
+
+PAIRED_ID = "111222333444555666"
+
+def _resolved_discord_adapter(entries, members):
+    """A real DiscordAdapter after connect: ``_allowed_user_ids`` holds the env entries and
+    ``_resolve_allowed_usernames`` runs against fake guild members."""
+    import asyncio
+
+    from plugins.platforms.discord.adapter import DiscordAdapter
+
+    adapter = object.__new__(DiscordAdapter)
+    adapter.platform = Platform.DISCORD
+    adapter._allowed_user_ids = set(entries)
+    adapter._username_resolved_ids = set()
+    guild = SimpleNamespace(name="g", members=members, member_count=len(members))
+    adapter._client = SimpleNamespace(guilds=[guild])
+    asyncio.run(adapter._resolve_allowed_usernames())
+    return adapter
+
+def _member(uid, name):
+    return SimpleNamespace(id=int(uid), name=name, display_name=name, global_name=None, discriminator="0")
+
+class TestRemovedNumericEntryIsNotResurrected:
+    """A numeric entry removed from DISCORD_ALLOWED_USERS after connect (``hermes pairing revoke``
+    from the CLI/dashboard process, or a hand edit) must stop authorizing once the env reloads,
+    not stay granted from the adapter's connect-time snapshot until a gateway restart."""
+
+    def test_revoked_paired_id_denied_after_env_reload(self, monkeypatch):
+        adapter = _resolved_discord_adapter(
+            {"teknium", PAIRED_ID}, [_member(OPERATOR_ID, "teknium")])
+        runner = _make_runner(adapter)
+        monkeypatch.setenv("DISCORD_ALLOWED_USERS", f"teknium,{PAIRED_ID}")
+        assert runner._is_user_authorized(_discord_source(PAIRED_ID)) is True
+        # Revoke wrote the file without PAIRED_ID; the per-turn reload restored it into the env.
+        monkeypatch.setenv("DISCORD_ALLOWED_USERS", "teknium")
+        assert runner._is_user_authorized(_discord_source(PAIRED_ID)) is False
+        # The username-resolved operator is still carried across the reload.
+        assert runner._is_user_authorized(_discord_source()) is True
+
+    def test_numeric_only_allowlist_snapshot_grants_nothing(self, monkeypatch):
+        adapter = _resolved_discord_adapter({OPERATOR_ID, PAIRED_ID}, [])
+        assert adapter.resolved_allowlist_user_ids() == set()
+        monkeypatch.setenv("DISCORD_ALLOWED_USERS", OPERATOR_ID)
+        runner = _make_runner(adapter)
+        assert runner._is_user_authorized(_discord_source(PAIRED_ID)) is False
+        assert runner._is_user_authorized(_discord_source()) is True

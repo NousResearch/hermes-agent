@@ -647,7 +647,7 @@ class HostedRoomRuntime:
                 getattr(exc, "dispatch_not_attempted", False) is True
                 and task.get("status") == "queued"
                 and task.get("execution_generation") == attempt.execution_generation - 1)
-            if submit_attempted and (
+            if submit_attempted and not bool(getattr(exc, "ambiguous", False)) and (
                     bool(getattr(exc, "not_admitted", False)) or fresh_preflight_failure):
                 deferred = None
                 try:

@@ -122,3 +122,32 @@ def test_cmd_status_memory_tool_gate_enabled(capsys, monkeypatch):
     assert re.search(r"Memory tool:\s+enabled", captured)
     assert re.search(r"Memory injection:\s+enabled", captured)
     assert re.search(r"User profile:\s+disabled", captured)
+
+
+def test_cmd_status_distinguishes_installed_provider_load_failure(capsys, monkeypatch):
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config",
+        lambda: {"memory": {"provider": "broken"}},
+    )
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config_readonly",
+        lambda: {"memory": {"provider": "broken"}},
+        raising=False,
+    )
+    monkeypatch.setattr(
+        "hermes_cli.tools_config._get_platform_tools",
+        lambda *args, **kwargs: {"memory"},
+    )
+    monkeypatch.setattr("tools.memory_tool.check_memory_requirements", lambda: True)
+    monkeypatch.setattr(
+        "plugins.memory.discover_memory_providers",
+        lambda: [("broken", "local", False)],
+    )
+    monkeypatch.setattr("plugins.memory.load_memory_provider", lambda name: None)
+
+    memory_setup.cmd_status(SimpleNamespace())
+    output = capsys.readouterr().out
+
+    assert "Plugin:    installed — LOAD FAILED" in output
+    assert "Load error: provider returned no instance" in output
+    assert "Install the 'broken' memory plugin" not in output

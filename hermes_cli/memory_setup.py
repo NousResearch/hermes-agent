@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import os
 import sys
 import shlex
@@ -11,6 +12,7 @@ from hermes_constants import get_hermes_home
 from hermes_cli.secret_prompt import masked_secret_prompt
 
 _CANCELLED = -1
+_PROVIDER_LOAD_ERRORS: dict[str, str] = {}
 
 
 def _curses_select(
@@ -120,7 +122,9 @@ def _schema_of(provider) -> list:
 
 
 def _get_available_providers() -> list:
-    """Discover memory providers from plugins/memory/ as ``(name, setup_hint, provider)`` tuples."""
+    """Discover loadable memory providers and retain load failures for status output."""
+    global _PROVIDER_LOAD_ERRORS
+    _PROVIDER_LOAD_ERRORS = {}
     try:
         from plugins.memory import discover_memory_providers, load_memory_provider
         raw = discover_memory_providers()
@@ -128,12 +132,29 @@ def _get_available_providers() -> list:
         raw = []
 
     results = []
+    logger = logging.getLogger("plugins.memory")
     for name, desc, available in raw:
+        records: list[logging.LogRecord] = []
+
+        class _Capture(logging.Handler):
+            def emit(self, record: logging.LogRecord) -> None:
+                records.append(record)
+
+        capture = _Capture()
+        logger.addHandler(capture)
         try:
             provider = load_memory_provider(name)
-            if not provider:
-                continue
-        except Exception:
+        except Exception as exc:
+            provider = None
+            _PROVIDER_LOAD_ERRORS[name] = str(exc)
+        finally:
+            logger.removeHandler(capture)
+        if not provider:
+            if name not in _PROVIDER_LOAD_ERRORS:
+                if records:
+                    _PROVIDER_LOAD_ERRORS[name] = records[-1].getMessage()
+                else:
+                    _PROVIDER_LOAD_ERRORS[name] = "provider returned no instance"
             continue
         schema = _schema_of(provider)
         has_secrets = any(f.get("secret") for f in schema)
@@ -411,8 +432,13 @@ def cmd_status(args) -> None:
                 print("  Note: systemd/gateway services do not inherit ~/.hermes/.env —")
                 print("        set any variables above in the service environment.")
         else:
-            print("\n  Plugin:    NOT installed ✗")
-            print(f"  Install the '{provider_name}' memory plugin to ~/.hermes/plugins/")
+            load_error = _PROVIDER_LOAD_ERRORS.get(provider_name)
+            if load_error:
+                print("\n  Plugin:    installed — LOAD FAILED ✗")
+                print(f"  Load error: {load_error}")
+            else:
+                print("\n  Plugin:    NOT installed ✗")
+                print(f"  Install the '{provider_name}' memory plugin to ~/.hermes/plugins/")
 
     if providers:
         print("\n  Installed plugins:")

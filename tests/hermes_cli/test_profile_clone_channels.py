@@ -8,14 +8,15 @@ while provider/tool keys and general config survive; ``--clone-channels`` restor
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
-import yaml
+import hermes_yaml as yaml
 
 import hermes_constants
 from hermes_cli import gateway_migrate as gm
 from hermes_cli.profile_channels import (
-    channel_platforms_configured, shared_channel_credentials, strip_channel_env_file,
+    channel_platforms_configured, shared_channel_credentials, strip_channel_config, strip_channel_env_file,
 )
 from hermes_cli.profiles import create_profile
 
@@ -56,7 +57,7 @@ def home(tmp_path, monkeypatch):
     (root / ".env").write_text(_SOURCE_ENV, encoding="utf-8")
     (root / "config.yaml").write_text(yaml.safe_dump(_SOURCE_CONFIG), encoding="utf-8")
     (root / "SOUL.md").write_text("Be helpful.", encoding="utf-8")
-    monkeypatch.setattr(gm, "_installed_service", lambda home: None)
+    monkeypatch.setattr(gm, "_installed_services", lambda home: [])
     monkeypatch.setattr(gm, "_live_gateway_pid", lambda home: None)
     return root
 
@@ -112,6 +113,27 @@ def test_clone_all_drops_pairing_and_platform_state(home):
     assert not (profile_dir / "platforms").exists() and not (profile_dir / "discord_threads.json").exists()
     assert (profile_dir / "memories" / "MEMORY.md").read_text(encoding="utf-8") == "remember"
     assert _fingerprints(profile_dir) == set()
+
+
+def test_strip_channel_config_can_deliberately_remove_most_top_level_keys(tmp_path):
+    """Channel stripping is an intentional full-state prune, not an incomplete-payload accident."""
+    config_path = tmp_path / "config.yaml"
+    original = {
+        "model": {"default": "gpt-5"},
+        "platforms": {"telegram": {"enabled": True}},
+        "telegram": {"reactions": True},
+        "discord": {"require_mention": False},
+        "gateway": {"multiplex_profiles": True, "profile_routes": [{"profile": "x"}]},
+    }
+    config_path.write_text(yaml.safe_dump(original), encoding="utf-8")
+
+    removed = strip_channel_config(
+        config_path, SimpleNamespace(platforms=("telegram", "discord")))
+
+    assert set(removed) >= {
+        "platforms", "telegram", "discord", "gateway.multiplex_profiles", "gateway.profile_routes"}
+    assert yaml.safe_load(config_path.read_text(encoding="utf-8")) == {
+        "model": {"default": "gpt-5"}}
 
 
 def test_strip_env_file_keeps_comments_and_unknown_keys_verbatim(tmp_path):

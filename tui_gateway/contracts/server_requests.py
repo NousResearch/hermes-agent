@@ -20,8 +20,8 @@ class ServerRequestParams(Params):
 
 
 class ValueResult(Result):
-    """The answer to any one-string prompt (sudo, secret, vault prompts, desktop bridges,
-    mcp.setup): ``''`` means skipped / declined."""
+    """The answer to any one-string prompt (sudo, secret, vault prompts, desktop bridges):
+    ``''`` means skipped / declined."""
 
     value: str
 
@@ -37,26 +37,21 @@ class ClarifyQuestion(Params):
 
 
 class ClarifyRequestParams(ServerRequestParams):
-    """Single question: ``question`` / ``choices`` (/ ``multi_select``); batch: ``questions``.
-    ``answers`` rides only on a reconnect replay (locks the server already accepted)."""
+    """``answers`` rides only on a reconnect replay (locks the server already accepted; null = skipped)."""
 
-    question: str | None = None
-    choices: list[str] | None = None
-    multi_select: bool | None = None
-    questions: list[ClarifyQuestion] | None = None
-    answers: dict[str, str] | None = None
+    questions: list[ClarifyQuestion]
+    answers: dict[str, str | None] | None = None
 
 
 class ClarifyResult(Result):
-    """Single: ``{answer}`` ('' = skip). Batch: ``{answers}`` for the whole set (early locks go through
-    the ``clarify.lock`` RPC); a response with neither is cancel-all."""
+    """``{answers}`` for the whole set (early locks go through the ``clarify.lock`` RPC); a response
+    without ``answers`` is cancel-all."""
 
-    answer: str | None = None
-    answers: dict[str, str] | None = None
+    answers: dict[str, str | None] | None = None
 
 
 server_request("clarify", params=ClarifyRequestParams, result=ClarifyResult,
-               doc="The clarify tool: ask the user one question or a batch.")
+               doc="The clarify tool: ask the user 1-5 questions.")
 
 
 # ── approval ──────────────────────────────────────────────────────────────────────────────────
@@ -102,7 +97,13 @@ class EmptyRequestParams(ServerRequestParams):
     pass
 
 
-server_request("sudo", params=EmptyRequestParams, result=ValueResult,
+class SudoRequestParams(ServerRequestParams):
+    """Original command, redacted server-side before any password-injection rewrite."""
+
+    command: str = ""
+
+
+server_request("sudo", params=SudoRequestParams, result=ValueResult,
                doc="Masked sudo password for the terminal tool.")
 
 
@@ -143,16 +144,6 @@ server_request("vault.code", params=VaultCodeRequestParams, result=ValueResult,
                doc="A one-time / 2FA code the user reads from their device.")
 
 
-class McpSetupRequestParams(ServerRequestParams):
-    server: str | None = None
-    action: str | None = None
-    reason: str | None = None
-
-
-server_request("mcp.setup", params=McpSetupRequestParams, result=ValueResult,
-               doc="Consent card for installing / enabling / authorising an MCP server.")
-
-
 # ── desktop GUI bridges ───────────────────────────────────────────────────────────────────────
 
 
@@ -182,6 +173,7 @@ class PreviewActRequestParams(ServerRequestParams):
     to: str | None = None
     amount: int | None = None
     max: int | None = None
+    allow_shortcut: bool | None = None
 
 
 server_request("preview.act", params=PreviewActRequestParams, result=ValueResult,

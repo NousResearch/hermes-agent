@@ -36,6 +36,14 @@ def _load_auxiliary_client() -> None:
 from hermes_constants import get_hermes_dir
 from tools.debug_helpers import DebugSession
 from tools.website_policy import check_website_access
+from tools.vision_tools_history_budget import (
+    native_turn_duplicate as _native_turn_duplicate,
+    record_embed as _record_embed,
+    release_embed as _release_embed,
+    repeat_refusal as _repeat_refusal,
+    resolve_repeat_cap as _resolve_repeat_cap,
+    resolve_embed_target_bytes as _resolve_embed_target_bytes,
+)
 from tools.vision_tools_image_prep import (
     _VISION_MAX_VALIDATED_AGGREGATE_PIXELS,
     _VISION_MAX_VALIDATED_FRAME_COUNT,
@@ -139,6 +147,103 @@ _DOWNLOAD_USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 )
+
+
+def _managed_install() -> bool:
+    """True when a package manager (NixOS) owns this install's modes.
+
+    Mirrors the check ``hermes_cli.config._secure_dir`` makes internally, read
+    here so the *creation* mode honours the same carve-out as reconciliation.
+    Import is local and failure means "not managed": an unimportable config
+    module is the single-user source-install case, where 0700 is correct.
+    """
+    try:
+        from hermes_cli.config import is_managed
+
+        return bool(is_managed())
+    except Exception:  # pragma: no cover - defensive
+        return False
+
+
+def _secure_cache_dir(new_subpath: str, old_name: str) -> Path:
+    """Resolve a Hermes media-cache dir, creating it owner-only (0700).
+
+    A downloaded image or video is as sensitive as whatever the user pointed
+    the agent at — a private attachment, an internal screenshot, a document
+    scan. Created with a bare ``mkdir(parents=True, exist_ok=True)`` these
+    inherited the umask and landed 0755, readable by every other local
+    account. ``HERMES_HOME`` is 0700 by default so default-config exposure is
+    narrow; the concrete scenario is the documented ``HERMES_HOME_MODE=0701``
+    hatch (letting nginx/caddy traverse to a served subdirectory), where a
+    0755 child really is world-readable.
+
+    The mode is passed to ``mkdir`` so it is set *at creation*, leaving no
+    window where the directory sits world-readable before a follow-up chmod.
+    Policy is then reconciled through ``hermes_cli.config._secure_dir`` — the
+    house helper — rather than a hand-rolled chmod, which is what keeps this
+    correct off a single-user desktop: managed/NixOS installs are skipped,
+    ``HERMES_HOME_MODE`` stays honoured, and ``HERMES_UID``/``HERMES_GID``
+    ownership is applied so a root-created dir does not lock out uid-mapped
+    Docker workers (#34107).
+
+    The managed/NixOS carve-out applies to **creation as well as
+    reconciliation**. ``cache/vision`` and ``cache/video`` are not among the
+    directories the NixOS module's ``systemd.tmpfiles`` rules pre-create, so
+    they are made lazily at runtime; a hardcoded 0700 here would be the only
+    thing setting their mode and would silently override a design that pins
+    ``stateDir/.hermes`` to ``2770`` and runs the gateway with ``UMask =
+    "0007"`` so "interactive users in the hermes group can read/write"
+    gateway-created state. On such a host the gateway and a hostUsers CLI
+    share one ``$HERMES_HOME``, so a 0700 cache created by whichever ran
+    first makes vision fail with EACCES for the other. Skipping the explicit
+    mode there lets the inherited setgid + umask land 2770, matching
+    ``ensure_hermes_home``'s managed branch and its ``logs/curator``
+    lazy-mkdir precedent.
+
+    Running it unconditionally also heals a directory an older Hermes left at
+    0755. That retroactive tighten is safe *here* because this is
+    Hermes-private scratch that the same user re-reads in the same call —
+    there is no user-shared content to strand. Note ``parents=True`` applies
+    the mode to the leaf only, so an intermediate ``cache/`` keeps its default
+    mode; it is shared with other subsystems and holds only directory names.
+    """
+    cache_dir = get_hermes_dir(new_subpath, old_name)
+    if _managed_install():
+        # Managed mode: the NixOS-configured umask/setgid owns the mode, and
+        # _secure_dir would no-op here anyway.
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        return cache_dir
+    # mode= is honored only for the leaf and is not further masked by umask
+    # for the bits we care about; _secure_dir reconciles anything unusual.
+    cache_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+    try:
+        from hermes_cli.config import _secure_dir
+
+        _secure_dir(cache_dir)
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.debug("vision: cache dir chmod skipped: %s", exc)
+    return cache_dir
+
+
+def _write_private_bytes(path: Path, data: bytes) -> None:
+    """Write ``data`` to ``path`` with owner-only (0600) permissions.
+
+    ``Path.write_bytes`` lands 0644 under a default umask. The enclosing cache
+    dir is 0700, so this matters only under ``HERMES_HOME_MODE=0701`` — but
+    ``tools.computer_use.tool`` already writes private captures into this
+    very directory, and one directory with two file-mode conventions is the
+    kind of inconsistency that rots. POSIX mode bits are advisory on Windows
+    (``os.chmod`` there only toggles the read-only flag), so on an ``os.open``
+    failure this degrades to a plain write rather than failing the download.
+    """
+    flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC
+    try:
+        fd = os.open(str(path), flags, 0o600)
+    except OSError:
+        path.write_bytes(data)
+        return
+    with os.fdopen(fd, "wb") as handle:
+        handle.write(data)
 
 
 async def _ssrf_redirect_guard(response):
@@ -252,10 +357,10 @@ _MAX_BASE64_BYTES = 20 * 1024 * 1024
 # downsamples to a 1568px long edge anyway, so pixels past that cost wire bytes for no fidelity.
 # The 20 MB hard ceiling / Anthropic 5 MB reject-cap still apply as safety nets; those are one-shot viewing
 # limits, not history-reuse sizes. A 4 MB / 7900px embed was observed at ~400K chars and ~100–260K billed
-# tokens per image (#92699), so we size for model reading instead: 256 KB keeps a 1568px screenshot cheap
-# enough to ride the session (PNGs that exceed it are downscaled further by the byte-budget ladder), well
-# under every provider's per-image limit.
-_EMBED_TARGET_BYTES = 256 * 1024
+# tokens per image (#92699), so we size for model reading instead: the byte budget is
+# ``vision.embed_target_bytes`` (default 256 KB, see vision_tools_history_budget) — it keeps a 1568px
+# screenshot cheap enough to ride the session (PNGs that exceed it are downscaled further by the
+# byte-budget ladder), well under every provider's per-image limit.
 _EMBED_MAX_DIMENSION = 1568
 
 # Target when auto-resizing after a provider size rejection (retry once).
@@ -301,11 +406,13 @@ def _import_pillow_for_resize():
         from PIL import Image
     except ImportError:
         try:
-            from tools.lazy_deps import ensure as _ensure_dep
-            # prompt=False: never raise a blocking input() prompt mid-session. Under the interactive CLI
-            # prompt_toolkit owns stdin, so a bare input() deadlocks the terminal (#40490). The install is
-            # already gated by security.allow_lazy_installs, so reaching here is opt-in.
-            _ensure_dep("tool.vision", prompt=False)
+            # pm-era wiring: never raise a blocking input() prompt mid-session. Under the
+            # interactive CLI prompt_toolkit owns stdin, so a bare input() deadlocks the
+            # terminal (#40490). The install is already gated by security.allow_lazy_installs,
+            # so reaching here is opt-in.
+            from pm import ensure_import
+
+            ensure_import("vision")
             from PIL import Image
         except Exception:
             return None
@@ -414,7 +521,7 @@ _TOOL_RESULT_MEDIA_PROVIDERS = frozenset({
 _GEMINI_PROVIDERS = frozenset({"google", "gemini", "google-gemini", "google-vertex-gemini"})
 
 
-def _profile_rejects_tool_media(provider: str) -> bool:
+def _profile_rejects_tool_media(provider: str, model: str = "") -> bool:
     """Hard veto: the provider's ``ProviderProfile`` declares
     ``supports_vision_tool_messages=False`` — images are accepted in user
     messages but list-type tool-result content is rejected with 400
@@ -423,9 +530,8 @@ def _profile_rejects_tool_media(provider: str) -> bool:
     and the image never enters context (#89981).
     """
     try:
-        from providers import get_provider_profile
-        profile = get_provider_profile(str(provider or "").strip().lower())
-        return profile is not None and profile.supports_vision_tool_messages is False
+        from providers import routed_model_rejects_vision_tool_messages
+        return routed_model_rejects_vision_tool_messages(provider, model)
     except Exception:
         return False
 
@@ -435,7 +541,7 @@ def _supports_media_in_tool_results(provider: str, model: str) -> bool:
     providers are False (caller falls back to aux-LLM text) unless their ``ProviderProfile``
     declares ``supports_vision``; ``supports_vision_tool_messages=False`` is a hard veto."""
     p = provider.strip().lower() if isinstance(provider, str) else ""
-    if not p or _profile_rejects_tool_media(p):
+    if not p or _profile_rejects_tool_media(p, model):
         return False
     if p in _TOOL_RESULT_MEDIA_PROVIDERS:
         return True
@@ -450,27 +556,33 @@ def _supports_media_in_tool_results(provider: str, model: str) -> bool:
         return False
 
 
+def _accepts_tool_result_images(provider: str, model: str, cfg: Optional[Dict[str, Any]]) -> bool:
+    """One gate for both native lanes — the ``vision_analyze`` fast path and the ``computer_use`` capture route
+    (#115248): the profile's ``supports_vision_tool_messages=False`` veto first, then either the provider's tool
+    results are known to carry media or the capability lookup (config override → catalog → probes → profile)
+    attests the model as vision-capable."""
+    if _profile_rejects_tool_media(provider, model):
+        return False
+    if _supports_media_in_tool_results(provider, model):
+        return True
+    from agent.image_routing import _lookup_supports_vision
+    return _lookup_supports_vision(provider, model, cfg) is True
+
+
 def _should_use_native_vision_fast_path() -> bool:
     """True when image routing resolves to ``native`` AND the provider accepts images in tool
     results, or the user set the ``model.supports_vision`` override (escape hatch for
     custom/local providers). Any failure → False."""
     try:
         from agent.auxiliary_client import _read_main_provider, _read_main_model
-        from agent.image_routing import decide_image_input_mode, _lookup_supports_vision
+        from agent.image_routing import decide_image_input_mode
         from hermes_cli.config import load_config
         provider = _read_main_provider()
         model = _read_main_model()
         cfg = load_config()
         if decide_image_input_mode(provider, model, cfg) != "native":
             return False
-        # The profile veto applies ahead of the capability lookup too: a
-        # model marked vision-capable by models.dev / custom_providers must
-        # not re-open the multimodal-envelope route the profile rejects.
-        if _profile_rejects_tool_media(provider):
-            return False
-        return (
-            _supports_media_in_tool_results(provider, model)
-            or _lookup_supports_vision(provider, model, cfg) is True)
+        return _accepts_tool_result_images(provider, model, cfg)
     except Exception as exc:
         logger.debug("Native vision fast-path check failed: %s", exc)
         return False
@@ -532,10 +644,9 @@ async def _prepare_image(
         resolved = await resolve_image_source(image_url, ResolveContext(task_id=task_id))
     except ImageResolutionError as exc:
         raise _ImagePrepError(str(exc)) from exc
-    temp_dir = get_hermes_dir("cache/vision", "temp_vision_images")
-    temp_dir.mkdir(parents=True, exist_ok=True)
+    temp_dir = _secure_cache_dir("cache/vision", "temp_vision_images")
     path = temp_dir / f"temp_image_{uuid.uuid4()}.img"
-    await asyncio.to_thread(path.write_bytes, resolved.data)
+    await asyncio.to_thread(_write_private_bytes, path, resolved.data)
     mime, size_bytes, crop_offset = resolved.mime, len(resolved.data), {}
     try:
         normalized_path, mime, norm_err = await asyncio.to_thread(_normalize_to_supported_image, path, mime)
@@ -567,8 +678,8 @@ async def _prepare_image(
 def _too_large_message(image_data_url: str) -> str:
     return (
         f"Image too large for vision API: base64 payload is {len(image_data_url) / (1024 * 1024):.1f} MB "
-        f"(limit {_MAX_BASE64_BYTES / (1024 * 1024):.0f} MB) even after resizing. Install Pillow "
-        f"(`pip install Pillow`) for better auto-resize, or compress the image manually.")
+        f"(limit {_MAX_BASE64_BYTES / (1024 * 1024):.0f} MB) even after resizing. Run `hermes pm repair` "
+        f"to restore Pillow for auto-resize, or compress the image manually.")
 
 
 async def _resize_prepared(prepared: _PreparedImage, scale_info: dict, **kwargs) -> str:
@@ -585,7 +696,16 @@ async def _vision_analyze_native(
     or a JSON error string (the normal tool-result contract) on failure."""
     if not isinstance(image_url, str) or not image_url.strip():
         return tool_error("image_url is required", success=False)
+    already_native = _native_turn_duplicate(image_url, region)
+    if already_native is not None:
+        return already_native
+    # A cap > 0 RESERVES the slot here (atomic check-and-count); released below if no embed happens.
+    refusal = _repeat_refusal(image_url)
+    if refusal is not None:
+        return refusal
+    reserved = _resolve_repeat_cap() > 0
     prepared: Optional[_PreparedImage] = None
+    embedded = False
     try:
         from tools.interrupt import is_interrupted
         if is_interrupted():
@@ -602,15 +722,19 @@ async def _vision_analyze_native(
         # Anthropic still rejects >5 MB / >8000px with a non-retryable 400, but those are one-shot viewing
         # limits — history embeds are sized smaller so repeated vision_analyze turns don't blow the context
         # (#92699).
+        embed_target_bytes = _resolve_embed_target_bytes()
         _over_dims = await _run_encode_on_cpu_executor(
             _image_exceeds_dimension, prepared.path, _EMBED_MAX_DIMENSION)
-        if len(image_data_url) > _EMBED_TARGET_BYTES or _over_dims:
+        if len(image_data_url) > embed_target_bytes or _over_dims:
             image_data_url = await _resize_prepared(
                 prepared, _scale_info,
-                max_base64_bytes=_EMBED_TARGET_BYTES, max_dimension=_EMBED_MAX_DIMENSION, force_jpeg=True)
+                max_base64_bytes=embed_target_bytes, max_dimension=_EMBED_MAX_DIMENSION, force_jpeg=True)
             # Reject rather than embed a session-wedging payload.
             if len(image_data_url) > _MAX_BASE64_BYTES:
                 return tool_error(_too_large_message(image_data_url), success=False)
+        embedded = True
+        if not reserved:
+            _record_embed(image_url)
         return _build_native_vision_tool_result(
             image_url=image_url, question=question, image_data_url=image_data_url,
             image_size_bytes=prepared.size_bytes,
@@ -619,6 +743,8 @@ async def _vision_analyze_native(
         logger.warning("Native vision fast path failed: %s", exc)
         return tool_error(f"Native vision failed: {exc}", success=False)
     finally:
+        if reserved and not embedded:
+            _release_embed(image_url)
         # Only delete temp files we created — never user-provided paths.
         if prepared is not None:
             _unlink_quietly(prepared.path)
@@ -960,10 +1086,9 @@ async def _materialize_video(video_url: str, task_id: Optional[str], temp_paths:
                 video_url, ResolveContext(task_id=task_id), permitted=("video",))
         except ImageResolutionError as exc:
             raise ValueError(f"Could not read video from terminal backend: {exc}") from exc
-        temp_dir = get_hermes_dir("cache/video", "temp_video_files")
-        temp_dir.mkdir(parents=True, exist_ok=True)
+        temp_dir = _secure_cache_dir("cache/video", "temp_video_files")
         path = temp_dir / f"terminal_video_{uuid.uuid4()}{suffix}"
-        path.write_bytes(resolved.data)
+        _write_private_bytes(path, resolved.data)
         temp_paths.append(path)
         return path
     if local_path.is_file():
@@ -975,7 +1100,13 @@ async def _materialize_video(video_url: str, task_id: Optional[str], temp_paths:
         blocked = check_website_access(video_url)
         if blocked:
             raise PermissionError(blocked["message"])
-        path = get_hermes_dir("cache/video", "temp_video_files") / f"temp_video_{uuid.uuid4()}.mp4"
+        # Hardened here rather than inside _download_media: that helper takes
+        # a caller-supplied destination (tools/image_source.py hands its
+        # sibling a /tmp NamedTemporaryFile it owns the mode of), and
+        # chmod-ing an arbitrary caller's parent to 0700 would be a
+        # destructive side effect on a path Hermes does not own.
+        temp_dir = _secure_cache_dir("cache/video", "temp_video_files")
+        path = temp_dir / f"temp_video_{uuid.uuid4()}.mp4"
         temp_paths.append(path)
         # Video downloads retry every failure class (legacy behavior).
         await _download_media(
@@ -1056,13 +1187,3 @@ registry.register(
     check_fn=check_video_requirements,
     is_async=True,
     emoji="🎬")
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-import contextlib  # noqa: F401,E402
-import sys  # noqa: F401,E402
-import threading  # noqa: F401,E402
-# ---- END PLUGIN-COMPAT ----

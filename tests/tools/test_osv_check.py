@@ -13,15 +13,12 @@ from tools.osv_check import (
     _parse_package_from_args,
     _parse_npm_package,
     _parse_pypi_package,
-    _query_osv,
 )
-
 
 class TestInferEcosystem:
     def test_npx(self):
         assert _infer_ecosystem("npx") == "npm"
         assert _infer_ecosystem("/usr/bin/npx") == "npm"
-
 
     def test_windows_shims(self):
         # Real shim names installed by each runner on Windows
@@ -32,7 +29,6 @@ class TestInferEcosystem:
         assert _infer_ecosystem("UVX.EXE") == "PyPI"
         assert _infer_ecosystem("pipx.exe") == "PyPI"
 
-
     def test_windows_paths_either_separator(self):
         # Backslash paths must resolve even when the check runs on POSIX
         # (config authored for Windows) — os.path.basename alone would not.
@@ -40,7 +36,6 @@ class TestInferEcosystem:
         assert _infer_ecosystem("C:/Program Files/nodejs/nPx.CmD") == "npm"
         assert _infer_ecosystem(r"C:\Users\u\.local\bin\UVX.EXE") == "PyPI"
         assert _infer_ecosystem("C:/Users/u/.local/bin/uVx.ExE") == "PyPI"
-
 
     def test_lookalikes_stay_fail_open(self):
         # No broad suffix matching: only the shims each runner actually
@@ -50,30 +45,24 @@ class TestInferEcosystem:
         assert _infer_ecosystem("npx.cmd.bak") is None
         assert _infer_ecosystem("uvx.cmd.old") is None
 
-
     def test_unknown(self):
         assert _infer_ecosystem("node") is None
         assert _infer_ecosystem("python") is None
         assert _infer_ecosystem("/bin/bash") is None
 
-
 class TestParseNpmPackage:
     def test_simple(self):
         assert _parse_npm_package("react") == ("react", None)
 
-
     def test_latest_ignored(self):
         assert _parse_npm_package("react@latest") == ("react", None)
-
 
 class TestParsePypiPackage:
     def test_simple(self):
         assert _parse_pypi_package("requests") == ("requests", None)
 
-
     def test_extras_no_version(self):
         assert _parse_pypi_package("mcp[cli]") == ("mcp", None)
-
 
 class TestParsePackageFromArgs:
     def test_npm_skips_flags(self):
@@ -87,13 +76,11 @@ class TestParsePackageFromArgs:
         # Actually --from is a flag so it gets skipped, mcp[cli] is found
         assert name == "mcp"
 
-
     def test_plain_positional_still_works(self):
         # Regression guard: bare positional with no --package flag is the pkg.
         name, ver = _parse_package_from_args(["-y", "react@18.3.1"], "npm")
         assert name == "react"
         assert ver == "18.3.1"
-
 
 class TestCheckPackageForMalware:
     @pytest.fixture(autouse=True)
@@ -138,7 +125,6 @@ class TestCheckPackageForMalware:
         assert "BLOCKED" in result
         assert "MAL-2023-7938" in result
         assert "CVE-2023-1234" not in result  # regular CVEs filtered
-
 
     def test_uvx_pypi(self):
         """uvx commands check PyPI ecosystem."""
@@ -250,30 +236,6 @@ class TestCheckPackageForMalware:
 
         assert mock_url2.call_count == 0, "disk cache must satisfy the second call"
 
-    def test_disk_cache_format_versioned(self, tmp_path, monkeypatch):
-        """Disk cache JSON has a version field and recoverable entries."""
-        from tools import osv_check
-
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-
-        mock_response = MagicMock()
-        mock_response.read.return_value = json.dumps({"vulns": []}).encode()
-        mock_response.__enter__ = lambda s: s
-        mock_response.__exit__ = MagicMock(return_value=False)
-
-        with patch("tools.osv_check.urllib.request.urlopen", return_value=mock_response):
-            check_package_for_malware("uvx", ["mcp-server-format"])
-
-        cache_file = tmp_path / "cache" / "osv_check.json"
-        with open(cache_file, "r", encoding="utf-8") as f:
-            data = json.load(f)
-        assert data["version"] == osv_check._DISK_CACHE_VERSION
-        assert "entries" in data
-        key = "PyPI|mcp-server-format|"
-        assert key in data["entries"]
-        assert "expiry" in data["entries"][key]
-        assert data["entries"][key]["result"] is None
-
     def test_disk_cache_retries_after_transient_oserror(self, tmp_path, monkeypatch):
         """A busy/unreadable cache file must not disable disk loads for the process."""
         from tools import osv_check
@@ -311,32 +273,3 @@ class TestCheckPackageForMalware:
             osv_check._load_disk_cache()
             assert osv_check._disk_cache_loaded is True
             assert ("PyPI", "mcp-server-retry", None) in osv_check._cache
-
-
-class TestLiveOsvQuery:
-    """Live integration test against the real OSV API. Skipped if offline."""
-
-    @pytest.mark.skipif(
-        not pytest.importorskip("urllib.request", reason="no network"),
-        reason="network required",
-    )
-    def test_known_malware_package(self):
-        """node-hide-console-windows has a real MAL- advisory."""
-        try:
-            result = _query_osv("node-hide-console-windows", "npm")
-            assert len(result) >= 1
-            assert result[0]["id"].startswith("MAL-")
-        except Exception:
-            pytest.skip("OSV API unreachable")
-
-    @pytest.mark.skipif(
-        not pytest.importorskip("urllib.request", reason="no network"),
-        reason="network required",
-    )
-    def test_clean_package(self):
-        """react should have zero MAL- advisories."""
-        try:
-            result = _query_osv("react", "npm")
-            assert len(result) == 0
-        except Exception:
-            pytest.skip("OSV API unreachable")

@@ -74,7 +74,9 @@ def quarantine_bundle(bundle: SkillBundle) -> Path:
         if isinstance(file_content, bytes):
             file_dest.write_bytes(file_content)
         else:
-            file_dest.write_text(file_content, encoding="utf-8")
+            # newline="" keeps the bundle's LF bytes verbatim; the default None mode would
+            # translate to os.linesep on Windows and desync content_hash from bundle_content_hash.
+            file_dest.write_text(file_content, encoding="utf-8", newline="")
     return dest
 
 
@@ -230,6 +232,8 @@ def uninstall_skill(skill_name: str) -> Tuple[bool, str]:
             caller_note="hub uninstall")
     except Exception:
         logger.debug("Unable to record skill uninstall lifecycle for %s", skill_name, exc_info=True)
+    from hermes_cli.observability.shared_metrics_disabled import record_skill_removed
+    record_skill_removed(skill_name)
     return True, f"Uninstalled '{skill_name}' from {entry['install_path']}"
 
 
@@ -260,6 +264,15 @@ _SOURCE_ID_ALIASES = {"skills.sh": "skills-sh"}
 def _source_matches(source: SkillSource, source_name: str) -> bool:
     return source.source_id() == _SOURCE_ID_ALIASES.get(source_name, source_name)
 
+
+
+def _current_revision_or_empty(src, identifier: str) -> str:
+    """A probe failure must degrade one row to the full-fetch path, not abort the whole check."""
+    try:
+        return src.current_revision(identifier)
+    except Exception:
+        logger.debug("current_revision probe failed for %s", identifier, exc_info=True)
+        return ""
 
 def check_for_skill_updates(
     name: Optional[str] = None, *, lock: Optional[HubLockFile] = None,
@@ -298,8 +311,16 @@ def check_for_skill_updates(
             # instead of re-paying it on every update run (#104291).
             results.append({**row, "status": "orphaned"})
             continue
+        matching = [src for src in sources if _source_matches(src, source_name)]
+        recorded = (entry.get("metadata") or {}).get("source_revision", "")
+        if recorded and any(_current_revision_or_empty(src, identifier) == recorded for src in matching):
+            # Same upstream tree as at install time: the bundle bytes cannot differ, so
+            # skip downloading SKILL.md + every support blob just to re-hash them (#101454).
+            content_hash = entry.get("content_hash", "")
+            results.append({**row, "status": "up_to_date", "current_hash": content_hash, "latest_hash": content_hash})
+            continue
         bundle = None
-        for src in filter(lambda s: _source_matches(s, source_name), sources):
+        for src in matching:
             try:
                 bundle = src.fetch(identifier)
             except Exception:

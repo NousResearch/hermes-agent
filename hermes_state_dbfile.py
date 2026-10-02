@@ -10,6 +10,7 @@ call time, so tests that monkeypatch ``hermes_state.<name>`` keep intercepting.
 from __future__ import annotations
 
 import contextlib
+import errno
 import hashlib
 import json
 import logging
@@ -23,7 +24,7 @@ import time
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
-from hermes_state_holders import canonical_sqlite_path
+from hermes_state_holders import canonical_sqlite_path, read_only_db_uri
 from hermes_state_common import (
     FTS_REBUILD_DEFERRAL_KEY, stat_db_file_identity as _stat_db_file_identity
 )
@@ -135,9 +136,24 @@ def _stat_sqlite_sidecar_identity(db_path: Path) -> Dict[str, tuple]:
 def _watched_sqlite_sidecar_paths(db_path) -> Dict[str, str]:
     """Map each sidecar's canonical (/proc-comparable) form to its literal, still-named path,
     so a canonical match can be re-``stat``'d for identity rather than trusted as text."""
-    base = os.path.abspath(os.fspath(db_path))
-    literal = (base + "-wal", base + "-shm")
-    return {canonical_sqlite_path(path): path for path in literal}
+    literal_base = os.path.abspath(os.fspath(db_path))
+    literal = (literal_base + "-wal", literal_base + "-shm")
+    watched = {canonical_sqlite_path(path): path for path in literal}
+    # /proc reports the kernel-resolved dentry, so the watched canonicals must also resolve
+    # symlinks -- with abspath alone a symlinked HERMES_HOME makes every deleted sidecar
+    # invisible to the scan. Both spellings are watched: the fully resolved path, which is
+    # where current SQLite places -wal/-shm when the database file itself is a symlink, and
+    # the realpath'd parent with the literal basename, which is where they land when SQLite
+    # names the sidecars after the path it was opened through.
+    resolved_bases = (
+        os.path.join(os.path.realpath(os.path.dirname(literal_base)),
+                     os.path.basename(literal_base)),
+        os.path.realpath(literal_base),
+    )
+    for base in resolved_bases:
+        for suffix in ("-wal", "-shm"):
+            watched.setdefault(canonical_sqlite_path(base + suffix), base + suffix)
+    return watched
 
 
 def _identity_is_truly_unlinked(identity: "Tuple[int, int]", watched_path: str) -> bool:
@@ -165,7 +181,12 @@ def _fd_is_truly_unlinked(fd_path: str, watched_path: str) -> bool:
     names — the guard keeps failing closed."""
     try:
         fd_stat = os.stat(fd_path)
-    except OSError:
+    except OSError as exc:
+        # ENOENT: the descriptor was closed after /proc was read. ESRCH: the whole
+        # process exited mid-scan. Neither can keep a retired generation alive, so
+        # do not turn this scan race into a refusal (mirrors hermes_state_holders).
+        if exc.errno in (errno.ENOENT, errno.ESRCH):
+            return False
         return True
     return _identity_is_truly_unlinked((fd_stat.st_dev, fd_stat.st_ino), watched_path)
 
@@ -210,6 +231,13 @@ _DARWIN_FD_DEV_OFFSET = 24
 _DARWIN_FD_INO_OFFSET = 32
 _DARWIN_FD_PATH_OFFSET = 176
 _DARWIN_LIBPROC = None
+
+# Wall-clock budget for one darwin holder-scan pass (#113187). A single
+# proc_pidfdinfo call can block uninterruptibly in the kernel (a process stuck
+# in uninterruptible I/O on a dead network share), so no per-iteration check
+# can bound it: the whole pass runs in a daemon thread and is abandoned on
+# expiry, failing open per the guard's contract.
+_DARWIN_FD_SCAN_TIMEOUT_SECONDS = 5.0
 
 
 def _darwin_libproc():
@@ -295,10 +323,32 @@ def _iter_darwin_sidecar_holders(db_path) -> List[Tuple[int, str]]:
     # spelled it; ``os.path.normcase`` is the identity on darwin, so fold case here.
     watched = {path.casefold(): path for path in (base + "-wal", base + "-shm")}
     holders: List[Tuple[int, str]] = []
-    for pid, _fd, target, identity in _iter_darwin_fd_targets():
-        literal = watched.get(target.casefold())
-        if literal is not None and _identity_is_truly_unlinked(identity, literal):
-            holders.append((pid, target))
+    errors: List[BaseException] = []
+
+    def _scan() -> None:
+        try:
+            for pid, _fd, target, identity in _iter_darwin_fd_targets():
+                literal = watched.get(target.casefold())
+                if literal is not None and _identity_is_truly_unlinked(identity, literal):
+                    holders.append((pid, target))
+        except BaseException as exc:
+            errors.append(exc)
+
+    # ponytail: abandoned daemon thread per timed-out scan; a kernel-blocked
+    # proc_pidfdinfo cannot be interrupted, so expiry leaks one thread that
+    # dies with the process. Fail open: partial/empty holders, never a refusal.
+    worker = threading.Thread(target=_scan, daemon=True)
+    worker.start()
+    worker.join(_DARWIN_FD_SCAN_TIMEOUT_SECONDS)
+    if worker.is_alive():
+        logger.warning(
+            "deleted-WAL holder scan timed out after %.1fs for %s; continuing fail-open",
+            _DARWIN_FD_SCAN_TIMEOUT_SECONDS,
+            db_path,
+        )
+        return []
+    if errors:
+        raise errors[0]
     return holders
 
 
@@ -684,8 +734,9 @@ def quarantine_invalid_state_db(path: Path, *, already_locked: bool = False) -> 
         if not acquired:
             logger.error("quarantine lock for %s not acquired within 5s — refusing to "
                          "quarantine without the cross-process lock. The invalid file "
-                         "is left in place. If sessions fail to load, restore from "
-                         "state-snapshots via `hermes snapshot list` / `hermes snapshot restore <id>`.",
+                         "is left in place. If sessions fail to load, run `hermes sessions recover "
+                         "--source <state.db> --inspect-only`, or restore a snapshot with "
+                         "`/snapshot list` / `/snapshot restore <id>` (terminal `hermes` chat only).",
                          path)
             return None
         return _do_quarantine()
@@ -710,7 +761,7 @@ def collect_state_db_stats(db_path: Path) -> Dict[str, Any]:
     try:
         # A short timeout keeps doctor snappy when a writer holds the lock.  The tracked connect
         # lets byte-probe helpers see this connection and refuse raw opens that would cancel locks.
-        conn = _connect_tracked_db(f"file:{Path(db_path)}?mode=ro", tracking_path=Path(db_path),
+        conn = _connect_tracked_db(read_only_db_uri(db_path), tracking_path=Path(db_path),
                                    uri=True, timeout=2.0)
     except Exception as exc:
         logger.debug("collect_state_db_stats: cannot open %s read-only: %s", db_path, exc)
@@ -765,13 +816,19 @@ def collect_state_db_stats(db_path: Path) -> Dict[str, Any]:
 
 
 def count_db_holders(db_path: Path) -> Optional[int]:
-    """Best-effort count of distinct PIDs holding ``db_path`` open (``/proc/*/fd`` scan); ``None``
-    on any error or non-Linux host, never raises.  Unreadable fd dirs (other users' processes
-    without root) are skipped, so this is a lower bound."""
+    """Best-effort count of distinct PIDs holding ``db_path`` open (``/proc/*/fd`` on Linux, libproc
+    on macOS); ``None`` on any error or other host, never raises.  Uninspectable processes (other
+    users' without root) are skipped, so this is a lower bound."""
     try:
+        target = os.path.realpath(str(db_path))
+        if sys.platform == "darwin":
+            # Identity, not pathname: libproc reports the vnode's last name as the opener spelled it
+            # (case, symlinked prefix), which is exactly what the sidecar leg had to case-fold around.
+            st = os.stat(target)
+            identity = (st.st_dev, st.st_ino)
+            return len({pid for pid, _fd, _path, ident in _iter_darwin_fd_targets() if ident == identity})
         if not sys.platform.startswith("linux"):
             return None
-        target = os.path.realpath(str(db_path))
         return len({pid for pid, link, _fd_path in _iter_proc_fd_targets() if link == target})
     except Exception:
         return None

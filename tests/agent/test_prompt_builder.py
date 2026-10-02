@@ -212,7 +212,7 @@ class TestParseSkillFile:
         skill_file.write_text(
             "---\nname: test-skill\ndescription: A useful test skill\n---\n\nBody here"
         )
-        is_compat, frontmatter, desc = _parse_skill_file(skill_file)
+        is_compat, frontmatter, desc, _ = _parse_skill_file(skill_file)
         assert is_compat is True
         assert frontmatter.get("name") == "test-skill"
         assert desc == "A useful test skill"
@@ -222,7 +222,7 @@ class TestParseSkillFile:
         skill_file = tmp_path / "SKILL.md"
         long_desc = "A" * 100
         skill_file.write_text(f"---\ndescription: {long_desc}\n---\n")
-        _, _, desc = _parse_skill_file(skill_file)
+        _, _, desc, _ = _parse_skill_file(skill_file)
         assert len(desc) <= 60
         assert desc.endswith("...")
 
@@ -234,9 +234,9 @@ class TestParseSkillFile:
         def boom(*args, **kwargs):
             raise OSError("read exploded")
 
-        monkeypatch.setattr(type(skill_file), "read_text", boom)
+        monkeypatch.setattr(type(skill_file), "read_bytes", boom)
         with caplog.at_level(logging.DEBUG, logger="agent.prompt_builder"):
-            is_compat, frontmatter, desc = _parse_skill_file(skill_file)
+            is_compat, frontmatter, desc, _ = _parse_skill_file(skill_file)
 
         assert is_compat is True
         assert frontmatter == {}
@@ -275,6 +275,35 @@ class TestBuildSkillsSystemPrompt:
         result = build_skills_system_prompt()
         # "search" should appear only once per category
         assert result.count("- search") == 1
+
+    def test_skill_copies_listed_once_distinct_skills_kept(self, monkeypatch, tmp_path):
+        """Rows that are ONE skill by skill_view's identity rule (same name, byte-identical SKILL.md) list once, as the
+        shallowest copy. A same-name skill with other content, and identical nameless SKILL.md files in differently
+        named dirs (two names), are different skills: they stay listed, and disabling one hides only that one."""
+        from agent.prompt_builder import clear_skills_system_prompt_cache
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        shared = "---\nname: demo\ndescription: Shared demo skill\n---\nbody\n"
+        nameless = "---\ndescription: Identical nameless stub\n---\nbody\n"
+        for rel, text in {
+            "demo": shared, "pkg/demo": shared, "deep/nest/renamed": shared,
+            "other/demo": "---\nname: demo\ndescription: Specialized demo\n---\nother\n",
+            "alpha/foo": nameless, "beta/bar": nameless,
+        }.items():
+            (tmp_path / "skills" / rel).mkdir(parents=True)
+            (tmp_path / "skills" / rel / "SKILL.md").write_text(text)
+
+        for _ in range(2):  # cold scan, then the disk snapshot that scan wrote
+            result = build_skills_system_prompt()
+            assert result.count("Shared demo skill") == 1
+            assert "  pkg:" not in result and "  deep/nest:" not in result
+            assert "Specialized demo" in result
+            assert "- foo: Identical nameless stub" in result and "- bar: Identical nameless stub" in result
+            clear_skills_system_prompt_cache()
+
+        (tmp_path / "config.yaml").write_text("skills:\n  disabled: [foo]\n")
+        result = build_skills_system_prompt()
+        assert "- foo:" not in result and "- bar: Identical nameless stub" in result
 
 
     def test_compact_categories_demote_nested_and_miss_cache_separately(

@@ -84,7 +84,7 @@ class TestSnapshotEntryProvenance:
             ),
             encoding="utf-8",
         )
-        entry = _build_snapshot_entry(d / "SKILL.md", skills, {"name": "beta"}, "d")
+        entry = _build_snapshot_entry(d / "SKILL.md", skills, {"name": "beta"}, "d", "")
         assert entry["org_id"] == "org-1"
         assert entry["org_author"] == "bens-macbook-a1b2c3"
         # Category derives from the path WITHIN the mirror, not _org/org-1/...
@@ -94,7 +94,7 @@ class TestSnapshotEntryProvenance:
     def test_personal_entry_unchanged(self, tmp_path):
         skills = tmp_path / "skills"
         d = _mk_skill(skills, "devops/beta", name="beta")
-        entry = _build_snapshot_entry(d / "SKILL.md", skills, {"name": "beta"}, "d")
+        entry = _build_snapshot_entry(d / "SKILL.md", skills, {"name": "beta"}, "d", "")
         assert "org_id" not in entry
         assert entry["category"] == "devops"
 

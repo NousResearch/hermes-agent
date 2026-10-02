@@ -524,3 +524,13 @@ def test_compaction_todo_carrier_is_hidden_without_durable_kind():
 def test_user_text_with_similar_words_is_not_hidden():
     row = {"role": "user", "content": "Please preserve the active task list across context compression."}
     assert "display_kind" not in _project_for_display([row])[0]
+
+
+def test_compaction_todo_carrier_appended_to_user_text_is_stripped():
+    row = {
+        "role": "user",
+        "content": "Keep this user-authored prefix.\n[Your active task list was preserved across context compression]\n- demo",
+    }
+    projected = _project_for_display([row])[0]
+    assert projected["content"] == "Keep this user-authored prefix."
+    assert "display_kind" not in projected

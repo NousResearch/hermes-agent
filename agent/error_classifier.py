@@ -55,6 +55,7 @@ class FailoverReason(enum.Enum):
     format_error = "format_error"        # 400 bad request — abort or strip + retry
     role_alternation = "role_alternation"  # Strict chat template rejected adjacent same-role messages — merge them for this destination and retry
     invalid_encrypted_content = "invalid_encrypted_content"  # Responses replay blob rejected — strip replay state and retry
+    echoed_reasoning_rejected = "echoed_reasoning_rejected"  # Echo route (Nous Portal / OpenRouter) rejected the replayed reasoning_details array with an opaque 400 that names the model, not the payload — strip the array from the wire copy and retry once
     multimodal_tool_content_unsupported = "multimodal_tool_content_unsupported"  # Provider rejected list-type content in tool messages (e.g. Xiaomi MiMo) — downgrade to text and retry
     reasoning_mandatory = "reasoning_mandatory"  # Route rejects reasoning: {enabled: false} — send the disable no more this session and retry
 
@@ -475,6 +476,7 @@ _V_OVERLOADED, _V_SERVER_ERROR, _V_TIMEOUT, _V_UNKNOWN = map(_v, (_R.overloaded,
 _V_IMAGE_TOO_LARGE, _V_IMAGE_CORRUPT = _v(_R.image_too_large), _v(_R.image_corrupt)
 _V_MULTIMODAL, _V_INVALID_ENCRYPTED = _v(_R.multimodal_tool_content_unsupported), _v(_R.invalid_encrypted_content)
 _V_REASONING_MANDATORY = _v(_R.reasoning_mandatory, should_compress=False, should_fallback=False)
+_V_ECHOED_REASONING = _v(_R.echoed_reasoning_rejected, should_compress=False, should_fallback=False)
 # Same recovery hints as format_error: consumers without a merge-and-retry step (the main loop
 # already merges adjacent users before the call) keep aborting to the fallback chain.
 _V_ROLE_ALTERNATION = _v(_R.role_alternation, **_ABORT_FALLBACK)
@@ -1162,6 +1164,20 @@ def _classify_400(c: _Ctx) -> Verdict:
     # loop drops it and retries once. Must precede request-validation, which would abort as format_error.
     if _REASONING_MANDATORY_PATTERN in msg or is_reasoning_field_rejection(msg):
         return _V_REASONING_MANDATORY
+    # Echo routes (Nous Portal fronting the Anthropic wire, OpenRouter) reject a replayed
+    # ``reasoning_details`` array with an opaque 400: "This request is not valid. Check the
+    # model name and other parameters. Additional info: Provider returned error" (probe-verified
+    # wording, ADR 2026-10-01 agent-org). It NAMES THE MODEL, not the payload — reads as
+    # model_not_found, aborts as request-validation format_error — while the model is routable
+    # (a bare replay succeeds; the rejection appears once a reasoning turn rides agent-shaped
+    # history). Recovery: strip the echo array from the wire copy and retry once
+    # (turn_recovery). Placement is deliberate: AFTER the specific reasoning-cause rung above
+    # (Nous wraps those in this SAME envelope — "Additional info: Reasoning is mandatory…"
+    # must stay reasoning_mandatory) and BEFORE request-validation, which previously
+    # classified this wedge non_retryable and burned the turn. Both markers required so a
+    # genuine typo'd-model 400 cannot trigger the strip. #70233 family.
+    if "this request is not valid" in msg and "check the model name" in msg:
+        return _V_ECHOED_REASONING
     # 400 blaming a field this route never sent (Codex OAuth injects then rejects
     # prompt_cache_retention ~20% of the time): transient, retry identical request.
     if _is_server_injected_param_rejection(msg, c.provider_slug):

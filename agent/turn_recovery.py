@@ -504,9 +504,9 @@ def _recover_format_errors(
     agent: Any, api_error: Exception, classified: Any, _retry: TurnRetryState,
     messages: List[Dict[str, Any]], api_messages: Any,
 ) -> bool:
-    """One-shot format-recovery strips: thinking-signature → invalid-encrypted-content
-    replay disable → native-compaction reject → llama.cpp grammar strip. Returns True when
-    the request was repaired and should be retried."""
+    """One-shot format-recovery strips: thinking-signature → echoed-reasoning strip →
+    invalid-encrypted-content replay disable → native-compaction reject → llama.cpp grammar
+    strip. Returns True when the request was repaired and should be retried."""
     # Upstream mutation can invalidate a thinking signature. Native Anthropic has multiple replay
     # carriers and preserved historical blocks, so suppress the rejected opaque blocks across all
     # carriers and persist that suppression. Other transports keep their established one-request
@@ -530,6 +530,36 @@ def _recover_format_errors(
             "%sThinking block signature recovery: %s from %d carrier/message(s) "
             "(canonical messages unchanged)",
             agent.log_prefix, detail, removed,
+        )
+        return True
+
+    # Echo-route (Nous Portal / OpenRouter) opaque 400 on the replayed ``reasoning_details``
+    # array — classified by wording because the error TEXT names the model, not the payload.
+    # Same contract as the thinking-signature strip above: mutate ``api_messages`` (wire copy)
+    # only, never ``messages`` (state.db). One-shot: if the route 400s identically after the
+    # strip — or nothing carried the field, so the strip repaired nothing — do NOT retry again;
+    # let the error fall through to fallback instead of spinning the attempt budget
+    # (2026-10-01 wedge: retry loop burned ~16min before the turn was abandoned).
+    if classified.reason == FailoverReason.echoed_reasoning_rejected and not _retry.echoed_reasoning_retry_attempted:
+        _retry.echoed_reasoning_retry_attempted = True
+        _echo_stripped = 0
+        for _m in api_messages:
+            if isinstance(_m, dict) and "reasoning_details" in _m:
+                _m.pop("reasoning_details", None)
+                _echo_stripped += 1
+        if _echo_stripped == 0:
+            logger.warning(
+                "%sEchoed reasoning_details 400 but no api_messages carried the "
+                "field — not a replay-shape problem, surfacing the error",
+                agent.log_prefix,
+            )
+            return False
+        _vlines(agent, "⚠️  Route rejected the echoed reasoning_details array — stripped it from api_messages for retry...")
+        logger.warning(
+            "%sEchoed reasoning_details recovery: stripped "
+            "reasoning_details from %d api_messages "
+            "(canonical messages unchanged)",
+            agent.log_prefix, _echo_stripped,
         )
         return True
 
@@ -1795,6 +1825,7 @@ def route_classified_error(
     from agent.conversation_compression import conversation_history_after_compression
     from agent.conversation_loop import _arm_fallback_restart, _ra
     from agent.model_metadata import estimate_request_tokens_rough
+    from agent.turn_context import _agent_reasoning_details_on_wire
 
     _provider_overflow_recovery_pending = False
     is_rate_limited = False
@@ -1863,7 +1894,10 @@ def route_classified_error(
                 # last_prompt_tokens — which is 0 in the no-usage fallback, hiding the true request size
                 # from the engine's overflow guard (upstream PR #77169 review).
                 messages, system_message,
-                approx_tokens=estimate_request_tokens_rough(api_messages, tools=agent.tools or None),
+                approx_tokens=estimate_request_tokens_rough(
+                    api_messages, tools=agent.tools or None,
+                    charge_echo_reasoning=_agent_reasoning_details_on_wire(agent),
+                ),
                 task_id=effective_task_id, trigger="overflow",
             )
             conversation_history = conversation_history_after_compression(agent, messages, conversation_history)

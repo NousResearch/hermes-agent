@@ -269,7 +269,13 @@ def _route_replays_reasoning_details(base_url: Any) -> bool:
     """
     from utils import base_url_host_matches
 
-    return base_url_host_matches(base_url, "openrouter.ai") or base_url_host_matches(base_url, "nousresearch.com")
+    # Delegation, not duplication: the estimator must charge exactly what this
+    # sanitizer sends, so both consume the SAME wire-truth predicate. Inlining a
+    # second host list here is how the two drift apart (2026-10-01 Nous wedge —
+    # see message_sanitization.reasoning_details_reaches_wire).
+    from agent.message_sanitization import reasoning_details_reaches_wire
+
+    return reasoning_details_reaches_wire("chat_completions", base_url)
 
 
 def _has_replayable_thought_signature(extra_content: Any) -> bool:

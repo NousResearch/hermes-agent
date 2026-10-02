@@ -2395,19 +2395,22 @@ def estimate_tokens_rough(text: str) -> int:
     return dense + ((len(stripped.encode("utf-8", "replace")) + 3) // CHARS_PER_TOKEN)
 
 
-def estimate_messages_tokens_rough(messages: List[Dict[str, Any]], *, charge_stale_thinking: bool = True) -> int:
+def estimate_messages_tokens_rough(messages: List[Dict[str, Any]], *, charge_stale_thinking: bool = True, charge_echo_reasoning: bool = False) -> int:
     """Rough token estimate for a message list (pre-flight only). Images cost the per-image price
     learned from provider usage (``agent.image_token_cost``; flat default before calibration)
     rather than their base64 length. ``charge_stale_thinking=False`` mirrors the tail-budget
     walk (``context_compressor._estimate_msg_budget_tokens``): on non-echo routes stale reasoning
     rides the wire only for the NEWEST assistant turn, so excluding it keeps the compaction TRIGGER
-    in the same size class as the walk — otherwise reasoning-heavy sessions fire preflight forever."""
+    in the same size class as the walk — otherwise reasoning-heavy sessions fire preflight forever.
+    ``charge_echo_reasoning=True`` adds the replayed ``reasoning_details`` array — pass it when
+    ``message_sanitization.reasoning_details_reaches_wire`` says the route sends the field (it is
+    NOT stale-thinking text: it ships on every assistant row, not just the newest)."""
     from agent.image_token_cost import current_image_token_cost
 
     image_cost = current_image_token_cost()
     if not charge_stale_thinking:
         messages = _strip_stale_thinking_for_estimate(messages)
-    return sum(_estimate_message_tokens_cached(msg, image_cost) for msg in messages)
+    return sum(_estimate_message_tokens_cached(msg, image_cost, charge_echo_reasoning) for msg in messages)
 
 
 def estimate_native_anthropic_messages_tokens_rough(messages: List[Dict[str, Any]]) -> int:
@@ -2485,17 +2488,21 @@ def _msg_fingerprint(value: Any, pins: list) -> Any:
     raise ValueError("unfingerprintable message value")
 
 
-def _estimate_message_tokens_cached(msg: Any, image_cost: int) -> int:
+def _estimate_message_tokens_cached(msg: Any, image_cost: int, charge_echo_reasoning: bool = False) -> int:
     """Text tokens + images x ``image_cost``; the memo holds text and image COUNT so a recalibrated
-    per-image price re-prices cached rows without invalidating them."""
+    per-image price re-prices cached rows without invalidating them. ``charge_echo_reasoning`` rows
+    are keyed under a namespaced prefix so they can never collide with the byte-blind default
+    memo for the same message fingerprint."""
     def _compute() -> Tuple[int, int]:
-        return _estimate_message_tokens_without_images(msg), _count_image_tokens(msg, 1)
+        return _estimate_message_tokens_without_images(msg, charge_echo_reasoning=charge_echo_reasoning), _count_image_tokens(msg, 1)
     try:
         pins: list = []
         # Persistence-only fields (identity, timestamps, display metadata) never reach the estimate: keep them
         # out of the key so stamping them neither costs a walk nor misses the memo.
         key = _msg_fingerprint(
             without_persistence_fields(msg) if type(msg) is dict else msg, pins)
+        if charge_echo_reasoning:
+            key = f"echo-rd|{key}"
         hash(key)
     except Exception:
         text, images = _compute()
@@ -2549,7 +2556,7 @@ def strip_opaque_replay_items(items: Any) -> Any:
     ]
 
 
-def _wire_message_shadow(msg: Dict[str, Any]) -> Dict[str, Any]:
+def _wire_message_shadow(msg: Dict[str, Any], charge_echo_reasoning: bool = False) -> Dict[str, Any]:
     """Shadow of a message holding only what the provider actually receives.
     * ``api_content`` SUBSTITUTES ``content`` (mirrors ``turn_context.substitute_api_content`` exactly):
       only a non-empty STRING sidecar on a user/assistant row displaces content; substituting any
@@ -2557,6 +2564,11 @@ def _wire_message_shadow(msg: Dict[str, Any]) -> Dict[str, Any]:
     * Base64 images become a placeholder; ``_count_image_tokens`` charges them flat.
     * ``reasoning`` never ships as-is (request builds pop it after optionally promoting it into
       ``reasoning_content``); counting both inflated estimates up to +53%.
+    * ``reasoning_details`` is dropped UNLESS ``charge_echo_reasoning`` — the route
+      (``message_sanitization.reasoning_details_reaches_wire``: OpenRouter / Nous Portal)
+      replays the array verbatim, and this shadow is the byte-level floor for the wire
+      payload. Excluding it on an echo route undercounts (2026-10-01 wedge: ~46K estimated
+      vs ~350K actually shipped) — undercount is the dangerous direction for 413/400 recovery.
     * Opaque provider blobs (``encrypted_content`` on codex reasoning / compaction items) are
       ciphertext the provider prices by its OWN token count, never by bytes; a native compaction
       checkpoint alone can be 5M chars (#100611). They contribute 0 here: only real usage ever
@@ -2567,7 +2579,7 @@ def _wire_message_shadow(msg: Dict[str, Any]) -> Dict[str, Any]:
     drop_reasoning_dup = isinstance(_rc, str) and bool(_rc.strip())
     shadow: Dict[str, Any] = {}
     for k, v in msg.items():
-        if k in ("_anthropic_content_blocks", "reasoning_details") or k in PERSISTENCE_ONLY_MESSAGE_FIELDS or (k == "reasoning" and drop_reasoning_dup):
+        if k in ("_anthropic_content_blocks",) or k in PERSISTENCE_ONLY_MESSAGE_FIELDS or (k == "reasoning" and drop_reasoning_dup) or (k == "reasoning_details" and not charge_echo_reasoning):
             continue
         if k == "api_content":
             if sidecar_wins:
@@ -2602,21 +2614,26 @@ def _wire_message_shadow(msg: Dict[str, Any]) -> Dict[str, Any]:
     return shadow
 
 
-def _estimate_message_tokens_without_images(msg: Dict[str, Any]) -> int:
+def _estimate_message_tokens_without_images(msg: Dict[str, Any], charge_echo_reasoning: bool = False) -> int:
     """Token estimate for a message shadow with image payloads stripped."""
-    return estimate_tokens_rough(str(_wire_message_shadow(msg) if isinstance(msg, dict) else msg))
+    return estimate_tokens_rough(str(_wire_message_shadow(msg, charge_echo_reasoning=charge_echo_reasoning) if isinstance(msg, dict) else msg))
 
 
 def estimate_request_tokens_rough(
     messages: List[Dict[str, Any]], *, system_prompt: str = "", tools: Optional[List[Dict[str, Any]]] = None, charge_stale_thinking: bool = True,
+    charge_echo_reasoning: bool = False,
 ) -> int:
     """Rough token estimate for a full request: system prompt + messages + tool schemas (50+ tools
     add 20-30K on their own). ``charge_stale_thinking`` is forwarded — pass False when the route
-    provably strips stale thinking (``message_sanitization.stale_thinking_reaches_wire``)."""
+    provably strips stale thinking (``message_sanitization.stale_thinking_reaches_wire``).
+    ``charge_echo_reasoning`` is forwarded — pass True when the route replays ``reasoning_details``
+    on the wire (``message_sanitization.reasoning_details_reaches_wire``)."""
     total = estimate_tokens_rough(system_prompt) if system_prompt else 0
     if messages:
         # Positional call: test seams and plugin engines monkeypatch estimate_messages_tokens_rough with (messages)-only signatures.
-        total += estimate_messages_tokens_rough(messages) if charge_stale_thinking else estimate_messages_tokens_rough(messages, charge_stale_thinking=False)
+        # ``charge_echo_reasoning`` is only passed through when True, so old seams never see an unknown kwarg.
+        _rd_kw = {"charge_echo_reasoning": True} if charge_echo_reasoning else {}
+        total += estimate_messages_tokens_rough(messages, **_rd_kw) if charge_stale_thinking else estimate_messages_tokens_rough(messages, charge_stale_thinking=False, **_rd_kw)
     if tools:
         total += _estimate_tools_tokens_rough(tools)
     return total

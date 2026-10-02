@@ -32,6 +32,7 @@ class FakeBridge:
         self.write_result = write_result
         self.closed = False
         self.resized = None
+        self.dead = False
 
     def read(self, timeout):
         if not self._chunks:
@@ -48,6 +49,9 @@ class FakeBridge:
 
     def close(self):
         self.closed = True
+
+    def is_alive(self):
+        return not self.dead
 
 
 class FakeWS:
@@ -453,4 +457,34 @@ async def test_close_other_sessions_removes_old_profile_session():
     assert reg._sessions[current.key] is current
     # The displaced viewer gets the documented supersede code rather than going silent.
     assert old_ws.close_code == WS_CLOSE_SUPERSEDED
+    await reg.close_all()
+
+
+@pytest.mark.asyncio
+async def test_reap_reaps_dead_process_even_when_attached():
+    # Child killed externally (OOM killer / cgroup SIGKILL) while a grandchild
+    # holds the PTY slave, so the drain never sees EOF: the session must still
+    # be reaped, otherwise its bridge and registry slot leak forever (#76759).
+    reg = make_registry(ttl=3600.0)
+    b = FakeBridge([b"", b"", b""])
+    s, _ = await reg.attach_or_spawn("tok", spawn=lambda: b)
+    await s.attach(FakeWS())
+    b.dead = True
+    await reg.reap_idle()
+    assert "tok" not in reg._sessions
+    assert b.closed is True
+    await reg.close_all()
+
+
+@pytest.mark.asyncio
+async def test_reap_keeps_live_attached_session():
+    # A session with a live child and an attached viewer is never reaped,
+    # even past the detached TTL.
+    reg = make_registry(ttl=1.0)
+    b = FakeBridge([b"", b""])
+    s, _ = await reg.attach_or_spawn("tok", spawn=lambda: b)
+    await s.attach(FakeWS())
+    await reg.reap_idle(now=time.monotonic() + 10)
+    assert "tok" in reg._sessions
+    assert b.closed is False
     await reg.close_all()

@@ -216,16 +216,29 @@ def _backup_operation_lock(hermes_home: Path, timeout_seconds: float = 0.25):
 
 
 @contextmanager
-def _atomic_output_path(final_path: Path, publish_path: Optional[Callable[[], Optional[Path]]] = None):
+def _atomic_output_path(
+    final_path: Path,
+    publish_path: Optional[Callable[[], Optional[Path]]] = None,
+    *,
+    private: bool = False,
+):
     """Yield a hidden sibling path and publish it only after a clean close.
 
     ``publish_path`` picks the destination at publish time (default ``final_path``) so a caller
     can divert an incomplete archive elsewhere without ever touching ``final_path``; returning
     ``None`` discards the partial instead of publishing it.
+
+    ``private`` creates the partial owner-only (0600) *before* the caller writes to it, so the
+    content is never readable by others, not even while it is being written. Reopening the
+    path for writing keeps that mode (a umask can only remove bits, never add them) and
+    ``os.replace`` carries it to the published name. If the private file cannot be created the
+    ``OSError`` propagates and nothing is published: fail closed rather than readable.
     """
     partial_path = final_path.with_name(f".{final_path.name}.{os.getpid()}-{threading.get_ident()}.partial")
     partial_path.unlink(missing_ok=True)
     try:
+        if private:
+            os.close(os.open(partial_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600))
         yield partial_path
         destination = publish_path() if publish_path else final_path
         if destination is None:
@@ -1157,9 +1170,11 @@ def _create_prefixed_full_backup(
         return None
     backup_dir = hermes_root / _PRE_UPDATE_BACKUPS_DIR
     try:
-        backup_dir.mkdir(parents=True, exist_ok=True)
+        backup_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+        if os.name != "nt":
+            os.chmod(backup_dir, 0o700)
     except OSError as exc:
-        logger.warning("Could not create %s backup dir %s: %s", what, backup_dir, exc)
+        logger.warning("Could not create private %s backup dir %s: %s", what, backup_dir, exc)
         return None
     out_path = backup_dir / f"{prefix}{datetime.now().strftime('%Y-%m-%d-%H%M%S')}.zip"
     if _write_full_zip_backup(out_path, hermes_root) is None:
@@ -1167,12 +1182,6 @@ def _create_prefixed_full_backup(
         # cap those salvages at one without letting them rotate complete backups out.
         _prune_incomplete_zips(backup_dir, prefix, prune_what)
         return None
-    # Contains a full HERMES_HOME snapshot (config, .env secrets, auth tokens, session data) -
-    # every other backup path in this module restricts its output to 0600/0700; this one didn't.
-    try:
-        os.chmod(out_path, 0o600)
-    except OSError as exc:
-        logger.warning("Could not restrict %s backup permissions on %s: %s", what, out_path, exc)
     _prune_prefixed_zips(backup_dir, prefix, keep, prune_what)
     return out_path
 
@@ -2223,7 +2232,7 @@ def _write_full_zip_backup_locked(out_path: Path, hermes_root: Path) -> Optional
 
     archive_started = time.monotonic()
     try:
-        with _atomic_output_path(out_path, _publish_path) as archive_path, zipfile.ZipFile(
+        with _atomic_output_path(out_path, _publish_path, private=True) as archive_path, zipfile.ZipFile(
                 archive_path, "w", zipfile.ZIP_DEFLATED, compresslevel=6) as zf:
             _write_zip_entries(
                 zf, files_to_add, out_path, on_db_failure=_db_failure, track_bytes=False,

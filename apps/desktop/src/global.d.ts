@@ -403,8 +403,10 @@ declare global {
         recover: () => Promise<{ ok: boolean; pending?: number; reason?: string }>
       }
       preparedSubmissions?: {
+        owner?: () => Promise<string>
         read: () => Promise<string>
         update: (key: string, entry: string | null) => Promise<void>
+        compareSend?: (key: string, expected: string | null, entry: string | null) => Promise<boolean>
       }
       zoom?: {
         get: () => Promise<{ level: number; percent: number }>

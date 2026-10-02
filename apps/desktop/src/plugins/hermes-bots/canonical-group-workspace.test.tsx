@@ -1,3 +1,7 @@
+import fs from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
+
 import type * as HermesSdk from '@hermes/plugin-sdk'
 import { useStore } from '@nanostores/react'
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
@@ -5,6 +9,9 @@ import { atom } from 'nanostores'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 
 const request = vi.hoisted(() => vi.fn())
+vi.mock('electron', () => ({ app: {}, ipcMain: {} }))
+const nativeModule = '../../../electron/prepared-submissions'
+const { preparedJournal } = await import(/* @vite-ignore */ nativeModule)
 vi.mock('@hermes/plugin-sdk', async () => {
   const sdk = await vi.importActual<typeof HermesSdk>('@hermes/plugin-sdk')
   const { pluginSdkMock, createGroupGateway, captureGroupRequests } = await import('./group-test-utils')
@@ -19,7 +26,7 @@ vi.mock('@hermes/plugin-sdk', async () => {
 })
 import { CANONICAL_GROUP_LOCALES } from './canonical-group-locales'
 import { $canonicalGroupBindings, $canonicalGroupNames, registerCanonicalGroup } from './canonical-group-registry'
-import { prepareCanonicalGroupSend, readCanonicalGroupSend } from './canonical-group-send'
+import { claimCanonicalGroupSend, listCanonicalGroupSends, prepareCanonicalGroupSend, readCanonicalGroupSend } from './canonical-group-send'
 import { CanonicalGroupWorkspace } from './canonical-group-workspace'
 import { GroupChatWorkspace } from './group-chat-view'
 import { CANONICAL_GROUP_CAPABILITIES } from './group-test-utils'
@@ -33,6 +40,316 @@ const chooseGroupAction = async (name: string) => {
 
 beforeEach(() => { Object.defineProperty(window, 'hermesDesktop', { configurable: true, writable: true, value: undefined }) })
 afterEach(() => { cleanup(); request.mockReset(); localStorage.clear(); window.hermesDesktop = originalDesktop })
+
+it.each(['entire journal', 'read', 'owner', 'compareSend'])('does not Send or write browser storage after incomplete native storage: missing %s', async missing => {
+  const binding = { connectionId: 'remote', profile: 'team', roomId: `missing-native-${missing}` }
+  const compareSend = vi.fn(), update = vi.fn()
+  const native: Record<string, unknown> = { read: async () => '{}', owner: async () => 'native-window', compareSend, update }
+  const desktop: Record<string, unknown> = { preparedSubmissions: native }
+  window.hermesDesktop = desktop as unknown as typeof window.hermesDesktop
+  request.mockImplementation(async (_route, method, params) => method === 'groups.state'
+    ? { room: { name: 'Room' }, driver_status: {} } : method === 'groups.log' ? { events: [] }
+      : { accepted: true, client_event_id: params.event_id })
+  render(<CanonicalGroupWorkspace binding={binding} />)
+  await waitFor(() => expect((screen.getByRole('textbox') as HTMLTextAreaElement).disabled).toBe(false))
+
+  if (missing === 'entire journal') {delete desktop.preparedSubmissions}
+  else {delete native[missing]}
+  const browserRead = vi.spyOn(Storage.prototype, 'getItem'), browserWrite = vi.spyOn(Storage.prototype, 'setItem')
+  try {
+    fireEvent.change(screen.getByRole('textbox'), { target: { value: 'Keep this unsent' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Send' }))
+    await screen.findByText('Atomic draft storage unavailable; update Desktop', {}, { timeout: 1000 })
+    expect(request.mock.calls.some(call => call[1] === 'groups.send')).toBe(false)
+    expect(browserRead).not.toHaveBeenCalled()
+    expect(browserWrite).not.toHaveBeenCalled()
+    expect(update).not.toHaveBeenCalled()
+    expect(compareSend).not.toHaveBeenCalled()
+    expect((screen.getByRole('textbox') as HTMLTextAreaElement).value).toBe('Keep this unsent')
+  } finally {browserRead.mockRestore(); browserWrite.mockRestore()}
+})
+
+it.each(['mounted', 'remount', 'transfer', 'legacy'].flatMap(mode =>
+  ['permission_denied', 'stale_generation'].map(reason => ({ mode, reason }))))('$mode keeps the unknown Send identity after a later $reason refusal', async ({ mode, reason }) => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'group-monotonic-ui-'))
+  const journal = preparedJournal(directory, 'http://localhost:5174')
+  const bind = (owner: string) => { window.hermesDesktop = { preparedSubmissions: {
+    owner: async () => owner, read: async () => JSON.stringify(journal.read()), update: vi.fn(),
+    compareSend: async (key: string, expected: string | null, entry: string | null) =>
+      journal.compareAndSet(key, expected === null ? null : JSON.parse(expected), entry === null ? null : JSON.parse(entry))
+  } } as unknown as typeof window.hermesDesktop }
+  const binding = { connectionId: 'remote', profile: 'team', roomId: `monotonic-${mode}-${reason}` }
+  const attempted: string[] = [], markers: unknown[] = []
+  const accepted = new Map<string, unknown>()
+  request.mockImplementation(async (_route, method, params) => {
+    if (method === 'groups.state') {return { room: { name: 'Room' }, driver_status: {} }}
+    if (method === 'groups.log') {return { events: [] }}
+    attempted.push(params.event_id)
+    markers.push((Object.values(journal.read())[0] as { attempted?: boolean })?.attempted)
+    // Controlled peer acceptance, then transport loss; no gateway/model process.
+    if (mode !== 'legacy' && attempted.length === 1) {
+      accepted.set(params.event_id, params.payload)
+      throw new Error('acceptance reply lost')
+    }
+    throw Object.assign(new Error(reason), { code: 4001, data: { reason } })
+  })
+  try {
+    bind('original-window')
+    let originalId: string
+    if (mode === 'legacy') {
+      originalId = 'legacy-unknown-id'
+      const entry = { binding, params: { room_id: binding.roomId, event_id: originalId, payload: { text: 'Original accepted intent', attachments: [], thread_id: originalId } } }
+      journal.update(JSON.stringify(['canonical-group-send-v1', binding.connectionId, binding.profile, binding.roomId]), entry)
+      accepted.set(originalId, entry.params.payload)
+    } else {
+      const first = render(<CanonicalGroupWorkspace binding={binding} />)
+      await waitFor(() => expect((screen.getByRole('textbox') as HTMLTextAreaElement).disabled).toBe(false))
+      fireEvent.change(screen.getByRole('textbox'), { target: { value: 'Original accepted intent' } })
+      fireEvent.click(screen.getByRole('button', { name: 'Send' }))
+      await screen.findByText('acceptance reply lost')
+      originalId = attempted[0]
+      if (mode !== 'mounted') {first.unmount()}
+    }
+
+    if (mode !== 'mounted') {
+      if (mode === 'transfer') {bind('new-window')}
+      render(<CanonicalGroupWorkspace binding={binding} />)
+      if (mode === 'transfer' || mode === 'legacy') {
+        fireEvent.click(await screen.findByRole('button', { name: 'Restore draft' }))
+      }
+    }
+    const retry = await screen.findByRole('button', { name: 'Retry' })
+    await waitFor(() => expect((retry as HTMLButtonElement).disabled).toBe(false))
+    const before = attempted.length
+    fireEvent.click(retry)
+    await screen.findByText(reason)
+    expect(Object.values(journal.read()).map((entry: any) => ({ id: entry.params.event_id, text: entry.params.payload.text })))
+      .toEqual([{ id: originalId, text: 'Original accepted intent' }])
+    expect((screen.getByRole('textbox') as HTMLTextAreaElement).value).toBe('Original accepted intent')
+    expect((screen.getByRole('textbox') as HTMLTextAreaElement).disabled).toBe(true)
+    expect(screen.getByText(CANONICAL_GROUP_LOCALES.en.sendMaybe)).toBeTruthy()
+    const again = screen.getByRole('button', { name: 'Retry' })
+    await waitFor(() => expect((again as HTMLButtonElement).disabled).toBe(false))
+    fireEvent.click(again)
+    await waitFor(() => expect(attempted).toHaveLength(before + 2))
+    expect(attempted.every(id => id === originalId)).toBe(true)
+    expect(markers.every(marker => marker === true)).toBe(true)
+    expect([...accepted.keys()]).toEqual([originalId])
+  } finally {cleanup(); fs.rmSync(directory, { recursive: true, force: true })}
+})
+
+it.each(['permission_denied', 'stale_generation'])('keeps a fresh proven %s refusal editable', async reason => {
+  const binding = { connectionId: 'remote', profile: 'team', roomId: `fresh-${reason}` }
+  request.mockImplementation(async (_route, method) => method === 'groups.state'
+    ? { room: { name: 'Room' }, driver_status: {} } : method === 'groups.log' ? { events: [] }
+      : Promise.reject(Object.assign(new Error(reason), { code: 4001, data: { reason } })))
+  render(<CanonicalGroupWorkspace binding={binding} />)
+  await waitFor(() => expect((screen.getByRole('textbox') as HTMLTextAreaElement).disabled).toBe(false))
+  fireEvent.change(screen.getByRole('textbox'), { target: { value: 'Fresh refused intent' } })
+  fireEvent.click(screen.getByRole('button', { name: 'Send' }))
+  await screen.findByText(CANONICAL_GROUP_LOCALES.en.sendRefused)
+  await waitFor(() => expect((screen.getByRole('textbox') as HTMLTextAreaElement).disabled).toBe(false))
+  expect(await readCanonicalGroupSend(binding)).toBeUndefined()
+  expect((screen.getByRole('textbox') as HTMLTextAreaElement).value).toBe('Fresh refused intent')
+})
+
+it.each([null, 0, 1, 'true', [], {}])('keeps the exact prepared message on malformed provided acceptance %j', async accepted => {
+  const binding = { connectionId: 'remote', profile: 'team', roomId: 'invalid-acceptance' }
+  request.mockImplementation(async (_route, method, params) => method === 'groups.state'
+    ? { room: { name: 'Room' }, driver_status: {} } : method === 'groups.log' ? { events: [] }
+      : { accepted, client_event_id: params.event_id })
+  render(<CanonicalGroupWorkspace binding={binding} />)
+  await waitFor(() => expect((screen.getByRole('textbox') as HTMLTextAreaElement).disabled).toBe(false))
+  fireEvent.change(screen.getByRole('textbox'), { target: { value: 'Keep this exact message' } })
+  fireEvent.click(screen.getByRole('button', { name: 'Send' }))
+
+  await screen.findByRole('button', { name: 'Retry' })
+  await waitFor(() => expect((screen.getByRole('textbox') as HTMLTextAreaElement).value).toBe('Keep this exact message'))
+  const retained = await readCanonicalGroupSend(binding)
+  expect(retained?.params.payload.text).toBe('Keep this exact message')
+  expect(request.mock.calls.filter(call => call[1] === 'groups.send')).toHaveLength(1)
+  expect(request.mock.calls.find(call => call[1] === 'groups.send')![2].event_id).toBe(retained!.params.event_id)
+})
+
+it('retains legacy acknowledgement compatibility when accepted is absent', async () => {
+  const binding = { connectionId: 'remote', profile: 'team', roomId: 'legacy-acceptance' }
+  request.mockImplementation(async (_route, method, params) => method === 'groups.state'
+    ? { room: { name: 'Room' }, driver_status: {} } : method === 'groups.log' ? { events: [] }
+      : { client_event_id: params.event_id })
+  render(<CanonicalGroupWorkspace binding={binding} />)
+  await waitFor(() => expect((screen.getByRole('textbox') as HTMLTextAreaElement).disabled).toBe(false))
+  fireEvent.change(screen.getByRole('textbox'), { target: { value: 'Compatible receipt' } })
+  fireEvent.click(screen.getByRole('button', { name: 'Send' }))
+  await waitFor(() => expect((screen.getByRole('textbox') as HTMLTextAreaElement).value).toBe(''))
+  expect(await readCanonicalGroupSend(binding)).toBeUndefined()
+})
+
+it('a second already-mounted window sends its own text while the first acknowledgement is unknown', async () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'group-window-ui-'))
+  const journal = preparedJournal(directory, 'http://localhost:5174')
+  const bind = (owner: string) => { window.hermesDesktop = { preparedSubmissions: {
+    owner: async () => owner, read: async () => JSON.stringify(journal.read()), update: vi.fn(),
+    compareSend: async (key: string, expected: string | null, entry: string | null) =>
+      journal.compareAndSet(key, expected === null ? null : JSON.parse(expected), entry === null ? null : JSON.parse(entry))
+  } } as unknown as typeof window.hermesDesktop }
+  const binding = { connectionId: 'remote', profile: 'team', roomId: 'two-window' }
+  request.mockImplementation(async (_route, method, params) => {
+    if (method === 'groups.state') {return { room: { name: 'Room' }, driver_status: {} }}
+    if (method === 'groups.log') {return { events: [] }}
+    if (params.payload.text === 'Window A') {throw new Error('lost ACK')}
+    return { accepted: true, client_event_id: params.event_id }
+  })
+  try {
+    bind('window-a')
+    const a = render(<CanonicalGroupWorkspace binding={binding} />)
+    await waitFor(() => expect((within(a.container).getByRole('textbox') as HTMLTextAreaElement).disabled).toBe(false))
+    bind('window-b')
+    const b = render(<CanonicalGroupWorkspace binding={binding} />)
+    await waitFor(() => expect((within(b.container).getByRole('textbox') as HTMLTextAreaElement).disabled).toBe(false))
+    bind('window-a')
+    fireEvent.change(within(a.container).getByRole('textbox'), { target: { value: 'Window A' } })
+    fireEvent.click(within(a.container).getByRole('button', { name: 'Send' }))
+    await within(a.container).findByText('lost ACK')
+    const first = request.mock.calls.find(call => call[1] === 'groups.send')![2]
+    bind('window-b')
+    fireEvent.change(within(b.container).getByRole('textbox'), { target: { value: 'Window B' } })
+    fireEvent.click(within(b.container).getByRole('button', { name: 'Send' }))
+    await waitFor(() => expect((within(b.container).getByRole('textbox') as HTMLTextAreaElement).value).toBe(''))
+    const sends = request.mock.calls.filter(call => call[1] === 'groups.send')
+    expect(sends.map(call => call[2].payload.text)).toEqual(['Window A', 'Window B'])
+    expect(sends[1][2].event_id).not.toBe(first.event_id)
+    expect(Object.values(journal.read()).map((entry: any) => entry.params.event_id)).toEqual([first.event_id])
+  } finally {fs.rmSync(directory, { recursive: true, force: true })}
+})
+
+it('offers a cold-window restore without sending, preserves a newer draft, then retries the chosen original identity', async () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'group-recovery-ui-'))
+  const journal = preparedJournal(directory, 'http://localhost:5174')
+  const bind = (owner: string) => { window.hermesDesktop = { preparedSubmissions: {
+    owner: async () => owner, read: async () => JSON.stringify(journal.read()), update: vi.fn(),
+    compareSend: async (key: string, expected: string | null, entry: string | null) =>
+      journal.compareAndSet(key, expected === null ? null : JSON.parse(expected), entry === null ? null : JSON.parse(entry))
+  } } as unknown as typeof window.hermesDesktop }
+  const binding = { connectionId: 'remote', profile: 'team', roomId: 'chosen-recovery' }
+  request.mockImplementation(async (_route, method, params) => method === 'groups.state'
+    ? { room: { name: 'Room' }, driver_status: {} } : method === 'groups.log' ? { events: [] }
+      : { accepted: true, client_event_id: params.event_id })
+  try {
+    bind('closed-window')
+    const original = await prepareCanonicalGroupSend(binding, { text: 'Frozen original', attachments: [] })
+    bind('new-window')
+    render(<CanonicalGroupWorkspace binding={binding} />)
+    await screen.findByRole('button', { name: 'Restore draft' })
+    expect((screen.getByRole('textbox') as HTMLTextAreaElement).value).toBe('')
+    expect(request.mock.calls.some(call => call[1] === 'groups.send')).toBe(false)
+    fireEvent.change(screen.getByRole('textbox'), { target: { value: 'Newer draft' } })
+    expect((screen.getByRole('button', { name: 'Restore draft' }) as HTMLButtonElement).disabled).toBe(true)
+    expect((screen.getByRole('textbox') as HTMLTextAreaElement).value).toBe('Newer draft')
+    fireEvent.change(screen.getByRole('textbox'), { target: { value: '' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Restore draft' }))
+    await screen.findByRole('button', { name: 'Retry' })
+    expect(request.mock.calls.some(call => call[1] === 'groups.send')).toBe(false)
+    fireEvent.click(screen.getByRole('button', { name: 'Retry' }))
+    await waitFor(() => expect(request.mock.calls.some(call => call[1] === 'groups.send')).toBe(true))
+    const sent = request.mock.calls.find(call => call[1] === 'groups.send')![2]
+    expect(sent).toEqual({ ...original.params, profile: binding.profile })
+  } finally {fs.rmSync(directory, { recursive: true, force: true })}
+})
+
+it('keeps Restore unclaimed during upload and while the new attachment occupies the composer', async () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'group-upload-recovery-'))
+  const journal = preparedJournal(directory, 'http://localhost:5174')
+  const compare = vi.spyOn(journal, 'compareAndSet')
+  const bind = (owner: string) => { window.hermesDesktop = { preparedSubmissions: {
+    owner: async () => owner, read: async () => JSON.stringify(journal.read()), update: vi.fn(),
+    compareSend: async (key: string, expected: string | null, entry: string | null) =>
+      journal.compareAndSet(key, expected === null ? null : JSON.parse(expected), entry === null ? null : JSON.parse(entry))
+  } } as unknown as typeof window.hermesDesktop }
+  const binding = { connectionId: 'remote', profile: 'team', roomId: 'upload-recovery' }
+  let releaseUpload!: (value: unknown) => void
+  request.mockImplementation(async (_route, method) => {
+    if (method === 'groups.state') {return { room: { name: 'Room' }, driver_status: {} }}
+    if (method === 'groups.log') {return { events: [] }}
+    if (method === 'groups.attachment.upload') {return new Promise(resolve => { releaseUpload = resolve })}
+    return {}
+  })
+  try {
+    bind('original-window')
+    const original = await prepareCanonicalGroupSend(binding, { text: 'Frozen original', attachments: [] })
+    compare.mockClear()
+    bind('new-window')
+    const view = render(<CanonicalGroupWorkspace binding={binding} />)
+    const restore = await screen.findByRole('button', { name: labels.restorePendingSend }) as HTMLButtonElement
+    fireEvent.change(view.container.querySelector('input[type=file]')!, { target: { files: [new File(['A'], 'notes.txt', { type: 'text/plain' })] } })
+    await waitFor(() => expect(releaseUpload).toBeTypeOf('function'))
+    expect(restore.disabled).toBe(true)
+    fireEvent.click(restore)
+    expect(compare).not.toHaveBeenCalled()
+    expect(Object.values(journal.read())).toEqual([original])
+    expect(request.mock.calls.some(call => call[1] === 'groups.send')).toBe(false)
+    await act(async () => releaseUpload({ attachment_id: 'uploaded', kind: 'file', name: 'notes.txt', mime: 'text/plain' }))
+    expect(restore.disabled).toBe(true)
+    fireEvent.click(restore)
+    expect(compare).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByRole('button', { name: labels.removeAttachment }))
+    await waitFor(() => expect(restore.disabled).toBe(false))
+    fireEvent.click(restore)
+    await screen.findByRole('button', { name: 'Retry' })
+    expect((Object.values(journal.read())[0] as { params: unknown }).params).toEqual(original.params)
+    expect(request.mock.calls.some(call => call[1] === 'groups.send')).toBe(false)
+  } finally {cleanup(); fs.rmSync(directory, { recursive: true, force: true })}
+})
+
+it('a queued editor update cannot be cleared by a prior message acknowledgement', async () => {
+  const binding = { connectionId: 'remote', profile: 'team', roomId: 'newer-edit' }
+  let acknowledge!: () => void
+  request.mockImplementation(async (_route, method, params) => {
+    if (method === 'groups.state') {return { room: { name: 'Room' }, driver_status: {} }}
+    if (method === 'groups.log') {return { events: [] }}
+    await new Promise<void>(resolve => {acknowledge = resolve})
+    return { accepted: true, client_event_id: params.event_id }
+  })
+  render(<CanonicalGroupWorkspace binding={binding} />)
+  await waitFor(() => expect((screen.getByRole('textbox') as HTMLTextAreaElement).disabled).toBe(false))
+  fireEvent.change(screen.getByRole('textbox'), { target: { value: 'Sent text' } })
+  fireEvent.click(screen.getByRole('button', { name: 'Send' }))
+  await waitFor(() => expect(acknowledge).toBeTypeOf('function'))
+  fireEvent.change(screen.getByRole('textbox'), { target: { value: 'Queued newer edit' } })
+  acknowledge()
+  await waitFor(() => expect(request.mock.calls.filter(call => call[1] === 'groups.state').length).toBeGreaterThan(1))
+  expect((screen.getByRole('textbox') as HTMLTextAreaElement).value).toBe('Queued newer edit')
+  expect(request.mock.calls.find(call => call[1] === 'groups.send')![2].payload.text).toBe('Sent text')
+})
+
+it('a mounted former window cannot Retry after another window explicitly claims its intent', async () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'group-transferred-ui-'))
+  const journal = preparedJournal(directory, 'http://localhost:5174')
+  const bind = (owner: string) => { window.hermesDesktop = { preparedSubmissions: {
+    owner: async () => owner, read: async () => JSON.stringify(journal.read()), update: vi.fn(),
+    compareSend: async (key: string, expected: string | null, entry: string | null) =>
+      journal.compareAndSet(key, expected === null ? null : JSON.parse(expected), entry === null ? null : JSON.parse(entry))
+  } } as unknown as typeof window.hermesDesktop }
+  const binding = { connectionId: 'remote', profile: 'team', roomId: 'transferred' }
+  request.mockImplementation(async (_route, method) => method === 'groups.state'
+    ? { room: { name: 'Room' }, driver_status: {} } : method === 'groups.log' ? { events: [] }
+      : Promise.reject(new Error('lost ACK')))
+  try {
+    bind('window-a')
+    const original = await prepareCanonicalGroupSend(binding, { text: 'Original intent', attachments: [] })
+    render(<CanonicalGroupWorkspace binding={binding} />)
+    await screen.findByRole('button', { name: 'Retry' })
+    bind('window-b')
+    const [offered] = await listCanonicalGroupSends(binding)
+    const transferred = await claimCanonicalGroupSend(binding, offered)
+    bind('window-a')
+    fireEvent.click(screen.getByRole('button', { name: 'Retry' }))
+    await screen.findByText('Prepared draft changed before Retry')
+    expect(request.mock.calls.some(call => call[1] === 'groups.send')).toBe(false)
+    expect(Object.values(journal.read())).toEqual([transferred])
+    expect(transferred.params.event_id).toBe(original.params.event_id)
+    expect((screen.getByRole('textbox') as HTMLTextAreaElement).value).toBe('Original intent')
+  } finally {fs.rmSync(directory, { recursive: true, force: true })}
+})
 
 it('restores a frozen send after remount and retires only its acknowledged exact retry', async () => {
   const binding = { connectionId: 'remote', profile: 'team', roomId: 'restore' }
@@ -53,7 +370,7 @@ it('restores a frozen send after remount and retires only its acknowledged exact
   expect(request.mock.calls.some(c => c[1] === 'groups.send')).toBe(false)
   fireEvent.click(screen.getByRole('button', { name: 'Retry' }))
   await screen.findByText('lost ACK')
-  expect(await readCanonicalGroupSend(binding)).toEqual(entry)
+  expect(await readCanonicalGroupSend(binding)).toEqual({ ...entry, attempted: true })
   first.unmount()
   render(<CanonicalGroupWorkspace binding={binding} />)
   await screen.findByRole('button', { name: 'Retry' })
@@ -77,12 +394,17 @@ it('blocks Send until journal restore and durable preparation complete', async (
   const journal: Record<string, unknown> = {}
 
   const native = {
+    owner: async () => 'window',
     read: vi.fn().mockImplementationOnce(() => new Promise<string>(resolve => { releaseRead = resolve }))
       .mockImplementation(async () => JSON.stringify(journal)),
-    update: vi.fn(async (key: string, value: string | null) => {
+    update: vi.fn(),
+    compareSend: vi.fn(async (key: string, expected: string | null, value: string | null) => {
       await new Promise<void>(resolve => { releaseWrite = resolve })
 
+      if ((Object.hasOwn(journal, key) ? JSON.stringify(journal[key]) : null) !== expected) {return false}
       if (value === null) {delete journal[key]} else {journal[key] = JSON.parse(value)}
+
+      return true
     })
   }
 
@@ -97,11 +419,18 @@ it('blocks Send until journal restore and durable preparation complete', async (
   await waitFor(() => expect((screen.getByRole('textbox') as HTMLTextAreaElement).disabled).toBe(false))
   fireEvent.change(screen.getByRole('textbox'), { target: { value: 'New text' } })
   fireEvent.click(screen.getByRole('button', { name: 'Send' }))
-  await waitFor(() => expect(native.update).toHaveBeenCalled())
+  await waitFor(() => expect(native.compareSend).toHaveBeenCalled())
   expect(request.mock.calls.some(c => c[1] === 'groups.send')).toBe(false)
   releaseWrite()
+  await waitFor(() => expect(native.compareSend).toHaveBeenCalledTimes(2))
+  expect(request.mock.calls.some(c => c[1] === 'groups.send')).toBe(false)
+  expect((Object.values(journal)[0] as { attempted: boolean }).attempted).toBe(false)
+  releaseWrite()
   await waitFor(() => expect(request.mock.calls.some(c => c[1] === 'groups.send')).toBe(true))
-  await waitFor(() => expect(native.update).toHaveBeenCalledTimes(2))
+  expect((Object.values(journal)[0] as { attempted: boolean }).attempted).toBe(true)
+  await waitFor(() => expect(native.compareSend).toHaveBeenCalledTimes(3))
+  releaseWrite()
+  await waitFor(() => expect(native.compareSend).toHaveBeenCalledTimes(4))
   releaseWrite()
   await waitFor(() => expect((screen.getByRole('textbox') as HTMLTextAreaElement).value).toBe(''))
 })
@@ -557,7 +886,7 @@ it('keeps its frozen send for missing or malformed acknowledgement identity', as
     await waitFor(() =>
       expect(screen.getByRole('alert').textContent).toContain(CANONICAL_GROUP_LOCALES.en.unconfirmedSend)
     )
-    expect(await readCanonicalGroupSend(binding)).toEqual(entry)
+    expect(await readCanonicalGroupSend(binding)).toEqual({ ...entry, attempted: true })
     await waitFor(() =>
       expect((screen.getByRole('button', { name: 'Retry' }) as HTMLButtonElement).disabled).toBe(false)
     )

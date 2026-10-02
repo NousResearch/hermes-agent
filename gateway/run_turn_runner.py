@@ -1739,6 +1739,11 @@ class TurnRunner:
             result["final_response"] = repair_explicit_computer_use_media_paths(
                 result["final_response"], result.get("messages", []), history_offset=len(agent_history),
             )
+        from gateway.request_lifecycle import final_response, request_for_run
+        ctx.request_context = request_for_run(self._runner, ctx.session_key, ctx.run_generation)
+        if isinstance(result, dict) and isinstance(result.get("final_response"), str):
+            result["final_response"] = final_response(
+                self._runner, ctx.session_key, ctx.run_generation, result["final_response"])
         ctx.result_holder[0] = result
         if stream_consumer is None:
             return

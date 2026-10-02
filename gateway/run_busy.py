@@ -420,6 +420,8 @@ class GatewayBusySessionMixin:
                 "Dropping busy-mode follow-up for session %s — pending queue at cap (%d).",
                 session_key, self._BUSY_QUEUE_MAX_PENDING,
             )
+            from gateway.request_lifecycle import finish_event
+            finish_event(event, "rejected")
             return
 
         self._enqueue_fifo(session_key, event, adapter)
@@ -682,6 +684,8 @@ class GatewayBusySessionMixin:
         turn = self._session_state(session_key).turn
         if turn.agent is not running_agent:
             return None
+        from gateway.request_lifecycle import fold_request
+        fold_request(self, event, session_key)
         if turn.event is not None and turn.event is not event:
             turn.event.absorb_reply_expected(event)
             if turn.ctx is not None:
@@ -831,11 +835,29 @@ class GatewayBusySessionMixin:
             return True
         event._bot_loop_admitted = True
 
+        from gateway.request_lifecycle import capability_enabled, consume_control, admit_request
+        # Correlated input retains precedence over generic pure request controls.
+        has_consumer = capability_enabled(self, event.source)
+        reply = (await self._hm_pending_reply_intercepts(event, event.source, session_key)
+                 if has_consumer else None)
+        if reply is not None:
+            adapter = self._delivery_adapter_for(event.source)
+            if adapter and reply:
+                await self._send_busy_reply(event, adapter, reply)
+            return True
+        if has_consumer and await self._route_plaintext_approval_while_busy(event, session_key):
+            return True
+        if await consume_control(self, event, session_key):
+            return True
+        await admit_request(self, event, session_key)
+
         effective_mode = self._effective_busy_input_mode(event.source)
         if self._draining:  # gateway restarting/stopping
             await self._send_busy_drain_notice(event, session_key, effective_mode)
+            from gateway.request_lifecycle import settle_unqueued_event
+            settle_unqueued_event(self, event)
             return True
-        if await self._route_plaintext_approval_while_busy(event, session_key):
+        if not has_consumer and await self._route_plaintext_approval_while_busy(event, session_key):
             return True
         adapter = self._delivery_adapter_for(event.source)
         if not adapter:
@@ -877,6 +899,8 @@ class GatewayBusySessionMixin:
             effective_mode == "interrupt" and not redirected
             and running_agent and running_agent is not _AGENT_PENDING_SENTINEL
         ):
+            from gateway.request_lifecycle import finish_session
+            finish_session(self, session_key, stage="superseded")
             await self._interrupt_running_agent_for_busy_event(event, adapter, running_agent)
 
         # Disabled ack: still process input. Checked before debounce so an undelivered ack never

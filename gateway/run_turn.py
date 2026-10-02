@@ -3089,7 +3089,9 @@ class GatewayTurnMixin:
             _cleanup_adapter = None
 
         # The one-slot progress/holder containers shared with the callbacks are TurnContext defaults.
+        from gateway.request_lifecycle import request_for_run
         turn_ctx = TurnContext(
+            request_context=request_for_run(self, session_key, run_generation),
             source=source, message=message, AIAgent=AIAgent, session_key=session_key,
             run_generation=run_generation, _cleanup_progress=_cleanup_progress,
             _run_still_current=self._run_still_current_fn(session_key, run_generation),
@@ -3682,6 +3684,8 @@ class GatewayTurnMixin:
                             "Discarding command '/%s' from pending queue — "
                             "commands must not be passed as agent input", _pending_cmd_word,
                         )
+                        from gateway.request_lifecycle import finish_event
+                        finish_event(pending_event, "rejected")
                         pending_event = None
                         pending = None
 
@@ -3690,6 +3694,8 @@ class GatewayTurnMixin:
                 "Discarding pending follow-up for session %s during gateway %s",
                 session_key or "?", self._status_action_label(),
             )
+            from gateway.request_lifecycle import finish_event
+            finish_event(pending_event, "cancelled")
             pending_event = None
             pending = None
         return pending_event, pending
@@ -3746,6 +3752,7 @@ class GatewayTurnMixin:
                     # The text send records a delivery-ledger obligation under this key, keyed on
                     # the raw inbound id (the anchor above is only the reply target).
                     session_key=session_key, inbound_message_id=turn_ctx.inbound_message_id,
+                    **({"request_context": turn_ctx.request_context} if turn_ctx.request_context is not None else {}),
                 )
             except Exception as e:
                 logger.warning("Failed to send first response before queued message: %s", e)
@@ -3837,10 +3844,14 @@ class GatewayTurnMixin:
                     "Queued follow-up session-key resolution failed; reusing %s",
                     session_key or "?", exc_info=True,
                 )
+            from gateway.request_lifecycle import begin_request
+            begin_request(self, pending_event, run_generation)
             next_message = await self._prepare_profile_scoped_inbound_message_text(
                 event=pending_event, source=next_source, history=updated_history, session_key=next_session_key,
             )
             if next_message is None:
+                from gateway.request_lifecycle import finish_event
+                finish_event(pending_event, "rejected")
                 return result
             from gateway.run_inbound import strip_discord_triggering_note
             next_persist_message = strip_discord_triggering_note(pending_event, next_message)
@@ -4047,6 +4058,8 @@ class GatewayTurnMixin:
                 _sk, _streamed, _previewed, _content_delivered,
             )
             response["already_sent"] = True
+            from gateway.request_lifecycle import record_final_delivery
+            record_final_delivery(turn_ctx.request_context, success=True)
         elif not _transformed and _stale_finalized and _sc is not None:
             # Stale finalize: edit the streamed message up to the complete response (on failure the
             # normal send delivers). Not for split delivery — message_id is only the LAST chunk.
@@ -4305,6 +4318,10 @@ class GatewayTurnMixin:
             worker = self._run_agent_start_turn_worker(turn_ctx, turn_runner.run_sync)
             _executor_task_holder[0] = worker.executor_task  # read late by _notify_long_running
             response = await self._run_agent_await_turn_worker(worker, turn_ctx, _interrupt_detected, interrupt_monitor)
+            # Early provider-resolution returns do not pass the normal worker final boundary.
+            from gateway.request_lifecycle import final_response
+            if isinstance(response, dict) and isinstance(response.get("final_response"), str):
+                response["final_response"] = final_response(self, session_key, run_generation, response["final_response"])
             if isinstance(response, dict):
                 response["_notification_reply_muted"] = turn_ctx.mute_notification_reply
             self._run_agent_evict_on_fallback(turn_ctx)

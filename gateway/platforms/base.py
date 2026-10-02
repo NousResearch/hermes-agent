@@ -1805,6 +1805,9 @@ def merge_pending_message_event(pending_messages: Dict[str, MessageEvent], sessi
     """Store or merge a pending event: photo bursts/albums merge into the queued event so the next
     turn sees the whole burst; with ``merge_text`` rapid TEXT follow-ups append instead of
     replace."""
+    from gateway.request_lifecycle import separate_queue_owners
+    if separate_queue_owners(pending_messages, session_key, event):
+        return
     existing = pending_messages.get(session_key)
     if existing:
         existing_type = getattr(existing, "message_type", None)
@@ -1830,6 +1833,8 @@ def merge_pending_message_event(pending_messages: Dict[str, MessageEvent], sessi
             if event.text:
                 existing.text = BasePlatformAdapter._merge_caption(existing.text, event.text)
             existing.absorb_reply_expected(event)
+            from gateway.request_lifecycle import reconcile_merge
+            reconcile_merge(existing, event, merged=True)
             if existing_is_photo or incoming_is_photo:
                 existing.message_type = MessageType.PHOTO
             elif existing_type == MessageType.TEXT and event.message_type != MessageType.TEXT:
@@ -1845,7 +1850,12 @@ def merge_pending_message_event(pending_messages: Dict[str, MessageEvent], sessi
             if event.text:
                 existing.text = _append_text(existing.text, event.text)
             existing.absorb_reply_expected(event)
+            from gateway.request_lifecycle import reconcile_merge
+            reconcile_merge(existing, event, merged=True)
             return
+    if existing is not None:
+        from gateway.request_lifecycle import reconcile_merge
+        reconcile_merge(existing, event, merged=False)
     pending_messages[session_key] = event
 
 
@@ -3611,9 +3621,12 @@ class BasePlatformAdapter(ABC):
         if log_cmd is not None:
             logger.info("[%s] Sending command '/%s' response (%d chars) to %s", self.name, log_cmd,
                         len(text), event.source.chat_id)
+        from gateway.request_lifecycle import final_delivery_context, record_final_delivery
+        initiated_at = time.monotonic()
         result = await self._send_with_retry(
             chat_id=event.source.chat_id, content=text, reply_to=_reply_anchor_for_event(event),
             metadata=_mark_notify_metadata(thread_meta))
+        record_final_delivery(final_delivery_context(event), success=result.success, initiated_at=initiated_at)
         if eph_ttl > 0 and result.success and result.message_id:
             self._schedule_ephemeral_delete(event.source.chat_id, result.message_id, eph_ttl)
 
@@ -3871,6 +3884,8 @@ class BasePlatformAdapter(ABC):
             if event.text:
                 state.event.text = _append_text(state.event.text, event.text)
             state.event.absorb_reply_expected(event)
+            from gateway.request_lifecycle import reconcile_merge
+            reconcile_merge(state.event, event, merged=True)
             latest_message_id = getattr(event, "message_id", None)
             latest_anchor = latest_message_id or getattr(event, "reply_to_message_id", None)
             if latest_message_id is not None:
@@ -3914,6 +3929,8 @@ class BasePlatformAdapter(ABC):
         """Cancel and drop pending text debounce state for control commands."""
         state = self._text_debounce_store().pop(session_key, None)
         if state is not None:
+            from gateway.request_lifecycle import finish_event
+            finish_event(state.event, "cancelled")
             state.cancel_timer()
 
     # ── Session task + guard ownership helpers: paired with the _session_tasks owner map so
@@ -3941,7 +3958,8 @@ class BasePlatformAdapter(ABC):
         logger.warning("[%s] Healing stale session lock for %s (owner task is done/absent)",
                        self.name, session_key)
         self._active_sessions.pop(session_key, None)
-        self._pending_messages.pop(session_key, None)
+        from gateway.request_lifecycle import finish_event
+        finish_event(self._pending_messages.pop(session_key, None), "cancelled")
         self._requeue_counts.pop(session_key, None)
         self._session_tasks.pop(session_key, None)
         self._discard_text_debounce(session_key)
@@ -3980,6 +3998,8 @@ class BasePlatformAdapter(ABC):
         """Cancel in-flight processing for one session. ``release_guard=False`` keeps the guard so
         reset-like commands finish atomically; the await is bounded (5s) so a wedged finally can't
         stall."""
+        from gateway.request_lifecycle import finish_session
+        finish_session(self.gateway_runner, session_key, include_queued=discard_pending)
         self._requeue_counts.pop(session_key, None)
         task = self._session_tasks.pop(session_key, None)
         if task is not None and not task.done():
@@ -4374,8 +4394,16 @@ class BasePlatformAdapter(ABC):
             event, session_key, text_content, delivery_adapter, is_ephemeral_response)
         if obligation_id is not None:
             await self._release_turn_marker(event)  # the ledger now owns the crash recovery
-        result = await delivery_adapter._send_with_retry(
-            chat_id=event.source.chat_id, content=text_content, reply_to=reply_to, metadata=metadata)
+        from gateway.request_lifecycle import final_delivery_context, record_final_delivery
+        request = final_delivery_context(event)
+        initiated_at = time.monotonic()
+        try:
+            result = await delivery_adapter._send_with_retry(
+                chat_id=event.source.chat_id, content=text_content, reply_to=reply_to, metadata=metadata)
+        except BaseException:
+            record_final_delivery(request, success=False, initiated_at=initiated_at)
+            raise
+        record_final_delivery(request, success=result.success, initiated_at=initiated_at)
         stop_reply_clock(delivery_adapter, event.source.chat_id, result)
         if obligation_id is not None:
             await self._finalize_delivery_obligation(obligation_id, result, event, delivery_adapter)

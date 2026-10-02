@@ -413,6 +413,7 @@ class GatewayNotificationsMixin:
         metadata: Optional[Dict[str, Any]] = None, event_message_id: Optional[str] = None,
         text_already_delivered: bool = False, deliver_media: bool = True, stream_consumer=None,
         session_key: Optional[str] = None, inbound_message_id: Optional[str] = None,
+        request_context=None,
     ) -> bool:
         """Deliver a queued response using the normal text+attachment split.
 
@@ -427,6 +428,9 @@ class GatewayNotificationsMixin:
         must leave the normal completion send as the fallback, or the user gets nothing. A connector
         DECLINE returns True: that destination is not approved and must not be re-sent."""
         from gateway.run import _strip_response_attachments_for_direct_send
+        from gateway.request_lifecycle import record_final_delivery
+        if text_already_delivered:
+            record_final_delivery(request_context, success=True)
         if not text_already_delivered:
             text_content = _strip_response_attachments_for_direct_send(response, adapter)
             if text_content:
@@ -467,7 +471,8 @@ class GatewayNotificationsMixin:
                 if not _reconciled:
                     _sent = await self._send_queued_final_text(
                         adapter, source, text_content, metadata, event_message_id, session_key,
-                        inbound_message_id)
+                        inbound_message_id,
+                        **({"request_context": request_context} if request_context is not None else {}))
                     if not getattr(_sent, "success", False):
                         # The text never landed. Report it undelivered and skip the attachments too:
                         # the caller's normal completion send replays the whole response (text and
@@ -487,6 +492,7 @@ class GatewayNotificationsMixin:
         self, adapter, source: SessionSource, text_content: str, metadata: Optional[Dict[str, Any]],
         event_message_id: Optional[str], session_key: Optional[str],
         inbound_message_id: Optional[str] = None,
+        request_context=None,
     ):
         """Send a queued-lane final through the same ledger bracket as the normal final
         (``send_final_ledgered``). This lane used to call ``adapter.send`` bare and discard the
@@ -497,11 +503,16 @@ class GatewayNotificationsMixin:
         inbound id the ledger falls back to the event's own (empty) message id. Adapters without
         the base contract and sends without a session key keep the plain send."""
         if session_key and isinstance(adapter, BasePlatformAdapter):
+            delivery_event = MessageEvent(text="", source=source, ledger_message_id=inbound_message_id)
+            delivery_event._gateway_final_request_context = request_context
             result, _ = await adapter.send_final_ledgered(
-                MessageEvent(text="", source=source, ledger_message_id=inbound_message_id),
+                delivery_event,
                 session_key, text_content, _mark_notify_metadata(metadata), reply_to=event_message_id)
         else:
+            from gateway.request_lifecycle import record_final_delivery
+            initiated_at = time.monotonic()
             result = await adapter.send(source.chat_id, text_content, metadata=metadata)
+            record_final_delivery(request_context, success=getattr(result, "success", False), initiated_at=initiated_at)
         if not getattr(result, "success", False):
             logger.warning(
                 "Queued-lane final send to %s failed: %s", getattr(source, "chat_id", "?"),

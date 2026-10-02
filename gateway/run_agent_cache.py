@@ -266,6 +266,8 @@ class GatewayAgentCacheMixin:
             run_generation is not None and not self._is_session_run_current(session_key, run_generation)
         ):
             return False
+        from gateway.request_lifecycle import finish_session
+        finish_session(self, session_key, generation=run_generation)
         state = self._peek_session_state(session_key)
         if state is not None:
             if state.turn.lease is not None:
@@ -415,6 +417,8 @@ class GatewayAgentCacheMixin:
 
         Settles a pending one-shot model override first: the displaced turn's finalizer is
         generation-guarded and would otherwise leave ``/moa`` / ``/model --once`` in force."""
+        from gateway.request_lifecycle import finish_session
+        finish_session(self, session_key, include_queued=True)
         self._restore_pending_one_turn_model_override(session_key)
         generation = self._begin_session_run_generation(session_key)
         if reason:

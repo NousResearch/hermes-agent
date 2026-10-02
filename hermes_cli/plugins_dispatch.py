@@ -40,6 +40,7 @@ logger = logging.getLogger("hermes_cli.plugins")
 # a daemon thread that may still mutate shared state — safer for value-returning observers than for
 # gates/flushes.
 _HOOK_TIMEOUT_BOUNDED_HOOKS: Set[str] = {
+    "gateway_request_lifecycle", "gateway_request_control", "gateway_request_final",
     "post_tool_call", "transform_terminal_output", "transform_tool_result", "transform_llm_output",
     "pre_llm_call", "post_llm_call", "pre_api_request", "post_api_request", "api_request_error",
     "pre_auxiliary_call", "post_auxiliary_call", "pre_verify", "on_session_start", "on_session_end",

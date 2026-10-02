@@ -135,11 +135,16 @@ class GatewayInboundMixin:
                     _result.get("reason"), source.platform.value if source.platform else "unknown",
                     source.chat_id or "unknown",
                 )
+                from gateway.request_lifecycle import finish_event
+                finish_event(event, "rejected")
                 return None
             if _action == "rewrite":
                 _new_text = _result.get("text")
                 if isinstance(_new_text, str):
+                    original = event
                     event = dataclasses.replace(event, text=_new_text)
+                    from gateway.request_lifecycle import transfer_rewritten_event
+                    transfer_rewritten_event(original, event)
                 break
             if _action == "allow":
                 break
@@ -726,6 +731,8 @@ class GatewayInboundMixin:
             _interrupt_text = _build_media_placeholder(event)
         # Delivered via adapter._pending_messages (read by _run_agent); never also buffered on self
         # — that copy was never consumed and grew unbounded.
+        from gateway.request_lifecycle import finish_session
+        finish_session(self, _quick_key, stage="superseded")
         running_agent.interrupt(_interrupt_text)
 
     async def _hm_handle_running_session_message(
@@ -1321,6 +1328,19 @@ class GatewayInboundMixin:
             return event, source, is_internal
 
     async def _handle_message(self, event: MessageEvent) -> Optional[str]:
+        from gateway.request_lifecycle import finish_event, settle_unqueued_event
+        try:
+            return await self._handle_message_core(event)
+        except asyncio.CancelledError:
+            finish_event(event, "cancelled")
+            raise
+        except BaseException:
+            finish_event(event, "failed")
+            raise
+        finally:
+            settle_unqueued_event(self, event)
+
+    async def _handle_message_core(self, event: MessageEvent) -> Optional[str]:
         """Handle an incoming message from any platform: auth → command check → running-agent
         interrupt → get/create session → build context → run agent → return response."""
         from gateway.run import _AGENT_PENDING_SENTINEL
@@ -1349,6 +1369,11 @@ class GatewayInboundMixin:
         if _reply is not None:
             return _reply
 
+        from gateway.request_lifecycle import consume_control, admit_request
+        if await consume_control(self, event, _quick_key):
+            return None
+        await admit_request(self, event, _quick_key)
+
         # Evict a leaked/reaped ``_running_agents`` slot before the busy-session fast-path.
         self._hm_evict_idle_stale_agent(_quick_key)
         if self._is_session_running(_quick_key):
@@ -1358,6 +1383,8 @@ class GatewayInboundMixin:
 
         _handled, _result = await self._hm_dispatch_idle_commands(event, source, _quick_key)
         if _handled:
+            from gateway.request_lifecycle import finish_event
+            finish_event(event)
             return _result
 
         # Pending exec approvals go through /approve and /deny only — no bare-text matching, or a
@@ -1366,13 +1393,19 @@ class GatewayInboundMixin:
             if await asyncio.to_thread(self._is_telegram_topic_root_lobby, source):
                 # Debounced so a user who forgets about topic mode doesn't get ten reminders.
                 if self._should_send_telegram_lobby_reminder(source):
+                    from gateway.request_lifecycle import finish_event
+                    finish_event(event, "rejected")
                     return self._telegram_topic_root_lobby_message()
+                from gateway.request_lifecycle import finish_event
+                finish_event(event, "rejected")
                 return None
             # External-drain new-turn gate: when NAS engaged an external drain (.drain_request.json,
             # seen by _drain_control_watcher), refuse to START new turns so the in-flight set can
             # only fall to zero. Reversible.
             if self._external_drain_active:
                 logger.info("Refusing new turn for session %s — external drain active.", _quick_key)
+                from gateway.request_lifecycle import finish_event
+                finish_event(event, "rejected")
                 return t("gateway.busy.draining_maintenance")
 
         # Claim this session before any await: many awaits sit between here and _run_agent
@@ -1381,6 +1414,8 @@ class GatewayInboundMixin:
         _active_session_lease, _limit_message = self._claim_active_session_slot(_quick_key, source)
         if _limit_message is not None:
             logger.info("Rejecting new active session %s: max_concurrent_sessions reached", _quick_key)
+            from gateway.request_lifecycle import finish_event
+            finish_event(event, "rejected")
             return _limit_message
 
         event, source, is_internal = self._hm_rescue_orphaned_fifo(event, source, is_internal, _quick_key)
@@ -1395,10 +1430,13 @@ class GatewayInboundMixin:
         start_reply_clock(source, internal=is_internal)
         self._persist_active_agents()
         _run_generation = self._begin_session_run_generation(_quick_key)
+        from gateway.request_lifecycle import begin_request, finish_event
+        begin_request(self, event, _run_generation)
 
         try:
             try:
                 _agent_result = await self._handle_message_with_agent(event, source, _quick_key, _run_generation)
+                finish_event(event, "final_ready")
             except TurnLeaseTimeoutError as exc:
                 # A rejected message, not a completed turn: return before the /goal judge so it
                 # cannot consume the resend notice and enqueue a synthetic continuation loop.
@@ -1416,7 +1454,14 @@ class GatewayInboundMixin:
             except Exception as _goal_exc:
                 logger.debug("post-turn hook failed: %s", _goal_exc)
             return _agent_result
+        except asyncio.CancelledError:
+            finish_event(event, "cancelled")
+            raise
+        except BaseException:
+            finish_event(event, "failed")
+            raise
         finally:
+            finish_event(event)
             # One-shot restore (/moa, /model --once) must run on EVERY exit path (success,
             # exception, interrupt); the generation guard makes a displaced turn's finalizer a no-op.
             self._restore_pending_one_turn_model_override(_quick_key, _run_generation)

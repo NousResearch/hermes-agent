@@ -851,6 +851,9 @@ class GatewayShutdownMixin:
 
     def _interrupt_running_agents(self, reason: str) -> None:
         from gateway.run import _AGENT_PENDING_SENTINEL, _INTERRUPT_TOOL_REASON_GATEWAY_SHUTDOWN, request_hard_interrupt
+        from gateway.request_lifecycle import finish_request
+        for request in tuple(getattr(self, "_request_lifecycle", {}).copy().values()):
+            finish_request(request, "cancelled")
         for session_key, agent in list(self._running_agents.items()):
             if agent is _AGENT_PENDING_SENTINEL:
                 continue
@@ -1982,6 +1985,9 @@ class GatewayShutdownMixin:
 
     async def _stop_finalize_agents_and_adapters(self, ctx: "GatewayShutdownMixin._StopContext") -> None:
         """Detached restart launch, agent finalization, idle-cache cleanup, adapter teardown."""
+        from gateway.request_lifecycle import finish_request
+        for request in tuple(getattr(self, "_request_lifecycle", {}).copy().values()):
+            finish_request(request, "cancelled")
         if self._restart_requested and self._restart_detached:
             with _log_suppressed(logging.ERROR, "Failed to launch detached gateway restart: %s"):
                 await self._launch_detached_restart_command()

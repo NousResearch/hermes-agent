@@ -13,7 +13,7 @@ from gateway.platforms.base_pending_merge import (
     _append_text,
     merge_pending_message_event,
 )
-from gateway.platforms.base_pending import _can_join_pending_event
+from gateway.platforms.base_pending import can_join_pending_event
 
 if TYPE_CHECKING:
     from gateway.platforms.base import BasePlatformAdapter
@@ -65,7 +65,7 @@ class BaseTextDebounceMixin:
         self: BasePlatformAdapter, existing: MessageEvent, event: MessageEvent
     ) -> bool:
         """Whether one debounce burst can preserve both events' attribution and reply context."""
-        return _can_join_pending_event(existing, event)
+        return can_join_pending_event(existing, event)
 
     def _text_debounce_delay(self: BasePlatformAdapter, session_key: str) -> float:
         """Return bounded busy-text debounce delay for ``session_key``."""

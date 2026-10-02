@@ -326,6 +326,43 @@ class TestCoerceToolArgsSingleKeyDictArray:
             result = coerce_tool_args("test_tool", {"ids": {"item": 14}})
             assert result["ids"] == [{"item": 14}]
 
+    def test_anyof_scalar_items_unwrapped(self):
+        """``items.anyOf`` of scalar branches (multi-branch unions survive
+        ``strip_nullable_unions``, which only folds the null-plus-single-
+        survivor form) unwrap like the union array form (#99270 Canva
+        report asked whether an ``anyOf`` branch was needed: yes)."""
+        schema = self._schema({"anyOf": [{"type": "string"}, {"type": "integer"}]})
+        with patch("tools.arg_coercion.registry.get_schema", return_value=schema):
+            result = coerce_tool_args("test_tool", {"ids": {"item": "a"}})
+            assert result["ids"] == ["a"]
+
+    def test_oneof_scalar_items_unwrapped(self):
+        schema = self._schema({"oneOf": [{"type": "number"}, {"type": "null"}]})
+        with patch("tools.arg_coercion.registry.get_schema", return_value=schema):
+            result = coerce_tool_args("test_tool", {"ids": {"item": 1.5}})
+            assert result["ids"] == [1.5]
+
+    def test_anyof_object_items_left_alone(self):
+        """Canva ``operations``-shaped ``items`` (anyOf of object branches):
+        a single-key dict is a legitimate element there, the wrap stays."""
+        schema = self._schema({
+            "anyOf": [
+                {"type": "object", "properties": {"page_id": {"type": "string"}}},
+                {"type": "object", "properties": {"asset_id": {"type": "string"}}},
+            ]
+        })
+        with patch("tools.arg_coercion.registry.get_schema", return_value=schema):
+            result = coerce_tool_args("test_tool", {"ids": {"item": 1}})
+            assert result["ids"] == [{"item": 1}]
+
+    def test_anyof_untyped_branch_left_alone(self):
+        """A union branch without a declared scalar ``type`` (const/ref-only
+        shapes) keeps the wrap — untyped is not scalar evidence."""
+        schema = self._schema({"anyOf": [{"type": "string"}, {"const": 7}]})
+        with patch("tools.arg_coercion.registry.get_schema", return_value=schema):
+            result = coerce_tool_args("test_tool", {"ids": {"item": "a"}})
+            assert result["ids"] == [{"item": "a"}]
+
     def test_wrapped_dict_logs_keys_not_values(self, caplog):
         """When the unwrap does not apply, the wrap logs the dict's KEYS so
         the next live report shows what the model actually emitted — without

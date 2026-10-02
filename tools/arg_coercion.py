@@ -34,6 +34,12 @@ def _array_items_type(prop_schema: Any) -> Optional[str]:
     ``anyOf``/``oneOf``) resolves to its first non-null scalar member, while
     a union mixing in a non-scalar type (``["integer", "object"]``) stays
     unknown so object-ish elements are never unwrapped.
+
+    ``items.anyOf``/``items.oneOf`` unions of scalar branches (multi-branch
+    unions survive ``strip_nullable_unions``, which only folds the
+    null-plus-single-survivor form) resolve the same way; a union carrying
+    any object/unknown branch — e.g. Canva's ``operations.items`` with nine
+    object shapes — stays unknown.
     """
     items = prop_schema.get("items") if isinstance(prop_schema, dict) else None
     if not isinstance(items, dict):
@@ -45,6 +51,20 @@ def _array_items_type(prop_schema: Any) -> Optional[str]:
         non_null = [t for t in declared if isinstance(t, str) and t != "null"]
         if non_null and all(t in _SCALAR_ITEM_TYPES for t in non_null):
             return non_null[0]
+        return None
+    for union_key in ("anyOf", "oneOf"):
+        variants = items.get(union_key)
+        if not isinstance(variants, list) or not variants:
+            continue
+        non_null = [v for v in variants if not (isinstance(v, dict) and v.get("type") == "null")]
+        scalar_types = [
+            v.get("type") for v in non_null
+            if isinstance(v, dict) and isinstance(v.get("type"), str)
+        ]
+        if (non_null and len(scalar_types) == len(non_null)
+                and all(t in _SCALAR_ITEM_TYPES for t in scalar_types)):
+            return scalar_types[0]
+        return None
     return None
 
 

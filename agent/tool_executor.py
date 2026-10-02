@@ -180,6 +180,60 @@ def _parse_tool_arguments(raw_arguments: Any) -> tuple[dict, Optional[str]]:
     )
 
 
+_DEFAULT_MALFORMED_TOOL_CALL_STREAK_LIMIT = 3
+_MAX_MALFORMED_TOOL_CALL_STREAK_LIMIT = 100
+
+
+def _malformed_tool_call_streak_limit() -> int:
+    """Turn-ending cap for consecutive all-malformed tool rounds
+    (``HERMES_MALFORMED_TOOL_CALL_STREAK_LIMIT``; ``0``/negative disables)."""
+    raw = os.environ.get("HERMES_MALFORMED_TOOL_CALL_STREAK_LIMIT")
+    if raw is None:
+        return _DEFAULT_MALFORMED_TOOL_CALL_STREAK_LIMIT
+    try:
+        value = int(raw)
+    except ValueError:
+        return _DEFAULT_MALFORMED_TOOL_CALL_STREAK_LIMIT
+    if value <= 0:
+        return value
+    return min(value, _MAX_MALFORMED_TOOL_CALL_STREAK_LIMIT)
+
+
+def note_malformed_argument_round(agent, tool_calls) -> bool:
+    """Update the per-turn streak of tool rounds that produced no dispatchable call (#125368).
+
+    A round whose every valid-name call had unparseable arguments increments
+    ``agent._malformed_tool_call_streak``; a round with any successfully parsed call resets it
+    (the model self-corrected). Calls with unknown tool names are a different failure class and
+    are not counted. Returns True when the streak reached ``_malformed_tool_call_streak_limit()``
+    — the loop then ends the turn with the typed ``malformed_tool_call_streak`` exit instead of
+    re-requesting the model until the iteration budget is gone (a malformed-args storm burns
+    hundreds of model calls at full speed with smaller/local models).
+    """
+    limit = _malformed_tool_call_streak_limit()
+    if limit <= 0:
+        return False
+    valid_names = getattr(agent, "valid_tool_names", None)
+    malformed = dispatchable = 0
+    for tc in tool_calls or ():
+        function = getattr(tc, "function", None)
+        if function is None:
+            continue
+        if valid_names is not None and _canonical_tool_name(function.name) not in valid_names:
+            continue
+        if _parse_tool_arguments(function.arguments)[1] is None:
+            dispatchable += 1
+        else:
+            malformed += 1
+    streak = getattr(agent, "_malformed_tool_call_streak", 0) or 0
+    if dispatchable:
+        streak = 0
+    elif malformed:
+        streak += 1
+    agent._malformed_tool_call_streak = streak
+    return streak >= limit
+
+
 def _resolve_concurrent_tool_timeout() -> float | None:
     """Per-batch concurrent deadline: ``timeouts.tools.concurrent_batch`` wins,
     ``HERMES_CONCURRENT_TOOL_TIMEOUT_S`` is the legacy bridge, ``0``/negative disables."""

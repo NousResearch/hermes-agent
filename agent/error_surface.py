@@ -39,6 +39,8 @@ _REASON_TO_LAYER = {
     "loop_error": LAYER_GATEWAY, "interpreter_shutdown": LAYER_GATEWAY, "session_busy": LAYER_GATEWAY,
     "truncated": LAYER_PROVIDER, "empty_response": LAYER_PROVIDER, "invalid_response": LAYER_PROVIDER,
     "context_overflow": LAYER_PROVIDER,  # a bigger-window model IS the fix, so Switch provider applies
+    # The model itself cannot emit valid tool arguments — switching model IS the fix (#125368).
+    "malformed_tool_call": LAYER_PROVIDER,
 }
 
 # Failures between us and the base_url (not a provider verdict); on a

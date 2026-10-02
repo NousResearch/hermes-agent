@@ -1611,6 +1611,8 @@ def _run_conversation_turn(
     agent._ephemeral_reasoning_off = False
     agent._auth_pool_refresh_counts = {}
     agent._last_turn_usage = None
+    # Consecutive all-malformed tool rounds (#125368): a fresh turn starts a fresh streak.
+    agent._malformed_tool_call_streak = 0
 
     s = _LoopState(
         system_message=system_message, moa_config=moa_config,

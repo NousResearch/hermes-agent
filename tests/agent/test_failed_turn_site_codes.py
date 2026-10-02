@@ -153,3 +153,12 @@ def test_cause_gloss_substitutes_the_subject_and_skips_unknown_reasons():
     assert "the job's" in failure_cause_gloss("context_overflow", subject="this job", possessive="the job's")
     assert failure_cause_gloss("model_not_found")
     assert failure_cause_gloss("unknown") is None and failure_cause_gloss(None) is None
+
+
+def test_malformed_tool_streak_limit_has_a_safe_upper_bound(monkeypatch):
+    from agent.tool_executor import _malformed_tool_call_streak_limit
+
+    monkeypatch.setenv("HERMES_MALFORMED_TOOL_CALL_STREAK_LIMIT", "1000000")
+    assert _malformed_tool_call_streak_limit() == 100
+    monkeypatch.setenv("HERMES_MALFORMED_TOOL_CALL_STREAK_LIMIT", "0")
+    assert _malformed_tool_call_streak_limit() == 0

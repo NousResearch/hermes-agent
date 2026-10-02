@@ -14,6 +14,7 @@ from typing import Any, Dict, Optional, Tuple
 
 from agent.message_metadata import append_message
 from agent.message_sanitization import coalesce_tool_call_id
+from agent.turn_failure_copy import site_copy
 from agent.turn_preflight import compress_after_tool_results
 from agent.turn_tool_validation import validate_tool_calls
 
@@ -182,6 +183,43 @@ def run_tool_round(
 
     # Reset per-turn retry counters so one truncation can't poison the turn.
     truncated_tool_call_retries = 0
+    # Malformed-argument streak (#125368): this round appended one error result per call and
+    # the loop would immediately re-request the model. A model that keeps emitting unparseable
+    # arguments burns the whole iteration budget at full speed (500+ model calls), so a small
+    # consecutive-round cap ends the turn with a typed failure instead.
+    from agent.tool_executor import note_malformed_argument_round
+
+    if (
+        getattr(agent, "_stall_guards_enabled", lambda: True)()
+        and note_malformed_argument_round(agent, assistant_message.tool_calls)
+    ):
+        _turn_exit_reason = "malformed_tool_call_streak"
+        final_response = site_copy(
+            "malformed_tool_call",
+            model=getattr(agent, "model", "the model"),
+            attempts=getattr(agent, "_malformed_tool_call_streak", 0),
+        )
+        failed = True
+        agent._emit_diagnostic_status(
+            f"⚠️ Model sent invalid tool arguments "
+            f"{getattr(agent, '_malformed_tool_call_streak', 0)} rounds in a row — "
+            "stopping this turn"
+        )
+        logger.warning(
+            "Ending turn after %d consecutive tool rounds with only malformed arguments "
+            "(model=%s provider=%s): the model cannot produce valid arguments for its tools "
+            "this turn (#125368)",
+            getattr(agent, "_malformed_tool_call_streak", 0), getattr(agent, "model", "?"),
+            getattr(agent, "provider", "?"),
+        )
+        append_message(messages, {"role": "assistant", "content": final_response})
+        if final_response:
+            agent._safe_print(f"\n{final_response}\n")
+            if agent.stream_delta_callback:
+                with suppress(Exception):
+                    agent.stream_delta_callback(final_response)
+                    agent.stream_delta_callback(None)
+        return _verdict("break")
     # Defer the paragraph break: _fire_stream_delta() prepends one "\n\n" when real
     # text arrives, so tool iterations don't stack blank lines.
     agent._stream_needs_break = True

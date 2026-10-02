@@ -491,7 +491,7 @@ def test_followup_reaction_uses_gateway_source_authorization(tmp_path, monkeypat
         )
         entry = runner.session_store.get_or_create_session(source)
         assert runner._is_user_authorized_for_source(source) is (grant != "denied")
-        assert adapter._is_authorized_user("@alice:test") is False
+        assert adapter._is_authorized_user("@alice:test") is (grant != "denied")
         adapter._followup_store().arm(
             "turn", ("$reply",), profile=source.profile or "", room_id="!room:test",
             thread_id="$thread", session_key=entry.session_key, session_id=entry.session_id,

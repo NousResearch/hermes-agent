@@ -187,7 +187,9 @@ export const opsCommands: SlashCommand[] = [
             }
 
             if (action === 'use') {
-              ctx.transcript.sys(t(mode === 'on' ? 'slashCmd.ops.browser.useEnabled' : 'slashCmd.ops.browser.useDisabled'))
+              ctx.transcript.sys(
+                t(mode === 'on' ? 'slashCmd.ops.browser.useEnabled' : 'slashCmd.ops.browser.useDisabled')
+              )
 
               return ctx.transcript.sys(t('slashCmd.ops.browser.newSessionsOnly'))
             }

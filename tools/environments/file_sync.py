@@ -460,7 +460,8 @@ class FileSyncManager:
     ) -> int:
         """Copy one extracted remote file onto the host if it changed since push. Returns 1 if
         applied, 0 if skipped (unchanged, unmapped, or an upload-only credential). A host file
-        modified since push is overwritten with the remote version (last-write-wins) with a warning.
+        modified since push is overwritten with the remote version (last-write-wins) with a
+        warning — EXCEPT a refreshable credential, whose host copy wins (refusing write-back).
 
         The one upload-only carve-out (#128233): a credential file DECLARED refreshable (a
         rotating token store such as ``google_token.json``) is written back so a token
@@ -488,6 +489,19 @@ class FileSyncManager:
                 logger.debug("sync_back: skipping upload-only credential file %s", remote_path)
                 return 0
             logger.info("sync_back: applying refreshable credential file %s", remote_path)
+            # A refreshable store is a rotating token: if the host copy changed since push
+            # (a second client rotated the same token while this sandbox was running), the
+            # remote copy is STALE — writing it back would silently destroy the newer host
+            # credential. Refuse and keep the host version (#128233).
+            if pushed_hash is not None and os.path.exists(host_path) and _sha256_file(host_path) != pushed_hash:
+                logger.warning(
+                    "sync_back: refusing write-back on %s — host copy changed since push "
+                    "(the token was rotated outside this sandbox); keeping the host version.",
+                    remote_path)
+                return 0
+            os.makedirs(os.path.dirname(host_path), exist_ok=True)
+            self._install_refreshable_file(staged_file, host_path)
+            return 1
 
         if pushed_hash is not None and os.path.exists(host_path) and _sha256_file(host_path) != pushed_hash:
             logger.warning(
@@ -498,6 +512,21 @@ class FileSyncManager:
         os.makedirs(os.path.dirname(host_path), exist_ok=True)
         shutil.copy2(staged_file, host_path)
         return 1
+
+    @staticmethod
+    def _install_refreshable_file(staged_file: str, host_path: str) -> None:
+        """Install refreshable-credential bytes atomically (same-dir temp + ``os.replace``)
+        so a failed copy can never leave a truncated token store on the host: the target is
+        either the complete previous version or the complete new one, never 0 bytes."""
+        temp_path = f"{host_path}.hermes-sync-back.tmp"
+        try:
+            shutil.copy2(staged_file, temp_path)
+            os.replace(temp_path, host_path)
+        finally:
+            try:
+                os.unlink(temp_path)
+            except OSError:
+                pass
 
     def _is_declared_refreshable(self, host_path: str, refreshable_rel_hosts: dict[str, str]) -> bool:
         """Write-back gate: *host_path* must be a declared refreshable credential target

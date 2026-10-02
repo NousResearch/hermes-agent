@@ -808,3 +808,54 @@ class TestRefreshableCredentialDeclarations:
 
         assert declared == {}
         assert any("may write back" in r.message for r in caplog.records)
+
+    def test_config_master_store_not_mounted_even_without_optin(self, tmp_path, monkeypatch, caplog):
+        """The deny-list gates the MOUNT surface too: a dict entry that never asks for
+        write-back must not slip ``.env``/``auth.json`` into the read-only mounts (the
+        gate used to sit inside ``if opt_in:``, mounting denied stores unlogged)."""
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / ".env").write_text("KEY=1")
+        (hermes_home / "auth.json").write_text('{"providers":{}}')
+        import hermes_yaml as yaml
+        (hermes_home / "config.yaml").write_text(yaml.safe_dump(
+            {"terminal": {"credential_files": [{"path": ".env"}, {"path": "auth.json"}]}}))
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        with caplog.at_level("WARNING", logger="tools.credential_files"):
+            mounts = get_credential_file_mounts()
+
+        assert mounts == []
+        assert sum(1 for r in caplog.records if "refused config entry" in r.message) == 2
+
+    def test_config_quoted_false_string_does_not_opt_in(self, tmp_path, monkeypatch):
+        """Quoted YAML ``refreshable: "false"`` is a STRING — bool() treated it as truthy
+        and armed write-back; ``is True`` keeps the frontmatter and config reads symmetric."""
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "google_token.json").write_text("{}")
+        import hermes_yaml as yaml
+        (hermes_home / "config.yaml").write_text(yaml.safe_dump(
+            {"terminal": {"credential_files": [{"path": "google_token.json", "refreshable": "false"}]}}))
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        declared = get_refreshable_credential_files()
+
+        assert declared == {}
+        # Not opted in, but the file itself is a legitimate per-service token: still mounts.
+        assert any(m["container_path"] == "/root/.hermes/google_token.json"
+                   for m in get_credential_file_mounts())
+
+    def test_frontmatter_quoted_false_string_does_not_opt_in(self, tmp_path):
+        """Skill-frontmatter dict entries share the same ``is True`` read."""
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "google_token.json").write_text("{}")
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(hermes_home)}):
+            missing = register_credential_files(
+                [{"path": "google_token.json", "refreshable": "false"}])
+            declared = get_refreshable_credential_files()
+
+        assert missing == []
+        assert declared == {}

@@ -557,3 +557,59 @@ class TestSyncBackRefreshableCredentials:
         mgr.sync_back(hermes_home=tmp_path / "hermes")
 
         assert not (hermes_home / "other_token.json").exists()
+
+    def test_refreshable_conflict_keeps_host_version(self, tmp_path, monkeypatch, caplog):
+        """A host token rotated AFTER push (a second client rotating the same token) must
+        survive: the sandbox copy is stale by definition, and last-write-wins would
+        silently destroy the newer host credential (#128233)."""
+        hermes_home = tmp_path / "home" / ".hermes"
+        host_token = hermes_home / "google_token.json"
+        _write_file(host_token, b'{"rt": "pushed-old"}')
+
+        remote_path = "/root/.hermes/google_token.json"
+        monkeypatch.setattr("tools.environments.file_sync._credential_host_paths", lambda: {str(host_token)})
+        monkeypatch.setattr("tools.environments.file_sync._refreshable_credential_declarations",
+                            lambda: {"google_token.json": str(host_token)})
+        monkeypatch.setattr("tools.environments.file_sync.get_hermes_home", lambda: hermes_home)
+
+        host_token.write_bytes(b'{"rt": "host-refreshed"}')  # rotated on the host after push
+        mgr = _make_manager(tmp_path, file_mapping=[(str(host_token), remote_path)],
+                            bulk_download_fn=_make_download_fn(
+                                {"root/.hermes/google_token.json": b'{"rt": "sandbox-version"}'}))
+        mgr._pushed_hashes[remote_path] = _sha256_bytes(b'{"rt": "pushed-old"}')
+
+        with caplog.at_level(logging.WARNING, logger="tools.environments.file_sync"):
+            mgr.sync_back(hermes_home=tmp_path / "hermes")
+
+        assert host_token.read_bytes() == b'{"rt": "host-refreshed"}'  # host version kept
+        assert any("refusing write-back" in r.message for r in caplog.records)
+
+    def test_refreshable_write_back_never_truncates_host_file(self, tmp_path, monkeypatch):
+        """A failed copy must leave the host token COMPLETE (old version), never 0 bytes:
+        the install goes through a same-dir temp + os.replace, so the target is always
+        a whole file."""
+        hermes_home = tmp_path / "home" / ".hermes"
+        host_token = hermes_home / "google_token.json"
+        _write_file(host_token, b'{"token": "stale"}')
+
+        remote_path = "/root/.hermes/google_token.json"
+        monkeypatch.setattr("tools.environments.file_sync._credential_host_paths", lambda: {str(host_token)})
+        monkeypatch.setattr("tools.environments.file_sync._refreshable_credential_declarations",
+                            lambda: {"google_token.json": str(host_token)})
+        monkeypatch.setattr("tools.environments.file_sync.get_hermes_home", lambda: hermes_home)
+        monkeypatch.setattr("tools.environments.file_sync._sleep", lambda s: None)
+
+        def _failing_copy(src, dst, **kwargs):
+            raise OSError("disk full")
+
+        monkeypatch.setattr("tools.environments.file_sync.shutil.copy2", _failing_copy)
+
+        mgr = _make_manager(tmp_path, file_mapping=[(str(host_token), remote_path)],
+                            bulk_download_fn=_make_download_fn(
+                                {"root/.hermes/google_token.json": b'{"token": "fresh"}'}))
+        mgr._pushed_hashes[remote_path] = _sha256_bytes(b'{"token": "stale"}')
+
+        mgr.sync_back(hermes_home=tmp_path / "hermes")
+
+        assert host_token.read_bytes() == b'{"token": "stale"}'  # intact, not truncated
+        assert not (hermes_home / "google_token.json.hermes-sync-back.tmp").exists()

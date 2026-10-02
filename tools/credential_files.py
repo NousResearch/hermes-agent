@@ -133,7 +133,9 @@ def register_credential_files(entries: list, container_base: str = "/root/.herme
     for entry in entries:
         refreshable = False
         if isinstance(entry, dict):
-            refreshable = bool(entry.get("refreshable"))
+            # ``is True``: quoted YAML ``refreshable: "false"`` must not arm write-back —
+            # bool() would treat any non-empty string (including "false") as opt-in.
+            refreshable = entry.get("refreshable") is True
             entry = entry.get("path") or entry.get("name") or ""
         elif not isinstance(entry, str):
             continue
@@ -172,7 +174,9 @@ def _config_file_entries() -> tuple[List[Dict[str, str]], Dict[str, str]]:
             rel, opt_in = "", False
             if isinstance(item, dict):
                 rel = str(item.get("path") or item.get("name") or "").strip()
-                opt_in = bool(item.get("refreshable"))
+                # ``is True`` mirrors the skill-frontmatter read: quoted YAML
+                # ``refreshable: "false"`` is a string and must not arm write-back.
+                opt_in = item.get("refreshable") is True
             elif isinstance(item, str):
                 rel = item.strip()
             if not rel:
@@ -183,9 +187,14 @@ def _config_file_entries() -> tuple[List[Dict[str, str]], Dict[str, str]]:
                 "credential_files: rejected config path traversal %r (%s)")
             if resolved_path is None:
                 continue
+            # The deny-list gates the MOUNT, not just write-back: a config entry is the same
+            # untrusted surface as skill frontmatter, and mounting a master store read-only
+            # hands the sandbox what the read surface forbids — with or without opt-in.
+            if not _config_entry_allowed(resolved_path, rel):
+                continue
             if resolved_path.is_file():
                 mounts.append(_mount(resolved_path, f"/root/.hermes/{rel}"))
-            if opt_in and _config_refreshable_allowed(resolved_path, rel):
+            if opt_in:
                 refreshable[rel] = str(resolved_path)
     except Exception as e:
         logger.warning("Could not read terminal.credential_files from config: %s", e)
@@ -194,22 +203,25 @@ def _config_file_entries() -> tuple[List[Dict[str, str]], Dict[str, str]]:
     return mounts, refreshable
 
 
-def _config_refreshable_allowed(resolved_path: Path, rel: str) -> bool:
-    """Fail-closed gate on config ``refreshable: true``: a master credential store
-    (``.env``, ``auth.json``, ...) never qualifies for sync-back write-back, even when a
-    user lists it explicitly. Same canonical read deny-list as the mount surface."""
+def _config_entry_allowed(resolved_path: Path, rel: str) -> bool:
+    """Fail-closed gate on ``terminal.credential_files`` entries: a master credential store
+    (``.env``, ``auth.json``, ...) is never mounted and never qualifies for sync-back
+    write-back, even when a user lists it explicitly — the same canonical read deny-list as
+    the skill mount surface (:func:`register_credential_file`)."""
     if get_read_block_error is None:
-        logger.error("credential_files: refusing refreshable %r — agent.file_safety could not be "
+        logger.error("credential_files: refusing config entry %r — agent.file_safety could not be "
                      "imported, so the master-store deny-list cannot be consulted", rel)
         return False
     try:
         denied = get_read_block_error(str(resolved_path))
     except Exception:
-        logger.exception("credential_files: refusing refreshable %r — read guard raised", rel)
+        logger.exception("credential_files: refusing config entry %r — read guard raised", rel)
         return False
     if denied:
-        logger.warning("credential_files: refused refreshable %r — it is a credential store the "
-                       "agent is denied from reading; only rotating token stores may write back", rel)
+        logger.warning("credential_files: refused config entry %r — it is a credential store the "
+                       "agent is denied from reading; a config entry may mount a skill's own "
+                       "service token, not the master key files (and only a rotating token "
+                       "store may write back)", rel)
         return False
     return True
 

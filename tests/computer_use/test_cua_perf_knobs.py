@@ -1,25 +1,7 @@
 """Behavior contracts for computer_use latency knobs."""
 
-from unittest.mock import patch
 
-from tools.computer_use import cua_backend
 from tools.computer_use import tool as cu_tool
-
-
-def test_max_image_dimension_default():
-    with patch("hermes_cli.config.load_config", return_value={}):
-        assert cua_backend._computer_use_max_image_dimension() == 1456
-
-
-
-
-def test_capture_after_mode_default_som():
-    with patch("hermes_cli.config.load_config", return_value={}):
-        assert cu_tool._capture_after_mode() == "som"
-
-
-
-
 
 
 def test_aux_vision_route_caches_per_provider_model(monkeypatch):

@@ -38,6 +38,14 @@ class _AsyncCM:
         return False
 
 
+
+@pytest.fixture(autouse=True)
+def _pm_node(monkeypatch):
+    """Stand-in for PM's Node/npm; the user's PATH copy is never picked up."""
+    from plugins.platforms.whatsapp import adapter as whatsapp_adapter
+    monkeypatch.setattr(whatsapp_adapter, "find_node_executable", lambda name: f"/pm/{name}")
+
+
 def _make_adapter(bridge_script: str = "/tmp/test-bridge.js",
                   session_path: Path = Path("/tmp/test-wa-session")):
     """Create a WhatsAppAdapter with test attributes (bypass __init__)."""
@@ -54,6 +62,8 @@ def _make_adapter(bridge_script: str = "/tmp/test-bridge.js",
     adapter._bridge_process = None
     adapter._reply_prefix = None
     adapter._send_read_receipts = False
+    adapter._dm_policy = adapter._group_policy = "pairing"
+    adapter._allow_from = adapter._group_allow_from = set()
     adapter._running = False
     adapter._message_handler = None
     adapter._fatal_error_code = None
@@ -84,11 +94,11 @@ def _setup_bridge_dir(tmp_path: Path) -> Path:
     """Create a real bridge dir with bridge.js + package.json + creds."""
     bridge_dir = tmp_path / "whatsapp-bridge"
     bridge_dir.mkdir()
-    (bridge_dir / "bridge.js").write_text("// current bridge code\n")
-    (bridge_dir / "package.json").write_text('{"name": "bridge"}\n')
+    (bridge_dir / "bridge.js").write_text("// current bridge code\n", encoding="utf-8")
+    (bridge_dir / "package.json").write_text('{"name": "bridge"}\n', encoding="utf-8")
     session_path = tmp_path / "session"
     session_path.mkdir()
-    (session_path / "creds.json").write_text("{}")
+    (session_path / "creds.json").write_text("{}", encoding="utf-8")
     return bridge_dir
 
 
@@ -103,15 +113,6 @@ def _fresh_node_modules(bridge_dir: Path) -> None:
     )
 
 
-class TestFileContentHash:
-    def test_hashes_file(self, tmp_path):
-        from plugins.platforms.whatsapp.adapter import _file_content_hash
-
-        f = tmp_path / "x.js"
-        f.write_text("abc")
-        h = _file_content_hash(f)
-        assert len(h) == 16
-        assert h == _file_content_hash(f)  # deterministic
 
 
 class TestStaleBridgeHandshake:

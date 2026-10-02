@@ -1,0 +1,23 @@
+name: cdp-manager
+repo: https://github.com/apoapostolov/hermes-agent-awesome-plugins
+sha: b364f8d5f015b9a9c10fb6af1d2d1112edc2af48
+subdir: public/cdp-manager
+description: "Local Chrome CDP debug ports in the status bar (probe, launch, stop, recheck)
+  plus a managed port Hermes keeps alive and the `cdp` agent tool, which also detects and
+  repairs a Chrome profile-picker launch (wedged/unwedge). Disclosure: launches
+  local Chrome on 127.0.0.1 only, with per-port profiles under the local app-data directory,
+  and closes it with a clean Browser.close; state lives in the plugin's own config file.
+  Windows only."
+maintainer: apoapostolov
+tier: community
+category: desktop
+docs_url: https://github.com/apoapostolov/hermes-agent-awesome-plugins/tree/main/public/cdp-manager
+version: "1.0.2"
+image: https://raw.githubusercontent.com/apoapostolov/hermes-agent-awesome-plugins/b364f8d5f015b9a9c10fb6af1d2d1112edc2af48/public/cdp-manager/docs/hero.png
+platforms: [windows]
+capabilities:
+  provides_tools:
+    - cdp
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

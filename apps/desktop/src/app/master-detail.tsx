@@ -206,8 +206,12 @@ const DETAIL_PANE_COLLAPSED_PX = 4
 // strip <Button size="icon">'s larger built-in size — a custom utility class
 // isn't size-merge-aware, so Button's icon size would leak and blow it up.
 // Compose extra state (data-[state=open], hover:text-destructive) with cn().
+// The visible box stays 20px; a transparent 2px ::before ring grows the pointer
+// target to 24px, the WCAG 2.5.8 Target Size (Minimum) floor (audit #38072,
+// finding 6), without changing how the button looks or lays out. The 2.5.5
+// enhanced 44px target is deliberately not met here.
 export const ICON_BUTTON =
-  'size-5 cursor-pointer rounded-[4px] text-muted-foreground/70 hover:bg-(--ui-control-active-background) hover:text-foreground'
+  "size-5 relative cursor-pointer rounded-[4px] text-muted-foreground/70 before:absolute before:-inset-0.5 before:content-[''] hover:bg-(--ui-control-active-background) hover:text-foreground"
 
 export function DetailPane({
   actions,
@@ -391,6 +395,16 @@ export function ListStripMenu({
   )
 }
 
+const LIST_STRIP_LABEL_CLASS = 'text-[0.68rem] font-medium text-muted-foreground/70'
+
+export function ListStripLabel({ children }: { children: ReactNode }) {
+  return (
+    <span className={LIST_STRIP_LABEL_CLASS} role="status">
+      {children}
+    </span>
+  )
+}
+
 export function ListStripButton({
   active,
   children,
@@ -405,7 +419,8 @@ export function ListStripButton({
   return (
     <button
       className={cn(
-        'cursor-pointer text-[0.68rem] font-medium transition-colors disabled:opacity-40',
+        LIST_STRIP_LABEL_CLASS,
+        'cursor-pointer transition-colors disabled:opacity-40',
         active ? 'text-foreground' : 'text-muted-foreground/70 hover:text-foreground'
       )}
       disabled={disabled}
@@ -418,23 +433,27 @@ export function ListStripButton({
 }
 
 interface CapRowProps {
+  /** Rendered in the switch slot instead of the Switch (e.g. an Install
+   *  button for not-yet-installed catalog rows). */
+  action?: ReactNode
   active: boolean
   busy?: boolean
   enabled: boolean
   meta?: ReactNode
   onSelect: () => void
-  onToggle: (checked: boolean) => void
+  onToggle?: (checked: boolean) => void
   rowId?: string
   /** Second line under the name (category, description, status). Rows grow to h-11. */
   subtitle?: ReactNode
   title: string
-  toggleLabel: string
+  toggleLabel?: string
 }
 
 // The one row used by all three lists. Fixed height, always-visible switch —
 // state reads from the switch + dimmed title, toggling never requires
 // selecting first. Off rows dim; the switch itself dims when off.
 export function CapRow({
+  action,
   active,
   busy,
   enabled,
@@ -484,15 +503,19 @@ export function CapRow({
           </span>
         )}
       </RowButton>
-      <Switch
-        aria-label={toggleLabel}
-        checked={enabled}
-        className={cn('mr-1.5 shrink-0 cursor-pointer', !enabled && 'opacity-60')}
-        disabled={busy}
-        onCheckedChange={onToggle}
-        size="xs"
-        title={toggleLabel}
-      />
+      {action != null ? (
+        <span className="mr-1.5 flex shrink-0 items-center">{action}</span>
+      ) : (
+        <Switch
+          aria-label={toggleLabel ?? title}
+          checked={enabled}
+          className={cn('mr-1.5 shrink-0 cursor-pointer', !enabled && 'opacity-60')}
+          disabled={busy}
+          onCheckedChange={onToggle}
+          size="xs"
+          title={toggleLabel ?? title}
+        />
+      )}
     </div>
   )
 }

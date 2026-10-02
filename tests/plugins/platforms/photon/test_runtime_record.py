@@ -22,6 +22,7 @@ import pytest
 
 from gateway.config import PlatformConfig
 from plugins.platforms.photon import adapter as photon_adapter
+from plugins.platforms.photon import sidecar_paths
 from plugins.platforms.photon.adapter import PhotonAdapter
 
 
@@ -35,6 +36,8 @@ def record_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 def _make_adapter(monkeypatch: pytest.MonkeyPatch) -> PhotonAdapter:
     monkeypatch.setenv("PHOTON_PROJECT_ID", "test-project-id")
     monkeypatch.setenv("PHOTON_PROJECT_SECRET", "test-project-secret")
+    # Stand-in for PM's node; the user's PATH node is never picked up.
+    monkeypatch.setattr(photon_adapter, "find_node_executable", lambda _name: "/pm/node")
     monkeypatch.delenv("PHOTON_SIDECAR_TOKEN", raising=False)
     cfg = PlatformConfig(enabled=True, token="", extra={})
     return PhotonAdapter(cfg)
@@ -58,7 +61,7 @@ def test_write_read_delete_roundtrip(record_path: Path) -> None:
     assert photon_adapter._read_runtime_record() is None
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="POSIX permission bits")
+@pytest.mark.platforms("posix")  # POSIX permission bits
 def test_record_written_with_0600(record_path: Path) -> None:
     photon_adapter._write_runtime_record(8789, "secret", 1)
     mode = stat.S_IMODE(record_path.stat().st_mode)
@@ -123,7 +126,7 @@ def _patch_spawn(
     # sidecar_deps_installed() checks the dependency's own directory, not just
     # node_modules/ (9cf2046081) — mirror a real completed install.
     (sidecar_dir / "node_modules" / "spectrum-ts").mkdir(parents=True)
-    monkeypatch.setattr(photon_adapter, "_SIDECAR_DIR", sidecar_dir)
+    monkeypatch.setattr(sidecar_paths, "_SIDECAR_DIR", sidecar_dir)
     monkeypatch.setattr(photon_adapter, "_sidecar_deps_stale", lambda: False)
 
     async def _no_reap(self: PhotonAdapter) -> None:

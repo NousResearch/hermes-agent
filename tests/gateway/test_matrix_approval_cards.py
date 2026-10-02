@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import types
 from unittest.mock import AsyncMock, MagicMock, patch
+from typing import TypedDict
 
 import pytest
 
@@ -18,6 +19,15 @@ from plugins.platforms.matrix.approval_cards import (
     load_matrix_approval_summary_config,
     sanitize_summary,
 )
+
+
+class _CardContent(TypedDict):
+    command: str
+    description: str
+
+
+class _SummaryCardContent(_CardContent):
+    summary: str
 
 
 @pytest.fixture
@@ -76,7 +86,7 @@ class TestApprovalCardFormatting:
             assert "always" not in text.lower()
 
     def test_pending_summarized_card_keeps_the_command_expanded(self):
-        card = dict(command="git reset --hard HEAD~1", description="git reset --hard (destroys uncommitted changes)")
+        card: _CardContent = {"command": "git reset --hard HEAD~1", "description": "git reset --hard (destroys uncommitted changes)"}
         summary = "Discards recent local commits and uncommitted work."
         expanded_text, expanded_html = format_pending_expanded(**card)
         assert expanded_html is not None
@@ -164,7 +174,7 @@ class TestApprovalCardFormatting:
 
     def test_cards_follow_the_active_language(self, monkeypatch, german):
         monkeypatch.setattr("gateway.platforms.base_exec_approval.approval_timeout_seconds", lambda: 300)
-        card = dict(command="rm -rf /tmp/x", description="", summary="Löscht ein Verzeichnis.")
+        card: _SummaryCardContent = {"command": "rm -rf /tmp/x", "description": "", "summary": "Löscht ein Verzeichnis."}
         cards = (
             format_pending_summarized(**card),
             format_terminal_compact(**card, choice="deny", actor="@owner:example.org"),
@@ -218,6 +228,7 @@ class TestApprovalCardFormatting:
             monkeypatch.setenv("HERMES_LANGUAGE", language)
             i18n.reset_language_cache()
             _text, card_html = format_pending_expanded(command="rm -rf /tmp/x", description="")
+            assert card_html is not None
             rendered[language] = ("`" in card_html, "<code>!approve</code>" in card_html)
         monkeypatch.delenv("HERMES_LANGUAGE")
         i18n.reset_language_cache()
@@ -357,7 +368,7 @@ class TestApprovalCardFormatting:
             patch("agent.auxiliary_client.call_llm", return_value=response),
         ):
             generated = generate_command_summary(command="rm -rf /tmp/x", description="d")
-        card = dict(command="rm -rf /tmp/x", description="d")
+        card: _CardContent = {"command": "rm -rf /tmp/x", "description": "d"}
 
         assert (
             generated,
@@ -843,7 +854,9 @@ class TestMatrixApprovalCardLifecycle:
             )
 
         assert result.success is True
-        body = adapter.send.await_args.args[1]
+        send_call = adapter.send.await_args
+        assert send_call is not None
+        body = send_call.args[1]
         assert "🌀" not in body
         assert "♾️" not in body
         prompt = adapter._approval_prompts_by_event["$evt2"]
@@ -1024,11 +1037,13 @@ class TestMatrixApprovalCardLifecycle:
             approval_id="approval-2",
         )
         assert adapter.edit_message.await_count == 1
-        edited = adapter.edit_message.await_args.args[2]
+        edit_call = adapter.edit_message.await_args
+        assert edit_call is not None
+        edited = edit_call.args[2]
         assert "Approved once" in edited
         assert "Deletes the bounded directory" in edited
         assert "rm -rf /tmp/x" in edited
-        metadata = adapter.edit_message.await_args.kwargs.get("metadata") or {}
+        metadata = edit_call.kwargs.get("metadata") or {}
         edited_html = metadata.get("matrix_formatted_body") or ""
         assert edited_html.index("Advisory interpretation") < edited_html.index("<details>")
         assert "<summary>Full command</summary>" in edited_html
@@ -1205,13 +1220,15 @@ class TestMatrixApprovalCardLifecycle:
         assert prompt.summary == "Restarts the example container."
         assert prompt.generation == 1
         assert adapter.edit_message.await_count == 1
-        body = adapter.edit_message.await_args.args[2]
+        edit_call = adapter.edit_message.await_args
+        assert edit_call is not None
+        body = edit_call.args[2]
         assert "Hermes wants to run a command that needs your OK" in body
         assert "Advisory interpretation" in body
         assert "Restarts the example container" in body
         assert "docker restart example" in body
         assert "✅ = approve once" in body
-        meta = adapter.edit_message.await_args.kwargs.get("metadata") or {}
+        meta = edit_call.kwargs.get("metadata") or {}
         html = meta.get("matrix_formatted_body") or ""
         assert html.index("<pre>docker restart example</pre>") < html.index("Advisory interpretation")
         assert "<details>" not in html
@@ -1401,18 +1418,22 @@ async def test_finalize_keeps_registry_until_edit_succeeds(monkeypatch):
 @pytest.mark.asyncio
 async def test_resolution_watch_uses_prompt_deadline(monkeypatch):
     from plugins.platforms.matrix.adapter import MatrixAdapter
-    from plugins.platforms.matrix.approval_lifecycle import _MatrixApprovalPrompt
+    from plugins.platforms.matrix.approval_lifecycle import _MatrixApprovalPrompt, _TerminalEdit
     from tools import approval as approval_mod
 
     adapter = MatrixAdapter.__new__(MatrixAdapter)
     prompt = _MatrixApprovalPrompt(session_key="s1", chat_id="!r", message_id="$e1", approval_id="a1", expires_at=10)
     finished = asyncio.Event()
 
-    async def finalize(*args, **kwargs):
+    async def finalize(
+        room_id: str, target_event_id: str, prompt: _MatrixApprovalPrompt,
+        *, choice: str, actor: str = "",
+    ) -> _TerminalEdit:
         prompt.terminal_visible = True
         finished.set()
+        return _TerminalEdit.VISIBLE
 
-    adapter._finalize_matrix_approval_prompt = finalize
+    monkeypatch.setattr(adapter, "_finalize_matrix_approval_prompt", finalize)
     adapter._redact_bot_approval_reactions = AsyncMock()
     monkeypatch.setattr(approval_mod, "has_blocking_approval", lambda *a, **k: True)
     monkeypatch.setattr(approval_mod, "consume_gateway_approval_outcome", lambda *a, **k: "expired")
@@ -1420,6 +1441,7 @@ async def test_resolution_watch_uses_prompt_deadline(monkeypatch):
     adapter._schedule_approval_resolution_watch(prompt)
     await asyncio.wait_for(finished.wait(), timeout=10)
     assert (prompt.resolved, prompt.terminal_choice) == (True, "expired")
+    assert prompt.lifecycle_task is not None
     await prompt.lifecycle_task
 
 
@@ -1487,18 +1509,18 @@ async def test_prompt_answer_during_seeding_preserves_delivery(monkeypatch, kind
     seed_calls = []
     choices = {'approval': '✅', 'model': '1️⃣', 'choice': '1️⃣'}
 
-    async def seed(chat_id, message_id, emoji):
-        seed_calls.append((chat_id, message_id, emoji))
+    async def seed(room_id: str, event_id: str, emoji: str) -> str:
+        seed_calls.append((room_id, event_id, emoji))
         if len(seed_calls) == answer_on_seed:
             handler = {
                 'approval': adapter._handle_approval_reaction,
                 'model': adapter._handle_model_picker_reaction,
                 'choice': adapter._handle_choice_picker_reaction,
             }[kind]
-            await handler(chat_id, message_id, choices[kind], '@owner:example.org')
+            await handler(room_id, event_id, choices[kind], '@owner:example.org')
         return f'$seed-{len(seed_calls)}'
 
-    adapter._send_reaction = seed
+    monkeypatch.setattr(adapter, "_send_reaction", seed)
     metadata = {'approval_id': 'a1', 'requester_user_id': '@owner:example.org'}
     if kind == 'approval':
         result = await adapter.send_exec_approval(
@@ -1577,8 +1599,8 @@ async def test_typed_approval_during_seeding_finishes_without_summary(monkeypatc
     approval._gateway_queues['s1'] = [entry]
     seed_calls = []
 
-    async def seed(chat_id, message_id, emoji):
-        seed_calls.append((chat_id, message_id, emoji))
+    async def seed(room_id: str, event_id: str, emoji: str) -> str:
+        seed_calls.append((room_id, event_id, emoji))
         if len(seed_calls) == 1:
             approval.resolve_gateway_approval('s1', choice)
             if entry.settle is not None:
@@ -1586,7 +1608,7 @@ async def test_typed_approval_during_seeding_finishes_without_summary(monkeypatc
                 await asyncio.wait_for(terminal_done.wait(), timeout=10)
         return '$seed'
 
-    adapter._send_reaction = seed
+    monkeypatch.setattr(adapter, "_send_reaction", seed)
     result = await adapter.send_exec_approval(
         chat_id='!room:example.org', command='echo hi', session_key='s1', description='test',
         metadata={'approval_id': 'a1', 'requester_user_id': '@owner:example.org'},

@@ -1,13 +1,14 @@
 """Real approval/foreground/Matrix boundaries; transport only is substituted."""
 import asyncio
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 from gateway.config import PlatformConfig
 from gateway.platforms.base import SendResult
 from gateway.run_turn_runner import TurnRunner
+from gateway.turn_context import TurnContext
 from plugins.platforms.matrix.adapter import MatrixAdapter
 from plugins.platforms.matrix.approval_lifecycle import _MatrixApprovalPrompt
 from tools import approval, approval_context
@@ -23,11 +24,16 @@ def adapter_for_test(monkeypatch):
     return adapter
 
 
-def foreground(adapter, loop):
+def foreground(adapter, loop, monkeypatch):
     runner = TurnRunner.__new__(TurnRunner)
-    runner._ctx = SimpleNamespace(_status_adapter=adapter, _status_chat_id="!room:example.org", session_key="boundary", _status_thread_metadata={}, source=SimpleNamespace(user_id="@owner:example.org"))
-    runner._close_native_stream_boundary = lambda _: None
-    runner._schedule = lambda coro, _: asyncio.run_coroutine_threadsafe(coro, loop)
+    runner._ctx = TurnContext(_status_adapter=adapter, _status_chat_id="!room:example.org", session_key="boundary", _status_thread_metadata={}, source=SimpleNamespace(user_id="@owner:example.org"))
+    runner._close_native_stream_boundary = MagicMock(return_value=False)
+    owner_loop = loop
+
+    def schedule(coro, log_message: str, loop: object = None):
+        return asyncio.run_coroutine_threadsafe(coro, owner_loop)
+
+    monkeypatch.setattr(runner, "_schedule", schedule)
     return runner
 
 
@@ -37,7 +43,7 @@ async def test_foreground_core_deadline_and_requester_reach_real_card(monkeypatc
     adapter = adapter_for_test(monkeypatch)
     adapter._approval_timeout_seconds = 1
     adapter._schedule_approval_resolution_watch = lambda _: None
-    runner = foreground(adapter, asyncio.get_running_loop())
+    runner = foreground(adapter, asyncio.get_running_loop(), monkeypatch)
     seen = {}
 
     def notify(data):
@@ -62,7 +68,7 @@ async def test_foreground_core_deadline_and_requester_reach_real_card(monkeypatc
 async def test_failed_foreground_full_fallback_returns_notify_failed(monkeypatch):
     adapter = adapter_for_test(monkeypatch)
     adapter.send = AsyncMock(return_value=SendResult(success=False, error="too large"))
-    runner = foreground(adapter, asyncio.get_running_loop())
+    runner = foreground(adapter, asyncio.get_running_loop(), monkeypatch)
     # A broken notifier must not block the test for the default approval timeout.
     monkeypatch.setattr(approval_context, "_get_approval_timeout", lambda: 0.01)
     result = await asyncio.to_thread(_await_gateway_decision, "boundary", runner._approval_notify_sync, {"command": "x" * 70000})
@@ -150,6 +156,8 @@ async def test_visible_failure_notice_retains_card_until_terminal_replacement(mo
 @pytest.mark.asyncio
 async def test_connector_decline_ends_approval_without_text_fallback(monkeypatch):
     class Adapter:
+        send: AsyncMock
+
         async def send_exec_approval(self, **kwargs):
             return SendResult(success=False, raw_response={"code": "egress_declined"})
 
@@ -158,7 +166,7 @@ async def test_connector_decline_ends_approval_without_text_fallback(monkeypatch
 
     adapter = Adapter()
     adapter.send = AsyncMock(return_value=SendResult(success=True, message_id="$unexpected"))
-    notify = foreground(adapter, asyncio.get_running_loop())._approval_notify_sync
+    notify = foreground(adapter, asyncio.get_running_loop(), monkeypatch)._approval_notify_sync
     monkeypatch.setattr(approval_context, "_get_approval_timeout", lambda: 0.1)
     result = await asyncio.to_thread(
         _await_gateway_decision, "declined", notify, {"command": "echo private"})
@@ -222,8 +230,8 @@ def test_ambiguous_text_ack_keeps_waiter_for_late_resolution(monkeypatch):
         return LateAck()
     adapter = SimpleNamespace(send=AsyncMock(), pause_typing_for_chat=lambda _: None,
                               typed_command_prefix="!", approval_fallback_single_event=True)
-    runner = foreground(adapter, None)
-    runner._schedule = schedule
+    runner = foreground(adapter, None, monkeypatch)
+    monkeypatch.setattr(runner, "_schedule", schedule)
     monkeypatch.setattr(approval_context, "_get_approval_timeout", lambda: 60)
     def callback(data):
         runner._approval_notify_sync(data)
@@ -266,7 +274,7 @@ async def test_oversized_text_fallback_is_refused_not_split(monkeypatch):
     adapter = adapter_for_test(monkeypatch)
     del adapter.send
     adapter._send_room_message = AsyncMock(return_value="$event")
-    runner = foreground(adapter, asyncio.get_running_loop())
+    runner = foreground(adapter, asyncio.get_running_loop(), monkeypatch)
     monkeypatch.setattr(approval_context, "_get_approval_timeout", lambda: 60)
     command = "x" * (adapter.max_message_length + 1)
     result = await asyncio.to_thread(_await_gateway_decision, "oversized", runner._approval_notify_sync, {"command": command})
@@ -288,7 +296,7 @@ async def test_button_adapters_receive_identity_but_not_the_process_deadline(mon
         def pause_typing_for_chat(self, chat_id):
             pass
 
-    runner = foreground(Adapter(), asyncio.get_running_loop())
+    runner = foreground(Adapter(), asyncio.get_running_loop(), monkeypatch)
     monkeypatch.setattr(approval_context, "_get_approval_timeout", lambda: 60)
 
     def notify(data):

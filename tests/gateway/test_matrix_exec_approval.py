@@ -1,4 +1,5 @@
 import types
+from typing import TypedDict
 
 import pytest
 from unittest.mock import AsyncMock, patch
@@ -11,6 +12,11 @@ from gateway.platforms.base import SendResult
 from plugins.platforms.matrix.adapter import MatrixAdapter
 from tools import approval
 from tools.approval_gateway_wait import _ApprovalEntry
+
+
+class _ApprovalIdentityArguments(TypedDict, total=False):
+    metadata: dict[str, str]
+    request_id: str
 
 
 class TestMatrixExecApprovalReactions:
@@ -81,7 +87,7 @@ async def test_native_matrix_card_targets_the_displayed_request(
     )
     adapter._send_reaction = AsyncMock(return_value="$seed")
     adapter._redact_bot_approval_reactions = AsyncMock()
-    kwargs = {}
+    kwargs: _ApprovalIdentityArguments = {}
     if card_state != "unbound":
         identity = "new" if card_state == "current" else "old"
         kwargs = (

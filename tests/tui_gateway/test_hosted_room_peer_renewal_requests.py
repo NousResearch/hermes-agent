@@ -177,3 +177,35 @@ def test_a_refused_grant_is_not_sent_to_the_same_check_again_for_a_minute(monkey
     with pytest.raises(PeerRunsHTTPError):
         client.probe(grant='refused')
     assert len(sent) == 7
+
+
+def test_cooldown_preserves_uncertainty_of_an_unverified_refresh_response(monkeypatch):
+    from gateway.hosted_room_peer import issue_room_grant
+    from gateway.session_group_peer_routes import before_sending
+    grant = issue_room_grant(b'x' * 32, grant_id='grant', room_id='room', home_install_id='home',
+        authority_gateway_id='home', authority_epoch=1, member_id='member', target_install_id='peer',
+        target_profile='default')
+    client = PeerRunsHTTPClient(base_url='https://peer.example.test', api_key='', proof_install_id='peer')
+    sent = []
+
+    def unverified_error(request, **kwargs):
+        sent.append(request)
+        raise urllib.error.HTTPError(request.full_url, 403, 'unverified intermediary', {}, io.BytesIO(b'{}'))
+
+    monkeypatch.setattr(http, '_open_roomlink_url', unverified_error)
+    failures = []
+    for _ in range(2):
+        with pytest.raises(PeerRunsHTTPError) as caught:
+            client.refresh_grant(grant=grant)
+        failures.append(caught.value)
+    assert len(sent) == 1
+    assert failures[0].ambiguous and not failures[0].not_admitted
+    for flag in ('retryable', 'ambiguous', 'not_admitted'):
+        assert getattr(failures[1], flag) == getattr(failures[0], flag)
+    # The canonical recovery boundary also keeps this uncertainty. A cached
+    # renewal failure is never proof that a prior Run was not admitted.
+    with pytest.raises(PeerRunsHTTPError) as caught:
+        with before_sending('recover_dispatch'):
+            client.refresh_grant(grant=grant)
+    assert caught.value.ambiguous and not caught.value.not_admitted
+    assert len(sent) == 1

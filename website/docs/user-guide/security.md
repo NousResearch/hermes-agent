@@ -599,13 +599,15 @@ If you add names to `terminal.docker_forward_env`, those variables are intention
 
 Reviewing a pull request or trying a repository often means running its code: its tests, its build, its install scripts. On the default `local` backend that code runs as you. It can read your SSH keys, `gh` login, `~/.hermes/.env` and anything else your account can read, and stripping secrets from the environment does not change that, because the files are still there.
 
-**For one run: `hermes sandbox run`.** It copies the code without executing anything it carries (no checkout, no hooks, no repo-configured git filters, symlinks kept as links) and runs your command in a throwaway container: no network, all capabilities dropped, a read-only root, an unprivileged user, no host environment and no host mount except the scratch copy, which is deleted afterwards. An optional `--setup` step installs dependencies with network but still without credentials.
+**For one run: `hermes sandbox run`.** It copies the code without executing anything it carries (no checkout, no hooks, no repo-configured git filters, symlinks kept as links) and runs your command in a throwaway container: no network, all capabilities dropped, a read-only root, an unprivileged user, no host environment and no host mount except the scratch copy, which is deleted afterwards. An optional `--setup` step installs dependencies under the same lock. It has no network unless you pass `--setup-network open`, which gives it the container runtime's ordinary network: the code's install scripts can then reach the internet, your local network and services on this machine. Use `open` only when the install must download packages; the test run itself never has a network.
 
 ```bash
-hermes sandbox run --pr 123 --setup 'pip install --user -e .' -- python -m pytest -q
+hermes sandbox run --pr 123 --setup 'pip install --user -e .' --setup-network open -- python -m pytest -q
 ```
 
 The bundled `github` skill's PR review runs tests this way. Options and details: [`hermes sandbox`](../reference/cli-commands.md#hermes-sandbox). It needs Docker or Podman.
+
+**No container runtime, or a hosted deployment without one.** Without Docker or Podman, `hermes sandbox run` exits 69 and runs nothing. Hermes then reviews untrusted code by reading it only (diff and source) and says that the tests were not run; it does not fall back to running the code on the host. Other isolation runtimes, such as remote terminal backends or a bubblewrap backend, may be supported later.
 
 **For a whole profile: the docker backend, locked down.** When a profile exists to work on code you do not trust, run every command in an ephemeral, air-gapped container:
 

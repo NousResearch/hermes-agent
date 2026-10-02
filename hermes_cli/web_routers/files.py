@@ -372,7 +372,9 @@ def _media_proxy_host_allowed(host: str) -> bool:
 
 def _validate_media_proxy_url(url: str) -> str:
     """Return a URL with an allowlisted CDN origin; DNS policy is enforced separately."""
-    url = (url or "").strip()
+    # urlparse discards some control characters; accept surrounding spaces but
+    # validate the original authority and path before the HTTP client sees them.
+    url = (url or "").strip(" ")
     parsed = urllib.parse.urlparse(url)
     if parsed.scheme not in ("http", "https") or not parsed.hostname:
         raise HTTPException(status_code=400, detail="A remote image URL is required")
@@ -380,6 +382,20 @@ def _validate_media_proxy_url(url: str) -> str:
         raise HTTPException(status_code=403, detail="Image host not allowed")
     if parsed.username is not None or parsed.password is not None:
         raise HTTPException(status_code=400, detail="Image URL must not contain credentials")
+    if not re.fullmatch(
+        r"https?://(?:(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)*"
+        r"(?:fal\.media|fal\.run)|storage\.googleapis\.com)\.?"
+        r"(?::[0-9]{1,5})?(?:[/?#][^\x00-\x20\x7f\\]*)?",
+        url,
+        flags=re.IGNORECASE,
+    ):
+        raise HTTPException(status_code=400, detail="Malformed image URL")
+    try:
+        port = parsed.port
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="Invalid image URL port") from exc
+    if port is not None and not 1 <= port <= 65535:
+        raise HTTPException(status_code=400, detail="Invalid image URL port")
     if not parsed.path or Path(parsed.path).suffix.lower() not in _MEDIA_CONTENT_TYPES:
         # Generated-image CDN URLs are content-hash paths with no extension;
         # a missing extension is expected, so only reject explicit non-image

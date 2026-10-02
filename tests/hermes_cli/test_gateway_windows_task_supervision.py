@@ -4,6 +4,7 @@ import json
 import os
 import subprocess
 import sys
+import sysconfig
 import time
 import xml.etree.ElementTree as ET
 from pathlib import Path
@@ -146,6 +147,45 @@ def _exercise_launcher(command, root, exit_code, *, supervised):
                     child.kill()
                 child.wait(timeout=10)
         output.close()
+
+
+@pytest.mark.platforms('windows')
+def test_probe_child_uses_production_pythonpath_without_editable_imports(monkeypatch, tmp_path):
+    monkeypatch.delenv(EXTERNAL_GATEWAY_SUPERVISOR_ENV, raising=False)
+    script_path = _launchers(monkeypatch, tmp_path, 0)
+    root = script_path.parent
+    (root / "release").touch()
+    dependencies = json.dumps(list(dict.fromkeys(
+        sysconfig.get_paths()[name] for name in ("purelib", "platlib")
+    )))
+    # -S skips .pth/editable hooks. Declared dependencies remain available, but
+    # the project itself must arrive through the production argv overlay.
+    driver = (
+        "import json, runpy, sys; sys.path.extend(json.loads(sys.argv[1])); "
+        "sys.argv=sys.argv[2:]; runpy.run_path(sys.argv[0], run_name='__main__')"
+    )
+    command = [sys.executable, "-S", "-c", driver, dependencies,
+               str(root / "probe child.py"), str(root), "0"]
+    env = dict(os.environ)
+    env.pop("PYTHONPATH", None)
+    missing = subprocess.run(
+        command, cwd=root, env=env, capture_output=True, text=True, timeout=30,
+        creationflags=subprocess.CREATE_NO_WINDOW,
+    )
+    assert missing.returncode != 0
+    assert "ModuleNotFoundError: No module named 'gateway'" in missing.stderr
+    assert not (root / "started.json").exists()
+    from hermes_cli.gateway import PROJECT_ROOT
+    gateway_windows._prepend_pythonpath(env, [str(PROJECT_ROOT)])
+    result = subprocess.run(
+        command, cwd=root, env=env, capture_output=True, text=True, timeout=30,
+        creationflags=subprocess.CREATE_NO_WINDOW,
+    )
+    assert result.returncode == 0, result.stderr
+    state = json.loads((root / "started.json").read_text(encoding="utf-8"))
+    assert state["visible"] is False
+    assert state["supervised"] is False
+    assert state["supervisor_marker"] == ""
 
 
 @pytest.mark.platforms('windows')

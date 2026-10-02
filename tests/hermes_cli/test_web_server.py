@@ -1133,8 +1133,37 @@ CONFIG_SCHEMA = ProviderConfigSchema(
             "https://v3.fal.media/media/hash",
             "https://sub.fal.run/generated/image.png",
             "https://storage.googleapis.com/images/image.png",
+            "HTTP://Sub.FAL.Media.:8080/media/hash?signature=fixture#image",
+            "https://a-b.deep.fal.run:65535/media/hash",
+            "https://STORAGE.GOOGLEAPIS.COM.:443/images/image.webp",
         ):
             assert _validate_media_proxy_url("  " + url + "  ") == url
+
+    @pytest.mark.parametrize("url", (
+        "https://fal.media.evil.test/image.png",
+        "https://evil.test@fal.media/image.png",
+        "https://fal.media@evil.test/image.png",
+        "https://sub.storage.googleapis.com/image.png",
+        "https://fal.media:65536/image.png",
+        "https://fal.media:0/image.png",
+        "https://fal.media:not-a-port/image.png",
+        "https://fal.media./\\evil.test/image.png",
+        "https://fal.media/im\rage.png",
+        "https://fal.media/im\nage.png",
+        "https://fal.media/im\tage.png",
+        "\x00https://fal.media/image.png",
+        "https://fal.media/image\x7f.png",
+        "https://fal.media/image name.png",
+        "https://.fal.media/image.png",
+        "https://a..fal.run/image.png",
+    ))
+    def test_media_proxy_rejects_ambiguous_url_authorities(self, url):
+        from fastapi import HTTPException
+        from hermes_cli.web_routers.files import _validate_media_proxy_url
+
+        with pytest.raises(HTTPException) as rejected:
+            _validate_media_proxy_url(url)
+        assert rejected.value.status_code in (400, 403)
 
     def test_media_proxy_fetches_allowlisted_image_and_returns_data_url(self, monkeypatch):
         png_bytes = b"\x89PNG\r\n\x1a\n" + b"0" * 8

@@ -328,8 +328,33 @@ describe('session-gone classification', () => {
     expect(turns.isSessionGoneError(Object.assign(new Error('x'), { code: 4001 }))).toBe(true)
     expect(turns.isSessionGoneError(new Error('session_id=rt-1 not in memory'))).toBe(true)
     expect(turns.isSessionGoneError(Object.assign(new Error('session not found'), { code: 4007 }))).toBe(false)
+    for (const reason of ['invalid_params','permission_denied','profile_mismatch','stale_generation','unknown_execution']) {
+      expect(turns.isSessionGoneError(Object.assign(new Error(reason),{code:4001,data:{reason}}))).toBe(false)
+    }
+    expect(turns.isSessionGoneError(Object.assign(new Error('not_found'),{code:4001,data:{reason:'not_found'}}))).toBe(true)
     expect(turns.isSessionGoneError(null)).toBe(false)
     expect(turns.isSessionGoneError(new Error('network blip'))).toBe(false)
+  })
+
+  it('submits classic member work with the identity required by the canonical wire contract', async () => {
+    const room = await loadRoom({turn: () => 'received with exact identity'})
+    const original = host.request as (method: string, params: Record<string, unknown>) => Promise<unknown>
+    const {CanonicalDesktopProtocol} = await import('@/api/canonical-protocol')
+    const protocol = new CanonicalDesktopProtocol()
+    let id = ''
+    host.request = async (method: string, params: Record<string, unknown>) => {
+      if (method === 'prompt.submit') {
+        const wire = protocol.prepare(method, params)
+        if (typeof wire.submission_id !== 'string' || !wire.submission_id) {
+          throw Object.assign(new Error('invalid_params'), {code:4001,data:{reason:'invalid_params'}})
+        }
+        id = wire.submission_id
+      }
+      return original(method, params)
+    }
+    expect(await room.turns.runGroupChatMemberTurn('Room',LOCAL_MEMBER,'hello','t1',[])).toBe('received with exact identity')
+    expect(id).toBeTruthy()
+    expect(room.gateway.rpcFor('prompt.submit')).toHaveLength(1)
   })
 
   it('recovers a 4001 on the first submit via the STORED id and delivers', async () => {
@@ -345,6 +370,10 @@ describe('session-gone classification', () => {
     expect(reply).toBe('recovered reply')
     // One failed submit + exactly one retry — never more.
     expect(room.gateway.rpcFor('prompt.submit')).toHaveLength(2)
+    const submissions = room.gateway.rpcFor('prompt.submit').map(call => call.params.submission_id)
+    expect(typeof submissions[0]).toBe('string')
+    expect(submissions[0]).toBeTruthy()
+    expect(submissions[1]).toBe(submissions[0])
     // The recovery re-resumed the durable stored id, not the dead runtime id.
     expect(room.chat.$groupChats.get().Room.sessions?.['thread:t1::helper']).toBeTruthy()
   })

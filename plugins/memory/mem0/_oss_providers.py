@@ -28,7 +28,7 @@ VECTOR_PROVIDERS: dict[str, dict[str, Any]] = {
     },
 }
 
-KNOWN_DIMS: dict[str, int] = {"text-embedding-3-small": 1536, "text-embedding-3-large": 3072, "text-embedding-ada-002": 1536, "nomic-embed-text": 768}
+KNOWN_DIMS: dict[str, int] = {"text-embedding-3-small": 1536, "text-embedding-3-large": 3072, "text-embedding-ada-002": 1536, "nomic-embed-text": 768, "bge-m3": 1024}
 
 def vector_default_config(provider_id: str) -> dict[str, Any]:
     """A vector store's ``default_config`` with callable defaults resolved for the active profile."""

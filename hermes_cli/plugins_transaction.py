@@ -16,10 +16,11 @@ def recover_plugin_publication(project: Path, row: dict, journal: Path) -> None:
 def publish_plugin(staged: Path, target: Path, old_metadata: dict, new_metadata: dict,
                    *, target_digest: str | None = None, require_consent: bool = False,
                    assume_consent: bool = False) -> None:
-    """Publish *staged* into *target*. *assume_consent* is the caller's own
-    ``--yes-deps`` answer: the active-replacement consent veto is skipped, so
-    an unattended install can carry the user's explicit decision instead of
-    being refused non-interactively."""
+    """Publish *staged* into *target*. *assume_consent* is consent the caller
+    already holds (``--yes-deps``, or a memory-provider migration under
+    ``security.allow_lazy_installs``): the active-replacement consent veto is
+    skipped, so an unattended install carries that decision instead of being
+    refused non-interactively."""
     from pm.client import sync_venv
     from pm.plugin_inputs import StagedUpdate
     from pm.store import tree_digest

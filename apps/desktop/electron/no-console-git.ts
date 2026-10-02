@@ -352,6 +352,7 @@ export function execGit(
           if (error) {
             child.kill('SIGKILL')
           }
+
           done()
         })
       } else {
@@ -374,6 +375,7 @@ export function execGit(
       if (timeoutError) {
         return
       }
+
       const used = isStdout ? stdoutBytes : stderrBytes
       const allowed = options.maxBufferBytes === undefined ? chunk.length : Math.max(0, options.maxBufferBytes - used)
       const kept = chunk.subarray(0, allowed)

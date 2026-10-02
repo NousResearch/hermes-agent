@@ -471,10 +471,13 @@ hold. One-shot jobs are not held.
 The announced reset is an upper bound: Codex can reopen days earlier (a banked
 reset, a plan change, a rotated or re-added account). While a hold is active,
 each tick re-runs the job's own provider resolve, at most once per route every
-5 minutes. When it succeeds the hold is released: an interval job fires on that
-tick, a cron job moves to its next scheduled occurrence, and a sparse job
-parked on its recovery retry takes that retry. A resolve that still fails, for
-any reason, leaves the hold as it was.
+5 minutes. For Codex a successful resolve is not enough, because the login
+stays valid while the quota is used up, so Hermes also asks the Codex usage
+endpoint whether the window is open again. When it is, the hold is released:
+an interval job fires on that tick, a cron job moves to its next scheduled
+occurrence, and a sparse job parked on its recovery retry takes that retry. A
+resolve that fails for any reason, or a usage check that says the window is
+still closed or gives no answer, leaves the hold as it was.
 
 ### Failure incidents: alert once, remind on a cooldown, acknowledge
 

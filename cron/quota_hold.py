@@ -168,13 +168,31 @@ def hold_notice(job: Dict[str, Any], hold_seconds: Optional[float]) -> str:
     )
 
 
-def _reopened_holds(held: list) -> Dict[str, str]:
-    """``job id -> held instant`` for held jobs whose primary route resolves again.
+def _quota_reopened(runtime: Any) -> bool:
+    """True only when the resolved route's usage window is known to be open again.
 
-    Same primary resolve the run itself starts with (``_resolve_job_runtime``), one probe per
-    route and at most one per ``RELEASE_PROBE_INTERVAL_SECONDS``. Any failure keeps the hold:
-    only the resolve that set it can release it. Runs under the profile's secret scope because
-    the tick holds none and ``get_secret`` fails closed under multiplex."""
+    A successful resolve proves the credentials work, not that the window reopened: a Codex
+    login stays valid while its quota is exhausted (the hold's own alert says "Credentials are
+    still valid"), so a singleton token resolves with the window still shut. For Codex, ask
+    the usage endpoint the credential pool already trusts (``_probe_codex_quota_restored``):
+    closed or unknown keeps the hold. Other providers have no window probe; for them the
+    resolve itself is the signal, and a still-closed window raises the quota error there."""
+    if not isinstance(runtime, dict) or runtime.get("provider") != "openai-codex":
+        return True
+    from hermes_cli.auth import _probe_codex_quota_restored
+
+    return _probe_codex_quota_restored(
+        runtime.get("api_key"), base_url=runtime.get("base_url")) is True
+
+
+def _reopened_holds(held: list) -> Dict[str, str]:
+    """``job id -> held instant`` for held jobs whose primary route has its window open again.
+
+    Same primary resolve the run itself starts with (``_resolve_job_runtime``), then the
+    route's usage check (``_quota_reopened``); one probe per route and at most one per
+    ``RELEASE_PROBE_INTERVAL_SECONDS``. Any failure or unknown answer keeps the hold. Runs
+    under the profile's secret scope because the tick holds none and ``get_secret`` fails
+    closed under multiplex."""
     import time
 
     from agent.secret_scope import build_profile_secret_scope, reset_secret_scope, set_secret_scope
@@ -209,8 +227,7 @@ def _reopened_holds(held: list) -> Dict[str, str]:
                 if route[2]:
                     kwargs["explicit_base_url"] = route[2]
                 try:
-                    resolve_runtime_provider(**kwargs)
-                    verdicts[route] = True
+                    verdicts[route] = _quota_reopened(resolve_runtime_provider(**kwargs))
                 except Exception:
                     verdicts[route] = False
             if verdicts[route]:
@@ -221,7 +238,7 @@ def _reopened_holds(held: list) -> Dict[str, str]:
 
 
 def release_reopened_holds() -> int:
-    """Release holds whose provider already resolves again; returns the number released.
+    """Release holds whose provider's usage window is open again; returns the number released.
 
     The announced reset is an upper bound: Codex can reopen days earlier (a banked reset, a plan
     change, a rotated or re-added account), and nothing else lifts a hold before its instant.
@@ -259,8 +276,8 @@ def release_reopened_holds() -> int:
                     else compute_next_run(schedule, now.isoformat()) or job["next_run_at"])
             released += 1
             logger.info(
-                "Job '%s': provider reachable again before its announced reset; releasing the "
-                "quota hold, next run %s", job.get("name", job.get("id")), job["next_run_at"])
+                "Job '%s': provider usage window open again before its announced reset; "
+                "releasing the quota hold, next run %s", job.get("name", job.get("id")), job["next_run_at"])
         if released:
             save_jobs(jobs)
     return released

@@ -184,9 +184,11 @@ def _held_job(name, schedule, now):
     return held
 
 
-def _run_tick(monkeypatch, resolve):
+def _run_tick(monkeypatch, resolve, usage_restored=True):
     """One real ``tick()`` with job execution stubbed; returns the dispatched job ids and the
-    number of provider probes."""
+    number of provider probes. *usage_restored* is what the Codex usage endpoint reports."""
+    import hermes_cli.auth as auth
+
     dispatched, probes = [], []
 
     def _probe(**kwargs):
@@ -197,6 +199,7 @@ def _run_tick(monkeypatch, resolve):
     monkeypatch.setattr(sched, "_process_due_job",
                         lambda job, *_a, **_k: dispatched.append(job["id"]) or True)
     monkeypatch.setattr("hermes_cli.runtime_provider.resolve_runtime_provider", _probe)
+    monkeypatch.setattr(auth, "_probe_codex_quota_restored", lambda *_a, **_k: usage_restored)
     sched.tick(verbose=False, sync=True)
     return dispatched, probes
 
@@ -206,9 +209,9 @@ def test_hold_is_released_when_the_provider_reopens_before_the_window_ends(
 ):
     """Codex can reopen days before the reset it announced (a banked reset, a plan change, a
     rotated account). A held job must not sit out the rest of the stale window once the
-    provider resolves again: the interval job fires on the next tick, the cron job moves to its
-    next legal occurrence (never off-lattice), both markers clear, and one probe serves every
-    held job on the same route."""
+    provider resolves and its usage window is open again: the interval job fires on the next
+    tick, the cron job moves to its next legal occurrence (never off-lattice), both markers
+    clear, and one probe serves every held job on the same route."""
     now = datetime.now(timezone.utc)
     interval = _held_job("crossfeed", "every 10m", now)
     daily = _held_job("nightly synthesis", "0 22 * * *", now)
@@ -235,19 +238,27 @@ def test_hold_is_released_when_the_provider_reopens_before_the_window_ends(
 
 
 def test_hold_stays_while_the_provider_is_still_closed_or_unresolvable(tmp_cron_home, monkeypatch):
-    """Only a successful resolve releases a hold. The same quota error, or any other resolve
-    failure (the real run reports those), leaves the job parked exactly where it was."""
+    """Only a resolve that succeeds with its usage window open releases a hold. The same quota
+    error, any other resolve failure (the real run reports those), or a successful resolve whose
+    usage window is still closed or unknown leaves the job parked exactly where it was."""
     now = datetime.now(timezone.utc)
     held = _held_job("crossfeed", "every 10m", now)
 
-    for failure in (_quota_error(), RuntimeError("network down"),
-                    AuthError("expired", provider="openai-codex", code="expired",
-                              relogin_required=True)):
-        def _fail(**_kw):
-            raise failure
+    def _resolves(**_kw):
+        return {"provider": "openai-codex", "api_key": "token", "base_url": None}
+
+    cases = [(f, True) for f in (_quota_error(), RuntimeError("network down"),
+                                 AuthError("expired", provider="openai-codex", code="expired",
+                                           relogin_required=True))]
+    cases += [(None, False), (None, None)]
+    for failure, usage in cases:
+        def _resolve(**_kw):
+            if failure is not None:
+                raise failure
+            return _resolves()
 
         monkeypatch.setattr(qh, "_release_probe_at", {}, raising=False)
-        dispatched, probes = _run_tick(monkeypatch, _fail)
+        dispatched, probes = _run_tick(monkeypatch, _resolve, usage_restored=usage)
         assert probes and dispatched == []
         still = get_job(held["id"])
         assert still[qh.STATE_KEY] == held[qh.STATE_KEY]
@@ -326,3 +337,85 @@ def test_release_skips_a_job_whose_run_finished_during_the_probe(tmp_cron_home, 
     after_run = get_job(held["id"])
     assert qh.STATE_KEY not in after_run
     assert after_run["last_status"] == "ok"
+
+
+def _jwt(exp: int) -> str:
+    import base64
+    import json
+
+    def seg(obj):
+        return base64.urlsafe_b64encode(json.dumps(obj).encode()).rstrip(b"=").decode()
+
+    claims = {"exp": exp, "https://api.openai.com/auth": {"chatgpt_account_id": "acct-test"}}
+    return f"{seg({'alg': 'none'})}.{seg(claims)}.sig"
+
+
+def _singleton_codex_login(home) -> str:
+    """A valid, unexpired singleton Codex login (no pool): it resolves whether or not the usage
+    window is open, so the resolve alone says nothing about the quota."""
+    import json
+    import time
+
+    token = _jwt(int(time.time()) + 30 * 86400)
+    (home / "auth.json").write_text(json.dumps({"version": 1, "providers": {"openai-codex": {
+        "tokens": {"access_token": token, "refresh_token": "refresh", "id_token": token},
+        "last_refresh": "2026-10-01T00:00:00Z", "auth_mode": "chatgpt"}}}))
+    return token
+
+
+@pytest.mark.parametrize("usage_says", [False, None])
+def test_a_valid_singleton_login_does_not_release_a_hold_while_the_window_is_closed(
+    tmp_cron_home, monkeypatch, usage_says,
+):
+    """The credentials stay valid while the window is shut, so a successful resolve is not a
+    reopened window. With a singleton login the real resolve succeeds; only the usage endpoint
+    can say the quota is back. Closed (False) or unknown (None) keeps the hold."""
+    import hermes_cli.auth as auth
+
+    token = _singleton_codex_login(tmp_cron_home)
+    asked = []
+
+    def _usage(access_token, **kwargs):
+        asked.append(access_token)
+        return usage_says
+
+    monkeypatch.setattr(auth, "_probe_codex_quota_restored", _usage)
+    monkeypatch.setattr(sched, "_should_yield_tick_to_fresh_gateway", lambda: None)
+    dispatched = []
+    monkeypatch.setattr(sched, "_process_due_job",
+                        lambda job, *_a, **_k: dispatched.append(job["id"]) or True)
+    job = create_job("crossfeed", "every 10m", deliver="local",
+                     provider="openai-codex", model="gpt-5.5")
+    assert mark_job_run(job["id"], False, QUOTA_MSG, quota_hold_seconds=123518)
+    held = get_job(job["id"])
+
+    sched.tick(verbose=False, sync=True)
+
+    assert asked == [token]
+    assert dispatched == []
+    still = get_job(job["id"])
+    assert still[qh.STATE_KEY] == held[qh.STATE_KEY]
+    assert still["next_run_at"] == held["next_run_at"]
+
+
+def test_a_singleton_login_releases_the_hold_once_the_usage_window_reopens(
+    tmp_cron_home, monkeypatch,
+):
+    """Same singleton login, usage endpoint reports headroom again: the hold is released and the
+    interval job fires on this tick."""
+    import hermes_cli.auth as auth
+
+    _singleton_codex_login(tmp_cron_home)
+    monkeypatch.setattr(auth, "_probe_codex_quota_restored", lambda *_a, **_k: True)
+    monkeypatch.setattr(sched, "_should_yield_tick_to_fresh_gateway", lambda: None)
+    dispatched = []
+    monkeypatch.setattr(sched, "_process_due_job",
+                        lambda job, *_a, **_k: dispatched.append(job["id"]) or True)
+    job = create_job("crossfeed", "every 10m", deliver="local",
+                     provider="openai-codex", model="gpt-5.5")
+    assert mark_job_run(job["id"], False, QUOTA_MSG, quota_hold_seconds=123518)
+
+    sched.tick(verbose=False, sync=True)
+
+    assert job["id"] in dispatched
+    assert qh.STATE_KEY not in get_job(job["id"])

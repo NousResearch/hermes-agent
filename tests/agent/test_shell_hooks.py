@@ -62,6 +62,73 @@ class TestParseResponse:
         assert shell_hooks._parse_response("pre_tool_call", "   ") is None
 
 
+class TestTransformToolResult:
+    """transform_tool_result dialect: a string ``result`` (``""`` included) replaces the tool
+    result (model_tools takes the first string return); anything else keeps it."""
+
+    def test_string_result_replaces(self):
+        assert shell_hooks._parse_response(
+            "transform_tool_result",
+            '{"result": "Blocked: prompt injection detected"}',
+        ) == "Blocked: prompt injection detected"
+
+    def test_empty_object_keeps_result(self):
+        assert shell_hooks._parse_response("transform_tool_result", "{}") is None
+
+    def test_non_string_result_keeps_result(self):
+        for stdout in ('{"result": 42}', '{"result": null}'):
+            assert shell_hooks._parse_response("transform_tool_result", stdout) is None
+
+    def test_empty_string_result_blanks(self):
+        """Like a Python hook, a shell hook may blank the result: model_tools takes the first str."""
+        assert shell_hooks._parse_response("transform_tool_result", '{"result": ""}') == ""
+
+    def test_matcher_kept_for_transform_event(self):
+        """A matcher on transform_tool_result must not be dropped as ignorable."""
+        specs = shell_hooks._parse_hooks_block({
+            "transform_tool_result": [
+                {"command": "echo hi", "matcher": "web_extract"},
+            ],
+        })
+        assert len(specs) == 1 and specs[0].matcher == "web_extract"
+
+    def test_callback_honors_matcher_and_returns_replacement(self, monkeypatch):
+        spawned = []
+
+        def _fake_spawn(spec, stdin_json):
+            spawned.append(stdin_json)
+            return _spawn_result(stdout='{"result": "withheld"}')
+
+        monkeypatch.setattr(shell_hooks, "_spawn", _fake_spawn)
+        cb = shell_hooks._make_callback(shell_hooks.ShellHookSpec(
+            event="transform_tool_result", command="echo", matcher="web_extract|web_search",
+        ))
+        assert cb(tool_name="terminal", result="ls output") is None
+        assert cb(tool_name="web_extract", result="page text") == "withheld"
+        assert len(spawned) == 1
+
+    def test_handle_function_call_applies_shell_transform(self, tmp_path, monkeypatch):
+        """End to end: config registration, consent, a real subprocess and the real dispatch path;
+        only the tool itself is stubbed. The matcher scopes the replacement to web_search."""
+        import sys
+
+        import model_tools
+        from hermes_cli import plugins
+
+        script = tmp_path / "transform.py"
+        script.write_text('import json\nprint(json.dumps({"result": "withheld"}))\n', encoding="utf-8")
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+        monkeypatch.setattr(plugins, "_plugin_manager", plugins.PluginManager())
+        cfg = {"hooks": {"transform_tool_result": [
+            {"matcher": "web_search", "command": f'"{sys.executable}" "{script}"'},
+        ]}}
+        assert len(shell_hooks.register_from_config(cfg, accept_hooks=True)) == 1
+
+        monkeypatch.setattr(model_tools, "_execute_tool", lambda *args, **kwargs: "raw")
+        assert model_tools.handle_function_call("web_search", {}) == "withheld"
+        assert model_tools.handle_function_call("terminal", {}) == "raw"
+
+
 # ── _serialize_payload ────────────────────────────────────────────────────
 
 

@@ -6,13 +6,15 @@ import asyncio
 import contextlib
 import logging
 import os
+import re
 from typing import TYPE_CHECKING, Any, Callable, Optional
 
+from gateway.config import Platform
 from gateway.platforms.base_pending import (
     _PendingDispatchReservation, pending_dispatch_scope, release_pending_dispatch,
     pending_dispatch_records, reserve_pending_dispatch, release_pending_dispatch_record,
 )
-from gateway.platforms.event import MessageEvent, ProcessingOutcome
+from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
 from gateway.warning_notifications import diagnostic_wake_muted
 
 if TYPE_CHECKING:
@@ -20,6 +22,29 @@ if TYPE_CHECKING:
     from gateway.platforms.base_text_debounce import TextDebounceState
 
 logger = logging.getLogger("gateway.platforms.base")
+
+
+_PLAINTEXT_GATEWAY_RESTART_PATTERNS: tuple[re.Pattern[str], ...] = (
+    re.compile(r"^(?:please\s+)?restart\s+(?:the\s+)?gateway[.!?\s]*$", re.IGNORECASE),
+    re.compile(r"^(?:please\s+)?restart\s+(?:the\s+)?hermes\s+gateway[.!?\s]*$", re.IGNORECASE),
+    re.compile(r"^(?:please\s+)?restart\s+hermes[.!?\s]*$", re.IGNORECASE))
+
+
+def coerce_plaintext_gateway_command(event: "MessageEvent") -> None:
+    """Rewrite a tiny set of DM plaintext admin phrases (exact matches only) into slash commands so
+    ``restart gateway`` never reaches the LLM/tool path (a self-restart from inside the running
+    agent leaves the gateway stuck in ``draining`` waiting on that agent)."""
+    with contextlib.suppress(Exception):
+        if event is None or event.message_type != MessageType.TEXT:
+            return
+        text = (event.text or "").strip()
+        if not text or text.startswith("/"):
+            return
+        if getattr(getattr(event, "source", None), "chat_type", None) != "dm":
+            return
+        if any(pattern.match(text) for pattern in _PLAINTEXT_GATEWAY_RESTART_PATTERNS):
+            event.text = "/restart"
+
 
 
 class BaseProcessingMixin:
@@ -60,6 +85,53 @@ class BaseProcessingMixin:
         _unwrap_ephemeral = BasePlatformAdapter._unwrap_ephemeral
         _wants_auto_tts = BasePlatformAdapter._wants_auto_tts
         pause_typing_for_chat = BasePlatformAdapter.pause_typing_for_chat
+        _drop_unresolved = BasePlatformAdapter._drop_unresolved
+        _apply_topic_recovery = BasePlatformAdapter._apply_topic_recovery
+        _event_session_key = BasePlatformAdapter._event_session_key
+        _handle_message_while_active = BasePlatformAdapter._handle_message_while_active
+
+    async def handle_message(self, event: MessageEvent) -> None:
+        """Process an incoming message; returns quickly by spawning a background
+        task so new messages (and interrupts) can arrive while an agent runs."""
+        event._gateway_accepted = False
+        if not self._message_handler:
+            # No handler = every inbound silently discarded on an adapter that still polls and sends;
+            # say so once per adapter (#102260).
+            if not getattr(self, "_no_message_handler_logged", False):
+                self._no_message_handler_logged = True
+                logger.error(
+                    "[%s] Dropping inbound message: no gateway message handler "
+                    "is installed on this adapter. The adapter is connected and "
+                    "can send, but every inbound message is discarded.",
+                    self.name,
+                )
+            return
+
+        if event.allow_gateway_control:
+            coerce_plaintext_gateway_command(event)
+        # Identity FIRST: every key below (routing check, guard lookup, batch lane) derives from it.
+        if self._drop_unresolved(event):
+            return
+        expected_session_key = str((event.metadata or {}).get("gateway_session_key") or "").strip()
+        # Explicitly routed events already name their destination; recovering a
+        # different topic would redirect them and yield before the session claim.
+        if (not expected_session_key and getattr(self, "_topic_recovery_fn", None) is not None
+                and event.source.platform == Platform.TELEGRAM and event.source.chat_type == "dm"):
+            await asyncio.to_thread(self._apply_topic_recovery, event)
+        session_key = self._event_session_key(event)
+        if expected_session_key and session_key != expected_session_key:
+            logger.warning("Dropping internally routed event: expected session=%s derived=%s",
+                           expected_session_key, session_key)
+            return
+        # On-entry self-heal: clear a guard whose owner task already exited.
+        if session_key in self._active_sessions:
+            self._heal_stale_session_lock(session_key)
+        if session_key in self._active_sessions:
+            await self._handle_message_while_active(event, session_key)
+            return
+        # Guard installed synchronously BEFORE the task spawns so a second message can't race in.
+        event._gateway_accepted = self._start_session_processing(event, session_key)
+
 
     def _release_session_guard(self, session_key: str, *, guard: Optional[asyncio.Event] = None) -> None:
         """Release the session guard; with ``guard`` given, only if the entry is still that exact

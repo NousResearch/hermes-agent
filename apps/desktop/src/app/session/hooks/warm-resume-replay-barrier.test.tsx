@@ -5,7 +5,7 @@ import { useRef } from 'react'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 
 import { reconcileActiveTranscript } from '@/app/contrib/hooks/use-background-sync'
-import { getLatestSessionMessages } from '@/hermes'
+import { getLatestSessionMessages, getSessionMessages } from '@/hermes'
 import { chatMessageText, toChatMessages } from '@/lib/chat-messages'
 import { resetInFlightTurnJournalStateForTests } from '@/lib/inflight-turn-journal'
 import { setPrimaryGateway } from '@/store/gateway'
@@ -30,7 +30,8 @@ import { useSessionStateCache } from './use-session-state-cache'
 
 vi.mock('@/hermes', async original => ({
   ...(await original<Record<string, unknown>>()),
-  getLatestSessionMessages: vi.fn()
+  getLatestSessionMessages: vi.fn(),
+  getSessionMessages: vi.fn()
 }))
 vi.mock('@/store/profile', async original => ({
   ...(await original<Record<string, unknown>>()),
@@ -196,6 +197,12 @@ beforeEach(() => {
       output_tokens: 0
     }
   ])
+  vi.mocked(getSessionMessages).mockReset()
+  vi.mocked(getSessionMessages).mockResolvedValue({
+    session_id: storedId,
+    messages: [],
+    pagination: { exhausted: true, has_more: false, next_before_id: null }
+  } as never)
   vi.mocked(getLatestSessionMessages).mockReset()
   vi.mocked(getLatestSessionMessages).mockResolvedValue({
     session_id: storedId,

@@ -31,6 +31,7 @@ from hermes_cli.route_identity import normalize_route_base_url
 from hermes_cli.urllib_security import open_credentialed_url
 from hermes_cli.version_info import get_version_info
 from hermes_cli.models_catalog_static import (
+    CuratedFallbackModels,
     CANONICAL_PROVIDERS,
     OPENROUTER_MODELS,
     PREFERRED_SILENT_DEFAULT_MODEL,
@@ -1320,7 +1321,7 @@ def _openai_discovery_base_url(provider: str) -> str:
 
 
 def _codex_catalog(normalized: str, force_refresh: bool) -> list[str]:
-    from hermes_cli.codex_models import CodexFallbackModels, get_codex_model_ids
+    from hermes_cli.codex_models import get_codex_model_ids
 
     # Live OAuth token so the picker matches what ChatGPT lists for this account; hardcoded
     # catalog without a token / when unreachable. Read-only (#68004): a picker never imports,
@@ -1338,10 +1339,9 @@ def _codex_catalog(normalized: str, force_refresh: bool) -> list[str]:
             access_token = None
     except Exception:
         access_token = None
-    models = get_codex_model_ids(access_token=access_token, base_url=base_url)
-    # Account-gated rows such as Astra are absent from the offline hints. Do not
-    # cache those hints as a successful account fetch or replace a verified row.
-    return CuratedFallbackModels(models) if isinstance(models, CodexFallbackModels) else models
+    # A failed live fetch returns ``CuratedFallbackModels``: account-gated rows such as Astra are
+    # absent from the offline hints, so they must never replace a verified row.
+    return get_codex_model_ids(access_token=access_token, base_url=base_url)
 
 
 _COPILOT_ACP_SESSION_MEMO_TTL = 300.0  # 5 min; SWR disk cache handles the rest
@@ -1370,11 +1370,6 @@ def _copilot_acp_session_models(force_refresh: bool) -> Optional[list[str]]:
         live = None
     _copilot_acp_session_memo = (now, _COPILOT_ACP_SESSION_MEMO_TTL if live else _COPILOT_ACP_SESSION_FAIL_TTL, live)
     return live
-
-
-class CuratedFallbackModels(list[str]):
-    """A curated list served because the provider's live catalog was unavailable. The disk cache
-    treats it as a placeholder, never as the account's real catalog (#107391)."""
 
 
 def _copilot_catalog(normalized: str, force_refresh: bool) -> Optional[list[str]]:

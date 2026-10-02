@@ -328,6 +328,31 @@ def _fetch_is_rate_limited(stderr: str) -> bool:
     return _has_http_code(stderr or "", "429") or "rate limit" in (stderr or "").lower()
 
 
+def _retry_on_rate_limit(run_fetch, *, sleep=None):
+    """Degrade past a transient repo-scoped HTTP 429 around any one fetch transport (#105857).
+
+    ``run_fetch`` is a zero-arg callable that performs a single fetch attempt and returns its
+    ``CompletedProcess``; the caller owns the transport (cwd, prompt-disabled env, timeout), so
+    this policy is shared by the apply path and the ``update --check`` path without flattening
+    their different ``cwd``/no-prompt plumbing. A non-rate-limit failure is returned immediately so
+    unrelated errors still fail fast; only a 429 triggers the bounded 5/10/15s backoff. When every
+    attempt is throttled the last 429 result is returned so ``_print_fetch_failure`` keeps its
+    accurate diagnosis. ``sleep`` resolves to ``_time.sleep`` at call time so callers that do not
+    thread it (the check path) stay patchable in tests."""
+    if sleep is None:
+        sleep = _time.sleep
+    result = run_fetch()
+    if result.returncode == 0 or not _fetch_is_rate_limited(result.stderr):
+        return result
+    for attempt in range(2, _FETCH_MAX_ATTEMPTS + 1):
+        sleep((attempt - 1) * 5)
+        print(f"  Rate-limited (HTTP 429) — retrying fetch (attempt {attempt}/{_FETCH_MAX_ATTEMPTS})...")
+        result = run_fetch()
+        if result.returncode == 0 or not _fetch_is_rate_limited(result.stderr):
+            return result
+    return result
+
+
 def _fetch_with_rate_limit_retry(git_cmd, fetch_args, *, sleep=_time.sleep):
     """Run one ``git`` fetch invocation, degrading past a transient repo-scoped HTTP 429 (#105857).
 
@@ -335,20 +360,8 @@ def _fetch_with_rate_limit_retry(git_cmd, fetch_args, *, sleep=_time.sleep):
     ``["fetch", "--no-tags", "origin", target_ref]``), so this drops in as the runner passed to
     :func:`fetch_with_partial_clone_recovery` and composes with its promisor-disabled retry:
     each fetch attempt — the first and the recovery's — degrades past a 429 on its own.
-    Returns the final ``CompletedProcess`` (caller inspects ``returncode``). A non-rate-limit
-    failure is returned immediately so unrelated errors still fail fast; only a 429 triggers the
-    bounded 5/10/15s backoff. When every attempt is throttled the last 429 result is returned so
-    ``_print_fetch_failure`` keeps its accurate diagnosis."""
-    result = _git_run(git_cmd, fetch_args, network=True)
-    if result.returncode == 0 or not _fetch_is_rate_limited(result.stderr):
-        return result
-    for attempt in range(2, _FETCH_MAX_ATTEMPTS + 1):
-        sleep((attempt - 1) * 5)
-        print(f"  Rate-limited (HTTP 429) — retrying fetch (attempt {attempt}/{_FETCH_MAX_ATTEMPTS})...")
-        result = _git_run(git_cmd, fetch_args, network=True)
-        if result.returncode == 0 or not _fetch_is_rate_limited(result.stderr):
-            return result
-    return result
+    Returns the final ``CompletedProcess`` (caller inspects ``returncode``)."""
+    return _retry_on_rate_limit(lambda: _git_run(git_cmd, fetch_args, network=True), sleep=sleep)
 
 
 def _capture_head_sha(git_cmd, cwd) -> str | None:

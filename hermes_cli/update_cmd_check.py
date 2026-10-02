@@ -88,9 +88,12 @@ def tracking_refspec(remote: str, branch: str) -> str:
 
 def _fetch(git_cmd: list[str], root: Path, depth_args: list[str], remote: str, branch: str):
     print(f"→ Fetching from {remote}...")
-    return _git(
-        git_cmd, root, ["fetch", *depth_args, remote, tracking_refspec(remote, branch)],
-        **_uc()._no_prompt_git_kwargs())
+    # Share the apply path's bounded HTTP 429 backoff (#105857) so the same transient repo-scoped
+    # throttle no longer strands `hermes update --check` on a single-shot exit 1. The runner keeps
+    # this path's own cwd/no-prompt transport.
+    args = ["fetch", *depth_args, remote, tracking_refspec(remote, branch)]
+    return _uc()._retry_on_rate_limit(
+        lambda: _git(git_cmd, root, args, **_uc()._no_prompt_git_kwargs()))
 
 
 def fetch_compare_branch(git_cmd: list[str], root: Path, branch: str, depth_args: list[str]):
@@ -109,8 +112,11 @@ def fetch_compare_branch(git_cmd: list[str], root: Path, branch: str, depth_args
     from hermes_cli.gitlock import fetch_with_partial_clone_recovery
     # Marking the unmarked packs clears the git 2.53+ partial-clone pack-objects crash (#124272).
     print("→ Fetching from origin...")
+    # Each partial-clone recovery attempt degrades past a 429 on its own, mirroring the apply
+    # path's `_fetch_with_rate_limit_retry` runner composition.
     return fetch_with_partial_clone_recovery(
-        lambda gc, a: _git(gc, root, a, **_uc()._no_prompt_git_kwargs()),
+        lambda gc, a: _uc()._retry_on_rate_limit(
+            lambda: _git(gc, root, a, **_uc()._no_prompt_git_kwargs())),
         git_cmd, ["fetch", *depth_args, "origin", tracking_refspec("origin", branch)], root), f"origin/{branch}"
 
 

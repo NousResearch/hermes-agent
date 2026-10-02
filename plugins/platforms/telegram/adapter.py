@@ -4389,15 +4389,24 @@ class TelegramAdapter(BasePlatformAdapter):
         on_model_selected, metadata: Optional[Dict[str, Any]] = None) -> SendResult:
         """Send an inline-keyboard model picker: provider → model drill-down, edited in place."""
         def build():
-            keyboard, provider_page_info = self._build_provider_keyboard(providers, 0)
-            text = self.format_message(
-                self._provider_list_text(current_model, self._provider_get_label()(current_provider), provider_page_info)
-            )
+            from gateway.platforms.model_picker import single_provider_for_picker
+
+            state = {
+                "providers": providers, "session_key": session_key, "on_model_selected": on_model_selected,
+                "current_model": current_model, "current_provider": current_provider, "provider_page": 0}
+            provider = single_provider_for_picker(providers, grouped=True)
+            if provider is not None:
+                state.update(selected_provider=provider["slug"], selected_provider_name=provider.get("name", provider["slug"]),
+                             model_list=provider["models"], skip_provider_step=True)
+                text_md, keyboard = self._model_page(state, 0)
+            else:
+                keyboard, provider_page_info = self._build_provider_keyboard(providers, 0)
+                text_md = self._provider_list_text(current_model, self._provider_get_label()(current_provider), provider_page_info)
+            text = self.format_message(text_md)
 
             def _remember(msg):
-                self._model_picker_state[str(chat_id)] = {
-                    "msg_id": msg.message_id, "providers": providers, "session_key": session_key, "on_model_selected": on_model_selected,
-                    "current_model": current_model, "current_provider": current_provider, "provider_page": 0}
+                state["msg_id"] = msg.message_id
+                self._model_picker_state[str(chat_id)] = state
             return text, keyboard, _remember
         return await self._send_prompt(
             "send_model_picker", chat_id, metadata, build, thread_id=metadata.get("thread_id") if metadata else None,
@@ -4483,8 +4492,9 @@ class TelegramAdapter(BasePlatformAdapter):
         return nav
 
     @staticmethod
-    def _picker_back_cancel_row() -> list:
-        return [InlineKeyboardButton(t("platform.telegram.picker.back"), callback_data="mb"), InlineKeyboardButton(t("platform.telegram.picker.cancel"), callback_data="mx")]
+    def _picker_back_cancel_row(show_back: bool = True) -> list:
+        back = [InlineKeyboardButton(t("platform.telegram.picker.back"), callback_data="mb")] if show_back else []
+        return back + [InlineKeyboardButton(t("platform.telegram.picker.cancel"), callback_data="mx")]
 
     def _paged_keyboard(self, buttons: list, page_meta: dict, nav_prefix: str, tail_row: list) -> tuple:
         rows = self._rows_of_two(buttons)
@@ -4520,7 +4530,7 @@ class TelegramAdapter(BasePlatformAdapter):
         page_buttons, page_meta = self._format_choice_page(buttons, page, self._PROVIDER_PAGE_SIZE)
         return self._paged_keyboard(page_buttons, page_meta, "mpv", [InlineKeyboardButton(t("platform.telegram.picker.cancel"), callback_data="mx")])
 
-    def _build_model_keyboard(self, models: list, page: int) -> tuple:
+    def _build_model_keyboard(self, models: list, page: int, *, show_back: bool = True) -> tuple:
         """Build paginated model buttons. Returns (keyboard, page_info_text)."""
         page_models, page_meta = self._format_choice_page(models, page, self._MODEL_PAGE_SIZE)
         start = page_meta["start"]
@@ -4530,7 +4540,7 @@ class TelegramAdapter(BasePlatformAdapter):
             if len(short) > 38:
                 short = short[:35] + "..."
             buttons.append(InlineKeyboardButton(short, callback_data=f"mm:{start + i}"))
-        return self._paged_keyboard(buttons, page_meta, "mg", self._picker_back_cancel_row())
+        return self._paged_keyboard(buttons, page_meta, "mg", self._picker_back_cancel_row(show_back))
 
     async def _picker_edit(self, query, text_md: str, keyboard) -> None:
         """Re-render the picker message in place (MarkdownV2) and ack the tap."""
@@ -4539,17 +4549,21 @@ class TelegramAdapter(BasePlatformAdapter):
 
     async def _picker_show_models(self, query, state: dict, page: int) -> None:
         """Render the model page for the provider currently selected in ``state``."""
+        text, keyboard = self._model_page(state, page)
+        await self._picker_edit(query, text, keyboard)
+
+    def _model_page(self, state: dict, page: int) -> tuple:
+        """Build the same model page for initial sends and callback edits."""
         models = state.get("model_list", [])
         state["model_page"] = page
-        keyboard, page_info = self._build_model_keyboard(models, page)
+        keyboard, page_info = self._build_model_keyboard(models, page, show_back=not state.get("skip_provider_step"))
         pname = state.get("selected_provider_name", "")
         provider_slug = state.get("selected_provider", "")
         provider = next((p for p in state["providers"] if p["slug"] == provider_slug), None)
         total = provider.get("total_models", len(models)) if provider else len(models)
         shown = len(models)
         extra = f"\n_{t('platform.telegram.picker.more_available', count=str(total - shown))}_" if total > shown else ""
-        await self._picker_edit(
-            query,
+        return (
             f"⚙ *{t('platform.telegram.picker.title')}*\n\n"
             f"{t('platform.telegram.picker.provider_label', provider=f'*{pname}*')}{page_info}\n"
             f"{t('platform.telegram.picker.select_model')}{extra}",
@@ -4681,7 +4695,10 @@ class TelegramAdapter(BasePlatformAdapter):
                 f"{t('platform.telegram.picker.select_provider')}",
                 InlineKeyboardMarkup(rows))
         elif data == "mb":  # back to provider list (folds groups)
-            await self._picker_show_providers(query, state, int(state.get("provider_page", 0) or 0), get_label)
+            if state.get("skip_provider_step"):
+                await self._picker_show_models(query, state, state.get("model_page", 0))
+            else:
+                await self._picker_show_providers(query, state, int(state.get("provider_page", 0) or 0), get_label)
         elif data == "mx":
             self._model_picker_state.pop(chat_id, None)
             await query.edit_message_text(text=t("platform.telegram.picker.cancelled"), reply_markup=None)

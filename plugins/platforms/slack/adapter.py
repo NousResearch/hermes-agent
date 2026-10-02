@@ -44,6 +44,7 @@ from gateway.platforms._shared import (
     platform_gate_env as _scoped_gate_env, send_error
 )
 from gateway.platforms.helpers import MessageDeduplicator
+from gateway.platforms.model_picker import single_provider_for_picker
 from gateway.platforms.base import (
     gateway_trust_env, BasePlatformAdapter, ExecApprovalPrompt,
     SendResult, SUPPORTED_DOCUMENT_TYPES, SUPPORTED_VIDEO_TYPES, _TEXT_INJECT_EXTENSIONS,
@@ -5102,7 +5103,7 @@ class SlackAdapter(BasePlatformAdapter):
                 "options": options,
             },
         ]
-        if provider_slug:
+        if provider_slug and single_provider_for_picker(providers) is None:
             elements.append({
                 "type": "button",
                 "text": {"type": "plain_text", "text": t("platform.slack.picker.back")[:75], "emoji": True},
@@ -5156,13 +5157,19 @@ class SlackAdapter(BasePlatformAdapter):
             if not providers:
                 return SendResult(success=False, error="No providers available")
 
-            blocks = self._build_model_picker_provider_blocks(
-                providers, current_model, provider_label
-            )
+            provider = single_provider_for_picker(providers)
+            if provider is not None:
+                blocks = self._build_model_picker_model_blocks(providers, provider["slug"])
+                fallback = t("platform.slack.picker.fallback_model", provider=provider.get("name", provider["slug"]))
+            else:
+                blocks = self._build_model_picker_provider_blocks(
+                    providers, current_model, provider_label
+                )
+                fallback = t("platform.slack.picker.fallback_provider")
 
             kwargs: Dict[str, Any] = {
                 "channel": chat_id,
-                "text": t("platform.slack.picker.fallback_provider"),
+                "text": fallback,
                 "blocks": sanitize_blocks(blocks),
             }
             if thread_ts:
@@ -5186,8 +5193,8 @@ class SlackAdapter(BasePlatformAdapter):
                 "current_model": current_model,
                 "current_provider": current_provider,
                 "on_model_selected": on_model_selected,
-                "stage": "provider",
-                "selected_provider_slug": "",
+                "stage": "model" if provider is not None else "provider",
+                "selected_provider_slug": provider["slug"] if provider is not None else "",
             }
             self._trim_oldest_dict_entries(
                 self._model_picker_state, self._MODEL_PICKER_STATE_MAX

@@ -5,6 +5,7 @@ import type { SessionMessage, SessionResumeResult } from '@/types/hermes'
 
 import { mergeLiveAssistantRun } from './live-turn-remainder'
 import { reconcilePersistedLiveTurn } from './persisted-live-turn'
+import { runningProjectionStreamId } from './utils'
 
 const assistant = (id: string, text: string, extra: Partial<ChatMessage> = {}): ChatMessage => ({
   id,
@@ -142,5 +143,94 @@ it('pairs only the queue projection, preserving equal corrections and different 
     expect(current).toContainEqual(oldQueue)
     expect(current).toContainEqual(response)
     expect(new Set(current.map(row => row.id)).size).toBe(current.length)
+  }
+})
+
+it('reconciles the marked queue once after the source-anchored active turn and its corrections', () => {
+  for (const structured of [false, true]) {
+    const rows: SessionMessage[] = [
+      { id: 1, role: 'user', content: 'repeat this', timestamp: 1 },
+      { id: 2, role: 'assistant', content: 'Old answer', timestamp: 2 },
+      { id: 3, role: 'user', content: 'repeat this', timestamp: 3 },
+      {
+        id: 4,
+        role: 'user',
+        content: '@file:/tmp/input.txt\n\nrepeat this',
+        timestamp: 4,
+        display_metadata: JSON.stringify({ _queued_prompt: true }) as never
+      }
+    ]
+    if (structured)
+      rows.push(
+        {
+          id: 5,
+          role: 'assistant',
+          content: 'Checking.',
+          timestamp: 5,
+          tool_calls: [{ id: 'inspect', type: 'function', function: { name: 'read_file', arguments: '{}' } }]
+        },
+        { id: 6, role: 'tool', content: 'File content', tool_call_id: 'inspect', timestamp: 6 },
+        { id: 7, role: 'user', content: 'Try tests', display_kind: 'steer', timestamp: 7 }
+      )
+    const persisted = toChatMessages(rows)
+    const before = structuredClone(persisted)
+    const projection = {
+      session_id: 'runtime',
+      queued: { user: 'repeat this' },
+      inflight: {
+        user: 'repeat this',
+        assistant: structured ? 'Checking.\n\nHello' : 'Hello',
+        streaming: true,
+        ...(structured ? { corrections: ['Try tests'], correction_offsets: ['Checking.\n\n'.length] } : {})
+      }
+    }
+    let current = [...persisted, assistant('assistant-stream-local', 'Hello + local delta', { pending: true })]
+    for (let resume = 0; resume < 3; resume++) {
+      current = reconcilePersistedLiveTurn(persisted, current, rows, projection)!
+      expect(current).not.toBeNull()
+      expect(current.map(chatMessageText)).toEqual(
+        structured
+          ? ['repeat this', 'Old answer', 'repeat this', 'Checking.', 'Try tests', 'Hello + local delta', 'repeat this']
+          : ['repeat this', 'Old answer', 'repeat this', 'Hello + local delta', 'repeat this']
+      )
+      expect(current.filter(message => message.rowId === 4)).toHaveLength(1)
+      expect(runningProjectionStreamId(current, true)).toBe('assistant-stream-runtime')
+      expect(current.at(-1)).toMatchObject({
+        id: 'user-queued-runtime',
+        rowId: 4,
+        queuedPrompt: true,
+        attachmentRefs: ['@file:/tmp/input.txt']
+      })
+      expect(current.filter(message => chatMessageText(message).includes('Hello'))).toHaveLength(1)
+      expect(new Set(current.map(message => message.id)).size).toBe(current.length)
+      if (structured) {
+        expect(current.flatMap(message => message.parts).filter(part => part.type === 'tool-call')).toEqual([
+          expect.objectContaining({ toolCallId: 'inspect', result: 'File content' })
+        ])
+        expect(current.flatMap(message => message.parts)).toContainEqual(
+          expect.objectContaining({ type: 'text', text: 'Checking.', sourceRowId: 5 })
+        )
+      }
+    }
+
+    let divergent = [...persisted, assistant('assistant-stream-runtime', 'Different local output', { pending: true })]
+    for (let replay = 0; replay < 3; replay++) {
+      divergent = reconcilePersistedLiveTurn(persisted, divergent, rows, projection)!
+      expect(divergent.filter(message => chatMessageText(message) === 'Different local output')).toHaveLength(1)
+      expect(divergent.filter(message => chatMessageText(message) === 'Hello')).toHaveLength(1)
+      expect(new Set(divergent.map(message => message.id)).size).toBe(divergent.length)
+      expect(runningProjectionStreamId(divergent, true)).toBe('assistant-stream-runtime')
+    }
+    expect(persisted).toEqual(before)
+    if (structured) {
+      // Equal commentary prose without its source occurrence cannot prove coverage.
+      const uncertain = persisted.map(message => ({
+        ...message,
+        parts: message.parts.map(part =>
+          part.type === 'text' && part.sourceRowId === 5 ? { ...part, sourceRowId: 99 } : part
+        )
+      }))
+      expect(reconcilePersistedLiveTurn(uncertain, [], rows, projection)).toBeNull()
+    }
   }
 })

@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
 import { textWithoutReferenceLines } from '@/components/assistant-ui/reference-kinds'
-import { type ChatMessage, type ChatMessagePart, chatMessageText, textPart } from '@/lib/chat-messages'
+import { type ChatMessage, type ChatMessagePart, chatMessageText, textPart, toChatMessages } from '@/lib/chat-messages'
 import { $approvalModes, approvalModeForProfile } from '@/store/approval-mode'
 import { $desktopOnboarding, consumePendingCredentialWarning } from '@/store/onboarding'
 import { $activeGatewayProfile } from '@/store/profile'
@@ -1808,6 +1808,143 @@ describe('runningProjectionStreamId', () => {
 })
 
 describe('appendLiveSessionProjection', () => {
+  it('keeps the accepted durable queue after the active assistant without consuming repeated history or uncertain rows', () => {
+    for (const queuedText of ['next prompt', 'repeat this']) {
+      const rows = [
+        { id: 1, role: 'user' as const, content: 'repeat this', timestamp: 1 },
+        { id: 2, role: 'assistant' as const, content: 'Completed old answer', timestamp: 2 },
+        { id: 3, role: 'user' as const, content: 'repeat this', timestamp: 3 },
+        {
+          id: 4,
+          role: 'user' as const,
+          content: '@file:/tmp/input.txt\n\n' + queuedText,
+          timestamp: 4,
+          display_metadata: { _queued_prompt: true, reactions: [{ emoji: '👍', author: 'user' as const, at: 4 }] }
+        }
+      ]
+      const persisted = toChatMessages(rows)
+      const original = structuredClone(persisted)
+      expect(
+        preserveEquivalentTranscript([{ ...persisted[3], queuedPrompt: undefined }], [persisted[3]])[0].queuedPrompt
+      ).toBe(true)
+      const runtime = persisted.slice(0, 2)
+      const projection = {
+        session_id: 'runtime-1',
+        inflight: { user: 'repeat this', assistant: 'Hello', streaming: true },
+        queued: { user: '@file:/tmp/input.txt\n\n' + queuedText }
+      } as SessionResumeResult
+      const deduped = dedupeInflightUserAgainstTranscript(persisted, runtime, projection)
+      const result = appendLiveSessionProjection(persisted, deduped)
+      expect(result.map(chatMessageText)).toEqual([
+        'repeat this',
+        'Completed old answer',
+        'repeat this',
+        'Hello',
+        queuedText
+      ])
+      expect(result.at(-1)).toMatchObject({
+        id: 'user-queued-runtime-1',
+        rowId: 4,
+        queuedPrompt: true,
+        attachmentRefs: ['@file:/tmp/input.txt'],
+        parts: persisted[3].parts
+      })
+      expect(result.at(-1)?.reactions).toEqual([{ emoji: '👍', author: 'user', at: 4 }])
+      expect(deduped).not.toBe(projection)
+      expect(result.filter(message => message.role === 'assistant')).toHaveLength(2)
+      expect(result.filter(message => message.rowId === 4)).toHaveLength(1)
+      expect(persisted).toEqual(original)
+      const cachedAssistant = msg('assistant-stream-old', 'assistant', 'Hello + local delta', {
+        pending: true,
+        rowId: 42,
+        reactions: [{ emoji: '👍', author: 'user', at: 4 }]
+      })
+      const cached = [...persisted.slice(0, 3), cachedAssistant, persisted[3]]
+      const unmatchedActive = appendLiveSessionProjection(cached, {
+        ...projection,
+        inflight: { ...projection.inflight, user: 'unproven new active turn' }
+      })
+      expect(unmatchedActive).toContainEqual(cachedAssistant)
+      const resumed = appendLiveSessionProjection(cached, projection)
+      expect(resumed.map(chatMessageText)).toEqual([
+        'repeat this',
+        'Completed old answer',
+        'repeat this',
+        'Hello + local delta',
+        queuedText
+      ])
+      expect(resumed.at(-2)).toMatchObject({
+        id: 'assistant-stream-runtime-1',
+        rowId: 42,
+        parts: cachedAssistant.parts,
+        reactions: cachedAssistant.reactions
+      })
+      expect(runningProjectionStreamId(resumed, true)).toBe('assistant-stream-runtime-1')
+      expect(resumed.at(-1)).toMatchObject({ id: 'user-queued-runtime-1', rowId: 4, queuedPrompt: true })
+      expect(appendLiveSessionProjection(resumed, projection).map(chatMessageText)).toEqual(
+        resumed.map(chatMessageText)
+      )
+
+      const divergent = appendLiveSessionProjection(
+        [
+          ...persisted.slice(0, 3),
+          { ...cachedAssistant, parts: [{ type: 'text', text: 'Different local output' }] },
+          persisted[3]
+        ],
+        projection
+      )
+      expect(divergent.map(chatMessageText)).toEqual([
+        'repeat this',
+        'Completed old answer',
+        'repeat this',
+        'Different local output',
+        'Hello',
+        queuedText
+      ])
+      expect(runningProjectionStreamId(divergent, true)).toBe('assistant-stream-runtime-1')
+      let canonicalDivergence = [
+        ...persisted.slice(0, 3),
+        msg('inflight-assistant-segment-queued-runtime-1-0', 'assistant', 'Earlier local output', { pending: true }),
+        {
+          ...cachedAssistant,
+          id: 'assistant-stream-runtime-1',
+          parts: [{ type: 'text' as const, text: 'Different local output' }]
+        },
+        persisted[3]
+      ]
+      for (let replay = 0; replay < 3; replay++) {
+        canonicalDivergence = appendLiveSessionProjection(canonicalDivergence, projection)
+        expect(canonicalDivergence.map(chatMessageText)).toEqual([
+          'repeat this',
+          'Completed old answer',
+          'repeat this',
+          'Earlier local output',
+          'Different local output',
+          'Hello',
+          queuedText
+        ])
+        expect(new Set(canonicalDivergence.map(message => message.id)).size).toBe(canonicalDivergence.length)
+        expect(runningProjectionStreamId(canonicalDivergence, true)).toBe('assistant-stream-runtime-1')
+      }
+
+      for (const uncertain of [
+        { ...persisted[3], queuedPrompt: undefined },
+        { ...persisted[3], rowId: undefined },
+        { ...persisted[3], rowId: 4.5 },
+        { ...persisted[3], rowId: -4 },
+        { ...persisted[3], parts: [{ type: 'text' as const, text: 'different queued request' }] }
+      ]) {
+        const legacy = [...persisted.slice(0, 3), uncertain]
+        expect(appendLiveSessionProjection(legacy, projection)).toContainEqual(uncertain)
+      }
+      expect(appendLiveSessionProjection(persisted, { session_id: 'runtime-1' })).toBe(persisted)
+      // A marker retained in completed history cannot identify this running queue.
+      const oldQueue = { ...persisted[0], queuedPrompt: true as const }
+      const history = [oldQueue, ...persisted.slice(1, 3)]
+      expect(appendLiveSessionProjection(history, projection)).toContainEqual(oldQueue)
+    }
+  })
+
   // A synthetic starting prompt keeps the display typing its persisted row
   // will get: on reconnect it renders as the same timeline event as history,
   // never as a user bubble; a real user quoting the marker text stays a user

@@ -5,7 +5,7 @@ import { parseErrorSurface } from '@/lib/error-surface'
 import type { SessionMessage, SessionResumeResult } from '@/types/hermes'
 
 import { mergeLiveAssistantRun } from './live-turn-remainder'
-import { reconcileDurableHistory } from './utils'
+import { acceptedQueuedPrompt, mergeQueuedAssistantRun, reconcileDurableHistory } from './utils'
 
 const rowId = (row: SessionMessage) => row.row_id ?? row.id
 const userText = (text: string) => textWithoutReferenceLines(text).trim()
@@ -206,6 +206,16 @@ export function reconcilePersistedLiveTurn(
     return null
   }
 
+  const acceptedQueue = acceptedQueuedPrompt(messages, projection)
+  if (acceptedQueue) {
+    const queueId = `user-queued-${projection.session_id}`
+    messages = messages.filter(message => message !== acceptedQueue)
+    rows = rows.filter(row => !(row.role === 'user' && rowId(row) === acceptedQueue.rowId))
+    previous = previous.filter(
+      message => !(message.role === 'user' && (message.rowId === acceptedQueue.rowId || message.id === queueId))
+    )
+  }
+
   const turn = locateTurn(rows, messages, inflight)
 
   if (!turn) {
@@ -275,7 +285,16 @@ export function reconcilePersistedLiveTurn(
         : []
 
     const local = pairedLocal ? withoutCoveredAssistantPrefix(durable, cached.intervals[index] ?? []) : []
-    result.push(...durable, ...mergeLiveAssistantRun(projected, local))
+    const merged =
+      acceptedQueue && final
+        ? mergeQueuedAssistantRun(projected, local, projection.session_id, [
+            ...messages,
+            ...previous,
+            ...result,
+            ...durable
+          ])
+        : mergeLiveAssistantRun(projected, local)
+    result.push(...durable, ...merged)
 
     if (!final) {
       const correction = stored.users[index] ?? {
@@ -320,9 +339,9 @@ export function reconcilePersistedLiveTurn(
     // The anchored turn has one next-turn queue slot. Refresh its projection
     // in place; equal correction/optimistic user text is a different occurrence.
     if (queuedIndex >= 0) {
-      result[queuedIndex] = { ...result[queuedIndex], parts }
+      result[queuedIndex] = acceptedQueue ? { ...acceptedQueue, id } : { ...result[queuedIndex], parts }
     } else {
-      result.push({ id, role: 'user', parts })
+      result.push(acceptedQueue ? { ...acceptedQueue, id } : { id, role: 'user', parts })
     }
   }
 

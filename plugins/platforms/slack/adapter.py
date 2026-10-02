@@ -1447,10 +1447,14 @@ class SlackAdapter(BasePlatformAdapter):
             if template:
                 return template.format(file_label=file_label)
         message = str(exc)
-        if "Slack returned HTML instead of media" in message or "non-image data" in message:
+        if "Slack returned HTML instead of media" in message:
             return (
                 f"Slack attachment access failed for {file_label}: Slack returned an HTML/login or non-media response. "
                 "This usually means a scope, auth, or file-permission problem.")
+        if "non-image data" in message:
+            return (
+                f"Slack attachment access failed for {file_label}: the download succeeded but the payload is not "
+                "a recognized raster image, so it was not cached as an image.")
         return None
 
     # Slash-command ephemeral helpers. response_url is valid 30 min; the much shorter TTL avoids
@@ -4780,6 +4784,11 @@ class SlackAdapter(BasePlatformAdapter):
     @staticmethod
     def _slack_file_kind(f: Dict[str, Any], mimetype: str) -> str:
         """image / audio / voice clip / video / document, from mimetype (+ voice-clip heuristics)."""
+        if mimetype.split(";", 1)[0].strip() == "image/svg+xml":
+            # SVG is XML, not a raster format: the image cache sniffs magic bytes and would
+            # reject it ("Refusing to cache non-image data"). The document path accepts any
+            # extension, so the agent still receives a readable cached .svg file.
+            return "document"
         for prefix in ("image", "audio"):
             if mimetype.startswith(prefix + "/"):
                 return prefix

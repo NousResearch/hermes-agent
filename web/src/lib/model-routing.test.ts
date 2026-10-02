@@ -6,6 +6,7 @@ import {
   hasMainFallbackSupport,
   hasSchemaKey,
   isRouteComplete,
+  moveFallbackRoute,
   parseFallbackRoutes,
   removeFallbackRoute,
   serializeFallbackRoutes,
@@ -112,6 +113,71 @@ describe("route reducers", () => {
     expect(isRouteComplete({ provider: "p", model: "m" })).toBe(true);
     expect(isRouteComplete({ provider: "p", model: " " })).toBe(false);
     expect(isRouteComplete({ provider: "", model: "m" })).toBe(false);
+  });
+});
+
+describe("moveFallbackRoute", () => {
+  const chain = [
+    { provider: "a", model: "1" },
+    { provider: "b", model: "2" },
+    { provider: "c", model: "3" },
+  ];
+
+  it("moves a middle row up by swapping it with its neighbour", () => {
+    expect(moveFallbackRoute(chain, 1, "up")).toEqual([
+      { provider: "b", model: "2" },
+      { provider: "a", model: "1" },
+      { provider: "c", model: "3" },
+    ]);
+  });
+
+  it("moves a row down by swapping it with its neighbour", () => {
+    expect(moveFallbackRoute(chain, 0, "down")).toEqual([
+      { provider: "b", model: "2" },
+      { provider: "a", model: "1" },
+      { provider: "c", model: "3" },
+    ]);
+    expect(moveFallbackRoute(chain, 1, "down")).toEqual([
+      { provider: "a", model: "1" },
+      { provider: "c", model: "3" },
+      { provider: "b", model: "2" },
+    ]);
+  });
+
+  it("is a no-op (same reference) past either end of the chain", () => {
+    expect(moveFallbackRoute(chain, 0, "up")).toBe(chain);
+    expect(moveFallbackRoute(chain, chain.length - 1, "down")).toBe(chain);
+    expect(moveFallbackRoute(chain, 9, "up")).toBe(chain);
+    expect(moveFallbackRoute(chain, -1, "down")).toBe(chain);
+    const empty: Array<{ provider: string; model: string }> = [];
+    expect(moveFallbackRoute(empty, 0, "up")).toBe(empty);
+    expect(moveFallbackRoute(chain, 0, "up")).toEqual(chain);
+  });
+
+  it("never mutates the input list", () => {
+    const next = moveFallbackRoute(chain, 2, "up");
+    expect(next).not.toBe(chain);
+    expect(chain[2]).toEqual({ provider: "c", model: "3" });
+  });
+
+  it("carries a blank draft row with the swap (draft-state semantics)", () => {
+    const draft = [
+      { provider: "a", model: "1" },
+      { provider: "", model: "" },
+    ];
+    expect(moveFallbackRoute(draft, 1, "up")).toEqual([
+      { provider: "", model: "" },
+      { provider: "a", model: "1" },
+    ]);
+  });
+
+  it("reorders what gets serialized, so priority follows the swap", () => {
+    const reordered = moveFallbackRoute(chain, 2, "up");
+    expect(serializeFallbackRoutes(reordered)).toEqual([
+      { provider: "a", model: "1" },
+      { provider: "c", model: "3" },
+      { provider: "b", model: "2" },
+    ]);
   });
 });
 

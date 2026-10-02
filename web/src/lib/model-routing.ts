@@ -161,6 +161,31 @@ export function removeFallbackRoute(routes: FallbackRoute[], index: number): Fal
   return routes.filter((_, i) => i !== index);
 }
 
+/** Which neighbour a row should swap with. */
+export type FallbackMoveDirection = "up" | "down";
+
+/**
+ * Move one row one position up or down by swapping it with its neighbour.
+ *
+ * The chain is positional — first entry is tried first, last is the last-resort
+ * fallback — so reordering is exactly this swap. Returns the input list
+ * unchanged when the row or its neighbour would fall outside the list, which
+ * lets callers wire it to buttons that are disabled at the ends (never mutates
+ * the input).
+ */
+export function moveFallbackRoute(
+  routes: FallbackRoute[],
+  index: number,
+  direction: FallbackMoveDirection,
+): FallbackRoute[] {
+  if (index < 0 || index >= routes.length) return routes;
+  const target = direction === "up" ? index - 1 : index + 1;
+  if (target < 0 || target >= routes.length) return routes;
+  const next = [...routes];
+  [next[index], next[target]] = [next[target], next[index]];
+  return next;
+}
+
 /** A route is usable once it names both halves of the provider:model pair. */
 export function isRouteComplete(route: FallbackRoute): boolean {
   return route.provider.trim().length > 0 && route.model.trim().length > 0;

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Plus, Route as RouteIcon, Trash2, Wand2 } from "lucide-react";
+import { ChevronDown, ChevronUp, Plus, Route as RouteIcon, Trash2, Wand2 } from "lucide-react";
 import { Badge } from "@nous-research/ui/ui/components/badge";
 import { Button } from "@nous-research/ui/ui/components/button";
 import {
@@ -19,6 +19,7 @@ import {
   addFallbackRoute,
   hasMainFallbackSupport,
   hasSchemaKey,
+  moveFallbackRoute,
   parseFallbackRoutes,
   removeFallbackRoute,
   serializeFallbackRoutes,
@@ -130,15 +131,23 @@ function RouteRow({
   route,
   index,
   m,
+  canMoveUp,
+  canMoveDown,
   onUpdate,
   onRemove,
+  onMoveUp,
+  onMoveDown,
   onPick,
 }: {
   route: FallbackRoute;
   index: number;
   m: RoutingStrings;
+  canMoveUp: boolean;
+  canMoveDown: boolean;
   onUpdate: (index: number, patch: Partial<FallbackRoute>) => void;
   onRemove: (index: number) => void;
+  onMoveUp: (index: number) => void;
+  onMoveDown: (index: number) => void;
   onPick: (index: number) => void;
 }) {
   const n = index + 1;
@@ -164,6 +173,26 @@ function RouteRow({
           className="font-mono text-xs"
         />
       </div>
+      <Button
+        ghost
+        size="icon"
+        aria-label={`${m.moveUp ?? "Move up"} — ${n}`}
+        title={m.moveUp ?? "Move up"}
+        disabled={!canMoveUp}
+        onClick={() => onMoveUp(index)}
+      >
+        <ChevronUp className="h-4 w-4" />
+      </Button>
+      <Button
+        ghost
+        size="icon"
+        aria-label={`${m.moveDown ?? "Move down"} — ${n}`}
+        title={m.moveDown ?? "Move down"}
+        disabled={!canMoveDown}
+        onClick={() => onMoveDown(index)}
+      >
+        <ChevronDown className="h-4 w-4" />
+      </Button>
       <Button
         ghost
         size="icon"
@@ -324,6 +353,8 @@ export function ModelRoutingCard({ config, schema, onChange }: Props) {
                     route={route}
                     index={index}
                     m={m}
+                    canMoveUp={index > 0}
+                    canMoveDown={index < subagentFallbackRoutes.length - 1}
                     onUpdate={(i, patch) =>
                       commitSubagentFallback(
                         updateFallbackRoute(subagentFallbackRoutes, i, patch),
@@ -332,6 +363,16 @@ export function ModelRoutingCard({ config, schema, onChange }: Props) {
                     onRemove={(i) =>
                       commitSubagentFallback(
                         removeFallbackRoute(subagentFallbackRoutes, i),
+                      )
+                    }
+                    onMoveUp={(i) =>
+                      commitSubagentFallback(
+                        moveFallbackRoute(subagentFallbackRoutes, i, "up"),
+                      )
+                    }
+                    onMoveDown={(i) =>
+                      commitSubagentFallback(
+                        moveFallbackRoute(subagentFallbackRoutes, i, "down"),
                       )
                     }
                     onPick={(i) => setPicker({ kind: "subagentFallback", index: i })}
@@ -368,6 +409,8 @@ export function ModelRoutingCard({ config, schema, onChange }: Props) {
                     route={route}
                     index={index}
                     m={m}
+                    canMoveUp={index > 0}
+                    canMoveDown={index < mainFallbackRoutes.length - 1}
                     onUpdate={(i, patch) =>
                       commitMainFallback(
                         updateFallbackRoute(mainFallbackRoutes, i, patch),
@@ -376,6 +419,16 @@ export function ModelRoutingCard({ config, schema, onChange }: Props) {
                     onRemove={(i) =>
                       commitMainFallback(
                         removeFallbackRoute(mainFallbackRoutes, i),
+                      )
+                    }
+                    onMoveUp={(i) =>
+                      commitMainFallback(
+                        moveFallbackRoute(mainFallbackRoutes, i, "up"),
+                      )
+                    }
+                    onMoveDown={(i) =>
+                      commitMainFallback(
+                        moveFallbackRoute(mainFallbackRoutes, i, "down"),
                       )
                     }
                     onPick={(i) => setPicker({ kind: "mainFallback", index: i })}

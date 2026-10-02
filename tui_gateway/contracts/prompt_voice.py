@@ -23,6 +23,11 @@ class ClientSurface(WireEnum):
     voice_live = "voice-live"
 
 
+class MutationPolicy(WireEnum):
+    allowed = "allowed"
+    forbidden = "forbidden"
+
+
 class PromptSubmitParams(SessionParams):
     """``text`` is normally a string; the relay / hosted paths may hand a structured (parts list)
     payload, and the busy path renders it. Truncation (rewind / edit / regenerate) needs explicit
@@ -30,6 +35,7 @@ class PromptSubmitParams(SessionParams):
     ``truncate_before_message_id``, or the legacy ``truncate_before_user_ordinal``)."""
 
     text: JsonValue = ""
+    mutation_policy: MutationPolicy | None = None
     display_kind: str | None = None  # only "hidden" is honoured; anything else renders as a user row
     interrupted: bool | None = None  # client-side barge-in: the turn's model message carries the note
     queued: bool | None = None  # client queue drain — the busy path must hold it, never redirect/steer

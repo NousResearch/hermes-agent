@@ -14,6 +14,7 @@ import { $queuedPromptsBySession, getQueuedPrompts } from '@/store/composer-queu
 import { requestGatewayForAgent } from '@/store/gateway'
 import { $goalsBySession, setSessionGoal } from '@/store/goals'
 import { $hudMode } from '@/store/hud'
+import { setInvestigationOnly } from '@/store/investigation-only'
 import { $notifications, clearNotifications } from '@/store/notifications'
 import { $cronRunReadOnlyVerdicts } from '@/store/read-only-transcript'
 import {
@@ -461,6 +462,7 @@ describe('usePromptActions HUD surface', () => {
   afterEach(() => {
     cleanup()
     $hudMode.set(false)
+    setInvestigationOnly(null)
     vi.restoreAllMocks()
   })
 
@@ -493,6 +495,14 @@ describe('usePromptActions HUD surface', () => {
 
   it('says nothing about the surface from the app window', async () => {
     expect(await submitFrom('app')).not.toHaveProperty('surface')
+  })
+
+  it('sends the explicit Investigation Only policy from the desktop control', async () => {
+    setInvestigationOnly(true)
+    expect(await submitFrom('app')).toMatchObject({ mutation_policy: 'forbidden' })
+    cleanup()
+    setInvestigationOnly(false)
+    expect(await submitFrom('app')).toMatchObject({ mutation_policy: 'allowed' })
   })
 })
 
@@ -3841,6 +3851,7 @@ describe('usePromptActions sleep/wake session recovery', () => {
   afterEach(() => {
     cleanup()
     $turnStartedAt.set(null)
+    setInvestigationOnly(null)
     vi.restoreAllMocks()
   })
 
@@ -4508,11 +4519,12 @@ describe('usePromptActions sleep/wake session recovery', () => {
       />
     )
 
+    setInvestigationOnly(true)
     expect(await handle!.submitText('stay in the routed profile session')).toBe(true)
     expect(resumeStoredSession).toHaveBeenCalledWith(STORED_SESSION_ID)
     expect(requestGateway).toHaveBeenCalledWith(
       'prompt.submit',
-      { session_id: RECOVERED_SESSION_ID, text: 'stay in the routed profile session' },
+      { session_id: RECOVERED_SESSION_ID, text: 'stay in the routed profile session', mutation_policy: 'forbidden' },
       1_800_000
     )
   })

@@ -25,6 +25,7 @@ import {
   updateQueuedPrompt,
   withQueueDrainClaim
 } from '@/store/composer-queue'
+import { selectedMutationPolicy } from '@/store/investigation-only'
 import { notify } from '@/store/notifications'
 import { $sessionsLoading } from '@/store/session'
 
@@ -290,6 +291,7 @@ export function useComposerQueue({
       !enqueueQueuedPrompt(activeQueueSessionKey, {
         text: frozen.text,
         attachments,
+        mutationPolicy: selectedMutationPolicy(),
         ...(frozen.displayText ? { displayText: frozen.displayText } : {}),
         ...(frozen.frozenTransport ? { frozenTransport: frozen.frozenTransport } : {})
       })
@@ -345,6 +347,7 @@ export function useComposerQueue({
           const accepted = await Promise.resolve(
             onSubmit(resolved.transportText, {
               attachments: entry.attachments,
+              mutationPolicy: entry.mutationPolicy,
               ...(resolved.displayText ? { displayText: resolved.displayText } : {}),
               ...(entry.displayKind ? { displayKind: entry.displayKind } : {}),
               fromQueue: true,

@@ -28,6 +28,7 @@ class TurnFacadeMixin:
         persist_user_platform_id: Optional[str]=None, moa_config: Optional[dict[str, Any]]=None,
         turn_author: Optional[Dict[str, Any]] = None,
         relay_metadata: Optional[Dict[str, Any]] = None,
+        mutation_policy: str = "allowed",
         title_user_message: Optional[str]=None,
     ) -> Dict[str, Any]:
         """Forwarder — see ``agent.conversation_loop.run_conversation``."""
@@ -141,6 +142,8 @@ class TurnFacadeMixin:
             # Keep the ContextVar scope local (agent tokens may be observed from another thread).
             # A host that owns this thread (Hermes Console) may cancel the turn cross-thread.
             with bind_subagent_parent(self), scoped_runtime_main({}), track_in_interrupt_scope(self):
+                previous_mutation_policy = getattr(self, "_current_mutation_policy", "allowed")
+                self._current_mutation_policy = mutation_policy
                 try:
                     if lease is not None:
                         lease.start()
@@ -155,6 +158,7 @@ class TurnFacadeMixin:
                         title_user_message=title_user_message,
                     )
                 finally:
+                    self._current_mutation_policy = previous_mutation_policy
                     # Post-loop relay/task finalization must not receive a late refresh interrupt;
                     # the interrupt clear itself waits for the thread join in the outer finally.
                     if lease is not None:

@@ -3217,6 +3217,10 @@ export interface Translations {
     attachments: (count: number) => string
     editingInComposer: string
     editingQueuedInComposer: string
+    investigationOnlyOn: string
+    investigationOnlyOff: string
+    investigationOnlyRestriction: string
+    investigationOnlyHint: string
     restoredDraftNotice: string
     restoredDraftUndo: string
     queueEdit: string

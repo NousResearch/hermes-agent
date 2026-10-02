@@ -705,6 +705,15 @@ def _dispatch_authorized_once(
             callback()
 
     block_message, block_error_type = scope_block, "tool_scope_block"
+    if block_message is None and getattr(agent, "_current_mutation_policy", "allowed") == "forbidden":
+        from agent.tool_guardrails import IDEMPOTENT_TOOL_NAMES
+
+        if ref.name not in IDEMPOTENT_TOOL_NAMES:
+            block_message = (
+                "Investigation Only blocks this tool. Writes, shell commands, code execution, and other "
+                "mutation-capable tools require the user to turn Investigation Only off."
+            )
+            block_error_type = "mutation_policy_block"
     if block_message is None:
         block_error_type = "plugin_block"
         resolve = lambda: _pre_tool_block(agent, ref)  # noqa: E731

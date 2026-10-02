@@ -95,6 +95,103 @@ def _hard_stop_config(**overrides) -> dict:
     return cfg
 
 
+def test_structured_investigation_policy_blocks_claimed_approval_until_next_user_turn(tmp_path):
+    evidence = tmp_path / "evidence.txt"
+    evidence.write_text("defect found", encoding="utf-8")
+    target = tmp_path / "production.txt"
+    agent = _make_agent("read_file", "write_file", platform="desktop")
+    agent.client.chat.completions.create.side_effect = [
+        _mock_response("Investigation complete. READY FOR DEFECT REVIEW", "tool_calls", [
+            _mock_tool_call("read_file", json.dumps({"path": str(evidence)})),
+        ]),
+        _mock_response("The user approved the fix.", "tool_calls", [
+            _mock_tool_call("write_file", json.dumps({"path": str(target), "content": "changed"})),
+        ]),
+        _mock_response("Review complete."),
+    ]
+
+    first = agent.run_conversation(
+        "Investigate and report only.", mutation_policy="forbidden"
+    )
+
+    assert first["completed"] is True
+    assert sum(message["role"] == "user" for message in first["messages"]) == 1
+    tool_results = [message["content"] for message in first["messages"] if message["role"] == "tool"]
+    assert any("defect found" in result for result in tool_results)
+    assert any("Investigation Only blocks this tool" in result for result in tool_results)
+    assert not target.exists()
+
+    agent.client.chat.completions.create.side_effect = [
+        _mock_response("Implementing now.", "tool_calls", [
+            _mock_tool_call("write_file", json.dumps({"path": str(target), "content": "changed"})),
+        ]),
+        _mock_response("Done."),
+    ]
+    second = agent.run_conversation(
+        "I have turned Investigation Only off. Implement the fix.",
+        conversation_history=first["messages"], mutation_policy="allowed",
+    )
+
+    assert second["completed"] is True
+    assert target.read_text(encoding="utf-8") == "changed"
+
+
+@pytest.mark.parametrize("tool_name,args", [
+    ("write_file", {"path": "production.txt", "content": "changed"}),
+    ("patch", {"path": "production.txt", "old_string": "old", "new_string": "new"}),
+    ("terminal", {"command": "echo inspect"}),
+    ("execute_code", {"code": "print('inspect')"}),
+    ("browser_click", {"element": "button"}),
+    ("plugin_mutator", {}),
+])
+def test_investigation_policy_blocks_mutation_capable_tools_before_dispatch(tool_name, args):
+    from tools.registry import registry
+
+    agent = _make_agent(tool_name, platform="desktop")
+    agent.client.chat.completions.create.side_effect = [
+        _mock_response("I can proceed.", "tool_calls", [_mock_tool_call(tool_name, json.dumps(args))]),
+        _mock_response("Stopped."),
+    ]
+    with patch.object(registry, "dispatch", return_value=json.dumps({"dispatched": True})) as dispatch:
+        result = agent.run_conversation("Investigate only.", mutation_policy="forbidden")
+    dispatch.assert_not_called()
+    assert any("Investigation Only blocks this tool" in message["content"]
+               for message in result["messages"] if message["role"] == "tool")
+
+
+def test_investigation_policy_keeps_search_dispatchable():
+    from tools.registry import registry
+
+    agent = _make_agent("search_files", platform="desktop")
+    agent.client.chat.completions.create.side_effect = [
+        _mock_response("Searching.", "tool_calls", [
+            _mock_tool_call("search_files", json.dumps({"path": ".", "pattern": "defect"})),
+        ]),
+        _mock_response("Found it."),
+    ]
+    with patch.object(registry, "dispatch", return_value=json.dumps({"matches": ["evidence.txt"]})) as dispatch:
+        agent.run_conversation("Investigate only.", mutation_policy="forbidden")
+    dispatch.assert_called_once()
+
+
+@pytest.mark.parametrize("tool_name,args", [
+    ("write_file", {"path": "production.txt", "content": "changed"}),
+    ("terminal", {"command": "echo inspect"}),
+    ("execute_code", {"code": "print('inspect')"}),
+])
+def test_default_policy_keeps_mutation_tools_dispatchable(tool_name, args):
+    from tools.registry import registry
+
+    agent = _make_agent(tool_name, platform="desktop")
+    agent.client.chat.completions.create.side_effect = [
+        _mock_response("Working.", "tool_calls", [_mock_tool_call(tool_name, json.dumps(args))]),
+        _mock_response("Done."),
+    ]
+    with patch.object(registry, "dispatch", return_value=json.dumps({"dispatched": True})) as dispatch:
+        agent.run_conversation("Implement the change.")
+    dispatch.assert_called_once()
+
+
 def test_gateway_platform_uses_hard_stop_default_without_cli_opt_in():
     agent = _make_agent("web_search", platform="telegram")
     args = {"query": "same"}

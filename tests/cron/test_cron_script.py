@@ -172,11 +172,11 @@ class TestRunJobScript:
         from tools.cronjob_job_args import _validate_cron_script_path
 
         script = cron_env / "scripts" / "job.ps1"
-        script.write_text('Write-Host "not python"\n')
+        script.write_text('Write-Host "not python"\n', encoding="utf-8")
         pyw = cron_env / "scripts" / "job.pyw"
-        pyw.write_text('print("pyw")\n')
+        pyw.write_text('print("pyw")\n', encoding="utf-8")
         bare = cron_env / "scripts" / "job"
-        bare.write_text('print("bare")\n')
+        bare.write_text('print("bare")\n', encoding="utf-8")
 
         success, output = _run_job_script("job.ps1")
         assert success is False

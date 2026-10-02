@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 import os
 import time
+from pathlib import Path
 import urllib.request
 from typing import Any, Optional
 from hermes_cli.models_reasoning_caps import _seed_reasoning_caps
@@ -29,11 +30,56 @@ _pricing_provider_cache_keys: dict[tuple[str, str], str] = {}
 _FAILED_CATALOG_TTL_SECONDS = 120.0
 
 _pricing_cache_retry_after: dict[str, float] = {}
+_disk_cache_checked: set[str] = set()
+_PRICING_DISK_CACHE_NAME = "pricing-cache.json"
+
+
+def _disk_cache_path() -> Path:
+    from hermes_constants import get_hermes_home
+
+    return get_hermes_home() / _PRICING_DISK_CACHE_NAME
+
+
+def _load_disk_catalog(cache_key: str) -> dict[str, dict[str, Any]] | None:
+    try:
+        with _disk_cache_path().open(encoding="utf-8") as handle:
+            payload = json.load(handle)
+    except (OSError, ValueError, TypeError):
+        return None
+    cached = payload.get(cache_key) if isinstance(payload, dict) else None
+    return cached if isinstance(cached, dict) else None
+
+
+def _save_disk_catalog(cache_key: str, result: dict[str, dict[str, Any]]) -> None:
+    if not result:
+        return
+    path = _disk_cache_path()
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            with path.open(encoding="utf-8") as handle:
+                payload = json.load(handle)
+        except (OSError, ValueError, TypeError):
+            payload = {}
+        if not isinstance(payload, dict):
+            payload = {}
+        payload[cache_key] = result
+        tmp = path.with_suffix(".tmp")
+        with tmp.open("w", encoding="utf-8") as handle:
+            json.dump(payload, handle)
+        os.replace(tmp, path)
+    except OSError:
+        return
 
 
 def _cached_catalog(cache_key: str) -> Optional[dict[str, dict[str, Any]]]:
     """The cached catalog for *cache_key*, or None to go fetch it."""
     cached = _pricing_cache.get(cache_key)
+    if cached is None and cache_key not in _disk_cache_checked:
+        _disk_cache_checked.add(cache_key)
+        cached = _load_disk_catalog(cache_key)
+        if cached is not None:
+            _pricing_cache[cache_key] = cached
     if cached is None:
         return None
     retry_after = _pricing_cache_retry_after.get(cache_key)
@@ -53,6 +99,7 @@ def _cache_catalog(
     result too — only for a catalog whose contents depend on server-side state the client cannot
     observe (an org's model policy can change while a long-lived process holds the entry)."""
     _pricing_cache[cache_key] = result
+    _save_disk_catalog(cache_key, result)
     if not result:
         _pricing_cache_retry_after[cache_key] = time.monotonic() + _FAILED_CATALOG_TTL_SECONDS
     elif ttl_seconds:

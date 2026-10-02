@@ -1668,6 +1668,9 @@ def _sum_terminal(name, args, content, content_len, line_count):
 
 
 def _sum_write_file(name, args, content, content_len, line_count):
+    failure = _tool_result_failure_suffix(content)
+    if failure:
+        return f"[write_file]{failure} {args.get('path', '?')}"
     written_lines = _str_arg(args, "content").count("\n") + 1 if args.get("content") else "?"
     return f"[write_file] wrote to {args.get('path', '?')} ({written_lines} lines)"
 
@@ -1710,6 +1713,13 @@ def _sum_execute_code(name, args, content, content_len, line_count):
     code_str = _str_arg(args, "code")
     code_preview = code_str[:60].replace("\n", " ") + ("..." if len(code_str) > 60 else "")
     return f"[execute_code] `{code_preview}` ({line_count} lines output)"
+
+
+def _sum_patch(name, args, content, content_len, line_count):
+    failure = _tool_result_failure_suffix(content)
+    if failure:
+        return f"[patch]{failure} {args.get('path', '?')}"
+    return f"[patch] {args.get('mode', 'replace')} in {args.get('path', '?')} ({content_len:,} chars result)"
 
 
 def _sum_skill_view(name, args, content, content_len, line_count):
@@ -1866,6 +1876,16 @@ def _skill_result_failure_suffix(content: str) -> str:
     return f" FAILED: {preview}" if preview else " FAILED"
 
 
+def _tool_result_failure_suffix(content: str) -> str:
+    """Return a bounded failure suffix for mutation results that report no applied change."""
+    payload = _json_dict(content)
+    error = payload.get("error")
+    if not error and payload.get("success") is not False and not payload.get("stale_write_blocked"):
+        return ""
+    preview = " ".join(str(error).split())[:80] if error else ""
+    return f" FAILED: {preview}" if preview else " FAILED"
+
+
 def _sum_template(template: str, **defaults):
     """Summarizer formatting ``template`` from the parsed args (``defaults`` fill missing keys) plus ``content_len``."""
     return lambda name, args, content, content_len, line_count: template.format_map(
@@ -1879,7 +1899,7 @@ _TOOL_RESULT_SUMMARIZERS = {
     "read_file": _sum_template("[read_file] read {path} from line {offset} ({content_len:,} chars)", path="?", offset=1),
     "write_file": _sum_write_file,
     "search_files": _sum_search_files,
-    "patch": _sum_template("[patch] {mode} in {path} ({content_len:,} chars result)", mode="replace", path="?"),
+    "patch": _sum_patch,
     **dict.fromkeys(
         ("browser_navigate", "browser_click", "browser_snapshot", "browser_type", "browser_scroll", "browser_vision"),
         _sum_browser,

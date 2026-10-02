@@ -26,6 +26,46 @@ from agent.auxiliary_client import CODEX_STREAM_STALL_MARKER
 _REQ = httpx.Request("POST", "http://x")
 
 
+class TestMutationToolResultSummaries:
+    def test_refused_write_file_is_not_summarized_as_success(self):
+        result = _summarize_tool_result(
+            "write_file",
+            json.dumps({"path": "notes.md", "content": "new content"}),
+            json.dumps({
+                "error": "Refusing to overwrite notes.md: task has not seen its full current content",
+                "stale_write_blocked": True,
+                "path": "notes.md",
+            }),
+        )
+        assert "wrote to" not in result
+        assert "FAILED" in result
+        assert "notes.md" in result
+
+    def test_rejected_patch_is_not_summarized_as_success(self):
+        result = _summarize_tool_result(
+            "patch",
+            json.dumps({"mode": "replace", "path": "notes.md"}),
+            json.dumps({"success": False, "error": "old text was not found"}),
+        )
+        assert " in notes.md " not in result
+        assert "FAILED" in result
+        assert "old text was not found" in result
+
+    def test_successful_mutations_keep_existing_summaries(self):
+        write_result = _summarize_tool_result(
+            "write_file",
+            json.dumps({"path": "notes.md", "content": "line 1\nline 2"}),
+            json.dumps({"verified": True, "path": "notes.md"}),
+        )
+        patch_result = _summarize_tool_result(
+            "patch",
+            json.dumps({"mode": "replace", "path": "notes.md"}),
+            json.dumps({"success": True}),
+        )
+        assert "wrote to notes.md (2 lines)" in write_result
+        assert "replace in notes.md" in patch_result
+
+
 class StubProviderError(Exception):
     def __init__(self, message, *, status_code=None, response=None):
         super().__init__(message)

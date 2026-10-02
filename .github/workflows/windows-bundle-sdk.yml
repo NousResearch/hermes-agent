@@ -22,15 +22,28 @@ concurrency:
   cancel-in-progress: true
 jobs:
   windows-bundle-tools:
-    name: Cold Windows SDK (${{ matrix.runner }})
+    name: Cold Windows SDK (${{ matrix.arch }})
     runs-on: ${{ matrix.runner }}
     # Cold ARM64 npm extraction alone can exceed 15 minutes on the hosted runner.
     timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
-        runner: [windows-latest-32-arm-core, windows-latest-32-arm-core]
+        include:
+          - arch: x64
+            runner: ${{ github.repository == 'NousResearch/hermes-agent' && 'windows-latest-32-core' || 'windows-latest' }}
+          - arch: arm64
+            runner: ${{ github.repository == 'NousResearch/hermes-agent' && 'windows-latest-32-arm-core' || 'windows-11-arm' }}
     steps:
+      - name: Require the native target architecture
+        shell: powershell
+        env:
+          EXPECTED_ARCH: ${{ matrix.arch }}
+        run: |
+          $nativeArch = [System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString().ToLowerInvariant()
+          if ($env:RUNNER_ARCH.ToLowerInvariant() -ne $env:EXPECTED_ARCH -or $nativeArch -ne $env:EXPECTED_ARCH) {
+            throw "Expected native $env:EXPECTED_ARCH runner; Actions reports $env:RUNNER_ARCH and Windows reports $nativeArch."
+          }
       - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
         with:
           persist-credentials: false

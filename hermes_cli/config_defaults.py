@@ -573,8 +573,9 @@ DEFAULT_CONFIG = {
         "loop_caps": {
             "max_web_searches": 50,   # web_search calls per turn
             "max_subagents": 50,      # subagents spawned per turn
-            # Optional task-specific cap for read_file/search_files and unmistakable terminal
-            # file reads/searches. Disabled by default because read-only work can need many reads.
+            # Optional task-specific cap for read_file/search_files, unmistakable terminal
+            # file reads/searches, and narrow read-only HTTP probes. Disabled by default because
+            # read-only work can legitimately need many discovery calls.
             "max_discovery_calls": 0,
         },
     },

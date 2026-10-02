@@ -860,7 +860,7 @@ Runs FTS5, dedupes hits by session lineage, and returns the top N sessions. Disc
 
 Each result carries:
 
-- `session_id`, `title`, `when`, `source`
+- `session_id`, `title`, `when`, `started_at`, `source` — `when` is the matched message's time (the conversation's creation time for title-only matches); `started_at` is the conversation's creation time — the lineage root's, for a hit inside a child session. `after` / `before` filter on session start.
 - `snippet` — FTS5-highlighted match excerpt
 - `detail` — `full` or `compact`
 - `bookend_start` / `bookend_end` — first/last 3 user+assistant messages for full results; empty lists for compact results

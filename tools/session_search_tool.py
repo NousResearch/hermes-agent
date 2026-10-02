@@ -47,7 +47,7 @@ _EXCLUDE_SESSION_IDS_CAP = 20
 _RELATIVE_BOUND_RE = re.compile(r"^(\d+)\s*(h|d|w)$", re.IGNORECASE)
 _RELATIVE_UNIT_SECONDS = {"h": 3600, "d": 86400, "w": 604800}
 # Raw FTS rows are only a plan input; the response hydrates its own window/bookends.
-_DISCOVER_SEARCH_FIELDS = ("id", "session_id", "role", "snippet", "source", "model", "session_started")
+_DISCOVER_SEARCH_FIELDS = ("id", "session_id", "role", "snippet", "timestamp", "source", "model", "session_started")
 # Compaction handoff summaries (agent/context_compressor.py); excluded from bookends.
 _COMPACTION_PREFIXES = ("[CONTEXT COMPACTION", "[CONTEXT SUMMARY]:")
 # /new, /reset, idle/daily expiry and CLI /new ("new_session") end the predecessor WITHOUT
@@ -266,7 +266,7 @@ def _session_link(session_id: str, profile: str = None) -> str:
 def _discovery_entry(lineage_root: Optional[str], **fields) -> Dict[str, Any]:
     """Canonical key order; ``parent_session_id`` set when the hit lives in a child."""
     entry = {k: fields[k] for k in (
-        "session_id", "when", "source", "model", "title", "matched_role", "match_message_id", "snippet",
+        "session_id", "when", "started_at", "source", "model", "title", "matched_role", "match_message_id", "snippet",
         "bookend_start", "messages", "bookend_end", "messages_before", "messages_after", "detail")}
     if lineage_root and lineage_root != entry["session_id"]:
         entry["parent_session_id"] = lineage_root
@@ -299,8 +299,10 @@ def _title_match_result(db, query: str, current_lineage_root: Optional[str]) -> 
     def shape(key, fallback, anchor=None, max_content_len=1200):
         return [_shape_message(m, anchor_id=anchor, max_content_len=max_content_len)
                 for m in (view.get(key) or fallback)]
+    session_start = session_meta.get("started_at")
     return {**_discovery_entry(
-        lineage_root, session_id=session_id, when=_format_timestamp(session_meta.get("started_at")),
+        lineage_root, session_id=session_id, when=_format_timestamp(session_start),
+        started_at=_format_timestamp(session_start),
         source=session_meta.get("source", "unknown"), model=session_meta.get("model") or "unknown",
         title=title, matched_role="session_title", match_message_id=anchor_id,
         snippet=f"Session title matched: {title}",
@@ -336,9 +338,12 @@ def _hydrate_hit(db, lineage_root: str, match_info: Dict[str, Any], result_detai
         logging.warning("get_anchored_view failed for %s/%s: %s", hit_sid, msg_id, e, exc_info=True)
         return None
     session_meta, full = _get_session_meta(db, lineage_root), result_detail == "full"
+    # `when` falls back to exactly what `started_at` reports — share one expression.
+    session_start = session_meta.get("started_at") or match_info.get("session_started")
     return _discovery_entry(
         lineage_root, session_id=hit_sid,
-        when=_format_timestamp(session_meta.get("started_at") or match_info.get("session_started")),
+        when=_format_timestamp(match_info.get("timestamp") or session_start),
+        started_at=_format_timestamp(session_start),
         source=session_meta.get("source") or match_info.get("source", "unknown"),
         model=session_meta.get("model") or match_info.get("model") or "unknown",
         title=session_meta.get("title") or None, matched_role=match_info.get("role"),

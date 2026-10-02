@@ -25,9 +25,16 @@ class VoiceClipTranscript:
 
 
 @dataclass(frozen=True)
+class VoiceFileReference:
+    path: str
+    rendered_path: str
+
+
+@dataclass(frozen=True)
 class VoiceTranscriptPart:
     text: str
     clip: VoiceClipTranscript | None = None
+    attachment: VoiceFileReference | None = None
 
 
 @dataclass(frozen=True)
@@ -88,10 +95,16 @@ def rehome_pending_voice(event: MessageEvent, paths: dict[str, str]) -> None:
         if part.clip is not None:
             parts.append(replace(part, clip=mapped[part.clip.path]))
             continue
-        note = part.text
-        for old, new in changed.items():
-            note = note.replace(old, to_agent_visible_cache_path(new))
-        parts.append(replace(part, text=note))
+        attachment = part.attachment
+        if attachment is None or attachment.path not in changed:
+            parts.append(part)
+            continue
+        path = changed[attachment.path]
+        rendered = to_agent_visible_cache_path(path)
+        parts.append(replace(
+            part, text=part.text.replace(attachment.rendered_path, rendered),
+            attachment=VoiceFileReference(path, rendered),
+        ))
     updated = replace(transcription, clips=tuple(mapped.values()), parts=tuple(parts))
     updated = replace(updated, text=updated.render(event.text))
     setattr(event, "_gateway_pending_stt_input", updated)
@@ -124,8 +137,16 @@ class GatewayInboundVoiceMixin:
         agent_path = to_agent_visible_cache_path(os.path.abspath(path))
         return f"[voice message could not be transcribed automatically; the audio is available at: {agent_path}]"
 
-    async def _transcribe_one_clip(self, path: str, transcribe_audio, transcribe_audio_local_fallback) -> tuple[Optional[str], str]:
-        """``(transcript_or_None, note)`` for one clip via configured STT with local fallback."""
+    def _untranscribed_audio_part(self, path: str) -> VoiceTranscriptPart:
+        from tools.credential_files import to_agent_visible_cache_path
+
+        rendered = to_agent_visible_cache_path(os.path.abspath(path))
+        return VoiceTranscriptPart(
+            self._untranscribed_audio_note(path),
+            attachment=VoiceFileReference(path, rendered),
+        )
+
+    async def _transcribe_one_clip(self, path: str, transcribe_audio, transcribe_audio_local_fallback) -> VoiceTranscriptPart:
         result = await asyncio.to_thread(transcribe_audio, path, None, "gateway")
         if not result.get("success"):
             fallback = await asyncio.to_thread(transcribe_audio_local_fallback, path)
@@ -134,13 +155,13 @@ class GatewayInboundVoiceMixin:
                 result = fallback
         if not result["success"]:
             logger.info("Voice transcription failed for %s: %s", path, result.get("error", "unknown error"))
-            return None, self._untranscribed_audio_note(path)
+            return self._untranscribed_audio_part(path)
         transcript = result["transcript"]
         # STT may return success=True with an empty/whitespace transcript (silence, cut-off);
         # empty quotes make the agent reply to nothing and can loop, so emit a sentinel note.
         # See #41603.
         if not (transcript or "").strip():
-            return None, (
+            return VoiceTranscriptPart(
                 "[The user sent a voice message but it came through "
                 "empty or inaudible — speech-to-text returned no "
                 "words. Do not guess at the content; ask the user "
@@ -148,7 +169,7 @@ class GatewayInboundVoiceMixin:
             )
         # Plain quoted line: a "The user sent a voice message..." wrapper read as a meta-instruction
         # and made the LLM comment on voice mode instead.
-        return transcript, f'"{transcript}"'
+        return VoiceTranscriptPart(f'"{transcript}"', VoiceClipTranscript(path, transcript))
 
     async def _enrich_message_with_transcription(
         self, user_text: str, audio_paths: list[str], *, event: MessageEvent | None = None,
@@ -164,15 +185,19 @@ class GatewayInboundVoiceMixin:
         from gateway.run import _probe_audio_duration
         audio_paths = list(dict.fromkeys(audio_paths))
         if not getattr(self.config, "stt_enabled", True):
-            notes = []
+            parts = []
             for path in audio_paths:
                 abs_path = os.path.abspath(path)
                 duration_str = await _probe_audio_duration(abs_path)
                 suffix = f" (duration: {duration_str})" if duration_str else ""
-                notes.append(f"[The user sent a voice message: {abs_path}{suffix}]")
+                parts.append(VoiceTranscriptPart(
+                    f"[The user sent a voice message: {abs_path}{suffix}]",
+                    attachment=VoiceFileReference(path, abs_path),
+                ))
+            notes = [part.text for part in parts]
             return VoiceTranscription(
                 self._prepend_media_prefix("\n\n".join(notes), user_text) if notes else user_text,
-                parts=tuple(VoiceTranscriptPart(note) for note in notes),
+                parts=tuple(parts),
             )
 
         try:
@@ -190,19 +215,18 @@ class GatewayInboundVoiceMixin:
         for path in audio_paths:
             try:
                 logger.debug("Transcribing user voice: %s", path)
-                transcript, note = await self._transcribe_one_clip(
+                part = await self._transcribe_one_clip(
                     path, transcribe_audio, transcribe_audio_local_fallback,
                 )
-                clip = VoiceClipTranscript(path, transcript) if transcript is not None else None
-                if clip is not None:
-                    clips.append(clip)
-                parts.append(VoiceTranscriptPart(note, clip))
-                enriched_parts.append(note)
+                if part.clip is not None:
+                    clips.append(part.clip)
+                parts.append(part)
+                enriched_parts.append(part.text)
             except Exception as e:
                 logger.error("Transcription error: %s", e)
-                note = self._untranscribed_audio_note(path)
-                parts.append(VoiceTranscriptPart(note))
-                enriched_parts.append(note)
+                part = self._untranscribed_audio_part(path)
+                parts.append(part)
+                enriched_parts.append(part.text)
 
         text = self._prepend_media_prefix("\n\n".join(enriched_parts), user_text) if enriched_parts else user_text
         return VoiceTranscription(text, tuple(clips), tuple(parts))

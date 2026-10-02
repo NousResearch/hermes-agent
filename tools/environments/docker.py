@@ -605,6 +605,7 @@ class DockerEnvironment(BaseEnvironment):
         shm_size: str = _DEFAULT_SHM_SIZE,
         shared_container_key: str = "",
         snap_compat: bool = False,
+        implicit_mounts: bool = True,
         image_pinned: bool = False):
         if cwd == "~":
             cwd = "/root"
@@ -638,7 +639,10 @@ class DockerEnvironment(BaseEnvironment):
                 mount, cwd)
             cwd = mount
             self.cwd = mount
-        volume_args.extend(_readonly_skill_mount_args())
+        if implicit_mounts:
+            volume_args.extend(_readonly_skill_mount_args())
+        else:
+            logger.info("docker_implicit_mounts: false, not mounting Hermes skills, credential files or caches")
         egress_label, egress_volume_args, egress_host_args, env_args, validated_extra = (
             self._egress_and_env_args(extra_args))
         volume_args.extend(egress_volume_args)

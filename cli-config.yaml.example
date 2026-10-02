@@ -461,6 +461,9 @@ terminal:
 #   lifetime_seconds: 300
 #   docker_image: "nousresearch/hermes-sandbox:desktop"
 #   docker_mount_cwd_to_workspace: true   # Explicit opt-in: mount your launch cwd into /workspace
+#   # Optional: false stops Hermes mounting its skills, credential files and caches (read-only),
+#   # so the host paths in the sandbox are only the ones you configure. Applies when the container is created.
+#   docker_implicit_mounts: false
 #   # Optional: run the container as your host user's uid:gid so files written
 #   # into bind-mounted dirs are owned by you, not root. Drops SETUID/SETGID
 #   # caps too since no gosu privilege drop is needed. Leave off if your

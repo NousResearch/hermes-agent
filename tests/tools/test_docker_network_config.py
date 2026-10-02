@@ -6,6 +6,8 @@ expose it, so operators could not request networkless Docker execution from
 config.yaml.
 """
 
+import os
+
 import tools.terminal_tool as terminal_tool
 from tools.environments import docker as docker_env
 
@@ -228,3 +230,30 @@ def test_pin_verdict_reaches_docker_environment_through_the_terminal_tool(monkey
         cc = _container_config_from_config(tt._get_env_config())
         _build_docker_env(image="x", cwd="/root", timeout=5, cc=cc, task_id="default", host_cwd=None)
         assert seen["image_pinned"] is (pinned == "1")
+
+
+def test_implicit_mounts_setting_reaches_docker_environment_from_config_yaml(monkeypatch, tmp_path):
+    """``terminal.docker_implicit_mounts`` in config.yaml must survive the bridge, the env read and
+    the container-config allowlist; unset keeps the Hermes mounts."""
+    from hermes_cli.config import apply_terminal_config_to_env
+    from tools import terminal_tool as tt
+    from tools.terminal_tool_backends import _build_docker_env, _container_config_from_config
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    seen = {}
+    monkeypatch.setattr("tools.terminal_tool_backends._DockerEnvironment",
+                        lambda **kw: seen.update(kw) or object())
+    monkeypatch.setattr(tt, "_maybe_reap_docker_orphans", lambda cc: None)
+    monkeypatch.setattr(tt, "_docker_session_isolation_enabled", lambda: False)
+
+    for terminal, expected in (("backend: docker\n  docker_implicit_mounts: false", False),
+                               ("backend: docker", True)):
+        (tmp_path / "config.yaml").write_text(f"terminal:\n  {terminal}\n", encoding="utf-8")
+        for var in [v for v in os.environ if v.startswith("TERMINAL_")]:
+            monkeypatch.delenv(var)
+        for var, value in apply_terminal_config_to_env(env={}, override=True).items():
+            if var.startswith("TERMINAL_"):
+                monkeypatch.setenv(var, value)
+        cc = _container_config_from_config(tt._get_env_config())
+        _build_docker_env(image="x", cwd="/root", timeout=5, cc=cc, task_id="default", host_cwd=None)
+        assert seen["implicit_mounts"] is expected

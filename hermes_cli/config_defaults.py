@@ -386,6 +386,9 @@ DEFAULT_CONFIG = {
         # anything under `--init` or `--security-opt no-new-privileges` ("operation not
         # permitted"). True drops those two flags; every other hardening stays. See #9730.
         "docker_snap_compat": False,
+        # Hermes-managed read-only bind mounts: skills, skill credential files and cache dirs.
+        # False mounts none of them, so the host paths in the sandbox are only the ones you configure.
+        "docker_implicit_mounts": True,
         # Trusted profiles sharing one Docker container identity; empty = per-profile boundary.
         "docker_shared_container_key": "",
         # Keep a long-lived bash shell across execute() calls so cwd/env/shell variables survive.

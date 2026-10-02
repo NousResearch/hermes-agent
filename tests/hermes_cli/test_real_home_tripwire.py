@@ -344,3 +344,32 @@ def test_loaded_library_requires_two_matching_module_paths(tmp_path, monkeypatch
     monkeypatch.setattr(home_io_guard.threading, "__file__",
                         None if missing_second else str(tmp_path / "second" / "threading.py"))
     assert home_io_guard._stdlib_prefixes() == ()
+
+
+def test_library_archive_exception_is_exact_and_corroborated(tmp_path, monkeypatch):
+    from tests import home_io_guard
+
+    library = tmp_path / "runtime" / "Lib"
+    archive = library.parent / f"python{sys.version_info.major}{sys.version_info.minor}.zip"
+    unrelated = tmp_path / "other-runtime" / archive.name
+    monkeypatch.setattr(home_io_guard.sysconfig, "get_path", lambda name: str(library))
+    for module in (home_io_guard.shutil, home_io_guard.threading):
+        monkeypatch.setattr(module, "__file__", str(library / (module.__name__ + ".py")))
+    monkeypatch.setattr(home_io_guard.sys, "path", [str(archive), str(unrelated), str(library.parent)])
+    assert set(home_io_guard._stdlib_prefixes()) == {
+        os.path.normcase(str(library.resolve())), os.path.normcase(str(archive.resolve()))
+    }
+    library.mkdir(parents=True)
+    archive.write_text("archive fixture", encoding="utf-8")
+    sibling = library.parent / "state.db"
+    sibling.write_text("private state", encoding="utf-8")
+    from tests import conftest
+    monkeypatch.setattr(home_io_guard, "_STDLIB_PREFIX_STRS", home_io_guard._stdlib_prefixes())
+    monkeypatch.setattr(conftest, "_REAL_HERMES_ROOT_CANDIDATES",
+                        conftest._REAL_HERMES_ROOT_CANDIDATES + [library.parent])
+    assert archive.stat().st_size == len("archive fixture")
+    assert archive.read_text(encoding="utf-8") == "archive fixture"
+    for action in (lambda: archive.write_text("changed"), archive.unlink,
+                   lambda: sibling.read_text(), lambda: os.listdir(library.parent)):
+        with pytest.raises(AssertionError, match="REAL hermes home"):
+            action()

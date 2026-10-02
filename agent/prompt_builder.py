@@ -1499,7 +1499,7 @@ def _render_skills_index(
         if category in demoted:
             index_lines.append(f"  {category} [names only]: {', '.join(sorted({n for n, _ in entries}))}")
             continue
-        cat_desc = category_descriptions.get(category, "")
+        cat_desc = "" if names_only else category_descriptions.get(category, "")
         index_lines.append(f"  {category}: {cat_desc}" if cat_desc else f"  {category}:")
         seen = set()
         for name, desc in sorted(entries, key=lambda x: x[0]):  # stable: first entry per name wins

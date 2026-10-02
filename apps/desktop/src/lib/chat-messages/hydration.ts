@@ -172,7 +172,7 @@ const NOTICE_DISPLAY_KINDS = [
 ] as const
 
 function isMachineNotice(displayKind: SessionMessage['display_kind']): boolean {
-  return displayKind !== undefined && (NOTICE_DISPLAY_KINDS as readonly string[]).includes(displayKind)
+  return typeof displayKind === 'string' && (NOTICE_DISPLAY_KINDS as readonly string[]).includes(displayKind)
 }
 
 // A remote backend older than this app serves display_metadata as raw JSON text,

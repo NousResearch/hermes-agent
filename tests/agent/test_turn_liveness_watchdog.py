@@ -753,3 +753,38 @@ def test_declined_abort_does_not_cancel_pending_compression_commit():
         "cancelled: begin_commit() refused"
     )
     fence.finish_commit()
+
+
+def test_watchdog_spares_turn_while_codex_tool_call_open():
+    """A quiet in-flight codex tool emits no deltas between item/started
+    and item/completed, so the activity clock reads stale past the bound --
+    but the turn is working, not wedged (#127643). The bridge publishes
+    the open-call count and the watchdog keeps polling instead of aborting;
+    once the tool completes, the same stale clock aborts as before."""
+    from agent.turn_liveness import TurnLivenessWatchdog
+
+    committed = []
+
+    def _build(agent):
+        return TurnLivenessWatchdog(
+            agent, session_id="stalled-session", timeout_s=0.3, poll_s=0.05,
+            stop_event=threading.Event(),
+            activity_lock=agent._liveness_activity_lock(),
+            is_turn_active=lambda: True,
+            commit_abort=lambda snapshot, message: committed.append(message) or True,
+            deactivate_turn=lambda: None,
+        )
+
+    db = _DB()
+    agent = _agent_with_db(db)
+    agent._last_activity_ts = time.time() - 1000.0  # stale past any bound
+    agent._codex_inflight_tool_calls = 1  # started, no completed yet
+    assert _build(agent)._tick() is None
+    assert committed == []
+
+    # Control: tool completed (count cleared) -> the stale clock aborts.
+    agent2 = _agent_with_db(db)
+    agent2._last_activity_ts = time.time() - 1000.0
+    assert getattr(agent2, "_codex_inflight_tool_calls", 0) == 0
+    assert _build(agent2)._tick() is False
+    assert len(committed) == 1 and "no progress" in committed[0]

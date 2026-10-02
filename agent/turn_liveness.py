@@ -125,6 +125,11 @@ class TurnLivenessWatchdog:
             return False  # turn no longer active
         if snapshot.idle_seconds < self._timeout_s:
             return None
+        if self._codex_tool_in_flight():
+            # A codex tool call is still open (item/started without its
+            # item/completed): quiet execution is working, not wedged — keep
+            # polling instead of aborting (#127643).
+            return None
         # Observational only: the commit below can still veto the abort if progress
         # resumed; the definitive settlement is _surface_committed_abort.
         # Pre-commit surface is OBSERVATIONAL only: it reports the stall and that a recovery attempt is
@@ -142,6 +147,19 @@ class TurnLivenessWatchdog:
         from hermes_cli.observability.shared_metrics_process import record_watchdog_turn_abort
         record_watchdog_turn_abort(self._agent)
         return False
+
+    def _codex_tool_in_flight(self) -> bool:
+        """Whether the codex bridge reports an open tool call.
+
+        Best-effort read of the counter the app-server bridge maintains; a missing
+        counter (non-codex turns, old doubles) means no exemption. Only a positive
+        int counts, so exotic values fail closed toward the pre-existing abort path.
+        """
+        try:
+            count = getattr(self._agent, "_codex_inflight_tool_calls", 0)
+        except Exception:
+            return False
+        return isinstance(count, int) and count > 0
 
     def _sample(self) -> Optional[ActivitySnapshot]:
         with self._activity_lock:

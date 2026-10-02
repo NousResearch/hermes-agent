@@ -378,6 +378,18 @@ def make_codex_app_server_event_bridge(agent) -> Callable[[dict], None]:
     without display hooks. Every callback is guarded so a buggy display hook cannot tear down the turn loop."""
     # item_id -> (tool_name, args, started_monotonic); duration even when codex omits durationMs.
     started: dict[str, tuple[str, dict, float]] = {}
+    # Open tool calls published for the turn-liveness watchdog: a quiet tool emits
+    # nothing between item/started and item/completed, so the watchdog reads this
+    # count (not the clock) to spare a working turn (#127643). Reset per session
+    # here and per turn in DurableTurnLease.start (an aborted turn's completed
+    # never lands, which would otherwise orphan the count).
+    with suppress(Exception):
+        agent._codex_inflight_tool_calls = 0
+
+    def _bump_inflight_tool_calls(delta: int) -> None:
+        with suppress(Exception):
+            agent._codex_inflight_tool_calls = max(
+                0, int(getattr(agent, "_codex_inflight_tool_calls", 0) or 0) + delta)
 
     def agent_cb(attr: str, fail_msg: str, *fail_args: Any, args: tuple = (), kwargs: dict | None = None) -> None:
         _call_guarded(getattr(agent, attr, None), fail_msg, *fail_args, args=args, kwargs=kwargs)
@@ -386,7 +398,15 @@ def make_codex_app_server_event_bridge(agent) -> Callable[[dict], None]:
         item_id, name = item.get("id") or "", _codex_item_to_tool_name(item)
         args = _codex_item_to_args(item)
         if item_id:
+            # One open call per item id (mirrors the `started` ledger): a repeated
+            # started for the same id refreshes it instead of double-counting.
+            if item_id not in started:
+                _bump_inflight_tool_calls(+1)
             started[item_id] = (name, args, time.monotonic())
+        else:
+            # No id to pair a later completed with; count it openly and let the
+            # matching completed (or the next turn-entry reset) clear it.
+            _bump_inflight_tool_calls(+1)
         agent_cb("tool_progress_callback", "tool_progress_callback raised on tool.started for %s", name,
                  args=("tool.started", name, _codex_item_to_preview(item), args))
         # Stable-ID tool card (TUI/desktop) fires alongside the progress bubble.
@@ -396,6 +416,10 @@ def make_codex_app_server_event_bridge(agent) -> Callable[[dict], None]:
     def _fire_tool_completed(item: dict) -> None:
         name = _codex_item_to_tool_name(item)
         prior = started.pop(item_id, None) if (item_id := item.get("id") or "") else None
+        # Only clear what was actually open: a lone completed (fast items on some
+        # codex versions) must not eat the next tool's count.
+        if prior is not None or not item_id:
+            _bump_inflight_tool_calls(-1)
         # Prefer codex's durationMs; else our started timestamp; else None (some codex
         # versions only emit completed for fast items).
         codex_ms = item.get("durationMs")

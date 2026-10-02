@@ -61,6 +61,25 @@ class PtyUnavailableError(RuntimeError):
     """
 
 
+# Longer than the TUI gateway's own SIGHUP shutdown grace (tui_gateway/entry.py, 1.0 s by default),
+# so a helper that is saving state on SIGHUP finishes before it is SIGKILLed.
+_HELPER_SHUTDOWN_GRACE_S = 1.5
+
+
+def _process_group_exists(pgid: int) -> bool:
+    try:
+        os.killpg(pgid, 0)  # windows-footgun: ok — POSIX-only module (imports fcntl/termios/ptyprocess at top)
+    except OSError:
+        return False
+    return True
+
+
+def _wait_for_group_exit(pgid: int, timeout: float) -> None:
+    deadline = time.monotonic() + timeout
+    while _process_group_exists(pgid) and time.monotonic() < deadline:
+        time.sleep(0.02)
+
+
 class PtyBridge:
     """Thin wrapper around ``ptyprocess.PtyProcess`` for byte streaming. Not thread-safe: owned by
     the WebSocket handler that spawned it; reads run in an executor thread, writes are awaited on
@@ -72,6 +91,12 @@ class PtyBridge:
         self._proc = proc
         self._fd: int = proc.fd
         self._closed = False
+        # Recorded at spawn: once the leader is reaped getpgid() can no longer find its group,
+        # but the helpers it started still belong to it.
+        try:
+            self._pgid: Optional[int] = os.getpgid(proc.pid)  # windows-footgun: ok — POSIX-only module (imports fcntl/termios/ptyprocess at top)
+        except OSError:
+            self._pgid = None
         os.set_blocking(self._fd, False)
 
     @classmethod
@@ -228,10 +253,8 @@ class PtyBridge:
             return
         self._closed = True
 
-        try:
-            pgid = os.getpgid(self._proc.pid)  # windows-footgun: ok — POSIX-only module (imports fcntl/termios/ptyprocess at top)
-        except Exception:
-            pgid = None
+        pgid = self._pgid
+        leader_was_alive = self._proc.isalive()
 
         # Signal the whole process group, not just the PTY leader: the dashboard TUI starts helper
         # children (e.g. the Python slash worker) and killing only the leader strands them.
@@ -248,6 +271,21 @@ class PtyBridge:
             deadline = time.monotonic() + 0.5
             while self._proc.isalive() and time.monotonic() < deadline:
                 time.sleep(0.02)
+
+        # Helpers can outlive the leader and keep the PTY slave open, so no EOF ever arrives (#76759):
+        # one that ignores SIGHUP, or any helper of a leader that died first (crash, OOM kill). When
+        # the group already got SIGHUP above, only wait: the TUI gateway saves its sessions on SIGHUP
+        # within its shutdown grace, and a second SIGHUP or an early SIGKILL would cut that short.
+        if pgid is not None:
+            sweep = (signal.SIGKILL,) if leader_was_alive else (signal.SIGHUP, signal.SIGKILL)  # windows-footgun: ok — POSIX-only module (imports fcntl/termios/ptyprocess at top)
+            if leader_was_alive:
+                _wait_for_group_exit(pgid, _HELPER_SHUTDOWN_GRACE_S)
+            for sig in sweep:
+                try:
+                    os.killpg(pgid, sig)  # windows-footgun: ok — POSIX-only module (imports fcntl/termios/ptyprocess at top)
+                except OSError:
+                    break  # ESRCH: the group is empty
+                _wait_for_group_exit(pgid, _HELPER_SHUTDOWN_GRACE_S)
 
         try:
             self._proc.close(force=True)

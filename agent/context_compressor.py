@@ -5039,6 +5039,22 @@ Write only the summary body. Do not include any preamble or prefix."""
             )
         drop_stale_api_content(replay)
 
+        # The replay is a replacement for the in-flight row, not an additional
+        # occurrence of it. When the original survived in the protected head,
+        # retaining it gives the durable transcript two active rows with the
+        # same message_uid and renders the request twice after reload.
+        replay_uid = replay.get("message_uid")
+        if isinstance(replay_uid, str) and replay_uid:
+            compressed[:] = [
+                msg
+                for msg in compressed
+                if not (
+                    msg is not carrier
+                    and msg.get("role") == "user"
+                    and msg.get("message_uid") == replay_uid
+                )
+            ]
+
         if last_visible_role == "user":
             # Alternation is judged on template-visible rows only (tool_calls /
             # tool rows are exempt), so a user-pinned summary followed by a

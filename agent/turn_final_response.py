@@ -13,7 +13,12 @@ from typing import Any, Dict, Optional
 
 from agent.message_metadata import append_message
 from agent.reasoning_promotion import answer_in_reasoning_capability
-from agent.repetition_guard import STOP_PATH_MIN_CHARS, is_runaway_repetition
+from agent.repetition_guard import (
+    CASCADE_MIN_CHARS,
+    STOP_PATH_MIN_CHARS,
+    is_runaway_repetition,
+    is_semantic_cascade,
+)
 from agent.stream_delivery import publish_held_final_row
 from agent.turn_failure_copy import stamp_failure
 from agent.turn_empty_response import recover_empty_response
@@ -66,6 +71,26 @@ def _absorb_continuation_fragments(final_response: Any, parts: Any, messages: An
             frag.pop("_length_continuation_fragment", None)
             frag.pop("_length_continuation_nudge", None)
     return _join_truncated_parts([*parts, (final_response, False)]), True
+
+
+def _runaway_response_verdict(final_response: Any) -> bool:
+    """True when a completed visible text response trips the runaway stop path.
+
+    A provider may end a degenerate loop normally with finish_reason="stop" instead of
+    exhausting its output cap (#100716). Runaway scale and shape only: a completed answer
+    the user asked to be repetitive is delivered, unlike a length-truncated fragment that
+    burned the whole budget.
+    Sibling: a semantic free-association cascade (#131098 defect 2) has ~1.0 n-gram
+    uniqueness, so the repetition gate cannot see it. Same verdict path, but its own
+    lower length floor: vocabulary abandonment is the stronger signal, and the reported
+    incident cascade was 12,657 chars (below the 16k repetition floor). Only a reply
+    that abandons its opening vocabulary outright trips it.
+    """
+    if not final_response:
+        return False
+    if len(final_response) >= STOP_PATH_MIN_CHARS and is_runaway_repetition(final_response):
+        return True
+    return len(final_response) >= CASCADE_MIN_CHARS and is_semantic_cascade(final_response)
 
 
 def finish_text_response(
@@ -270,16 +295,9 @@ def finish_text_response(
 
     final_response = agent._strip_think_blocks(final_response).strip()
 
-    # A provider may end a degenerate loop normally with finish_reason="stop" instead of
-    # exhausting its output cap (#100716). Check every completed visible text response before
-    # any verify/kanban interim emission or durable transcript write.
-    # Runaway scale and shape only: a completed answer the user asked to be repetitive is
-    # delivered, unlike a length-truncated fragment that burned the whole budget.
-    if (
-        final_response
-        and len(final_response) >= STOP_PATH_MIN_CHARS
-        and is_runaway_repetition(final_response)
-    ):
+    # Check every completed visible text response before any verify/kanban interim
+    # emission or durable transcript write.
+    if _runaway_response_verdict(final_response):
         line, user_response, error = _REPETITION_STOPPED
         agent._vprint(f"{agent.log_prefix}{line}", force=True, diagnostic=True)
         agent._cleanup_task_resources(effective_task_id)

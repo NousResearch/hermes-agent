@@ -103,20 +103,29 @@ function browserTabMenuPrefix(tabId: string) {
  *  cross-session workspace, everything else belongs to the session that
  *  opened it (#73890). URL tabs keep their browser rows below it. */
 function previewTabMenuPrefix(tabId: string) {
-  const pinned = Boolean($previewTabs.get().find(tab => tab.id === tabId)?.pinned)
   const browserRows = browserTabMenuPrefix(tabId)
 
-  return (kit: MenuKit) => (
-    <>
-      {renderActionItem(kit, {
-        icon: pinned ? 'pinned' : 'pin',
-        key: 'pin',
-        label: translateNow(pinned ? 'preview.unpin' : 'preview.pin'),
-        onSelect: () => setPreviewTabPinned(tabId, !pinned)
-      })}
-      {browserRows?.(kit) ?? null}
-    </>
-  )
+  // Pin state is read when the menu renders and again on select, never at
+  // registration: the mirror keeps a same-title registration (and so this
+  // closure) for the tab's whole life, so a captured flag goes stale after the
+  // first toggle and the row keeps offering — and re-applying — the same pin.
+  const isPinned = () => Boolean($previewTabs.get().find(tab => tab.id === tabId)?.pinned)
+
+  return (kit: MenuKit) => {
+    const pinned = isPinned()
+
+    return (
+      <>
+        {renderActionItem(kit, {
+          icon: pinned ? 'pinned' : 'pin',
+          key: 'pin',
+          label: translateNow(pinned ? 'preview.unpin' : 'preview.pin'),
+          onSelect: () => setPreviewTabPinned(tabId, !isPinned())
+        })}
+        {browserRows?.(kit) ?? null}
+      </>
+    )
+  }
 }
 
 /** Tab title. A URL tab is titled by the CONTRIBUTION as the surface — see

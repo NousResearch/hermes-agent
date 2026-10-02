@@ -74,6 +74,7 @@ def mock_pyright(monkeypatch, tmp_path):
     repo = tmp_path / "repo"
     repo.mkdir()
     (repo / ".git").mkdir()
+    (repo / ".git" / "HEAD").write_text("ref: refs/heads/main\n", encoding="utf-8")
     (repo / "pyproject.toml").write_text("")  # so pyright's root resolver finds it
     monkeypatch.chdir(str(repo))
     gen = _install_mock_server(monkeypatch, "errors", "pyright")
@@ -97,6 +98,7 @@ def mock_pyright_silent(monkeypatch, tmp_path):
     repo = tmp_path / "repo"
     repo.mkdir()
     (repo / ".git").mkdir()
+    (repo / ".git" / "HEAD").write_text("ref: refs/heads/main\n", encoding="utf-8")
     (repo / "pyproject.toml").write_text("")
     monkeypatch.chdir(str(repo))
     gen = _install_mock_server(monkeypatch, "silent", "pyright")
@@ -176,6 +178,7 @@ def test_service_replaces_client_after_reader_failure(
     repo = tmp_path / "repo"
     repo.mkdir()
     (repo / ".git").mkdir()
+    (repo / ".git" / "HEAD").write_text("ref: refs/heads/main\n", encoding="utf-8")
     (repo / "pyproject.toml").write_text("")
     source = repo / "x.py"
     source.write_text("print('hi')\n")

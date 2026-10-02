@@ -42,9 +42,11 @@ class ConfigProviderRef(OpenModel):
 class ConfigGetResult(Result):
     """Union of every getter's payload: ``value`` for the simple words, ``config`` for ``full``,
     ``mtime`` / ``mcp_rev`` for the poller, ``model`` / ``provider`` / ``providers`` for ``provider``,
-    ``home`` / ``display`` for ``profile``, ``cwd`` / ``branch`` for ``project``, ``prompt``."""
+    ``home`` / ``display`` for ``profile``, ``cwd`` / ``branch`` for ``project``, ``prompt``.
+    ``value`` is also a ``{id: bool}`` / ``{id: [combo, ...]}`` object for
+    ``desktop.pluginDecisions`` / ``desktop.keybinds`` (desktop settings server mirror)."""
 
-    value: str | None = None
+    value: str | dict[str, JsonValue] | None = None
     display: str | None = None
     tool_progress: str | None = None
     model: str | None = None
@@ -88,10 +90,12 @@ class ConfigSetResult(Result):
     """``{key, value}`` plus the setter's extras: model switches add ``warning`` /
     ``confirm_required`` / ``confirm_message`` / ``scope`` / ``deferred``; ``focus`` adds
     ``tool_progress``; ``cwd`` adds ``cwd`` / ``branch``; ``personality`` adds ``history_reset`` /
-    ``info``; ``yolo`` reports its ``scope``. ``value`` is a bool only for the display toggles."""
+    ``info``; ``yolo`` reports its ``scope``. ``value`` is a bool only for the display toggles, or
+    a ``{id: bool}`` / ``{id: [combo, ...]}`` object for ``desktop.pluginDecisions`` /
+    ``desktop.keybinds`` (desktop settings server mirror)."""
 
     key: str
-    value: str | bool | None = None
+    value: str | bool | dict[str, JsonValue] | None = None
     warning: str | None = None
     confirm_required: bool | None = None
     confirm_message: str | None = None

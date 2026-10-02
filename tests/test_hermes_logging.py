@@ -335,6 +335,48 @@ class TestSetupLogging:
         # No "--- Logging error ---" FileNotFoundError loop on stderr.
         assert "FileNotFoundError" not in capsys.readouterr().err
 
+    @pytest.mark.parametrize("removal", ["tombstone", "rmtree"])
+    def test_out_of_band_profile_delete_releases_routed_handler(self, hermes_home, capsys, removal):
+        """A CLI delete tombstones then removes the home behind a running serve: the router must
+        stop writing there at either step and close the stale file, like an in-process delete."""
+        import shutil
+
+        from hermes_constants import (
+            mark_named_profile_deleted, reset_hermes_home_override, set_hermes_home_override,
+        )
+
+        profile_home = (hermes_home / "profiles" / "worker").resolve()
+        profile_home.mkdir(parents=True)
+        hermes_logging.setup_logging(hermes_home=hermes_home)
+        assert hermes_logging.enable_profile_log_routing([hermes_home, profile_home]) is True
+        logger = logging.getLogger("cron.scheduler.out-of-band-delete-test")
+
+        def emit(message):
+            token = set_hermes_home_override(profile_home)
+            try:
+                logger.warning(message)
+            finally:
+                reset_hermes_home_override(token)
+            hermes_logging.flush_log_queue()
+
+        emit("before delete")
+        routed = [h._profile_handlers[profile_home] for h in hermes_logging._queued_file_handlers
+                  if isinstance(h, hermes_logging._ProfileRoutingFileHandler)]
+        assert routed
+        mark_named_profile_deleted(profile_home)
+        if removal == "rmtree":
+            shutil.rmtree(profile_home)
+        capsys.readouterr()
+        for i in range(3):
+            emit(f"after delete {i}")
+
+        assert "Logging error" not in capsys.readouterr().err
+        assert all(h.stream is None or h.stream.closed for h in routed), "stale profile log fd kept open"
+        default_log = (hermes_home / "logs" / "agent.log").read_text(encoding="utf-8-sig")
+        assert all(f"after delete {i}" in default_log for i in range(3))
+        profile_log = profile_home / "logs" / "agent.log"
+        assert not profile_log.exists() or "after delete" not in profile_log.read_text(encoding="utf-8-sig")
+
     def test_explicit_params_override_config(self, hermes_home):
         """Explicit function params take precedence over config.yaml."""
         import hermes_yaml as yaml

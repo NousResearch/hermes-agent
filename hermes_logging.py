@@ -19,7 +19,9 @@ from logging.handlers import QueueHandler, QueueListener
 from pathlib import Path
 from typing import Optional, Sequence
 
-from hermes_constants import get_config_path, get_hermes_home, mkdir_under_hermes_home
+from hermes_constants import (
+    get_config_path, get_hermes_home, mkdir_under_hermes_home, named_profile_is_deleted,
+)
 
 # setup_logging() is idempotent: a second call is a no-op unless ``force=True``.
 _logging_initialized = False
@@ -609,18 +611,17 @@ class _ProfileRoutingFileHandler(logging.Handler):
             candidate = Path(raw_home).expanduser().resolve()
         except (TypeError, ValueError, OSError):
             candidate = self._default_home
-        if (
-            candidate != self._default_home
-            and candidate in self._profile_homes
-            and not candidate.is_dir()
-        ):
-            # The profile was deleted underneath this long-lived process — the
-            # startup ``_profile_homes`` snapshot is static, so its handler would
-            # retry (and stderr-spam) the vanished logs/ path on every record
-            # (#103777). Fall back to the default home; mirrors the cron
-            # scheduler's ``_existing_profile_homes()`` is_dir() filter.
+        if candidate == self._default_home or candidate not in self._profile_homes:
             return self._default_home
-        return candidate if candidate in self._profile_homes else self._default_home
+        if not candidate.is_dir() or named_profile_is_deleted(candidate):
+            # Deleted out of band (CLI ``hermes profile delete`` while this process runs; it
+            # tombstones before rmtree). The startup snapshot still names it, so its handler would
+            # retry the vanished logs/ path on every record (#103777). Release it the way an
+            # in-process delete does: closes the stale fd and drops it from the routing set, so
+            # later records for it skip this check and fall back to the default home.
+            self.release_profile(candidate)
+            return self._default_home
+        return candidate
 
     def _handler_for_home(self, home: Path) -> _ManagedRotatingFileHandler:
         with self._profile_handlers_lock:

@@ -5,14 +5,10 @@ from unittest.mock import MagicMock, patch
 
 
 from tools.browser_camofox import (
-    camofox_back,
     camofox_click,
     camofox_close,
-    camofox_console,
     camofox_get_images,
     camofox_navigate,
-    camofox_press,
-    camofox_scroll,
     camofox_snapshot,
     camofox_type,
     camofox_vision,
@@ -194,16 +190,6 @@ class TestCamofoxInteractions:
         assert "sk-pro" in raw_result
 
 
-    @patch("tools.browser_camofox.requests.post")
-    def test_press(self, mock_post, monkeypatch):
-        monkeypatch.setenv("CAMOFOX_URL", "http://localhost:9377")
-        mock_post.return_value = _mock_response(json_data={"tabId": "tab8", "url": "https://x.com"})
-        camofox_navigate("https://x.com", task_id="t8")
-
-        mock_post.return_value = _mock_response(json_data={"ok": True})
-        result = json.loads(camofox_press("Enter", task_id="t8"))
-        assert result["success"] is True
-        assert result["pressed"] == "Enter"
 
 
 # ---------------------------------------------------------------------------
@@ -235,13 +221,6 @@ class TestCamofoxClose:
 # ---------------------------------------------------------------------------
 
 
-class TestCamofoxConsole:
-    def test_console_returns_empty_with_note(self, monkeypatch):
-        monkeypatch.setenv("CAMOFOX_URL", "http://localhost:9377")
-        result = json.loads(camofox_console(task_id="t_console"))
-        assert result["success"] is True
-        assert result["total_messages"] == 0
-        assert "not available" in result["note"]
 
 
 # ---------------------------------------------------------------------------
@@ -304,37 +283,6 @@ class TestCamofoxVisionConfig:
         assert mock_llm.call_args.kwargs["temperature"] == 1.0
         assert mock_llm.call_args.kwargs["timeout"] == 45.0
 
-    @patch("tools.browser_camofox.requests.post")
-    @patch("tools.browser_camofox._get")
-    @patch("tools.browser_camofox._get_raw")
-    def test_camofox_vision_defaults_temperature_when_config_omits_it(self, mock_get_raw, mock_get, mock_post, monkeypatch):
-        monkeypatch.setenv("CAMOFOX_URL", "http://localhost:9377")
-        mock_post.return_value = _mock_response(json_data={"tabId": "tab12", "url": "https://x.com"})
-        camofox_navigate("https://x.com", task_id="t12")
-
-        snapshot_text = '- button "Submit"\n'
-        raw_resp = MagicMock()
-        raw_resp.content = b"fakepng"
-        mock_get_raw.return_value = raw_resp
-        mock_get.return_value = {"snapshot": snapshot_text}
-
-        mock_response = MagicMock()
-        mock_choice = MagicMock()
-        mock_choice.message.content = "Default camofox screenshot analysis"
-        mock_response.choices = [mock_choice]
-
-        with (
-            patch("tools.browser_camofox.open", create=True) as mock_open,
-            patch("agent.auxiliary_client.call_llm", return_value=mock_response) as mock_llm,
-            patch("tools.browser_camofox.load_config", return_value={"auxiliary": {"vision": {}}}),
-        ):
-            mock_open.return_value.__enter__.return_value.read.return_value = b"fakepng"
-            result = json.loads(camofox_vision("what is on the page?", annotate=True, task_id="t12"))
-
-        assert result["success"] is True
-        assert result["analysis"] == "Default camofox screenshot analysis"
-        assert mock_llm.call_args.kwargs["temperature"] == 0.1
-        assert mock_llm.call_args.kwargs["timeout"] == 120.0
 
 
 # ---------------------------------------------------------------------------

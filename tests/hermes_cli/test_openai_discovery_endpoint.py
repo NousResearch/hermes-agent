@@ -134,14 +134,15 @@ class TestRegionalCatalogFiltering:
     def test_official_hosts_intersect_with_curated(self, monkeypatch, base):
         monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
         monkeypatch.setenv("OPENAI_BASE_URL", base)
+        curated = models_mod._PROVIDER_MODELS["openai-api"][0]
         with mock_patch.object(
-            models_mod, "fetch_api_models", return_value=list(self._RAW_DUMP)
+            models_mod, "fetch_api_models", return_value=[curated, *self._RAW_DUMP]
         ):
             ids = models_mod.provider_model_ids("openai-api", force_refresh=True)
         assert "whisper-1" not in ids
         assert "tts-1" not in ids
         assert "text-embedding-ada-002" not in ids
-        assert "gpt-5.6-terra" in ids
+        assert curated in ids
 
     def test_custom_proxy_keeps_live_list_verbatim(self, monkeypatch):
         monkeypatch.setenv("OPENAI_API_KEY", "sk-test")

@@ -6,17 +6,7 @@
 name: provider-usage
 repo: https://github.com/PhoeniXAbhisheK/hermes-plugin-provider-usage
 sha: "753dfbd35c9ed8fec3127ce48e5521d986d3aabe"   # tag v0.2.0
-description: >-
-  Per-provider quota and balance readout in the Hermes desktop status bar.
-  Per-provider chips with eye toggles, a popover with every quota window, reset times,
-  balance and key-cap amounts, near-limit amber tint, a desktop notification per
-  threshold crossing, and burn-rate projections (ETA to reset or depletion).
-  Providers: OpenCode, OpenAI Codex, OpenRouter, plus Anthropic, GitHub Copilot, Nous,
-  Z.AI, Kimi, MiniMax and DeepSeek when configured. Disclosure: credentials are resolved
-  read-only (Hermes account-usage helpers for Codex/Claude/Copilot/Nous, else the
-  provider env key or its CLI auth file) and never serialized; only the provider
-  endpoints listed in the README are called; the GitHub Copilot check presents the
-  VS Code / Copilot client identity. No subprocesses, no telemetry, no self-updater.
+description: "Per-provider quota and balance readout in the Hermes desktop status bar. Per-provider chips with eye toggles, a popover with every quota window, reset times, balance and key-cap amounts, near-limit amber tint, a desktop notification per threshold crossing, and burn-rate projections (ETA to reset or depletion). Providers: OpenCode, OpenAI Codex, OpenRouter, plus Anthropic, GitHub Copilot, Nous, Z.AI, Kimi, MiniMax and DeepSeek when configured. Disclosure: credentials are resolved read-only (Hermes account-usage helpers for Codex/Claude/Copilot/Nous, else the provider env key or its CLI auth file) and never serialized; only the provider endpoints listed in the README are called; the GitHub Copilot check presents the VS Code / Copilot client identity. No subprocesses, no telemetry, no self-updater. Disclosure — resolves provider credentials read-only (Hermes account-usage helpers, provider env keys, else the vendor CLI login files ~/.codex/auth.json, ~/.claude/.credentials.json and ~/.local/share/opencode/auth.json) and sends each only to that provider's usage endpoint; the GitHub Copilot check presents the VS Code / Copilot client identity."
 maintainer: PhoeniXAbhisheK
 tier: community
 category: desktop

@@ -179,11 +179,13 @@ gateway:
     label_normal: "NORMALE"
     status_fast: "veloce"
     status_normal: "normale"
-    picker_title: "⚡ **Priority Processing**\\n\\nModalità attuale: `{mode}`\\n\\nScegli un\\'opzione:"
+    picker_title: "⚡ **Priority Processing**\n\nModalità attuale: `{mode}`\n\nScegli un\\'opzione:"
     choice_fast: "fast — Priority Processing attivo"
     choice_normal: "normal — elaborazione standard"
     choice_auto: "auto — veloce nei primi secondi di ogni turno"
     choice_cold: "cold — veloce solo nel primo turno di una sessione"
+    choice_ultrafast: "ultrafast — OpenAI Ultrafast (GPT-6 Astra, prezzo x6)"
+    ultrafast_not_supported: "⚡ Ultrafast è disponibile solo per GPT-6 Astra (modello attuale: `{model}`)."
   footer:
     status: "📎 Footer di runtime: **{state}**\nCampi: `{fields}`\nPiattaforma: `{platform}`"
     usage: "Uso: `/footer [on|off|status]`"
@@ -280,7 +282,7 @@ gateway:
     reset_global_unsupported: "⚠️ `/reasoning reset --global` non è supportato. Usa `/reasoning <level> --global` per cambiare il valore predefinito globale."
     reset_done: "🧠 ✓ Override di reasoning della sessione cancellato; ripristino della configurazione globale."
     unknown_arg: "⚠️ Argomento sconosciuto: `{arg}`\n\n**Livelli validi:** none, minimal, low, medium, high, xhigh, max, ultra\n**Visualizzazione:** show, hide\n**Persistenza:** aggiungi `--global` per salvare oltre questa sessione"
-    picker_title: "🧠 **Impostazioni di reasoning**\\n\\n**Sforzo:** `{level}`\\n**Ambito:** {scope}\\n**Visualizzazione:** {display}\\n\\nScegli un\\'opzione:"
+    picker_title: "🧠 **Impostazioni di reasoning**\n\n**Sforzo:** `{level}`\n**Ambito:** {scope}\n**Visualizzazione:** {display}\n\nScegli un\\'opzione:"
     choice_none: "none — disattiva il reasoning"
     choice_reset: "reset — cancella l'override di sessione"
     choice_show: "mostra il reasoning nelle risposte"
@@ -653,6 +655,7 @@ gateway:
     cancelled: "↩️ Chiarimento annullato — il tuo messaggio verrà gestito come follow-up."
     expired: "⏳ Questa richiesta è scaduta — invia una nuova richiesta."
     native_stream_placeholder: "💬 In attesa della tua scelta..."
+    skip_hint: 'Rispondi "skip" per saltare questa domanda.'
   errors:
     rate_limited: "⏱️ Il servizio del modello AI sta limitando le richieste. Attendi un momento, poi usa /retry."
     auth_failed: "⚠️ Accesso al servizio del modello AI non riuscito. Usa /login per accedere di nuovo, oppure chiedi a chi gestisce questo bot di eseguire `hermes doctor` sull'host."
@@ -1597,7 +1600,7 @@ slash:
   reasoning:
     description: "Gestisci lo sforzo di ragionamento e la sua visualizzazione"
   fast:
-    description: "Modalità veloce — OpenAI Priority Processing / Anthropic Fast Mode (normal/fast/auto/cold)"
+    description: "Modalità veloce — OpenAI Priority Processing / Anthropic Fast Mode (normal/fast/auto/cold/ultrafast)"
   skin:
     description: "Mostra o cambia la skin/tema di visualizzazione"
   indicator:
@@ -2032,7 +2035,6 @@ cli:
     clarify_other_type_below: "Altro (digita sotto)"
     clarify_other_type_answer: "Altro (digita la tua risposta)"
     clarify_guidance: "Digita la tua risposta nel prompt qui sotto, poi premi Invio."
-    clarify_question_truncated: "… (domanda troncata)"
     picker_title_provider: "⚙ Selettore modelli — Scegli il provider"
     picker_provider_row_one: "{name} ({count} modello)"
     picker_provider_row_other: "{name} ({count} modelli)"
@@ -2077,7 +2079,6 @@ cli:
     hint_vault_username: "visibile mentre digiti · Invio per continuare"
     hint_clarify_freetext: "digita la tua risposta e premi Invio"
     hint_clarify_batch: "↑/↓ per selezionare, Invio per bloccare, Tab domanda successiva"
-    hint_clarify_choice: "↑/↓ per selezionare, Invio per confermare"
     hint_input_disabled: "input temporaneamente disattivato"
     hint_input_queues: "l'input resta attivo; Invio mette in coda"
     hint_command_running: "{frame} comando in corso · {detail}"
@@ -2260,7 +2261,6 @@ cli:
   clarify:
     bell_context: "chiarimento"
     label: "Chiarimento"
-    timed_out_agent_decides: "(chiarimento scaduto dopo {timeout}s — deciderà l'agente)"
     timed_out_locked_answers: "(chiarimento scaduto dopo {timeout}s — restituite le risposte bloccate)"
   connect:
     bell_context: "configurazione connessione"
@@ -2653,7 +2653,9 @@ cli:
       feature_generic: "Modalità veloce"
       feature_anthropic: "Anthropic Fast Mode"
       feature_openai: "Priority Processing"
-      usage: "Uso: /fast [normal|fast|auto|cold|status] [--global]"
+      feature_ultrafast: "OpenAI Ultrafast"
+      ultrafast_not_supported: "(._.) Ultrafast è disponibile solo per GPT-6 Astra (modello attuale: {model})."
+      usage: "Uso: /fast [normal|fast|auto|cold|ultrafast|status] [--global]"
       status: "{feature}: {status}"
       set_to: "✓ {feature} impostato su {value} {scope}"
     hatch:
@@ -3285,6 +3287,7 @@ cli:
     shallow_clone_keeping: "⚠ Clone shallow — impossibile verificare lo stato del push, mantengo: {path}"
     next_session_deepens: "La prossima sessione `hermes -w` approfondisce il clone ed elimina automaticamente i worktree già uniti."
     unpushed_keeping: "⚠ Il worktree ha commit non inviati, mantengo: {path}"
+    uncommitted_keeping: "⚠ Il worktree ha modifiche non committate, mantengo: {path}"
     clean_up_manually: "Per pulire manualmente: git worktree remove --force {path}"
     cleaned_up: "✓ Worktree pulito: {path}"
 display:

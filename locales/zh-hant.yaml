@@ -179,11 +179,13 @@ gateway:
     label_normal: "一般"
     status_fast: "快速"
     status_normal: "一般"
-    picker_title: "⚡ **Priority Processing**\\n\\n目前模式：`{mode}`\\n\\n請選擇："
+    picker_title: "⚡ **Priority Processing**\n\n目前模式：`{mode}`\n\n請選擇："
     choice_fast: "fast — 開啟 Priority Processing"
     choice_normal: "normal — 標準處理"
     choice_auto: "auto — 每輪的前幾秒快速"
     choice_cold: "cold — 僅會話的第一輪快速"
+    choice_ultrafast: "ultrafast — OpenAI Ultrafast（GPT-6 Astra，6 倍價格）"
+    ultrafast_not_supported: "⚡ Ultrafast 僅適用於 GPT-6 Astra（目前模型：`{model}`）。"
   footer:
     status: "📎 執行階段頁尾：**{state}**\n欄位：`{fields}`\n平台：`{platform}`"
     usage: "用法：`/footer [on|off|status]`"
@@ -280,7 +282,7 @@ gateway:
     reset_global_unsupported: "⚠️ 不支援 `/reasoning reset --global`。請使用 `/reasoning <level> --global` 變更全域預設值。"
     reset_done: "🧠 ✓ 已清除本工作階段的推理覆寫；回退至全域設定。"
     unknown_arg: "⚠️ 未知參數：`{arg}`\n\n**有效級別：** none, minimal, low, medium, high, xhigh, max, ultra\n**顯示：** show, hide\n**持久化：** 加上 `--global` 可跨工作階段儲存"
-    picker_title: "🧠 **推理設定**\\n\\n**強度：** `{level}`\\n**範圍：** {scope}\\n**顯示：** {display}\\n\\n請選擇："
+    picker_title: "🧠 **推理設定**\n\n**強度：** `{level}`\n**範圍：** {scope}\n**顯示：** {display}\n\n請選擇："
     choice_none: "none — 停用推理"
     choice_reset: "reset — 清除工作階段覆寫"
     choice_show: "在回覆中顯示推理"
@@ -653,6 +655,7 @@ gateway:
     cancelled: "↩️ 已取消釐清 — 你的訊息將作為後續訊息處理。"
     expired: "⏳ 此提問已逾期 — 請重新送出請求。"
     native_stream_placeholder: "💬 等待你的選擇..."
+    skip_hint: '回覆「skip」即可略過此問題。'
   errors:
     rate_limited: "⏱️ AI 模型服務正在限制請求速率。請稍候，再使用 /retry。"
     auth_failed: "⚠️ 登入 AI 模型服務失敗。請使用 /login 重新登入，或請這個 bot 的管理者在主機上執行 `hermes doctor`。"
@@ -2032,7 +2035,6 @@ cli:
     clarify_other_type_below: "其他（在下方輸入）"
     clarify_other_type_answer: "其他（輸入你的答案）"
     clarify_guidance: "在下方的輸入欄輸入答案，然後按 Enter。"
-    clarify_question_truncated: "…（問題已截斷）"
     picker_title_provider: "⚙ 模型選擇器 — 選擇提供方"
     picker_provider_row_one: "{name}（{count} 個模型）"
     picker_provider_row_other: "{name}（{count} 個模型）"
@@ -2077,7 +2079,6 @@ cli:
     hint_vault_username: "輸入內容會顯示 · Enter 繼續"
     hint_clarify_freetext: "輸入答案並按 Enter"
     hint_clarify_batch: "↑/↓ 選擇，Enter 鎖定，Tab 下一題"
-    hint_clarify_choice: "↑/↓ 選擇，Enter 確認"
     hint_input_disabled: "輸入暫時停用"
     hint_input_queues: "仍可輸入；Enter 排入佇列"
     hint_command_running: "{frame} 指令執行中 · {detail}"
@@ -2260,7 +2261,6 @@ cli:
   clarify:
     bell_context: "澄清"
     label: "澄清"
-    timed_out_agent_decides: "（澄清已在 {timeout} 秒後逾時 — 由代理決定）"
     timed_out_locked_answers: "（澄清已在 {timeout} 秒後逾時 — 已回傳鎖定的答案）"
   connect:
     bell_context: "連線設定"
@@ -2653,7 +2653,9 @@ cli:
       feature_generic: "快速模式"
       feature_anthropic: "Anthropic Fast Mode"
       feature_openai: "Priority Processing"
-      usage: "用法：/fast [normal|fast|auto|cold|status] [--global]"
+      feature_ultrafast: "OpenAI Ultrafast"
+      ultrafast_not_supported: "(._.) Ultrafast 僅適用於 GPT-6 Astra（目前模型：{model}）。"
+      usage: "用法：/fast [normal|fast|auto|cold|ultrafast|status] [--global]"
       status: "{feature}：{status}"
       set_to: "✓ {feature} 已設為 {value} {scope}"
     hatch:
@@ -3285,6 +3287,7 @@ cli:
     shallow_clone_keeping: "⚠ 淺層複製 — 無法確認推送狀態，保留：{path}"
     next_session_deepens: "下一次 `hermes -w` 工作階段會加深複製並自動清理已合併的工作樹。"
     unpushed_keeping: "⚠ 工作樹有未推送的提交，保留：{path}"
+    uncommitted_keeping: "⚠ 工作樹有未提交的變更，保留：{path}"
     clean_up_manually: "手動清理方式：git worktree remove --force {path}"
     cleaned_up: "✓ 工作樹已清理：{path}"
 display:

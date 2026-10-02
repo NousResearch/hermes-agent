@@ -21,6 +21,7 @@ from typing import List, Optional, Tuple
 from hermes_state_holders import read_only_db_uri
 from utils import (
     _preserve_file_mode, _preserve_file_owner, _restore_file_mode, _restore_file_owner, atomic_replace,
+    mkstemp_beside,
 )
 
 logger = logging.getLogger(__name__)
@@ -345,9 +346,7 @@ def _extract_member_atomically(
 
     # Truncate the stem: mkstemp adds ~16 characters, and a member already near
     # NAME_MAX would otherwise fail here on a write that used to succeed.
-    fd, tmp_name = tempfile.mkstemp(
-        dir=str(target.parent), prefix=f".{target.name[:80]}.", suffix=".partial"
-    )
+    fd, tmp_name = mkstemp_beside(target, prefix=f".{target.name[:80]}.", suffix=".partial")
     try:
         with os.fdopen(fd, "wb") as dst:
             if mode is not None:

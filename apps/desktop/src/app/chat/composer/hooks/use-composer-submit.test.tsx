@@ -5,7 +5,11 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import * as sessionOwnerUtils from '@/app/session/hooks/use-session-actions/utils'
 import { PaneVisibleContext } from '@/components/pane-shell/pane-visibility'
 import { $clarifyRequests } from '@/store/clarify'
-import type { ComposerAttachment } from '@/store/composer'
+import {
+  clearComposerTerminalSelections,
+  type ComposerAttachment,
+  setComposerTerminalSelection
+} from '@/store/composer'
 import { clearQueuedPrompts, getQueuedPrompts } from '@/store/composer-queue'
 import { $connectionRequests, type ConnectionRequest } from '@/store/connection-request'
 import { $gateway } from '@/store/gateway'
@@ -28,7 +32,6 @@ interface SubmitHarnessOptions {
   attachments?: ComposerAttachment[]
   busy?: boolean
   busyInputMode?: BusyInputMode
-  compacting?: boolean
   inputDisabled?: boolean
   scopeTarget?: ComposerTarget
   sessionKey?: string | null
@@ -45,7 +48,6 @@ function renderSubmitHook({
   attachments = [],
   busy = false,
   busyInputMode = 'interrupt',
-  compacting = false,
   inputDisabled = false,
   scopeTarget = 'main',
   sessionKey = 'stored-session',
@@ -57,6 +59,7 @@ function renderSubmitHook({
 }: SubmitHarnessOptions = {}) {
   const resolvedSurfaceId = surfaceId === undefined ? `test-surface-${++surfaceSequence}` : surfaceId
   const draftRef = { current: text }
+  const draftScopeRef = { current: sessionKey }
   const editor = window.document.createElement('div')
   editor.dataset.slot = 'composer-rich-input'
   editor.textContent = text
@@ -110,9 +113,9 @@ function renderSubmitHook({
         attachments,
         busy,
         busyInputMode,
-        compacting,
         clearDraft,
         disabled: false,
+        draftScopeRef,
         draftRef,
         drainNextQueued: vi.fn(async () => false),
         editorRef,
@@ -349,6 +352,7 @@ describe('useComposerSubmit busy-turn routing', () => {
     cleanup()
     clearQueuedPrompts('stored-session')
     vi.restoreAllMocks()
+    clearComposerTerminalSelections()
   })
 
   it('routes a plain busy Enter through queue mode', () => {
@@ -545,23 +549,6 @@ describe('useComposerSubmit busy-turn routing', () => {
     clearQueuedPrompts('stored-session')
   })
 
-  it('queues a plain-text follow-up while the active turn is compacting', () => {
-    const { hook, onCancel, onSteer, onSubmit, queueCurrentDraft } = renderSubmitHook({
-      busy: true,
-      compacting: true,
-      text: 'wait for the summary'
-    })
-
-    act(() => {
-      hook.result.current.submitDraft()
-    })
-
-    expect(queueCurrentDraft).toHaveBeenCalledTimes(1)
-    expect(onSteer).not.toHaveBeenCalled()
-    expect(onSubmit).not.toHaveBeenCalled()
-    expect(onCancel).not.toHaveBeenCalled()
-  })
-
   it('runs slash commands immediately while busy', async () => {
     const { clearDraft, hook, onCancel, onSteer, onSubmit, queueCurrentDraft } = renderSubmitHook({
       busy: true,
@@ -630,11 +617,76 @@ describe('useComposerSubmit busy-turn routing', () => {
     expect(queueCurrentDraft).not.toHaveBeenCalled()
     expect(onCancel).not.toHaveBeenCalled()
   })
+
+  it('threads the loaded composer scope through onSubmit for the #59305 submit-time guard', async () => {
+    const { hook, onSubmit } = renderSubmitHook({ text: 'hello' })
+
+    act(() => {
+      hook.result.current.submitDraft()
+    })
+
+    await waitFor(() =>
+      expect(onSubmit).toHaveBeenCalledWith('hello', expect.objectContaining({ composerScope: 'stored-session' }))
+    )
+  })
+
+  it('leaves idle @terminal chips for the submit transport freeze (does not expand here)', async () => {
+    setComposerTerminalSelection('zsh:23-58', 'selected terminal lines')
+
+    const { hook, onSteer, onSubmit, queueCurrentDraft } = renderSubmitHook({
+      text: 'look at @terminal:`zsh:23-58`'
+    })
+
+    act(() => {
+      hook.result.current.submitDraft()
+    })
+
+    await waitFor(() =>
+      expect(onSubmit).toHaveBeenCalledWith('look at @terminal:`zsh:23-58`', {
+        attachments: [],
+        composerScope: 'stored-session'
+      })
+    )
+    expect(onSteer).not.toHaveBeenCalled()
+    expect(queueCurrentDraft).not.toHaveBeenCalled()
+  })
+
+  it('expands @terminal selection chips before steering a busy turn', async () => {
+    setComposerTerminalSelection('zsh:23-58', 'selected terminal lines')
+
+    const { hook, onSteer, queueCurrentDraft } = renderSubmitHook({
+      busy: true,
+      text: 'look at @terminal:`zsh:23-58`'
+    })
+
+    act(() => {
+      hook.result.current.submitDraft()
+    })
+
+    await waitFor(() => expect(onSteer).toHaveBeenCalledWith('```terminal\nselected terminal lines\n```\n\nlook at'))
+    expect(queueCurrentDraft).not.toHaveBeenCalled()
+  })
+
+  it('refuses to steer when a restored @terminal chip has no selection payload', () => {
+    clearComposerTerminalSelections()
+
+    const { hook, onSteer, queueCurrentDraft } = renderSubmitHook({
+      busy: true,
+      text: 'look at @terminal:`zsh:23-58`'
+    })
+
+    act(() => {
+      hook.result.current.submitDraft()
+    })
+
+    expect(onSteer).not.toHaveBeenCalled()
+    expect(queueCurrentDraft).not.toHaveBeenCalled()
+  })
 })
 
 describe('useComposerSubmit with a clarify parked on the session', () => {
   // The clarify is a live server→client request: skipping it answers that
-  // request frame (`{ answer: '' }`), not a `clarify.respond` RPC.
+  // request frame (`{}`), not a `clarify.respond` RPC.
   const respond = vi.fn()
 
   const parkClarify = (sessionId: string) => {
@@ -644,9 +696,7 @@ describe('useComposerSubmit with a clarify parked on the session', () => {
     $clarifyRequests.set({
       [sessionId]: {
         requestId,
-        question: 'which one?',
-        choices: ['a', 'b'],
-        multiSelect: false,
+        questions: [{ choices: ['a', 'b'], multiSelect: false, qid: 'q0', question: 'which one?' }],
         sessionId
       }
     })
@@ -690,7 +740,7 @@ describe('useComposerSubmit with a clarify parked on the session', () => {
     })
 
     await waitFor(() => expect(onSubmit).toHaveBeenCalledWith('/status', expect.anything()))
-    expect(respond).toHaveBeenCalledWith({ answer: '' })
+    expect(respond).toHaveBeenCalledWith({})
     expect(hasOpenServerRequest('req-runtime-session')).toBe(false)
   })
 
@@ -702,7 +752,7 @@ describe('useComposerSubmit with a clarify parked on the session', () => {
       hook.result.current.submitDraft()
     })
 
-    await waitFor(() => expect(respond).toHaveBeenCalledWith({ answer: '' }))
+    await waitFor(() => expect(respond).toHaveBeenCalledWith({}))
     await waitFor(() =>
       expect(onSubmit).toHaveBeenCalledWith('actually do this instead', expect.objectContaining({ attachments: [] }))
     )
@@ -719,7 +769,7 @@ describe('useComposerSubmit with a clarify parked on the session', () => {
     })
 
     await waitFor(() => expect(onSteer).toHaveBeenCalledWith('change course'))
-    expect(respond).toHaveBeenCalledWith({ answer: '' })
+    expect(respond).toHaveBeenCalledWith({})
   })
 
   it('leaves the question alone for an empty Enter (Stop, not an answer)', () => {

@@ -83,7 +83,7 @@ export function ComposerControls({
   // Steer is just send: a payload keeps the Send affordance mid-turn. Stop
   // only when the composer is empty and a turn is running.
   const showStop = busy && !hasComposerPayload
-  const showQueueButton = busyAction !== 'queue' && busyAction !== 'stop' && hasComposerPayload
+  const showQueueButton = busy && busyAction !== 'queue' && busyAction !== 'stop' && hasComposerPayload
   const primaryActionLabel = busyAction === 'queue' ? c.queueMessage : c.send
   // The HUD is a Spotlight bar a few hundred pixels wide, so the four separate
   // voice toggles fold into one menu there and leave the row to the input. A

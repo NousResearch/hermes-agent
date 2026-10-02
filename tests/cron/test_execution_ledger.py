@@ -490,3 +490,27 @@ def test_job_listing_exposes_latest_execution(monkeypatch, tmp_path):
     listed = jobs.list_jobs(include_disabled=True)
     assert listed[0]["latest_execution"]["id"] == record["id"]
     assert listed[0]["latest_execution"]["status"] == "running"
+
+
+def test_history_orders_by_instant_across_dst_fall_back(monkeypatch, tmp_path):
+    """01:10-05:00 is 20 minutes after 01:50-04:00 but sorts first as text."""
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    executions = _point_ledger(monkeypatch, tmp_path)
+    new_york = ZoneInfo("America/New_York")
+    first_pass = datetime(2026, 11, 1, 1, 50, tzinfo=new_york, fold=0)
+    second_pass = datetime(2026, 11, 1, 1, 10, tzinfo=new_york, fold=1)
+    monkeypatch.setattr(executions, "_hermes_now", lambda: first_pass)
+    earlier = executions.create_execution("dst-job", source="builtin")
+    monkeypatch.setattr(executions, "_hermes_now", lambda: second_pass)
+    later = executions.create_execution("dst-job", source="builtin")
+    assert later["claimed_at"] < earlier["claimed_at"]
+
+    assert executions.latest_execution("dst-job")["id"] == later["id"]
+    assert executions.latest_executions(["dst-job"])["dst-job"]["id"] == later["id"]
+    assert [r["id"] for r in executions.list_executions(job_id="dst-job")] == [
+        later["id"], earlier["id"],
+    ]
+    page = executions.list_executions(job_id="dst-job", before_claimed_at=later["claimed_at"])
+    assert [r["id"] for r in page] == [earlier["id"]]

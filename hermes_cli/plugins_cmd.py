@@ -39,7 +39,7 @@ from hermes_cli.plugins_cmd_install import (  # noqa: F401
     _read_manifest_for_install, cmd_install, dashboard_install_plugin,
 )
 from hermes_cli.plugins_cmd_listing import (  # noqa: F401
-    _filter_plugin_entries, cmd_compat, cmd_list, cmd_show,
+    _filter_plugin_entries, cmd_list, cmd_show,
 )
 from hermes_cli.plugins_cmd_remove import (  # noqa: F401
     _remove_plugin_core, cmd_remove, dashboard_remove_user_plugin,
@@ -647,7 +647,8 @@ def cmd_enable(name: str, allow_tool_override: Optional[bool] = None) -> None:
         if plugin in LEGACY_RELAY_PLUGIN_KEYS:
             _fail(console, (
                 f"[red]Plugin '{plugin}' was removed.[/red] Relay lifecycle is owned "
-                f"by Hermes core; configure {RELAY_PLUGINS_CONFIG_ENV} instead."))
+                "by Hermes core; configure a standard user or system Relay plugins.toml, or use "
+                f"{RELAY_PLUGINS_CONFIG_ENV} for an explicit user-file override."))
 
     _refuse_legacy_relay(name)
     resolved = _resolve_plugin_key_and_source(name)
@@ -967,7 +968,8 @@ _PLUGIN_ACTIONS = {
         enable=_tri_state_flag(args, "enable", "no_enable"),
         ref=getattr(args, "ref", None),
         allow_removed=getattr(args, "allow_removed", False),
-        no_deps=getattr(args, "no_deps", False)),
+        no_deps=getattr(args, "no_deps", False),
+        yes_deps=getattr(args, "yes_deps", False)),
     "search": lambda args: _catalog().cmd_search(
         getattr(args, "term", "") or "", json_output=getattr(args, "json", False)),
     "browse": lambda args: _catalog().cmd_search(""),
@@ -989,7 +991,6 @@ _PLUGIN_ACTIONS = {
     "list": lambda args: cmd_list(args),
     "ls": lambda args: cmd_list(args),
     "doctor": lambda args: cmd_plugin_doctor(args.target, ci=getattr(args, "ci", False)),
-    "compat": lambda args: cmd_compat(args),
     "pack": _action_pack,
     "show": lambda args: cmd_show(args.name),
     "info": lambda args: _catalog().cmd_info(args.name),
@@ -1004,11 +1005,3 @@ def plugins_command(args) -> None:
     if handler is None:
         _fail(_console(), f"[red]Unknown plugins action: {action}[/red]")
     handler(args)
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-import importlib.metadata  # noqa: F401,E402
-# ---- END PLUGIN-COMPAT ----

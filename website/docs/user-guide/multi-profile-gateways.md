@@ -210,6 +210,9 @@ Parking does not delete the profile, its sessions, or its scheduled jobs.
 Without a running host it removes the marker and follows the normal start
 path; start the host from the default profile if prompted. `restart` unserves
 and serves the profile without writing a parked marker, re-reading its config.
+On a **parked** profile with no live per-profile gateway, `restart` behaves as
+`start`: it removes the marker and hot-serves the profile (a gateway started
+with `--force` beside the marker keeps its own restart instead).
 These operations do not terminate work already dispatched by a cron tick.
 
 The host also rescans every 30 seconds: adding the marker by hand unserves the
@@ -566,7 +569,7 @@ parent conversation.
 
 #### 5. One PID/lock and one status surface
 
-There is a single process-level PID and lock (the multiplexer, under the default home). `hermes status` on the default profile reports the multiplexer and lists the profiles it serves (`Serves: coder, research`). `hermes -p coder status` and `hermes -p coder gateway status` report "running via the default-profile multiplexer" instead of "stopped". The dashboard's `/api/status?profile=coder` / Channels page report the multiplexer as coder's running gateway, with coder's own adapters as its platforms. The single `gateway_state.json` lives under the default home: secondary adapters appear there as `<profile>:<platform>` entries beside `served_profiles`; no per-profile gateway status file is written.
+There is a single process-level PID and lock (the multiplexer, under the default home). `hermes status --full` on the default profile reports the multiplexer and lists the profiles it serves (`Serves: coder, research`). `hermes -p coder status` and `hermes -p coder gateway status` report "running via the default-profile multiplexer" instead of "stopped". The dashboard's `/api/status?profile=coder` / Channels page report the multiplexer as coder's running gateway, with coder's own adapters as its platforms. The single `gateway_state.json` lives under the default home: secondary adapters appear there as `<profile>:<platform>` entries beside `served_profiles`; no per-profile gateway status file is written.
 
 `hermes -p coder cron status` names the single host gateway and the profiles it serves — `Scheduler host: the host gateway (PID 4211) serving profiles default, coder` — then checks coder's own ticker heartbeat and last successful tick. A missing or stale heartbeat produces a warning rather than an unconditional running verdict. `cron list` and `cron create` also warn when a served profile has no fresh heartbeat. `cron status` adds tick-failure details that those lightweight checks do not read.
 
@@ -663,6 +666,7 @@ profile and never shares with the default or any sibling:
 |---|---|---|
 | Provider keys, bot tokens, `${VAR}` refs in `config.yaml` | The profile's own `.env` (its secret scope) | Unresolved / no adapter — never the default profile's value |
 | Authorization (`GATEWAY_ALLOW_ALL_USERS`, `GATEWAY_ALLOWED_USERS`, per-platform allowlists and allow-all opt-ins) | The owning profile's `.env` and `config.yaml` | Closed — a default-profile opt-in never opens a secondary's bot |
+| Slash-command gating (`allow_admin_from`, `user_allowed_commands`, `group_allow_admin_from`; see [Slash commands](../reference/slash-commands.md)) | The profile whose bot received the message — a secondary's own platform `extra` block governs its bots, not the default profile's | Fail closed: a served profile whose config the multiplexer has not loaded is gated with an **empty** admin list and no user-enabled commands, so only the always-allowed floor (`/help`, `/whoami`) runs — never the default profile's open policy |
 | HTTP endpoints (`/p/<profile>/api/...`, `/p/<profile>/webhooks/...`, platform event callbacks) | The named profile's `API_SERVER_KEY`, `profile:`-bound webhook routes, and its own adapter | `401`/`404`; delivery without an adapter is `502`/`503`, never another profile's bot |
 | Inbound-port platforms (`/p/<profile>/webhooks/twilio`, `/p/<profile>/line/webhook`, `/p/<profile>/api/messages`, …) | The named profile's own adapter and its secret (Twilio auth token, LINE channel secret, Teams app, BlueBubbles password, …); replies leave through that adapter | `401`/`403` on a wrong secret, `404` when the profile has no such adapter — never the default profile's adapter |
 | Adapter settings (`*_REQUIRE_MENTION`, `*_REACTIONS`, `*_ALLOW_BOTS`, `*_PROXY`, Discord `allow_mentions`, Matrix `allowed_users` / `ignore_user_patterns`, webhook host/port/URL, Matrix thread/session/E2EE policy, Discord backfill/attachment caps, Buzz reply mode, A2A agent card / public URL, WhatsApp bridge policy, Yuanbao home channel) | The owning profile, in this order: explicit `.env` value → its `config.yaml` → the adapter's default | The adapter's documented default — never the default profile's setting. Single-profile installs keep env-over-YAML exactly as each platform page documents |

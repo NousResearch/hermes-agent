@@ -19,12 +19,18 @@ import weakref as _weakref
 from agent.async_utils import consume_detached_task_result
 from contextvars import Context
 from datetime import datetime, timedelta, timezone
-from gateway.config import SHARED_LISTENER_MIRROR_PLATFORMS, Platform, platform_binds_port as _platform_binds_port
+from gateway.config import (
+    ON_ALL_ADAPTERS_DOWN_POLICIES,
+    SHARED_LISTENER_MIRROR_PLATFORMS,
+    Platform,
+    platform_binds_port as _platform_binds_port,
+)
 from gateway.platforms.base import BasePlatformAdapter
 from gateway.platforms.helpers import carry_inbound_dedup, inbound_dedup_caches
 from gateway.restart import is_global_startup_conflict
 from gateway.run_shutdown import _log_suppressed
 from gateway.session import SessionSource
+from hermes_cli.observability.shared_metrics_gateway import record_platform_connect, record_platform_disconnect
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Dict, Optional
 
@@ -174,6 +180,15 @@ class GatewayAdapterLifecycleMixin:
         ``initial`` selects the capped cold-start budget for platforms whose full connect budget is too long
         to spend before the gateway reaches ``running`` (#85993 — Telegram's 180s).
         """
+        try:
+            ok = await self._connect_adapter_bounded(adapter, platform, is_reconnect=is_reconnect, initial=initial)
+        except Exception as exc:
+            record_platform_connect(adapter, platform, is_reconnect=is_reconnect, ok=False, exc=exc)
+            raise
+        record_platform_connect(adapter, platform, is_reconnect=is_reconnect, ok=bool(ok))
+        return ok
+
+    async def _connect_adapter_bounded(self, adapter, platform, *, is_reconnect: bool, initial: bool) -> bool:
         timeout = self._platform_connect_timeout_secs(platform, initial=initial)
         if timeout <= 0:
             return await adapter.connect(is_reconnect=is_reconnect)
@@ -259,6 +274,14 @@ class GatewayAdapterLifecycleMixin:
         self._ensure_reconnect_watcher_running()
         return True
 
+    def _on_all_adapters_down(self) -> str:
+        """Normalized ``GatewayConfig.on_all_adapters_down``: ``"exit"`` (default — a supervising
+        service manager restarts the process) or ``"stay_alive"`` (launchers with no supervisor,
+        e.g. the desktop app's direct ``hermes serve`` child, where a failure exit only severs the
+        UI's websockets and drops in-flight assistant messages; #118080)."""
+        value = getattr(getattr(self, "config", None), "on_all_adapters_down", None)
+        return value if value in ON_ALL_ADAPTERS_DOWN_POLICIES else "exit"
+
     async def _handle_adapter_fatal_error_detached(self, adapter: BasePlatformAdapter) -> None:
         """Run the fatal handler; a platform left stranded (not reconnected, not queued, not
         intentionally disabled) exits the gateway with failure so the service manager restarts it."""
@@ -301,13 +324,25 @@ class GatewayAdapterLifecycleMixin:
                 and platform not in getattr(self, "_failed_platforms", {})
                 and not (shutdown_event is not None and shutdown_event.is_set())
             ):
-                logger.error(
-                    "%s adapter was lost without entering the reconnection "
-                    "queue; exiting gateway so the service manager restarts it.", platform.value,
-                )
-                self._exit_reason = f"{platform.value} adapter lost without reconnection queue"
-                self._exit_with_failure = True
-                await self.stop()
+                if self._on_all_adapters_down() == "stay_alive":
+                    # No supervisor will revive this process, so exiting only severes the UI's
+                    # connections and drops in-flight assistant messages (#118080). Stay alive and
+                    # hand recovery to the reconnect watcher; the messaging platform stays down
+                    # either way, but cron / api_server / dashboard keep serving.
+                    logger.warning(
+                        "%s adapter was lost without entering the reconnection queue; "
+                        "on_all_adapters_down=stay_alive — gateway staying alive, reconnect "
+                        "watcher owns recovery.", platform.value,
+                    )
+                    self._ensure_reconnect_watcher_running()
+                else:
+                    logger.error(
+                        "%s adapter was lost without entering the reconnection "
+                        "queue; exiting gateway so the service manager restarts it.", platform.value,
+                    )
+                    self._exit_reason = f"{platform.value} adapter lost without reconnection queue"
+                    self._exit_with_failure = True
+                    await self.stop()
 
     def _queue_retryable_best_effort(self, adapter: BasePlatformAdapter, why: str) -> None:
         with _log_suppressed(
@@ -340,6 +375,7 @@ class GatewayAdapterLifecycleMixin:
             error_message=adapter.fatal_error_message,
         )
         if existing is adapter:
+            record_platform_disconnect(adapter)
             # Claim for teardown BEFORE awaiting disconnect(), else a second fatal disconnects it twice.
             self.adapters.pop(adapter.platform, None)
             self.delivery_router.adapters = self.adapters
@@ -354,6 +390,17 @@ class GatewayAdapterLifecycleMixin:
             # after.
             await self._safe_adapter_disconnect(adapter, adapter.platform)
         if not self.adapters and not self._failed_platforms:
+            if adapter.fatal_error_retryable and self._on_all_adapters_down() == "stay_alive":
+                # No supervising service manager to revive the process (#118080): stay alive and
+                # keep serving cron / api_server / dashboard while the reconnect watcher owns
+                # recovery of the lost platform.
+                logger.warning(
+                    "No connected messaging platforms remain; on_all_adapters_down=stay_alive — "
+                    "gateway staying alive, reconnect watcher owns recovery of %s.",
+                    adapter.platform.value,
+                )
+                self._ensure_reconnect_watcher_running()
+                return
             self._exit_reason = adapter.fatal_error_message or "All messaging adapters disconnected"
             if adapter.fatal_error_retryable:
                 self._exit_with_failure = True
@@ -1499,6 +1546,9 @@ class GatewayAdapterLifecycleMixin:
             )
             return
         profile_map.pop(platform, None)
+        # The notification may arrive outside the profile's scope: the row is that profile's.
+        if (profile_home := self._routed_profile_home(profile_name)) is not UNRESOLVED_PROFILE_HOME:
+            record_platform_disconnect(adapter, hermes_home=profile_home)
         await self._safe_adapter_disconnect(adapter, platform)
         if not self._running:
             return

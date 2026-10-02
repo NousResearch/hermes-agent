@@ -7,7 +7,7 @@
 # Schema version of this file. The installers copy it to seed config.yaml, and
 # `hermes update` uses it to know which one-time migrations the file already
 # has. Hermes manages it: do not copy it into another config.
-_config_version: 48
+_config_version: 49
 
 # =============================================================================
 # Database Configuration
@@ -576,6 +576,21 @@ terminal:
 #   # disable the gate; add fnmatch patterns on the basename to protect more files.
 #   protected_instruction_files: true
 #   protected_instruction_extra_patterns: []
+
+# =============================================================================
+# LSP Diagnostics (post-write lint for write_file / patch)
+# =============================================================================
+# lsp:
+#   enabled: true
+#   # Language servers only load code a project ships (its .venv interpreter,
+#   # node_modules TypeScript, svelte.config.js, cargo/Gradle/mix build files)
+#   # in the git worktree of the directory you launched Hermes in or opened
+#   # the session in (hermes -w, a Desktop project, terminal.cwd), or under a
+#   # directory listed here. In other checkouts, such as a repository the agent
+#   # cloned, only servers that run no project code start (pinned to
+#   # Hermes-side tools) and the npx tsc / rustfmt lint fallbacks are skipped.
+#   trusted_workspaces:
+#     - ~/code/my-app
 
 # =============================================================================
 # Browser Tool Configuration
@@ -1222,6 +1237,8 @@ agent:
   # begins. /restart and SIGUSR1 refuse new work, then wait up to this cap for
   # in-flight agent, cron and API runs to complete so the requesting turn is
   # not cut off by restart_drain_timeout. 0 = enter stop()/drain immediately.
+  # Excluded from the wait: wedged runs, and cron runs already handed to a
+  # worker in its own restart-safe systemd scope (they outlive the restart).
   # The default (30 min) is a safety valve for wedged agents, not a target
   # latency; raise it for long unattended turns. Env: HERMES_RESTART_AFTER_TURN_TIMEOUT.
   # restart_after_turn_timeout: 1800
@@ -1824,13 +1841,16 @@ display:
   #   false: Full ASCII banner with tool/skill summary (default)
   compact: false
 
-  # Tool progress display level (CLI and gateway)
+  # Tool progress display level (CLI, gateway, and the TUI/Desktop tool feed)
   #   off:     Silent — no tool activity shown, just the final response
   #   new:     Show a tool indicator only when the tool changes (skip repeats)
   #   all:     Show every tool call with a short preview (default)
   #   verbose: Full args, results, and debug logs (same as /verbose)
   #   log:     Silent in chat; append every tool call to ~/.hermes/logs/tool_calls.log (gateway only)
   # Toggle at runtime with /verbose in the CLI
+  # Independent of show_reasoning: hiding reasoning never hides tool rows.
+  # Answer-only (just the final response) is show_reasoning: false plus
+  # tool_progress: off.
   # tool_progress: all
 
   # tool_progress, interim_assistant_messages, long_running_notifications,

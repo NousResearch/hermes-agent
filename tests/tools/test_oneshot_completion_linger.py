@@ -226,9 +226,14 @@ def test_default_timeout_read_from_config(registry, monkeypatch):
 
 # ── CLI exit paths invoke the linger ─────────────────────────────────────────
 
-def test_finalize_single_query_lingers_before_teardown(monkeypatch):
-    """cli._finalize_single_query must call the registry wait BEFORE the
-    durable flush / cleanup so deliveries land while the parent is alive."""
+def test_finalize_single_query_settles_session_then_releases_then_lingers(monkeypatch):
+    """cli._finalize_single_query ordering contract: session-owned settlement
+    (durable flush incl. end_session, finalize hook, memory-provider session
+    finalization — providers commit THIS session's remote state at on_session_end)
+    completes BEFORE the lease release, so a successor can never receive a stale
+    end-stamp or a remote commit mid-turn; the lease release precedes the exit
+    linger, so a finished turn stops refusing deliveries (#118826); the linger
+    precedes teardown (the parent owns the children's pipes)."""
     import cli as cli_mod
 
     order = []
@@ -245,6 +250,9 @@ def test_finalize_single_query_lingers_before_teardown(monkeypatch):
     monkeypatch.setattr(
         cli_mod, "_notify_single_query_session_finalize", lambda cli, **k: order.append("finalize")
     )
+    monkeypatch.setattr(
+        cli_mod, "_shutdown_agent_memory_provider", lambda agent: order.append("memory")
+    )
     monkeypatch.setattr(cli_mod, "_run_cleanup", lambda **k: order.append("cleanup"))
 
     class _FakeCli:
@@ -255,7 +263,7 @@ def test_finalize_single_query_lingers_before_teardown(monkeypatch):
             order.append("release")
 
     cli_mod._finalize_single_query(_FakeCli())
-    assert order[0] == "wait"
+    assert order == ["flush", "finalize", "memory", "release", "wait", "cleanup"]
 
 def test_finalize_single_query_survives_wait_failure(monkeypatch):
     """A raising wait must not break the durable flush path."""

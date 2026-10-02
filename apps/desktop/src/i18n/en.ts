@@ -207,7 +207,7 @@ export const en: Translations = {
         openLogs: 'Open logs',
         reconnect: 'Reconnect',
         stopWaiting: 'Stop waiting',
-        tryAgain: 'Try again',
+        tryAgain: 'Retry',
         turnBackOn: 'Turn back on'
       },
       reason: {

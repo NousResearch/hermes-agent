@@ -29,6 +29,11 @@ export const BRAND_CONNECTOR_CATALOG: BrandConnectorCatalogEntry[] = [
   { id: 'appsflyer', label: 'AppsFlyer', mcpUrl: 'https://mcp.appsflyer.com/auth/mcp' },
   { id: 'beehiiv', label: 'Beehiiv', mcpUrl: '' },
   { id: 'n8n', label: 'n8n', mcpUrl: 'https://n8n-mcp.intelli-verse-x.ai/' },
+  {
+    id: 'automation-studio',
+    label: 'Automation Studio',
+    mcpUrl: 'https://api.intelli-verse-x.ai/api/admin/public/automation/mcp'
+  },
   { id: 'slack', label: 'Slack', mcpUrl: '' },
   { id: 'notion', label: 'Notion', mcpUrl: 'https://mcp.notion.com/mcp' },
   { id: 'linear', label: 'Linear', mcpUrl: 'https://mcp.linear.app/sse' }
@@ -213,6 +218,25 @@ function parseRows(body: unknown): WebRow[] {
   return rows
 }
 
+/** The portal wallet payload nests the flag. A flat flag is accepted too. */
+export function desktopUnlockedFromPortalBody(body: unknown): boolean | null {
+  if (!body || typeof body !== 'object') {
+    return null
+  }
+
+  const data = (body as { data?: unknown }).data
+
+  if (!data || typeof data !== 'object') {
+    return null
+  }
+
+  const record = data as { desktopUnlocked?: unknown; wallet?: { desktopUnlocked?: unknown } }
+  const nested = record.wallet?.desktopUnlocked
+  const value = typeof nested === 'boolean' ? nested : record.desktopUnlocked
+
+  return typeof value === 'boolean' ? value : null
+}
+
 /** Mail credit does not unlock the desktop. Super admin sets this on Brand billing.
  *  Null means the server did not answer, so the desktop does not lock by itself. */
 export async function readDesktopUnlocked(appId: string): Promise<boolean | null> {
@@ -223,13 +247,12 @@ export async function readDesktopUnlocked(appId: string): Promise<boolean | null
   }
 
   const result = await portalJson('GET', `/api/portal/brand-control/${encodeURIComponent(id)}/wallet`)
-  const data = (result.body as { data?: { desktopUnlocked?: unknown } } | null)?.data
 
-  if (!result.ok || typeof data?.desktopUnlocked !== 'boolean') {
+  if (!result.ok) {
     return null
   }
 
-  return data.desktopUnlocked
+  return desktopUnlockedFromPortalBody(result.body)
 }
 
 async function portalJson(method: string, urlPath: string, body?: unknown): Promise<{ ok: boolean; status: number; body: unknown }> {

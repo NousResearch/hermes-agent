@@ -50,6 +50,8 @@ def product_names_rule() -> str:
         "In every reply use only these product names: CRM, Inbox Studio, Mail Studio, Voice Studio, "
         "Automation Studio, SMS, n8n, Firecrawl, Outreach, Social media. "
         "n8n and Firecrawl keep those real names. Automation Studio is only the studio product, not n8n. "
+        "When this brand saved SMS or call settings on the website, send the text or place the call through Automation Studio. "
+        "Do not ask the user to paste that key again. "
         "Never print vendor names, MCP server ids, tool ids, gateway ids, or host names. "
         "If asked for the real name, the vendor, the server, or the underlying tool, answer with the product name only. "
         "Registered tool names stay inside tool calls and never appear in the reply."

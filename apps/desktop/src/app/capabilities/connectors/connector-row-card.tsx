@@ -151,9 +151,16 @@ function CardLane({
   const copy = t.connectorsPage.card
   const server = card.ways.local
   const fact = card.residency === 'hosted' && card.fact ? factText(copy, card.fact) : null
+  const showSwitch = server?.installed === true && onServerToggle !== undefined
+  const showVerb = Boolean(card.verb && onVerb)
 
   return (
-    <div className="relative z-10 flex w-[7.75rem] shrink-0 flex-col items-end gap-1">
+    <div
+      className={cn(
+        'relative z-10 flex shrink-0 flex-col items-end gap-1',
+        showSwitch && showVerb ? 'w-auto' : 'w-[7.75rem]'
+      )}
+    >
       <span className="flex items-center gap-1.5 text-[0.6875rem] text-(--ui-text-secondary)">
         {withDot ? (
           <span aria-hidden className={cn('size-[5px] shrink-0 rounded-full', STATE_DOT[card.state])} />
@@ -161,31 +168,67 @@ function CardLane({
         <span className="truncate">{stateLabel}</span>
       </span>
 
-      {server?.installed === true && onServerToggle ? (
-        <Switch
-          aria-label={server.serverEnabled ? copy.turnServerOff(card.name) : copy.turnServerOn(card.name)}
-          checked={server.serverEnabled ?? false}
-          onCheckedChange={onServerToggle}
-          size="xs"
-        />
-      ) : null}
-
-      {card.verb && onVerb ? (
-        <Button
-          disabled={busy}
-          loading={busy}
-          onClick={onVerb}
-          size="xs"
-          variant={card.state === 'available' ? 'outline' : 'secondary'}
-        >
-          {copy.verb[card.verb]}
-        </Button>
-      ) : null}
+      {showSwitch && showVerb ? (
+        <div className="flex flex-nowrap items-center gap-2">
+          <VerbButton busy={busy} card={card} label={copy.verb[card.verb!]} onVerb={onVerb!} />
+          <ServerSwitch card={card} copy={copy} onServerToggle={onServerToggle} server={server} />
+        </div>
+      ) : (
+        <>
+          {showSwitch ? <ServerSwitch card={card} copy={copy} onServerToggle={onServerToggle} server={server} /> : null}
+          {showVerb ? <VerbButton busy={busy} card={card} label={copy.verb[card.verb!]} onVerb={onVerb!} /> : null}
+        </>
+      )}
 
       {card.verb === undefined && fact !== null ? (
         <span className="truncate text-[0.6875rem] text-(--ui-text-tertiary)">{fact}</span>
       ) : null}
     </div>
+  )
+}
+
+function ServerSwitch({
+  card,
+  copy,
+  onServerToggle,
+  server
+}: {
+  card: ConnectorCardModel
+  copy: Translations['connectorsPage']['card']
+  onServerToggle: (next: boolean) => void
+  server: ConnectorCardModel['ways']['local']
+}) {
+  return (
+    <Switch
+      aria-label={server?.serverEnabled ? copy.turnServerOff(card.name) : copy.turnServerOn(card.name)}
+      checked={server?.serverEnabled ?? false}
+      onCheckedChange={onServerToggle}
+      size="xs"
+    />
+  )
+}
+
+function VerbButton({
+  busy,
+  card,
+  label,
+  onVerb
+}: {
+  busy: boolean
+  card: ConnectorCardModel
+  label: string
+  onVerb: () => void
+}) {
+  return (
+    <Button
+      disabled={busy}
+      loading={busy}
+      onClick={onVerb}
+      size="xs"
+      variant={card.state === 'available' ? 'outline' : 'secondary'}
+    >
+      {label}
+    </Button>
   )
 }
 

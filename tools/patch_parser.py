@@ -397,7 +397,8 @@ def _insert_addition_only(new_content: str, hunk: Hunk, insert_text: str) -> Tup
                 return new_content + '\n' + insert_text, None
             return new_content[:eol + 1] + insert_text + '\n' + new_content[eol + 1:], None
     # No hint / hint not found — append at end as a safe fallback.
-    return new_content.rstrip('\n') + '\n' + insert_text + '\n', None
+    separator = '\n' if new_content and not new_content.endswith('\n') else ''
+    return new_content + separator + insert_text + '\n', None
 
 
 def _apply_update(op: PatchOperation, file_ops: Any) -> ApplyResult:

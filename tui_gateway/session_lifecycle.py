@@ -140,14 +140,24 @@ def _ensure_active_session_slot(sid: str, session: dict) -> str | None:
     return limit_message
 
 
-def _evict_other_session_leases(current_sid: str, key: str) -> None:
+def _evict_other_session_leases(current_sid: str, key: str, sessions_dict: dict | None = None, lock=None) -> None:
     """When a session claims or takes over a key, evict and interrupt any sibling session in this process
     holding that key so multiple runtimes cannot concurrently execute turns into one stored session."""
-    try:
-        from tui_gateway.server import _sessions as sessions, _sessions_lock as sessions_lock
-    except ImportError:
-        sessions = globals().get("_sessions", {})
-        sessions_lock = globals().get("_sessions_lock", contextlib.nullcontext())
+    if sessions_dict is not None:
+        sessions = sessions_dict
+        sessions_lock = lock if lock is not None else contextlib.nullcontext()
+    else:
+        try:
+            import sys
+            server_mod = sys.modules.get("tui_gateway.server")
+            if server_mod is not None:
+                sessions = getattr(server_mod, "_sessions", {})
+                sessions_lock = getattr(server_mod, "_sessions_lock", contextlib.nullcontext())
+            else:
+                from tui_gateway.server import _sessions as sessions, _sessions_lock as sessions_lock
+        except ImportError:
+            sessions = globals().get("_sessions", {})
+            sessions_lock = globals().get("_sessions_lock", contextlib.nullcontext())
 
     with sessions_lock:
         for other_sid, other in list(sessions.items()):

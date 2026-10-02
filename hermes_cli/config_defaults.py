@@ -1594,6 +1594,9 @@ DEFAULT_CONFIG = {
         # Max bytes per cached attachment (held in memory while written); 0 = no cap. Env:
         # DISCORD_MAX_ATTACHMENT_BYTES.
         "max_attachment_bytes": 33554432,
+        # Discord messages are 2000 chars. Long replies split into this many messages; the last
+        # slot becomes a truncation notice. 0 posts every chunk (a runaway reply can flood the channel).
+        "max_split_messages": 8,
         # Mention allowed users on approval prompts so owners notice them in shared channels. Env:
         # DISCORD_APPROVAL_MENTIONS.
         "approval_mentions": False,

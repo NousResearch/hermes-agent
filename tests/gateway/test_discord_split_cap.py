@@ -71,6 +71,31 @@ class TestCapSplitChunks:
         # The notice itself must stay under Discord's per-message cap.
         assert len(capped[-1]) <= MAX
 
+    def test_configured_limit_replaces_the_default(self):
+        adapter = _make_adapter()
+        adapter.config.extra["max_split_messages"] = 3
+        chunks = [f"chunk-{i}-" + "z" * 40 for i in range(10)]
+        capped = adapter._cap_split_chunks(chunks)
+        assert len(capped) == 3
+        assert capped[0] == chunks[0]
+        assert "delivery limit (3 messages)" in capped[-1]
+        assert "Response truncated" not in "".join(capped[:-1])
+
+    def test_zero_delivers_every_chunk(self):
+        adapter = _make_adapter()
+        adapter.config.extra["max_split_messages"] = 0
+        chunks = [f"chunk-{i}" for i in range(40)]
+        assert adapter._cap_split_chunks(chunks) == chunks
+
+    def test_unusable_value_keeps_the_default_ceiling(self):
+        adapter = _make_adapter()
+        chunks = [f"chunk-{i}-" + "z" * 40 for i in range(CAP + 5)]
+        for raw in (True, "lots", -1, 2.5):
+            adapter.config.extra["max_split_messages"] = raw
+            capped = adapter._cap_split_chunks(chunks)
+            assert len(capped) == CAP
+            assert "Response truncated" in capped[-1]
+
 
 class TestSendCap:
     @pytest.mark.asyncio
@@ -94,6 +119,29 @@ class TestSendCap:
         assert result.success is True
         assert len(sends) == CAP
         assert "Response truncated" in sends[-1]
+
+    @pytest.mark.asyncio
+    async def test_send_honors_unlimited_split_setting(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        adapter = _make_adapter()
+        adapter.config.extra["max_split_messages"] = 0
+        sends = []
+
+        async def fake_send(*, content, reference=None):
+            sends.append(content)
+            return SimpleNamespace(id=9000 + len(sends))
+
+        channel = SimpleNamespace(id=555, send=AsyncMock(side_effect=fake_send))
+        adapter._client = SimpleNamespace(
+            get_channel=lambda _cid: channel,
+            fetch_channel=AsyncMock(),
+        )
+
+        result = await adapter.send("555", _huge_content())
+
+        assert result.success is True
+        assert len(sends) > CAP
+        assert all("Response truncated" not in content for content in sends)
 
 
 class TestForumCap:

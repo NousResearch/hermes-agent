@@ -369,6 +369,7 @@ discord:
   no_thread_channels: []          # Channel IDs where bot responds without threading
   history_backfill: true          # Prepend recent channel scrollback on mention (default: true)
   history_backfill_limit: 50      # Max messages to scan backwards (default: 50)
+  max_split_messages: 8           # How many messages one reply may split into (0 = no cap)
   missed_message_backfill:        # Replay messages missed while disconnected (opt-in)
     enabled: false
     channels: []                  # Empty uses free_response_channels
@@ -554,6 +555,19 @@ discord:
 ```
 
 > **Note:** Messages that arrive *while* the bot is processing (between a trigger and its response) are not captured. This is an accepted simplification — the user can re-send or tag again.
+
+#### `discord.max_split_messages`
+
+**Type:** integer — **Default:** `8`
+
+Discord rejects any single message over 2,000 characters. Hermes splits a longer reply into several messages. This is how many of those messages one reply may post. The last slot is a short notice that the rest was cut; the full text stays in the session logs.
+
+`0` posts every chunk, so the whole reply reaches Discord. A runaway reply can then flood the channel (one incident posted 31 messages). Raise the number for longer answers, or set `0` only where that flood is acceptable.
+
+```yaml
+discord:
+  max_split_messages: 0    # deliver the full reply; default 8
+```
 
 #### `discord.history_backfill_limit`
 

@@ -1057,10 +1057,10 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
     _SPLIT_THRESHOLD = 1900  # near the 2000-char split point
     supports_code_blocks = True  # Discord markdown renders fenced code blocks natively
     splits_long_messages = True  # send() chunks via truncate_message(MAX_MESSAGE_LENGTH)
-    # Safety ceiling on split deliveries: chunks beyond the cap become a notice (degenerate turns).
-    # Safety ceiling on split deliveries (#86581): a degenerate turn can produce tens of thousands of
-    # characters — without a cap the adapter posts every 2000-char chunk back-to-back and floods the channel
-    # (the incident delivered 60,698 chars as 31 messages).
+    # Default safety ceiling on split deliveries (#86581): a degenerate turn can produce tens of
+    # thousands of characters — without a cap the adapter posts every 2000-char chunk back-to-back
+    # and floods the channel (the incident delivered 60,698 chars as 31 messages).
+    # ``discord.max_split_messages`` overrides this; 0 delivers every chunk.
     MAX_SPLIT_MESSAGES = 8
 
     # Voice auto-disconnect after N idle seconds (discord.voice_channel_inactivity_timeout_seconds; 0 off).
@@ -3026,22 +3026,55 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             logger.debug("Could not build reply-to reference: %s", e)
             return None
 
+    def _max_split_messages(self) -> int:
+        """How many Discord messages one reply may become.
+
+        ``discord.max_split_messages`` in config.yaml. ``0`` delivers every chunk.
+        Missing or unusable values keep ``MAX_SPLIT_MESSAGES``.
+        """
+        extra = getattr(self.config, "extra", None)
+        configured = extra.get("max_split_messages") if isinstance(extra, dict) else None
+        if configured is None or configured == "":
+            return self.MAX_SPLIT_MESSAGES
+        if isinstance(configured, bool) or (
+            isinstance(configured, float) and not configured.is_integer()
+        ):
+            logger.warning(
+                "[%s] Invalid max_split_messages value %r; using %d",
+                self.name, configured, self.MAX_SPLIT_MESSAGES,
+            )
+            return self.MAX_SPLIT_MESSAGES
+        try:
+            value = int(configured)
+        except (TypeError, ValueError):
+            logger.warning(
+                "[%s] Invalid max_split_messages value %r; using %d",
+                self.name, configured, self.MAX_SPLIT_MESSAGES,
+            )
+            return self.MAX_SPLIT_MESSAGES
+        if value < 0:
+            logger.warning(
+                "[%s] Invalid max_split_messages value %r; using %d",
+                self.name, configured, self.MAX_SPLIT_MESSAGES,
+            )
+            return self.MAX_SPLIT_MESSAGES
+        return value
+
     def _cap_split_chunks(self, chunks: List[str]) -> List[str]:
-        """Cap chunks at ``MAX_SPLIT_MESSAGES``: keep the first N-1 and replace the rest with a
+        """Cap chunks at ``max_split_messages``: keep the first N-1 and replace the rest with a
         notice so a degenerate turn can't flood the channel (full text stays in session history).
 
-        Cap the number of chunks sent for one logical response (#86581).
-        A degenerate turn can produce tens of thousands of characters; the 86581 incident delivered 60,698
-        chars as 31 back-to-back Discord messages. The full response remains available in the gateway
-        session history / logs. See #86581.
+        ``0`` disables the ceiling. The 86581 incident delivered 60,698 chars as 31 back-to-back
+        Discord messages; the full response remains in the gateway session history / logs.
         """
-        if len(chunks) <= self.MAX_SPLIT_MESSAGES:
+        limit = self._max_split_messages()
+        if limit == 0 or len(chunks) <= limit:
             return chunks
-        kept = chunks[: self.MAX_SPLIT_MESSAGES - 1]
-        dropped_chars = sum(len(c) for c in chunks[self.MAX_SPLIT_MESSAGES - 1 :])
+        kept = chunks[: limit - 1]
+        dropped_chars = sum(len(c) for c in chunks[limit - 1 :])
         notice = "\n\n" + t(
             "platform.discord.limits.response_truncated",
-            max_messages=str(self.MAX_SPLIT_MESSAGES), dropped_chars=str(dropped_chars))
+            max_messages=str(limit), dropped_chars=str(dropped_chars))
         if self.warning_text(notice):
             kept.append(notice)
         return kept

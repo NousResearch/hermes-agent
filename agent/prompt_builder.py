@@ -925,6 +925,9 @@ def _windows_marketing_version() -> str:
 _WINDOWS_BASH_SHELL_HINT = (
     "Shell: on this Windows host your `terminal` tool runs commands through bash (git-bash / MSYS), NOT PowerShell or "
     "cmd.exe. Use POSIX shell syntax (`ls`, `$HOME`, `&&`, `|`, single-quoted strings) inside terminal calls. "
+    "NEVER put backslash Windows paths in terminal commands (`C:\\Users\\...`): Git Bash eval treats `\\U` as an "
+    "escape, so `C:\\Users\\<user>\\AppData` collapses to `C:Users<user>AppData` and the command fails. Use "
+    "forward-slash native paths instead. "
     "MSYS-style paths like `/c/Users/<user>/...` work alongside native `C:\\Users\\<user>\\...` paths. PowerShell "
     "builtins (`Get-ChildItem`, `$env:FOO`, `Select-String`) will NOT work — use their POSIX equivalents (`ls`, "
     "`$FOO`, `grep`). Path arguments for NATIVE Windows programs (git, rg, node, python, ...) are NOT translated: MSYS "

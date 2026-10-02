@@ -452,6 +452,20 @@ class TestLoadGatewayConfig:
         assert extra["websocket_max_latency_seconds"] == 30
         assert extra["websocket_event_max_silence_seconds"] == 7200
 
+    def test_discord_max_split_messages_reaches_platform_extra(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text(
+            "discord:\n"
+            "  max_split_messages: 0\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config = load_gateway_config()
+
+        assert config.platforms[Platform.DISCORD].extra["max_split_messages"] == 0
+
 
     def test_quick_commands_from_nested_gateway_section(self, tmp_path, monkeypatch):
         hermes_home = tmp_path / ".hermes"

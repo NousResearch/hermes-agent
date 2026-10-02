@@ -164,6 +164,35 @@ def _bash_safe_path(path: str) -> str:
     return _windows_to_msys_path(path).replace("\\", "/") if _IS_WINDOWS and path else path
 
 
+# Quoted ``"C:\Users\x\My Documents\a.py"`` (spaces allowed) then bare ``C:\Users\x``.
+_WIN_QUOTED_DRIVE_PATH_RE = re.compile(
+    r'(["\'])([A-Za-z]:(?:\\+|/)(?:(?!\1).)*)(\1)'
+)
+_WIN_BARE_DRIVE_PATH_RE = re.compile(
+    r'(?<![A-Za-z0-9_])[A-Za-z]:(?:\\+|/)[^\s"\'`$;&|<>()]*'
+)
+
+
+def _rewrite_native_paths_for_bash(command: str) -> str:
+    """Turn ``C:\\Users\\x`` in a terminal command into ``C:/Users/x``.
+
+    Git Bash runs the user command through ``eval`` of a single-quoted wrapper.
+    Unquoted ``\\U`` / ``\\p`` / ``\\A`` are POSIX escapes, so
+    ``C:\\Users\\pragp\\AppData`` becomes ``C:UserspragpAppData`` before ``cd``
+    or ``python`` ever sees it. Forward-slash native paths work for bash
+    builtins *and* native Windows python/git/rg. No-op when there are no
+    backslashes. Does not rewrite UNC ``\\\\server\\share`` paths.
+    """
+    if not command or "\\" not in command:
+        return command
+
+    def _slash_quoted(m: re.Match) -> str:
+        return m.group(1) + m.group(2).replace("\\", "/") + m.group(3)
+
+    rewritten = _WIN_QUOTED_DRIVE_PATH_RE.sub(_slash_quoted, command)
+    return _WIN_BARE_DRIVE_PATH_RE.sub(lambda m: m.group(0).replace("\\", "/"), rewritten)
+
+
 def _quote_bash_path(path: str) -> str:
     """Quote *path* for safe interpolation into a Git Bash script on Windows."""
     import shlex
@@ -968,6 +997,12 @@ class LocalEnvironment(BaseEnvironment):
     def _quote_shell_path(self, path: str) -> str:
         """Rewrite native/mixed Windows paths before quoting for Git Bash."""
         return _quote_bash_path(path)
+
+    def _wrap_command(self, command: str, cwd: str) -> str:
+        """Rewrite ``C:\\Users\\...`` before the bash eval wrapper can eat ``\\U``."""
+        if _IS_WINDOWS:
+            command = _rewrite_native_paths_for_bash(command)
+        return super()._wrap_command(command, cwd)
 
     def _recover_cwd(self) -> None:
         """Swap ``self.cwd`` for a usable directory if it vanished or is inaccessible

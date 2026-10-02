@@ -4,14 +4,17 @@ from __future__ import annotations
 
 import asyncio
 import threading
+import time
 from concurrent.futures import Future
 from types import SimpleNamespace
 
 import pytest
 
 from agent import llm_concurrency, relay_llm
+from agent.chat_completion_helpers import _context_thread_target
 from agent.rate_limit_tracker import RateLimitBucket, RateLimitState
 from hermes_cli import config as config_module
+from hermes_constants import reset_hermes_home_override, set_hermes_home_override
 
 
 @pytest.fixture
@@ -83,7 +86,7 @@ def _nested(callback):
 
 @pytest.mark.parametrize("lazy", [False, True], ids=["eager", "lazy"])
 @pytest.mark.parametrize("stream_end", ["exhausted", "aborted", "failed"])
-def test_max_in_flight_bounds_requests_and_streams_without_leaking(providers, stream_end, lazy):
+def test_max_in_flight_bounds_requests_and_streams_without_leaking(providers, stream_end, lazy, tmp_path):
     providers({"openrouter": {"max_in_flight": 1}})
     physical = _Physical()
     queued_entered = threading.Event()
@@ -131,6 +134,15 @@ def test_max_in_flight_bounds_requests_and_streams_without_leaking(providers, st
         relay_llm.execute, {}, interrupted.call, name="openrouter", model_name="m", session_id="")
     # Other providers are not queued behind this budget.
     assert relay_llm.execute({}, lambda _r: "other", name="anthropic", model_name="m", session_id="") == "other"
+    # Nor is another profile multiplexed into this process (A -> B -> A: A's budget is still held).
+    def in_profile_b():
+        token = set_hermes_home_override(tmp_path / "profile-b")
+        try:
+            return relay_llm.execute({}, lambda _r: "profile-b", name="openrouter", model_name="m", session_id="")
+        finally:
+            reset_hermes_home_override(token)
+
+    assert _spawn(in_profile_b).result(timeout=5) == "profile-b"
     assert not queued_entered.is_set()
 
     interrupted._interrupt_requested = True
@@ -155,6 +167,11 @@ def test_max_in_flight_bounds_requests_and_streams_without_leaking(providers, st
     assert fresh.result(timeout=5) == "fresh"
     assert physical.max_active == 1
     assert physical.active == 0
+
+
+def _request_window(remaining: int, reset_seconds: float) -> RateLimitState:
+    bucket = RateLimitBucket(limit=60, remaining=remaining, reset_seconds=reset_seconds, captured_at=time.time())
+    return RateLimitState(requests_min=bucket, captured_at=time.time(), provider="openrouter")
 
 
 def test_requests_per_minute_paces_starts_fairly_and_honors_rate_limit_headers(providers, monkeypatch):
@@ -189,11 +206,7 @@ def test_requests_per_minute_paces_starts_fairly_and_honors_rate_limit_headers(p
         await asyncio.gather(*tasks)
 
         # The provider reports its request window exhausted for another 30 s.
-        state = RateLimitState(
-            requests_min=RateLimitBucket(limit=60, remaining=0, reset_seconds=30.0, captured_at=llm_real_time()),
-            captured_at=llm_real_time(), provider="openrouter",
-        )
-        llm_concurrency.note_rate_limit_state("openrouter", state)
+        llm_concurrency.note_rate_limit_state("openrouter", _request_window(0, 30.0))
         late = asyncio.create_task(request("after-reset", "main"))
         clock.now += 20.0
         await settle()
@@ -202,10 +215,59 @@ def test_requests_per_minute_paces_starts_fairly_and_honors_rate_limit_headers(p
         await asyncio.wait_for(late, timeout=5)
         assert started[-1] == "after-reset"
 
+        # Rate inputs that change between two starts govern the very next start, in both directions:
+        # a positive header window (30 left of 60 s: one per 2 s), then live 60 -> 1 -> 60 rpm edits.
+        async def starts_after(name: str, delay: float) -> None:
+            begin = clock.now
+            task = asyncio.create_task(request(name, "main"))
+            clock.now = begin + delay - 0.01
+            await settle()
+            assert started[-1] != name
+            clock.now = begin + delay
+            await asyncio.wait_for(task, timeout=5)
+            assert started[-1] == name
+
+        llm_concurrency.note_rate_limit_state("openrouter", _request_window(30, 60.0))
+        await starts_after("header-paced", 2.0)
+        providers({"openrouter": {"requests_per_minute": 1}})
+        clock.now += 0.1
+        await starts_after("tightened", 59.9)
+        providers({"openrouter": {"requests_per_minute": 60}})
+        clock.now += 0.1
+        await starts_after("loosened", 0.9)
+
     asyncio.run(scenario())
 
+    # A streaming retry is a new physical request: admitted and paced afresh, not re-entry of
+    # the logical call's admission (the attempts run on a context-copied worker, as in production).
+    llm_concurrency._reset_provider_limiters()
+    clock.now = 5000.0
+    opened: list[float] = []
 
-def llm_real_time() -> float:
-    import time
+    def provider_stream(_request):
+        opened.append(clock.now)
+        return _ProviderStream(_Physical(), fail_after=0 if len(opened) == 1 else None)
 
-    return time.time()
+    def attempts() -> list:
+        for attempt in range(2):
+            if attempt:
+                llm_concurrency.readmit_prepaid("openrouter")
+            try:
+                return list(relay_llm.stream(
+                    {}, provider_stream, name="openrouter", model_name="m", session_id="", finalizer=dict))
+            except ConnectionError:
+                pass
+        return []
+
+    def logical_call() -> list:
+        with llm_concurrency.prepaid_provider_slot("openrouter"):
+            return _spawn(_context_thread_target(attempts)).result(timeout=5)
+
+    call = _spawn(logical_call)
+    time.sleep(0.3)
+    clock.now = 5000.99
+    time.sleep(0.3)
+    assert opened == [5000.0]
+    clock.now = 5001.0
+    assert call.result(timeout=5) == ["chunk-1", "chunk-2"]
+    assert opened == [5000.0, 5001.0]

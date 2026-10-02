@@ -1,8 +1,9 @@
 """Per-provider request admission: ``max_in_flight`` and ``requests_per_minute``.
 
 Every physical provider request takes a permit here before it is sent (see
-``relay_llm`` and ``interruptible_streaming_api_call``); a stream keeps its permit
-until it is exhausted, closed or abandoned. Budgets are process-local and keyed by
+``relay_llm``); a stream keeps its permit until it is exhausted, closed or abandoned.
+``interruptible_streaming_api_call`` admits its first request ahead of time; each
+retry or probe after it is admitted (and paced) afresh. Budgets are process-local and keyed by
 (Hermes home, provider id): profiles multiplexed into one process never share or
 throttle each other's budget, matching how each profile reads its own config.
 
@@ -40,6 +41,10 @@ MAIN, AUXILIARY = "main", "auxiliary"
 # request: taking a second permit would deadlock at ``max_in_flight: 1``.
 _held_gates: contextvars.ContextVar[frozenset[str]] = contextvars.ContextVar(
     "hermes_llm_admission_held", default=frozenset()
+)
+# A permit admitted before its physical request exists (see ``prepaid_provider_slot``).
+_prepaid: contextvars.ContextVar["_Prepaid | None"] = contextvars.ContextVar(
+    "hermes_llm_admission_prepaid", default=None
 )
 _gates: dict[str, "_Gate"] = {}
 _gates_lock = threading.Lock()
@@ -128,7 +133,10 @@ class _Gate:
         self._in_flight = 0
         self._queues: dict[str, deque[_Waiter]] = {MAIN: deque(), AUXILIARY: deque()}
         self._last_served = AUXILIARY  # on a tie the main loop goes first
-        self._next_start = 0.0  # monotonic: earliest time the next request may start
+        # Pacing state is kept as inputs, not a precomputed deadline, so a live RPM edit or a
+        # new header window applies to the very next start.
+        self._last_start: float | None = None  # monotonic
+        self._blocked_until = 0.0  # the provider reported its window exhausted
         self._header_interval = 0.0
         self._header_until = 0.0
 
@@ -160,13 +168,15 @@ class _Gate:
         if cap and self._in_flight >= cap:
             return _POLL_SECONDS
         now = time.monotonic()
-        delay = self._next_start - now
-        if delay > 0:
-            return delay
+        earliest = self._blocked_until
+        if self._last_start is not None:
+            earliest = max(earliest, self._last_start + self._interval(now))
+        if earliest > now:
+            return earliest - now
         self._queues[waiter.role].popleft()
         self._in_flight += 1
         self._last_served = waiter.role
-        self._next_start = now + self._interval(now)
+        self._last_start = now
         self._cond.notify_all()
         return None
 
@@ -226,7 +236,7 @@ class _Gate:
             self._header_until = now + window
             if remaining <= 0:
                 self._header_interval = window
-                self._next_start = max(self._next_start, now + window)
+                self._blocked_until = max(self._blocked_until, now + window)
             else:
                 self._header_interval = window / remaining
             self._cond.notify_all()
@@ -293,6 +303,43 @@ class ProviderPermit:
         self._gate.release()
 
 
+class _Prepaid:
+    """A permit admitted ahead of the physical request that claims it; claimed at most once."""
+
+    __slots__ = ("key", "_permit", "_closed", "_lock")
+
+    def __init__(self, permit: ProviderPermit) -> None:
+        self.key, self._permit = permit.key, permit
+        self._closed = False
+        self._lock = threading.Lock()
+
+    def claim(self, key: str) -> ProviderPermit | None:
+        with self._lock:
+            if key != self.key:
+                return None
+            permit, self._permit = self._permit, None
+        return permit
+
+    def offer(self, permit: ProviderPermit) -> None:
+        with self._lock:
+            if not self._closed and self._permit is None:
+                self._permit = permit
+                return
+        permit.release()
+
+    def close(self) -> None:
+        with self._lock:
+            self._closed = True
+            permit, self._permit = self._permit, None
+        if permit is not None:
+            permit.release()
+
+
+def _claim_prepaid(key: str) -> ProviderPermit | None:
+    prepaid = _prepaid.get()
+    return prepaid.claim(key) if prepaid is not None else None
+
+
 def acquire_provider_slot(
     provider: Any, *, role: str | None = None, cancelled: Callable[[], bool] | None = None,
 ) -> ProviderPermit:
@@ -301,6 +348,9 @@ def acquire_provider_slot(
         return ProviderPermit()
     if gate.key in _held_gates.get():
         return ProviderPermit(gate.key)
+    prepaid = _claim_prepaid(gate.key)
+    if prepaid is not None:
+        return prepaid
     gate.acquire(_role(role), cancelled)
     return ProviderPermit(gate.key, gate)
 
@@ -313,6 +363,9 @@ async def acquire_provider_slot_async(
         return ProviderPermit()
     if gate.key in _held_gates.get():
         return ProviderPermit(gate.key)
+    prepaid = _claim_prepaid(gate.key)
+    if prepaid is not None:
+        return prepaid
     await gate.acquire_async(_role(role), cancelled)
     return ProviderPermit(gate.key, gate)
 
@@ -339,6 +392,36 @@ async def provider_slot_async(
             yield
     finally:
         permit.release()
+
+
+@contextlib.contextmanager
+def prepaid_provider_slot(provider: Any, *, cancelled: Callable[[], bool] | None = None) -> Iterator[None]:
+    """Admit a logical call's next physical request now, before it exists.
+
+    The first same-provider request inside claims this permit and owns it from then on; a
+    retry or probe after it is a new physical request and is admitted (and paced) afresh,
+    not waved through as re-entry. An unclaimed permit is released on exit.
+    """
+    holder = _Prepaid(acquire_provider_slot(provider, cancelled=cancelled))
+    token = _prepaid.set(holder)
+    try:
+        yield
+    finally:
+        _prepaid.reset(token)
+        holder.close()
+
+
+def readmit_prepaid(provider: Any, *, cancelled: Callable[[], bool] | None = None) -> None:
+    """Admit the next physical request of the enclosing ``prepaid_provider_slot`` ahead of
+    time, so a retry waits for admission here rather than inside its stall-monitored attempt."""
+    holder = _prepaid.get()
+    gate = _gate_for(provider)
+    if holder is None or gate is None or holder.key != gate.key or gate.key in _held_gates.get():
+        return
+    permit = holder.claim(gate.key)
+    if permit is None:
+        permit = acquire_provider_slot(provider, cancelled=cancelled)
+    holder.offer(permit)
 
 
 def note_rate_limit_state(provider: Any, state: Any) -> None:

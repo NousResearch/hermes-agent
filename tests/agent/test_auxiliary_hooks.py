@@ -1,8 +1,9 @@
 """``pre_auxiliary_call`` / ``post_auxiliary_call`` fire for auxiliary LLM calls (#79733).
 
-Two invariants: (1) an auxiliary ``call_llm`` emits the pair with ``aux_task`` set and does NOT
+Invariants: (1) an auxiliary ``call_llm`` emits the pair with ``aux_task`` set and does NOT
 fire the turn-scoped ``pre/post_api_request`` events; (2) a raising subscriber never breaks the
-auxiliary call.
+auxiliary call; (3) a ``pre_auxiliary_call`` block directive vetoes the attempt before anything is
+sent, and the veto is never treated as a reason to fall back to another provider.
 """
 
 from types import SimpleNamespace
@@ -70,3 +71,23 @@ def test_raising_subscriber_does_not_break_the_auxiliary_call(manager, aux_clien
     response = call_llm(task="compression", messages=[{"role": "user", "content": "summarize"}])
 
     assert response is aux_client.chat.completions.create.return_value
+
+
+def test_block_directive_vetoes_the_attempt(manager, aux_client):
+    from agent.auxiliary_hooks import AuxiliaryCallBlocked
+
+    manager.register_hook("pre_auxiliary_call",
+                          lambda **_kw: {"action": "block", "message": "aux must stay local"})
+
+    with pytest.raises(AuxiliaryCallBlocked, match="aux must stay local"):
+        call_llm(task="title_generation", messages=[{"role": "user", "content": "private text"}])
+
+    aux_client.chat.completions.create.assert_not_called()
+
+
+def test_a_veto_is_not_a_fallback_reason():
+    from agent.auxiliary_client import _FALLBACK_REASONS
+    from agent.auxiliary_hooks import AuxiliaryCallBlocked
+
+    exc = AuxiliaryCallBlocked("blocked")
+    assert not [label for predicate, label in _FALLBACK_REASONS if predicate(exc)]

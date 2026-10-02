@@ -49,7 +49,8 @@ vi.mock('@/store/default-profile', () => ({
   refreshDefaultProfile: vi.fn(async () => $defaultProfileRoute.get())
 }))
 
-const { initializeConnectionsRegistry, _resetConnectionsForTests } = await import('./connections')
+const { initializeConnectionsRegistry, _resetConnectionsForTests, selectConnection, setConnectionsRegistry } =
+  await import('./connections')
 
 const registry = {
   connections: [
@@ -70,6 +71,7 @@ beforeEach(() => {
   $activeSessionId.set(null)
   $selectedStoredSessionId.set(null)
   $defaultProfileRoute.set(null)
+  $showAllProfiles.set(false)
   ensureGatewayAgent.mockClear()
   openGatewayAgent.mockClear()
   getProfiles.mockReset()
@@ -90,6 +92,16 @@ describe('restoring a remote primary without an explicit default', () => {
     expect(getProfiles).toHaveBeenCalledWith({ connectionId: 'homelab' })
     expect(ensureGatewayAgent).toHaveBeenCalledWith('homelab', 'default', expect.anything())
     expect($activeGatewayProfile.get()).toBe('default')
+  })
+
+  it('keeps All profiles browse mode when correcting a stale profile during boot', async () => {
+    $showAllProfiles.set(true)
+    getProfiles.mockResolvedValue({ profiles: [{ name: 'default' }, { name: 'marina' }] })
+
+    await initializeConnectionsRegistry()
+
+    expect(ensureGatewayAgent).toHaveBeenCalledWith('homelab', 'default', expect.anything())
+    expect($showAllProfiles.get()).toBe(true)
   })
 
   it('preserves a matching remote profile, without any re-home', async () => {
@@ -117,6 +129,24 @@ describe('restoring a remote primary without an explicit default', () => {
 
     expect(getProfiles).not.toHaveBeenCalled()
     expect(ensureGatewayAgent).toHaveBeenCalledWith('homelab', 'marina', expect.anything())
+  })
+
+  it('keeps All profiles when an explicit default already points at the booted route', async () => {
+    $showAllProfiles.set(true)
+    $defaultProfileRoute.set({ connectionId: 'homelab', profile: 'office-evals-windows' })
+
+    await initializeConnectionsRegistry()
+
+    expect($showAllProfiles.get()).toBe(true)
+  })
+
+  it('still leaves All profiles on an intentional user connection pick', async () => {
+    setConnectionsRegistry(registry as Parameters<typeof setConnectionsRegistry>[0])
+    $showAllProfiles.set(true)
+
+    await selectConnection('homelab', { profile: 'marina' })
+
+    expect($showAllProfiles.get()).toBe(false)
   })
 
   it('does not undo a user profile choice made while the roster is loading', async () => {

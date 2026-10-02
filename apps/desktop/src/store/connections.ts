@@ -271,7 +271,7 @@ export async function initializeConnectionsRegistry(): Promise<DesktopConnection
     }
 
     if (registry.connections.some(connection => connection.id === connectionId)) {
-      await selectConnection(connectionId, { profile: defaultRoute.profile })
+      await selectConnection(connectionId, { profile: defaultRoute.profile, fromBoot: true })
     }
 
     return $connectionsRegistry.get() ?? registry
@@ -324,10 +324,14 @@ export async function initializeConnectionsRegistry(): Promise<DesktopConnection
         !$activeSessionId.get() &&
         !$selectedStoredSessionId.get()
       ) {
-        const target = startupProfileForConnection(profile, startupLastProfileByConnection[preferredId], roster.profiles)
+        const target = startupProfileForConnection(
+          profile,
+          startupLastProfileByConnection[preferredId],
+          roster.profiles
+        )
 
         if (target) {
-          await selectConnection(preferredId, { profile: target })
+          await selectConnection(preferredId, { profile: target, fromBoot: true })
         } else if (roster.profiles.some(candidate => candidate.name === profile)) {
           $lastProfileByConnection.set({ ...$lastProfileByConnection.get(), [preferredId]: profile })
         }
@@ -336,7 +340,7 @@ export async function initializeConnectionsRegistry(): Promise<DesktopConnection
 
     await rememberConnection(preferredId)
   } else {
-    await selectConnection(preferredId)
+    await selectConnection(preferredId, { fromBoot: true })
   }
 
   return $connectionsRegistry.get() ?? registry
@@ -371,6 +375,8 @@ export interface SelectConnectionOptions {
   /** Land on this profile of the target source instead of the one last used
    *  there. The fleet profile rail passes the exact square the user clicked. */
   profile?: null | string
+  /** Silent startup restoration must not clear the persisted All profiles view. */
+  fromBoot?: boolean
 }
 
 export async function selectConnection(connectionId: string, options: SelectConnectionOptions = {}): Promise<void> {
@@ -385,7 +391,7 @@ export async function selectConnection(connectionId: string, options: SelectConn
   // picker is a concrete-source action. The silent boot-time restore (below,
   // from initializeConnectionsRegistry) is not — it must leave the persisted
   // browse-mode preference alone so it survives restart (#93197).
-  const restoreOnBoot = pendingTarget === null && $activeConnectionId.get() === null
+  const restoreOnBoot = options.fromBoot === true || (pendingTarget === null && $activeConnectionId.get() === null)
 
   const currentConnectionId = $activeConnectionId.get()
   const currentProfile = normalizeProfileKey($activeGatewayProfile.get())
@@ -431,7 +437,10 @@ export async function selectConnection(connectionId: string, options: SelectConn
   }
 
   if (pendingTarget === null && currentConnectionId === connectionId && currentProfile === targetProfile) {
-    $showAllProfiles.set(false)
+    if (!restoreOnBoot) {
+      $showAllProfiles.set(false)
+    }
+
     $newChatProfile.set(targetProfile)
     // A connection switch is a new-chat intent on THAT source: keep the
     // registry identity with the profile so the next create names local::x /

@@ -1097,12 +1097,7 @@ function ModelFamilyRow({
             </Badge>
           ))}
           {decoration.badge ? (
-            <Badge
-              className="shrink-0 uppercase tracking-wide"
-              data-model-menu-row-badge=""
-              size="xs"
-              variant="muted"
-            >
+            <Badge className="shrink-0 uppercase tracking-wide" data-model-menu-row-badge="" size="xs" variant="muted">
               {decoration.badge}
             </Badge>
           ) : null}

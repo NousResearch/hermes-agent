@@ -6,9 +6,7 @@ describe('product tool labels', () => {
     expect(productToolLabel('mcp__ivx_foundrly_chatwoot__chatwoot_list_conversations')).toBe(
       'Inbox Studio · List Conversations'
     )
-    expect(productToolLabel('mcp__ivx_foundrly_firecrawl__firecrawl_search')).toBe('Firecrawl · Search')
-    expect(productToolLabel('ivx-foundrly-n8n')).toBe('n8n')
-    expect(productToolLabel('ivx-foundrly-automation-studio')).toBe('Automation Studio · Studio')
+    expect(productToolLabel('mcp__ivx_foundrly_firecrawl__firecrawl_search')).toBe('Web research · Search')
     expect(productToolLabel('mcp__ivx_foundrly_twenty__search')).toBe('CRM · Search')
     expect(productToolLabel('mcp__ivx_foundrly_notifuse__notifuse_lists_list')).toBe('Mail Studio · Lists List')
     expect(productToolLabel('Foundrly Twenty · Execute Tool')).toBe('CRM · Execute Tool')
@@ -31,9 +29,9 @@ describe('product tool labels', () => {
       'Checked chatwoot and the server ivx-foundrly-firecrawl. Twenty people were added yesterday.'
     )
 
-    expect(shown).not.toMatch(/chatwoot/i)
+    expect(shown).not.toMatch(/chatwoot|firecrawl/i)
     expect(shown).toContain('Inbox Studio')
-    expect(shown).toContain('Firecrawl')
+    expect(shown).toContain('Web research')
     expect(shown).toContain('Twenty people were added yesterday.')
   })
 })

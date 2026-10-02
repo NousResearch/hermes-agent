@@ -796,7 +796,7 @@ DEFAULT_CONFIG = {
         "triage_specifier": _aux(120),
         "kanban_decomposer": _aux(180),
         "profile_describer": _aux(60),   # 1-2 sentence profile blurb; short, cheap
-        "goal_judge": _aux(60),          # /goal satisfaction + contract drafting; JSON calls
+        "goal_judge": _aux(30),          # /goal satisfaction + contract drafting; JSON calls
         # Curator skill-usage review can take minutes on reasoning models (umbrellas over hundreds
         # of skills); route cheaper via `hermes model` → auxiliary → Curator.
         "curator": _aux(600),

@@ -44,7 +44,7 @@ jobs:
           if ($env:RUNNER_ARCH.ToLowerInvariant() -ne $env:EXPECTED_ARCH -or $nativeArch -ne $env:EXPECTED_ARCH) {
             throw "Expected native $env:EXPECTED_ARCH runner; Actions reports $env:RUNNER_ARCH and Windows reports $nativeArch."
           }
-      - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - uses: ./.github/actions/setup-pm

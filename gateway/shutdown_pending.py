@@ -14,7 +14,7 @@ import time
 from typing import Any
 import uuid
 
-from gateway.platforms.base_pending import _PendingDispatchReservation, pending_dispatch_needs_snapshot, pending_dispatch_records
+from gateway.platforms.base_pending import _PendingDispatchReservation, pending_dispatch_records, ingress_order, pending_dispatch_needs_snapshot
 from gateway.platforms.event import MessageEvent
 
 logger = logging.getLogger(__name__)
@@ -149,15 +149,23 @@ def flush_adapter_pending(adapter: Any, reservations: dict[str, list[_PendingDis
                 recorded.append(reserved)
     pending = getattr(adapter, "_pending_messages", {})
     buffered = adapter._text_debounce_store()
-    keys = set(pending) | set(buffered) | set(reservations)
+    ingress: dict[str, list[MessageEvent]] = {}
+    for attr in ("_pending_text_batches", "_pending_photo_batches", "_media_group_events"):
+        for event in getattr(adapter, attr, {}).values():
+            ingress.setdefault(adapter._event_session_key(event), []).append(event)
+    for event in getattr(adapter, "_held_inbound_events", ()):
+        ingress.setdefault(adapter._event_session_key(event), []).append(event)
+    for events in ingress.values():
+        events.sort(key=ingress_order)
+    keys = set(pending) | set(buffered) | set(reservations) | set(ingress)
     delivery = getattr(runner, "_delivery_adapter_for", None)
     for key, tail in getattr(runner, "_queued_events", {}).items():
         if tail and callable(delivery) and delivery(tail[0].source) is adapter:
             keys.add(key)
     written: set[str] = set()
     for key in keys:
-        events = [reserved.event for reserved in reservations.get(key, [])
-                  if pending_dispatch_needs_snapshot(adapter, reserved)]
+        events = [reserved.event for reserved in reservations.get(key, []) if pending_dispatch_needs_snapshot(adapter, reserved)]
+        events.extend(ingress.get(key, ()))
         if pending.get(key) is not None:
             events.append(pending[key])
         queue = getattr(runner, "_overflow_queue", None)
@@ -181,6 +189,26 @@ def flush_adapter_pending(adapter: Any, reservations: dict[str, list[_PendingDis
                 state_for(key).conversation.queued_events[:] = events
             logger.warning("Could not preserve pending input for %s at shutdown", key, exc_info=True)
     return written
+
+
+def discard_persisted_ingress(adapter: Any, session_keys: set[str]) -> None:
+    for attr, tasks_attr in (
+        ("_pending_text_batches", "_pending_text_batch_tasks"),
+        ("_pending_photo_batches", "_pending_photo_batch_tasks"),
+        ("_media_group_events", "_media_group_tasks"),
+    ):
+        store = getattr(adapter, attr, {})
+        tasks = getattr(adapter, tasks_attr, {})
+        for key, event in list(store.items()):
+            if adapter._event_session_key(event) not in session_keys:
+                continue
+            store.pop(key, None)
+            task = tasks.pop(key, None)
+            if task is not None and not task.done():
+                task.cancel()
+    held = getattr(adapter, "_held_inbound_events", None)
+    if held is not None:
+        held[:] = [event for event in held if adapter._event_session_key(event) not in session_keys]
 
 
 def project_pending_snapshot(path: Path, payload: dict[str, Any], *, session_resolver: Any) -> int:

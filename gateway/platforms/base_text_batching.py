@@ -6,7 +6,10 @@ import asyncio
 import logging
 from typing import TYPE_CHECKING, Optional
 
-from gateway.platforms.base_pending import merge_recorded
+from gateway.platforms.base_pending import (
+    merge_recorded, _PendingDispatchReservation, can_join_pending_event,
+    pending_dispatch_scope, reserve_pending_dispatch, release_pending_dispatch_record, ingress_order,
+)
 from gateway.platforms.base_pending_merge import _append_batched_text
 from gateway.platforms.event import MessageEvent
 
@@ -17,6 +20,11 @@ logger = logging.getLogger("gateway.platforms.base")
 
 
 class BaseTextBatchingMixin:
+    def _text_batch_dependencies(self: BasePlatformAdapter) -> dict[str, asyncio.Task]:
+        from gateway.platforms.base import _lazy_attr
+
+        return _lazy_attr(self, "_pending_text_batch_dependencies", dict)
+
     def _text_batch_key(self: BasePlatformAdapter, event: MessageEvent) -> str:
         """Session-scoped key for text batching (subclasses may override)."""
         return self._event_session_key(event)
@@ -25,6 +33,7 @@ class BaseTextBatchingMixin:
         """Buffer a text event (merging into a pending one) and restart the flush timer."""
         if self._drop_unresolved(event):
             return
+        ingress_order(event)
         key = self._text_batch_key(event)
         existing = self._text_batch_boundary(
             key, self._pending_text_batches.get(key), event
@@ -48,17 +57,22 @@ class BaseTextBatchingMixin:
         event: MessageEvent,
     ) -> Optional[MessageEvent]:
         """Dispatch the completed batch when its reply target conflicts."""
-        if existing is None or not existing.reply_context_conflicts(event):
+        if existing is None or can_join_pending_event(existing, event):
             return existing
 
-        prior_task = self._pending_text_batch_tasks.pop(key, None)
-        if prior_task is not None and not prior_task.done():
-            prior_task.cancel()
-        completed = self._pop_text_batch(key)
-        if completed is not None:
-            task = asyncio.create_task(self._dispatch_completed_text_batch(completed))
-            self._background_tasks.add(task)
-            task.add_done_callback(self._background_tasks.discard)
+        previous = self._pending_text_batch_tasks.pop(key, None)
+        if previous is not None and not previous.done():
+            previous.cancel()
+        self._pop_text_batch(key)
+        boundary_key = f"{key}:boundary:{id(existing)}"
+        self._pending_text_batches[boundary_key] = existing
+        dependencies = BaseTextBatchingMixin._text_batch_dependencies(self)
+        predecessor = dependencies.pop(key, None)
+        if predecessor is not None:
+            dependencies[boundary_key] = predecessor
+        task = asyncio.create_task(BaseTextBatchingMixin._flush_text_batch(self, boundary_key, delay=0))
+        self._pending_text_batch_tasks[boundary_key] = task
+        dependencies[key] = task
         return None
 
     async def _dispatch_completed_text_batch(
@@ -97,7 +111,18 @@ class BaseTextBatchingMixin:
         if event is not None:
             await self._dispatch_text_batch(event)
 
-    async def _flush_text_batch(self: BasePlatformAdapter, key: str) -> None:
+
+    async def _dispatch_owned_text_batch(
+        self: BasePlatformAdapter, event: MessageEvent, session_key: str,
+        reservation: _PendingDispatchReservation,
+    ) -> None:
+        try:
+            with pending_dispatch_scope(self, session_key, event):
+                await self._dispatch_text_batch(event)
+        finally:
+            release_pending_dispatch_record(self, session_key, reservation)
+
+    async def _flush_text_batch(self: BasePlatformAdapter, key: str, *, delay: float | None = None) -> None:
         """Wait for the quiet period, then dispatch the batch for ``key``.
 
         Two races share this body. (1) ``_enqueue_text_event`` cancels the prior flush task
@@ -109,24 +134,32 @@ class BaseTextBatchingMixin:
         dispatch is shielded and the outer CancelledError swallowed."""
         current_task = asyncio.current_task()
         try:
-            await asyncio.sleep(
-                self._text_batch_delay_for(self._pending_text_batches.get(key))
-            )
+            await asyncio.sleep(self._text_batch_delay_for(self._pending_text_batches.get(key)) if delay is None else delay)
+            dependencies = BaseTextBatchingMixin._text_batch_dependencies(self)
+            predecessor = dependencies.get(key)
+            if predecessor is not None:
+                await asyncio.gather(asyncio.shield(predecessor), return_exceptions=True)
             owner = self._pending_text_batch_tasks.get(key)
             if owner is not None and owner is not current_task:
                 return
             event = self._pop_text_batch(key)
             if event is None:
                 return
-            logger.info(
-                "[%s] Flushing text batch %s (%d chars)",
-                self.name,
-                key,
-                len(event.text or ""),
-            )
-            await asyncio.shield(self._dispatch_text_batch(event))
+            logger.info("[%s] Flushing text batch %s (%d chars)", self.name, key, len(event.text or ""))
+            session_key = self._event_session_key(event)
+            reservation = reserve_pending_dispatch(self, session_key, event, accepted=False)
+            dispatch = asyncio.create_task(BaseTextBatchingMixin._dispatch_owned_text_batch(
+                self, event, session_key, reservation))
+            reservation.task = dispatch
+            from gateway.platforms.base import _lazy_attr
+
+            background = _lazy_attr(self, "_background_tasks", set)
+            background.add(dispatch)
+            dispatch.add_done_callback(background.discard)
+            await asyncio.shield(dispatch)
         except asyncio.CancelledError:
             pass
         finally:
             if self._pending_text_batch_tasks.get(key) is current_task:
                 self._pending_text_batch_tasks.pop(key, None)
+                BaseTextBatchingMixin._text_batch_dependencies(self).pop(key, None)

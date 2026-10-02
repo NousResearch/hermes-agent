@@ -1,4 +1,4 @@
-"""Desktop loopback renderer -> authenticated remote gateway upgrade (#131271)."""
+"""Authenticated gateway upgrades reject malformed and cross-site web origins."""
 
 from urllib.parse import parse_qs, urlparse
 
@@ -46,25 +46,24 @@ def _ticket(client):
     return response.json()["ticket"]
 
 
-def test_authenticated_desktop_origin_completes_gateway_handshake(remote_dashboard):
-    """HTTP readiness alone must not mask a failed renderer WebSocket leg."""
+def test_authenticated_allowed_origin_completes_gateway_handshake(remote_dashboard):
     assert remote_dashboard.get("/api/status").status_code == 200
     for origin in (
-        "http://100.64.0.10:9119",  # ordinary same-origin dashboard still works
-        "http://127.0.0.1:52133",
-        "http://localhost:61307",
-        "http://[::1]:52133",
+        "http://100.64.0.10:9119",
+        "file://",
+        "null",
+        "app://hermes",
     ):
         ticket = _ticket(remote_dashboard)
         with remote_dashboard.websocket_connect(
             f"/api/ws?ticket={ticket}", headers={"Origin": origin}
         ) as connection:
             assert connection.receive_json()["params"]["type"] == "gateway.ready"
-            connection.send_json({"jsonrpc": "2.0", "id": "desktop-ping", "method": "gateway.ping"})
+            connection.send_json({"jsonrpc": "2.0", "id": "origin-ping", "method": "gateway.ping"})
             assert connection.receive_json() == {
-                "jsonrpc": "2.0", "id": "desktop-ping", "result": {"ok": True}
+                "jsonrpc": "2.0", "id": "origin-ping", "result": {"ok": True}
             }
-        # A Desktop reconnect must mint a fresh ticket, never reuse an accepted one.
+        # Reconnects must mint a fresh ticket, never reuse an accepted one.
         with pytest.raises(WebSocketDisconnect) as rejected:
             with remote_dashboard.websocket_connect(
                 f"/api/ws?ticket={ticket}", headers={"Origin": origin}
@@ -73,13 +72,18 @@ def test_authenticated_desktop_origin_completes_gateway_handshake(remote_dashboa
         assert rejected.value.code == 4401
 
 
-def test_desktop_origin_exemption_preserves_auth_and_host_boundaries(remote_dashboard, monkeypatch):
+def test_gateway_upgrade_preserves_auth_host_and_origin_boundaries(remote_dashboard, monkeypatch):
     for headers in (
         {"Origin": "https://evil.test"},
+        {"Origin": "http://127.0.0.1:52133"},
+        {"Origin": "http://localhost:61307"},
+        {"Origin": "http://[::1]:52133"},
         {"Origin": "http://localhost.evil.test:52133"},
         {"Origin": "http://evil.test@localhost:52133"},
         {"Origin": "http://localhost:notaport"},
         {"Origin": "http://[::1].evil.test:52133"},
+        {"Origin": "http://[::1"},
+        {"Origin": "https://[not-an-ip]:52133"},
         {"Origin": "http://testclient:52133"},
         {"Host": "evil.test:9119", "Origin": "http://127.0.0.1:52133"},
     ):
@@ -92,7 +96,7 @@ def test_desktop_origin_exemption_preserves_auth_and_host_boundaries(remote_dash
     for query in ("", "?ticket=invalid", f"?token={web_server._SESSION_TOKEN}"):
         with pytest.raises(WebSocketDisconnect) as rejected:
             with remote_dashboard.websocket_connect(
-                f"/api/ws{query}", headers={"Origin": "http://127.0.0.1:52133"}
+                f"/api/ws{query}", headers={"Origin": "null"}
             ):
                 pass
         assert rejected.value.code == 4401

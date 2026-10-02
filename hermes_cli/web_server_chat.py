@@ -169,9 +169,8 @@ def _ws_host_origin_reason(ws: "WebSocket") -> Optional[str]:
 
     HTTP middleware does not run for WebSocket routes, so the DNS-rebinding
     Host check is repeated here; an Origin header, when present, must target the
-    bound host. Non-web origins (file://, null, app://) are trusted. A gated
-    dashboard also accepts the packaged Desktop's loopback HTTP renderer:
-    callers validate the WS credential first, and the Host check still applies.
+    bound host.  Non-web origins (packaged Electron: file://, null, app://) are
+    trusted — the credential check is the real auth boundary there.
     """
     from hermes_cli.web_server import _is_accepted_host, app
     bound_host = getattr(app.state, "bound_host", None)
@@ -189,8 +188,6 @@ def _ws_host_origin_reason(ws: "WebSocket") -> Optional[str]:
     except ValueError:
         return f"origin_mismatch origin={origin} bound={bound_host}"
     if parsed.scheme not in {"http", "https"}:
-        return None
-    if getattr(app.state, "auth_required", False) and _is_accepted_host(parsed.netloc, "127.0.0.1"):
         return None
     if not parsed.netloc or not _is_accepted_host(parsed.netloc, bound_host, trusted_public_hosts):
         return f"origin_mismatch origin={origin} bound={bound_host}"

@@ -1337,6 +1337,12 @@ Unlike Discord (where reactions are additive), Telegram's Bot API replaces all b
 If the bot doesn't have permission to add reactions in a group, the reaction calls fail silently and message processing continues normally.
 :::
 
+## Custom Emoji in Replies
+
+Telegram MarkdownV2 renders `![😀](tg://emoji?id=<custom_emoji_id>)` as a custom (Premium) emoji. The adapter passes this form through unescaped, so a plugin (`transform_llm_output`) or the model itself can embed custom emoji in replies — for example a provider logo badge keyed on the model that answered. Any other `![alt](url)` stays plain text (the `!` is escaped as before).
+
+The Bot API only shows custom emoji in messages sent by a bot whose owner has Telegram Premium; without it the fallback unicode emoji inside the brackets is shown instead.
+
 ## Per-Channel Prompts
 
 Assign ephemeral system prompts to specific Telegram groups or forum topics. The prompt is injected at runtime on every turn — never persisted to transcript history — so changes take effect immediately.

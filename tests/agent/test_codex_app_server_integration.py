@@ -99,6 +99,7 @@ class TestRunConversationCodexPath:
             )
 
         monkeypatch.setattr(CodexAppServerSession, "run_turn", fake_run_turn)
+        monkeypatch.setattr(CodexAppServerSession, "ensure_started", lambda self: "thread-stub-1")
         agent = _make_codex_agent(
             model="gpt-5.4",
             reasoning_config=reasoning_config,
@@ -125,6 +126,7 @@ class TestRunConversationCodexPath:
             return TurnResult(final_text="done", projected_messages=[{"role": "assistant", "content": "done"}])
 
         monkeypatch.setattr(CodexAppServerSession, "run_turn", fake_run_turn)
+        monkeypatch.setattr(CodexAppServerSession, "ensure_started", lambda self: "thread-stub-1")
         agent = _make_codex_agent(model=model, reasoning_config={"enabled": True, "effort": "ultra"})
         agent.provider = "openai-codex"
         with patch.object(agent, "_spawn_background_review", return_value=None):

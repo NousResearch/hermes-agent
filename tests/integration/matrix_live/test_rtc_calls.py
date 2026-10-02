@@ -108,6 +108,11 @@ def rtc_gateway(tmp_path, gateway_image, synapse, live_room, rtc_services):
     shutil.rmtree(home)
 
 
+@pytest.fixture
+def gateway(rtc_gateway: LiveGateway) -> LiveGateway:
+    return rtc_gateway
+
+
 @pytest.mark.parametrize("mode", ["leave", "shutdown", "crash", "restart"])
 def test_matrix_rtc_client_visible_lifecycle_and_duplex_audio(
         mode, rtc_gateway, rtc_services, live_room, linux_nio_observer, synapse):
@@ -149,7 +154,11 @@ def test_matrix_rtc_client_visible_lifecycle_and_duplex_audio(
             container.get_wrapped_container().start()
         control = json.dumps({"mode": mode})
         observer.run_python(f"from pathlib import Path; Path('/opt/data/rtc-peer-control.json').write_text({control!r})")
-        output = future.result(timeout=90)
+        try:
+            output = future.result(timeout=90)
+        except Exception:
+            print(logs())
+            raise
         result = peer_json("/opt/data/rtc-peer-result.json")
     assert {"mode": result["mode"], "left": result["left"]} == {"mode": mode, "left": {}}, output
     if mode == "shutdown":

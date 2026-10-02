@@ -27,7 +27,9 @@ async def wait_until(check, description: str, timeout: float = 25):
         if result:
             return result
         await asyncio.sleep(0.1)
-    raise AssertionError(f"Timed out waiting for {description}")
+    trace = Path("/opt/data/rtc-peer-state.json")
+    details = trace.read_text() if trace.exists() else "unavailable"
+    raise AssertionError(f"Timed out waiting for {description}; bot state: {details}")
 
 
 async def credentials(http, user_id, access_token, device_id, room_id):
@@ -134,6 +136,7 @@ async def run(room_id: str, bot_id: str, mode: str, mallory: dict, startup_grace
                     events = await response.json()
                 matches = [event for event in events if event.get("type") == MEMBER_TYPE
                            and event.get("state_key", "").startswith(bot_key)]
+                (paths / "rtc-peer-state.json").write_text(json.dumps(matches))
                 return matches[0] if matches else None
 
             async def bot_membership():

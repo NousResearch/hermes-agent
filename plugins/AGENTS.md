@@ -35,7 +35,8 @@ command. A hook with no concrete consumer is speculative infrastructure and is r
 ## Plugin catalog (`plugin-catalog/`, Sep 2026)
 
 The ONLY discovery system for out-of-tree plugins. One YAML per entry, 40-hex SHA pin mandatory,
-human-merged via PR (`plugin-catalog/README.md` = admission policy; `plugin-catalog-ci.yml` clones
+human-merged via PR (`plugin-catalog/README.md` = admission policy, mirrored word for word in
+`website/docs/developer-guide/plugins/catalog-submission.md` with the submission guide; `plugin-catalog-ci.yml` clones
 each changed entry at its pin and runs `hermes plugins validate`). `removed.yaml` is the kill list —
 every install path (CLI, dashboard, TUI) refuses matches (repo URLs compared by canonical
 `host/owner/repo`, so `git@`/`ssh://`/`www.` spellings match); only the CLI has a loud

@@ -1261,6 +1261,45 @@ def _clone_all_into(source_dir: Path, profile_dir: Path, canon: str) -> None:
         )
 
 
+def _clone_plugins_ignore(plugins_root: Path):
+    """copytree ignore for a cloned ``plugins/``: :func:`_non_exportable_entries` everywhere, plus
+    the installer's in-flight ``.install-*`` / ``.update-*`` staging dirs at the root."""
+    root = str(plugins_root)
+
+    def _ignore(directory: str, names: List[str]) -> set:
+        ignored = _non_exportable_entries(directory, names)
+        if directory == root:
+            # Directories only: ``.install-metadata.json`` shares the prefix and must travel.
+            ignored.update(n for n in names if n.startswith((".install-", ".update-"))
+                           and os.path.isdir(os.path.join(directory, n)))
+        return ignored
+    return _ignore
+
+
+def _clone_plugins(source_dir: Path, profile_dir: Path) -> None:
+    """Copy the source's user-installed plugins (``plugins/`` with ``.install-metadata.json``).
+
+    ``config.yaml`` already carries ``plugins.enabled`` and ``memory.provider``; without the code a
+    catalog-installed memory provider resolves nowhere in the clone, so the clone silently runs
+    without its memory (or, with lazy installs on, re-fetches the latest catalog pin instead of the
+    revision the source runs). The copy keeps each plugin's tree, revision and catalog provenance,
+    so ``hermes plugins update/remove`` work in the clone exactly as in the source. Python
+    dependencies live in the shared venv, already installed for the source's identical copy."""
+    source_plugins = source_dir / "plugins"
+    if source_plugins.is_dir():
+        _copytree_keep_junctions(source_plugins, profile_dir / "plugins",
+                                 _clone_plugins_ignore(source_plugins), dirs_exist_ok=True)
+
+
+def cloned_plugin_names(profile_dir: Path) -> List[str]:
+    """Plugins a clone now carries in ``plugins/``, for the CLI notice."""
+    try:
+        return sorted(p.name for p in (profile_dir / "plugins").iterdir()
+                      if not p.name.startswith(".") and (p.is_dir() or p.is_symlink()))
+    except OSError:
+        return []
+
+
 def _bootstrap_profile_dir(profile_dir: Path, source_dir: Optional[Path],
                            sync_imports: bool = False) -> None:
     """Fresh layout: bootstrap dirs, then either seed a model block (no source) or clone
@@ -1284,11 +1323,7 @@ def _bootstrap_profile_dir(profile_dir: Path, source_dir: Optional[Path],
         _copytree_keep_junctions(source_skills, profile_dir / "skills", _non_exportable_entries, dirs_exist_ok=True)
     for relpath in _CLONE_SUBDIR_FILES:
         _clone_file(source_dir, profile_dir, relpath)
-    # Clone plugins from the source profile
-    source_plugins = source_dir / "plugins"
-    if source_plugins.is_dir():
-        shutil.copytree(source_plugins, profile_dir / "plugins",
-                        symlinks=True, dirs_exist_ok=True)
+    _clone_plugins(source_dir, profile_dir)
     from hermes_cli.profile_memory_config import active_memory_provider, clone_memory_provider_config
     clone_memory_provider_config(source_dir, profile_dir,
                                  active_memory_provider(_load_yaml_dict(source_dir / "config.yaml")))

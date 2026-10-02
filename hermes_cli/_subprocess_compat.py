@@ -13,12 +13,14 @@ import re
 import shutil
 import subprocess
 import sys
-from typing import Mapping, Sequence
+from pathlib import Path
+from typing import Mapping, NoReturn, Sequence
 
 __all__ = [
     "IS_WINDOWS",
     "resolve_node_command",
     "split_command_line",
+    "restore_ambient_pythonpath",
     "suppress_platform_ver_console",
     "windows_detach_flags",
     "windows_detach_flags_without_breakaway",
@@ -26,9 +28,15 @@ __all__ = [
     "windows_detach_popen_kwargs",
     "bounded_git_probe",
     "bounded_probe_run",
+    "selected_git_env",
+    "expose_pm_git",
     "noninteractive_git_env",
+    "noninteractive_repo_git_env",
+    "FILTER_DISCOVERY_FAILED",
     "NO_DRIVER_DIFF_FLAGS",
+    "NO_LAZY_FETCH_ENV",
     "pid_is_hermes",
+    "pid_exists_stdlib",
 ]
 
 # Flags that neutralize *attribute-scoped* diff drivers on any diff-rendering git command. A
@@ -36,8 +44,8 @@ __all__ = [
 # arbitrary program via ``[diff "evil"] command=/textconv=`` in ``.git/config``; because the
 # attacker chooses the name, ``GIT_CONFIG_KEY`` overrides in ``noninteractive_git_env`` cannot
 # enumerate it — only these flags do. ``--no-ext-diff`` kills ``command=``; ``--no-textconv`` kills
-# ``textconv=``; each alone leaves the other live. Smudge/clean filters are neutralized by the env
-# layer's ``core.hooksPath`` + running against the index without checkout.
+# ``textconv=``; each alone leaves the other live. Repository-named clean/smudge/process filters
+# are handled separately by ``noninteractive_repo_git_env`` at repo-scoped automatic call sites.
 NO_DRIVER_DIFF_FLAGS = ("--no-ext-diff", "--no-textconv")
 
 # Only these subcommands accept ``NO_DRIVER_DIFF_FLAGS`` — ``status`` and friends reject them
@@ -47,6 +55,13 @@ _DIFF_RENDERING_SUBCOMMANDS = frozenset({"diff", "show", "log", "blame"})
 # Options that consume the FOLLOWING token, so that value is never mistaken for the subcommand
 # (``-C diff`` is a path; ``-c diff=x`` is a config pair).
 _GIT_VALUE_OPTS = {"-C", "-c", "--git-dir", "--work-tree", "--namespace", "--exec-path"}
+
+
+def run(cmd, **kwargs) -> NoReturn:
+    # Shim to suppress old updater work until relaunch. Do not start its installer.
+    from hermes_cli._old_updater import stop_for_relaunch
+
+    stop_for_relaunch()
 
 
 def harden_git_argv(args: Sequence[str]) -> list[str]:
@@ -100,6 +115,34 @@ def split_command_line(line: str) -> list[str]:
             tok = tok[1:-1]
         out.append(tok)
     return out
+
+
+# -----------------------------------------------------------------------------
+# Node ecosystem launcher resolution
+# -----------------------------------------------------------------------------
+
+
+def restore_ambient_pythonpath(env: Mapping[str, str]) -> dict:
+    """Re-add the ambient ``PYTHONPATH`` to a child environment that a
+    ``build_subprocess_env``-style factory already built.
+
+    No-boot-through-venv: the boot interpreter is the pm STORE python, whose
+    imports arrive via ``PYTHONPATH=<repo>;<venv>/site-packages`` (it has no
+    editable install). The subprocess-env factories strip Hermes-owned
+    PYTHONPATH entries so agent-run children on DIFFERENT interpreter
+    versions never load the backend's C extensions — but a child that
+    re-execs THIS interpreter (``sys.executable -m hermes_cli.main``) runs
+    on the same version and needs those entries back. Prepending keeps the
+    launcher's repo-first ordering intact.
+    """
+    merged = dict(env)
+    ambient = os.environ.get("PYTHONPATH")
+    if ambient:
+        existing = merged.get("PYTHONPATH", "")
+        merged["PYTHONPATH"] = (
+            ambient + os.pathsep + existing if existing else ambient
+        )
+    return merged
 
 
 def resolve_node_command(name: str, argv: Sequence[str]) -> list[str]:
@@ -211,6 +254,14 @@ def windows_detach_popen_kwargs() -> dict:
     return {"start_new_session": True}
 
 
+# Read-only probes must never lazy-fetch. In a partial (blobless/treeless) clone a missing object makes
+# git spawn ``git fetch`` from the promisor remote, and a probe's timeout kills only its own git: the
+# startup update check's ``merge-base --is-ancestor <fresh upstream tip>`` started a ~233k-object
+# history download on every launch that ran on orphaned, piling up partial packs. With this set the
+# probe fails fast on the missing object instead (git >= 2.44; older git ignores the variable).
+NO_LAZY_FETCH_ENV = {"GIT_NO_LAZY_FETCH": "1"}
+
+
 # GIT_CONFIG_KEY_n/VALUE_n overrides for internal git children: no credential/askpass prompts, no
 # repo-configured fsmonitor/hooks/pager/editor/external-diff programs.
 _GIT_CONFIG_INJECT_PREFIXES = ("GIT_CONFIG_KEY_", "GIT_CONFIG_VALUE_")
@@ -294,6 +345,7 @@ def _user_safe_directories(base_env: "Mapping[str, str]") -> list[str]:
                 ["git", "config", scope, "-z", "--get-all", "safe.directory"],
                 capture_output=True, text=True, encoding="utf-8", errors="replace",
                 timeout=5, stdin=subprocess.DEVNULL, env=env, check=False,
+                creationflags=windows_hide_flags(),
             )
         except (OSError, subprocess.SubprocessError):
             continue
@@ -307,6 +359,51 @@ def _user_safe_directories(base_env: "Mapping[str, str]") -> list[str]:
         values.extend(records)
     _safe_directory_cache[cache_key] = list(values)
     return values
+
+
+def selected_git_env(base: Mapping[str, str] | None = None) -> dict[str, str]:
+    """PM's full Git environment, or the original base for system-Git fallback.
+
+    Keep lazy acquisition under PM's policy (not just installed-package lookup).
+    Unsupported targets and failed acquisition must not disable a working system
+    Git. Callers apply their own config/security isolation after selection.
+    """
+    env = dict(base if base is not None else os.environ)
+    try:
+        from pm import ensure
+
+        return ensure("git", base_env=env).env
+    except Exception:
+        return env
+
+
+def expose_pm_git(project_root: Path) -> None:
+    """Put PM's git on PATH, and in PM's facts, for a Windows git checkout.
+
+    install.ps1 stages the pinned Git for Windows into PM's store for its own
+    process only, and PM's facts never record it, so every later bare ``git``
+    (``hermes update``, the source-completion stamp, plugin installs, doctor)
+    died with ``[WinError 2]``. A git found under PM's store is that unrecorded
+    copy inherited from the installer, so it is recorded too. Callers are
+    explicit user actions (like ``ensure_tools_for_sync``), so acquire PM's git
+    outright; children inherit the PATH. The machine's own git, and a git-less
+    ZIP install that never runs git, are untouched. Raises what ``pm.ensure``
+    raises.
+    """
+    if sys.platform != "win32" or not (Path(project_root) / ".git").exists():
+        return
+    from hermes_platform.resolver import locate_command
+    from pm.paths import store_root
+
+    found = locate_command("git").command
+    if found and not Path(found[0]).resolve().is_relative_to(store_root()):
+        return
+    from pm import ensure
+
+    env = ensure("git", explicit=True).env
+    path = next((value for key, value in env.items() if key.upper() == "PATH"), None)
+    if path:
+        os.environ["PATH"] = path
 
 
 def noninteractive_git_env(base: "Mapping[str, str] | None" = None) -> dict[str, str]:
@@ -370,6 +467,188 @@ def noninteractive_git_env(base: "Mapping[str, str] | None" = None) -> dict[str,
         env[f"GIT_CONFIG_KEY_{idx}"] = key
         env[f"GIT_CONFIG_VALUE_{idx}"] = value
     return env
+
+
+_FILTER_COMMAND_KEY = re.compile(r"^filter\..+\.(?:clean|smudge|process)$", re.IGNORECASE)
+# ``includeIf`` is evaluated against the CURRENT checkout: ``onbranch:`` against the current branch,
+# ``gitdir:`` against the current git dir (``.git/worktrees/<name>`` during ``worktree add``), so
+# the spawned git can load an include this discovery's ``--includes`` skipped. Every include target
+# is therefore read directly, whatever its condition, and its filter names are neutralized too.
+# Global/system config is already /dev/null, so only repo-local includes reach this.
+_INCLUDE_IF_KEY = re.compile(r"^includeif\..*\.path$", re.IGNORECASE)
+# Any include (conditional or not) inside an include target: discovery does not walk it twice.
+_INCLUDE_KEY = re.compile(r"^include(?:if\..*)?\.path$", re.IGNORECASE)
+# `git config --get-regexp` pattern for the keys discovery reads (filter commands and includes).
+_DISCOVERY_KEYS_REGEXP = r"^(filter\..*\.(clean|smudge|process)|include\.path|includeif\..*\.path)$"
+# Each include target costs one bounded spawn on every hardened git call; refuse past this many.
+_MAX_INCLUDE_TARGETS = 16
+# Each discovered key costs two env entries; a repo with tens of thousands of filters would make
+# every spawn fail with E2BIG ("Argument list too long"), so refuse past a generous cap.
+_MAX_FILTER_KEYS = 256
+# Stand-in stderr for a git call refused because filter discovery could not be trusted.
+FILTER_DISCOVERY_FAILED = "git filter discovery failed"
+
+
+def noninteractive_repo_git_env(
+    cwd: "str | os.PathLike[str]",
+    base: "Mapping[str, str] | None" = None,
+) -> "dict[str, str] | None":
+    """Harden internal git for one repository, including named clean/smudge/process filters.
+
+    The static environment can pin fixed config keys such as core.fsmonitor and
+    core.hooksPath, but a repository chooses filter driver names through .gitattributes.
+    Discover the effective filter command keys for this checkout and append empty command
+    overrides plus required=false to the already-isolated config block. Discovery is
+    bounded and fail-closed: if filter discovery cannot be trusted, callers skip the
+    automatic git operation instead of running with only partial hardening.
+    """
+    env = noninteractive_git_env(base)
+    # bounded_probe_run, not subprocess.run: Windows' post-timeout communicate() can deadlock and
+    # a bare spawn flashes a console. (Not bounded_git_probe: rc 1 = "no filters" is a verdict.)
+    # One probe lists the filter keys and the include paths with their origin file: -z --show-origin
+    # yields "file:<origin>", "<key>\n<value>" pairs.
+    proc = bounded_probe_run(
+        ["git", "-C", str(cwd), "config", "--includes", "--show-origin", "-z", "--get-regexp",
+         _DISCOVERY_KEYS_REGEXP],
+        timeout=2, env=env,
+    )
+    if proc is None or proc.returncode not in (0, 1):
+        return None
+    names: list[str] = []
+    targets: set[Path] = set()
+    toplevel: "Path | None" = None
+    fields = proc.stdout.split("\0")
+    for origin, entry in zip(fields[0::2], fields[1::2]):
+        key, _, value = entry.partition("\n")
+        if not _INCLUDE_IF_KEY.fullmatch(key):
+            names.append(key)
+            continue
+        if not origin.startswith("file:"):
+            return None
+        origin_path = Path(origin[len("file:"):])
+        if not origin_path.is_absolute():
+            # git prints repo-local origins relative to the worktree top level, not to *cwd*; with a
+            # caller-set GIT_DIR/GIT_WORK_TREE they are relative to something else, so refuse.
+            if env.get("GIT_DIR") or env.get("GIT_WORK_TREE"):
+                return None
+            if toplevel is None:
+                top = bounded_probe_run(["git", "-C", str(cwd), "rev-parse", "--show-toplevel"],
+                                        timeout=2, env=env)
+                if top is None or top.returncode != 0:
+                    return None
+                toplevel = Path(top.stdout.rstrip("\r\n"))  # a checkout path may end in a space
+            origin_path = toplevel / origin_path
+        # A relative include path resolves against the directory of the config file naming it.
+        target = (origin_path.parent / os.path.expanduser(value)).resolve()
+        if target in targets or not target.exists():
+            continue  # already read, or missing (git skips a missing include file)
+        if not target.is_file() or len(targets) >= _MAX_INCLUDE_TARGETS:
+            return None  # a FIFO/device/directory, or too many targets to read on every call
+        targets.add(target)
+        probe = bounded_probe_run(
+            ["git", "config", "--file", str(target), "--name-only", "-z", "--get-regexp", _DISCOVERY_KEYS_REGEXP],
+            timeout=2, env=env,
+        )
+        if probe is None or probe.returncode not in (0, 1):
+            return None
+        found = probe.stdout.split("\0")
+        # An include inside an include target would need the same walk again; refuse instead.
+        if any(_INCLUDE_KEY.fullmatch(name) for name in found):
+            return None
+        names.extend(found)
+
+    keys: list[str] = []
+    required: list[str] = []
+    seen: set[str] = set()
+    # Dedup on the exact key name git prints: section and variable lowercased, subsection case kept,
+    # and ``[filter "Evil"]`` is a different driver from ``[filter "evil"]``.
+    for raw in names:
+        key = raw.strip()
+        if not key or key in seen or not _FILTER_COMMAND_KEY.fullmatch(key):
+            continue
+        seen.add(key)
+        keys.append(key)
+        if len(keys) > _MAX_FILTER_KEYS:
+            return None
+        required_key = key.rsplit(".", 1)[0] + ".required"
+        if required_key not in seen:
+            seen.add(required_key)
+            required.append(required_key)
+
+    start = int(env["GIT_CONFIG_COUNT"])  # always set by noninteractive_git_env
+    overrides = [(key, "") for key in keys] + [(key, "false") for key in required]
+    for offset, (key, value) in enumerate(overrides):
+        env[f"GIT_CONFIG_KEY_{start + offset}"] = key
+        env[f"GIT_CONFIG_VALUE_{start + offset}"] = value
+    env["GIT_CONFIG_COUNT"] = str(start + len(overrides))
+    return env
+
+
+def posix_is_zombie(pid: int) -> bool:
+    """Zombie via ``/proc/<pid>/stat`` field 3, or ``ps -o state=`` without /proc (macOS/BSD)."""
+    try:
+        with open(f"/proc/{pid}/stat", encoding="utf-8") as fh:
+            stat_fields = fh.read().split()
+        return len(stat_fields) > 2 and stat_fields[2] == "Z"
+    except FileNotFoundError:
+        try:
+            r = subprocess.run(
+                ["ps", "-o", "state=", "-p", str(pid)],
+                capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=5,
+            )
+            return r.returncode == 0 and r.stdout.strip().startswith("Z")
+        except Exception:
+            pass
+    except (IndexError, PermissionError, OSError):
+        pass
+    return False
+
+
+def win32_pid_exists(pid: int) -> bool:
+    """psutil-free Windows liveness probe via OpenProcess/WaitForSingleObject."""
+    try:
+        import ctypes
+        kernel32 = ctypes.windll.kernel32  # type: ignore[attr-defined]
+        # Pin restypes: default c_int mangles WAIT_* DWORDs into negatives.
+        kernel32.OpenProcess.restype = ctypes.c_void_p
+        kernel32.WaitForSingleObject.restype = ctypes.c_uint
+        kernel32.GetLastError.restype = ctypes.c_uint
+        PROCESS_QUERY_LIMITED_INFORMATION, SYNCHRONIZE = 0x1000, 0x100000  # SYNCHRONIZE: for Wait*
+        WAIT_TIMEOUT, ERROR_ACCESS_DENIED = 0x00000102, 5
+        handle = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | SYNCHRONIZE, False, pid)
+        if not handle:
+            # ERROR_INVALID_PARAMETER (87): PID definitely gone. ACCESS_DENIED: exists
+            # but owned by another user/session. Any other error: conservative False.
+            return kernel32.GetLastError() == ERROR_ACCESS_DENIED
+        try:
+            # WAIT_TIMEOUT = still running; anything else = gone.
+            return kernel32.WaitForSingleObject(handle, 0) == WAIT_TIMEOUT
+        finally:
+            kernel32.CloseHandle(handle)
+    except (OSError, AttributeError):
+        return False
+
+
+def pid_exists_stdlib(pid: int) -> bool:
+    """Stdlib-only "is this PID alive" check that never signals the target (zombies report dead).
+
+    For code that must run without the dependency environment: the detached gateway restart
+    watcher is started by whatever interpreter the updater runs on (the bare store Python after
+    the package-manager handoff), so it cannot import ``gateway.status`` (``utils`` pulls in
+    ``ruamel``). ``gateway.status._pid_exists`` prefers psutil and falls back to this.
+    """
+    pid = int(pid)
+    if IS_WINDOWS:
+        return win32_pid_exists(pid)
+    if posix_is_zombie(pid):  # a zombie still answers os.kill(pid, 0)
+        return False
+    try:
+        os.kill(pid, 0)  # windows-footgun: ok — POSIX-only branch (Windows returned above)
+    except PermissionError:
+        return True  # Exists but we can't signal it.
+    except OSError:  # ProcessLookupError included
+        return False
+    return True
 
 
 def _process_start_time(pid: int) -> int | None:
@@ -497,12 +776,15 @@ def _legacy_kill_process_tree(proc: "subprocess.Popen") -> None:
 
 def bounded_probe_run(
     argv: Sequence[str], *, timeout: float, errors: str = "replace",
-    env: "Mapping[str, str] | None" = None,
+    env: "Mapping[str, str] | None" = None, cwd: "str | os.PathLike[str] | None" = None,
+    raise_on_spawn_failure: bool = False,
 ) -> "subprocess.CompletedProcess[str] | None":
     """Deadlock-safe ``subprocess.run(argv, capture_output=True, timeout=…)`` for fail-open probes.
 
     Returns a ``CompletedProcess`` when the child finished within *timeout* (any exit code), or
-    ``None`` on spawn failure or timeout.
+    ``None`` on spawn failure or timeout. With ``raise_on_spawn_failure=True`` the ``Popen``
+    exception propagates instead, so callers that treat a *timeout* as a verdict can still tell
+    "our own probe never started" apart from "the child hung".
 
     Why not ``subprocess.run``: on Windows, ``run()``'s post-timeout cleanup calls an *unbounded*
     ``communicate()`` after killing the direct child. Killing it can leave a descendant (``git.exe`` under a
@@ -512,28 +794,49 @@ def bounded_probe_run(
     machines (#87134); the git probes hit it first (#68609 / #66037).
     """
     _popen_kwargs: dict = {"creationflags": windows_hide_flags()} if IS_WINDOWS else {"process_group": 0}
+    job = None
     try:
-        proc = subprocess.Popen(
+        # Windows: contain the probe in a Job Object. `taskkill /T` walks LIVE parent pids, and a
+        # Cygwin/MSYS `exec` lets the forked stub exit once the new image runs, so a Git Bash grandchild
+        # (`sleep`, `cat`) has a dead parent and survives the tree-kill holding our pipes (#73403, proven
+        # on windows-latest). KILL_ON_JOB_CLOSE reaches it regardless of ancestry.
+        from hermes_cli.local_runtime.processes import spawn_server
+
+        proc, job = spawn_server(
             list(argv), stdout=subprocess.PIPE, stderr=subprocess.PIPE, stdin=subprocess.DEVNULL,
             text=True, encoding="utf-8", errors=errors,
-            env=dict(env) if env is not None else None, **_popen_kwargs)
+            env=dict(env) if env is not None else None, cwd=cwd, **_popen_kwargs)
     except Exception:
+        if raise_on_spawn_failure:
+            raise
         return None
     try:
         stdout, stderr = proc.communicate(timeout=timeout)
     except Exception:
         # Timeout OR any other communicate() failure (torn-down pipe, decode error): tree-kill and
         # drain bounded — leaving it running would leak the suspended-descendant class this guards.
+        _close_job(job)
         kill_process_tree(proc)
         try:
             proc.communicate(timeout=1)
         except Exception:
             pass
         return None
+    # The probe exited on its own; anything it left behind (`&` jobs) goes with the job.
+    _close_job(job)
     return subprocess.CompletedProcess(list(argv), proc.returncode, stdout, stderr)
 
 
-def bounded_git_probe(argv: Sequence[str], *, timeout: float) -> str:
+def _close_job(job) -> None:
+    if job is None:
+        return
+    try:
+        job.close()
+    except Exception:
+        pass
+
+
+def bounded_git_probe(argv: Sequence[str], *, timeout: float, env: "Mapping[str, str] | None" = None) -> str:
     """Run a short ``git`` probe and return stripped stdout, or ``""`` on ANY failure.
 
     On Windows ``run()``'s post-timeout cleanup calls an unbounded ``communicate()``; a suspended
@@ -559,8 +862,7 @@ def bounded_git_probe(argv: Sequence[str], *, timeout: float) -> str:
     openai/codex#36793). ``process_group`` only changes which group the child belongs to; it does not detach
     the terminal or alter the fast path.
     """
-    result = bounded_probe_run(argv, timeout=timeout, env=noninteractive_git_env())
+    result = bounded_probe_run(argv, timeout=timeout, env={**(env or noninteractive_git_env()), **NO_LAZY_FETCH_ENV})
     if result is None or result.returncode != 0:
         return ""
     return (result.stdout or "").strip()
-

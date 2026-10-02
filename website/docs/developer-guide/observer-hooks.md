@@ -136,6 +136,8 @@ API hooks describe provider attempts inside the agent loop:
 | `pre_api_request` | Immediately before a provider API request. |
 | `post_api_request` | After a successful provider response. |
 | `api_request_error` | After a failed provider request or retryable error path. |
+| `pre_auxiliary_call` | Before each provider attempt of an auxiliary LLM call (titling, compression, MoA, vision, ...). Carries `aux_task`; the `*_api_request` hooks stay main-loop only. |
+| `post_auxiliary_call` | After that attempt returns or raises (`error` set on failure). |
 
 `pre_api_request` includes:
 
@@ -206,7 +208,8 @@ Common fields include `command`, `description`, `pattern_key`,
 `pattern_keys`, `session_key`, and `surface`.
 
 `post_approval_response` also includes `choice`, with values such as `once`,
-`session`, `always`, `deny`, and `timeout`.
+`session`, `always`, `deny`, `timeout`, and `cancelled` (nobody answered: the prompt
+was withdrawn — turn interrupted or ended — or never reached the user on the CLI).
 
 Approval hooks are observer-only. Plugins cannot pre-answer or veto approvals
 from these hooks. To prevent a tool from reaching approval, use
@@ -324,7 +327,8 @@ The bundled Langfuse plugin demonstrates direct hook-based observability for
 turns, provider requests, and tool calls.
 
 The native NeMo Relay SDK integration maps Hermes session, turn, LLM, and tool
-lifecycles to Relay. Explicit Relay plugin configuration can add
+lifecycles to Relay. Relay's discovered user and system configuration, or an
+explicit file selected with `HERMES_NEMO_RELAY_PLUGINS_TOML`, can add
 [ATOF, ATIF, or OTEL](https://docs.nvidia.com/nemo/relay/configure-plugins/observability/about)
 exporters and execution middleware; see
 [Relay shared metrics](relay-shared-metrics.md).

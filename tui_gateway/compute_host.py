@@ -3,6 +3,12 @@
 
 from __future__ import annotations
 
+# First, like every entry point: stdio, import-path and environ-lifetime fixes (hermes_bootstrap).
+# Only as ``python -m``: tests import this module, and the bootstrap's TMPDIR/scratch exports
+# must not fire in a library importer.
+if __name__ == "__main__":
+    import hermes_bootstrap  # noqa: F401
+
 import argparse
 import concurrent.futures
 import contextlib
@@ -96,6 +102,11 @@ class ComputeHost:
     def close(self) -> None:
         self._closed.set()
         self._executor.shutdown(wait=False, cancel_futures=True)
+        # Every caller hard-exits next (os._exit skips atexit): a foreground command still
+        # running in its own process group would outlive the host.
+        with contextlib.suppress(Exception):
+            from tools.environments.base import kill_live_foreground_processes
+            kill_live_foreground_processes()
 
     def shutdown(self, *, reason: str = "shutdown", wait: float = 10.0) -> None:
         """Drain in-flight turns, then finalize every session.
@@ -219,6 +230,12 @@ class ComputeHost:
         try:
             from tui_gateway import server
             session = self._ensure_server_session(server, frame)
+            # #101416: the parent already holds this session's active-session lease (claimed in
+            # prompt.submit before routing here). Install the inert borrow BEFORE the turn runs, or
+            # _admit_prompt_turn re-claims from this child pid and is fenced out by the parent's own
+            # registry entry ("already has a live owner"). Unknown flag (parent predates the field):
+            # no borrow, legacy self-claim path, unchanged behaviour.
+            server._install_borrowed_lease(sid, session, frame)
             text = frame["text"] if "text" in frame else frame.get("prompt", "")
             inflight = frame["text"] if "text" in frame else frame.get("prompt")
             with session["history_lock"]:
@@ -242,7 +259,9 @@ class ComputeHost:
             with contextlib.suppress(Exception):
                 server._persist_branch_seed(session)
             server._run_prompt_submit(
-                request_id, sid, session, text, display_kind=frame.get("display_kind") or None)
+                request_id, sid, session, text, display_kind=frame.get("display_kind") or None,
+                display_metadata=(frame.get("display_metadata")
+                                  if isinstance(frame.get("display_metadata"), dict) else None))
             run_thread = session.get("_run_thread")
             if run_thread is not None and hasattr(run_thread, "join"):
                 while run_thread.is_alive():
@@ -299,6 +318,11 @@ class ComputeHost:
             session = self._build_server_session(server, frame, sid)
         if isinstance(frame.get("attached_images"), list):
             session["attached_images"] = list(frame.get("attached_images") or [])
+        # A model switch queued on the host side while this session was busy rides
+        # the turn frame; adopt it here so the child's turn thread applies it via
+        # _apply_pending_model_switch — in the child the live agent exists.
+        if frame.get("pending_model_switch"):
+            session["pending_model_switch"] = dict(frame["pending_model_switch"])
         return session
 
     def _build_server_session(self, server: Any, frame: dict[str, Any], sid: str) -> dict:
@@ -312,9 +336,17 @@ class ComputeHost:
             if profile_home:
                 from hermes_constants import set_hermes_home_override
                 from agent.secret_scope import build_profile_secret_scope, set_secret_scope
+                from hermes_cli.env_loader import hydrate_profile_secret_sources
                 from hermes_state_registry import acquire
                 home_token = set_hermes_home_override(profile_home)
-                secret_token = set_secret_scope(build_profile_secret_scope(Path(profile_home)))
+                # External sources first (1Password / Bitwarden / secrets.command): this isolated
+                # turn process never ran the launch dotenv path for the routed profile, so without
+                # hydration the scope is built on an empty external snapshot and a vault-only
+                # provider key fails closed. Same order as gateway/run.py::_load_profile_secret_scope
+                # and tui_gateway/model_switch.py::_profile_runtime_scope_tokens (#119521).
+                hydrate_profile_secret_sources(Path(profile_home))
+                secret_token = set_secret_scope(
+                    build_profile_secret_scope(Path(profile_home)), profile_home=profile_home)
                 # DEDICATED handle — ours only until _make_agent succeeds, then the agent owns
                 # it. A RAISING _make_agent is the one path where nothing takes it (``owns_db``).
                 session_db = acquire(Path(profile_home) / "state.db")
@@ -324,6 +356,7 @@ class ComputeHost:
                 reasoning_config_override=frame.get("reasoning_config_override"),
                 service_tier_override=frame.get("service_tier_override"),
                 platform_override=frame.get("source"),
+                cwd_override=str(frame.get("cwd") or "") or None,
                 context_cwd_is_launch_artifact=bool(
                     frame.get("context_cwd_is_launch_artifact", False)),
                 session_db=session_db, auth_user_id=frame.get("auth_user_id"))
@@ -372,6 +405,10 @@ class ComputeHost:
         session["profile_home"] = profile_home or session.get("profile_home")
         if frame.get("model_override") is not None:
             session["model_override"] = frame.get("model_override")
+        # See _ensure_server_session's existing-session branch — a queued model
+        # switch crosses the process boundary and applies at this child's turn start.
+        if frame.get("pending_model_switch"):
+            session["pending_model_switch"] = dict(frame["pending_model_switch"])
         return session
 
     def _handle_reload_mcp(self, frame: dict[str, Any]) -> None:
@@ -438,9 +475,14 @@ class ComputeHost:
             with session["history_lock"]:
                 ack.update(_history_meta(session))
         else:
-            output = server._mirror_slash_side_effects(sid, session, command) if command else ""
+            if route_name == "slash.refine":
+                parts = command.lstrip("/").split(maxsplit=1)
+                focus = parts[1] if len(parts) > 1 else ""
+                output = server._live_slash_command_output(sid, session, "refine", focus) or ""
+            else:
+                output = server._mirror_slash_side_effects(sid, session, command) if command else ""
             with session["history_lock"]:
-                messages = server._history_to_messages(list(session.get("history") or []))
+                messages = server._history_to_messages(list(session.get("history") or []), profile_home=session.get("profile_home"))
                 ack = {"output": output, **_history_meta(session), "messages": messages}
         ack["session_info"] = server._session_info(session.get("agent"), session)
         return ack
@@ -494,9 +536,15 @@ def _default_workers() -> int:
 
 def run_host(stdin: Any = None, stdout: Any = None) -> None:
     os.environ["HERMES_COMPUTE_HOST_CHILD"] = "1"
-    stdin = stdin or sys.stdin
+    # JSONL framing is byte-oriented; avoid text-stream read-ahead on Windows pipes.
+    stdin = stdin if stdin is not None else getattr(sys.stdin, "buffer", sys.stdin)
     host = ComputeHost(stdout=stdout or sys.stdout)
     shutting_down = threading.Event()
+    # No client is connected to this process: session-less broadcasts (``broadcast_plugin_event``
+    # from a plugin tool/hook running in the isolated turn) ride the host pipe to the parent
+    # gateway, which fans them out to its clients (compute_host_bridge._relay_compute_host_rpc).
+    from tui_gateway import server
+    server.register_live_transport(host._transport)
 
     def _signal_handler(_signum, _frame) -> None:
         if shutting_down.is_set():
@@ -536,6 +584,7 @@ def run_host(stdin: Any = None, stdout: Any = None) -> None:
             if not reader.is_alive():
                 break
     finally:
+        server.unregister_live_transport(host._transport)
         host.shutdown(reason="stdin_closed", wait=2.0)
 
 
@@ -547,86 +596,3 @@ def main(argv: list[str] | None = None) -> int:
 
 if __name__ == "__main__":  # pragma: no cover
     raise SystemExit(main())
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-from dataclasses import field  # noqa: F401,E402
-from dataclasses import dataclass  # noqa: F401,E402
-from dataclasses import dataclass  # noqa: F401,E402
-from dataclasses import field  # noqa: F401,E402
-
-@dataclass
-class SpikeAgent:
-    """A deterministic AIAgent-shaped object for pipe/interrupt measurements."""
-
-    session_id: str
-    history: list[dict[str, str]] = field(default_factory=list)
-    _interrupt: threading.Event = field(default_factory=threading.Event)
-
-    def clear_interrupt(self) -> None:
-        self._interrupt.clear()
-
-    def interrupt(self, *, hard_cancel: bool = False) -> None:
-        self._interrupt.set()
-
-    def run_conversation(
-        self,
-        prompt: str,
-        *,
-        conversation_history: list[dict[str, str]] | None = None,
-        stream_callback: Callable[[str], None] | None = None,
-        delta_count: int = 24,
-        delay_s: float = 0.001,
-    ) -> dict[str, Any]:
-        base_history = list(conversation_history if conversation_history is not None else self.history)
-        chunks: list[str] = []
-        interrupted = False
-        for index in range(max(0, int(delta_count))):
-            if self._interrupt.is_set():
-                interrupted = True
-                break
-            chunk = f"{self.session_id}:{prompt}:{index:04d} "
-            chunks.append(chunk)
-            if stream_callback is not None:
-                stream_callback(chunk)
-            if delay_s > 0:
-                time.sleep(delay_s)
-        if self._interrupt.is_set():
-            interrupted = True
-        final = "".join(chunks)
-        if interrupted:
-            final += "[interrupted]"
-        messages = [
-            *base_history,
-            {"role": "user", "content": prompt},
-            {"role": "assistant", "content": final},
-        ]
-        self.history = messages
-        return {"final_response": final, "messages": messages, "interrupted": interrupted}
-
-@dataclass
-class HostSession:
-    sid: str
-    agent: SpikeAgent
-    history_version: int = 0
-    running: bool = False
-    lock: threading.Lock = field(default_factory=threading.Lock)
-
-
-_PLUGIN_COMPAT_LAZY = {
-    'request_hard_interrupt': ('agent.interrupt_compat', 'request_hard_interrupt'),
-}
-
-
-def __getattr__(name):  # PEP 562 — lazy so no import cycles
-    target = _PLUGIN_COMPAT_LAZY.get(name)
-    if target is None:
-        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-    import importlib
-    from hermes_cli.plugin_compat import warn_once
-    warn_once(__name__, name, *target)
-    return getattr(importlib.import_module(target[0]), target[1])
-# ---- END PLUGIN-COMPAT ----

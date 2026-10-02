@@ -162,7 +162,8 @@ Session ID 格式为 `YYYYMMDD_HHMMSS_<hex>`——CLI/TUI session 使用 6 位�
    - **Telegram** — 开启新的论坛话题（如果在聊天中启用了 Bot API 9.4+ Topics 模式则为私信话题，或论坛超级群组话题）。
    - **Discord** — 在主文字频道下创建 1440 分钟自动归档的线程。
    - **Slack** — 发布一条种子消息并使用其 `ts` 作为线程锚点。
-   - **WhatsApp / Signal / Matrix / SMS** — 无原生线程，回退到直接使用主频道。
+   - **Matrix** — 发布一条种子消息并使用其事件 id 作为线程根（`m.thread` 关系）。
+   - **WhatsApp / Signal / SMS** — 无原生线程，回退到直接使用主频道。
 4. Gateway 将目标键重新绑定到你现有的 CLI session id，然后伪造一个合成用户轮次，要求 agent 确认并总结。回复会出现在新线程中。
 5. Gateway 确认成功后，CLI 打印 `/resume` 提示并干净退出：
 
@@ -181,7 +182,7 @@ Session ID 格式为 `YYYYMMDD_HHMMSS_<hex>`——CLI/TUI session 使用 6 位�
 - 线程创建失败（权限不足、话题模式未开启）→ 直接回退到主频道并仍然完成切换；没有线程隔离，但切换本身有效。
 - `adapter.send` 失败（速率限制、临时 API 错误）→ 切换标记为失败并附带原因；行被清除以便重试。
 
-**值得注意的限制：** 对于无线程能力的多用户群组主频道平台，合成轮次以私信风格 session 为键。这对自私信主频道（典型设置）有效，但对真正的共享群聊并不理想。线程支持覆盖 Telegram / Discord / Slack——这是最常见的情况——因此大多数设置不会遇到此问题。
+**值得注意的限制：** 对于无线程能力的多用户群组主频道平台，合成轮次以私信风格 session 为键。这对自私信主频道（典型设置）有效，但对真正的共享群聊并不理想。线程支持覆盖 Telegram / Discord / Slack / Matrix——这是最常见的情况——因此大多数设置不会遇到此问题。
 
 ## Session 命名 {#session-naming}
 
@@ -381,6 +382,8 @@ hermes sessions delete 20250305_091523_a1b2c3d4
 hermes sessions delete 20250305_091523_a1b2c3d4 --yes
 ```
 
+删除一个仍在运行中的对话所使用的 session 并不会结束该对话：它下一次保存时会以同一个 id 重建 session，并写入完整的内存中对话记录。如果希望该 session 彻底消失，请先关闭对话。
+
 ### 重命名 Session
 
 ```bash
@@ -411,6 +414,7 @@ hermes sessions prune --older-than 30 --yes
 
 :::info
 清理仅删除**已结束**的 session（已被显式结束或自动重置的 session）。活跃 session 永远不会被清理。
+被压缩拆分成多个 session 的对话作为一个整体清理：只要后续任一段仍保留，较早的段就会保留。
 :::
 
 ### Session 统计
@@ -430,7 +434,7 @@ Total messages: 3847
 Database size: 12.4 MB
 ```
 
-如需更深入的分析——token 用量、费用估算、工具分解和活动模式——请使用 [`hermes insights`](/reference/cli-commands#hermes-insights)。
+如需更深入的分析——token 用量、费用估算、工具分解和活动模式——请使用 [`hermes insights`](../reference/cli-commands.md#hermes-insights)。
 
 ## Session 搜索工具
 
@@ -588,7 +592,7 @@ sessions:
   min_interval_hours: 24    # 清理间隔不短于此值
 ```
 
-活跃 session 永远不会被自动清理，无论时间多长。
+活跃 session 永远不会被自动清理，无论时间多长。被压缩拆分成多个 session 的对话同样如此：只要后续任一段仍保留，其较早的段就会保留，并在整个对话符合条件后一起清理。
 
 ### 手动清理
 

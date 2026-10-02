@@ -42,14 +42,17 @@ import {
   eventsReconnectingMessage,
   eventsRejectedMessage,
   isEventsAuthRejection,
+  isEventsAuthRejectionMessage,
   isEventsFeedMessage,
   shouldRetryEventsClose
 } from '@/lib/events-reconnect'
+import { credentialWarning, sidecarErrorMessage } from '@/lib/chat-sidebar-banner'
 import { titleFromSessionInfoPayload } from '@/lib/chat-title'
 
 import { cn } from '@/lib/utils'
-import { AlertCircle, ChevronDown, RefreshCw } from 'lucide-react'
+import { AlertCircle, ChevronDown, KeyRound, RefreshCw } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useNavigate } from 'react-router'
 
 interface SessionInfo {
   cwd?: string
@@ -58,6 +61,18 @@ interface SessionInfo {
   credential_warning?: string
   title?: string
 }
+
+// Auto-redial budget for the JSON-RPC sidecar (#95951). After this many
+// bounded-backoff attempts the manual Reconnect affordance stays the only
+// path, mirroring the events feed's give-up contract.
+const SIDE_CAR_MAX_RECONNECT_ATTEMPTS = 5;
+
+// Surfaced once when the redial budget is exhausted. Only this module may
+// clear it (on the next successful open), matching how the events feed
+// owns its own banner messages.
+const SIDE_CAR_GAVE_UP_MESSAGE =
+  "gateway sidecar disconnected — gave up after " +
+  `${SIDE_CAR_MAX_RECONNECT_ATTEMPTS} attempts, use Reconnect`;
 
 const STATE_LABEL: Record<ConnectionState, string> = {
   idle: 'idle',
@@ -106,6 +121,7 @@ export function ChatSidebar({
   onDashboardNewSessionRequest,
   onSessionTitleChange
 }: ChatSidebarProps) {
+  const navigate = useNavigate()
   // `version` bumps on reconnect (manual button, profile/channel switch) and
   // re-runs the socket effects. The clients themselves live for the whole
   // component: the shared client keeps per-session seq watermarks and asks
@@ -114,6 +130,12 @@ export function ChatSidebar({
   const [version, setVersion] = useState(0)
   const gw = useMemo(() => new GatewayClient(), [])
   const feed = useMemo(() => new EventsFeedClient(), [])
+  // Sidecar auto-redial budget (#95951). A ref, NOT effect state: the counter
+  // must survive the [gw, version] effect re-runs a redial triggers, or the
+  // budget resets every attempt and never exhausts.
+  // Reset on a successful open and on scope switches.
+  const sidecarRedialAttemptRef = useRef(0)
+  const sidecarGaveUpRef = useRef(false)
 
   const [state, setState] = useState<ConnectionState>('idle')
   const [info, setInfo] = useState<SessionInfo>({})
@@ -171,6 +193,9 @@ export function ChatSidebar({
     if (prevScopeKey.current === scopeKey) return
     prevScopeKey.current = scopeKey
     setError(null)
+    // Fresh scope, fresh sidecar redial budget (#95951).
+    sidecarRedialAttemptRef.current = 0
+    sidecarGaveUpRef.current = false
     setVersion(v => v + 1)
   }, [scopeKey])
 
@@ -196,9 +221,61 @@ export function ChatSidebar({
       const message = ev.payload?.message
 
       if (message) {
-        setError(message)
+        console.warn(`[chat-sidebar] sidecar error: ${message}`)
+        setError(sidecarErrorMessage(message))
       }
     })
+
+    // Auto-redial after a transient drop (#95951): a dashboard service
+    // restart closes the sidecar's WebSocket with 1012, and GatewayClient
+    // deliberately delegates reconnect policy to this connection owner.
+    // Bounded exponential backoff — the same shape the PTY pane uses —
+    // capped at SIDE_CAR_MAX_RECONNECT_ATTEMPTS; after that the manual
+    // Reconnect affordance stays the only path. A successful open resets
+    // the counter; unmount or a scope switch (version bump) cancels the
+    // pending timer because this effect tears down with the old client.
+    let redialTimer: ReturnType<typeof setTimeout> | null = null;
+    const offRedial = gw.onState((s) => {
+      if (s === "open") {
+        sidecarRedialAttemptRef.current = 0;
+        if (sidecarGaveUpRef.current) {
+          sidecarGaveUpRef.current = false;
+          setError((current) =>
+            current === SIDE_CAR_GAVE_UP_MESSAGE ? null : current,
+          );
+        }
+        return;
+      }
+      if (s !== "closed" && s !== "error") {
+        return;
+      }
+      if (cancelled || redialTimer) {
+        return;
+      }
+      // The attempt counter lives in a ref: each redial rebuilds the client
+      // and re-runs this effect, so a closure-local counter would reset and
+      // the budget would never exhaust (#95951).
+      if (sidecarRedialAttemptRef.current >= SIDE_CAR_MAX_RECONNECT_ATTEMPTS) {
+        // Mirror the events feed's give-up contract: say so once, then the
+        // manual Reconnect affordance stays the only path. Cleared again if
+        // a later connection does open (manual reconnect followed by a
+        // within-budget drop).
+        if (!sidecarGaveUpRef.current) {
+          sidecarGaveUpRef.current = true;
+          setError((current) => current ?? SIDE_CAR_GAVE_UP_MESSAGE);
+        }
+        return;
+      }
+      const attempt = sidecarRedialAttemptRef.current;
+      sidecarRedialAttemptRef.current += 1;
+      const delayMs = Math.min(250 * 2 ** attempt, 3000);
+      redialTimer = setTimeout(() => {
+        redialTimer = null;
+        if (!cancelled) {
+          setVersion((v) => v + 1);
+        }
+      }, delayMs);
+    });
 
     // Create the sidecar session so the gateway surfaces session-scoped
     // signals (connection state, credential warnings). It's independent of the
@@ -215,18 +292,23 @@ export function ChatSidebar({
       })
       .catch((e: Error) => {
         if (!cancelled) {
-          setError(e.message)
+          console.warn(`[chat-sidebar] sidecar connect failed: ${e.message}`)
+          setError(sidecarErrorMessage(e.message))
         }
       })
 
     return () => {
       cancelled = true
+      if (redialTimer) {
+        clearTimeout(redialTimer)
+        redialTimer = null
+      }
+      offRedial()
       offState()
       offSessionInfo()
       offError()
       gw.close()
     }
-    // `profile` is read from render; scope changes bump `version` → redial.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [gw, version])
 
@@ -302,6 +384,7 @@ export function ChatSidebar({
       if (unmounting) {
         return
       }
+      console.warn(`[chat-sidebar] events feed closed code=${code ?? 'none'}`)
       if (code !== undefined && isEventsAuthRejection(code)) {
         surface(eventsRejectedMessage(code))
         return
@@ -362,7 +445,9 @@ export function ChatSidebar({
   // sidecar gateway session, so it's available whenever the sidebar is mounted.
   const modelName = effectiveModel || info.model || '—'
   const modelLabel = modelName.split('/').slice(-1)[0] ?? '—'
-  const banner = error ?? info.credential_warning ?? null
+  const credential = credentialWarning(info.credential_warning)
+  const banner = error ?? credential?.message ?? null
+  const showReload = isEventsAuthRejectionMessage(error)
 
   return (
     <aside
@@ -429,10 +514,39 @@ export function ChatSidebar({
           <div className="min-w-0 flex-1">
             <div className="wrap-break-word text-destructive">{banner}</div>
 
-            {error && (
-              <Button size="sm" outlined className="mt-1" onClick={reconnect} prefix={<RefreshCw />}>
-                reconnect events feed
+            {error && showReload && (
+              <Button
+                size="sm"
+                outlined
+                className="mt-1"
+                onClick={() => window.location.reload()}
+                prefix={<RefreshCw />}
+              >
+                Reload page
               </Button>
+            )}
+            {error && !showReload && (
+              <Button size="sm" outlined className="mt-1" onClick={reconnect} prefix={<RefreshCw />}>
+                Reconnect side panel
+              </Button>
+            )}
+            {!error && credential && (
+              <div className="mt-1 flex flex-wrap gap-2">
+                <Button
+                  size="sm"
+                  outlined
+                  prefix={<KeyRound />}
+                  // Router navigation: a full page load would tear down the
+                  // xterm scrollback and the chat sockets. (The mobile portal
+                  // still lives under ChatPage, so router context is present.)
+                  onClick={() => navigate('/env')}
+                >
+                  Add key
+                </Button>
+                <Button size="sm" outlined onClick={() => setModelOpen(true)}>
+                  Switch model
+                </Button>
+              </div>
             )}
           </div>
         </Card>

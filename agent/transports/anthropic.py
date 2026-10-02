@@ -91,6 +91,9 @@ class AnthropicTransport(ProviderTransport):
                     name = _unprefix_oauth_tool_name(name)
                 tool_calls.append(ToolCall(id=block.id, name=name, arguments=json.dumps(block.input)))
         provider_data = {"reasoning_details": reasoning_details} if reasoning_details else {}
+        stop_details = _to_plain_data(getattr(response, "stop_details", None))
+        if stop_details is not None:
+            provider_data["stop_details"] = stop_details
         # Ordered channel only for the shape the parallel lists reconstruct wrongly.
         signed = any(b.get("type") in _THINKING_TYPES and (b.get("signature") or b.get("data")) for b in ordered_blocks)
         if signed and any(b.get("type") == "tool_use" for b in ordered_blocks):

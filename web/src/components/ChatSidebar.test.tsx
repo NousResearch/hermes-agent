@@ -36,7 +36,14 @@ const reloadMocks = vi.hoisted(() => ({
   maybeReloadForLoopbackWsAuthFailure: vi.fn(() => true)
 }))
 
+const routerMocks = vi.hoisted(() => ({ navigate: vi.fn() }))
+
+vi.mock('react-router', () => ({
+  useNavigate: () => routerMocks.navigate
+}))
+
 vi.mock('@/lib/api', () => ({
+  HERMES_BASE_PATH: '',
   api: { getModelInfo: apiMocks.getModelInfo },
   buildWsUrl: apiMocks.buildWsUrl
 }))
@@ -176,6 +183,30 @@ describe('ChatSidebar event socket', () => {
 
     expect(reloadMocks.maybeReloadForLoopbackWsAuthFailure).toHaveBeenCalledWith(4401)
   })
+
+  it("auto-redials the JSON-RPC sidecar after a transient close (#95951)", async () => {
+    const { ChatSidebar } = await import("./ChatSidebar");
+
+    await render(<ChatSidebar channel="chat-1" />);
+
+    // The sidecar subscribes state handlers via onState; the first
+    // subscription's mock call receives the handler we can drive.
+    await vi.waitFor(() => expect(gatewayMocks.onState).toHaveBeenCalled());
+    expect(gatewayMocks.connect).toHaveBeenCalledTimes(1);
+
+    // A service-restart close reports 'closed'. The connection owner
+    // schedules a version bump after the 250ms first-attempt backoff,
+    // which rebuilds the client and dials again. (onState call [0] is the
+    // state badge subscription; the redial owner is call [1].)
+    const stateHandler = gatewayMocks.onState.mock
+      .calls[1][0] as (s: string) => void;
+    act(() => stateHandler("closed"));
+
+    await vi.waitFor(
+      () => expect(gatewayMocks.connect).toHaveBeenCalledTimes(2),
+      { timeout: 3000 },
+    );
+  });
 })
 
 describe('ChatSidebar event socket reconnect', () => {
@@ -228,16 +259,59 @@ describe('ChatSidebar event socket reconnect', () => {
 
     await advance(1_000)
     expect(FakeWebSocket.instances).toHaveLength(1)
-    expect(container.textContent).toContain('reconnecting in 2s')
 
     await advance(2_000)
     expect(FakeWebSocket.instances).toHaveLength(2)
     expect(apiMocks.buildWsUrl).toHaveBeenCalledTimes(3)
   })
 
+  it("surfaces a gave-up banner when the sidecar redial budget is exhausted (#95951)", async () => {
+    // The file-wide onState mock immediately reports "open" to every new
+    // subscription — that would reset the sidecar's redial counter after
+    // every rebuild and the budget would never exhaust. Collect the
+    // handlers and drive the state sequence ourselves.
+    const originalImpl = gatewayMocks.onState.getMockImplementation();
+    const stateHandlers: Array<(s: string) => void> = [];
+    gatewayMocks.onState.mockImplementation((handler: (s: string) => void) => {
+      stateHandlers.push(handler);
+      return () => undefined;
+    });
+
+    try {
+      const { ChatSidebar } = await import("./ChatSidebar");
+      await render(<ChatSidebar channel="chat-1" />);
+      expect(stateHandlers.length).toBeGreaterThanOrEqual(2);
+
+      // Exhaust the budget: each failed attempt re-runs the socket effect
+      // (new handler subscribed), so drive the LATEST subscription each
+      // round and advance past that round's backoff (250 * 2^n, capped 3s).
+      for (let round = 0; round < 5; round += 1) {
+        const handler = stateHandlers[stateHandlers.length - 1];
+        await act(async () => {
+          handler("error");
+        });
+        await advance(4_000);
+        expect(gatewayMocks.connect).toHaveBeenCalledTimes(2 + round);
+      }
+
+      // One more drop with the budget spent: no further connect is
+      // scheduled, and the banner reports give-up.
+      const finalHandler = stateHandlers[stateHandlers.length - 1];
+      await act(async () => {
+        finalHandler("closed");
+      });
+      await advance(4_000);
+      expect(gatewayMocks.connect).toHaveBeenCalledTimes(6);
+      expect(container?.textContent ?? "").toContain("gave up after 5 attempts");
+    } finally {
+      gatewayMocks.onState.mockImplementation(originalImpl!);
+    }
+  });
+
   it('times out a stalled URL request and retries', async () => {
     let resolveStalledRequest!: (url: string) => void
     await renderSidebar()
+
     apiMocks.buildWsUrl
       .mockImplementationOnce(
         () =>
@@ -253,7 +327,6 @@ describe('ChatSidebar event socket reconnect', () => {
 
     await advance(1_000 + EVENTS_CONNECT_TIMEOUT_MS)
     expect(FakeWebSocket.instances).toHaveLength(1)
-    expect(container.textContent).toContain('reconnecting in 2s')
 
     // A late ticket response from the timed-out attempt must not create a
     // superseded socket alongside the scheduled replacement.
@@ -279,7 +352,6 @@ describe('ChatSidebar event socket reconnect', () => {
 
     await advance(EVENTS_CONNECT_TIMEOUT_MS)
     expect(FakeWebSocket.instances[1].closed).toBe(true)
-    expect(container.textContent).toContain('reconnecting in 2s')
 
     await advance(2_000)
     expect(FakeWebSocket.instances).toHaveLength(3)
@@ -384,16 +456,16 @@ describe('ChatSidebar event socket reconnect', () => {
     await act(async () => {
       FakeWebSocket.instances[0].emit('close', { code: 1006 })
     })
-    expect(container.textContent).toContain('events feed disconnected')
+    expect(container.textContent).toContain('Live tool activity paused')
 
     await advance(1_000)
     await act(async () => {
       FakeWebSocket.instances[1].emit('open', {})
     })
 
-    // Banner gone entirely — including the "reconnect events feed" button,
+    // Banner gone entirely — including the "Reconnect side panel" button,
     // which only renders while `error` is set.
-    expect(container.textContent).not.toContain('events feed')
+    expect(container.textContent).not.toContain('Live tool activity')
   })
 
   it('does not clear a credential warning when the feed recovers', async () => {
@@ -441,9 +513,33 @@ describe('ChatSidebar event socket reconnect', () => {
 
     expect(container.textContent).toContain('ANTHROPIC_API_KEY is not set')
     // The disconnect message must not have replaced it. (Matching the
-    // banner text specifically — "reconnect events feed" is the button
-    // label, which is expected to be present whenever a banner shows.)
-    expect(container.textContent).not.toContain('events feed disconnected')
+    // banner text specifically — the reconnect button label is expected to
+    // be present whenever a banner shows.)
+    expect(container.textContent).not.toContain('Live tool activity paused')
+  })
+
+  it('offers Add key and Switch model when the gateway reports a missing key', async () => {
+    await renderSidebar()
+
+    await act(async () => {
+      gatewayMocks.handlers.get('session.info')?.({
+        payload: {
+          credential_warning: "No API key configured for provider 'openrouter'. First message will fail."
+        }
+      })
+    })
+
+    const buttons = Array.from(container.querySelectorAll('button'))
+    const labels = buttons.map(b => b.textContent?.trim())
+    expect(labels).toContain('Add key')
+    expect(labels).toContain('Switch model')
+
+    // Add key must be an in-app route change: a full page load would tear down
+    // the terminal scrollback and the chat sockets.
+    await act(async () => {
+      buttons.find(b => b.textContent?.trim() === 'Add key')?.click()
+    })
+    expect(routerMocks.navigate).toHaveBeenCalledWith('/env')
   })
 
   it('still reconnects while a foreign banner suppresses its message', async () => {
@@ -476,7 +572,7 @@ describe('ChatSidebar event socket reconnect', () => {
       FakeWebSocket.instances[0].emit('close', { code: 1006 })
     })
     const reconnectButton = Array.from(container.querySelectorAll('button')).find(b =>
-      /reconnect events feed/i.test(b.textContent ?? '')
+      /reconnect side panel/i.test(b.textContent ?? '')
     )
     expect(reconnectButton).toBeDefined()
     await act(async () => {

@@ -16,7 +16,8 @@
  */
 
 import type { PreviewActAction, PreviewActResult } from '@/lib/preview-act/act-in-page'
-import { type PreviewOwner, previewTabIdsVisibleTo } from '@/store/preview'
+import { previewTabIdsVisibleTo } from '@/store/preview'
+import type { PreviewOwner } from '@/store/preview-ownership'
 import { isBrowserWindow, windowBrowserTabId } from '@/store/windows'
 
 import { actOnActivePreview } from './preview-act'

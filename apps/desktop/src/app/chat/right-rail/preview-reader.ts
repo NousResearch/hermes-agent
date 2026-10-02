@@ -13,7 +13,8 @@
  * directly (read_file / the conversation's artifact).
  */
 
-import { type PreviewOwner, type PreviewTab, previewTabsFor } from '@/store/preview'
+import { type PreviewTab, previewTabsFor } from '@/store/preview'
+import type { PreviewOwner } from '@/store/preview-ownership'
 
 import { resolveActivePreviewTab } from './preview-active-tab'
 import { nudgeOverlay } from './preview-nudge'

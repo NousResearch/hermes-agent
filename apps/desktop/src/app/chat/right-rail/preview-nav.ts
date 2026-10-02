@@ -10,7 +10,7 @@
  */
 
 import { isElementInHiddenPane } from '@/components/pane-shell/pane-visibility'
-import type { PreviewOwner } from '@/store/preview'
+import type { PreviewOwner } from '@/store/preview-ownership'
 
 import { activePreviewTabFor } from './preview-active-tab'
 

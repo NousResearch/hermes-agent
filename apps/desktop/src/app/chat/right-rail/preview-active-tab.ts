@@ -12,8 +12,9 @@
 import { findGroup } from '@/components/pane-shell/tree/model'
 import { $activeTreeGroup, $hoveredTreeGroup, $layoutTree } from '@/components/pane-shell/tree/store'
 import { $rightRailActiveTabId } from '@/store/layout'
-import { type PreviewOwner, type PreviewTab, previewTabsFor } from '@/store/preview'
+import { type PreviewTab, previewTabsFor } from '@/store/preview'
 import { explicitOpenBlocksZone, PREVIEW_TILE_PREFIX } from '@/store/preview-explicit'
+import type { PreviewOwner } from '@/store/preview-ownership'
 
 function tabIdFromPreviewPane(paneId: string | undefined): null | string {
   if (!paneId?.startsWith(`${PREVIEW_TILE_PREFIX}:`)) {

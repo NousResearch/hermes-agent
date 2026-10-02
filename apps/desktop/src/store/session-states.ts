@@ -47,11 +47,11 @@ import { dialedGatewayModeFor } from './gateway'
 import {
   adoptPendingRuntimeTabs,
   dropPreviewTabsForProfile,
-  forgetPendingRuntimeTabs,
   migratePreviewTabsForProfile,
   rekeyPreviewTabsSession,
   setPreviewScope
 } from './preview'
+import { forgetPendingRuntimeTabs } from './preview-ownership'
 import { dropPreviewArtifactsForProfile, migratePreviewArtifactsForProfile } from './preview-status'
 import { $activeGatewayProfile, normalizeProfileKey } from './profile'
 import { clearAllProviderWaits, clearSessionProviderWait } from './provider-wait'

@@ -20,7 +20,7 @@ import driverIife from 'driver.js/dist/driver.js.iife.js?raw'
 
 import { collectTourTargets } from '@/lib/tour/collect-targets'
 import { runTourEngine, type TourAction, type TourResult } from '@/lib/tour/engine'
-import type { PreviewOwner } from '@/store/preview'
+import type { PreviewOwner } from '@/store/preview-ownership'
 
 import { activePreviewScriptRunner } from './preview-script-runner'
 

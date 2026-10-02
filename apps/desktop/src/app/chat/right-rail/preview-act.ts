@@ -29,7 +29,7 @@
 
 import { actEngineSource, type PreviewActAction, type PreviewActResult } from '@/lib/preview-act/act-in-page'
 import { watchInPage } from '@/lib/preview-act/watch-in-page'
-import type { PreviewOwner } from '@/store/preview'
+import type { PreviewOwner } from '@/store/preview-ownership'
 
 import {
   clearCharsBack,

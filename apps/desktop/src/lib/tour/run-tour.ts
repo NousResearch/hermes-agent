@@ -18,7 +18,7 @@ import { driver as driverFactory } from 'driver.js'
 
 import { runPreviewTour } from '@/app/chat/right-rail/preview-tour'
 import { revealDesktopPane } from '@/store/pane-focus'
-import type { PreviewOwner } from '@/store/preview'
+import type { PreviewOwner } from '@/store/preview-ownership'
 
 import { collectTourTargets } from './collect-targets'
 import {

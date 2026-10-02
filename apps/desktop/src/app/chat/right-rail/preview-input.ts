@@ -19,7 +19,7 @@
  * must be scaled by the guest's zoom factor on the way back out (#116281).
  */
 
-import type { PreviewOwner } from '@/store/preview'
+import type { PreviewOwner } from '@/store/preview-ownership'
 
 import { activePreviewTabFor } from './preview-active-tab'
 

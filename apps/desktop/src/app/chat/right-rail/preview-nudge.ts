@@ -15,7 +15,7 @@
  */
 
 import type { WatchStage } from '@/lib/preview-act/watch-in-page'
-import type { PreviewOwner } from '@/store/preview'
+import type { PreviewOwner } from '@/store/preview-ownership'
 
 import { activePreviewScriptRunner } from './preview-script-runner'
 

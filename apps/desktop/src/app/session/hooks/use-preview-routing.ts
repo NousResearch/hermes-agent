@@ -10,11 +10,11 @@ import {
   closeAgentPreview,
   completePreviewServerRestart,
   openPreview,
-  type PreviewOwner,
   progressPreviewServerRestart,
   renderedHtmlTarget,
   requestPreviewReload
 } from '@/store/preview'
+import type { PreviewOwner } from '@/store/preview-ownership'
 import { $activeSessionId, $currentCwd } from '@/store/session'
 import { $focusedStoredSessionId } from '@/store/session-focus'
 import {

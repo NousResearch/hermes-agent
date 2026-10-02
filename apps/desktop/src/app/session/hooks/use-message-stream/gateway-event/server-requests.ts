@@ -20,7 +20,7 @@ import type { TourAction, TourStep } from '@/lib/tour'
 import { normalizeQuestions, setClarifyRequest } from '@/store/clarify'
 import type { ScopedServerRequest } from '@/store/gateway'
 import { dispatchNativeNotification } from '@/store/native-notifications'
-import type { PreviewOwner } from '@/store/preview'
+import type { PreviewOwner } from '@/store/preview-ownership'
 import {
   receiveApprovalRequest,
   setSecretRequest,

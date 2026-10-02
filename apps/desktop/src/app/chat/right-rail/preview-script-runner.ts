@@ -10,7 +10,7 @@
  * of the pane component's static import graph and only load when used.
  */
 
-import type { PreviewOwner } from '@/store/preview'
+import type { PreviewOwner } from '@/store/preview-ownership'
 
 import { activePreviewTabFor } from './preview-active-tab'
 

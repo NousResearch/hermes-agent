@@ -15,29 +15,44 @@ from gateway.platforms.base_pending import (
 )
 from gateway.platforms.event import MessageType
 from gateway.run import _AGENT_PENDING_SENTINEL
-from gateway.run_inbound import GatewayInboundMixin
+from gateway.session import SessionSource
 from gateway.wake import WakeNotAccepted, admit_internal_event
 from tests.gateway.test_active_session_text_merge import (
     _make_event,
     _make_initialized_adapter,
 )
 from tests.gateway.test_busy_followup_after_session_release import _QueueRunner
+from gateway.session import SessionStore
+from gateway.config import GatewayConfig
+from gateway.input_owner import gateway_input_owner
+from gateway.platforms.base_pending import bind_pending_dispatch_input
 
 
-class _AdmissionRunner(GatewayInboundMixin, _QueueRunner):
+class _AdmissionRunner(_QueueRunner):
     def __init__(self, adapter):
         super().__init__(adapter)
         self._draining = False
-        self._is_user_authorized_for_source = lambda source: True
-        self._admit_bot_message_for_source = lambda source: True
-        self._effective_busy_input_mode = lambda source: "queue"
-        self._effective_busy_text_mode = lambda source: "interrupt"
+        self._busy_text_mode = "interrupt"
         self._route_plaintext_approval_while_busy = AsyncMock(return_value=False)
         self._resolve_busy_steer_or_redirect = AsyncMock()
         self._resolve_busy_steer_or_redirect.return_value.effective_mode = "queue"
         self._resolve_busy_steer_or_redirect.return_value.steered = False
         self._resolve_busy_steer_or_redirect.return_value.redirected = False
         self._send_busy_reply = AsyncMock()
+
+    def _is_user_authorized_for_source(
+        self, source: SessionSource, *, allow_adapter_delegation: bool = True
+    ) -> bool:
+        return True
+
+    def _admit_bot_message_for_source(self, source: SessionSource) -> bool:
+        return True
+
+    def _effective_busy_input_mode(self, source: SessionSource) -> str:
+        return "queue"
+
+    def _effective_busy_text_mode(self, source: SessionSource) -> str:
+        return self._busy_text_mode
 
 
 def _events(adapter, runner):
@@ -164,11 +179,20 @@ async def test_admission_at_capacity_preserves_the_complete_fifo(path, monkeypat
                 )
                 runner._persist_active_agents = lambda: None
                 runner._begin_session_run_generation = lambda key: 1
-                runner._handle_message_with_agent = (
-                    AsyncMock(side_effect=asyncio.CancelledError)
-                    if path != "cancel-claim-complete"
-                    else AsyncMock(return_value=None)
-                )
+                async def persist_claimed_input(event, *args):
+                    entry = runner.session_store.get_or_create_session(event.source)
+                    owner = gateway_input_owner(event, event.source)
+                    bind_pending_dispatch_input(entry.session_id, owner)
+                    runner.session_store.append_to_transcript(entry.session_id, {
+                        "role": "user", "content": event.text,
+                        "display_metadata": {"gateway_input_owner": owner},
+                    })
+                    assert runner.session_store.has_input_owner(entry.session_id, owner)
+                    if path != "cancel-claim-complete":
+                        raise asyncio.CancelledError
+                    return None
+
+                runner._handle_message_with_agent = persist_claimed_input
                 runner._run_post_turn_hooks = AsyncMock()
                 runner._restore_pending_one_turn_model_override = lambda *args: None
                 runner._clear_durable_active_turn = AsyncMock()
@@ -192,7 +216,9 @@ async def test_admission_at_capacity_preserves_the_complete_fifo(path, monkeypat
                 if path
                 in {
                     "cancel-claimed",
+                    "cancel-claim-race",
                     "cancel-claim-complete",
+                    "cancel-claim-replaced",
                 }
                 else expected,
                 {"shared": incoming} if path == "cancel-claim-replaced" else {},
@@ -328,7 +354,7 @@ async def test_queue_receipts_and_refusals_preserve_event_context(
                 await admit_internal_event(adapter, event)
         else:
             if path == "debounce":
-                runner._effective_busy_text_mode = lambda source: "queue"
+                runner._busy_text_mode = "queue"
             await adapter.handle_message(event)
         notices = runner._send_busy_reply.await_args_list
         assert (

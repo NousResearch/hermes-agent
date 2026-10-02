@@ -588,6 +588,7 @@ async def test_replacement_transport_preserves_turn_queue_and_final_choice(
         mute_notification_reply=True,
         stream_consumer_holder=[],
         result_holder=[{"completed": True}],
+        processing_event=None,
     )
     runner._run_agent_build_turn_context = Mock(
         return_value=(turn, SimpleNamespace(run_sync=lambda: None), None)

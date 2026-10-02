@@ -48,6 +48,10 @@ def _tuple_agent(entry: Any) -> Any:
 class GatewayAgentCacheMixin:
     """Agent cache, session model overrides, turn leases, run generations and conversation-scope reset for GatewayRunner."""
 
+    if TYPE_CHECKING:
+        _discard_parked_event = GatewayRunner._discard_parked_event
+        _complete_discarded_event = GatewayRunner._complete_discarded_event
+
     @classmethod
     def _extract_cache_busting_config(cls, user_config: dict | None) -> dict:
         """Values that must bust the cached agent, as a flat dict keyed by 'section.key'. ``user_config``

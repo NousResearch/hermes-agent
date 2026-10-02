@@ -19,6 +19,7 @@ from contextlib import suppress
 from gateway.config import Platform
 from gateway.platforms.base import BasePlatformAdapter
 from gateway.inbound_context import PreparedInboundMessage
+from gateway.platforms.event import MessageEvent
 from gateway.response_filters import (
     silence_allowed,
 )
@@ -1508,7 +1509,9 @@ class GatewayTurnExecutionMixin:
             result = turn_ctx.result_holder[0]
             adapter = self._delivery_adapter_for(source)
             await self._run_agent_finalize_streaming_tts(turn_ctx, adapter)
-            pending_event, pending = await self._run_agent_drain_pending(result, queue_adapter, source, session_key)
+            pending_event, pending = await self._run_agent_drain_pending(
+                result, queue_adapter, source, session_key, processing_event=turn_ctx.processing_event,
+            )
             if pending_event or pending:
                 return await self._run_agent_queued_followup(
                     turn_ctx, adapter, pending, pending_event, response, result, stream_task,

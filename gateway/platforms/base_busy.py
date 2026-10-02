@@ -26,6 +26,8 @@ class BaseBusyMixin:
     name: str
 
     if TYPE_CHECKING:
+        _run_processing_hook = BasePlatformAdapter._run_processing_hook
+        _merge_into_pending_slot = BasePlatformAdapter._merge_into_pending_slot
         _canonicalize = BasePlatformAdapter._canonicalize
         get_pending_message = BasePlatformAdapter.get_pending_message
         _discard_text_debounce = BasePlatformAdapter._discard_text_debounce

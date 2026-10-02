@@ -20,9 +20,9 @@ from copy import copy
 from agent.i18n import DEFAULT_LANGUAGE, t
 from agent.session_activity import format_iteration_progress
 from gateway.config import Platform
-from gateway.platforms.base import EphemeralReply
+from gateway.platforms.base import BasePlatformAdapter, EphemeralReply, SendResult
 from gateway.platforms.base_pending import Withdraw, ingress_order
-from gateway.platforms.event import ProcessingOutcome, MessageEvent, MessageType, _ProcessingCompletion, _ProcessingPhase
+from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome, _ProcessingCompletion, _ProcessingPhase
 from gateway.platforms.base_pending import can_join_pending_event, is_pending_redispatch, release_pending_dispatch, pending_dispatch_records, pending_dispatch_withdrawn, pending_dispatch_needs_snapshot
 from gateway.session import SessionSource
 from gateway.whatsapp_identity import canonical_whatsapp_identifier
@@ -138,7 +138,7 @@ class GatewayBusySessionMixin:
         state = self._peek_session_state(session_key)
         return state.conversation.queued_events if state else None
 
-    def _enqueue_fifo(self, session_key: str, queued_event: MessageEvent, adapter: Any) -> bool:
+    def _enqueue_fifo(self: GatewayRunner, session_key: str, queued_event: MessageEvent, adapter: Any) -> bool:
         """Admit a new FIFO event without replacing earlier queued input."""
         ingress_order(queued_event)
         pending_slot = getattr(adapter, "_pending_messages", None) if adapter is not None else None
@@ -161,7 +161,7 @@ class GatewayBusySessionMixin:
         queued_event._gateway_accepted = True
         return True
 
-    def _flush_buffered_pending(self, session_key: str, adapter) -> None:
+    def _flush_buffered_pending(self: "GatewayRunner", session_key: str, adapter) -> None:
         buffers = getattr(adapter, "_text_debounce", None)
         buffered = buffers.pop(session_key, None) if isinstance(buffers, dict) else None
         if buffered is None:
@@ -518,7 +518,7 @@ class GatewayBusySessionMixin:
             entry = session_store._entries.get(session_key)
         return getattr(entry, "session_id", None) if entry is not None else None
 
-    def _queue_or_replace_pending_event(self, session_key: str, event: MessageEvent) -> bool:
+    def _queue_or_replace_pending_event(self: "GatewayRunner", session_key: str, event: MessageEvent) -> bool:
         from gateway.platforms.base_pending_merge import merge_pending_message_event
         adapter = self._delivery_adapter_for(event.source)
         if not adapter:
@@ -531,6 +531,7 @@ class GatewayBusySessionMixin:
         existing = pending_slot.get(session_key)
         if is_pending_redispatch(adapter, session_key, event):
             self._restore_pending_dispatch(session_key, event, adapter)
+            self._park_event_lifecycle(event)
             return True
         self._flush_buffered_pending(session_key, adapter)
         existing = pending_slot.get(session_key)
@@ -659,7 +660,7 @@ class GatewayBusySessionMixin:
             },
         )
 
-    async def _send_busy_drain_notice(self, event: MessageEvent, session_key: str, effective_mode: str) -> None:
+    async def _send_busy_drain_notice(self: "GatewayRunner", event: MessageEvent, session_key: str, effective_mode: str) -> None:
         """Busy path while the gateway is restarting/stopping: queue (if allowed) and tell the user."""
         adapter = self._delivery_adapter_for(event.source)
         if not adapter:
@@ -1276,7 +1277,7 @@ class GatewayBusySessionMixin:
         )
         return await self._handle_reset_command(event)
 
-    async def _busy_queue_command(self, event: MessageEvent, quick_key: str, source):
+    async def _busy_queue_command(self: "GatewayRunner", event: MessageEvent, quick_key: str, source):
         # Each /queue is its own full agent turn, run FIFO after the current run; never merged.
         queued_text = event.get_command_args().strip()
         # A /queue carrying media or reply context is valid with no prompt text (image caption).

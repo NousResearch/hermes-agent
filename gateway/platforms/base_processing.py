@@ -61,6 +61,9 @@ class BaseProcessingMixin:
     _text_debounce_store: Callable[[], dict[str, TextDebounceState]]
 
     if TYPE_CHECKING:
+        _complete_started = BasePlatformAdapter._complete_started
+        _complete_discarded = BasePlatformAdapter._complete_discarded
+        _discard_parked = BasePlatformAdapter._discard_parked
         _cleanup_finished_session_task = BasePlatformAdapter._cleanup_finished_session_task
         _clear_session_guard = BasePlatformAdapter._clear_session_guard
         _deliver_attachments = BasePlatformAdapter._deliver_attachments
@@ -482,5 +485,3 @@ class BaseProcessingMixin:
                        self._active_sessions, self._requeue_counts):
             bucket.clear()
         await self._complete_started()
-
-

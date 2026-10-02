@@ -447,17 +447,20 @@ async def test_busy_merges_preserve_reply_context_and_attachments(
 async def test_third_sender_not_dropped_when_debounce_store_is_stuck(lifecycle, tmp_path, monkeypatch):
     import time as _time
 
+    from gateway.platforms.base_pending import ingress_order
     from gateway.platforms.base_text_debounce import TextDebounceState
 
     adapter = _make_initialized_adapter()
 
     event_a = _make_event("sender-a message", user_id="ua")
+    ingress_order(event_a)
     session_key = build_session_key(event_a.source)
 
     adapter._active_sessions[session_key] = asyncio.Event()
 
     adapter._pending_messages[session_key] = event_a
     event_b = _make_event("sender-b message", user_id="ub")
+    ingress_order(event_b)
     _now = _time.monotonic()
     adapter._text_debounce[session_key] = TextDebounceState(
         event=event_b, task=None, first_ts=_now - 0.5, last_ts=_now - 0.2,

@@ -180,154 +180,61 @@ async def test_session_fast_override_beats_config_default(monkeypatch, tmp_path)
     assert runner._resolve_session_service_tier(session_key="other-session") == "priority"
 
 
+_ASTRA_ON_CODEX = {"model": "gpt-6-astra", "provider": "openai-codex",
+                   "base_url": "https://chatgpt.com/backend-api/codex", "api_key": "***"}
+_GPT_ON_OPENROUTER = {"model": "openai/gpt-5.4", "provider": "openrouter",
+                      "base_url": "https://openrouter.ai/api/v1", "api_key": "***"}
+
+
 @pytest.mark.asyncio
-async def test_handle_fast_command_allows_when_session_override_supports_fast(
-    monkeypatch, tmp_path
-):
-    """Global default is fast-ineligible, but a session /model override is.
-
-    The eligibility check must resolve the model the session will actually use
-    (via ``_resolve_session_agent_runtime``), not the global config default —
-    otherwise ``/fast`` is wrongly rejected after switching to a fast-capable
-    model in-session.
-    """
+@pytest.mark.parametrize("default_model, override, command, accepted", [
+    # #118761: Astra picked with session /model over a default /fast can't serve.
+    ("claude-sonnet-4-6", _ASTRA_ON_CODEX, "/fast ultrafast", True),
+    # Converse: a fast-capable default must not admit a session route whose turns never carry the tier.
+    ("claude-opus-5-5", _GPT_ON_OPENROUTER, "/fast fast", False),
+])
+async def test_fast_gate_follows_the_session_route(monkeypatch, tmp_path, default_model, override, command, accepted):
+    """Real fast-mode tables: /fast accepts exactly the tiers the session's next turn would send."""
     runner = _make_runner()
-    source = _make_source()
-    session_key = runner._session_key_for_source(source)
-    runner._session_model_overrides[session_key] = {
-        "model": "gpt-5.4",
-        "api_key": "***",
-        "credential_pool": "pool",
-    }
-
+    event = _make_event(command)
+    session_key = runner._session_key_for_source(event.source)
+    runner._session_model_overrides[session_key] = dict(override)
     monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
     monkeypatch.setattr(gateway_run, "_load_gateway_config", lambda: {})
-    # Global default is Anthropic Opus 4.8, which does NOT support the fast
-    # *parameter* path (fast is a separate model id there).
-    monkeypatch.setattr(
-        gateway_run, "_resolve_gateway_model", lambda config=None: "claude-opus-4-8"
-    )
+    monkeypatch.setattr(gateway_run, "_resolve_gateway_model", lambda config=None: default_model)
 
-    response = await runner._handle_fast_command(
-        MessageEvent(text="/fast fast", source=source, message_id="m1")
-    )
+    response = await runner._handle_fast_command(event)
 
-    assert "FAST" in response
-    assert runner._service_tier == "priority"
-    # Bare /fast (no --global) is session-scoped: the override is recorded and
-    # config.yaml stays untouched (global persistence requires --global).
-    assert runner._session_service_tier_overrides
-    assert not (tmp_path / "config.yaml").exists()
+    tier = runner._resolve_session_service_tier(session_key=session_key)
+    model, runtime = runner._resolve_session_agent_runtime(source=event.source)
+    route = runner._resolve_turn_agent_config("hi", model, runtime)
+    if accepted:
+        assert tier == "ultrafast" and "only available" not in response
+        assert route["request_overrides"] == {"service_tier": "ultrafast"}
+    else:
+        assert "only available" in response
+        assert session_key not in runner._session_service_tier_overrides
 
 
 @pytest.mark.asyncio
-async def test_handle_fast_command_rejects_when_session_override_unsupported(
-    monkeypatch, tmp_path
-):
-    """Global default supports fast, but the session override does not.
-
-    ``/fast`` must be refused because the effective session model is
-    fast-ineligible — the reverse of the previous test, guarding both
-    directions.
-    """
-    runner = _make_runner()
-    source = _make_source()
-    session_key = runner._session_key_for_source(source)
-    runner._session_model_overrides[session_key] = {
-        "model": "claude-opus-4-8",
-        "api_key": "***",
-        "credential_pool": "pool",
-    }
-
-    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
-    monkeypatch.setattr(gateway_run, "_load_gateway_config", lambda: {})
-    monkeypatch.setattr(
-        gateway_run, "_resolve_gateway_model", lambda config=None: "gpt-5.4"
-    )
-
-    response = await runner._handle_fast_command(
-        MessageEvent(text="/fast fast", source=source, message_id="m1")
-    )
-
-    assert "only available for OpenAI models" in response
-    assert runner._service_tier is None
-    assert not (tmp_path / "config.yaml").exists()
-
-
-@pytest.mark.asyncio
-async def test_handle_fast_command_rehydrates_persisted_session_override(
-    monkeypatch, tmp_path
-):
-    """A persisted /model override that a restart cleared from memory is
-    rehydrated by ``_resolve_session_agent_runtime`` before eligibility is
-    judged, so ``/fast`` respects it even with an empty in-memory dict.
-    """
-    runner = _make_runner()
-    source = _make_source()
-    session_key = runner._session_key_for_source(source)
-    # In-memory overrides are empty (simulating a fresh gateway restart);
-    # only the session store still knows the user switched to gpt-5.4.
-    runner._session_model_overrides = {}
-    _persisted_key = session_key
-    runner.session_store.get_model_override = lambda session_key: (
-        {"model": "gpt-5.4"} if session_key == _persisted_key else None
-    )
-
-    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
-    monkeypatch.setattr(gateway_run, "_load_gateway_config", lambda: {})
-    monkeypatch.setattr(
-        gateway_run, "_resolve_gateway_model", lambda config=None: "claude-opus-4-8"
-    )
-    # The persisted override has no provider, so the resolver falls through to
-    # env-based runtime resolution then re-applies the override model on top.
-    monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", lambda: {})
-
-    response = await runner._handle_fast_command(
-        MessageEvent(text="/fast fast", source=source, message_id="m1")
-    )
-
-    assert "FAST" in response
-    assert runner._service_tier == "priority"
-    # The persisted override was rehydrated into the in-memory dict.
-    assert runner._session_model_overrides.get(session_key, {}).get("model") == "gpt-5.4"
-
-
-@pytest.mark.asyncio
-async def test_handle_fast_command_normalizes_source_before_override_lookup(
-    monkeypatch, tmp_path
-):
-    """The command source is normalized (Telegram DM topic recovery, #30479)
-    before deriving the override key, so ``/fast`` reads the override under the
-    same key the next message turn will — a lobby-shaped reply pinned to the
-    user's last-active topic.
-    """
-    runner = _make_runner()
-    source = _make_source()  # telegram DM, thread_id=None (lobby)
-    # The next turn recovers this DM to the user's last-active topic 77.
-    monkeypatch.setattr(runner, "_recover_telegram_topic_thread_id", lambda src: "77")
+async def test_fast_override_lands_under_the_recovered_telegram_topic_key(monkeypatch, tmp_path):
+    """/fast keys its eligibility check AND its tier override by the topic-recovered source the next
+    turn uses (#30479), not the raw lobby-shaped event source."""
     import dataclasses
 
-    recovered_source = dataclasses.replace(source, thread_id="77")
-    recovered_key = runner._session_key_for_source(recovered_source)
+    runner = _make_runner()
+    source = _make_source()
+    monkeypatch.setattr(runner, "_recover_telegram_topic_thread_id", lambda src: "77")
     raw_key = runner._session_key_for_source(source)
-    assert recovered_key != raw_key  # normalization actually changes the key
-    runner._session_model_overrides[recovered_key] = {
-        "model": "gpt-5.4",
-        "api_key": "***",
-        "credential_pool": "pool",
-    }
-
+    turn_key = runner._session_key_for_source(dataclasses.replace(source, thread_id="77"))
+    assert turn_key != raw_key
+    runner._session_model_overrides[turn_key] = dict(_ASTRA_ON_CODEX)
     monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
     monkeypatch.setattr(gateway_run, "_load_gateway_config", lambda: {})
-    monkeypatch.setattr(
-        gateway_run, "_resolve_gateway_model", lambda config=None: "claude-opus-4-8"
-    )
+    monkeypatch.setattr(gateway_run, "_resolve_gateway_model", lambda config=None: "claude-sonnet-4-6")
 
-    response = await runner._handle_fast_command(
-        MessageEvent(text="/fast fast", source=source, message_id="m1")
-    )
+    response = await runner._handle_fast_command(MessageEvent(text="/fast fast", source=source, message_id="m1"))
 
-    # If the handler had keyed off the raw (un-normalized) source it would miss
-    # the override and reject against the unsupported global default.
     assert "FAST" in response
-    assert runner._service_tier == "priority"
+    assert runner._resolve_session_service_tier(session_key=turn_key) == "priority"
+    assert raw_key not in runner._session_service_tier_overrides

@@ -1,6 +1,5 @@
 """Invalid time bounds must stop session mutations before querying the store."""
 
-import sys
 from argparse import Namespace
 
 import pytest
@@ -34,7 +33,7 @@ def test_nonfinite_time_bounds_leave_sessions_unchanged(
         db.close()
 
 
-@pytest.mark.skipif(sys.platform != "win32", reason="Windows CRT timestamp limitation")
+@pytest.mark.platforms("windows")
 @pytest.mark.parametrize("action", ["prune", "archive"])
 def test_unrepresentable_iso_time_is_a_cli_error(tmp_path, monkeypatch, capsys, action):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))

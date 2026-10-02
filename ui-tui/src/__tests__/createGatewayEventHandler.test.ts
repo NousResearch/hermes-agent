@@ -95,6 +95,20 @@ describe('createGatewayEventHandler', () => {
     patchUiState({ showReasoning: true })
   })
 
+  it('sends a desktop notification with the completion bell', () => {
+    const ctx = buildCtx([])
+    const notifyOnComplete = vi.fn()
+
+    ctx.system.bellOnComplete = true
+    ctx.system.notifyOnComplete = notifyOnComplete
+    ctx.system.stdout = { isTTY: true, write: vi.fn() }
+
+    const onEvent = createGatewayEventHandler(ctx)
+    onEvent({ payload: { text: 'Finished the task.' }, type: 'message.complete' } as any)
+
+    expect(notifyOnComplete).toHaveBeenCalledOnce()
+  })
+
   it('heals missed completion and blocking prompts only from the focused authoritative idle snapshot', () => {
     patchUiState({ sid: 'focused' })
     const ctx = buildCtx([])

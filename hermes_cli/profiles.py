@@ -517,7 +517,9 @@ def remove_wrapper_script(name: str) -> bool:
 def _migrate_profile_config_if_outdated(profile_dir: Path) -> None:
     """Migrate a copied config.yaml to the current schema (non-interactive, scoped to the new
     profile); otherwise the first desktop/doctor view shows a scary ``v0 -> latest`` warning."""
-    from hermes_cli.config_backend import config_exists
+    from hermes_cli.config_backend import config_exists, supports_file_tooling
+    if not supports_file_tooling():
+        return  # no local config.yaml to migrate: a remote backend migrates in memory on read (D12)
     if not config_exists(profile_dir / "config.yaml"):
         return
     # Creation must not fail over an unmigratable old config; `hermes doctor --fix` surfaces
@@ -675,10 +677,11 @@ def _profile_file_signature(path: Path) -> Optional[tuple]:
     return (stat.st_mtime_ns, stat.st_size, stat.st_ino)
 
 
-def _cached_profile_read(path: Path, kind: str, compute):
+def _cached_profile_read(path: Path, kind: str, compute, signature_of=None):
     """``compute()``'s value, reused while *path* has not changed. A missing file is never cached:
-    reading it costs nothing, and one created later must be picked up."""
-    signature = _profile_file_signature(path)
+    reading it costs nothing, and one created later must be picked up. ``signature_of(path)``
+    replaces the local stat signature for a value derived from somewhere else."""
+    signature = (signature_of or _profile_file_signature)(path)
     if signature is None:
         return compute()
     key = (str(path), kind)
@@ -723,7 +726,17 @@ def _read_config_model(profile_dir: Path) -> tuple:
             pass
         return None, None
 
-    return _cached_profile_read(config_path, "config-model", _read)
+    return _cached_profile_read(config_path, "config-model", _read, signature_of=_config_layer_signature)
+
+
+def _config_layer_signature(config_path: Path) -> Optional[tuple]:
+    """The config backend's version of a profile's config layer (a remote layer changes without
+    the local file changing), or None when it cannot be read — never cached then."""
+    from hermes_cli.config_backend import config_version
+    try:
+        return config_version(config_path)
+    except OSError:
+        return None
 
 
 def launch_model_seed(source_cfg: dict) -> dict:
@@ -2387,6 +2400,18 @@ def _record_profile_rename(new_dir: Path, old_canon: str) -> None:
         logger.debug("profile rename: could not record previous name %r in %s: %s", old_canon, new_dir, exc)
 
 
+def _refuse_rename_without_file_tooling(old_canon: str) -> None:
+    """A remote config backend keys each profile's settings by its canonical name, and the plane
+    has no rename: renaming the local home would leave the settings under the old name and read
+    another (possibly populated) level under the new one. Refused before any side effect."""
+    from hermes_cli.config_backend import get_config_backend
+    backend = get_config_backend()
+    if not backend.supports_file_tooling():
+        raise ValueError(
+            f"Cannot rename profile '{old_canon}': its config lives in the {backend.name!r} config "
+            "backend under that name, and renaming it there is not supported. Nothing was changed.")
+
+
 def rename_profile(old_name: str, new_name: str) -> Path:
     """Rename a profile: directory, wrapper script, service, active_profile. The default
     profile's home IS the installation root, so "renaming" it sets a presentation-only
@@ -2401,6 +2426,7 @@ def rename_profile(old_name: str, new_name: str) -> Path:
     new_canon = _canon_valid(new_name)
     if new_canon == "default":
         raise ValueError("Cannot rename to 'default' — it is reserved.")
+    _refuse_rename_without_file_tooling(old_canon)
     old_dir = get_profile_dir(old_canon)
     new_dir = get_profile_dir(new_canon)
     if not old_dir.is_dir():

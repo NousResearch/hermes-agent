@@ -1326,15 +1326,26 @@ def _load_cfg() -> dict:
 def _save_cfg(cfg: dict):
     global _cfg_cache, _cfg_sig, _cfg_path
     from hermes_cli.config import atomic_config_replace
-    from hermes_cli.config_backend import config_version
+    from hermes_cli.config_backend import config_version, supports_file_tooling
     path = _active_config_path()
     atomic_config_replace(path, cfg)
+    if not supports_file_tooling():
+        # The backend saves what it accepts (a bulk save omits locked keys), not what was proposed:
+        # drop the cache so the next raw read returns the accepted document.
+        _drop_cfg_cache()
+        return
     with _cfg_lock:
         _cfg_cache, _cfg_path = copy.deepcopy(cfg), path
         try:
             _cfg_sig = config_version(path)
         except Exception:
             _cfg_sig = None
+
+
+def _drop_cfg_cache() -> None:
+    global _cfg_cache, _cfg_sig, _cfg_path
+    with _cfg_lock:
+        _cfg_cache, _cfg_sig, _cfg_path = None, None, None
 
 
 def _session_for_key(session_key: str) -> dict | None:
@@ -1865,6 +1876,15 @@ def _append_model_switch_marker(session: dict | None, *, model: str, provider: s
 
 
 def _write_config_key(key_path: str, value):
+    from hermes_cli.config_backend import Changes, get_config_backend, supports_file_tooling
+    if not supports_file_tooling():
+        # One explicit key: a keyed write, which refuses a locked key (ConfigLockedError) instead
+        # of the bulk save's silent omission, so the caller never reports a refused value as saved.
+        try:
+            get_config_backend().write_changes(_active_config_path().parent, Changes(set={key_path: value}))
+        finally:
+            _drop_cfg_cache()
+        return
     # Write-back round-trip: raw read is mandatory — saving the overlaid/expanded view would persist it.
     cfg = current = _load_cfg_raw()
     *parents, leaf = key_path.split(".")

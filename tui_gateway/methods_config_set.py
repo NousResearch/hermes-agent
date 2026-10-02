@@ -501,7 +501,11 @@ def _(rid, params: dict) -> dict:
         handler = _set_display_toggle
     if handler is None:
         return _err(rid, 4002, f"unknown config key: {key}")
-    return handler(rid, params, key, value, session)
+    from hermes_cli.config_backend import ConfigWriteError
+    try:
+        return handler(rid, params, key, value, session)
+    except ConfigWriteError as exc:  # a locked key or a value the config backend refused: nothing saved
+        return _err(rid, 4002, str(exc))
 
 
 def register(server) -> None:

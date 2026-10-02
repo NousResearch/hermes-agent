@@ -1140,6 +1140,19 @@ DEFAULT_CONFIG = {
         },
     },
 
+    # How inbound voice / audio reaches the main model (see agent/audio_routing.py).
+    # "auto" (default) = attach the clip as a native OpenAI-style input_audio part on
+    # an OpenAI-compatible chat-completions backend, so the model hears the audio
+    # itself instead of a lossy STT transcript; Anthropic / Gemini / Codex / Bedrock
+    # wires and an unknown backend degrade to the existing path-pointing text note.
+    # "on" = attach regardless of backend (a model that already rejected audio this
+    # session still gets the text note), "off" = never attach. Clips over 8 MB or 10
+    # minutes, and clips needing an unavailable ffmpeg to normalize to wav/mp3, always
+    # take the text note.
+    "media": {
+        "native_audio": "auto",
+    },
+
     "stt": {
         "enabled": True,
         # Echo the raw transcript of gateway voice messages back as a 🎙️ message.

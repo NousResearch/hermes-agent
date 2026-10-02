@@ -1094,11 +1094,13 @@ export function AppearanceSettings({ subpage }: AppearanceSettingsProps = {}) {
       )}
 
       {/* Plugin-provided appearance controls — the sanctioned seam for a
-          plugin that used to inject nodes into this page. Last subpage only
-          (after the built-in sections): the router always resolves a subpage,
-          so pinning to the Pet page keeps one visible home per card while a
-          deep-link to another subpage still shows only that built-in section. */}
-      {show('pet') && <AppearanceExtraSlot />}
+          plugin that used to inject nodes into this page. Default subpage
+          only (after the built-in sections): the router resolves every visit
+          to a subpage and falls back to the FIRST one (general), so the one
+          home a plugin card is guaranteed to reach must be that fallback —
+          pinning it to pet hid the cards on a plain "open Appearance" visit.
+          A deep-link to another subpage still shows only that section. */}
+      {show('general') && <AppearanceExtraSlot />}
     </SettingsContent>
   )
 }

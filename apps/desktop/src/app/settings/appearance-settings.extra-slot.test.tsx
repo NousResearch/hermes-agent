@@ -24,7 +24,7 @@ function renderPage(subpage?: string) {
 }
 
 describe('AppearanceSettings extra slot', () => {
-  it('mounts plugin extras on the last subpage only, not on other subpages', () => {
+  it('mounts plugin extras on the default (fallback) subpage only, not on other subpages', () => {
     act(() => {
       disposers.push(
         registry.register({
@@ -36,15 +36,23 @@ describe('AppearanceSettings extra slot', () => {
       )
     })
 
-    // The router resolves every Appearance visit to a subpage (falling back to
-    // the first one), so the slot must ride along with a real subpage — the
-    // last one, after the built-in sections — or it never renders.
+    // The router resolves every Appearance visit to a subpage, falling back to
+    // the FIRST one (general) — resolveSettingsSubpage ends with
+    // `?? pages[0]?.id`. A plain "open Appearance" visit therefore lands on
+    // general, so the slot's one guaranteed home is that fallback page; the
+    // router never hands this component undefined, and pinning the slot to a
+    // later subpage (pet) hid the cards on the default entry.
     let view = renderPage('theme')
 
     expect(screen.queryByText('Extra controls')).toBeNull()
     view.unmount()
 
     view = renderPage('pet')
+
+    expect(screen.queryByText('Extra controls')).toBeNull()
+    view.unmount()
+
+    view = renderPage('general')
 
     expect(screen.getByText('Extra controls')).toBeTruthy()
     view.unmount()

@@ -109,25 +109,56 @@ def _native_voice_payload(request):
 
 
 @pytest.mark.asyncio
-async def test_send_voice_uses_probed_duration_when_oggopus_rejects_source(tmp_path, monkeypatch):
+async def test_send_voice_transcodes_non_opus_and_uses_final_artifact(tmp_path, monkeypatch):
+    audio = tmp_path / "reply.mp3"
+    original = b"mp3 bytes"
+    audio.write_bytes(original)
+    adapter, channel, request = _voice_adapter(None)
+    monkeypatch.setattr(adapter, "_is_forum_parent", lambda _channel: False)
+
+    class _FakeOggOpus:
+        def __init__(self, path):
+            if Path(path).suffix == ".mp3":
+                raise ValueError("not OggOpus")
+            self.info = SimpleNamespace(length=1.44)
+
+    monkeypatch.setitem(sys.modules, "mutagen.oggopus", SimpleNamespace(OggOpus=_FakeOggOpus))
+
+    def fake_transcode(_source, *, output_path, **_kwargs):
+        Path(output_path).write_bytes(b"real ogg opus bytes")
+        return output_path
+
+    monkeypatch.setattr("gateway.platforms.base.transcode_to_ogg_opus", fake_transcode)
+    result = await adapter.send_voice("555", str(audio))
+
+    assert result.success is True
+    payload = _native_voice_payload(request)
+    assert payload["attachments"][0]["duration_secs"] == 1.44
+    form = request.await_args.kwargs["form"]
+    upload = next(part for part in form if part["name"] == "files[0]")
+    assert upload["value"] == b"real ogg opus bytes"
+    assert upload["filename"] == "voice-message.ogg"
+    assert audio.read_bytes() == original
+
+
+@pytest.mark.asyncio
+async def test_send_voice_falls_back_without_posting_mislabeled_native_voice(tmp_path, monkeypatch):
     audio = tmp_path / "reply.mp3"
     audio.write_bytes(b"mp3 bytes")
     adapter, channel, request = _voice_adapter(None)
     monkeypatch.setattr(adapter, "_is_forum_parent", lambda _channel: False)
-    monkeypatch.setattr(
-        "tools.transcription_audio._probe_audio_duration",
-        lambda path: 1.44,
-    )
 
     class _RejectingOggOpus:
         def __init__(self, _path):
             raise ValueError("not OggOpus")
 
     monkeypatch.setitem(sys.modules, "mutagen.oggopus", SimpleNamespace(OggOpus=_RejectingOggOpus))
+    monkeypatch.setattr("gateway.platforms.base.transcode_to_ogg_opus", lambda *_args, **_kwargs: None)
     result = await adapter.send_voice("555", str(audio))
 
     assert result.success is True
-    assert _native_voice_payload(request)["attachments"][0]["duration_secs"] == 1.44
+    request.assert_not_awaited()
+    channel.send.assert_awaited_once()
 
 
 @pytest.mark.asyncio

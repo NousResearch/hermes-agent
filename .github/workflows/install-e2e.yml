@@ -324,7 +324,9 @@ jobs:
     name: ${{ matrix.name }}
     # The generator applies the route; an OS it selected no legs for is skipped
     # (GitHub rejects an empty matrix).
-    if: needs.generate-matrix.outputs.linux-legs != '0'
+    # Fork policy: Linux install/update legs are excluded (see AGENTS.md);
+    # the windows/macos lanes below are untouched.
+    if: ${{ needs.generate-matrix.outputs.linux-legs != '0' && github.repository != 'hushulin/hermes-agent' }}
     needs: generate-matrix
     strategy:
       # One leg breaking is worth knowing about even if another already

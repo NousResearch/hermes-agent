@@ -16,6 +16,9 @@ concurrency:
 
 jobs:
   e2e:
+    # Fork policy: this lane runs on a Linux runner only (see AGENTS.md).
+    # Self-disabling: upstream keeps running it.
+    if: ${{ github.repository != 'hushulin/hermes-agent' }}
     name: Playwright E2E (Linux)
     # This job builds the renderer and the electron bundle, then drives a real
     # Electron app under xvfb. vite, tsc and the Playwright workers all scale

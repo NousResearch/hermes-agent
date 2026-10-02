@@ -26,10 +26,7 @@ from gateway.platforms.base import EphemeralReply
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.run_busy import approval_input_words
 from gateway.run_common import _UNSET
-from gateway.run_inbound_unauthorized import (
-    UnauthorizedOwnerNotifier, pairing_code_reply, pairing_profile_arg, pairing_rate_limited_reply,
-    unauthorized_owner_hint,
-)
+from gateway.run_inbound_admission import GatewayInboundAdmissionMixin
 from gateway.session import (
     SessionSource, build_session_context, is_shared_multi_user_session,
     neutralize_untrusted_inline_text,
@@ -105,198 +102,8 @@ def strip_discord_triggering_note(event: Any, message_text: Any) -> Any:
     return message_text[len(prefix):] if message_text.startswith(prefix) else message_text
 
 
-class GatewayInboundMixin:
+class GatewayInboundMixin(GatewayInboundAdmissionMixin):
     """Inbound message pipeline (_handle_message, text/media preparation, durable-turn markers, plugin injection) for GatewayRunner."""
-
-    async def _hm_pre_gateway_dispatch_hook(
-        self, event: "MessageEvent", source: SessionSource
-    ) -> Optional["MessageEvent"]:
-        """Run the ``pre_gateway_dispatch`` plugin hook; None = drop, else the (maybe rewritten) event.
-        Results: ``{"action": "skip"}`` → drop; ``{"action": "rewrite", "text"}`` → replace ``event.text``;
-        ``allow``/None → normal dispatch. Runs BEFORE auth so plugins can handle unauthorized senders."""
-        try:
-            from hermes_cli.lifecycle import ainvoke_hook as _ainvoke_hook
-            _hook_results = await _ainvoke_hook(
-                "pre_gateway_dispatch", event=event, gateway=self,
-                # getattr: bare-runner tests build GatewayRunner via object.__new__ without __init__.
-                session_store=getattr(self, "session_store", None),
-            )
-        except Exception as _hook_exc:
-            logger.warning("pre_gateway_dispatch invocation failed: %s", _hook_exc)
-            _hook_results = []
-
-        for _result in _hook_results:
-            if not isinstance(_result, dict):
-                continue
-            _action = _result.get("action")
-            if _action == "skip":
-                logger.info(
-                    "pre_gateway_dispatch skip: reason=%s platform=%s chat=%s",
-                    _result.get("reason"), source.platform.value if source.platform else "unknown",
-                    source.chat_id or "unknown",
-                )
-                return None
-            if _action == "rewrite":
-                _new_text = _result.get("text")
-                if isinstance(_new_text, str):
-                    event = dataclasses.replace(event, text=_new_text)
-                break
-            if _action == "allow":
-                break
-        return event
-
-    async def _hm_offer_pairing_code(self, source: SessionSource) -> None:
-        """DM an unauthorized sender a pairing code (rate-limited; groups never reach here)."""
-        platform_name = source.platform.value if source.platform else "unknown"
-        pairing_store = self._pairing_store_for(source)
-        if pairing_store is None:
-            logger.error("Cannot offer pairing code on %s: no pairing store", platform_name)
-            return
-        # Rate-limit ALL pairing responses (code or rejection) so a burst of DMs doesn't spam.
-        if pairing_store._is_rate_limited(platform_name, source.user_id):
-            return
-        code = pairing_store.generate_code(platform_name, source.user_id, source.user_name or "")
-        adapter = self._delivery_adapter_for(source)
-        if code:
-            reply = pairing_code_reply(platform_name, code, pairing_profile_arg(pairing_store))
-        else:
-            reply = pairing_rate_limited_reply()
-        if adapter:
-            await adapter.send(source.chat_id, reply)
-        if not code:
-            # Record rate limit so subsequent messages are silently ignored
-            pairing_store._record_rate_limit(platform_name, source.user_id)
-
-    async def _hm_send_unauthorized_decline(self, source: SessionSource) -> None:
-        """``decline`` behavior: one short refusal per sender per DECLINE_DEDUPE_SECONDS, then silence
-        (#88028). The stamp is written BEFORE the send so a delivery
-        hiccup cannot become a decline storm; without a store there is no dedupe state → stay silent."""
-        from gateway.config import DEFAULT_UNAUTHORIZED_DM_DECLINE_MESSAGE
-        platform_name = source.platform.value if source.platform else "unknown"
-        pairing_store = self._pairing_store_for(source)
-        if pairing_store is None or pairing_store.has_recent_decline(platform_name, source.user_id):
-            return
-        pairing_store.record_decline(platform_name, source.user_id)
-        adapter = self._delivery_adapter_for(source)
-        if not adapter:
-            return
-        config = getattr(self, "config", None)
-        text = str(getattr(config, "unauthorized_dm_decline_message", "") or "").strip()
-        try:
-            await adapter.send(source.chat_id, text or DEFAULT_UNAUTHORIZED_DM_DECLINE_MESSAGE)
-        except Exception:
-            logger.warning("Failed to deliver unauthorized-DM decline on %s", platform_name, exc_info=True)
-
-    async def _hm_report_ignored_dm(self, source: SessionSource) -> None:
-        """Unauthorized DM under behaviour ``ignore``: nothing goes to the sender. The owner gets the
-        sender's ID and the allowlist fix in the WARNING log and, once per sender, in the home channel."""
-        from hermes_constants import display_hermes_home
-        platform_name = source.platform.value if source.platform else "unknown"
-        hint = unauthorized_owner_hint(
-            platform_name, source.user_id, source.user_name or "", hermes_home=display_hermes_home(),
-        )
-        logger.warning("Unauthorized user (ignored): %s", hint)
-        notifier = getattr(self, "_unauthorized_owner_notifier", None)
-        if notifier is None:
-            notifier = self._unauthorized_owner_notifier = UnauthorizedOwnerNotifier()
-        if notifier.first_time(platform_name, source.user_id) and getattr(self, "config", None) is not None:
-            await notifier.notify(self, source, hint)
-
-    async def _hm_admit_event(
-        self, event: "MessageEvent"
-    ) -> Optional[Tuple["MessageEvent", SessionSource, bool]]:
-        """Ingress gates for ``_handle_message``; None when dropped, else ``(event, source, is_internal)``
-        (the ``pre_gateway_dispatch`` hook may have rewritten ``event``)."""
-        from gateway.run import _is_slack_ignored_channel
-        source = event.source
-        # getattr(self, ...) throughout: bare test runners build GatewayRunner via object.__new__.
-        _config = getattr(self, "config", None)
-
-        # 🔴 Cross-session leak guard: this per-message task was create_task()'d with a copy of the
-        # spawning context, which may carry ANOTHER message's HERMES_SESSION_* ContextVars; until
-        # _set_session_env binds ours a subprocess would read the foreign identity. Reset to _UNSET.
-        try:
-            from gateway.session_context import reset_session_vars
-            reset_session_vars()
-        except Exception:
-            logger.debug("reset_session_vars failed at handler entry", exc_info=True)
-
-        # Identity FIRST. Most adapters canonicalize at their own ingress; internal/voice paths
-        # construct SessionSource directly, so this is the shared fail-closed gate. Strict boolean
-        # marker: require the literal True so duck-typed test/internal sources with dynamic
-        # attributes are not mistaken for a rejection.
-        if getattr(_config, "multiplex_profiles", False):
-            self._canonicalize(source)
-        if getattr(source, "profile_route_rejected", False) is True:
-            logger.warning(
-                "Dropping inbound message because its explicit profile route "
-                "targets an unserved profile"
-            )
-            return None
-
-        is_internal = bool(getattr(event, "internal", False))  # e.g. background-process notifications
-
-        # Ignored-channel guard runs FIRST — before startup-restore queueing, plugin hooks, auth,
-        # and session setup — so an ignored channel can never reach pairing/auth/session state.
-        _chat_id = getattr(source, "chat_id", None)
-        if not is_internal and getattr(source, "platform", None) == Platform.SLACK:
-            # The routed adapter's extra carries a secondary profile's own list; ``_config`` is the default's.
-            _slack_adapter = None
-            with suppress(Exception):
-                _slack_adapter = self._intake_adapter_for(source)
-        if (
-            # See #51899.
-            not is_internal
-            and getattr(source, "platform", None) == Platform.SLACK
-            and _is_slack_ignored_channel(_config, _chat_id, _slack_adapter)
-        ):
-            logger.info("Dropping Slack message from configured ignored channel %s", _chat_id)
-            return None
-
-        if (
-            getattr(self, "_startup_restore_in_progress", False)
-            and not is_internal
-            and not getattr(event, "_hermes_startup_restore_replay", False)
-        ):
-            self._queue_startup_restore_event(event)
-            return None
-
-        if is_internal:
-            return event, source, True
-
-        # scale-to-zero: only real user-originated inbound stamps the last-inbound clock;
-        # counting internal/system events would keep a genuinely idle gateway awake.
-        self._scale_to_zero_note_real_inbound()
-        event = await self._hm_pre_gateway_dispatch_hook(event, source)
-        if event is None:
-            return None
-        source = event.source
-
-        if not self._is_user_authorized_for_source(source):
-            if source.user_id is None:
-                # No user identity (Telegram service messages, channel forwards, anonymous admin
-                # posts, sender_chat): can't be paired but may be authorized via a chat allowlist.
-                logger.debug("Ignoring message with no user_id from %s", source.platform.value)
-                return None
-            # DMs get a pairing code or a one-time decline, groups are ignored. A bot cannot pair, and
-            # answering one mid-cooldown is outbound traffic.
-            pairable_dm = source.chat_type == "dm" and not getattr(source, "is_bot", False)
-            behavior = self._get_unauthorized_dm_behavior(source.platform, profile=source.profile) if pairable_dm else None
-            if behavior == "pair":
-                logger.warning("Unauthorized user: %s (%s) on %s", source.user_id, source.user_name, source.platform.value)
-                await self._hm_offer_pairing_code(source)
-            elif behavior == "decline":
-                logger.warning("Unauthorized user: %s (%s) on %s", source.user_id, source.user_name, source.platform.value)
-                await self._hm_send_unauthorized_decline(source)
-            elif pairable_dm:
-                await self._hm_report_ignored_dm(source)
-            else:
-                logger.warning("Unauthorized user: %s (%s) on %s", source.user_id, source.user_name, source.platform.value)
-            return None
-        # The busy path charged this event on arrival; a drained follow-up must not pay twice.
-        if not getattr(event, "_bot_loop_admitted", False) and not self._admit_bot_message_for_source(source):
-            return None
-        return event, source, False
 
     def _hm_estop_turn_allowed(self, event: "MessageEvent", source: SessionSource) -> bool:
         """Whether a turn may bypass the global emergency stop: pause blocks NEW agent turns, never
@@ -621,11 +428,26 @@ class GatewayInboundMixin:
     def _hm_merge_pending_for_source(
         self, source: SessionSource, _quick_key: str, event: "MessageEvent", *, merge_text: bool = False
     ) -> None:
-        """Merge *event* into the source adapter's pending slot (no-op without an adapter)."""
+        """Coalesce compatible busy input or queue it behind earlier events."""
         from gateway.platforms.base import merge_pending_message_event
+        from gateway.platforms.base_pending import _can_join_pending_event, is_pending_redispatch
+
         adapter = self._delivery_adapter_for(source)
-        if adapter:
-            merge_pending_message_event(adapter._pending_messages, _quick_key, event, merge_text=merge_text)
+        if not adapter:
+            return
+        self._flush_buffered_pending(_quick_key, adapter)
+        existing = adapter._pending_messages.get(_quick_key)
+        if (
+            existing is None
+            or self._overflow_queue(_quick_key)
+            or existing.message_type not in {MessageType.TEXT, MessageType.PHOTO}
+            or not _can_join_pending_event(existing, event)
+            or is_pending_redispatch(adapter, _quick_key, event)
+        ):
+            self._queue_or_replace_pending_event(_quick_key, event)
+            return
+        merge_pending_message_event(adapter._pending_messages, _quick_key, event, merge_text=merge_text)
+        event._gateway_accepted = True
 
     async def _hm_busy_slash_or_photo(
         self, event: "MessageEvent", source: SessionSource, _quick_key: str
@@ -656,7 +478,7 @@ class GatewayInboundMixin:
         if event.message_type == MessageType.PHOTO:
             logger.debug("PRIORITY photo follow-up for session %s — queueing without interrupt", _quick_key)
             self._hm_merge_pending_for_source(source, _quick_key, event)
-            return True, None
+            return True, None if event._gateway_accepted else self._pending_queue_refusal(event)
         return False, None
 
     def _hm_busy_telegram_grace_queue(
@@ -687,7 +509,7 @@ class GatewayInboundMixin:
     def _hm_text_only(event: "MessageEvent") -> bool:
         return event.message_type == MessageType.TEXT and not event.media_urls and not event.media_types
 
-    def _hm_busy_steer(self, event: "MessageEvent", running_agent: Any, _quick_key: str) -> None:
+    def _hm_busy_steer(self, event: "MessageEvent", running_agent: Any, _quick_key: str) -> bool:
         """Steer mode: inject text mid-run via ``agent.steer()``, else fall back to queue semantics."""
         steer_text = (event.text or "").strip()
         steered = False
@@ -699,9 +521,9 @@ class GatewayInboundMixin:
         if steered:
             self._fold_into_running_turn(running_agent, _quick_key, event)
             logger.debug("PRIORITY steer for session %s", _quick_key)
-            return
+            return True
         logger.debug("PRIORITY steer-fallback-to-queue for session %s", _quick_key)
-        self._queue_or_replace_pending_event(_quick_key, event)
+        return self._queue_or_replace_pending_event(_quick_key, event)
 
     async def _hm_busy_interrupt(
         self, event: "MessageEvent", source: SessionSource, running_agent: Any, _quick_key: str
@@ -740,7 +562,7 @@ class GatewayInboundMixin:
 
         effective_busy_input_mode = self._effective_busy_input_mode(source)
         if self._hm_busy_telegram_grace_queue(event, source, _quick_key, effective_busy_input_mode):
-            return None
+            return None if event._gateway_accepted else self._pending_queue_refusal(event)
 
         _ra_state = self._peek_session_state(_quick_key)
         running_agent = _ra_state.turn.agent if _ra_state else None
@@ -750,11 +572,12 @@ class GatewayInboundMixin:
                 logger.info("HARD STOP (pending) for session %s — sentinel cleared", _quick_key)
                 return EphemeralReply(t("gateway.stop.force_stopped_pending"))
             self._hm_merge_pending_for_source(source, _quick_key, event, merge_text=True)  # picked up after start
-            return None
+            return None if event._gateway_accepted else self._pending_queue_refusal(event)
         if self._draining:
             queue_during_drain = self._queue_during_drain_enabled(effective_busy_input_mode)
             if queue_during_drain:
-                self._queue_or_replace_pending_event(_quick_key, event)
+                if not self._queue_or_replace_pending_event(_quick_key, event):
+                    return self._pending_queue_refusal(event)
             return (
                 t("gateway.busy.drain_queued", action=self._status_action_gerund())
                 if queue_during_drain
@@ -762,11 +585,9 @@ class GatewayInboundMixin:
             )
         if effective_busy_input_mode == "queue":
             logger.debug("PRIORITY queue follow-up for session %s", _quick_key)
-            self._queue_or_replace_pending_event(_quick_key, event)
-            return None
+            return None if self._queue_or_replace_pending_event(_quick_key, event) else self._pending_queue_refusal(event)
         if effective_busy_input_mode == "steer":
-            self._hm_busy_steer(event, running_agent, _quick_key)
-            return None
+            return None if self._hm_busy_steer(event, running_agent, _quick_key) else self._pending_queue_refusal(event)
         # Subagent protection: an interrupt cascades through ``_active_children`` and aborts
         # in-flight delegate_task work (/stop reached its handler above — still an escape hatch).
         # Compression protection: an interrupt would start a new turn on the pre-rotation parent
@@ -779,8 +600,7 @@ class GatewayInboundMixin:
             await self._hm_busy_interrupt(event, source, running_agent, _quick_key)
             return None
         logger.info("PRIORITY interrupt demoted to queue for session %s %s", _quick_key, _demote)
-        self._queue_or_replace_pending_event(_quick_key, event)
-        return None
+        return None if self._queue_or_replace_pending_event(_quick_key, event) else self._pending_queue_refusal(event)
 
     def _hm_quick_commands(self) -> dict:
         """User-defined ``quick_commands`` mapping from config (empty dict when unset/malformed)."""
@@ -1385,6 +1205,8 @@ class GatewayInboundMixin:
 
         event, source, is_internal = self._hm_rescue_orphaned_fifo(event, source, is_internal, _quick_key)
 
+        from gateway.platforms.base_pending import release_pending_dispatch
+        release_pending_dispatch(self._delivery_adapter_for(source), _quick_key, event, claimed=True)
         _claim_state = self._session_state(_quick_key)
         if _active_session_lease is not None:
             _claim_state.turn.lease = _active_session_lease

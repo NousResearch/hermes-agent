@@ -144,3 +144,18 @@ test('an unknown peer outcome is visible without granting Retry or Skip', () => 
   expect(onDiscard).not.toHaveBeenCalled()
   expect(request).not.toHaveBeenCalled()
 })
+
+test.each(['', '<terminal> (plugin approval rule)'])('a description without an operation cannot authorize execution: %s', async command => {
+  const onAction = vi.fn(), onRefresh = vi.fn()
+  const action: CanonicalPendingAction = { ...target, kind: 'approval', request_id: 'exact-prompt', approval: {
+    request_id: 'exact-prompt', command, description: 'Plugin requires approval for terminal', choices: ['once', 'deny']
+  } }
+  render(<CanonicalGroupPendingActions actions={[action]} members={members} onAction={onAction} onDiscard={noop} onRefresh={onRefresh} />)
+  expect(screen.queryByRole('button', { name: 'Allow once' })).toBeNull()
+  expect(screen.getByText(/Action details are unavailable/)).toBeTruthy()
+  await act(async () => {fireEvent.click(screen.getByRole('button', { name: 'Refresh' }))})
+  expect(onRefresh).toHaveBeenCalledOnce()
+  expect(onAction).not.toHaveBeenCalled()
+  await act(async () => {fireEvent.click(screen.getByRole('button', { name: 'Don’t allow' }))})
+  expect(onAction).toHaveBeenCalledWith(action, 'deny')
+})

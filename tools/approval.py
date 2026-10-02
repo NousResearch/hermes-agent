@@ -624,7 +624,7 @@ def _smart_gate(spec: _GateSpec, command: str, description: str, pattern_key: st
     # tool arguments come from json.loads and can carry lone surrogates, which a strict utf-8
     # encode would turn into a crash on the verdict path.
     command_sha256 = hashlib.sha256(command.encode("utf-8", "surrogatepass")).hexdigest()[:12]
-    gate_name = "execute_code" if spec is _EXECUTE_CODE_GATE else "command"
+    gate_name = "execute_code" if spec is _EXECUTE_CODE_GATE else spec.noun
     if verdict == "approve":
         _reset_denials(session_key)
         logger.info(

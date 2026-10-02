@@ -7,6 +7,7 @@ import logging
 from typing import TYPE_CHECKING
 
 from gateway.platforms.event import MessageEvent
+from gateway.platforms.base_pending import _can_join_pending_event, ingress_order
 
 if TYPE_CHECKING:
     from plugins.platforms.telegram.adapter import TelegramAdapter
@@ -23,12 +24,16 @@ class TelegramTextBatchingMixin:
 
     def _enqueue_text_event(self: TelegramAdapter, event: MessageEvent) -> None:
         """Buffer a text chunk, or hold it while delayed delivery must be dropped."""
+        ingress_order(event)
         if self._should_drop_delayed_delivery():
             self._hold_inbound_event(event, where="text-enqueue")
             return
         key = self._text_batch_key(event)
         existing = self._pending_text_batches.get(key)
-        if existing is not None and not self._text_batch_context_compatible(existing, event):
+        if existing is not None and (
+            not self._text_batch_context_compatible(existing, event)
+            or not _can_join_pending_event(existing, event)
+        ):
             prior_task = self._pending_text_batch_tasks.pop(key, None)
             if prior_task and not prior_task.done():
                 prior_task.cancel()
@@ -74,11 +79,11 @@ class TelegramTextBatchingMixin:
                 tasks.pop(key, None)
 
 
-    async def _flush_text_batch(self: TelegramAdapter, key: str) -> None:
+    async def _flush_text_batch(self: TelegramAdapter, key: str, *, delay: float | None = None) -> None:
         """Telegram keeps its own flush body: a cancel after the pop must HOLD the event and re-raise
         (PTB already acked the update; the hold queue redispatches after reconnect) rather than shield
         the dispatch — teardown must be able to stop a flush from reaching a torn-down session."""
         await self._flush_buffered(
             self._pending_text_batches, self._pending_text_batch_tasks, key,
-            self._text_batch_delay_for(self._pending_text_batches.get(key)), "text",
+            self._text_batch_delay_for(self._pending_text_batches.get(key)) if delay is None else delay, "text",
             lambda ev: logger.info("[Telegram] Flushing text batch %s (%d chars)", key, len(ev.text or "")))

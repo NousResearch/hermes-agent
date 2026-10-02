@@ -202,3 +202,163 @@ class TestWeComTextBatching:
         text = adapter.handle_message.call_args[0][0].text
         assert "first part" in text
         assert "second part" in text
+@pytest.mark.asyncio
+@pytest.mark.parametrize('route', ['base', 'telegram-photo', 'telegram-album'])
+@pytest.mark.parametrize('relation', ['matching', 'first-quote', 'second-quote', 'conflicting', 'conflicting-failure', 'authorization', 'sender', 'control'])
+async def test_entry_batch_keeps_each_reply_target(route, relation):
+    from dataclasses import replace
+    from gateway.platforms.base_pending import pending_part, withdraw_from_event
+    from plugins.platforms.telegram.adapter import TelegramAdapter
+
+    delivered = []
+    if route == 'base':
+        adapter = _make_matrix_adapter()
+        maps = [adapter._pending_text_batch_tasks]
+        platform = Platform.MATRIX
+    else:
+        adapter = TelegramAdapter(PlatformConfig(enabled=True, token='1234:dummy'))
+        adapter._drop_delayed_deliveries = False
+        adapter._media_batch_delay_seconds = 0
+        adapter.MEDIA_GROUP_WAIT_SECONDS = 0
+        maps = [adapter._pending_photo_batch_tasks, adapter._media_group_tasks]
+        platform = Platform.TELEGRAM
+
+    async def capture(event):
+        delivered.append(event)
+        if relation == 'conflicting-failure' and event.message_id == 'm-one':
+            raise ValueError('controlled admission failure')
+
+    adapter.handle_message = capture
+    source = SessionSource(platform=platform, chat_id='12345', chat_type='dm', user_id='sender')
+    first = MessageEvent(text='one', source=source, message_id='m-one',
+                         message_type=MessageType.TEXT if route == 'base' else MessageType.PHOTO)
+    second = MessageEvent(text='two', source=source, message_id='m-two',
+                          message_type=first.message_type)
+    if relation != 'second-quote':
+        first.reply_to_message_id, first.reply_to_text = 'q-one', 'quoted one'
+    if relation != 'first-quote':
+        second.reply_to_message_id, second.reply_to_text = (
+            ('q-two', 'quoted two') if relation.startswith('conflicting') else ('q-one', 'quoted one'))
+    if route != 'base':
+        first.media_urls, first.media_types, first.media_text_inlined = ['one.png'], ['image/png'], [True]
+        second.media_urls, second.media_types, second.media_text_inlined = ['two.png'], ['image/png'], [False]
+    first.reply_to_author_authorized = second.reply_to_author_authorized = True
+    if relation == 'authorization':
+        second.reply_to_author_authorized = False
+    if relation == 'sender':
+        second.source = replace(source, user_id='other-sender')
+    if relation == 'control':
+        second.allow_gateway_control = False
+    originals = [pending_part(event) for event in (first, second)]
+    if route == 'base':
+        adapter._enqueue_text_event(first)
+        adapter._enqueue_text_event(second)
+    elif route == 'telegram-photo':
+        adapter._enqueue_photo_event('lane', first)
+        adapter._enqueue_photo_event('lane', second)
+    else:
+        await adapter._queue_media_group_event('album', first)
+        await adapter._queue_media_group_event('album', second)
+    while tasks := [task for pending in maps for task in pending.values()]:
+        await asyncio.gather(*tasks, return_exceptions=True)
+    held = getattr(adapter, '_held_inbound_redispatch_task', None)
+    if held is not None:
+        await held
+    states = [(event.text, event._reply_context(), event.media_urls,
+               event.media_types, event.media_text_inlined) for event in delivered]
+    first_media = (['one.png'], ['image/png'], [True]) if route != 'base' else ([], [], [])
+    second_media = (['two.png'], ['image/png'], [False]) if route != 'base' else ([], [], [])
+    if relation in {'conflicting', 'conflicting-failure', 'authorization', 'sender', 'control'}:
+        expected = [('one', originals[0]._reply_context(), *first_media),
+                    ('two', originals[1]._reply_context(), *second_media)]
+    else:
+        combined_media = (['one.png', 'two.png'], ['image/png', 'image/png'], [True, False]) if route != 'base' else ([], [], [])
+        reply = originals[1]._reply_context() if relation == 'second-quote' else originals[0]._reply_context()
+        expected = [('one\ntwo' if route == 'base' else 'one\n\ntwo', reply, *combined_media)]
+    assert states == expected
+    if len(delivered) == 1:
+        matched, remaining = withdraw_from_event(delivered[0], lambda event: event.message_id == 'm-one')
+        assert (matched, remaining) == (True, originals[1])
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stage", ["buffered", "preparing", "telegram-photo", "telegram-album"])
+@pytest.mark.parametrize("write_fails", [False, True])
+async def test_ingress_shutdown_preserves_split_inputs_before_consumption(tmp_path, monkeypatch, stage, write_fails):
+    import json
+    from dataclasses import fields
+
+    from plugins.platforms.matrix.adapter import MatrixAdapter
+    from plugins.platforms.telegram.adapter import TelegramAdapter
+    from gateway.shutdown_pending import PendingQueueSnapshot
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    adapter = (TelegramAdapter(PlatformConfig(enabled=True, token="1234:dummy"))
+               if stage.startswith("telegram") else MatrixAdapter(PlatformConfig(enabled=True)))
+    adapter._text_batch_delay_seconds = 0 if stage == "preparing" else 60
+    adapter._media_batch_delay_seconds = adapter.MEDIA_GROUP_WAIT_SECONDS = 60
+    adapter._drop_delayed_deliveries = False
+    source = SessionSource(platform=adapter.platform, chat_id="12345", chat_type="dm", user_id="sender")
+    events = [MessageEvent(text=text, source=source, message_id=f"m-{text}",
+                           reply_to_message_id=f"q-{text}", reply_to_text=f"quoted {text}",
+                           reply_to_author_id="author", reply_to_author_name="Quoted author",
+                           reply_to_is_own_message=False, reply_to_author_authorized=True)
+              for text in ("one", "two")]
+    entered = asyncio.Event()
+    consumed = []
+
+    async def prepare(event):
+        entered.set()
+        await asyncio.Event().wait()
+        consumed.append(event)
+
+    adapter.handle_message = prepare
+    from gateway.shutdown_flush import _write_payload
+    if write_fails:
+        def fail(directory, payload):
+            raise OSError("controlled full disk")
+        monkeypatch.setattr("gateway.shutdown_flush._write_payload", fail)
+    try:
+        for event in events:
+            if stage.startswith("telegram"):
+                event.message_type = MessageType.PHOTO
+                event.media_urls, event.media_types, event.media_text_inlined = [event.text + ".png"], ["image/png"], [False]
+                if stage == "telegram-photo":
+                    adapter._enqueue_photo_event("lane", event)
+                else:
+                    await adapter._queue_media_group_event("album", event)
+            else:
+                adapter._enqueue_text_event(event)
+        if stage == "preparing":
+            await asyncio.wait_for(entered.wait(), 2)
+        expected = [{item.name: getattr(event, item.name) for item in fields(event)
+                     if item.init and not item.name.startswith("_") and item.name not in {"raw_message", "source"}}
+                    for event in events]
+        for value, event in zip(expected, events):
+            value.update(message_type=event.message_type.value, timestamp=event.timestamp.isoformat(),
+                         source={item.name: getattr(source, item.name) for item in fields(source)})
+            value["source"]["platform"] = source.platform.value
+        await adapter.cancel_background_tasks()
+        payloads = [json.loads(path.read_text()) for path in (tmp_path / "pending_messages").glob("*.json")]
+        if write_fails:
+            assert (payloads, consumed) == ([], [])
+            from gateway.shutdown_pending import flush_adapter_pending
+            monkeypatch.setattr("gateway.shutdown_flush._write_payload", _write_payload)
+            flush_adapter_pending(adapter, {})
+            payloads = [json.loads(path.read_text()) for path in (tmp_path / "pending_messages").glob("*.json")]
+        snapshot, = [PendingQueueSnapshot.from_payload(payload) for payload in payloads]
+        assert (snapshot.session_key, snapshot.runtime_home, [record["event"] for record in snapshot.events], consumed) == (
+            adapter._event_session_key(events[0]), str(tmp_path), expected, [])
+        if not write_fails:
+            assert (adapter._pending_text_batches, getattr(adapter, "_pending_photo_batches", {}),
+                    getattr(adapter, "_media_group_events", {}), getattr(adapter, "_held_inbound_events", [])) == ({}, {}, {}, [])
+    finally:
+        tasks = [task for attr in ("_pending_text_batch_tasks", "_pending_photo_batch_tasks", "_media_group_tasks")
+                 for task in getattr(adapter, attr, {}).values()]
+        tasks.extend(getattr(adapter, "_background_tasks", ()))
+        held = getattr(adapter, "_held_inbound_redispatch_task", None)
+        if held is not None:
+            tasks.append(held)
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)

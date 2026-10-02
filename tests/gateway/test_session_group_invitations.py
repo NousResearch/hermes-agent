@@ -3,6 +3,8 @@ import asyncio
 import json
 import time
 
+import pytest
+
 from gateway import hosted_rooms
 from gateway.platforms.api_server_room_grants import _grant_db
 from gateway.session_controls import AuthorityConnection
@@ -46,3 +48,31 @@ def test_failed_receipt_commit_rolls_back_the_real_peer_reservation(gateway, mon
     assert not hosted_rooms.peer_room_is_reserved(db_path, room_id='failed-setup', target_profile='default')
     with hosted_rooms._transaction(db_path) as conn:
         assert conn.execute('SELECT COUNT(*) FROM hosted_room_setup_invitations').fetchone()[0] == 1
+
+
+@pytest.mark.asyncio
+async def test_replayed_revoked_invitation_cannot_regain_bearer_authority_after_new_setup(gateway, monkeypatch):
+    from tests.gateway.test_session_group_peer_routes import serve
+    from tui_gateway.hosted_room_peer_http import PeerRunsHTTPClient, PeerRunsHTTPError
+
+    server, url = await serve(gateway, monkeypatch)
+    params = dict(room_id='setup', home_install_id='install:home', authority_gateway_id='install:home',
+        authority_epoch=1, member_id='peer', request_id='desktop-replay-revoked', requested_at=time.time())
+    try:
+        first = await call(gateway.owner, 'groups.peer.invite', **params)
+        client = PeerRunsHTTPClient(base_url=url, api_key='', proof_install_id=first['catalog']['installation_id'])
+        assert (await asyncio.to_thread(client.probe, grant=first['grant']))['room_id'] == 'setup'
+        assert await call(gateway.owner, 'groups.peer.revoke', grant=first['grant']) == {'revoked': True}
+        assert await call(gateway.owner, 'groups.peer.invite', **params) == first
+        # A new explicit setup may restore its own reservation, but the earlier bearer stays revoked.
+        replacement = await call(gateway.owner, 'groups.peer.invite', **(params | {'request_id': 'desktop-new-setup'}))
+        assert replacement['grant'] != first['grant']
+        assert (await asyncio.to_thread(client.probe, grant=replacement['grant']))['room_id'] == 'setup'
+        assert await call(gateway.owner, 'groups.peer.invite', **params) == first
+        with pytest.raises(PeerRunsHTTPError) as refused:
+            await asyncio.to_thread(client.probe, grant=first['grant'])
+        assert refused.value.needs_reauthorization
+        with hosted_rooms._transaction(_grant_db(gateway.adapter)) as conn:
+            assert conn.execute('SELECT COUNT(*) FROM hosted_room_setup_invitations').fetchone()[0] == 2
+    finally:
+        await server.close()

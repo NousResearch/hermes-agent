@@ -107,6 +107,8 @@ class GatewayBusySessionMixin:
         _sessions_map: Callable[[], Dict[str, SessionState]]
         _delivery_adapter_for = GatewayRunner._delivery_adapter_for
         _session_key_for_source = GatewayRunner._session_key_for_source
+        _profile_scope_for_source = GatewayRunner._profile_scope_for_source
+        _prepend_inbound_reply_context = GatewayRunner._prepend_inbound_reply_context
 
 
     async def _strict_session_current(
@@ -529,7 +531,7 @@ class GatewayBusySessionMixin:
         )
         return (enriched_text or text).strip() if successful_transcripts else text
 
-    def _steer_text_with_origin(self: GatewayRunner, text: str, event: MessageEvent) -> str:
+    def _steer_text_with_origin(self, text: str, event: MessageEvent) -> str:
         """Keep event origin in this injection, never in the cached system prompt."""
         if not text.strip():
             return text

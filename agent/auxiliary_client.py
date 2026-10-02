@@ -1129,26 +1129,33 @@ def _scoped_key_env(name: str) -> str:
 
 
 # Codex Responses → chat.completions adapter, so aux consumers need no changes.
-def _parse_codex_final_response(final: Any) -> Tuple[List[str], List[Any], Any]:
-    """Split a completed Responses object into (text_parts, tool_calls, usage) in chat.completions shape."""
-    text_parts: List[str] = []
-    tool_calls_raw: List[Any] = []
-    for item in (getattr(final, "output", None) or []):
-        item_type = _field(item, "type")
-        if item_type == "message":
-            for part in (_field(item, "content") or []):
-                part_type = _field(part, "type")
-                if part_type in {"output_text", "text"}:
-                    text_parts.append(_field(part, "text", ""))
-                elif part_type == "refusal":
-                    # A refusal part carries the model's explanation; dropping it turns a
-                    # refusal-only turn into an empty response that gets retried.
-                    text_parts.append(_field(part, "refusal", ""))
-        elif item_type == "function_call":
-            tool_calls_raw.append(SimpleNamespace(
-                id=_field(item, "call_id", ""), type="function",
-                function=SimpleNamespace(
-                    name=_field(item, "name", ""), arguments=_field(item, "arguments", "{}"))))
+def _parse_codex_final_response(final: Any) -> Tuple[List[str], List[Any], Any, str]:
+    """Normalize Responses output without losing phase or completion state for aux callers."""
+    from agent.codex_responses_adapter import _normalize_codex_response
+
+    # The shared normalizer reads SDK-style items. Keep support for compatible hosts
+    # returning dict items, and the aux adapter's legacy empty completed response.
+    output = [
+        SimpleNamespace(**item) if isinstance(item, dict) else item
+        for item in (getattr(final, "output", None) or [])
+    ]
+    normalized_final = SimpleNamespace(
+        output=output or [SimpleNamespace(type="message", content=[])],
+        output_text=getattr(final, "output_text", None),
+        status=getattr(final, "status", None),
+        incomplete_details=getattr(final, "incomplete_details", None),
+        error=getattr(final, "error", None),
+    )
+    message, finish_reason = _normalize_codex_response(normalized_final)
+    status = str(normalized_final.status or "").strip().lower()
+    reason = str(_field(normalized_final.incomplete_details, "reason", "") or "").strip().lower()
+    # Aux consumers speak Chat Completions: "length" activates their existing
+    # partial-summary rejection/fallback, whereas Codex's "incomplete" does not.
+    # A final_answer phase cannot override the provider's incomplete status.
+    if finish_reason == "incomplete" or (status == "incomplete" and reason != "content_filter"):
+        finish_reason = "length"
+    text_parts = [message.content] if message.content else []
+    tool_calls_raw = message.tool_calls
     usage = None
     resp_usage = getattr(final, "usage", None)
     if resp_usage:
@@ -1157,7 +1164,7 @@ def _parse_codex_final_response(final: Any) -> Tuple[List[str], List[Any], Any]:
         usage = SimpleNamespace(
             prompt_tokens=_u("input_tokens"), completion_tokens=_u("output_tokens"),
             total_tokens=_u("total_tokens"))
-    return text_parts, tool_calls_raw, usage
+    return text_parts, tool_calls_raw, usage, finish_reason
 
 
 def _attempt_stream_socket(stream: Any) -> Any:
@@ -1618,7 +1625,7 @@ class _CodexCompletionsAdapter:
                 guard.release_stream(event_stream)
             if final is None:
                 raise RuntimeError("Codex auxiliary Responses stream did not return a final response")
-            text_parts, tool_calls_raw, usage = _parse_codex_final_response(final)
+            text_parts, tool_calls_raw, usage, finish_reason = _parse_codex_final_response(final)
             # Undo only the aliases THIS request emitted, before the call reaches Hermes dispatch.
             for tc in tool_calls_raw or ():
                 if tc.function.name in wire_aliases:
@@ -1635,10 +1642,11 @@ class _CodexCompletionsAdapter:
             role="assistant", content="".join(text_parts).strip() or None,
             tool_calls=tool_calls_raw or None,
         )
-        choice = SimpleNamespace(
-            index=0, message=message, finish_reason="stop" if not tool_calls_raw else "tool_calls"
+        choice = SimpleNamespace(index=0, message=message, finish_reason=finish_reason)
+        return SimpleNamespace(
+            choices=[choice], model=model, usage=usage, status=getattr(final, "status", None),
+            incomplete_details=getattr(final, "incomplete_details", None), error=getattr(final, "error", None),
         )
-        return SimpleNamespace(choices=[choice], model=model, usage=usage)
 
 
 class _ChatShim:

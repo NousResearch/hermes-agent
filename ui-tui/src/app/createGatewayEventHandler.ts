@@ -32,7 +32,7 @@ import { applyConnectionRequest, applyConnectionUpdate } from './connectionOpera
 import { applyDelegationStatus, getDelegationState } from './delegationStore.js'
 import { applyGoalSnapshot } from './goalStatus.js'
 import type { GatewayEventHandlerContext, NoticeLevel } from './interfaces.js'
-import { getOverlayState, patchOverlayState } from './overlayStore.js'
+import { getOverlayState, patchOverlayState, SENSITIVE_PROMPTS } from './overlayStore.js'
 import { flashGoodVibes, flashPet } from './petFlashStore.js'
 import { forgetServerRequest } from './serverRequestStore.js'
 import { reportStartupLatency } from './startupLatency.js'
@@ -1353,7 +1353,7 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
           const next = { ...prev }
           let changed = false
 
-          for (const key of ['approval', 'clarify', 'secret', 'sudo', 'vaultSaveLogin', 'vaultUnlock'] as const) {
+          for (const key of ['approval', 'clarify', ...SENSITIVE_PROMPTS] as const) {
             if (prev[key]?.requestId === id) {
               next[key] = null
               changed = true

@@ -1375,7 +1375,7 @@ describe('createGatewayEventHandler', () => {
   })
 
   it('declines the requests a terminal cannot answer so the channel fails them fast', () => {
-    for (const method of ['preview.act', 'window.read', 'tour', 'mcp.setup', 'vault.code']) {
+    for (const method of ['preview.act', 'window.read', 'tour', 'mcp.setup', 'terminal.read']) {
       expect(serverRequest(method, {}).handled).toBe(false)
     }
   })
@@ -2404,6 +2404,23 @@ describe('createGatewayEventHandler', () => {
 
         onEvent({ payload: { id: 'save-1' }, type: 'request.cancel' } as any)
         expect(getOverlayState().vaultSaveLogin).toBeNull()
+      })
+
+      it('opens the verification-code card for vault.code and tears it down on request.cancel', () => {
+        const onEvent = createGatewayEventHandler(buildCtx([]))
+
+        const { handled } = serverRequest(
+          'vault.code',
+          { hint: 'sent to •••42', session_id: 'sess', site: 'github.com' },
+          'code-1'
+        )
+
+        expect(handled).toBe(true)
+        expect(getOverlayState().vaultCode).toEqual({ hint: 'sent to •••42', requestId: 'code-1', site: 'github.com' })
+        expect(getUiState().status).toBe('verification code for github.com')
+
+        onEvent({ payload: { id: 'code-1' }, type: 'request.cancel' } as any)
+        expect(getOverlayState().vaultCode).toBeNull()
       })
     })
   })

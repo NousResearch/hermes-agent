@@ -11,7 +11,7 @@ import { ActiveSessionSwitcher } from './activeSessionSwitcher.js'
 import { FloatBox } from './appChrome.js'
 import { BillingOverlay } from './billingOverlay.js'
 import { ConnectionSetupOverlay } from './connectionSetupOverlay.js'
-import { SecretPrompt, SudoPrompt, VaultUnlockPrompt } from './maskedPrompt.js'
+import { SecretPrompt, SudoPrompt, VaultCodePrompt, VaultSaveLoginPrompt, VaultUnlockPrompt } from './maskedPrompt.js'
 import { ModelPicker } from './modelPicker.js'
 import { OverlayHint } from './overlayControls.js'
 import { listRowStyle } from './overlayPrimitives.js'
@@ -20,7 +20,6 @@ import { PluginsHub } from './pluginsHub.js'
 import { ApprovalPrompt, ClarifyPrompt, ConfirmPrompt } from './prompts.js'
 import { SkillsHub } from './skillsHub.js'
 import { SubscriptionOverlay } from './subscriptionOverlay.js'
-import { VaultSaveLoginPrompt } from './vaultSaveLoginPrompt.js'
 import { WidgetGrid, type WidgetGridWidget } from './widgetGrid.js'
 
 const COMPLETION_WINDOW = 16
@@ -64,6 +63,7 @@ export function PromptZone({
   onClarifyQuestionAnswer,
   onSecretSubmit,
   onSudoSubmit,
+  onVaultCodeSubmit,
   onVaultSaveLoginSubmit,
   onVaultUnlockSubmit
 }: Pick<
@@ -74,6 +74,7 @@ export function PromptZone({
   | 'onClarifyQuestionAnswer'
   | 'onSecretSubmit'
   | 'onSudoSubmit'
+  | 'onVaultCodeSubmit'
   | 'onVaultSaveLoginSubmit'
   | 'onVaultUnlockSubmit'
 >) {
@@ -201,6 +202,20 @@ export function PromptZone({
           cols={cols}
           onReady={onVaultSaveLoginSubmit}
           site={overlay.vaultSaveLogin.site}
+          t={theme}
+        />
+      </PromptCell>
+    )
+  }
+
+  if (overlay.vaultCode) {
+    return (
+      <PromptCell cols={cols} id="vault-code">
+        <VaultCodePrompt
+          cols={cols}
+          hint={overlay.vaultCode.hint}
+          onSubmit={onVaultCodeSubmit}
+          site={overlay.vaultCode.site}
           t={theme}
         />
       </PromptCell>

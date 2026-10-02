@@ -59,7 +59,7 @@ import { planGatewayRecovery } from './gatewayRecovery.js'
 import { applyGoalSnapshot } from './goalStatus.js'
 import { getInputSelection } from './inputSelectionStore.js'
 import { type GatewayRpc, type StateSetter, type TranscriptRow } from './interfaces.js'
-import { $overlayState, patchOverlayState } from './overlayStore.js'
+import { $overlayState, hasSensitivePrompt, patchOverlayState } from './overlayStore.js'
 import { $goodVibesTick } from './petFlashStore.js'
 import { applyProcessSnapshot, type ProcessEntry } from './processRoster.js'
 import { scrollWithSelectionBy } from './scroll.js'
@@ -694,12 +694,7 @@ export function useMainApp(gw: GatewayClient) {
   // Format: `<marker> <session name> · <model> · <cwd>` — name/cwd omitted when absent.
   const model = ui.info?.model?.replace(/^.*\//, '') ?? ''
 
-  const marker =
-    overlay.approval || overlay.sudo || overlay.secret || overlay.vaultUnlock || overlay.clarify
-      ? '⚠'
-      : ui.busy
-        ? '⏳'
-        : '✓'
+  const marker = overlay.approval || overlay.clarify || hasSensitivePrompt(overlay) ? '⚠' : ui.busy ? '⏳' : '✓'
 
   const tabCwd = ui.info?.cwd
 
@@ -1200,12 +1195,9 @@ export function useMainApp(gw: GatewayClient) {
 
       const requestId = overlay.vaultSaveLogin.requestId
 
-      // Either step left empty = declined (CLI parity). The login pair travels
-      // as one JSON value string (ValueResult); an empty value means "not
-      // saving" — the backend treats a password-less login as declined — so
-      // the tool's blocked wait resolves immediately instead of burning its
-      // 180s timeout. Values go only to the encrypted vault, never to the
-      // transcript, logs, or model context.
+      // Either step left empty declines (CLI parity): an empty value resolves the
+      // tool's wait now instead of at its 180s deadline. The pair goes only to
+      // the encrypted vault, never to the transcript or the model.
       if (!identifier || !password) {
         patchOverlayState({ vaultSaveLogin: null })
       }
@@ -1220,6 +1212,27 @@ export function useMainApp(gw: GatewayClient) {
       )
     },
     [overlay.vaultSaveLogin, respondWith]
+  )
+
+  const answerVaultCode = useCallback(
+    (code: string) => {
+      if (!overlay.vaultCode) {
+        return
+      }
+
+      const requestId = overlay.vaultCode.requestId
+      const value = code.trim()
+
+      if (!value) {
+        patchOverlayState({ vaultCode: null })
+      }
+
+      respondWith(requestId, { value }, () => {
+        patchOverlayState({ vaultCode: null })
+        patchUiState({ status: 'running…' })
+      })
+    },
+    [overlay.vaultCode, respondWith]
   )
 
   const onModelSelect = useCallback((value: string) => {
@@ -1331,6 +1344,7 @@ export function useMainApp(gw: GatewayClient) {
       answerClarifyQuestion,
       answerSecret,
       answerSudo,
+      answerVaultCode,
       answerVaultSaveLogin,
       answerVaultUnlock,
       cancelClarify,
@@ -1356,6 +1370,7 @@ export function useMainApp(gw: GatewayClient) {
       answerClarifyQuestion,
       answerSecret,
       answerSudo,
+      answerVaultCode,
       answerVaultSaveLogin,
       answerVaultUnlock,
       cancelClarify,

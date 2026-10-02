@@ -620,6 +620,7 @@ export const AppLayout = memo(function AppLayout({
                 onClarifyQuestionAnswer={actions.answerClarifyQuestion}
                 onSecretSubmit={actions.answerSecret}
                 onSudoSubmit={actions.answerSudo}
+                onVaultCodeSubmit={actions.answerVaultCode}
                 onVaultSaveLoginSubmit={actions.answerVaultSaveLogin}
                 onVaultUnlockSubmit={actions.answerVaultUnlock}
               />

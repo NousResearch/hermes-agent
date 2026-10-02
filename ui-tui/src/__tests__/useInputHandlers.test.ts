@@ -226,4 +226,18 @@ describe('dismissSensitivePrompt', () => {
     expect(sys).toHaveBeenCalledWith('login for example.com not saved')
     expect(respond).toHaveBeenCalledWith({ value: '' })
   })
+
+  it('skips a vault verification-code overlay with an empty value', () => {
+    resetOverlayState()
+    resetServerRequestsForTests()
+    patchOverlayState({ vaultCode: { hint: '', requestId: 'code-1', site: 'github.com' } })
+    const respond = openRequest('code-1', 'vault.code')
+    const sys = vi.fn()
+
+    dismissSensitivePrompt(getOverlayState(), vi.fn(), sys)
+
+    expect(getOverlayState().vaultCode).toBeNull()
+    expect(sys).toHaveBeenCalledWith('verification code for github.com skipped')
+    expect(respond).toHaveBeenCalledWith({ value: '' })
+  })
 })

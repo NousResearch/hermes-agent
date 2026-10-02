@@ -212,6 +212,13 @@ export interface VaultSaveLoginReq {
   site: string
 }
 
+/** `vault.code` server→client request — a one-time sign-in code the user reads from their device. */
+export interface VaultCodeReq {
+  hint: string
+  requestId: string
+  site: string
+}
+
 export interface PanelData {
   sections: PanelSection[]
   title: string

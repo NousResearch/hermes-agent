@@ -132,3 +132,15 @@ test('file publication and cleanup remain informational, including blocked refre
   expect(onDiscard).not.toHaveBeenCalled()
   expect(request).not.toHaveBeenCalled()
 })
+
+
+test('an unknown peer outcome is visible without granting Retry or Skip', () => {
+  const onAction = vi.fn(), onDiscard = vi.fn()
+  render(<CanonicalGroupPendingActions actions={[{ ...target, kind: 'unknown' }]} members={members}
+    onAction={onAction} onDiscard={onDiscard} onRefresh={noop} />)
+  expect(screen.getByText('We couldn’t confirm whether Atlas Bot finished.')).toBeTruthy()
+  expect(screen.queryByRole('button')).toBeNull()
+  expect(onAction).not.toHaveBeenCalled()
+  expect(onDiscard).not.toHaveBeenCalled()
+  expect(request).not.toHaveBeenCalled()
+})

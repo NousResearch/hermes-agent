@@ -128,7 +128,7 @@ export function CanonicalGroupPendingActions({ actions, members, busy = false, o
   const [discard, setDiscard] = useState<{ action: CanonicalPendingAction; name: string; notStarted: boolean } | null>(null)
   const stopping = new Set(actions.filter(action => action.kind === 'stopping').map(attemptKey))
   const retry = new Set(actions.filter(action => action.kind === 'retry').map(attemptKey))
-  const rows = actions.filter(action => ['approval', 'retry', 'discard', 'stopping', 'output_retry'].includes(action.kind) &&
+  const rows = actions.filter(action => ['approval', 'retry', 'discard', 'stopping', 'output_retry', 'unknown'].includes(action.kind) &&
     (!stopping.has(attemptKey(action)) || action.kind === 'stopping' || action.kind === 'output_retry') && !(action.kind === 'discard' && retry.has(attemptKey(action))))
   return <div data-testid="group-chat-pending-actions">
     {rows.map(action => {

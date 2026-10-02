@@ -5,7 +5,7 @@ import type { WritableAtom } from 'nanostores'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 
 import { CANONICAL_GROUP_LOCALES } from './canonical-group-locales'
-import { $canonicalGroupBindings, CanonicalGroupList } from './canonical-group-registry'
+import { $canonicalGroupBindings, CanonicalGroupList, forgetCanonicalGroup, registerCanonicalGroup, updateCanonicalGroupName } from './canonical-group-registry'
 import { CreateGroupChatDialog } from './create-dialog'
 import { $botMeta } from './data'
 import { $groupChats, $groupChatWorkspace, updateGroupChat } from './group-chat'
@@ -248,7 +248,7 @@ it('explains a hosted-profile create refusal in the dialog and room gate without
   await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Start gateway group' })) })
   expect(screen.getByRole('alert').textContent).toContain('hosted_rooms.profiles')
   expect(screen.getByRole('link').getAttribute('href')).toBe('https://hermes-agent.nousresearch.com/docs/developer-guide/hosted-profile-owners')
-  expect(screen.queryByRole('textbox')).toBeNull()
+  expect(screen.getByRole('textbox')).toBeTruthy()
   expect(updateGroupChat).not.toHaveBeenCalled()
   expect(openWorkspace).not.toHaveBeenCalled()
 })
@@ -286,4 +286,53 @@ it.each(['profile', 'gateway', 'same-route-activation'] as const)('workspace: a 
   expect(request.mock.calls.filter(call => call[1] === 'groups.create')).toHaveLength(0)
   expect(pending.serverRooms.size).toBe(0)
   expect(openWorkspace).not.toHaveBeenCalled()
+})
+
+it('keeps the existing classic transcript and composer when explicitly starting a separate gateway group', async () => {
+  answer(CANONICAL_GROUP_CAPABILITIES)
+  const log = [
+    { id: 'classic-message', from: { kind: 'user' as const, name: 'You' }, text: 'Earlier classic conversation', at: 1 }
+  ]
+  $groupChats.set({ Existing: { log, watermarks: {}, sessions: {} } })
+  await act(async () => {
+    render(<GroupChatWorkspace group="Existing" members={roster} />)
+  })
+  expect(screen.getByText('Earlier classic conversation')).toBeTruthy()
+  const composer = screen.getByRole('textbox') as HTMLTextAreaElement
+  fireEvent.change(composer, { target: { value: 'Continue classic draft' } })
+  expect(composer.disabled).toBe(false)
+  await act(async () => {
+    fireEvent.click(screen.getByRole('button', { name: 'Start gateway group' }))
+  })
+  expect($groupChats.get().Existing.log).toEqual(log)
+  expect(composer.value).toBe('Continue classic draft')
+  const create = request.mock.calls.find(call => call[1] === 'groups.create')!
+  expect(create[2]).not.toHaveProperty('history')
+  expect(create[2]).not.toHaveProperty('messages')
+  expect(Object.keys($canonicalGroupBindings.get())[0]).not.toBe('Existing')
+  expect(request.mock.calls.some(call => call[1] === 'groups.send')).toBe(false)
+})
+
+it('reconciles committed create, rename and disband in the owning roster without manual Refresh', async () => {
+  request.mockImplementation(async (_route, method) =>
+    method === 'groups.capabilities' ? CANONICAL_GROUP_CAPABILITIES : method === 'groups.list' ? { rooms: [] } : {}
+  )
+  await act(async () => {
+    render(<CanonicalGroupList onOpen={vi.fn()} />)
+  })
+  const route = { connectionId: 'local', profile: 'default' }
+  let key = ''
+  await act(async () => {
+    key = registerCanonicalGroup(route, { room_id: 'added', name: 'New group', members: [] })
+  })
+  expect(screen.getByRole('button', { name: 'New group' })).toBeTruthy()
+  await act(async () => {
+    updateCanonicalGroupName($canonicalGroupBindings.get()[key], 'Renamed group')
+  })
+  expect(screen.getByRole('button', { name: 'Renamed group' })).toBeTruthy()
+  expect(screen.queryByRole('button', { name: 'New group' })).toBeNull()
+  await act(async () => {
+    forgetCanonicalGroup($canonicalGroupBindings.get()[key])
+  })
+  expect(screen.queryByRole('button', { name: 'Renamed group' })).toBeNull()
 })

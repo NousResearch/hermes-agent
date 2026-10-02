@@ -1,10 +1,12 @@
-import { Button } from '@hermes/plugin-sdk'
+import { Button, ConfirmDialog } from '@hermes/plugin-sdk'
 import { useEffect, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
 
+import { canonicalApprovalDetails } from './canonical-group-approval'
 import { CanonicalGroupAttachments } from './canonical-group-attachments'
 import { type CanonicalGroupEvent, CanonicalGroupHistory } from './canonical-group-history'
 import { useCanonicalGroupLabels } from './canonical-group-labels'
+import { updateCanonicalGroupName } from './canonical-group-registry'
 import { prepareCanonicalGroupSend, readCanonicalGroupSend, retireCanonicalGroupSend } from './canonical-group-send'
 import type { PreparedCanonicalGroupSend } from './canonical-group-send'
 import { actCanonicalGroup, canonicalGroupRequest } from './canonical-groups'
@@ -73,6 +75,8 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack, actions }
   const [busy, setBusy] = useState(false)
   const busyRef = useRef(false)
   const [stopping, setStopping] = useState(false)
+  const stopPending = useRef(false)
+  const stopIntent = useRef<string | null>(null)
   const [notice, setNotice] = useState('')
   const [sendHint, setSendHint] = useState('')
   const alive = useRef(true)
@@ -122,6 +126,7 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack, actions }
     if (alive.current && version === revision.current) {
       const last = seen.current.seq
       seen.current = { epoch, seq: log.at(-1)?.seq ?? cursor }
+      updateCanonicalGroupName(binding, snapshot.room.name)
       setState(snapshot)
       setEvents(current => fresh ? log : [...current, ...log.filter(event => event.seq > last)])
       setReadError('')
@@ -146,8 +151,8 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack, actions }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [visible])
 
-  const mutate = async (operation: () => Promise<unknown>) => {
-    if (busyRef.current) {return}
+  const mutate = async (operation: () => Promise<unknown>, rethrow = false) => {
+    if (busyRef.current) {if (rethrow) {throw new Error(labels.pendingActionUnconfirmed)}; return}
     busyRef.current = true
     setBusy(true)
     setError('')
@@ -155,7 +160,7 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack, actions }
     try { await operation();
 
  if (alive.current) {await refresh()} }
-    catch (e) { if (alive.current) {setError(e instanceof Error ? e.message : String(e))} }
+    catch (e) { if (alive.current) {setError(e instanceof Error ? e.message : String(e))}; if (rethrow) {throw e} }
     finally {
       busyRef.current = false
 
@@ -177,7 +182,7 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack, actions }
       try {
         const result = await canonicalGroupRequest<{ accepted?: boolean; client_event_id?: unknown } | undefined>(binding, 'groups.send', exact.params)
 
-        if (result?.accepted === false || (typeof result?.client_event_id === 'string' && result.client_event_id !== exact.params.event_id)) {
+        if (result?.accepted === false || result?.client_event_id !== exact.params.event_id) {
           throw new Error(labels.unconfirmedSend)
         }
       } catch (error) {
@@ -205,13 +210,18 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack, actions }
 
   // Stop has its own busy state: it must stay available while a Send is in flight.
   const stop = async () => {
+    if (stopPending.current) {return}
+    stopPending.current = true
+    stopIntent.current ??= crypto.randomUUID()
     setStopping(true)
     setNotice('')
     setError('')
 
     try {
-      const result = await canonicalGroupRequest<{ cancelled?: number }>(binding, 'groups.stop', { room_id: binding.roomId, cancel_id: crypto.randomUUID() })
-      const cancelled = Number(result?.cancelled) || 0
+      const result = await canonicalGroupRequest<{ cancelled?: number }>(binding, 'groups.stop', { room_id: binding.roomId, cancel_id: stopIntent.current })
+      const cancelled = result?.cancelled
+      if (typeof cancelled !== 'number' || !Number.isSafeInteger(cancelled) || cancelled < 0) {throw new Error(labels.pendingActionUnconfirmed)}
+      stopIntent.current = null
 
       if (alive.current) {setNotice(cancelled ? labels.stopped.replace('{count}', String(cancelled)) : labels.nothingRunning)}
 
@@ -219,6 +229,7 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack, actions }
     } catch (e) {
       if (alive.current) {setError(e instanceof Error ? e.message : String(e))}
     } finally {
+      stopPending.current = false
       if (alive.current) {setStopping(false)}
     }
   }
@@ -238,17 +249,23 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack, actions }
     <div className="min-h-0 flex-1 overflow-auto" role="log">
       <CanonicalGroupHistory binding={binding} disabled={!visible} events={events} />
     </div>
-    {(state?.driver_status?.pending_actions || []).map(action => <div className="flex items-center gap-2" key={`${action.kind}:${action.task_id}:${action.execution_generation}`}>
+    {(state?.driver_status?.pending_actions || []).map(action => {
+      const approval = action.kind === 'approval' ? canonicalApprovalDetails({ action, labels }) : null
+      return <div className="flex items-center gap-2" key={`${action.kind}:${action.task_id}:${action.execution_generation}`}>
       <span>{action.member_id}</span>
       {action.kind === 'discard' && <Button disabled={busy} onClick={() => setDiscard({ ...action })}>{labels.discard}</Button>}
       {action.kind === 'retry' && <Button disabled={busy} onClick={() => void act({ ...action })}>{labels.retry}</Button>}
-      {action.kind === 'approval' && <><Button disabled={busy} onClick={() => void act({ ...action }, 'once')}>{labels.allowOnce}</Button><Button disabled={busy} onClick={() => void act({ ...action }, 'deny')}>{labels.deny}</Button></>}
-    </div>)}
-    {discard && <div aria-label={labels.discardUnknown} role="alertdialog">
-      <p>{labels.discardWarning}</p>
-      <Button disabled={busy} onClick={() => { const exact = discard; setDiscard(null); void act(exact) }}>{labels.confirmDiscard}</Button>
-      <Button onClick={() => setDiscard(null)}>{labels.cancel}</Button>
-    </div>}
+      {approval && <div className="grid min-w-0 gap-2">
+        {approval.content}
+        {approval.reviewable && action.approval?.choices?.includes('once') && <Button disabled={busy} onClick={() => void act({ ...action }, 'once')}>{labels.allowOnce}</Button>}
+        {action.request_id && action.approval?.choices?.includes('deny') && <Button disabled={busy} onClick={() => void act({ ...action }, 'deny')}>{labels.deny}</Button>}
+        {(!approval.reviewable || !action.approval?.choices?.some(choice => choice === 'once' || choice === 'deny')) && <Button disabled={busy} onClick={() => void refresh()}>{labels.refresh}</Button>}
+      </div>}
+    </div>})}
+    <ConfirmDialog cancelLabel={labels.cancel} confirmLabel={labels.confirmDiscard} description={labels.discardWarning}
+      destructive onClose={() => setDiscard(null)} onConfirm={async () => {
+        if (discard) {await mutate(() => actCanonicalGroup(binding, discard), true)}
+      }} open={discard !== null} title={labels.discardUnknown} />
     {pending && <p role="status">{labels.restoredPendingSend}</p>}
     {sendHint && <p aria-live="polite">{sendHint}</p>}
     <form className="flex gap-2" onSubmit={event => { event.preventDefault(); send() }}>

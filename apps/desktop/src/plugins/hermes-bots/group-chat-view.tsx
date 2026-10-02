@@ -590,6 +590,7 @@ export function GroupChatWorkspace(props: GroupChatWorkspaceProps) {
 
 function GroupExecutionGate(props: GroupChatWorkspaceProps) {
   const b = useBots()
+  const existingClassicRoom = useValue($groupChats)[props.group]
   const connectionId = useValue(host.state.connectionId)
   const profile = useValue(host.state.profile)
   const gateway = useValue(host.state.gateway)
@@ -630,8 +631,10 @@ function GroupExecutionGate(props: GroupChatWorkspaceProps) {
     return <LegacyGroupChatWorkspace {...props} />
   }
 
-  return <div className="grid gap-3 p-3">
-    <h2>{props.group}</h2>
+  return <div className="flex h-full min-h-0 flex-col">
+    {(mode === 'canonical' || existingClassicRoom) && <div className="min-h-0 flex-1"><LegacyGroupChatWorkspace {...props} /></div>}
+    <div className="grid gap-3 p-3">
+    {mode !== 'canonical' && !existingClassicRoom && <h2>{props.group}</h2>}
     <p>{mode === 'canonical' ? b.canonical.legacyRoom : mode === 'unavailable' ? b.canonical.driverUnavailable : b.canonical.checkingDriver}</p>
     {error && <p role="alert">{error}{createRefused && <>{' '}
       <a href={HOSTED_PROFILE_OWNERS_URL} rel="noreferrer" target="_blank">{b.canonical.hostedProfileOwners}</a>
@@ -663,6 +666,7 @@ function GroupExecutionGate(props: GroupChatWorkspaceProps) {
           }
         }).finally(() => setBusy(false))
     }}>{b.canonical.startGatewayGroup}</Button>
+    </div>
   </div>
 }
 

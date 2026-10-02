@@ -23,7 +23,7 @@ import { useState } from 'react'
 import { $lastRoster, ROSTER_KEY } from './data'
 import { labeled, ResizableFrame } from './dialog-parts'
 import { botsText, useBots } from './i18n'
-import { McpSetupButton } from './mcp-setup'
+import { McpSetupButton, type McpSetupTarget } from './mcp-setup'
 import { ModelPicker } from './model-picker'
 import { botBackendProfileScope, requestForBot, resolveBotConnectionRoute } from './routing'
 import { HubSkillsSection } from './skills-hub'
@@ -135,9 +135,16 @@ export function AdvancedProfileConfig({ bot, state, setState }: AdvancedProfileC
   const [skillFilter, setSkillFilter] = useState('')
   // Component body = render path: degrade an orphaned row to the bot's own
   // name scope instead of throwing into the dialog's error boundary.
-  const botRoute = resolveBotConnectionRoute(bot).route
+  const resolved = resolveBotConnectionRoute(bot)
+  const botRoute = resolved.route
   const backendProfile = botRoute?.targetProfile || botRoute?.profile || bot.name
   const backendScope = botBackendProfileScope(botRoute, bot.name)
+
+  // One captured MCP setup target: the resolved route plus its backend name.
+  // An orphaned source-scoped bot has NO target — setup must report that
+  // instead of borrowing the ambient gateway for a credential write.
+  const mcpSetupTarget: null | McpSetupTarget =
+    resolved.status === 'owner_removed' ? null : { route: botRoute, profile: backendProfile }
 
   if (!loaded) {
     setLoaded(true)
@@ -469,7 +476,7 @@ export function AdvancedProfileConfig({ bot, state, setState }: AdvancedProfileC
                           </span>
                         ) : null}
                         {needsSetup ? (
-                          <McpSetupButton entry={m} onDone={() => toggleMcp(m.name, true)} profile={backendScope} />
+                          <McpSetupButton entry={m} onDone={() => toggleMcp(m.name, true)} target={mcpSetupTarget} />
                         ) : null}
                         {m.description ? (
                           <div className="truncate text-[0.65rem] leading-4 text-(--ui-text-quaternary)">

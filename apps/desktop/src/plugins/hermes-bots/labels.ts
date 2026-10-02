@@ -9,7 +9,7 @@
  */
 
 import { aliasIdentityFor } from './routing'
-import type { BotMeta, RosterRow } from './types'
+import type { BotMeta, ConnectionRow, RosterRow } from './types'
 
 export function displayName(bot: Partial<RosterRow>, meta?: BotMeta | null): string {
   // A configured alias route claiming this row overrides source-derived
@@ -143,4 +143,10 @@ export function stripPreviewMarkdown(text: unknown) {
     .replace(/^\s{0,3}>\s?/gm, '')
     .replace(/\s+/g, ' ')
     .trim()
+}
+
+/** A registry connection's display label: its row's label, falling back to
+ *  the raw connection id. */
+export function connectionLabel(connections: null | ConnectionRow[] | undefined, connectionId: string): string {
+  return (connections || []).find(c => c.id === connectionId)?.label || connectionId
 }

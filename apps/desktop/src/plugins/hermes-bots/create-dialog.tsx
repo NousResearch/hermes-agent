@@ -44,6 +44,7 @@ import { isBackfilledFacePng } from './avatar-image'
 import { AvatarPicker } from './avatar-picker'
 import { $selectedBot } from './bot-state'
 import { createCanonicalChat } from './canonical-chat'
+import { createdSetupTarget, createTargetRoute } from './create-mcp-setup'
 import { $botMeta, botHandle, botRosterKey, filterBots, ROSTER_KEY, saveBotMeta } from './data'
 import { labeled, ResizableFrame } from './dialog-parts'
 import { GROUP_CHAT_MAX_MEMBERS, mintGroupRoomId, uniqueGroupChatName, updateGroupChat } from './group-chat'
@@ -58,8 +59,8 @@ import {
   liveGroupChatNames
 } from './group-membership'
 import { useBots } from './i18n'
-import { botProfileIdentity, displayName } from './labels'
-import { McpSetupButton } from './mcp-setup'
+import { botProfileIdentity, connectionLabel, displayName } from './labels'
+import { McpSetupButton, type McpSetupTarget } from './mcp-setup'
 import { ModelPicker } from './model-picker'
 import type {
   CapabilityEntry,
@@ -131,6 +132,8 @@ export function CreateAgentDialog({ open, onClose, onConfigureModel, roster }: C
   // button + MCP setup buttons). Distinct from createdRef on purpose:
   // createdRef must stay a slug string for its sibling consumers.
   const flightRef = useRef<Promise<null | string> | null>(null)
+  // The selection the materialized profile was created on (see createdSetupTarget).
+  const createdOnRef = useRef('')
   const [title, setTitle] = useState('')
   const [description, setDescription] = useState('')
   // Default shapes mode: deterministic blob face drawn from the agent's name
@@ -173,29 +176,17 @@ export function CreateAgentDialog({ open, onClose, onConfigureModel, roster }: C
       .catch(() => setConnections([]))
   }, [open, connections])
   const activeConnectionId = String(host.state?.connectionId?.get?.() || '').trim()
-  // Remote target = an explicitly picked registry connection that is not the
-  // one this window is already on.
+  // Remote target = a picked registry connection other than this window's own.
   const remoteTarget = Boolean(targetConnection) && targetConnection !== (activeConnectionId || 'local')
 
-  const targetLabel = remoteTarget
-    ? (connections || []).find(c => c.id === targetConnection)?.label || targetConnection
-    : ''
+  const targetLabel = remoteTarget ? connectionLabel(connections, targetConnection) : ''
+
+  const targetRoute = createTargetRoute(remoteTarget, targetConnection)
 
   /** Gateway RPC on the create target: the picked connection's default
    *  backend for remote targets, the active gateway otherwise. */
   const requestForTarget = <T,>(method: string, params: Record<string, unknown> = {}): Promise<T> =>
-    remoteTarget
-      ? host.requestProfile(
-          {
-            connectionId: targetConnection,
-            mode: 'remote',
-            profile: 'default',
-            targetProfile: 'default'
-          },
-          method,
-          params
-        )
-      : host.request(method, params)
+    targetRoute ? host.requestProfile(targetRoute, method, params) : host.request(method, params)
 
   // Set once ensureAgentCreated() materializes the profile for the live
   // Capabilities tab (CapabilitiesView needs a real backend to point at). State —
@@ -222,11 +213,11 @@ export function CreateAgentDialog({ open, onClose, onConfigureModel, roster }: C
   // A remote-target create is gated by the TARGET machine's roster: a local
   // name clash is fine there, and the remote's own duplicate check rejects
   // real collisions at profiles.create time.
-  const taken = remoteTarget
-    ? roster.some(
-        b => b.remoteSource && b.connectionId === targetConnection && b.name === slug && b.name !== createdRef.current
-      )
-    : roster.some(b => !b.remoteSource && b.name === slug && b.name !== createdRef.current)
+  const sameTarget = (row: RosterRow) =>
+    (remoteTarget ? row.remoteSource && row.connectionId === targetConnection : !row.remoteSource) &&
+    row.name === slug &&
+    row.name !== createdRef.current
+  const taken = roster.some(sameTarget)
 
   // Draft semantics for the lazily-created profile: opening the Capabilities
   // tab (or running MCP setup) materializes the profile so the LIVE config
@@ -363,12 +354,10 @@ export function CreateAgentDialog({ open, onClose, onConfigureModel, roster }: C
     )
   }
 
-  // Materialize the profile exactly once. createdRef stores the finished slug
-  // (its consumers — the taken check, draft discard on cancel, the MCP setup
-  // button's profile param — all read a string); flightRef shares the
-  // in-flight creation promise so simultaneous MCP setup / Create clicks fire
-  // ONE profiles.create. A settled flight clears its slot: failures retry,
-  // and a null result (form invalid at flight time) isn't sticky.
+  // Materialize the profile exactly once: createdRef stores the finished slug
+  // (a string for its consumers), flightRef shares the in-flight creation so
+  // concurrent triggers fire ONE profiles.create. A settled flight clears its
+  // slot — failures retry, a null result (invalid form) isn't sticky.
   const ensureAgentCreated = (): Promise<null | string> => {
     // Renamed since the draft materialized? The old draft is orphaned —
     // discard it and create fresh under the new slug.
@@ -385,6 +374,10 @@ export function CreateAgentDialog({ open, onClose, onConfigureModel, roster }: C
       if (!valid || taken) {
         return null
       }
+
+      // Capture the selection BEFORE the first await: a later selection flip
+      // retires the MCP setup (createdSetupTarget) instead of re-guessing.
+      createdOnRef.current = targetConnection
 
       await requestForTarget('profiles.create', {
         name: slug,
@@ -497,6 +490,18 @@ export function CreateAgentDialog({ open, onClose, onConfigureModel, roster }: C
     })
 
     return flight
+  }
+
+  const ensureSetupTarget = async (): Promise<null | McpSetupTarget> => {
+    const capturedSelection = targetConnection
+    const slug = await ensureAgentCreated()
+
+    return createdSetupTarget({
+      capturedSelection,
+      createdOn: createdOnRef.current,
+      route: targetRoute,
+      slug
+    })
   }
 
   const submit = async () => {
@@ -959,7 +964,7 @@ export function CreateAgentDialog({ open, onClose, onConfigureModel, roster }: C
                               ) : null}
                               {needsSetup ? (
                                 <McpSetupButton
-                                  ensureProfile={ensureAgentCreated}
+                                  ensureTarget={ensureSetupTarget}
                                   entry={m}
                                   onDone={() => {
                                     // Setup done: mark installed so the row's
@@ -985,7 +990,7 @@ export function CreateAgentDialog({ open, onClose, onConfigureModel, roster }: C
                                       mcp: true
                                     }))
                                   }}
-                                  profile={createdRef.current}
+                                  target={{ route: targetRoute, profile: createdRef.current || slug }}
                                 />
                               ) : null}
                               {m.description ? (

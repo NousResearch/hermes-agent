@@ -47,14 +47,14 @@ def _critical_module_import_failures(
         "        if %r:\n"
         "            failures.append((name, type(exc).__name__, str(exc)))\n"
         "    except SystemExit as exc:\n"
-        "        # Only a historical updater explicitly attributed to the relaunch may suppress it.\n"
-        "        if not (%r and exc.code in (None, 0)):\n"
-        "            failures.append((name, type(exc).__name__, str(exc)))\n"
+        "        # Exit status alone cannot prove that this import was the updater takeover.\n"
+        "        # Keep unrelated successful exits visible to the stash-safety comparison.\n"
+        "        failures.append((name, type(exc).__name__, str(exc)))\n"
         "    except BaseException as exc:\n"
         "        failures.append((name, type(exc).__name__, str(exc)))\n"
         "sys.stdout.write('\\n%s' + json.dumps(failures))\n"
         % (_UPDATE_CRITICAL_MODULES, tuple(sorted(FIRST_PARTY_MODULE_ROOTS)), report_runtime_errors,
-           report_runtime_errors, allow_successful_relaunch, marker))
+           report_runtime_errors, marker))
     try:
         result = subprocess.run(
             runtime_command(Path(root), code=probe), cwd=str(root), capture_output=True, text=True,

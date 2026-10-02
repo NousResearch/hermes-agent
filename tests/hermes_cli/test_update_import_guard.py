@@ -170,7 +170,7 @@ def test_import_guard_reports_unrelated_successful_system_exit_during_stash_comp
     assert error == "0"
 
 
-def test_import_guard_ignores_explicitly_attributed_successful_relaunch(
+def test_import_guard_does_not_treat_successful_exit_as_relaunch_provenance(
     monkeypatch, probe_root
 ):
     (probe_root / "consumer.py").write_text("raise SystemExit(0)\n")
@@ -179,7 +179,7 @@ def test_import_guard_ignores_explicitly_attributed_successful_relaunch(
 
     assert update_cmd_validation._critical_module_import_failures(
         probe_root, report_runtime_errors=True, allow_successful_relaunch=True
-    ) == {}
+    ) == {"consumer": ("SystemExit", "0")}
 
 
 def test_import_guard_reports_system_exit_by_default(monkeypatch, probe_root):

@@ -433,8 +433,7 @@ def _restore_stashed_changes(
     git_cmd: list[str], cwd: Path, stash_ref: str, prompt_user: bool = False, input_fn=None,
 ) -> bool:
     from hermes_cli.update_cmd import _critical_module_import_failures, _git_untracked_paths, _restored_python_paths, _validate_python_files_syntax
-    from hermes_cli._old_updater import in_historical_update
-    allow_successful_relaunch = in_historical_update()
+
     if prompt_user and not _confirm_restore(stash_ref, input_fn):
         _record_stash_disposition("parked", stash_ref, "restore declined", chosen=True)
         return False
@@ -444,8 +443,7 @@ def _restore_stashed_changes(
         print(f"  Restore manually with: git stash apply {stash_ref}")
         _record_stash_disposition("parked", stash_ref, "untracked baseline unknown")
         return False
-    clean_import_failures = _critical_module_import_failures(
-        cwd, report_runtime_errors=True, allow_successful_relaunch=allow_successful_relaunch)
+    clean_import_failures = _critical_module_import_failures(cwd, report_runtime_errors=True)
     replaced = _apply_stash(git_cmd, cwd, stash_ref)
     if replaced is None:
         return False  # disposition already recorded inside _apply_stash
@@ -459,9 +457,7 @@ def _restore_stashed_changes(
     syntax_ok, failing_path, syntax_error = _validate_python_files_syntax(cwd, restored_python)
     if not syntax_ok:
         reject(failing_path or "restored Python source", syntax_error)
-    for module, error in _critical_module_import_failures(
-        cwd, report_runtime_errors=True, allow_successful_relaunch=allow_successful_relaunch
-    ).items():
+    for module, error in _critical_module_import_failures(cwd, report_runtime_errors=True).items():
         if clean_import_failures.get(module) != error:
             reject(f"agent import {module or 'unknown'}", error[1])
             break

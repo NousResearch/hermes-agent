@@ -93,7 +93,7 @@ import {
   ptyRejectionBanner,
   type PtyBannerAction,
 } from "@/lib/pty-close-copy";
-import { ptyAttachToken } from "@/lib/pty-attach-token";
+import { parsePtyAttachmentChannel, ptyAttachment } from "@/lib/pty-attach-token";
 import {
   refitWhenTerminalFontLoads,
   TERMINAL_FONT_FAMILY,
@@ -108,10 +108,9 @@ import { errorMessage } from "@/lib/api-error";
 // second tab — including a Chrome "Duplicate tab" — gets its own PTY instead of
 // taking over this one. See #115304.
 
-// Channel id ties this chat tab's PTY child (publisher) to its sidebar
-// (subscriber).  Generated once per mount so a tab refresh starts a fresh
-// channel — the previous PTY child terminates with the old WS, and its
-// channel auto-evicts when no subscribers remain.
+// Channel id ties a PTY child's publisher and active-session breadcrumb to its
+// sidebar. New chat must get a new channel even when `resume` was already empty:
+// reusing it overwrites the previous living child's resume breadcrumb.
 function generateChannelId(scope?: string): string {
   const prefix = scope ? "chat" : "chat-fresh";
   if (typeof crypto !== "undefined" && "randomUUID" in crypto) {
@@ -240,6 +239,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const reconnectAttemptRef = useRef(0);
   const forceFreshPtyRef = useRef(false);
+  const [freshChannelNonce, setFreshChannelNonce] = useState(0);
   const blockedInputNoticeRef = useRef(false);
   const lastResumeReconnectAtRef = useRef(0);
   // True from the moment the connect effect begins until the socket resolves
@@ -288,6 +288,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
   }, [clearReconnectTimer]);
   const startFreshPty = useCallback(() => {
     forceFreshPtyRef.current = true;
+    setFreshChannelNonce((n) => n + 1);
     reconnectAttemptRef.current = 0;
     clearReconnectTimer();
     blockedInputNoticeRef.current = false;
@@ -304,6 +305,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
 
     next.delete("resume");
     forceFreshPtyRef.current = true;
+    setFreshChannelNonce((n) => n + 1);
     reconnectAttemptRef.current = 0;
     clearReconnectTimer();
     blockedInputNoticeRef.current = false;
@@ -410,9 +412,11 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     setWorkspaceCwdState(readStoredWorkspace(scopedProfile));
   }
   const channel = useMemo(
-    () => generateChannelId(`${resumeParam ?? ""}\0${scopedProfile}`),
-    [resumeParam, scopedProfile],
+    () => generateChannelId(`${resumeParam ?? ""}\0${scopedProfile}\0${freshChannelNonce}`),
+    [resumeParam, scopedProfile, freshChannelNonce],
   );
+  const [ownerChannel, setOwnerChannel] = useState<{ requestChannel: string; channel: string } | null>(null);
+  const sidecarChannel = ownerChannel?.requestChannel === channel ? ownerChannel.channel : channel;
   const titleScope = `${channel}\0${reconnectNonce}`;
   const sessionTitle =
     sessionTitleState.scope === titleScope ? sessionTitleState.title : null;
@@ -1261,10 +1265,6 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       // keeps its own cwd); the server validates the directory exists.
       const pickedWorkspace = resumeParam ? "" : readStoredWorkspace(scopedProfile);
       if (pickedWorkspace) params.cwd = pickedWorkspace;
-      // Keep-alive identity: reattach to this tab's living PTY across
-      // refresh/transient drops. A forced-fresh start rotates the token so
-      // the previous keep-alive PTY is not reattached (registry reaps it).
-      params.attach = await ptyAttachToken(forceFresh);
       // Profile-scoped chat: the PTY child gets HERMES_HOME pointed at the
       // selected profile, so the conversation runs with that profile's model,
       // skills, memory, and sessions (see web_server._resolve_chat_argv).
@@ -1280,6 +1280,10 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
 
       let url: string;
       try {
+        // Tab claims and ticket creation share the same deadline. A stale
+        // attempt must not open a second socket after a newer selection.
+        Object.assign(params, await ptyAttachment(forceFresh));
+        if (unmounting || ticketSuperseded) return;
         url = await api.buildWsUrl("/api/pty", params);
       } catch (err) {
         if (unmounting || ticketSuperseded) return;
@@ -1391,7 +1395,13 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     }
 
     ws.onmessage = (ev) => {
+      if (unmounting) return;
       if (typeof ev.data === "string") {
+        const attachedChannel = parsePtyAttachmentChannel(ev.data);
+        if (attachedChannel) {
+          setOwnerChannel({ requestChannel: channel, channel: attachedChannel });
+          return;
+        }
         // The active-session fallback (no `?resume=` on the URL) tells us
         // via a one-off JSON control frame that a replay is starting (#93518,
         // see `pty_ws` in web_server.py). Real PTY output always arrives as
@@ -1898,7 +1908,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
           >
             <div className="border-b border-current/10 px-1 py-2">
               <ChatSidebar
-                channel={channel}
+                channel={sidecarChannel}
                 profile={scopedProfile}
                 onDashboardNewSessionRequest={startFreshDashboardChat}
                 onSessionTitleChange={handleSessionTitleChange}
@@ -2107,7 +2117,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
             {/* Model picker — keeps the rail thin. */}
             <div className="shrink-0">
               <ChatSidebar
-                channel={channel}
+                channel={sidecarChannel}
                 profile={scopedProfile}
                 onDashboardNewSessionRequest={startFreshDashboardChat}
                 onSessionTitleChange={handleSessionTitleChange}

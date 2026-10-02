@@ -8,6 +8,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
  */
 type Tab = {
   ptyAttachToken: (rotate?: boolean) => Promise<string>;
+  ptyAttachment: (fresh?: boolean) => Promise<{ tab: string; attach: string }>;
   storage: Storage;
 };
 
@@ -69,8 +70,8 @@ async function openTab(
     configurable: true,
     value: fakeLocks(held, requests),
   });
-  const { ptyAttachToken } = await import("./pty-attach-token");
-  return { ptyAttachToken, storage };
+  const { ptyAttachToken, ptyAttachment } = await import("./pty-attach-token");
+  return { ptyAttachToken, ptyAttachment, storage };
 }
 
 beforeEach(() => {
@@ -91,6 +92,34 @@ afterEach(() => {
 });
 
 describe("ptyAttachToken", () => {
+  it("shares one tab claim between overlapping connect attempts", async () => {
+    const tab = await openTab(new Set<string>(), { [KEY]: "stored-tab" });
+    const [a, b] = await Promise.all([tab.ptyAttachment(), tab.ptyAttachment()]);
+    expect(a).toEqual(b);
+  });
+
+  it("keeps the tab scope across New chat and reload without sharing a duplicate's terminal", async () => {
+    const held = new Set<string>();
+    const first = await openTab(held, { [KEY]: "legacy-terminal" });
+    const a = await first.ptyAttachment();
+    const b = await first.ptyAttachment(true);
+    expect(a).toEqual({ tab: "legacy-terminal", attach: "legacy-terminal" });
+    expect(b.tab).toBe(a.tab);
+    expect(b.attach).not.toBe(a.attach);
+    expect(await first.ptyAttachment()).toEqual(b);
+    const seed = Object.fromEntries(Array.from({ length: first.storage.length }, (_, i) => {
+      const key = first.storage.key(i)!;
+      return [key, first.storage.getItem(key)!];
+    }));
+    const duplicate = await openTab(held, seed);
+    const other = await duplicate.ptyAttachment();
+    expect(other.tab).not.toBe(a.tab);
+    expect(other.attach).not.toBe(b.attach);
+    simulateUnload(held);
+    const refreshed = await openTab(held, seed);
+    expect(await refreshed.ptyAttachment()).toEqual(b);
+  });
+
   it("mints its own token for a duplicate tab instead of sharing the live one", async () => {
     const held = new Set<string>();
     const first = await openTab(held);

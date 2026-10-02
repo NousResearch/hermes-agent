@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+import uuid
 from typing import Callable, Dict, Optional, Tuple
 
 WS_CLOSE_PROCESS_EXITED = 4410
@@ -43,8 +44,12 @@ async def _close_ws(ws, code: int) -> None:
 
 
 class PtySession:
-    def __init__(self, key: str, bridge, *, buffer_cap: int, read_timeout: float) -> None:
+    def __init__(self, key: str, bridge, *, buffer_cap: int, read_timeout: float,
+                 resume_key: Optional[Callable[[], Optional[str]]] = None,
+                 channel: Optional[str] = None) -> None:
         self.key = key
+        self.resume_key = resume_key
+        self.channel = channel
         self.bridge = bridge
         self.buffer = RingBuffer(buffer_cap)
         self.alive = True
@@ -166,6 +171,16 @@ async def run_reaper(registry: "PtySessionRegistry", *, interval: float = 60.0) 
             pass
 
 
+def _key_profile(key: str) -> str:
+    """Profile component of a registry key.
+
+    Keys are ``token``, ``token\\0profile\\0resume`` or either followed by a
+    ``\\0uuid`` owner suffix; only the three-plus component form carries a profile.
+    """
+    parts = key.split("\0")
+    return parts[1] if len(parts) >= 3 else ""
+
+
 class PtySessionRegistry:
     def __init__(self, *, ttl: float, max_sessions: int, buffer_cap: int, read_timeout: float) -> None:
         self._ttl = ttl
@@ -184,37 +199,57 @@ class PtySessionRegistry:
         # delays NEW chats. Per-key locks if spawn throughput ever matters.
         self._attach_lock = asyncio.Lock()
 
-    async def attach_or_spawn(self, key: str, *, spawn: Callable[[], object]) -> Tuple[PtySession, bool]:
+    async def attach_or_spawn(self, key: str, *, spawn: Callable[[], object],
+                              resume_key: Optional[Callable[[], Optional[str]]] = None,
+                              resume_target: Optional[str] = None,
+                              channel: Optional[str] = None) -> Tuple[PtySession, bool]:
+        """Reuse a terminal or its current conversation; detach via the returned key."""
         await self.reap_idle()
         async with self._attach_lock:
             existing = self._sessions.get(key)
             if existing is not None and existing.alive:
-                return existing, False
-            if existing is not None:                       # dead remnant
+                if resume_target is None or existing.resume_key is None or existing.resume_key() == resume_target:
+                    return existing, False
+            if existing is not None and not existing.alive:
                 await existing.close()
                 self._sessions.pop(key, None)
+            # The child may switch conversation or compress after launch. An
+            # explicit resume must match its current identity, not its old key.
+            if resume_target is not None:
+                for session in self._sessions.values():
+                    if session.alive and session.resume_key is not None and session.resume_key() == resume_target:
+                        return session, False
             if len(self._sessions) >= self._max:
                 self._reap_one_idle_or_raise()
-            # PTY spawn does blocking fork/exec work — keep it off the event loop.
-            # See #53227.
+            # Keep an owner that moved to another conversation reachable by its
+            # live alias; never overwrite its registry entry to reclaim the key.
+            owner_key = key if key not in self._sessions else f"{key}\0{uuid.uuid4().hex}"
             bridge = await asyncio.to_thread(spawn)
-            session = PtySession(key, bridge, buffer_cap=self._buffer_cap, read_timeout=self._read_timeout)
+            session = PtySession(owner_key, bridge, buffer_cap=self._buffer_cap, read_timeout=self._read_timeout,
+                                 resume_key=resume_key, channel=channel)
             await session.start()
-            self._sessions[key] = session
+            self._sessions[owner_key] = session
             return session, True
 
-    async def close_other_sessions(self, prefix: str, *, keep_key: str) -> None:
+    async def close_other_sessions(self, prefix: str, *, keep_key: str,
+                                   keep_profile: Optional[str] = None) -> None:
         """Close sessions belonging to the same logical client except ``keep_key``.
 
         Dashboard profile changes keep the browser's attach token but change the
         canonical session key. The previous profile's detached PTY must not
         remain alive long enough to hold the TUI session lease and reject a
         later return to that chat.
+
+        With ``keep_profile`` given, siblings whose key carries that same profile
+        are retained: a tab keeps the terminals of the conversations it left so a
+        later explicit resume reattaches to the live one (see ``attach_or_spawn``
+        ``resume_target``) instead of spawning a child that is refused the lease.
         """
         async with self._attach_lock:
             keys = [
                 key for key in self._sessions
                 if key != keep_key and (key == prefix or key.startswith(prefix + "\0"))
+                and (keep_profile is None or _key_profile(key) != keep_profile)
             ]
             for key in keys:
                 session = self._sessions.pop(key, None)

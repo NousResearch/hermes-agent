@@ -74,3 +74,40 @@ export async function ptyAttachToken(rotate = false): Promise<string> {
   claimedToken = token;
   return token;
 }
+
+let terminalToken: string | null = null;
+let tabClaim: Promise<string> | null = null;
+
+/** Stable tab capability plus a separately rotating fresh-terminal identity.
+ * Seed the tab from the legacy token so upgrading can still find its live PTY.
+ * A duplicate tab claims a new scope, so it cannot reuse cloned terminal state.
+ */
+export async function ptyAttachment(fresh = false): Promise<{ tab: string; attach: string }> {
+  // React can start a replacement effect before the previous claim settles.
+  // Share its promise: Web Locks are not reentrant, even in one document.
+  tabClaim ??= ptyAttachToken().catch((error: unknown) => {
+    tabClaim = null;
+    throw error;
+  });
+  const tab = await tabClaim;
+  const key = `hermes.pty.terminal.${tab}`;
+  if (fresh) terminalToken = mint();
+  if (!terminalToken) terminalToken = tabStorage()?.getItem(key) || tab;
+  try {
+    tabStorage()?.setItem(key, terminalToken);
+  } catch {
+    /* Storage blocked: in-document reconnect still retains both identities. */
+  }
+  return { tab, attach: terminalToken };
+}
+
+/** The retained PTY owns its publisher channel across browser remounts. */
+export function parsePtyAttachmentChannel(data: string): string | null {
+  try {
+    const frame = JSON.parse(data);
+    return frame?.type === "pty.attached" && typeof frame.channel === "string" && frame.channel
+      ? frame.channel : null;
+  } catch {
+    return null;
+  }
+}

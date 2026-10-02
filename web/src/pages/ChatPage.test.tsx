@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { act, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { MemoryRouter } from "react-router";
+import { Link, MemoryRouter } from "react-router";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
@@ -86,7 +86,11 @@ class FakeTerminal {
 
 const maybeReloadForLoopbackWsAuthFailure = vi.fn(() => false);
 const apiMocks = vi.hoisted(() => ({
-  buildWsUrl: vi.fn(async () => "ws://localhost/api/pty?channel=chat-1"),
+  buildWsUrl: vi.fn<(path: string, params?: Record<string, string>) => Promise<string>>(
+    async () => "ws://localhost/api/pty?channel=chat-1",
+  ),
+  getSessionDetail: vi.fn(async () => ({ title: "A" })),
+  getSessionLatestDescendant: vi.fn(async () => ({ session_id: "session-a" })),
 }));
 const uploadChatImage = vi.hoisted(() =>
   vi.fn(async () => ({ path: "/tmp/pasted.png" })),
@@ -103,7 +107,9 @@ vi.mock("@xterm/addon-web-links", () => ({ WebLinksAddon: class {} }));
 vi.mock("@xterm/addon-webgl", () => ({ WebglAddon: FakeWebglAddon }));
 vi.mock("@xterm/xterm", () => ({ Terminal: FakeTerminal }));
 vi.mock("@/components/ChatSidebar", () => ({
-  ChatSidebar: () => null,
+  ChatSidebar: ({ onDashboardNewSessionRequest, channel }: { onDashboardNewSessionRequest: () => void; channel: string }) => (
+    <button data-testid="new-chat" data-channel={channel} onClick={onDashboardNewSessionRequest}>New chat</button>
+  ),
 }));
 vi.mock("@/components/ChatSessionList", () => ({
   ChatSessionList: () => null,
@@ -269,6 +275,57 @@ afterEach(async () => {
 });
 
 describe("ChatPage", () => {
+  it("rebinds the sidebar to the attached owner's channel without reconnecting the PTY", async () => {
+    let sequence = 50;
+    vi.stubGlobal("crypto", {
+      getRandomValues: (values: Uint8Array) => values.fill(++sequence),
+      randomUUID: () => `channel-${++sequence}`,
+    });
+    const { default: ChatPage } = await import("./ChatPage");
+    await render(<MemoryRouter initialEntries={["/chat?resume=session-a"]}><ChatPage isActive /></MemoryRouter>);
+    const first = FakeWebSocket.instances[0];
+    const connectionCount = FakeWebSocket.instances.length;
+    await act(async () => first.onmessage?.({ data: JSON.stringify({ type: "pty.attached", channel: "original-publisher" }) }));
+    const sidebar = () => container.querySelector<HTMLButtonElement>('[data-testid="new-chat"]')!;
+    expect(sidebar().dataset.channel).toBe("original-publisher");
+    expect(FakeWebSocket.instances).toHaveLength(connectionCount);
+    await act(async () => sidebar().click());
+    const params = apiMocks.buildWsUrl.mock.calls.filter(([path]) => path === "/api/pty").at(-1)![1]!;
+    expect(sidebar().dataset.channel).toBe(params.channel);
+    expect(sidebar().dataset.channel).not.toBe("original-publisher");
+    await act(async () => first.onmessage?.({ data: JSON.stringify({ type: "pty.attached", channel: "late-old-publisher" }) }));
+    expect(sidebar().dataset.channel).toBe(params.channel);
+  });
+
+  it("sends stable tab scope but distinct terminal and channel on New chat then returns to A", async () => {
+    let sequence = 20;
+    vi.stubGlobal("crypto", {
+      getRandomValues: (values: Uint8Array) => values.fill(++sequence),
+      randomUUID: () => `channel-${++sequence}`,
+    });
+    const { default: ChatPage } = await import("./ChatPage");
+    await render(
+      <MemoryRouter initialEntries={["/chat"]}>
+        <Link data-testid="return-a" to="/chat?resume=session-a">Return A</Link>
+        <ChatPage isActive />
+      </MemoryRouter>,
+    );
+    const lastParams = () => apiMocks.buildWsUrl.mock.calls.filter(([path]) => path === "/api/pty").at(-1)![1]!;
+    const a = { ...lastParams() };
+    await act(async () => container.querySelector<HTMLButtonElement>('[data-testid="new-chat"]')!.click());
+    const b = { ...lastParams() };
+    expect(b.fresh).toBe("1");
+    expect(b.resume).toBeUndefined();
+    expect(b.tab).toBe(a.tab);
+    expect(b.attach).not.toBe(a.attach);
+    expect(b.channel).not.toBe(a.channel);
+    await act(async () => container.querySelector<HTMLAnchorElement>('[data-testid="return-a"]')!.click());
+    const returned = lastParams();
+    expect(returned.resume).toBe("session-a");
+    expect(returned.tab).toBe(a.tab);
+    expect(returned.attach).toBe(b.attach);
+  });
+
   it("sends a PTY keepalive frame every 20 seconds while the socket is open", async () => {
     vi.useFakeTimers();
     try {
@@ -670,6 +727,28 @@ describe("ChatPage PTY ticket connect deadline", () => {
       await vi.advanceTimersByTimeAsync(ms);
     });
   }
+
+  it("times out a stalled tab claim without opening a late socket", async () => {
+    const identity = await import("@/lib/pty-attach-token");
+    let release!: (value: { tab: string; attach: string }) => void;
+    const claim = vi.spyOn(identity, "ptyAttachment").mockImplementationOnce(
+      () => new Promise((resolve) => { release = resolve; }),
+    );
+    try {
+      await renderChat();
+      await advance(PTY_TICKET_TIMEOUT_MS);
+      await act(async () => {
+        release({ tab: "stale-tab", attach: "stale-terminal" });
+        await Promise.resolve();
+      });
+      expect(apiMocks.buildWsUrl).not.toHaveBeenCalled();
+      expect(FakeWebSocket.instances).toHaveLength(0);
+      await advance(250);
+      expect(FakeWebSocket.instances).toHaveLength(1);
+    } finally {
+      claim.mockRestore();
+    }
+  });
 
   it("retries when the ticket request rejects", async () => {
     apiMocks.buildWsUrl.mockRejectedValueOnce(

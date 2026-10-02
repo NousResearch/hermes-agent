@@ -1,5 +1,3 @@
-import { writeFileSync } from 'node:fs'
-
 import type { ScrollBoxHandle } from '@hermes/ink'
 import { evictInkCaches } from '@hermes/ink'
 import type { InflightTurn, SessionResumeResult, Usage } from '@hermes/shared/gateway-events'
@@ -21,6 +19,7 @@ import { t } from '../i18n/runtime.js'
 import { asRpcResult } from '../lib/rpc.js'
 import type { Msg, PanelSection, SessionInfo } from '../types.js'
 
+import { writeActiveSessionFile } from './activeSessionFile.js'
 import { applyConnectionRequest, clearConnectionOperation } from './connectionOperationStore.js'
 import type { ComposerActions, GatewayRpc, StateSetter } from './interfaces.js'
 import { patchOverlayState } from './overlayStore.js'
@@ -44,18 +43,6 @@ const statusFromLiveSession = (status?: string, running = false) => {
   }
 
   return running || status === 'working' ? 'running…' : 'ready'
-}
-
-export const writeActiveSessionFile = (sessionId: null | string, file = process.env.HERMES_TUI_ACTIVE_SESSION_FILE) => {
-  if (!file || !sessionId) {
-    return
-  }
-
-  try {
-    writeFileSync(file, JSON.stringify({ session_id: sessionId }), { mode: 0o600 })
-  } catch {
-    // Best-effort shell epilogue hint only; never break live session changes.
-  }
 }
 
 export const liveSessionInflightMessages = (inflight?: null | InflightTurn): Msg[] => {

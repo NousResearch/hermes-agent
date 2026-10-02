@@ -28,6 +28,7 @@ import { bootSeededPin, invalidateBootBackground, writeBootTheme } from '../lib/
 import { defaultThemeForCurrentBackground, fromSkin, skinIsLight, type Theme, themeToneHex } from '../theme.js'
 import type { Msg, SessionInfo, SubagentProgress } from '../types.js'
 
+import { writeActiveSessionFile } from './activeSessionFile.js'
 import { applyConnectionRequest, applyConnectionUpdate } from './connectionOperationStore.js'
 import { applyDelegationStatus, getDelegationState } from './delegationStore.js'
 import { applyGoalSnapshot } from './goalStatus.js'
@@ -846,6 +847,12 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
         // payloads without a durable id — keep the one we already track so a
         // later reconnect still resumes this session.
         const storedSid = info.stored_session_id || getUiState().storedSid
+
+        // Compression can rotate the durable id without a create/resume transition.
+        // Only an explicit durable id from the focused session may replace the hint.
+        if (sid && ev.session_id === sid && info.stored_session_id) {
+          writeActiveSessionFile(info.stored_session_id)
+        }
 
         if (storedSid) {
           info = { ...info, stored_session_id: storedSid }

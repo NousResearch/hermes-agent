@@ -1,17 +1,27 @@
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import {
+  closeSync,
+  mkdirSync,
+  mkdtempSync,
+  openSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync
+} from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { writeActiveSessionFile } from '../app/activeSessionFile.js'
 import { turnController } from '../app/turnController.js'
 import { getTurnState, resetTurnState } from '../app/turnStore.js'
 import { patchUiState, resetUiState } from '../app/uiStore.js'
 import {
   hydrateLiveSessionInflight,
   liveSessionInflightMessages,
-  signalFreshSessionBoundary,
-  writeActiveSessionFile
+  signalFreshSessionBoundary
 } from '../app/useSessionLifecycle.js'
 
 describe('fresh session boundary', () => {
@@ -45,6 +55,43 @@ describe('writeActiveSessionFile', () => {
     writeActiveSessionFile('actual_session', path)
 
     expect(JSON.parse(readFileSync(path, 'utf8'))).toEqual({ session_id: 'actual_session' })
+  })
+
+  it('replaces the breadcrumb without changing an open reader or leaving staging files', () => {
+    dir = mkdtempSync(join(tmpdir(), 'hermes-tui-active-'))
+    const path = join(dir, 'active.json')
+    const previous = JSON.stringify({ session_id: 'before-compression' })
+    writeFileSync(path, previous, { mode: 0o644 })
+    const reader = openSync(path, 'r')
+
+    try {
+      writeActiveSessionFile('after-compression', path)
+
+      expect(JSON.parse(readFileSync(path, 'utf8'))).toEqual({ session_id: 'after-compression' })
+      // An existing reader must keep the complete old JSON, not the truncated/new file.
+      expect(readFileSync(reader, 'utf8')).toBe(previous)
+
+      if (process.platform !== 'win32') {
+        expect(statSync(path).mode & 0o777).toBe(0o600)
+      }
+
+      expect(readdirSync(dir)).toEqual(['active.json'])
+    } finally {
+      closeSync(reader)
+    }
+
+    writeActiveSessionFile(null, path)
+    writeActiveSessionFile('', path)
+    expect(JSON.parse(readFileSync(path, 'utf8'))).toEqual({ session_id: 'after-compression' })
+
+    // A real rename failure must neither escape nor leave a partial replacement behind.
+    const blocked = join(dir, 'blocked')
+    mkdirSync(blocked)
+    writeFileSync(join(blocked, 'keep'), previous)
+    expect(() => writeActiveSessionFile('cannot-replace-directory', blocked)).not.toThrow()
+    expect(readFileSync(join(blocked, 'keep'), 'utf8')).toBe(previous)
+    expect(readdirSync(dir).sort()).toEqual(['active.json', 'blocked'])
+    expect(() => writeActiveSessionFile('missing-parent', join(dir, 'missing', 'active.json'))).not.toThrow()
   })
 })
 

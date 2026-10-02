@@ -508,17 +508,30 @@ async def pty_ws(ws: WebSocket) -> None:
         await _pty_fail(ws, exc)
         return
 
-    raw_attach_token = ws.query_params.get("attach") or None
-    attach_token = raw_attach_token
+    attach_token = ws.query_params.get("attach") or None
+    raw_attach_token = attach_token
+    # `tab` survives New chat; `attach` identifies a fresh terminal within it.
+    # Older clients use their attach token as both identities.
+    browser_attach_token = ws.query_params.get("tab") or attach_token
     registry_resume = raw_resume
     if raw_resume and env:
         registry_resume = env.get("HERMES_TUI_RESUME") or raw_resume
     if attach_token is not None and (registry_resume or profile):
         # Key explicit resumes on their canonical target, never the active-session fallback.
-        attach_token = f"{attach_token}\0{profile or ''}\0{registry_resume or ''}"
+        terminal_token = browser_attach_token if registry_resume else attach_token
+        attach_token = f"{terminal_token}\0{profile or ''}\0{registry_resume or ''}"
 
     def _spawn():
         return PtyBridge.spawn(argv, cwd=cwd, env=env)
+
+    def _resume_key() -> Optional[str]:
+        # Read the ORIGINAL child's breadcrumb, not the new channel generated
+        # when React switches sessions. Never share an alias across tabs/profiles.
+        if active_session_file is not None:
+            session_id = _read_active_session_file(active_session_file)
+            if session_id:
+                return f"{browser_attach_token}\0{profile or ''}\0{session_id}"
+        return None
 
     if attach_token is None:
         # Legacy path: 1:1 socket<->PTY, killed on disconnect.
@@ -535,8 +548,15 @@ async def pty_ws(ws: WebSocket) -> None:
 
     # Keep-alive path: the PTY outlives this socket; reattach by token.
     try:
-        await PTY_REGISTRY.close_other_sessions(raw_attach_token, keep_key=attach_token)
-        session, _created = await PTY_REGISTRY.attach_or_spawn(attach_token, spawn=_spawn)
+        # A profile switch keeps the attach token but changes the canonical key; the
+        # previous profile's PTY must not keep holding its TUI session lease. Same-
+        # profile siblings are retained on purpose: this tab reattaches to the
+        # terminal whose live conversation matches a later resume (resume_target).
+        await PTY_REGISTRY.close_other_sessions(
+            raw_attach_token, keep_key=attach_token, keep_profile=profile or "")
+        session, _created = await PTY_REGISTRY.attach_or_spawn(
+            attach_token, spawn=_spawn, resume_key=_resume_key if active_session_file is not None else None,
+            resume_target=attach_token if registry_resume else None, channel=channel)
     except (PtyUnavailableError, FileNotFoundError, OSError, RegistryFull) as exc:
         await _pty_fail(ws, exc)
         return
@@ -549,7 +569,7 @@ async def pty_ws(ws: WebSocket) -> None:
         # stalled redraw write leaves THIS socket attached and worth closing.
         if session._ws is ws:
             await _close_stalled_pty_input(ws, path="keepalive-redraw")
-        PTY_REGISTRY.detach(attach_token, ws)
+        PTY_REGISTRY.detach(session.key, ws)
         return
 
     # Writer loop only: the session's drain task (one per PTY, inside the
@@ -557,6 +577,8 @@ async def pty_ws(ws: WebSocket) -> None:
     # it while detached. On child EOF it closes the attached socket with 4410,
     # which unparks ws.receive() — same half-open protection as the legacy pump.
     try:
+        if ws.query_params.get("tab") and session.channel:
+            await ws.send_json({"type": "pty.attached", "channel": session.channel})
         while True:
             try:
                 msg = await ws.receive()
@@ -583,7 +605,7 @@ async def pty_ws(ws: WebSocket) -> None:
     finally:
         # Detach only — the PTY keeps running for a reattach; the registry
         # reaper closes it after the TTL (or immediately on process exit).
-        PTY_REGISTRY.detach(attach_token, ws)
+        PTY_REGISTRY.detach(session.key, ws)
 
 
 # --- /api/ws: JSON-RPC sidecar for the Chat tab. Drives the same

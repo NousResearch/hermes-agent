@@ -1,3 +1,7 @@
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+
 import type { ConnectionOperationTarget } from '@hermes/shared/gateway-events'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -195,6 +199,69 @@ describe('createGatewayEventHandler', () => {
     } as any)
     expect(getUiState().storedSid).toBe('durable-2')
     expect(getUiState().info?.stored_session_id).toBe('durable-2')
+  })
+
+  it('keeps the breadcrumb on the focused durable session through compression and file failures', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'hermes-tui-breadcrumb-'))
+    const file = join(dir, 'active.json')
+    const breadcrumb = () => JSON.parse(readFileSync(file, 'utf8'))
+    writeFileSync(file, JSON.stringify({ session_id: 'durable-before' }))
+    vi.stubEnv('HERMES_TUI_ACTIVE_SESSION_FILE', file)
+
+    try {
+      patchUiState({ sid: 'focused', storedSid: 'durable-before' })
+      const onEvent = createGatewayEventHandler(buildCtx([]))
+
+      const snapshot = (sessionId?: string, storedId?: string) =>
+        onEvent({
+          session_id: sessionId,
+          payload: {
+            model: 'test',
+            skills: {},
+            tools: {},
+            ...(storedId === undefined ? {} : { stored_session_id: storedId })
+          },
+          type: 'session.info'
+        } as any)
+
+      snapshot('other', 'durable-other')
+      expect(getUiState().storedSid).toBe('durable-before')
+      expect(breadcrumb()).toEqual({ session_id: 'durable-before' })
+
+      // Compression changes the durable id without changing the live transport id.
+      snapshot('focused', 'durable-after')
+      expect(getUiState().sid).toBe('focused')
+      expect(getUiState().storedSid).toBe('durable-after')
+      expect(breadcrumb()).toEqual({ session_id: 'durable-after' })
+
+      for (const missing of [undefined, '']) {
+        snapshot('focused', missing)
+        expect(getUiState().storedSid).toBe('durable-after')
+        expect(getUiState().info?.stored_session_id).toBe('durable-after')
+        expect(breadcrumb()).toEqual({ session_id: 'durable-after' })
+      }
+
+      // An unscoped event, or one received while no session is focused, owns no breadcrumb.
+      snapshot(undefined, 'durable-unscoped')
+      expect(breadcrumb()).toEqual({ session_id: 'durable-after' })
+      snapshot('focused')
+      expect(breadcrumb()).toEqual({ session_id: 'durable-after' })
+      patchUiState({ sid: null, storedSid: null })
+      snapshot('other', 'durable-other')
+      expect(breadcrumb()).toEqual({ session_id: 'durable-after' })
+      patchUiState({ sid: 'focused', storedSid: null })
+      snapshot('focused')
+      expect(breadcrumb()).toEqual({ session_id: 'durable-after' })
+
+      vi.stubEnv('HERMES_TUI_ACTIVE_SESSION_FILE', join(dir, 'missing', 'active.json'))
+      expect(() => snapshot('focused', 'durable-after-write-failure')).not.toThrow()
+      expect(getUiState().storedSid).toBe('durable-after-write-failure')
+      expect(getUiState().info?.stored_session_id).toBe('durable-after-write-failure')
+      expect(breadcrumb()).toEqual({ session_id: 'durable-after' })
+    } finally {
+      vi.unstubAllEnvs()
+      rmSync(dir, { force: true, recursive: true })
+    }
   })
 
   it('archives incomplete todos into transcript flow at end of turn so they scroll up', () => {

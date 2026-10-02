@@ -333,10 +333,22 @@ function persistPositions(storageKey: string, positions: Record<string, ThreadSc
   writeKey(storageKey, keys.length === 0 ? null : JSON.stringify(positions))
 }
 
+// LOCAL (this machine, user-directed 2026-10-02): the per-session reading-
+// position restore is DISABLED — opening a session always lands on the live
+// tail. Rationale: his sessions stream while he is away, so a stored offset
+// never points where he left it, and the store still carries garbage offsets
+// from the old window-top bug (observed: 787px, 11373px artifacts). Upstream
+// keeps the feature. Set to true to re-enable upstream restore behavior.
+const RESTORE_READING_POSITIONS = false
+
 export function getThreadScrollPosition(
   sessionKey: string,
   storageKey = threadScrollStorageKey()
 ): ThreadScrollState | undefined {
+  if (!RESTORE_READING_POSITIONS) {
+    return undefined
+  }
+
   return loadPositions(storageKey)[sessionKey]
 }
 

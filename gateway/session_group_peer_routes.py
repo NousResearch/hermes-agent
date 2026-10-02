@@ -38,7 +38,7 @@ _ATTEMPT_SECONDS = 60.0  # at most one renewal attempt per route per minute
 _RETRY_SECONDS, _MAX_RETRY_SECONDS = 30.0, 120.0
 _RENEWED_TTL_SECONDS = 3600.0
 _NEW_WORK = frozenset({'dispatch', 'recover_dispatch', 'probe'})
-_OBSERVATION = frozenset({'history', 'status', 'stop', 'stop_receipt'})
+_OBSERVATION = frozenset({'history', 'status', 'stop', 'stop_receipt', 'output_request'})
 
 
 def _retire(client, grant):

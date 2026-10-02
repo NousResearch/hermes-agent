@@ -130,6 +130,22 @@ class CanonicalHostedOutput:
 
     _output_clock = staticmethod(time.time)
 
+    def start(self):
+        # The gateway watcher ensures start every second; an already-live owner is unchanged.
+        if self.runtime.status().get('running'):
+            return super().start()
+        self._peer_output_generation = getattr(self, '_peer_output_generation', 0) + 1
+        self._peer_output_stopping = False
+        return super().start()
+
+    def stop(self, *, timeout=5.0):
+        self._peer_output_stopping = True
+        self._peer_output_generation = getattr(self, '_peer_output_generation', 0) + 1
+        # These are only transfer observations. Durable obligations remain untouched.
+        with self._policy_lock:
+            getattr(self, '_peer_output_io', {}).clear()
+        return super().stop(timeout=timeout)
+
     # ------------------------------------------------------------------ obligations
     def _output_write(self, operation):
         def write(conn):
@@ -278,6 +294,23 @@ class CanonicalHostedOutput:
 
     def _unreported_output(self, room, task):
         """Open bytes of this gateway's own profile that no receipt reported (stopped, failed)."""
+        payload = task['payload']
+        member = next((member for member in room['members'] if member['member_id'] == payload.get('target_member_id', payload.get('target_profile'))), None)
+        if member is not None and member.get('target', {}).get('kind') == 'peer':
+            from tui_gateway.hosted_room_peer_output import stored_consent
+            target = member['target']
+            scope = RoomArtifactScope.from_mapping(dict(room_id=room['room_id'], task_id=task['identity'].task_id,
+                execution_generation=task['execution_generation'], member_id=member['member_id'], target_profile=target['profile'],
+                home_install_id=room['authority_gateway_id'], target_install_id=target['installation_id'],
+                authority_gateway_id=room['authority_gateway_id'], authority_epoch=room['authority_epoch']))
+            consent = stored_consent(self.db_path, scope.as_mapping())
+            from gateway.hosted_room_driver import is_proven_nonadmission
+            if is_proven_nonadmission(task) or (task.get('result') or {}).get('peer_output_empty') == scope.as_mapping():
+                return None
+            if task['status'] == 'cancelled' and consent is not None and (consent.get('dispatched') is False
+                    or consent.get('unreceived_cancel_generation') == task['cancel_generation']):
+                return None
+            return (scope, None) if consent is not None and consent['contract'] is not None else None
         with self.authority.db._read_ctx() as conn:
             if not output_store_exists(conn):
                 return None  # no Bot ever shared a file here: nothing to look up
@@ -287,7 +320,21 @@ class CanonicalHostedOutput:
         with self.authority.db._read_ctx() as conn:
             return (scope, None) if scope_has_output(conn, scope) else None
 
+    def _peer_output_consent(self, scope):
+        from tui_gateway.hosted_room_peer_output import stored_consent
+        consent = stored_consent(self.db_path, scope.as_mapping())
+        return consent is not None and consent['contract'] is not None
+
     def _output_source(self, identity, scope: RoomArtifactScope, manifest):
+        from tui_gateway.hosted_room_peer_output import PeerOutputSource, stored_consent
+        consent = stored_consent(self.db_path, scope.as_mapping())
+        member = next((m for m in self._room(scope.room_id)['members'] if m['member_id'] == scope.member_id), {})
+        if (member.get('target', {}).get('kind') == 'peer' or
+                (consent is not None and consent['contract'] is not None)):
+            return PeerOutputSource(self, scope, manifest)
+        if (not member or member.get('target', {}).get('kind', 'local') != 'local'
+                or scope.target_install_id != scope.home_install_id):
+            raise RoomArtifactError('Group Chat output source installation changed')
         home = self.profile_homes().get(scope.target_profile)
         if home is None:
             raise RuntimeStoreError("permission_denied")
@@ -610,7 +657,10 @@ class CanonicalHostedOutput:
                         self._verify_published_bytes(scope, *published)
                         self._acknowledge_source(identity, scope, manifest, published[0])
                     self._force_obligation(identity, scope, manifest, "ack", acknowledge)
-                elif self.profile_homes().get(scope.target_profile) is None:
+                elif (scope.target_install_id == scope.home_install_id and not self._peer_output_consent(scope)
+                      and any(m['member_id'] == scope.member_id and m['profile'] == scope.target_profile
+                              and m.get('target', {}).get('kind', 'local') == 'local' for m in room['members'])
+                      and self.profile_homes().get(scope.target_profile) is None):
                     # No longer served here: that profile's own outbox expiry retires the bytes.
                     self._force_obligation(identity, scope, manifest, "discard", lambda: None,
                                            reason="source_unavailable")
@@ -626,7 +676,7 @@ class CanonicalHostedOutput:
                     self._output_write(lambda conn: conn.execute(
                         f"DELETE FROM {OBLIGATIONS} WHERE room_id=? AND state='completed'", (room_id,)))
         if remaining:
-            raise RuntimeError("room file cleanup is still pending; retry deletion after it completes")
+            raise RuntimeError("File cleanup is still pending. Try ending the group chat again after it finishes.")
 
     def _force_obligation(self, identity, scope, manifest, operation, action, *, reason="room_disbanded"):
         """Disband: settle one obligation now, overriding its backoff or block."""

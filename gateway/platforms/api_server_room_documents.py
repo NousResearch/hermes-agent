@@ -61,7 +61,10 @@ def accepted_document_run(adapter, *, run_id, session_id, dispatch, scope):
                                (identity_key('api', session_id, run_id),)).fetchone()
         projected = conn.execute("SELECT 1 FROM logical_attempts WHERE principal_id='api' AND request_id=?", (run_id,)).fetchone()
         if not rows:
-            if retired or projected:
+            logical = conn.execute("""SELECT 1 FROM logical_attempts WHERE principal_id='api' AND session_id=?
+                AND owner_scope=? AND task_id=? AND execution_generation=?""",
+                (session_id, scope, dispatch['task_id'], dispatch['execution_generation'])).fetchone()
+            if retired or projected or logical:
                 raise RuntimeStoreError('room_document_outcome_unknown')
             return None
         if len(rows) != 1 or rows[0]['target_session_id'] != session_id:

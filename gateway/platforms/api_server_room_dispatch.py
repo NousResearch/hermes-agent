@@ -74,6 +74,10 @@ async def _normalize_room_dispatch(
     """Validate and normalize a scoped RoomLink dispatch request."""
     _openai_error, room_token = _api_server._openai_error, self._room_grant_token(request)
     if not room_token:
+        declared = body.get('hosted_room_dispatch') if isinstance(body, dict) else None
+        if isinstance(declared, dict) and declared.get('document_output') is not None:
+            return body, _json_error(_openai_error, 'Peer output requires authenticated room consent.',
+                                     code='invalid_room_output', status=403)
         return body, None
     if not isinstance(body, dict) or set(body) - {"input", "hosted_room_dispatch", "document_bytes"}:
         return body, _json_error(
@@ -85,9 +89,12 @@ async def _normalize_room_dispatch(
         from gateway.hosted_room_execution_policy import RoomExecutionPolicy
         from gateway.platforms.api_server_room_grants import _local_room_catalog
         dispatch = HostedMemberDispatch.from_mapping(body.get("hosted_room_dispatch"))
-        if dispatch.document_inputs is not None and not request.get("verified_room_grant"):
+        if (dispatch.document_inputs is not None or dispatch.document_output is not None) and not request.get("verified_room_grant"):
             raise ValueError("document inputs require proof-v2 transport")
         verify_room_grant(self._room_grant_secret(), room_token, dispatch, permission="dispatch")
+        if dispatch.document_output is not None:
+            for permission in ('status', 'stop'):
+                verify_room_grant(self._room_grant_secret(), room_token, dispatch, permission=permission)
         active_profile = _api_server._api_request_profile.get() or "default"
         local_install = hosted_rooms.local_authority_gateway_id()
         if dispatch.target_profile != active_profile or dispatch.target_install_id != local_install:

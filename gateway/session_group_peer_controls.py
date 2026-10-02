@@ -239,6 +239,8 @@ def discard_peer(service, task, binding):
             if current['execution_generation'] != task['execution_generation'] or current['status'] != 'deferred':
                 raise RuntimeStoreError('stale_generation')
             _validate_discard(service, conn, current, binding)
+            from tui_gateway.hosted_room_peer_output import remember_unreceived_discard
+            remember_unreceived_discard(conn, binding, current)
         result = tasks.cancel_task(service.db_path, task['identity'], cancel_id=cancel_id,
             expected_cancel_generation=task['cancel_generation'], clock=runtime.clock, authorize=authorize)
         runtime._set_blocked(binding.room_id, False)

@@ -119,7 +119,7 @@ class PeerMemberRoute:
 def build_member_dispatch(
     *, binding: HostedRoomBinding, route: PeerMemberRoute, room_id: str, task_id: str,
     target_profile: str, execution_generation: int, source_event_seq: int, prompt: str,
-    trace_id: str, document_inputs: list[dict] | None = None) -> HostedMemberDispatch:
+    trace_id: str, document_inputs: list[dict] | None = None, document_output: dict | None = None) -> HostedMemberDispatch:
     """Build the fully fenced member dispatch shared by submit and recovery."""
     return HostedMemberDispatch.from_mapping({
         "protocol_version": PROTOCOL_VERSION, "room_id": room_id,
@@ -131,7 +131,8 @@ def build_member_dispatch(
         "prompt": prompt, "prompt_digest": hashlib.sha256(prompt.encode("utf-8")).hexdigest(),
         "capability_digest": route.capability_digest,
         "execution_policy_digest": route.execution_policy_digest, "trace_id": trace_id,
-        **({"document_inputs": document_inputs} if document_inputs is not None else {})})
+        **({"document_inputs": document_inputs} if document_inputs is not None else {}),
+        **({"document_output": document_output} if document_output is not None else {})})
 
 
 class PeerHostedRoomTransport(InternalSessionRPC):
@@ -142,7 +143,10 @@ class PeerHostedRoomTransport(InternalSessionRPC):
     def __init__(
         self, *, binding: HostedRoomBinding, route: PeerMemberRoute,
         client: HostedRoomPeerClient, source_event_seq: int = 1, task_id: str | None = None,
-        execution_generation: int | None = None, document_inputs: list[dict] | None = None) -> None:
+        execution_generation: int | None = None, document_inputs: list[dict] | None = None, document_output: dict | None = None,
+        output_factory=None) -> None:
+        self.output_factory = output_factory
+        self.document_output = document_output
         self.document_inputs = document_inputs
         self.binding = binding
         self.route = route
@@ -212,11 +216,20 @@ class PeerHostedRoomTransport(InternalSessionRPC):
         self._validate_coordinates(profile=profile, source=source)
         if self._session_id not in {None, session_id}:
             raise ValueError("peer room session changed during admission")
+        if self.output_factory is not None:
+            try:
+                self.document_output = self.output_factory()
+            except Exception as exc:
+                from tui_gateway.hosted_room_peer_http import PeerRunsHTTPError
+                error = PeerRunsHTTPError('peer output capability unavailable before dispatch',
+                                         not_admitted=True, retryable=True)
+                error.dispatch_not_attempted = True
+                raise error from exc
         dispatch = build_member_dispatch(
             binding=self.binding, route=self.route, room_id=task.room_id, task_id=task.task_id,
             target_profile=profile, execution_generation=execution_generation,
             source_event_seq=self.source_event_seq, prompt=prompt,
-            trace_id=self.route.trace_id or f"trace-{uuid.uuid4().hex}", document_inputs=self.document_inputs)
+            trace_id=self.route.trace_id or f"trace-{uuid.uuid4().hex}", document_inputs=self.document_inputs, document_output=self.document_output)
         self._dispatch = dispatch
         self._session_id = session_id
         result = self.client.dispatch(dispatch=dispatch.as_mapping(), grant=self.route.grant)

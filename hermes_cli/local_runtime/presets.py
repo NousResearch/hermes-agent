@@ -96,6 +96,11 @@ def preset_for_model(gguf: Path, budget: HardwareBudget,
         return None
     entry = entry_for_model(model_id)
     is_mtp = entry.mtp if entry is not None else model_id in mtp_capable
+    if is_mtp:
+        from hermes_cli.config import load_config
+
+        preference = load_config().get("local_runtime", {}).get("speculative", "auto")
+        is_mtp = preference != "off"
 
     mmproj_path = _asset_path(entry.mmproj) if entry is not None else None
     fixed_overhead = RUNTIME_OVERHEAD_BYTES + (

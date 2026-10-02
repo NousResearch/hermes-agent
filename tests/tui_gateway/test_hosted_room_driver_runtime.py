@@ -546,6 +546,28 @@ def test_transport_resolver_selects_member_transport_without_forking_state(
     assert any(method == "submit" for method, _ in selected.calls)
 
 
+
+def test_ambiguous_error_cannot_requeue_even_with_a_nonadmission_flag(db: Path):
+    class ConflictingFailureRPC(FakeSessionRPC):
+        def submit(self, **kwargs):
+            self.calls.append(("submit", dict(kwargs)))
+            raise PeerRunsHTTPError("uncertain peer outcome", ambiguous=True, not_admitted=True, retryable=True)
+
+    identity = _identity()
+    _admit(db, identity)
+    rpc = ConflictingFailureRPC()
+    now = [100.0]
+    runtime = _runtime(db, rpc, clock=lambda: now[0], lease_ttl_seconds=30)
+    runtime._run_cycle()
+    # Unknown work retains its lease boundary before becoming recoverable.
+    assert state.get_task(db, identity)["status"] == "running"
+    now[0] = 131.0
+    runtime._run_cycle()
+    saved = state.get_task(db, identity)
+    assert saved["status"] == "indeterminate"
+    assert saved["execution_generation"] == 1
+    assert [call[1]["execution_generation"] for call in rpc.calls if call[0] == "submit"] == [1]
+
 def test_not_admitted_peer_task_stays_queued_with_exponential_capped_retry(
     db: Path,
 ):

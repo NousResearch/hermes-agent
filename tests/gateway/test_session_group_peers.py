@@ -264,10 +264,12 @@ async def test_reregistered_route_replays_accepted_work_as_the_same_target_run(g
 
         # A route minted with a fresh identity would turn that replay into a new request.
         drifted = replace(second, trace_id='trace-' + 'f' * 32)
-        fresh = PeerRunsHTTPClient(base_url=url, api_key='')
+        fresh = PeerRunsHTTPClient(base_url=url, api_key='', proof_install_id=catalog['installation_id'])
         with pytest.raises(PeerRunsHTTPError) as refused:
             await asyncio.to_thread(fresh.recover_dispatch, dispatch=dispatch(drifted), grant=second.grant)
-        assert refused.value.status_code == 409 and refused.value.not_admitted
+        # The same logical key already owns accepted work; a signed conflict is not absence.
+        assert refused.value.status_code == 409 and refused.value.ambiguous
+        assert not refused.value.not_admitted
     finally:
         await server.close()
 

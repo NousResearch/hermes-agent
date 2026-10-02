@@ -7801,6 +7801,11 @@ def _aux_recovery_ladder(
     strips → Nous heal/refresh → credential refresh/pool rotation → provider fallback.
     Each rung returns a response, narrows ``first_err`` and falls through, or re-raises.
     Raises the narrowed ``first_err`` when exhausted (after evicting a connection-poisoned client)."""
+    from agent.auxiliary_hooks import AuxiliaryCallBlocked
+    if isinstance(first_err, AuxiliaryCallBlocked):
+        # A plugin veto is a policy decision, not a provider failure: its free-text message must never
+        # reach the ``_FALLBACK_REASONS`` predicates (e.g. "quota exceeded" / "timed out" would reroute it).
+        raise first_err
     tag = " (async)" if async_mode else ""
     route = _LadderRoute(
         client, task, tag, async_mode, base_info, resolved_provider, resolved_model,

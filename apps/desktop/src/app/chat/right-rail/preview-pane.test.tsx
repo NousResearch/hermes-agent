@@ -2,6 +2,7 @@ import { act, cleanup, fireEvent, render, waitFor } from '@testing-library/react
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { onComposerAttachImagesRequest } from '@/app/chat/composer/focus'
+import { PaneVisibleContext } from '@/components/pane-shell/pane-visibility'
 import { $previewTabs, closeRightRail, openPreview, previewTabId } from '@/store/preview'
 import { $connection, $selectedStoredSessionId } from '@/store/session'
 
@@ -885,6 +886,62 @@ describe('PreviewPane guest external handoff', () => {
     guestMessage(webview, 'https://example.com', 'something-else')
 
     expect(openExternal).not.toHaveBeenCalled()
+  })
+})
+
+describe('PreviewPane off-screen guest', () => {
+  const desktopWindow = window as unknown as { hermesDesktop?: Window['hermesDesktop'] }
+  const initialHermesDesktop = desktopWindow.hermesDesktop
+
+  const target = {
+    kind: 'url',
+    label: 'Preview',
+    source: 'http://localhost:8502',
+    url: 'http://localhost:8502'
+  } as const
+
+  afterEach(() => {
+    cleanup()
+
+    if (initialHermesDesktop) {
+      desktopWindow.hermesDesktop = initialHermesDesktop
+    } else {
+      delete desktopWindow.hermesDesktop
+    }
+  })
+
+  // Chromium keeps a hidden guest as the focused webContents, so main's
+  // mouse back / ⌘R would act on a page the user cannot see unless the pane
+  // tells main the guest left the screen — and that it came back.
+  it('tells main when its guest leaves the screen and when it returns', async () => {
+    const setPreviewGuestHidden = vi.fn()
+    desktopWindow.hermesDesktop = { setPreviewGuestHidden } as unknown as Window['hermesDesktop']
+
+    const pane = (visible: boolean) => (
+      <PaneVisibleContext value={visible}>
+        <PreviewPane tabId="url:offscreen" target={target} />
+      </PaneVisibleContext>
+    )
+
+    let rendered!: ReturnType<typeof render>
+
+    await act(async () => {
+      rendered = render(pane(true))
+    })
+
+    const webview = rendered.container.querySelector('webview') as HTMLElement & { getWebContentsId?: () => number }
+    webview.getWebContentsId = () => 41
+    setPreviewGuestHidden.mockClear()
+
+    await act(async () => {
+      rendered.rerender(pane(false))
+    })
+    expect(setPreviewGuestHidden).toHaveBeenLastCalledWith(41, true)
+
+    await act(async () => {
+      rendered.rerender(pane(true))
+    })
+    expect(setPreviewGuestHidden).toHaveBeenLastCalledWith(41, false)
   })
 })
 

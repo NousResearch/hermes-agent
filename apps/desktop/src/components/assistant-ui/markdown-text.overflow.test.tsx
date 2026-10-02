@@ -111,4 +111,26 @@ describe('MarkdownTextContent overflow containment', () => {
     expect(codeCard.textContent).toContain(longToken)
     expect(tableWrapper.className).toContain('overflow-x-auto')
   })
+
+  // jsdom has no layout engine, so the actual scrolling lives in styles.css
+  // (`.aui-md .katex-display { overflow-x: auto; … }`). This pins the DOM
+  // contract that rule hooks into: display math must arrive as a
+  // `.katex-display` box nested inside the `.aui-md` container — the element
+  // the stylesheet turns into the scroll container with the always-visible
+  // slider. If the pipeline ever renders wide display math as something else
+  // (inline `.katex`, raw source text), the overflow rule silently stops
+  // applying and the formula's tail becomes unreachable again.
+  it('nests long display equations in a KaTeX display block for the scroll CSS', async () => {
+    const equation = `$$\n${'x+'.repeat(60)}x\n$$`
+
+    const { container } = render(<MarkdownTextContent isRunning={false} text={equation} />)
+
+    await waitFor(() => expect(container.querySelector('.katex-display')).toBeTruthy())
+
+    const markdown = container.querySelector('.aui-md')!
+    const display = container.querySelector('.katex-display')!
+
+    expect(markdown.contains(display)).toBe(true)
+    expect(display.querySelector(':scope > .katex')).not.toBeNull()
+  })
 })

@@ -11673,18 +11673,13 @@ def test_slash_exec_r7_read_commands_use_metadata_mirror_flag_on(monkeypatch):
 
 
 def test_prompt_submit_sets_approval_session_key(monkeypatch):
-    """A TUI/Desktop turn binds its approval session key and holds its prompts open until answered:
-    the approval window inside the turn is unbounded even with a short ``approvals.timeout``."""
-    from tools import approval_context
     from tools.approval import get_current_session_key
 
     captured = {}
-    monkeypatch.setattr(approval_context, "_get_approval_config", lambda: {"timeout": 1})
 
     class _Agent:
         def run_conversation(self, prompt, conversation_history=None, stream_callback=None, **_kwargs):
             captured["session_key"] = get_current_session_key(default="")
-            captured["approval_wait"] = approval_context.approval_wait_seconds()
             return {
                 "final_response": "ok",
                 "messages": [{"role": "assistant", "content": "ok"}],
@@ -11713,7 +11708,6 @@ def test_prompt_submit_sets_approval_session_key(monkeypatch):
 
     assert resp["result"]["status"] == "streaming"
     assert captured["session_key"] == "session-key"
-    assert captured["approval_wait"] > 1
 
 
 def test_prompt_submit_expands_context_refs(monkeypatch):
@@ -15484,24 +15478,29 @@ def test_mirror_slash_compress_honors_here_argument(monkeypatch):
 
 # ---------------------------------------------------------------------------
 # session.create / session.close race: fast /new churn must not orphan the
-# global approval-notify registration. (Slash workers are no longer pre-warmed
-# by the build thread — slash.exec spawns them on demand — so the build thread
-# must ALSO never construct one here.)
+# agent or the global approval-notify registration. (Slash workers are no
+# longer pre-warmed by the build thread — slash.exec spawns them on demand —
+# so the build thread must ALSO never construct one here.)
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.real_agent_prewarm
-def test_session_create_close_race_does_not_orphan_worker(monkeypatch):
+def test_session_create_close_race_does_not_orphan_resources(monkeypatch):
     """Regression guard: if session.close runs while session.create's
     _build thread is still constructing the agent, the build thread
-    must detect the orphan and unregister the notify registration it's
-    about to install.  It must also never pre-warm a slash worker (each
-    worker forks the full stdio MCP fleet; spawn is on-demand in
-    slash.exec) — a worker constructed here would be a regression."""
+    must detect the orphan, close the just-built agent, and unregister
+    the notify registration it's about to install - avoiding installing
+    a slash_worker or notify callback for the dead session.  It must also
+    never pre-warm a slash worker (each worker forks the full stdio MCP
+    fleet; spawn is on-demand in slash.exec) - a worker constructed here
+    would be a regression.  Without the early abort the agent outlives
+    the session until gateway shutdown."""
     import threading
 
     created_workers: list[str] = []
     closed_workers: list[str] = []
+    closed_agents: list[str] = []
+    registered_keys: list[str] = []
     unregistered_keys: list[str] = []
 
     class _FakeWorker:
@@ -15520,6 +15519,9 @@ def test_session_create_close_race_does_not_orphan_worker(monkeypatch):
             self.provider = "openrouter"
             self.base_url = ""
             self.api_key = ""
+
+        def close(self):
+            closed_agents.append("closed")
 
     # Make _build block until we release it — simulates slow agent init.
     # Also signal when _build actually reaches _make_agent so the test
@@ -15554,7 +15556,11 @@ def test_session_create_close_race_does_not_orphan_worker(monkeypatch):
     # Shim register/unregister to observe leaks
     import tools.approval as _approval
 
-    monkeypatch.setattr(_approval, "register_gateway_notify", lambda key, cb: None)
+    monkeypatch.setattr(
+        _approval,
+        "register_gateway_notify",
+        lambda key, cb: registered_keys.append(key),
+    )
     monkeypatch.setattr(
         _approval,
         "unregister_gateway_notify",
@@ -15593,20 +15599,24 @@ def test_session_create_close_race_does_not_orphan_worker(monkeypatch):
     )
     assert close_resp.get("result", {}).get("closed") is True
 
-    # At this point session.close saw slash_worker=None (never eagerly
-    # installed) so it had nothing to close.  Release the build thread
-    # and let it finish — it should detect the orphan and unregister
-    # the notify, without ever having constructed a worker.
+    # At this point session.close saw agent=None and slash_worker=None (never
+    # eagerly installed) so it had nothing to close.  Release the build thread:
+    # it must close the agent that finishes late and abort before registering
+    # any more session resources - without ever having constructed a worker.
     release_build.set()
 
     # Give the build thread a moment to run through its finally.
     for _ in range(100):
-        if own_key in unregistered_keys:
+        if closed_agents:
             break
         import time
 
         time.sleep(0.02)
 
+    assert closed_agents == ["closed"], (
+        "agent built after session.close was never closed - "
+        f"closed_agents={closed_agents}"
+    )
     assert created_workers == [], (
         f"build thread pre-warmed a slash worker (spawn must stay on-demand "
         f"in slash.exec) — created_workers={created_workers}"
@@ -15621,6 +15631,9 @@ def test_session_create_close_race_does_not_orphan_worker(monkeypatch):
     assert own_key in unregistered_keys, (
         f"orphan notify registration was not unregistered — "
         f"{own_key} not in unregistered_keys={unregistered_keys}"
+    )
+    assert own_key not in registered_keys, (
+        f"the abandoned build registered {own_key} for a closed session"
     )
 
 
@@ -21509,11 +21522,10 @@ def _capture_server_request(monkeypatch, result):
     return captured
 
 
-def test_clarify_callback_waits_until_answered(monkeypatch):
-    """The TUI/desktop clarify bridge sends a ``clarify`` server request with no deadline — even when
-    ``agent.clarify_timeout`` (the messaging-platform knob) is short — and returns the response's
-    ``answers`` and ``outcome``."""
-    monkeypatch.setattr("tools.clarify_gateway.get_clarify_timeout", lambda: 1)
+def test_clarify_callback_uses_configured_timeout(monkeypatch):
+    """The TUI/desktop clarify bridge sends a ``clarify`` server request with the canonical clarify timeout
+    (via _clarify_timeout_seconds), and returns the response's ``answers`` and ``outcome``."""
+    monkeypatch.setattr(server, "_clarify_timeout_seconds", lambda: 42)
     reply = {"answers": {"q0": "a"}, "outcome": "submitted"}
     captured = _capture_server_request(monkeypatch, reply)
     questions = [{"qid": "q0", "question": "Pick one", "choices": ["a", "b"], "multi_select": False}]
@@ -21522,9 +21534,21 @@ def test_clarify_callback_waits_until_answered(monkeypatch):
 
     assert result == reply
     assert captured["method"] == "clarify" and captured["sid"] == "sid-1"
-    assert captured["timeout"] is None
+    assert captured["timeout"] == 42
     assert captured["params"] == {"questions": questions}
     assert captured["qids"] == ["q0"]
+
+
+@pytest.mark.parametrize(
+    ("configured", "expected"),
+    [(0, None), (-1, None), (42, 42)],
+)
+def test_clarify_timeout_seconds_maps_non_positive_to_unlimited(monkeypatch, configured, expected):
+    """A ``<= 0`` clarify timeout means unlimited and reaches the server request as None
+    (wait(None) waits forever) rather than an immediate wait(0) skip."""
+    monkeypatch.setattr("tools.clarify_gateway.get_clarify_timeout", lambda: configured)
+
+    assert server._clarify_timeout_seconds() == expected
 
 
 def test_build_persist_message_with_image_refs_without_images_returns_text(monkeypatch):

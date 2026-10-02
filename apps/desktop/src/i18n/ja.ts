@@ -1058,8 +1058,7 @@ export const ja = defineLocale({
       fileReadMaxChars: 'Hermes が 1 回のファイル読み取りで取得できる最大文字数です。',
       approvals: {
         mode: '明示的な承認が必要なコマンドを Hermes がどう扱うかを設定します。',
-        timeout:
-          'メッセージングプラットフォームで承認プロンプトがタイムアウトするまで待つ時間です。アプリとターミナルは回答するまで待ちます。'
+        timeout: '承認プロンプトがタイムアウトするまで待つ時間です。'
       },
       security: {
         redactSecrets: '検出したシークレットを、可能な限りモデルから見える内容から隠します。'
@@ -2596,6 +2595,8 @@ export const ja = defineLocale({
       reveal: 'フォルダで表示',
       copyPath: 'パスをコピー',
       removeFromSidebar: 'サイドバーから削除',
+      createdInPreviousContext:
+        'プロジェクトは以前の接続またはプロファイルで作成されました。そこに戻ってください。IDEA.md は書き込まれていません。',
       createFailed: 'プロジェクトを作成できませんでした',
       staleBackend:
         'プロジェクトを作成するには Hermes バックエンドを更新してください。バックエンドがこのデスクトップアプリより古いです（設定 → 更新 → バックエンド）。',
@@ -3591,8 +3592,6 @@ export const ja = defineLocale({
 
   preview: {
     tab: 'プレビュー',
-    pin: 'ワークスペースにピン留め',
-    unpin: 'ワークスペースからピン留めを外す',
     closePane: 'プレビューペインを閉じる',
     loading: 'プレビューを読み込み中',
     unavailable: 'プレビューは利用できません',
@@ -3624,6 +3623,7 @@ export const ja = defineLocale({
     editing: '編集中',
     unsavedChanges: '未保存の変更',
     saveFailed: message => `保存できませんでした：${message}`,
+    saveScopeChanged: 'この下書きを保存するには、元の接続とプロファイルに戻ってください。',
     diskChangedTitle: 'ファイルがディスク上で変更されました',
     diskChangedBody:
       'このファイルは開いてから変更されています。あなたの版で上書きするか、編集を破棄して再読み込みしますか？',

@@ -2252,6 +2252,8 @@ cli:
   approval:
     bell_context: "goedkeuring"
     label: "Goedkeuring"
+    timeout_denying: "⏱ Tyd verstreke — opdrag word geweier"
+    timed_out_no_response: "tyd verstreke (geen antwoord)"
     outcome_once: "eenmalig toegelaat"
     outcome_session: "vir sessie toegelaat"
     outcome_always: "by toelaatlys gevoeg"
@@ -2259,6 +2261,7 @@ cli:
   clarify:
     bell_context: "verduideliking"
     label: "Verduidelik"
+    timed_out_locked_answers: "(verduideliking se tyd het na {timeout}s verstryk — vasgestelde antwoorde teruggestuur)"
   connect:
     bell_context: "verbindingsopstelling"
     cannot_restart: "Hierdie verbinding kan nie weer begin word nie. Kanselleer en vra die agent weer."
@@ -3284,6 +3287,7 @@ cli:
     shallow_clone_keeping: "⚠ Vlak kloon — kan nie stootstatus verifieer nie, word behou: {path}"
     next_session_deepens: "Die volgende `hermes -w`-sessie verdiep die kloon en snoei saamgevoegde werkbome outomaties."
     unpushed_keeping: "⚠ Werkboom het ongestootte commits, word behou: {path}"
+    uncommitted_keeping: "⚠ Werkboom het ongecommitte veranderinge, word behou: {path}"
     clean_up_manually: "Om met die hand op te ruim: git worktree remove --force {path}"
     cleaned_up: "✓ Werkboom opgeruim: {path}"
 display:

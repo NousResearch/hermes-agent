@@ -556,7 +556,7 @@ _version = _simple_command(
 def _status(_engine: HermesConsoleEngine, args: list[str]) -> str:
     _expect_no_args(args, "status")
     from hermes_cli.status import show_status
-    output = _capture_output(lambda: show_status(SimpleNamespace(all=False, deep=False)))
+    output = _capture_output(lambda: show_status(SimpleNamespace(full=True, deep=False)))
     return _strip_console_status_footer(output)
 
 

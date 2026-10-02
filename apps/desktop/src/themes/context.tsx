@@ -32,7 +32,7 @@ import {
 } from './backend-sync'
 import { $chatFontFamily, resolveChatFontFamily } from './chat-font'
 import { harmonize, readableInk } from './color'
-import { BUILTIN_THEME_LIST, DEFAULT_SKIN_NAME, DEFAULT_TYPOGRAPHY, nousTheme } from './presets'
+import { BUILTIN_THEME_LIST, DEFAULT_SKIN_NAME, DEFAULT_TYPOGRAPHY, nousTheme, RETIRED_SKINS } from './presets'
 import { retintTheme } from './retint'
 import type { DesktopTheme, DesktopThemeColors } from './types'
 import { $userThemes, listAllThemes, resolveTheme } from './user-themes'
@@ -54,11 +54,6 @@ const LAST_PROFILE_KEY = 'hermes-desktop-active-profile-v1'
 // both prefs at the global slot — the one `default` already uses — so flipping
 // back to per-profile finds every profile's earlier assignment intact.
 const THEME_SCOPE_KEY = 'hermes-desktop-theme-scope-v1'
-// Skins that no longer exist. A profile still pointing at one falls back to
-// DEFAULT_SKIN_NAME rather than painting a name nothing resolves.
-// `default` is the live CLI classic skin (Classic Hermes gold) once registered
-// by backend-sync — not retired. `gold` remains a legacy alias (see use-skin-command).
-const RETIRED_SKINS = new Set(['nous-light', 'gold'])
 
 export type ThemeMode = 'light' | 'dark' | 'system'
 

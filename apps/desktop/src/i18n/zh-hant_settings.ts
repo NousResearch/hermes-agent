@@ -615,7 +615,7 @@ export const zhHantSettings = {
       fileReadMaxChars: 'Hermes 單次檔案讀取可讀取的最大字元數。',
       approvals: {
         mode: 'Hermes 如何處理需要明確批准的指令。',
-        timeout: '訊息平台上的批准提示逾時前等待的時間。App 與終端機會一直等到你回覆。'
+        timeout: '批准提示逾時前等待的時間。'
       },
       security: {
         redactSecrets: '盡可能從模型可見內容中隱藏偵測到的密鑰。'

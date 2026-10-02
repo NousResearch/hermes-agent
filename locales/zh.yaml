@@ -2252,6 +2252,8 @@ cli:
   approval:
     bell_context: "审批"
     label: "审批"
+    timeout_denying: "⏱ 超时——拒绝执行命令"
+    timed_out_no_response: "已超时（无响应）"
     outcome_once: "已允许一次"
     outcome_session: "本会话内已允许"
     outcome_always: "已加入允许列表"
@@ -2259,6 +2261,7 @@ cli:
   clarify:
     bell_context: "澄清"
     label: "澄清"
+    timed_out_locked_answers: "（澄清在 {timeout} 秒后超时——已返回锁定的答案）"
   connect:
     bell_context: "连接设置"
     cannot_restart: "此连接无法再次启动。请取消后重新向代理发起请求。"
@@ -3284,6 +3287,7 @@ cli:
     shallow_clone_keeping: "⚠ 浅克隆 — 无法验证推送状态，保留：{path}"
     next_session_deepens: "下一次 `hermes -w` 会话会自动加深克隆并清理已合并的工作树。"
     unpushed_keeping: "⚠ 工作树有未推送的提交，保留：{path}"
+    uncommitted_keeping: "⚠ 工作树有未提交的更改，保留：{path}"
     clean_up_manually: "手动清理：git worktree remove --force {path}"
     cleaned_up: "✓ 工作树已清理：{path}"
 display:

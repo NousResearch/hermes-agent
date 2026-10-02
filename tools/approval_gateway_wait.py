@@ -43,9 +43,8 @@ class _ApprovalEntry:
 
 
 def _poll_event(event: threading.Event, session_key: str, *, interrupt_log: str) -> str:
-    """Wait on *event* until it fires, the turn is interrupted, or the approval window
-    elapses (``approval_wait_seconds``: until answered on TUI/Desktop, approvals.timeout
-    on messaging platforms); returns ``"set"`` | ``"interrupted"`` | ``"timeout"``. Polls in ~1s
+    """Wait on *event* until it fires, the turn is interrupted, or approvals.timeout
+    elapses; returns ``"set"`` | ``"interrupted"`` | ``"timeout"``. Polls in ~1s
     slices so activity heartbeats reach the agent's inactivity tracker every ~10s —
     otherwise the gateway watchdog kills the agent while the user is still
     responding (mirrors ``_wait_for_process()`` cadence). The loop is recorded as
@@ -56,7 +55,7 @@ def _poll_event(event: threading.Event, session_key: str, *, interrupt_log: str)
     per-thread interrupt-cause channel (``get_interrupt_reason()``, a trusted fixed
     category), never inferred from message text, so the caller can report a
     withdrawn prompt without inventing a user refusal."""
-    deadline = time.monotonic() + max(_ctx.approval_wait_seconds(), 0)
+    deadline = time.monotonic() + max(_ctx._get_approval_timeout(), 0)
     heartbeat = activity_heartbeat("waiting for user approval")
     with human_wait_window(session_key):
         while True:

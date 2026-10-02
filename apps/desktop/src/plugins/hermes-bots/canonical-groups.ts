@@ -3,7 +3,7 @@ import { host } from '@hermes/plugin-sdk'
 import { canonicalApprovalPreview } from './canonical-group-approval'
 import { groupExecutionMode } from './canonical-group-capabilities'
 import type { GroupExecutionMode } from './canonical-group-capabilities'
-import { CANONICAL_GROUP_LOCALES } from './canonical-group-locales'
+import type { CanonicalGroupMessages } from './canonical-group-locales'
 import type { GroupMember } from './types'
 
 export interface CanonicalGroupRoute {
@@ -183,6 +183,18 @@ export function isCanonicalGroupCreateRefusal(error: unknown): boolean {
   return refusal?.code === 4001 && refusal.data?.reason === 'invalid_params'
 }
 
+const CREATE_REASONS = ['classicCount', 'classicConnection', 'classicMembers', 'createRefused'] as const
+type CreateReason = typeof CREATE_REASONS[number]
+
+/** UI callers own the locale; transport errors never select English on their behalf. */
+export function canonicalGroupCreateErrorMessage(error: unknown, labels: Pick<CanonicalGroupMessages, CreateReason>): string {
+  const reason = (error as { canonicalGroupCreateReason?: unknown } | null)?.canonicalGroupCreateReason
+
+  if (typeof reason === 'string' && CREATE_REASONS.includes(reason as CreateReason)) {return labels[reason as CreateReason]}
+
+  return isCanonicalGroupCreateRefusal(error) ? labels.createRefused : error instanceof Error ? error.message : String(error)
+}
+
 export async function createCanonicalGroup(
   route: CanonicalGroupRoute,
   name: string,
@@ -190,10 +202,10 @@ export async function createCanonicalGroup(
 ): Promise<{ binding: CanonicalGroupBinding; room: CanonicalRoom }> {
   requireRoute(route)
 
-  if (!name.trim()) {throw new Error('A canonical group needs a name and two to six members')}
+  if (!name.trim()) {throw Object.assign(new Error('createRefused'), { canonicalGroupCreateReason: 'createRefused' })}
   const eligibility = canonicalGroupEligibility(route, members)
 
-  if (!eligibility.eligible) {throw new Error(CANONICAL_GROUP_LOCALES.en[eligibility.reason])}
+  if (!eligibility.eligible) {throw Object.assign(new Error(eligibility.reason), { canonicalGroupCreateReason: eligibility.reason })}
 
   const { room } = await canonicalGroupRequest<{ room: CanonicalRoom }>(route, 'groups.create', {
     room_id: crypto.randomUUID(), name, members: eligibility.roster

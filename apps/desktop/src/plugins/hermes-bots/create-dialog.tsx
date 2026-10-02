@@ -44,9 +44,8 @@ import { AvatarPicker } from './avatar-picker'
 import { $selectedBot } from './bot-state'
 import { createCanonicalChat } from './canonical-chat'
 import { groupCreationSource } from './canonical-group-capabilities'
-import { HOSTED_PROFILE_OWNERS_URL } from './canonical-group-locales'
 import { registerCanonicalGroup } from './canonical-group-registry'
-import { canonicalGroupEligibility, captureCanonicalGroupRoute, createCanonicalGroup, isCanonicalGroupCreateRefusal, readGroupExecutionMode } from './canonical-groups'
+import { canonicalGroupCreateErrorMessage, canonicalGroupEligibility, captureCanonicalGroupRoute, createCanonicalGroup, isCanonicalGroupCreateRefusal, readGroupExecutionMode } from './canonical-groups'
 import { $botMeta, botHandle, botRosterKey, filterBots, ROSTER_KEY, saveBotMeta } from './data'
 import { labeled, ResizableFrame } from './dialog-parts'
 import { GROUP_CHAT_MAX_MEMBERS, mintGroupRoomId, uniqueGroupChatName, updateGroupChat } from './group-chat'
@@ -1268,7 +1267,7 @@ export function CreateGroupChatDialog({ open, roster, onClose, onCreated }: Crea
     } catch (error) {
       const refused = isCanonicalGroupCreateRefusal(error)
       setCreateRefused(refused)
-      host.notify({ kind: 'error', message: refused ? b.canonical.createRefused : error instanceof Error ? error.message : String(error) })
+      host.notify({ kind: 'error', message: canonicalGroupCreateErrorMessage(error, b.canonical) })
     } finally { creating.current = false }
   }
 
@@ -1287,9 +1286,7 @@ export function CreateGroupChatDialog({ open, roster, onClose, onCreated }: Crea
           <DialogDescription>{`Pick 2–${GROUP_CHAT_MAX_MEMBERS} bots. Local memberships sync through each Bot profile; cross-machine members stay scoped to this room.`}</DialogDescription>
         </DialogHeader>
         {selected.length >= 2 && !eligibility.eligible && <p role="status">{b.canonical[eligibility.reason]}</p>}
-        {createRefused && <p role="alert">{b.canonical.createRefused}{' '}
-          <a href={HOSTED_PROFILE_OWNERS_URL} rel="noreferrer" target="_blank">{b.canonical.hostedProfileOwners}</a>
-        </p>}
+        {createRefused && <p role="alert">{b.canonical.createRefused}</p>}
         {/* TODO(bot-mode-types): this search box never takes focus when the dialog
             opens — SearchField accepts no `autoFocus` prop and forwards no extra
             props, so the `autoFocus` that used to sit here was inert. */}

@@ -13,8 +13,21 @@ vi.mock('@hermes/plugin-sdk', async () => {
 })
 
 import { groupExecutionMode } from './canonical-group-capabilities'
-import { actCanonicalGroup, canonicalGroupEligibility, canonicalGroupRequest, captureCanonicalGroupRoute, createCanonicalGroup, discoverCanonicalGroups, isCanonicalGroupCreateRefusal } from './canonical-groups'
+import { CANONICAL_GROUP_LOCALES } from './canonical-group-locales'
+import { actCanonicalGroup, canonicalGroupCreateErrorMessage, canonicalGroupEligibility, canonicalGroupRequest, captureCanonicalGroupRoute, createCanonicalGroup, discoverCanonicalGroups, isCanonicalGroupCreateRefusal } from './canonical-groups'
 import { CANONICAL_GROUP_CAPABILITIES, STANDALONE_GROUP_CAPABILITIES } from './group-test-utils'
+
+it('formats local eligibility and generic gateway refusals in the caller’s locale without diagnosing profile setup', async () => {
+  const error = await createCanonicalGroup({ connectionId: 'source-a', profile: 'default' }, 'Team', [{ name: 'alice' }])
+    .catch(failure => failure)
+
+  expect(canonicalGroupCreateErrorMessage(error, CANONICAL_GROUP_LOCALES.fr)).toBe(CANONICAL_GROUP_LOCALES.fr.classicCount)
+  expect(host.requestProfile).not.toHaveBeenCalled()
+  const refused = Object.assign(new Error('invalid_params'), { code: 4001, data: { reason: 'invalid_params' } })
+
+  expect(canonicalGroupCreateErrorMessage(refused, CANONICAL_GROUP_LOCALES.fr)).toBe(CANONICAL_GROUP_LOCALES.fr.createRefused)
+  expect(canonicalGroupCreateErrorMessage(refused, CANONICAL_GROUP_LOCALES.fr)).not.toContain('hosted_rooms.profiles')
+})
 
 beforeEach(() => {
   vi.resetAllMocks()

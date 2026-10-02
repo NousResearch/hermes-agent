@@ -630,6 +630,14 @@ export interface Translations {
       needsHomeChannel?: string;
       noneConfigured?: string;
     };
+    noToolsets: string;
+    noSkills: string;
+    skillsOptional: string;
+    savedChanges: string;
+    saveChanges: string;
+    editJob: string;
+    jobsTab: string;
+    blueprintsTab: string;
   };
 
   // ── Plugins page ──

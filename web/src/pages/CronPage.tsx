@@ -328,7 +328,7 @@ function CronAdvancedFields({
               available={availableToolsets}
               selected={form.enabled_toolsets}
               onChange={(v) => update("enabled_toolsets", v)}
-              emptyLabel="No toolsets available."
+              emptyLabel={t.cron.noToolsets ?? "No toolsets available."}
             />
           </div>
         </div>
@@ -422,13 +422,13 @@ function CronJobFormFields({
       </div>
 
       <div className="grid gap-2">
-        <Label htmlFor={`${idPrefix}-skills`}>Skills (optional)</Label>
+        <Label htmlFor={`${idPrefix}-skills`}>{t.cron.skillsOptional ?? "Skills (optional)"}</Label>
         <NameCheckboxPicker
           id={`${idPrefix}-skills`}
           available={availableSkills}
           selected={form.skills}
           onChange={(skills) => update("skills", skills)}
-          emptyLabel="No skills installed for this profile."
+          emptyLabel={t.cron.noSkills ?? "No skills installed for this profile."}
         />
         <p className="text-xs text-muted-foreground">
           Selected skills are loaded before the prompt runs — the cron
@@ -768,7 +768,7 @@ export default function CronPage() {
         payload,
         getJobProfile(editJob),
       );
-      showToast("Saved changes ✓", "success");
+      showToast(t.cron.savedChanges ?? "Saved changes ✓", "success");
       setEditJob(null);
       loadJobs(selectedProfile);
     } catch (e) {
@@ -915,8 +915,8 @@ export default function CronPage() {
         value={view}
         onChange={(v) => setView(v as "jobs" | "blueprints")}
         options={[
-          { value: "jobs", label: "Jobs" },
-          { value: "blueprints", label: "Blueprints" },
+          { value: "jobs", label: t.cron.jobsTab ?? "Jobs" },
+          { value: "blueprints", label: t.cron.blueprintsTab ?? "Blueprints" },
         ]}
       />
 
@@ -959,7 +959,7 @@ export default function CronPage() {
               size="icon"
               onClick={() => setCreateModalOpen(false)}
               className="absolute right-2 top-2 text-muted-foreground hover:text-foreground"
-              aria-label="Close"
+              aria-label={t.common.close}
             >
               <X />
             </Button>
@@ -1034,7 +1034,7 @@ export default function CronPage() {
               size="icon"
               onClick={() => setEditJob(null)}
               className="absolute right-2 top-2 text-muted-foreground hover:text-foreground"
-              aria-label="Close"
+              aria-label={t.common.close}
             >
               <X />
             </Button>
@@ -1073,7 +1073,7 @@ export default function CronPage() {
                   disabled={saving}
                   prefix={saving ? <Spinner /> : undefined}
                 >
-                  {saving ? t.common.loading : "Save changes"}
+                  {saving ? t.common.loading : (t.cron.saveChanges ?? "Save changes")}
                 </Button>
               </div>
             </div>
@@ -1263,8 +1263,8 @@ export default function CronPage() {
                   <Button
                     ghost
                     size="icon"
-                    title="Edit job"
-                    aria-label="Edit job"
+                    title={t.cron.editJob ?? "Edit job"}
+                    aria-label={t.cron.editJob ?? "Edit job"}
                     onClick={() => openEditModal(job)}
                   >
                     <Pencil />

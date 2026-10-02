@@ -609,6 +609,14 @@ export const zh: Translations = {
       noneConfigured:
         "尚未配置任何消息平台。请在「频道」页面设置一个以接收报告。",
     },
+      "noToolsets": "没有可用的工具集。",
+      "noSkills": "该配置未安装技能。",
+      "skillsOptional": "技能（可选）",
+      "savedChanges": "已保存更改 ✓",
+      "saveChanges": "保存更改",
+      "editJob": "编辑任务",
+      "jobsTab": "任务",
+      "blueprintsTab": "蓝图",
   },
 
   profiles: {

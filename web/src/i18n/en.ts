@@ -636,6 +636,14 @@ export const en: Translations = {
       noneConfigured:
         "No messaging platforms configured. Set one up under Channels to deliver reports.",
     },
+      "noToolsets": "No toolsets available.",
+      "noSkills": "No skills installed for this profile.",
+      "skillsOptional": "Skills (optional)",
+      "savedChanges": "Saved changes ✓",
+      "saveChanges": "Save changes",
+      "editJob": "Edit job",
+      "jobsTab": "Jobs",
+      "blueprintsTab": "Blueprints",
   },
 
   profiles: {

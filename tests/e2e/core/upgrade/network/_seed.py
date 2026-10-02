@@ -8,7 +8,7 @@ own; each cell then publishes a NEW upstream commit (or a new release record), s
 a real fetch, checkout and rebuild, never the "already current" branch.
 
 After the seed the sandbox loses the ``insteadOf`` rewrite: the checkout's origin is the official
-``https://github.com/NousResearch/hermes-agent.git`` again, and inside the namespace the only way
+``https://github.com/intelli-verse-x/IVX-desktop.git`` again, and inside the namespace the only way
 to reach it is the test's proxy, which routes ``github.com`` to a git smart-HTTP server over the
 same bare origin. The partial clone (``--filter=tree:0``) makes every lazy tree/blob fetch of the
 checkout cross that proxy too.
@@ -36,7 +36,7 @@ from tests.e2e.core.upgrade import _install_helpers as I
 from tests.e2e.core.upgrade.network import _netedge as N
 
 ASSETS = "hermes-assets.nousresearch.com"
-REPOSITORY = "NousResearch/hermes-agent"
+REPOSITORY = "intelli-verse-x/IVX-desktop"
 # Hosts a correctly isolated update must never reach directly; with the proxy they appear in
 # the proxy log as "refused" (the proxy has no route for them).
 PUBLIC_INDEXES = ("pypi.org", "files.pythonhosted.org", "registry.npmjs.org")

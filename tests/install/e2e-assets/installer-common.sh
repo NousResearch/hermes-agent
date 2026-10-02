@@ -2,8 +2,8 @@
 # Driver-only setup; these helpers never install into the caller's real HOME.
 arm_source_redirect() {
   local repo="$1" work="$2" serve="$3"
-  local https='https://github.com/NousResearch/hermes-agent.git'
-  local ssh='git@github.com:NousResearch/hermes-agent.git'
+  local https='https://github.com/intelli-verse-x/IVX-desktop.git'
+  local ssh='git@github.com:intelli-verse-x/IVX-desktop.git'
   local actual real_git quoted_git cfg="$work/gitconfig" shim="$work/shim"
   actual="$(git -C "$repo" remote get-url origin)"
   real_git="$(command -v git)"

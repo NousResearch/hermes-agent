@@ -206,7 +206,7 @@ pub(crate) fn prepare_cached_script_bytes(kind: ScriptKind, bytes: &[u8]) -> Vec
 /// instead of failing so the user can Retry.
 async fn download(kind: ScriptKind, commit_or_ref: &str, dest_path: &Path) -> Result<()> {
     let url = format!(
-        "https://raw.githubusercontent.com/NousResearch/hermes-agent/{}/scripts/{}",
+        "https://raw.githubusercontent.com/intelli-verse-x/IVX-desktop/{}/scripts/{}",
         commit_or_ref,
         kind.filename()
     );

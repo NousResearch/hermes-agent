@@ -61,8 +61,8 @@ param(
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version 2.0
 
-$OfficialHttps = 'https://github.com/NousResearch/hermes-agent.git'
-$OfficialSsh = 'git@github.com:NousResearch/hermes-agent.git'
+$OfficialHttps = 'https://github.com/intelli-verse-x/IVX-desktop.git'
+$OfficialSsh = 'git@github.com:intelli-verse-x/IVX-desktop.git'
 # Diff-area cap pre sets while the snapshot is alive (post restores the original).
 $ShadowStorageMax = [UInt64]128GB
 

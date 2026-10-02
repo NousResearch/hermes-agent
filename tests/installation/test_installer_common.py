@@ -46,8 +46,8 @@ arm_source_redirect "$2" "$3" "$4"
         return subprocess.run(["bash", "-c", setup + body, "bash", str(HELPER), str(repo), str(work), str(serve), old, new],
                               env=env, text=True, capture_output=True, timeout=30)
 
-    result = run('''[ "$(git -C "$2" remote get-url origin)" = 'https://github.com/NousResearch/hermes-agent.git' ]
-git clone -q https://github.com/NousResearch/hermes-agent.git "$3/clone"
+    result = run('''[ "$(git -C "$2" remote get-url origin)" = 'https://github.com/intelli-verse-x/IVX-desktop.git' ]
+git clone -q https://github.com/intelli-verse-x/IVX-desktop.git "$3/clone"
 [ "$(git -C "$3/clone" rev-parse HEAD)" = "$6" ]
 run_source_installer "$2" "$3" "$3" "$5" old
 run_source_installer "$2" "$3" "$3" "$6" new desktop

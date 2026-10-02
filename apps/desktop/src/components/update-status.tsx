@@ -24,7 +24,7 @@ import {
   type UpdateTarget
 } from '@/store/updates'
 
-const RELEASE_NOTES_URL = 'https://github.com/NousResearch/hermes-agent/releases'
+const RELEASE_NOTES_URL = 'https://github.com/intelli-verse-x/IVX-desktop/releases'
 const INSTALLER_URL = 'https://hermes-agent.nousresearch.com/'
 
 export type UpdateStatusTone = 'idle' | 'available' | 'error' | 'unsupported'

@@ -7,7 +7,7 @@
   "author": "Nous Research",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/NousResearch/hermes-agent.git"
+    "url": "git+https://github.com/intelli-verse-x/IVX-desktop.git"
   },
   "type": "module",
   "main": "dist/electron-main.mjs",

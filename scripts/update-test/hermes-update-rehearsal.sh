@@ -29,8 +29,8 @@
 
 set -euo pipefail
 
-OFFICIAL_HTTPS="https://github.com/NousResearch/hermes-agent.git"
-OFFICIAL_SSH="git@github.com:NousResearch/hermes-agent.git"
+OFFICIAL_HTTPS="https://github.com/intelli-verse-x/IVX-desktop.git"
+OFFICIAL_SSH="git@github.com:intelli-verse-x/IVX-desktop.git"
 DEFAULT_SOURCE="https://github.com/ethernet8023/hermes-agent.git"
 
 SUBCMD=""

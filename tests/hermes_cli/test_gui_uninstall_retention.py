@@ -9,9 +9,10 @@ from hermes_cli import gui_uninstall, main
 from hermes_constants import get_hermes_home
 
 
-@pytest.fixture
-def installation(tmp_path, monkeypatch):
+@pytest.fixture(params=("complete", "record_only"))
+def installation(request, tmp_path, monkeypatch):
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
     home = get_hermes_home()
     assert home.resolve().is_relative_to(tmp_path.resolve())
     root = home / "hermes-agent"
@@ -35,6 +36,8 @@ def installation(tmp_path, monkeypatch):
         userdata / "connections.json": b'{"fixture": true}',
         record: b'{"fixture": true}',
     }
+    if request.param == "record_only":
+        gui_files = {record: gui_files[record]}
     for path, data in {**protected, **gui_files}.items():
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(data)

@@ -86,8 +86,11 @@ def agent_is_installed(hermes_home: Path) -> bool:
 
 
 def gui_is_installed(hermes_home: Path) -> bool:
-    """Return True when any desktop GUI artifact exists (built or packaged)."""
-    return any(p.exists() for p in (*source_built_gui_artifacts(hermes_home), *packaged_gui_app_paths(), desktop_userdata_dir()))
+    """Return True when any desktop GUI artifact or install record exists."""
+    return any(p.exists() for p in (
+        *source_built_gui_artifacts(hermes_home), *packaged_gui_app_paths(),
+        desktop_userdata_dir(), desktop_install_record(),
+    ))
 
 
 def gui_install_summary(hermes_home: "Path | None" = None) -> dict:

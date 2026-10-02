@@ -4138,15 +4138,18 @@ class BasePlatformAdapter(ABC):
             # base path instead (returned False, or raised before storing it) and nothing is
             # queued, start this event.
             if session_key not in self._active_sessions:
-                orphan = self._pending_messages.pop(session_key, None)
-                if orphan is None:
-                    # The runner may have accepted the event into the delivery adapter's
-                    # pending slot while the turn released its guard.  That slot is normally
-                    # drained by the finishing task, but the task can finish between the
-                    # handler's await and this ownership check.  Start it here rather than
-                    # acknowledging an event with no owner (notably background wakes and
-                    # steer fallbacks).
-                    orphan = self.get_pending_message(session_key)
+                # Busy admission may queue through the runner's delivery adapter.  That can be a
+                # replacement instance after reconnect, so recover from the adapter that owns the
+                # event rather than reading this intake adapter's slot (and do it exactly once).
+                delivery_adapter = self
+                runner = getattr(self, "gateway_runner", None)
+                if runner is not None:
+                    try:
+                        delivery_adapter = runner._delivery_adapter_for(event.source) or self
+                    except Exception:
+                        logger.debug("[%s] Delivery-adapter lookup failed during pending recovery",
+                                     self.name, exc_info=True)
+                orphan = delivery_adapter.get_pending_message(session_key)
                 if orphan is not None:
                     self._start_session_processing(orphan, session_key)
                 elif not handled:

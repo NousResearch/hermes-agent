@@ -1,4 +1,4 @@
-import { Button, gatewayActivationEpoch } from '@hermes/plugin-sdk'
+import { Button, ConfirmDialog, gatewayActivationEpoch } from '@hermes/plugin-sdk'
 import { useEffect, useRef, useState } from 'react'
 
 import { CanonicalGroupFiles } from './canonical-group-files'
@@ -17,6 +17,8 @@ export function CanonicalGroupRoomActions({ binding, name, latestFileSeq = 0, vi
   const [confirming, setConfirming] = useState(false)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
+  const pending = useRef(false)
+  const disbandIntent = useRef<string | null>(null)
   // One intended name keeps one event id across retries; a different name is a new intent.
   const renameIntent = useRef<null | { name: string; eventId: string }>(null)
 
@@ -29,7 +31,9 @@ export function CanonicalGroupRoomActions({ binding, name, latestFileSeq = 0, vi
     return () => { current = false }
   }, [binding])
 
-  const run = async (operation: () => Promise<void>) => {
+  const run = async (operation: () => Promise<void>, rethrow = false) => {
+    if (pending.current) {if (rethrow) {throw new Error(labels.pendingActionUnconfirmed)}; return}
+    pending.current = true
     setBusy(true)
     setError('')
 
@@ -37,7 +41,9 @@ export function CanonicalGroupRoomActions({ binding, name, latestFileSeq = 0, vi
       await operation()
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
+      if (rethrow) {throw e}
     } finally {
+      pending.current = false
       setBusy(false)
     }
   }
@@ -61,14 +67,19 @@ export function CanonicalGroupRoomActions({ binding, name, latestFileSeq = 0, vi
     })
   }
 
-  const disband = () => void run(async () => {
-    const result = await canonicalGroupRequest<{ tombstone?: boolean } | undefined>(binding, 'groups.disband', {
-      room_id: binding.roomId, cancel_id: crypto.randomUUID()
-    })
+  const disband = () => {
+    disbandIntent.current ??= crypto.randomUUID()
+    return run(async () => {
+      const result = await canonicalGroupRequest<{ tombstone?: { room_id: string; disbanded_at: number } } | undefined>(binding, 'groups.disband', {
+        room_id: binding.roomId, cancel_id: disbandIntent.current
+      })
 
-    if (result?.tombstone !== true) {throw new Error(labels.disbandUnconfirmed)}
-    onDisbanded?.()
-  })
+      const tombstone = result?.tombstone
+      if (tombstone?.room_id !== binding.roomId || !Number.isFinite(tombstone.disbanded_at)) {throw new Error(labels.disbandUnconfirmed)}
+      disbandIntent.current = null
+      onDisbanded?.()
+    }, true)
+  }
 
   return <>
     {visible && methods.includes('groups.attachment.list') &&
@@ -81,11 +92,8 @@ export function CanonicalGroupRoomActions({ binding, name, latestFileSeq = 0, vi
         <Button disabled={busy} onClick={() => setDraft(null)}>{labels.cancel}</Button>
       </form>)}
     {methods.includes('groups.disband') && <Button disabled={busy} onClick={() => setConfirming(true)}>{labels.disband}</Button>}
-    {confirming && <div aria-label={labels.disband} role="alertdialog">
-      <p>{labels.disbandWarning}</p>
-      <Button disabled={busy} onClick={disband}>{labels.confirmDisband}</Button>
-      <Button disabled={busy} onClick={() => setConfirming(false)}>{labels.cancel}</Button>
-    </div>}
+    <ConfirmDialog cancelLabel={labels.cancel} confirmLabel={labels.confirmDisband} description={labels.disbandWarning}
+      destructive onClose={() => setConfirming(false)} onConfirm={disband} open={confirming} title={labels.disband} />
     {error && <p role="alert">{error}</p>}
   </>
 }

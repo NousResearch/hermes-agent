@@ -1,4 +1,12 @@
 export interface CanonicalGroupMessages {
+  approvalAction: string
+  approvalCommand: string
+  approvalChanges: string
+  approvalBefore: string
+  approvalAfter: string
+  approvalEmptyFile: string
+  approvalDetailsMissing: string
+  pendingActionUnconfirmed: string
   legacyRoom: string
   checkingDriver: string
   startGatewayGroup: string
@@ -66,7 +74,15 @@ export const HOSTED_PROFILE_OWNERS_URL = 'https://hermes-agent.nousresearch.com/
 
 export const CANONICAL_GROUP_LOCALES = {
   en: {
-    legacyRoom: 'This is a legacy Desktop room. Start a gateway-owned group with these members; the old history stays here and is not replayed.',
+    pendingActionUnconfirmed: 'We couldn’t confirm this action. Refresh the group chat to check its status.',
+    approvalDetailsMissing: 'Action details are unavailable. Check again before allowing this.',
+    approvalEmptyFile: 'Empty file',
+    approvalAfter: 'After',
+    approvalBefore: 'Before',
+    approvalChanges: 'Proposed changes',
+    approvalCommand: 'Command',
+    approvalAction: 'Action',
+    legacyRoom: 'This classic chat stays usable. Start a separate gateway group with these Bots; the existing history will not be replayed.',
     checkingDriver: 'Checking group driver…',
     startGatewayGroup: 'Start gateway group',
     classicCount: 'This roster stays classic: gateway groups need two to six Bots.',
@@ -97,7 +113,7 @@ export const CANONICAL_GROUP_LOCALES = {
     statusBlocked: 'Blocked',
     statusApprovals: '{count} waiting for approval',
     statusAttention: '{count} need attention',
-    stopped: 'Stopped {count} task(s).',
+    stopped: 'Stop requested',
     nothingRunning: 'Nothing was running.',
     sendRefused: 'The gateway refused this message. Edit it and send again.',
     sendNotYet: 'Not sent yet. Retry sends the same message.',
@@ -129,7 +145,15 @@ export const CANONICAL_GROUP_LOCALES = {
     filesYou: 'You'
   },
   ja: {
-    legacyRoom: 'これは従来のDesktopルームです。このメンバーでゲートウェイ管理のグループを開始できます。過去の履歴はここに残り、再実行されません。',
+    pendingActionUnconfirmed: 'この操作を確認できませんでした。グループチャットを更新して状態を確認してください。',
+    approvalDetailsMissing: '操作の詳細を表示できません。許可する前に、詳細を更新してください。',
+    approvalEmptyFile: '空のファイル',
+    approvalAfter: '変更後',
+    approvalBefore: '変更前',
+    approvalChanges: '変更案',
+    approvalCommand: 'コマンド',
+    approvalAction: '操作',
+    legacyRoom: 'この従来のチャットは引き続き使えます。同じBotで別のゲートウェイグループを開始できます。既存の履歴は再送されません。',
     checkingDriver: 'グループの実行機能を確認中…',
     startGatewayGroup: 'ゲートウェイのグループを開始',
     classicCount: 'このメンバー構成は従来方式のままです。ゲートウェイのグループには2〜6体のBotが必要です。',
@@ -160,7 +184,7 @@ export const CANONICAL_GROUP_LOCALES = {
     statusBlocked: 'ブロック中',
     statusApprovals: '承認待ち {count} 件',
     statusAttention: '要対応 {count} 件',
-    stopped: '{count} 件のタスクを停止しました。',
+    stopped: '停止を要求しました',
     nothingRunning: '実行中のものはありませんでした。',
     sendRefused: 'ゲートウェイがこのメッセージを拒否しました。編集してからもう一度送信してください。',
     sendNotYet: 'まだ送信されていません。再試行すると同じメッセージを送信します。',
@@ -192,7 +216,15 @@ export const CANONICAL_GROUP_LOCALES = {
     filesYou: 'あなた'
   },
   zh: {
-    legacyRoom: '这是旧版Desktop群组。可使用这些成员创建由网关管理的群组；旧记录会保留在此处，不会重新执行。',
+    pendingActionUnconfirmed: '无法确认此操作。请刷新群聊以检查其状态。',
+    approvalDetailsMissing: '无法显示操作详情。请先刷新详情，再允许此操作。',
+    approvalEmptyFile: '空文件',
+    approvalAfter: '更改后',
+    approvalBefore: '更改前',
+    approvalChanges: '拟议更改',
+    approvalCommand: '命令',
+    approvalAction: '操作',
+    legacyRoom: '此旧版聊天仍可使用。可用这些Bot另建网关群聊；现有历史不会重新发送。',
     checkingDriver: '正在检查群组运行程序…',
     startGatewayGroup: '启动网关群组',
     classicCount: '此成员组合保留经典模式：网关群组需要2至6个Bot。',
@@ -223,7 +255,7 @@ export const CANONICAL_GROUP_LOCALES = {
     statusBlocked: '已阻塞',
     statusApprovals: '{count} 项等待批准',
     statusAttention: '{count} 项需要处理',
-    stopped: '已停止 {count} 个任务。',
+    stopped: '已请求停止',
     nothingRunning: '没有正在运行的任务。',
     sendRefused: '网关拒绝了这条消息。请编辑后重新发送。',
     sendNotYet: '尚未发送。重试会发送同一条消息。',
@@ -255,7 +287,15 @@ export const CANONICAL_GROUP_LOCALES = {
     filesYou: '你'
   },
   'zh-hant': {
-    legacyRoom: '這是舊版Desktop群組。可使用這些成員建立由閘道管理的群組；舊記錄會保留在此處，不會重新執行。',
+    pendingActionUnconfirmed: '無法確認此操作。請重新整理群聊以檢查其狀態。',
+    approvalDetailsMissing: '無法顯示操作詳細資訊。請先重新整理詳細資訊，再允許此操作。',
+    approvalEmptyFile: '空白檔案',
+    approvalAfter: '變更後',
+    approvalBefore: '變更前',
+    approvalChanges: '建議變更',
+    approvalCommand: '命令',
+    approvalAction: '操作',
+    legacyRoom: '此舊版聊天仍可使用。可用這些Bot另建閘道群聊；現有歷史不會重新傳送。',
     checkingDriver: '正在檢查群組執行程式…',
     startGatewayGroup: '啟動閘道群組',
     classicCount: '此成員組合保留經典模式：閘道群組需要2至6個Bot。',
@@ -286,7 +326,7 @@ export const CANONICAL_GROUP_LOCALES = {
     statusBlocked: '已封鎖',
     statusApprovals: '{count} 項等待核准',
     statusAttention: '{count} 項需要處理',
-    stopped: '已停止 {count} 個工作。',
+    stopped: '已要求停止',
     nothingRunning: '沒有正在執行的工作。',
     sendRefused: '閘道拒絕了這則訊息。請編輯後再傳送。',
     sendNotYet: '尚未傳送。重試會傳送同一則訊息。',
@@ -318,7 +358,15 @@ export const CANONICAL_GROUP_LOCALES = {
     filesYou: '您'
   },
   ar: {
-    legacyRoom: 'هذه غرفة Desktop قديمة. ابدأ مجموعة تديرها البوابة بهؤلاء الأعضاء؛ يبقى السجل القديم هنا ولا يُعاد تشغيله.',
+    pendingActionUnconfirmed: 'لم نتمكن من تأكيد هذا الإجراء. حدّث محادثة المجموعة للتحقق من حالته.',
+    approvalDetailsMissing: 'تفاصيل الإجراء غير متاحة. حدّثها قبل السماح بهذا الإجراء.',
+    approvalEmptyFile: 'ملف فارغ',
+    approvalAfter: 'بعد',
+    approvalBefore: 'قبل',
+    approvalChanges: 'التغييرات المقترحة',
+    approvalCommand: 'الأمر',
+    approvalAction: 'الإجراء',
+    legacyRoom: 'تظل هذه المحادثة القديمة قابلة للاستخدام. ابدأ مجموعة منفصلة عبر البوابة مع هؤلاء البوتات؛ لن يُعاد إرسال السجل الحالي.',
     checkingDriver: 'جارٍ التحقق من مشغّل المجموعة…',
     startGatewayGroup: 'بدء مجموعة البوابة',
     classicCount: 'تبقى هذه التشكيلة بالنمط الكلاسيكي: تحتاج مجموعات البوابة إلى بوتين إلى ستة بوتات.',
@@ -349,7 +397,7 @@ export const CANONICAL_GROUP_LOCALES = {
     statusBlocked: 'محظور',
     statusApprovals: '{count} بانتظار الموافقة',
     statusAttention: '{count} تحتاج إلى انتباه',
-    stopped: 'تم إيقاف {count} من المهام.',
+    stopped: 'طُلب الإيقاف',
     nothingRunning: 'لم يكن هناك شيء قيد التشغيل.',
     sendRefused: 'رفضت البوابة هذه الرسالة. عدّلها ثم أرسلها مرة أخرى.',
     sendNotYet: 'لم تُرسل بعد. تعيد إعادة المحاولة إرسال الرسالة نفسها.',
@@ -381,7 +429,15 @@ export const CANONICAL_GROUP_LOCALES = {
     filesYou: 'أنت'
   },
   ru: {
-    legacyRoom: 'Это старая комната Desktop. Создайте группу под управлением шлюза с этими участниками; прежняя история останется здесь и не будет выполнена заново.',
+    pendingActionUnconfirmed: 'Не удалось подтвердить это действие. Обновите групповой чат, чтобы проверить его состояние.',
+    approvalDetailsMissing: 'Подробности действия недоступны. Обновите их перед тем, как разрешить действие.',
+    approvalEmptyFile: 'Пустой файл',
+    approvalAfter: 'После',
+    approvalBefore: 'До',
+    approvalChanges: 'Предлагаемые изменения',
+    approvalCommand: 'Команда',
+    approvalAction: 'Действие',
+    legacyRoom: 'Этот классический чат остаётся доступен. Создайте отдельную группу шлюза с этими Ботами; существующая история не отправится повторно.',
     checkingDriver: 'Проверка исполнителя группы…',
     startGatewayGroup: 'Создать группу шлюза',
     classicCount: 'Эта группа останется классической: группе шлюза нужны от двух до шести ботов.',
@@ -415,7 +471,7 @@ export const CANONICAL_GROUP_LOCALES = {
     statusBlocked: 'Заблокировано',
     statusApprovals: 'Ждут подтверждения: {count}',
     statusAttention: 'Требуют внимания: {count}',
-    stopped: 'Остановлено задач: {count}.',
+    stopped: 'Остановка запрошена',
     nothingRunning: 'Ничего не выполнялось.',
     sendRefused: 'Шлюз отклонил это сообщение. Измените его и отправьте снова.',
     sendNotYet: 'Ещё не отправлено. Повтор отправит то же сообщение.',
@@ -447,7 +503,15 @@ export const CANONICAL_GROUP_LOCALES = {
     filesYou: 'Вы'
   },
   fr: {
-    legacyRoom: 'Ceci est un ancien salon Desktop. Démarrez un groupe géré par la passerelle avec ces membres ; l’ancien historique reste ici et n’est pas rejoué.',
+    pendingActionUnconfirmed: 'Cette action n’a pas pu être confirmée. Actualisez la discussion pour vérifier son état.',
+    approvalDetailsMissing: 'Les détails de l’action sont indisponibles. Actualisez-les avant d’autoriser cette action.',
+    approvalEmptyFile: 'Fichier vide',
+    approvalAfter: 'Après',
+    approvalBefore: 'Avant',
+    approvalChanges: 'Modifications proposées',
+    approvalCommand: 'Commande',
+    approvalAction: 'Action',
+    legacyRoom: 'Ce chat classique reste utilisable. Créez un groupe distinct sur la passerelle avec ces Bots ; l’historique existant ne sera pas renvoyé.',
     checkingDriver: 'Vérification du pilote de groupe…',
     startGatewayGroup: 'Démarrer un groupe de passerelle',
     classicCount: 'Ce groupe reste classique : les groupes de passerelle nécessitent deux à six Bots.',
@@ -480,7 +544,7 @@ export const CANONICAL_GROUP_LOCALES = {
     statusBlocked: 'Bloqué',
     statusApprovals: '{count} en attente d’approbation',
     statusAttention: '{count} à traiter',
-    stopped: '{count} tâche(s) arrêtée(s).',
+    stopped: 'Arrêt demandé',
     nothingRunning: 'Rien n’était en cours.',
     sendRefused: 'La passerelle a refusé ce message. Modifiez-le puis renvoyez-le.',
     sendNotYet: 'Pas encore envoyé. Réessayer renvoie le même message.',
@@ -512,7 +576,15 @@ export const CANONICAL_GROUP_LOCALES = {
     filesYou: 'Vous'
   },
   de: {
-    legacyRoom: 'Dies ist ein alter Desktop-Raum. Starten Sie mit diesen Mitgliedern eine vom Gateway verwaltete Gruppe; der bisherige Verlauf bleibt hier und wird nicht erneut ausgeführt.',
+    pendingActionUnconfirmed: 'Diese Aktion konnte nicht bestätigt werden. Aktualisiere den Gruppenchat, um ihren Status zu prüfen.',
+    approvalDetailsMissing: 'Die Aktionsdetails sind nicht verfügbar. Aktualisiere sie, bevor du diese Aktion erlaubst.',
+    approvalEmptyFile: 'Leere Datei',
+    approvalAfter: 'Nachher',
+    approvalBefore: 'Vorher',
+    approvalChanges: 'Vorgeschlagene Änderungen',
+    approvalCommand: 'Befehl',
+    approvalAction: 'Aktion',
+    legacyRoom: 'Dieser klassische Chat bleibt nutzbar. Starte mit diesen Bots eine separate Gateway-Gruppe; der bisherige Verlauf wird nicht erneut gesendet.',
     checkingDriver: 'Gruppentreiber wird geprüft…',
     startGatewayGroup: 'Gateway-Gruppe starten',
     classicCount: 'Diese Gruppe bleibt klassisch: Gateway-Gruppen benötigen zwei bis sechs Bots.',
@@ -546,7 +618,7 @@ export const CANONICAL_GROUP_LOCALES = {
     statusBlocked: 'Blockiert',
     statusApprovals: '{count} warten auf Freigabe',
     statusAttention: '{count} brauchen Aufmerksamkeit',
-    stopped: '{count} Aufgabe(n) gestoppt.',
+    stopped: 'Stopp angefordert',
     nothingRunning: 'Es lief nichts.',
     sendRefused: 'Das Gateway hat diese Nachricht abgelehnt. Bearbeite sie und sende sie erneut.',
     sendNotYet: 'Noch nicht gesendet. Erneut versuchen sendet dieselbe Nachricht.',
@@ -578,7 +650,15 @@ export const CANONICAL_GROUP_LOCALES = {
     filesYou: 'Sie'
   },
   es: {
-    legacyRoom: 'Esta es una sala Desktop antigua. Inicia un grupo gestionado por la pasarela con estos miembros; el historial anterior permanece aquí y no se vuelve a ejecutar.',
+    pendingActionUnconfirmed: 'No pudimos confirmar esta acción. Actualiza el chat para comprobar su estado.',
+    approvalDetailsMissing: 'Los detalles de la acción no están disponibles. Actualízalos antes de permitirla.',
+    approvalEmptyFile: 'Archivo vacío',
+    approvalAfter: 'Después',
+    approvalBefore: 'Antes',
+    approvalChanges: 'Cambios propuestos',
+    approvalCommand: 'Comando',
+    approvalAction: 'Acción',
+    legacyRoom: 'Este chat clásico sigue disponible. Crea otro grupo en la puerta de enlace con estos Bots; el historial existente no se enviará de nuevo.',
     checkingDriver: 'Comprobando el controlador de grupo…',
     startGatewayGroup: 'Iniciar grupo de pasarela',
     classicCount: 'Este grupo sigue siendo clásico: los grupos de pasarela necesitan entre dos y seis Bots.',
@@ -611,7 +691,7 @@ export const CANONICAL_GROUP_LOCALES = {
     statusBlocked: 'Bloqueado',
     statusApprovals: '{count} esperando aprobación',
     statusAttention: '{count} requieren atención',
-    stopped: 'Se detuvieron {count} tarea(s).',
+    stopped: 'Parada solicitada',
     nothingRunning: 'No había nada en ejecución.',
     sendRefused: 'La puerta de enlace rechazó este mensaje. Edítalo y envíalo de nuevo.',
     sendNotYet: 'Aún no se ha enviado. Reintentar envía el mismo mensaje.',

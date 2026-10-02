@@ -1,5 +1,6 @@
 import { host } from '@hermes/plugin-sdk'
 
+import { canonicalApprovalPreview } from './canonical-group-approval'
 import { groupExecutionMode } from './canonical-group-capabilities'
 import type { GroupExecutionMode } from './canonical-group-capabilities'
 import { CANONICAL_GROUP_LOCALES } from './canonical-group-locales'
@@ -35,6 +36,7 @@ export interface CanonicalPendingAction {
   task_id: string
   execution_generation: number
   request_id?: string
+  approval?: { request_id?: string; prompt_id?: string; command?: string; description?: string; choices?: string[]; edit?: unknown }
 }
 
 function requireRoute(route: CanonicalGroupRoute): void {
@@ -221,9 +223,12 @@ export async function actCanonicalGroup(
   }
 
   if (action.kind === 'approval') {
-    if (!action.request_id || (choice !== 'once' && choice !== 'deny')) {
+    if (!action.request_id || (choice !== 'once' && choice !== 'deny') ||
+        !Array.isArray(action.approval?.choices) || !action.approval.choices.includes(choice)) {
       throw new Error('Approval requires its exact request ID and an explicit choice')
     }
+
+    if (choice === 'once' && !canonicalApprovalPreview(action).reviewable) {throw new Error('Approval requires a reviewable command or edit')}
 
     params.request_id = action.request_id
     params.choice = choice

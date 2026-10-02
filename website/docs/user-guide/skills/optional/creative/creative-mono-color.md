@@ -21,7 +21,7 @@ Generate one- or two-ink editorial print poster images.
 | License | MIT |
 | Platforms | linux, macos, windows |
 | Tags | `design`, `poster`, `print`, `duotone`, `risograph`, `editorial`, `image-generation` |
-| Related skills | [`baoyu-infographic`](/docs/user-guide/skills/bundled/creative/creative-baoyu-infographic), [`meme-generation`](/docs/user-guide/skills/optional/creative/creative-meme-generation), [`pixel-art`](/docs/user-guide/skills/optional/creative/creative-pixel-art) |
+| Related skills | [`baoyu-infographic`](../../bundled/creative/creative-baoyu-infographic.md), [`meme-generation`](../../optional/creative/creative-meme-generation.md), [`pixel-art`](../../optional/creative/creative-pixel-art.md) |
 
 ## Reference: full SKILL.md
 

@@ -8,6 +8,7 @@ gate in :mod:`tools.approval`.
 import contextvars
 import logging
 import os
+from agent.i18n import t
 from hermes_cli.config import cfg_get
 from utils import env_var_enabled, is_truthy_value
 
@@ -251,7 +252,7 @@ def _get_approval_timeout() -> int:
         from agent.deadline import MAX_SAFE_TIMEOUT_S
         safe_cap = int(MAX_SAFE_TIMEOUT_S)
     except Exception:
-        safe_cap = 365 * 24 * 3600  # fail CLOSED: the raw value would re-open the overflow
+        safe_cap = 300  # dependency failure must keep the safe default
     if raw > safe_cap:
         logger.warning("approvals.timeout=%s exceeds the platform-safe maximum; clamping to %ss", raw, safe_cap)
     return min(raw, safe_cap)
@@ -268,7 +269,7 @@ def format_approval_window(seconds: int) -> str:
         count, unit = seconds // 60, "minute"
     else:
         count, unit = seconds, "second"
-    return f"{count} {unit}" if count == 1 else f"{count} {unit}s"
+    return t(f"approval.window.{unit}_one" if count == 1 else f"approval.window.{unit}_other", count=count)
 
 
 def approval_timeout_notice_kwargs() -> dict:

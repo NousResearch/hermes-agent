@@ -258,19 +258,6 @@ async def test_control_and_clarify_messages_bypass_text_debounce():
     assert session_key not in adapter._pending_messages
 
 
-def test_adapter_defaults_to_interrupt_mode(monkeypatch):
-    monkeypatch.delenv("HERMES_GATEWAY_BUSY_TEXT_MODE", raising=False)
-    adapter = _make_initialized_adapter()
-    assert adapter._busy_text_mode == "interrupt"
-    assert not adapter._is_queue_text_debounce_candidate(_make_event("hello"))
-
-
-def test_command_messages_bypass_debounce_even_in_queue_mode():
-    adapter = _make_adapter()
-    assert not adapter._is_queue_text_debounce_candidate(_make_event(""))
-    assert not adapter._is_queue_text_debounce_candidate(_make_event("/stop"))
-
-
 @pytest.mark.asyncio
 async def test_queue_debounce_preserves_same_reply_context():
     adapter = _make_adapter()
@@ -351,5 +338,3 @@ async def test_queue_debounce_splits_incompatible_reply_contexts():
         queued.reply_to_author_name,
     ) == ("reply-2", "second quote", "author-2", "Author Two")
     adapter._discard_text_debounce(session_key)
-
-

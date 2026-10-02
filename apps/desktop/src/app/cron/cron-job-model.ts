@@ -7,6 +7,11 @@ export function jobIsScriptOnly(job: Pick<CronJob, 'no_agent' | 'script'>): bool
   return Boolean(job.no_agent) && Boolean(asText(job.script).trim())
 }
 
+/** Description shown for a cron job: the prompt, or the script when script-only. */
+export function jobDescription(job: Pick<CronJob, 'prompt' | 'script'>): string {
+  return asText(job.prompt) || asText(job.script)
+}
+
 export type CronEditorValidationError = 'prompt' | 'prompt_and_schedule' | 'schedule'
 
 export interface CronEditorValidationInput {
@@ -45,6 +50,35 @@ export interface CronEditorSaveValues {
   schedule: string
 }
 
+export interface CronModelChoice {
+  model: string
+  provider: string
+}
+
+/** Encode the provider/model pair as an opaque Select value without delimiter ambiguity. */
+export function cronModelChoiceValue(provider: string, model: string): string {
+  return JSON.stringify([provider, model])
+}
+
+export function parseCronModelChoiceValue(value: string): CronModelChoice | null {
+  try {
+    const parsed: unknown = JSON.parse(value)
+
+    if (
+      !Array.isArray(parsed) ||
+      parsed.length !== 2 ||
+      typeof parsed[0] !== 'string' ||
+      typeof parsed[1] !== 'string'
+    ) {
+      return null
+    }
+
+    return { provider: parsed[0], model: parsed[1] }
+  } catch {
+    return null
+  }
+}
+
 export function parseCronDeliveryTargets(value: string): string[] {
   const targets = value
     .split(',')
@@ -81,7 +115,7 @@ export function lastErrorSummary(lastError: string | null | undefined): string {
   let text = (lastError ?? '').trim()
 
   // Wrappers can nest (marker, then emoji, then exception class); peel until stable.
-  for (let previous = ''; previous !== text; ) {
+  for (let previous = ''; previous !== text;) {
     previous = text
     text = text.replace(ERROR_MARKER_RE, '').replace(ERROR_EMOJI_RE, '').replace(ERROR_PREFIX_RE, '').trimStart()
   }

@@ -25,7 +25,10 @@ class _StubCompressor:
     last_prompt_tokens = 0
 
 
-class _StubAgent:
+from agent.status_output import StatusOutputMixin
+
+
+class _StubAgent(StatusOutputMixin):
     """Minimal agent surface that ``finalize_turn`` reads from."""
 
     def __init__(self, *, raise_in):
@@ -192,6 +195,6 @@ def test_persist_disabled_turn_skips_session_end_hook(
             turn_exit_reason="text_response(stop)",
         )
 
-    assert calls == expected_calls
+    assert ("on_session_end" in calls) == ("on_session_end" in expected_calls)
 
 

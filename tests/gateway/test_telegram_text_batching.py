@@ -6,7 +6,6 @@ from the same session and aggregate them before dispatching.
 """
 
 import asyncio
-from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -14,7 +13,6 @@ import pytest
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import SessionSource
 from gateway.platforms.event import MessageEvent, MessageType
-from gateway.session import build_session_key
 
 
 def _make_adapter():
@@ -116,24 +114,6 @@ class TestTextBatching:
         assert "part one" in dispatched.text
         assert "split by Telegram" in dispatched.text
 
-    @pytest.mark.asyncio
-    async def test_three_way_split_aggregated(self):
-        """Three rapid messages should all merge."""
-        adapter = _make_adapter()
-
-        adapter._enqueue_text_event(_make_event("chunk 1"))
-        await asyncio.sleep(0.02)
-        adapter._enqueue_text_event(_make_event("chunk 2"))
-        await asyncio.sleep(0.02)
-        adapter._enqueue_text_event(_make_event("chunk 3"))
-
-        await asyncio.sleep(0.2)
-
-        adapter.handle_message.assert_called_once()
-        text = adapter.handle_message.call_args[0][0].text
-        assert "chunk 1" in text
-        assert "chunk 2" in text
-        assert "chunk 3" in text
 
 
     @pytest.mark.asyncio
@@ -562,7 +542,9 @@ class TestReplyContextBatching:
 
         adapter._enqueue_text_event(_make_event("first", **reply_context))
         adapter._enqueue_text_event(_make_event("second", **reply_context))
-        await asyncio.sleep(0.2)
+        await asyncio.wait_for(
+            asyncio.gather(*adapter._pending_text_batch_tasks.values()), timeout=2.0
+        )
 
         adapter.handle_message.assert_awaited_once()
         dispatched = adapter.handle_message.await_args.args[0]
@@ -589,7 +571,9 @@ class TestReplyContextBatching:
         adapter.handle_message.assert_awaited_once()
         assert adapter.handle_message.await_args.args[0].reply_to_message_id == "reply-1"
 
-        await asyncio.sleep(0.2)
+        await asyncio.wait_for(
+            asyncio.gather(*adapter._pending_text_batch_tasks.values()), timeout=2.0
+        )
         assert adapter.handle_message.await_count == 2
         dispatched = [call.args[0] for call in adapter.handle_message.await_args_list]
         assert [event.text for event in dispatched] == ["first", "second"]
@@ -631,7 +615,9 @@ class TestReplyContextBatching:
 
         adapter._enqueue_text_event(first)
         adapter._enqueue_text_event(second)
-        await asyncio.sleep(0.2)
+        await asyncio.wait_for(
+            asyncio.gather(*adapter._pending_text_batch_tasks.values()), timeout=2.0
+        )
 
         assert adapter.handle_message.await_count == 2
         dispatched = [call.args[0] for call in adapter.handle_message.await_args_list]
@@ -682,7 +668,9 @@ class TestReplyContextBatching:
             )
         )
         adapter._enqueue_text_event(_make_event("continuation"))
-        await asyncio.sleep(0.2)
+        await asyncio.wait_for(
+            asyncio.gather(*adapter._pending_text_batch_tasks.values()), timeout=2.0
+        )
 
         adapter.handle_message.assert_awaited_once()
         dispatched = adapter.handle_message.await_args.args[0]

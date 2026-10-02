@@ -86,8 +86,9 @@ class SessionUsageMixin:
         self, session_id: str, *, provider: str, base_url: str, billing_mode: Optional[str] = None,
     ) -> None:
         """Unconditionally set the billing route (``update_token_counts`` only COALESCE-fills
-        NULLs) so the dashboard reflects the latest /model switch; also nulls
-        ``system_prompt`` so the cached snapshot header is rebuilt.
+        NULLs) so the dashboard reflects the latest /model switch.
+
+        Route writers never touch the stored prompt; ``_stored_prompt_matches_runtime`` decides staleness.
 
         See #48173, #48248.
         """
@@ -98,11 +99,8 @@ class SessionUsageMixin:
             conn.execute("""UPDATE sessions SET
                    billing_provider = ?,
                    billing_base_url = ?,
-                   billing_mode = COALESCE(?, billing_mode),
-                   system_prompt = NULL,
-                   system_prompt_hash = NULL
+                   billing_mode = COALESCE(?, billing_mode)
                    WHERE id = ?""", (provider, base_url, billing_mode, session_id))
-            self._delete_unreferenced_system_prompts(conn)
         self._execute_write(_do)
 
     def queue_token_counts(self, session_id: str, **kwargs) -> None:
@@ -389,6 +387,35 @@ class SessionUsageMixin:
         # the placeholder stays repairable by the creator's upsert (_insert_session_row).
         self._insert_session_row(session_id, "unknown")
         self._execute_write(lambda conn: self._record_model_usage(conn, session_id, task=task, **usage))
+
+    def auxiliary_usage_by_task(self, session_id: str) -> Dict[str, Dict[str, float]]:
+        """Per-task auxiliary usage (``task != ''``: vision, compression, title_generation, ...) summed
+        over the session's compression lineage. Aux calls bill to the id the turn STARTED with while
+        compression mints child ids mid-turn, so a single-id read misses rows (#112848)."""
+        if not session_id:
+            return {}
+        chain = self._session_lineage_root_to_tip(session_id)
+        # An explicit ``/branch`` copy owns its spend: cut the walk at the nearest branch node so a
+        # resumed branch never absorbs aux rows billed to its source (hermes_state_messages does the same).
+        for i in range(len(chain) - 1, -1, -1):
+            if self._is_explicit_branch_session(chain[i]):
+                chain = chain[i:]
+                break
+        rows = self._read_all(
+            f"""SELECT task,
+                       COALESCE(SUM(api_call_count), 0) AS api_calls,
+                       COALESCE(SUM(input_tokens), 0) AS input_tokens,
+                       COALESCE(SUM(output_tokens), 0) AS output_tokens,
+                       COALESCE(SUM(cache_read_tokens), 0) AS cache_read_tokens,
+                       COALESCE(SUM(cache_write_tokens), 0) AS cache_write_tokens,
+                       COALESCE(SUM(reasoning_tokens), 0) AS reasoning_tokens,
+                       COALESCE(SUM(estimated_cost_usd), 0) AS estimated_cost_usd
+                  FROM session_model_usage
+                 WHERE session_id IN ({','.join('?' * len(chain))}) AND task != ''
+                 GROUP BY task""",
+            chain,
+        )
+        return {row["task"]: {k: row[k] for k in row.keys() if k != "task"} for row in rows}
 
     def usage_totals(self, *, min_message_count: int = 1, include_archived: bool = False) -> Dict[str, float]:
         """Tokens and spend across the whole store (one scan), so the sidebar total does not

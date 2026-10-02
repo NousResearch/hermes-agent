@@ -94,6 +94,21 @@ def test_kanban_show_exposes_actionable_block_contract(kanban_home):
     assert "Owner: Matt" in text
 
 
+def test_kanban_show_marks_prior_blocked_attempt_historical(kanban_home):
+    with kbc.connect_closing() as conn:
+        task_id = kb.create_task(conn, title="approval", assignee="publisher")
+        kb.block_task(conn, task_id, kind="transient", reason="Old failure")
+        assert kb.unblock_task(conn, task_id)
+        kb.block_task(conn, task_id, kind="needs_input", reason="Current decision")
+
+    text = kc.run_slash(f"show {task_id}")
+
+    assert text.count("[historical] blocked") == 1
+    assert "Old failure" in text
+    assert "Current decision" in text
+    assert text.count("blocked (historical)") == 1
+
+
 def test_kanban_show_text_renders_graph_with_open_connection(kanban_home):
     with kbc.connect_closing() as conn:
         parent_id = kb.create_task(conn, title="parent task")

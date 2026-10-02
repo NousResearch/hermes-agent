@@ -22,7 +22,13 @@ from hermes_cli import kanban_db_dispatch as kbd
 from hermes_cli import kanban_db_workspace as kbw
 from hermes_cli import kanban_db_notify as kbn
 from hermes_cli import kanban_swarm as ks
-from hermes_cli.kanban_block_action import build_block_action, reason_from_events, render_block_action
+from hermes_cli.kanban_block_action import (
+    build_block_action,
+    latest_block_event_id,
+    latest_block_run_id,
+    reason_from_events,
+    render_block_action,
+)
 from hermes_cli.kanban_output import (
     _ATTACHMENT_FIELDS, _RUNS_RUN_FIELDS, _SHOW_RUN_FIELDS, _bulk_apply, _err,
     _fmt_counts, _fmt_task_line, _fmt_ts, _json_out, _obj_dict, _print_json,
@@ -560,11 +566,13 @@ def _cmd_show(args: argparse.Namespace) -> int:
         _print_section(f"Comments ({len(comments)}):",
                        (f"  [{_fmt_ts(c.created_at)}] {c.author}: {c.body}" for c in comments))
     if events:
+        current_block_event_id = latest_block_event_id(events) if task.status == "blocked" else None
         _print_section(f"Events ({len(events)}):", (
             f"  [{_fmt_ts(e.created_at)}]{f' [run {e.run_id}]' if e.run_id else ''} "
-            f"{'[historical] ' if task.status != 'blocked' and e.kind in {'blocked', 'gave_up', 'block_loop_detected'} else ''}{e.kind}"
+            f"{'[historical] ' if e.kind in {'blocked', 'gave_up', 'block_loop_detected', 'dependency_wait', 'timed_out'} and e.id != current_block_event_id else ''}{e.kind}"
             f"{f' {e.payload}' if e.payload else ''}" for e in events[-20:]))
     if runs:
+        current_block_run_id = latest_block_run_id(events) if task.status == "blocked" else None
         print()
         print(f"Runs ({len(runs)}):")
         for r in runs:
@@ -572,7 +580,7 @@ def _cmd_show(args: argparse.Namespace) -> int:
             elapsed = max(0, r.ended_at - r.started_at) if r.ended_at else None
             el = f"{elapsed}s" if elapsed is not None else "active"
             outcome = r.outcome or r.status or "active"
-            if task.status != "blocked" and outcome in {"blocked", "gave_up"}:
+            if outcome in {"blocked", "gave_up", "timed_out"} and r.id != current_block_run_id:
                 outcome = f"{outcome} (historical)"
             print(f"  #{r.id:<3} {outcome:<12} @{r.profile or '-'}  {el}  {_fmt_ts(r.started_at)}")
             if r.summary:

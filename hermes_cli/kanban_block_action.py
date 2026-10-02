@@ -6,6 +6,11 @@ from dataclasses import asdict, dataclass
 from typing import Any, Iterable, Mapping, Optional
 
 
+_BLOCK_EVENT_KINDS = frozenset(
+    {"blocked", "gave_up", "block_loop_detected", "dependency_wait", "timed_out"}
+)
+
+
 @dataclass(frozen=True)
 class BlockActionContract:
     disposition: str
@@ -30,7 +35,7 @@ def reason_from_events(events: Iterable[Any]) -> Optional[str]:
     """
     for event in reversed(list(events)):
         kind = _get(event, "kind")
-        if kind not in {"blocked", "gave_up", "block_loop_detected", "dependency_wait"}:
+        if kind not in _BLOCK_EVENT_KINDS:
             continue
         payload = _get(event, "payload")
         if isinstance(payload, str):
@@ -44,6 +49,24 @@ def reason_from_events(events: Iterable[Any]) -> Optional[str]:
             if reason:
                 return str(reason).strip()
         return None
+    return None
+
+
+def latest_block_event_id(events: Iterable[Any]) -> Optional[int]:
+    """Return the newest block-related event id, if one exists."""
+    for event in reversed(list(events)):
+        if _get(event, "kind") in _BLOCK_EVENT_KINDS:
+            event_id = _get(event, "id")
+            return int(event_id) if event_id is not None else None
+    return None
+
+
+def latest_block_run_id(events: Iterable[Any]) -> Optional[int]:
+    """Return the run that owns the newest block-related event, if any."""
+    for event in reversed(list(events)):
+        if _get(event, "kind") in _BLOCK_EVENT_KINDS:
+            run_id = _get(event, "run_id")
+            return int(run_id) if run_id is not None else None
     return None
 
 

@@ -16,7 +16,7 @@ import weakref
 from typing import Any, Callable, Optional
 
 from agent.i18n import t
-from hermes_cli.kanban_block_action import build_block_action, render_block_action
+from hermes_cli.kanban_block_action import build_block_action, latest_block_event_id, render_block_action
 
 from gateway.kanban_watchers_common import _list_boards, _to_thread_process_service, logger
 from gateway.wake import session_owned_by_profile
@@ -562,6 +562,7 @@ class _KanbanNotification:
             and ev.kind in {"blocked", "gave_up", "block_loop_detected", "timed_out"}
             and self.task is not None
             and getattr(self.task, "status", None) == "blocked"
+            and ev.id == latest_block_event_id(self.d["events"])
         ):
             reason = _payload(ev, "reason") or _payload(ev, "error")
             contract = build_block_action(self.task, reason=str(reason or ""))

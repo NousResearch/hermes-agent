@@ -2580,7 +2580,7 @@ websocket triggers) cannot starve the messaging gateway that shares this cap.
 
 When the cap is reached, Hermes returns a direct limit message naming which
 surfaces hold the slots. Existing active sessions keep their normal behavior.
-Run `hermes status` to see the current slot usage and every holder.
+Run `hermes status --full` to see the current slot usage and every holder.
 
 This is the only cap on concurrent gateway turns: the gateway runs each turn body
 on its own thread, so with the default (unset) every accepted turn starts

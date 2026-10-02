@@ -276,6 +276,7 @@ function runtimeBindingDelegate(
   return {
     archiveSession: vi.fn(),
     branchSession: vi.fn(),
+    branchSessionAtMessage: vi.fn(async () => true),
     deleteSession: vi.fn(),
     executeSlash: vi.fn(),
     interruptSession: vi.fn(),
@@ -1244,9 +1245,7 @@ describe('$focusedStoredSessionId in Bot Mode (#96062)', () => {
   it('computes $focusedWorkspaceCwd from the focused tile session state or sessions list', () => {
     $selectedStoredSessionId.set('primary-1')
     setSessions([{ cwd: '/repo-stacked', id: 'stacked' } as any])
-    $sessionTiles.set([
-      { storedSessionId: 'stacked', runtimeId: 'rt-stacked', workspaceMode: 'sessions' } as any
-    ])
+    $sessionTiles.set([{ storedSessionId: 'stacked', runtimeId: 'rt-stacked', workspaceMode: 'sessions' } as any])
     $sessionStates.set({
       'rt-stacked': { cwd: '/repo-stacked' } as any
     })
@@ -1269,11 +1268,7 @@ describe('$focusedStoredSessionId in Bot Mode (#96062)', () => {
     setSessions([{ cwd: '/repo-primary-project', id: 'primary-1' } as any])
     $sessionTiles.set([])
     $sessionStates.set({})
-    $layoutTree.set(
-      split('row', [
-        group(['workspace'], { active: 'workspace', id: 'grp-main' })
-      ])
-    )
+    $layoutTree.set(split('row', [group(['workspace'], { active: 'workspace', id: 'grp-main' })]))
     noteActiveTreeGroup('grp-main')
 
     expect($focusedStoredSessionId.get()).toBe('primary-1')

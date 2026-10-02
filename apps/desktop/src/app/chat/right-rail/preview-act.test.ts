@@ -338,12 +338,16 @@ describe('actOnActivePreview (drive_preview tool)', () => {
 
     send.mockImplementation((e: { type: string; keyCode: string; modifiers?: string[] }) => {
       if (isSelectAll(e)) {
-        if (opts.selectWorks && opts.clearable) {fieldLen = 0}
+        if (opts.selectWorks && opts.clearable) {
+          fieldLen = 0
+        }
 
         return
       }
 
-      if (e.type === 'keyDown' && e.keyCode === 'Backspace' && fieldLen > 0 && opts.clearable) {fieldLen--}
+      if (e.type === 'keyDown' && e.keyCode === 'Backspace' && fieldLen > 0 && opts.clearable) {
+        fieldLen--
+      }
     })
 
     cleanups.push(
@@ -368,10 +372,16 @@ describe('actOnActivePreview (drive_preview tool)', () => {
   }
 
   const charKeys = (send: ReturnType<typeof vi.fn>) =>
-    send.mock.calls.map(([e]) => e).filter((e: { type: string }) => e.type === 'char').map((e: { keyCode: string }) => e.keyCode)
+    send.mock.calls
+      .map(([e]) => e)
+      .filter((e: { type: string }) => e.type === 'char')
+      .map((e: { keyCode: string }) => e.keyCode)
 
   const keyDowns = (send: ReturnType<typeof vi.fn>) =>
-    send.mock.calls.map(([e]) => e).filter((e: { type: string }) => e.type === 'keyDown').map((e: { keyCode: string }) => e.keyCode)
+    send.mock.calls
+      .map(([e]) => e)
+      .filter((e: { type: string }) => e.type === 'keyDown')
+      .map((e: { keyCode: string }) => e.keyCode)
 
   it('verifies the select emptied the field before typing (select works)', async () => {
     const send = withTypingPane({ initial: 4, selectWorks: true, clearable: true })
@@ -435,21 +445,23 @@ describe('actOnActivePreview (drive_preview tool)', () => {
     const send = vi.fn()
 
     cleanups.push(
-      registerPreviewScriptRunner(tabId, async code =>
-        code.includes('hermes-focus-probe')
-          ? JSON.stringify({ focused: true, success: true, tag: 'INPUT' })
-          : code.includes('"kind":"locate"')
-            ? JSON.stringify({
-                acted: 'looking at textbox "Price"',
-                point: { x: 120, y: 80 },
-                success: true,
-                typable: true
-              })
-            : !code.includes('__hermesAct') && code.includes('getOwnPropertyDescriptor')
-              ? JSON.stringify({ success: true }) // the direct-set fallback succeeded (no preamble)
-              : !code.includes('__hermesAct') && code.includes('document.activeElement')
-                ? JSON.stringify({ success: true, field: true, len: 4 }) // field-state read
-                : JSON.stringify({ elements: [], hit: { tag: 'INPUT', trusted: true }, success: true }) // finish trip
+      registerPreviewScriptRunner(
+        tabId,
+        async code =>
+          code.includes('hermes-focus-probe')
+            ? JSON.stringify({ focused: true, success: true, tag: 'INPUT' })
+            : code.includes('"kind":"locate"')
+              ? JSON.stringify({
+                  acted: 'looking at textbox "Price"',
+                  point: { x: 120, y: 80 },
+                  success: true,
+                  typable: true
+                })
+              : !code.includes('__hermesAct') && code.includes('getOwnPropertyDescriptor')
+                ? JSON.stringify({ success: true }) // the direct-set fallback succeeded (no preamble)
+                : !code.includes('__hermesAct') && code.includes('document.activeElement')
+                  ? JSON.stringify({ success: true, field: true, len: 4 }) // field-state read
+                  : JSON.stringify({ elements: [], hit: { tag: 'INPUT', trusted: true }, success: true }) // finish trip
       )
     )
     cleanups.push(registerPreviewInput(tabId, { focus: vi.fn(), send }))

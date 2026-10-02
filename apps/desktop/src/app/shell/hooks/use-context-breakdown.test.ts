@@ -89,7 +89,10 @@ describe('useContextBreakdown (#94001)', () => {
 
     // s2's fetch resolved with LIVE_BREAKDOWN too (same mock), so it serves —
     // but the point is the s1 entry did not leak during the s2 loading window.
-    const requestGatewaySlow = vi.fn((_method: string) => deferred<ContextBreakdown>().promise) as unknown as GatewayRequester
+    const requestGatewaySlow = vi.fn(
+      (_method: string) => deferred<ContextBreakdown>().promise
+    ) as unknown as GatewayRequester
+
     rerender({ busy: false, enabled: true, requestGateway: requestGatewaySlow, sessionId: 's3' })
 
     expect(result.current.breakdown).toBeNull()
@@ -175,7 +178,10 @@ describe('useContextBreakdown (#94001)', () => {
 
   it('does not cache a zeroed breakdown (agentless window) and retries until a live agent answers', async () => {
     let zeroed = true
-    const requestGateway = vi.fn(async () => (zeroed ? ZEROED_BREAKDOWN : LIVE_BREAKDOWN)) as unknown as GatewayRequester
+
+    const requestGateway = vi.fn(async () =>
+      zeroed ? ZEROED_BREAKDOWN : LIVE_BREAKDOWN
+    ) as unknown as GatewayRequester
 
     const { result } = renderHook(props => useContextBreakdown(props), {
       initialProps: { busy: false, enabled: true, requestGateway, sessionId: 's1' as null | string }

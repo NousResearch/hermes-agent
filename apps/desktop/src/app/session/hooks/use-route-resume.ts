@@ -167,9 +167,7 @@ export function useRouteResume({
         Boolean(activeSessionIdRef.current)
 
       const stuckOnRoutedSession =
-        routedSessionId !== selectedStoredSessionIdRef.current &&
-        !freshDraftReady &&
-        !selectionMovedAheadOfRoute
+        routedSessionId !== selectedStoredSessionIdRef.current && !freshDraftReady && !selectionMovedAheadOfRoute
 
       // Resume when the route meaningfully changed, the gateway just opened, or
       // we're stranded on a routed session that never loaded. The first two

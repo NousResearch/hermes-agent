@@ -228,6 +228,7 @@ const COMPARED_FIELDS = [
   'hidden',
   'branchGroupId',
   'interim',
+  'interrupted',
   'reactions',
   'timestamp',
   'completedAt',
@@ -1973,6 +1974,14 @@ function upsertResolvedSession(
   storedSessionId: string,
   tombstoneGenerationsAtRequestStart: SessionTombstoneGenerationSnapshot
 ) {
+  // Exact-id lookup intentionally resolves internal delegate children so a
+  // watch tile can open them. They are not ordinary user conversations,
+  // though, and the authoritative list endpoints omit them; caching one here
+  // would bypass that boundary and leak it into the Sessions sidebar.
+  if (session.is_internal_child) {
+    return
+  }
+
   const removed = $removedSessionIds.get()
   const identities = [storedSessionId, session.id, session._lineage_root_id]
 

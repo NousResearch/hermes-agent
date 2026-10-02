@@ -2600,6 +2600,8 @@ export const ja = defineLocale({
       reveal: 'フォルダで表示',
       copyPath: 'パスをコピー',
       removeFromSidebar: 'サイドバーから削除',
+      createdInPreviousContext:
+        'プロジェクトは以前の接続またはプロファイルで作成されました。そこに戻ってください。IDEA.md は書き込まれていません。',
       createFailed: 'プロジェクトを作成できませんでした',
       staleBackend:
         'プロジェクトを作成するには Hermes バックエンドを更新してください。バックエンドがこのデスクトップアプリより古いです（設定 → 更新 → バックエンド）。',
@@ -2867,6 +2869,11 @@ export const ja = defineLocale({
     queueDroppedTitle: 'キューのエントリを破棄しました',
     queueDroppedBody:
       'このバックグラウンドのエントリは、セッションを繰り返し再開できなかったため破棄されました。キューの他のエントリには影響しません。',
+    terminalSelectionMissingTitle: 'ターミナル選択を利用できません',
+    terminalSelectionMissingBody:
+      '送信前にターミナル行を再選択（Ctrl/Cmd+L）してください — チップに元のテキストがありません。',
+    queuedTerminalSelectionExpiredBody:
+      'キュー内のターミナル選択はもう利用できません。行を再選択（Ctrl/Cmd+L）して、もう一度キューに入れてください。',
     previewUnavailable: 'プレビューは利用できません',
     previewLabel: label => `${label} のプレビュー`,
     couldNotPreview: label => `${label} をプレビューできませんでした`,
@@ -3593,6 +3600,9 @@ export const ja = defineLocale({
     closePane: 'プレビューペインを閉じる',
     loading: 'プレビューを読み込み中',
     unavailable: 'プレビューは利用できません',
+    missingTitle: 'ファイルは存在しません',
+    missingBody: label =>
+      `${label} は削除・移動されたか、一時的な場所が消去されました。このタブは次回の起動時には復元されません。`,
     opening: '開いています...',
     hide: '非表示',
     openPreview: 'プレビューを開く',
@@ -3618,6 +3628,7 @@ export const ja = defineLocale({
     editing: '編集中',
     unsavedChanges: '未保存の変更',
     saveFailed: message => `保存できませんでした：${message}`,
+    saveScopeChanged: 'この下書きを保存するには、元の接続とプロファイルに戻ってください。',
     diskChangedTitle: 'ファイルがディスク上で変更されました',
     diskChangedBody:
       'このファイルは開いてから変更されています。あなたの版で上書きするか、編集を破棄して再読み込みしますか？',
@@ -3956,6 +3967,8 @@ export const ja = defineLocale({
       skipped: 'スキップ済み',
       noAnswer: '回答なし',
       confirmAndContinueLabel: '確定して続行',
+      singleSelectHint: '1つ選ぶ',
+      multiSelectHint: '該当するものをすべて選択',
       questionProgress: (answered, total) => `${total}問中${answered}問回答済み`,
       notDelivered:
         'この質問はアプリに届かなかったため、ここでは回答できません。停止を押してターンを終了し、チャットで返信してください。'
@@ -4136,6 +4149,9 @@ export const ja = defineLocale({
       'このウィンドウは同じチャットの別ビューより遅れています。最新のメッセージを読み込みました。送信する場合はもう一度送ってください。',
     providerCredentialRequired: '最初のメッセージを送信する前にプロバイダー認証情報を追加してください。',
     emptySlashCommand: '空のスラッシュコマンド',
+    slashCommandIgnoredTitle: 'コマンドが送信されませんでした',
+    slashCommandIgnoredBody:
+      'スラッシュコマンドと添付ファイルを同時に使用することはできません。添付ファイルを削除するか、コマンドを別途送信してください。',
     desktopCommands: 'デスクトップコマンド',
     skillCommandsAvailable: count => `${count} 件のスキルコマンドが利用可能です。`,
     warningLine: message => `警告: ${message}`,
@@ -4201,6 +4217,9 @@ export const ja = defineLocale({
     openImage: '画像を開く',
     downloadImage: '画像をダウンロード',
     savingImage: '画像を保存中',
+    zoomIn: '拡大',
+    zoomOut: '縮小',
+    resetZoom: 'ズームをリセット',
     imagePreviewFailed: '画像のプレビューに失敗しました',
     imageAttach: '画像を添付',
     imageWriteFailed: '画像のディスクへの書き込みに失敗しました。',

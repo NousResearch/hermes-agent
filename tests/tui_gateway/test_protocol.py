@@ -1977,3 +1977,149 @@ def test_peerless_global_broadcast_never_reaches_stdout_in_ws_backend(capture, m
 
     assert len(a.frames) == 1
     assert buf.getvalue() == ""
+
+
+# ── session.create idempotency (#65410 / PR #65411) ───────────────────
+
+
+def _stub_session_create_dependencies(server, monkeypatch):
+    """Stub out the heavy deps ``session.create`` touches so it can run without
+    a real agent/DB. ``session.create`` lives in the split ``methods_session``
+    module but its handlers read server globals (``bind_module`` rebinds them),
+    so patching the server module covers both."""
+    # session.create's handler reads SERVER globals (bind_module rebinds the
+    # split module's functions onto server vars), so patching the server module
+    # covers everything the create path touches.
+    monkeypatch.setattr(server, "_register_session_cwd", lambda *a, **kw: None)
+    monkeypatch.setattr(server, "_schedule_agent_build", lambda *a, **kw: None)
+    monkeypatch.setattr(server, "_schedule_session_cap_enforcement", lambda *a, **kw: None)
+    monkeypatch.setattr(server, "_enable_gateway_prompts", lambda: None)
+    monkeypatch.setattr(server, "_load_show_reasoning", lambda: False)
+    monkeypatch.setattr(server, "_load_tool_progress_mode", lambda: None)
+    monkeypatch.setattr(server, "_profile_home", lambda p: None)
+    monkeypatch.setattr(server, "_profile_build_scope", _null_scope)
+    monkeypatch.setattr(server, "_seed_row", lambda *a, **kw: None)
+    monkeypatch.setattr(server, "_seed_branch_row", lambda *a, **kw: None)
+    monkeypatch.setattr(server, "_ensure_session_db_row", lambda *a, **kw: None)
+    # Fresh registry per test: the server and the rebound handler share the
+    # same dict object only if we swap it in place.
+    server._idempotency_keys.clear()
+
+
+class _NullScope:
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+
+def _null_scope(profile_home):
+    return _NullScope()
+
+
+def test_session_create_idempotency_key_dedupes_retry(server, monkeypatch):
+    """A retried session.create with the same idempotency_key returns the SAME
+    sid instead of spawning a duplicate child (#65410): a create whose first
+    response was lost must not leave two children behind."""
+    _stub_session_create_dependencies(server, monkeypatch)
+
+    params = {
+        "cols": 96,
+        "source": "desktop",
+        "messages": [{"role": "user", "content": "branch me"}],
+        "parent_session_id": "parent-1",
+        "idempotency_key": "branch-retry-abc",
+    }
+    first = server.handle_request({"id": "c1", "method": "session.create", "params": dict(params)})
+    assert "error" not in first, first.get("error")
+    first_sid = first["result"]["session_id"]
+    assert first_sid
+    assert len(server._sessions) == 1
+
+    # Client retries after a lost response: same key, same params.
+    second = server.handle_request({"id": "c2", "method": "session.create", "params": dict(params)})
+    assert "error" not in second, second.get("error")
+    assert second["result"]["session_id"] == first_sid
+    assert len(server._sessions) == 1
+
+
+def test_session_create_no_idempotency_key_creates_distinct_sessions(server, monkeypatch):
+    """Without an idempotency_key, repeated creates keep the historic behavior."""
+    _stub_session_create_dependencies(server, monkeypatch)
+
+    first = server.handle_request({"id": "c1", "method": "session.create", "params": {"cols": 96, "source": "desktop"}})
+    second = server.handle_request({"id": "c2", "method": "session.create", "params": {"cols": 96, "source": "desktop"}})
+
+    assert "error" not in first and "error" not in second
+    assert first["result"]["session_id"] != second["result"]["session_id"]
+    assert len(server._sessions) == 2
+
+
+def test_session_create_idempotency_key_expires_with_session(server, monkeypatch):
+    """If the original session closed between create and retry, the same key
+    falls through and creates a fresh session (the key does not pin a dead sid)."""
+    _stub_session_create_dependencies(server, monkeypatch)
+
+    first = server.handle_request(
+        {"id": "c1", "method": "session.create",
+         "params": {"cols": 96, "source": "desktop", "idempotency_key": "branch-retry-xyz"}}
+    )
+    first_sid = first["result"]["session_id"]
+
+    server._sessions.pop(first_sid, None)
+
+    second = server.handle_request(
+        {"id": "c2", "method": "session.create",
+         "params": {"cols": 96, "source": "desktop", "idempotency_key": "branch-retry-xyz"}}
+    )
+    assert "error" not in second
+    assert second["result"]["session_id"] != first_sid
+    assert len(server._sessions) == 1
+
+
+def test_session_branch_stored_accepts_idempotency_key(server, monkeypatch):
+    """The desktop's whole-session branch (session.branch_stored) rides the same
+    create plumbing and sends idempotency_key on EVERY branch (#65410): the
+    contract must accept it, the create must succeed (the lineage-sidebar e2e
+    failed with a 4000 because SessionBranchStoredParams forbade the key), and a
+    retried branch_stored with the SAME key must return the SAME child instead
+    of a duplicate."""
+    _stub_session_create_dependencies(server, monkeypatch)
+
+    class _Scope:
+        def __init__(self, db):
+            self.db = db
+
+        def __enter__(self):
+            return self.db
+
+        def __exit__(self, *_args):
+            return False
+
+    class _FakeDB:
+        def get_resume_conversations(self, key):
+            assert key == "parent"
+            return [], [
+                {"role": "user", "content": "first question", "timestamp": 1},
+                {"role": "assistant", "content": "first answer", "timestamp": 2},
+            ]
+
+    monkeypatch.setattr(server, "_profile_db", lambda _params: _Scope(_FakeDB()))
+
+    params = {
+        "cols": 96,
+        "parent_session_id": "parent",
+        "source": "desktop",
+        "idempotency_key": "branch-stored-retry-abc",
+    }
+    first = server.handle_request({"id": "b1", "method": "session.branch_stored", "params": dict(params)})
+    assert "error" not in first, first.get("error")
+    first_sid = first["result"]["session_id"]
+    assert len(server._sessions) == 1
+
+    # A lost-response retry: same key, same params, same child.
+    second = server.handle_request({"id": "b2", "method": "session.branch_stored", "params": dict(params)})
+    assert "error" not in second, second.get("error")
+    assert second["result"]["session_id"] == first_sid
+    assert len(server._sessions) == 1

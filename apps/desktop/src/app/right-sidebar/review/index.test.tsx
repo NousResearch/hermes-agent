@@ -4,7 +4,15 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import type { HermesReviewFile } from '@/global'
 import { I18nProvider } from '@/i18n'
 import { $panesFlipped } from '@/store/layout'
-import { $reviewDiff, $reviewDiffLoading, $reviewFiles, $reviewIsRepo, $reviewLoading, $reviewScope, $reviewSelectedPath } from '@/store/review'
+import {
+  $reviewDiff,
+  $reviewDiffLoading,
+  $reviewFiles,
+  $reviewIsRepo,
+  $reviewLoading,
+  $reviewScope,
+  $reviewSelectedPath
+} from '@/store/review'
 
 import { ReviewPane } from './index'
 

@@ -58,6 +58,9 @@ export const arArtifacts = {
     closePane: 'إغلاق جزء المعاينة',
     loading: 'جار تحميل المعاينة',
     unavailable: 'المعاينة غير متاحة',
+    missingTitle: 'الملف لم يعد موجودا',
+    missingBody: label =>
+      `تم حذف ${label} أو نقله، أو أُفرغ موقعه المؤقت. لن تتم استعادة علامة التبويب هذه عند الإطلاق التالي.`,
     opening: 'جار الفتح...',
     hide: 'إخفاء',
     openPreview: 'فتح المعاينة',
@@ -83,6 +86,7 @@ export const arArtifacts = {
     editing: 'جار التحرير',
     unsavedChanges: 'تغييرات غير محفوظة',
     saveFailed: message => `تعذّر الحفظ: ${message}`,
+    saveScopeChanged: 'عُد إلى الاتصال والملف الشخصي الأصليين لحفظ هذه المسودة.',
     diskChangedTitle: 'تغيّر الملف على القرص',
     diskChangedBody: 'تغيّر هذا الملف منذ أن فتحته. هل تريد الكتابة فوقه بنسختك، أم تجاهل تعديلاتك وإعادة التحميل؟',
     overwrite: 'الكتابة فوقه',
@@ -151,5 +155,5 @@ export const arArtifacts = {
       openTarget: url => `فتح ${url}`,
       fallbackTitle: 'معاينة'
     }
-  },
+  }
 } satisfies Pick<TranslationOverrides, 'artifacts' | 'artifactCard' | 'artifactPreview' | 'preview'>

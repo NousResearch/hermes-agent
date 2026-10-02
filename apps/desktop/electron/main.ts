@@ -35,6 +35,7 @@ import {
 import type { Session } from 'electron'
 
 import { type ActiveRuntimeState, classifyActiveRuntime } from './active-runtime-state'
+import { HERMES_API_EXPECTED_404 } from './api-expected-404'
 import {
   destroyKeepaliveAgents,
   htmlResponseError,
@@ -212,6 +213,7 @@ import {
   isAttachedBackendTokenDrifted,
   resolveServedDashboardToken
 } from './dashboard-token'
+import { resolveDashboardWebDist } from './dashboard-web-dist'
 import { resolveDesktopHermesHome, resolveDesktopUserData } from './data-paths'
 import { loadOrCreateInstallationId, sshOwnershipId } from './desktop-installation'
 import { formatDesktopLogLine, formatLogStamp } from './desktop-log-line'
@@ -238,6 +240,7 @@ import {
 } from './desktop-uninstall'
 import { describeDevCdpDecision, resolveDevCdpPort } from './dev-cdp'
 import { preReadyDockLaunchSteps } from './dock-launch-order'
+import { embedHostOrigin } from './embed-host'
 import { installEmbedReferer } from './embed-referer'
 import { createAmbientClaimArbiter } from './event-dedupe'
 import { openExternalUrl as externalOpen, type ExternalOpenDeps, reportPreOpenStatFailure } from './external-open'
@@ -289,6 +292,8 @@ import {
   enableBasicPasswordStoreEncryption,
   encryptDesktopSecret as encryptDesktopSecretStrict,
   homeRelativeAttachmentCandidates,
+  isMissingFileError,
+  missingFileResult,
   readFileDataUrlForIpc,
   resolvePersistedRemoteToken,
   resolveReadableFileForIpc,
@@ -310,6 +315,7 @@ import {
 import { assertNoSecondLocalBackend, assertNotPassiveSpawn } from './host-backend-singleton'
 import { lookupPublishedSessionToken } from './host-published-token'
 import { claimHostSpawnGate } from './host-spawn-gate'
+import { HERMES_HUB_FALLBACK_ORIGIN, HERMES_HUB_ORIGIN, isHermesHubClipboardWrite } from './hub-iframe-policy'
 import { requestHudClose } from './hud-close'
 import { cursorPointInWindow } from './hud-cursor'
 import { startHudGameOverlayWatch } from './hud-game-overlay'
@@ -326,6 +332,17 @@ import type { InstallStamp } from './install-stamp'
 import { applyLaunchProfileOverride } from './launch-profile'
 import { fetchLinkTitle, resolveFaviconCached } from './link-metadata'
 import { CHROMIUM_LOG_FILENAME, enableLinuxCrashDiagnostics, linuxCrashDiagnostics } from './linux-crash-diagnostics'
+import {
+  decideLinuxGpuLaunch,
+  disableGpuSwitchNeededForReason,
+  LINUX_GPU_SILENT_RETRY_GRACE_S,
+  linuxGpuChildDeathPath,
+  linuxGpuFallbackMarker,
+  linuxGpuMarkerAfterSuccessfulBoot,
+  readLinuxGpuMarker,
+  shouldEngageSilentGpuRetryFallback,
+  writeLinuxGpuMarker
+} from './linux-gpu-fallback'
 import { notifyLauncherWindowRevealed } from './linux-launcher-ready'
 import {
   decideNvidiaEglFallback,
@@ -432,6 +449,7 @@ import { capturePreviewContents } from './preview-capture'
 import { onPreviewWatchOwnerDestroyed, sendPreviewFileChangedToOwner } from './preview-file-watch'
 import { hasClosePreviewFlag, previewGuestInputAction } from './preview-guest-escape'
 import { PreviewReachRegistry } from './preview-reach'
+import { previewHttpUrlTarget } from './preview-url-target'
 import {
   createPrimaryRemoteConnection,
   FirstRunSetupResetError,
@@ -469,7 +487,12 @@ import {
   tagRegistrySessionResponse,
   tagRemoteSessionRows
 } from './profile-session-routing'
-import { createQuickEntryShortcut, quickEntryWindowBounds, sanitizeQuickEntrySettings } from './quick-entry'
+import {
+  createQuickEntryShortcut,
+  createQuickEntrySubmitRelay,
+  quickEntryWindowBounds,
+  sanitizeQuickEntrySettings
+} from './quick-entry'
 import { createQuitFinalization } from './quit-finalization'
 import {
   type ActiveWork,
@@ -555,6 +578,7 @@ import {
   opacityNeedsSetting,
   translucencySupportedOn,
   vibrancyFor as vibrancyForTranslucency,
+  windowBackgroundMaterialOptions,
   windowBackingOptions,
   windowOpacityFor,
   windowOpacityOptions
@@ -601,6 +625,7 @@ import { createStoreStrategy } from './updater/store-client'
 import { isExternalVenvHolder, isHermesOwnedVenvDaemon } from './venv-holder-select'
 import { fetchMarketplaceThemes, searchMarketplaceThemes } from './vscode-marketplace'
 import { createWakeIndicatorWindowController } from './wake-indicator-window'
+import { guardedWatch } from './watch-storm-breaker'
 import { windowAcceleratorAction } from './window-accelerator'
 import { enumerateWindowsFrontToBack, enumerationFailed, readWindowBelow } from './window-below'
 import { bindWindowChromeEvents } from './window-chrome-events'
@@ -612,6 +637,7 @@ import {
 } from './window-connection-route'
 import { registerWindowControlIpc, windowControlState } from './window-controls'
 import { revealAction, shouldFocusToTakeKeyboard } from './window-focus-policy'
+import { windowMenuTemplate } from './window-menu'
 import { createWindowOpenHandler } from './window-open-policy'
 import { installWindowRendererLifecycle } from './window-renderer-lifecycle'
 import { wireWindowReveal } from './window-reveal'
@@ -715,6 +741,15 @@ if (REMOTE_DISPLAY_REASON) {
   // Belt-and-suspenders for X11/VNC, where the Viz compositor can still glitch
   // with only --disable-gpu: force compositing onto the CPU too.
   app.commandLine.appendSwitch('disable-gpu-compositing')
+
+  // #97616: disableHardwareAcceleration() alone does NOT stop a GPU child
+  // from spawning (it then dies error_code=1002 on AMD/Mesa). For the explicit
+  // HERMES_DESKTOP_DISABLE_GPU override, fully spawn-block it. Remote-display
+  // detections keep their long-standing compositing-only behavior.
+  if (disableGpuSwitchNeededForReason(REMOTE_DISPLAY_REASON)) {
+    app.commandLine.appendSwitch('disable-gpu')
+  }
+
   console.log(
     `[hermes] remote display detected (${REMOTE_DISPLAY_REASON}); disabling GPU hardware acceleration to prevent flicker`
   )
@@ -900,6 +935,51 @@ if (NVIDIA_DRIVER_MAJOR !== null && process.platform === 'linux') {
   })
 }
 
+// #124843: on Mesa/Wayland the Chromium GPU child can fail init
+// (error_code=1002) and retry inside a sub-zygote forever — ~350% CPU, no
+// gpu-process, no crash. Bound it: one relaunch into software rendering,
+// then a sticky per-version marker so the next boot goes straight there.
+// Reactive only — healthy Mesa/Wayland stacks keep full acceleration. Must
+// run before app `ready`. Override with HERMES_DESKTOP_DISABLE_GPU
+// (1/true → always software, 0/false → keep GPU on).
+let linuxGpuFallbackActive = false
+let linuxGpuFallbackSticky = false
+let linuxGpuRelaunchAttempted = false
+
+const LINUX_GPU_SOFTWARE_ACTIVE =
+  Boolean(REMOTE_DISPLAY_REASON) || NVIDIA_EGL_FALLBACK.enable || alreadyHasDisableGpu(process.argv, process.env)
+
+if (process.platform === 'linux') {
+  const linuxGpuUserData = app.getPath('userData')
+
+  const linuxGpuDecision = decideLinuxGpuLaunch({
+    argv: process.argv,
+    env: process.env,
+    marker: readLinuxGpuMarker(linuxGpuUserData),
+    appVersion: app.getVersion(),
+    remoteDisplayReason: REMOTE_DISPLAY_REASON,
+    nvidiaFallbackActive: NVIDIA_EGL_FALLBACK.enable
+  })
+
+  linuxGpuFallbackActive = linuxGpuDecision.enable
+  linuxGpuFallbackSticky = linuxGpuDecision.nextMarker.state === 'fallback'
+
+  try {
+    writeLinuxGpuMarker(linuxGpuUserData, linuxGpuDecision.nextMarker)
+  } catch {
+    void 0
+  }
+
+  if (linuxGpuDecision.enable && linuxGpuDecision.reason !== 'already-enabled' && !LINUX_GPU_SOFTWARE_ACTIVE) {
+    app.disableHardwareAcceleration()
+    app.commandLine.appendSwitch('disable-gpu-compositing')
+    console.log(
+      `[hermes] Linux GPU software fallback enabled (${linuxGpuDecision.reason}); disabling GPU ` +
+        'hardware acceleration after a GPU-child init failure (#124843). HERMES_DESKTOP_DISABLE_GPU=0 to opt out.'
+    )
+  }
+}
+
 // Linux: point Chromium at the session's keychain backend so safeStorage can
 // encrypt remote gateway tokens (hardening.ts refuses to persist them without
 // it). The value arrives via HERMES_DESKTOP_PASSWORD_STORE, bridged by the
@@ -936,7 +1016,15 @@ let windowsSandboxFallbackSticky = false
 let windowsSandboxFallbackReason: SandboxFallbackReason = 'boot-loop'
 let windowsNoSandboxRelaunchAttempted = false
 
-if (IS_WINDOWS) {
+// #121954: the two-strike boot-abort ladder now also covers Linux. On Linux
+// hosts where the sandboxed GPU child cannot start (dies pre-main on an
+// FD-ownership violation), Chromium prints "GPU process isn't usable.
+// Goodbye." and aborts — a 100% crash loop; the host isolation matrix in
+// #121954 shows only `--no-sandbox` reaches the UI. Same sticky per-version
+// recovery as #38216: two consecutive mid-boot aborts engage `--no-sandbox`,
+// an app update re-probes the sandbox once. Windows-only extras (ACL repair,
+// renderer crash-loop relaunch) stay inside the IS_WINDOWS branch.
+if (IS_WINDOWS || process.platform === 'linux') {
   const windowsUserData = app.getPath('userData')
   const priorMarker = readSandboxMarker(windowsUserData)
 
@@ -974,50 +1062,121 @@ if (IS_WINDOWS) {
     app.commandLine.appendSwitch('no-sandbox')
     process.env.ELECTRON_DISABLE_SANDBOX = '1'
     console.log(
-      `[hermes] Windows sandbox fallback enabled (${sandboxDecision.reason}); launching with --no-sandbox (#38216)`
+      `[hermes] sandbox fallback enabled (${sandboxDecision.reason}); launching with --no-sandbox (#38216, #121954)`
     )
   }
 
   writeSandboxMarker(windowsUserData, sandboxDecision.nextMarker)
 
-  // Catch the first GPU breakpoint death and relaunch before Chromium's
-  // "GPU process isn't usable" FATAL abort ends the process with no recovery.
+  // One coalesced Linux GPU-child recovery (#86073, #124843, #121954): the
+  // sandbox signature is tried first (that host's matrix shows --disable-gpu
+  // still crashes), then the software ladder — including the relapse after a
+  // --no-sandbox boot died again. One death, one bounded relaunch; Windows
+  // keeps its breakpoint-signature fast path unchanged.
   app.on('child-process-gone', (_event, details) => {
-    if (
-      !shouldRelaunchForGpuSandboxCrash({
-        details,
-        alreadyNoSandbox: windowsSandboxFallbackActive || alreadyHasNoSandbox(process.argv, process.env),
-        relaunchAttempted: windowsNoSandboxRelaunchAttempted
-      })
-    ) {
+    if (IS_WINDOWS) {
+      if (
+        !shouldRelaunchForGpuSandboxCrash({
+          details,
+          alreadyNoSandbox: windowsSandboxFallbackActive || alreadyHasNoSandbox(process.argv, process.env),
+          relaunchAttempted: windowsNoSandboxRelaunchAttempted
+        })
+      ) {
+        return
+      }
+
+      windowsNoSandboxRelaunchAttempted = true
+      windowsSandboxFallbackActive = true
+      windowsSandboxFallbackSticky = true
+      windowsSandboxFallbackReason = 'gpu-breakpoint'
+
+      try {
+        writeSandboxMarker(app.getPath('userData'), fallbackMarker('gpu-breakpoint', app.getVersion()))
+      } catch {
+        void 0
+      }
+
+      console.warn(
+        `[hermes] GPU child died with the sandbox signature (exit=${details?.exitCode}); relaunching once with --no-sandbox (#38216)`
+      )
+
+      try {
+        app.relaunch({ args: buildNoSandboxRelaunchArgs(process.argv.slice(1)) })
+        void exitAfterBackendShutdown(0)
+      } catch (error) {
+        console.error(`[hermes] --no-sandbox relaunch failed: ${error?.message || error}`)
+      }
+
       return
     }
 
-    windowsNoSandboxRelaunchAttempted = true
-    windowsSandboxFallbackActive = true
-    windowsSandboxFallbackSticky = true
-    windowsSandboxFallbackReason = 'gpu-breakpoint'
+    const alreadySoftware =
+      LINUX_GPU_SOFTWARE_ACTIVE || linuxGpuFallbackActive || alreadyHasDisableGpu(process.argv, process.env)
 
-    try {
-      writeSandboxMarker(app.getPath('userData'), fallbackMarker('gpu-breakpoint', app.getVersion()))
-    } catch {
-      void 0
+    const path = linuxGpuChildDeathPath({
+      details,
+      alreadyNoSandbox: windowsSandboxFallbackActive || alreadyHasNoSandbox(process.argv, process.env),
+      alreadySoftware,
+      sandboxRelaunchAttempted: windowsNoSandboxRelaunchAttempted,
+      softwareRelaunchAttempted: linuxGpuRelaunchAttempted
+    })
+
+    if (path === 'no-sandbox') {
+      windowsNoSandboxRelaunchAttempted = true
+      windowsSandboxFallbackActive = true
+      windowsSandboxFallbackSticky = true
+      windowsSandboxFallbackReason = 'gpu-breakpoint'
+
+      try {
+        writeSandboxMarker(app.getPath('userData'), fallbackMarker('gpu-breakpoint', app.getVersion()))
+      } catch {
+        void 0
+      }
+
+      console.warn(
+        `[hermes] Linux GPU child died with the sandbox signature (exit=${details?.exitCode}); relaunching once with --no-sandbox (#121954)`
+      )
+
+      try {
+        app.relaunch({ args: buildNoSandboxRelaunchArgs(process.argv.slice(1)) })
+        void exitAfterBackendShutdown(0)
+      } catch (error) {
+        console.error(`[hermes] --no-sandbox relaunch failed: ${error?.message || error}`)
+      }
+
+      return
     }
 
-    console.warn(
-      `[hermes] Windows GPU sandbox crashed (exit=${details?.exitCode}); relaunching once with --no-sandbox (#38216)`
-    )
+    if (path === 'disable-gpu') {
+      linuxGpuRelaunchAttempted = true
+      linuxGpuFallbackActive = true
+      linuxGpuFallbackSticky = true
 
-    try {
-      app.relaunch({ args: buildNoSandboxRelaunchArgs(process.argv.slice(1)) })
-      void exitAfterBackendShutdown(0)
-    } catch (error) {
-      console.error(`[hermes] --no-sandbox relaunch failed: ${error?.message || error}`)
+      const reason =
+        String(details?.reason || '').toLowerCase() === 'launch-failure' ? 'gpu-launch-failure' : 'gpu-crash'
+
+      try {
+        writeLinuxGpuMarker(app.getPath('userData'), linuxGpuFallbackMarker(reason, app.getVersion()))
+      } catch {
+        void 0
+      }
+
+      console.warn(
+        `[hermes] Linux GPU child gone (reason=${details?.reason}); relaunching once with --disable-gpu (#124843)`
+      )
+
+      try {
+        app.relaunch({ args: buildDisableGpuRelaunchArgs(process.argv.slice(1)) })
+        void exitAfterBackendShutdown(0)
+      } catch (error) {
+        console.error(`[hermes] --disable-gpu relaunch failed: ${error?.message || error}`)
+      }
     }
   })
 }
 
 ipcMain.handle('hermes:get-remote-display-reason', () => REMOTE_DISPLAY_REASON)
+ipcMain.handle('hermes:embed-host:origin', () => embedHostOrigin())
 
 // Keep the renderer's PROCESS priority normal while its windows are hidden —
 // a deprioritized renderer streams a live answer visibly slower once the
@@ -1456,7 +1615,7 @@ function chatWindowSurfaceOptions() {
     // opts into the documented transparent-window limits — including that a
     // RESIZABLE transparent window is unsupported and breaks (electron#48421).
     // Every chat window is resizable.
-    backgroundMaterial: IS_WINDOWS && GLASS_SUPPORTED ? backgroundMaterialFor(translucencyState) : undefined,
+    ...windowBackgroundMaterialOptions(translucencyState, IS_WINDOWS, GLASS_SUPPORTED),
     ...windowOpacityOptions(translucencyState),
     ...windowBackingOptions(translucencyState, getWindowBackgroundColor())
   }
@@ -1544,7 +1703,6 @@ const MEDIA_MIME_TYPES = {
 const PREVIEW_HTML_EXTENSIONS = new Set(['.html', '.htm'])
 const PREVIEW_PDF_EXTENSIONS = new Set(['.pdf'])
 const PREVIEW_WATCH_DEBOUNCE_MS = 120
-const LOCAL_PREVIEW_HOSTS = new Set(['0.0.0.0', '127.0.0.1', '::1', '[::1]', 'localhost'])
 const TEXT_PREVIEW_MAX_BYTES = 512 * 1024
 
 const PREVIEW_LANGUAGE_BY_EXT = {
@@ -3496,7 +3654,10 @@ function readWindowState() {
 
 // Persist the window's restored (non-maximized) bounds plus its maximized flag.
 // getNormalBounds() keeps the pre-maximize size, so un-maximizing next session
-// lands back where the user actually sized the window.
+// lands back where the user actually sized the window. While fullscreen,
+// getNormalBounds() reports the fullscreen bounds with isMaximized=false — the
+// broken transition behind #94319 — so record that provenance and let recovery
+// on the next launch recognize the snapshot instead of guessing from geometry.
 function persistWindowState() {
   if (!mainWindow || mainWindow.isDestroyed() || mainWindow.isMinimized()) {
     return
@@ -3507,7 +3668,18 @@ function persistWindowState() {
     fs.mkdirSync(path.dirname(DESKTOP_WINDOW_STATE_PATH), { recursive: true })
     writeFileAtomic(
       DESKTOP_WINDOW_STATE_PATH,
-      JSON.stringify({ x, y, width, height, isMaximized: mainWindow.isMaximized() }, null, 2)
+      JSON.stringify(
+        {
+          x,
+          y,
+          width,
+          height,
+          isMaximized: mainWindow.isMaximized(),
+          boundsCapturedFullScreen: mainWindow.isFullScreen()
+        },
+        null,
+        2
+      )
     )
   } catch (err) {
     rememberLog(`[window-state] persist failed: ${err?.message || err}`)
@@ -5758,7 +5930,6 @@ function filenameFromUrl(rawUrl, fallback = 'image') {
   }
 }
 
-
 async function resourceBufferFromUrl(rawUrl) {
   if (!rawUrl) {
     throw new Error('Missing URL')
@@ -5875,10 +6046,6 @@ async function writeComposerImage(buffer, ext = '.png', name = '') {
   await fs.promises.writeFile(filePath, buffer)
 
   return filePath
-}
-
-function previewLabelForUrl(url) {
-  return `${url.host}${url.pathname === '/' ? '' : url.pathname}`
 }
 
 function expandUserPath(filePath) {
@@ -6009,30 +6176,6 @@ async function previewFileTarget(rawTarget, baseDir) {
   }
 }
 
-function previewUrlTarget(rawTarget) {
-  const raw = String(rawTarget || '').trim()
-  const url = new URL(raw)
-
-  if (!['http:', 'https:'].includes(url.protocol)) {
-    return null
-  }
-
-  if (!LOCAL_PREVIEW_HOSTS.has(url.hostname.toLowerCase())) {
-    return null
-  }
-
-  if (url.hostname === '0.0.0.0') {
-    url.hostname = '127.0.0.1'
-  }
-
-  return {
-    kind: 'url',
-    label: previewLabelForUrl(url),
-    source: raw,
-    url: url.toString()
-  }
-}
-
 async function normalizePreviewTarget(rawTarget, baseDir) {
   const raw = String(rawTarget || '').trim()
 
@@ -6042,7 +6185,7 @@ async function normalizePreviewTarget(rawTarget, baseDir) {
 
   try {
     if (/^https?:\/\//i.test(raw)) {
-      return previewUrlTarget(raw)
+      return previewHttpUrlTarget(raw)
     }
 
     return await previewFileTarget(raw, baseDir)
@@ -6058,7 +6201,21 @@ async function filePathFromPreviewUrl(rawUrl) {
 }
 
 async function watchPreviewFile(owner, rawUrl) {
-  const filePath = await filePathFromPreviewUrl(rawUrl)
+  let filePath
+
+  try {
+    filePath = await filePathFromPreviewUrl(rawUrl)
+  } catch (error) {
+    // A restored tab probing a file that is gone is an expected outcome —
+    // answer it like the read handlers do instead of rejecting (Electron logs
+    // every rejected handler as a stack trace at startup).
+    if (isMissingFileError(error)) {
+      return missingFileResult(rawUrl, error)
+    }
+
+    throw error
+  }
+
   const watchDir = path.dirname(filePath)
   const targetName = path.basename(filePath)
   const id = crypto.randomBytes(12).toString('base64url')
@@ -6068,28 +6225,45 @@ async function watchPreviewFile(owner, rawUrl) {
   // it by whole quit-cycles waiting on a change event that never comes.
   const offOwnerDestroyed = onPreviewWatchOwnerDestroyed(owner, () => stopPreviewFileWatch(id))
 
-  const watcher = fs.watch(watchDir, (_eventType, filename) => {
-    const changedName = filename ? path.basename(String(filename)) : ''
-
-    if (changedName && changedName !== targetName) {
+  const emit = () => {
+    if (!fileExists(filePath)) {
       return
     }
 
-    if (timer) {
-      clearTimeout(timer)
-    }
+    sendPreviewFileChangedToOwner(owner, { id, path: filePath, url: pathToFileURL(filePath).toString() }, () =>
+      stopPreviewFileWatch(id)
+    )
+  }
 
-    timer = setTimeout(() => {
-      timer = null
+  // guardedWatch: a win32 event storm closes the raw fs.watch and falls back
+  // to a slow stat poll instead of pinning the main thread (#118974).
+  const watcher = guardedWatch({
+    platform: process.platform,
+    watch: listener => fs.watch(watchDir, listener),
+    onEvent: (_eventType, filename) => {
+      const changedName = filename ? path.basename(String(filename)) : ''
 
-      if (!fileExists(filePath)) {
+      if (changedName && changedName !== targetName) {
         return
       }
 
-      sendPreviewFileChangedToOwner(owner, { id, path: filePath, url: pathToFileURL(filePath).toString() }, () =>
-        stopPreviewFileWatch(id)
-      )
-    }, PREVIEW_WATCH_DEBOUNCE_MS)
+      if (timer) {
+        clearTimeout(timer)
+      }
+
+      timer = setTimeout(() => {
+        timer = null
+        emit()
+      }, PREVIEW_WATCH_DEBOUNCE_MS)
+    },
+    snapshot: () => {
+      const stat = fs.statSync(filePath)
+
+      return `${stat.mtimeMs}:${stat.size}`
+    },
+    onPollChange: emit,
+    onTrip: ({ events, windowMs }) =>
+      console.warn(`[hermes] fs.watch storm on ${watchDir} (${events} events within ${windowMs}ms); polling instead`)
   })
 
   previewWatchers.set(id, {
@@ -6156,17 +6330,31 @@ function watchDirectory(owner, rawDir) {
   // watch must not keep polling the disk-plugin door until quit.
   const offOwnerDestroyed = onPreviewWatchOwnerDestroyed(owner, () => stopPreviewFileWatch(id))
 
-  const watcher = fs.watch(watchDir, () => {
-    if (timer) {
-      clearTimeout(timer)
-    }
+  const emit = () => {
+    sendPreviewFileChangedToOwner(owner, { id, path: watchDir, url: pathToFileURL(watchDir).toString() }, () =>
+      stopPreviewFileWatch(id)
+    )
+  }
 
-    timer = setTimeout(() => {
-      timer = null
-      sendPreviewFileChangedToOwner(owner, { id, path: watchDir, url: pathToFileURL(watchDir).toString() }, () =>
-        stopPreviewFileWatch(id)
-      )
-    }, PREVIEW_WATCH_DEBOUNCE_MS)
+  // A win32 event storm here pinned a core at 100% (#118974): the breaker
+  // closes the raw watch and falls back to the readdir poll it replaced.
+  const watcher = guardedWatch({
+    platform: process.platform,
+    watch: listener => fs.watch(watchDir, listener),
+    onEvent: () => {
+      if (timer) {
+        clearTimeout(timer)
+      }
+
+      timer = setTimeout(() => {
+        timer = null
+        emit()
+      }, PREVIEW_WATCH_DEBOUNCE_MS)
+    },
+    snapshot: () => fs.readdirSync(watchDir).sort().join('\0'),
+    onPollChange: emit,
+    onTrip: ({ events, windowMs }) =>
+      console.warn(`[hermes] fs.watch storm on ${watchDir} (${events} events within ${windowMs}ms); polling instead`)
   })
 
   previewWatchers.set(id, {
@@ -6752,24 +6940,7 @@ function buildApplicationMenu() {
       { role: 'togglefullscreen' }
     ]
   })
-  template.push({
-    label: 'Window',
-    submenu: IS_MAC
-      ? [{ role: 'minimize' }, { role: 'zoom' }, { role: 'front' }]
-      : // Click-only Close: the `close` role would register its default
-        // CommandOrControl+W accelerator, claiming the chord before the
-        // before-input-event run that routes a terminal-focused Ctrl+W to the
-        // shell's word erase (#65457). The menu item still closes the focused
-        // window when clicked.
-        [
-          { role: 'minimize' },
-          {
-            click: (_menuItem, window) => window?.close(),
-            label: 'Close',
-            registerAccelerator: false
-          }
-        ]
-  })
+  template.push(windowMenuTemplate(IS_MAC))
   template.push({
     label: 'Help',
     role: 'help',
@@ -7088,7 +7259,16 @@ function installDownloadHandling() {
 
 function installMediaPermissions() {
   // Async request handler: the prompt-style path (most platforms).
-  session.defaultSession.setPermissionRequestHandler((_webContents, permission, callback, details) => {
+  // clipboard-sanitized-write is granted ONLY to the exact Skills Hub origins
+  // (hub-iframe-policy.ts): the picker's Copy controls write to the clipboard,
+  // and every other frame — artifact previews included — stays denied.
+  session.defaultSession.setPermissionRequestHandler((webContents, permission, callback, details) => {
+    if ((permission as string) === 'clipboard-sanitized-write') {
+      callback(isHermesHubClipboardWrite(focusedFrameOrigin(webContents)))
+
+      return
+    }
+
     callback(isMediaCapturePermission(permission, details))
   })
 
@@ -7099,9 +7279,83 @@ function installMediaPermissions() {
   // the shared predicate runs with `undefined` details and allows the capture
   // permissions — identical policy to the request handler below, just without
   // the metadata refinement (absent metadata is allowed there too).
-  session.defaultSession.setPermissionCheckHandler((_webContents, permission) => {
+  session.defaultSession.setPermissionCheckHandler((webContents, permission) => {
+    if ((permission as string) === 'clipboard-sanitized-write') {
+      return isHermesHubClipboardWrite(focusedFrameOrigin(webContents))
+    }
+
     return isMediaCapturePermission(permission, undefined)
   })
+}
+
+// Origin of the frame a permission request came from. The request handler is
+// given the webContents of the TOP document (Chromium routes subframe
+// permission requests through it in Electron 40 without exposing the frame
+// directly), so when the top document is NOT on a hub origin we fall back to
+// the request's own `requestingUrl` — the URL the frame actually asked for —
+// whose origin is exact for both hub deployments and `null` for anything
+// sandboxed or opaque.
+function focusedFrameOrigin(
+  webContents: { getURL?: () => string } | null | undefined,
+  details?: { requestingUrl?: string }
+): string | null {
+  try {
+    if (details?.requestingUrl) {
+      return new URL(details.requestingUrl).origin
+    }
+
+    if (webContents?.getURL) {
+      return new URL(webContents.getURL()).origin
+    }
+  } catch {
+    // Unparseable URL — report no origin; callers deny.
+  }
+
+  return null
+}
+
+/** The picker embed URL the hub iframe starts on (both deployments). */
+function isHermesHubPickerUrl(url: string): boolean {
+  try {
+    const parsed = new URL(url)
+    const isHubOrigin = parsed.origin === HERMES_HUB_ORIGIN || parsed.origin === HERMES_HUB_FALLBACK_ORIGIN
+    const isPickerPath = parsed.pathname === '/hermes-agent/docs/skills' || parsed.pathname === '/docs/skills'
+
+    return isHubOrigin && isPickerPath
+  } catch {
+    return false
+  }
+}
+
+/** Look up a subframe by its process/routing id; never throws. */
+function findFrameByIdentifier(
+  webContents: { frames?: readonly unknown[]; framesInSubtree?: readonly unknown[] } | null | undefined,
+  frameProcessId: number,
+  frameRoutingId: number
+): { origin?: string; reload?: () => void } | null {
+  const candidates = [...(webContents?.frames ?? []), ...(webContents?.framesInSubtree ?? [])] as Array<{
+    processId?: number
+    routingId?: number
+    frameProcessId?: number
+    frameRoutingId?: number
+    origin?: string
+    reload?: () => void
+  }>
+
+  return (
+    candidates.find(
+      f => (f.frameProcessId ?? f.processId) === frameProcessId && (f.frameRoutingId ?? f.routingId) === frameRoutingId
+    ) ?? null
+  )
+}
+
+/** `frame.origin` as a safe string; destroyed frames report opaque/'null'. */
+function safeFrameOrigin(frame: { origin?: string } | null | undefined): string | null {
+  if (!frame?.origin || frame.origin === 'null') {
+    return null
+  }
+
+  return frame.origin
 }
 
 // ---------------------------------------------------------------------------
@@ -12090,7 +12344,13 @@ async function runPoolBackendStart(
   backend.args = await getBackendArgsForRuntime(backend)
   assertPoolEntryStillOwned(poolKey, entry, backendPool, localBackendLifecycle.signal)
   const hermesCwd = resolveHermesCwd()
-  const webDist = resolveWebDist()
+
+  const webDist = resolveDashboardWebDist({
+    activeHermesRoot: ACTIVE_HERMES_ROOT,
+    appRoot: APP_ROOT,
+    env: process.env
+  })
+
   const readyFile = backend.readyFile ? makeDashboardReadyFile() : null
 
   // Guard BEFORE the "Starting" line: a profile that only exists on a remote
@@ -12570,6 +12830,9 @@ function attachToRunningHostBackend(): Promise<AttachedBackend | null> {
 
 function hostBackendAttachDeps() {
   return {
+    // Skip ledger records whose backend is already gone before dialling
+    // anything: the ledger survives the process it describes (#123586).
+    isPidAlive: isPidAliveWindows,
     log: rememberLog,
     readLedger: (target: string) => {
       try {
@@ -12995,7 +13258,13 @@ async function runHermesStart({ supervisorRecovery = false }: { supervisorRecove
     backend.args = await getBackendArgsForRuntime(backend)
     backendConnectionState.assertCurrentAttempt(connectionAttempt)
     const hermesCwd = resolveHermesCwd()
-    const webDist = resolveWebDist()
+
+    const webDist = resolveDashboardWebDist({
+      activeHermesRoot: ACTIVE_HERMES_ROOT,
+      appRoot: APP_ROOT,
+      env: process.env
+    })
+
     const readyFile = backend.readyFile ? makeDashboardReadyFile() : null
 
     await advanceBootProgress('backend.spawn', `Starting Hermes backend via ${backend.label}`, 84)
@@ -13403,9 +13672,46 @@ function wireCommonWindowHandlers(win, { zoom = true }: { zoom?: boolean } = {})
   installContextMenuBridge(win)
   // Always deny, never open as a side effect: GHSA-9f4c-93c8-jc8g. Trusted
   // links arrive via `hermes:openExternal`, not here. See window-open-policy.ts.
+  // The trusted-hub delegation (window-open-policy.ts, #91612) also never
+  // creates a window: it hands http/https/mailto opens from the EXACT hub
+  // origin to the audited `openExternalUrl` as a deny side effect.
   win.webContents.setWindowOpenHandler(
-    createWindowOpenHandler(origin => rememberLog(`[window-open] denied: ${origin}`))
+    createWindowOpenHandler(origin => rememberLog(`[window-open] denied: ${origin}`), {
+      getOpenerOrigin: () => win.webContents.getFocusedFrame?.()?.origin ?? null,
+      openExternalUrl: (url: string) => void openExternalUrl(url)
+    })
   )
+  // The embedded Skills Hub picker must stay pinned to its picker URL
+  // (#91612): the frame is free to navigate itself within the picker (search,
+  // pagination), but the moment it tries to escape to the full docs site —
+  // whose layout is not embeddable and whose links are then dead — the
+  // navigation is denied and the frame is reloaded onto the picker URL.
+  win.webContents.on('will-frame-navigate', (event, url, isMainFrame, frameProcessId, frameRoutingId) => {
+    if (isMainFrame) {
+      return
+    }
+
+    const frame = findFrameByIdentifier(win.webContents, frameProcessId, frameRoutingId)
+    const frameOrigin = safeFrameOrigin(frame)
+
+    if (frameOrigin !== HERMES_HUB_ORIGIN && frameOrigin !== HERMES_HUB_FALLBACK_ORIGIN) {
+      return
+    }
+
+    if (isHermesHubPickerUrl(url)) {
+      return
+    }
+
+    event.preventDefault()
+
+    // Reload the frame back onto the picker instead of leaving it on a
+    // half-navigated document.
+    try {
+      frame?.reload()
+    } catch {
+      // A destroyed frame is gone; nothing to restore.
+    }
+  })
   win.webContents.on('will-navigate', (event, url) => {
     if ((DEV_SERVER && url.startsWith(DEV_SERVER)) || (!DEV_SERVER && url.startsWith('file:'))) {
       return
@@ -14938,11 +15244,12 @@ function createWindow() {
         }
       }
 
-      // #38216: clear the mid-boot marker only after a window is actually usable.
-      // Keep sticky `fallback` when we launched with --no-sandbox so the next
-      // Start Menu click does not re-enter the GPU FATAL crash loop. The marker
-      // records the app version so the next update re-probes the sandbox.
-      if (IS_WINDOWS) {
+      // #38216/#121954: clear the mid-boot marker only after a window is
+      // actually usable. Keep sticky `fallback` when we launched with
+      // --no-sandbox so the next launcher click does not re-enter the GPU
+      // FATAL crash loop. The marker records the app version so the next
+      // update re-probes the sandbox.
+      if (IS_WINDOWS || process.platform === 'linux') {
         try {
           writeSandboxMarker(
             app.getPath('userData'),
@@ -14966,6 +15273,70 @@ function createWindow() {
           )
         } catch (error) {
           rememberLog(`[gpu] stack-cookie marker update after main-window reveal failed: ${error?.message || error}`)
+        }
+      }
+
+      // #124843: clear the mid-boot marker only after a window is actually
+      // usable. Keep sticky `fallback` when we launched with software
+      // rendering so the next launch skips the GPU-child retry loop.
+      if (process.platform === 'linux') {
+        try {
+          writeLinuxGpuMarker(
+            app.getPath('userData'),
+            linuxGpuMarkerAfterSuccessfulBoot({
+              fallbackActive: linuxGpuFallbackSticky,
+              appVersion: app.getVersion()
+            })
+          )
+        } catch (error) {
+          rememberLog(`[gpu] linux marker update after main-window reveal failed: ${error?.message || error}`)
+        }
+
+        // #124843 silent-retry manifestation: the boot "succeeded" (window
+        // revealed, marker ok) while a sub-zygote retries GPU init forever —
+        // no child-process-gone event ever fires, so the reactive ladder
+        // above never engages. After a grace window, a boot that should have
+        // a GPU child but has none is that retry loop: engage the sticky
+        // software fallback so the NEXT launch skips it (this boot's switches
+        // already applied pre-ready and cannot change now).
+        if (!linuxGpuFallbackSticky) {
+          const checkSilentGpuRetry = (): void => {
+            const alreadySoftware =
+              LINUX_GPU_SOFTWARE_ACTIVE ||
+              linuxGpuFallbackActive ||
+              alreadyHasDisableGpu(process.argv, process.env) ||
+              isHermesDesktopGpuOverrideOff(process.env)
+
+            const gpuChildPresent = app
+              .getAppMetrics()
+              .some(metric => String(metric?.type || '').toLowerCase() === 'gpu')
+
+            if (
+              shouldEngageSilentGpuRetryFallback({
+                gpuChildPresent,
+                graceElapsed: true,
+                alreadySoftware
+              })
+            ) {
+              linuxGpuFallbackActive = true
+              linuxGpuFallbackSticky = true
+
+              try {
+                writeLinuxGpuMarker(
+                  app.getPath('userData'),
+                  linuxGpuFallbackMarker('gpu-launch-failure', app.getVersion())
+                )
+              } catch {
+                void 0
+              }
+
+              console.warn(
+                '[hermes] Linux: no GPU child after window reveal — GPU init is retrying silently; software fallback engaged for the next launch (#124843)'
+              )
+            }
+          }
+
+          setTimeout(checkSilentGpuRetry, LINUX_GPU_SILENT_RETRY_GRACE_S).unref()
         }
       }
     }
@@ -17252,6 +17623,13 @@ async function teardownConnectionScopedProfileBackend(connectionId, profile) {
   ])
 }
 
+// A 404 raised by `fetchJson` — the shape is `404: <body>` (see fetchJson).
+// Session lookups are a probe ladder: "not on this profile" is a normal rung
+// outcome, not a failure.
+function isNotFoundApiError(error) {
+  return /(?:^|\s)404\b/.test(String((error as any)?.message ?? error))
+}
+
 async function handleHermesApiRequest(request) {
   // Registry-pinned request (request.connectionId): the renderer is working
   // against a REGISTERED gateway connection, so the data — cron jobs and their
@@ -17394,10 +17772,29 @@ ipcMain.handle('hermes:api', async (_event, request) => {
 
     return await handleHermesApiRequest(request).finally(releaseProfileDeletion)
   } catch (error) {
+    // Electron logs "Error occurred in handler for 'hermes:api'" with a full
+    // stack for EVERY rejected invoke, and there is no opt-out on the handler.
+    // Session resolution is a deliberate probe ladder (`resolveStoredSession`:
+    // cache → active backend → each other profile) and the renderer already
+    // handles a miss by falling to the next rung — so an expected 404 is not an
+    // error condition. Left rejecting, it printed a multi-line stack per probe
+    // on every startup and session switch: pure noise that buries genuine
+    // handler failures.
+    //
+    // So don't reject for that one case — RESOLVE with a sentinel and let
+    // preload (our own code, the other side of the same seam) turn it back into
+    // a rejection with the identical `404: <body>` message. The renderer
+    // contract is unchanged; only Electron's logging is bypassed. Every other
+    // failure still rejects and still logs in full.
+    if (isNotFoundApiError(error)) {
+      return { [HERMES_API_EXPECTED_404]: String((error as any)?.message ?? error) }
+    }
+
     // Persist the failure (full stack) before the rejection crosses to the
     // renderer, where the invoke wrapper strips it to a one-line message.
     rememberLog(formatApiRequestFailure(request, error))
     flushDesktopLogBufferSync()
+
     throw error
   }
 })
@@ -17465,11 +17862,19 @@ ipcMain.handle('hermes:readFileDataUrl', async (_event, filePath) => {
   // Windows host bridge them to a UNC/drive form, same as directory reads.
   const bridgedPath = resolveIpcFileReadPath(filePath)
 
-  return readFileDataUrlForIpc(bridgedPath, {
-    maxBytes: dataUrlReadMaxBytesFromMb(dataUrlReadMaxMb),
-    mimeType: mimeTypeForPath(resolveRequestedPathForIpc(bridgedPath, { purpose: 'File preview' })),
-    purpose: 'File preview'
-  })
+  try {
+    return await readFileDataUrlForIpc(bridgedPath, {
+      maxBytes: dataUrlReadMaxBytesFromMb(dataUrlReadMaxMb),
+      mimeType: mimeTypeForPath(resolveRequestedPathForIpc(bridgedPath, { purpose: 'File preview' })),
+      purpose: 'File preview'
+    })
+  } catch (error) {
+    if (isMissingFileError(error)) {
+      return missingFileResult(filePath, error)
+    }
+
+    throw error
+  }
 })
 
 // Remote attachment transfer is independent of the preview / Settings path.
@@ -17479,38 +17884,59 @@ ipcMain.handle('hermes:readFileDataUrl', async (_event, filePath) => {
 ipcMain.handle('hermes:readFileDataUrlForAttach', async (_event, filePath) => {
   const bridgedPath = resolveIpcFileReadPath(filePath)
 
-  return readFileDataUrlForIpc(bridgedPath, {
-    maxBytes: ATTACHMENT_UPLOAD_DEFAULT_MAX_BYTES,
-    mimeType: mimeTypeForPath(resolveRequestedPathForIpc(bridgedPath, { purpose: 'Attachment upload' })),
-    purpose: 'Attachment upload'
-  })
+  try {
+    return await readFileDataUrlForIpc(bridgedPath, {
+      maxBytes: ATTACHMENT_UPLOAD_DEFAULT_MAX_BYTES,
+      mimeType: mimeTypeForPath(resolveRequestedPathForIpc(bridgedPath, { purpose: 'Attachment upload' })),
+      purpose: 'Attachment upload'
+    })
+  } catch (error) {
+    if (isMissingFileError(error)) {
+      return missingFileResult(filePath, error)
+    }
+
+    throw error
+  }
 })
 
 ipcMain.handle('hermes:readFileText', async (_event, filePath) => {
-  const { resolvedPath, stat } = await resolveReadableFileForIpc(resolveIpcFileReadPath(filePath), {
-    maxBytes: TEXT_PREVIEW_SOURCE_MAX_BYTES,
-    purpose: 'Text preview'
-  })
-
-  const ext = path.extname(resolvedPath).toLowerCase()
-  const handle = await fs.promises.open(resolvedPath, 'r')
-  const bytesToRead = Math.min(stat.size, TEXT_PREVIEW_MAX_BYTES)
-
   try {
-    const buffer = Buffer.alloc(bytesToRead)
-    const { bytesRead } = await handle.read(buffer, 0, bytesToRead, 0)
+    const { resolvedPath, stat } = await resolveReadableFileForIpc(resolveIpcFileReadPath(filePath), {
+      maxBytes: TEXT_PREVIEW_SOURCE_MAX_BYTES,
+      purpose: 'Text preview'
+    })
 
-    return {
-      binary: looksBinary(buffer.subarray(0, Math.min(bytesRead, 4096))),
-      byteSize: stat.size,
-      language: PREVIEW_LANGUAGE_BY_EXT[ext] || 'text',
-      mimeType: mimeTypeForPath(resolvedPath),
-      path: resolvedPath,
-      text: buffer.subarray(0, bytesRead).toString('utf8'),
-      truncated: stat.size > TEXT_PREVIEW_MAX_BYTES
+    const ext = path.extname(resolvedPath).toLowerCase()
+    const handle = await fs.promises.open(resolvedPath, 'r')
+    const bytesToRead = Math.min(stat.size, TEXT_PREVIEW_MAX_BYTES)
+
+    try {
+      const buffer = Buffer.alloc(bytesToRead)
+      const { bytesRead } = await handle.read(buffer, 0, bytesToRead, 0)
+
+      return {
+        binary: looksBinary(buffer.subarray(0, Math.min(bytesRead, 4096))),
+        byteSize: stat.size,
+        language: PREVIEW_LANGUAGE_BY_EXT[ext] || 'text',
+        mimeType: mimeTypeForPath(resolvedPath),
+        path: resolvedPath,
+        text: buffer.subarray(0, bytesRead).toString('utf8'),
+        truncated: stat.size > TEXT_PREVIEW_MAX_BYTES
+      }
+    } finally {
+      await handle.close()
     }
-  } finally {
-    await handle.close()
+  } catch (error) {
+    // A preview probing a file that is gone (deleted, moved, or cleared from
+    // /tmp since the tab/transcript reference was written) is an expected
+    // outcome. Return a structured error instead of rejecting — Electron logs
+    // every rejected handler with a stack trace even though the renderer shows
+    // "preview unavailable" either way.
+    if (isMissingFileError(error)) {
+      return missingFileResult(filePath, error)
+    }
+
+    throw error
   }
 })
 
@@ -17966,27 +18392,63 @@ ipcMain.handle('hermes:quick-entry:settings:set', async (_event, patch) => {
 // owns the one prompt-submit path, and forwarding keeps it that way. The
 // payload is `{ target, text }` — target routing (current chat / a picked
 // session / new) is the renderer's job too.
-ipcMain.on('hermes:quick-entry:submit', (_event, payload) => {
-  hideQuickEntryWindow()
+const quickEntrySubmitRelay = createQuickEntrySubmitRelay({
+  // A late ack for a timed-out submit proves the outcome. Forward it to the
+  // capture window so it can reconcile the unknown state instead of the user
+  // resending a prompt that may already be delivered.
+  onLateResult: (correlationId, result) => {
+    if (quickEntryWindow && !quickEntryWindow.isDestroyed()) {
+      quickEntryWindow.webContents.send('hermes:quick-entry:late-result', { correlationId, result })
+    }
+  },
+  onSuccess: () => {
+    hideQuickEntryWindow()
 
-  const text = typeof payload?.text === 'string' ? payload.text.trim() : ''
+    if (process.platform === 'darwin') {
+      app.dock?.show()
+    }
+
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.show()
+      mainWindow.focus()
+    }
+  }
+})
+
+// Main owns the request lifecycle so the capture window can keep text until
+// the primary renderer confirms delivery (#85590).
+ipcMain.handle('hermes:quick-entry:submit', (event, payload) => {
+  if (!quickEntryWindow || event.sender !== quickEntryWindow.webContents) {
+    return { code: 'forbidden', message: 'Quick Entry sender is not authorized.', ok: false, retryable: false }
+  }
+
+  const text =
+    typeof payload === 'string' ? payload.trim() : typeof payload?.text === 'string' ? payload.text.trim() : ''
 
   if (!text) {
-    return
+    return { code: 'empty', message: 'Enter a prompt before submitting.', ok: false, retryable: false }
   }
 
   if (!mainWindow || mainWindow.isDestroyed()) {
-    rememberLog('[quick-entry] dropped a submit: no primary window to route it to')
+    return { code: 'no-primary', message: 'The primary Hermes window is unavailable.', ok: false, retryable: true }
+  }
 
+  const target =
+    typeof payload === 'object' && typeof payload?.target === 'string' && payload.target ? payload.target : 'current'
+
+  return quickEntrySubmitRelay.begin(correlationId => {
+    mainWindow.webContents.send('hermes:quick-entry:submit', { correlationId, target, text })
+  })
+})
+
+// Main cannot invoke the primary renderer, so the primary returns by id. Stale
+// or duplicate acknowledgements are intentionally ignored (#85590).
+ipcMain.on('hermes:quick-entry:ack', (event, payload) => {
+  if (!mainWindow || event.sender !== mainWindow.webContents) {
     return
   }
 
-  // Deliberately does NOT raise/focus the main window — the user asked to fire
-  // a prompt from wherever they were, not to be yanked into the app.
-  mainWindow.webContents.send('hermes:quick-entry:submit', {
-    target: typeof payload?.target === 'string' && payload.target ? payload.target : 'current',
-    text
-  })
+  quickEntrySubmitRelay.acknowledge(payload?.correlationId, payload?.result)
 })
 
 // Primary renderer → main → quick window: gateway connection state + the
@@ -19261,9 +19723,19 @@ app.on('before-quit', event => {
   // FATAL GPU aborts skip before-quit, leaving the `booting` marker in place.
   // Keyed on sticky (not active): a manual --no-sandbox run still records a
   // clean quit, while an engaged fallback keeps its sticky marker.
-  if (IS_WINDOWS && !windowsSandboxFallbackSticky) {
+  if ((IS_WINDOWS || process.platform === 'linux') && !windowsSandboxFallbackSticky) {
     try {
       writeSandboxMarker(app.getPath('userData'), markerAfterSuccessfulBoot({ fallbackActive: false }))
+    } catch {
+      void 0
+    }
+  }
+
+  // #124843: a clean quit mid-boot must not trip next-launch --disable-gpu.
+  // Keyed on sticky (not active) so an engaged fallback keeps its marker.
+  if (process.platform === 'linux' && !linuxGpuFallbackSticky) {
+    try {
+      writeLinuxGpuMarker(app.getPath('userData'), linuxGpuMarkerAfterSuccessfulBoot({ fallbackActive: false }))
     } catch {
       void 0
     }

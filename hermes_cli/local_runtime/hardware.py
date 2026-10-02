@@ -297,15 +297,21 @@ def _cuda_driver_pool() -> "tuple[int, bool | None] | None":
     return None
 
 
+def _configured_engine():
+    """The installed engine for ``local_runtime.backend``; the probes below run that exact build."""
+    from hermes_cli.config import load_config_readonly
+    from hermes_cli.local_runtime.binaries import installed_engine
+
+    section = load_config_readonly().get("local_runtime") or {}
+    return installed_engine(section.get("backend") or "auto")
+
+
 def _engine_device_pool() -> "tuple[int, bool | None] | None":
     """(engine_total_bytes, None) from the installed runtime's own --list-devices, or None. The
     fallback when the driver API is unreachable: asks the exact binary that will do the
     allocating. Carries no integrated verdict — callers must gate it."""
     with suppress(Exception):  # a probe miss must never block budgeting
-        from hermes_cli.config import get_config_value
-        from hermes_cli.local_runtime.binaries import installed_engine
-
-        engine = installed_engine(get_config_value("local_runtime.backend", "auto"))
+        engine = _configured_engine()
         if engine is None:
             return None
         exe = engine.binary
@@ -346,11 +352,9 @@ def _accelerator_device() -> "dict | None":
     endpoint polls this every few seconds and each probe initializes the GPU driver.
     """
     with suppress(Exception):  # a probe miss must never block budgeting
-        from hermes_cli.config import get_config_value
-        from hermes_cli.local_runtime.binaries import installed_engine
         from hermes_cli.local_runtime.devices import probe_devices
 
-        engine = installed_engine(get_config_value("local_runtime.backend", "auto"))
+        engine = _configured_engine()
         if engine is None or engine.backend not in ("vulkan", "hip"):
             return None
         key, now = str(engine.binary), time.monotonic()

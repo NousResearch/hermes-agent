@@ -1,0 +1,19 @@
+name: loreconvo
+repo: https://github.com/labyrinth-analytics/loreconvo
+sha: 91c5d17418269a06389a2133739297f7d004c310
+subdir: integrations/hermes/
+tier: community
+category: memory
+maintainer: labyrinth-analytics
+capabilities:
+  tools:
+    - loreconvo_search_sessions
+    - loreconvo_get_context
+    - loreconvo_save_memory
+  hooks:
+    - post_tool_call
+  requires_env:
+    - LORECONVO_HERMES_PROJECT
+requires_hermes: ">=0.21"
+version: "0.10.12"
+docs_url: https://github.com/labyrinth-analytics/loreconvo?tab=readme-ov-file#loreconvo

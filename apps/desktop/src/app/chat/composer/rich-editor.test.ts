@@ -401,6 +401,23 @@ describe('insertComposerContentsAtCaret', () => {
 
     editor.remove()
   })
+
+  it('leaves the caret inside text after a chip inserted at the end', () => {
+    const editor = document.createElement('div')
+    editor.dataset.slot = RICH_INPUT_SLOT
+    document.body.append(editor)
+    placeCaretAtEnd(editor)
+
+    insertComposerContentsAtCaret(editor, '@url:`https://example.dev/a`')
+
+    const range = window.getSelection()!.getRangeAt(0)
+    expect(range.startContainer.nodeType).toBe(Node.TEXT_NODE)
+    expect(range.startContainer.textContent).toBe(' ')
+    expect(range.startOffset).toBe(1)
+    expect(composerPlainText(editor)).toBe('@url:`https://example.dev/a` ')
+
+    editor.remove()
+  })
 })
 
 describe('replaceBeforeCaret', () => {
@@ -425,6 +442,33 @@ describe('replaceBeforeCaret', () => {
     expect(replaceBeforeCaret(editor, 3, fragment)).toBe(true)
     expect(composerPlainText(editor)).toBe('see @file:`src/foo.ts` ')
     expect(selection.getRangeAt(0).collapsed).toBe(true)
+
+    editor.remove()
+  })
+
+  it('leaves the caret inside text after replacing with a chip at the end', () => {
+    const editor = document.createElement('div')
+    editor.dataset.slot = RICH_INPUT_SLOT
+    editor.textContent = 'see /url'
+    document.body.append(editor)
+
+    const text = editor.firstChild!
+    const selection = window.getSelection()!
+    const range = document.createRange()
+    range.setStart(text, 8)
+    range.collapse(true)
+    selection.removeAllRanges()
+    selection.addRange(range)
+
+    const fragment = document.createDocumentFragment()
+    fragment.append(refChipElement('url', '`https://example.dev/a`'))
+
+    expect(replaceBeforeCaret(editor, 4, fragment)).toBe(true)
+    const caret = selection.getRangeAt(0)
+    expect(caret.startContainer.nodeType).toBe(Node.TEXT_NODE)
+    expect(caret.startContainer.textContent).toBe('')
+    expect(caret.startOffset).toBe(0)
+    expect(composerPlainText(editor)).toBe('see @url:`https://example.dev/a`')
 
     editor.remove()
   })

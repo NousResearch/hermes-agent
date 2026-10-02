@@ -295,6 +295,30 @@ function atTokenBoundary(editor: HTMLElement, range: Range | null): boolean {
   return !last || /[\s\uFFFC]/.test(last)
 }
 
+/** Place a fresh insertion caret inside text, not at an element boundary.
+ * Chromium's IME starts composition by writing into the text node at the
+ * insertion point. */
+function caretAfterInsert(tail: Node): Range {
+  let target = tail
+  let offset = 0
+
+  if (tail.nodeType === Node.TEXT_NODE) {
+    offset = (tail.textContent ?? '').length
+  } else if (tail.nextSibling?.nodeType === Node.TEXT_NODE) {
+    target = tail.nextSibling
+  } else {
+    const spacer = document.createTextNode(' ')
+    tail.parentNode?.insertBefore(spacer, tail.nextSibling)
+    target = spacer
+    offset = 1
+  }
+
+  const caret = document.createRange()
+  caret.setStart(target, offset)
+  caret.collapse(true)
+  return caret
+}
+
 /** Insert text at the caret (replacing any selection), with any directives in
  *  it landing as chips. Pastes use this instead of `execCommand('insertText')`
  *  — Chromium's editing pipeline is ~O(n²) on large multiline blobs.
@@ -348,9 +372,7 @@ export function insertComposerContentsAtCaret(editor: HTMLElement, text: string,
   }
 
   if (tail) {
-    const caret = document.createRange()
-    caret.setStartAfter(tail)
-    caret.collapse(true)
+    const caret = caretAfterInsert(tail)
     const selection = hit?.selection ?? window.getSelection()
     selection?.removeAllRanges()
     selection?.addRange(caret)
@@ -441,7 +463,8 @@ export function replaceBeforeCaret(editor: HTMLElement, length: number, fragment
   range.insertNode(fragment)
 
   if (tail) {
-    range.setStartAfter(tail)
+    const caret = caretAfterInsert(tail)
+    range.setStart(caret.startContainer, caret.startOffset)
   }
 
   range.collapse(true)
@@ -638,12 +661,8 @@ function caretClientRect(range: Range): { bottom: number; top: number } | null {
 
   // Chromium gives a caret between elements (after a chip or <br>, or at the
   // editor's end, which is where inserts leave it) no box. Measure a probe
-  // there instead. A text-node caret always has a box, so the probe never
-  // splits text.
-  if (end.startContainer.nodeType === Node.TEXT_NODE) {
-    return null
-  }
-
+  // there instead. In jsdom, text-node ranges also have no geometry, so the
+  // same fallback keeps programmatic inserts covered by the tests.
   const probe = document.createElement('span')
   probe.textContent = '\u200b'
   end.insertNode(probe)

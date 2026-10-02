@@ -1,5 +1,6 @@
 """Tests for the /voice command and auto voice reply in the gateway."""
 
+import asyncio
 import importlib.util
 import json
 import os
@@ -78,6 +79,7 @@ def _make_runner(tmp_path):
     runner = object.__new__(GatewayRunner)
     runner.adapters = {}
     runner._voice_mode = {}
+    runner._voice_call_keys = set()
     runner._VOICE_MODE_PATH = tmp_path / "gateway_voice_mode.json"
     runner._session_db = None
     runner.session_store = MagicMock()
@@ -464,8 +466,9 @@ class TestVoiceChannelCommands:
 
 
     @pytest.mark.asyncio
-    async def test_join_success(self, runner):
-        """Successful join sets voice_mode and returns confirmation."""
+    @pytest.mark.parametrize("saved_mode", [None, "all", "voice_only", "off"])
+    async def test_join_success(self, runner, saved_mode):
+        """Joining preserves the selected reply policy and expires it with the call."""
         mock_channel = MagicMock()
         mock_channel.name = "General"
         mock_adapter = AsyncMock()
@@ -473,16 +476,39 @@ class TestVoiceChannelCommands:
         mock_adapter.get_user_voice_channel = AsyncMock(return_value=mock_channel)
         mock_adapter._voice_text_channels = {}
         mock_adapter._voice_sources = {}
+        mock_adapter._auto_tts_enabled_chats = set()
+        mock_adapter._auto_tts_disabled_chats = set()
+        async def join(channel, *, text_channel_id, source):
+            mock_adapter._voice_text_channels[111] = text_channel_id
+            mock_adapter._voice_sources[111] = source
+            return True
+        mock_adapter.join_voice_channel.side_effect = join
         mock_adapter._voice_input_callback = None
         event = self._make_discord_event()
         event.source.chat_type = "group"
         event.source.chat_name = "Hermes Server / #general"
         runner.adapters[event.source.platform] = mock_adapter
+        if saved_mode is not None:
+            runner._voice_mode["discord:123"] = saved_mode
         result = await runner._handle_voice_channel_join(event)
-        assert "General" in result
-        assert runner._voice_mode["discord:123"] == "all"
-        assert mock_adapter._voice_sources[111]["chat_id"] == "123"
-        assert mock_adapter._voice_sources[111]["chat_type"] == "group"
+        effective_mode = saved_mode or "all"
+        reply_key = {
+            "voice_only": "gateway.voice.channel_joined_voice_only",
+            "off": "gateway.voice.channel_joined_off",
+        }.get(effective_mode, "gateway.voice.channel_joined")
+        from agent.i18n import t
+
+        assert (
+            result, runner._voice_mode, runner._voice_call_keys,
+            json.loads(runner._VOICE_MODE_PATH.read_text()),
+            mock_adapter._voice_sources[111], mock_adapter._auto_tts_enabled_chats,
+            mock_adapter._auto_tts_disabled_chats,
+        ) == (
+            t(reply_key, name="General"), {"discord:123": effective_mode},
+            {"discord:123"}, {"discord:123": "off"}, event.source.to_dict(),
+            {"123"} if effective_mode != "off" else set(),
+            {"123"} if effective_mode == "off" else set(),
+        )
 
 
     @pytest.mark.asyncio
@@ -510,13 +536,63 @@ class TestVoiceChannelCommands:
         """Successful leave disconnects and clears voice mode."""
         mock_adapter = AsyncMock()
         mock_adapter.is_in_voice_channel = MagicMock(return_value=True)
-        mock_adapter.leave_voice_channel = AsyncMock()
+        mock_adapter.leave_voice_channel = AsyncMock(return_value=123)
+        mock_adapter._voice_text_channels = {111: 123}
         event = self._make_discord_event("/voice leave")
         runner.adapters[event.source.platform] = mock_adapter
         runner._voice_mode["discord:123"] = "all"
         await runner._handle_voice_channel_leave(event)
         assert runner._voice_mode["discord:123"] == "off"
         mock_adapter.leave_voice_channel.assert_called_once_with(111)
+
+    @pytest.mark.asyncio
+    async def test_restart_ends_call_mode_but_keeps_chat_preferences(self, runner, tmp_path):
+        """No call survives a restart, so the mode that /voice join set must not be
+        restored, while modes that users chose with /voice tts or /voice on are."""
+        mock_channel = MagicMock()
+        mock_channel.name = "General"
+        mock_adapter = AsyncMock()
+        mock_adapter.join_voice_channel = AsyncMock(return_value=True)
+        mock_adapter.get_user_voice_channel = AsyncMock(return_value=mock_channel)
+        mock_adapter._voice_text_channels = {}
+        mock_adapter._voice_sources = {}
+        join = self._make_discord_event("/voice join", chat_id="123")
+        runner.adapters[join.source.platform] = mock_adapter
+        await runner._handle_voice_command(join)
+        await runner._handle_voice_command(self._make_discord_event("/voice tts", chat_id="456"))
+        await runner._handle_voice_command(self._make_discord_event("/voice on", chat_id="789"))
+
+        restarted = _make_runner(tmp_path)
+
+        expected_saved = {
+            "discord:123": "off",
+            "discord:456": "all",
+            "discord:789": "voice_only",
+        }
+        assert (
+            runner._voice_mode,
+            runner._voice_call_keys,
+            json.loads(runner._VOICE_MODE_PATH.read_text()),
+            restarted._load_voice_modes(),
+        ) == (
+            {**expected_saved, "discord:123": "all"},
+            {"discord:123"},
+            expected_saved,
+            expected_saved,
+        )
+
+    @pytest.mark.asyncio
+    async def test_leave_without_a_connection_is_refused(self, runner):
+        """A guild-scoped call *is* the in-process voice client: no connection means there
+        is nothing left to hang up, remotely or otherwise. Chat-scoped adapters differ."""
+        mock_adapter = AsyncMock()
+        mock_adapter.is_in_voice_channel = MagicMock(return_value=False)
+        mock_adapter.leave_voice_channel = AsyncMock()
+        event = self._make_discord_event("/voice leave")
+        runner.adapters[event.source.platform] = mock_adapter
+        result = await runner._handle_voice_channel_leave(event)
+        assert result == "Not in a voice channel."
+        mock_adapter.leave_voice_channel.assert_not_called()
 
     # -- _handle_voice_channel_input --
 
@@ -526,6 +602,7 @@ class TestVoiceChannelCommands:
         """Voice input creates synthetic event and calls handle_message."""
         from gateway.config import Platform
         mock_adapter = AsyncMock()
+        mock_adapter._resolve_channel_prompt = MagicMock(return_value=None)
         mock_adapter._voice_text_channels = {111: 123}
         mock_adapter._voice_sources = {}
         mock_channel = AsyncMock()
@@ -558,6 +635,7 @@ class TestVoiceChannelCommands:
             lambda _config: [("team-bot", None), ("first", None), ("second", None)],
         )
         mock_adapter = AsyncMock()
+        mock_adapter._resolve_channel_prompt = MagicMock(return_value=None)
         mock_adapter._owner_profile = "team-bot"
         mock_adapter._voice_text_channels = {111: 123}
         mock_adapter._voice_sources = {111: SessionSource(
@@ -612,6 +690,7 @@ class TestVoiceChannelCommands:
         )
 
         mock_adapter = AsyncMock()
+        mock_adapter._resolve_channel_prompt = MagicMock(return_value=None)
         mock_adapter._voice_text_channels = {111: 123}
         mock_adapter._voice_sources = {111: bound_source.to_dict()}
         mock_channel = AsyncMock()
@@ -671,6 +750,7 @@ class TestDiscordVoiceChannelMethods:
         adapter._voice_receivers = {}
         adapter._voice_listen_tasks = {}
         adapter._voice_input_callback = None
+        adapter._on_voice_disconnect = None
         adapter._allowed_user_ids = set()
         adapter._running = True
         return adapter
@@ -749,6 +829,50 @@ class TestDiscordVoiceChannelMethods:
             "cancel_bot_task",
             "close_client",
         ]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(("leave_returns", "budget"), [(True, 30.0), (False, 2.0)])
+    async def test_disconnect_reports_each_call_it_ends(self, leave_returns, budget):
+        """Disconnecting ends every call, so the runner must reset each bound text
+        channel's voice mode, as it does after an inactivity timeout. The runner
+        cancels a disconnect that outlasts its budget, for example when a dead
+        gateway connection blocks the voice leave, and the reset must still happen."""
+        from gateway.run import GatewayRunner
+
+        adapter = self._make_adapter()
+        ended = []
+        adapter._on_voice_disconnect = ended.append
+        adapter._cancel_liveness_task = AsyncMock()
+        adapter._cancel_bot_task = AsyncMock()
+        adapter._client.close = AsyncMock()
+        adapter._ready_event = MagicMock()
+        adapter._post_connect_task = None
+        adapter._missed_message_backfill_task = None
+        for guild_id, text_channel_id in ((111, 999), (222, 888)):
+            vc = MagicMock()
+            vc.is_connected.return_value = True
+            vc.is_playing.return_value = False
+            vc.disconnect = AsyncMock()
+            adapter._voice_clients[guild_id] = vc
+            adapter._voice_text_channels[guild_id] = text_channel_id
+        leave_entered = asyncio.Event()
+        if not leave_returns:
+            async def leave_that_never_returns(guild_id):
+                leave_entered.set()
+                await asyncio.Event().wait()
+
+            adapter.leave_voice_channel = leave_that_never_returns
+
+        disconnect_task = asyncio.ensure_future(adapter.disconnect())
+        try:
+            if not leave_returns:
+                await asyncio.wait_for(leave_entered.wait(), timeout=10.0)
+            completed = await GatewayRunner._wait_or_detach(disconnect_task, budget)
+        finally:
+            disconnect_task.cancel()
+            await asyncio.gather(disconnect_task, return_exceptions=True)
+
+        assert (completed, ended) == (leave_returns, ["999", "888"])
 
 
     def test_voice_timeout_zero_disables_auto_leave(self):
@@ -873,6 +997,7 @@ class TestLeaveExceptionHandling:
             side_effect=RuntimeError("Connection reset")
         )
         mock_adapter._voice_input_callback = MagicMock()
+        mock_adapter._voice_text_channels = {111: 123}
 
         event = _make_event("/voice leave")
         event.raw_message = SimpleNamespace(guild_id=111, guild=None)
@@ -1656,3 +1781,154 @@ class TestPcmToWav:
             assert w.getframerate() == 16000
             # 48kHz -> 16kHz is a 3x decimation of a 1s clip.
             assert w.getnframes() == 16000
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("outcome", ["same", "move", "failed_move", "refused", "leave_other"])
+async def test_voice_rebind_expires_only_the_replaced_call(tmp_path, monkeypatch, outcome):
+    from gateway.config import Platform, PlatformConfig
+    from plugins.platforms.discord.adapter import DiscordAdapter
+
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="test"))
+    adapter._client = MagicMock()
+    monkeypatch.setattr(adapter, "_reset_voice_timeout", lambda guild_id: None)
+    runner = _make_runner(tmp_path)
+    runner._delivery_adapter_for = lambda source: adapter
+    runner._adapter_profile_for_source = lambda source: None
+    channel = SimpleNamespace(id=444, name="call", guild=SimpleNamespace(id=111))
+    old_channel = channel if outcome == "same" else SimpleNamespace(id=333)
+    vc = MagicMock()
+    vc.channel = old_channel
+    vc.is_connected.return_value = True
+    vc.move_to = AsyncMock(side_effect=RuntimeError("move refused") if outcome == "failed_move" else None)
+    adapter._voice_clients[111] = vc
+    adapter._voice_text_channels[111] = 123
+    adapter._voice_sources[111] = {"original": True}
+    adapter.get_user_voice_channel = AsyncMock(return_value=channel)
+    if outcome == "refused":
+        adapter.join_voice_channel = AsyncMock(return_value=False)
+    runner._apply_voice_mode(adapter, "discord:123", "123", "all", in_call=True)
+    runner._apply_voice_mode(adapter, "discord:999", "999", "voice_only")
+    if outcome == "leave_other":
+        runner._apply_voice_mode(adapter, "discord:456", "456", "voice_only")
+        vc.is_playing.return_value = False
+        vc.disconnect = AsyncMock()
+    event = _make_event("/voice join", chat_id="456")
+    event.source.platform = Platform.DISCORD
+    event.raw_message = SimpleNamespace(guild_id=111)
+
+    if outcome == "leave_other":
+        await runner._handle_voice_channel_leave(event)
+    else:
+        await runner._handle_voice_channel_join(event)
+
+    ended = outcome == "leave_other"
+    successful = outcome in {"same", "move"}
+    expected_modes = {"discord:123": "all", "discord:999": "voice_only"}
+    expected_calls = {"discord:123"}
+    expected_binding = {111: 123}
+    expected_sources = {111: {"original": True}}
+    expected_persisted = {"discord:123": "off", "discord:999": "voice_only"}
+    if successful:
+        expected_modes.update({"discord:123": "off", "discord:456": "all"})
+        expected_calls = {"discord:456"}
+        expected_binding = {111: 456}
+        expected_sources = {111: event.source.to_dict()}
+        expected_persisted["discord:456"] = "off"
+    if ended:
+        expected_modes.update({"discord:123": "off", "discord:456": "voice_only"})
+        expected_calls = set()
+        expected_binding = {}
+        expected_sources = {}
+        expected_persisted["discord:456"] = "voice_only"
+    assert {
+        "modes": runner._voice_mode,
+        "calls": runner._voice_call_keys,
+        "binding": adapter._voice_text_channels,
+        "sources": adapter._voice_sources,
+        "persisted": json.loads(runner._VOICE_MODE_PATH.read_text()),
+    } == {
+        "modes": expected_modes,
+        "calls": expected_calls,
+        "binding": expected_binding,
+        "sources": expected_sources,
+        "persisted": expected_persisted,
+    }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("change", ["bot_left", "bot_moved", "member_left", "stale_channel", "replaced_call"])
+async def test_registered_voice_event_expires_the_bot_call_only(tmp_path, monkeypatch, change):
+    import discord
+    from discord.ext import commands
+    from gateway.config import PlatformConfig
+    from plugins.platforms.discord import adapter as discord_mod
+
+    adapter = discord_mod.DiscordAdapter(PlatformConfig(enabled=True, token="test"))
+    bot = commands.Bot(command_prefix="!", intents=discord.Intents.default())
+    bot._connection.user = discord.ClientUser(state=bot._connection, data={
+        "id": "999", "username": "Hermes", "discriminator": "0", "avatar": None,
+    })
+    async def start(token):
+        await bot.on_ready()
+        await asyncio.Event().wait()
+    monkeypatch.setattr(bot, "start", start)
+    monkeypatch.setattr(discord_mod.commands, "Bot", lambda **kwargs: bot)
+    monkeypatch.setattr(adapter, "_acquire_platform_lock", lambda *args: True)
+    monkeypatch.setattr(adapter, "_release_platform_lock", lambda: None)
+    monkeypatch.setattr(adapter, "_resolve_allowed_usernames", AsyncMock())
+    monkeypatch.setattr(adapter, "_run_post_connect_initialization", AsyncMock())
+    monkeypatch.setattr(adapter, "_start_liveness_probe", lambda: None)
+    monkeypatch.setattr(adapter, "_missed_message_backfill_enabled", lambda: False)
+    adapter._slash_commands = []
+    runner = _make_runner(tmp_path)
+    adapter._on_voice_disconnect = lambda chat_id: runner._handle_voice_timeout_cleanup(chat_id, adapter=adapter)
+    vc = MagicMock()
+    vc.channel = SimpleNamespace(id=555 if change == "stale_channel" else 444, name="call")
+    vc.is_connected.return_value = False
+    adapter._voice_clients[111] = vc
+    adapter._voice_text_channels[111] = 123
+    adapter._voice_sources[111] = {"original": True}
+    runner._apply_voice_mode(adapter, "discord:123", "123", "all", in_call=True)
+    runner._apply_voice_mode(adapter, "discord:999", "999", "voice_only")
+    member = discord.Member(guild=SimpleNamespace(id=111), state=bot._connection, data={
+        "user": {"id": "888" if change == "member_left" else "999", "username": "user",
+                 "discriminator": "0", "avatar": None}, "roles": [], "joined_at": None, "flags": 0,
+    })
+    before = discord.VoiceState(data={}, channel=SimpleNamespace(id=444, name="call"))
+    after = discord.VoiceState(data={}, channel=SimpleNamespace(id=555, name="next") if change == "bot_moved" else None)
+    try:
+        assert await adapter.connect() is True
+        if change == "replaced_call":
+            lock = adapter._voice_locks.setdefault(111, asyncio.Lock())
+            await lock.acquire()
+            started = asyncio.Event()
+            async def dispatch():
+                started.set()
+                await bot.on_voice_state_update(member, before, after)
+            event_task = asyncio.create_task(dispatch())
+            await asyncio.wait_for(started.wait(), timeout=10)
+            replacement = MagicMock()
+            replacement.channel = vc.channel
+            replacement.is_connected.return_value = False
+            adapter._voice_clients[111] = replacement
+            lock.release()
+            await event_task
+        else:
+            await bot.on_voice_state_update(member, before, after)
+        ended = change == "bot_left"
+        assert {
+            "modes": runner._voice_mode, "calls": runner._voice_call_keys,
+            "binding": adapter._voice_text_channels, "sources": adapter._voice_sources,
+            "guilds": list(adapter._voice_clients),
+            "persisted": json.loads(runner._VOICE_MODE_PATH.read_text()),
+        } == {
+            "modes": {"discord:123": "off" if ended else "all", "discord:999": "voice_only"},
+            "calls": set() if ended else {"discord:123"},
+            "binding": {} if ended else {111: 123},
+            "sources": {} if ended else {111: {"original": True}},
+            "guilds": [] if ended else [111],
+            "persisted": {"discord:123": "off", "discord:999": "voice_only"},
+        }
+    finally:
+        await adapter.disconnect()

@@ -271,7 +271,8 @@ def check_config(groq_key, eleven_key):
             modes = json.loads(voice_mode_path.read_text(encoding="utf-8-sig"))
             off_count = sum(1 for v in modes.values() if v == "off")
             all_count = sum(1 for v in modes.values() if v == "all")
-            check("Voice mode state", True, f"{all_count} on, {off_count} off, {len(modes)} total")
+            check("Voice mode state (loaded on restart)", True,
+                  f"{all_count} on, {off_count} off, {len(modes)} total")
         except Exception:
             warn("Voice mode state", "parse error")
     else:

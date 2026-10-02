@@ -1050,7 +1050,11 @@ def _read_discord_prompt_timeout() -> int:
 from plugins.platforms.discord.adapter_media import DiscordMediaMixin
 
 
-class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
+from plugins.platforms.discord.inbound_context import DiscordInboundContextMixin
+from plugins.platforms.discord.voice_lifecycle import DiscordVoiceLifecycleMixin
+
+
+class DiscordAdapter(DiscordVoiceLifecycleMixin, DiscordInboundContextMixin, DiscordMediaMixin, BasePlatformAdapter):
     """Discord bot adapter: guild/DM messages, threads, slash commands, button approvals, reactions."""
 
     MAX_MESSAGE_LENGTH = 2000
@@ -1379,32 +1383,7 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
 
             @self._client.event
             async def on_voice_state_update(member, before, after):
-                """Track voice channel join/leave events."""
-                bot_guild_ids = set(adapter_self._voice_clients.keys())
-                if not bot_guild_ids:
-                    return
-                guild_id = member.guild.id
-                if guild_id not in bot_guild_ids:
-                    return
-                if member == adapter_self._client.user:
-                    return
-                joined = before.channel is None and after.channel is not None
-                left = before.channel is not None and after.channel is None
-                switched = (
-                    before.channel is not None
-                    and after.channel is not None
-                    and before.channel != after.channel
-                )
-                if joined or left or switched:
-                    logger.info(
-                        "Voice state: %s (%d) %s (guild %d)",
-                        member.display_name,
-                        member.id,
-                        "joined " + after.channel.name if joined
-                        else "left " + before.channel.name if left
-                        else f"moved {before.channel.name} -> {after.channel.name}",
-                        guild_id,
-                    )
+                await adapter_self._handle_voice_state_update(member, before, after)
             if self._slash_commands:
                 # Registration walks the skill catalog on disk (#110707); keep the loop free.
                 await asyncio.to_thread(self._register_slash_commands)
@@ -1960,41 +1939,6 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         deadline = max(1.0, budget - headroom)
         return min(deadline, budget * 0.9)
 
-    async def disconnect(self) -> None:
-        """Disconnect from Discord."""
-        self._disconnecting = True
-        # Cancel the liveness probe first so it can't fire a spurious fatal/reconnect mid-teardown.
-        await self._cancel_liveness_task()
-        # Leave voice *before* cancelling the bot task: VoiceClient.disconnect() needs the main
-        # gateway WS (run by the bot task) or it blocks until the timeout.
-        for guild_id in list(self._voice_clients.keys()):
-            try:
-                await self.leave_voice_channel(guild_id)
-            except Exception as e:  # pragma: no cover - defensive logging
-                logger.debug("[%s] Error leaving voice channel %s: %s", self.name, guild_id, e)
-        # Cancel the bot task before closing: after a connect() timeout client.start() may still run
-        # and discord.py's reconnect loop can ignore the closed flag mid-handshake.
-        await self._cancel_bot_task()
-        if self._client:
-            try:
-                await self._client.close()
-            except Exception as e:  # pragma: no cover - defensive logging
-                logger.warning("[%s] Error during disconnect: %s", self.name, e, exc_info=True)
-        for task in (self._post_connect_task, self._missed_message_backfill_task):
-            if task and not task.done():
-                task.cancel()
-                try:
-                    await task
-                except asyncio.CancelledError:
-                    pass
-        self._running = False
-        self._client = None
-        self._ready_event.clear()
-        self._post_connect_task = None
-        self._liveness_task = None
-        self._missed_message_backfill_task = None
-        self._release_platform_lock()
-        logger.info("[%s] Disconnected", self.name)
 
     def _command_sync_state_path(self) -> _Path:
         from hermes_constants import get_hermes_home
@@ -3589,76 +3533,7 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         mixers = getattr(self, "_voice_mixers", None)
         return bool(mixers) and mixers.get(guild_id) is not None
 
-    async def join_voice_channel(self, channel, *, text_channel_id: int = None, source: dict = None) -> bool:
-        """Join a voice channel; returns True on success. ``text_channel_id`` stores the
-        transcription-routing binding so programmatic joins work without ``/voice join``."""
-        if not self._client or not DISCORD_AVAILABLE:
-            return False
-        guild_id = channel.guild.id
-        async with self._voice_locks.setdefault(guild_id, asyncio.Lock()):
-            existing = self._voice_clients.get(guild_id)
-            if existing and existing.is_connected():
-                if existing.channel.id == channel.id:
-                    self._reset_voice_timeout(guild_id)
-                    return True
-                await existing.move_to(channel)
-                self._reset_voice_timeout(guild_id)
-                return True
-            vc = await channel.connect()
-            self._voice_clients[guild_id] = vc
-            self._reset_voice_timeout(guild_id)
-            if text_channel_id is not None:
-                self._voice_text_channels[guild_id] = text_channel_id
-            if source is not None:
-                self._voice_sources[guild_id] = source
-            try:
-                receiver = VoiceReceiver(vc, allowed_user_ids=self._allowed_user_ids)
-                receiver.start()
-                self._voice_receivers[guild_id] = receiver
-                self._voice_listen_tasks[guild_id] = asyncio.ensure_future(
-                    self._voice_listen_loop(guild_id)
-                )
-            except Exception as e:
-                logger.warning("Voice receiver failed to start: %s", e)
-            # Mixer is best-effort; failure falls back to one-shot FFmpegPCMAudio playback.
-            if getattr(self, "_voice_fx_cfg", {}).get("enabled"):
-                try:
-                    await self._install_voice_mixer(guild_id, vc)
-                except Exception as e:
-                    logger.warning("Voice mixer failed to start: %s", e)
-            return True
 
-    async def leave_voice_channel(self, guild_id: int) -> None:
-        """Disconnect from the voice channel in a guild."""
-        async with self._voice_locks.setdefault(guild_id, asyncio.Lock()):
-            receiver = self._voice_receivers.pop(guild_id, None)
-            pending_inputs = []
-            if receiver:
-                pending_inputs = receiver.flush_pending()
-                receiver.stop()
-            listen_task = self._voice_listen_tasks.pop(guild_id, None)
-            if listen_task:
-                listen_task.cancel()
-            guild = self._client.get_guild(guild_id) if self._client is not None else None
-            for user_id, pcm_data in pending_inputs:
-                if self._is_allowed_user(str(user_id), guild=guild, is_dm=False):
-                    await self._process_voice_input(guild_id, user_id, pcm_data)
-            # Tear down the mixer (stops the continuous outgoing stream).
-            if getattr(self, "_voice_mixers", None) is not None:
-                self._voice_mixers.pop(guild_id, None)
-            vc = self._voice_clients.pop(guild_id, None)
-            if vc and vc.is_connected():
-                try:
-                    if vc.is_playing():
-                        vc.stop()
-                except Exception:
-                    pass
-                await vc.disconnect()
-            task = self._voice_timeout_tasks.pop(guild_id, None)
-            if task:
-                task.cancel()
-            self._voice_text_channels.pop(guild_id, None)
-            self._voice_sources.pop(guild_id, None)
 
     async def play_in_voice_channel(self, guild_id: int, audio_path: str) -> bool:
         """Play audio in the VC: via the mixer (layered over the ambient bed, ducking it)
@@ -3745,55 +3620,8 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             return None
         return member.voice.channel
 
-    def _cancel_voice_timeout(self, guild_id: int) -> None:
-        task = self._voice_timeout_tasks.pop(guild_id, None)
-        if task:
-            task.cancel()
 
-    def _reset_voice_timeout(self, guild_id: int) -> None:
-        """Reset the auto-disconnect inactivity timer."""
-        self._cancel_voice_timeout(guild_id)
-        timeout = self._voice_timeout_limit()
-        if timeout <= 0:
-            logger.debug("Voice inactivity timeout disabled (guild=%d)", guild_id)
-            return
-        self._voice_timeout_tasks[guild_id] = asyncio.ensure_future(
-            self._voice_timeout_handler(guild_id, timeout)
-        )
 
-    async def _voice_timeout_handler(self, guild_id: int, timeout: Optional[int] = None) -> None:
-        """Auto-disconnect after the configured inactivity timeout."""
-        timeout = self._voice_timeout_limit() if timeout is None else int(timeout)
-        if timeout <= 0:
-            return
-        try:
-            await asyncio.sleep(timeout)
-        except asyncio.CancelledError:
-            return
-        text_ch_id = self._voice_text_channels.get(guild_id)
-        # ``/voice off`` keeps the bot in the channel; only the bot's own audio counts as
-        # activity, so the timer would fire every VOICE_TIMEOUT and spam "Left voice channel".
-        _mode_getter = getattr(self, "_voice_mode_getter", None)
-        if text_ch_id is not None and _mode_getter is not None:
-            try:
-                if _mode_getter(str(text_ch_id)) == "off":
-                    return
-            except Exception:
-                pass
-        await self.leave_voice_channel(guild_id)
-        # Notify the runner so it can clean up voice_mode state
-        if self._on_voice_disconnect and text_ch_id:
-            try:
-                self._on_voice_disconnect(str(text_ch_id))
-            except Exception:
-                pass
-        if text_ch_id and self._client:
-            ch = self._client.get_channel(text_ch_id)
-            if ch:
-                try:
-                    await ch.send(t("platform.discord.voice.left_inactivity"))
-                except Exception:
-                    pass
 
     def is_in_voice_channel(self, guild_id: int) -> bool:
         """Check if the bot is connected to a voice channel in this guild."""
@@ -5979,235 +5807,6 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                 return _Snowflake(int(_ref_mid))
         return None
 
-    async def _handle_message(
-        self, message: DiscordMessage, role_authorized: bool = False, *, recovered: bool = False,
-    ) -> bool:
-        """Handle one Discord message and report whether it reached dispatch."""
-        # Server channels (not DMs) require @mention unless free-response or an already-joined thread.
-        #
-        # Config (discord.* in config.yaml or DISCORD_* env vars):
-        #   discord.require_mention: Require @mention in server channels (default: true)
-        #   discord.free_response_channels: Channel IDs where bot responds without mention
-        #   discord.ignored_channels: Channel IDs where bot NEVER responds (even when mentioned)
-        #   discord.allowed_channels: If set, bot ONLY responds in these channels (whitelist)
-        #   discord.no_thread_channels: Channel IDs where bot responds directly without creating thread
-        #   discord.auto_thread: Auto-create thread on @mention in channels (default: true)
-        #   discord.free_response_auto_thread: Free-response channels also auto-thread (default: false)
-        thread_id = None
-        parent_channel_id = None
-        is_thread = isinstance(message.channel, discord.Thread)
-        if is_thread:
-            thread_id = str(message.channel.id)
-            parent_channel_id = self._get_parent_channel_id(message.channel)
-        is_voice_linked_channel = False
-        # Save stripped text now: create_thread() can clobber message.content (breaks /command detection).
-        raw_content = message.content.strip()
-        normalized_content = raw_content
-        mention_prefix = False
-        snapshot_attachments = []
-        if hasattr(message, "message_snapshots") and message.message_snapshots:
-            snapshot_text_parts = []
-            for snap in message.message_snapshots:
-                if getattr(snap, "content", None):
-                    snapshot_text_parts.append(snap.content.strip())
-                snapshot_attachments.extend(getattr(snap, "attachments", []) or [])
-            if snapshot_text_parts and not raw_content:
-                raw_content = "\n".join(snapshot_text_parts)
-                normalized_content = raw_content
-        if self._self_is_explicitly_mentioned(message):
-            mention_prefix = True
-            if self._client.user:
-                normalized_content = normalized_content.replace(f"<@{self._client.user.id}>", "").strip()
-                normalized_content = normalized_content.replace(f"<@!{self._client.user.id}>", "").strip()
-            message.content = normalized_content
-        if not isinstance(message.channel, discord.DMChannel):
-            channel_ids = {str(message.channel.id)}
-            if parent_channel_id:
-                channel_ids.add(parent_channel_id)
-            channel_keys = self._discord_channel_keys(message, parent_channel_id)
-            allowed_channels = self._get_allowed_channels()
-            if allowed_channels:
-                if "*" not in allowed_channels and not (channel_keys & allowed_channels):
-                    logger.debug("[%s] Ignoring message in non-allowed channel: %s", self.name, channel_keys)
-                    return False
-            ignored_channels = self._get_ignored_channels()
-            if "*" in ignored_channels or (channel_keys & ignored_channels):
-                logger.debug("[%s] Ignoring message in ignored channel: %s", self.name, channel_keys)
-                return False
-            free_channels = self._discord_free_response_channels()
-            require_mention = self._discord_require_mention()
-            # Voice-linked text channel is free-response while voice is active (exact channel only).
-            voice_linked_ids = {str(ch_id) for ch_id in self._voice_text_channels.values()}
-            current_channel_id = str(message.channel.id)
-            is_voice_linked_channel = current_channel_id in voice_linked_ids
-            is_free_channel = (
-                "*" in free_channels
-                or bool(channel_keys & free_channels)
-                or is_voice_linked_channel
-            )
-            in_bot_thread = self._in_bot_thread(message)
-            if require_mention and not is_free_channel and not in_bot_thread:
-                if (
-                    not self._self_is_explicitly_mentioned(message)
-                    and not mention_prefix
-                    and not self._is_bot_tag_debounce_continuation(message)
-                ):
-                    return False
-        # Auto-thread: isolate each @mention in a text channel into its own thread (Slack-style).
-        auto_threaded_channel = None
-        if not is_thread and not isinstance(message.channel, discord.DMChannel):
-            no_thread_channels = self._get_no_thread_channels()
-            # Voice-linked and reply exclusions live in the auto-thread gate below, not in skip_thread.
-            skip_thread = bool(channel_keys & no_thread_channels) or (
-                is_free_channel and not self._discord_free_response_auto_thread()
-            )
-            auto_thread = self._extra_or_env_flag("auto_thread", "DISCORD_AUTO_THREAD", "true", truthy=True)
-            is_reply_message = getattr(message, "type", None) == discord.MessageType.reply
-            if auto_thread and not skip_thread and not is_voice_linked_channel and not is_reply_message:
-                thread = await self._auto_create_thread(message)
-                if thread:
-                    parent_channel_id = str(message.channel.id)
-                    is_thread = True
-                    thread_id = str(thread.id)
-                    # Pre-seed dedup: message.create_thread() fires a second MESSAGE_CREATE for the
-                    # starter (id == thread.id, maybe type=default); mark it so it can't trigger a rerun.
-                    # Must run before the first await below: mark_async yields to the loop, and the
-                    # echo's _discord_message_admission would otherwise claim the id first.
-                    self._dedup.is_duplicate(str(thread.id))
-                    auto_threaded_channel = thread
-                    await self._threads.mark_async(thread_id)
-                else:
-                    # Auto-threading is the routing target; do NOT fall back to an inline parent-channel
-                    # reply (dumps the task into a shared channel). Surface an error and skip the run.
-                    try:
-                        # That breaks thread-first Discord workflows by dumping a new task into a shared
-                        # channel. Surface a short visible error so the user can retry once Discord
-                        # recovers, and skip agent invocation for this message. See #20243.
-                        await message.channel.send(
-                            self.warning_text(
-                                t("platform.discord.thread.auto_create_failed"),
-                                t("platform.discord.thread.auto_create_failed_generic"))
-                        )
-                    except Exception as notify_error:
-                        logger.warning(
-                            "[%s] Failed to notify user of auto-thread failure: %s", self.name,
-                            notify_error,
-                        )
-                    return False
-        referenced_attachments = []
-        reference = getattr(message, "reference", None)
-        resolved_reference = getattr(reference, "resolved", None) if reference else None
-        if resolved_reference is not None:
-            referenced_attachments = list(getattr(resolved_reference, "attachments", []) or [])
-        all_attachments = list(message.attachments) + snapshot_attachments + referenced_attachments
-        if normalized_content.startswith("/"):
-            msg_type = MessageType.COMMAND
-        elif all_attachments:
-            msg_type = self._attachment_message_type(all_attachments[0])
-        else:
-            msg_type = MessageType.TEXT
-        effective_channel = auto_threaded_channel or message.channel
-        if isinstance(message.channel, discord.DMChannel):
-            chat_type = "dm"
-            chat_name = message.author.name
-        elif is_thread:
-            chat_type = "thread"
-            chat_name = self._format_thread_chat_name(effective_channel)
-        else:
-            chat_type = "group"
-            chat_name = getattr(message.channel, "name", str(message.channel.id))
-            if hasattr(message.channel, "guild") and message.channel.guild:
-                chat_name = f"{message.channel.guild.name} / #{chat_name}"
-        # Channel topic (TextChannels only); forum-parented threads inherit the parent topic.
-        chat_topic = self._get_effective_topic(message.channel, is_thread=is_thread)
-        guild = getattr(message, "guild", None)
-        source = self.build_source(
-            chat_id=str(effective_channel.id),
-            chat_name=chat_name,
-            chat_type=chat_type,
-            user_id=str(message.author.id),
-            user_name=message.author.display_name,
-            thread_id=thread_id,
-            chat_topic=chat_topic,
-            is_bot=getattr(message.author, "bot", False),
-            guild_id=str(guild.id) if guild else None,
-            parent_chat_id=parent_channel_id,
-            message_id=str(message.id),
-            role_authorized=role_authorized,
-            auto_thread_created=auto_threaded_channel is not None,
-            auto_thread_initial_name=(
-                getattr(auto_threaded_channel, "_hermes_auto_thread_initial_name", None)
-                or self._derive_auto_thread_name(message.content or "")
-            ) if auto_threaded_channel is not None else None,
-        )
-        media_urls, media_types, media_text_inlined, pending_text_injection = await self._collect_attachment_media(
-            all_attachments)
-        event_text = normalized_content
-        if pending_text_injection:
-            event_text = f"{pending_text_injection}\n\n{event_text}" if event_text else pending_text_injection
-        # ── History backfill ─────────────────────────────────────────
-        # With require_mention, messages between bot turns never reach the transcript; fetch
-        # history after the bot's last message (cold start: last N, stop at first self-message)
-        # and prepend it. DMs skipped (every DM triggers the bot); in-flight arrivals not captured.
-        _channel_context = None
-        _is_dm = isinstance(message.channel, discord.DMChannel)
-        if not _is_dm and self._discord_history_backfill():
-            # Backfill on a gap: mention-gated channels, any thread (processing/restart gaps), any
-            # reply (hydrate context around the referenced message). DMs/fresh auto-threads: nothing.
-            _has_mention_gap = require_mention and not is_free_channel and not in_bot_thread
-            _is_reply = message.reference is not None
-            if (_has_mention_gap or is_thread or _is_reply) and auto_threaded_channel is None:
-                _backfill_text = await self._fetch_channel_context(
-                    message.channel, before=message,
-                    reply_target=self._reply_target(message.reference) if _is_reply else None,
-                )
-                if _backfill_text:
-                    _channel_context = _backfill_text
-        # Keep empty user messages out of the session; with channel_context a bare mention = "catch me up".
-        if (not event_text or not event_text.strip()) and not _channel_context:
-            # Bare mention-only ping with no media/text/backfill: drop rather than spawn an empty turn.
-            if (mention_prefix and not media_urls and not pending_text_injection):
-                logger.info(
-                    "[%s] Ignoring mention-only message from %s in %s", self.name,
-                    getattr(message.author, "display_name", getattr(message.author, "name", "unknown")),
-                    getattr(message.channel, "id", "unknown"),
-                )
-                return False
-            event_text = "(The user sent a message with no text content)"
-        _chan = message.channel
-        _parent_id = str(getattr(_chan, "parent_id", "") or "")
-        _chan_id = str(getattr(_chan, "id", ""))
-        _skills = self._resolve_channel_skills(_chan_id, _parent_id or None)
-        _channel_prompt = self._resolve_channel_prompt(_chan_id, _parent_id or None)
-        reply_to_id = None
-        reply_to_text = None
-        if message.reference:
-            reply_to_id = str(message.reference.message_id)
-            if message.reference.resolved:
-                reply_to_text = getattr(message.reference.resolved, "content", None) or None
-        event = MessageEvent(
-            text=event_text, message_type=msg_type, source=source, raw_message=message,
-            message_id=str(message.id), media_urls=media_urls, media_types=media_types,
-            media_text_inlined=media_text_inlined,
-            reply_to_message_id=reply_to_id, reply_to_text=reply_to_text,
-            timestamp=message.created_at, auto_skill=_skills, channel_prompt=_channel_prompt,
-            channel_context=_channel_context,
-        )
-        if (
-            getattr(getattr(message, "author", None), "bot", False)
-            and self._is_bot_tag_debounce_continuation(message)
-        ):
-            event._bot_tag_debounce = True  # type: ignore[attr-defined]
-
-        # Track participation so follow-ups in this thread don't need @mention.
-        if thread_id:
-            await self._threads.mark_async(thread_id)
-        # Only live plain text is batched: recovery candidates are complete; coalescing would replay IDs.
-        if (not recovered and msg_type == MessageType.TEXT and self._text_batch_delay_seconds > 0):
-            self._enqueue_text_event(event)
-        else:
-            await self.handle_message(event)
-        return True
 
     def _text_batch_delay_for(self, pending: Optional[MessageEvent]) -> float:
         """A bot handoff's continuation chunks arrive at Discord's send rate (~1/s), so a
@@ -7467,4 +7066,5 @@ def register(ctx) -> None:
         max_message_length=2000,
         emoji="🎮",
         allow_update_command=True,
+        reads_non_conversational_mark=True,
     )

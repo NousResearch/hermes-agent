@@ -585,6 +585,8 @@ gateway:
     channel_join_failed: "Failed to join voice channel: {error}"
     channel_deps_missing: "Voice dependencies are missing (PyNaCl / davey). Run: `{hint}`"
     channel_join_permissions: "Failed to join voice channel. Check bot permissions (Connect + Speak)."
+    channel_joined_voice_only: "Joined voice channel **{name}**.\nI'll listen and reply with voice only to voice messages. Use /voice leave to disconnect."
+    channel_joined_off: "Joined voice channel **{name}**.\nI'll listen but keep replies as text. Use /voice on to enable voice replies or /voice leave to disconnect."
     channel_joined: "Joined voice channel **{name}**.\nI'll speak my replies and listen to you. Use /voice leave to disconnect."
     channel_not_joined: "Not in a voice channel."
     channel_left: "Left voice channel."
@@ -754,6 +756,7 @@ gateway:
     paused: "⏸️ Paused{suffix}. New cron/kanban/gateway work is on hold; in-flight work finishes normally. Use `/pause off` to resume."
 
   queue:
+    full: "The pending queue is full. This message was not queued. Wait for a queued turn to finish, then resend it."
     usage: "Usage: /queue <prompt>"
     queued: "Queued for the next turn."
     queued_depth: " ({depth} queued)"

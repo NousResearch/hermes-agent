@@ -29,3 +29,9 @@ def test_openrouter_and_nous_routes_keep_reasoning_details():
     for base_url in ("https://openrouter.ai/api/v1", "https://inference-api.nousresearch.com/v1"):
         kwargs = transport.build_kwargs("m", _HISTORY, base_url=base_url)
         assert any("reasoning_details" in m for m in kwargs["messages"]), base_url
+
+
+def test_openrouter_drops_reasoning_details_for_google_upstream():
+    transport = get_transport("chat_completions")
+    kwargs = transport.build_kwargs("google/gemini-3.6-flash", _HISTORY, base_url="https://openrouter.ai/api/v1")
+    assert all("reasoning_details" not in m for m in kwargs["messages"])

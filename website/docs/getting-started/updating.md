@@ -215,7 +215,10 @@ fold them back together with `git gc --auto` (git's own `gc.autoPackLimit`, 50 b
 healthy checkout pays a no-op. They also set `maintenance.auto`, `gc.writeCommitGraph` and
 `fetch.writeCommitGraph` to `false` in that checkout, because a commit-graph write over commits the
 graph has not seen yet downloads every one of their trees. Leave those settings alone, and leave
-`gc.auto` at its default: `gc.auto=0` stops the fold. To fold by hand (with Hermes closed):
+`gc.auto` at its default: `gc.auto=0` stops the fold. The first fold on a checkout that has
+piled up thousands of packs is a full repack and can take several minutes; the update says so
+before it starts, and if the fold runs past 20 minutes it stops and prints the command below.
+To fold by hand (with Hermes closed):
 
 ```bash
 git -C "$repo" -c gc.writeCommitGraph=false gc --auto

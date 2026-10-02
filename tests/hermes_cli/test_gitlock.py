@@ -238,6 +238,8 @@ def partial_clone(tmp_path: Path) -> Path:
     """Blobless clone that has lazy-fetched one pack per object it was asked for."""
     _seed, _up, clone = _blobless_clone(tmp_path, 3)
     _run_git("config", "gc.autoPackLimit", "2", cwd=clone)  # the wild default (50) cannot be crossed here
+    # Else each lazy fetch's detached auto-maintenance races the test and folds the packs itself.
+    _run_git("config", "maintenance.auto", "false", cwd=clone)
     for name in ("d0/f.txt", "d1/f.txt", "d2/f.txt"):
         _run_git("cat-file", "-p", _run_git("rev-parse", f"HEAD:{name}", cwd=clone), cwd=clone)
     return clone
@@ -290,10 +292,18 @@ def test_non_partial_checkout_is_left_alone(repo: Path) -> None:
     assert keys == "", "a full clone keeps git's stock maintenance"
 
 
-def test_update_check_debris_cleanup_is_where_the_packs_get_folded(partial_clone: Path) -> None:
-    """`hermes update --check` runs on its own (CLI banner prefetch), so its cleanup is the fold point."""
+def test_update_debris_cleanup_folds_and_reports_a_fold_that_runs_out_of_time(
+        partial_clone: Path, monkeypatch: pytest.MonkeyPatch, capfd: pytest.CaptureFixture[str]) -> None:
+    """A killed fold restarts from scratch every update, so it must say so instead of returning 0."""
+    from hermes_cli import gitlock
     from hermes_cli.update_cmd_check import clear_git_debris
 
     before = len(_packs(partial_clone))
+    with monkeypatch.context() as patched:
+        patched.setattr(gitlock, "LAZY_FETCH_GC_TIMEOUT_SECONDS", 0)  # the real gc, killed by the real bound
+        clear_git_debris(partial_clone)
+    out = capfd.readouterr().out
+    assert f"Folding {before} lazy-fetch packs" in out and "gc.writeCommitGraph=false gc --auto" in out
+
     clear_git_debris(partial_clone)
     assert len(_packs(partial_clone)) < before

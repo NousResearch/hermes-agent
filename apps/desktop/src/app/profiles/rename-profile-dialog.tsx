@@ -18,6 +18,7 @@ import { useI18n } from '@/i18n'
 import { AlertTriangle } from '@/lib/icons'
 import { slug } from '@/lib/sanitize'
 import { retireLocalProfileGateways } from '@/store/gateway'
+import { notifyError } from '@/store/notifications'
 import { migrateTilesForProfile } from '@/store/session-states'
 
 import { isValidProfileName } from './create-profile-dialog'
@@ -95,7 +96,13 @@ export function RenameProfileDialog({
         retireLocalProfileGateways(currentName)
       }
 
-      await (scope == null ? renameProfile(currentName, trimmed) : renameProfile(currentName, trimmed, scope))
+      const result = await (scope == null
+        ? renameProfile(currentName, trimmed)
+        : renameProfile(currentName, trimmed, scope))
+
+      if (result.thoughtCaptureWarning) {
+        notifyError(result.thoughtCaptureWarning, p.failedRename)
+      }
 
       // The sessions moved with the directory; the tabs, cached tails and
       // remembered ids keyed by the old name must follow, or every open

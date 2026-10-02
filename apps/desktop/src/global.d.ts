@@ -7,6 +7,7 @@ import type { HudModifierApi } from '../electron/hud-modifier-types'
 import type { MachineProfile } from '../electron/machine-profile'
 import type { HermesNotification } from '../electron/notification-types'
 import type { PoolLimits } from '../electron/pool-limits'
+import type { ThoughtDraft, ThoughtSnapshot } from '../electron/thought-capture'
 import type { UpdateRunReport } from '../electron/updater/update-metrics'
 import type { GrowRequest } from '../electron/window-growth'
 
@@ -183,6 +184,11 @@ declare global {
       // shortcut on a cold launch without the renderer visiting Settings), so
       // the renderer reads/writes it here and adopts the authoritative reply.
       quickEntry: {
+        readThoughts: () => Promise<ThoughtSnapshot>
+        saveThought: (payload: { token: string; draft: ThoughtDraft }) => Promise<ThoughtSnapshot>
+        saveThoughtDraft: (payload: { token: string; draft: ThoughtDraft }) => Promise<void>
+        expandThoughts: (expanded: boolean) => void
+        onThoughtOwnerChanged: (callback: (retiredOwner?: ThoughtSnapshot['owner']) => void) => () => void
         getSettings: () => Promise<QuickEntryStatus>
         // Returns the resulting state — including `registered: false` +
         // `error: 'taken'` when another app already owns the chord, so a failed

@@ -14,6 +14,7 @@ Regression tests for two bugs in WhatsAppAdapter.connect():
 
 import asyncio
 import signal
+from contextlib import ExitStack
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -80,6 +81,71 @@ def _connect_patches(mock_proc, mock_fh):
         patch("plugins.platforms.whatsapp.adapter.asyncio.create_task"),
     ]
     return base
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "windows,winerror,recovered",
+    [(True, 5, True), (True, 2, False), (False, 5, False)],
+    ids=["windows-job-denied", "other-windows-error", "non-windows"],
+)
+async def test_bridge_spawn_retries_only_windows_job_denial(windows, winerror, recovered):
+    """A job that rejects breakaway must still permit the managed bridge to start."""
+    adapter = _make_adapter()
+    proc, log = MagicMock(), MagicMock()
+    denied = PermissionError("process creation denied")
+    denied.winerror = winerror
+    with ExitStack() as stack:
+        for item in _connect_patches(proc, log):
+            stack.enter_context(item)
+        stack.enter_context(patch("plugins.platforms.whatsapp.adapter._IS_WINDOWS", windows))
+        stack.enter_context(patch.object(adapter, "_acquire_platform_lock", return_value=True))
+        stack.enter_context(patch.object(adapter, "_ensure_bridge_deps", return_value=True))
+        stack.enter_context(patch.object(adapter, "_reuse_running_bridge", new_callable=AsyncMock, return_value=False))
+        stack.enter_context(patch.object(adapter, "_bridge_env", return_value={"PUBLIC_TEST": "1"}))
+        stack.enter_context(patch.object(adapter, "_wait_for_bridge", new_callable=AsyncMock, return_value=True))
+        stack.enter_context(patch.object(adapter, "_attach_to_bridge"))
+        stack.enter_context(patch.object(adapter, "_wire_plugin_handlers"))
+        for name in ("_kill_stale_bridge_by_pidfile", "_kill_port_process", "_write_bridge_pidfile"):
+            stack.enter_context(patch(f"plugins.platforms.whatsapp.adapter.{name}"))
+        stack.enter_context(patch("plugins.platforms.whatsapp.adapter.windows_detach_popen_kwargs", return_value={"creationflags": 0x09000200}))
+        spawn = stack.enter_context(patch("subprocess.Popen", side_effect=[denied, proc]))
+        result = await adapter.connect()
+    assert result is recovered
+    assert spawn.call_count == (2 if recovered else 1)
+    if recovered:
+        first, second = spawn.call_args_list
+        assert first.args == second.args
+        assert {k:v for k,v in first.kwargs.items() if k != "creationflags"} == {k:v for k,v in second.kwargs.items() if k != "creationflags"}
+        assert first.kwargs["creationflags"] & 0x01000000
+        assert not second.kwargs["creationflags"] & 0x01000000
+        assert adapter._bridge_process is proc
+
+
+@pytest.mark.asyncio
+async def test_bridge_spawn_failed_fallback_releases_lock_and_log():
+    """Failed fallback remains a real connection failure and closes its resources."""
+    adapter = _make_adapter()
+    proc, log = MagicMock(), MagicMock()
+    denied = PermissionError("process creation denied")
+    denied.winerror = 5
+    with ExitStack() as stack:
+        for item in _connect_patches(proc, log):
+            stack.enter_context(item)
+        stack.enter_context(patch("plugins.platforms.whatsapp.adapter._IS_WINDOWS", True))
+        stack.enter_context(patch.object(adapter, "_acquire_platform_lock", return_value=True))
+        release = stack.enter_context(patch.object(adapter, "_release_platform_lock"))
+        stack.enter_context(patch.object(adapter, "_ensure_bridge_deps", return_value=True))
+        stack.enter_context(patch.object(adapter, "_reuse_running_bridge", new_callable=AsyncMock, return_value=False))
+        stack.enter_context(patch.object(adapter, "_bridge_env", return_value={"PUBLIC_TEST": "1"}))
+        for name in ("_kill_stale_bridge_by_pidfile", "_kill_port_process"):
+            stack.enter_context(patch(f"plugins.platforms.whatsapp.adapter.{name}"))
+        spawn = stack.enter_context(patch("subprocess.Popen", side_effect=[denied, OSError("bridge unavailable")]))
+        result = await adapter.connect()
+    assert result is False
+    assert spawn.call_count == 2
+    log.close.assert_called_once()
+    release.assert_called_once()
 
 
 # ---------------------------------------------------------------------------

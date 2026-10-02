@@ -6,7 +6,6 @@ import asyncio
 import contextvars
 import json
 import threading
-import time
 from types import SimpleNamespace
 
 import pytest
@@ -140,62 +139,6 @@ async def test_async_execution_uses_canonical_relay_operation_name(
 
     assert result == {"content": "done"}
     assert observed_names == ["openai.responses"]
-
-
-@pytest.mark.asyncio
-async def test_provider_stream_read_does_not_block_its_event_loop():
-    """A blocked provider read must not prevent a concurrent stream from consuming data."""
-    read_started = threading.Event()
-    release_read = threading.Event()
-
-    class BlockingIterator:
-        def __iter__(self):
-            return self
-
-        def __next__(self):
-            read_started.set()
-            assert release_read.wait(timeout=1)
-            return {"delta": "chunk"}
-
-    class ReadyIterator:
-        def __iter__(self):
-            return self
-
-        def __next__(self):
-            return {"delta": "ready"}
-
-    def provider_stream_for(raw_stream):
-        stream = object.__new__(relay_llm.ManagedLlmStream)
-        stream._stream_factory = lambda _request: raw_stream
-        stream._completed_response_predicate = None
-        stream._on_stream_created = None
-        stream._accept_chunk = None
-        stream._raw_chunks = []
-        stream._provider_completed = False
-        stream._callback_error = None
-        stream._closed = True  # This producer-only test does not own a Relay stream lifecycle.
-        return stream, stream._provider_stream(attempt, {})
-
-    attempt = SimpleNamespace(
-        provider_request=lambda request: request,
-        run_callback=lambda callback, *args: callback(*args),
-    )
-    _slow_stream, slow_provider_stream = provider_stream_for(BlockingIterator())
-    _fast_stream, fast_provider_stream = provider_stream_for(ReadyIterator())
-    release_timer = threading.Timer(0.2, release_read.set)
-    release_timer.start()
-    started_at = time.monotonic()
-    try:
-        slow_task = asyncio.create_task(anext(slow_provider_stream))
-        assert await asyncio.to_thread(read_started.wait, 1)
-        assert await anext(fast_provider_stream) == {"delta": "ready"}
-        assert time.monotonic() - started_at < 0.15
-        assert await slow_task == {"delta": "chunk"}
-    finally:
-        release_read.set()
-        release_timer.cancel()
-        await slow_provider_stream.aclose()
-        await fast_provider_stream.aclose()
 
 
 def test_stream_execution_uses_canonical_relay_operation_name(relay_turn, monkeypatch):
@@ -432,6 +375,31 @@ def test_managed_stream_does_not_add_sdk_headers_to_strict_callback(relay_turn):
 
     assert list(stream) == chunks
     assert observed == ["provider-native"]
+
+
+def test_managed_stream_delivers_each_chunk_before_the_provider_sends_the_next(relay_turn):
+    """Steering lost streamed text with Relay on: chunk N was withheld until chunk N+1 arrived."""
+    del relay_turn
+    release = threading.Event()
+
+    def paused_provider(_request):
+        yield {"delta": "first"}
+        assert release.wait(10), "first chunk never reached the consumer during the provider pause"
+        yield {"delta": "second"}
+
+    stream = relay_llm.stream(
+        {"payload": "paused"},
+        paused_provider,
+        session_id="session-1",
+        name="paused-native",
+        model_name="paused-model",
+        finalizer=lambda: {"content": "first second"},
+        metadata={"api_mode": "bedrock_converse", "api_request_id": "paused-stream"},
+    )
+
+    assert next(stream) == {"delta": "first"}
+    release.set()
+    assert list(stream) == [{"delta": "second"}]
 
 
 def test_stream_uses_rewritten_request_and_post_intercept_chunks(relay_turn):

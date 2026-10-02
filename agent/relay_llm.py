@@ -360,9 +360,9 @@ class ManagedLlmStream(Iterator[Any]):
                 run_callback(self._on_stream_created, raw_stream)
             raw_iterator = run_callback(iter, raw_stream)
             while True:
-                # Provider SDK streams are synchronous and their ``next`` commonly blocks on
-                # socket I/O. Do that read off the Relay event loop so concurrent managed
-                # streams can continue consuming their already-arrived responses.
+                # Off the loop: Relay pulls the next provider chunk before it hands over the
+                # current one, so a blocking read here withholds each chunk until the provider
+                # sends the next. Text vanishes for every provider pause and a steer aborts it.
                 chunk, exhausted = await asyncio.to_thread(_next_provider_chunk, run_callback, raw_iterator)
                 if exhausted:
                     break

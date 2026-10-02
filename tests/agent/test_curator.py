@@ -1060,6 +1060,30 @@ def test_review_fork_toolset_surface_excludes_execution_tools():
 
 
 
+def test_curator_review_prompt_matches_read_before_write_contract(curator_env):
+    """Keep the prompt aligned with the existing-target guard and review-turn marks.
+
+    The guard records a target read for the current review turn; it does not
+    require the read to be the immediately preceding tool call. New supporting
+    files are also exempt because there is no existing content to load.
+    """
+    prompt = curator_env["curator"].CURATOR_REVIEW_PROMPT
+
+    assert "mutating skill_manage call on an EXISTING target" in prompt
+    assert "action=write_file on an existing file" in prompt
+    assert "A new supporting file needs no prior read." in prompt
+    assert "at some point in this review turn" in prompt
+    assert "The read mark lasts for this review turn" in prompt
+    assert "call skill_view for the named target once and retry the write once" in prompt
+    assert "do not loop." in prompt
+
+    # Do not regress to an adjacency requirement that the append-only mark
+    # store does not enforce.
+    assert "immediately preceding tool call" not in prompt
+    assert "immediately adjacent to the mutation" in prompt
+
+
+
 def test_review_fork_seeds_shared_read_marks(curator_env, monkeypatch):
     """The curator LLM fork must install a shared read-before-write marks store
     in its own context before ``run_conversation``.

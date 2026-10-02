@@ -189,6 +189,32 @@ class TestRealProfileCdpLaunch:
         assert cdp is None
         assert err and "boom" in err
 
+    def test_wedged_lock_reports_fast_instead_of_hanging_forever(self):
+        """A call stuck inside the real-profile resolve (e.g. a wedged agent-browser subprocess,
+        #125986) must not silently queue every later call behind it for the full 420s tool
+        timeout: the wait is bounded and re-reports the last known failure instead."""
+        import threading
+        import tools.browser_tool as bt
+        self._reset()
+        bt._real_profile_cdp_cache["last_error"] = "edge is running and has its profile locked"
+        bt._real_profile_cdp_lock.acquire()  # simulate a call stuck inside the critical section
+        result = {}
+
+        def call():
+            with patch.object(bt_cloud, "_use_real_profile", return_value=True), \
+                 patch.object(bt_real_profile, "_REAL_PROFILE_LOCK_TIMEOUT", 0.3, create=True):
+                result["cdp"], result["err"] = bt_real_profile._real_profile_cdp()
+
+        t = threading.Thread(target=call, daemon=True)
+        t.start()
+        t.join(timeout=2.0)
+        still_blocked = t.is_alive()
+        bt._real_profile_cdp_lock.release()
+        t.join(timeout=5.0)  # let it finish now that the lock is free, so it never leaks into other tests
+        assert not still_blocked, ("a second real-profile call must not block indefinitely behind "
+                                   "a wedged one instead of returning within the bounded timeout")
+        assert result.get("err") and "profile locked" in result["err"]
+        self._reset()
 
     def test_launch_is_headless_and_agent_browser_attaches(self, tmp_path):
         """Real-profile browsing runs headless (no focus-stealing window).

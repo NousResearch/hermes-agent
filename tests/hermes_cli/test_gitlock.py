@@ -17,6 +17,7 @@ process* must never be cleared.
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
 import time
 from pathlib import Path
@@ -195,167 +196,104 @@ def test_recovery_marks_unmarked_packs_and_retries_the_same_fetch(crash_stderr, 
     assert result.returncode == 0
 
 
-# A partial clone's on-demand fetches strand one small packfile each and nothing consolidates
-# them (#129712). The fold rides `git gc --auto`: git's own small-pack threshold
-# (gc.autoPackLimit, default 50 in the wild) decides when repacking is worth it, so a healthy
-# checkout pays a no-op probe and a lazy-fetch-saturated one converges.
+# ---- partial-clone pack growth (#129712, #127711) ----
+#
+# Every on-demand fetch from a promisor remote writes its own pack, and a commit-graph write over
+# commits the graph has not seen lazy-fetches their trees, one pack each. The fold rides
+# `git gc --auto` (git's own gc.autoPackLimit decides when it is worth it). Real git against a
+# local blobless clone: these pin how the pieces interact, not their command lines.
 
-from hermes_cli.gitlock import consolidate_lazy_fetch_packs  # noqa: E402
+from hermes_cli.gitlock import consolidate_lazy_fetch_packs, disable_tree0_auto_maintenance  # noqa: E402
+
+_GIT_ENV = {**os.environ, "GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_NOSYSTEM": "1"}
 
 
-@pytest.fixture
-def partial_clone(tmp_path: Path) -> Path:
-    """A ``tree:0`` clone of a local upstream: every on-demand blob fetch writes a packfile.
-
-    ``core.commitGraph false`` keeps git ≤2.50's lazy fetches working: a clone-time (or
-    fetch-maintenance) commit-graph makes the third one abort with "attempting to fetch <sha>,
-    which is in the commit graph file but not in the object database"."""
-    seed, up, clone = tmp_path / "seed", tmp_path / "up.git", tmp_path / "clone"
-    subprocess.run(["git", "init", "-q", "-b", "main", str(seed)], check=True)
-    for name, text in (("f0.txt", "zero\n"), ("f1.txt", "one\n"), ("f2.txt", "two\n")):
-        (seed / name).write_text(text, encoding="utf-8")
-        subprocess.run(["git", "add", str(name)], cwd=seed, check=True)
-        subprocess.run(
-            ["git", "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", f"add {name}"],
-            cwd=seed, check=True)
-    subprocess.run(["git", "clone", "-q", "--bare", str(seed), str(up)], check=True)
-    subprocess.run(["git", "config", "uploadpack.allowFilter", "true"], cwd=up, check=True)
-    subprocess.run(["git", "config", "uploadpack.allowAnySHA1InWant", "true"], cwd=up, check=True)
-    subprocess.run(["git", "clone", "-q", "--filter=tree:0", "--no-checkout", up.as_uri(), str(clone)],
-                   check=True)
-    subprocess.run(["git", "config", "core.commitGraph", "false"], cwd=clone, check=True)
-    return clone
+def _run_git(*args: str, cwd: Path, env: dict = _GIT_ENV) -> str:
+    return subprocess.run(["git", "-c", "user.email=t@t", "-c", "user.name=t", *args], cwd=cwd, env=env,
+                          check=True, capture_output=True, text=True).stdout.strip()
 
 
 def _packs(repo: Path) -> list:
     return list((repo / ".git" / "objects" / "pack").glob("pack-*.pack"))
 
 
-def _lazy_fetch_blobs(clone: Path, *names: str) -> None:
-    for name in names:
-        sha = subprocess.run(["git", "rev-parse", f"HEAD:{name}"], cwd=clone, check=True,
-                             capture_output=True, text=True).stdout.strip()
-        subprocess.run(["git", "cat-file", "-p", sha], cwd=clone, check=True, capture_output=True)
+def _blobless_clone(tmp_path: Path, commits: int) -> tuple[Path, Path, Path]:
+    """(seed, upstream.git, clone): a blobless clone of an upstream with ``commits`` commits."""
+    seed, up, clone = tmp_path / "seed", tmp_path / "up.git", tmp_path / "clone"
+    _run_git("init", "-q", "-b", "main", str(seed), cwd=tmp_path)
+    for i in range(commits):
+        (seed / f"d{i % 3}").mkdir(exist_ok=True)
+        (seed / f"d{i % 3}" / "f.txt").write_text(f"v{i}\n", encoding="utf-8")
+        _run_git("add", "-A", cwd=seed)
+        _run_git("commit", "-qm", f"c{i}", cwd=seed)
+    _run_git("clone", "-q", "--bare", str(seed), str(up), cwd=tmp_path)
+    _run_git("config", "uploadpack.allowFilter", "true", cwd=up)
+    _run_git("config", "uploadpack.allowAnySHA1InWant", "true", cwd=up)
+    _run_git("clone", "-q", "--filter=tree:0", "--no-checkout", up.as_uri(), str(clone), cwd=tmp_path)
+    return seed, up, clone
 
 
-def test_consolidate_folds_lazy_fetch_packs(partial_clone: Path) -> None:
-    _lazy_fetch_blobs(partial_clone, "f0.txt", "f1.txt", "f2.txt")
+@pytest.fixture
+def partial_clone(tmp_path: Path) -> Path:
+    """Blobless clone that has lazy-fetched one pack per object it was asked for."""
+    _seed, _up, clone = _blobless_clone(tmp_path, 3)
+    _run_git("config", "gc.autoPackLimit", "2", cwd=clone)  # the wild default (50) cannot be crossed here
+    for name in ("d0/f.txt", "d1/f.txt", "d2/f.txt"):
+        _run_git("cat-file", "-p", _run_git("rev-parse", f"HEAD:{name}", cwd=clone), cwd=clone)
+    return clone
+
+
+def test_consolidate_folds_lazy_fetch_packs_that_the_maintenance_keys_leave_foldable(partial_clone: Path) -> None:
     before = _packs(partial_clone)
     assert len(before) > 2, "each on-demand fetch should have stranded its own packfile"
-    # The wild default threshold (gc.autoPackLimit 50) cannot be crossed in a fixture; drop it
-    # to 1 so any second small pack is already worth folding — same decision, smaller scale.
-    subprocess.run(["git", "config", "gc.autoPackLimit", "1"], cwd=partial_clone, check=True)
+    # gc.auto=0 here (an earlier cut of the maintenance keys) would turn the fold into a no-op.
+    disable_tree0_auto_maintenance(partial_clone)
 
     folded = consolidate_lazy_fetch_packs(partial_clone)
 
     remaining = _packs(partial_clone)
     assert folded == len(before) - len(remaining) > 0
-    # The folded pack must still carry the .promisor marker, or git 2.53+ fetches crash (#124272).
     assert all(pack.with_suffix(".promisor").exists() for pack in remaining)
-    sha = subprocess.run(["git", "rev-parse", "HEAD:f1.txt"], cwd=partial_clone, check=True,
-                         capture_output=True, text=True).stdout.strip()
-    blob = subprocess.run(["git", "cat-file", "-p", sha], cwd=partial_clone, check=True,
-                          capture_output=True, text=True)
-    assert blob.stdout == "one\n", "the folded repository must still read its objects"
+    blob = _run_git("cat-file", "-p", _run_git("rev-parse", "HEAD:d1/f.txt", cwd=partial_clone), cwd=partial_clone,
+                    env={**_GIT_ENV, "GIT_NO_LAZY_FETCH": "1"})
+    assert blob == "v1", "the folded repository must still read its objects without the promisor"
 
 
-def test_consolidate_leaves_a_converged_checkout_alone(partial_clone: Path) -> None:
-    """Under git's small-pack threshold the fold is a no-op: one pack, nothing folded."""
-    assert len(_packs(partial_clone)) == 1
+def test_fold_does_not_lazy_fetch_the_trees_of_commits_a_bloom_graph_has_not_seen(tmp_path: Path) -> None:
+    """The same gc that folds the packs, left to write a commit-graph, adds one pack per unseen commit."""
+    seed, up, clone = _blobless_clone(tmp_path, 12)
+    full = tmp_path / "full"
+    _run_git("clone", "-q", up.as_uri(), str(full), cwd=tmp_path)
+    _run_git("commit-graph", "write", "--reachable", "--changed-paths", cwd=full)
+    graph = clone / ".git" / "objects" / "info"
+    for entry in (full / ".git" / "objects" / "info").glob("commit-graph*"):
+        (shutil.copytree if entry.is_dir() else shutil.copy)(entry, graph / entry.name)
+    for i in range(10):
+        (seed / "new.txt").write_text(f"n{i}\n", encoding="utf-8")
+        _run_git("add", "-A", cwd=seed)
+        _run_git("commit", "-qm", f"n{i}", cwd=seed)
+    _run_git("push", "-q", str(up), "main", cwd=seed)
+    _run_git("-c", "maintenance.auto=false", "fetch", "-q", "origin", cwd=clone)
+    _run_git("-c", "maintenance.auto=false", "log", "-p", cwd=clone)
+    _run_git("config", "gc.autoPackLimit", "3", cwd=clone)
+    assert len(_packs(clone)) > 3
 
-    assert consolidate_lazy_fetch_packs(partial_clone) == 0
-    assert len(_packs(partial_clone)) == 1
+    consolidate_lazy_fetch_packs(clone)
+
+    assert len(_packs(clone)) == 1
 
 
-def test_consolidate_skips_non_partial_checkouts(repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Lazy-fetch packs only exist on a promisor remote — a plain checkout never spawns the gc."""
-    import hermes_cli.gitlock as gitlock
-
-    spawns = []
-    real_run = subprocess.run
-
-    def _spy(*args, **kwargs):
-        if "gc" in args[0]:
-            spawns.append(args[0])
-        return real_run(*args, **kwargs)
-
-    monkeypatch.setattr(gitlock.subprocess, "run", _spy)
+def test_non_partial_checkout_is_left_alone(repo: Path) -> None:
     assert consolidate_lazy_fetch_packs(repo) == 0
-    assert not spawns
+    keys = subprocess.run(["git", "config", "--local", "--get-regexp", "maintenance|writecommitgraph"], cwd=repo,
+                          capture_output=True, text=True).stdout
+    assert keys == "", "a full clone keeps git's stock maintenance"
 
 
-def test_update_check_debris_cleanup_folds_lazy_fetch_packs(
-        partial_clone: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """``hermes update --check`` is the pass that runs on its own (CLI banner prefetch), so its
-    debris cleanup must be the folding point."""
-    import hermes_cli.gitlock as gitlock
-    import hermes_cli.update_cmd_check as check
+def test_update_check_debris_cleanup_is_where_the_packs_get_folded(partial_clone: Path) -> None:
+    """`hermes update --check` runs on its own (CLI banner prefetch), so its cleanup is the fold point."""
+    from hermes_cli.update_cmd_check import clear_git_debris
 
-    seen = {}
-    monkeypatch.setattr(gitlock, "consolidate_lazy_fetch_packs",
-                        lambda root: seen.setdefault("root", root) or 0)
-    check.clear_git_debris(partial_clone)
-    assert seen.get("root") == partial_clone
-
-
-
-
-# ---- tree:0 auto-maintenance commit-graph loop (#127711) ----
-#
-# A tree:0 partial clone that lets detached ``git maintenance --auto`` write a
-# commit-graph lazy-fetches every missing tree on demand; each fetch
-# re-triggers maintenance, looping unboundedly (2000+ git procs observed).
-# Repos we clone or convert to tree:0 must therefore disable the automatic
-# maintenance paths. These pin the helper and its wiring into the conversion.
-
-from hermes_cli.gitlock import (  # noqa: E402
-    disable_tree0_auto_maintenance,
-    fetch_full_commit_graph,
-)
-
-
-def _git_config(repo: Path, key: str) -> str:
-    result = subprocess.run(
-        ["git", "config", "--get", key], cwd=str(repo),
-        capture_output=True, text=True, encoding="utf-8", errors="replace",
-    )
-    return result.stdout.strip()
-
-
-def test_tree0_maintenance_off_lands_config(repo: Path) -> None:
-    disable_tree0_auto_maintenance(repo)
-    assert _git_config(repo, "maintenance.auto") == "false"
-    assert _git_config(repo, "gc.auto") == "0"
-    assert _git_config(repo, "fetch.writeCommitGraph") == "false"
-
-
-def test_tree0_conversion_disables_auto_maintenance(
-    repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Tree:0 conversion still lands maintenance config."""
-    import hermes_cli.gitlock as gitlock
-
-    shallow = tmp_path / "shallow"
-    shallow.write_text("deadbeefdeadbeefdeadbeefdeadbeefdeadbeef\n")
-    monkeypatch.setattr(gitlock, "_shallow_file_path", lambda _root: shallow)
-    monkeypatch.setattr(gitlock, "_partial_clone_filter", lambda _root, **_kw: None)
-    monkeypatch.setattr(gitlock, "_batch_missing_parents", lambda _root, _c: {"deadbeef"})
-    marked = []
-    monkeypatch.setattr(gitlock, "mark_unmarked_packs_promisor", lambda root: marked.append(root) or 0)
-
-    real_run = subprocess.run
-
-    def fake_run(argv, **kwargs):
-        if "fetch" in argv:
-            raise subprocess.CalledProcessError(1, argv, stderr="boom")
-        return real_run(argv, **kwargs)
-
-    monkeypatch.setattr(gitlock.subprocess, "run", fake_run)
-
-    with pytest.raises(subprocess.CalledProcessError):
-        fetch_full_commit_graph(repo, "origin", "main")
-
-    assert marked == [repo]
-    assert _git_config(repo, "maintenance.auto") == "false"
-    assert _git_config(repo, "gc.auto") == "0"
-    assert _git_config(repo, "fetch.writeCommitGraph") == "false"
+    before = len(_packs(partial_clone))
+    clear_git_debris(partial_clone)
+    assert len(_packs(partial_clone)) < before

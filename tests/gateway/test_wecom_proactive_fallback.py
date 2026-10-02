@@ -25,6 +25,18 @@ These drive the REAL ``WeComAdapter._cached_reply_req_id`` and the REAL
 ``_send_proactive_markdown`` / stream seams faked, so the actual branch logic
 runs.  Assertions read observable adapter state: the resolved req_id, how many
 proactive attempts actually reached the wire, and the resulting ``SendResult``.
+
+Fix A′ (group chats) — WeCom rejects APP_CMD_SEND in groups, so a group's only
+deliverable path is a passive reply bound to its req_id.  The age gate must
+therefore not fire for a group: ageing its req_id out converts "maybe
+deliverable" into a guaranteed drop, with no proactive fallback to catch it.
+Toggle = membership in ``adapter._group_chat_ids`` (the gate's group exemption).
+
+Fix B′ (socket-level faults) — a dropped socket surfaces as ``OSError``
+(``ConnectionResetError`` / ``BrokenPipeError``), so the retryable set must
+include it, both in the proactive retry and around the passive attempt;
+otherwise the first attempt escapes as a final failure.  Toggle = a faked
+sender raising ``ConnectionResetError`` instead of ``RuntimeError``.
 """
 
 from __future__ import annotations
@@ -35,20 +47,24 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+import plugins.platforms.wecom.adapter as wecom_adapter_module
 from gateway.config import PlatformConfig
 from plugins.platforms.wecom.adapter import WeComAdapter
+from plugins.platforms.wecom.streaming import STREAM_SAFE_DURATION_SECONDS
 
 
 CHAT_ID = "chat-reqid"
+GROUP_CHAT_ID = "group-chat-reqid"
 REQ_ID = "req-reqid"
 
-# WeCom's documented passive-reply window is ~6 min (errcode 846604).
+# WeCom's documented passive-reply window is ~6 min (errcode 846604), modelled by
+# ``streaming.STREAM_SAFE_DURATION_SECONDS``.
 # Read defensively so this module still imports against unfixed code and the
 # toggle produces a BEHAVIOURAL failure, not a collection error.
 WINDOW_SECONDS = getattr(
-    __import__("plugins.platforms.wecom.adapter", fromlist=["x"]),
-    "WINDOW_SECONDS",
-    300.0,
+    wecom_adapter_module,
+    "REQ_ID_MAX_AGE_SECONDS",
+    getattr(wecom_adapter_module, "WINDOW_SECONDS", 300.0),
 )
 
 
@@ -344,5 +360,224 @@ class TestSendFallsBackToProactive:
                 "into a silent failure"
             )
             assert calls["n"] == 2
+        finally:
+            await adapter.disconnect()
+
+
+# ===========================================================================
+# Group chats — a group must never be refused with zero wire attempts
+# ===========================================================================
+
+
+class TestGroupChatDelivery:
+    """Groups are the regression surface of Fix A: a group has no proactive path.
+
+    WeCom rejects APP_CMD_SEND in groups, so ageing a group's req_id out turns
+    "maybe deliverable" into a guaranteed drop — there is no fallback to catch
+    it.  ``_group_chat_ids`` was referenced nowhere in this module before, so
+    none of this ran.
+    """
+
+    @pytest.mark.asyncio
+    async def test_stale_req_id_is_still_offered_for_a_group(self):
+        """A group's cached req_id is never aged out by the window gate.
+
+        The passive attempt is the group's only deliverable path, so refusing it
+        locally guarantees the drop the gate was meant to avoid.
+        """
+        adapter = _make_adapter()
+        try:
+            adapter._last_chat_req_ids[GROUP_CHAT_ID] = REQ_ID
+            _stamp(adapter, GROUP_CHAT_ID, time.time() - WINDOW_SECONDS - 60)
+            adapter._group_chat_ids.add(GROUP_CHAT_ID)
+
+            assert adapter._cached_reply_req_id(GROUP_CHAT_ID, None) == REQ_ID
+        finally:
+            await adapter.disconnect()
+
+    @pytest.mark.asyncio
+    async def test_group_is_exempt_even_when_marked_stream_expired(self):
+        """The exemption is not defeated by a stale ``_stream_expired_chats`` entry.
+
+        Expiry knowledge must not pre-empt the only path a group can be answered
+        on; the send itself reports the real 846604/846609 and falls back.
+        """
+        adapter = _make_adapter()
+        try:
+            adapter._last_chat_req_ids[GROUP_CHAT_ID] = REQ_ID
+            adapter._stream_expired_chats.add(GROUP_CHAT_ID)
+            adapter._group_chat_ids.add(GROUP_CHAT_ID)
+
+            assert adapter._cached_reply_req_id(GROUP_CHAT_ID, None) == REQ_ID
+        finally:
+            await adapter.disconnect()
+
+    @pytest.mark.asyncio
+    async def test_live_req_id_group_send_stays_passive(self):
+        """A group with a live req_id is still answered passively.
+
+        Guards the exemption from over-reaching: it must widen what is attempted,
+        not divert working group replies onto the proactive path.
+        """
+        adapter = _make_adapter()
+        try:
+            adapter._last_chat_req_ids[GROUP_CHAT_ID] = REQ_ID
+            _stamp(adapter, GROUP_CHAT_ID, time.time())
+            adapter._group_chat_ids.add(GROUP_CHAT_ID)
+
+            passive = AsyncMock(return_value={"errcode": 0})
+            proactive = AsyncMock(return_value={"errcode": 0})
+            adapter._send_reply_markdown = passive
+            adapter._send_proactive_markdown = proactive
+
+            result = await adapter._send_inner(GROUP_CHAT_ID, "群里回复")
+
+            assert result.success is True
+            assert passive.await_count == 1
+            assert proactive.await_count == 0, (
+                "a live group req_id must not be diverted to a proactive send"
+            )
+        finally:
+            await adapter.disconnect()
+
+    @pytest.mark.asyncio
+    async def test_group_with_no_req_id_at_all_still_fails_early(self):
+        """The exemption must not invent a proactive path for groups.
+
+        With no req_id ever cached there is nothing to answer on, and WeCom
+        rejects APP_CMD_SEND in groups, so the send must fail with a clear error
+        instead of issuing a call that cannot succeed.  This pins the invariant
+        the Fix A exemption depends on.
+        """
+        adapter = _make_adapter()
+        try:
+            adapter._group_chat_ids.add(GROUP_CHAT_ID)
+            proactive = AsyncMock(return_value={"errcode": 0})
+            adapter._send_proactive_markdown = proactive
+
+            result = await adapter._send_inner(GROUP_CHAT_ID, "群里通知")
+
+            assert result.success is False
+            assert "req_id" in (result.error or "").lower()
+            assert proactive.await_count == 0, (
+                "groups have no proactive path — do not attempt one"
+            )
+        finally:
+            await adapter.disconnect()
+
+
+# ===========================================================================
+# The local threshold must not be stricter than the modelled reply window
+# ===========================================================================
+
+
+class TestReqIdWindowMatchesStreamModel:
+    """A req_id inside WeCom's window must not be aged out locally."""
+
+    @pytest.mark.asyncio
+    async def test_req_id_inside_the_modelled_window_is_still_used(self):
+        """A req_id younger than the window streaming.py models is still live.
+
+        A stricter local cutoff refuses replies WeCom would have accepted, which
+        is how the group regression appeared in the first place.
+        """
+        adapter = _make_adapter()
+        try:
+            adapter._last_chat_req_ids[CHAT_ID] = REQ_ID
+            _stamp(adapter, CHAT_ID, time.time() - (STREAM_SAFE_DURATION_SECONDS - 5))
+
+            assert adapter._cached_reply_req_id(CHAT_ID, None) == REQ_ID, (
+                "a req_id inside STREAM_SAFE_DURATION_SECONDS is still deliverable"
+            )
+        finally:
+            await adapter.disconnect()
+
+    def test_threshold_is_not_below_the_modelled_window(self):
+        """The local cutoff must not undercut the window the rest of the plugin uses."""
+        assert wecom_adapter_module.REQ_ID_MAX_AGE_SECONDS >= STREAM_SAFE_DURATION_SECONDS, (
+            "ageing a req_id out earlier than STREAM_SAFE_DURATION_SECONDS turns a "
+            "deliverable reply into a guaranteed 846604"
+        )
+
+
+# ===========================================================================
+# Socket-level faults are transient too
+# ===========================================================================
+
+
+class TestSocketLevelTransientErrors:
+    """A dropped socket is as retryable as a timeout — it must not drop the report."""
+
+    @pytest.mark.asyncio
+    async def test_connection_reset_on_first_proactive_attempt_is_retried(self):
+        """FIX ENABLED: ``ConnectionResetError`` (OSError) on attempt 1 → retry.
+
+        Narrowing the except to TimeoutError/RuntimeError let the first socket
+        reset escape immediately, so the retry never ran for the exact class of
+        transient failure it was added for.
+        """
+        adapter = _make_adapter()
+        try:
+            calls = {"n": 0}
+
+            async def reset_then_ok(chat_id: str, content: str):
+                calls["n"] += 1
+                if calls["n"] == 1:
+                    raise ConnectionResetError("connection reset by peer")
+                return {"errcode": 0}
+
+            adapter._send_proactive_markdown = reset_then_ok
+
+            result = await adapter._send_proactive_with_retry(CHAT_ID, "report")
+
+            assert result == {"errcode": 0}
+            assert calls["n"] == 2, "a dropped socket is transient and must be retried"
+        finally:
+            await adapter.disconnect()
+
+    @pytest.mark.asyncio
+    async def test_socket_error_on_passive_attempt_still_falls_back(self):
+        """A dropped socket on the passive attempt must still reach the proactive path."""
+        adapter = _make_adapter()
+        try:
+            adapter._last_chat_req_ids[CHAT_ID] = REQ_ID
+            _stamp(adapter, CHAT_ID, time.time())
+
+            async def passive_reset(*args, **kwargs):
+                raise ConnectionResetError("connection reset by peer")
+
+            adapter._send_reply_markdown = passive_reset
+            proactive = AsyncMock(return_value={"errcode": 0})
+            adapter._send_proactive_markdown = proactive
+
+            result = await adapter._send_inner(CHAT_ID, "08:00 巡检报告")
+
+            assert result.success is True
+            assert proactive.await_count == 1
+        finally:
+            await adapter.disconnect()
+
+    @pytest.mark.asyncio
+    async def test_persistent_socket_error_is_reported_not_raised(self):
+        """A genuinely dead socket must surface as a failed SendResult.
+
+        Retrying must stay bounded and the caller must still get a result it can
+        report, rather than an exception escaping ``send()``.
+        """
+        adapter = _make_adapter()
+        try:
+            calls = {"n": 0}
+
+            async def always_reset(chat_id: str, content: str):
+                calls["n"] += 1
+                raise ConnectionResetError("peer went away")
+
+            adapter._send_proactive_markdown = always_reset
+
+            result = await adapter._send_inner(CHAT_ID, "report")
+
+            assert result.success is False
+            assert result.error
+            assert calls["n"] == 3, "retries stay bounded by _send_proactive_with_retry"
         finally:
             await adapter.disconnect()

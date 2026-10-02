@@ -1,16 +1,20 @@
 """A local Stop request is not evidence that its canonical producer ended."""
 from pathlib import Path
+import asyncio
 import time
 
 import pytest
 
 from gateway import hosted_room_driver as tasks, hosted_rooms as rooms
 from gateway.session_hosted_service import CanonicalHostedRoomService
-from hermes_state_runtime import claim_session_input, get_session_admission, settle_session_input
+from hermes_state_runtime import (
+    RuntimeStoreError, begin_runtime_epoch, claim_session_input, get_session_admission,
+    recover_session_inputs, settle_session_input,
+)
 from tests.gateway.test_session_hosted_rpc import owner  # noqa: F401
 
 
-@pytest.mark.parametrize('producer_state', ['queued', 'started'])
+@pytest.mark.parametrize('producer_state', ['queued', 'started', 'restart_unknown'])
 def test_acknowledged_room_stop_waits_for_the_producer_terminal(owner, monkeypatch, producer_state):
     authority, loop, _, agent = owner
     service = CanonicalHostedRoomService(authority, loop)
@@ -31,8 +35,11 @@ def test_acknowledged_room_stop_waits_for_the_producer_terminal(owner, monkeypat
     sid = member.create(**coords, title='Group: room')['session_id']
     receipt = member.submit(**coords, session_id=sid, prompt=task['payload']['prompt'], task=identity,
         execution_generation=1, on_terminal=lambda _: None)
-    if producer_state == 'started':
+    if producer_state != 'queued':
         claim_session_input(authority.db, epoch=authority.epoch, session_id=sid)
+    if producer_state == 'restart_unknown':
+        authority.epoch = begin_runtime_epoch(authority.db, instance_id='restarted-owner')
+        recover_session_inputs(authority.db, epoch=authority.epoch)
     refusal = None
     try:
         service.stop_room('room', cancel_id='stop', require_acknowledged=True)
@@ -44,6 +51,18 @@ def test_acknowledged_room_stop_waits_for_the_producer_terminal(owner, monkeypat
         assert refusal is None and hosted['status'] == 'cancelled'
         assert (canonical['status'], canonical['outcome']) == ('terminal', 'cancelled')
         assert not agent.interrupted
+        return
+    if producer_state == 'restart_unknown':
+        assert canonical['status'] == 'unknown'
+        with pytest.raises(RuntimeStoreError, match='unknown_execution'):
+            member.interrupt(**coords, session_id=sid, expected_task_id=identity.task_id, expected_execution_generation=1)
+        assert hosted['status'] == 'stopping' and refusal is not None, {
+            'hosted_status': hosted['status'], 'canonical_status': canonical['status'], 'refusal': refusal}
+        # A separately acknowledged unknown outcome is durable terminal evidence.
+        asyncio.run_coroutine_threadsafe(authority.resolve_unknown(
+            member.principal, member.ref, canonical['admission_id'], canonical['generation']), loop).result(10)
+        service.stop_room('room', cancel_id='stop', require_acknowledged=True)
+        assert tasks.get_task(authority.db.db_path, identity)['status'] == 'cancelled'
         return
     assert agent.interrupted and canonical['status'] == 'started'
     assert hosted['status'] == 'stopping' and refusal is not None, {

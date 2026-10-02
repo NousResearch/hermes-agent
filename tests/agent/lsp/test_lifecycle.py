@@ -238,7 +238,7 @@ def test_routed_profile_tombstone_retains_config_owner(tmp_path, monkeypatch):
     for home, timeout in zip(homes, (1, 2)):
         home.mkdir()
         (home / "config.yaml").write_text(
-            f"lsp:\n  enabled: true\n  install_strategy: manual\n  idle_timeout: 0\n  wait_timeout: {timeout}\n",
+            f"lsp:\n  enabled: true\n  install_strategy: manual\n  idle_timeout: {timeout * 60}\n  wait_timeout: {timeout}\n",
             encoding="utf-8",
         )
     monkeypatch.setattr(atexit, "register", lambda fn: None)
@@ -255,6 +255,7 @@ def test_routed_profile_tombstone_retains_config_owner(tmp_path, monkeypatch):
     assert under(homes[0]) is a
     assert a.get_status()["wait_timeout"] == 1
     assert b.get_status()["wait_timeout"] == 2
+    assert (a._idle_timeout, b._idle_timeout) == (60, 120)
     real_stop = a._loop.stop
     monkeypatch.setattr(a._loop, "stop", lambda: False)
     try:
@@ -264,6 +265,7 @@ def test_routed_profile_tombstone_retains_config_owner(tmp_path, monkeypatch):
         replacement_b = under(homes[1])
         assert replacement_b is not None and replacement_b is not b
         assert replacement_b.get_status()["wait_timeout"] == 2
+        assert replacement_b._idle_timeout == 120
     finally:
         monkeypatch.setattr(a._loop, "stop", real_stop)
         assert lsp_module.shutdown_service() is True

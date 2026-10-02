@@ -224,9 +224,26 @@ def old_updater():
     return old
 
 
-def test_old_android_updater_handoffs_before_download(old_updater, fresh_child):
+def _under_historical_update(fn, module="hermes_cli.update_cmd"):
+    """Run *fn* below a frame shaped like a historical ``_cmd_update_impl`` (no sentinel local):
+    every shipped caller of the psutil Android installer ran inside that entrypoint."""
+    namespace = {"__name__": module, "_fn": fn}
+    exec("def _cmd_update_impl():\n    pre_update_version = '1.0'\n    _fn()\n", namespace)
+    return namespace["_cmd_update_impl"]
+
+
+def test_old_android_updater_handoffs_before_download(old_updater, fresh_child, monkeypatch):
+    monkeypatch.delitem(sys.modules, "hermes_cli.psutil_android", raising=False)
     with fresh_child.exits():
-        old_updater._install_psutil_android_compat(["uv", "pip"])
+        _under_historical_update(lambda: old_updater._install_psutil_android_compat(["uv", "pip"]))()
+
+
+def test_psutil_android_import_outside_an_update_starts_nothing(no_external_work, monkeypatch):
+    # 2026-10-01: an import smoke imported this shim and the unconditional import-time
+    # handoff ran a whole update takeover, which restarted the account's live gateway.
+    monkeypatch.delitem(sys.modules, "hermes_cli.psutil_android", raising=False)
+    module = importlib.import_module("hermes_cli.psutil_android")
+    assert module.PSUTIL_URL.endswith(".tar.gz")
 
 
 def test_old_updater_retains_its_code_but_loads_new_managed_uv(old_updater, fresh_child, no_external_work, tmp_path):

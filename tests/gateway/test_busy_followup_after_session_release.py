@@ -23,7 +23,7 @@ import pytest
 
 from gateway.platforms.base import BasePlatformAdapter
 from gateway.platforms.event import MessageEvent
-from gateway.run_busy import GatewayBusySessionMixin
+from gateway.run import GatewayRunner
 from gateway.run_inbound import GatewayInboundMixin
 from gateway.session import build_session_key
 from gateway.session_state import SessionState
@@ -138,7 +138,7 @@ async def test_followup_still_queues_when_the_session_stays_active():
     assert pending is not None and pending.text == "still busy here"
 
 
-class _QueueRunner(GatewayBusySessionMixin):
+class _QueueRunner(GatewayRunner):
     """The runner's FIFO, its post-turn chain and its idle-path orphan rescue."""
 
     _BUSY_QUEUE_MAX_PENDING = 32
@@ -151,8 +151,8 @@ class _QueueRunner(GatewayBusySessionMixin):
     def _delivery_adapter_for(self, source):
         return self.adapter
 
-    def _session_state(self, key):
-        return self.states.setdefault(key, SessionState())
+    def _session_state(self, session_key: str) -> SessionState:
+        return self.states.setdefault(session_key, SessionState())
 
     def _peek_session_state(self, key):
         return self.states.get(key)
@@ -160,7 +160,9 @@ class _QueueRunner(GatewayBusySessionMixin):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("busy_text_mode", ["interrupt", "queue"])
-async def test_followups_arriving_during_final_delivery_keep_arrival_order(busy_text_mode):
+async def test_followups_arriving_during_final_delivery_keep_arrival_order(
+    busy_text_mode,
+):
     """The runner has drained its queue and the adapter is still delivering the answer when two
     people send follow-ups. The adapter's post-turn drain starts the first; the second must not
     overtake it through the runner's orphan rescue."""
@@ -175,10 +177,15 @@ async def test_followups_arriving_during_final_delivery_keep_arrival_order(busy_
     ran: list[str] = []
 
     async def runner_handle_message(event):
-        event, _, _ = runner._hm_rescue_orphaned_fifo(event, event.source, False, "shared")
+        event, _, _ = runner._hm_rescue_orphaned_fifo(
+            event, event.source, False, "shared"
+        )
         ran.append(event.text)
-        while (queued := runner._promote_queued_event(
-                "shared", adapter, adapter._pending_messages.pop("shared", None))) is not None:
+        while (
+            queued := runner._promote_queued_event(
+                "shared", adapter, adapter._pending_messages.pop("shared", None)
+            )
+        ) is not None:
             ran.append(queued.text)
         if event.text == "first":
             await delivering.wait()
@@ -194,10 +201,14 @@ async def test_followups_arriving_during_final_delivery_keep_arrival_order(busy_
 
     adapter.set_message_handler(runner_handle_message)
     adapter.set_busy_session_handler(busy_handler)
-    await adapter.handle_message(_make_event("first", chat_type="group", user_id="alice"))
+    await adapter.handle_message(
+        _make_event("first", chat_type="group", user_id="alice")
+    )
     await asyncio.sleep(0)
     for text, sender in [("from bob", "bob"), ("from carol", "carol")]:
-        await adapter.handle_message(_make_event(text, chat_type="group", user_id=sender))
+        await adapter.handle_message(
+            _make_event(text, chat_type="group", user_id=sender)
+        )
     delivering.set()
     await asyncio.wait_for(all_ran.wait(), 2.0)
     await asyncio.wait_for(asyncio.gather(*list(adapter._background_tasks)), 2.0)

@@ -56,6 +56,36 @@ _EMOJI_RE = re.compile(
 _VARIATION_SELECTOR_RE = re.compile("[︎️]")
 
 
+# Opt-in command-provider fallback, not an SSML synthesizer. Match complete
+# XML-style tags, including quoted '>' in attributes, without eating comparisons.
+_SPEECH_CUE_TAG_RE = re.compile(
+    r"</?(?P<name>[A-Za-z][\w:.-]*)(?=[\s/>])"
+    r"(?:[^<>\"']|\"[^\"]*\"|'[^']*')*/?>"
+)
+_SPEECH_AUDIO_CUE_RE = re.compile(
+    r"\[(?:/?(?:pause|break|emphasis|whisper|whispers|laugh|laughs|sigh|sighs|"
+    r"excited|excitedly|slow|very slow|fast))\]", re.IGNORECASE
+)
+
+
+def prepare_command_speech_cues(text: str) -> str:
+    """Plain-text fallback for opted-in command engines: breaks become commas,
+    emphasis keeps its words, complete XML/audio tags are not sent to speech.
+    No duration or prosody guarantee: those belong to the configured engine.
+    Run before generic cleanup, which otherwise mangles closing tags as paths.
+    """
+    text = html.unescape(text)
+
+    def replace_tag(match: re.Match[str]) -> str:
+        opening = not match.group(0).startswith("</")
+        return ", " if opening and match.group("name").lower() == "break" else ""
+
+    text = _SPEECH_CUE_TAG_RE.sub(replace_tag, text)
+    return _SPEECH_AUDIO_CUE_RE.sub(
+        lambda m: ", " if m.group(0).lower() in {"[pause]", "[break]"} else "", text
+    )
+
+
 def strip_markdown_for_tts(text: str) -> str:
     """Strip Markdown/Telegram formatting while preserving readable words."""
     if not text:

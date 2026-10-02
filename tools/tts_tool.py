@@ -429,6 +429,15 @@ def text_to_speech_tool(
     separate valid files and no over-limit artifact is ever returned."""
     if not text or not text.strip():
         return tool_error("Text is required", success=False)
+    tts_config, provider = _apply_call_overrides(_load_tts_config(), speed, provider)
+    command_provider_config = _resolve_command_provider_config(provider, tts_config)
+    from utils import is_truthy_value
+    if command_provider_config and is_truthy_value(command_provider_config.get("speech_cues", False)):
+        try:
+            from tools.tts_text_normalize import prepare_command_speech_cues
+            text = prepare_command_speech_cues(text)
+        except Exception as exc:
+            return _tool_failure("TTS cue preprocessing failed", provider, exc)
     try:  # shared cleaner: markdown, emoji, think blocks, verifier footer, units, newlines
         from tools.tts_text_normalize import prepare_spoken_text
         text = prepare_spoken_text(text, max_chars=None)
@@ -436,8 +445,6 @@ def text_to_speech_tool(
         text = text.strip()
     if not text:
         return tool_error("Text is empty after TTS cleanup", success=False)
-    tts_config, provider = _apply_call_overrides(_load_tts_config(), speed, provider)
-    command_provider_config = _resolve_command_provider_config(provider, tts_config)
     max_len = _resolve_max_text_length(provider, tts_config)
     chunks = _split_text_for_tts(text, max_len)
     if not chunks:

@@ -374,15 +374,23 @@ class TestGenerateErrors:
 
 
     @pytest.mark.parametrize("failure, eligible", [
-        ("connection", True), (503, True), (429, True), (422, False), ("timeout", False), ("invalid_json", False),
+        ("refused", True), (429, True), ("disconnected", False), (503, False), (422, False), ("timeout", False),
+        ("invalid_json", False),
     ])
     def test_submit_failure_marks_whether_a_fal_fallback_is_safe(self, failure, eligible):
-        """Only failures that prove Krea created no job may fall back: connection errors, 429 and 5xx."""
+        """Only failures that prove Krea created no job may fall back: a connection that was never
+        established, or the gateway's 429. A connection dropped after sending, a timeout or a 5xx may
+        have happened after Krea accepted the job."""
         import requests as req_lib
+        from urllib3.exceptions import MaxRetryError, NewConnectionError
         from plugins.image_gen.krea import KreaImageGenProvider
 
-        if failure == "connection":
-            post = patch("plugins.image_gen.krea.requests.post", side_effect=req_lib.ConnectionError("refused"))
+        if failure == "refused":
+            refused = MaxRetryError(None, "http://x", reason=NewConnectionError(None, "Connection refused"))
+            post = patch("plugins.image_gen.krea.requests.post", side_effect=req_lib.ConnectionError(refused))
+        elif failure == "disconnected":
+            post = patch("plugins.image_gen.krea.requests.post",
+                         side_effect=req_lib.ConnectionError("Remote end closed connection without response"))
         elif failure == "timeout":
             post = patch("plugins.image_gen.krea.requests.post", side_effect=req_lib.Timeout())
         else:

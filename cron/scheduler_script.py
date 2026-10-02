@@ -398,10 +398,11 @@ def _resolve_cron_interpreter(interpreter: str) -> tuple[Optional[str], Optional
 
 
 # Shell-hook script suffixes minus the ones cron actually runs (.py/.pyw as
-# Python, .sh/.bash as bash). The rest would be handed to Python and die with
-# a SyntaxError that never names the extension.
+# Python, .sh/.bash as bash), plus .ps1. Those would be handed to Python and
+# die with a SyntaxError that never names the extension. .ps1 is not in the
+# shell-hook list, but a PowerShell file is the same failure on Windows.
 _UNSUPPORTED_SCRIPT_SUFFIXES = frozenset({
-    ".zsh", ".fish", ".rb", ".pl", ".lua", ".js", ".mjs", ".cjs", ".ts",
+    ".zsh", ".fish", ".rb", ".pl", ".lua", ".js", ".mjs", ".cjs", ".ts", ".ps1",
 })
 
 
@@ -409,14 +410,16 @@ def unsupported_script_extension_error(path: Path) -> Optional[str]:
     """Error when *path* is a known non-Python script cron must not execute.
 
     Shebangs stay ignored (the interpreter surface is extension-only). Extensionless
-    files and ``.py``/``.pyw`` stay on the Python path.
+    files and ``.py``/``.pyw`` stay on the Python path. This is a denylist of
+    known foreign suffixes, not a claim that every other extension is Python-safe.
     """
     suffix = path.suffix.lower()
     if suffix not in _UNSUPPORTED_SCRIPT_SUFFIXES:
         return None
     return (
-        f"cron scripts must be .py, .sh, or .bash (got {suffix!r}). "
-        "Wrap other languages in a .sh that execs them."
+        f"cron scripts cannot run {suffix!r} files; they would be parsed as Python. "
+        "Use .py, .pyw, an extensionless Python file, .sh, or .bash, "
+        "or wrap other languages in a .sh that execs them."
     )
 
 

@@ -160,6 +160,46 @@ class TestRunJobScript:
         assert ".py" in output and ".sh" in output and ".bash" in output
         assert "SyntaxError" not in output
 
+    def test_powershell_extension_is_refused_on_every_entry(self, cron_env):
+        """A .ps1 file is the same class as .cjs: create, doctor, dashboard, and
+        runtime must name the extension instead of handing it to Python (#129350).
+        .pyw and extensionless files stay on the Python path."""
+        from fastapi import HTTPException
+
+        from cron.scheduler_script import _run_job_script, unsupported_script_extension_error
+        from hermes_cli.cron import _script_health_issue
+        from hermes_cli.web_server_cron import _normalize_dashboard_cron_script
+        from tools.cronjob_job_args import _validate_cron_script_path
+
+        script = cron_env / "scripts" / "job.ps1"
+        script.write_text('Write-Host "not python"\n')
+        pyw = cron_env / "scripts" / "job.pyw"
+        pyw.write_text('print("pyw")\n')
+        bare = cron_env / "scripts" / "job"
+        bare.write_text('print("bare")\n')
+
+        success, output = _run_job_script("job.ps1")
+        assert success is False
+        assert ".ps1" in output
+        assert "SyntaxError" not in output
+
+        create_error = _validate_cron_script_path("job.ps1")
+        doctor_error = _script_health_issue("job.ps1")
+        assert create_error == doctor_error == unsupported_script_extension_error(script)
+        assert create_error is not None and ".ps1" in create_error
+
+        with pytest.raises(HTTPException) as dashboard:
+            _normalize_dashboard_cron_script("job.ps1", cron_env)
+        assert dashboard.value.status_code == 400
+        assert dashboard.value.detail == create_error
+
+        assert unsupported_script_extension_error(pyw) is None
+        assert unsupported_script_extension_error(bare) is None
+        pyw_ok, pyw_out = _run_job_script("job.pyw")
+        bare_ok, bare_out = _run_job_script("job")
+        assert (pyw_ok, pyw_out) == (True, "pyw")
+        assert (bare_ok, bare_out) == (True, "bare")
+
     def test_script_relative_path(self, cron_env):
         from cron.scheduler_script import _run_job_script
 

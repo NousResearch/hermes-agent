@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Any, Union
 from urllib.parse import urlparse
 
-import yaml
+import hermes_yaml as yaml
 
 logger = logging.getLogger(__name__)
 
@@ -174,7 +174,7 @@ def atomic_replace(tmp_path: Union[str, Path], target: Union[str, Path]) -> str:
     then in-place rewrite).
     """
     target_str = str(target)
-    real_path = os.path.realpath(target_str) if os.path.islink(target_str) else target_str
+    real_path = _publish_path(target_str)
     tmp_str = str(tmp_path)
     try:
         os.replace(tmp_str, real_path)
@@ -204,6 +204,31 @@ def atomic_replace(tmp_path: Union[str, Path], target: Union[str, Path]) -> str:
         # The rewrite re-raises its own error, so an ACL denial is reported as such, not as contention.
         (_rewrite_in_place if contended else _copy_fallback)(tmp_str, real_path)
     return real_path
+
+
+def _publish_path(target_str: str) -> str:
+    """The path :func:`atomic_replace` renames onto: a symlink's real file, else the target itself."""
+    return os.path.realpath(target_str) if os.path.islink(target_str) else target_str
+
+
+def mkstemp_beside(target: Union[str, Path], **kw: Any) -> tuple[int, str]:
+    """``tempfile.mkstemp`` in the directory :func:`atomic_replace` will rename into.
+
+    A temp staged next to a symlink whose target lives on another filesystem turns the publish
+    rename into EXDEV, and atomic_replace's copy fallback then rewrites the file in place (torn on
+    a crash). Staging beside the resolved target keeps the rename atomic. If that directory is not
+    writable to us (the file itself may still be), stage beside the link instead: the save keeps
+    working through the non-atomic copy fallback, exactly as before.
+    """
+    target_str = str(target)
+    link_dir = str(Path(target_str).parent)
+    stage_dir = os.path.dirname(_publish_path(target_str)) or link_dir
+    try:
+        return tempfile.mkstemp(dir=stage_dir, **kw)
+    except PermissionError:
+        if stage_dir == link_dir:
+            raise
+        return tempfile.mkstemp(dir=link_dir, **kw)
 
 
 def fsync_directory(path: Union[str, Path]) -> None:
@@ -286,7 +311,7 @@ def _atomic_write(path: Path, write, *, prefix: str, encoding: str = "utf-8", mo
     if mode is None and not path.exists():
         mode = default_new_file_mode()
     original_owner = _preserve_file_owner(path) if preserve_owner else None
-    fd, tmp_path = tempfile.mkstemp(dir=str(path.parent), prefix=prefix, suffix=".tmp")
+    fd, tmp_path = mkstemp_beside(path, prefix=prefix, suffix=".tmp")
     try:
         with os.fdopen(fd, "wb" if binary else "w", encoding=None if binary else encoding) as f:
             if mode is not None and hasattr(os, "fchmod"):
@@ -400,60 +425,25 @@ def warn_if_credential_file_broadly_readable(path: Union[str, Path], *, label: s
     return True
 
 
-class IndentDumper(yaml.SafeDumper):
-    """PyYAML dumper that indents list items under mapping keys (2-space).
-
-    PyYAML emits "indentless" sequences while ruamel (:func:`atomic_roundtrip_yaml_update`)
-    indents them; mixing both in one ``config.yaml`` makes stricter parsers like ``js-yaml``
-    reject it, so every write path is forced to the same shape.
-
-    Forcing ``indentless=False`` aligns the two serializers so all write paths emit byte-identical layouts
-    (#31999).
-    """
-
-    def increase_indent(self, flow=False, indentless=False):  # noqa: ARG002
-        return super().increase_indent(flow, False)
-
-
 def atomic_yaml_write(path: Union[str, Path], data: Any, *, default_flow_style: bool = False, sort_keys: bool = False,
                       extra_content: str | None = None, create_mode: "int | None" = None) -> None:
     """Write YAML to *path* atomically (temp file + fsync + replace)."""
     path = Path(path)
 
     def _write(f) -> None:
-        # allow_unicode=True writes emoji/kaomoji as real UTF-8. Without it PyYAML emits astral
-        # chars as `\UXXXXXXXX` escapes inside `\`-continued double-quoted strings — a structure
-        # stricter parsers and hand-edits routinely break into unclosed quotes, corrupting the config.
-        yaml.dump(data, f, Dumper=IndentDumper, default_flow_style=default_flow_style, sort_keys=sort_keys, allow_unicode=True)
+        yaml.safe_dump(data, f, default_flow_style=default_flow_style, sort_keys=sort_keys)
         if extra_content:
             f.write(extra_content)
 
     _atomic_write(path, _write, prefix=f".{path.stem}_", mode=_mode_for_write(path, create_mode))
 
 
-# ruamel's emitter can change a double-quoted value when it folds a long line right after an
-# escaped backslash (``D:\\Cent…`` → ``D:\\`` + bare newline): the fold reloads as a literal space
-# and a no-op save mutates the stored value (#119844). Config writes must be value-preserving, so
-# every round-trip emitter in the tree keeps scalars on one line instead of folding (``None``
-# does NOT disable folding on 0.18.x; only a large width does).
-ROUNDTRIP_YAML_WIDTH = 2**31 - 1
-
-
 def _roundtrip_load(path: Path):
     """``(yaml_rt, CommentedMap)``: a ruamel round-trip loader keeping quotes/Unicode with 2-space
     indents, plus *path* loaded through it (empty map when missing/blank)."""
-    from ruamel.yaml import YAML
     from ruamel.yaml.comments import CommentedMap
 
-    yaml_rt = YAML(typ="rt")
-    yaml_rt.width = ROUNDTRIP_YAML_WIDTH
-    yaml_rt.preserve_quotes = True
-    yaml_rt.allow_unicode = True
-    yaml_rt.default_flow_style = False
-    yaml_rt.indent(mapping=2, sequence=4, offset=2)
-    # PyYAML (every reader in the tree) tolerates duplicate keys (last wins); refusing them here
-    # would turn a file the CLI can read into one it cannot write.
-    yaml_rt.allow_duplicate_keys = True
+    yaml_rt = yaml.roundtrip_yaml()
     data = yaml_rt.load(path.read_text(encoding="utf-8")) if path.exists() else None
     return yaml_rt, data if isinstance(data, CommentedMap) else CommentedMap(data or {})
 
@@ -539,9 +529,9 @@ def atomic_roundtrip_yaml_save(path: Union[str, Path], new_state: dict, *,
                                extra_content_on_create: "str | None" = None) -> None:
     """Persist a full config-state dict while preserving comments and ordering.
 
-    THE writer for ``config.yaml`` (every production caller reaches it through
-    ``hermes_cli.config.atomic_config_write``): the on-disk document is loaded through ruamel
-    round-trip mode and *new_state* is merged onto it, so comments, key order, quotes, blank
+    THE on-disk primitive for ``config.yaml`` (production callers reach it through
+    ``hermes_cli.config.atomic_config_write`` or ``atomic_config_replace``): the document is
+    loaded through ruamel round-trip mode and *new_state* is merged onto it, so comments, key order, quotes, blank
     lines and readable Unicode survive. Only nodes whose value actually changed are reassigned;
     an untouched scalar or list keeps its inline comments and formatting. Keys absent from
     *new_state* are deleted ("explicit absence": ``cfg.pop(k)`` + save removes ``k`` from disk).
@@ -604,15 +594,9 @@ def safe_json_loads(text: str, default: Any = None) -> Any:
         return default
 
 
-# libyaml's CSafeLoader is ~8x faster than the pure-Python SafeLoader and a true drop-in for
-# ``safe_load`` (same restricted tag set); startup parses config.yaml and every plugin manifest,
-# so the slow path cost ~0.9 s of cold start.
-_fast_yaml_loader = getattr(yaml, "CSafeLoader", None) or yaml.SafeLoader
-
-
 def fast_safe_load(stream: Any) -> Any:
-    """``yaml.safe_load`` (same inputs, same result) using the libyaml C loader when available."""
-    return yaml.load(stream, Loader=_fast_yaml_loader)
+    """Use the shared safe reader (which selects ruamel's C parser when available)."""
+    return yaml.safe_load(stream)
 
 
 _YAML_FILE_CACHE: dict = {}

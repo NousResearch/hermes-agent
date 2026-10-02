@@ -271,7 +271,7 @@ def test_server_request_round_trip_uses_response_frame(capture):
      lambda sr, req: sr.resolve_response({"id": req.id, "result": {"value": "yes"}}) is True,
      {"value": "yes"}),
     # Batch clarify's lock-based resolution follows the same first-settlement rule.
-    ("clarify", ["q1"], lambda sr, req: sr.lock_answer(req.id, "q1", "yes") == [], {"answers": {"q1": "yes"}}),
+    ("clarify", ["q1"], lambda sr, req: sr.lock_answer(req.id, "q1", "yes") == [], {"answers": {"q1": "yes"}, "outcome": "submitted"}),
 ])
 def test_settlement_wins_over_a_later_cancel(capture, method, qids, settle, expected):
     """A response and cancellation may race; the first settlement owns the result."""
@@ -403,6 +403,88 @@ def test_server_request_error_response_fails_fast(server):
     assert box["result"] is None
 
 
+def _two_window_session(server, sid):
+    """A session two advertised Desktop windows are attached to (a FanoutTransport of WS peers)."""
+    import asyncio
+
+    from tui_gateway import server_requests
+    from tui_gateway.transport import FanoutTransport
+
+    # The fanout awaits a WS peer's write_async on its loop; a peer without one is pruned on first write.
+    loop = asyncio.new_event_loop()
+    threading.Thread(target=loop.run_forever, daemon=True).start()
+    windows = (_silent_ws(), _silent_ws())
+    for window in windows:
+        async def _write_async(obj, window=window):
+            return window.write(obj)
+        window._loop, window.write_async = loop, _write_async
+        server_requests.advertise(window, True)
+    _ws_session(server, sid, FanoutTransport(*windows))
+    return windows
+
+
+def _not_shown(req):
+    from tui_gateway import server_requests
+    return {"jsonrpc": "2.0", "id": req.id, "error": {"code": server_requests.NOT_SHOWN_CODE, "message": "not here"}}
+
+
+def test_window_owned_request_refuses_at_once_when_no_window_shows_the_session(server):
+    """#119333: every attached window says it does not show the session → preview.read resolves with the
+    distinct not-shown refusal now, instead of the agent waiting out the 45s bridge deadline."""
+    from tui_gateway import server_requests
+
+    windows = _two_window_session(server, "s-none")
+    box = {}
+    thread = threading.Thread(target=lambda: box.setdefault("r", server._ask("preview.read", "s-none", {}, timeout=30)),
+                              daemon=True)
+    thread.start()
+    req = _wait_open(server_requests)
+    t0 = time.monotonic()
+    assert server.dispatch(_not_shown(req), windows[0]) is None
+    # A replayed decline from the same window is still one window's vote.
+    server.dispatch(_not_shown(req), windows[0])
+    time.sleep(0.05)
+    assert thread.is_alive()
+    server.dispatch(_not_shown(req), windows[1])
+    thread.join(timeout=2)
+    assert not thread.is_alive() and time.monotonic() - t0 < 2
+    assert json.loads(box["r"]) == {"success": False, "error": server_requests.NOT_SHOWN_MESSAGE}
+    assert server_requests.open_requests("s-none") == []
+
+
+def test_window_owned_request_decline_does_not_beat_the_owner_window(server):
+    """#113348 stays fixed: one bystander window declining leaves the request open for the window that
+    shows the session, and its answer is the result."""
+    from tui_gateway import server_requests
+
+    bystander, owner = _two_window_session(server, "s-own")
+    box = {}
+    thread = threading.Thread(target=lambda: box.setdefault("r", server._ask("preview.read", "s-own", {}, timeout=5)),
+                              daemon=True)
+    thread.start()
+    req = _wait_open(server_requests)
+    server.dispatch(_not_shown(req), bystander)
+    # An unattributed decline (proxied / relayed frame) is not a window's vote either.
+    assert server_requests.resolve_response(_not_shown(req)) is True
+    time.sleep(0.05)
+    assert thread.is_alive() and [r["id"] for r in server_requests.open_requests("s-own")] == [req.id]
+    server.dispatch({"jsonrpc": "2.0", "id": req.id, "result": {"value": '{"text": "page"}'}}, owner)
+    thread.join(timeout=2)
+    assert box["r"] == '{"text": "page"}'
+
+
+def test_client_capabilities_advertises_counting_not_shown_declines(server):
+    from tui_gateway.transport import bind_transport, reset_transport
+
+    peer = _silent_ws()
+    token = bind_transport(peer)
+    try:
+        response = server.handle_request({"id": 1, "method": "client.capabilities", "params": {"server_requests": True}})
+    finally:
+        reset_transport(token)
+    assert response["result"]["declines_not_shown"] is True
+
+
 @pytest.mark.parametrize("method", ["secret", "sudo", "terminal.read", "tour"])
 def test_server_request_timeout_emits_one_request_cancel(capture, method):
     from tui_gateway import server_requests
@@ -432,7 +514,7 @@ def _start_batch_clarify(server, buf, qids, timeout=None):
     if timeout is not None:
         server._clarify_timeout_seconds = lambda: timeout
     thread = threading.Thread(
-        target=lambda: box.__setitem__("answer", server._clarify_block("s1", "", None, questions=normalized)), daemon=True)
+        target=lambda: box.__setitem__("answer", server._clarify_block("s1", normalized)), daemon=True)
     thread.start()
     return thread, box, _wait_open(server_requests, buf)
 
@@ -459,9 +541,9 @@ def test_clarify_batch_locks_resolve_in_order_and_keep_partial_on_timeout(captur
                                   "params": {"request_id": req.id, "question_id": "q1", "answer": ""}})
     assert last["result"] == {"status": "ok", "remaining": []}
     thread.join(timeout=5)
-    assert json.loads(box["answer"]) == {"answers": {"q0": "y", "q1": ""}}
+    assert box["answer"] == {"answers": {"q0": "y", "q1": ""}, "outcome": "submitted"}
 
-    # Deadline: locked answers survive, timed_out flagged, one request.cancel.
+    # Deadline: locked answers survive, outcome timed_out, one request.cancel.
     original_timeout = server._clarify_timeout_seconds
     try:
         thread, box, req = _start_batch_clarify(server, buf, ["q0", "q1"], timeout=1.5)
@@ -471,7 +553,7 @@ def test_clarify_batch_locks_resolve_in_order_and_keep_partial_on_timeout(captur
         thread.join(timeout=5)
     finally:
         server._clarify_timeout_seconds = original_timeout
-    assert json.loads(box["answer"]) == {"answers": {"q0": "kept"}, "timed_out": True}
+    assert box["answer"] == {"answers": {"q0": "kept"}, "outcome": "timed_out"}
     cancels = [f for f in _frames(buf) if f.get("method") == "event" and f["params"]["type"] == "request.cancel"]
     assert [c["params"]["payload"]["id"] for c in cancels] == [req.id]
 
@@ -481,7 +563,7 @@ def test_clarify_batch_cancel_all_is_a_response_without_answers(capture):
     thread, box, req = _start_batch_clarify(server, buf, ["q0", "q1"])
     server.dispatch({"jsonrpc": "2.0", "id": req.id, "result": {}})
     thread.join(timeout=5)
-    assert box["answer"] == ""
+    assert box["answer"] == {"answers": {}, "outcome": "cancelled"}
 
 
 def test_clear_pending_cancels_only_that_session(capture):
@@ -1246,9 +1328,7 @@ def test_slash_exec_scopes_skill_lookup_to_session_profile(server, tmp_path):
 
     with (
         patch("tools.skills_tool.SKILLS_DIR", empty_local_dir),
-        patch.object(sc_mod, "_skill_commands", {}),
-        patch.object(sc_mod, "_skill_commands_platform", None),
-        patch.object(sc_mod, "_skill_commands_home", None),
+        patch.object(sc_mod, "_skill_commands_by_key", {}),
     ):
         resp = server.handle_request({
             "id": "r1",
@@ -1261,6 +1341,332 @@ def test_slash_exec_scopes_skill_lookup_to_session_profile(server, tmp_path):
     # resolves is by scoping the lookup to the session's profile_home.
     assert "error" in resp
     assert resp["error"]["code"] == 4018
+
+
+def test_command_dispatch_expands_stacked_skills_from_temp_home(server, tmp_path, monkeypatch):
+    """#74705: Desktop/TUI command.dispatch must expand every real leading
+    /skill token (CLI cli.py and the messaging gateway already do), so
+    '/nature-figure /academic-plotting Plot the results' loads BOTH skills
+    over the remaining instruction instead of leaving the second token in
+    the prompt as plain text."""
+    import agent.skill_commands as skill_commands
+    import tools.skills_tool as skills_tool
+
+    home = tmp_path / ".hermes"
+    skills_dir = home / "skills"
+    for name, instructions in (
+        ("nature-figure", "Render figures with natural colors."),
+        ("academic-plotting", "Label every axis and include units."),
+    ):
+        skill_dir = skills_dir / name
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text(
+            f"---\nname: {name}\ndescription: Test {name}.\n---\n\n{instructions}\n",
+            encoding="utf-8",
+        )
+
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr(skills_tool, "SKILLS_DIR", skills_dir)
+    monkeypatch.setattr(skill_commands, "_skill_commands_by_key", {})
+
+    sid = "test-session"
+    server._sessions[sid] = {"session_key": sid, "agent": None}
+    resp = server.handle_request({
+        "id": "stacked-skills",
+        "method": "command.dispatch",
+        "params": {
+            "name": "nature-figure",
+            "arg": "/academic-plotting Plot the results",
+            "session_id": sid,
+        },
+    })
+
+    assert "error" not in resp
+    result = resp["result"]
+    assert result["type"] == "skill"
+    assert result["notice"] == (
+        "⚡ Loading 2 stacked skills: nature-figure, academic-plotting"
+    )
+    assert "Render figures with natural colors." in result["message"]
+    assert "Label every axis and include units." in result["message"]
+    assert "Plot the results" in result["message"]
+    # UIs render `display`: the projection shows the invocation the user typed.
+    assert result["display"] == (
+        "/nature-figure /academic-plotting Plot the results"
+    )
+
+
+def test_command_dispatch_stacked_split_keeps_unknown_tokens_as_instruction(server, tmp_path, monkeypatch):
+    """A non-skill or repeated token stops the stack and stays instruction text —
+    the split must never eat content the user meant as the prompt."""
+    import agent.skill_commands as skill_commands
+    import tools.skills_tool as skills_tool
+
+    home = tmp_path / ".hermes"
+    skills_dir = home / "skills"
+    skill_dir = skills_dir / "nature-figure"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(
+        "---\nname: nature-figure\ndescription: Test.\n---\n\nRender figures.\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr(skills_tool, "SKILLS_DIR", skills_dir)
+    monkeypatch.setattr(skill_commands, "_skill_commands_by_key", {})
+
+    sid = "test-session-unknown"
+    server._sessions[sid] = {"session_key": sid, "agent": None}
+    resp = server.handle_request({
+        "id": "stacked-unknown",
+        "method": "command.dispatch",
+        "params": {
+            "name": "nature-figure",
+            "arg": "/not-a-skill-command but /model is a registry command",
+            "session_id": sid,
+        },
+    })
+
+    assert "error" not in resp
+    result = resp["result"]
+    assert result["type"] == "skill"
+    # No stacked notice — the single-skill path ran with the post-split text intact.
+    assert "notice" not in result
+    assert "/not-a-skill-command but /model is a registry command" in result["message"]
+
+
+def test_sessionless_slash_palette_follows_profile_param(server, tmp_path, monkeypatch):
+    """A Desktop draft has no session yet: ``commands.catalog`` / ``complete.slash`` must scan the
+    named ``profile``'s home, not the launch profile's — A→B→A under multiplexing (#124651). The
+    palette's quick_commands are that profile's too, and an unknown profile is 4064, not a
+    launch-profile palette."""
+    import agent.skill_commands as sc_mod
+    from agent.secret_scope import is_multiplex_active, set_multiplex_active
+
+    root = tmp_path / "hermes_home"
+    for name in ("s6probe-a", "s6probe-b"):
+        skill_dir = tmp_path / f"external_{name}" / f"{name}-only"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text(f"---\nname: {name}-only\ndescription: Only in {name}.\n---\n\n# x\n")
+        (root / "profiles" / name).mkdir(parents=True)
+        (root / "profiles" / name / "config.yaml").write_text(
+            f"skills:\n  external_dirs:\n    - {skill_dir.parent}\n"
+            f"quick_commands:\n  {name}-qc:\n    type: exec\n    command: echo {name}\n")
+    monkeypatch.setenv("HERMES_HOME", str(root))
+    monkeypatch.setattr(server, "_hermes_home", str(root))
+
+    def palette(profile):
+        catalog = server.handle_request({"id": "r1", "method": "commands.catalog", "params": {"profile": profile}})
+        typed = server.handle_request({
+            "id": "r2", "method": "complete.slash", "params": {"text": "/s6probe", "profile": profile}})
+        assert "result" in catalog and "result" in typed, (catalog, typed)
+        quick = {key for key, _ in catalog["result"]["pairs"] if key.endswith("-qc")}
+        return set(catalog["result"]["skills"]), {item["text"].strip("/") for item in typed["result"]["items"]}, quick
+
+    previous = is_multiplex_active()
+    set_multiplex_active(True)
+    try:
+        with (
+            patch("tools.skills_tool.SKILLS_DIR", tmp_path / "no-local-skills"),
+            patch.object(sc_mod, "_skill_commands_by_key", {}),
+        ):
+            assert palette("s6probe-a") == ({"/s6probe-a-only"}, {"s6probe-a-only"}, {"/s6probe-a-qc"})
+            assert palette("s6probe-b") == ({"/s6probe-b-only"}, {"s6probe-b-only"}, {"/s6probe-b-qc"})
+            assert palette("s6probe-a") == ({"/s6probe-a-only"}, {"s6probe-a-only"}, {"/s6probe-a-qc"})
+            for method in ("commands.catalog", "skills.reload"):
+                bad = server.handle_request({"id": "r3", "method": method, "params": {"profile": "../x"}})
+                assert bad.get("error", {}).get("code") == 4064, (method, bad)
+    finally:
+        set_multiplex_active(previous)
+
+
+class _BannerWorker:
+    """Stand-in for the slash worker's current skill path: ok-reply the banner."""
+
+    def __init__(self):
+        self.calls = []
+        self.closed = False
+
+    def run(self, command):
+        self.calls.append(command)
+        return "⚡ Loading skill: grilling"
+
+    def close(self):
+        self.closed = True
+
+
+def _grilling_profile(tmp_path):
+    """A session whose profile has only the grilling skill, plus a banner worker."""
+    empty_local_dir = tmp_path / "no-local-skills"
+    empty_local_dir.mkdir()
+    profile = tmp_path / "profile"
+    profile.mkdir()
+    external = tmp_path / "external"
+    skill_dir = external / "grilling"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(
+        "---\nname: grilling\ndescription: Grill the plan.\n---\n\n# grilling\n\nAsk hard questions.\n"
+    )
+    (profile / "config.yaml").write_text(f"skills:\n  external_dirs:\n    - {external}\n")
+    sid = "skill-failopen-session"
+    worker = _BannerWorker()
+    return empty_local_dir, {
+        "session_key": sid,
+        "agent": None,
+        "profile_home": str(profile),
+        "slash_worker": worker,
+    }, worker
+
+
+def _assert_not_ok_banner(resp, worker):
+    blob = json.dumps(resp)
+    assert "Loading skill" not in blob
+    assert worker.calls == []
+    result = resp.get("result") or {}
+    if result.get("type") == "skill":
+        assert result.get("message")
+        assert result.get("name") == "grilling"
+        return
+    assert "error" in resp
+    assert resp["error"]["code"] != 0
+
+
+def test_slash_exec_skill_scan_raise_returns_dispatch_payload_not_banner(server, tmp_path):
+    """A skill-scan exception must not fail open into an ok loading banner.
+
+    The client gets command.dispatch's skill payload (the expanded prompt), never
+    a silent success that drops it.
+    """
+    import agent.skill_commands as sc_mod
+
+    empty_local_dir, session, worker = _grilling_profile(tmp_path)
+    sid = session["session_key"]
+    server._sessions[sid] = session
+    real_get = sc_mod.get_skill_commands
+    calls = {"n": 0}
+
+    def flaky():
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise OSError("external_dirs hiccup")
+        return real_get()
+
+    with (
+        patch("tools.skills_tool.SKILLS_DIR", empty_local_dir),
+        patch.object(sc_mod, "get_skill_commands", flaky),
+        patch.object(sc_mod, "_skill_commands_by_key", {}),
+    ):
+        resp = server.handle_request({
+            "id": "r1",
+            "method": "slash.exec",
+            "params": {"command": "grilling tighten this", "session_id": sid},
+        })
+
+    _assert_not_ok_banner(resp, worker)
+    assert resp["result"]["type"] == "skill"
+    assert "tighten this" in resp["result"]["message"]
+
+
+def test_slash_exec_skill_scan_raise_is_hard_error_not_banner_when_dispatch_misses(server, tmp_path):
+    """If the scan keeps failing, slash.exec still must not ok-reply the banner."""
+    import agent.skill_commands as sc_mod
+
+    empty_local_dir, session, worker = _grilling_profile(tmp_path)
+    sid = session["session_key"]
+    server._sessions[sid] = session
+
+    def always_raise():
+        raise OSError("external_dirs hiccup")
+
+    with (
+        patch("tools.skills_tool.SKILLS_DIR", empty_local_dir),
+        patch.object(sc_mod, "get_skill_commands", always_raise),
+        patch.object(sc_mod, "_skill_commands_by_key", {}),
+    ):
+        resp = server.handle_request({
+            "id": "r1",
+            "method": "slash.exec",
+            "params": {"command": "/grilling", "session_id": sid},
+        })
+
+    _assert_not_ok_banner(resp, worker)
+    assert "error" in resp
+
+
+def test_slash_exec_skill_scan_raise_still_runs_registry_commands(server):
+    """A skill-scan exception must not block built-ins the worker owns."""
+    import agent.skill_commands as sc_mod
+
+    class _StatusWorker:
+        def __init__(self):
+            self.calls = []
+
+        def run(self, command):
+            self.calls.append(command)
+            return "verbose ok"
+
+        def close(self):
+            pass
+
+    sid = "registry-during-skill-scan-failure"
+    worker = _StatusWorker()
+    server._sessions[sid] = {"session_key": sid, "agent": None, "slash_worker": worker}
+
+    with patch.object(sc_mod, "get_skill_commands", side_effect=OSError("external_dirs hiccup")):
+        resp = server.handle_request({
+            "id": "r1",
+            "method": "slash.exec",
+            "params": {"command": "/verbose", "session_id": sid},
+        })
+
+    assert worker.calls == ["/verbose"]
+    assert resp.get("result", {}).get("output") == "verbose ok"
+    assert "error" not in resp
+
+
+def test_slash_exec_worker_skill_refuse_returns_dispatch_payload(server, tmp_path):
+    """A worker that refuses a skill before process_command must not become a 5030 drop.
+
+    The gate can miss (stale empty scan) while dispatch still resolves the skill.
+    The client gets that payload, and the worker stays up.
+    """
+    import agent.skill_commands as sc_mod
+
+    empty_local_dir, session, worker = _grilling_profile(tmp_path)
+    sid = session["session_key"]
+
+    class _RefuseWorker(_BannerWorker):
+        def run(self, command):
+            self.calls.append(command)
+            raise RuntimeError("skill command refused before process: /grilling")
+
+    worker = _RefuseWorker()
+    session["slash_worker"] = worker
+    server._sessions[sid] = session
+    real_get = sc_mod.get_skill_commands
+    calls = {"n": 0}
+
+    def stale_then_real():
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return {}
+        return real_get()
+
+    with (
+        patch("tools.skills_tool.SKILLS_DIR", empty_local_dir),
+        patch.object(sc_mod, "get_skill_commands", stale_then_real),
+        patch.object(sc_mod, "_skill_commands_by_key", {}),
+    ):
+        resp = server.handle_request({
+            "id": "r1",
+            "method": "slash.exec",
+            "params": {"command": "/grilling", "session_id": sid},
+        })
+
+    assert worker.closed is False
+    assert resp.get("result", {}).get("type") == "skill"
+    assert resp["result"].get("message")
+    assert "Loading skill" not in json.dumps(resp)
 
 
 def test_command_dispatch_scopes_skill_lookup_to_session_profile(server, tmp_path):
@@ -1291,9 +1697,7 @@ def test_command_dispatch_scopes_skill_lookup_to_session_profile(server, tmp_pat
 
     with (
         patch("tools.skills_tool.SKILLS_DIR", empty_local_dir),
-        patch.object(sc_mod, "_skill_commands", {}),
-        patch.object(sc_mod, "_skill_commands_platform", None),
-        patch.object(sc_mod, "_skill_commands_home", None),
+        patch.object(sc_mod, "_skill_commands_by_key", {}),
     ):
         resp = server.handle_request({
             "id": "r1",
@@ -1329,8 +1733,7 @@ def test_slash_exec_routes_a_secondary_only_bundle_to_dispatch(server, tmp_path,
         patch("tools.skills_tool.SKILLS_DIR", tmp_path / "no-local-skills"),
         patch.object(sb_mod, "_bundles_cache", {}),
         patch.object(sb_mod, "_bundles_cache_mtime", None),
-        patch.object(sc_mod, "_skill_commands", {}),
-        patch.object(sc_mod, "_skill_commands_home", None),
+        patch.object(sc_mod, "_skill_commands_by_key", {}),
     ):
         resp = server.handle_request({
             "id": "r1", "method": "slash.exec", "params": {"command": "/b-pack go", "session_id": sid}})
@@ -1422,7 +1825,7 @@ def test_skin_live_switch_end_to_end(server, tmp_path, monkeypatch):
 
     (tmp_path / "skins").mkdir()
     (tmp_path / "skins" / "midnight.yaml").write_text(
-        "name: midnight\ndescription: t\ncolors:\n  banner_title: '#00ffcc'\n  background: '#001010'\n"
+        "name: midnight\ndescription: t\ncolors:\n  banner_title: '#00ffcc'\n  background: '#001010'\ncustomCSS: |\n  .chat-input { font-size: 16px; }\n"
     )
     monkeypatch.setattr(skin_engine, "get_hermes_home", lambda: tmp_path)
     monkeypatch.setattr(server, "_hermes_home", tmp_path)
@@ -1446,6 +1849,9 @@ def test_skin_live_switch_end_to_end(server, tmp_path, monkeypatch):
     assert [ev for ev, _ in emitted] == ["skin.changed"]
     assert emitted[0][1]["name"] == "midnight"
     assert emitted[0][1]["colors"]["banner_title"] == "#00ffcc"
+    # customCSS rides the same payload end-to-end: parsed from the YAML,
+    # stripped, and emitted by resolve_skin().
+    assert emitted[0][1]["customCSS"] == ".chat-input { font-size: 16px; }"
 
 
 def test_broadcast_skin_if_changed_on_any_signature_move(server, monkeypatch):
@@ -1571,3 +1977,149 @@ def test_peerless_global_broadcast_never_reaches_stdout_in_ws_backend(capture, m
 
     assert len(a.frames) == 1
     assert buf.getvalue() == ""
+
+
+# ── session.create idempotency (#65410 / PR #65411) ───────────────────
+
+
+def _stub_session_create_dependencies(server, monkeypatch):
+    """Stub out the heavy deps ``session.create`` touches so it can run without
+    a real agent/DB. ``session.create`` lives in the split ``methods_session``
+    module but its handlers read server globals (``bind_module`` rebinds them),
+    so patching the server module covers both."""
+    # session.create's handler reads SERVER globals (bind_module rebinds the
+    # split module's functions onto server vars), so patching the server module
+    # covers everything the create path touches.
+    monkeypatch.setattr(server, "_register_session_cwd", lambda *a, **kw: None)
+    monkeypatch.setattr(server, "_schedule_agent_build", lambda *a, **kw: None)
+    monkeypatch.setattr(server, "_schedule_session_cap_enforcement", lambda *a, **kw: None)
+    monkeypatch.setattr(server, "_enable_gateway_prompts", lambda: None)
+    monkeypatch.setattr(server, "_load_show_reasoning", lambda: False)
+    monkeypatch.setattr(server, "_load_tool_progress_mode", lambda: None)
+    monkeypatch.setattr(server, "_profile_home", lambda p: None)
+    monkeypatch.setattr(server, "_profile_build_scope", _null_scope)
+    monkeypatch.setattr(server, "_seed_row", lambda *a, **kw: None)
+    monkeypatch.setattr(server, "_seed_branch_row", lambda *a, **kw: None)
+    monkeypatch.setattr(server, "_ensure_session_db_row", lambda *a, **kw: None)
+    # Fresh registry per test: the server and the rebound handler share the
+    # same dict object only if we swap it in place.
+    server._idempotency_keys.clear()
+
+
+class _NullScope:
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+
+def _null_scope(profile_home):
+    return _NullScope()
+
+
+def test_session_create_idempotency_key_dedupes_retry(server, monkeypatch):
+    """A retried session.create with the same idempotency_key returns the SAME
+    sid instead of spawning a duplicate child (#65410): a create whose first
+    response was lost must not leave two children behind."""
+    _stub_session_create_dependencies(server, monkeypatch)
+
+    params = {
+        "cols": 96,
+        "source": "desktop",
+        "messages": [{"role": "user", "content": "branch me"}],
+        "parent_session_id": "parent-1",
+        "idempotency_key": "branch-retry-abc",
+    }
+    first = server.handle_request({"id": "c1", "method": "session.create", "params": dict(params)})
+    assert "error" not in first, first.get("error")
+    first_sid = first["result"]["session_id"]
+    assert first_sid
+    assert len(server._sessions) == 1
+
+    # Client retries after a lost response: same key, same params.
+    second = server.handle_request({"id": "c2", "method": "session.create", "params": dict(params)})
+    assert "error" not in second, second.get("error")
+    assert second["result"]["session_id"] == first_sid
+    assert len(server._sessions) == 1
+
+
+def test_session_create_no_idempotency_key_creates_distinct_sessions(server, monkeypatch):
+    """Without an idempotency_key, repeated creates keep the historic behavior."""
+    _stub_session_create_dependencies(server, monkeypatch)
+
+    first = server.handle_request({"id": "c1", "method": "session.create", "params": {"cols": 96, "source": "desktop"}})
+    second = server.handle_request({"id": "c2", "method": "session.create", "params": {"cols": 96, "source": "desktop"}})
+
+    assert "error" not in first and "error" not in second
+    assert first["result"]["session_id"] != second["result"]["session_id"]
+    assert len(server._sessions) == 2
+
+
+def test_session_create_idempotency_key_expires_with_session(server, monkeypatch):
+    """If the original session closed between create and retry, the same key
+    falls through and creates a fresh session (the key does not pin a dead sid)."""
+    _stub_session_create_dependencies(server, monkeypatch)
+
+    first = server.handle_request(
+        {"id": "c1", "method": "session.create",
+         "params": {"cols": 96, "source": "desktop", "idempotency_key": "branch-retry-xyz"}}
+    )
+    first_sid = first["result"]["session_id"]
+
+    server._sessions.pop(first_sid, None)
+
+    second = server.handle_request(
+        {"id": "c2", "method": "session.create",
+         "params": {"cols": 96, "source": "desktop", "idempotency_key": "branch-retry-xyz"}}
+    )
+    assert "error" not in second
+    assert second["result"]["session_id"] != first_sid
+    assert len(server._sessions) == 1
+
+
+def test_session_branch_stored_accepts_idempotency_key(server, monkeypatch):
+    """The desktop's whole-session branch (session.branch_stored) rides the same
+    create plumbing and sends idempotency_key on EVERY branch (#65410): the
+    contract must accept it, the create must succeed (the lineage-sidebar e2e
+    failed with a 4000 because SessionBranchStoredParams forbade the key), and a
+    retried branch_stored with the SAME key must return the SAME child instead
+    of a duplicate."""
+    _stub_session_create_dependencies(server, monkeypatch)
+
+    class _Scope:
+        def __init__(self, db):
+            self.db = db
+
+        def __enter__(self):
+            return self.db
+
+        def __exit__(self, *_args):
+            return False
+
+    class _FakeDB:
+        def get_resume_conversations(self, key):
+            assert key == "parent"
+            return [], [
+                {"role": "user", "content": "first question", "timestamp": 1},
+                {"role": "assistant", "content": "first answer", "timestamp": 2},
+            ]
+
+    monkeypatch.setattr(server, "_profile_db", lambda _params: _Scope(_FakeDB()))
+
+    params = {
+        "cols": 96,
+        "parent_session_id": "parent",
+        "source": "desktop",
+        "idempotency_key": "branch-stored-retry-abc",
+    }
+    first = server.handle_request({"id": "b1", "method": "session.branch_stored", "params": dict(params)})
+    assert "error" not in first, first.get("error")
+    first_sid = first["result"]["session_id"]
+    assert len(server._sessions) == 1
+
+    # A lost-response retry: same key, same params, same child.
+    second = server.handle_request({"id": "b2", "method": "session.branch_stored", "params": dict(params)})
+    assert "error" not in second, second.get("error")
+    assert second["result"]["session_id"] == first_sid
+    assert len(server._sessions) == 1

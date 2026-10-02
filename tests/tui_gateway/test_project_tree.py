@@ -356,6 +356,44 @@ def test_posix_path_identity_remains_case_sensitive():
     ]
 
 
+def test_unicode_normalization_forms_share_one_project_identity():
+    # The same on-disk folder can reach the tree as different byte strings:
+    # macOS file pickers emit NFD ("a" + U+030A) while typed paths and
+    # os.getcwd() are usually NFC (U+00E5). Identity comparison must treat
+    # them as one path or the project renders empty (#65014).
+    import unicodedata
+
+    nfc = unicodedata.normalize("NFC", "/projects/sv/bist\u00e5nd")
+    nfd = unicodedata.normalize("NFD", nfc)
+    assert nfc != nfd  # premise: distinct byte strings for the same folder
+
+    explicit = _project("p_bistand", "Bist\u00e5nd", [nfc])
+    session = _session(nfd)
+
+    tree = pt.build_tree([explicit], [session], [], resolve=lambda _cwd: None, hydrate=True)
+
+    project = next(p for p in tree["projects"] if p["id"] == "p_bistand")
+    assert project["sessionCount"] == 1
+    # No stray auto-project for the NFD spelling of the same folder.
+    assert not any(p.get("isAuto") and "bist" in str(p["id"]) for p in tree["projects"])
+
+
+def test_windows_unicode_normalization_and_case_share_one_identity():
+    import unicodedata
+
+    folder_nfc = unicodedata.normalize("NFC", "D:/Projects/SV/Bist\u00e5nd")
+    cwd_nfd = unicodedata.normalize("NFD", "d:/projects/sv/bist\u00e5nd")
+    assert folder_nfc != cwd_nfd
+
+    explicit = _project("p_sv", "SV", [folder_nfc])
+    session = _session(cwd_nfd)
+
+    tree = pt.build_tree([explicit], [session], [], resolve=lambda _cwd: None, hydrate=True)
+
+    project = next(p for p in tree["projects"] if p["id"] == "p_sv")
+    assert project["sessionCount"] == 1
+
+
 def test_explicit_project_claims_sessions_and_beats_auto():
     project = _project("p_app", "App", ["/www/app"])
     resolve = _resolver(
@@ -526,6 +564,31 @@ def test_existing_non_git_workspace_still_becomes_a_project():
     tree = pt.build_tree([], sessions, [], lambda _cwd: None, hydrate=True, exists=lambda _p: True)
 
     assert [p["id"] for p in tree["projects"]] == ["/www/notes"]
+
+
+def test_git_lanes_are_flagged_is_git():
+    # Every placement backed by a git probe (or a persisted repo root, when no
+    # probe ran) marks its lane isGit, so the renderer can offer branch
+    # switching only where `git switch` can actually run.
+    probed = pt.build_tree(
+        [], [_session("/repo", branch="main")], [], _resolver({"/repo": ("/repo", "/repo")}), hydrate=True)
+    persisted = pt.build_tree(
+        [], [_session("/repo", branch="main", repo_root="/repo")], [], None, hydrate=True)
+
+    for tree in (probed, persisted):
+        lane = tree["projects"][0]["repos"][0]["groups"][0]
+        assert lane["isMain"] and lane["isGit"]
+
+
+def test_non_git_heuristic_lane_is_flagged_not_git():
+    # The path-only heuristic lane for a plain folder keeps the project and the
+    # lane (pinned above), but carries isGit=False so the renderer never runs
+    # `git switch <folder-name>` and dies with "not a git repository" (#61362).
+    tree = pt.build_tree([], [_session("/www/notes")], [], lambda _cwd: None, hydrate=True)
+
+    lane = tree["projects"][0]["repos"][0]["groups"][0]
+    assert lane["isMain"] and lane["id"] == "/www/notes::branch::main"
+    assert lane["isGit"] is False
 
 
 def test_stale_persisted_repo_root_does_not_become_a_project():

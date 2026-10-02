@@ -4,6 +4,11 @@
 # This file configures CLI behavior; only documented secret environment
 # variables in .env take precedence over their corresponding settings.
 
+# Schema version of this file. The installers copy it to seed config.yaml, and
+# `hermes update` uses it to know which one-time migrations the file already
+# has. Hermes manages it: do not copy it into another config.
+_config_version: 49
+
 # =============================================================================
 # Database Configuration
 # =============================================================================
@@ -36,6 +41,21 @@ database:
 # null to disable the adjustment. Default: 4096.
 runtime:
   nofile_soft_limit: 4096
+
+# =============================================================================
+# Attachments
+# =============================================================================
+# Where the TUI/Desktop gateway stages session file attachments (file uploads and
+# pasted text). Read per profile: a session bound to profile X follows X's own
+# config.yaml, so each agent's attachments stay with its workspace.
+#   hermes-home  (default) <profile home>/attachments — the directory container
+#                 backends bind-mount, so @file: refs resolve inside the sandbox.
+#   workspace    <session workspace>/.hermes/attachments — staging lands inside
+#                 the allowed reference root, so the profile's agent can always
+#                 read its own attachments back. A remote (ssh) workspace keeps
+#                 the profile home directory either way.
+attachments:
+  storage: "hermes-home"
 
 # =============================================================================
 # Plugin Installation
@@ -439,7 +459,7 @@ terminal:
 #   cwd: "/workspace"  # Path INSIDE the container (default: /)
 #   timeout: 180
 #   lifetime_seconds: 300
-#   docker_image: "nikolaik/python-nodejs:python3.11-nodejs20"
+#   docker_image: "nousresearch/hermes-sandbox:desktop"
 #   docker_mount_cwd_to_workspace: true   # Explicit opt-in: mount your launch cwd into /workspace
 #   # Optional: run the container as your host user's uid:gid so files written
 #   # into bind-mounted dirs are owned by you, not root. Drops SETUID/SETGID
@@ -469,7 +489,7 @@ terminal:
 #   cwd: "/workspace"  # Path INSIDE the container (default: /root)
 #   timeout: 180
 #   lifetime_seconds: 300
-#   singularity_image: "docker://nikolaik/python-nodejs:python3.11-nodejs20"
+#   singularity_image: "docker://nousresearch/hermes-sandbox:desktop"
 
 # -----------------------------------------------------------------------------
 # OPTION 5: Modal cloud execution
@@ -481,7 +501,7 @@ terminal:
 #   cwd: "/workspace"  # Path INSIDE the sandbox (default: /root)
 #   timeout: 180
 #   lifetime_seconds: 300
-#   modal_image: "nikolaik/python-nodejs:python3.11-nodejs20"
+#   modal_image: "nousresearch/hermes-sandbox:desktop"
 
 # -----------------------------------------------------------------------------
 # OPTION 6: Daytona cloud execution
@@ -494,7 +514,7 @@ terminal:
 #   cwd: "~"
 #   timeout: 180
 #   lifetime_seconds: 300
-#   daytona_image: "nikolaik/python-nodejs:python3.11-nodejs20"
+#   daytona_image: "nousresearch/hermes-sandbox:desktop"
 #   container_disk: 10240          # Daytona max is 10GB per sandbox
 
 #
@@ -556,6 +576,21 @@ terminal:
 #   # disable the gate; add fnmatch patterns on the basename to protect more files.
 #   protected_instruction_files: true
 #   protected_instruction_extra_patterns: []
+
+# =============================================================================
+# LSP Diagnostics (post-write lint for write_file / patch)
+# =============================================================================
+# lsp:
+#   enabled: true
+#   # Language servers only load code a project ships (its .venv interpreter,
+#   # node_modules TypeScript, svelte.config.js, cargo/Gradle/mix build files)
+#   # in the git worktree of the directory you launched Hermes in or opened
+#   # the session in (hermes -w, a Desktop project, terminal.cwd), or under a
+#   # directory listed here. In other checkouts, such as a repository the agent
+#   # cloned, only servers that run no project code start (pinned to
+#   # Hermes-side tools) and the npx tsc / rustfmt lint fallbacks are skipped.
+#   trusted_workspaces:
+#     - ~/code/my-app
 
 # =============================================================================
 # Browser Tool Configuration
@@ -671,12 +706,11 @@ compression:
   #   "claude-sonnet": 0.35
   #   "gpt-5": 0.30
 
-  # Absolute token cap for the compression trigger (default: 256000).
-  # Compression fires at the LOWER of the ratio-based threshold and this count,
-  # bounding large-window sessions while lower proportional triggers still win
-  # whenever they fall below the cap. The cap survives model switches and fallbacks.
-  # Set null to restore ratio-only behavior.
-  threshold_tokens: 256000
+  # Optional absolute token cap for the compression trigger (default: null = disabled).
+  # When set, compression fires at the LOWER of the ratio-based threshold and this
+  # absolute token count. Clamped to the model's context length at apply-time, so a
+  # cap above the window is a no-op. Survives model switches and fallback activations.
+  # threshold_tokens: 200000
 
   # Existing Codex gpt-5.5 behavior: raise Hermes' compaction trigger to 85%
   # for the ChatGPT Codex OAuth route. Set false to opt back down to threshold.
@@ -718,7 +752,7 @@ compression:
 
   # Native OpenAI Responses server-side compaction (default: false). When true,
   # gpt-5.6-family models on the DIRECT OpenAI API (api.openai.com) or a ChatGPT
-  # Codex subscription, plus exact gpt-6-astra on official Codex OAuth, compact
+  # Codex subscription, plus gpt-6-astra (and its -900k alias) on official Codex OAuth, compact
   # server-side: OpenAI prunes older context into an
   # encrypted checkpoint that Hermes replays on later turns. No other provider,
   # route, or model is affected. Hermes' local compression stays armed as the
@@ -1203,6 +1237,8 @@ agent:
   # begins. /restart and SIGUSR1 refuse new work, then wait up to this cap for
   # in-flight agent, cron and API runs to complete so the requesting turn is
   # not cut off by restart_drain_timeout. 0 = enter stop()/drain immediately.
+  # Excluded from the wait: wedged runs, and cron runs already handed to a
+  # worker in its own restart-safe systemd scope (they outlive the restart).
   # The default (30 min) is a safety valve for wedged agents, not a target
   # latency; raise it for long unattended turns. Env: HERMES_RESTART_AFTER_TURN_TIMEOUT.
   # restart_after_turn_timeout: 1800
@@ -1789,7 +1825,7 @@ delegation:
 # Builds a deeper understanding of the user across sessions and tools.
 # Runs alongside USER.md — additive, not a replacement.
 #
-# Requires: pip install honcho-ai
+# Requires: hermes plugins install honcho (Plastic Labs' plugin from the catalog)
 # Config: ~/.honcho/config.json (shared with Claude Code, Cursor, etc.)
 # API key: HONCHO_API_KEY in ~/.hermes/.env or ~/.honcho/config.json
 #
@@ -1805,16 +1841,25 @@ display:
   #   false: Full ASCII banner with tool/skill summary (default)
   compact: false
 
-  # Tool progress display level (CLI and gateway)
+  # Tool progress display level (CLI, gateway, and the TUI/Desktop tool feed)
   #   off:     Silent — no tool activity shown, just the final response
   #   new:     Show a tool indicator only when the tool changes (skip repeats)
   #   all:     Show every tool call with a short preview (default)
   #   verbose: Full args, results, and debug logs (same as /verbose)
   #   log:     Silent in chat; append every tool call to ~/.hermes/logs/tool_calls.log (gateway only)
   # Toggle at runtime with /verbose in the CLI
-  tool_progress: all
+  # Independent of show_reasoning: hiding reasoning never hides tool rows.
+  # Answer-only (just the final response) is show_reasoning: false plus
+  # tool_progress: off.
+  # tool_progress: all
 
-  # Per-platform defaults can be quieter than the global setting. Telegram
+  # tool_progress, interim_assistant_messages, long_running_notifications,
+  # busy_ack_detail and show_reasoning are left unset here on purpose: a value
+  # set under display: applies to EVERY messaging platform and replaces its
+  # built-in default. To change one platform, set it under
+  # display.platforms.<platform> instead.
+  #
+  # Per-platform defaults can be quieter than the CLI. Telegram
   # tunes for mobile: tool_progress and busy_ack_detail default off (no
   # per-tool breadcrumb stream, no "iteration 21/60" debug detail in busy
   # acks or heartbeats), but interim_assistant_messages and
@@ -1845,9 +1890,10 @@ display:
   # assistant narration streamed between tool calls is kept in the transcript
   # instead of the bubble collapsing to only the final message on completion.
   # Independent of tool_progress and gateway streaming.
-  #   true:  Keep/send mid-turn assistant updates (default)
+  #   true:  Keep/send mid-turn assistant updates (default; off on platforms
+  #          that cannot edit messages)
   #   false: Only keep/send the final response
-  interim_assistant_messages: true
+  # interim_assistant_messages: true
 
   # Opt-in: hide automatic warning/diagnostic notifications (compression, retry
   # and fallback notices, credit/subagent failure lines, inactivity and watchdog
@@ -1862,16 +1908,17 @@ display:
   # notifications even if agent.gateway_notify_interval is non-zero. The
   # heartbeat edits a single message in place (where the adapter supports
   # editing) instead of posting a new bubble each interval.
-  # Default: true everywhere, including Telegram (silent agents are worse
-  # than a single edit-in-place heartbeat).
-  long_running_notifications: true
+  # Default: true, including Telegram (silent agents are worse than a single
+  # edit-in-place heartbeat); false on Slack and on platforms that cannot edit.
+  # long_running_notifications: true
 
   # Include detailed iteration/tool/status context in busy acknowledgments
   # and long-running heartbeats. When true, busy acks show "iteration 21/60,
   # terminal, 10 min" and the heartbeat shows "⏳ Working — 12 min,
-  # iteration 21/60, terminal". When false (Telegram default), both stay
-  # terse: "Interrupting current task" and "⏳ Working — 12 min, terminal".
-  busy_ack_detail: true
+  # iteration 21/60, terminal". When false (Telegram, Slack and no-edit
+  # platform default), both stay terse: "Interrupting current task" and
+  # "⏳ Working — 12 min, terminal".
+  # busy_ack_detail: true
 
   # What Enter does when Hermes is already busy (CLI and gateway platforms).
   #   interrupt: Interrupt the current run and redirect Hermes (default)
@@ -1913,9 +1960,9 @@ display:
   # Show model reasoning/thinking before each response.
   # When enabled, a dim box shows the model's thought process above the response.
   # Toggle at runtime with /reasoning show or /reasoning hide.
-  #   true:  Show the reasoning box (default)
-  #   false: Hide reasoning
-  show_reasoning: true
+  #   true:  Show the reasoning box (CLI default)
+  #   false: Hide reasoning (messaging platform default)
+  # show_reasoning: true
 
   # Stream tokens to the terminal as they arrive instead of waiting for the
   # full response. The response box opens on first token and text appears

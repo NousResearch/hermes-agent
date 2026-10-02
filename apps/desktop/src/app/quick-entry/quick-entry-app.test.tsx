@@ -1,6 +1,8 @@
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
+import type { QuickEntrySubmitResult } from '@/store/quick-entry'
+
 import { QuickEntryApp } from './quick-entry-app'
 
 function setup() {
@@ -27,7 +29,7 @@ function setup() {
       draft: { id: 'two', text: '' },
       thoughts: [{ ...draft, createdAt: '2026-01-01' }]
     })),
-    submit: vi.fn(async () => true),
+    submit: vi.fn(async (): Promise<QuickEntrySubmitResult> => ({ ok: true })),
     dismiss: vi.fn(),
     expandThoughts: vi.fn(),
     onShown: vi.fn(fn => {
@@ -40,6 +42,7 @@ function setup() {
 
       return () => {}
     }),
+    onLateResult: vi.fn(() => () => {}),
     onThoughtOwnerChanged: vi.fn(fn => {
       ownerChanged = fn
 
@@ -54,7 +57,8 @@ function setup() {
     state,
     changeOwner: (owner?: { connectionId: string; profile: string }) => ownerChanged(owner),
     show: () => shown(),
-    connect: () => statePush({ connected: true, sessions: [] })
+    connect: () => statePush({ connected: true, sessions: [] }),
+    pushState: (value: unknown) => statePush(value)
   }
 }
 
@@ -176,18 +180,18 @@ it('saves with the keyboard, restores focus, and appends without replacing an ex
   fireEvent.change(input, { target: { value: 'saved fragment' } })
   fireEvent.keyDown(input, { key: 's', metaKey: true })
   await screen.findByText('Saved locally')
-  expect(document.activeElement).toBe(input)
+  expect(input.ownerDocument.activeElement).toBe(input)
   fireEvent.change(input, { target: { value: 'unfinished draft' } })
   fireEvent.click(screen.getByRole('button', { name: 'Saved thoughts' }))
   fireEvent.click(screen.getByRole('button', { name: 'Append to draft' }))
   expect(input.value).toBe('unfinished draft\nsaved fragment')
-  expect(document.activeElement).toBe(input)
+  expect(input.ownerDocument.activeElement).toBe(input)
   expect(api.submit).not.toHaveBeenCalled()
 })
 
 it('keeps rejected handoffs visible and does not send when their recovery write fails', async () => {
   const { api, connect } = setup()
-  api.submit.mockResolvedValue(false)
+  api.submit.mockResolvedValue({ code: 'submit-failed', message: 'Not accepted.', ok: false, retryable: true })
   render(<QuickEntryApp />)
   const input = screen.getByRole<HTMLTextAreaElement>('textbox')
   await waitFor(() => expect(input.disabled).toBe(false))
@@ -203,4 +207,20 @@ it('keeps rejected handoffs visible and does not send when their recovery write 
   await screen.findByText('Could not save. Your text is still here; retry saving.')
   expect(input.value).toBe('retain this')
   expect(api.submit).toHaveBeenCalledTimes(1)
+})
+
+it('paints native target options with matching theme foreground and background', async () => {
+  const { pushState } = setup()
+  render(<QuickEntryApp />)
+  await screen.findByRole('textbox')
+
+  act(() => pushState({ connected: true, sessions: [{ id: 'session-1', title: 'A recent session' }] }))
+
+  const options = screen.getAllByRole('option') as HTMLOptionElement[]
+  expect(options).toHaveLength(3)
+
+  for (const option of options) {
+    expect(option.style.color).toBe('var(--ui-text-primary, var(--foreground))')
+    expect(option.style.backgroundColor).toBe('var(--ui-bg-elevated, var(--background))')
+  }
 })

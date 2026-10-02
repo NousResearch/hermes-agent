@@ -24,7 +24,8 @@ afterEach(() => {
 })
 
 it('preserves a trusted owner through the bridge and rejects a changed owner before sending', () => {
-  let receive!: (payload: QuickEntrySubmitPayload) => void
+  let receive!: (payload: QuickEntrySubmitPayload & { correlationId: string }) => void
+  const ackSubmit = vi.fn()
   vi.stubGlobal('hermesDesktop', {
     quickEntry: {
       onSubmit: (fn: typeof receive) => {
@@ -32,23 +33,25 @@ it('preserves a trusted owner through the bridge and rejects a changed owner bef
 
         return () => {}
       },
+      ackSubmit,
       pushState: vi.fn()
     }
   })
-  const submitText = vi.fn()
-  renderHook(() => useQuickEntryBridge({ submitText, startFreshSessionDraft: vi.fn() }))
-  const payload = { target: 'current', text: 'saved thought', thoughtOwner: { connectionId: 'local', profile: 'work' } }
+  const submitText = vi.fn(async () => true)
+  renderHook(() => useQuickEntryBridge({ submitText, submitTextToNewSession: vi.fn() }))
+  const payload = { correlationId: 'one', target: 'current', text: 'saved thought', thoughtOwner: { connectionId: 'local', profile: 'work' } }
   act(() => receive(payload))
   expect(submitText).toHaveBeenCalledOnce()
   route.profile = 'other'
   act(() => receive(payload))
   expect(submitText).toHaveBeenCalledOnce()
-  act(() => receive({ target: 'current', text: 'ordinary chat' }))
+  expect(ackSubmit).toHaveBeenCalledWith('one', expect.objectContaining({ code: 'owner-changed', ok: false }))
+  act(() => receive({ correlationId: 'two', target: 'current', text: 'ordinary chat' }))
   expect(submitText).toHaveBeenCalledTimes(2)
 })
 
 it('does not send to a changed profile after an asynchronous resume or its failure fallback', async () => {
-  let receive!: (payload: QuickEntrySubmitPayload) => void
+  let receive!: (payload: QuickEntrySubmitPayload & { correlationId: string }) => void
   vi.stubGlobal('hermesDesktop', {
     quickEntry: {
       onSubmit: (fn: typeof receive) => {
@@ -56,13 +59,15 @@ it('does not send to a changed profile after an asynchronous resume or its failu
 
         return () => {}
       },
+      ackSubmit: vi.fn(),
       pushState: vi.fn()
     }
   })
-  const submitText = vi.fn()
-  renderHook(() => useQuickEntryBridge({ submitText, startFreshSessionDraft: vi.fn() }))
+  const submitText = vi.fn(async () => true)
+  renderHook(() => useQuickEntryBridge({ submitText, submitTextToNewSession: vi.fn() }))
 
   const payload = {
+    correlationId: 'saved-session-1',
     target: 'saved-session',
     text: 'saved thought',
     thoughtOwner: { connectionId: 'local', profile: 'work' }

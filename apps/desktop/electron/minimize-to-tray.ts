@@ -89,7 +89,15 @@ export function createMinimizeToTray(options: Options) {
         win.restore()
       }
 
-      win.showInactive()
+      if (process.platform === 'win32') {
+        // showInactive() never activates the window. A restored-but-inactive
+        // window can come back painted yet dead to input (AppHangB1, #119252),
+        // so genuinely activate it like focusWindow in main.ts does.
+        win.show()
+        win.focus()
+      } else {
+        win.showInactive()
+      }
     }
   }
 
@@ -98,9 +106,18 @@ export function createMinimizeToTray(options: Options) {
     options.restoreMainWindow()
   }
 
-  const destroyTray = () => {
+  const destroyTray = (force = false) => {
     stopWatchingHost?.()
     stopWatchingHost = undefined
+
+    // Linux StatusNotifierItem stays exported after Tray.destroy(), so a later
+    // `new Tray()` in this process cannot re-export and the panel icon dies
+    // (#126353). Park the instance until the app actually quits or the host
+    // disappears.
+    if (process.platform === 'linux' && !quitting && !force) {
+      return
+    }
+
     tray?.destroy()
     tray = null
   }
@@ -109,7 +126,7 @@ export function createMinimizeToTray(options: Options) {
     // Losing the shell/tray must never strand an invisible app.
     hostGeneration += 1
     restoreHidden()
-    destroyTray()
+    destroyTray(true)
     broadcast()
   }
 
@@ -119,6 +136,20 @@ export function createMinimizeToTray(options: Options) {
     if (!on) {
       restoreHidden()
       destroyTray()
+    } else if (!quitting && status().available && process.platform === 'linux' && !stopWatchingHost) {
+      try {
+        const { watchLinuxTrayHost } = await import('./tray-host')
+        const generation = hostGeneration
+        stopWatchingHost = await watchLinuxTrayHost(hostLost)
+
+        if (generation !== hostGeneration) {
+          throw new Error('System tray host disappeared')
+        }
+      } catch (error) {
+        restoreHidden()
+        destroyTray(true)
+        options.log(`[tray] unavailable; ordinary window behavior retained: ${error}`)
+      }
     } else if (!status().available && !quitting) {
       try {
         if (process.platform === 'linux') {
@@ -182,6 +213,10 @@ export function createMinimizeToTray(options: Options) {
     windows.add(win)
 
     const hide = () => {
+      if (win.isDestroyed()) {
+        return false
+      }
+
       if (!enabled || !status().available || quitting || options.isQuittingForHandoff()) {
         return false
       }
@@ -190,6 +225,11 @@ export function createMinimizeToTray(options: Options) {
 
       if (process.platform === 'win32') {
         win.setSkipTaskbar(true)
+        // A hidden Chromium window on Windows neither emits blur nor releases
+        // the UI thread's keyboard focus: keys keep going to the invisible
+        // page, trapping keyboard navigation and screen readers in it. Release
+        // focus before hiding -- once hidden it no longer takes (#126570).
+        win.blur()
       }
 
       win.hide()
@@ -198,7 +238,23 @@ export function createMinimizeToTray(options: Options) {
       return true
     }
 
-    win.on('minimize', hide)
+    // Hide past the native minimize dispatch, not inside it: hiding
+    // synchronously here re-enters window-state changes mid-flight and on
+    // Windows wedges isMinimized(), so the later restore takes the
+    // restore-on-hidden path back to a painted-but-dead window (#119252).
+    // Guards are re-evaluated at fire time inside hide(); the close handler
+    // below keeps its synchronous hide so preventDefault still works.
+    win.on('minimize', () => {
+      setImmediate(() => {
+        // The user may have restored the window in the meantime (taskbar or
+        // shortcut); a stale hide must not snatch it back.
+        if (!win.isDestroyed() && !win.isMinimized() && win.isVisible()) {
+          return
+        }
+
+        hide()
+      })
+    })
 
     if (closeToTray) {
       win.on('close', event => {
@@ -265,7 +321,10 @@ export function createMinimizeToTray(options: Options) {
 
   ipcMain.handle('hermes:minimize-to-tray:get', status)
   ipcMain.handle('hermes:minimize-to-tray:set', (_event, on) => setEnabled(on === true))
-  app.on('will-quit', destroyTray)
+  app.on('will-quit', () => {
+    quitting = true
+    destroyTray()
+  })
 
   return {
     start,

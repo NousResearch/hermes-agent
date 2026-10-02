@@ -9,16 +9,23 @@ import {
   QUICK_TARGET_NEW,
   type QuickComposerEvent,
   quickComposerReducer,
+  quickEntryResultEvent,
   type QuickEntrySubmitPayload
 } from '@/store/quick-entry'
 
 import type { ThoughtSnapshot } from '../../../electron/thought-capture'
+
+const QUICK_TARGET_OPTION_STYLE = {
+  backgroundColor: 'var(--ui-bg-elevated, var(--background))',
+  color: 'var(--ui-text-primary, var(--foreground))'
+}
 
 /** Capture stays local; only Enter sends through the existing chat path. */
 export function QuickEntryApp() {
   const { t } = useI18n()
   const copy = t.quickCapture
   const inputRef = useRef<HTMLTextAreaElement>(null)
+  const submitIdRef = useRef(0)
   const [state, setState] = useState(initialQuickComposerState)
   const stateRef = useRef(state)
   const [inbox, setInbox] = useState<ThoughtSnapshot | null>(null)
@@ -37,23 +44,24 @@ export function QuickEntryApp() {
   const ownerKey = (value: ThoughtSnapshot) => JSON.stringify(value.owner)
 
   function dispatch(event: QuickComposerEvent) {
+    const current = stateRef.current
     const { state: next, send } = quickComposerReducer(stateRef.current, event)
 
-    if (send) {
-      void handoff(send)
-
+    if (send && (busyRef.current || inboxRef.current?.draft.handoffAttempted)) {
       return
     }
 
     stateRef.current = next
     setState(next)
 
-    if (!next.visible) {
+    if (send) {
+      void handoff(send, event.type === 'submit' ? (event.submitId ?? 0) : 0)
+    } else if (!next.visible && current.visible) {
       window.hermesDesktop.quickEntry.dismiss()
     }
   }
 
-  async function handoff(send: QuickEntrySubmitPayload) {
+  async function handoff(send: QuickEntrySubmitPayload, submitId: number) {
     const current = inboxRef.current
 
     if (busyRef.current || current?.draft.handoffAttempted) {
@@ -70,22 +78,34 @@ export function QuickEntryApp() {
         // Persist uncertainty before dispatch so a restart cannot silently retry a chat prompt.
         await window.hermesDesktop.quickEntry.saveThoughtDraft({ token: current.token, draft })
 
-        if (request !== generation.current) {return}
+        if (request !== generation.current) {
+          return
+        }
+
         pendingDrafts.current.delete(ownerKey(current))
         adopt({ ...current, draft })
       }
 
       setNotice('handoffUnconfirmed')
 
-      const forwarded = await window.hermesDesktop.quickEntry.submit({
+      const result = await window.hermesDesktop.quickEntry.submit({
         ...send,
         thoughtOwnerToken: current?.token
       })
 
-      if (request === generation.current && !forwarded) {setNotice('handoffRejected')}
+      if (request === generation.current) {
+        dispatch(quickEntryResultEvent(result, submitId))
+
+        if (!result.ok) {
+          setNotice(result.code === 'timeout' ? 'handoffUnconfirmed' : 'handoffRejected')
+          requestAnimationFrame(() => inputRef.current?.focus())
+        }
+      }
     } catch {
-      if (request === generation.current)
-        {setNotice(inboxRef.current?.draft.handoffAttempted ? 'handoffUnconfirmed' : 'saveFailed')}
+      if (request === generation.current) {
+        dispatch({ message: 'Quick Entry could not complete the handoff.', submitId, type: 'submit-error' })
+        setNotice(inboxRef.current?.draft.handoffAttempted ? 'handoffUnconfirmed' : 'saveFailed')
+      }
     } finally {
       busyRef.current = false
       setBusy(false)
@@ -185,7 +205,9 @@ export function QuickEntryApp() {
       busyRef.current = false
       setBusy(false)
 
-      if (request === generation.current && stateRef.current.visible) {inputRef.current?.focus()}
+      if (request === generation.current && stateRef.current.visible) {
+        inputRef.current?.focus()
+      }
     }
   }
 
@@ -197,7 +219,13 @@ export function QuickEntryApp() {
     setNotice(null)
     inboxRef.current = null
     setInbox(null)
-    dispatch({ type: 'edit', draft: '' })
+    stateRef.current = {
+      ...initialQuickComposerState,
+      connected: stateRef.current.connected,
+      sessions: stateRef.current.sessions,
+      visible: stateRef.current.visible
+    }
+    setState(stateRef.current)
     void load()
   }
 
@@ -233,6 +261,20 @@ export function QuickEntryApp() {
 
     const offOwner = api.onThoughtOwnerChanged(ownerChanged)
 
+    const offLateResult = api?.onLateResult(payload => {
+      if (stateRef.current.unknownSubmitId === null) {
+        return
+      }
+
+      dispatch({
+        message: payload?.result?.message ?? 'Hermes could not deliver the prompt.',
+        ok: payload?.result?.ok === true,
+        type: 'late-result'
+      })
+
+      setNotice(payload?.result?.ok === true ? null : 'handoffRejected')
+    })
+
     inputRef.current?.focus()
 
     return () => {
@@ -240,6 +282,7 @@ export function QuickEntryApp() {
       offShown()
       offState()
       offOwner()
+      offLateResult?.()
     }
     // IPC subscriptions live for this window; callbacks read current state from refs.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -274,7 +317,7 @@ export function QuickEntryApp() {
 
             if (isSubmitEnter(event) && !event.shiftKey && !busyRef.current) {
               event.preventDefault()
-              dispatch({ type: 'submit' })
+              dispatch({ submitId: ++submitIdRef.current, type: 'submit' })
             }
           }}
           placeholder={copy.placeholder}
@@ -316,10 +359,14 @@ export function QuickEntryApp() {
             onChange={event => dispatch({ type: 'target', target: event.target.value })}
             value={state.target}
           >
-            <option value={QUICK_TARGET_CURRENT}>{copy.current}</option>
-            <option value={QUICK_TARGET_NEW}>{copy.newSession}</option>
+            <option style={QUICK_TARGET_OPTION_STYLE} value={QUICK_TARGET_CURRENT}>
+              {copy.current}
+            </option>
+            <option style={QUICK_TARGET_OPTION_STYLE} value={QUICK_TARGET_NEW}>
+              {copy.newSession}
+            </option>
             {state.sessions.map(session => (
-              <option key={session.id} value={session.id}>
+              <option key={session.id} style={QUICK_TARGET_OPTION_STYLE} value={session.id}>
                 {session.title}
               </option>
             ))}
@@ -334,6 +381,7 @@ export function QuickEntryApp() {
             {copy[notice]}
           </p>
         )}
+        {state.error && <p className="text-xs text-(--ui-text-secondary)" role="alert">{state.error}</p>}
         {inbox?.draft.handoffAttempted && (
           <Button
             disabled={busy}

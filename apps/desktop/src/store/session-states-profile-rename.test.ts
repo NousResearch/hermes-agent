@@ -72,4 +72,24 @@ describe('migrateTilesForProfile', () => {
       { connectionId: 'local', profile: 'hutnik-projectmanager', targetProfile: 'hutnik-projectmanager' }
     ])
   })
+
+  it('leaves owner hints of a same-named profile on another connection alone', async () => {
+    const storage = await import('@/lib/storage')
+    const remote = { connectionId: 'remote-1', profile: 'webdesign_bhp', targetProfile: 'webdesign_bhp' }
+    storage.writeJson('hermes.desktop.sessionOwnerHints.v1', [
+      ['s-1', { connectionId: 'local', profile: 'webdesign_bhp', targetProfile: 'webdesign_bhp' }],
+      ['s-9', remote]
+    ])
+
+    const sessionStore = await import('@/store/session')
+    const { migrateTilesForProfile } = await import('@/store/session-states')
+    migrateTilesForProfile('webdesign_bhp', 'hutnik-projectmanager')
+
+    expect(sessionStore.getSessionOwnerHints('s-1')).toEqual([
+      { connectionId: 'local', profile: 'hutnik-projectmanager', targetProfile: 'hutnik-projectmanager' }
+    ])
+    // The rename ran on the local backend; the remote profile still has its old name.
+    expect(sessionStore.getSessionOwnerHints('s-9')).toEqual([remote])
+    expect(storage.readJson<unknown[]>('hermes.desktop.sessionOwnerHints.v1')).toContainEqual(['s-9', remote])
+  })
 })

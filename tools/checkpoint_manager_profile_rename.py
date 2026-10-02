@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Dict
 
 from tools import checkpoint_manager as cm
+from tools import checkpoint_maintenance as maintenance
 
 logger = logging.getLogger(__name__)
 
@@ -68,7 +69,7 @@ def _rekey_project(store: Path, meta: Dict, old_workdir: Path, new_workdir: Path
             ok, _, err = cm._run_git(["update-ref", new_ref, old_tip], store, str(new_workdir))
             if not ok:
                 raise OSError(f"could not create {new_ref}: {err}")
-        if not cm._delete_ref(store, old_ref):
+        if not maintenance._delete_ref(store, old_ref):
             raise OSError(f"could not delete {old_ref}")
     cm._unlink_quiet(cm._project_meta_path(store, old_hash))
     cm._unlink_quiet(old_ledger_path)

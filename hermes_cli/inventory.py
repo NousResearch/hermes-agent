@@ -44,7 +44,7 @@ def load_picker_context() -> ConfigContext:
     cfg = load_config()
     model_cfg = cfg.get("model", {})
     if isinstance(model_cfg, dict):
-        # PyYAML parses unquoted scalars as int (`provider: 2070`); keep strings so picker/options
+        # YAML parses unquoted scalars as int (`provider: 2070`); keep strings so picker/options
         # paths never call `.strip()` on an int.
         current_model = str(model_cfg.get("default", model_cfg.get("name", "")) or "")
         current_provider = coerce_provider_id(model_cfg.get("provider", ""))
@@ -158,6 +158,9 @@ def build_models_payload(
     if featured:
         _apply_featured(rows, metadata_config=metadata_config)
     _apply_custom_aliases(rows)
+    from hermes_cli.models_validate import drop_unofferable_model_ids
+
+    drop_unofferable_model_ids(rows)
 
     return {"providers": rows, "model": ctx.current_model, "provider": ctx.current_provider}
 
@@ -767,7 +770,15 @@ def _prewarm_pricing_async(
 
 
 def _moa_provider_row(current_provider: str = "") -> dict | None:
-    """The virtual ``moa`` row shared by the CLI inventory and gateway picker; ``None`` without presets."""
+    """The virtual ``moa`` row shared by the CLI inventory and gateway picker; ``None`` without presets.
+
+    Strictly opt-in (#63353): the row only appears when the user's raw config.yaml explicitly
+    enables at least one MoA preset. The synthesized ``default`` preset from
+    ``normalize_moa_config({})`` — which every user gets via DEFAULT_CONFIG defaults — must not
+    be treated as a user choice."""
+    if not _raw_config_has_enabled_moa_preset():
+        return None
+
     try:
         from hermes_cli.config import load_config
         from hermes_cli.moa_config import normalize_moa_config

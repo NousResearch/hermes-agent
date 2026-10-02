@@ -273,6 +273,13 @@ def _refresh_home_layer(layer: _HomeLayer, home: Path | None, key: str, *, force
     if stamps != layer.stamps:
         _scan_home_layer(layer, key)
         layer.stamps = stamps
+        # Publish the completed layer -- stamps AND check time -- before auth
+        # sync: it calls list_providers(), which re-enters this function. An
+        # unpublished stamp rescanned forever; an unpublished check time
+        # re-stats the plugin dirs inside the TTL.
+        layer.stamp_checked_at = now
+        if _discovered and not _discovering:
+            _sync_auth_registry()
     layer.stamp_checked_at = now
     return True
 
@@ -319,7 +326,7 @@ def _declares_model_provider_kind(plugin_dir: Path) -> bool:
 
     Only that kind is imported from the flat install directory — every other
     plugin there belongs to ``PluginManager``, which owns its lifecycle and
-    consent flow. Parsed with PyYAML when available, falling back to a line
+    consent flow. Parsed with ruamel.yaml when available, falling back to a line
     scan so provider discovery never hard-depends on it.
     """
     for filename in ("plugin.yaml", "plugin.yml"):
@@ -376,8 +383,6 @@ def _scan_home_layer(layer: _HomeLayer, key: str) -> None:
     finally:
         _REGISTRATION_TARGET.reset(token)
         _discovering = prior_discovering
-    if _discovered and not _discovering:
-        _sync_auth_registry()
 
 
 def _user_module_name(plugin_dir: Path, home_key: str) -> str:
@@ -621,25 +626,3 @@ def _run_discovery_steps() -> None:
     # (Pip entry-point providers are discovered in step 0, before the
     # filesystem plugins, so first-party profiles always win on name
     # collision — see _discover_entry_point_providers.)
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-
-
-_PLUGIN_COMPAT_LAZY = {
-    'OMIT_TEMPERATURE': ('providers.base', 'OMIT_TEMPERATURE'),
-}
-
-
-def __getattr__(name):  # PEP 562 — lazy so no import cycles
-    target = _PLUGIN_COMPAT_LAZY.get(name)
-    if target is None:
-        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-    import importlib
-    from hermes_cli.plugin_compat import warn_once
-    warn_once(__name__, name, *target)
-    return getattr(importlib.import_module(target[0]), target[1])
-# ---- END PLUGIN-COMPAT ----

@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 from hermes_cli.archive_safe import archive_root_dirs, make_targz, normalize_archive_parts, safe_extract_targz
+from hermes_cli.home_data_layout import PM_RUNTIME_ROOT_DIRS
 from hermes_constants import (
     LOCAL_RUNTIME_ROOT_DIRS, PROFILE_ID_RE, clear_named_profile_deleted, mark_named_profile_deleted,
     named_profile_has_identity, named_profile_is_deleted, named_profile_is_live,
@@ -61,8 +62,16 @@ _CLONE_ALL_STRIP: list[str] = [
 # allow-list instead (``_DEFAULT_EXPORT_INCLUDE_ROOT``): an archive is a portable snapshot,
 # a clone must run. The runtime trio is ``LOCAL_RUNTIME_ROOT_DIRS``, shared with
 # ``hermes_cli.backup._EXCLUDED_ROOT_DIRS`` so the two lists cannot drift.
-_CLONE_ALL_DEFAULT_EXCLUDE_ROOT: frozenset[str] = frozenset({
-    "hermes-agent", ".worktrees", "profiles", "bin", "node_modules",
+_CLONE_ALL_DEFAULT_EXCLUDE_ROOT: frozenset[str] =  frozenset({
+    "hermes-agent",
+    ".worktrees",
+    "profiles",
+    "bin",
+    "node_modules",
+    # Managed runtime trees — install artifacts, never profile state
+    # (install/profile bucket split; see test_install_bucket_separation).
+    ".hermes-runtime",
+    "node",
 }) | LOCAL_RUNTIME_ROOT_DIRS
 
 # Per-profile history excluded from --clone-all for ANY source: SQLite session store
@@ -139,13 +148,50 @@ def _clone_all_copytree_ignore(source_dir: Path):
     return _ignore
 
 
-# Allow-list for ``export_profile("default")``: when HERMES_HOME equals the cwd
-# (Docker/custom deployments) the default home holds arbitrary user files that must NOT
-# be bundled. Only known Hermes profile artifacts at the root survive; sensitive runtime
-# infrastructure (``state.db``, ``logs/``, ``auth.*``, other profiles) is deliberately
-# absent so the export stays a portable, credential-free snapshot. Add new artifacts here
-# when introduced in ``hermes_constants``.
-# See #58394.
+# Directories/files to exclude when exporting the default (~/.hermes) profile.
+# The default profile contains infrastructure (repo checkout, worktrees, DBs,
+# caches, binaries) that named profiles don't have.  We exclude those so the
+# export is a portable, reasonable-size archive of actual profile data.
+# The ONE exclude-list authority for "infrastructure / runtime state that is
+# not profile data". The export path (``_default_export_ignore``) consumes it
+# directly; the distribution path (``profile_distribution.USER_OWNED_EXCLUDE``)
+# layers its distribution-specific additions on top of it. Keep new root
+# artifacts here — not in a downstream copy.
+_DEFAULT_EXPORT_EXCLUDE_ROOT = DEFAULT_EXPORT_EXCLUDE_ROOT = frozenset({
+    # Infrastructure
+    "hermes-agent",         # repo checkout (multi-GB)
+    ".worktrees",           # git worktrees
+    "profiles",             # other profiles — never recursive-export
+    "bin",                  # installed binaries (tirith, etc.)
+    "node_modules",         # npm packages
+    ".hermes-runtime",      # managed runtime tree (install artifact)
+    "node",                 # legacy pre-split managed Node tree
+    # Databases & runtime state
+    "state.db", "state.db-shm", "state.db-wal",
+    "hermes_state.db",
+    "response_store.db", "response_store.db-shm", "response_store.db-wal",
+    "gateway.pid", "gateway_state.json", "processes.json",
+    "auth.json",            # API keys, OAuth tokens, credential pools
+    ".env",                 # API keys (dotenv)
+    "auth.lock", "active_profile", ".update_check", "source-checks",
+    "errors.log",
+    ".hermes_history",
+    # Caches (regenerated on use)
+    "image_cache", "audio_cache", "document_cache",
+    "browser_screenshots", "checkpoints",
+    "sandboxes",
+    "logs",                 # gateway logs
+}) | PM_RUNTIME_ROOT_DIRS
+
+# Allow-list for ``export_profile("default")``: when HERMES_HOME equals the
+# cwd (Docker/custom deployments), the default profile home is the working
+# directory and contains arbitrary user files that should NOT be bundled
+# into the export. The set below identifies the *known Hermes profile
+# artifacts* at the root of HERMES_HOME; everything else is excluded.
+# Sensitive runtime infrastructure (``state.db``, ``logs/``, ``auth.*``,
+# other profiles) is intentionally *not* in this list so the export stays
+# a portable, credential-free snapshot of the user-facing surface
+# (#58394). Add new artifacts here when introduced in ``hermes_constants``.
 _DEFAULT_EXPORT_INCLUDE_ROOT = frozenset({
     # Configuration / persona
     "config.yaml", "SOUL.md", "MEMORY.md", "USER.md", "todo.json",
@@ -200,7 +246,7 @@ def _wrapper_path(alias: str) -> Path:
 def _is_our_wrapper(path: Path) -> bool:
     """True when *path* reads as a Hermes-generated wrapper (contains ``hermes -p``)."""
     try:
-        return "hermes -p" in path.read_text(encoding="utf-8")
+        return "hermes -p" in path.read_text(encoding="utf-8-sig")
     except Exception:
         return False
 
@@ -248,10 +294,21 @@ def normalize_profile_name(name: str) -> str:
     case-insensitively. Dashboards/tools may pass title-cased labels — normalize before
     validation, assignment, and subprocess spawn.
 
-    Named profiles are stored lowercase under ``profiles/<id>/``. See #18498.
+    Named profiles are stored lowercase under ``profiles/<id>/``. The special
+    alias ``default`` is matched case-insensitively (``Default`` → ``default``).
+    Dashboards and tools may pass title-cased display labels; normalize before
+    validation, assignment, and subprocess spawn (see issue #18498).
+
+    Raises ``ValueError`` for non-string input: a numeric profile id (e.g. a
+    DB row id or a falsy sentinel) silently coerced via ``str()`` becomes a
+    real on-disk profile directory (``profiles/0/``, #88842). Callers that
+    hold a numeric id must resolve it to an actual profile name first.
     """
     if not isinstance(name, str):
-        name = str(name)
+        raise ValueError(
+            "profile name must be a string, got "
+            f"{type(name).__name__}: {name!r}"
+        )
     stripped = name.strip()
     if not stripped:
         raise ValueError("profile name cannot be empty")
@@ -511,7 +568,7 @@ def build_alias_map() -> dict[str, str]:
         if not is_windows and entry.suffix:
             continue
         try:
-            with open(entry, "r", encoding="utf-8", errors="strict") as f:
+            with open(entry, "r", encoding="utf-8-sig", errors="strict") as f:
                 content = f.read(_WRAPPER_READ_LIMIT)
         except (OSError, UnicodeDecodeError):
             continue  # UnicodeDecodeError = a binary on PATH, not a wrapper
@@ -577,8 +634,8 @@ def _load_yaml_dict(path: Path) -> Optional[dict]:
     if not path.is_file():
         return None
     try:
-        import yaml
-        data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+        import hermes_yaml as yaml
+        data = yaml.safe_load(path.read_text(encoding="utf-8-sig")) or {}
     except Exception:
         return None
     return data if isinstance(data, dict) else None
@@ -981,7 +1038,7 @@ def profile_is_standalone(home: Path) -> bool:
     (``gateway.standalone: true``)? Memoised by file signature. The DEFAULT profile is
     never standalone — it IS the host — and warns once per process if the key is set there."""
     global _STANDALONE_WARNED
-    from yaml import YAMLError
+    from hermes_yaml import YAMLError
     from utils import file_signature
 
     home = Path(home)
@@ -1204,6 +1261,45 @@ def _clone_all_into(source_dir: Path, profile_dir: Path, canon: str) -> None:
         )
 
 
+def _clone_plugins_ignore(plugins_root: Path):
+    """copytree ignore for a cloned ``plugins/``: :func:`_non_exportable_entries` everywhere, plus
+    the installer's in-flight ``.install-*`` / ``.update-*`` staging dirs at the root."""
+    root = str(plugins_root)
+
+    def _ignore(directory: str, names: List[str]) -> set:
+        ignored = _non_exportable_entries(directory, names)
+        if directory == root:
+            # Directories only: ``.install-metadata.json`` shares the prefix and must travel.
+            ignored.update(n for n in names if n.startswith((".install-", ".update-"))
+                           and os.path.isdir(os.path.join(directory, n)))
+        return ignored
+    return _ignore
+
+
+def _clone_plugins(source_dir: Path, profile_dir: Path) -> None:
+    """Copy the source's user-installed plugins (``plugins/`` with ``.install-metadata.json``).
+
+    ``config.yaml`` already carries ``plugins.enabled`` and ``memory.provider``; without the code a
+    catalog-installed memory provider resolves nowhere in the clone, so the clone silently runs
+    without its memory (or, with lazy installs on, re-fetches the latest catalog pin instead of the
+    revision the source runs). The copy keeps each plugin's tree, revision and catalog provenance
+    (the install record). Python dependencies live in the shared venv, where the source's
+    selection of the same plugin already put them."""
+    source_plugins = source_dir / "plugins"
+    if source_plugins.is_dir():
+        _copytree_keep_junctions(source_plugins, profile_dir / "plugins",
+                                 _clone_plugins_ignore(source_plugins), dirs_exist_ok=True)
+
+
+def cloned_plugin_names(profile_dir: Path) -> List[str]:
+    """Plugins a clone now carries in ``plugins/``, for the CLI notice."""
+    try:
+        return sorted(p.name for p in (profile_dir / "plugins").iterdir()
+                      if not p.name.startswith(".") and (p.is_dir() or p.is_symlink()))
+    except OSError:
+        return []
+
+
 def _bootstrap_profile_dir(profile_dir: Path, source_dir: Optional[Path],
                            sync_imports: bool = False) -> None:
     """Fresh layout: bootstrap dirs, then either seed a model block (no source) or clone
@@ -1227,6 +1323,7 @@ def _bootstrap_profile_dir(profile_dir: Path, source_dir: Optional[Path],
         _copytree_keep_junctions(source_skills, profile_dir / "skills", _non_exportable_entries, dirs_exist_ok=True)
     for relpath in _CLONE_SUBDIR_FILES:
         _clone_file(source_dir, profile_dir, relpath)
+    _clone_plugins(source_dir, profile_dir)
     from hermes_cli.profile_memory_config import active_memory_provider, clone_memory_provider_config
     clone_memory_provider_config(source_dir, profile_dir,
                                  active_memory_provider(_load_yaml_dict(source_dir / "config.yaml")))
@@ -1826,8 +1923,8 @@ def _maybe_unregister_gateway_service(profile_name: str) -> None:
         print(f"⚠ Could not unregister s6 gateway service: {exc}")
 
 
-def _cleanup_gateway_service(name: str, profile_dir: Path) -> None:
-    """Disable and remove systemd/launchd service for a profile."""
+def _cleanup_gateway_service(name: str, profile_dir: Path) -> bool:
+    """Disable and remove systemd/launchd service for a profile; True when a unit was removed."""
     import platform as _platform
 
     # The service name follows get_hermes_home(): bind the override (the seam a multiplexed
@@ -1843,7 +1940,10 @@ def _cleanup_gateway_service(name: str, profile_dir: Path) -> None:
         def _run(*cmd: str) -> None:
             subprocess.run(list(cmd), capture_output=True, check=False, timeout=10)
 
+        from hermes_cli.profiles_service_cleanup import remove_system_systemd_unit, remove_windows_task
+
         system = _platform.system()
+        removed = False
         if system == "Linux":
             svc_name = get_service_name()
             svc_file = user_systemd_unit_dir() / f"{svc_name}.service"
@@ -1853,12 +1953,20 @@ def _cleanup_gateway_service(name: str, profile_dir: Path) -> None:
                 svc_file.unlink(missing_ok=True)
                 _run("systemctl", "--user", "daemon-reload")
                 print(f"✓ Service {svc_name} removed")
+                removed = True
+            # `gateway install --system` writes the same name under /etc; a survivor there
+            # restarts the removed profile at boot exactly like the user unit at login.
+            removed = remove_system_systemd_unit() or removed
         elif system == "Darwin":
             plist_path = get_launchd_plist_path()
             if plist_path.exists():
                 _run("launchctl", "unload", str(plist_path))
                 plist_path.unlink(missing_ok=True)
                 print("✓ Launchd service removed")
+                removed = True
+        elif system == "Windows":
+            removed = remove_windows_task()
+        return removed
     except Exception as e:
         print(f"⚠ Service cleanup: {e}")
     finally:
@@ -1866,6 +1974,7 @@ def _cleanup_gateway_service(name: str, profile_dir: Path) -> None:
         os.environ.pop("HERMES_HOME", None)
         if old_home is not None:
             os.environ["HERMES_HOME"] = old_home
+    return False
 
 
 def _stop_gateway_process(profile_dir: Path) -> None:
@@ -1874,7 +1983,7 @@ def _stop_gateway_process(profile_dir: Path) -> None:
     if not pid_file.exists():
         return
     try:
-        raw = pid_file.read_text(encoding="utf-8").strip()
+        raw = pid_file.read_text(encoding="utf-8-sig").strip()
         data = json.loads(raw) if raw.startswith("{") else {"pid": int(raw)}
         pid = int(data["pid"])
         # Cross-profile kill refusal: the record's hermes_home stamp names the gateway's TRUE
@@ -1910,8 +2019,11 @@ def get_active_profile(root: Path | None = None) -> str:
     """Read the sticky active profile name (of *root*, default: this process's Hermes root)."""
     path = root / "active_profile" if root is not None else _get_active_profile_path()
     try:
-        return path.read_text(encoding="utf-8").strip() or "default"
-    except (UnicodeDecodeError, OSError):
+        name = path.read_text(encoding="utf-8-sig").strip()
+        if not name:
+            return "default"
+        return name
+    except (FileNotFoundError, UnicodeDecodeError, OSError):
         return "default"
 
 
@@ -2100,7 +2212,7 @@ def _scrub_export_secrets(staged: Path) -> None:
         if not _should_redact_export_file(path):
             continue
         try:
-            text = path.read_text(encoding="utf-8")
+            text = path.read_text(encoding="utf-8-sig")
         except (UnicodeDecodeError, OSError):
             continue
         redacted = redact_sensitive_text(text, force=True)
@@ -2125,6 +2237,8 @@ def export_profile(name: str, output_path: str, extra_files: Optional[Dict[str, 
     def _ignore_credentials(directory: str, contents: list) -> set:
         ignored = _non_exportable_entries(directory, contents)
         ignored.update(_EXPORT_CREDENTIAL_FILES & set(contents))
+        if Path(directory) == profile_dir:
+            ignored |= PM_RUNTIME_ROOT_DIRS & set(contents)
         return ignored
 
     ignore = _default_export_ignore(profile_dir) if canon == "default" else _ignore_credentials
@@ -2178,6 +2292,14 @@ def import_profile(archive_path: str, name: Optional[str] = None) -> Path:
         if archive_root != canon:
             final_source = staging_root / canon
             extracted.rename(final_source)
+        # Remove foreign runtime state before publishing, including file-shaped roots.
+        # A failed removal must abort import rather than install a stale PM selection.
+        for child in final_source.iterdir():
+            if child.name in PM_RUNTIME_ROOT_DIRS:
+                if child.is_dir():
+                    shutil.rmtree(child)
+                else:
+                    child.unlink()
         drop_profile_role(final_source)
         shutil.move(str(final_source), str(profile_dir))
     return profile_dir
@@ -2213,7 +2335,7 @@ def _migrate_honcho_profile_host(old_name: str, new_name: str, new_dir: Path) ->
             continue
         seen.add(resolved)
         try:
-            raw = json.loads(path.read_text(encoding="utf-8"))
+            raw = json.loads(path.read_text(encoding="utf-8-sig"))
         except (OSError, json.JSONDecodeError):
             continue
         hosts = raw.get("hosts")
@@ -2269,9 +2391,14 @@ def rename_profile(old_name: str, new_name: str) -> Path:
     if new_dir.exists():
         raise _profile_exists_error(new_canon)
 
-    # 1. Stop gateway if running, and the screen whose launcher holds paths under the old name
-    if _check_gateway_running(old_dir):
-        _cleanup_gateway_service(old_canon, old_dir)
+    # 1. Remove the old name's service even when its gateway is stopped: the unit is named after
+    # the old profile and runs ``--profile <old>``, so the service manager would crash-loop it on
+    # the next login or container boot. Then stop the gateway and the screen whose launcher
+    # holds paths under the old name.
+    gw_running = _check_gateway_running(old_dir)
+    service_removed = _cleanup_gateway_service(old_canon, old_dir)
+    _maybe_unregister_gateway_service(old_canon)
+    if gw_running:
         _stop_gateway_process(old_dir)
     _stop_bot_desktop(old_dir)
 
@@ -2301,6 +2428,9 @@ def rename_profile(old_name: str, new_name: str) -> Path:
         if live_mux:
             clear_named_profile_deleted(old_dir)
             _notify_multiplexer(old_canon)
+        _maybe_register_gateway_service(old_canon)
+        if service_removed:
+            print(f"⚠ The gateway service was removed. Reinstall it with: hermes -p {old_canon} gateway install")
         raise
     print(f"✓ Renamed {old_dir.name} → {new_dir.name}")
     # The tombstone lives at profiles/.deleted/<old_name>; old_dir is gone so nothing can
@@ -2337,6 +2467,9 @@ def rename_profile(old_name: str, new_name: str) -> Path:
     # 7. Hot-serve the renamed profile now (mirrors create; a missed signal only delays it).
     if live_mux:
         _notify_multiplexer(new_canon)
+    _maybe_register_gateway_service(new_canon)
+    if service_removed:
+        print(f"⚠ The gateway service was removed. Reinstall it with: hermes -p {new_canon} gateway install")
     return new_dir
 
 
@@ -2371,17 +2504,3 @@ def resolve_profile_env(profile_name: str) -> str:
     if not named_profile_is_live(profile_dir):
         raise _missing_profile_error(canon)
     return str(profile_dir)
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-
-def has_bundled_skills_opt_out(profile_dir: Path) -> bool:
-    """Return True if the profile opted out of bundled-skill seeding."""
-    try:
-        return (profile_dir / NO_BUNDLED_SKILLS_MARKER).exists()
-    except OSError:
-        return False
-# ---- END PLUGIN-COMPAT ----

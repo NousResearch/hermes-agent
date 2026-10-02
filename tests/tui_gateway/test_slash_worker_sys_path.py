@@ -18,7 +18,6 @@ from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
-
 def test_slash_worker_imports_from_cwd_with_colliding_utils(tmp_path):
     """Importing the worker from a CWD that ships its own ``utils/`` package
     must succeed — the guard strips CWD so the installed module wins."""
@@ -46,7 +45,3 @@ def test_slash_worker_imports_from_cwd_with_colliding_utils(tmp_path):
         "utils/ package — sys.path guard regressed (issue #51286).\n"
         f"stderr:\n{result.stderr}"
     )
-
-
-
-

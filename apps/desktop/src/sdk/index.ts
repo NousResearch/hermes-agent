@@ -1767,6 +1767,17 @@ export {
   ModelMenuCloseContext,
   type ModelMenuController
 } from '@/app/shell/model-catalog-menu'
+/** Per-model marks inside that same menu: register a `MODEL_MENU_ROW_AREA`
+ *  data contribution whose `decorate({ provider, model, label })` returns
+ *  `{ icon?, badge? }` (or `null`). Core paints the leading icon slot and a
+ *  trailing badge chip; per slot the first usable answer wins, and a throwing
+ *  decorator is skipped. Never patch the menu's rows yourself. */
+export {
+  MODEL_MENU_ROW_AREA,
+  type ModelMenuRowContext,
+  type ModelMenuRowContribution,
+  type ModelMenuRowDecoration
+} from '@/app/shell/model-menu-row-decorations'
 export type { StatusbarItem } from '@/app/shell/statusbar-controls'
 export type { TitlebarTool } from '@/app/shell/titlebar-controls'
 /** Canonical raw message renderer: applies Desktop message transforms (including

@@ -31,6 +31,7 @@ from hermes_cli.route_identity import normalize_route_base_url
 from hermes_cli.urllib_security import open_credentialed_url
 from hermes_cli.version_info import get_version_info
 from hermes_cli.models_catalog_static import (
+    CuratedFallbackModels,
     CANONICAL_PROVIDERS,
     OPENROUTER_MODELS,
     PREFERRED_SILENT_DEFAULT_MODEL,
@@ -1369,11 +1370,6 @@ def _copilot_acp_session_models(force_refresh: bool) -> Optional[list[str]]:
     return live
 
 
-class CuratedFallbackModels(list[str]):
-    """A curated list served because the provider's live catalog was unavailable. The disk cache
-    treats it as a placeholder, never as the account's real catalog (#107391)."""
-
-
 def _copilot_catalog(normalized: str, force_refresh: bool) -> Optional[list[str]]:
     if normalized == "copilot-acp" and (live := _copilot_acp_session_models(force_refresh)):
         return live
@@ -1433,7 +1429,9 @@ def _anthropic_catalog(normalized: str, force_refresh: bool) -> list[str]:
     live = _fetch_anthropic_models(base_url=cfg_base_url or None, api_key=cfg_api_key or None)
     curated = list(_PROVIDER_MODELS.get("anthropic", []))
     if not live:
-        return curated
+        # A placeholder for the outage, not this account/proxy's catalog: the disk cache must
+        # never pin it over a same-credentials live row (#107391).
+        return CuratedFallbackModels(curated)
     # The live /v1/models dump lags newly-routed curated aliases (reachable before enumerated):
     # curated first, then live-only extras, so a fresh curated model never disappears.
     return live if cfg_base_url else _merge_unique(curated, live)

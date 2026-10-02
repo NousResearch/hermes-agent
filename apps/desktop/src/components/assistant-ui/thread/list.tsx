@@ -47,6 +47,7 @@ import { MessageRenderBoundary } from '../message-render-boundary'
 import { PendingApprovalStack } from '../tool/approval'
 
 import { responseMessageRole, ResponseMessages } from './response-group'
+import { holdSessionSwitching } from './session-switching'
 import { resolveShowEarlierAction, shouldAutoShowEarlier, useTranscriptWindow } from './transcript-window'
 import { useMessagesBelow } from './use-messages-below'
 import { useStickyPromptClip } from './use-sticky-prompt-clip'
@@ -266,6 +267,9 @@ interface ThreadMessageListProps {
   loadingIndicator?: ReactNode
   sessionId?: string | null
   sessionKey?: string | null
+  /** A routed session is still loading into this surface (the thread spinner
+   *  is up). Holds `data-session-switching` for that phase. */
+  sessionLoading?: boolean
   scrollProfile?: string
 }
 
@@ -465,7 +469,8 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
   loadingIndicator,
   sessionId = null,
   scrollProfile,
-  sessionKey
+  sessionKey,
+  sessionLoading = false
 }) => {
   // TWO signatures, deliberately split. The STRUCTURAL one (ids/roles/count)
   // changes only when messages are added/removed/swapped — it keys the error
@@ -1030,6 +1035,9 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
 
     applyRestoreRef.current()
     loadSettledRef.current = false
+    // The rows are in and about to be glued to their target: theme CSS may
+    // hide this phase (data-session-switching) so the jump never paints.
+    const releaseSwitching = holdSessionSwitching(el)
 
     // An anchor captured for the OUTGOING transcript must not be applied to
     // this one — a switch owns the position outright. The empty→non-empty
@@ -1065,6 +1073,8 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
       // the old 90-frame ceiling was for slow async image loads. Cap at 15
       // frames to minimize the settle-loop racing markdown paint on every switch.
       if (stableFrames >= 2 || ++frame > 15) {
+        releaseSwitching()
+
         if (target.kind === 'bottom') {
           // Hand back to use-stick-to-bottom locked, so late async growth
           // (images, highlight) keeps following the bottom.
@@ -1128,6 +1138,7 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
       applyRestoreRef.current = null
       resizeObserver.disconnect()
       cancelAnimationFrame(rafId)
+      releaseSwitching()
 
       if (loadSettledRef.current) {
         return
@@ -1207,6 +1218,7 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
       el.removeEventListener('pointerdown', cancelRestore)
       el.removeEventListener('keydown', cancelRestore)
       cancelAnimationFrame(rafId)
+      releaseSwitching()
       record()
     }
   }, [
@@ -1219,6 +1231,16 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
     sessionKey,
     stopScroll
   ])
+
+  // The load phase of a switch: the route names a session whose transcript
+  // has not arrived. The restore loop above takes over the marker when it does.
+  useLayoutEffect(() => {
+    if (!sessionLoading || !paneVisible) {
+      return
+    }
+
+    return holdSessionSwitching(scrollRef.current)
+  }, [paneVisible, scrollRef, sessionLoading])
 
   // A thread can mount with a run already active, without a runStart event.
   useEffect(() => {

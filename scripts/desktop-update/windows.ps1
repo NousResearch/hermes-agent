@@ -1286,6 +1286,26 @@ function Invoke-HermesStep([string]$Exe, [string[]]$HermesArgs, [string]$Tag) {
     return @{ Code = $code; Output = $all; TreeQuiesced = (-not $stalled -or $proc.HasExited); StartedAfterJobAssignment = $true }
 }
 
+# `hermes update` can COMPLETE (its output carries "✓ Update complete!") and
+# still be killed with the idle-watchdog sentinel 124: the post-update phase
+# (gateway restart hand-off) stayed alive and silent past the ceiling, so
+# Invoke-HermesStep terminated the tree (#96205). The install is done; failing
+# would keep the old Desktop and a legacy install would re-run the whole update.
+# Surface success so the hand-off verifies, restores the gateways and relaunches.
+# Only 124 is remapped, and never when anything after the banner reports a
+# failure: the restart/verify phase prints "✗ Update not complete", "Update
+# incomplete — …", "✗ <unit> failed to come back after restart" or
+# "verification incomplete" there. \u2717 (✗) stays an escape: Windows
+# PowerShell reads this BOM-less script as ANSI, never as UTF-8.
+function Resolve-HermesUpdateOutcome($StepResult) {
+    $banner = if ($StepResult.Output) { $StepResult.Output.LastIndexOf('Update complete!') } else { -1 }
+    if ($StepResult.Code -eq 124 -and $banner -ge 0 -and $StepResult.Output.Substring($banner) -notmatch 'incomplete|not complete|\u2717') {
+        Write-HandoffLog "update completed before the idle watchdog killed its finalizing step (exit 124); treating it as success, not retrying (#96205)"
+        $StepResult.Code = 0
+    }
+    return $StepResult
+}
+
 function Set-InstallRootCurrentDirectory([string]$Root) {
     $resolved = [System.IO.Path]::GetFullPath($Root)
     [Environment]::CurrentDirectory = $resolved
@@ -1675,6 +1695,7 @@ try {
     Publish-UiProgress "Updating code and dependencies"
     $res = Invoke-HermesStep $pythonExe $updateArgs "update"
     Write-HandoffLog "hermes update exit code: $($res.Code)"
+    $res = Resolve-HermesUpdateOutcome $res
 
     $retryPolicyPath = Join-Path $PSScriptRoot "retry-policy.ps1"
     if (Test-Path -LiteralPath $retryPolicyPath) {
@@ -1719,6 +1740,7 @@ try {
         # legacy one being converted until this run succeeds.
         $updateArgs = $runtimeArgs + @('update', '--yes') + $gatewayArg + $forceArg + $targetArgs
         $res = Invoke-HermesStep $pythonExe $updateArgs 'update'
+        $res = Resolve-HermesUpdateOutcome $res
     }
 
     # Pre-PM updates reported a successful exit with a failed build warning.

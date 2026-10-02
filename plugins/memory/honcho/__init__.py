@@ -111,6 +111,9 @@ _PREWARM_QUERY = "Summarize what you know about this user. Focus on preferences,
 
 class HonchoMemoryProvider(DialecticMixin, MemoryProvider):
     """Honcho AI-native memory with dialectic Q&A and persistent user modeling."""
+    # honcho_profile and honcho_conclude are mixed read/write tools and are
+    # intentionally absent from a query-only surface.
+    read_only_tool_names = frozenset({"honcho_search", "honcho_reasoning", "honcho_context"})
 
     def backup_paths(self) -> List[str]:
         """Whole ~/.honcho dir (peer/session config when no profile-local honcho.json exists)."""

@@ -315,6 +315,7 @@ def _tagged(resp: dict, tag: Optional[str]) -> dict:
 
 
 class SupermemoryMemoryProvider(MemoryProvider):
+    read_only_tool_names = frozenset({"supermemory_search", "supermemory_profile"})
     def __init__(self):
         self._api_key = self._session_id = self._hermes_home = ""
         self._client: Optional[_SupermemoryClient] = None

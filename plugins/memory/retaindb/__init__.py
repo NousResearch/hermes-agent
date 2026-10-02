@@ -303,6 +303,10 @@ _AGENT_MODEL_FIELDS = (
 
 class RetainDBMemoryProvider(MemoryProvider):
     """RetainDB cloud memory — durable queue, semantic search, dialectic synthesis, shared files."""
+    read_only_tool_names = frozenset({
+        "retaindb_profile", "retaindb_search", "retaindb_context",
+        "retaindb_list_files", "retaindb_read_file",
+    })
 
     def __init__(self):
         self._client: _Client | None = None

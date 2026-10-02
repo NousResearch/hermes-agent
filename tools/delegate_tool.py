@@ -29,8 +29,9 @@ from tools.delegate_tool_child_run import (  # noqa: F401
 )
 from tools.delegate_tool_config import (  # noqa: F401
     _DEFAULT_MAX_CONCURRENT_CHILDREN, _get_child_timeout, _get_max_async_children, _get_max_concurrent_children,
-    _get_max_spawn_depth, _get_oneshot_max_children, _get_orchestrator_enabled, _get_subagent_approval_callback, _get_worktree_isolation,
-    _inherit_parent_capabilities, _load_config, _merge_request_overrides, _resolve_child_credential_pool,
+    _get_max_spawn_depth, _get_oneshot_max_children, _get_orchestrator_enabled, _get_subagent_approval_callback,
+    _get_worktree_isolation, _inherit_parent_capabilities, _load_config, _merge_request_overrides,
+    _resolve_child_memory_mode, _resolve_child_credential_pool,
     _resolve_child_runtime, _resolve_delegation_credentials,
     _subagent_auto_approve, _subagent_auto_deny,
 )
@@ -114,6 +115,48 @@ def _apply_child_cache_ttl(child) -> None:
         child._cache_ttl = "5m"
 
 _CHILD_CAP_MIN = 16_000  # below this a child compresses on every call; treat as a config error
+_MCP_MEMORY_READ_TOOLS = frozenset({"hermes_mem_search", "hermes_mem_get"})
+
+
+def _parent_memory_read_tools(parent_agent: Any) -> set[str]:
+    """Read-only memory tools the parent actually has on its resolved surface."""
+    valid = set(getattr(parent_agent, "valid_tool_names", None) or ())
+    allowed = valid & _MCP_MEMORY_READ_TOOLS
+    manager = getattr(parent_agent, "_memory_manager", None)
+    get_names = getattr(manager, "get_read_only_tool_names", None)
+    if callable(get_names):
+        with _quiet("subagent: failed to inspect parent memory query tools", exc_info=True):
+            allowed.update(valid & set(get_names()))
+    return allowed
+
+
+def _is_memory_surface_tool(tool_name: str) -> bool:
+    """True for core/provider/MCP memory tools that delegation must policy-filter."""
+    if tool_name == "memory" or tool_name.startswith("hermes_mem_"):
+        return True
+    try:
+        import model_tools
+        toolset = model_tools.get_toolset_for_tool(tool_name) or ""
+    except Exception:
+        toolset = ""
+    return "memory" in toolset.lower()
+
+
+def _prune_child_memory_surface(child: Any, allowed: set[str]) -> None:
+    """Final post-expansion guard for registry/MCP memory tools."""
+    tools = getattr(child, "tools", None)
+    if isinstance(tools, list):
+        child.tools = [
+            tool for tool in tools
+            if (
+                (name := tool.get("function", {}).get("name")) in allowed
+                or not (isinstance(name, str) and _is_memory_surface_tool(name))
+            )
+        ]
+    child.valid_tool_names = {
+        name for name in (getattr(child, "valid_tool_names", None) or set())
+        if name in allowed or not _is_memory_surface_tool(name)
+    }
 
 
 def _child_compression_cap_tokens(raw) -> "int | None":
@@ -178,6 +221,7 @@ def _build_child_agent(
     routing_cfg: Optional[Dict[str, Any]] = None,
     # Legacy; accepted for wire compat but ignored (capability is depth-derived).
     role: str = "leaf",
+    memory_mode: Optional[str] = None,
 ):
     """Build (don't run) a child AIAgent on the main thread. override_* (from delegation config) replace parent
     inheritance so children can run on a different provider:model pair."""
@@ -199,6 +243,11 @@ def _build_child_agent(
     # global. Only fallback policy follows the owner of a per-call route such
     # as auxiliary.review.
     delegation_cfg = _load_config()
+    effective_memory_mode = _resolve_child_memory_mode(parent_agent, memory_mode)
+    memory_tool_allowlist = (
+        _parent_memory_read_tools(parent_agent)
+        if effective_memory_mode != "off" else set()
+    )
     child_toolsets, child_disabled_toolsets = _resolve_child_toolsets(parent_agent, toolsets, effective_role)
     child_prompt = _build_child_system_prompt(
         goal, context, workspace_path=_resolve_workspace_hint(parent_agent), role=effective_role,
@@ -238,7 +287,19 @@ def _build_child_agent(
                 enabled_toolsets=child_toolsets, disabled_toolsets=child_disabled_toolsets, quiet_mode=True,
                 ephemeral_system_prompt=child_prompt, log_prefix=f"[subagent-{task_index}]", platform="subagent",
                 side_agent=True,
-                skip_context_files=True, skip_memory=True, clarify_callback=None,
+                skip_context_files=True, skip_memory=False,
+                memory_mode=effective_memory_mode,
+                memory_tool_allowlist=sorted(memory_tool_allowlist),
+                memory_manager=getattr(parent_agent, "_memory_manager", None),
+                user_id=getattr(parent_agent, "_user_id", None) or "",
+                user_id_alt=getattr(parent_agent, "_user_id_alt", None) or "",
+                user_name=getattr(parent_agent, "_user_name", None) or "",
+                chat_id=getattr(parent_agent, "_chat_id", None) or "",
+                chat_name=getattr(parent_agent, "_chat_name", None) or "",
+                chat_type=getattr(parent_agent, "_chat_type", None) or "",
+                thread_id=getattr(parent_agent, "_thread_id", None) or "",
+                gateway_session_key=getattr(parent_agent, "_gateway_session_key", None) or "",
+                clarify_callback=None,
                 thinking_callback=(
                     (lambda text: _safe_progress(child_progress_cb, "_thinking", text) if text else None)
                     if child_progress_cb else None
@@ -262,7 +323,9 @@ def _build_child_agent(
     # reference), and no parent teardown can close it out from under a background child (#81267).
     child_session_ref["session_id"] = getattr(child, "session_id", "") or ""
     child._progress_identity_ref = child_session_ref
+    _prune_child_memory_surface(child, memory_tool_allowlist)
     child._delegate_depth, child._delegate_role = child_depth, effective_role  # post-degrade role
+    child._delegate_memory_mode = effective_memory_mode
     child._subagent_id, child._parent_subagent_id = subagent_id, parent_subagent_id
     _apply_child_compression_cap(child, delegation_cfg)
     # Ownership chain for action=list/steer/stop; weakref so a finished parent
@@ -365,7 +428,8 @@ def _run_single_child(
 def _build_children(
     task_list: List[Dict[str, Any]], task_schemas: List[Optional[Dict[str, Any]]], creds: Dict[str, Any], *,
     top_role: str, max_iterations: int, parent_agent, routing_cfg: Dict[str, Any],
-    live_deleg_id: Optional[str], live_writers: list, task_images: Optional[List[Optional[List[str]]]] = None,
+    live_deleg_id: Optional[str], live_writers: list, memory_mode: str,
+    task_images: Optional[List[Optional[List[str]]]] = None,
 ) -> tuple[List[tuple], Optional[str]]:
     """Build every child on the main thread (construction is not thread-safe);
     ``(children, None)`` or ``([], error)`` on an explicit-pin preflight failure."""
@@ -390,7 +454,8 @@ def _build_children(
                 task_index=i, goal=t["goal"], context=_child_context,
                 toolsets=None,  # always inherit the parent's toolsets
                 model=creds["model"], max_iterations=max_iterations, task_count=len(task_list),
-                parent_agent=parent_agent, role=_normalize_role(t.get("role") or top_role), **overrides,
+                parent_agent=parent_agent, role=_normalize_role(t.get("role") or top_role),
+                memory_mode=memory_mode, **overrides,
             )
         except ValueError as exc:
             return [], str(exc)
@@ -442,7 +507,7 @@ def delegate_task(
     max_iterations: Optional[int] = None, role: Optional[str] = None, background: Optional[bool] = None,
     output_schema: Optional[Dict[str, Any]] = None, images: Optional[List[str]] = None, action: Optional[str] = None,
     subagent_id: Optional[str] = None, message: Optional[str] = None, parent_agent=None,
-    credentials_cfg: Optional[Dict[str, Any]] = None,
+    credentials_cfg: Optional[Dict[str, Any]] = None, memory_mode: Optional[str] = None,
 ) -> str:
     """Spawn child agents (single ``goal`` or ``tasks=[...]`` batch) or control running ones. ``action``
     list/steer/stop run synchronously and bypass the pause gate, depth limit and async dispatch. ``role`` is legacy
@@ -479,6 +544,10 @@ def delegate_task(
         )
 
     cfg = _load_config()
+    try:
+        effective_memory_mode = _resolve_child_memory_mode(parent_agent, memory_mode)
+    except ValueError as exc:
+        return tool_error(str(exc))
     default_max_iter = cfg.get("max_iterations", DEFAULT_MAX_ITERATIONS)
     # Caller-supplied max_iterations is ignored: the config value is authoritative
     # so budgets stay predictable (kwarg kept for internal callers/tests).
@@ -521,7 +590,8 @@ def delegate_task(
 
     children, err = _build_children(
         task_list, task_schemas, creds, top_role=top_role, max_iterations=default_max_iter, parent_agent=parent_agent,
-        routing_cfg=routing_cfg, live_deleg_id=live_deleg_id, live_writers=live_writers, task_images=task_images,
+        routing_cfg=routing_cfg, live_deleg_id=live_deleg_id, live_writers=live_writers,
+        memory_mode=effective_memory_mode, task_images=task_images,
     )
     if err:
         return tool_error(err)
@@ -545,12 +615,14 @@ def _build_top_level_description(*, independent_completions=None) -> str:
     # vocabulary); model_tools session-filters the list to tools the session has.
     if orchestration_available:
         restrictions_rule = (
-            "- Children cannot call clarify, memory, or cronjob.\n"
+            "- Children cannot call clarify, writable memory tools, or cronjob.\n"
             f"- Children can themselves delegate while depth remains (max_spawn_depth={_get_max_spawn_depth()}); the "
             "runtime derives this from depth automatically.\n"
         )
     else:
-        restrictions_rule = "- Children cannot call delegate_task, clarify, memory, or cronjob.\n"
+        restrictions_rule = (
+            "- Children cannot call delegate_task, clarify, writable memory tools, or cronjob.\n"
+        )
     from tools.delegate_tool_config import _get_independent_completions
 
     if independent_completions is None:
@@ -690,6 +762,13 @@ DELEGATE_TASK_SCHEMA = {
                 },
                 "description": "(rebuilt at get_definitions() time)",
             },
+            "memory_mode": _p(
+                "string",
+                "Child memory policy. full injects the profile-scoped memory snapshot and exposes only "
+                "parent-permitted read tools; on_demand exposes those read tools without automatic prompt/turn "
+                "injection; off exposes neither. Nested calls inherit this policy and may only narrow it.",
+                enum=["full", "on_demand", "off"],
+            ),
             # `background` (bool) is also accepted — DEPRECATED, ignored: top-level
             # delegations always run in the background. Unadvertised; do not re-add.
             "action": _p(
@@ -741,6 +820,7 @@ registry.register(
     handler=lambda args, **kw: delegate_task(
         goal=args.get("goal"), context=args.get("context"), tasks=_strip_model_hidden_task_fields(args.get("tasks")),
         max_iterations=args.get("max_iterations"), role=args.get("role"),
+        memory_mode=args.get("memory_mode"),
         background=_model_background_value(args, kw.get("parent_agent")), output_schema=args.get("output_schema"),
         images=args.get("images"), action=args.get("action"), subagent_id=args.get("subagent_id"), message=args.get("message"),
         parent_agent=kw.get("parent_agent"),

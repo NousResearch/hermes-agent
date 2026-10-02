@@ -51,6 +51,7 @@ export const zh: Translations = {
       "消息平台、API 服务器和 webhook 在「频道」页面配置。这些是网关级别的设置（代理/中继模式和全局允许列表）。",
     loadFailed: "无法加载{what}。请确认仪表盘服务正在运行，然后点击重试。",
     loadFailedDetails: "详情：{detail}",
+    commaSeparatedPlaceholder: "以逗号分隔多个值",
   },
 
   app: {
@@ -253,6 +254,8 @@ export const zh: Translations = {
     "sources": "来源",
     "importSessions": "导入已导出的会话",
     "importSessionsTitle": "导入已导出的会话 JSON 或 JSONL",
+    "olderThanDays": "早于（天）",
+    "importSessionsAction": "导入会话",
   },
 
   analytics: {
@@ -632,6 +635,10 @@ export const zh: Translations = {
     "deleteFolderDescription": "将删除该文件夹及其中的全部内容。",
     "deleteFileDescription": "将删除该文件。",
     "targetLabel": "目标：",
+    "uploadAction": "上传",
+    "createAction": "新建",
+    "go": "前往",
+    "loadingFiles": "正在加载文件…",
   },
 
 
@@ -742,6 +749,18 @@ export const zh: Translations = {
     "editJob": "编辑任务",
     "jobsTab": "任务",
     "blueprintsTab": "蓝图",
+    "advancedFields": "高级字段",
+    "providerLabel": "服务商",
+    "defaultOption": "默认",
+    "modelLabel": "模型",
+    "baseUrlOverride": "Base URL 覆盖",
+    "scriptLabel": "脚本",
+    "workdirLabel": "工作目录",
+    "profileLabel": "配置",
+    "allProfilesOption": "全部配置",
+    "scriptPlaceholder": "scripts/ 下的相对路径",
+    "contextFromPlaceholder": "每行一个任务 ID",
+    "skillsHint": "所选技能会在提示词运行前加载——定时决定何时执行，技能决定如何执行。",
   },
 
   profiles: {
@@ -3346,6 +3365,7 @@ export const zh: Translations = {
     customKeyNamePlaceholder: "例如 MY_SERVICE_API_KEY",
     add: "添加",
     invalidKeyName: "只能使用字母、数字和下划线（必须以字母或下划线开头）。",
+    jumpToSection: "跳转到分区",
   },
 
   oauth: {

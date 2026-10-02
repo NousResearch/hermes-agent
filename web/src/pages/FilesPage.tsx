@@ -296,7 +296,7 @@ export default function FilesPage() {
               className="h-9 min-w-0 flex-1 font-mono"
             />
             <Button type="submit" size="sm" outlined className="uppercase">
-              Go
+              {F?.go ?? "Go"}
             </Button>
           </form>
         ) : (
@@ -314,7 +314,7 @@ export default function FilesPage() {
             className="uppercase"
             prefix={uploading ? <Spinner /> : <Upload />}
           >
-            Upload
+            {F?.uploadAction ?? "Upload"}
           </Button>
           <Button
             type="button"
@@ -325,7 +325,7 @@ export default function FilesPage() {
             className="uppercase"
             prefix={<FolderPlus />}
           >
-            Create
+            {F?.createAction ?? "Create"}
           </Button>
         </div>
       </div>
@@ -397,7 +397,7 @@ export default function FilesPage() {
           {loading && !listing ? (
             <div className="flex items-center justify-center gap-2 py-12 text-sm text-muted-foreground">
               <Spinner />
-              Loading files...
+              {F?.loadingFiles ?? "Loading files..."}
             </div>
           ) : listing && listing.entries.length === 0 ? (
             <div className="py-12 text-center text-sm text-muted-foreground">

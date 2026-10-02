@@ -191,7 +191,7 @@ export function AutoField({
                 .filter(Boolean),
             )
           }
-          placeholder="comma-separated values"
+          placeholder={t.common.commaSeparatedPlaceholder ?? "comma-separated values"}
         />
       </div>
     );

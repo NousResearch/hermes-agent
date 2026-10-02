@@ -1566,7 +1566,7 @@ export default function SystemPage() {
       {/* ── Checkpoints ───────────────────────────────────────────── */}
       <section className="flex flex-col gap-3">
         <H2 variant="sm" className="flex items-center gap-2 text-muted-foreground">
-          <Database className="h-4 w-4" /> Checkpoints
+          <Database className="h-4 w-4" /> {SP.checkpointsHeading}
         </H2>
         <Card>
           <CardContent className="flex items-center justify-between py-4">
@@ -1586,7 +1586,7 @@ export default function SystemPage() {
       <section className="flex flex-col gap-3">
         <div className="flex items-center justify-between">
           <H2 variant="sm" className="flex items-center gap-2 text-muted-foreground">
-            <Terminal className="h-4 w-4" /> Shell hooks
+            <Terminal className="h-4 w-4" /> {SP.shellHooksHeading}
           </H2>
           <Button size="sm" className="uppercase" prefix={<Plus className="h-3.5 w-3.5" />} onClick={() => setHookModalOpen(true)}>
             {SP.newHook}

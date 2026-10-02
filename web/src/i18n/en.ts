@@ -52,6 +52,7 @@ export const en: Translations = {
       "Could not load this plugin’s script. Check the Network tab (dashboard-plugins/…) and the server’s plugin path.",
     pluginNotRegistered:
       "The plugin’s script did not call register(), or the script errored. Open the browser console for details.",
+    commaSeparatedPlaceholder: "comma-separated values",
   },
 
   app: {
@@ -267,6 +268,8 @@ export const en: Translations = {
     "sources": "Sources",
     "importSessions": "Import exported sessions",
     "importSessionsTitle": "Import exported session JSON or JSONL",
+    "olderThanDays": "Older than (days)",
+    "importSessionsAction": "Import sessions",
   },
 
   analytics: {
@@ -653,6 +656,10 @@ export const en: Translations = {
     "deleteFolderDescription": "This removes the folder and everything inside it.",
     "deleteFileDescription": "This removes the file.",
     "targetLabel": "Target:",
+    "uploadAction": "Upload",
+    "createAction": "Create",
+    "go": "Go",
+    "loadingFiles": "Loading files...",
   },
 
 
@@ -769,6 +776,18 @@ export const en: Translations = {
     "editJob": "Edit job",
     "jobsTab": "Jobs",
     "blueprintsTab": "Blueprints",
+    "advancedFields": "Advanced fields",
+    "providerLabel": "Provider",
+    "defaultOption": "Default",
+    "modelLabel": "Model",
+    "baseUrlOverride": "Base URL override",
+    "scriptLabel": "Script",
+    "workdirLabel": "Workdir",
+    "profileLabel": "Profile",
+    "allProfilesOption": "All profiles",
+    "scriptPlaceholder": "relative/path/in/scripts",
+    "contextFromPlaceholder": "one job id per line",
+    "skillsHint": "Selected skills are loaded before the prompt runs — the cron sets when, the skill sets how.",
   },
 
   profiles: {
@@ -3384,6 +3403,7 @@ export const en: Translations = {
     customKeyNamePlaceholder: "e.g. MY_SERVICE_API_KEY",
     add: "Add",
     invalidKeyName: "Use letters, numbers and underscores only (must start with a letter or underscore).",
+    jumpToSection: "Jump to section",
   },
 
   oauth: {

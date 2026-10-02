@@ -1602,7 +1602,7 @@ export default function SessionsPage() {
               htmlFor="prune-days"
               className="text-xs font-medium text-muted-foreground"
             >
-              Older than (days)
+              {t.sessions.olderThanDays ?? "Older than (days)"}
             </label>
             <Input
               id="prune-days"
@@ -1928,7 +1928,7 @@ export default function SessionsPage() {
                 prefix={importingSessions ? <Spinner /> : <Upload />}
               >
                 <span className="font-mondwest normal-case text-xs">
-                  Import sessions
+                  {t.sessions.importSessionsAction ?? "Import sessions"}
                 </span>
               </Button>
             )}

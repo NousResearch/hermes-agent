@@ -279,6 +279,10 @@ class GatewayQueuedFollowupMixin:
                     session_key=next_session_key or "", session_id=session_id or "",
                 )
                 with self._session_env_scope(tool_context):
+                    from gateway.pending_execution import pending_execution_current
+
+                    if not pending_execution_current(self, pending_event, next_session_key):
+                        return result
                     followup_result = await self._run_agent(
                         message=next_message, context_prompt=turn_ctx.context_prompt, history=updated_history,
                         source=next_source, session_id=session_id, session_key=next_session_key,
@@ -339,6 +343,10 @@ class GatewayQueuedFollowupMixin:
                 }
             return merged
         finally:
+            if pending_event is not None:
+                from gateway.pending_execution import consume_pending_execution
+
+                consume_pending_execution(self, pending_event)
             if reservation is not None and turn_ctx.session_key:
                 release_pending_dispatch_record(adapter, turn_ctx.session_key, reservation)
 

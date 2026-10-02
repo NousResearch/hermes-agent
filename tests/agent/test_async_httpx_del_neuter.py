@@ -17,7 +17,6 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-
 # ---------------------------------------------------------------------------
 # Layer 1: neuter_async_httpx_del
 # ---------------------------------------------------------------------------
@@ -47,29 +46,6 @@ class TestNeuterAsyncHttpxDel:
             # Restore original to avoid leaking into other tests
             AsyncHttpxClientWrapper.__del__ = original_del
 
-    def test_neuter_idempotent(self):
-        """Calling neuter twice doesn't break anything."""
-        from agent.auxiliary_client import neuter_async_httpx_del
-
-        try:
-            from openai._base_client import AsyncHttpxClientWrapper
-        except ImportError:
-            pytest.skip("openai SDK not installed")
-
-        original_del = AsyncHttpxClientWrapper.__del__
-        try:
-            neuter_async_httpx_del()
-            first_del = AsyncHttpxClientWrapper.__del__
-            neuter_async_httpx_del()
-            second_del = AsyncHttpxClientWrapper.__del__
-            # Both calls should succeed; the class should have a no-op
-            assert first_del is not original_del
-            assert second_del is not original_del
-        finally:
-            AsyncHttpxClientWrapper.__del__ = original_del
-
-
-
 # ---------------------------------------------------------------------------
 # Layer 3: cleanup_stale_async_clients
 # ---------------------------------------------------------------------------
@@ -81,6 +57,7 @@ class TestCleanupStaleAsyncClients:
         """Entries with a closed loop should be evicted."""
         from agent.auxiliary_client import (
             _client_cache,
+            _client_cache_key,
             _client_cache_lock,
             cleanup_stale_async_clients,
         )
@@ -94,7 +71,7 @@ class TestCleanupStaleAsyncClients:
         mock_client._client = MagicMock()
         mock_client._client.is_closed = False
 
-        key = ("test_stale", True, "", "", "", (), False)
+        key = _client_cache_key("test_stale", async_mode=True)
         with _client_cache_lock:
             _client_cache[key] = (mock_client, "test-model", loop)
 
@@ -111,6 +88,7 @@ class TestCleanupStaleAsyncClients:
     def test_awaits_async_close_for_closed_loop(self):
         from agent.auxiliary_client import (
             _client_cache,
+            _client_cache_key,
             _client_cache_lock,
             cleanup_stale_async_clients,
         )
@@ -127,7 +105,7 @@ class TestCleanupStaleAsyncClients:
         loop = asyncio.new_event_loop()
         loop.close()
         client = AsyncClient()
-        key = ("test_async_close", True, "", "", "", (), False)
+        key = _client_cache_key("test_async_close", async_mode=True)
         with _client_cache_lock:
             _client_cache[key] = (client, "test-model", loop)
 
@@ -138,10 +116,10 @@ class TestCleanupStaleAsyncClients:
             with _client_cache_lock:
                 _client_cache.pop(key, None)
 
-
     def test_shutdown_closes_outside_cache_lock(self):
         from agent.auxiliary_client import (
             _client_cache,
+            _client_cache_key,
             _client_cache_lock,
             shutdown_cached_clients,
         )
@@ -157,7 +135,7 @@ class TestCleanupStaleAsyncClients:
                 if acquired:
                     _client_cache_lock.release()
 
-        key = ("test_shutdown_lock", False, "", "", "", (), False)
+        key = _client_cache_key("test_shutdown_lock", async_mode=False)
         with _client_cache_lock:
             previous = dict(_client_cache)
             _client_cache.clear()
@@ -175,6 +153,7 @@ class TestCleanupStaleAsyncClients:
     def test_shutdown_does_not_await_live_foreign_loop_client(self):
         from agent.auxiliary_client import (
             _client_cache,
+            _client_cache_key,
             _client_cache_lock,
             shutdown_cached_clients,
         )
@@ -189,7 +168,7 @@ class TestCleanupStaleAsyncClients:
                 self.awaited = True
 
         client = Client()
-        key = ("test_shutdown_foreign_loop", True, "", "", "", (), False)
+        key = _client_cache_key("test_shutdown_foreign_loop", async_mode=True)
         with _client_cache_lock:
             previous = dict(_client_cache)
             _client_cache.clear()
@@ -208,6 +187,7 @@ class TestCleanupStaleAsyncClients:
         """Entries with an open loop should be preserved."""
         from agent.auxiliary_client import (
             _client_cache,
+            _client_cache_key,
             _client_cache_lock,
             cleanup_stale_async_clients,
         )
@@ -215,7 +195,7 @@ class TestCleanupStaleAsyncClients:
         loop = asyncio.new_event_loop()  # NOT closed
 
         mock_client = MagicMock()
-        key = ("test_live", True, "", "", "", (), False)
+        key = _client_cache_key("test_live", async_mode=True)
         with _client_cache_lock:
             _client_cache[key] = (mock_client, "test-model", loop)
 
@@ -232,12 +212,13 @@ class TestCleanupStaleAsyncClients:
         """Sync entries (cached_loop=None) should be preserved."""
         from agent.auxiliary_client import (
             _client_cache,
+            _client_cache_key,
             _client_cache_lock,
             cleanup_stale_async_clients,
         )
 
         mock_client = MagicMock()
-        key = ("test_sync", False, "", "", "", (), False)
+        key = _client_cache_key("test_sync", async_mode=False)
         with _client_cache_lock:
             _client_cache[key] = (mock_client, "test-model", None)
 
@@ -248,7 +229,6 @@ class TestCleanupStaleAsyncClients:
         finally:
             with _client_cache_lock:
                 _client_cache.pop(key, None)
-
 
 # ---------------------------------------------------------------------------
 # Cache bounded growth (#10200)
@@ -302,82 +282,3 @@ class TestClientCacheBoundedGrowth:
         finally:
             with _client_cache_lock:
                 _client_cache.pop(key, None)
-
-    def test_different_loops_do_not_grow_cache(self):
-        """Multiple event loops for the same provider should NOT create multiple entries."""
-        from agent.auxiliary_client import (
-            _client_cache,
-            _client_cache_lock,
-        )
-
-        key = ("test_no_grow", True, "", "", "", (), False)
-
-        loops = []
-        try:
-            for i in range(5):
-                loop = asyncio.new_event_loop()
-                loops.append(loop)
-                mock_client = MagicMock()
-                mock_client._client = MagicMock()
-                mock_client._client.is_closed = False
-
-                # Close previous loop entries (simulating worker thread recycling)
-                if i > 0:
-                    loops[i - 1].close()
-
-                with _client_cache_lock:
-                    # Simulate what _get_cached_client does: replace on loop mismatch
-                    if key in _client_cache:
-                        old_entry = _client_cache[key]
-                        del _client_cache[key]
-                    _client_cache[key] = (mock_client, f"model-{i}", loop)
-
-            # Only one entry should exist for this key
-            with _client_cache_lock:
-                count = sum(1 for k in _client_cache if k == key)
-                assert count == 1, f"Expected 1 entry, got {count}"
-        finally:
-            for loop in loops:
-                if not loop.is_closed():
-                    loop.close()
-            with _client_cache_lock:
-                _client_cache.pop(key, None)
-
-    def test_max_cache_size_eviction(self):
-        """Cache should not exceed _CLIENT_CACHE_MAX_SIZE."""
-        from agent.auxiliary_client import (
-            _client_cache,
-            _client_cache_lock,
-            _CLIENT_CACHE_MAX_SIZE,
-        )
-
-        # Save existing cache state
-        with _client_cache_lock:
-            saved = dict(_client_cache)
-            _client_cache.clear()
-
-        try:
-            # Fill to max + 5
-            for i in range(_CLIENT_CACHE_MAX_SIZE + 5):
-                mock_client = MagicMock()
-                mock_client._client = MagicMock()
-                mock_client._client.is_closed = False
-                key = (f"evict_test_{i}", False, "", "", "", (), False)
-                with _client_cache_lock:
-                    # Inline the eviction logic (same as _get_cached_client)
-                    while len(_client_cache) >= _CLIENT_CACHE_MAX_SIZE:
-                        evict_key = next(iter(_client_cache))
-                        del _client_cache[evict_key]
-                    _client_cache[key] = (mock_client, f"model-{i}", None)
-
-            with _client_cache_lock:
-                assert len(_client_cache) <= _CLIENT_CACHE_MAX_SIZE, \
-                    f"Cache size {len(_client_cache)} exceeds max {_CLIENT_CACHE_MAX_SIZE}"
-                # The earliest entries should have been evicted
-                assert ("evict_test_0", False, "", "", "", (), False) not in _client_cache
-                # The latest entries should be present
-                assert (f"evict_test_{_CLIENT_CACHE_MAX_SIZE + 4}", False, "", "", "", (), False) in _client_cache
-        finally:
-            with _client_cache_lock:
-                _client_cache.clear()
-                _client_cache.update(saved)

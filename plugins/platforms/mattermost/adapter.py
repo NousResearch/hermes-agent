@@ -185,8 +185,9 @@ class MattermostAdapter(BasePlatformAdapter):
                 or not self._last_post_failure_is_broken_thread_root()):
             return data
         flat_payload = {k: v for k, v in payload.items() if k != "root_id"}
-        flat_payload["message"] = ("⚠️ Mattermost thread delivery failed; posting final reply in channel.\n\n"
-                                   + str(flat_payload.get("message") or "")).strip()
+        body = str(flat_payload.get("message") or "")
+        flat_payload["message"] = self.warning_text(
+            ("⚠️ Mattermost thread delivery failed; posting final reply in channel.\n\n" + body).strip(), body)
         logger.warning("Mattermost: falling back to flat channel delivery for notify-worthy post in %s", chat_id)
         return await self._api_post("posts", flat_payload)
 
@@ -310,7 +311,7 @@ class MattermostAdapter(BasePlatformAdapter):
         return await self._send_local_file(chat_id, file_path, caption, reply_to, file_name, metadata)
 
     async def send_voice(self, chat_id: str, audio_path: str, caption: Optional[str] = None,
-                         reply_to: Optional[str] = None, metadata: _Metadata = None) -> SendResult:
+                         reply_to: Optional[str] = None, metadata: _Metadata = None, **kwargs: Any) -> SendResult:
         return await self._send_local_file(chat_id, audio_path, caption, reply_to, metadata=metadata)
 
     async def send_video(self, chat_id: str, video_path: str, caption: Optional[str] = None,

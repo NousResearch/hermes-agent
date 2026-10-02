@@ -2,26 +2,30 @@
 
 The chat panel used to echo ``Error: HTTP 401: Invalid API key`` as the assistant's answer. These
 helpers map the classifier verdict (``agent/error_classifier.py``) to WHAT happened + WHAT TO DO,
-and demote the raw provider text to a ``Details:`` line.
+and demote the raw provider text to a ``Details:`` line. Copy lives in the i18n catalog under
+``cli.error.*`` and is resolved at render time for the active language.
 """
 
 from __future__ import annotations
 
+from agent.i18n import t
+
 _SUMMARY_LIMIT = 120
 
-# FailoverReason.value -> plain copy. ``{provider}`` / ``{model}`` are filled at render time.
-_REASON_COPY: dict[str, str] = {
-    "auth": "Your {provider} key was rejected. Run `hermes model` to re-enter it.",
-    "auth_permanent": "Your {provider} key was rejected. Run `hermes model` to re-enter it.",
-    "billing": "Your {provider} account is out of credit. Top up at the provider, or run /model to switch.",
-    "model_not_found": "'{model}' isn't available on {provider}. Run /model to pick a valid model.",
-    "rate_limit": "Rate limited by {provider}; wait a minute or /model to switch.",
-    "upstream_rate_limit": "Rate limited by {provider}; wait a minute or /model to switch.",
-    "overloaded": "{provider} is overloaded right now. Send /retry in a moment, or /model to switch.",
-    "server_error": "{provider} had an internal error. Send /retry in a moment, or /model to switch.",
-    "timeout": "{provider} did not answer in time. Send /retry, or /model to switch.",
+# FailoverReason.value -> catalog key suffix. Reasons sharing copy point at one key.
+_REASON_KEYS: dict[str, str] = {
+    "auth": "auth",
+    "auth_permanent": "auth",
+    "billing": "billing",
+    "model_not_found": "model_not_found",
+    "rate_limit": "rate_limit",
+    "upstream_rate_limit": "rate_limit",
+    "upstream_blocked": "upstream_blocked",
+    "overloaded": "overloaded",
+    "server_error": "server_error",
+    "timeout": "timeout",
 }
-_UNKNOWN_COPY = "The model request failed. Run /model to switch or `hermes doctor` to check the setup."
+_UNKNOWN_KEY = "unknown"
 
 
 def _short(text: str, limit: int = _SUMMARY_LIMIT) -> str:
@@ -51,15 +55,14 @@ def chat_error_response(
 
         exc = error if isinstance(error, Exception) else Exception(str(error))
         reason = classify_api_error(exc, provider=provider or "", model=model or "").reason.value
-    copy = _REASON_COPY.get(reason, _UNKNOWN_COPY)
-    lead = copy.format(provider=provider or "the provider", model=model or "the current model")
-    return f"{lead}\nDetails: {_short(str(error), 300)}"
+    lead = t(
+        f"cli.error.{_REASON_KEYS.get(reason, _UNKNOWN_KEY)}",
+        provider=provider or t("cli.error.the_provider"),
+        model=model or t("cli.error.the_current_model"),
+    )
+    return t("cli.error.with_details", lead=lead, details=_short(str(error), 300))
 
 
 def agent_init_failure_message(error: BaseException) -> str:
     """Copy for a failed AIAgent build on first message: the user's turn was dropped."""
-    return (
-        f"Hermes couldn't start the model connection: {_short(str(error)) or type(error).__name__}. "
-        "Your message was not sent. Run `hermes doctor` to check the setup, "
-        "or /model to pick a different provider."
-    )
+    return t("cli.error.agent_init_failed", error=_short(str(error)) or type(error).__name__)

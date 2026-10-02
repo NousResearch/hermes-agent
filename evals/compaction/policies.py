@@ -45,6 +45,37 @@ POLICIES: Dict[str, Dict[str, Any]] = {
         "ctor": {"tail_mode": "lean"},
         "attrs": {"_session_id": "eval-session"},
     },
+    # fast-jev-compaction (evals/compaction/jev_arm.py): no summary at all —
+    # Jev scores every tool call/result and stale ones are dropped or
+    # truncated; user/assistant text stays verbatim. Plugin defaults.
+    "jev": {
+        "engine": "jev",
+        "jev": {},
+    },
+    # Same, with the pinned tail widened from the plugin's 6 rows to roughly
+    # lean's 25K-token tail so the two arms protect comparable recent context.
+    "jev_tail40": {
+        "engine": "jev",
+        "jev": {"preserve_recent_messages": 40},
+    },
+    # Threshold lowered to ~the median keep_result Jev assigns on Hermes
+    # transcripts (0.15): tests whether its ranking carries signal below the
+    # plugin's 0.5 calibration point, where it drops every candidate.
+    "jev_t15": {
+        "engine": "jev",
+        "jev": {"keep_threshold": 0.15},
+    },
+    # Matched-budget pair (eval-only extension): keep 60K tokens of tool
+    # call+result pairs ranked by Jev's keep_result vs. ranked by recency.
+    # Same retained size, so the recall gap is Jev's judgment alone.
+    "jev_top60k": {
+        "engine": "jev",
+        "jev": {"select": "jev", "result_budget_tokens": 60_000},
+    },
+    "recent_top60k": {
+        "engine": "jev",
+        "jev": {"select": "recency", "result_budget_tokens": 60_000},
+    },
 }
 
 

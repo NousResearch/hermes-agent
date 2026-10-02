@@ -38,6 +38,8 @@ import type { ErrorSurface } from '@/lib/error-surface'
 import { tileFocusStampOnFocusChange } from '@/lib/session-timer-since'
 import { stableArray } from '@/lib/stable-array'
 import { readJson, writeJson } from '@/lib/storage'
+import { setBrowserSessionResolver } from '@/store/browser-conversation'
+import { retireBrowserProfile } from '@/store/browser-workspaces'
 import type { SessionInfo } from '@/types/hermes'
 
 import { dropStatusDrawersForProfile, migrateStatusDrawersForProfile } from './composer-status-drawer'
@@ -1916,6 +1918,15 @@ export function knownOwnerForSession(sessionId: null | string | undefined): Sess
 // Session-scoped REST reads (detail / messages / timeline) resolve their
 // connection pin through the SAME owner ladder as RPC dispatch (#125372).
 setSessionOwnerResolver(knownOwnerForSession)
+setBrowserSessionResolver(sessionId => {
+  const id = storedSessionIdForRuntimeId(sessionId) ?? sessionId
+  const owner = knownOwnerForSession(sessionId)
+
+  // A profile name alone cannot distinguish two machines' default profiles.
+  return isSessionOwnerRoute(owner)
+    ? { kind: 'session', id, connectionId: owner.connectionId, profile: owner.profile }
+    : null
+}, () => $focusedStoredSessionId.get() || $activeSessionId.get())
 
 /** The profile whose chat is on screen — the rail's scope.
  *
@@ -1935,7 +1946,8 @@ export function previewScopeForRuntime(runtimeId: string | undefined): string {
   const owner = knownOwnerForSession(runtimeId)
   const profile = typeof owner === 'string' ? owner : owner?.profile
 
-  return normalizeProfileKey(profile || $activeGatewayProfile.get())
+  return backendScopeKey(typeof owner === 'object' ? owner?.connectionId : typeof owner === 'string' ? LOCAL_CONNECTION_ID : tileConnectionId,
+    normalizeProfileKey(profile || $activeGatewayProfile.get()))
 }
 
 /** Keep the rail on the chat in view, so switching agents re-homes it. */
@@ -2863,10 +2875,10 @@ export function discardSessionTile(storedSessionId: string) {
  * discard (no ⌘⇧T) semantics as discardSessionTile — undoing the delete of the
  * owning profile would resolve to a 404 again.
  */
-export function dropTilesForProfile(
+export async function dropTilesForProfile(
   profile: string,
   route?: { connectionId?: string; profile?: string; targetProfile?: string }
-): void {
+): Promise<void> {
   // A route without profile has no owner side to match: it would silently fall
   // into the local-delete branch below and require `ownerConnection === 'local'`,
   // dropping nothing remotely owned while appearing to succeed. Both current
@@ -2878,8 +2890,6 @@ export function dropTilesForProfile(
   }
 
   const name = normalizeProfileKey(profile)
-  dropPreviewArtifactsForProfile(name, route)
-  dropStatusDrawersForProfile(name, route)
   // Route fields go through the SAME canonicalization as `name` below — a
   // source-scoped delete must not be defeated by stray whitespace around a
   // profile name that a non-route delete trims away.
@@ -2890,7 +2900,12 @@ export function dropTilesForProfile(
   // remotes whose tile key uses the URL fallback. Reuse the writer's resolved
   // connection scope so deletion cannot erase same-named local tabs instead.
   const ambientConnection = tileConnectionId || LOCAL_CONNECTION_ID
-  const removedScope = backendScopeKey(route ? routeConnection : ambientConnection, routeProfile || name)
+  const removedScope = backendScopeKey(routeConnection || ambientConnection, routeProfile || name)
+  const retirement = retireBrowserProfile({ connectionId: routeConnection || ambientConnection, profile: routeProfile || name })
+
+  if (retirement) {await retirement}
+  dropPreviewArtifactsForProfile(name, route)
+  dropStatusDrawersForProfile(name, route)
 
   const ownerMatches = (owner: SessionProfileRoute | undefined): boolean => {
     if (!owner) {
@@ -2962,7 +2977,7 @@ export function dropTilesForProfile(
   persistTiles()
   // The rail is a profile-keyed family too: a deleted profile's tabs must not
   // outlive it, or a later profile of the same name inherits them.
-  dropPreviewTabsForProfile(name)
+  dropPreviewTabsForProfile(removedScope)
 }
 
 /**
@@ -2973,11 +2988,24 @@ export function dropTilesForProfile(
  * to a backend that no longer exists ("Couldn't open this session", #111868).
  * Local-connection state only; a remote gateway rename executes there.
  */
-export function migrateTilesForProfile(oldProfile: string, newProfile: string): void {
+export async function migrateTilesForProfile(oldProfile: string, newProfile: string, route?: { connectionId: string }): Promise<void> {
   const from = normalizeProfileKey(oldProfile)
   const to = normalizeProfileKey(newProfile)
 
   if (!from || !to || from === to) {
+    return
+  }
+
+  const connectionId = route?.connectionId ?? LOCAL_CONNECTION_ID
+  const retirement = retireBrowserProfile({ connectionId, profile: from, replacementProfile: to })
+
+  if (retirement) {await retirement}
+
+  // Keep the existing local-only tile/navigation migration below. Browser
+  // ownership must retire even when its conversation lives on another source.
+  if (connectionId !== LOCAL_CONNECTION_ID) {
+    migratePreviewTabsForProfile(backendScopeKey(connectionId, from), backendScopeKey(connectionId, to))
+
     return
   }
 

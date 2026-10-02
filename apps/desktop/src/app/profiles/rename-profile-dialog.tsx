@@ -17,7 +17,7 @@ import { renameProfile } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { AlertTriangle } from '@/lib/icons'
 import { slug } from '@/lib/sanitize'
-import { retireLocalProfileGateways } from '@/store/gateway'
+import { activeGatewayConnectionId, retireLocalProfileGateways } from '@/store/gateway'
 import { migrateTilesForProfile } from '@/store/session-states'
 
 import { isValidProfileName } from './create-profile-dialog'
@@ -87,11 +87,15 @@ export function RenameProfileDialog({
     setError(null)
 
     try {
+      // Bind lifecycle ownership before local teardown or the PATCH can change
+      // the active source. Keep the API's ambient/explicit routing unchanged.
+      const connectionId = (typeof scope === 'object' ? scope?.connectionId : null) || activeGatewayConnectionId() || 'local'
+
       // A retained renderer socket for the old name would treat the rename's
       // backend teardown as a transient drop and redial, resurrecting the
       // old-name backend whose ensure_hermes_home() recreates the directory
       // the rename just moved (same class as the delete path, #88638).
-      if (!isDefault && scope == null) {
+      if (!isDefault && connectionId === 'local') {
         retireLocalProfileGateways(currentName)
       }
 
@@ -100,8 +104,8 @@ export function RenameProfileDialog({
       // The sessions moved with the directory; the tabs, cached tails and
       // remembered ids keyed by the old name must follow, or every open
       // dials a backend that no longer exists (#111868).
-      if (!isDefault && scope == null) {
-        migrateTilesForProfile(currentName, trimmed)
+      if (!isDefault) {
+        await migrateTilesForProfile(currentName, trimmed, { connectionId })
       }
 
       await onRenamed?.(trimmed)

@@ -4828,8 +4828,12 @@ export const en: Translations = {
     openPreview: 'Open preview',
     openInBrowser: 'Open in browser',
     openInExternal: 'Open in external',
+    newBrowserTab: 'New browser tab',
     popIn: 'Pop in',
     popOut: 'Pop out',
+    popOutFailed: 'Could not pop out browser',
+    popOutOwnerUnavailable:
+      'Browser ownership is unavailable. Open its chat or group and try again, or keep using this tab docked.',
     linkHint: '⌘/Ctrl-click for preview pane',
     sourceLineTitle: 'Click to select · shift-click to extend · drag to composer',
     source: 'SOURCE',

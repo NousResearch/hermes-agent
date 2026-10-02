@@ -1,6 +1,20 @@
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type * as WindowsStore from '@/store/windows'
+
+import { typeText } from './preview-drive'
+
+const target = vi.hoisted(() => ({
+  windowId: 'workspace-a',
+  tabId: 'url:second',
+  selectionVersion: 2,
+  owner: { connectionId: 'a', profile: 'alpha', scope: 'alpha', destination: null,
+    conversation: { kind: 'session' as const, id: 'stored-a', connectionId: 'a', profile: 'alpha' } }
+}))
+
+const selectedPopoutTarget = vi.hoisted(() => vi.fn((_requester?: unknown, _ids?: readonly string[]): typeof target | null => target))
+const validPopoutTarget = vi.hoisted(() => vi.fn((value: unknown) => JSON.stringify(value) === JSON.stringify(target)))
+vi.mock('@/store/browser-workspaces', () => ({ selectedPopoutTarget, validPopoutTarget }))
 
 const isBrowserWindow = vi.hoisted(() => vi.fn(() => false))
 const actOnActivePreview = vi.hoisted(() => vi.fn())
@@ -51,7 +65,8 @@ vi.mock('@/store/windows', async importOriginal => {
 
   return {
     ...actual,
-    isBrowserWindow: () => isBrowserWindow()
+    isBrowserWindow: () => isBrowserWindow(),
+    windowBrowserWorkspaceId: () => isBrowserWindow() ? target.windowId : null
   }
 })
 
@@ -99,9 +114,97 @@ function installDesktopRelay() {
 }
 
 describe('preview pop-out bridge', () => {
+  beforeEach(async () => {
+    const { $previewTabs } = await import('@/store/preview')
+    $previewTabs.set([{ id: 'url:second', pinned: true, sessionId: 'stored-a', target: {
+      kind: 'url', label: 'Second', source: 'https://example.test', url: 'https://example.test'
+    } }])
+  })
+  it.each(['abort', 'deadline', 'teardown'] as const)('stops stable-target native typing on %s, never falling back or reviving a replay', async reason => {
+    vi.useFakeTimers()
+    isBrowserWindow.mockReturnValue(true)
+    const input = { focus: vi.fn(), send: vi.fn() }
+    let responderSignal: AbortSignal | undefined
+    actOnActivePreview.mockImplementation(async (action, signal) => {
+      responderSignal = signal
+      await typeText(input, action.text, signal)
+
+      return { success: !signal?.aborted }
+    })
+    const { installPopoutPreviewResponder, requestPopoutPreviewAct } = await import('./preview-popout-bridge')
+    const stop = installPopoutPreviewResponder()
+    const controller = new AbortController()
+
+    try {
+      const pending = requestPopoutPreviewAct({ kind: 'type', text: 'x'.repeat(10_000) }, target.owner.conversation, controller.signal)
+      await vi.advanceTimersByTimeAsync(100)
+      expect(input.send).toHaveBeenCalled()
+      expect(responderSignal?.aborted).toBe(false)
+
+      if (reason === 'abort') {controller.abort('interrupted')}
+
+      if (reason === 'deadline') {await vi.advanceTimersByTimeAsync(20_000)}
+
+      if (reason === 'teardown') {stop()}
+      expect(responderSignal?.aborted).toBe(true)
+      const sent = input.send.mock.calls.length
+      await vi.advanceTimersByTimeAsync(21_000)
+      expect(input.send).toHaveBeenCalledTimes(sent)
+      expect(await pending).toMatchObject({ success: false })
+      expect(validPopoutTarget(target)).toBe(true)
+      expect(actOnActivePreview).toHaveBeenCalledOnce()
+      expect(vi.getTimerCount()).toBe(0)
+    } finally {stop(); vi.useRealTimers()}
+  })
+
+  it('matches cancellation to the captured target even after invalidation and keeps terminal replay tombstones', async () => {
+    vi.useFakeTimers()
+    isBrowserWindow.mockReturnValue(true)
+    let signal: AbortSignal | undefined
+    let finish!: () => void
+    actOnActivePreview.mockImplementation((_action, current) => {
+      signal = current
+
+      return new Promise(resolve => {finish = () => resolve({ success: false })})
+    })
+    const { installPopoutPreviewResponder } = await import('./preview-popout-bridge')
+    const stop = installPopoutPreviewResponder()
+    const bus = new LoopbackChannel('hermes:preview-popout')
+    const packet = { id: 'cancel-original', kind: 'act', target, payload: { kind: 'type' }, tabIds: [target.tabId], deadline: Date.now() + 20_000 }
+
+    try {
+      bus.postMessage(packet)
+      bus.postMessage({ kind: 'cancel', id: 'other', target })
+      bus.postMessage({ kind: 'cancel', id: packet.id, target: { ...target, selectionVersion: 99 } })
+      expect(signal?.aborted).toBe(false)
+      validPopoutTarget.mockReturnValue(false)
+      bus.postMessage({ kind: 'cancel', id: packet.id, target })
+      expect(signal?.aborted).toBe(true)
+      finish()
+      await Promise.resolve()
+      await vi.advanceTimersByTimeAsync(31_000)
+      validPopoutTarget.mockReturnValue(true)
+      bus.postMessage(packet)
+      expect(actOnActivePreview).toHaveBeenCalledOnce()
+      expect(vi.getTimerCount()).toBe(0)
+      const input = { focus: vi.fn(), send: vi.fn() }
+      actOnActivePreview.mockImplementation(async (action, current) => {
+        await typeText(input, action.text, current)
+
+        return { success: true }
+      })
+      bus.postMessage({ ...packet, id: 'expired-in-transit', payload: { kind: 'type', text: 'too late' } })
+      await vi.advanceTimersByTimeAsync(0)
+      expect(input.send).not.toHaveBeenCalled()
+      expect(vi.getTimerCount()).toBe(0)
+    } finally {stop(); vi.useRealTimers()}
+  })
+
   afterEach(() => {
     LoopbackChannel.listeners.clear()
     vi.resetModules()
+    selectedPopoutTarget.mockReturnValue(target)
+    validPopoutTarget.mockImplementation(value => JSON.stringify(value) === JSON.stringify(target))
     isBrowserWindow.mockReturnValue(false)
     actOnActivePreview.mockReset()
     readActivePreview.mockReset()
@@ -126,7 +229,10 @@ describe('preview pop-out bridge', () => {
     try {
       const result = await requestPopoutPreviewAct({ kind: 'click', ref: 'btn-1' })
 
-      expect(actOnActivePreview).toHaveBeenCalledWith({ kind: 'click', ref: 'btn-1' })
+      expect(actOnActivePreview).toHaveBeenCalledWith({ kind: 'click', ref: 'btn-1' }, expect.any(AbortSignal), expect.objectContaining({ sessionId: 'stored-a' }), {
+        tabId: target.tabId,
+        valid: expect.any(Function)
+      })
       expect(result).toEqual({ acted: 'click', success: true })
     } finally {
       stop()
@@ -145,7 +251,7 @@ describe('preview pop-out bridge', () => {
       try {
         const result = await requestPopoutPreviewRead({ count: 10, start: 0 })
 
-        expect(readActivePreview).toHaveBeenCalledWith({ count: 10, start: 0 })
+        expect(readActivePreview).toHaveBeenCalledWith({ count: 10, start: 0 }, expect.objectContaining({ sessionId: 'stored-a' }), target.tabId, [target.tabId])
         expect(result).toEqual({ kind: 'url', text: 'page' })
       } finally {
         stop()
@@ -171,15 +277,84 @@ describe('preview pop-out bridge', () => {
     }
   })
 
+  it('returns a failure instead of allowing a timed-out mutation to fall through to another local tab', async () => {
+    vi.useFakeTimers()
+
+    try {
+      const { requestPopoutPreviewAct } = await import('./preview-popout-bridge')
+      const pending = requestPopoutPreviewAct({ kind: 'click', ref: 'button' })
+      await vi.advanceTimersByTimeAsync(20_100)
+      expect(await pending).toMatchObject({ success: false, error: expect.stringContaining('not redirected') })
+      expect(LoopbackChannel.listeners.get('hermes:preview-popout')?.size).toBe(0)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('shares one responder and does not execute a duplicate request twice', async () => {
+    isBrowserWindow.mockReturnValue(true)
+    actOnActivePreview.mockResolvedValue({ success: true })
+    const { installPopoutPreviewResponder } = await import('./preview-popout-bridge')
+    const first = installPopoutPreviewResponder()
+    const second = installPopoutPreviewResponder()
+    const bus = new LoopbackChannel('hermes:preview-popout')
+    const packet = { id: 'duplicate', kind: 'act', payload: { kind: 'click' }, target, tabIds: [target.tabId], deadline: Date.now() + 20_000 }
+    bus.postMessage(packet)
+    bus.postMessage(packet)
+    await Promise.resolve()
+    expect(actOnActivePreview).toHaveBeenCalledOnce()
+    first()
+    expect(LoopbackChannel.listeners.get('hermes:preview-popout')?.size).toBe(1)
+    second()
+    second()
+    expect(LoopbackChannel.listeners.get('hermes:preview-popout')?.size).toBe(0)
+  })
+
+  it('rejects wrong-target packets before invoking a reader or action', async () => {
+    isBrowserWindow.mockReturnValue(true)
+    const { installPopoutPreviewResponder } = await import('./preview-popout-bridge')
+    const stop = installPopoutPreviewResponder()
+    const bus = new LoopbackChannel('hermes:preview-popout')
+
+    for (const badTarget of [
+      undefined,
+      { ...target, windowId: 'other' },
+      { ...target, tabId: 'url:seed' },
+      { ...target, selectionVersion: 1 }
+    ]) {
+      bus.postMessage({ id: 'bad', kind: 'act', payload: { kind: 'click' }, target: badTarget, tabIds: [target.tabId], deadline: Date.now() + 20_000 })
+    }
+
+    await Promise.resolve()
+    expect(actOnActivePreview).not.toHaveBeenCalled()
+    expect(readActivePreview).not.toHaveBeenCalled()
+    stop()
+  })
+
+  it('passes a live target guard so a switched/closed tab cannot receive later input', async () => {
+    isBrowserWindow.mockReturnValue(true)
+    actOnActivePreview.mockImplementation(async (_action, _signal, _owner, pinned) => {
+      expect(pinned.valid()).toBe(true)
+      validPopoutTarget.mockReturnValue(false)
+      expect(pinned.valid()).toBe(false)
+
+      return { success: false, error: 'target retired' }
+    })
+    const { installPopoutPreviewResponder, requestPopoutPreviewAct } = await import('./preview-popout-bridge')
+    const stop = installPopoutPreviewResponder()
+    expect(await requestPopoutPreviewAct({ kind: 'type', text: 'safe fixture' })).toMatchObject({ success: false })
+    stop()
+  })
+
   it('answers only for the session whose tab the pop-out shows (#73890)', async () => {
     isBrowserWindow.mockReturnValue(true)
     actOnActivePreview.mockResolvedValue({ acted: 'click', success: true })
-    window.history.replaceState(null, '', '/?win=browser&tab=url:browser-a')
+    window.history.replaceState(null, '', '/')
     const { $previewTabs } = await import('@/store/preview')
     const url = (u: string) => ({ kind: 'url' as const, label: u, source: u, url: u })
 
     $previewTabs.set([
-      { id: 'url:browser-a', pinned: false, sessionId: 'sess-a', target: url('https://a.example') },
+      { id: 'url:second', pinned: false, sessionId: 'sess-a', target: url('https://a.example') },
       { id: 'url:browser-b', pinned: false, sessionId: 'sess-b', target: url('https://b.example') }
     ])
 
@@ -188,15 +363,16 @@ describe('preview pop-out bridge', () => {
     vi.useFakeTimers()
 
     try {
-      // sess-b's agent: the pop-out shows sess-a's tab, so it stays silent.
-      const refused = requestPopoutPreviewAct({ kind: 'click', ref: 'btn-1' }, 'sess-b')
+      selectedPopoutTarget.mockImplementation((_requester, ids) => ids?.includes(target.tabId) ? target : null)
+      // sess-b's agent cannot select sess-a's tab.
+      const refused = requestPopoutPreviewAct({ kind: 'click', ref: 'btn-1' }, { ...target.owner.conversation, id: 'sess-b' }, undefined, 'sess-b')
       await vi.advanceTimersByTimeAsync(20_100)
 
       expect(await refused).toBeNull()
       expect(actOnActivePreview).not.toHaveBeenCalled()
 
       // sess-a's agent is answered.
-      expect(await requestPopoutPreviewAct({ kind: 'click', ref: 'btn-1' }, 'sess-a')).toEqual({
+      expect(await requestPopoutPreviewAct({ kind: 'click', ref: 'btn-1' }, { ...target.owner.conversation, id: 'sess-a' }, undefined, 'sess-a')).toEqual({
         acted: 'click',
         success: true
       })

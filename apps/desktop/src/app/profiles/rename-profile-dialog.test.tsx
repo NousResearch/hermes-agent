@@ -2,7 +2,7 @@ import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/re
 import { afterEach, expect, it, vi } from 'vitest'
 
 import { renameProfile } from '@/hermes'
-import { retireLocalProfileGateways } from '@/store/gateway'
+import { activeGatewayConnectionId, retireLocalProfileGateways } from '@/store/gateway'
 import { migrateTilesForProfile } from '@/store/session-states'
 
 import { RenameProfileDialog } from './rename-profile-dialog'
@@ -23,6 +23,7 @@ vi.mock('@/hermes', () => ({
 }))
 
 vi.mock('@/store/gateway', () => ({
+  activeGatewayConnectionId: vi.fn(() => 'local'),
   retireLocalProfileGateways: vi.fn()
 }))
 
@@ -52,7 +53,21 @@ it('retires the old-name local gateways before issuing the rename', async () => 
   expect(order).toEqual(['retire', 'rename'])
   // The sessions moved with the directory: tabs / cached tails / remembered ids keyed by the
   // old name follow, else every restored tab 404s against a backend that no longer exists (#111868).
-  expect(migrateTilesForProfile).toHaveBeenCalledWith('selena', 'renamed')
+  expect(migrateTilesForProfile).toHaveBeenCalledWith('selena', 'renamed', { connectionId: 'local' })
+})
+
+it.each(['local', 'remote'])('keeps the default display-name edit presentation-only on %s', async connectionId => {
+  vi.mocked(activeGatewayConnectionId).mockReturnValueOnce(connectionId)
+  const onRenamed = vi.fn()
+  render(<RenameProfileDialog currentName="default" isDefault onClose={vi.fn()} onRenamed={onRenamed} open />)
+
+  fireEvent.change(screen.getByLabelText(/display name/i), { target: { value: 'My Assistant' } })
+  fireEvent.click(screen.getByRole('button', { name: /^rename$/i }))
+
+  await waitFor(() => expect(onRenamed).toHaveBeenCalledWith('My Assistant'))
+  expect(renameProfile).toHaveBeenCalledWith('default', 'My Assistant')
+  expect(retireLocalProfileGateways).not.toHaveBeenCalled()
+  expect(migrateTilesForProfile).not.toHaveBeenCalled()
 })
 
 it('does not retire gateways when validation rejects the submit', async () => {

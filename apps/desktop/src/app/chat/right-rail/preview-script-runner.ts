@@ -33,8 +33,8 @@ export function registerPreviewScriptRunner(tabId: string, runner: PreviewScript
 /** The script runner of the ACTIVE tab among those `owner` (the requesting
  *  session's stored id; omitted = the focused session) may see. Null = no live
  *  page behind it. */
-export function activePreviewScriptRunner(owner?: PreviewOwner): PreviewScriptRunner | null {
-  const tab = activePreviewTabFor(owner)
+export function activePreviewScriptRunner(owner?: PreviewOwner, tabId?: string): PreviewScriptRunner | null {
+  const tab = activePreviewTabFor(owner, tabId)
 
   return (tab && runners.get(tab.id)) || null
 }

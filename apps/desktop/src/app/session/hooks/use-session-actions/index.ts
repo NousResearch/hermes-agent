@@ -32,6 +32,7 @@ import { isMissingRpcMethod } from '@/lib/gateway-rpc'
 import { purgeInFlightTurnJournals, recoverInFlightTurnJournal } from '@/lib/inflight-turn-journal'
 import { latestSessionTodoSnapshot } from '@/lib/todos'
 import { setSessionYolo } from '@/lib/yolo-session'
+import { retireBrowserSession } from '@/store/browser-conversation'
 import { $clarifyRequests, clearClarifyRequest } from '@/store/clarify'
 import { announceGoneSessionDraft, announceNewSessionDraftKey, migrateSessionDraft } from '@/store/composer'
 import { clearQueuedPrompts, migrateQueuedPrompts } from '@/store/composer-queue'
@@ -3289,6 +3290,8 @@ export function useSessionActions({
         }
 
         await deleteSession(storedSessionId, removedOwner)
+
+        for (const id of removedIds) {if (id) {retireBrowserSession(id)}}
 
         dropTranscriptTailEverywhere(storedSessionId)
         // Only after the RPC lands — the optimistic eviction above can roll

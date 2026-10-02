@@ -1,7 +1,7 @@
 name: jp-estat
 repo: https://github.com/TakeshiTGAL/hermes-plugin-estat
-sha: 00070ac4ad9c5c2f86e6d2597f4f538cd4327130
-description: "Unofficial plugin for e-Stat (政府統計の総合窓口), Japan's official government statistics portal: search tables, see their categories, and fetch numbers by name (population, households, establishments by industry, wages, consumer prices) with units, survey dates and citations. Disclosure: sends your search words and table selections to api.e-stat.go.jp with your own free application ID; no other host, no files written."
+sha: 7cf225afe7ef6f46b4dccd0e2521f137e602dd9e
+description: "Japanese government statistics for Hermes Agent, built on the e-Stat API (政府統計の総合窓口, Japan's official government statistics portal): search tables, see their categories, and fetch numbers by name (population, households, establishments by industry, wages, consumer prices) with units, survey dates and citations. Disclosure: sends your search words and table selections to api.e-stat.go.jp with your own free application ID; no other host, no files written."
 maintainer: TakeshiTGAL
 tier: community
 category: tools

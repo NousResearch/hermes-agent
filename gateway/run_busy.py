@@ -19,7 +19,7 @@ from agent.session_activity import format_iteration_progress
 from gateway.config import Platform
 from gateway.platforms.base import EphemeralReply
 from gateway.platforms.event import MessageEvent, MessageType
-from gateway.platforms.base_pending import _can_join_pending_event, is_pending_redispatch
+from gateway.platforms.base_pending import can_join_pending_event, is_pending_redispatch
 from gateway.session import SessionSource
 from gateway.whatsapp_identity import canonical_whatsapp_identifier
 from typing import Any, Dict, List, Optional, Tuple, Union
@@ -391,7 +391,7 @@ class GatewayBusySessionMixin:
         if (
             existing is not None
             and not self._overflow_queue(session_key)
-            and _can_join_pending_event(existing, event)
+            and can_join_pending_event(existing, event)
             and MessageType.PHOTO in merge_types
             and merge_types <= {MessageType.TEXT, MessageType.PHOTO}
         ):

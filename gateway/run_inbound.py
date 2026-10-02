@@ -618,7 +618,7 @@ class GatewayInboundMixin:
     ) -> None:
         """Coalesce compatible busy input or queue it behind earlier events."""
         from gateway.platforms.base import merge_pending_message_event
-        from gateway.platforms.base_pending import _can_join_pending_event, is_pending_redispatch
+        from gateway.platforms.base_pending import can_join_pending_event, is_pending_redispatch
 
         adapter = self._delivery_adapter_for(source)
         if not adapter:
@@ -628,7 +628,7 @@ class GatewayInboundMixin:
             existing is None
             or self._overflow_queue(_quick_key)
             or existing.message_type not in {MessageType.TEXT, MessageType.PHOTO}
-            or not _can_join_pending_event(existing, event)
+            or not can_join_pending_event(existing, event)
             or is_pending_redispatch(adapter, _quick_key, event)
         ):
             self._queue_or_replace_pending_event(_quick_key, event)

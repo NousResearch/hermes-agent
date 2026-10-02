@@ -429,7 +429,7 @@ from gateway.platforms.base_exec_approval import (
     approval_timeout_seconds, ea_action_labels, ea_default_reason_text, ea_header_text,
     ea_reason_label_text, ea_smart_deny_line_text, format_approval_deadline_line)
 from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
-from gateway.platforms.base_pending import _can_join_pending_event, pending_dispatch_scope
+from gateway.platforms.base_pending import can_join_pending_event, pending_dispatch_scope
 from gateway.warning_notifications import diagnostic_wake_muted
 from hermes_cli.observability.shared_metrics_gateway import records_delivery, stop_reply_clock
 from gateway.session import SessionSource, build_session_key
@@ -3827,7 +3827,7 @@ class BasePlatformAdapter(ABC):
 
     def _can_merge_text_debounce_events(self, existing: MessageEvent, event: MessageEvent) -> bool:
         """Whether one debounce burst can preserve both events' attribution and reply context."""
-        return _can_join_pending_event(existing, event)
+        return can_join_pending_event(existing, event)
 
     def _text_debounce_delay(self, session_key: str) -> float:
         """Return bounded busy-text debounce delay for ``session_key``."""

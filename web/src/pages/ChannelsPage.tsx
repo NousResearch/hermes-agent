@@ -483,7 +483,8 @@ export default function ChannelsPage() {
                       rel="noopener noreferrer"
                       className="inline-flex items-center gap-1 text-primary hover:underline"
                     >
-                      Find my user ID <ExternalLink className="h-3 w-3" />
+                      {C.telegramFindMyUserId ?? "Find my user ID"}{" "}
+                      <ExternalLink className="h-3 w-3" />
                     </a>
                   </div>
                   <p className="text-xs">
@@ -1120,13 +1121,15 @@ export function WhatsAppOnboardingPanel({
                 <div className="flex h-60 w-60 flex-col items-center justify-center gap-3 border border-border bg-background/50 p-4 text-center">
                   <Spinner className="text-2xl" />
                   <div className="text-xs text-muted-foreground">
-                    Waiting for WhatsApp to provide a QR code…
+                    {C.whatsappWaitingQr ??
+                      "Waiting for WhatsApp to provide a QR code…"}
                   </div>
                 </div>
               )}
               {phase === "waiting" && (
                 <span className="text-center text-xs text-muted-foreground">
-                  Scan with WhatsApp Linked Devices, not the camera app.
+                  {C.whatsappScanHint ??
+                    "Scan with WhatsApp Linked Devices, not the camera app."}
                 </span>
               )}
               <Button size="sm" ghost onClick={() => void cancel()}>
@@ -1360,11 +1363,11 @@ function TelegramOnboardingPanel({
     <div className="rounded-sm border border-border bg-background/35 p-4">
       <div className="grid gap-1">
         <span className="font-mondwest text-sm text-foreground">
-          Choose how to connect your Telegram bot
+          {C.telegramChooseTitle ?? "Choose how to connect your Telegram bot"}
         </span>
         <span className="text-xs text-muted-foreground">
-          Both options connect a bot you control and save its credentials only to
-          this Hermes installation.
+          {C.telegramChooseBody ??
+            "Both options connect a bot you control and save its credentials only to this Hermes installation."}
         </span>
       </div>
 
@@ -1372,13 +1375,13 @@ function TelegramOnboardingPanel({
         <div className="grid content-start gap-3 sm:pr-4">
           <div className="flex flex-wrap items-center gap-2">
             <span className="text-xs font-medium uppercase text-foreground">
-              Quick setup
+              {C.telegramQuickSetup ?? "Quick setup"}
             </span>
             <Badge tone="success">{C.recommended}</Badge>
           </div>
           <p className="text-xs text-muted-foreground">
-            Scan a QR code and confirm in Telegram. Hermes creates the bot and
-            detects your Telegram user ID automatically.
+            {C.telegramQuickSetupBody ??
+              "Scan a QR code and confirm in Telegram. Hermes creates the bot and detects your Telegram user ID automatically."}
           </p>
           <Button
             size="sm"
@@ -1393,11 +1396,11 @@ function TelegramOnboardingPanel({
 
         <div className="grid content-start gap-3 border-t border-border pt-4 sm:border-t-0 sm:pl-4 sm:pt-0">
           <span className="text-xs font-medium uppercase text-foreground">
-            Use your own bot
+            {C.telegramUseOwnBot ?? "Use your own bot"}
           </span>
           <p className="text-xs text-muted-foreground">
-            Create a bot with @BotFather, or connect one you already have, by
-            entering its token and choosing who can use it.
+            {C.telegramUseOwnBotBody ??
+              "Create a bot with @BotFather, or connect one you already have, by entering its token and choosing who can use it."}
           </p>
           <Button
             size="sm"
@@ -1407,22 +1410,23 @@ function TelegramOnboardingPanel({
             disabled={phase !== "idle"}
             prefix={<Bot className="h-4 w-4" />}
           >
-            Manual setup
+            {C.telegramManualSetup ?? "Manual setup"}
           </Button>
         </div>
       </div>
 
       {platform.configured && (
         <div className="mt-4 border-t border-border pt-3 text-xs text-muted-foreground">
-          Telegram credentials are already configured. A new QR setup or bot token
-          will replace the current bot when you save.
+          {C.telegramAlreadyConfigured ??
+            "Telegram credentials are already configured. A new QR setup or bot token will replace the current bot when you save."}
         </div>
       )}
 
       {phase !== "idle" && (
         <div className="mt-4 border-t border-border pt-4">
           <span className="text-xs text-muted-foreground">
-            Finish or cancel the current QR setup before switching methods.
+            {C.telegramFinishOrCancel ??
+              "Finish or cancel the current QR setup before switching methods."}
           </span>
         </div>
       )}
@@ -1450,7 +1454,7 @@ function TelegramOnboardingPanel({
                 <div className="grid gap-2">
                   <div className="flex flex-wrap items-center gap-2">
                     <span className="text-xs uppercase tracking-[0.12em] text-muted-foreground">
-                      Allowed users
+                      {C.telegramAllowedUsers ?? "Allowed users"}
                     </span>
                     {detectedOwnerId && allowedIds.includes(detectedOwnerId) && (
                       <Badge tone="success">{C.ownerDetected}</Badge>
@@ -1474,7 +1478,7 @@ function TelegramOnboardingPanel({
                     ))}
                     {allowedIds.length === 0 && (
                       <span className="text-sm text-muted-foreground">
-                        Add at least one Telegram user ID.
+                        {C.telegramAddAtLeastOneUser ?? "Add at least one Telegram user ID."}
                       </span>
                     )}
                   </div>
@@ -1530,7 +1534,7 @@ function TelegramOnboardingPanel({
                 className="inline-flex h-8 items-center gap-1 border border-border px-3 text-xs uppercase text-foreground hover:border-foreground/40"
               >
                 <ExternalLink className="h-4 w-4" />
-                Open Telegram
+                {C.telegramOpen ?? "Open Telegram"}
               </a>
               <Button size="sm" ghost onClick={() => void cancel()}>
                 Cancel

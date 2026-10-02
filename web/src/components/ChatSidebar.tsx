@@ -624,12 +624,12 @@ export function ChatSidebar({
                 onClick={() => window.location.reload()}
                 prefix={<RefreshCw />}
               >
-                Reload page
+                {CS.reloadPage ?? "Reload page"}
               </Button>
             )}
             {error && !showReload && (
               <Button size="sm" outlined className="mt-1" onClick={reconnect} prefix={<RefreshCw />}>
-                Reconnect side panel
+                {CS.reconnectSidePanel ?? "Reconnect side panel"}
               </Button>
             )}
             {!error && credential && (
@@ -643,10 +643,10 @@ export function ChatSidebar({
                   // still lives under ChatPage, so router context is present.)
                   onClick={() => navigate('/env')}
                 >
-                  Add key
+                  {CS.addKey ?? "Add key"}
                 </Button>
                 <Button size="sm" outlined onClick={() => setModelOpen(true)}>
-                  Switch model
+                  {CS.switchModel ?? "Switch model"}
                 </Button>
               </div>
             )}

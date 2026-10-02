@@ -441,7 +441,7 @@ export function ModelPickerDialog(props: Props) {
         <footer className="border-t border-border p-3 flex items-center justify-between gap-3 flex-wrap">
           {alwaysGlobal ? (
             <span className="text-xs text-muted-foreground">
-              Saves to config.yaml — applies to new sessions.
+              {P?.savesToConfig ?? "Saves to config.yaml — applies to new sessions."}
             </span>
           ) : (
             <div className="flex items-center gap-2">
@@ -554,10 +554,10 @@ function ProviderColumn({
               <span>{P?.noProviders ?? NO_PROVIDERS_MESSAGE}</span>
               <div className="flex flex-wrap gap-2">
                 <Link to="/env" onClick={onClose} className="underline underline-offset-2 hover:text-foreground">
-                  Open Keys
+                  {P?.openKeys ?? "Open Keys"}
                 </Link>
                 <Link to="/models" onClick={onClose} className="underline underline-offset-2 hover:text-foreground">
-                  Sign in to a provider
+                  {P?.signInToProvider ?? "Sign in to a provider"}
                 </Link>
               </div>
             </div>

@@ -283,6 +283,18 @@ export const zh: Translations = {
     acrossModels: "共 {count} 个模型",
     inOut: "输入 {input} / 输出 {output}",
     all: "全部",
+    hiddenTitle: "Token 分析已隐藏",
+    hiddenBodyOne:
+      "本页的 Token、费用和按日分析只是一项本地调试估算。它只统计带有可用",
+    hiddenBodyOneSuffix:
+      "块的成功主代理响应，并会静默排除辅助调用（上下文压缩、标题生成、视觉、会话搜索、网页提取、智能审批、MCP 路由、插件 LLM 访问），以及服务商端的重试和回退尝试。缓存写入则完全没有计入。",
+    hiddenBodyTwo:
+      "在辅助调用量极大的模型（Kimi K2.6、MiniMax M2.7）上，本地总量可能比服务商的账单低 10–100 倍。与其让这些数字显得权威可信，不如将它们隐藏。",
+    hiddenBodyThreePrefix:
+      "请到你的服务商仪表盘（OpenRouter、Anthropic 等）查看实际用量和账单。若要重新启用本地调试估算，请设置",
+    hiddenBodyThreeMid: "（见",
+    hiddenConfigLink: "配置",
+    hiddenBodyThreeSuffix: "）。",
   },
 
   models: {
@@ -414,6 +426,9 @@ export const zh: Translations = {
     confirmPricingMessage: "该模型已知价格异常偏高。",
     modelCount: "{count} 个模型",
     pickProvider: "选择一个服务商 →",
+    savesToConfig: "保存到 config.yaml —— 对新会话生效。",
+    openKeys: "打开密钥",
+    signInToProvider: "登录服务商",
   },  mcpPage: {
     removeServer: "移除 MCP 服务器",
     removeBodyNamed: "「{name}」— 这将移除该服务器。",
@@ -609,6 +624,25 @@ export const zh: Translations = {
     slackTokenPrefix: "{field} 必须以 {prefix} 开头",
     slackMemberIdInvalid: "{id} 看起来不是 Slack 成员 ID。请使用类似 U01ABC2DEF3 的 ID。",
     expired: "已过期",
+    telegramChooseTitle: "选择如何连接你的 Telegram 机器人",
+    telegramChooseBody:
+      "两种方式都连接由你掌控的机器人，并且只把凭据保存到这台 Hermes 安装中。",
+    telegramQuickSetup: "快速设置",
+    telegramQuickSetupBody:
+      "扫描二维码并在 Telegram 中确认。Hermes 会自动创建机器人并识别你的 Telegram 用户 ID。",
+    telegramUseOwnBot: "使用你自己的机器人",
+    telegramUseOwnBotBody:
+      "用 @BotFather 创建一个机器人，或接入你已有的机器人——输入它的令牌并选择谁可以使用。",
+    telegramManualSetup: "手动设置",
+    telegramAlreadyConfigured:
+      "Telegram 凭据已配置。保存新的二维码设置或机器人令牌会替换当前的机器人。",
+    telegramFinishOrCancel: "切换方式前，请先完成或取消当前的二维码设置。",
+    telegramAllowedUsers: "允许的用户",
+    telegramAddAtLeastOneUser: "请至少添加一个 Telegram 用户 ID。",
+    telegramOpen: "打开 Telegram",
+    telegramFindMyUserId: "查找我的用户 ID",
+    whatsappWaitingQr: "正在等待 WhatsApp 提供二维码……",
+    whatsappScanHint: "请用 WhatsApp 的「已连接的设备」扫描，而不是相机应用。",
   },
 
 
@@ -1282,6 +1316,10 @@ export const zh: Translations = {
       reasoning: "推理",
       reasoningNotice: "推理强度已设置为 {effort}。运行 /new 或刷新页面以应用于此对话。",
       modelNotice: "模型已设置为 {model}。运行 /new 或刷新页面以应用于此对话。",
+      reloadPage: "重新加载页面",
+      reconnectSidePanel: "重新连接侧边面板",
+      addKey: "添加密钥",
+      switchModel: "切换模型",
     },
   },
 

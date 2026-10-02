@@ -297,6 +297,18 @@ export const en: Translations = {
     acrossModels: "across {count} models",
     inOut: "{input} in / {output} out",
     all: "All",
+    hiddenTitle: "Token analytics hidden",
+    hiddenBodyOne:
+      "The token, cost, and per-day analytics on this page are a local debug estimate. They only count successful main-agent responses with a usable",
+    hiddenBodyOneSuffix:
+      "block, and silently exclude auxiliary calls (context compression, title generation, vision, session search, web extract, smart approvals, MCP routing, plugin LLM access) plus provider-side retries and fallback attempts. Cache writes are missing entirely.",
+    hiddenBodyTwo:
+      "On models with heavy auxiliary traffic (Kimi K2.6, MiniMax M2.7) the local total can be 10x–100x lower than what your provider bills. Hiding these numbers is safer than letting them look authoritative.",
+    hiddenBodyThreePrefix:
+      "Check your provider dashboard (OpenRouter, Anthropic, etc.) for actual usage and billing. To re-enable the local debug estimate anyway, set",
+    hiddenBodyThreeMid: "in",
+    hiddenConfigLink: "Config",
+    hiddenBodyThreeSuffix: ".",
   },
 
   models: {
@@ -429,6 +441,9 @@ export const en: Translations = {
     confirmPricingMessage: "This model has unusually high known pricing.",
     modelCount: "{count} models",
     pickProvider: "pick a provider →",
+    savesToConfig: "Saves to config.yaml — applies to new sessions.",
+    openKeys: "Open Keys",
+    signInToProvider: "Sign in to a provider",
   },  mcpPage: {
     removeServer: "Remove MCP server",
     removeBodyNamed: '"{name}" — this will remove the server.',
@@ -630,6 +645,26 @@ export const en: Translations = {
     slackTokenPrefix: "{field} must start with {prefix}",
     slackMemberIdInvalid: "{id} does not look like a Slack member ID. Use IDs like U01ABC2DEF3.",
     expired: "expired",
+    telegramChooseTitle: "Choose how to connect your Telegram bot",
+    telegramChooseBody:
+      "Both options connect a bot you control and save its credentials only to this Hermes installation.",
+    telegramQuickSetup: "Quick setup",
+    telegramQuickSetupBody:
+      "Scan a QR code and confirm in Telegram. Hermes creates the bot and detects your Telegram user ID automatically.",
+    telegramUseOwnBot: "Use your own bot",
+    telegramUseOwnBotBody:
+      "Create a bot with @BotFather, or connect one you already have, by entering its token and choosing who can use it.",
+    telegramManualSetup: "Manual setup",
+    telegramAlreadyConfigured:
+      "Telegram credentials are already configured. A new QR setup or bot token will replace the current bot when you save.",
+    telegramFinishOrCancel:
+      "Finish or cancel the current QR setup before switching methods.",
+    telegramAllowedUsers: "Allowed users",
+    telegramAddAtLeastOneUser: "Add at least one Telegram user ID.",
+    telegramOpen: "Open Telegram",
+    telegramFindMyUserId: "Find my user ID",
+    whatsappWaitingQr: "Waiting for WhatsApp to provide a QR code…",
+    whatsappScanHint: "Scan with WhatsApp Linked Devices, not the camera app.",
   },
 
 
@@ -1317,6 +1352,10 @@ export const en: Translations = {
       reasoning: "reasoning",
       reasoningNotice: "Reasoning effort set to {effort}. Run /new or refresh the page to apply it to this chat.",
       modelNotice: "Model set to {model}. Run /new or refresh the page to apply it to this chat.",
+      reloadPage: "Reload page",
+      reconnectSidePanel: "Reconnect side panel",
+      addKey: "Add key",
+      switchModel: "Switch model",
     },
   },
 

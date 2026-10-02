@@ -3,46 +3,6 @@ import { FIELD_DESCRIPTIONS, FIELD_LABELS } from '@/app/settings/constants'
 import type { Translations } from './types'
 
 export const en: Translations = {
-  catalog: {
-    listView: 'List view',
-    cardView: 'Card view',
-    installTitle: (name: string) => `Install “${name}”?`,
-    installDescription: 'This skill will be available in new sessions. Only install sources you trust.',
-    installTo: 'Install to',
-    thisComputer: 'This computer',
-    installing: 'Installing…',
-    installComplete: (name: string) => `“${name}” installed`,
-    destinationChanged: 'The destination changed. Close this dialog and open the install link again.',
-    browse: 'Browse',
-    installed: 'Installed',
-    searchSkills: 'Search skills',
-    searchPlugins: 'Search plugins',
-    allSources: 'All sources',
-    allCategories: 'All categories',
-    about: 'About',
-    author: 'Author',
-    source: 'Source',
-    category: 'Category',
-    version: 'Version',
-    platforms: 'Platforms',
-    requires: 'Requires',
-    tools: 'Tools',
-    hooks: 'Hooks',
-    repository: 'Repository',
-    documentation: 'Documentation',
-    noResults: 'No matches',
-    tryAnother: 'Try another search or clear your filters.',
-    clearFilters: 'Clear filters',
-    loadFailed: 'Could not load the catalog',
-    retry: 'Try again',
-    more: 'Show more',
-    pinned: 'Reviewed commit',
-    snapshotHint: 'From the Hermes catalog. Browsing never contacts source repositories.',
-    installHint: 'Review the source before installing. Changes apply to new sessions.',
-    results: (count: number) => `${count.toLocaleString()} result${count === 1 ? '' : 's'}`,
-    back: 'Back to results'
-  },
-
   externalOpenFailed: {
     title: 'Couldn’t open this link',
     message: 'No browser is registered to open this address. Copy the link and open it manually.',
@@ -88,7 +48,6 @@ export const en: Translations = {
     stripChoices: { share: 'Send to Nous', local: 'Local only', off: 'No thanks' },
     stripDetails: 'Details'
   },
-  // English editorial copy stays in the shipped JSONL; other locales override it.
   intro: { stock: {}, custom: () => [] },
   catalog: {
     add: 'Add',
@@ -147,7 +106,8 @@ export const en: Translations = {
     snapshotHint: 'From the Hermes catalog. Browsing never contacts source repositories.',
     installHint: 'Review the source before installing. Changes apply to new sessions.',
     results: (count: number) => `${count.toLocaleString()} result${count === 1 ? '' : 's'}`,
-    back: 'Back to results'
+    back: 'Back to results',
+    browse: 'Browse'
   },
   connectors: {
     title: 'Connect your apps',
@@ -181,8 +141,6 @@ export const en: Translations = {
     authorizedToolsUnavailable: 'Authorized. Tools unavailable.',
     required: 'Required'
   },
-
-  // `connectors.*` above stays the onboarding and chat vocabulary; these are the page's own, and the two are not shared.
   connectorsPage: {
     title: 'Connectors',
     searchPlaceholder: (count: number) => `Search ${count} apps`,
@@ -424,7 +382,6 @@ export const en: Translations = {
       hintOpenWorld: { label: 'External', long: 'Reaches something outside this app.' }
     }
   },
-
   sessionImport: {
     title: 'Continue from another app',
     subtitle: 'Bring a conversation into Hermes and pick up where you left off.',
@@ -501,7 +458,6 @@ export const en: Translations = {
     on: 'On',
     off: 'Off'
   },
-
   fileMenu: {
     revealFinder: 'Reveal in Finder',
     revealExplorer: 'Reveal in File Explorer',
@@ -522,7 +478,6 @@ export const en: Translations = {
     revealMissing: 'That folder is not on this computer',
     revealUnavailable: 'That path is not on this computer — it lives on the backend machine. Use “Reveal in filetree”.'
   },
-
   boot: {
     ready: 'Hermes Desktop is ready',
     desktopBootFailedWithMessage: message => `Desktop boot failed: ${message}`,
@@ -603,7 +558,6 @@ export const en: Translations = {
       identityProvider: 'your identity provider'
     }
   },
-
   notifications: {
     sharedProfileWarning:
       'Another Hermes installation is using this profile. Both installations share its settings and data, so changes can conflict. You can continue, or close the other installation before making changes.',
@@ -707,12 +661,10 @@ export const en: Translations = {
       creditsTitle: 'Credits'
     }
   },
-
   remoteDisplayBanner: {
     message: reason =>
       `Software rendering active — remote display detected (${reason}). GPU acceleration is disabled to prevent flickering.`
   },
-
   billingBlock: {
     titleNous: 'Out of Nous credits',
     titleProvider: provider => `Out of credits — ${provider}`,
@@ -721,7 +673,6 @@ export const en: Translations = {
     addCredits: 'Add credits',
     dismiss: 'Dismiss'
   },
-
   sendDiagnostics: {
     title: 'Send diagnostics to Nous',
     privacyNotice:
@@ -745,7 +696,6 @@ export const en: Translations = {
       discord: 'Discord'
     }
   },
-
   titlebar: {
     hideSidebar: 'Hide sidebar',
     showSidebar: 'Show sidebar',
@@ -765,7 +715,6 @@ export const en: Translations = {
     layoutEditor: 'Layout editor',
     layoutEditorTitle: mod => `Layout editor — ${mod}-click resets the layout`
   },
-
   keybinds: {
     title: 'Keyboard shortcuts',
     subtitle: open => `Click a shortcut to rebind it · ${open} reopens this panel.`,
@@ -893,12 +842,10 @@ export const en: Translations = {
       'composer.cancel': 'Close popover · cancel run'
     }
   },
-
   findInPage: {
     next: 'Next match',
     previous: 'Previous match'
   },
-
   language: {
     label: 'Language',
     description: 'Choose the language for the desktop interface.',
@@ -908,7 +855,6 @@ export const en: Translations = {
     searchPlaceholder: 'Search languages…',
     noResults: 'No languages found'
   },
-
   settings: {
     subpages: {
       appearanceTheme: 'Theme',
@@ -1120,9 +1066,8 @@ export const en: Translations = {
         notInstalled: name =>
           `Not detected. Install the ${name} command-line tool and sign in to it; Hermes picks it up automatically.`,
         disabledDesc: 'Detected but turned off for Hermes.',
-        lockedDesc: 'Locked for this Settings connection. Unlock here to view saved logins; each chat asks separately.',
-        unlockedDesc:
-          'Unlocked for this Settings connection only. Locks after 30 minutes idle or when this connection disconnects. Chats unlock separately.',
+        lockedDesc: 'Detected. The agent will ask you to unlock it when it needs a login, or unlock now.',
+        unlockedDesc: 'Unlocked for this session. Locks automatically after 30 minutes idle or when Hermes closes.',
         statusLocked: 'Locked',
         statusNotDetected: 'Not detected',
         statusOff: 'Off',
@@ -1130,10 +1075,10 @@ export const en: Translations = {
         unlock: 'Unlock',
         unlocking: 'Unlocking…',
         lock: 'Lock',
-        unlocked: name => `${name} unlocked for this Settings connection only.`,
+        unlocked: name => `${name} unlocked for this session.`,
         unlockTitle: name => `Unlock ${name}`,
         unlockDescription:
-          'This unlock applies only to this Settings connection. Each chat asks separately. Your master password is handed to the password manager and discarded locally; it is never stored, logged, or shown to the agent.',
+          'Enter your master password. It is handed to the password manager on this machine and discarded — it is never stored, logged, or shown to the agent.',
         masterPasswordPlaceholder: 'Master password'
       }
     },
@@ -1311,9 +1256,6 @@ export const en: Translations = {
       resumeLastSessionTitle: 'Reopen Last Chat on Launch',
       resumeLastSessionDesc:
         'When enabled, the app reopens your most recent chat on cold start. Turn off to always start with a fresh new chat.',
-      loginStartupTitle: 'Start Hermes with Windows',
-      loginStartupDesc: 'Open the desktop app minimized when you sign in. Uses the saved primary profile.',
-      loginStartupFailed: 'Windows did not enable startup. Check Startup apps in Windows Settings.',
       product: 'Product',
       productDesc: 'Human-friendly tool activity with concise summaries.',
       technical: 'Technical',
@@ -1368,7 +1310,10 @@ export const en: Translations = {
         noneAvailable: 'No pets available to turn on right now.',
         turnOnFailed: 'Could not turn the pet on.',
         turnOffFailed: 'Could not turn the pet off.'
-      }
+      },
+      loginStartupTitle: 'Start Hermes with Windows',
+      loginStartupDesc: 'Open the desktop app minimized when you sign in. Uses the saved primary profile.',
+      loginStartupFailed: 'Windows did not enable startup. Check Startup apps in Windows Settings.'
     },
     fieldLabels: FIELD_LABELS,
     fieldDescriptions: FIELD_DESCRIPTIONS,
@@ -1456,6 +1401,7 @@ export const en: Translations = {
       driverHealth: 'Driver health'
     },
     about: {
+      updates: 'Updates',
       heading: 'Hermes Desktop',
       version: value => `Version ${value}`,
       versionUnavailable: 'Version unavailable',
@@ -1467,7 +1413,6 @@ export const en: Translations = {
       bundleSwapPendingDesc:
         'The updated app is already installed — Hermes only needs to restart to load it. Chats and settings are untouched.',
       bundleSwapPendingAction: 'Restart Hermes',
-      updates: 'Updates',
       checkNow: 'Check now',
       checking: 'Checking…',
       seeWhatsNew: "See what's new",
@@ -1494,7 +1439,6 @@ export const en: Translations = {
       minAgo: count => `${count} min ago`,
       hoursAgo: count => `${count} hours ago`,
       daysAgo: count => `${count} days ago`
-      updates: 'Updates'
     },
     config: {
       minimizeToTrayTitle: 'Minimize to tray',
@@ -1602,7 +1546,6 @@ export const en: Translations = {
       set: 'Set',
       clear: 'Clear'
     },
-    // v2 multi-connection registry: Settings → Gateways.
     connections: {
       title: 'Registered gateways',
       intro: 'Manage this device and every Hermes gateway it can reach through remote, SSH, or Cloud connections.',
@@ -2541,11 +2484,9 @@ export const en: Translations = {
       }
     }
   },
-
   skills: {
     tabSkills: 'Skills',
     tabToolsets: 'Tools',
-    tabHub: 'Browse Hub',
     configuringProfile: 'Configuring:',
     all: 'All',
     searchSkills: 'Search skills...',
@@ -2589,7 +2530,6 @@ export const en: Translations = {
       bundled: 'Built-in',
       hub: 'Hub'
     },
-    provenanceSummary: (agent, bundled, hub) => `${agent} learned · ${bundled} built-in · ${hub} hub`,
     emptyNoneFound: noun => `No ${noun} found`,
     emptyNothingMatches: query => `Nothing matches “${query}”.`,
     emptyNoneAvailable: noun => `No ${noun} available yet.`,
@@ -2751,9 +2691,10 @@ export const en: Translations = {
       previewFailed: 'Skill preview failed',
       scanFailed: 'Security scan failed',
       searchFailed: 'Hub search failed'
-    }
+    },
+    tabHub: 'Browse Hub',
+    provenanceSummary: (agent, bundled, hub) => `${agent} learned · ${bundled} built-in · ${hub} hub`
   },
-
   starmap: {
     title: 'Memory Graph',
     subtitle: (nodes, clusters) => `${nodes} skills across ${clusters} categories`,
@@ -2824,7 +2765,6 @@ export const en: Translations = {
     durationMinutes: (minutes, seconds) => `${minutes}m ${seconds}s`,
     tokens: value => `${value} tok`
   },
-
   commandCenter: {
     close: 'Close command center',
     paletteTitle: 'Command palette',
@@ -2944,7 +2884,6 @@ export const en: Translations = {
     actionDone: 'done',
     actionFailed: 'failed',
     actionStartedWaiting: 'Action started, waiting for status...',
-    actionTimedOut: 'Action is still running; check recent logs for the final status.',
     loadingStatus: 'Loading status...',
     recentLogs: 'Recent logs',
     noLogs: 'No logs loaded yet.',
@@ -2968,10 +2907,6 @@ export const en: Translations = {
     actions: count => `${count} actions`,
     logFile: 'Log file',
     logLevel: 'Level',
-    allLogLevels: 'All levels',
-    noMatchingLogs: 'No log lines match the search.',
-    logTailHint: count => `Showing up to ${count} recent lines from the selected file and level.`,
-    logSearchPlaceholder: 'Filter log lines...',
     logSearchPlaceholder: 'Search log lines...',
     maintenance: {
       runOps: 'Diagnostics',
@@ -3004,7 +2939,6 @@ export const en: Translations = {
       builtinMemory: 'built-in',
       memoryFile: 'Agent memory (MEMORY.md)',
       userFile: 'User profile (USER.md)',
-      openFile: 'Open file',
       bytes: size => size,
       empty: 'empty',
       resetMemory: 'Reset memory',
@@ -3016,10 +2950,20 @@ export const en: Translations = {
       actionStarted: name => `${name} started — tailing log...`,
       actionFailed: name => `${name} failed to start`,
       running: 'Running...',
-      viewLog: 'Action log'
-    }
+      viewLog: 'Action log',
+      openFile: 'Open file'
+    },
+    sectionDescriptions: {
+      maintenance: 'Diagnostics, backups, curator, and memory data',
+      sessions: 'Search and manage sessions',
+      system: 'Status, logs, and system actions',
+      usage: 'Token, cost, and skill activity over time'
+    },
+    actionTimedOut: 'Action is still running; check recent logs for the final status.',
+    allLogLevels: 'All levels',
+    noMatchingLogs: 'No log lines match the search.',
+    logTailHint: count => `Showing up to ${count} recent lines from the selected file and level.`
   },
-
   messaging: {
     search: 'Search messaging...',
     statusFilter: {
@@ -3216,7 +3160,6 @@ export const en: Translations = {
     },
     platformIntro: {}
   },
-
   webhooks: {
     search: 'Search webhooks...',
     loading: 'Loading webhooks...',
@@ -3282,7 +3225,6 @@ export const en: Translations = {
       github_comment: 'GitHub comment'
     }
   },
-
   profiles: {
     close: 'Close profiles',
     nameHint: 'Lowercase letters, digits, hyphens, and underscores. Must start with a letter or digit.',
@@ -3437,7 +3379,6 @@ export const en: Translations = {
     failedCreate: 'Failed to create profile',
     failedRename: 'Failed to rename profile'
   },
-
   modelAssignment: {
     saveFailed: 'Hermes did not save that model change.',
     confirmTitle: 'Model Selection Warning',
@@ -3445,7 +3386,6 @@ export const en: Translations = {
     confirmAction: 'Confirm',
     declined: 'Model change cancelled — you declined the data-training tier warning.'
   },
-
   cron: {
     close: 'Close cron',
     title: 'Scheduled jobs',
@@ -3587,7 +3527,6 @@ export const en: Translations = {
       emptyDesc: 'No automation blueprints are available on this backend.'
     }
   },
-
   artifacts: {
     search: 'Search artifacts...',
     refresh: 'Refresh artifacts',
@@ -3622,14 +3561,12 @@ export const en: Translations = {
     copyUrl: 'Copy URL',
     copyPath: 'Copy path'
   },
-
   artifactCard: {
     kind: { code: 'Code', html: 'Interactive page', svg: 'Graphic' },
     generating: lines => `Generating… ${lines} lines`,
     versionBadge: count => `${count} versions`,
     open: 'Open'
   },
-
   artifactPreview: {
     versionOf: (current, total) => `v${current} of ${total}`,
     olderVersion: 'Older version',
@@ -3642,7 +3579,6 @@ export const en: Translations = {
     missingTitle: 'Artifact unavailable',
     missingBody: 'This artifact is no longer in the local registry.'
   },
-
   sidebar: {
     filter: {
       grouping: 'Grouping',
@@ -3871,7 +3807,6 @@ export const en: Translations = {
     },
     markAllRead: 'Mark all as read'
   },
-
   composer: {
     message: 'Message',
     wakingProfile: profile => `Waking up ${profile}…`,
@@ -4135,7 +4070,6 @@ export const en: Translations = {
       }
     }
   },
-
   statusStack: {
     hideStack: 'Hide status stack',
     showStack: 'Show status stack',
@@ -4290,9 +4224,7 @@ export const en: Translations = {
       worktrees: 'Worktrees'
     }
   },
-
   updates: {
-    automaticUpdatesSaveFailed: 'Could not confirm the setting was saved. Please try again.',
     discontinuedTitle: 'This build of Hermes is no longer supported',
     discontinuedBody:
       'This build of Hermes is no longer supported and may break — uninstall it. Your data stays on disk.',
@@ -4402,7 +4334,6 @@ export const en: Translations = {
       failed: 'Backend update failed.',
       noReturn: 'Backend didn’t come back online. The update may not have completed — check the backend host.'
     },
-    // Update-status overlay + version-details (mechanism-aware update UI).
     appName: 'Hermes',
     version: (value: string) => `Version ${value}`,
     versionUnavailable: 'Version unavailable',
@@ -4447,9 +4378,9 @@ export const en: Translations = {
     versionDetailsRuntimeEmbedded: 'Embedded runtime',
     versionDetailsRuntimeExternal: 'External (uses the machine runtime)',
     versionDetailsInstallId: 'Install ID',
-    versionDetailsUncommittedChanges: 'uncommitted changes'
+    versionDetailsUncommittedChanges: 'uncommitted changes',
+    automaticUpdatesSaveFailed: 'Could not confirm the setting was saved. Please try again.'
   },
-
   handoffTour: {
     profileTitle: 'Your first task runs on the default profile',
     profileText:
@@ -4543,7 +4474,6 @@ export const en: Translations = {
     reloadRetry: 'Reload and retry',
     openLogs: 'Open logs'
   },
-
   onboarding: {
     headerTitle: "Let's get you setup with Hermes Agent",
     headerDesc: 'Connect a model provider to start chatting. Most options take one click.',
@@ -4630,7 +4560,6 @@ export const en: Translations = {
     startChatting: 'Begin',
     docs: provider => `${provider} docs`
   },
-
   freeTier: {
     providerRowTitle: 'Nous · free tier',
     providerRowPitch: 'Sign in with a Nous account to unlock more models and tools.',
@@ -4698,7 +4627,6 @@ export const en: Translations = {
       retrying: 'Trying again…'
     }
   },
-
   modelPicker: {
     title: 'Switch model',
     current: 'current:',
@@ -4721,7 +4649,6 @@ export const en: Translations = {
     addCustomModelAction: 'Add custom model…',
     customModelPlaceholder: 'Type a model id, e.g. openai/gpt-5'
   },
-
   modelVisibility: {
     title: 'Models',
     search: 'Search models',
@@ -4735,7 +4662,6 @@ export const en: Translations = {
       'Your shown and hidden model choices are cleared and every provider’s default list comes back. Custom models you added are kept and shown.',
     resetAction: 'Reset'
   },
-
   shell: {
     windowControls: 'Window controls',
     paneControls: 'Pane controls',
@@ -4899,10 +4825,10 @@ export const en: Translations = {
       openModelPicker: 'Open model picker',
       modelPinned: 'pinned by you; new chats use this instead of the Settings default',
       modelTitle: (provider, model) => `Model · ${provider}: ${model}`,
-      providerModelTitle: (provider, model) => `${provider} · ${model}`
+      providerModelTitle: (provider, model) => `${provider} · ${model}`,
+      session: 'Session'
     }
   },
-
   rightSidebar: {
     terminalReadOnly: 'Read-only output',
     terminalReadOnlyHelp:
@@ -4950,7 +4876,6 @@ export const en: Translations = {
     terminalCloseAll: 'Close all',
     addToChat: 'Add to chat'
   },
-
   preview: {
     tab: 'Preview',
     closePane: 'Close preview pane',
@@ -5066,7 +4991,6 @@ export const en: Translations = {
       cancelComment: 'Cancel comment'
     }
   },
-
   interfaceMode: {
     title: 'Interface mode',
     hint: 'Changes what is shown, not what Hermes can do.',
@@ -5080,7 +5004,6 @@ export const en: Translations = {
       description: 'For developers. Terminal, files, diffs, statusbar and layouts, as you set them.'
     }
   },
-
   zones: {
     showTabStrip: 'Show tabs',
     hideTabStrip: 'Hide tabs',
@@ -5130,7 +5053,6 @@ export const en: Translations = {
     zoneCount: count => `${count} zones`,
     tabCount: count => `${count} tabs`
   },
-
   contextMenu: {
     link: {
       openInApp: 'Open in in-app browser',
@@ -5154,7 +5076,6 @@ export const en: Translations = {
       inspectElement: 'Inspect element'
     }
   },
-
   assistant: {
     thread: {
       loadingSession: 'Loading session',
@@ -5435,7 +5356,12 @@ export const en: Translations = {
       multiSelectHint: 'Select all that apply',
       questionProgress: (answered, total) => `${answered} of ${total} answered`,
       notDelivered:
-        "This question didn't reach the app, so it can't be answered here. Press Stop to end the turn, then reply in chat."
+        "This question didn't reach the app, so it can't be answered here. Press Stop to end the turn, then reply in chat.",
+      continueLabel: 'Continue',
+      answeredBadge: 'Answered',
+      lateAnswer: (question, choice) => `Re: "${question}" — my answer: ${choice}`,
+      lateAnswerTip: 'Draft this answer as a follow-up message',
+      lateAnswerHint: 'This prompt is no longer waiting. Pick an option to draft it as a follow-up message.'
     },
     catalogInstall: {
       preparing: 'Preparing the install…',
@@ -5579,7 +5505,6 @@ export const en: Translations = {
       }
     }
   },
-
   prompts: {
     gatewayDisconnected: 'Hermes is offline right now. Reconnect, then send it again.',
     reconnect: 'Reconnect',
@@ -5623,7 +5548,6 @@ export const en: Translations = {
     vaultCodeSkip: 'Skip',
     vaultCodeConfirm: 'Enter code'
   },
-
   desktop: {
     audioReadFailed: 'Could not read recorded audio',
     sessionUnavailable: 'Session unavailable',
@@ -5725,7 +5649,6 @@ export const en: Translations = {
       startMessaging: 'Start messaging'
     }
   },
-
   tips: {
     close: "Don't show this tip again",
     items: {
@@ -5777,7 +5700,6 @@ export const en: Translations = {
       }
     }
   },
-
   errors: {
     genericFailure: 'Something went wrong',
     boundaryTitle: 'Something broke in the interface',
@@ -5787,7 +5709,6 @@ export const en: Translations = {
     reloadWindow: 'Reload window',
     openLogs: 'Open logs'
   },
-
   ui: {
     search: {
       clear: 'Clear search'

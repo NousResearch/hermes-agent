@@ -50,8 +50,9 @@ export type CommandCenterSection = 'maintenance' | 'sessions' | 'system' | 'usag
 const SECTIONS = ['sessions', 'system', 'usage', 'maintenance'] as const satisfies readonly CommandCenterSection[]
 
 const LOG_FILES = ['agent', 'errors', 'gateway', 'desktop'] as const
-const LOG_LEVELS = ['ALL', 'INFO', 'WARNING', 'ERROR'] as const
 const LOG_TAIL_LINES = 100
+const LOG_LEVELS = ['ALL', 'INFO', 'WARNING', 'ERROR'] as const
+
 const ACTION_POLL_INTERVAL_MS = 1200
 const ACTION_POLL_DEADLINE_MS = 5 * 60 * 1000
 const ACTION_POLL_REQUEST_TIMEOUT_MS = 5000
@@ -181,11 +182,12 @@ export function CommandCenterView({
   const [logFile, setLogFile] = useState<(typeof LOG_FILES)[number]>('agent')
   const [logLevel, setLogLevel] = useState<(typeof LOG_LEVELS)[number]>('WARNING')
   const [logQuery, setLogQuery] = useState('')
+  const systemRequestRef = useRef(0)
+  const systemActionStartingRef = useRef(false)
   const [systemLoading, setSystemLoading] = useState(false)
   const [systemError, setSystemError] = useState('')
-  const [systemAction, setSystemAction] = useState<ActionStatusResponse | null>(null)
   const [systemActionStarting, setSystemActionStarting] = useState(false)
-  const systemRequestRef = useRef(0)
+  const [systemAction, setSystemAction] = useState<ActionStatusResponse | null>(null)
   const [usagePeriod, setUsagePeriod] = useState<UsagePeriod>(30)
   const [usage, setUsage] = useState<AnalyticsResponse | null>(null)
   const [usageLoading, setUsageLoading] = useState(false)
@@ -215,42 +217,47 @@ export function CommandCenterView({
     })
   }, [debouncedQuery, sessions])
 
-  const refreshSystem = useCallback(async (): Promise<StatusResponse | null> => {
-    const requestId = systemRequestRef.current + 1
-    systemRequestRef.current = requestId
-    setSystemLoading(true)
-    setSystemError('')
+  const refreshSystem = useCallback(
+    async (preserveActionError = false): Promise<StatusResponse | null> => {
+      const requestId = systemRequestRef.current + 1
+      systemRequestRef.current = requestId
+      setSystemLoading(true)
+      if (!preserveActionError) {
+        setSystemError('')
+      }
 
-    try {
-      const [nextStatus, nextLogs] = await Promise.all([
-        getStatus(),
-        getLogs({
-          file: logFile,
-          level: logLevel,
-          lines: LOG_TAIL_LINES
-        })
-      ])
+      try {
+        const [nextStatus, nextLogs] = await Promise.all([
+          getStatus(),
+          getLogs({
+            file: logFile,
+            level: logLevel,
+            lines: LOG_TAIL_LINES
+          })
+        ])
 
-      if (systemRequestRef.current !== requestId) {
+        if (systemRequestRef.current !== requestId) {
+          return null
+        }
+
+        setStatus(nextStatus)
+        setLogs(nextLogs.lines)
+
+        return nextStatus
+      } catch (error) {
+        if (systemRequestRef.current === requestId && !preserveActionError) {
+          setSystemError(error instanceof Error ? error.message : String(error))
+        }
+
         return null
+      } finally {
+        if (systemRequestRef.current === requestId) {
+          setSystemLoading(false)
+        }
       }
-
-      setStatus(nextStatus)
-      setLogs(nextLogs.lines)
-
-      return nextStatus
-    } catch (error) {
-      if (systemRequestRef.current === requestId) {
-        setSystemError(error instanceof Error ? error.message : String(error))
-      }
-
-      return null
-    } finally {
-      if (systemRequestRef.current === requestId) {
-        setSystemLoading(false)
-      }
-    }
-  }, [logFile, logLevel])
+    },
+    [logFile, logLevel]
+  )
 
   const refreshUsage = useCallback(async (days: UsagePeriod) => {
     const requestId = usageRequestRef.current + 1
@@ -298,7 +305,11 @@ export function CommandCenterView({
   })
 
   const sessionListHasResults = filteredSessions.length > 0
-  const logSearch = useLogSearch(logs, logQuery)
+  const visibleLogs = useMemo(() => {
+    const needle = logQuery.trim().toLowerCase()
+    return needle ? logs.filter(line => line.toLowerCase().includes(needle)) : logs
+  }, [logQuery, logs])
+  const logSearch = useLogSearch(visibleLogs, logQuery)
 
   // Same cap semantics as the sidebar's recents ("Load more" visible when any
   // profile's backend page was truncated). Reuses the shared $sessions window:
@@ -321,18 +332,23 @@ export function CommandCenterView({
 
   const runSystemAction = useCallback(
     async (kind: 'restart' | 'update') => {
+      if (systemActionStartingRef.current || systemAction?.running) {
+        return
+      }
+
+      systemActionStartingRef.current = true
       setSystemActionStarting(true)
       setSystemError('')
       let actionSucceeded = false
 
-      // A profile served by the shared multiplexer restarts every bot on this device: ask first.
-      const shared = kind === 'restart' ? await confirmSharedGatewayRestart() : null
-
-      if (shared === false) {
-        return
-      }
-
       try {
+        // The ownership guard also covers the shared-gateway confirmation.
+        const shared = kind === 'restart' ? await confirmSharedGatewayRestart() : null
+
+        if (shared === false) {
+          return
+        }
+
         const started = kind === 'restart' ? await restartGateway() : await updateHermes()
         let nextStatus: ActionStatusResponse | null = null
 
@@ -395,28 +411,31 @@ export function CommandCenterView({
       } catch (error) {
         setSystemError(error instanceof Error ? error.message : String(error))
       } finally {
-        setSystemActionStarting(false)
+        try {
+          if (kind === 'restart' && actionSucceeded) {
+            // Gateway startup can finish after the action process exits. Keep
+            // the status card in sync instead of leaving a stale "stopped" pill.
+            for (let attempt = 0; attempt < 16; attempt += 1) {
+              const refreshed = await refreshSystem(true)
 
-        if (kind === 'restart' && actionSucceeded) {
-          // Gateway startup can finish after the action process exits. Keep
-          // the status card in sync instead of leaving a stale "stopped" pill.
-          for (let attempt = 0; attempt < 16; attempt += 1) {
-            const refreshed = await refreshSystem()
+              if (refreshed?.gateway_running) {
+                break
+              }
 
-            if (refreshed?.gateway_running) {
-              break
+              if (attempt < 15) {
+                await new Promise(resolve => window.setTimeout(resolve, 1200))
+              }
             }
-
-            if (attempt < 15) {
-              await new Promise(resolve => window.setTimeout(resolve, 1200))
-            }
+          } else {
+            await refreshSystem(true)
           }
-        } else {
-          await refreshSystem()
+        } finally {
+          systemActionStartingRef.current = false
+          setSystemActionStarting(false)
         }
       }
     },
-    [cc, refreshSystem]
+    [cc, refreshSystem, systemAction?.running]
   )
 
   const navGroups = useMemo(
@@ -569,31 +588,23 @@ export function CommandCenterView({
                           </div>
                         </div>
                         <div className="flex shrink-0 flex-wrap items-center gap-x-3 gap-y-1 whitespace-nowrap max-[47.5rem]:whitespace-normal">
-                          <Button onClick={() => void runSystemAction('restart')} size="xs" variant="text">
+                          <Button
+                            disabled={systemActionStarting || systemAction?.running === true}
+                            onClick={() => void runSystemAction('restart')}
+                            size="xs"
+                            variant="text"
+                          >
                             {cc.restartGateway}
                           </Button>
-                          <Button onClick={() => void runSystemAction('update')} size="xs" variant="textStrong">
+                          <Button
+                            disabled={systemActionStarting || systemAction?.running === true}
+                            onClick={() => void runSystemAction('update')}
+                            size="xs"
+                            variant="textStrong"
+                          >
                             {cc.updateHermes}
                           </Button>
                         </div>
-                      </div>
-                      <div className="flex shrink-0 flex-wrap items-center gap-x-3 gap-y-1 whitespace-nowrap max-[47.5rem]:whitespace-normal">
-                        <Button
-                          disabled={systemActionStarting || systemAction?.running === true}
-                          onClick={() => void runSystemAction('restart')}
-                          size="xs"
-                          variant="text"
-                        >
-                          {cc.restartGateway}
-                        </Button>
-                        <Button
-                          disabled={systemActionStarting || systemAction?.running === true}
-                          onClick={() => void runSystemAction('update')}
-                          size="xs"
-                          variant="textStrong"
-                        >
-                          {cc.updateHermes}
-                        </Button>
                       </div>
                       {systemAction && (
                         <div className="text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
@@ -611,69 +622,37 @@ export function CommandCenterView({
                   )}
                 </div>
 
-              <div className="flex min-h-0 flex-col pt-2">
-                <div className="mb-2 flex flex-wrap items-center justify-between gap-x-3 gap-y-1">
-                  <span className="text-[0.625rem] font-medium uppercase tracking-[0.08em] text-(--ui-text-tertiary)">
-                    {cc.recentLogs}
-                  </span>
-                  <div className="flex flex-wrap items-center gap-x-5 gap-y-2">
-                    <div aria-label={cc.logFile} className="flex flex-wrap items-center gap-x-2" role="group">
-                      <span className="text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
-                        {cc.logFile}
-                      </span>
-                      <ResponsiveTabs
-                        align="end"
-                        onChange={id => setLogFile(id as (typeof LOG_FILES)[number])}
-                        tabs={LOG_FILES.map(value => ({ id: value, label: `${value}.log` }))}
-                        value={logFile}
-                      />
-                    </div>
-                    <div aria-label={cc.logLevel} className="flex flex-wrap items-center gap-x-2" role="group">
-                      <span className="text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
-                        {cc.logLevel}
-                      </span>
-                      <ResponsiveTabs
-                        align="end"
-                        onChange={id => setLogLevel(id as (typeof LOG_LEVELS)[number])}
-                        tabs={LOG_LEVELS.map(value => ({
-                          id: value,
-                          label: value === 'ALL' ? cc.allLogLevels : value.toLowerCase()
-                        }))}
-                        value={logLevel}
-                      />
-                    </div>
-                    <SearchField
-                      containerClassName="w-44"
-                      onChange={next => setLogQuery(next)}
-                      placeholder={cc.logSearchPlaceholder}
-                      value={logQuery}
-                    />
-                  </div>
-                  {systemError && (
-                    <span className="inline-flex items-center gap-1 text-[length:var(--conversation-caption-font-size)] text-destructive">
-                      <AlertCircle className="size-3.5" />
-                      {systemError}
                 <div className="flex min-h-0 flex-col pt-2">
                   <div className="mb-2 flex flex-wrap items-center justify-between gap-x-3 gap-y-1">
                     <span className="text-[0.625rem] font-medium uppercase tracking-[0.08em] text-(--ui-text-tertiary)">
                       {cc.recentLogs}
                     </span>
                     <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
-                      <ResponsiveTabs
-                        align="end"
-                        onChange={id => setLogFile(id as (typeof LOG_FILES)[number])}
-                        tabs={LOG_FILES.map(value => ({ id: value, label: value }))}
-                        value={logFile}
-                      />
-                      <ResponsiveTabs
-                        align="end"
-                        onChange={id => setLogLevel(id as (typeof LOG_LEVELS)[number])}
-                        tabs={LOG_LEVELS.map(value => ({
-                          id: value,
-                          label: value === 'ALL' ? 'all' : value.toLowerCase()
-                        }))}
-                        value={logLevel}
-                      />
+                      <div aria-label={cc.logFile} className="flex flex-wrap items-center gap-x-2" role="group">
+                        <span className="text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
+                          {cc.logFile}
+                        </span>
+                        <ResponsiveTabs
+                          align="end"
+                          onChange={id => setLogFile(id as (typeof LOG_FILES)[number])}
+                          tabs={LOG_FILES.map(value => ({ id: value, label: `${value}.log` }))}
+                          value={logFile}
+                        />
+                      </div>
+                      <div aria-label={cc.logLevel} className="flex flex-wrap items-center gap-x-2" role="group">
+                        <span className="text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
+                          {cc.logLevel}
+                        </span>
+                        <ResponsiveTabs
+                          align="end"
+                          onChange={id => setLogLevel(id as (typeof LOG_LEVELS)[number])}
+                          tabs={LOG_LEVELS.map(value => ({
+                            id: value,
+                            label: value === 'ALL' ? cc.allLogLevels : value.toLowerCase()
+                          }))}
+                          value={logLevel}
+                        />
+                      </div>
                       <LogSearchField
                         containerClassName="w-44"
                         onChange={setLogQuery}
@@ -689,21 +668,16 @@ export function CommandCenterView({
                       </span>
                     )}
                   </div>
+                  <p className="mb-2 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
+                    {cc.logTailHint(LOG_TAIL_LINES)}
+                  </p>
                   <LogTail
                     className="flex-1 rounded-lg border border-(--ui-stroke-tertiary) bg-(--ui-bg-quinary)"
-                    emptyLabel={cc.noLogs}
-                    lines={systemLoading && logs.length === 0 ? null : logs}
+                    emptyLabel={logQuery.trim() && logs.length > 0 ? cc.noMatchingLogs : cc.noLogs}
+                    lines={systemLoading && logs.length === 0 ? null : visibleLogs}
                     search={logSearch}
                   />
                 </div>
-                <p className="mb-2 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
-                  {cc.logTailHint(LOG_TAIL_LINES)}
-                </p>
-                <LogTail
-                  className="flex-1 rounded-lg border border-(--ui-stroke-tertiary) bg-(--ui-bg-quinary)"
-                  emptyLabel={logQuery.trim() && logs.length > 0 ? cc.noMatchingLogs : cc.noLogs}
-                  lines={systemLoading && logs.length === 0 ? null : visibleLogs}
-                />
               </div>
             )}
           </div>

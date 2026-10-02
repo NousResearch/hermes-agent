@@ -41,13 +41,11 @@ import { $connection } from '@/store/session'
 
 import { Pill } from '../../settings/primitives'
 import { useDeepLinkHighlight } from '../../settings/use-deep-link-highlight'
-import { CapabilityTabs, type CapabilityView } from '../capability-tabs'
-import { CatalogBrowser } from '../catalog-browser'
-import type { CatalogEntry } from '../catalog-data'
 import { CatalogAlert } from '../catalog/catalog-alert'
 import { CatalogBrowser } from '../catalog/catalog-browser'
 import { type CatalogEntry, parseCatalog } from '../catalog/catalog-data'
 import { TOOLSETS_QUERY_KEY } from '../toolsets/toolsets-data'
+import { CapabilityTabs, type CapabilityView } from '../capability-tabs'
 
 import { mergePluginPackages, type PackageKind, type PluginPackage } from './plugin-packages'
 import { PluginSettingsForm } from './plugin-settings-form'
@@ -548,17 +546,14 @@ export const PluginsTab = memo(function PluginsTab({
   profile,
   scopeSelector,
   scopeLabel,
-  view = 'installed',
-  query = '',
   query,
-  onQueryChange
+  onQueryChange,
+  view: initialView = 'installed'
 }: {
-  query?: string
-  onQueryChange?: (value: string) => void
-  view?: CapabilityView
   profile: ProfileScope
   query?: string
   onQueryChange?: (value: string) => void
+  view?: CapabilityView
   /** The profile selector governs only the Agent half, not the app-level Desktop half. */
   scopeSelector?: ReactNode
   /** Display name of the selected profile for the Agent half label. */
@@ -566,9 +561,8 @@ export const PluginsTab = memo(function PluginsTab({
 }) {
   const { t } = useI18n()
   const p = t.skills.plugins
+  const [view, setView] = useState<CapabilityView>(initialView)
   const { requestGateway } = useGatewayRequest()
-
-  const [localView, setLocalView] = useState<CapabilityView>(view)
 
   const desktopRecords = useStore($pluginRecords)
   const agentRows = useStore($agentPlugins)
@@ -590,13 +584,6 @@ export const PluginsTab = memo(function PluginsTab({
 
   const [selectedEntryId, setSelectedEntryId] = useState<string | null>(null)
 
-  // Catalog picker viewport (persisted height, collapse toggle, top-edge sash).
-  const heightOverride = useStore($paneHeightOverride(CATALOG_PANE_ID))
-  const height = heightOverride ?? CATALOG_DEFAULT_PX
-  const open = localView === 'installed' && height > CATALOG_COLLAPSED_PX
-  const [pickerMounted, setPickerMounted] = useState(open)
-  const [dragging, setDragging] = useState(false)
-  const sectionRef = useRef<HTMLElement>(null)
   const packageForTarget = useCallback(
     (target: string) =>
       packages.find(pkg => [pkg.key, pkg.agent?.key, pkg.agent?.name, pkg.desktop?.id].includes(target)),
@@ -740,11 +727,6 @@ export const PluginsTab = memo(function PluginsTab({
     )
   }
 
-  const agentBusy = (row: AgentPluginRow) => busyKey === (row.key ?? row.name) || busyKey === row.name
-  const isInstalled = (entry: CatalogEntry) =>
-    agentRows.some(row => (row.catalog_name === entry.name || row.name === entry.name) && !row.update_available)
-  const install = (entry: CatalogEntry) =>
-    openCatalogPluginInstall({ name: entry.name, repo: entry.repo, sha: entry.sha, subdir: entry.subdir }, scope)
   const notice =
     status === 'error' ? (
       <CatalogAlert
@@ -757,141 +739,86 @@ export const PluginsTab = memo(function PluginsTab({
     ) : null
 
   return (
-    <div className="flex h-full min-h-0 flex-col">
-      <CapabilityTabs onChange={setLocalView} value={localView} />
-      {localView === 'browse' && (
-        <CatalogBrowser
-          isInstalled={isInstalled}
-          kind="plugins"
-          onInstall={install}
-          onQueryChange={onQueryChange}
-          query={query}
-        />
-      )}
-      <div className={localView === 'installed' ? 'min-h-32 flex-1 overflow-y-auto' : 'hidden'}>
-        {/* Header: what the two columns mean, and the controls that act on
-            the whole page (install, folder, rescan). */}
-        <div className="flex flex-wrap items-start justify-between gap-3 px-3 pt-3 pb-2">
-          <p className="min-w-0 flex-1 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
-            {p.pageBlurb}
-          </p>
-          <div className="flex shrink-0 items-center gap-1">
-            <Button
-              onClick={() => openPluginInstallRequest({ profile: scope, repo: '' })}
-              size="sm"
-              type="button"
-              variant="secondary"
-            >
-              {d.installModal.installFromGit}
-            </Button>
-            <Tip label={d.openFolder}>
-              <Button
-                aria-label={d.openFolder}
-                onClick={() => void revealPluginsDir()}
-                size="icon"
-                type="button"
-                variant="ghost"
-              >
-                <FolderOpen className="size-3.5" />
-              </Button>
-            </Tip>
-            <Tip label={d.rescan}>
-              <Button
-                aria-label={d.rescan}
-                onClick={() => {
-                  triggerHaptic('selection')
-    <CatalogBrowser
-      headerActions={<PluginActions profile={profile} />}
-      installedEntries={installedEntries}
-      installedPending={status !== 'ready'}
-      isInstalled={isInstalled}
-      kind="plugins"
-      matchInstalled={matchInstalled}
-      notice={notice}
-      onInstall={entry => openCatalogPluginInstall(entry, scope)}
-      onQueryChange={onQueryChange}
-      query={query}
-      renderInstalledAction={entry => {
-        const pkg = packageById.get(entry.id)
+    <>
+      <CapabilityTabs onChange={setView} value={view} />
+      <CatalogBrowser
+        view={view}
+        headerActions={<PluginActions profile={profile} />}
+        installedEntries={installedEntries}
+        installedPending={status !== 'ready'}
+        isInstalled={isInstalled}
+        kind="plugins"
+        matchInstalled={matchInstalled}
+        notice={notice}
+        onInstall={entry => openCatalogPluginInstall(entry, scope)}
+        onQueryChange={onQueryChange}
+        query={query}
+        renderInstalledAction={entry => {
+          const pkg = packageById.get(entry.id)
 
-        return pkg ? packageSwitch(pkg) : null
-      }}
-      renderInstalledDetail={entry => {
-        const pkg = packageById.get(entry.id)
+          return pkg ? packageSwitch(pkg) : null
+        }}
+        renderInstalledDetail={entry => {
+          const pkg = packageById.get(entry.id)
 
-        if (!pkg) {
-          return null
-        }
+          if (!pkg) {
+            return null
+          }
 
-        return (
-          <PackageRow
-            busy={pkg.agent ? agentBusy(pkg.agent) : false}
-            key={pkg.key}
-            onAgentRemove={handleAgentRemove}
-            onAgentToggle={(row, enable) => {
-              if (!row.key) {
-                return
-              }
-
-              void toggleAgentPlugin(requestGateway, row.key, enable, p.toggleFailed(row.name), scope)
-            }}
-            onAgentUpdate={row => {
-              const finish = (outcome: AgentPluginUpdateOutcome) => {
-                if (outcome.kind === 'applied') {
-                  notify({ kind: 'success', message: p.updated(row.name) })
-                  void rescanAll(requestGateway, scope)
-                }
-              }
-
-              void updateAgentPlugin(requestGateway, row.name, p.updateFailed(row.name), scope).then(async outcome => {
-                if (outcome.kind !== 'consent') {
-                  finish(outcome)
-
-      <section
-        className={cn(
-          'relative flex min-h-9 flex-col overflow-hidden border-t border-(--ui-stroke-secondary)',
-          localView !== 'installed' && 'hidden'
-        )}
-        ref={sectionRef}
-      >
-        <div
-          className="group/catsash absolute inset-x-0 top-0 z-10 h-1 -translate-y-1/2 cursor-row-resize"
-          data-testid="plugin-catalog-sash"
-          onDoubleClick={() => setPaneHeightOverride(CATALOG_PANE_ID, undefined)}
-          onPointerDown={startDrag}
-        >
-          <div
-            className={cn(
-              'absolute inset-x-0 top-1/2 h-px -translate-y-1/2 transition-colors',
-              dragging ? 'bg-(--ui-stroke-secondary)' : 'group-hover/catsash:bg-(--ui-stroke-secondary)'
-            )}
+          return (
+            <PackageRow
+              busy={pkg.agent ? agentBusy(pkg.agent) : false}
+              key={pkg.key}
+              onAgentRemove={handleAgentRemove}
+              onAgentToggle={(row, enable) => {
+                if (!row.key) {
                   return
                 }
 
-                // The new pin widens the plugin (tools, hooks, deps, capabilities, a Desktop
-                // half); the backend changed nothing until the user confirms the delta.
-                const ok = await confirm({
-                  confirmLabel: p.updateConsentConfirm,
-                  description: [p.updateConsentBody(row.name, outcome.sha), ...outcome.deltaLines].join('\n'),
-                  title: p.updateConsentTitle(row.name)
-                })
-
-                if (ok) {
-                  finish(await updateAgentPlugin(requestGateway, row.name, p.updateFailed(row.name), scope, true))
+                void toggleAgentPlugin(requestGateway, row.key, enable, p.toggleFailed(row.name), scope)
+              }}
+              onAgentUpdate={row => {
+                const finish = (outcome: AgentPluginUpdateOutcome) => {
+                  if (outcome.kind === 'applied') {
+                    notify({ kind: 'success', message: p.updated(row.name) })
+                    void rescanAll(requestGateway, scope)
+                  }
                 }
-              })
-            }}
-            onDesktopRemove={handleDesktopRemove}
-            pkg={pkg}
-            profile={profile}
-            request={requestGateway}
-            scope={scope}
-            scopeLabel={label}
-            scopeSelector={scopeSelector}
-          />
-        )
-      }}
-      selectedEntryId={selectedEntryId}
-    />
+
+                void updateAgentPlugin(requestGateway, row.name, p.updateFailed(row.name), scope).then(
+                  async outcome => {
+                    if (outcome.kind !== 'consent') {
+                      finish(outcome)
+
+                      return
+                    }
+
+                    // The new pin widens the plugin (tools, hooks, deps, capabilities, a Desktop
+                    // half); the backend changed nothing until the user confirms the delta.
+                    const ok = await confirm({
+                      confirmLabel: p.updateConsentConfirm,
+                      description: [p.updateConsentBody(row.name, outcome.sha), ...outcome.deltaLines].join('\n'),
+                      title: p.updateConsentTitle(row.name)
+                    })
+
+                    if (ok) {
+                      finish(await updateAgentPlugin(requestGateway, row.name, p.updateFailed(row.name), scope, true))
+                    }
+                  }
+                )
+              }}
+              onDesktopRemove={handleDesktopRemove}
+              pkg={pkg}
+              profile={profile}
+              request={requestGateway}
+              scope={scope}
+              scopeLabel={label}
+              scopeSelector={scopeSelector}
+            />
+          )
+        }}
+        selectedEntryId={selectedEntryId}
+      />
+    </>
   )
 })

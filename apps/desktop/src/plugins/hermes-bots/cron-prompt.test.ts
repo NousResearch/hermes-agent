@@ -13,11 +13,9 @@
 
 import { spawnSync } from 'node:child_process'
 import { existsSync } from 'node:fs'
+import { join } from 'node:path'
 
 import { describe, expect, it } from 'vitest'
-
-// eslint-disable-next-line no-restricted-imports -- Native test oracle only; the plugin never imports or exposes this capability.
-import { findGitBash } from '../../../electron/find-git-bash'
 
 import { isLegacyDelegatedRoutine, normalizedProfileName, routineInputError, routinePrompt } from './cron'
 
@@ -31,18 +29,24 @@ function argvOf(prompt: string): string[] {
   const isWindows = process.platform === 'win32'
 
   const shell = isWindows
-    ? findGitBash({ isWindows, env: process.env, fileExists: existsSync })
+    ? ([process.env.ProgramFiles, process.env['ProgramFiles(x86)'], process.env.LOCALAPPDATA]
+        .filter((root): root is string => Boolean(root))
+        .flatMap(root => [join(root, 'Git', 'bin', 'bash.exe'), join(root, 'Programs', 'Git', 'bin', 'bash.exe')])
+        .find(existsSync) ?? 'bash')
     : 'sh'
 
   expect(shell, 'Git Bash is required for the Windows shell-quoting regression').not.toBeNull()
 
-  const result = spawnSync(shell!, [...(isWindows ? ['--noprofile', '--norc'] : []), '-c',
-    `hermes() { printf '%s\\037' "$@"; }\n${command}`], {
-    encoding: 'utf8',
-    input: '',
-    timeout: 10_000,
-    windowsHide: true
-  })
+  const result = spawnSync(
+    shell!,
+    [...(isWindows ? ['--noprofile', '--norc'] : []), '-c', `hermes() { printf '%s\\037' "$@"; }\n${command}`],
+    {
+      encoding: 'utf8',
+      input: '',
+      timeout: 10_000,
+      windowsHide: true
+    }
+  )
 
   expect(result.error).toBeUndefined()
   expect(result.status, result.stderr).toBe(0)

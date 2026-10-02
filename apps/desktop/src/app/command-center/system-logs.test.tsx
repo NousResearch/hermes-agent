@@ -33,9 +33,7 @@ function renderSystem() {
 }
 
 function choose(group: string, label: string) {
-  fireEvent.click(
-    within(screen.getByRole('group', { name: group })).getAllByRole('button', { name: label })[0]
-  )
+  fireEvent.click(within(screen.getByRole('group', { name: group })).getAllByRole('button', { name: label })[0])
 }
 
 describe('Command Center log filters', () => {
@@ -69,7 +67,7 @@ describe('Command Center log filters', () => {
   it('shows a search-specific empty state and restores results when the query is cleared', async () => {
     renderSystem()
     await screen.findByText('WARNING example entry')
-    const search = screen.getByPlaceholderText('Filter log lines...')
+    const search = screen.getByPlaceholderText('Search log lines...')
     fireEvent.change(search, { target: { value: 'no such entry' } })
     expect(screen.getByText('No log lines match the search.')).toBeTruthy()
     expect(screen.getByText('Showing up to 100 recent lines from the selected file and level.')).toBeTruthy()

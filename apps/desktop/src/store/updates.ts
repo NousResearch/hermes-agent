@@ -28,6 +28,7 @@ import { withTimeout } from '@/lib/with-timeout'
 import { $connectionsRegistry, refreshConnectionsRegistry } from '@/store/connections'
 import { reconnectGateway } from '@/store/gateway-reconnect'
 import { dismissNotification, notify } from '@/store/notifications'
+import { onboardingSurfaceActive } from '@/store/onboarding-presence'
 import { $connection } from '@/store/session'
 import type { BackendUpdateCheckResponse } from '@/types/hermes'
 
@@ -286,6 +287,10 @@ export function reportInstallMethodWarning(message: string | undefined): void {
  * showed the user a machine they weren't told about, with no way back.
  */
 export function maybeNotifyUpdateAvailable(status: DesktopUpdateStatus | null, target: UpdateTarget = 'client') {
+  if (onboardingSurfaceActive()) {
+    return
+  }
+
   // Either signal means "update ready": behind > 0 (git checkout) or
   // updateAvailable (shallow clone, App Installer feed).
   if (!status || status.supported === false || status.error) {
@@ -1380,6 +1385,8 @@ export function setAutomaticUpdateChecksEnabled(enabled: boolean): void {
         message: translateNow('updates.automaticUpdatesSaveFailed')
       })
     })
+}
+
 let lastConnectionKey: string | undefined
 
 // mode alone can't tell two remote backends apart — switching directly from
@@ -1460,10 +1467,6 @@ export function startUpdatePoller(): void {
       }
     }
 
-    if (conn?.mode === lastConnectionMode) {
-  // connection resolves to remote, and again whenever the remote target
-  // itself changes (switching between two remote profiles).
-  connectionUnsub = $connection.subscribe((conn: HermesConnection | null): void => {
     const key = connectionKey(conn)
 
     if (key === lastConnectionKey) {
@@ -1509,7 +1512,6 @@ function onFocus() {
 
   lastFocusAt = now
 
-function onFocus(): void {
   void refreshDesktopVersion()
 
   if (!automaticUpdatePreferenceLoaded) {

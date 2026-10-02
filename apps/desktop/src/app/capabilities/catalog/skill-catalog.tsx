@@ -19,6 +19,7 @@ interface SkillCatalogProps {
   skills: SkillInfo[]
   profile: ProfileScope
   query?: string
+  view?: 'installed' | 'browse'
   onQueryChange?: (value: string) => void
   actions?: ReactNode
   installedPending?: boolean
@@ -37,6 +38,7 @@ function ScopedSkillCatalog({
   skills,
   profile,
   query,
+  view,
   onQueryChange,
   actions,
   installedPending,
@@ -266,6 +268,7 @@ function ScopedSkillCatalog({
 
   return (
     <CatalogBrowser
+      view={view}
       actions={actions}
       installedEntries={catalog.entries}
       installedPending={installedPending || identityPending}

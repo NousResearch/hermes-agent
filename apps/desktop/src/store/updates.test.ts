@@ -1591,9 +1591,7 @@ describe('startUpdatePoller', () => {
     expect($automaticUpdateChecksEnabled.get()).toBe(false)
     expect(checkMock).not.toHaveBeenCalled()
     await vi.waitFor(() =>
-      expect(saveHermesConfigRecordSpy).toHaveBeenCalledWith(
-        { desktop: { automatic_update_checks: false } }
-      )
+      expect(saveHermesConfigRecordSpy).toHaveBeenCalledWith({ desktop: { automatic_update_checks: false } })
     )
 
     setAutomaticUpdateChecksEnabled(true)
@@ -1863,6 +1861,8 @@ describe('automatic update preference recovery', () => {
     await vi.advanceTimersByTimeAsync(0)
     expect(updates.$automaticUpdateChecksEnabled.get()).toBe(true)
     expect(notifySpy).toHaveBeenCalledWith(expect.objectContaining({ kind: 'error' }))
+  })
+
   it('re-checks backend updates when switching directly between two remote profiles', async () => {
     // Both profiles resolve to mode: 'remote' — only baseUrl differs. A
     // mode-only comparison would treat this as "no change" and never

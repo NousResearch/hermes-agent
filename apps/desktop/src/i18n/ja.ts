@@ -4,48 +4,6 @@ import { defineLocale } from './define-locale'
 import { introJa } from './intro-ja'
 
 export const ja = defineLocale({
-  catalog: {
-    listView: 'リスト表示',
-    cardView: 'カード表示',
-    installTitle: (name: string) => `「${name}」をインストールしますか？`,
-    installDescription:
-      'このスキルは新しいセッションで利用できます。信頼できる提供元からのみインストールしてください。',
-    installTo: 'インストール先',
-    thisComputer: 'このコンピューター',
-    installing: 'インストール中…',
-    installComplete: (name: string) => `「${name}」をインストールしました`,
-    destinationChanged:
-      'インストール先が変更されました。このダイアログを閉じ、インストールリンクを開き直してください。',
-    browse: '閲覧',
-    installed: 'インストール済み',
-    searchSkills: 'スキルを検索',
-    searchPlugins: 'プラグインを検索',
-    allSources: 'すべての提供元',
-    allCategories: 'すべてのカテゴリ',
-    about: '概要',
-    author: '作者',
-    source: '提供元',
-    category: 'カテゴリ',
-    version: 'バージョン',
-    platforms: '対応プラットフォーム',
-    requires: '必要なもの',
-    tools: 'ツール',
-    hooks: 'フック',
-    repository: 'リポジトリ',
-    documentation: 'ドキュメント',
-    noResults: '一致する項目がありません',
-    tryAnother: '別の検索を試すか、フィルターをクリアしてください。',
-    clearFilters: 'フィルターをクリア',
-    loadFailed: 'カタログを読み込めませんでした',
-    retry: '再試行',
-    more: 'さらに表示',
-    pinned: 'レビュー済みコミット',
-    snapshotHint: 'Hermesカタログの情報です。閲覧時に提供元のリポジトリへ接続することはありません。',
-    installHint: 'インストール前にソースを確認してください。変更は新しいセッションに適用されます。',
-    results: (count: number) => `${count.toLocaleString('ja')}件の結果`,
-    back: '結果に戻る'
-  },
-
   externalOpenFailed: {
     title: 'このリンクを開けませんでした',
     message: 'このアドレスを開くブラウザが登録されていません。リンクをコピーして手動で開いてください。',
@@ -149,7 +107,8 @@ export const ja = defineLocale({
     snapshotHint: 'Hermesカタログの情報です。閲覧時に提供元のリポジトリへ接続することはありません。',
     installHint: 'インストール前にソースを確認してください。変更は新しいセッションに適用されます。',
     results: (count: number) => `${count.toLocaleString('ja')}件の結果`,
-    back: '結果に戻る'
+    back: '結果に戻る',
+    browse: '閲覧'
   },
   sessionImport: {
     title: '別のアプリから続ける',
@@ -226,7 +185,6 @@ export const ja = defineLocale({
     on: 'オン',
     off: 'オフ'
   },
-
   fileMenu: {
     revealFinder: 'Finder で表示',
     revealExplorer: 'エクスプローラーで表示',
@@ -246,7 +204,6 @@ export const ja = defineLocale({
     pathCopied: 'パスをコピーしました',
     revealMissing: 'そのフォルダーはこのコンピューターにありません'
   },
-
   boot: {
     ready: 'Hermes Desktop の準備ができました',
     desktopBootFailedWithMessage: message => `デスクトップの起動に失敗しました: ${message}`,
@@ -307,7 +264,6 @@ export const ja = defineLocale({
       identityProvider: 'ID プロバイダー'
     }
   },
-
   notifications: {
     sharedProfileWarning:
       '別の Hermes インストールがこのプロファイルを使用しています。両方が設定とデータを共有しているため、変更が競合する可能性があります。このまま続けるか、変更する前にもう一方を終了してください。',
@@ -393,12 +349,10 @@ export const ja = defineLocale({
       creditsTitle: 'クレジット'
     }
   },
-
   remoteDisplayBanner: {
     message: reason =>
       `ソフトウェアレンダリングが有効です — リモートディスプレイを検出しました（${reason}）。ちらつきを防ぐため GPU アクセラレーションは無効化されています。`
   },
-
   billingBlock: {
     titleNous: 'Nous クレジットが不足しています',
     titleProvider: provider => `クレジット不足 — ${provider}`,
@@ -407,7 +361,6 @@ export const ja = defineLocale({
     addCredits: 'クレジットを追加',
     dismiss: '閉じる'
   },
-
   sendDiagnostics: {
     title: 'Nous に診断情報を送信',
     privacyNotice:
@@ -431,7 +384,6 @@ export const ja = defineLocale({
       discord: 'Discord'
     }
   },
-
   titlebar: {
     hideSidebar: 'サイドバーを非表示',
     showSidebar: 'サイドバーを表示',
@@ -447,7 +399,6 @@ export const ja = defineLocale({
     openStarmap: 'メモリグラフを開く',
     resetHudLayout: 'HUD のサイズと位置をリセット'
   },
-
   language: {
     label: '言語',
     description: 'デスクトップインターフェイスの言語を選択します。',
@@ -457,7 +408,6 @@ export const ja = defineLocale({
     searchPlaceholder: '言語を検索…',
     noResults: '言語が見つかりません'
   },
-
   settings: {
     uninstallSection: {
       dangerZone: '危険ゾーン',
@@ -644,9 +594,8 @@ export const ja = defineLocale({
           `未検出です。${name} のコマンドラインツールをインストールしてサインインすると、Hermes が自動的に検出します。`,
         disabledDesc: '検出済みですが、Hermes では無効になっています。',
         lockedDesc:
-          'この設定画面の接続ではロックされています。保存済みのログイン情報を表示するには、ここで解除してください。各チャットでは個別に解除を求めます。',
-        unlockedDesc:
-          'この設定画面の接続でのみロック解除済み。30分間使用しないか、この接続が切れるとロックされます。チャットでは個別に解除が必要です。',
+          '検出済み。エージェントがログイン情報を必要とするときにロック解除を求めます。今すぐ解除することもできます。',
+        unlockedDesc: 'このセッションでロック解除済み。30分間操作がないか Hermes を閉じると自動的にロックされます。',
         statusLocked: 'ロック中',
         statusNotDetected: '未検出',
         statusOff: 'オフ',
@@ -654,10 +603,10 @@ export const ja = defineLocale({
         unlock: 'ロック解除',
         unlocking: 'ロック解除中…',
         lock: 'ロック',
-        unlocked: name => `${name} をこの設定画面の接続でのみロック解除しました。`,
+        unlocked: name => `${name} をこのセッションでロック解除しました。`,
         unlockTitle: name => `${name} のロックを解除`,
         unlockDescription:
-          'このロック解除は、この設定画面の接続にのみ適用されます。各チャットでは個別に解除を求めます。マスターパスワードはパスワードマネージャーに渡された後、ローカルで破棄されます。保存・記録されることも、エージェントに表示されることもありません。',
+          'マスターパスワードを入力してください。このマシン上のパスワードマネージャーに渡された後に破棄され、保存・記録されることも、エージェントに表示されることもありません。',
         masterPasswordPlaceholder: 'マスターパスワード'
       }
     },
@@ -839,11 +788,6 @@ export const ja = defineLocale({
       resumeLastSessionTitle: '起動時に前回のチャットを再開',
       resumeLastSessionDesc:
         'オンの場合、コールドスタート時に直近のチャットを再び開きます。オフにすると常に新しいチャットから始まります。',
-      loginStartupTitle: 'Windows と同時に Hermes を起動',
-      loginStartupDesc:
-        'サインイン時にデスクトップアプリを最小化して開きます。保存されたプライマリプロファイルを使用します。',
-      loginStartupFailed:
-        'Windows でスタートアップを有効にできませんでした。Windows の設定でスタートアップ アプリを確認してください。',
       product: 'プロダクト',
       productDesc: '読みやすいツール活動と簡潔な要約を表示します。',
       technical: 'テクニカル',
@@ -898,7 +842,12 @@ export const ja = defineLocale({
         noneAvailable: 'オンにできるペットがありません。',
         turnOnFailed: 'ペットをオンにできませんでした。',
         turnOffFailed: 'ペットをオフにできませんでした。'
-      }
+      },
+      loginStartupTitle: 'Windows と同時に Hermes を起動',
+      loginStartupDesc:
+        'サインイン時にデスクトップアプリを最小化して開きます。保存されたプライマリプロファイルを使用します。',
+      loginStartupFailed:
+        'Windows でスタートアップを有効にできませんでした。Windows の設定でスタートアップ アプリを確認してください。'
     },
     fieldLabels: defineFieldCopy({
       model: 'デフォルトモデル',
@@ -1137,6 +1086,7 @@ export const ja = defineLocale({
       }
     }),
     about: {
+      updates: '更新',
       heading: 'Hermes Desktop',
       version: value => `バージョン ${value}`,
       versionUnavailable: 'バージョンを取得できません',
@@ -1148,7 +1098,6 @@ export const ja = defineLocale({
       bundleSwapPendingDesc:
         '更新されたアプリはすでにインストール済みです。Hermes を再起動するだけで新しいビルドが読み込まれます。チャットや設定はそのまま保持されます。',
       bundleSwapPendingAction: 'Hermes を再起動',
-      updates: '更新',
       checkNow: '今すぐ確認',
       checking: '確認中…',
       seeWhatsNew: '新機能を見る',
@@ -1174,7 +1123,6 @@ export const ja = defineLocale({
       minAgo: count => `${count} 分前`,
       hoursAgo: count => `${count} 時間前`,
       daysAgo: count => `${count} 日前`
-      updates: '更新'
     },
     config: {
       minimizeToTrayTitle: 'トレイに最小化',
@@ -1768,7 +1716,6 @@ export const ja = defineLocale({
       }
     }
   },
-
   skills: {
     plugins: {
       pageBlurb:
@@ -1786,7 +1733,6 @@ export const ja = defineLocale({
     },
     tabSkills: 'スキル',
     tabToolsets: 'ツールセット',
-    tabHub: 'スキルハブ',
     all: 'すべて',
     searchSkills: 'スキルを検索...',
     searchToolsets: 'ツールセットを検索...',
@@ -1829,7 +1775,6 @@ export const ja = defineLocale({
       bundled: '組み込み',
       hub: 'ハブ'
     },
-    provenanceSummary: (agent, bundled, hub) => `${agent} 学習済み · ${bundled} 組み込み · ${hub} ハブ`,
     emptyNoneFound: noun => `${noun} が見つかりません`,
     emptyNothingMatches: query => `「${query}」に一致するものはありません。`,
     emptyNoneAvailable: noun => `利用可能な ${noun} はまだありません。`,
@@ -1840,9 +1785,10 @@ export const ja = defineLocale({
     skillArchivedTitle: 'スキルをアーカイブしました',
     skillArchivedMessage: 'hermes curator restore で復元できます。',
     officialCatalog: 'インストール可能',
-    officialPill: '公式'
+    officialPill: '公式',
+    tabHub: 'スキルハブ',
+    provenanceSummary: (agent, bundled, hub) => `${agent} 学習済み · ${bundled} 組み込み · ${hub} ハブ`
   },
-
   starmap: {
     title: 'メモリグラフ',
     subtitle: (nodes, clusters) => `${clusters} カテゴリの ${nodes} スキル`,
@@ -1900,7 +1846,6 @@ export const ja = defineLocale({
     durationMinutes: (minutes, seconds) => `${minutes}分 ${seconds}秒`,
     tokens: value => `${value} トーク`
   },
-
   commandCenter: {
     close: 'コマンドセンターを閉じる',
     paletteTitle: 'コマンドパレット',
@@ -2013,14 +1958,10 @@ export const ja = defineLocale({
     actionDone: '完了',
     actionFailed: '失敗',
     actionStartedWaiting: 'アクションが開始されました。ステータスを待機中...',
-    actionTimedOut: 'アクションはまだ実行中です。最終状態は最新ログで確認してください。',
     loadingStatus: 'ステータスを読み込み中...',
     recentLogs: '最近のログ',
     logSearchPlaceholder: 'ログ行を検索…',
     noLogs: 'ログはまだ読み込まれていません。',
-    allLogLevels: 'すべてのレベル',
-    noMatchingLogs: '検索に一致するログ行はありません。',
-    logTailHint: count => `選択したファイルとレベルの最新ログを最大${count}行表示しています。`,
     days: count => `${count}日`,
     statSessions: 'セッション',
     statApiCalls: 'API コール',
@@ -2038,9 +1979,17 @@ export const ja = defineLocale({
     noModelUsage: 'モデルの使用履歴はまだありません。',
     topSkills: 'よく使うスキル',
     noSkillActivity: 'スキルのアクティビティはまだありません。',
-    actions: count => `${count} アクション`
+    actions: count => `${count} アクション`,
+    sectionDescriptions: {
+      sessions: 'セッションの検索と管理',
+      system: 'ステータス、ログ、システムアクション',
+      usage: 'トークン、コスト、スキルの活動履歴'
+    },
+    actionTimedOut: 'アクションはまだ実行中です。最終状態は最新ログで確認してください。',
+    allLogLevels: 'すべてのレベル',
+    noMatchingLogs: '検索に一致するログ行はありません。',
+    logTailHint: count => `選択したファイルとレベルの最新ログを最大${count}行表示しています。`
   },
-
   messaging: {
     search: 'メッセージングを検索...',
     statusFilter: {
@@ -2224,7 +2173,6 @@ export const ja = defineLocale({
     },
     platformIntro: {}
   },
-
   profiles: {
     close: 'プロファイルを閉じる',
     nameHint: '小文字、数字、ハイフン、アンダースコア。文字または数字で始める必要があります。',
@@ -2365,7 +2313,6 @@ export const ja = defineLocale({
     failedCreate: 'プロファイルの作成に失敗しました',
     failedRename: 'プロファイルの名前変更に失敗しました'
   },
-
   modelAssignment: {
     saveFailed: 'Hermes はモデルの変更を保存しませんでした。',
     confirmTitle: 'モデル選択の警告',
@@ -2373,7 +2320,6 @@ export const ja = defineLocale({
     confirmAction: '確認',
     declined: 'モデル変更をキャンセルしました — データ学習ティアの警告を拒否しました。'
   },
-
   cron: {
     close: 'Cron を閉じる',
     title: 'スケジュール済みジョブ',
@@ -2512,7 +2458,6 @@ export const ja = defineLocale({
       emptyDesc: 'このバックエンドで利用できる自動化ブレーンプリントはありません。'
     }
   },
-
   artifacts: {
     search: 'アーティファクトを検索...',
     refresh: 'アーティファクトを更新',
@@ -2547,14 +2492,12 @@ export const ja = defineLocale({
     copyUrl: 'URL をコピー',
     copyPath: 'パスをコピー'
   },
-
   artifactCard: {
     kind: { code: 'コード', html: 'インタラクティブページ', svg: 'グラフィック' },
     generating: lines => `生成中… ${lines} 行`,
     versionBadge: count => `${count} 個のバージョン`,
     open: '開く'
   },
-
   artifactPreview: {
     versionOf: (current, total) => `${total} 中 v${current}`,
     olderVersion: '前のバージョン',
@@ -2567,7 +2510,6 @@ export const ja = defineLocale({
     missingTitle: 'アーティファクトを利用できません',
     missingBody: 'このアーティファクトはローカルレジストリに存在しません。'
   },
-
   sidebar: {
     profileRail: 'プロファイルバー',
     markAllRead: 'すべて既読にする',
@@ -2777,7 +2719,6 @@ export const ja = defineLocale({
       done: '完了'
     }
   },
-
   composer: {
     message: 'メッセージ',
     wakingProfile: profile => `${profile} を起動中…`,
@@ -2995,7 +2936,6 @@ export const ja = defineLocale({
       }
     }
   },
-
   statusStack: {
     hideStack: 'ステータススタックを隠す',
     showStack: 'ステータススタックを表示',
@@ -3151,9 +3091,7 @@ export const ja = defineLocale({
       worktrees: 'ワークツリー'
     }
   },
-
   updates: {
-    automaticUpdatesSaveFailed: '設定の保存を確認できませんでした。もう一度お試しください。',
     discontinuedTitle: 'このHermesビルドはサポートされていません',
     discontinuedBody:
       'このHermesビルドはサポートが終了し、動作しなくなる可能性があります。アンインストールしてください。データはディスクに残ります。',
@@ -3256,7 +3194,6 @@ export const ja = defineLocale({
       noReturn:
         'バックエンドがオンラインに戻りませんでした。更新が完了していない可能性があります。バックエンドホストを確認してください。'
     },
-    // Restored About-card strings (moved from `settings.about.*` to `updates.*`).
     version: value => `バージョン ${value}`,
     versionUnavailable: 'バージョンを取得できません',
     checkNow: '今すぐ確認',
@@ -3279,9 +3216,9 @@ export const ja = defineLocale({
     bundleOutOfSyncDesc:
       'Hermes ランタイムは更新されましたが、デスクトップアプリ自体は古いビルドのままです。アプリを更新するまで、新しいインターフェース機能(Bot Mode など)は表示されません。下の更新を実行してアプリを再ビルドしてください。それでもこの警告が消えない場合は、最新のデスクトップインストーラーから再インストールしてください。',
     bundleOutOfSyncAction: 'インストーラーを入手',
-    checkingShort: '確認中…'
+    checkingShort: '確認中…',
+    automaticUpdatesSaveFailed: '設定の保存を確認できませんでした。もう一度お試しください。'
   },
-
   guidedGreeting: {
     line: 'やあ、どうぞ。Hermes です。二分だけください、あなたに合わせて整えます。それから、本当にやりたいことに取りかかりましょう。\n\nまずは、何とお呼びすればいいですか。',
     nameSuggestion: (name: string) => `（よければ、${name} さんとお呼びします。）`
@@ -3361,7 +3298,6 @@ export const ja = defineLocale({
     copyOutput: '出力をコピー',
     reloadRetry: '再読み込みして再試行'
   },
-
   onboarding: {
     headerTitle: 'Hermes Agent のセットアップをしましょう',
     headerDesc: 'チャットを始めるにはモデルプロバイダーを接続してください。ほとんどのオプションはワンクリックです。',
@@ -3442,7 +3378,6 @@ export const ja = defineLocale({
     startChatting: '始める',
     docs: provider => `${provider} ドキュメント`
   },
-
   modelPicker: {
     title: 'モデルを切り替え',
     current: '現在:',
@@ -3464,7 +3399,6 @@ export const ja = defineLocale({
     addCustomModelAction: 'カスタムモデルを追加…',
     customModelPlaceholder: 'モデル ID を入力（例: openai/gpt-5）'
   },
-
   modelVisibility: {
     title: 'モデル',
     search: 'モデルを検索',
@@ -3478,7 +3412,6 @@ export const ja = defineLocale({
       '表示・非表示の選択が消去され、各プロバイダーのデフォルトの一覧に戻ります。追加したカスタムモデルは残り、表示されます。',
     resetAction: 'リセット'
   },
-
   shell: {
     windowControls: 'ウィンドウコントロール',
     paneControls: 'ペインコントロール',
@@ -3622,10 +3555,10 @@ export const ja = defineLocale({
       openModelPicker: 'モデルピッカーを開く',
       modelPinned: '手動で固定中 — 新しいチャットは設定のデフォルトではなくこのモデルを使用します',
       modelTitle: (provider, model) => `モデル · ${provider}: ${model}`,
-      providerModelTitle: (provider, model) => `${provider} · ${model}`
+      providerModelTitle: (provider, model) => `${provider} · ${model}`,
+      session: 'セッション'
     }
   },
-
   rightSidebar: {
     terminalReadOnly: '読み取り専用の出力',
     terminalReadOnlyHelp:
@@ -3673,7 +3606,6 @@ export const ja = defineLocale({
     terminalCloseAll: 'すべて閉じる',
     addToChat: 'チャットに追加'
   },
-
   preview: {
     tab: 'プレビュー',
     closePane: 'プレビューペインを閉じる',
@@ -3779,7 +3711,6 @@ export const ja = defineLocale({
       fallbackTitle: 'プレビュー'
     }
   },
-
   interfaceMode: {
     title: 'インターフェースモード',
     hint: '表示される内容が変わるだけで、Hermes にできることは変わりません。',
@@ -3795,7 +3726,6 @@ export const ja = defineLocale({
       description: '開発者向け。ターミナル、ファイル、差分、ステータスバー、レイアウトを設定したとおりに。'
     }
   },
-
   zones: {
     showTabStrip: 'タブを表示',
     hideTabStrip: 'タブを隠す',
@@ -3841,7 +3771,6 @@ export const ja = defineLocale({
     zoneCount: count => `${count} ゾーン`,
     tabCount: count => `${count} 個のタブ`
   },
-
   contextMenu: {
     link: {
       openInApp: 'アプリ内ブラウザーで開く',
@@ -3865,7 +3794,6 @@ export const ja = defineLocale({
       inspectElement: '要素を調査'
     }
   },
-
   assistant: {
     catalogInstall: {
       preparing: 'インストールを準備中…',
@@ -4050,7 +3978,12 @@ export const ja = defineLocale({
       multiSelectHint: '該当するものをすべて選択',
       questionProgress: (answered, total) => `${total}問中${answered}問回答済み`,
       notDelivered:
-        'この質問はアプリに届かなかったため、ここでは回答できません。停止を押してターンを終了し、チャットで返信してください。'
+        'この質問はアプリに届かなかったため、ここでは回答できません。停止を押してターンを終了し、チャットで返信してください。',
+      continueLabel: '続行',
+      answeredBadge: '回答済み',
+      lateAnswer: (question, choice) => `「${question}」について — 私の回答: ${choice}`,
+      lateAnswerTip: 'この回答をフォローアップメッセージとして下書きします',
+      lateAnswerHint: 'この質問はもう回答を待っていません。選択肢を選ぶとフォローアップメッセージとして下書きされます。'
     },
     tool: {
       copyCode: 'コードをコピー',
@@ -4174,7 +4107,6 @@ export const ja = defineLocale({
       }
     }
   },
-
   prompts: {
     gatewayDisconnected: 'Hermes ゲートウェイが接続されていません',
     sudoSendFailed: 'sudo パスワードを送信できませんでした',
@@ -4217,7 +4149,6 @@ export const ja = defineLocale({
     vaultCodeSkip: 'スキップ',
     vaultCodeConfirm: 'コードを入力'
   },
-
   desktop: {
     audioReadFailed: '録音した音声を読み取れませんでした',
     sessionUnavailable: 'セッションが利用できません',
@@ -4318,7 +4249,6 @@ export const ja = defineLocale({
       timedOut: 'ゲートウェイの待機がタイムアウトしました。`hermes gateway` は起動していますか？'
     }
   },
-
   tips: {
     close: 'このヒントを今後表示しない',
     items: {
@@ -4370,7 +4300,6 @@ export const ja = defineLocale({
       }
     }
   },
-
   errors: {
     genericFailure: '問題が発生しました',
     boundaryTitle: 'インターフェイスで問題が発生しました',
@@ -4378,7 +4307,6 @@ export const ja = defineLocale({
     reloadWindow: 'ウィンドウを再読み込み',
     openLogs: 'ログを開く'
   },
-
   ui: {
     search: {
       clear: '検索をクリア'

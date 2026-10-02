@@ -66,46 +66,6 @@ interface AuxTaskCopy {
 }
 
 export interface Translations {
-  catalog: {
-    listView: string
-    cardView: string
-    installTitle: (name: string) => string
-    installDescription: string
-    installTo: string
-    thisComputer: string
-    installing: string
-    installComplete: (name: string) => string
-    destinationChanged: string
-    browse: string
-    installed: string
-    searchSkills: string
-    searchPlugins: string
-    allSources: string
-    allCategories: string
-    about: string
-    author: string
-    source: string
-    category: string
-    version: string
-    platforms: string
-    requires: string
-    tools: string
-    hooks: string
-    repository: string
-    documentation: string
-    noResults: string
-    tryAnother: string
-    clearFilters: string
-    loadFailed: string
-    retry: string
-    more: string
-    pinned: string
-    snapshotHint: string
-    installHint: string
-    results: (count: number) => string
-    back: string
-  }
-
   /** Shared-metrics consent: first-run dialog + Settings › Safety toggles. */
   sharedMetrics: {
     consentTitle: string
@@ -208,6 +168,8 @@ export interface Translations {
     installHint: string
     results: (count: number) => string
     back: string
+
+    browse: string
   }
   connectors: {
     title: string
@@ -1094,9 +1056,6 @@ export interface Translations {
       embedsReset: (count: number) => string
       resumeLastSessionTitle: string
       resumeLastSessionDesc: string
-      loginStartupTitle: string
-      loginStartupDesc: string
-      loginStartupFailed: string
       product: string
       productDesc: string
       technical: string
@@ -1149,6 +1108,10 @@ export interface Translations {
         turnOnFailed: string
         turnOffFailed: string
       }
+
+      loginStartupTitle: string
+      loginStartupDesc: string
+      loginStartupFailed: string
     }
     fieldLabels: Record<string, string>
     fieldDescriptions: Record<string, string>
@@ -1223,6 +1186,16 @@ export interface Translations {
     }
     about: {
       updates: string
+
+      heading: string
+      version: (value: string) => string
+      versionUnavailable: string
+      bundleOutOfSync: string
+      bundleOutOfSyncDesc: string
+      bundleOutOfSyncAction: string
+      bundleSwapPending: string
+      bundleSwapPendingDesc: string
+      bundleSwapPendingAction: string
       checkNow: string
       checking: string
       seeWhatsNew: string
@@ -2153,7 +2126,6 @@ export interface Translations {
   skills: {
     tabSkills: string
     tabToolsets: string
-    tabHub: string
     configuringProfile: string
     all: string
     searchSkills: string
@@ -2192,7 +2164,6 @@ export interface Translations {
     bulkNoChange: string
     usageCount: (count: number | string) => string
     provenance: Record<'agent' | 'bundled' | 'hub', string>
-    provenanceSummary: (agent: number, bundled: number, hub: number) => string
     emptyNoneFound: (noun: string) => string
     emptyNothingMatches: (query: string) => string
     emptyNoneAvailable: (noun: string) => string
@@ -2335,6 +2306,9 @@ export interface Translations {
       scanFailed: string
       searchFailed: string
     }
+
+    tabHub: string
+    provenanceSummary: (agent: number, bundled: number, hub: number) => string
   }
 
   starmap: {
@@ -2514,7 +2488,6 @@ export interface Translations {
     actionDone: string
     actionFailed: string
     actionStartedWaiting: string
-    actionTimedOut: string
     loadingStatus: string
     recentLogs: string
     noLogs: string
@@ -2538,9 +2511,6 @@ export interface Translations {
     actions: (count: string) => string
     logFile: string
     logLevel: string
-    allLogLevels: string
-    noMatchingLogs: string
-    logTailHint: (count: number) => string
     logSearchPlaceholder: string
     maintenance: {
       runOps: string
@@ -2573,7 +2543,6 @@ export interface Translations {
       builtinMemory: string
       memoryFile: string
       userFile: string
-      openFile: string
       bytes: (size: string) => string
       empty: string
       resetMemory: string
@@ -2586,7 +2555,15 @@ export interface Translations {
       actionFailed: (name: string) => string
       running: string
       viewLog: string
+
+      openFile: string
     }
+
+    sectionDescriptions: Record<'maintenance' | 'sessions' | 'system' | 'usage', string>
+    actionTimedOut: string
+    allLogLevels: string
+    noMatchingLogs: string
+    logTailHint: (count: number) => string
   }
 
   messaging: {
@@ -3578,7 +3555,6 @@ export interface Translations {
   }
 
   updates: {
-    automaticUpdatesSaveFailed: string
     discontinuedTitle: string
     discontinuedBody: string
     channels: { stable: string; canary: string }
@@ -3712,6 +3688,8 @@ export interface Translations {
     versionDetailsRuntimeExternal: string
     versionDetailsInstallId: string
     versionDetailsUncommittedChanges: string
+
+    automaticUpdatesSaveFailed: string
   }
 
   /** The guided first run's pre-written opening line — banked, not generated,
@@ -4134,6 +4112,8 @@ export interface Translations {
       modelPinned: string
       modelTitle: (provider: string, model: string) => string
       providerModelTitle: (provider: string, model: string) => string
+
+      session: string
     }
   }
 
@@ -4522,6 +4502,12 @@ export interface Translations {
       multiSelectHint: string
       questionProgress: (answered: number, total: number) => string
       notDelivered: string
+
+      continueLabel: string
+      answeredBadge: string
+      lateAnswer: (question: string, choice: string) => string
+      lateAnswerTip: string
+      lateAnswerHint: string
     }
     catalogInstall: {
       preparing: string

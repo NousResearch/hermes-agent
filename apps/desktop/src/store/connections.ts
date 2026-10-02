@@ -430,8 +430,6 @@ export async function selectConnection(connectionId: string, options: SelectConn
     await withTimeout(
       openGatewayAgent(connectionId, targetProfile, { signal: activationController.signal }),
       SWITCH_DIAL_TIMEOUT_MS,
-      openGatewayAgent(connectionId, targetProfile),
-      SOURCE_SWITCH_DIAL_TIMEOUT_MS,
       `Timed out connecting to "${targetConnection.label}".`
     )
 

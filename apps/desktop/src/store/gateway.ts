@@ -24,9 +24,6 @@ import {
   isTimeoutError,
   RECONNECT_ATTEMPT_TIMEOUT_MS,
   TimeoutError,
-  isTimeoutError,
-  RECONNECT_ATTEMPT_TIMEOUT_MS,
-  SOURCE_SWITCH_DIAL_TIMEOUT_MS,
   withTimeout
 } from '@/lib/with-timeout'
 import { notifyError, RECOVERY_ACTIONS } from '@/store/notifications'
@@ -403,20 +400,6 @@ function claimActivationHandoff(scope: string, signal: AbortSignal | undefined):
 
   return handoff.activation
 }
-// How long a mid-dial activation holds its prune lease: it must outlast every
-// dial the renderer still treats as in flight, or the pruner reaps the switch
-// target mid-dial and the click resolves on a socket that is already closed
-// (#89622's mechanism, one budget change later). The activation dials now carry
-// SOURCE_SWITCH_DIAL_TIMEOUT_MS — the whole remote bring-up chain (ssh connect,
-// the platform/locate/version probes, the remote spawn's ready sentinel, the
-// forward) — so this is DERIVED from it rather than picked independently: at
-// the old 30 s literal, raising the dial budget to 135 s left the switch target
-// prunable for the last ~105 s of a *healthy* dial. The margin covers the
-// settle that releases the lease (the renderer's switch commit). Bounded on
-// purpose: a leaked lease still expires on its own and the reaper reclaims the
-// entry.
-const ACTIVATION_LEASE_MS = SOURCE_SWITCH_DIAL_TIMEOUT_MS + 15_000
-
 // ── HMR-stable module state ─────────────────────────────────────────────────
 // All mutable singletons (live sockets, active-profile routing, the event
 // registry) live in ONE container parked on globalThis, NOT in module-level
@@ -1097,13 +1080,6 @@ async function openSecondary(
                 ...(dialOptions(spawnPriority, speculative) ?? {})
               }),
             activation,
-        ? await withTimeout(
-            desktop.getConnectionFor({
-              connectionId: entry.connectionId,
-              profile: entry.profile,
-              ...dialPriority(spawnPriority)
-            }),
-            SOURCE_SWITCH_DIAL_TIMEOUT_MS,
             `Timed out connecting to profile "${entry.profile}"`
           )
         : await withSpawnIpcTimeout(
@@ -1572,6 +1548,13 @@ async function gatewayForProfile(
     return { gateway: g.primaryGateway, key, release: noRelease, scopeProfile: false }
   }
 
+  // The shared-primary probe may spawn a backend too; honor cooldown before either dial.
+  const existing = g.secondaries.get(key)
+
+  if (spawnPriority !== 'foreground' && !(existing && isOpen(existing.gateway)) && backgroundDialCoolingDown(key)) {
+    throw new Error(`Backend for "${key}" is reconnecting; retry after it settles.`)
+  }
+
   let entry = g.secondaries.get(key)
 
   if (activation && entry && !holdActivationLease(entry, activation)) {
@@ -1593,15 +1576,6 @@ async function gatewayForProfile(
       releaseActivationLease(entry, activation)
     }
 
-  // sharedPrimaryRoute is itself a dial into main (it can start the profile's spawn), so a
-  // cooling-down scope has to be held back before it, not just before openSecondary.
-  const existing = g.secondaries.get(key)
-
-  if (spawnPriority !== 'foreground' && !(existing && isOpen(existing.gateway)) && backgroundDialCoolingDown(key)) {
-    throw new Error(`Backend for "${key}" is reconnecting; retry after it settles.`)
-  }
-
-  if (await sharedPrimaryRoute(key, spawnPriority)) {
     return { gateway: g.primaryGateway, key, release: noRelease, scopeProfile: true }
   }
 

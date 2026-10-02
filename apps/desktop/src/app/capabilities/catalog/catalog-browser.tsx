@@ -42,6 +42,7 @@ import { useCatalogFilters } from './use-catalog-filters'
 interface CatalogBrowserProps {
   kind: CatalogKind
   query?: string
+  view?: 'installed' | 'browse'
   onQueryChange?: (value: string) => void
   isInstalled: (entry: CatalogEntry) => boolean
   onInstall: (entry: CatalogEntry) => void
@@ -125,12 +126,13 @@ export const CatalogBrowser = memo(function CatalogBrowser({
   renderInstalledAction,
   selectedEntryId,
   query,
+  view,
   onQueryChange
 }: CatalogBrowserProps) {
   const { t } = useI18n()
   const c = t.catalog
   const cardView = useStore($catalogCardView)
-  const { data, isPending, error, refetch } = useCatalog(kind)
+  const { data, isPending, error, refetch } = useCatalog(kind, view !== 'installed')
   const deferredQuery = useDeferredValue((query ?? '').trim().toLowerCase())
   const [selectedId, setSelectedId] = useState<string | null>(selectedEntryId ?? null)
   const [detailOpen, setDetailOpen] = useState(false)
@@ -143,7 +145,10 @@ export const CatalogBrowser = memo(function CatalogBrowser({
   }
 
   const filters = useCatalogFilters(kind, resetSelection)
-  const { facets, sort } = filters
+  const { sort } = filters
+  const facets = view === 'installed' ? { ...filters.facets, installedOnly: true } : filters.facets
+
+  useEffect(resetSelection, [view])
 
   // Clearing the query only widens results, and a deep link clears it while selecting its target.
   useEffect(() => {
@@ -332,15 +337,15 @@ export const CatalogBrowser = memo(function CatalogBrowser({
             </div>
           </header>
           {notice}
-          {error && entries.length > 0 && (
+          {view !== 'installed' && error && entries.length > 0 && (
             <CatalogAlert onRetry={() => void refetch()} retryLabel={c.retry} title={c.loadFailed}>
               {error.message}
             </CatalogAlert>
           )}
           <div className="min-h-0 flex-1">
-            {isPending && !entries.length ? (
+            {view !== 'installed' && isPending && !entries.length ? (
               <PageLoader label={t.skills.loading} />
-            ) : error && !entries.length ? (
+            ) : view !== 'installed' && error && !entries.length ? (
               <div className="grid h-full place-items-center p-5">
                 <ErrorState description={error.message} title={c.loadFailed}>
                   <Button onClick={() => void refetch()} size="sm" variant="secondary">

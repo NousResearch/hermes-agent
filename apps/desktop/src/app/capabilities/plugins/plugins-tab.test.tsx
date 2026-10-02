@@ -1,6 +1,4 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
-import { QueryClientProvider } from '@tanstack/react-query'
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { type ComponentProps, useState } from 'react'
 import { MemoryRouter, useLocation } from 'react-router'
@@ -14,7 +12,6 @@ import { $notifications } from '@/store/notifications'
 import { $pluginInstallRequest, closePluginInstallRequest } from '@/store/plugin-install-request'
 import { $connection } from '@/store/session'
 
-import { parseCatalog } from '../catalog-data'
 import { PageSearchShell } from '../../page-search-shell'
 import { parseCatalog } from '../catalog/catalog-data'
 import { $catalogCardView } from '../catalog/store'
@@ -59,6 +56,8 @@ function seedCatalog(entries = [weatherEntry]) {
 }
 
 async function selectCatalogEntry(name: string) {
+  const browse = screen.queryByRole('button', { name: 'Browse', pressed: false })
+  if (browse) fireEvent.click(browse)
   fireEvent.click((await screen.findAllByRole('button', { name }))[0])
   expect(screen.getAllByRole('heading', { name }).length).toBeGreaterThan(0)
 }
@@ -206,7 +205,7 @@ describe('PluginsTab', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Browse' }))
     fireEvent.click(await screen.findByRole('button', { name: /^reviewed-plugin/ }))
-    fireEvent.click(screen.getByRole('button', { name: 'Install' }))
+    fireEvent.click(screen.getByRole('switch', { name: 'Add reviewed-plugin' }))
 
     await waitFor(() =>
       expect($pluginInstallRequest.get()).toMatchObject({
@@ -747,7 +746,12 @@ describe('PluginsTab catalog UX', () => {
     fireEvent.change(search, { target: { value: 'weather' } })
     expect(await screen.findByRole('heading', { name: weatherEntry.name })).toBeTruthy()
     expect(screen.queryByRole('button', { name: 'garden-plugin' })).toBeNull()
-    fireEvent.click(screen.getByRole('button', { name: 'Installed', pressed: false }))
+    fireEvent.click(
+      within(document.querySelector('[data-capability-tabs]') as HTMLElement).getByRole('button', {
+        name: 'Installed',
+        pressed: false
+      })
+    )
     expect(screen.queryByRole('heading', { name: weatherEntry.name })).toBeNull()
     expect(search.value).toBe('weather')
     fireEvent.click(screen.getAllByRole('button', { name: 'Clear filters' })[0])
@@ -769,13 +773,13 @@ describe('PluginsTab catalog UX', () => {
       .mockResolvedValue({ ok: true, json: async () => [weatherEntry] })
 
     vi.stubGlobal('fetch', fetchCatalog)
-    const view = renderPlugins({ profile: null })
+    const view = renderPlugins({ profile: null, view: 'browse' })
 
     expect(await screen.findByText('Catalog HTTP 503')).toBeTruthy()
     expect(fetchCatalog).toHaveBeenCalledTimes(1)
     view.unmount()
     await act(async () => {
-      renderPlugins({ profile: null })
+      renderPlugins({ profile: null, view: 'browse' })
     })
     expect(fetchCatalog).toHaveBeenCalledTimes(1)
     expect(screen.getByText('Catalog HTTP 503')).toBeTruthy()

@@ -292,9 +292,10 @@ it.each([
 
 it('settles an unfinished bubble when the stream binding was already cleared', async () => {
   const h = mount()
+  const streamed = 'The answer is'
   await h.submit()
   await h.send('message.start')
-  await h.send('message.delta', { text: ANSWER })
+  await h.send('message.delta', { text: streamed })
   await flush()
 
   h.update(state => ({

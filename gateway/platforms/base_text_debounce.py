@@ -53,7 +53,10 @@ class BaseTextDebounceMixin:
 
     def _can_merge_text_debounce_events(self: BasePlatformAdapter, existing: MessageEvent, event: MessageEvent) -> bool:
         """Whether one debounce burst can preserve both events' attribution and reply context."""
-        return _can_join_pending_event(existing, event)
+        return (
+            {existing.message_type, event.message_type} <= {MessageType.TEXT, MessageType.PHOTO}
+            and _can_join_pending_event(existing, event)
+        )
 
 
     def _text_debounce_delay(self: BasePlatformAdapter, session_key: str) -> float:
@@ -67,7 +70,7 @@ class BaseTextDebounceMixin:
 
 
     async def _queue_text_debounce(self: BasePlatformAdapter, session_key: str, event: MessageEvent) -> bool:
-        """Buffer normal queue-mode busy text and schedule a bounded flush."""
+        """Buffer a busy burst and schedule a bounded flush."""
         store = self._text_debounce_store()
         state = store.get(session_key)
         if state is None or not self._can_merge_text_debounce_events(state.event, event):
@@ -94,7 +97,10 @@ class BaseTextDebounceMixin:
             state = TextDebounceState(event=event, task=None, first_ts=now, last_ts=now)
             store[session_key] = state
         else:
-            merge_recorded(state.event, event, base_pending_merge._append_debounced_text)
+            merger = (base_pending_merge._absorb_pending_media
+                      if MessageType.PHOTO in {state.event.message_type, event.message_type}
+                      else base_pending_merge._append_debounced_text)
+            merge_recorded(state.event, event, merger)
             state.last_ts = now
         state.cancel_timer()
         delay = self._text_debounce_delay(session_key)

@@ -1,6 +1,7 @@
-import { cleanup, render, screen, waitFor } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { I18nProvider } from '@/i18n'
 import { fmtDayTime } from '@/lib/time'
 import { $cronRunReadOnlyVerdicts, isStoredTranscriptReadOnly } from '@/store/read-only-transcript'
 import type { CronJob, SessionInfo } from '@/types/hermes'

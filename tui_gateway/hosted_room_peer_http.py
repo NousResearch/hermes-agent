@@ -46,7 +46,7 @@ _TERMINAL_RUN_STATES = frozenset({"completed", "failed", "interrupted", "cancell
 _ACTIVE_RUN_STATES = frozenset({"queued", "running", "waiting_for_approval", "stopping"})
 _KNOWN_RUN_STATES = _TERMINAL_RUN_STATES | _ACTIVE_RUN_STATES
 _RUN_STATUS_KEYS = ("run_id", "status", "output", "error", "approval", "last_event",
-                    "pending_controls", "execution_generation", "artifacts", "artifact_scope", "peer_output_empty", "peer_output_unresolved")
+                    "pending_controls", "execution_generation", "artifacts", "artifact_scope", "peer_output_empty", "peer_output_unresolved", "peer_output_dispatch_digest")
 # Older target gateways wrap these inside the generic dispatch error; normalize locally.
 _LEGACY_DISPATCH_MESSAGE_CODES = (
     ("room grant", "invalid_room_grant"),
@@ -279,6 +279,7 @@ class PeerRunsHTTPClient:
         self._status_cache: dict[str, dict[str, Any]] = {}
         self._recovery_backoff: dict[tuple[str, int], dict[str, Any]] = {}
         self._terminal_receipts: set[tuple[str, int]] = set()
+        self._output_dispatch_digests: dict[tuple[str, int], str] = {}
         self._room_scope: dict[str, Any] | None = None
         self._auth_probe_lock = threading.Lock()
         self._auth_probe_rejections: OrderedDict[tuple[str, str, str], tuple[float, str, int, str | None]] = (
@@ -308,7 +309,7 @@ class PeerRunsHTTPClient:
             return
         self._room_scope, self._observation_key = scope, None
         for table in (
-                self._runs, self._status_cache, self._recovery_backoff, self._terminal_receipts):
+                self._runs, self._status_cache, self._recovery_backoff, self._terminal_receipts, self._output_dispatch_digests):
             table.clear()
 
     def _receipt(self, task_id: str, execution_generation: int) -> dict[str, Any] | None:
@@ -334,6 +335,7 @@ class PeerRunsHTTPClient:
             return
         for terminal_key in self._terminal_receipts - {key}:
             self._runs.pop(terminal_key, None)
+            self._output_dispatch_digests.pop(terminal_key, None)
         self._terminal_receipts.intersection_update({key})
         self._observation_key = key
         self._status_cache.clear()
@@ -481,12 +483,14 @@ class PeerRunsHTTPClient:
         self.bind_room_scope(**{f: getattr(checked, f) for f in _RECEIPT_SCOPE_FIELDS})
         self.bind_observation(
             task_id=checked.task_id, execution_generation=checked.execution_generation)
+        self._remember_output_digest(checked)
         return checked
 
     def dispatch(self, *, dispatch: Mapping[str, Any], grant: str) -> Mapping[str, Any]:
         return self._admit_dispatch(self._checked_dispatch(dispatch, grant), grant=grant)
 
-    def recover_dispatch(self, *, dispatch: Mapping[str, Any], grant: str) -> Mapping[str, Any]:
+    def recover_dispatch(self, *, dispatch: Mapping[str, Any], grant: str, observation_only=False,
+                         before_preparation_resume=None) -> Mapping[str, Any]:
         """Observe output-enabled attempts; legacy text retains its idempotent replay."""
         accepted = self.recover_accepted_dispatch(dispatch=dispatch, grant=grant)
         if accepted is not None:
@@ -499,10 +503,21 @@ class PeerRunsHTTPClient:
                 "peer admission recovery is backing off", retryable=True, ambiguous=True)
         try:
             if checked.document_output is not None:
-                receipt = self._recover_output_receipt(checked, grant=grant)
-                recovered = self._accepted(checked, run_id=receipt['run_id'],
-                                           session_id=receipt['session_id'], replayed=True)
+                try:
+                    receipt = self._recover_output_receipt(checked, grant=grant)
+                    recovered = self._accepted(checked, run_id=receipt['run_id'],
+                                               session_id=receipt['session_id'], replayed=True)
+                except PeerRunsHTTPError as error:
+                    if (observation_only or not checked.document_inputs or before_preparation_resume is None
+                            or not (error.status_code == 404 or error.error_code == 'peer_output_acceptance_unproven')):
+                        raise
+                    # A missing observation never proves nonadmission. Only a current
+                    # source attempt may ask the existing accepting writer to resume
+                    # exact verified preparation; that writer decides admission/replay.
+                    recovered = self._admit_dispatch(checked, grant=grant, before_post=before_preparation_resume)
             else:
+                if observation_only:
+                    raise PeerRunsHTTPError('peer accepted receipt remains unknown', ambiguous=True)
                 recovered = self._admit_dispatch(checked, grant=grant)
         except PeerRunsHTTPError as exc:
             failure = exc
@@ -538,7 +553,7 @@ class PeerRunsHTTPClient:
             "execution_generation": checked.execution_generation, "run_id": run_id,
             "session_id": session_id, "replayed": replayed}
 
-    def _admit_dispatch(self, checked: HostedMemberDispatch, *, grant: str) -> Mapping[str, Any]:
+    def _admit_dispatch(self, checked: HostedMemberDispatch, *, grant: str, before_post=None) -> Mapping[str, Any]:
         if checked.document_output is not None:
             from tui_gateway.hosted_room_peer_output import mark_dispatched, stored_consent
             saved = stored_consent(self.receipt_db_path, checked.as_mapping()) if self.receipt_db_path else None
@@ -551,6 +566,8 @@ class PeerRunsHTTPClient:
         def admit() -> dict[str, Any]:
             body = {"input": checked.prompt, "hosted_room_dispatch": checked.as_mapping()}
             def post():
+                if before_post is not None:
+                    before_post()
                 return self._request("/v1/runs", method="POST", body=body,
                     headers={"Idempotency-Key": f"room:{checked.task_id}:{checked.execution_generation}"},
                     room_grant=grant)
@@ -643,6 +660,26 @@ class PeerRunsHTTPClient:
             raise PeerRunsHTTPError("peer observation receipt changed scope")
         return record
 
+    def _remember_output_digest(self, checked):
+        if checked.document_output is not None:
+            from gateway.hosted_room_peer_output import dispatch_digest
+            self._output_dispatch_digests[(checked.task_id, checked.execution_generation)] = dispatch_digest(checked)
+
+    def _verify_output_projection(self, record, status):
+        key = (record['task_id'], record['execution_generation'])
+        expected = self._output_dispatch_digests.get(key)
+        if expected is None and self.receipt_db_path is not None and self.proof_install_id is not None:
+            from tui_gateway.hosted_room_peer_output import stored_consent
+            from gateway.hosted_room_peer_output import dispatch_digest
+            try:
+                saved = stored_consent(self.receipt_db_path, record)
+                if saved is not None and saved.get('contract') is not None:
+                    expected = dispatch_digest(HostedMemberDispatch.from_mapping(saved['dispatch']))
+            except (ValueError, TypeError, KeyError) as error:
+                raise PeerRunsHTTPError('peer output observation consent is unreadable', ambiguous=True) from error
+        if expected is not None and status.get('peer_output_dispatch_digest') != expected:
+            raise PeerRunsHTTPError('peer output canonical evidence is unavailable or changed', ambiguous=True, retryable=True)
+
     def _next_poll_delay(self, cached: Mapping[str, Any] | None) -> float:
         previous = float(cached["delay"]) if cached is not None else self.poll_min_seconds / 2
         return min(self.poll_max_seconds, max(self.poll_min_seconds, previous * 2))
@@ -657,6 +694,7 @@ class PeerRunsHTTPClient:
         if cached is not None:
             status = cached["status"]
             if status.get("status") in _TERMINAL_RUN_STATES and not status.get("peer_output_unresolved"):
+                self._verify_output_projection(record, status)
                 return status
             if now < float(cached["next_poll_at"]):
                 error = cached.get("error")
@@ -667,6 +705,7 @@ class PeerRunsHTTPClient:
         entry = {"delay": delay, "next_poll_at": now + delay, "grant_sha256": fingerprint}
         try:
             full = self._request(_run_path(record), room_grant=self._require_room_grant(grant))
+            self._verify_output_projection(record, full)
             status = {key: full[key] for key in _RUN_STATUS_KEYS if key in full}
             if (
                 str(status.get("run_id") or "") != run_id
@@ -759,8 +798,37 @@ class PeerRunsHTTPClient:
         result = self._post_run_action(
             record, "stop", body={}, grant=self._require_room_grant(grant))
         if result.get("status") in _TERMINAL_RUN_STATES:
+            self._verify_output_projection(record, result)
             self._terminal_receipts.add((str(task_id), int(execution_generation)))
         return result
+
+    def recover_output_consent(self, *, dispatch, grant):
+        """Read positive canonical evidence when local negotiation state was lost."""
+        from dataclasses import replace
+        from gateway.hosted_room_peer_output import dispatch_digest, output_contract
+        from gateway.platforms.api_server_run_scope import room_run_scope_key
+        checked = self._checked_dispatch(dispatch, grant)
+        if self.proof_install_id != checked.target_install_id:
+            raise PeerRunsHTTPError('peer consent recovery requires exact target proof', ambiguous=True)
+        existing = self._receipt(checked.task_id, checked.execution_generation)
+        run_id = str(existing['run_id']) if existing else 'run_' + hashlib.sha256((
+            room_run_scope_key(checked.as_mapping()) + '\0' +
+            f"room:{checked.task_id}:{checked.execution_generation}").encode()).hexdigest()[:32]
+        try:
+            status = self._request('/v1/runs/' + run_id, room_grant=grant,
+                                   headers={'Hermes-Room-Features': 'document-output-v1'})
+            evidence = status.get('peer_dispatch_evidence')
+            if (status.get('run_id') != run_id or status.get('status') not in _KNOWN_RUN_STATES
+                    or not isinstance(evidence, dict) or set(evidence) != {'dispatch_digest', 'document_output'}):
+                raise ValueError('missing canonical dispatch evidence')
+            recovered = replace(checked, document_output=output_contract(evidence['document_output']))
+            if evidence['dispatch_digest'] != dispatch_digest(recovered):
+                raise ValueError('canonical dispatch evidence changed')
+            self._remember_dispatch_receipt(recovered, run_id, grant=grant)
+            return recovered
+        except (PeerRunsHTTPError, ValueError) as error:
+            raise PeerRunsHTTPError('peer output consent remains unknown', ambiguous=True,
+                                   retryable=getattr(error, 'retryable', False)) from error
 
     def _recover_output_receipt(self, checked, *, grant):
         """Prove an already accepted exact attempt without ever POSTing a Run."""
@@ -776,9 +844,17 @@ class PeerRunsHTTPClient:
             # A missing/read-failed receipt is not proof that this attempt never ran.
             raise PeerRunsHTTPError(str(exc), ambiguous=True, retryable=exc.retryable,
                                    status_code=exc.status_code, error_code=exc.error_code) from exc
-        if (status.get('run_id') != run_id or status.get('status') not in _KNOWN_RUN_STATES
-                or status.get('peer_output_dispatch_digest') != dispatch_digest(checked)):
-            raise PeerRunsHTTPError('peer output accepted dispatch changed or is unavailable', ambiguous=True)
+        if status.get('run_id') != run_id or status.get('status') not in _KNOWN_RUN_STATES:
+            raise PeerRunsHTTPError('peer output Run observation changed', ambiguous=True)
+        if status.get('peer_output_dispatch_digest') is None:
+            raise PeerRunsHTTPError('peer output acceptance is unproven', ambiguous=True,
+                                   error_code='peer_output_acceptance_unproven')
+        if status['peer_output_dispatch_digest'] != dispatch_digest(checked):
+            raise PeerRunsHTTPError('peer output accepted dispatch changed', ambiguous=True)
+        return self._remember_dispatch_receipt(checked, run_id, grant=grant)
+
+    def _remember_dispatch_receipt(self, checked, run_id, *, grant):
+        self._remember_output_digest(checked)
         receipt = {**{field: getattr(checked, field) for field in _RECEIPT_SCOPE_FIELDS},
             'task_id': checked.task_id, 'execution_generation': checked.execution_generation,
             'run_id': run_id, 'session_id': self._session_id(checked, grant=grant)}

@@ -38,7 +38,7 @@ _ATTEMPT_SECONDS = 60.0  # at most one renewal attempt per route per minute
 _RETRY_SECONDS, _MAX_RETRY_SECONDS = 30.0, 120.0
 _RENEWED_TTL_SECONDS = 3600.0
 _NEW_WORK = frozenset({'dispatch', 'recover_dispatch', 'probe'})
-_OBSERVATION = frozenset({'history', 'status', 'stop', 'stop_receipt', 'output_request'})
+_OBSERVATION = frozenset({'history', 'status', 'stop', 'stop_receipt', 'output_request', 'recover_output_consent'})
 
 
 def _retire(client, grant):
@@ -181,9 +181,14 @@ class CanonicalPeerClient:
     def _recover_existing(self, call, kwargs):
         # End must still observe accepted work. This helper cannot POST a Run;
         # a missing receipt retains the ordinary retiring/new-admission fence.
-        accepted = self._observe('recover_accepted_dispatch', self._client.recover_accepted_dispatch, kwargs)
+        observed = {key: kwargs[key] for key in ('dispatch', 'grant')}
+        original_grant = self._grant
+        accepted = self._observe('recover_accepted_dispatch', self._client.recover_accepted_dispatch, observed)
         if accepted is not None:
             return accepted
+        if kwargs.get('observation_only'):
+            return self._observe('recover_dispatch', call, {**observed, 'observation_only': True})
+        self._grant = original_grant  # no accepted receipt: never promote an observer grant into new-work authority
         return self._new_work('recover_dispatch', call, kwargs)
 
     def _status(self, status, grant):
@@ -217,7 +222,42 @@ class CanonicalPeerClient:
                 if current is None or current.grant != grant or not self._same_route(
                         current, self._service.peer_clients.get(self._key)):
                     raise RuntimeError('peer room route changed before admission')
+        if name == 'recover_dispatch' and 'preparation_cancel_generation' in kwargs:
+            kwargs = dict(kwargs)
+            cancel_generation = kwargs.pop('preparation_cancel_generation')
+            kwargs['before_preparation_resume'] = lambda: self._check_preparation_resume(
+                kwargs['dispatch'], cancel_generation, grant)
         return self._report(call, {**kwargs, 'grant': grant})
+
+    def _check_preparation_resume(self, dispatch, cancel_generation, grant):
+        from gateway import hosted_room_driver as tasks
+        from tui_gateway.hosted_room_peer_output import stored_consent
+        service = self._service
+        with service._policy_lock:
+            from gateway.session_group_peer_controls import _require_owner
+            _require_owner(service, service.authority, service.runtime)
+            if self._observer_grant() != grant:
+                raise RuntimeStoreError('permission_denied')
+            if service.is_retiring(self._key[0]):
+                raise RuntimeStoreError('room_retiring')
+            current_route = service.peer_routes.get(self._key)
+            if (not self._same_route(current_route, service.peer_clients.get(self._key))
+                    or current_route.grant != grant):
+                raise RuntimeStoreError('permission_denied')
+            current = next((task for task in tasks.list_tasks(service.db_path, room_id=self._key[0])
+                            if task['identity'].task_id == dispatch['task_id']), None)
+            saved = stored_consent(service.db_path, dispatch)
+            if (current is None or current['status'] != 'indeterminate'
+                    or current['execution_generation'] != dispatch['execution_generation']
+                    or current['cancel_generation'] != cancel_generation
+                    or not dispatch.get('document_inputs') or saved is None
+                    or saved.get('dispatched') is not True or saved.get('dispatch') != dispatch
+                    or current['payload'].get('prompt') != dispatch['prompt']
+                    or current['payload'].get('source_event_seq') != dispatch['source_event_seq']):
+                raise RuntimeStoreError('unknown_execution')
+            from tui_gateway.hosted_room_peer_documents import task_documents
+            if task_documents(service.db_path, self._binding, current) != dispatch['document_inputs']:
+                raise RuntimeStoreError('unknown_execution')
 
     def _observe(self, name, call, kwargs):
         from tui_gateway.hosted_room_peer_http import PeerRunsHTTPError

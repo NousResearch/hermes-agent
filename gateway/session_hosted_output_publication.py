@@ -297,7 +297,7 @@ class CanonicalHostedOutput:
         payload = task['payload']
         member = next((member for member in room['members'] if member['member_id'] == payload.get('target_member_id', payload.get('target_profile'))), None)
         if member is not None and member.get('target', {}).get('kind') == 'peer':
-            from tui_gateway.hosted_room_peer_output import stored_consent
+            from tui_gateway.hosted_room_peer_output import proven_text_consent, stored_consent
             target = member['target']
             scope = RoomArtifactScope.from_mapping(dict(room_id=room['room_id'], task_id=task['identity'].task_id,
                 execution_generation=task['execution_generation'], member_id=member['member_id'], target_profile=target['profile'],
@@ -307,10 +307,10 @@ class CanonicalHostedOutput:
             from gateway.hosted_room_driver import is_proven_nonadmission
             if is_proven_nonadmission(task) or (task.get('result') or {}).get('peer_output_empty') == scope.as_mapping():
                 return None
-            if task['status'] == 'cancelled' and consent is not None and (consent.get('dispatched') is False
+            if task['status'] == 'cancelled' and consent is not None and ((consent.get('dispatched') is False and consent.get('provenance') == 'capabilities-v1')
                     or consent.get('unreceived_cancel_generation') == task['cancel_generation']):
                 return None
-            return (scope, None) if consent is not None and consent['contract'] is not None else None
+            return None if proven_text_consent(consent) else (scope, None)
         with self.authority.db._read_ctx() as conn:
             if not output_store_exists(conn):
                 return None  # no Bot ever shared a file here: nothing to look up

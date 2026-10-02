@@ -34,6 +34,9 @@ class Proxy(BaseHTTPRequestHandler):
         body = self.rfile.read(int(self.headers.get('Content-Length', 0)))
         if self.command == 'POST' and self.path == '/v1/runs':
             self.server.run_posts = getattr(self.server, 'run_posts', 0) + 1
+        if self.server.mode == 'offline_before_feature' and self.headers.get('Hermes-Room-Features') == 'document-output-v1':
+            self.server.shutdown(); self.server.server_close()
+            self.send_response(503); self.end_headers(); return
         if self.path.endswith('/artifacts/ack') and self.server.mode == 'block_ack':
             self.send_response(503); self.end_headers(); return
         request = urllib.request.Request(self.server.target + self.path, method=self.command,
@@ -200,9 +203,10 @@ def test_corrupt_published_copy_blocks_ack_replay_and_end_until_repaired(tmp_pat
             asyncio.run(blocked_then_repaired())
 
 
-@pytest.mark.parametrize('action', ['discard', 'retry'])
-def test_proven_unreceived_output_intent_does_not_block_healthy_member_or_controls(tmp_path, action):
-    with pair(tmp_path, 'offline_after_feature') as p:
+@pytest.mark.parametrize('action,mode', [('discard', 'offline_after_feature'), ('retry', 'offline_after_feature'),
+                                          ('discard', 'offline_before_feature'), ('retry', 'offline_before_feature')])
+def test_proven_unreceived_output_intent_does_not_block_healthy_member_or_controls(tmp_path, action, mode):
+    with pair(tmp_path, mode) as p:
         replacement = None
         try:
             with daemon(p.root, p.peer, p.pe, barrier=False) as (_, pd), daemon(p.root, p.home, p.he, barrier=False) as (_, hd):
@@ -219,6 +223,9 @@ def test_proven_unreceived_output_intent_does_not_block_healthy_member_or_contro
                         assert healthy['actor']['id'] == 'host' and not p.pm.requests
                         state = (await rpc(hw, 'groups.state', room_id='linked'))['result']
                         pending = next(a for a in state['driver_status']['pending_actions'] if a['kind'] == 'discard')
+                        if mode == 'offline_before_feature':
+                            with sqlite3.connect(p.home / 'state.db') as db:
+                                assert db.execute("SELECT 1 FROM state_meta WHERE key LIKE 'group.peer-output.v1.%'").fetchone() is None
                         if action == 'retry':
                             replacement = proxy_server(p.proxy.target, address=p.proxy.server_address)
                             p.pm.release.set()

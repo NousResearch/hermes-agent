@@ -188,8 +188,9 @@ async def test_startup_replays_only_current_native_input_and_retains_its_record(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("authorization", ["current", "revoked"])
 async def test_restoration_validates_media_and_receipts_in_the_routed_profile_home(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, authorization
 ):
     from pathlib import Path
 
@@ -298,6 +299,7 @@ async def test_restoration_validates_media_and_receipts_in_the_routed_profile_ho
     expected = []
     try:
         for index, profile in enumerate(("a", "b", "a")):
+            (launch / ".env").write_text("GATEWAY_ALLOWED_USERS=@alice:example.org\n")
             event_id = f"$input-{index}"
             content = {
                 "msgtype": "m.image",
@@ -337,15 +339,23 @@ async def test_restoration_validates_media_and_receipts_in_the_routed_profile_ho
                 path = homes[profile] / "pending_messages" / f"pending-{index}.json"
                 path.parent.mkdir(exist_ok=True)
                 atomic_json_write(path, snapshot.to_payload(), mode=0o600)
+            if authorization == "revoked":
+                (launch / ".env").write_text(
+                    "GATEWAY_ALLOWED_USERS=@other:example.org\n"
+                )
+            assert runner._is_user_authorized_for_source(source) is (
+                authorization == "current"
+            )
             runner._startup_restore_in_progress = True
             await runner._finish_startup_restore()
             if tasks := list(adapter._background_tasks):
                 await asyncio.wait_for(asyncio.gather(*tasks), timeout=5)
-            expected.append((event_id, homes[profile], f"native-{index}".encode()))
+            if authorization == "current":
+                expected.append((event_id, homes[profile], f"native-{index}".encode()))
             assert (observed, reads, path.exists(), get_hermes_home()) == (
                 expected,
                 [(item[0], item[1]) for item in expected],
-                False,
+                authorization == "revoked",
                 launch,
             )
     finally:

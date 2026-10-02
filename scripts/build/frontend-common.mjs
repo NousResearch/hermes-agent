@@ -125,7 +125,15 @@ export async function rmTree(dir) {
 }
 
 export function isMain(url) {
-  return process.argv[1] && url === pathToFileURL(path.resolve(process.argv[1])).href
+  if (!process.argv[1]) return false
+  // Node realpaths the main entry, so import.meta.url is the resolved spelling;
+  // resolve argv[1] too or any symlinked path component (macOS /var -> /private/var,
+  // /tmp -> /private/tmp) makes this false and the CLI silently becomes a no-op.
+  try {
+    return url === pathToFileURL(realpathSync(process.argv[1])).href
+  } catch {
+    return false
+  }
 }
 
 export function frontendArgs(args, extra = {}) {

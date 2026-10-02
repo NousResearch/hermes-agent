@@ -329,3 +329,26 @@ def test_module_cli_builds_the_requested_products(source_products, desktop, monk
     assert acquired == ["npm"]
     assert (root / "hermes_cli/web_dist/index.html").is_file()
     assert (root / "apps/desktop/release/linux-unpacked/hermes").exists() == desktop
+
+
+@pytest.mark.platforms("posix")
+def test_freshness_cli_answers_through_a_symlinked_script_path(tmp_path):
+    """isMain compares argv[1] against Node's realpath'd import.meta.url. Resolve argv[1] the
+    same way, or a symlinked script path (macOS /var -> /private/var, /tmp -> /private/tmp)
+    turns the freshness CLI into a silent no-op: empty stdout reads as a stale product."""
+    import json
+
+    copy_freshness_scripts(tmp_path)
+    dist = tmp_path / "out"
+    dist.mkdir()
+    stamp_product(tmp_path, "desktop", dist)
+    entry = tmp_path / "entry-link" / "freshness.mjs"
+    entry.parent.mkdir()
+    entry.symlink_to(tmp_path / "scripts" / "build" / "freshness.mjs")
+    result = subprocess.run(
+        [shutil.which("node"), str(entry),
+         "--source", str(tmp_path), "--product", "desktop", "--out", str(dist)],
+        capture_output=True, text=True, timeout=60,
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "true", f"CLI produced no verdict: {result.stdout!r} {result.stderr!r}"

@@ -256,7 +256,7 @@ def _model_consumes_thought_signature(model: Any) -> bool:
     return "gemini" in m or "gemma" in m
 
 
-def _route_replays_reasoning_details(base_url: Any) -> bool:
+def _route_replays_reasoning_details(base_url: Any, model: Any = None) -> bool:
     """True when the target route reads replayed ``reasoning_details`` (OpenRouter's unified
     reasoning array, also consumed by the Nous Portal).
 
@@ -266,10 +266,21 @@ def _route_replays_reasoning_details(base_url: Any) -> bool:
     request with HTTP 400/422 — so a reasoning turn produced earlier in the session wedges every
     later turn once the model is switched (#70233). The stored history keeps the field; only the
     wire copy drops it.
+
+    On OpenRouter routes, models that resolve to Gemini/Gemma upstreams consume
+    ``thought_signature`` instead of ``reasoning_details``; OpenRouter forwards the wire copy to
+    strict upstreams (e.g. Google AI Studio), which reject unknown fields with HTTP 400 (#129037).
+    Dropping the wire field for those targets avoids the funnel failure while keeping
+    OpenRouter-native reasoning continuity for models that do replay it.
     """
     from utils import base_url_host_matches
 
-    return base_url_host_matches(base_url, "openrouter.ai") or base_url_host_matches(base_url, "nousresearch.com")
+    if base_url_host_matches(base_url, "openrouter.ai"):
+        m = str(model or "").lower()
+        if _model_consumes_thought_signature(model) or m.startswith("google/"):
+            return False
+        return True
+    return base_url_host_matches(base_url, "nousresearch.com")
 
 
 def _has_replayable_thought_signature(extra_content: Any) -> bool:
@@ -453,7 +464,9 @@ class ChatCompletionsTransport(ProviderTransport):
         strip_extra_content = not _model_consumes_thought_signature(kwargs.get("model"))
         # A profile declaring a native carrier type consumes replayed details by contract.
         native_type = getattr(kwargs.get("provider_profile"), "native_reasoning_details_type", None) or None
-        strip_reasoning_details = not (native_type or _route_replays_reasoning_details(kwargs.get("base_url")))
+        strip_reasoning_details = not (
+            native_type or _route_replays_reasoning_details(kwargs.get("base_url"), kwargs.get("model"))
+        )
         sanitized_pairs = [(m, _sanitize_message(m, strip_extra_content, strip_reasoning_details, native_type))
                            for m in messages]
         if all(s is None for _, s in sanitized_pairs):
@@ -473,7 +486,8 @@ class ChatCompletionsTransport(ProviderTransport):
         path below (is_kimi, is_openrouter, ...) is only reached for unregistered providers.
         """
         _profile = params.get("provider_profile")
-        sanitized = self.convert_messages(messages, model=model, base_url=params.get("base_url"), provider_profile=_profile)
+        base_url = params.get("base_url") or getattr(_profile, "base_url", None)
+        sanitized = self.convert_messages(messages, model=model, base_url=base_url, provider_profile=_profile)
         if _profile:
             return self._build_kwargs_from_profile(_profile, model, sanitized, tools, params)
 

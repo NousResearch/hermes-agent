@@ -4010,6 +4010,13 @@ export interface Translations {
       modelPinned: string
       modelTitle: (provider: string, model: string) => string
       providerModelTitle: (provider: string, model: string) => string
+      workhorse: {
+        openPicker: string
+        inherit: string
+        noModel: string
+        modelTitle: (provider: string, model: string) => string
+        effortInherit: string
+      }
     }
   }
 

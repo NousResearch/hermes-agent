@@ -225,13 +225,19 @@ def _remove_entry(store: Store, entry_name: str) -> None:
     """
     import time
 
+    from hermes_cli.fs_utils import rmtree_force
+
     entry = store.entry(entry_name)
     for attempt in range(5):
         try:
             if entry.is_symlink() or not entry.is_dir():
                 entry.unlink(missing_ok=True)
             else:
-                shutil.rmtree(entry)
+                # PortableGit ships etc/hosts read-only, and Windows refuses to unlink
+                # a read-only file, so a bare rmtree raised WinError 5 and aborted the
+                # whole update ("install failed: [WinError 5] Access is denied"). The
+                # retry loop cannot help: the read-only bit is not a transient hold.
+                rmtree_force(entry)
             return
         except FileNotFoundError:
             return

@@ -1508,6 +1508,37 @@ class TestDispatchDelegateTask(unittest.TestCase):
         self.assertNotIn("acp_command", captured["tasks"][0])
         self.assertNotIn("acp_args", captured["tasks"][0])
 
+    def test_model_context_mode_is_forwarded(self):
+        import run_agent
+
+        captured = {}
+
+        def fake_delegate_task(**kwargs):
+            captured.update(kwargs)
+            return "{}"
+
+        parent = _make_mock_parent(depth=0)
+        with patch("tools.delegate_tool.delegate_task", fake_delegate_task):
+            run_agent.AIAgent._dispatch_delegate_task(
+                parent, {"goal": "test", "context_mode": "fork"}
+            )
+
+        self.assertEqual(captured["context_mode"], "fork")
+
+    def test_context_mode_preserves_tool_error_for_malformed_tasks(self):
+        parent = _make_mock_parent(depth=0)
+
+        for malformed in (123, "hello", None):
+            with self.subTest(malformed=malformed):
+                result = json.loads(
+                    delegate_task(
+                        tasks=[malformed],  # type: ignore[list-item]
+                        context_mode="fork", parent_agent=parent
+                    )
+                )
+                self.assertIn("error", result)
+                self.assertIn("Task 0 must be an object", result["error"])
+
 
 
 class TestConcurrencyDefaults(unittest.TestCase):

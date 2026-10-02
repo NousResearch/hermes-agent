@@ -507,13 +507,12 @@ def delegate_task(
         # spawn loudly (#80450).
         return tool_error(str(exc))
     max_children = _get_max_concurrent_children()
-    if context_mode is not None:
-        if tasks is not None:
-            tasks = [dict(task, context_mode=context_mode) for task in tasks]
-        elif goal is not None:
-            tasks = [{"goal": goal, **({"context": context} if context is not None else {}), "context_mode": context_mode}]
-            goal = None
     task_list, err = _normalize_task_list(goal, context, tasks, output_schema, top_role, max_children)
+    if not err and context_mode is not None:
+        # Apply the top-level mode only after normalization so malformed task entries
+        # still produce the structured validation error instead of crashing here.
+        for task in task_list:
+            task["context_mode"] = context_mode
     if not err:
         task_schemas, err = _coerce_task_schemas(task_list, output_schema)
     if not err:

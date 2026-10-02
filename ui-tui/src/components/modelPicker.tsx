@@ -219,6 +219,9 @@ export function ModelPicker({
   }, [allModels, filter, stage])
 
   const models = filteredModels
+  // Error/empty catalog views render no searchable list. Keep their cancellation
+  // contract separate from list filtering so printable keys cannot create hidden state.
+  const usableCatalog = !loading && !err && providers.length > 0
 
   // Keep the active selection within the (possibly filtered) list bounds.
   useEffect(() => {
@@ -234,6 +237,14 @@ export function ModelPicker({
   }, [models.length, modelIdx])
 
   const back = () => {
+    // Error/empty catalog views are terminal: cancel before any filter-clearing
+    // navigation, even if stale filter state somehow exists.
+    if (!loading && !usableCatalog) {
+      onCancel()
+
+      return
+    }
+
     // Esc first clears an active filter on the list stages, before navigating.
     if ((stage === 'provider' || stage === 'model') && filter.trim()) {
       // Preserve the selected provider across filter clear (same fix as
@@ -443,6 +454,16 @@ export function ModelPicker({
       return
     }
 
+    // Error/empty catalog views have no visible filter. Their advertised q/Esc
+    // keys must cancel immediately, and every other printable key is ignored.
+    if (!loading && !usableCatalog) {
+      if (key.escape || ch === 'q') {
+        onCancel()
+      }
+
+      return
+    }
+
     // List-stage Esc handling (overlay keys are disabled while on a list
     // stage so 'q' can be typed into the filter, e.g. a leading "qwen").
     if (key.escape) {
@@ -574,7 +595,7 @@ export function ModelPicker({
 
     // Any other printable single character extends the filter — once the list has loaded, so the
     // selection restored on load can't point at an arbitrary row of an already-filtered list.
-    if (!loading && ch && !key.ctrl && !key.meta && ch.length === 1 && ch >= ' ') {
+    if (usableCatalog && ch && !key.ctrl && !key.meta && ch.length === 1 && ch >= ' ') {
       setFilter(v => v + ch)
       setSel(0)
     }

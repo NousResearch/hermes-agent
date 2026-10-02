@@ -121,7 +121,7 @@ class _KeylessFirecrawlClient:
         return response.json()
 
     search = lambda self, *, query, limit=5: self._post("/v2/search", {"query": query, "limit": limit})  # noqa: E731
-    scrape = lambda self, *, url, formats: self._post("/v2/scrape", {"url": url, "formats": formats})  # noqa: E731
+    scrape = lambda self, *, url, formats: self._post("/v2/scrape", {"url": url, "formats": formats, "onlyMainContent": False})  # noqa: E731
 
 
 def _get_firecrawl_gateway_url() -> str:

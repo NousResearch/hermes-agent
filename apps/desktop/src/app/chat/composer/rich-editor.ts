@@ -304,7 +304,7 @@ function caretAfterInsert(tail: Node): Range {
 
   if (tail.nodeType === Node.TEXT_NODE) {
     offset = (tail.textContent ?? '').length
-  } else if (tail.nextSibling?.nodeType === Node.TEXT_NODE) {
+  } else if (tail.nextSibling?.nodeType === Node.TEXT_NODE && tail.nextSibling.textContent) {
     target = tail.nextSibling
   } else {
     const spacer = document.createTextNode(' ')
@@ -316,6 +316,7 @@ function caretAfterInsert(tail: Node): Range {
   const caret = document.createRange()
   caret.setStart(target, offset)
   caret.collapse(true)
+
   return caret
 }
 
@@ -661,8 +662,12 @@ function caretClientRect(range: Range): { bottom: number; top: number } | null {
 
   // Chromium gives a caret between elements (after a chip or <br>, or at the
   // editor's end, which is where inserts leave it) no box. Measure a probe
-  // there instead. In jsdom, text-node ranges also have no geometry, so the
-  // same fallback keeps programmatic inserts covered by the tests.
+  // there instead. A text-node caret always has a box, so the probe never
+  // splits text.
+  if (end.startContainer.nodeType === Node.TEXT_NODE) {
+    return null
+  }
+
   const probe = document.createElement('span')
   probe.textContent = '\u200b'
   end.insertNode(probe)

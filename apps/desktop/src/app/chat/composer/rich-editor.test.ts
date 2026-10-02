@@ -466,9 +466,9 @@ describe('replaceBeforeCaret', () => {
     expect(replaceBeforeCaret(editor, 4, fragment)).toBe(true)
     const caret = selection.getRangeAt(0)
     expect(caret.startContainer.nodeType).toBe(Node.TEXT_NODE)
-    expect(caret.startContainer.textContent).toBe('')
-    expect(caret.startOffset).toBe(0)
-    expect(composerPlainText(editor)).toBe('see @url:`https://example.dev/a`')
+    expect(caret.startContainer.textContent).toBe(' ')
+    expect(caret.startOffset).toBe(1)
+    expect(composerPlainText(editor)).toBe('see @url:`https://example.dev/a` ')
 
     editor.remove()
   })
@@ -641,6 +641,28 @@ describe('caret reveal after programmatic inserts', () => {
     document.body.append(editor)
 
     Object.defineProperty(editor, 'clientHeight', { configurable: true, value: 100 })
+    Object.defineProperty(Range.prototype, 'getClientRects', {
+      configurable: true,
+      value: vi.fn(function (this: Range) {
+        if (this.startContainer.nodeType !== Node.TEXT_NODE) {
+          return [] as unknown as DOMRectList
+        }
+
+        return [
+          {
+            bottom: caretTop + 20,
+            height: 20,
+            left: 0,
+            right: 0,
+            top: caretTop,
+            width: 0,
+            x: 0,
+            y: caretTop,
+            toJSON: () => ({})
+          }
+        ] as unknown as DOMRectList
+      })
+    })
     vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function (this: HTMLElement) {
       const [top, bottom] = this === editor ? [0, 100] : [caretTop, caretTop + 20]
 
@@ -657,6 +679,8 @@ describe('caret reveal after programmatic inserts', () => {
 
   afterEach(() => {
     vi.restoreAllMocks()
+    const rangePrototype = Range.prototype as unknown as { getClientRects?: unknown }
+    delete rangePrototype.getClientRects
     document.body.replaceChildren()
   })
 
@@ -679,5 +703,14 @@ describe('caret reveal after programmatic inserts', () => {
 
     expect(editor.scrollTop).toBe(220)
     expect(composerPlainText(editor)).toContain('said 29')
+  })
+
+  it('uses a probe for an element-boundary caret without range geometry', () => {
+    const editor = overflowingEditor(300)
+
+    placeCaretEnd(editor)
+
+    expect(editor.scrollTop).toBe(220)
+    expect(editor.querySelectorAll('span')).toHaveLength(0)
   })
 })

@@ -70,6 +70,7 @@ def test_fetch_masks_reference_components_and_url_spellings(monkeypatch, tmp_pat
 
 @pytest.mark.parametrize("reference, diagnostic, leaked", [
     ('op://vault/client "prod"/field', r'no item named "client \"prod\""', r'client \"prod\"'),
+    ('op://vault/café/field', r'no item named caf\u00e9', r'caf\u00e9'),
     ('op://vault/café/field', 'no item named caf%c3%a9', 'caf%c3%a9'),
     ("op://vault/Client's account/field", "no item named Client's%20account", "Client's"),
 ])

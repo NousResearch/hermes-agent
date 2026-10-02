@@ -139,6 +139,7 @@ def _mask_reference_diagnostic(message: str, references: Dict[str, str]) -> str:
             for variant in (part, unquote(part), quote(unquote(part), safe="/:" if part == ref else "")):
                 if variant:
                     spellings.update((variant, repr(variant)[1:-1],
+                                      json.dumps(variant)[1:-1],
                                       json.dumps(variant, ensure_ascii=False)[1:-1]))
     if not spellings:
         return message

@@ -141,6 +141,18 @@ class GatewayConfigLoadersMixin:
         turn for the same reason.
         """
         override = self._channel_override(platform, chat_id, thread_id, parent_id)
+        if override and override.personality is not None:
+            from gateway.run import _load_gateway_config
+            from hermes_cli.personality import resolve_personality
+
+            try:
+                _, personality = resolve_personality(override.personality, _load_gateway_config())
+            except ValueError:
+                logger.warning("Unknown channel_overrides personality %r for channel %s", override.personality, chat_id)
+            else:
+                return "\n\n".join(part for part in (
+                    personality, (override.system_prompt or "").strip(),
+                ) if part)
         if override and override.system_prompt:
             return (override.system_prompt or "").strip()
         return self._load_ephemeral_system_prompt()

@@ -342,7 +342,21 @@ platforms:
 
 Details:
 
-- All three keys are optional — set only `model`, only `system_prompt`, or any combination. Unset fields fall back to the global defaults.
+- All keys are optional — set `model`, `provider`, `system_prompt`, `personality`, or a combination. Unset fields fall back to the global defaults.
+- `personality` resolves a name from the same registry as `/personality` (including `agent.personalities` string or structured definitions). When paired with `system_prompt`, the named style comes first, followed by a blank line and the channel prompt. Together they replace the global overlay. An explicit `personality: none` selects an empty style; unknown names warn and retain the existing channel-prompt/global fallback.
+
+```yaml
+agent:
+  personalities:
+    reviewer: "Be precise and concise."
+platforms:
+  discord:
+    channel_overrides:
+      "123456789012345678":
+        personality: reviewer
+        system_prompt: "Review changes for this project."
+```
+
 - Lookup order is exact channel/thread id first, then the **parent** channel/forum id — so Discord threads inherit their parent channel's override automatically.
 - Resolution priority for the model is: session `/model` override → `channel_overrides` → global config. A user running `/model` in a chat still wins over the channel default.
 - The `system_prompt` override replaces the global gateway prompt for that channel (it is ephemeral — injected per turn, not stored in history).

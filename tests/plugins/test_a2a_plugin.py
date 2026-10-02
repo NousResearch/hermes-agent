@@ -17,6 +17,7 @@ import re
 import os
 import socket
 import threading
+import time
 import urllib.error
 import urllib.request
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -1089,9 +1090,12 @@ class TestInboundRoundTrip:
 
         asyncio.run(run())
 
-    def test_timeout_returns_failed_not_completed(self, monkeypatch):
-        """When the agent never replies, the task must FAIL (and count as a
-        failure), not report success."""
+    def test_reply_window_expiry_parks_task_and_late_reply_lands(self, monkeypatch):
+        """A reply window that elapses while the agent is still working must NOT tombstone the task.
+
+        The requester gets a WORKING task carrying the poll hint, the failure counters stay put, and
+        the reply that arrives afterwards lands in the task store (audit + tasks/get + push) instead
+        of dying with the HTTP thread — the loss class behind two A2A jobs recovered by ssh."""
         monkeypatch.delenv("A2A_BEARER_TOKEN", raising=False)
         monkeypatch.delenv("A2A_PEER_TOKENS", raising=False)
         monkeypatch.setenv("A2A_REPLY_TIMEOUT", "1")
@@ -1103,12 +1107,109 @@ class TestInboundRoundTrip:
             completed_before = protocol.metrics.tasks_completed
             resp = await asyncio.to_thread(_post_json, base + "/", _send_body("are you there"))
             task = resp["result"]
-            assert task["status"]["state"] == "TASK_STATE_FAILED"
-            assert protocol.metrics.tasks_failed == failed_before + 1
+            task_id = task["id"]
+            # Not FAILED (the work is alive) and not COMPLETED (it is not done) — WORKING + hint.
+            assert task["status"]["state"] == protocol.STATE_WORKING
+            hint = protocol.extract_text(task["status"]["message"])
+            assert "reply window" in hint and "tasks/get" in hint
+            assert protocol.metrics.tasks_failed == failed_before
             assert protocol.metrics.tasks_completed == completed_before
-            # The task store agrees.
-            rec = adapter.tasks.get(task["id"])
-            assert rec["state"] == "TASK_STATE_FAILED"
+            assert adapter.tasks.get(task_id)["state"] == protocol.STATE_WORKING
+            # tasks/get shows the same hint to a poller, not an empty shell.
+            got = await asyncio.to_thread(_post_json, base + "/",
+                                          {"jsonrpc": "2.0", "id": "r2", "method": "GetTask",
+                                           "params": {"taskId": task_id}})
+            assert got["result"]["status"]["state"] == protocol.STATE_WORKING
+            assert "tasks/get" in protocol.extract_text(got["result"]["status"]["message"])
+
+            # The job finishes after the requester gave up: it must still land.
+            assert adapter._resolve_task(task_id, protocol.STATE_COMPLETED, "LATE_RESULT")
+            for _ in range(100):
+                if adapter.tasks.get(task_id)["state"] == protocol.STATE_COMPLETED:
+                    break
+                await asyncio.sleep(0.05)
+            rec = adapter.tasks.get(task_id)
+            assert rec["state"] == protocol.STATE_COMPLETED
+            assert rec["reply"] == "LATE_RESULT"
+            assert protocol.metrics.tasks_completed == completed_before + 1
+            assert protocol.metrics.tasks_failed == failed_before
+            await adapter.disconnect()
+
+        asyncio.run(run())
+
+    def test_return_immediately_accepts_then_polls(self, monkeypatch):
+        """A2A v1.0 ``configuration.returnImmediately=true`` is accept-then-poll: answer at once with
+        a task id the caller can poll, so a 60-minute job never depends on a reply window."""
+        from plugins.platforms.a2a import adapter as adapter_mod
+        monkeypatch.delenv("A2A_BEARER_TOKEN", raising=False)
+        monkeypatch.delenv("A2A_PEER_TOKENS", raising=False)
+        monkeypatch.setenv("A2A_REPLY_TIMEOUT", "60")  # long on purpose: the answer must not be a timeout
+        adapter, base = _make_live_adapter(monkeypatch, reply_fn=lambda e: None)
+
+        async def run():
+            assert await adapter.connect() is True
+            started = time.monotonic()
+            resp = await asyncio.to_thread(
+                _post_json, base + "/",
+                _send_body("run the full suite", extra_params={"configuration": {"returnImmediately": True}}))
+            elapsed = time.monotonic() - started
+            task = resp["result"]
+            assert elapsed < 5, f"accept-then-poll blocked {elapsed:.1f}s"
+            assert task["status"]["state"] == protocol.STATE_WORKING
+            task_id = task["id"]
+            assert "asynchronous" in protocol.extract_text(task["status"]["message"]).lower()
+            # The v0.2 spelling takes the same path.
+            assert adapter_mod.A2AAdapter._return_immediately({"configuration": {"blocking": False}}) is True
+            assert adapter_mod.A2AAdapter._return_immediately({"configuration": {"blocking": True}}) is False
+            assert adapter_mod.A2AAdapter._return_immediately({}) is False
+
+            # Poll, then collect the late result — the contract a2a_status relies on.
+            got = await asyncio.to_thread(_post_json, base + "/",
+                                          {"jsonrpc": "2.0", "id": "r3", "method": "GetTask",
+                                           "params": {"taskId": task_id}})
+            assert got["result"]["status"]["state"] == protocol.STATE_WORKING
+            assert adapter._resolve_task(task_id, protocol.STATE_COMPLETED, "SUITE_DONE")
+            for _ in range(100):
+                if adapter.tasks.get(task_id)["state"] == protocol.STATE_COMPLETED:
+                    break
+                await asyncio.sleep(0.05)
+            assert adapter.tasks.get(task_id)["reply"] == "SUITE_DONE"
+            await adapter.disconnect()
+
+        asyncio.run(run())
+
+    def test_parked_task_fails_after_job_budget_not_reply_window(self, monkeypatch):
+        """Parked tasks are exempt from the orphan sweep (that is what lets the late reply land), so
+        A2A_JOB_TIMEOUT is what finally bounds them — a job budget, not a reply window."""
+        from plugins.platforms.a2a import adapter as adapter_mod
+        adapter, _base = _make_live_adapter(monkeypatch, reply_fn=lambda e: None)
+        rec = adapter.tasks.create("t-parked", "c1", "peer")
+        adapter.tasks.set_state("t-parked", protocol.STATE_WORKING)
+        adapter.tasks._tasks["t-parked"]["created_at"] = time.time() - (adapter_mod._job_timeout() + 60)
+        pending = {"task_id": "t-parked", "context_id": "c1", "peer": "peer",
+                   "future": adapter._add_pending("t-parked", "c1"), "created_iso": rec["created_iso"],
+                   "started": time.time()}
+        adapter._park_task(pending, "parked note")
+
+        # Younger than the reply window? Irrelevant — the parked sweep uses the job budget alone,
+        # and an ordinary orphan younger than the job budget is still protected.
+        assert adapter._fail_orphans_once() == ["t-parked"]
+        stored = adapter.tasks.get("t-parked")
+        assert stored["state"] == protocol.STATE_FAILED
+        assert "A2A_JOB_TIMEOUT" in stored["reply"]
+        assert "t-parked" not in adapter._parked
+
+    def test_health_reports_reply_and_job_windows(self, monkeypatch):
+        """The reply window must be readable live (GET /health) instead of guessed from .env files."""
+        monkeypatch.setenv("A2A_REPLY_TIMEOUT", "420")
+        monkeypatch.setenv("A2A_JOB_TIMEOUT", "3600")
+        adapter, base = _make_live_adapter(monkeypatch)
+
+        async def run():
+            assert await adapter.connect() is True
+            payload = await asyncio.to_thread(_get_json, base + "/health")
+            assert payload["reply_timeout_seconds"] == 420
+            assert payload["job_timeout_seconds"] == 3600
             await adapter.disconnect()
 
         asyncio.run(run())
@@ -1511,7 +1612,7 @@ class TestClientTenantAndDiscovery:
 
         monkeypatch.setattr(tools, "_http_get_json", fake_get)
         monkeypatch.setattr(tools, "_http_post_json", fake_post)
-        reply, _ctx, _state = tools._send_task(
+        reply, _ctx, _state, _task_id = tools._send_task(
             "dev", {"url": "http://peer.example", "auth": {}, "timeout": 5}, "hello", "ctx-1"
         )
         assert reply == "ok"
@@ -1583,10 +1684,11 @@ class TestV1SpecRegressionFixes:
 
         monkeypatch.setattr(tools, "_http_get_json", fake_get)
         monkeypatch.setattr(tools, "_http_post_json", fake_post)
-        reply, _ctx, state = tools._send_task(
+        reply, _ctx, state, task_id = tools._send_task(
             "dev", {"url": "http://peer.example", "auth": {}, "timeout": 5}, "hello", "ctx-1")
         assert reply == "ok"
         assert state == protocol.STATE_COMPLETED
+        assert task_id == "task-1"
         assert posted["body"]["method"] == "SendMessage"
         assert posted["body"]["params"]["tenant"] == "dev-team"
 
@@ -1701,6 +1803,20 @@ class TestV1SpecRegressionFixes:
         assert calls[0][1]['input_id']
         assert not (tmp_path / 'state.db').exists()
 
+
+
+class TestExclusivePort:
+    """Two gateways (profiles) must not share one A2A port: on Windows stdlib SO_REUSEADDR let a second
+    server bind the same listening port and requests split between them."""
+
+    def test_a_second_server_on_the_same_port_fails_to_bind(self):
+        from plugins.platforms.a2a.adapter import A2ARequestHandler, _ExclusiveHTTPServer
+        first = _ExclusiveHTTPServer(("127.0.0.1", 0), A2ARequestHandler)
+        try:
+            with pytest.raises(OSError):
+                _ExclusiveHTTPServer(("127.0.0.1", first.server_address[1]), A2ARequestHandler).server_close()
+        finally:
+            first.server_close()
 
 
 # --------------------------------------------------------------------------

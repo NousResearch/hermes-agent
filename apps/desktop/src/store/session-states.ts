@@ -614,7 +614,9 @@ function withNoReplyNotice(messages: ChatMessage[]): ChatMessage[] {
  *  user started meanwhile is either live (skipped) or has its own reply. */
 function markTurnWithoutReply(runtimeId: string) {
   writeSessionState(runtimeId, state =>
-    isLiveTurnAwaitingEvents(state) || turnHasReply(state.messages)
+    // An explicit Stop or a superseding prompt owns this terminal transition.
+    // Never replace that intentional interruption with a retryable no-reply card.
+    state.interrupted || isLiveTurnAwaitingEvents(state) || turnHasReply(state.messages)
       ? state
       : { ...state, messages: withNoReplyNotice(state.messages) }
   )

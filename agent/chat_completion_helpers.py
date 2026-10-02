@@ -922,7 +922,7 @@ class _InlineRequest:
         # deadlock this path exists to avoid (#60203). This ticker only refreshes the clock.
         while not self._hb_stop.wait(_DIRECT_API_ACTIVITY_HEARTBEAT_SECONDS):
             with contextlib.suppress(Exception):
-                self.agent._touch_activity("waiting for non-streaming API response")
+                self.agent._touch_activity("等待非流式 API 响应")
 
     def _on_stale(self) -> None:
         # Timer thread: aborts sockets only, never issues a request (keeps the no-worker
@@ -1021,7 +1021,7 @@ def direct_api_call(agent, api_kwargs: dict):
     equal to the stale budget is the backstop when the abort finds nothing (#85252).
     Both surface a retryable ``TimeoutError`` for the outer retry loop."""
     _check_stale_giveup(agent)
-    agent._touch_activity("waiting for non-streaming API response")
+    agent._touch_activity("等待非流式 API 响应")
     # Resolve the budget BEFORE the heartbeat starts: the resolver may raise
     # (fail-closed), and a leaked heartbeat thread would mask real stalls forever.
     call_start = time.time()
@@ -1616,6 +1616,21 @@ def _assistant_content_for_storage(agent, assistant_message):
         if content:
             from agent.redact import redact_sensitive_text
             content = redact_sensitive_text(content)
+            # Degeneration guard at the storage boundary — the single choke point every
+            # assistant row passes through. The repetition guard only runs on the
+            # truncation/interrupt paths, so a reply that degenerates and then stops NORMALLY
+            # would be persisted verbatim; because the row is replayed on every later turn it
+            # re-seeds the same loop and survives a model switch. Replace it here so the
+            # corruption never becomes durable history.
+            from agent.repetition_guard import REPETITION_LOOP_INTERRUPTED, looks_degenerate
+            if looks_degenerate(content):
+                logger.warning(
+                    "Degenerate assistant reply (%d chars, model=%s provider=%s finish_reason=%s) "
+                    "— storing a marker instead of the corrupted text",
+                    len(content), getattr(agent, "model", None), getattr(agent, "provider", None),
+                    getattr(assistant_message, "finish_reason", None),
+                )
+                content = REPETITION_LOOP_INTERRUPTED
     return content
 
 
@@ -3003,7 +3018,7 @@ class _StreamingCall(StreamingWaitMonitor):
     def _count_chunk(self, diag, chunk) -> None:
         """Stamp liveness for a real chunk; diagnostics are best-effort."""
         self.last_chunk_time["t"] = time.time()
-        self.agent._touch_activity("receiving stream response")
+        self.agent._touch_activity("接收流式响应")
         with contextlib.suppress(Exception):
             diag["chunks"] = int(diag.get("chunks", 0)) + 1
             if diag.get("first_chunk_at") is None:
@@ -3074,7 +3089,7 @@ class _StreamingCall(StreamingWaitMonitor):
         request_client = self._attempt_request_client = self.clients.set_client(
             self.agent._create_request_openai_client(reason="chat_completion_stream_request", api_kwargs=stream_kwargs))
         self.last_chunk_time["t"] = time.time()
-        self.agent._touch_activity("waiting for provider response (streaming)")
+        self.agent._touch_activity("等待提供者响应（流式）")
         # #93650: as above — the streaming path carries the same bulk
         # messages/tools payload and pays the same client-side walk.
         stream_kwargs = bypass_chat_sdk_request_transform(stream_kwargs, request_client)

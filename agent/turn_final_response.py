@@ -113,6 +113,18 @@ def finish_text_response(
                 sum(1 for m in messages if isinstance(m, dict) and m.get("role") == "assistant" and m.get("tool_calls")),
             )
     final_response = _promoted or assistant_message.content or ""
+    # Degeneration guard for the LIVE reply: the storage boundary keeps corrupted text out of
+    # history, but the user would still SEE it this turn. Swap in the same marker so what is
+    # displayed matches what is persisted.
+    from agent.repetition_guard import REPETITION_LOOP_INTERRUPTED, looks_degenerate
+    if looks_degenerate(final_response):
+        logger.warning(
+            "Degenerate final response (%d chars, model=%s provider=%s finish_reason=%s) — "
+            "replacing with a marker instead of showing/persisting the corrupted text",
+            len(final_response), agent.model, agent.provider, finish_reason,
+        )
+        final_response = REPETITION_LOOP_INTERRUPTED
+        _promoted = None
     # Unmute: _mute_post_response from a housekeeping tool turn must not silence
     # empty-response warnings on the final response path.
     agent._mute_post_response = False

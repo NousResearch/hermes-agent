@@ -10,6 +10,7 @@ conservative: only LONG verbatim repeats (60+ chars) covering a majority of the 
 from __future__ import annotations
 
 import math
+import unicodedata
 from collections import Counter
 
 # Below this length the check doesn't run: short truncations trivially
@@ -154,3 +155,88 @@ def _line_repetition_dominated(text: str, n: int) -> bool:
     """True when a single normalized line covers half the fragment via repeats."""
     counts = Counter(norm for norm in (line.strip() for line in text.splitlines()) if norm)
     return any(c >= _MIN_REPEAT_COUNT and c * len(line) >= n * _DOMINANCE_RATIO for line, c in counts.items())
+
+
+# --- Completed-reply degeneration guard -------------------------------------------------
+#
+# ``is_repetition_dominated`` above only runs on the truncation / interrupt paths. A model that
+# degenerates and then terminates NORMALLY (``finish_reason="stop"``) bypasses it entirely, and
+# the two shapes it cannot see anyway are the ones users actually hit:
+#
+#   * script switching — one reply restated in a dozen scripts (the dominant failure), and
+#   * symbol soup — a long reply that is almost entirely punctuation and digits.
+#
+# Such a reply is persisted as an ordinary assistant row and REPLAYED on every later turn, which
+# re-seeds the same loop: the corruption outlives a model switch because it lives in the history,
+# not the model. Callers therefore run this at the storage boundary (see
+# ``agent.chat_completion_helpers._assistant_content_for_storage``) and in the final-response path.
+
+# Scripts that never legitimately dominate a Latin/CJK conversation's reply. A quoted name or
+# title must not trip the check, so an absolute floor AND a share-of-letters test both apply.
+_EXOTIC_SCRIPT_PREFIXES = (
+    "THAI", "LAO", "TIBETAN", "GREEK", "CYRILLIC", "HEBREW", "ARABIC", "SYRIAC",
+    "DEVANAGARI", "BENGALI", "GURMUKHI", "GUJARATI", "ORIYA", "TAMIL", "TELUGU",
+    "KANNADA", "MALAYALAM", "SINHALA", "MYANMAR", "KHMER", "GEORGIAN", "ARMENIAN",
+    "ETHIOPIC", "HANGUL", "HIRAGANA", "KATAKANA",
+)
+# A handful of foreign words (a quoted title, a name) must never trip the check.
+_MIN_EXOTIC_LETTERS = 60
+# ...nor may a stray quotation: this share of ALL letters must also be foreign.
+_MIN_EXOTIC_RATIO = 0.10
+# An absolute flood of foreign-script letters is degenerate on its own, however small a share of
+# a long reply it is (observed word-salad case: 833 kana inside a 43k-char reply = 3.9%).
+_MIN_EXOTIC_ABSOLUTE = 300
+# Symbol soup: a reply whose letters cover less than this share of its characters...
+_MIN_LETTER_RATIO = 0.28
+# ...AND that is dominated by a single repeated symbol. The second test keeps legitimately
+# data-heavy replies (JSON, CSV, numeric tables — few letters, but no character above ~29%)
+# from tripping the first.
+_MIN_SYMBOL_FLOOD = 0.35
+
+
+def _exotic_letter_count(text: str) -> int:
+    """Letters belonging to scripts that should not appear in bulk in a Latin/CJK reply."""
+    n = 0
+    for ch in text:
+        if not ch.isalpha():
+            continue
+        try:
+            name = unicodedata.name(ch)
+        except ValueError:
+            continue
+        if name.startswith(_EXOTIC_SCRIPT_PREFIXES):
+            n += 1
+    return n
+
+
+def _top_char_share(text: str) -> float:
+    """Share of the reply taken by its single most frequent non-space character."""
+    counts = Counter(ch for ch in text if not ch.isspace())
+    if not counts:
+        return 0.0
+    return counts.most_common(1)[0][1] / len(text)
+
+
+def looks_degenerate(text: str) -> bool:
+    """True when a COMPLETED reply carries the signature of a degeneration loop.
+
+    Catches the two shapes the repetition guard cannot: a reply that switches into unrelated
+    scripts wholesale, and a long reply that is almost entirely non-letters. Deliberately
+    conservative (fail-open for non-string/short input) so ordinary prose, code blocks, tables
+    and short foreign quotations pass.
+    """
+    if not isinstance(text, str):
+        return False
+    n = len(text)
+    if n < MIN_FRAGMENT_LENGTH:
+        return False
+
+    letters = sum(1 for ch in text if ch.isalpha())
+    exotic = _exotic_letter_count(text)
+    if exotic >= _MIN_EXOTIC_ABSOLUTE:
+        return True
+    if exotic >= _MIN_EXOTIC_LETTERS and letters and exotic >= letters * _MIN_EXOTIC_RATIO:
+        return True
+    if letters < n * _MIN_LETTER_RATIO and _top_char_share(text) >= _MIN_SYMBOL_FLOOD:
+        return True
+    return False

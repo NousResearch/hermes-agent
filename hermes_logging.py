@@ -17,6 +17,7 @@ import sys
 import threading
 from logging.handlers import QueueHandler, QueueListener
 from pathlib import Path
+from time import monotonic as _monotonic
 from typing import Optional, Sequence
 
 from hermes_constants import (
@@ -446,6 +447,9 @@ class _ManagedRotatingFileHandler(RotatingFileHandler):
         from hermes_cli.config import is_managed
         self._managed = is_managed()
         self._unavailable_reported = False
+        # Set by _ProfileRoutingFileHandler: a vanished logs/ dir means the profile was deleted,
+        # so skip the write (the router re-routes the record) instead of a FileNotFoundError traceback.
+        self._skip_write_when_dir_missing = False
         super().__init__(*args, **kwargs)
         self._record_stream_stat()
 
@@ -502,6 +506,10 @@ class _ManagedRotatingFileHandler(RotatingFileHandler):
         # The kernel caches inode metadata, so this stat is sub-microsecond on a hot file.
         if self.stream is not None or os.path.exists(self.baseFilename):
             self._reopen_if_externally_rotated()
+        # Only reached with no stream (reopen failed), so a healthy emit pays no extra stat.
+        if (self.stream is None and self._skip_write_when_dir_missing
+                and not os.path.isdir(os.path.dirname(self.baseFilename))):
+            return
         super().emit(record)
         # A record actually reached the file: only now has the destination recovered. Resetting
         # in _open() is wrong — open() succeeds on a device whose write/flush still raise EIO,
@@ -581,6 +589,14 @@ def _new_file_handler(
     return handler
 
 
+# A routed profile home is re-checked for an out-of-band delete (missing dir or tombstone) at
+# most this often. WHY: the check is two stats per record per router on the listener thread,
+# nearly doubling the syscalls of every live-profile emit; a deleted home only needs catching
+# within a couple of seconds. Inside that window a tombstoned (not yet removed) home still gets
+# its records; an rmtree is caught at once by the write that finds the directory gone.
+_PROFILE_LIVENESS_RECHECK_S = 2.0
+
+
 class _ProfileRoutingFileHandler(logging.Handler):
     """Route queued records to the log file for their Hermes home.
 
@@ -601,6 +617,8 @@ class _ProfileRoutingFileHandler(logging.Handler):
         self._backup_count = getattr(existing, "backupCount", 0)
         self._profile_handlers: dict[Path, _ManagedRotatingFileHandler] = {}
         self._profile_handlers_lock = threading.RLock()
+        # Home -> monotonic time of its last liveness check (see _PROFILE_LIVENESS_RECHECK_S).
+        self._liveness_checked_at: dict[Path, float] = {}
         self.setFormatter(existing.formatter)
         for log_filter in existing.filters:
             self.addFilter(log_filter)
@@ -613,23 +631,39 @@ class _ProfileRoutingFileHandler(logging.Handler):
             candidate = self._default_home
         if candidate == self._default_home or candidate not in self._profile_homes:
             return self._default_home
-        if not candidate.is_dir() or named_profile_is_deleted(candidate):
-            # Deleted out of band (CLI ``hermes profile delete`` while this process runs; it
-            # tombstones before rmtree). The startup snapshot still names it, so its handler would
-            # retry the vanished logs/ path on every record (#103777). Release it the way an
-            # in-process delete does: closes the stale fd and drops it from the routing set, so
-            # later records for it skip this check and fall back to the default home.
-            self.release_profile(candidate)
-            return self._default_home
+        last = self._liveness_checked_at.get(candidate)
+        if last is None or _monotonic() - last >= _PROFILE_LIVENESS_RECHECK_S:
+            # First sighting always checks, so a home deleted before it ever logged is caught on
+            # its first record; afterwards at most once per interval. An rmtree inside the
+            # interval is caught by emit() on the record whose write finds the dir gone.
+            if self._release_if_deleted(candidate):
+                return self._default_home
         return candidate
+
+    def _release_if_deleted(self, home: Path) -> bool:
+        """Release *home* if it was deleted out of band; True when it was."""
+        self._liveness_checked_at[home] = _monotonic()
+        if home.is_dir() and not named_profile_is_deleted(home):
+            return False
+        # Deleted out of band (CLI ``hermes profile delete`` while this process runs; it
+        # tombstones before rmtree). The startup snapshot still names it, so its handler would
+        # retry the vanished logs/ path on every record (#103777). Release it the way an
+        # in-process delete does: the stale fd is closed on this routed record and the home is
+        # dropped from the routing set, so later records fall back to the default home. This
+        # does not reach into another process: a CLI delete racing a live server's open fd
+        # still relies on release_profile_log_handlers in-process and #130285.
+        self.release_profile(home)
+        return True
 
     def _handler_for_home(self, home: Path) -> _ManagedRotatingFileHandler:
         with self._profile_handlers_lock:
             if home not in self._profile_handlers:
-                self._profile_handlers[home] = _new_file_handler(
+                handler = _new_file_handler(
                     home / "logs" / self._filename, level=self.level, max_bytes=self._max_bytes,
                     backup_count=self._backup_count, formatter=self.formatter,
                 )
+                handler._skip_write_when_dir_missing = home != self._default_home
+                self._profile_handlers[home] = handler
             return self._profile_handlers[home]
 
     def emit(self, record: logging.LogRecord) -> None:
@@ -647,6 +681,10 @@ class _ProfileRoutingFileHandler(logging.Handler):
                 handler.handle(record)
             finally:
                 reset_hermes_home_override(token)
+            # The write lost its stream (an rmtree inside the liveness interval skips it, see
+            # _ManagedRotatingFileHandler.emit): re-check now so this record is not dropped.
+            if handler.stream is None and self._release_if_deleted(home):
+                self._handler_for_home(self._default_home).handle(record)
         except Exception:
             self.handleError(record)
 
@@ -663,6 +701,7 @@ class _ProfileRoutingFileHandler(logging.Handler):
         with self._profile_handlers_lock:
             handler = self._profile_handlers.pop(home, None)
             self._profile_homes.discard(home)
+            self._liveness_checked_at.pop(home, None)
         if handler is None:
             return False
         _quietly(handler.close)

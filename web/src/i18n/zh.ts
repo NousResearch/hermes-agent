@@ -300,6 +300,12 @@ export const zh: Translations = {
       highPricing: "该模型的已知定价异常高昂。",
       contextWindow: "上下文窗口",
       maxOutput: "最大输出",
+      loadingInfo: "正在加载模型信息…",
+      overrideAuto: "（覆盖 — 自动：{value}）",
+      autoDetected: "自动检测",
+      tools: "工具",
+      vision: "视觉",
+      reasoning: "推理",
       moaTitle: "配置多模型混合预设",
       moaIntro:
         "预设会作为「多模型混合」服务商下的模型出现。参考模型提供不同视角；聚合模型是负责作答和调用工具的执行模型。",
@@ -359,6 +365,8 @@ export const zh: Translations = {
     promiseNote: "Promise",
     reloadTitle: "切换模型？",
     reload: "重新加载",
+    reloadDescription:
+      "切换到 {model} 会开启一个新的会话。当前会话仍保留在「会话」列表中，智能体的记忆也会保留。现在重新加载以应用？",
   },
 
   logs: {

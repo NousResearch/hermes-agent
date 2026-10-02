@@ -315,6 +315,12 @@ export const en: Translations = {
       highPricing: "This model has unusually high known pricing.",
       contextWindow: "Context Window",
       maxOutput: "Max Output",
+      loadingInfo: "Loading model info…",
+      overrideAuto: "(override — auto: {value})",
+      autoDetected: "auto-detected",
+      tools: "Tools",
+      vision: "Vision",
+      reasoning: "Reasoning",
       moaTitle: "Configure Mixture of Agents presets",
       moaIntro:
         "Presets appear as models under the Mixture of Agents provider. References produce perspectives; the aggregator is the acting model that answers and calls tools.",
@@ -374,6 +380,8 @@ export const en: Translations = {
     promiseNote: "Promise",
     reloadTitle: "Switch model?",
     reload: "Reload",
+    reloadDescription:
+      "Switching to {model} starts a fresh chat. Your current chat stays in your Sessions list and the agent's memory is kept. Reload now to apply it?",
   },
 
   logs: {

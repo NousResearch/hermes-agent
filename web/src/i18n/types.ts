@@ -340,6 +340,12 @@ export interface Translations {
       highPricing: string;
       contextWindow: string;
       maxOutput: string;
+      loadingInfo: string;
+      overrideAuto: string;
+      autoDetected: string;
+      tools: string;
+      vision: string;
+      reasoning: string;
       moaTitle: string;
       moaIntro: string;
       setDefault: string;
@@ -376,6 +382,7 @@ export interface Translations {
     promiseNote: string;
     reloadTitle: string;
     reload: string;
+    reloadDescription: string;
   };
 
   // ── Logs page ──

@@ -65,6 +65,7 @@ def _make_adapter(require_mention=False, auto_thread=False, monkeypatch=None):
         display_name="Test Room",
         room_topic=None,
         server_name="example.org",
+        members_digest=None,
         chat_type="dm",  # DM shortcut so we bypass MATRIX_ALLOWED_ROOMS
     )
     adapter._resolve_room_identity = AsyncMock(return_value=identity)
@@ -181,6 +182,122 @@ async def test_reply_carries_target_text_and_author(monkeypatch):
     # "Replying to your previous message" vs "Replying to another user's message".
     assert msg.reply_to_author_id == "@carol:example.org"
     assert msg.reply_to_author_name == "carol"
+
+
+_REPLY_WITHOUT_QUOTE = {
+    "reply_to_message_id": "$target1",
+    "reply_to_text": None,
+    "reply_to_author_id": None,
+    "reply_to_author_name": None,
+}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("require_mention", "content", "expected"),
+    [
+        pytest.param(
+            False,
+            {"body": "> the logs say timeout\n\nwhy?"},
+            {**_REPLY_WITHOUT_QUOTE, "text": "> the logs say timeout\n\nwhy?"},
+            id="own-quote",
+        ),
+        pytest.param(
+            False,
+            {"body": "> <@carol:example.org> said it failed\nI disagree"},
+            {**_REPLY_WITHOUT_QUOTE, "text": "> <@carol:example.org> said it failed\nI disagree"},
+            id="own-quote-with-pill-and-no-blank-line",
+        ),
+        pytest.param(
+            True,
+            {"body": "> @hermes:example.org please summarise\n\nthanks"},
+            {**_REPLY_WITHOUT_QUOTE, "text": "> please summarise\n\nthanks"},
+            id="own-quote-mentioning-the-bot",
+        ),
+        pytest.param(
+            False,
+            {
+                "body": "> the logs say timeout\n\nwhy?",
+                "m.relates_to": {
+                    "rel_type": "m.thread",
+                    "event_id": "$root1",
+                    "is_falling_back": True,
+                    "m.in_reply_to": {"event_id": "$target1"},
+                },
+            },
+            {**_REPLY_WITHOUT_QUOTE, "text": "> the logs say timeout\n\nwhy?", "reply_to_message_id": None},
+            id="thread-message-own-quote",
+        ),
+        pytest.param(
+            False,
+            {
+                "body": "> original question\n\nbecause reasons",
+                "format": "org.matrix.custom.html",
+                "formatted_body": (
+                    "<mx-reply><blockquote>In reply to original question</blockquote></mx-reply>"
+                    "because reasons"
+                ),
+            },
+            {**_REPLY_WITHOUT_QUOTE, "text": "because reasons", "reply_to_text": "original question"},
+            id="html-fallback",
+        ),
+        pytest.param(
+            False,
+            {
+                "body": "> original question\n\nbecause reasons",
+                "format": "org.matrix.custom.html",
+                "formatted_body": (
+                    '<mx-reply data-x="1"><blockquote>original question</blockquote></mx-reply>'
+                    "because reasons"
+                ),
+            },
+            {**_REPLY_WITHOUT_QUOTE, "text": "because reasons", "reply_to_text": "original question"},
+            id="html-fallback-with-attributes",
+        ),
+        pytest.param(
+            False,
+            {
+                "body": "> original question\n\nbecause reasons",
+                "formatted_body": (
+                    "<mx-reply><blockquote>original question</blockquote></mx-reply>because reasons"
+                ),
+            },
+            {**_REPLY_WITHOUT_QUOTE, "text": "> original question\n\nbecause reasons"},
+            id="mx-reply-without-html-format",
+        ),
+        pytest.param(
+            False,
+            {"body": "> * <@carol:example.org> waves\n\nhello back"},
+            {
+                "text": "hello back",
+                "reply_to_message_id": "$target1",
+                "reply_to_text": "waves",
+                "reply_to_author_id": "@carol:example.org",
+                "reply_to_author_name": "carol",
+            },
+            id="emote-fallback",
+        ),
+    ],
+)
+async def test_reply_strips_only_a_reply_fallback(monkeypatch, require_mention, content, expected):
+    """Matrix 1.13 (MSC2781) removed reply fallbacks, so a leading quote in a reply can be
+    the user's own text. It must reach the agent, with a bot mention stripped like any text."""
+    adapter = _make_adapter(require_mention=require_mention, monkeypatch=monkeypatch)
+    adapter._startup_ts = time.time() - 10
+
+    event = _make_event(content["body"], in_reply_to_event_id="$target1")
+    event.content.update(content)
+    await adapter._on_room_message(event)
+
+    msg = adapter.handle_message.await_args.args[0]
+    reply_state = {
+        "text": msg.text,
+        "reply_to_message_id": msg.reply_to_message_id,
+        "reply_to_text": msg.reply_to_text,
+        "reply_to_author_id": msg.reply_to_author_id,
+        "reply_to_author_name": msg.reply_to_author_name,
+    }
+    assert reply_state == expected
 
 
 @pytest.mark.asyncio

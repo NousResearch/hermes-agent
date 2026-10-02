@@ -1,13 +1,7 @@
 name: health-insights
 repo: https://github.com/mwdearing/hermes-health-insights
 sha: d6d09c1f17ada6ca60368a1e0c7a7b5bd4efefc6
-description: Deterministic, local-first analysis of your own Apple Health data - weekly trends, rule-based
-  concern checks, nutrition versus Dietary Reference Intakes, an IOM energy target, lab results and opt-in modules
-  (GLP-1 monitoring, medication adherence; all off by default). Portable
-  Agent Plugins v1 package of ten skills that drive the separately installed health-insights command line
-  tool (installed from the plugin's own pinned copy); the plugin itself contains no executable. Works on a self-hosted
-  HealthRelay or Health Bridge receiver database. Disclosure - it handles sensitive health data, so use a
-  local model or one you trust; personal integrations (medication counts, model wording) are off by default.
+description: "Deterministic, local-first analysis of your own Apple Health data - weekly trends, rule-based concern checks, nutrition versus Dietary Reference Intakes, an IOM energy target, lab results and opt-in modules (GLP-1 monitoring, medication adherence; all off by default). Portable Agent Plugins v1 package of ten skills that drive the separately installed health-insights command line tool (installed from the plugin's own pinned copy); the plugin itself contains no executable. Works on a self-hosted HealthRelay or Health Bridge receiver database. Disclosure - it handles sensitive health data, so use a local model or one you trust; personal integrations (medication counts, model wording) are off by default. Disclosure — the skills run a separately installed health-insights CLI that reads your HealthRelay or Health Bridge SQLite database read-only and keeps imported lab and ECG results under ~/.local/share/health-insights; the health values it prints are sent to whichever model provider your Hermes session uses."
 maintainer: mwdearing
 tier: community
 category: tools

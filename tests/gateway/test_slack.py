@@ -4348,7 +4348,10 @@ class TestEnsureDmConversation:
     async def test_user_prefixed_target_resolves_like_bare_user_id(self, adapter):
         """``user:U...`` is what ``tools.send_message_targets`` emits for every ``slack:U...``
         reference. The standalone cron transport opens it; the live adapter must too, or a
-        gateway-served cron job with ``deliver: slack:U...`` fails at chat.postMessage."""
+        gateway-served cron job with ``deliver: slack:U...`` fails at chat.postMessage.
+
+        The second call with the bare id must hit the cache, which is only true if the prefix is
+        stripped *before* the cache lookup — hence ``assert_awaited_once``."""
         adapter._app.client.conversations_open = AsyncMock(
             return_value={"ok": True, "channel": {"id": "D999NEW"}}
         )
@@ -4358,6 +4361,70 @@ class TestEnsureDmConversation:
 
         assert prefixed == bare == "D999NEW"
         adapter._app.client.conversations_open.assert_awaited_once_with(users="U123ABCDEF")
+
+    @pytest.mark.asyncio
+    async def test_user_name_target_resolves_handle_then_opens_dm(self, adapter):
+        """``user_name:<handle>`` is the sibling form the same parser emits for ``slack:@handle``.
+        It resolves through users.list (stable ``name`` only, deleted/bot members skipped) and then
+        shares the DM cache with the bare-id form, so the second call opens nothing."""
+        adapter._app.client.users_list = AsyncMock(return_value={
+            "ok": True,
+            "members": [
+                {"id": "U_BOTX", "name": "alice.smith", "is_bot": True},
+                {"id": "U_GONE", "name": "alice.smith", "deleted": True},
+                {"id": "U123ABCDEF", "name": "Alice.Smith",
+                 "profile": {"display_name": "someone else"}},
+            ],
+            "response_metadata": {"next_cursor": ""},
+        })
+        adapter._app.client.conversations_open = AsyncMock(
+            return_value={"ok": True, "channel": {"id": "D999NEW"}}
+        )
+
+        by_handle = await adapter._ensure_dm_conversation("user_name:@alice.smith")
+        by_id = await adapter._ensure_dm_conversation("U123ABCDEF")
+
+        assert by_handle == by_id == "D999NEW"
+        adapter._app.client.users_list.assert_awaited_once()
+        adapter._app.client.conversations_open.assert_awaited_once_with(users="U123ABCDEF")
+
+    @pytest.mark.asyncio
+    async def test_user_name_target_follows_users_list_pagination(self, adapter):
+        """A handle on a later page must still resolve; the cursor is threaded through."""
+        adapter._app.client.users_list = AsyncMock(side_effect=[
+            {"ok": True, "members": [{"id": "U_OTHER", "name": "bob"}],
+             "response_metadata": {"next_cursor": "page2"}},
+            {"ok": True, "members": [{"id": "U_ALICE", "name": "alice"}],
+             "response_metadata": {"next_cursor": ""}},
+        ])
+        adapter._app.client.conversations_open = AsyncMock(
+            return_value={"ok": True, "channel": {"id": "D_ALICE"}}
+        )
+
+        resolved = await adapter._ensure_dm_conversation("user_name:alice")
+
+        assert resolved == "D_ALICE"
+        assert adapter._app.client.users_list.await_count == 2
+        assert adapter._app.client.users_list.await_args_list[1].kwargs["cursor"] == "page2"
+        adapter._app.client.conversations_open.assert_awaited_once_with(users="U_ALICE")
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("members", [
+        [],
+        [{"id": "U1", "name": "alice"}, {"id": "U2", "name": "alice"}],
+    ], ids=["unknown-handle", "ambiguous-handle"])
+    async def test_user_name_target_unresolvable_passes_through(self, adapter, members):
+        """Unknown or ambiguous handles return the target unchanged — nothing is opened, and
+        downstream surfaces the send error instead of DMing the wrong person."""
+        adapter._app.client.users_list = AsyncMock(return_value={
+            "ok": True, "members": members, "response_metadata": {"next_cursor": ""},
+        })
+        adapter._app.client.conversations_open = AsyncMock()
+
+        resolved = await adapter._ensure_dm_conversation("user_name:alice")
+
+        assert resolved == "user_name:alice"
+        adapter._app.client.conversations_open.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_conversation_ids_pass_through(self, adapter):

@@ -520,11 +520,28 @@ class TestMemoryManager:
         assert resolve_external_prefetch_timeout({"external_prefetch_timeout": -1}) == _EXTERNAL_PREFETCH_TIMEOUT_S
         assert resolve_external_prefetch_timeout({"external_prefetch_timeout": "nope"}) == _EXTERNAL_PREFETCH_TIMEOUT_S
 
+    def test_resolve_external_prefetch_timeout_rejects_nan_and_inf(self):
+        """NaN/inf survive the ``<= 0`` check (NaN compares False against everything) and
+        YAML 1.1 passes ``.nan``/``.inf`` through end to end: NaN makes thread.join()
+        return instantly so every prefetch is judged timed out, inf silently disables the
+        timeout. Both must fall back like any other invalid value."""
+        assert resolve_external_prefetch_timeout({"external_prefetch_timeout": float("nan")}) == _EXTERNAL_PREFETCH_TIMEOUT_S
+        assert resolve_external_prefetch_timeout({"external_prefetch_timeout": float("inf")}) == _EXTERNAL_PREFETCH_TIMEOUT_S
+
+    def test_memory_manager_constructor_rejects_nan_and_inf(self):
+        """Direct construction is the strict path: non-finite timeouts raise, matching <= 0."""
+        with pytest.raises(ValueError, match="finite positive"):
+            MemoryManager(external_prefetch_timeout=float("nan"))
+        with pytest.raises(ValueError, match="finite positive"):
+            MemoryManager(external_prefetch_timeout=float("-inf"))
+
     def test_memory_manager_from_config_uses_resolved_timeout(self):
         mgr = memory_manager_from_config({"external_prefetch_timeout": 30})
         assert mgr._external_prefetch_timeout == 30.0
         default_mgr = memory_manager_from_config({})
         assert default_mgr._external_prefetch_timeout == _EXTERNAL_PREFETCH_TIMEOUT_S
+        nan_mgr = memory_manager_from_config({"external_prefetch_timeout": float("nan")})
+        assert nan_mgr._external_prefetch_timeout == _EXTERNAL_PREFETCH_TIMEOUT_S
 
     def test_default_config_prefetch_timeout_matches_constant(self):
         from hermes_cli.config_defaults import DEFAULT_CONFIG

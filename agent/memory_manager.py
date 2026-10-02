@@ -10,6 +10,7 @@ import contextvars
 import inspect
 import json
 import logging
+import math
 import re
 import threading
 from concurrent.futures import Future, ThreadPoolExecutor, wait
@@ -48,7 +49,10 @@ def resolve_external_prefetch_timeout(
         value = float(raw)
     except (TypeError, ValueError):
         return _EXTERNAL_PREFETCH_TIMEOUT_S
-    if value <= 0:
+    if value <= 0 or not math.isfinite(value):
+        # NaN compares False against everything (so ``<= 0`` never catches it) and makes
+        # thread.join() return instantly — every prefetch judged timed out; inf disables
+        # the timeout the config docs promise. Both fall back like any invalid value.
         return _EXTERNAL_PREFETCH_TIMEOUT_S
     return value
 
@@ -389,8 +393,8 @@ class MemoryManager:
         self._has_external: bool = False
         timeout = external_prefetch_timeout
         timeout = _EXTERNAL_PREFETCH_TIMEOUT_S if timeout is None else float(timeout)
-        if timeout <= 0:
-            raise ValueError("external_prefetch_timeout must be positive")
+        if timeout <= 0 or not math.isfinite(timeout):
+            raise ValueError("external_prefetch_timeout must be a finite positive number")
         self._external_prefetch_timeout = timeout
         self._external_prefetch_threads: Dict[str, threading.Thread] = {}
         self._late_prefetch: Dict[str, _LatePrefetch] = {}

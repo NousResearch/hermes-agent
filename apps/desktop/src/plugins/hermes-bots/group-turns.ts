@@ -186,6 +186,7 @@ interface GroupSessionSnapshot {
   pending_approval?: GroupPendingApproval
   running?: boolean
   session_id?: string
+  stored_session_id?: string
   session_key?: string
   /** Start time of the live or retained turn; the `inflight` snapshot omits it. */
   turn_started_at?: null | number
@@ -304,16 +305,12 @@ export async function ensureGroupChatSession(
 
     // Try resuming what we know (stored sid first, then title lookup).
     //
-    // FAIL CLOSED on a transient lookup failure — mirrors the sibling fix in
-    // findExistingCanonicalChat (87b645f52c). session.resume signals "this
-    // target genuinely doesn't exist" with JSON-RPC code 4007; every other
-    // failure (network blip, the backend still warming up after a restart,
-    // an oversized-resume refusal) means the real session might still be
-    // there and must not be read as "no session, mint a new one" — that
-    // forks the member's real history, and the fork silently overwrites
-    // room.sessions[key] so the old session becomes unreachable from the
-    // room. Only a genuine 4007 on EVERY target means there truly is
-    // nothing to resume yet, so the loop falls through to session.create.
+    // FAIL CLOSED on a transient lookup failure: only old-runtime 4007, or
+    // canonical not_found after an explicit title lookup, proves absence.
+    // A canonical refusal of a stored ID must not fork retained history;
+    // permission, profile, transport and malformed replies stay errors.
+    // Canonical title resolution stays on this exact member's owner, and
+    // session.create still applies the owner's resolve-or-create guards.
     //
     // Target order: this thread's own pointer, then — only while the room is
     // still unmigrated — the pre-thread pointer and the pre-thread title, so
@@ -321,17 +318,28 @@ export async function ensureGroupChatSession(
     // that speaks instead of being stranded behind an unreferenced sid.
     const targets = [known, title, ...(legacy === null ? [] : [legacy, roomTitle])]
 
+    const canonicalNotFound = (error: unknown) => {
+      const failure = error as {code?: unknown; data?: {reason?: unknown}} | null
+      return failure?.code === 4001 && failure.data?.reason === 'not_found'
+    }
+
     for (const target of targets) {
       if (!target || target === true) {
         continue
       }
 
+      let canonicalTitleChecked = false
       try {
-        const res = await resumeGroupSession(member, {
-          session_id: target,
-          profile: member.name,
-          omit_messages: true
-        })
+        let res: GroupSessionSnapshot
+        try {
+          res = await resumeGroupSession(member, {session_id: target, profile: member.name, omit_messages: true})
+        } catch (error) {
+          // The canonical owner resolves names through its explicit title field.
+          // A stored-ID refusal stays closed; it is never proof to create a replacement.
+          if ((target !== title && target !== roomTitle) || !canonicalNotFound(error)) {throw error}
+          canonicalTitleChecked = true
+          res = await resumeGroupSession(member, {title: target, profile: member.name, omit_messages: true})
+        }
 
         if (!binding.isLive()) {
           return { runtime: null }
@@ -349,7 +357,7 @@ export async function ensureGroupChatSession(
           // The fallback is the id we resumed BY, which on the adoption pass
           // is the pre-thread pointer — the two title targets are titles, not
           // ids, and were never eligible.
-          const stored = res.session_key || (target === title || target === roomTitle ? known : target)
+          const stored = res.session_key || res.stored_session_id || (target === title || target === roomTitle ? known : target)
 
           if (stored) {
             updateGroupChat(group, (current: GroupChatRoom) => {
@@ -372,13 +380,13 @@ export async function ensureGroupChatSession(
           }
         }
       } catch (error: any) {
-        if (error?.code !== 4007) {
+        if (error?.code !== 4007 && !(canonicalTitleChecked && canonicalNotFound(error))) {
           const detail = error instanceof Error && error.message ? ` (${error.message})` : ''
           throw new Error(
             `Could not check ${member?.name || 'member'}'s group session${detail} — not starting a new one`
           )
         }
-        /* genuinely doesn't exist (4007) — try the next target / fall through to create */
+        /* Exact old-runtime absence or a completed canonical title miss; creation remains owner-guarded. */
       }
     }
 

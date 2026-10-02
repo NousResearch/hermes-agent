@@ -2,11 +2,7 @@ name: hermes-agent-builder
 title: Hermes Agent Builder
 repo: https://github.com/itsflownium/hermes-agent-builder
 sha: 6ed39da7c7054587cbe2a42e60c3e9cbe4969cf6
-description: >-
-  Guided Desktop workspace in BOTS: tailored questions, reference files,
-  editable instructions and capabilities, version comparisons, model-only
-  trials, and native Bot Chat handoff. Saves specialists as separate Hermes
-  profiles and installs the Builder companion plugin into its own bot profile.
+description: "Guided Desktop workspace in BOTS: tailored questions, reference files, editable instructions and capabilities, version comparisons, model-only trials, and native Bot Chat handoff. Saves specialists as separate Hermes profiles and installs the Builder companion plugin into its own bot profile. Disclosure — \"Talk to Builder\" auto-creates a hermes-builder profile cloned from the active profile with copied .env/auth.json and copies+enables this plugin there outside the catalog installer (uninstall does not remove that copy); \"Save agent\" creates new profiles the same way and rewrites their tool/skill selection."
 maintainer: itsflownium
 tier: community
 category: desktop

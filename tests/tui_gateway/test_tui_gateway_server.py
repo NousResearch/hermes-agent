@@ -889,6 +889,12 @@ def test_speculative_agent_build_failure_is_silent(monkeypatch):
         raise RuntimeError("Unknown provider 'custom:gemma-imatrix'")
 
     monkeypatch.setattr(server, "_make_agent", _boom)
+    monkeypatch.setattr(server, "_wire_callbacks", lambda _sid: None)
+    monkeypatch.setattr(server, "_SlashWorker", lambda *args: None)
+    monkeypatch.setattr(server, "_attach_worker", lambda *args: None)
+    monkeypatch.setattr(server, "_config_model_target", lambda: ("", ""))
+    monkeypatch.setattr(server, "_start_notification_poller", lambda *a, **k: None)
+    monkeypatch.setattr(server, "_schedule_mcp_late_refresh", lambda *a, **k: None)
     monkeypatch.setattr(server, "_emit", lambda *a, **k: emitted.append(a))
     monkeypatch.setattr(server, "_set_session_context", lambda *a, **k: None)
     monkeypatch.setattr(server, "_clear_session_context", lambda *a, **k: None)
@@ -986,7 +992,12 @@ def test_prompt_after_speculative_failure_surfaces_recorded_error(monkeypatch):
         )
         assert submit.get("result"), f"got error: {submit.get('error')}"
 
-        threads[0].target()
+        # A completed FAILED build must not wedge the session: submit retries
+        # it (a fresh, non-speculative, loud build) before the turn body runs.
+        # Drive every captured thread in spawn order: retry build, then turn.
+        assert len(threads) == 2, f"expected retry-build + turn threads, got: {len(threads)}"
+        for t in threads:
+            t.target()
 
         assert calls["run_prompt"] == 0
         assert session["running"] is False
@@ -998,9 +1009,14 @@ def test_prompt_after_speculative_failure_surfaces_recorded_error(monkeypatch):
             and e[1] == sid
             and "Unknown provider 'custom:gemma-imatrix'" in str(e[2])
         ]
-        assert len(failure_frames) == 1, (
-            f"recorded agent_error must reach the client exactly once, got: {emitted}"
+        assert failure_frames, (
+            f"recorded agent_error must reach the client visibly, got: {emitted}"
         )
+        terminal_frames = [e for e in failure_frames if e[0] == "message.complete"]
+        assert len(terminal_frames) == 1, (
+            f"expected exactly one terminal turn frame, got: {emitted}"
+        )
+        assert terminal_frames[0][2].get("status") == "error"
         assert recorded == session.get("agent_error")
     finally:
         server._sessions.pop(sid, None)
@@ -1021,6 +1037,12 @@ def test_non_speculative_agent_build_failure_emits_error(monkeypatch):
         raise RuntimeError("Unknown provider 'custom:gemma-imatrix'")
 
     monkeypatch.setattr(server, "_make_agent", _boom)
+    monkeypatch.setattr(server, "_wire_callbacks", lambda _sid: None)
+    monkeypatch.setattr(server, "_SlashWorker", lambda *args: None)
+    monkeypatch.setattr(server, "_attach_worker", lambda *args: None)
+    monkeypatch.setattr(server, "_config_model_target", lambda: ("", ""))
+    monkeypatch.setattr(server, "_start_notification_poller", lambda *a, **k: None)
+    monkeypatch.setattr(server, "_schedule_mcp_late_refresh", lambda *a, **k: None)
     monkeypatch.setattr(server, "_emit", lambda *a, **k: emitted.append(a))
     monkeypatch.setattr(server, "_set_session_context", lambda *a, **k: None)
     monkeypatch.setattr(server, "_clear_session_context", lambda *a, **k: None)

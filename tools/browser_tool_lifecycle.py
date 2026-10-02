@@ -379,12 +379,18 @@ def _reap_orphaned_browser_sessions():
     ``agent-browser-*`` socket dirs; safe from any context."""
     import glob
 
-    # Lightpanda servers keep their own records (no socket dir); sweep them with the
-    # same owner-liveness rule BEFORE the daemon scan, which may return early.
+    # Lightpanda servers and Browser Use harness runtimes keep their own records (no socket dir);
+    # sweep them with the same owner-liveness rule BEFORE the daemon scan, which may return early.
     def _reap_lp():
         from tools.browser_lightpanda import reap_orphaned_lightpanda
         reap_orphaned_lightpanda()
     _best_effort("Lightpanda orphan reap", _reap_lp)
+
+    def _reap_harness():
+        from tools.browser_use_cli import reap_orphaned_browser_use_runtimes
+        if reaped := reap_orphaned_browser_use_runtimes():
+            _bt.logger.info("Stopped %d Browser Use harness daemon(s) left by dead Hermes processes", reaped)
+    _best_effort("Browser Use harness orphan reap", _reap_harness)
 
     tmpdir = _bt._socket_safe_tmpdir()
     socket_dirs = []

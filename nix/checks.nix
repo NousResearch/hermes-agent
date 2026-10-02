@@ -1395,7 +1395,7 @@ json.dump(sorted(leaf_paths(DEFAULT_CONFIG)), sys.stdout, indent=2)
           '';
 
         # ── Config merge + round-trip test ────────────────────────────────
-        # Tests the merge script (Nix activation behavior) across 7
+        # Tests the merge script (Nix activation behavior) across 8
         # scenarios, then verifies Python's load_config() reads correctly.
         config-roundtrip = let
           # Nix settings used across scenarios
@@ -1453,6 +1453,13 @@ json.dump(sorted(leaf_paths(DEFAULT_CONFIG)), sys.stdout, indent=2)
               env_passthrough:
                 - USER_VAR
           '';
+
+          fixtureH = pkgs.writeText "fixture-h.yaml" ''
+            _config_version: 1
+          '';
+          stampedSettings = pkgs.writeText "stamped-settings.json" (builtins.toJSON {
+            _config_version = 999;
+          });
 
         in pkgs.runCommand "hermes-config-roundtrip" {
           nativeBuildInputs = [ pkgs.jq ];
@@ -1593,6 +1600,26 @@ json.dump(load_config(), sys.stdout, default=str)
           echo "PASS: Scenario G"
 
           # ═══════════════════════════════════════════════════════════════
+          # Scenario H: An on-disk version stamp survives, so a package
+          # update still migrates the file; a fresh file gets the stamp
+          # ═══════════════════════════════════════════════════════════════
+          echo "=== Scenario H: Version stamp ==="
+          H_HOME=$(mktemp -d)
+          install -m 0644 ${fixtureH} "$H_HOME/config.yaml"
+          ${configMergeScript} ${stampedSettings} "$H_HOME/config.yaml"
+          ${hermesVenv}/bin/python3 -c '
+import sys, hermes_yaml as yaml
+sys.exit(yaml.safe_load(open(sys.argv[1]))["_config_version"] != 1)
+' "$H_HOME/config.yaml" || fail "H: merge replaced the on-disk _config_version"
+          H_FRESH=$(mktemp -d)
+          ${configMergeScript} ${stampedSettings} "$H_FRESH/config.yaml"
+          ${hermesVenv}/bin/python3 -c '
+import sys, hermes_yaml as yaml
+sys.exit(yaml.safe_load(open(sys.argv[1]))["_config_version"] != 999)
+' "$H_FRESH/config.yaml" || fail "H: a fresh config.yaml did not get the generated stamp"
+          echo "PASS: Scenario H"
+
+          # ═══════════════════════════════════════════════════════════════
           # Report
           # ═══════════════════════════════════════════════════════════════
           if [ -n "$ERRORS" ]; then
@@ -1603,7 +1630,7 @@ json.dump(load_config(), sys.stdout, default=str)
           fi
 
           echo ""
-          echo "=== All 7 merge scenarios passed ==="
+          echo "=== All 8 merge scenarios passed ==="
           mkdir -p $out
           echo "ok" > $out/result
         '';

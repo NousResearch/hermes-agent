@@ -35,6 +35,12 @@ pkgs.writeScript "hermes-config-merge" ''
       return result
 
   merged = deep_merge(existing, nix)
+  # A stamp already on disk is Hermes' own record of how far this file was
+  # migrated. The generated stamp only seeds a fresh or unstamped file;
+  # replacing an older one would make boot bootstrap skip the migrations a
+  # package update brings.
+  if "_config_version" in existing:
+      merged["_config_version"] = existing["_config_version"]
   with open(config_path, "w") as f:
       yaml.dump(merged, f)
 ''

@@ -689,10 +689,11 @@ let
   # order of the recursiveUpdate lets an explicit settings.terminal.cwd
   # replace the default value.
   #
-  # The file also carries the `_config_version` of the package. In managed
-  # mode Hermes refuses to write config.yaml, so it cannot stamp the version
-  # itself, and an unstamped file reads as version 0 at every boot. The build
-  # reads the version from DEFAULT_CONFIG so it always matches the package.
+  # The file also carries the `_config_version` of the package, which seeds a
+  # fresh config.yaml: an unstamped file reads as version 0 at every boot. The
+  # build reads the version from DEFAULT_CONFIG so it always matches the
+  # package. The merge keeps a stamp already on disk, so the migrations of a
+  # package update still run at the next boot.
   mkConfigFiles =
     {
       pkgs,

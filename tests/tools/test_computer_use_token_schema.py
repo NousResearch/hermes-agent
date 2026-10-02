@@ -1,5 +1,6 @@
 """Driver schemas remain authoritative when capability vocabulary omits element tokens."""
 
+import contextlib
 import json
 
 import pytest
@@ -37,7 +38,10 @@ def test_indexed_actions_send_tokens_only_when_the_driver_accepts_them(
                 "images": [], "structuredContent": {}, "isError": not accepted}
 
     monkeypatch.setattr(backend._session, "call_tool", native_action)
-    monkeypatch.setattr(tool, "_get_backend", lambda session_id="": backend)
+    @contextlib.contextmanager
+    def _mock_backend_for_call(session_id=""):
+        yield backend
+    monkeypatch.setattr(tool, "_backend_for_call", _mock_backend_for_call)
     args = {"action": action, "element": 1}
     if action == "scroll":
         args.update(direction="down", amount=1)
@@ -68,7 +72,10 @@ def test_scroll_coordinates_sent_when_schema_or_capability_advertises(
         return {"data": {"message": "scrolled"}, "images": [], "structuredContent": {}, "isError": False}
 
     monkeypatch.setattr(backend._session, "call_tool", native_action)
-    monkeypatch.setattr(tool, "_get_backend", lambda session_id="": backend)
+    @contextlib.contextmanager
+    def _mock_backend_for_call(session_id=""):
+        yield backend
+    monkeypatch.setattr(tool, "_backend_for_call", _mock_backend_for_call)
     result = json.loads(registry.dispatch("computer_use", {
         "action": "scroll", "direction": "down", "amount": 2, "coordinate": [100, 200],
     }))

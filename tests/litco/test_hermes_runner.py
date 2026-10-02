@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import threading
 from pathlib import Path
 
@@ -358,3 +359,63 @@ def test_run_binds_the_grant_for_the_tools(runner, tmp_path, monkeypatch):
     runner.run(ctx)
     assert seen["grant"] == "grant-xyz"
     assert current_turn_grant() is None  # unbound after the turn
+
+
+def _held_terminal_result(monkeypatch) -> str:
+    """The terminal tool's own result when Hermes's approval gate holds a command (2026-10-01 incident)."""
+    from tools import terminal_tool
+
+    monkeypatch.setattr(terminal_tool, "_check_all_guards", lambda *a, **k: {
+        "approved": False, "status": "pending_approval", "command": "python3 - <<'EOF'",
+        "description": "script execution via heredoc", "pattern_key": "heredoc_script"})
+    with pytest.raises(terminal_tool._Rejected) as held:
+        terminal_tool._run_approval_guards("python3 - <<'EOF'", "local", {}, force=False)
+    return held.value.result_json
+
+
+def _litkit_transform_hook():
+    """The transform_tool_result hook the litkit plugin registers."""
+    import importlib
+    hooks = {}
+
+    class _Ctx:
+        def register_tool(self, **kw):
+            pass
+
+        def register_hook(self, name, callback):
+            hooks[name] = callback
+
+    importlib.import_module("plugins.litkit").register(_Ctx())
+    return hooks["transform_tool_result"]
+
+
+def test_held_command_reaches_the_model_as_held_and_the_app_as_not_failed(tmp_path, monkeypatch):
+    from agent.display import _detect_tool_failure
+    from litco.held import HELD_MESSAGE
+    from litco.litkit.context import turn_scope
+
+    raw = _held_terminal_result(monkeypatch)
+    assert _detect_tool_failure("terminal", raw)[0]  # as the gate leaves it, Hermes counts it a failure
+    ctx, events = _ctx(tmp_path, kind="dm", acting_user="u1")
+    with turn_scope(hermes_runner.turn_identity(ctx)):
+        seen_by_model = _litkit_transform_hook()(tool_name="terminal", args={"command": "python3 -"}, result=raw)
+
+    model = json.loads(seen_by_model)
+    assert model["message"] == HELD_MESSAGE and model["ran"] is False
+    assert "exit_code" not in model and "error" not in model
+    is_error, _ = _detect_tool_failure("terminal", seen_by_model)
+    assert is_error is False
+
+    m = _EventMapper(ctx)
+    m.tool_start("c1", "terminal", {"command": "python3 -"})
+    m.progress("tool.completed", "terminal", None, None, duration=0.1, is_error=is_error, result=seen_by_model)
+    m.tool_complete("c1", "terminal", {"command": "python3 -"}, seen_by_model)
+    pill = events[-1][1]["result"]
+    assert pill["status"] == "ok" and pill["held"] is True
+    assert pill["summary"] == "held for approval; not run"
+
+    # A hold the hook never saw (Hermes's verdict says error) still reaches the app as held, not failed.
+    m.tool_start("c2", "terminal", {})
+    m.progress("tool.completed", "terminal", None, None, duration=0.1, is_error=True, result=raw)
+    m.tool_complete("c2", "terminal", {}, raw)
+    assert events[-1][1]["result"]["status"] == "ok" and events[-1][1]["result"]["held"] is True

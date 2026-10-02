@@ -23,7 +23,7 @@ Ana owns a review from the lawyer's request to the finished tags. She registers 
 
 ## Prerequisites
 
-The `litkit` toolset on a matter host. Every call acts for the lawyer on the turn. A refusal (`permission_denied`) means that lawyer may not create tags, write criteria, or propose runs on this matter. Tell them so and name who can do it; do not route around it.
+The `litkit` toolset on a matter host. Every call acts for the lawyer on the turn. A refusal (`permission_denied`) means that lawyer may not create tags, write criteria, or propose runs on this matter. Tell them so and name who can do it; do not route around it. The LitKit access rule in the `litkit-corpus-pull` skill applies to every call.
 
 ## Quick Reference
 
@@ -49,7 +49,13 @@ The `litkit` toolset on a matter host. Every call acts for the lawyer on the tur
 1. **Read the request into parts.** Name the judgments the lawyer wants back (one tag each), the standard for each judgment, and the documents in scope. Ask only if the scope or a judgment is genuinely ambiguous; a numbered request list is criteria, not a question.
 2. **Tags.** List the matter's tags. Reuse an existing tag where the name fits, spelled as LitKit spells it. Create the rest with `litkit_tags` action=create (kind `issue` for request-by-request tags, `privilege` or `responsive` where those fit). A run can write only the tags its criteria name, so every judgment needs its own tag.
 3. **Criteria set.** `litkit_review` action=criteria, criteriaAction=create, with a name and one criterion per judgment: `title`, `description` (what counts and what does not, in the lawyer's terms), `tagName` (the tag that criterion writes), and optionally `seedQuery`. Keep the lawyer's numbering in the titles ("Part 11, item 6: REV-NR"). The set belongs to the lawyer on the turn and is published at version 1; there is no separate publish step. Use `setScope: firm` only when a firm administrator asks for a firm set.
-4. **Scope.** Use a work set when the documents are a named batch (`litkit_review` action=work_sets lists them; `litkit_work_sets` action=create makes one from up to 500 ids). Otherwise send `documentIds`, a `filter` (the review grid's filters: custodian, dateFrom, dateTo, query, tagIds, productionIds), or a `batesRange` {start, end}. The scope takes exactly one of these.
+4. **Scope.** One run covers up to 250,000 documents, so the size of a scope never calls for several runs or several work sets. The scope takes exactly one of these:
+   - a `filter`, which takes the review grid's filters (custodian, dateFrom, dateTo, query, tagIds, productionIds, bates). Use it for any scope over 500 documents. When no filter names the documents, put their ids in the filter as `documentIds`; a filter takes up to 250,000 ids;
+   - `documentIds`, up to 500 ids;
+   - a `batesRange` {start, end} that covers up to 500 documents. For a longer range, send a filter with `bates` (a beginning-stamp prefix);
+   - a `workSetId`, when the documents are a named batch (`litkit_review` action=work_sets lists them). A work set holds up to 500 ids. Make one with `litkit_work_sets` action=create only when the person wants a batch, never to fit a large scope.
+
+   Past 250,000 documents LitKit reviews only the first 250,000, so split a larger scope by date or custodian into separate runs. If LitKit refuses a scope as too large, narrow it or send it as a filter. Never go around the tool.
 5. **First pass (required).** Load the `jev-first-pass-review` skill and decide whether Jev screens the scope first. If it does, pass `firstPass: {enabled: true, thresholds: {low, priv}}` on create and name the thresholds in the proposal. If it does not, pass `firstPass: {enabled: false}` and give the reason in one sentence. Omit `firstPass` only when the server default (on when Jev is configured) is what you decided.
 6. **Optimize before you propose.** The person decides whether to launch from what you report, so they need the price and the cheaper paths before you ask. Name at least one concrete optimization and its effect in documents or dollars:
    - the Jev first pass on or off, and why (step 5);

@@ -22,7 +22,17 @@ Census a custodian (or any filtered slice of the matter), pull every document's 
 
 ## Prerequisites
 
-The `litkit` toolset on a matter host (`LITCO_INSTANCE_URL`, `LITCO_AGENT_TOKEN`). The token sees exactly one matter, so there is no matter to pick. Every call acts for the lawyer on the current turn; a refusal (`permission_denied`) means that lawyer cannot see or do it, and the answer is to tell them, not to try another route.
+The `litkit` toolset on a matter host, used as the LitKit access rule below requires. The tools see exactly one matter, so there is no matter to pick. Every call acts for the lawyer on the current turn; a refusal (`permission_denied`) means that lawyer cannot see or do it, and the answer is to tell them, not to try another route.
+
+## LitKit Access Rule
+
+This rule governs every LitKit call in every skill.
+
+1. The `litkit_*` tools are your access to LitKit. Each call carries the matter's credentials and the identity of the lawyer on the turn. Nothing else on the host gives you that access.
+2. Never read credentials from the shell or from files. That includes any `LITCO_*` or `TYPESAFE_*` variable. Never call the LitKit API yourself with `curl`, a Python script, or any other command.
+3. Never tell anyone that LitKit credentials are missing or unavailable. If any `litkit_*` call has worked in this session, your access works.
+4. When a tool fails, report that tool's failure and quote its message, for example "`litkit_tags` bulk returned HTTP 500: …". Then say what you will do next: retry later, send a smaller request, or use another `litkit_*` tool that does the job. One tool's failure says nothing about the others.
+5. A command held for approval did not run and did not fail. Infer nothing from it.
 
 ## Quick Reference
 

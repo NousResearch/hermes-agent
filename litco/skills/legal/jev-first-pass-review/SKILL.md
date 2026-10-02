@@ -32,7 +32,7 @@ A first pass does not help, and Ana proposes the run without one (`firstPass: {e
 
 ## Prerequisites
 
-- The `litkit` toolset on a matter host, with `TYPESAFE_API_KEY` in the host's environment. Without the key, `litkit_jev` returns "Jev not configured on this host"; tell the lawyer, and propose the run without a first pass.
+- The `litkit` toolset on a matter host, with Jev set up on the host. When it is not, `litkit_jev` returns "Jev not configured on this host". Tell the lawyer that, and propose the run without a first pass. The LitKit access rule in the `litkit-corpus-pull` skill applies here too.
 - Jev reads text only. A document with no extracted text is never screened; it goes to the full review.
 
 ## How to Run

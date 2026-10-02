@@ -22,7 +22,8 @@ A tool's ``status`` follows Hermes's own failure verdict: the executor classifie
 (``agent.display._detect_tool_failure``: a terminal command's non-zero exit, an ``error`` field,
 ``success: false``) and reports it on the ``tool.completed`` progress event just before it calls
 ``tool_complete_callback``. The mapper keeps that verdict per tool name and applies it, so a
-command Hermes logs as "returned error" arrives as ``status: "error"``.
+command Hermes logs as "returned error" arrives as ``status: "error"``. A command held for approval
+(:mod:`litco.held`) did not run and did not fail: it arrives as ``status: "ok"`` with ``held: true``.
 
 Built-in memory is scoped per thread (:mod:`litco.memory_scope`): a dm turn uses the lawyer's
 ``users/<userId>/memories/``, a channel turn the matter's ``shared/memories/``. Firm conventions and
@@ -40,6 +41,7 @@ from collections import defaultdict, deque
 from pathlib import Path
 from typing import Any, Deque, Dict, Optional, Tuple
 
+from litco.held import HELD_SUMMARY, is_held
 from litco.homes import safe_segment
 from litco.litkit.context import TurnIdentity, bind_turn, reset_turn
 from litco.memory_scope import memory_dir, scope_agent_memory
@@ -134,8 +136,11 @@ def _summarize_result(result: Any, name: Optional[str] = None, is_error: Optiona
     only a tool-supplied ``summary``/``message``, an error message, an exit code, or the size.
 
     ``is_error`` is Hermes's verdict when the executor reported one; otherwise Hermes's classifier
-    is asked directly. Either way a non-zero exit code or an ``error`` field is a failure."""
+    is asked directly. Either way a non-zero exit code or an ``error`` field is a failure, except in a
+    command held for approval, which did not run."""
     text, parsed = _parse(result)
+    if is_held(parsed):
+        return {"status": "ok", "held": True, "summary": HELD_SUMMARY}
     status, summary = "ok", f"returned {_size_label(len(text))}"
     exit_code = _exit_code(parsed)
     if isinstance(parsed, dict):

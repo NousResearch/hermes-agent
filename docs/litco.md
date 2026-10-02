@@ -76,12 +76,19 @@ The response is `text/event-stream`. The header `X-Turn-Id` carries the turn id.
 | `assistant_reset` | `reason` | The text streamed so far was interim commentary (for example, before a tool call). Discard it; later deltas start fresh. |
 | `tool_started` | `call{toolCallId,name}`, `args` | A tool call begins. |
 | `tool_progress` | `call`, `message` | Progress from a long tool, such as a delegated subagent. |
-| `tool_complete` | `call`, `result{status,summary,durationMs}` | A tool call ends. `status` is `ok` or `error`, and follows Hermes's own verdict: a terminal command with a non-zero exit, a result with an `error` field or `success: false`, and anything Hermes logs as "returned error" arrive as `error`. The summary never carries the tool's output, only a tool-supplied summary, an error message, an exit code (`command failed with exit code 1`), or the size of the result. |
+| `tool_complete` | `call`, `result{status,summary,durationMs}` | A tool call ends. `status` is `ok` or `error`, and follows Hermes's own verdict: a terminal command with a non-zero exit, a result with an `error` field or `success: false`, and anything Hermes logs as "returned error" arrive as `error`. The summary never carries the tool's output, only a tool-supplied summary, an error message, an exit code (`command failed with exit code 1`), or the size of the result. A command held for approval did not run and did not fail: it arrives as `status: "ok"` with `held: true` and the summary `held for approval; not run` (see "Held commands" below). |
 | `error_classified` | `category`, `message`, `recovery` | The turn failed. |
 | `loop_halted` | `reason`, `explanation` | The turn stopped early: `interrupted`, `budget_exhausted`, or `shutdown`. |
 | `final` | `text`, `citations`, `usage{inputTokens,outputTokens,cacheReadTokens?,cacheWriteTokens?}`, `durationMs`, `modelUsed?`, `deliverables?` | Always last. |
 
 Hermes has no plan events, so `plan_drafted` and `plan_step_*` are never sent.
+
+#### Held commands
+
+A turn from the turn server has no approval channel (deploy/host/README.md, "Approvals"), so when Hermes's approval gate holds a command, the command never runs in that turn. The gate's own result (`{"status": "pending_approval", "approval_pending": true, "exit_code": -1, "error": ""}`) reads like a failed command, and on 2026-10-01 the agent took one as proof that its LitKit credentials were missing. Two things now prevent that (`litco/held.py`):
+
+- The model reads `{"status": "held_for_approval", "ran": false, "command": …, "message": …}` in its place. The message says the command did not run, that this is not a failure, and that nothing follows from it. The `litkit` plugin registers this as a `transform_tool_result` hook, which acts only while a turn is bound.
+- The `tool_complete` frame carries `result{status: "ok", held: true, summary: "held for approval; not run"}`. LitKit's tool pill knows only `ok` and `error` (`ToolResultSummary.status` in litkit-app `src/lib/agent-events/events.ts`), and a held command is not an error, so `held` rides beside an unchanged `status`. An app that reads `held` can show the pill as held; one that does not shows it as finished.
 
 `final.deliverables` lists the files the turn hands to the thread, as `{fileId, filename, mime, path, deliverableClass?}`:
 
@@ -235,6 +242,7 @@ Results larger than 12,000 characters follow Hermes's spill convention: the full
 | `litco/assertion.py` | Host-secret comparison and the user-assertion MAC. |
 | `litco/homes.py` | Working-directory layout, deliverable ids, the deliverable rule, and the `litco_deliver_local` registry. |
 | `litco/memory_scope.py` | Per-thread scoping of Hermes's built-in memory. |
+| `litco/held.py` | A command held for approval, as the model and the app see it. |
 | `litco/litkit/` | LitKit client, the `litkit` tools, the turn identity, the write boundary. |
 | `plugins/litkit/` | Registers the `litkit` toolset (bundled backend plugin). |
 | `litco/skills/legal/` | Legal skills for the matter host. |

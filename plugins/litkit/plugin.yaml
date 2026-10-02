@@ -9,6 +9,8 @@ description: >
   assertion. Code lives in the top-level ``litco.litkit`` package; this plugin only registers it.
 author: LitCo
 kind: backend
+provides_hooks:
+  - transform_tool_result
 provides_tools:
   - litkit_matter
   - litkit_search

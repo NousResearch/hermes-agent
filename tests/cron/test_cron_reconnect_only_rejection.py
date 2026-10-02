@@ -14,6 +14,7 @@ import threading
 import pytest
 
 import cron.scheduler_delivery as sd
+import cron.scheduler_delivery_continuation as continuation
 from gateway import delivery_ledger as dl
 from gateway.config import GatewayConfig, Platform
 from gateway.platforms.base import SendResult
@@ -25,7 +26,7 @@ def _fresh_ledger(tmp_path, monkeypatch):
     home.mkdir()
     monkeypatch.setattr(dl, "_db_path", lambda: home / "state.db")
     monkeypatch.setattr(dl, "ledger_enabled", lambda config=None: True)
-    monkeypatch.setattr(sd, "_maybe_mirror_cron_delivery", lambda *a, **k: None)
+    monkeypatch.setattr(continuation, "_maybe_mirror_cron_delivery", lambda *a, **k: None)
 
 
 @pytest.fixture

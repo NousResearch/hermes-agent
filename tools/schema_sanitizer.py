@@ -321,6 +321,10 @@ def _sanitize_node(node: Any, path: str) -> Any:
         required = out.get("required")
         out["required"] = ([r for r in required if isinstance(r, str) and r in out["properties"]]
                            if isinstance(required, list) else [])
+
+    # Gemini strict requirement: array nodes MUST contain an items field (#71804).
+    if out.get("type") == "array" and "items" not in out:
+        out["items"] = {}
     return out
 
 

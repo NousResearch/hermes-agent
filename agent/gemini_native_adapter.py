@@ -837,8 +837,18 @@ class GeminiNativeClient:
         self.close()
 
     def _headers(self) -> Dict[str, str]:
-        return {"Content-Type": "application/json", "Accept": "application/json", "x-goog-api-key": self.api_key,
-                "User-Agent": f"{_API_CLIENT} (gemini-native)", "X-Goog-Api-Client": _API_CLIENT, **self._default_headers}
+        headers = {
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+            "x-goog-api-key": self.api_key,
+            "User-Agent": f"{_API_CLIENT} (gemini-native)",
+            "X-Goog-Api-Client": _API_CLIENT,
+            **self._default_headers,
+        }
+        # Prevent Google from treating the request as OAuth2 and failing with 401 (#69031)
+        headers.pop("Authorization", None)
+        headers.pop("authorization", None)
+        return headers
 
     @staticmethod
     def _advance_stream_iterator(iterator: Iterator[_GeminiStreamChunk]) -> tuple[bool, Optional[_GeminiStreamChunk]]:

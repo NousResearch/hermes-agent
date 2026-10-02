@@ -85,8 +85,12 @@ def _native_turn(agent, question, size, sig):
         stop_details=None,
     )
     normalized = AnthropicTransport().normalize_response(response)
-    return [{"role": "user", "content": question},
-            build_assistant_message(agent, normalized, normalized.finish_reason)]
+    from agent.agent_runtime_helpers import reasoning_route_fingerprint
+
+    message = build_assistant_message(agent, normalized, normalized.finish_reason)
+    expected = reasoning_route_fingerprint(agent.provider, agent.model, agent.base_url, agent.api_mode)
+    assert message.get("_reasoning_route") == expected, "producer provenance must match the exact route"
+    return [{"role": "user", "content": question}, message]
 
 
 def _session_db(tmp_path, *session_ids):
@@ -270,7 +274,9 @@ def test_estimates_charge_exactly_the_thinking_the_wire_replays(tmp_path, monkey
                 body = _signed_turn("Q1", "", "sig_1", thinking="t" * 4000)
                 body[1]["api_content"] = "x" * size
             body += _signed_turn("Q2", "A2", "sig_2")
-        return _owned_history(agent, body + [{"role": "user", "content": "continue"}])
+        if case != "producer":
+            _owned_history(agent, body)
+        return body + [{"role": "user", "content": "continue"}]
 
     if case.startswith("rejected"):
         _reject_signatures(agent, history(1))
@@ -312,6 +318,26 @@ def test_estimates_charge_exactly_the_thinking_the_wire_replays(tmp_path, monkey
             prefix + _signed_turn("Q3", "A3", "sig_3"), base_url=route[1], model=model
         )[1]
         assert longer[3] == short[3] if replayed_blocks else not _thinking_blocks([longer[3]])
+
+
+@pytest.mark.parametrize("stamp", [None, "wrong-route"], ids=["missing", "wrong"])
+def test_producer_accounting_fixture_catches_invalid_provenance(tmp_path, monkeypatch, stamp):
+    """Fixture ownership must not repair a broken real producer before the replay assertion."""
+    import agent.chat_completion_helpers as helpers
+
+    build = helpers.build_assistant_message
+
+    def broken_producer(*args, **kwargs):
+        message = build(*args, **kwargs)
+        if stamp is None:
+            message.pop("_reasoning_route", None)
+        else:
+            message["_reasoning_route"] = stamp
+        return message
+
+    monkeypatch.setattr(helpers, "build_assistant_message", broken_producer)
+    with pytest.raises(AssertionError, match="producer provenance"):
+        test_estimates_charge_exactly_the_thinking_the_wire_replays(tmp_path, monkeypatch, "producer")
 
 
 @pytest.mark.parametrize(

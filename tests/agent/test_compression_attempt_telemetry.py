@@ -1,9 +1,12 @@
 import json
 import logging
+import time
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from agent.conversation_compression import compress_context
+import pytest
+
+from agent.conversation_compression import _emit_aborted_attempt_telemetry, compress_context
 from agent.context_compressor import ContextCompressor
 
 
@@ -220,3 +223,62 @@ def test_automatic_compaction_counts_once_in_shared_metrics(monkeypatch):
     assert [compression_fields(**kw) for kw in calls] == [
         {"trigger": "auto", "outcome": "success", "context_fill_bucket": "75_to_90"}
     ]
+
+
+def test_structural_no_op_keeps_the_compressors_failure_class(caplog, monkeypatch):
+    """A transcript that fits inside the tail budget is logged as ``no_compressible_window``.
+
+    The compressor classifies WHY it returned the transcript unchanged; the caller only observes THAT
+    it did (``no_progress``). The attempt log line and the shared-metrics sink must both carry the
+    compressor's class, or an operator reads "the summarizer achieved nothing" for an attempt that
+    never made a summary call (#131412).
+    """
+    from hermes_cli.observability import shared_metrics_events
+
+    finished = []
+    monkeypatch.setattr(
+        shared_metrics_events, "finish_compression_attempt",
+        lambda commit_status, failure_class, *_args, **_kwargs: finished.append((commit_status, failure_class)),
+    )
+    with patch("agent.context_compressor.get_model_context_length", return_value=100_000):
+        compressor = ContextCompressor(
+            model="test/main-model", provider="test-provider", threshold_percent=0.50, quiet_mode=True,
+            config_context_length=100_000,
+        )
+    agent = _Agent(compressor)
+    messages = _messages()
+
+    # Every row lands inside the protected tail, so the summarizable middle window is empty.
+    with patch.object(compressor, "_find_tail_cut_by_tokens", return_value=0):
+        with caplog.at_level(logging.INFO, logger="agent.conversation_compression"):
+            compressed, _ = compress_context(agent, messages, "system prompt", approx_tokens=75_000, force=True)
+
+    assert compressed == messages
+    payload = _extract_telemetry(caplog)
+    assert payload["commit_status"] == "aborted"
+    assert payload["failure_class"] == "no_compressible_window"
+    assert finished == [("aborted", "no_compressible_window")]
+
+
+@pytest.mark.parametrize(
+    ("recorded", "caller", "expected"),
+    [
+        # Nothing recorded: the caller's verdict is the only information there is.
+        (None, "no_progress", "no_progress"),
+        # Sibling generic verdict: a terminal summary failure keeps its documented class.
+        ("summary_auth_failure", "summary_generation_aborted", "summary_auth_failure"),
+        # A caller-side event the compressor cannot see still outranks a recorded class.
+        ("no_compressible_window", "attempt_superseded", "attempt_superseded"),
+    ],
+)
+def test_generic_caller_verdicts_defer_to_the_recorded_failure_class(caplog, monkeypatch, recorded, caller, expected):
+    from hermes_cli.observability import shared_metrics_events
+
+    monkeypatch.setattr(shared_metrics_events, "finish_compression_attempt", lambda *_args, **_kwargs: None)
+    compressor = SimpleNamespace(_last_compression_telemetry={"failure_class": recorded}, context_length=100_000)
+    agent = SimpleNamespace(context_compressor=compressor, session_id="session-telemetry-test")
+
+    with caplog.at_level(logging.INFO, logger="agent.conversation_compression"):
+        _emit_aborted_attempt_telemetry(agent, time.monotonic(), caller)
+
+    assert _extract_telemetry(caplog)["failure_class"] == expected

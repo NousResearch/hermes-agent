@@ -1981,7 +1981,12 @@ class GatewayNotificationsMixin:
         if len(_raw) > _LIMIT:
             _tail = _raw[-_LIMIT:]
             _nl = _tail.find("\n")
-            _tail = _tail[_nl + 1:] if _nl != -1 else _tail
+            # The snap targets a *preceding* newline (#23284). When the only
+            # newline in the window merely terminates it (single-line JSON /
+            # results), nothing but that terminator follows, so slicing would
+            # empty the tail (#131786) — keep the full window instead.
+            if _nl != -1 and _tail[_nl + 1:].strip():
+                _tail = _tail[_nl + 1:]
             _out = f"[… output truncated — showing last {len(_tail)} chars]\n{_tail}"
         else:
             _out = _raw

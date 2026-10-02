@@ -92,10 +92,14 @@ dependencies = [
   # it out of the lazy-install path that exists only for the heavy matrix deps.
   "Markdown==3.10.2",
   # Skills Hub (GitHub App JWT auth — optional, only needed for bot identity)
-  "PyJWT[crypto]==2.13.0",  # PYSEC-2026-175/177/178/179
+  # 2.15.0 fixes PYSEC-2026-4140..4152 (GHSA-ffc3-869f-jxw9 critical, among others).
+  # PYSEC-2026-4146 (GHSA-gvp8-978c-rx2q) has no fixed release yet.
+  "PyJWT[crypto]==2.15.0",  # PYSEC-2026-175/177/178/179, PYSEC-2026-4140..4152
   # urllib3 2.7.0 fixes GHSA-mf9v-mfxr-j63j (decompression-bomb bypass)
-  # and GHSA-qccp-gfcp-xxvc (header leak across origins).
-  "urllib3>=2.7.0,<3",
+  # and GHSA-qccp-gfcp-xxvc (header leak across origins). 2.8.0 fixes
+  # PYSEC-2026-4175/4176/4177 (GHSA-8988-9cw3-xx77, GHSA-gh4c-6fx4-qh6g,
+  # GHSA-vxq7-64xx-v4gw).
+  "urllib3>=2.8.0,<3",
   # PyJWT[crypto] pulls cryptography in transitively. Pin it here as well, so
   # that the WeCom and Weixin crypto paths cannot fall below the patched
   # version. 50.0.0 is the floor: it fixes CVE-2026-69247, a Bleichenbacher

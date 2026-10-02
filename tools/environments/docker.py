@@ -33,7 +33,8 @@ from tools.environments.docker_egress import (
 )
 from tools.environments.path_utils import sanitize_task_id_for_path
 from tools.environments.remote_common import (
-    bash_argv, client_env_with, load_hermes_env_vars, prepend_unset, resolve_passthrough_env, run_capture)
+    bash_argv, client_env_with, launch_remote_kill, load_hermes_env_vars, prepend_unset, resolve_passthrough_env,
+    run_capture)
 
 logger = logging.getLogger(__name__)
 
@@ -571,6 +572,38 @@ def _abs_host_cwd(host_cwd: str) -> str:
     return os.path.abspath(expanded)
 
 
+# Killing the host-side ``docker exec`` client does not signal the process it started in the
+# container (moby), so a timed-out or interrupted command kept running in the shared container.
+# The exec'd shell is a session and process-group leader (runc/crun setsid it) and records its
+# PID; the kill runs inside the container against that group. TERM, up to 1s grace, then KILL
+# (the local backend's shape); a runtime that did not make it a group leader gets the PID alone.
+# The script runs in a subshell so the record is removed even when it sets its own EXIT trap or
+# ``exec``s; a killed group leaves the removal to the kill.
+# A kill can land before the shell has recorded its PID (the exec is still starting). The kill
+# first leaves a ``.stop`` marker, then reads the PID; the shell first records its PID, then
+# checks the marker. Whichever runs second sees the other's write, so either the kill finds the
+# PID or the shell exits before running the command.
+def _record_exec_group(cmd_string: str, pidfile: str) -> str:
+    q = shlex.quote(pidfile)
+    return (f"{{ echo $$ > {q}; }} 2>/dev/null\n"
+            f"if [ -e {q}.stop ]; then rm -f {q} {q}.stop; exit 130; fi\n(\n{cmd_string}\n)\n"
+            f"__hermes_exec_rc=$?\nrm -f {q}\nexit $__hermes_exec_rc")
+
+
+_EXEC_GROUP_KILL = (
+    ': 2>/dev/null > {pf}.stop; p=$(cat {pf} 2>/dev/null); [ -n "$p" ] || exit 0; rm -f {pf} {pf}.stop; '
+    't=-$p; kill -TERM -- "$t" 2>/dev/null || {{ t=$p; kill -TERM "$t" 2>/dev/null; }} || exit 0; '
+    'for _ in 1 2 3 4 5 6 7 8 9 10; do kill -0 -- "$t" 2>/dev/null || exit 0; sleep 0.1; done; '
+    'kill -KILL -- "$t" 2>/dev/null; exit 0')
+_EXEC_GROUP_FORCE_KILL = (
+    ': 2>/dev/null > {pf}.stop; p=$(cat {pf} 2>/dev/null); [ -n "$p" ] || exit 0; rm -f {pf} {pf}.stop; '
+    'kill -KILL -- "-$p" 2>/dev/null || kill -KILL "$p" 2>/dev/null; exit 0')
+
+
+# Bound on one in-container kill round trip; enforced by launch_remote_kill's reaper.
+_IN_CONTAINER_KILL_TIMEOUT = 10
+
+
 class DockerEnvironment(BaseEnvironment):
     """Hardened Docker container execution (caps dropped, no-new-privileges, PID limits,
     size-limited tmpfs). The container is the security boundary — its filesystem stays
@@ -1037,10 +1070,32 @@ class DockerEnvironment(BaseEnvironment):
         elif self._profile_scoped_passthrough:
             runtime_args, unset_names, env_values = self._build_runtime_env_args_with_unsets()
             cmd.extend(runtime_args)
-        cmd += [self._container_id, *bash_argv(prepend_unset(cmd_string, unset_names), login)]
+        pidfile = f"{self.get_temp_dir().rstrip('/')}/.hermes-exec-{uuid.uuid4().hex}.pid"
+        cmd += [self._container_id,
+                *bash_argv(_record_exec_group(prepend_unset(cmd_string, unset_names), pidfile), login)]
 
         client_env = self._docker_client_env(env_values)
-        return _popen_bash(cmd, stdin_data, env=client_env) if client_env is not None else _popen_bash(cmd, stdin_data)
+        proc = _popen_bash(cmd, stdin_data, env=client_env) if client_env is not None else _popen_bash(cmd, stdin_data)
+        proc._hermes_exec_pidfile = pidfile
+        return proc
+
+    def _kill_in_container(self, proc, script: str) -> None:
+        """Run a group-kill ``script`` for ``proc``'s exec'd shell inside the container, without
+        waiting for the ``docker exec`` round trip: this runs on the timeout path under the
+        ``run_bounded_sync`` backstop and once per command on shutdown (``launch_remote_kill``)."""
+        pidfile = getattr(proc, "_hermes_exec_pidfile", None)
+        if not pidfile or not self._container_id:
+            return
+        argv = [self._docker_exe, "exec", self._container_id, "bash", "-c", script.format(pf=shlex.quote(pidfile))]
+        launch_remote_kill(argv, timeout=_IN_CONTAINER_KILL_TIMEOUT, label="docker-exec-kill")
+
+    def _kill_process(self, proc):
+        self._kill_in_container(proc, _EXEC_GROUP_KILL)
+        super()._kill_process(proc)
+
+    def _force_kill_process(self, proc):
+        self._kill_in_container(proc, _EXEC_GROUP_FORCE_KILL)
+        super()._kill_process(proc)
 
     # --- "No such container" recovery ---
     _NO_CONTAINER_PATTERNS = ("No such container", "is not running", "no such container")

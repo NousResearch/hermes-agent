@@ -1,6 +1,7 @@
 import logging
 import os
 import subprocess
+from types import SimpleNamespace
 
 import pytest
 
@@ -221,7 +222,7 @@ def test_runtime_exec_tracks_scope_and_clears_missing_value(monkeypatch):
     monkeypatch.setattr(
         docker_env,
         "_popen_bash",
-        lambda cmd, stdin_data=None, **kw: calls.append((cmd, stdin_data, kw)) or object(),
+        lambda cmd, stdin_data=None, **kw: calls.append((cmd, stdin_data, kw)) or SimpleNamespace(),
     )
     ss.set_multiplex_active(True)
     token = ss.set_secret_scope({"SERVICE_TOKEN": "token-for-profile-a"})
@@ -1697,7 +1698,7 @@ def test_forwarded_secret_values_never_in_argv(monkeypatch):
     monkeypatch.setattr(
         docker_env,
         "_popen_bash",
-        lambda cmd, stdin_data=None, **kw: calls.append((cmd, kw)) or object(),
+        lambda cmd, stdin_data=None, **kw: calls.append((cmd, kw)) or SimpleNamespace(),
     )
     env._init_env_args = init_args
     env._init_env_values = dict(env._init_env_values)

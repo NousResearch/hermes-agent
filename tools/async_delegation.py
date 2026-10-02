@@ -32,6 +32,9 @@ logger = logging.getLogger(__name__)
 _executor: Optional[ThreadPoolExecutor] = None
 _executor_lock = threading.Lock()
 _executor_max_workers: int = 0
+# Submitted runners that have not returned, including force-stalled ones that ignored their interrupt and
+# still hold a pool thread after their record (and slot) was finalized.
+_unreturned_runners: int = 0
 
 _records_lock = threading.Lock()
 # delegation_id -> record dict; kept for the run plus a short completed tail.
@@ -633,6 +636,12 @@ def _get_executor(max_workers: int) -> ThreadPoolExecutor:
         return _executor
 
 
+def _runner_returned(_future: Any = None) -> None:
+    global _unreturned_runners
+    with _records_lock:
+        _unreturned_runners -= 1
+
+
 def active_count() -> int:
     """Number of live async delegation UNITS (one per completion message: a task group or an ungrouped task)."""
     with _records_lock:
@@ -737,6 +746,7 @@ def _dispatch_admitted(
     can't pile up unbounded background work. ``slot_key`` names the pool slot the unit occupies
     (default: its own id); the units of one delegate_task call share the first unit's id so
     splitting a call into per-group completions never consumes more capacity than the call did."""
+    global _unreturned_runners
     is_batch = goals is not None
     label = " batch" if is_batch else ""
     classify = _batch_status if is_batch else (lambda r: r.get("status") or "completed")
@@ -764,11 +774,13 @@ def _dispatch_admitted(
         if record["slot_key"] not in active_slots and len(active_slots) >= max_async_children:
             return {"status": "rejected", "error": capacity_error}
         _records[delegation_id] = record
-        live_units = sum(1 for r in _records.values() if r.get("status") in _LIVE_STATES)
     _persist_dispatch(record)
-    # Units of one call share a slot, so live units can exceed slots: size the pool by units or a
-    # unit queues behind a full pool and the stale monitor kills it before its child ever starts.
-    executor = _get_executor(max(max_async_children, live_units))
+    # Units of one call share a slot, and a force-stalled runner still holds its thread after its slot is freed:
+    # size the pool by unreturned runners, or a unit queues behind a busy pool and never starts.
+    with _records_lock:
+        _unreturned_runners += 1
+        runners = _unreturned_runners
+    executor = _get_executor(max(max_async_children, runners))
 
     def _worker() -> None:
         result: Dict[str, Any] = {}
@@ -795,8 +807,10 @@ def _dispatch_admitted(
     try:
         future = executor.submit(propagate_context_to_thread(_worker))
         future.add_done_callback(lambda _: retirement.release())
+        future.add_done_callback(_runner_returned)
     except Exception as exc:  # pragma: no cover — pool submit failure is rare
         retirement.release()
+        _runner_returned()
         with _records_lock:
             _records.pop(delegation_id, None)
         with _DB_LOCK, _transaction() as conn:

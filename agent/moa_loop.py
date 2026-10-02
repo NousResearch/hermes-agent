@@ -246,11 +246,50 @@ def _aggregator_reasoning_config(aggregator: dict[str, Any]) -> dict[str, Any] |
         return None
 
 
+def _pool_holds_healthy_key(provider: str, api_key: str) -> bool | None:
+    """Whether the pool still considers *api_key* usable, or None when unknown.
+
+    Fresh read every call (``load_pool`` re-seeds from disk), so a rotation or
+    in-place refresh by another process is visible immediately. A key whose entry
+    carries a failure mark (or matches no entry at all) is stale: serving it
+    would 401 until the slot TTL expires. Pure read — never mutates pool state.
+    """
+    try:
+        from agent.credential_pool import STATUS_OK, load_pool
+        pool = load_pool(provider)
+        if pool is None or not pool.has_credentials():
+            return None
+        for entry in pool.entries():
+            runtime_key = getattr(entry, "runtime_api_key", None) or getattr(entry, "access_token", "")
+            if runtime_key and runtime_key == api_key:
+                return entry.last_status in (None, STATUS_OK)
+        return False
+    except Exception:
+        return None
+
+
+def _evict_slot_runtime(slot: dict[str, Any]) -> None:
+    """Drop the cached runtime for *slot* so the next call re-resolves.
+
+    Call after an auth error: the cached ``api_key`` may have been revoked by a
+    rotation in another process.
+    """
+    from hermes_constants import hermes_home_key
+    provider = str(slot.get("provider") or "").strip()
+    model = str(slot.get("model") or "").strip()
+    with _runtime_cache_lock:
+        _runtime_cache.pop((hermes_home_key(), provider, model), None)
+
+
 def _slot_runtime(slot: dict[str, Any]) -> dict[str, Any]:
     """Slot → ``call_llm`` kwargs with the provider's real api_mode/base_url/api_key.
 
     Cached per (profile home, provider, model) with a short TTL. Falls back to bare provider/model
     on error — never cached, or a transient error would pin bare kwargs for a TTL.
+
+    The cached ``api_key`` is validated against the pool's current key on every hit:
+    another process may rotate the entry (revoking the old token) at any time, and
+    serving the cached key would 401 every slot call until the TTL expires (#122600).
     """
     provider = str(slot.get("provider") or "").strip()
     model = str(slot.get("model") or "").strip()
@@ -262,7 +301,18 @@ def _slot_runtime(slot: dict[str, Any]) -> dict[str, Any]:
     with _runtime_cache_lock:
         entry = _runtime_cache.get(cache_key)
     if entry is not None and now - entry[0] < _RUNTIME_CACHE_TTL_SECONDS:
-        return entry[1]
+        cached = entry[1]
+        if not cached.get("api_key"):
+            return cached
+        # Another process may have rotated or refreshed the entry (revoking the
+        # old token) since we cached: re-resolve unless the pool still holds
+        # this key as healthy. Unknown pool state keeps the cached key (#122600).
+        healthy = _pool_holds_healthy_key(provider, cached["api_key"])
+        if healthy is not False:
+            return cached
+        # Stale key: drop the entry and re-resolve below.
+        with _runtime_cache_lock:
+            _runtime_cache.pop(cache_key, None)
     out: dict[str, Any] = {"provider": provider, "model": model}
     try:
         from hermes_cli.runtime_provider import resolve_runtime_provider
@@ -376,33 +426,51 @@ def _run_reference(
     trace_fields = {"model": slot.get("model"), "provider": runtime.get("provider") or slot.get("provider"), "temperature": temperature}
     # The advisory view already stripped the agent's system prompt; this is the only one.
     messages = [{"role": "system", "content": _REFERENCE_SYSTEM_PROMPT}, *ref_messages]
-    try:
+
+    def _attempt(rt):
         # Trim to THIS model's window (advisors may be smaller than the aggregator); the
         # advisory view is append-only across iterations, so cache_control lets
         # iteration N+1 replay N's cached prefix.
         # Reference models may have a smaller window than the aggregator (e.g. kimi-k2.7-code @ 262K
         # advising a glm-5.2 @ 1M conversation); without this trim the provider returns a hard HTTP 400
-        # which the except below silently converts to a [failed: …] note (issue #60345). Estimated AFTER the
+        # which the caller converts to a [failed: …] note (issue #60345). Estimated AFTER the
         # advisory system prompt is prepended so its tokens count against the budget too.
         trimmed = _trim_messages_for_reference(
-            messages, slot, runtime, reserve_output_tokens=max_tokens, context_length_cache=context_length_cache,
+            messages, slot, rt, reserve_output_tokens=max_tokens, context_length_cache=context_length_cache,
         )
-        trimmed = _maybe_apply_moa_cache_control(trimmed, _with_cache_disabled(runtime, cache_disabled), cache_ttl=cache_ttl)
+        trimmed = _maybe_apply_moa_cache_control(trimmed, _with_cache_disabled(rt, cache_disabled), cache_ttl=cache_ttl)
 
         # Copilot gates premium models on request attribution; MoA fan-out serves the
         # user's current turn, so mirror the main agent's x-initiator header.
         from agent.auxiliary_client import _normalize_aux_provider
-        is_copilot = _normalize_aux_provider(str(runtime.get("provider") or "")) in ("copilot", "copilot-acp")
+        is_copilot = _normalize_aux_provider(str(rt.get("provider") or "")) in ("copilot", "copilot-acp")
         response = call_llm(
             task="moa_reference", messages=trimmed, temperature=temperature,
             max_tokens=max_tokens,
             timeout=reference_timeout, reasoning_config=_slot_reasoning_config(slot),
-            extra_headers={"x-initiator": "user"} if is_copilot else None, **runtime,
+            extra_headers={"x-initiator": "user"} if is_copilot else None, **rt,
         )
+        return trimmed, response
+
+    try:
+        trimmed, response = _attempt(runtime)
         output_text = _extract_text(response) or "(empty response)"
         acct = _RefAccounting(*_price_reference_response(response, slot, runtime), messages=trimmed, output=output_text, **trace_fields)
         return label, output_text, acct
     except Exception as exc:
+        from agent.auxiliary_client import _is_auth_error
+        if _is_auth_error(exc):
+            # The slot key may have been rotated (and revoked) by another process
+            # after we resolved it: evict, re-resolve, and retry once (#122600).
+            _evict_slot_runtime(slot)
+            try:
+                runtime = _slot_runtime(slot)
+                trimmed, response = _attempt(runtime)
+                output_text = _extract_text(response) or "(empty response)"
+                acct = _RefAccounting(*_price_reference_response(response, slot, runtime), messages=trimmed, output=output_text, **trace_fields)
+                return label, output_text, acct
+            except Exception as retry_exc:
+                exc = retry_exc
         logger.warning("MoA reference model %s failed: %s", label, exc)
         note = f"[failed: {exc}]"
         return label, note, _RefAccounting(CanonicalUsage(), messages=messages, output=note, **trace_fields)
@@ -892,19 +960,34 @@ def aggregate_moa_context(
     agg_label = _slot_label(aggregator)
     agg_runtime = _slot_runtime(aggregator)
     cache_disabled, cache_ttl = _agent_cache_opts(agent)
-    try:
+
+    def _attempt_synthesis(rt):
         # Same cache_control decoration as the advisor calls; this synthesis call is
         # a third independent MoA call path that otherwise re-bills its full input.
         agg_messages = _maybe_apply_moa_cache_control(
-            [{"role": "user", "content": synth_prompt}], _with_cache_disabled(agg_runtime, cache_disabled), cache_ttl=cache_ttl,
+            [{"role": "user", "content": synth_prompt}], _with_cache_disabled(rt, cache_disabled), cache_ttl=cache_ttl,
         )
-        synthesis = _extract_text(call_llm(
+        return _extract_text(call_llm(
             task="moa_aggregator", messages=agg_messages, temperature=aggregator_temperature,
-            reasoning_config=_aggregator_reasoning_config(aggregator), **agg_runtime,
+            reasoning_config=_aggregator_reasoning_config(aggregator), **rt,
         ))
+
+    try:
+        synthesis = _attempt_synthesis(agg_runtime)
     except Exception as exc:
-        logger.warning("MoA aggregator model %s failed: %s", agg_label, exc)
-        synthesis = ""
+        from agent.auxiliary_client import _is_auth_error
+        if not _is_auth_error(exc):
+            logger.warning("MoA aggregator model %s failed: %s", agg_label, exc)
+            synthesis = ""
+        else:
+            # Rotated-and-revoked slot key: evict, re-resolve, retry once (#122600).
+            _evict_slot_runtime(aggregator)
+            try:
+                agg_runtime = _slot_runtime(aggregator)
+                synthesis = _attempt_synthesis(agg_runtime)
+            except Exception as retry_exc:
+                logger.warning("MoA aggregator model %s failed: %s", agg_label, retry_exc)
+                synthesis = ""
 
     return (
         "[Mixture of Agents context — use this as private guidance for the "

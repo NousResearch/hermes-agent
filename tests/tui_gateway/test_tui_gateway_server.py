@@ -15479,7 +15479,7 @@ def test_mirror_slash_compress_honors_here_argument(monkeypatch):
 # ---------------------------------------------------------------------------
 # session.create / session.close race: fast /new churn must not orphan the
 # agent or the global approval-notify registration. (Slash workers are no
-# longer pre-warmed by the build thread - slash.exec spawns them on demand  - 
+# longer pre-warmed by the build thread — slash.exec spawns them on demand —
 # so the build thread must ALSO never construct one here.)
 # ---------------------------------------------------------------------------
 
@@ -15631,6 +15631,9 @@ def test_session_create_close_race_does_not_orphan_resources(monkeypatch):
     assert own_key in unregistered_keys, (
         f"orphan notify registration was not unregistered — "
         f"{own_key} not in unregistered_keys={unregistered_keys}"
+    )
+    assert own_key not in registered_keys, (
+        f"the abandoned build registered {own_key} for a closed session"
     )
 
 

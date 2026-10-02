@@ -232,15 +232,20 @@ def install_hosted_transport(server, authority, loop, *, attest):
             raise RuntimeStoreError('profile_mismatch')
         binding = {'source_home': envelope['source_home'], 'selector': selector,
                    'target_home': authority.profile_id}
-        attested = _attest(binding, operation, params)
+        # The target compares the requested task/generation with its canonical
+        # admission, then re-attests that full identity before allowing execution.
+        attested = _attest(binding, 'info' if operation == 'approve' else operation, params)
         binding['owner'] = attested['owner']
         principal = _principal(authority, binding)
-        # Authorization already happened: every operation, including each attachment
-        # chunk, is re-attested at the SOURCE owner above before anything runs here, so
-        # the RPC's own authorize hook has nothing left to decide. A new operation must
-        # be added to _OPERATIONS (and therefore attested) before it can reach _call.
+        # Ordinary operations and attachment chunks are attested above. Allow
+        # additionally re-attests the target's exact current admission after its
+        # queued callback reaches the responder, without blocking this event loop.
+        def authorize_approval(task, generation):
+            current = _attest(binding, 'approve', {'task': asdict(task), 'execution_generation': generation})
+            return current['owner'] == binding['owner']
+
         rpc = HostedRoomAuthorityRPC(authority, loop, **selector, principal=principal,
-                                    authorize=lambda *args: True)
+                                    authorize=lambda *args: True, authorize_approval=authorize_approval)
         key = _BINDING + rpc.ref.session_id
         encoded = json.dumps(binding, sort_keys=True)
         def persist(conn):

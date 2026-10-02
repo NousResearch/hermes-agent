@@ -99,6 +99,15 @@ class CanonicalHostedRoomService(HostedControls, HostedRoomService):
         if target_home is None or params.get('_target_home') != str(target_home):
             raise RuntimeStoreError('permission_denied')
         result = {'owner': owner, 'target_home': str(target_home)}
+        if operation == 'approve':
+            from gateway.hosted_room_approval import require_current_approval
+            task = params.get('task')
+            if not isinstance(task, dict) or task.get('room_id') != room_id:
+                raise RuntimeStoreError('permission_denied')
+            current = require_current_approval(self, room_id, member, task.get('task_id'),
+                                               params.get('execution_generation'))
+            if asdict(current['identity']) != task:
+                raise RuntimeStoreError('permission_denied')
         if operation in {'submit', 'execute', 'attachment'}:
             matches = [t for t in list_tasks(self.db_path, room_id=room_id)
                        if asdict(t['identity']) == params.get('task')
@@ -289,6 +298,12 @@ class CanonicalHostedRoomService(HostedControls, HostedRoomService):
                     return False
                 if self.profile_homes().get(profile) != home:
                     return False
+                if operation == 'approve':
+                    from gateway.hosted_room_approval import require_current_approval
+                    if identity is None:
+                        return False
+                    current = require_current_approval(self, binding.room_id, member, identity.task_id, generation)
+                    return current['identity'] == identity
                 if identity is not None:
                     from gateway.hosted_room_driver import list_tasks
                     return any(t['identity'] == identity and t['execution_generation'] == generation
@@ -332,11 +347,12 @@ class CanonicalHostedRoomService(HostedControls, HostedRoomService):
         except (ValueError, TypeError, KeyError, StopIteration) as exc:
             raise RuntimeStoreError('permission_denied') from exc
 
-    def approve(self, *, session_id, request_id, choice):
+    def approve(self, *, session_id, request_id, choice, expected_task_id, expected_execution_generation):
         rpc = next((r for r in self.member_rpcs.values() if r.ref.session_id == session_id), None)
         if rpc is None:
             raise RuntimeStoreError('permission_denied')
-        return rpc.approve(session_id=session_id, request_id=request_id, choice=choice)
+        return rpc.approve(session_id=session_id, request_id=request_id, choice=choice,
+            expected_task_id=expected_task_id, expected_execution_generation=expected_execution_generation)
 
 
 async def ensure_hosted_service(runner):

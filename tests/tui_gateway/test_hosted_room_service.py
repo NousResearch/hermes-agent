@@ -232,7 +232,7 @@ class _ApprovalPeerClient(_FakePeerClient):
             "status": "waiting_for_approval",
             "active": True,
             "task_id": task_id,
-                "execution_generation": 2,
+                "execution_generation": 1,
                 "run_id": "run-peer-1",
                 "session_id": "peer-group-session",
                 "request_id": "req-peer-1",
@@ -246,6 +246,18 @@ class _ApprovalPeerClient(_FakePeerClient):
     def approve_receipt(self, **kwargs):
         self.approvals.append(dict(kwargs))
         return {"resolved": 1}
+
+
+def _start_approval_task(service, *, task_id, member_id, profile):
+    identity = driver.TaskIdentity('room-1', task_id, 'thread-1', 'turn-1')
+    driver.admit_task(service.db_path, identity, payload={
+        'target_profile': profile, 'target_member_id': member_id, 'source_event_seq': 1, 'prompt': 'input'},
+        clock=time.time)
+    binding = service.bindings()[0]
+    lease = driver.acquire_lease(service.db_path, room_id='room-1', gateway_id=binding.gateway_id,
+        authority_epoch=binding.authority_epoch, process_generation='approval-test', ttl_seconds=120,
+        clock=time.time)
+    return driver.start_task(service.db_path, identity, lease, expected_cancel_generation=0, clock=time.time)
 
 
 class _PromptRecordingRPC(_FakeRPC):
@@ -882,7 +894,7 @@ def test_local_pending_approval_requires_exact_task_generation_and_request(
             super().__init__()
             self.approvals = []
 
-        def approve(self, *, session_id, request_id, choice):
+        def approve(self, *, session_id, request_id, choice, expected_task_id, expected_execution_generation):
             self.approvals.append((session_id, request_id, choice))
             return {"resolved": 1}
 
@@ -1849,12 +1861,13 @@ def test_peer_approval_is_scoped_visible_and_resolvable(tmp_path: Path):
             }
         ],
     )
-    identity = driver.TaskIdentity("room-1", "task-1", "thread-1", "turn-1")
+    attempt = _start_approval_task(service, task_id='task-1', member_id='member-peer', profile='reviewer')
+    identity = attempt.identity
     transport = service._resolve_member_transport(
         service.bindings()[0],
         {
             "identity": identity,
-            "execution_generation": 2,
+            "execution_generation": attempt.execution_generation,
             "payload": {
                 "target_member_id": "member-peer",
                 "target_profile": "reviewer",
@@ -1887,7 +1900,7 @@ def test_peer_approval_is_scoped_visible_and_resolvable(tmp_path: Path):
         {
             "kind": "approval",
             "task_id": "task-1",
-            "execution_generation": 2,
+            "execution_generation": attempt.execution_generation,
             "run_id": "run-peer-1",
             "session_id": "peer-group-session",
             "request_id": "req-peer-1",
@@ -1904,14 +1917,14 @@ def test_peer_approval_is_scoped_visible_and_resolvable(tmp_path: Path):
         "room-1",
         member_id="member-peer",
         task_id="task-1",
-        execution_generation=2,
+        execution_generation=attempt.execution_generation,
         choice="once",
         request_id="req-peer-1",
     ) == {"resolved": 1}
     assert peer.approvals == [
         {
             "task_id": "task-1",
-            "execution_generation": 2,
+            "execution_generation": attempt.execution_generation,
             "request_id": "req-peer-1",
             "choice": "once",
             "grant": "signed.room.grant",
@@ -1922,6 +1935,11 @@ def test_peer_approval_is_scoped_visible_and_resolvable(tmp_path: Path):
 
 def test_local_room_approval_uses_the_exact_hidden_session(tmp_path: Path):
     service = HostedRoomService(_server(), db_path=tmp_path / "state.db")
+    service.local_profiles = lambda: ('default', 'ops')
+    service.create_room(room_id='room-1', name='Local', members=[
+        {'member_id': 'local', 'profile': 'default', 'handle': 'local'},
+        {'member_id': 'other', 'profile': 'ops', 'handle': 'other'}])
+    _start_approval_task(service, task_id='task-local-1', member_id='local', profile='default')
     rpc = _FakeRPC()
     service.rpc = rpc
     service.runtime.rpc = rpc
@@ -1955,6 +1973,8 @@ def test_local_room_approval_uses_the_exact_hidden_session(tmp_path: Path):
             "session_id": "local-session",
             "request_id": "approval-local-1",
             "choice": "once",
+            "expected_task_id": "task-local-1",
+            "expected_execution_generation": 1,
         }
     ]
     assert service.status("room-1")["pending_actions"] == []

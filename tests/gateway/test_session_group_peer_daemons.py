@@ -296,6 +296,7 @@ async def _join_pair(home_ws, target_ws, *, peer_first=False):
 
 
 def test_peer_approval_wait_keeps_target_policy_and_stop_works(tmp_path):
+    from gateway import hosted_rooms
     root = Path(__file__).resolve().parents[2]
     home_model, target_model = _model('HOME_REPLY'), _model('PEER_REPLY')
     with socket.socket() as sock:
@@ -314,7 +315,7 @@ def test_peer_approval_wait_keeps_target_policy_and_stop_works(tmp_path):
 
     async def exercise(home_desc, target_desc):
         async with websocket(home, home_desc) as home_ws, websocket(target, target_desc) as target_ws:
-            await _join_pair(home_ws, target_ws)
+            room, _ = await _join_pair(home_ws, target_ws)
             await _send(home_ws, 'approval-stop', '@reviewer APPROVAL_WAIT')
             async with asyncio.timeout(45):
                 while not (actions := (await rpc(home_ws, 'groups.state', room_id='linked'))[
@@ -336,6 +337,14 @@ def test_peer_approval_wait_keeps_target_policy_and_stop_works(tmp_path):
                         'result']['driver_status']['pending_actions']):
                     await asyncio.sleep(.1)
             assert actions[0]['request_id'] != action['request_id']
+            # Stop's durable watermark precedes transport delivery. A newly
+            # requested Allow must not release the target tool in that interval.
+            hosted_rooms.request_room_stop(home / 'state.db', room_id='linked', cancel_id='before-allow',
+                expected_gateway_id=room['authority_gateway_id'], expected_epoch=room['authority_epoch'])
+            blocked = await rpc(home_ws, 'groups.approve', room_id='linked', member_id='reviewer',
+                task_id=actions[0]['task_id'], execution_generation=actions[0]['execution_generation'],
+                request_id=actions[0]['request_id'], choice='once')
+            assert 'error' in blocked and marker.is_dir(), blocked
             assert (await rpc(home_ws, 'groups.stop', room_id='linked'))['result']['cancelled'] == 1
             await _events(home_ws, 'turn.cancelled', timeout=10)
             assert marker.is_dir()

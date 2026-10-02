@@ -1,5 +1,6 @@
 """Configured vault locators must not be echoed by secret-resolution failures."""
 import subprocess
+from urllib.parse import quote
 
 import pytest
 
@@ -40,6 +41,41 @@ def test_fetch_hides_reference_but_names_destination(monkeypatch, tmp_path, fail
     assert "TARGET_KEY" in warnings[0]
     if failure == "stderr":
         assert "not signed in" in warnings[0]
+
+
+@pytest.mark.parametrize("encoded_config", [False, True])
+@pytest.mark.parametrize("shape", ["components", "encoded", "decoded"])
+def test_fetch_masks_reference_components_and_url_spellings(monkeypatch, tmp_path, encoded_config, shape):
+    reference = "op://Private Vault/Client's account/api key"
+    encoded = quote(reference, safe="/:")
+    diagnostic = {
+        "components": 'no item named "Client\'s account" found in vault "Private Vault"',
+        "encoded": f"not signed in: {encoded}",
+        "decoded": f"not signed in: {reference}",
+    }[shape]
+    monkeypatch.setattr(op.subprocess, "run", lambda cmd, **kw:
+                        subprocess.CompletedProcess(cmd, 1, "", diagnostic))
+    secrets, warnings = op.fetch_onepassword_secrets(
+        references={"TARGET_KEY": encoded if encoded_config else reference},
+        binary=tmp_path / "op", use_cache=False, home_path=tmp_path,
+    )
+    assert secrets == {}
+    assert len(warnings) == 1
+    for component in ["Private Vault", "Client's account", "api key"]:
+        assert component not in warnings[0]
+        assert quote(component, safe="") not in warnings[0]
+    assert "TARGET_KEY" in warnings[0]
+    assert ("no item named" if shape == "components" else "not signed in") in warnings[0]
+
+
+def test_short_components_preserve_diagnostics_and_redaction_marker(monkeypatch, tmp_path):
+    monkeypatch.setattr(op.subprocess, "run", lambda cmd, **kw:
+                        subprocess.CompletedProcess(cmd, 1, "", 'not signed in: op://a/b/reference; vault "a"'))
+    _, warnings = op.fetch_onepassword_secrets(
+        references={"TARGET_KEY": "op://a/b/reference"}, binary=tmp_path / "op",
+        use_cache=False, home_path=tmp_path,
+    )
+    assert warnings == ['TARGET_KEY: op read failed: not signed in: [reference redacted]; vault "[reference redacted]"']
 
 
 def test_invalid_reference_value_is_not_echoed(monkeypatch, tmp_path):

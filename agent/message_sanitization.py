@@ -584,14 +584,20 @@ def normalize_provider_tool_call_ids(tool_calls: list) -> list:
     if not all(isinstance(raw, str) and raw.split("|", 1)[0].startswith(_PROVIDER_TOOL_ID_PREFIXES) for raw in ids):
         return tool_calls
     logger.warning("Normalized provider-minted parallel tool-call ids for replay compatibility")
-    for tc, raw in zip(tool_calls, ids):
-        primary, *rest = raw.split("|", 1)
-        replacement = "call_" + hashlib.sha256(primary.encode("utf-8")).hexdigest()[:12]
-        value = replacement + ("|" + rest[0] if rest else "")
-        if _tc_field(tc, "id") is not None:
-            _tc_set(tc, "id", value)
-        if _tc_field(tc, "call_id") is not None:
-            _tc_set(tc, "call_id", value)
+    for tc in tool_calls:
+        # Rewrite each field's call half separately: ``id`` may carry the response-item
+        # half while ``call_id`` is bare, and that half must survive.
+        for key in ("id", "call_id"):
+            value = _tc_field(tc, key)
+            if not isinstance(value, str):
+                continue
+            primary, sep, item = value.partition("|")
+            if not primary.startswith(_PROVIDER_TOOL_ID_PREFIXES):
+                continue
+            # surrogatepass: provider JSON can carry lone surrogates; strict utf-8 would raise,
+            # and errors=replace would collapse distinct ids onto one digest.
+            digest = hashlib.sha256(primary.encode("utf-8", "surrogatepass")).hexdigest()[:12]
+            _tc_set(tc, key, f"call_{digest}{sep}{item}")
     return tool_calls
 
 

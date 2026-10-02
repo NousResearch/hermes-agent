@@ -3007,13 +3007,22 @@ def _build_user_local_paths(home: Path, path_entries: list[str]) -> list[str]:
     return [p for p in candidates if p not in path_entries and Path(p).exists()]
 
 
-def _build_wsl_interop_paths(path_entries: list[str]) -> list[str]:
+def _build_wsl_interop_paths(path_entries: list[str], *, base_path: str | None = None) -> list[str]:
     """WSL Windows-interop PATH entries for generated units: systemd services don't inherit the
-    Windows PATH (``/mnt/c/WINDOWS/System32``…), so ``powershell.exe``/``cmd.exe`` break unless persisted."""
+    Windows PATH (``/mnt/c/WINDOWS/System32``…), so ``powershell.exe``/``cmd.exe`` break unless persisted.
+
+    *base_path* is the PATH the service runs with (``_installed_service_path``); None means a first
+    install, where the invoking process's PATH is the only source. Regenerating an EXISTING unit must
+    not read the invoker's PATH, or the definition depends on who ran the command: ``hermes gateway
+    status`` compares the installed unit against one generated from its own shell — whose Windows
+    entries differ from the service's on WSL — and reported a correct unit as "outdated" forever, while
+    a refresh from a shell without those entries rewrote them out of the service's PATH.
+    """
     if not is_wsl():
         return []
 
-    candidates = [entry for entry in os.environ.get("PATH", "").split(os.pathsep) if entry.startswith("/mnt/")]
+    base_path = os.environ.get("PATH", "") if base_path is None else base_path
+    candidates = [entry for entry in base_path.split(os.pathsep) if entry.startswith("/mnt/")]
     for executable in ("powershell.exe", "cmd.exe", "explorer.exe", "wsl.exe"):
         resolved = shutil.which(executable)
         if resolved:
@@ -3063,6 +3072,19 @@ def _systemd_env_line(name: str, value: str) -> str:
 def _installed_unit_ld_library_path(system: bool) -> str:
     """``LD_LIBRARY_PATH`` baked into the installed unit; ``""`` when absent."""
     return _unit_environment_value(get_systemd_unit_path(system=system), "LD_LIBRARY_PATH") or ""
+
+
+def _installed_service_path(system: bool) -> str | None:
+    """``PATH`` the installed unit runs with, or None when no unit is installed yet.
+
+    The anchor for regenerating an existing unit: the unit's own PATH is what the service actually
+    runs with, so generation stops depending on the shell that invoked it. A first install has no
+    unit to read and falls back to the installing process's PATH.
+    """
+    unit_path = get_systemd_unit_path(system=system)
+    if not unit_path.exists():
+        return None
+    return _unit_environment_value(unit_path, "PATH")
 
 
 def _ld_library_path_line(system: bool, target_home_dir: str | None = None) -> str:
@@ -3293,7 +3315,7 @@ def generate_systemd_unit(system: bool = False, run_as_user: str | None = None) 
     if watchdog_seconds > 0:
         systemd_type, systemd_watchdog_directives = "notify", f"NotifyAccess=main\nWatchdogSec={watchdog_seconds}s\n"
     path_entries.extend(_build_user_local_paths(user_home, path_entries))
-    path_entries.extend(_build_wsl_interop_paths(path_entries))
+    path_entries.extend(_build_wsl_interop_paths(path_entries, base_path=_installed_service_path(system)))
     path_entries.extend(["/usr/local/sbin", "/usr/local/bin", "/usr/sbin", "/usr/bin", "/sbin", "/bin"])
     sane_path = ":".join(path_entries)
     start = installation_command(project_root, [*shlex.split(profile_arg), "gateway", "run"],

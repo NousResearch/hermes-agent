@@ -19,6 +19,7 @@ import {
   LIVENESS_REPROBE_DELAY_MS
 } from '@/lib/gateway-liveness-policy'
 import { isMissingRpcMethod } from '@/lib/gateway-rpc'
+import { traceIdentityChange } from '@/lib/identity-trace'
 import {
   isTimeoutError,
   RECONNECT_ATTEMPT_TIMEOUT_MS,
@@ -381,6 +382,10 @@ export function dispatchPrimaryServerRequest(request: ServerRequest, profile: st
   return dispatchServerRequest(request, profile, g.config?.activeConnectionId?.() ?? null)
 }
 
+/** The source the last primary connect/reconnect named, published or not:
+ *  diverges from `g.primaryConnectionId` only when the publish was refused. */
+let primaryDialedConnectionId: null | string = null
+
 export function setPrimaryGateway(gateway: HermesGateway | null, profile = 'default'): void {
   const next = normKey(profile)
 
@@ -418,7 +423,15 @@ export function setPrimaryGatewayConnectionId(
   // ambient API/WebSocket helper (and new-session routing) silently lands on
   // the wrong backend. The primary's own identity is (re)published by its
   // boot/reconnect path, which runs with the primary route active.
+  primaryDialedConnectionId = (connectionId ?? '').trim() || null
+
   if (!isActivePrimary()) {
+    traceIdentityChange(
+      'gateway-route',
+      'primary-publish',
+      `refused ${primaryDialedConnectionId ?? '-'} keeping=${g.primaryConnectionId ?? '-'} active=${g.activeKey}`
+    )
+
     return
   }
 
@@ -451,6 +464,14 @@ export function dialedGatewayModeFor(connectionId: null | string, profile: strin
 /** Publish the registry source owned by the window primary socket. */
 export function setPrimaryGatewayConnection(connection: Pick<HermesConnection, 'connectionId' | 'mode'> | null): void {
   setPrimaryGatewayConnectionId(connection?.connectionId, connection?.mode)
+}
+
+function traceAgentRoute(scope: string, via: string): void {
+  traceIdentityChange(
+    'gateway-route',
+    scope,
+    `via=${via} primary=${g.primaryConnectionId ?? '-'}/${g.primaryProfile} dialed=${primaryDialedConnectionId ?? '-'}`
+  )
 }
 
 function isPrimaryRegistryRoute(connectionId: null | string, profile: string): boolean {
@@ -692,6 +713,11 @@ function applyActive(profile: string, activationEpoch: number): boolean {
 
   g.$activeProfile.set(routeProfile)
   g.config?.onActiveRouteChanged?.(routeProfile)
+  traceIdentityChange(
+    'gateway-route',
+    'active',
+    `key=${g.activeKey} via=${g.activeKey === g.primaryProfile ? 'primary' : 'secondary'} conn=${activeGatewayConnectionId() ?? '-'} profile=${routeProfile}`
+  )
 
   return true
 }
@@ -1357,12 +1383,18 @@ export async function requestGatewayForAgent<T>(
   // Require both owner identities to agree before collapsing the route; a
   // different source or profile must retain its isolated secondary.
   if (isPrimaryRegistryRoute(connectionId, key)) {
+    traceAgentRoute(scope, 'primary')
+
     return requestGatewayForProfile<T>(key, method, params, timeoutMs, signal, { spawnPriority })
   }
 
   if (await ridesPrimaryBackend(connectionId, key, spawnPriority)) {
+    traceAgentRoute(scope, 'primary-shared')
+
     return requestOnPrimaryGateway<T>(method, { ...params, profile: key }, timeoutMs, signal)
   }
+
+  traceAgentRoute(scope, 'secondary')
 
   if (!window.hermesDesktop?.getConnectionFor) {
     throw new Error('This Desktop build cannot dial registry connections. Update Hermes Desktop.')

@@ -305,14 +305,14 @@ async function relayAgentsOn(
   labels: Map<string, string>
 ): Promise<RelayAgentRow[] | null> {
   try {
-    const res = await host.requestProfile<{ profiles?: RosterRow[] }>(connection.route, 'profiles.list', {
+    const res = await host.requestProfile<{ install_id?: string; profiles?: RosterRow[] }>(connection.route, 'profiles.list', {
       include_sessions: false
     })
 
     const profiles = Array.isArray(res?.profiles) ? res.profiles : []
     const label = labels.get(connection.id) || connection.id
 
-    return profiles
+    const rows = profiles
       .map(profile => ({
         profile: String(profile?.name || ''),
         handle: botHandle(profile?.name, profile),
@@ -322,9 +322,30 @@ async function relayAgentsOn(
         description: String(profile?.description || '')
       }))
       .filter(row => row.profile)
+
+    host.traceIdentityChange?.('bot-relay', `rows ${connection.id}`, rosterTrace(rows, String(res?.install_id || '')))
+
+    return rows
   } catch {
     return null
   }
+}
+
+/** Which connection last answered from each install: a second connection
+ *  answering from the same machine is a misrouted request (or one machine
+ *  registered twice) and is flagged in the trace. */
+const answeringInstall = new Map<string, string>()
+
+function rosterTrace(rows: RelayAgentRow[], installId: string): string {
+  const connectionId = rows[0]?.connection_id ?? ''
+  const other = installId ? answeringInstall.get(installId) : undefined
+  const flag = other && other !== connectionId ? `MISROUTED (same install as ${other}) ` : ''
+
+  if (installId && connectionId && !flag) {
+    answeringInstall.set(installId, connectionId)
+  }
+
+  return `${flag}install=${installId.slice(0, 8) || '-'} n=${rows.length} [${rows.map(row => `${row.connection_id}/${row.profile}=${JSON.stringify(row.title)}`).join(' ')}]`
 }
 
 /** Last good agent rows per connection id — reused when a fetch blips so a

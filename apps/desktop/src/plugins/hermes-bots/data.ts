@@ -191,6 +191,15 @@ interface BotMetaStorage {
  *  { [botName]: { shape, color, title } } */
 export const $botMeta = atom<BotMetaSnapshot>({})
 
+// One desktop.log line per route key whose title changes, from any writer
+// (hydrate, server merge, save): a title that jumps between scoped keys names
+// the moment, the window and the key it landed on.
+$botMeta.listen(snapshot => {
+  for (const [key, meta] of Object.entries(snapshot)) {
+    host.traceIdentityChange?.('bot-meta', key, `title=${JSON.stringify(meta?.title ?? null)}`)
+  }
+})
+
 export function commitBotMetaV2(storage: BotMetaStorage | undefined, snapshot: BotMetaSnapshot) {
   const commit = botMetaV2Commit.then(async () => {
     if (typeof storage?.remove !== 'function' || typeof storage?.set !== 'function') {
@@ -644,6 +653,29 @@ interface UnionRoster {
   sources?: GatewaySource[]
 }
 
+/** The rich rows come from the AMBIENT socket and are stamped with
+ *  `activeConnectionId`; when the install that answered is not that
+ *  connection's install, every title on the active source is another
+ *  machine's, so say so in desktop.log. */
+function traceRosterSnapshot(
+  local: RosterSnapshot | null | undefined,
+  sources: GatewaySource[],
+  activeConnectionId: null | string | undefined,
+  rows: RosterRow[]
+): void {
+  const answered = String((local as { install_id?: string } | null | undefined)?.install_id || '')
+  const active = activeConnectionId || 'local'
+  const expected = String(sources.find(source => source.connectionId === active)?.installId || '')
+  const flag = answered && expected && answered !== expected ? 'MISROUTED ' : ''
+  const shown = rows.map(row => `${row.connectionId ?? '-'}/${row.name}=${JSON.stringify(row.display_name ?? '')}`)
+
+  host.traceIdentityChange?.(
+    'bot-roster',
+    'snapshot',
+    `${flag}active=${active} answered=${answered.slice(0, 8) || '-'} expected=${expected.slice(0, 8) || '-'} rows=[${shown.join(' ')}]`
+  )
+}
+
 /** One roster snapshot for `activeConnectionId` — the pane's query and the
  *  composer's cold-cache prime (`primeRoster`) share it, so both see the same
  *  cross-connection rows. */
@@ -696,6 +728,7 @@ async function fetchRosterSnapshot(activeConnectionId: null | string | undefined
       const previous: RosterRow[] = $lastRoster.get().filter(row => !row?.ghost)
       const merged = mergeMultiSourceRoster(local, union, activeConnectionId, previous)
       const sources = Array.isArray(union?.sources) ? union.sources : []
+      traceRosterSnapshot(local, sources, activeConnectionId, merged?.profiles || [])
 
       return {
         ...merged,

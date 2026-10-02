@@ -381,3 +381,103 @@ def test_split_requires_a_request_that_can_be_restated_as_text(payload, can_spli
     else:
         assert any(m.get("content") == payload for m in compressed)
     _assert_tool_pairs_are_complete(compressed)
+
+
+def _tail_group(index: int) -> list[dict]:
+    """A small group so the region after the latest user turn stays under the soft ceiling."""
+    call_id = f"tail_{index}"
+    return [
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": call_id,
+                    "type": "function",
+                    "function": {"name": "inspect_shard", "arguments": "x" * 100},
+                }
+            ],
+        },
+        {"role": "tool", "tool_call_id": call_id, "content": f"t-{index}:" + "r" * 50},
+    ]
+
+
+def _textless_oversized_turn() -> list[dict]:
+    """#131412 shape: a completed older turn, then an oversized active turn with no text reply."""
+    messages = [
+        {"role": "system", "content": "system"},
+        {"role": "user", "content": "older request"},
+        {"role": "assistant", "content": "older request completed"},
+    ]
+    for index in range(10):
+        messages.extend(_tool_group(index))
+    # Newest text-bearing assistant reply: the older turn's closer.
+    messages.append({"role": "assistant", "content": "older turn finished"})
+    # The oversized active turn: a normal opening request, then tool groups with no
+    # interleaved text reply (assistant rows carry only tool_calls).
+    messages.append({"role": "user", "content": _ACTIVE_REQUEST})
+    for index in range(10, 20):
+        messages.extend(_tool_group(index))
+    # A final short user nudge plus a small tail region: the latest user turn stays
+    # inside the token-budget tail, so the #80449 user-anchor split does not fire.
+    messages.append({"role": "user", "content": "keep going"})
+    messages.extend(_tail_group(0))
+    messages.extend(_tail_group(1))
+    return messages
+
+
+def test_assistant_anchor_cannot_retain_a_textless_oversized_turn(
+    compressor: ContextCompressor,
+) -> None:
+    """The assistant anchor needs the same soft-ceiling bound as the user anchor (#131412).
+
+    When the newest text-bearing assistant is the previous turn's closer, anchoring the
+    cut to it retains the whole oversized active turn and the middle collapses to
+    nothing — the session wedges in no_progress. The cut must keep a tool-group-aligned
+    mid-turn boundary instead.
+    """
+    messages = _textless_oversized_turn()
+    head_end = compressor._protect_head_size(messages)
+    active_user_idx = next(
+        index for index, message in enumerate(messages)
+        if message.get("content") == _ACTIVE_REQUEST
+    )
+
+    cut = compressor._find_tail_cut_by_tokens(messages, head_end, token_budget=_TOKEN_BUDGET)
+
+    # The whole active turn must not ride the protected tail: its older portion stays
+    # summarizable so compression can make progress.
+    assert cut > active_user_idx + 2
+    tail_tokens = sum(_estimate_msg_budget_tokens(msg) for msg in messages[cut:])
+    active_turn_tokens = sum(
+        _estimate_msg_budget_tokens(msg) for msg in messages[active_user_idx:]
+    )
+    assert tail_tokens < active_turn_tokens
+    # The #10896 anchor keeps the latest user turn ("keep going") in the tail.
+    latest_user_idx = next(
+        index for index, message in enumerate(messages)
+        if message.get("role") == "user" and message.get("content") == "keep going"
+    )
+    assert latest_user_idx >= cut
+    _assert_tool_pairs_are_complete(messages[head_end:cut])
+    _assert_tool_pairs_are_complete(messages[cut:])
+
+
+def test_assistant_anchor_still_binds_when_splitting_is_disabled(
+    compressor: ContextCompressor,
+) -> None:
+    """Rolling micro-compaction consumes complete exchanges only (allow_split_turn=False)."""
+    messages = _textless_oversized_turn()
+    head_end = compressor._protect_head_size(messages)
+
+    cut = compressor._find_tail_cut_by_tokens(
+        messages, head_end, token_budget=_TOKEN_BUDGET, allow_split_turn=False,
+    )
+
+    older_closer_idx = next(
+        index for index, message in enumerate(messages)
+        if message.get("content") == "older turn finished"
+    )
+    # Without the split allowance the anchor may still pull the cut back to the
+    # older turn's closer; the mid-turn exception must never fire.
+    assert cut <= older_closer_idx + 1

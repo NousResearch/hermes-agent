@@ -252,6 +252,30 @@ class TestRealProfileCdpLaunch:
         assert "AGENT_BROWSER_IDLE_TIMEOUT_MS" not in captured["env"]
         self._reset()
 
+    def test_root_linux_launch_disables_chrome_sandbox(self, tmp_path):
+        import tools.browser_tool as bt
+
+        captured = {}
+
+        class FakeChrome:
+            def poll(self):
+                return None
+
+        def fake_popen(argv, **kw):
+            captured["argv"] = argv
+            (tmp_path / "DevToolsActivePort").write_text("41000\n/devtools/browser/x\n")
+            return FakeChrome()
+
+        with patch.object(bt_real_profile._origin(), "_build_browser_env", return_value={}), \
+             patch.object(bt_real_profile.subprocess, "Popen", side_effect=fake_popen), \
+             patch.object(bt_real_profile.os, "geteuid", return_value=0), \
+             patch.object(bt_real_profile.sys, "platform", "linux"), \
+             patch.object(bt_real_profile, "_read_devtools_port", return_value="41000"):
+            port, err = bt_real_profile._launch_real_profile_chrome("/usr/bin/chrome", str(tmp_path))
+
+        assert err is None and port == 41000
+        assert "--no-sandbox" in captured["argv"]
+
     def test_reuses_only_session_on_our_copy_dir(self, tmp_path):
         """A live session on a DIFFERENT dir (stale/throwaway) is closed, not reused."""
         import tools.browser_tool as bt

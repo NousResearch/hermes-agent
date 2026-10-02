@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Awaitable, Callable
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 from urllib.parse import quote
 
-from gateway.pending_native import PendingNativeInput
+from gateway.pending_native import PendingNativeInput, PendingMatrixCorrection
 from gateway.session import SessionSource
 from gateway.platforms.base import BasePlatformAdapter
 from gateway.platforms.event import MessageEvent, MessageType
@@ -23,13 +24,22 @@ class MatrixPendingReplayMixin(BasePlatformAdapter):
     _event_context_cache: MatrixEventContextCache
     _build_inbound_event: Callable[..., Awaitable[MessageEvent | None]]
     _resolve_message_context: Callable[..., Awaitable[tuple | None]]
+    _revalidate_pending_correction: Callable[
+        [MessageEvent, dict], Awaitable[MessageEvent | None]
+    ]
 
     def pending_native_input(self, event: MessageEvent) -> PendingNativeInput | None:
         if not isinstance(event.raw_message, dict) or not isinstance(
             event.raw_message.get("msgtype"), str
         ):
             return None
-        return PendingNativeInput.capture(event, event.raw_message)
+        native = PendingNativeInput.capture(event, event.raw_message)
+        target = event.metadata.get("edited_message_original_id")
+        if event._queue_at_turn_boundary and isinstance(target, str) and target:
+            correction = PendingMatrixCorrection(target)
+            correction.bind(event)
+            return replace(native, correction=correction)
+        return native
 
     async def revalidate_pending_event(
         self,
@@ -77,6 +87,10 @@ class MatrixPendingReplayMixin(BasePlatformAdapter):
                 or membership.get("membership") != "join"
             ):
                 return None
+            if event.metadata.get("edited_message") is True:
+                if native is None or native.correction is None:
+                    return None
+                return await self._revalidate_pending_correction(event, current)
             state = await effective_event(
                 self._client, current, cache=self._event_context_cache, room_id=room_id
             )

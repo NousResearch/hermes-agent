@@ -1,6 +1,9 @@
 """Tests for the dashboard-managed file browser API."""
 
 import base64
+import errno
+import io
+import os
 from types import SimpleNamespace
 
 import pytest
@@ -460,9 +463,10 @@ def test_git_branch_decodes_utf8_under_a_gbk_default_codec(tmp_path, monkeypatch
     assert _rt_files._fs_git_branch(str(tmp_path)) == branch
 
 
-def test_mutating_a_link_entry_never_touches_its_referent(local_files_client):
+def test_mutating_a_link_entry_never_touches_its_referent(local_files_client, monkeypatch):
     """Upload and delete act on the listed entry itself: a symlink is replaced or
-    removed AS the link, never chased to the file or directory tree it names."""
+    removed AS the link, never chased to the file or directory tree it names, and
+    an upload that fails or is refused leaves the existing entry as it was."""
     client, home = local_files_client
     repo = home / "work" / "repo"
     (repo / "src").mkdir(parents=True)
@@ -476,6 +480,63 @@ def test_mutating_a_link_entry_never_touches_its_referent(local_files_client):
     (shortcuts / "repo").symlink_to(repo, target_is_directory=True)
     (shortcuts / "notes.md").symlink_to(docs / "notes.md")
     (shortcuts / "todo.md").symlink_to(docs / "todo.md")
+
+    saved = home / "saved"
+    saved.mkdir()
+    (saved / "later.md").symlink_to(docs / "later.md")
+    refused = [
+        client.post(
+            "/api/files/upload",
+            json={"path": str(saved / "later.md"), "overwrite": False, "data_url": "data:text/plain;base64,bmV3"},
+        ),
+        client.post(
+            "/api/files/upload-stream",
+            data={"path": str(saved / "later.md"), "overwrite": "false"},
+            files={"file": ("later.md", b"new")},
+        ),
+    ]
+    decode = _rt_files._decode_data_url
+
+    def decode_while_another_writer_saves(data_url):
+        (saved / "report.md").write_text("theirs")
+        return decode(data_url)
+
+    with monkeypatch.context() as m:
+        m.setattr(_rt_files, "_decode_data_url", decode_while_another_writer_saves)
+        refused.append(client.post(
+            "/api/files/upload",
+            json={"path": str(saved / "report.md"), "overwrite": False, "data_url": "data:text/plain;base64,bmV3"},
+        ))
+    assert [r.status_code for r in refused] == [409] * 3, [r.text for r in refused]
+    assert os.readlink(saved / "later.md") == str(docs / "later.md")
+    assert not (docs / "later.md").exists()
+    assert (saved / "report.md").read_text() == "theirs"
+
+    class DiskFull:
+        def __init__(self, f):
+            self._f = f
+
+        def write(self, _data):
+            raise OSError(errno.ENOSPC, os.strerror(errno.ENOSPC))
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_exc):
+            self._f.close()
+
+    real_open = io.open
+    with monkeypatch.context() as m:
+        m.setattr(io, "open", lambda f, mode="r", *a, **k: (
+            DiskFull(real_open(f, mode, *a, **k)) if "w" in mode else real_open(f, mode, *a, **k)
+        ))
+        failed = client.post(
+            "/api/files/upload",
+            json={"path": str(shortcuts / "notes.md"), "data_url": "data:text/plain;base64,bmV3"},
+        )
+    assert failed.status_code == 500, failed.text
+    assert os.readlink(shortcuts / "notes.md") == str(docs / "notes.md")
+    assert sorted(p.name for p in shortcuts.iterdir()) == ["notes.md", "repo", "todo.md"]
 
     uploaded = client.post(
         "/api/files/upload-stream",

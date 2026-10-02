@@ -77,14 +77,31 @@ class _ProviderStream:
             self._physical.exit()
 
 
+def _nested(callback):
+    return relay_llm.execute({}, lambda _r: callback(), name="openrouter", model_name="m", session_id="")
+
+
+@pytest.mark.parametrize("lazy", [False, True], ids=["eager", "lazy"])
 @pytest.mark.parametrize("stream_end", ["exhausted", "aborted", "failed"])
-def test_max_in_flight_bounds_requests_and_streams_without_leaking(providers, stream_end):
+def test_max_in_flight_bounds_requests_and_streams_without_leaking(providers, stream_end, lazy):
     providers({"openrouter": {"max_in_flight": 1}})
     physical = _Physical()
     queued_entered = threading.Event()
 
+    def open_stream(_request):
+        return _ProviderStream(physical, fail_after=1 if stream_end == "failed" else None)
+
+    def lazy_shim(request):
+        # Opens and closes its one provider request through nested same-provider calls,
+        # on first pull and on teardown: both are that stream's request.
+        stream = _nested(lambda: open_stream(request))
+        try:
+            yield from stream
+        finally:
+            _nested(stream.close)
+
     held = relay_llm.stream(
-        {}, lambda _request: _ProviderStream(physical, fail_after=1 if stream_end == "failed" else None),
+        {}, lazy_shim if lazy else open_stream,
         name="openrouter", model_name="primary", session_id="", finalizer=dict,
     )
 
@@ -122,14 +139,14 @@ def test_max_in_flight_bounds_requests_and_streams_without_leaking(providers, st
     assert not interrupted.dispatched
     assert not queued_entered.is_set()
 
-    assert next(held) == "chunk-1"
+    assert _spawn(next, held).result(timeout=5) == "chunk-1"
     if stream_end == "exhausted":
-        assert list(held) == ["chunk-2"]
+        assert _spawn(list, held).result(timeout=5) == ["chunk-2"]
     elif stream_end == "aborted":
-        held.close()
+        _spawn(held.close).result(timeout=5)
     else:
         with pytest.raises(ConnectionError):
-            next(held)
+            _spawn(next, held).result(timeout=5)
 
     assert queued.result(timeout=5) == "nested"
 

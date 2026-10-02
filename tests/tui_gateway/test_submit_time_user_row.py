@@ -40,7 +40,7 @@ def test_user_message_is_durable_at_submit_before_any_agent_turn(monkeypatch, tm
         with session["history_lock"]:
             session["running"] = True
             server._start_inflight_turn(session, "please refactor the login page")
-        assert server._persist_session_row_for_submit("rid", session, "please refactor the login page", None) is None
+        assert server._persist_session_row_for_submit("rid", session, "please refactor the login page", None, turn_claim=None) is None
         # The agent build has not even started: the transcript already resumes with the sent message.
         assert [(r["role"], r["content"]) for r in db.get_messages_as_conversation(key)] == [
             ("user", "please refactor the login page")]
@@ -65,7 +65,7 @@ def test_submit_ack_binds_the_written_row_even_if_worker_consumes_staging(monkey
     monkeypatch.setattr(server.threading, "Thread", InlineThread)
     monkeypatch.setattr(server, "_start_agent_build", lambda *args: None)
     monkeypatch.setattr(server, "_restart_completed_failed_agent_build", lambda *args: False)
-    monkeypatch.setattr(server, "_run_after_agent_ready", lambda *args: session.pop("_submit_user_row", None))
+    monkeypatch.setattr(server, "_run_after_agent_ready", lambda *args, **kwargs: session.pop("_submit_user_row", None))
     try:
         replies = []
         for _ in range(2):
@@ -88,7 +88,7 @@ def test_turn_adopts_the_submit_row_and_writes_no_duplicate(monkeypatch, tmp_pat
         with session["history_lock"]:
             session["running"] = True
             server._start_inflight_turn(session, "look at @notes.md")
-        assert server._persist_session_row_for_submit("rid", session, "look at @notes.md", None) is None
+        assert server._persist_session_row_for_submit("rid", session, "look at @notes.md", None, turn_claim=None) is None
         agent = _flush_agent(db, key)
         # The prologue rewrote the persisted prompt (@-expansion): the early row follows it.
         expanded = "look at @notes.md\n\n<file notes.md>todo</file>"
@@ -171,9 +171,11 @@ def test_failed_build_drops_the_staged_row_and_a_later_turn_never_adopts_it(monk
     try:
         with session["history_lock"]:
             session["running"] = True
+            session["_turn_claim"] = 1
             server._start_inflight_turn(session, "please refactor the login page")
-        assert server._persist_session_row_for_submit("rid", session, "please refactor the login page", None) is None
-        server._run_after_agent_ready("rid", sid, session, "please refactor the login page", None, None, None)
+        assert server._persist_session_row_for_submit("rid", session, "please refactor the login page", None, turn_claim=1) is None
+        server._run_after_agent_ready(
+            "rid", sid, session, "please refactor the login page", None, None, None, turn_claim=1)
         assert "_submit_user_row" not in session, "staged row survived a turn that never reached the agent"
 
         # Even if a staged row were still around, a turn whose raw submit differs must leave the DB alone.
@@ -203,7 +205,7 @@ def test_the_staged_submit_row_carries_the_uid_its_db_row_was_written_with(monke
         with session["history_lock"]:
             session["running"] = True
             server._start_inflight_turn(session, "please refactor the login page")
-        assert server._persist_session_row_for_submit("rid", session, "please refactor the login page", None) is None
+        assert server._persist_session_row_for_submit("rid", session, "please refactor the login page", None, turn_claim=None) is None
         staged = session["_submit_user_row"]
         stored = db._conn.execute("SELECT message_uid FROM messages WHERE id = ?", (staged["_row_id"],)).fetchone()
         assert staged.get("message_uid") == stored[0]

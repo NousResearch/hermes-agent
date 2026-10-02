@@ -15,6 +15,8 @@ import threading
 import time
 from typing import Any, Dict, List, Optional, Tuple
 
+from gateway.session import format_untrusted_prompt_value
+
 logger = logging.getLogger(__name__)
 
 
@@ -416,7 +418,8 @@ def _build_prompt(intro: List[str], doc_url: str, file_type: str, file_token: st
     """Intro lines + document block + ``label`` timeline header, the selected entries, referenced docs and common instructions."""
     lines = [*intro, _MENTION_NOTE, f"Document link: {doc_url}", "Current commented document:", f"- file_type={file_type}", f"- file_token={file_token}",
              *ids, "", f"{label} ({len(selected)}/{len(timeline)} entries):"]
-    lines += [f"[{user_id}] {_truncate(text)}{' <-- YOU' if is_self else ''}" for user_id, text, is_self in selected]
+    lines += [f"[{user_id}] {format_untrusted_prompt_value(_truncate(text), max_chars=0)}{' <-- YOU' if is_self else ''}"
+              for user_id, text, is_self in selected]
     if referenced_docs:
         lines.append(referenced_docs)
     return "\n".join(lines + ["", _COMMON_INSTRUCTIONS])
@@ -428,8 +431,10 @@ def build_local_comment_prompt(
     target_index: int = -1, referenced_docs: str = "",
 ) -> str:
     """Build the prompt for a local (quoted-text) comment."""
-    intro = [f'The user added a reply in "{doc_title}".', f'Current user comment text: "{_truncate(target_reply_text)}"',
-             f'Original comment text: "{_truncate(root_comment_text)}"', f'Quoted content: "{_truncate(quote_text, 500)}"']
+    intro = [f'The user added a reply in {format_untrusted_prompt_value(doc_title, max_chars=0)}.',
+             f'Current user comment text: {format_untrusted_prompt_value(_truncate(target_reply_text), max_chars=0)}',
+             f'Original comment text: {format_untrusted_prompt_value(_truncate(root_comment_text), max_chars=0)}',
+             f'Quoted content: {format_untrusted_prompt_value(_truncate(quote_text, 500), max_chars=0)}']
     selected = _select_timeline(timeline, _LOCAL_TIMELINE_LIMIT, target_index, pinned=(0, len(timeline) - 1))
     return _build_prompt(intro, doc_url, file_type, file_token, [f"- comment_id={comment_id}"], "Current comment card timeline", timeline, selected, referenced_docs)
 
@@ -439,7 +444,9 @@ def build_whole_comment_prompt(
     self_open_id: str, current_index: int = -1, nearest_self_index: int = -1, referenced_docs: str = "",
 ) -> str:
     """Build the prompt for a whole-document comment."""
-    intro = [f'The user added a comment in "{doc_title}".', f'Current user comment text: "{_truncate(comment_text)}"', "This is a whole-document comment."]
+    intro = [f'The user added a comment in {format_untrusted_prompt_value(doc_title, max_chars=0)}.',
+             f'Current user comment text: {format_untrusted_prompt_value(_truncate(comment_text), max_chars=0)}',
+             "This is a whole-document comment."]
     selected = _select_timeline(timeline, _WHOLE_TIMELINE_LIMIT, current_index, pinned=(nearest_self_index,))
     return _build_prompt(intro, doc_url, file_type, file_token, [], "Whole-document comment timeline", timeline, selected, referenced_docs)
 

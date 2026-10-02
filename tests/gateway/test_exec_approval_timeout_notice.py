@@ -53,7 +53,7 @@ def _runner(adapter):
     runner = object.__new__(TurnRunner)
     runner._ctx = SimpleNamespace(
         _status_adapter=adapter, _status_chat_id="C1", _status_thread_metadata={"thread_id": "t1"},
-        session_key=SESSION, source=SimpleNamespace(chat_id="C1", platform="telegram", session_key=SESSION),
+        session_key=SESSION, source=SimpleNamespace(chat_id="C1", platform="telegram", session_key=SESSION, user_id="requester"),
     )
 
     class _Fut:

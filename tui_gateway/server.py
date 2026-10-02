@@ -18,7 +18,11 @@ import time
 import uuid
 from datetime import datetime, timezone  # noqa: F401  (timezone: split modules)
 from pathlib import Path
-from typing import Any, Callable, NamedTuple, Optional  # noqa: F401  (Callable: split modules)
+from typing import TYPE_CHECKING, Any, Callable, NamedTuple, Optional  # noqa: F401  (Callable: split modules)
+
+if TYPE_CHECKING:
+    from .session_lifecycle import _claim_session_turn, _owns_turn_claim
+
 
 # Several of these look unused here but are resolved BARE by split-module bodies rebound onto this
 # namespace (method_ctx.bind_module) — deleting one breaks a handler at call time, not import time.
@@ -1522,11 +1526,11 @@ def _preview_action_request(sid: str, payload: dict) -> str:
     return answer or _PREVIEW_ACTION_BRIDGE_UNAVAILABLE
 
 
-def _clear_pending(sid: str | None = None) -> None:
+def _clear_pending(sid: str | None = None, *, request_ids: set[str] | None = None) -> None:
     """Withdraw open server→client requests: only *sid*'s (session.interrupt must not cancel other sessions'
     prompts), or every one when *sid* is None (process exit). Each one gets a ``request.cancel``."""
     from tui_gateway import server_requests
-    server_requests.cancel(sid, reason="interrupted" if sid else "shutdown")
+    server_requests.cancel(sid, reason="interrupted" if sid else "shutdown", request_ids=request_ids)
 
 
 # ── Agent factory ────────────────────────────────────────────────────

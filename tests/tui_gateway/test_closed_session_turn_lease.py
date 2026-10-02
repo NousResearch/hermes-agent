@@ -96,7 +96,8 @@ def test_close_while_first_prompt_waits_for_build_leaves_no_lease(turn_env):
     } == {"leases": [], "reopen_refusal": None, "running": False, "turns_run": []}
 
 
-def test_close_landing_while_turn_claims_lease_leaves_no_lease(turn_env, monkeypatch):
+@pytest.mark.parametrize("stop_first", [False, True], ids=["close", "stop-then-close"])
+def test_close_landing_while_turn_claims_lease_leaves_no_lease(turn_env, monkeypatch, stop_first):
     """The close finalizes between the turn's closing check and its lease claim."""
     ready = threading.Event()
     ready.set()
@@ -105,10 +106,13 @@ def test_close_landing_while_turn_claims_lease_leaves_no_lease(turn_env, monkeyp
     turn_env.append(session)
     server._sessions[SID] = session
     claim = server._ensure_active_session_slot
+    submitting_thread = threading.current_thread()
     at_claim: dict = {}
 
     def _claim_after_close(sid, claiming):
-        if threading.current_thread() is claiming.get("_run_thread") and not claiming.get("_closing"):
+        if threading.current_thread() is not submitting_thread and not claiming.get("_closing"):
+            if stop_first:
+                assert _rpc("session.interrupt")["result"] == {"status": "interrupted"}
             at_claim["closed"] = _rpc("session.close")["result"]["closed"]
             at_claim["leases"] = _registry_session_ids()
         return claim(sid, claiming)
@@ -136,7 +140,10 @@ def test_closing_refusal_keeps_a_lease_the_session_already_held(turn_env):
     held = session["active_session_lease"]
     session["_closing"] = True
 
-    assert server._admit_prompt_turn(SID, session, "hello", None, None, None, None) is None
+    with session["history_lock"]:
+        turn_claim = server._claim_session_turn(session)
+    assert server._admit_prompt_turn(
+        SID, session, "hello", None, None, None, None, turn_claim=turn_claim) is None
 
     assert session.get("active_session_lease") is held
     assert _registry_session_ids() == ["closing-session-key"]

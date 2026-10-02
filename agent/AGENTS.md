@@ -98,6 +98,8 @@ cache break — keep it the only one. Full detail:
 - **Auxiliary (side-LLM) work** — curator, vision, embedding, title generation, session_search,
   compression — resolves through `agent/auxiliary_client.py::_resolve_auto_route`; each task can pin
   its own `provider/model/base_url/reasoning_effort` under `auxiliary:` in config.yaml.
+  Request preparation and recovery are in `agent/auxiliary_calls.py`; the public
+  `call_llm` and `async_call_llm` entry points remain in `agent/auxiliary_client.py`.
   Every physical attempt funnels through `_relay_sync_completion` / `_relay_async_completion` /
   `_relay_sync_stream`, where `agent/auxiliary_hooks.py` emits `pre_auxiliary_call` /
   `post_auxiliary_call` (observer-only, fail-open, `aux_task` set); the main-loop

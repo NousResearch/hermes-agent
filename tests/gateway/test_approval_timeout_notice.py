@@ -42,6 +42,19 @@ def test_non_timeout_reasons_never_post(monkeypatch):
     assert runner.scheduled == []
 
 
+@pytest.mark.parametrize("card_id, expected_hooks", [("$card", []), (None, ["r1"])])
+def test_native_card_lifecycle_does_not_replace_text_fallback_notice(monkeypatch, card_id, expected_hooks):
+    hooks = _capture_settle(monkeypatch)
+    runner = _Runner(current=True)
+
+    class Adapter:
+        manages_exec_approval_lifecycle = True
+
+    runner._ctx._status_adapter = Adapter()
+    settle_mod.register_timeout_notice(runner, {"request_id": "r1"}, command="ls", card_message_id=card_id)
+    assert list(hooks) == expected_hooks
+
+
 @pytest.mark.asyncio
 async def test_text_prompt_is_never_edited_in_place():
     """card_message_id=None (the text-fallback path) must send a new message, not rewrite the prompt."""

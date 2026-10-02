@@ -89,6 +89,19 @@ class GatewayStartupMixin:
                 source.chat_id if source else "unknown",
             )
 
+    def _defer_for_startup_restore(self, event: MessageEvent) -> bool:
+        """Queue a user event for replay while the startup-restore gate is closed; True if queued.
+        Both inbound paths call this: the idle handler and the busy-session handler."""
+        if (
+            not getattr(self, "_startup_restore_in_progress", False)
+            or getattr(event, "internal", False)
+            or getattr(event, "_hermes_startup_restore_replay", False)
+            or event.get_command() in {"approve", "deny"}
+        ):
+            return False
+        self._queue_startup_restore_event(event)
+        return True
+
     async def _drain_startup_restore_queue(self) -> int:
         """Replay inbound messages queued while startup auto-resume ran."""
         drained = 0
@@ -1204,15 +1217,31 @@ class GatewayStartupMixin:
         return False, enabled_platform_count, _multiplex_skipped_platforms, _pending_connects
 
     async def _start_connect_pending(self, _pending_connects: list) -> Optional[list]:
-        """Connect the pre-filtered adapters concurrently. Returns the raw per-platform results, or
-        None when a restart/shutdown aborted startup mid-connect (adapters already torn down)."""
+        """Connect adapters concurrently and await cleanup when shutdown interrupts startup."""
+        self._startup_connect_cleanup_started = False
+        task = asyncio.create_task(self._start_connect_pending_impl(_pending_connects))
+        self._startup_connect_task = task
+        try:
+            result = await task
+            if result is None or self._startup_should_abort():
+                await self._abort_startup_if_shutdown_requested()
+                return None
+            return result
+        finally:
+            self._startup_connect_task = None
+
+    async def _start_connect_pending_impl(
+        self, _pending_connects: list
+    ) -> Optional[list]:
         async def _connect_one_startup(p, p_cfg, adp):
-            """Connect a single platform; never let one block the others (#83791)."""
-            if await self._abort_startup_if_shutdown_requested(adp, p):
+            if self._startup_should_abort():
                 return (p, adp, p_cfg, "aborted", None)
             logger.info("Connecting to %s...", p.value)
             self._update_platform_runtime_status(
-                p.value, platform_state="connecting", error_code=None, error_message=None,
+                p.value,
+                platform_state="connecting",
+                error_code=None,
+                error_message=None,
             )
             try:
                 ok = await self._connect_initial_adapter_with_timeout(adp, p)
@@ -1222,30 +1251,30 @@ class GatewayStartupMixin:
 
         if not _pending_connects:
             return []
-        # Abort-aware concurrent wait: a restart/shutdown mid-connect cancels pending connects, tears down
-        # completed ones, and aborts startup.
         _task_map = {
-            asyncio.ensure_future(_connect_one_startup(p, c, a)): (p, c, a) for (p, c, a) in _pending_connects
+            asyncio.ensure_future(_connect_one_startup(p, c, a)): (p, c, a)
+            for (p, c, a) in _pending_connects
         }
         _pending_tasks = set(_task_map)
-        while _pending_tasks:
-            _done, _pending_tasks = await asyncio.wait(_pending_tasks, timeout=0.05)
-            if _pending_tasks and self._startup_should_abort():
-                break
-        else:
-            return [_t.exception() or _t.result() for _t in _task_map]
-        # Settle in-flight connects FIRST so a completed adapter's disconnect cannot unblock a sibling.
+        cancelled = False
+        try:
+            while _pending_tasks:
+                _done, _pending_tasks = await asyncio.wait(_pending_tasks, timeout=0.05)
+                if self._startup_should_abort():
+                    break
+            else:
+                return [_t.exception() or _t.result() for _t in _task_map]
+        except asyncio.CancelledError:
+            cancelled = True
+        self._startup_connect_cleanup_started = True
         for _t in _pending_tasks:
-            _t.cancel()
+            if not _t.cancelling():
+                _t.cancel()
         await asyncio.gather(*_pending_tasks, return_exceptions=True)
-        # Then tear down adapters whose connect succeeded — never registered, so stop() won't reach them.
-        _connected_ok = [
-            _t for _t in _task_map
-            if _t not in _pending_tasks and not _t.cancelled() and _t.exception() is None and _t.result()[3] == "ok"
-        ]
-        for _t in [*_pending_tasks, *_connected_ok]:
-            await self._startup_teardown_adapter(_task_map[_t][2], _task_map[_t][0])
-        await self._abort_startup_if_shutdown_requested()
+        for p, _c, adp in _task_map.values():
+            await self._startup_teardown_adapter(adp, p)
+        if cancelled and not self._startup_should_abort():
+            raise asyncio.CancelledError
         return None
 
     def _startup_queue_transient_failure(
@@ -1335,16 +1364,27 @@ class GatewayStartupMixin:
         # secondaries' ledgers are replayed by _restore_secondary_completion_ledgers below.
         _pr.restore_completions()
         # Secondary-profile adapters connect under their own home + credential scope.
+        self._startup_connect_cleanup_started = False
         try:
-            connected_count += await self._start_secondary_profile_adapters()
+            task = asyncio.create_task(self._start_secondary_profile_adapters())
+            self._startup_connect_task = task
+            connected_count += await task
+        except asyncio.CancelledError:
+            if not self._startup_should_abort():
+                raise
+            await self._abort_startup_if_shutdown_requested()
+            return True, connected_count
         except MultiplexConfigError as e:
             # Invalid multiplexer config — abort cleanly rather than run a half-wired gateway.
             logger.error("Gateway multiplexer config error: %s", str(e))
             self._startup_fail_fatal_config(str(e))
             return True, connected_count
         except Exception as e:
-            logger.error("Secondary-profile adapter startup failed: %s", e, exc_info=True)
+            logger.error(
+                "Secondary-profile adapter startup failed: %s", e, exc_info=True
+            )
         finally:
+            self._startup_connect_task = None
             # Startup authority is one phase: from here on every adapter retry is non-evicting.
             self._platform_lock_takeover_on_start = False
         # A platform skipped on the primary should have been picked up by a secondary owning the token;

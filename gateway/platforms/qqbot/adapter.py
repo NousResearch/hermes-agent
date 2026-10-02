@@ -693,7 +693,7 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
 
         approval = parse_approval_button_data(button_data)
         if approval is not None:
-            session_key, decision = approval
+            session_key, decision, request_id = approval
             choice = self._APPROVAL_BUTTON_TO_CHOICE.get(decision)
             if choice is None:
                 logger.warning("[%s] Unknown approval decision %r (session=%s)", self._log_tag, decision, session_key)
@@ -705,7 +705,10 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
                 return
             try:
                 from tools.approval import resolve_gateway_approval  # lazy: keep adapter light
-                count = resolve_gateway_approval(session_key, choice)
+                count = (
+                    resolve_gateway_approval(session_key, choice, request_id=request_id)
+                    if request_id else 0
+                )
                 logger.info(
                     "[%s] Button resolved %d approval(s) for session %s (choice=%s, operator=%s)",
                     self._log_tag, count, session_key, choice, event.operator_openid)
@@ -820,8 +823,8 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
     async def _ingest(
         self, d: Dict[str, Any], msg_id: str, content: str, attachments: Any, timestamp: str, *,
         chat_id: str, qq_chat_type: str, verbose: bool = False, **source_kwargs: Any) -> None:
-        """Shared inbound tail: fold attachment transcripts/file info and quoted context
-        into the text, drop empty events, remember the QQ chat kind and dispatch."""
+        """Shared inbound tail: fold attachment transcripts/file info into the text, attach the
+        quoted message as reply context, drop empty events, remember the QQ chat kind and dispatch."""
         att = await self._process_attachments(attachments)
         text = content
         voice_transcripts = att["voice_transcripts"]
@@ -834,11 +837,11 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
             logger.info("[%s] After processing: images=%d, voice=%d", self._log_tag, len(image_urls), len(voice_transcripts))
 
         quoted = await self._process_quoted_context(d)
-        text = self._merge_quote_into(text, quoted["quote_block"])
+        quote_text = quoted["quote_text"] or None
         if quoted["image_urls"]:
             image_urls = image_urls + quoted["image_urls"]
             image_media_types = image_media_types + quoted["image_media_types"]
-        if not text.strip() and not image_urls:
+        if not text.strip() and not image_urls and not quote_text:
             return
 
         self._chat_type_map[chat_id] = qq_chat_type
@@ -846,6 +849,8 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
             source=self.build_source(chat_id=chat_id,** source_kwargs), text=text,
             message_type=self._detect_message_type(image_urls, image_media_types), raw_message=d,
             message_id=msg_id, media_urls=image_urls, media_types=image_media_types,
+            # The quote has no message ID, and the gateway shows reply_to_text only beside one.
+            reply_to_message_id=f"quote:{msg_id}" if quote_text else None, reply_to_text=quote_text,
             timestamp=self._parse_qq_timestamp(timestamp),
         )
         await self.handle_message(event)
@@ -856,9 +861,9 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
         """Process the quoted message a user is replying to (``message_type == 103``;
         referenced content + attachments live in ``msg_elements``). Quoted attachments
         go through _process_attachments so quoted voice gets STT and quoted images are
-        cached identically. Returns ``{"quote_block", "image_urls", "image_media_types"}``;
-        quote_block is "" when nothing is quoted."""
-        empty = {"quote_block": "", "image_urls": [], "image_media_types": []}
+        cached identically. Returns ``{"quote_text", "image_urls", "image_media_types"}``;
+        quote_text is "" when nothing is quoted."""
+        empty = {"quote_text": "", "image_urls": [], "image_media_types": []}
         try:
             is_quote = int(d.get("message_type", 0) or 0) == 103
         except (TypeError, ValueError):
@@ -882,16 +887,9 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
             return empty
         # Images-only quote still gets a marker so the LLM knows context was referenced.
         return {
-            "quote_block": "[Quoted message]:\n" + "\n".join(lines) if lines else "[Quoted message]: (image)",
+            "quote_text": "\n".join(lines) if lines else "(image)",
             "image_urls": quoted_images,
             "image_media_types": att_result.get("image_media_types") or []}
-
-    @staticmethod
-    def _merge_quote_into(text: str, quote_block: str) -> str:
-        """Prepend ``quote_block`` to *text*, separated by a blank line."""
-        if not quote_block:
-            return text
-        return f"{quote_block}\n\n{text}".strip() if text.strip() else quote_block
 
     # ── Attachment processing ──
 
@@ -1473,7 +1471,11 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
         """Send a 3-button approval request (allow-once / allow-always / deny);
         clicks come back as INTERACTION_CREATE decoded by parse_approval_button_data."""
         from gateway.platforms.qqbot.keyboards import build_approval_text
-        keyboard = build_approval_keyboard(req.session_key, allow_permanent=getattr(req, "allow_permanent", True))
+        keyboard = build_approval_keyboard(
+            req.session_key,
+            allow_permanent=getattr(req, "allow_permanent", True),
+            request_id=getattr(req, "request_id", None),
+        )
         return await self.send_with_keyboard(chat_id, build_approval_text(req), keyboard, reply_to=reply_to)
 
     # Cross-adapter gateway contract: gateway/run.py detects send_exec_approval /
@@ -1491,7 +1493,7 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
         req = ApprovalRequest(
             session_key=prompt.session_key, title="Execute this command?", description=description,
             command_preview=prompt.command, timeout_sec=self._APPROVAL_TIMEOUT_SECONDS,
-            allow_permanent="always" in prompt.choices)
+            allow_permanent="always" in prompt.choices, request_id=prompt.request_id)
         # QQ requires a msg_id for passive replies; the last inbound id is the natural one.
         return await self.send_approval_request(
             prompt.chat_id, req, reply_to=self._last_msg_id.get(prompt.chat_id))

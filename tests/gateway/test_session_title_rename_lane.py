@@ -85,6 +85,7 @@ def _attach_in_thread(current, entry_origin, row_origin=None, get_session=None):
             lookup_by_session_key={"key-1": entry}.get, _db_for_key={"key-1": db}.get,
         ),
         _is_telegram_topic_lane=lambda src: False,
+        _is_discord_thread_lane=lambda src: True,
         _is_relay_discord_channel_lane=lambda src: False,
         _schedule_discord_semantic_thread_rename=lambda src, sid, title: scheduled.append((src, sid, title)),
     )

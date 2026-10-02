@@ -82,3 +82,12 @@ for run in ("\\n" * 24000, " \\n" * 12000, "\\t\\n" * 12000, "sudo" + " " * 2400
     assert all(rx.search(run + "\\nmkfs.ext4 /dev/sda1") for rx in mkfs), run[:6]
 ''')
 
+
+def test_blank_line_runs_are_skipped_once():
+    # Each newline of a blank-line run is a command start; skipping the rest of the run again from
+    # every one of them was quadratic Python work before any rule ran.
+    _run('''
+from tools.approval_detection import _iter_shell_command_starts
+command = "echo a" + "\\n" * 40000 + "rm -rf /tmp/x"
+assert list(_iter_shell_command_starts(command)) == [0, command.index("rm")]
+''')

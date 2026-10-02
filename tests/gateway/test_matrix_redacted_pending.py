@@ -83,3 +83,51 @@ async def _assert_parked_voice_redaction(monkeypatch):
 ])
 async def test_redaction_preserves_only_the_authorised_remaining_input(monkeypatch, check, args):
     await check(monkeypatch, *args)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("in_content", [False, True], ids=["v10", "v11"])
+@pytest.mark.parametrize("confirmation", ["accepted", "other-actor", "unredacted", "unreadable", "malformed"])
+async def test_moderator_withdrawal_requires_current_server_redaction(monkeypatch, in_content, confirmation):
+    from mautrix.api import HTTPAPI, Method
+    from mautrix.client.api import ClientAPI
+    from mautrix.errors import MForbidden
+    from mautrix.types import UserID
+
+    monkeypatch.setenv("MATRIX_REQUIRE_MENTION", "false")
+    monkeypatch.setenv("MATRIX_AUTO_THREAD", "false")
+    adapter = _make_adapter()
+    adapter._text_batch_delay_seconds = 60
+    await adapter._on_room_message(_message("first", "$one"))
+    await adapter._on_room_message(_message("second", "$two"))
+
+    moderator = "@moderator:example.org"
+    redaction = {"type": "m.room.redaction", "room_id": ROOM, "event_id": "$redaction",
+                 "sender": "@other:example.org" if confirmation == "other-actor" else moderator,
+                 "origin_server_ts": int(time.time() * 1000), "content": {}}
+    if in_content:
+        redaction["content"]["redacts"] = "$two"
+    else:
+        redaction["redacts"] = "$two"
+    if confirmation == "malformed":
+        redaction["content"] = ["invalid redaction content"]
+    current = {"type": "m.room.message", "room_id": ROOM, "event_id": "$two", "sender": ALICE,
+               "origin_server_ts": int(time.time() * 1000), "content": {}}
+    if confirmation != "unredacted":
+        current["unsigned"] = {"redacted_because": redaction}
+
+    async def request(method, path, **kwargs):
+        assert (method, path) == (Method.GET, "/_matrix/client/v3/rooms/%21room1%3Aexample.org/event/%24two")
+        if confirmation == "unreadable":
+            raise MForbidden(403, "event unavailable")
+        return current
+
+    api = HTTPAPI("https://matrix.example.org", token="test", client_session=MagicMock())
+    monkeypatch.setattr(api, "request", request)
+    adapter._client = ClientAPI(UserID("@hermes:example.org"), api=api)
+    await adapter._on_redaction(_redaction(moderator, "$two", in_content=in_content))
+    for key in list(adapter._pending_text_batches):
+        await adapter._flush_text_batch_now(key)
+
+    expected = [("$one", "first")] if confirmation == "accepted" else [("$one", "first\nsecond")]
+    assert _dispatched(adapter) == expected

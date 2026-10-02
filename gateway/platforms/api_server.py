@@ -2241,12 +2241,12 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             # Same fallback provider chain as Telegram/Discord/Slack.
             "fallback_model": None if confirmed_runtime_lock else GatewayRunner._load_fallback_model(),
             "reasoning_config": request_reasoning_config,
-            "gateway_session_key": gateway_session_key,
-            # The session's provider from the previous request, so its queued recall reaches this turn
-            # (#120116); checked back in by the turn's finally.
-            "memory_manager": self._memory_sessions.checkout(session_id)}
+            "gateway_session_key": gateway_session_key}
         if request_service_tier is not _REQUEST_OPTION_MISSING:
             agent_kwargs["service_tier"] = request_service_tier
+        # The session's previous provider (queued recall, #120116), checked back in by the turn's finally;
+        # matched on this agent's identity kwargs so another caller's scope is never adopted.
+        agent_kwargs["memory_manager"] = self._memory_sessions.checkout(session_id, agent_kwargs)
         agent = AIAgent(**agent_kwargs)
         attach_primary_auth_failure(agent, failure_for_route(_primary_auth_failure, resolved_route, runtime_kwargs))
         route_source = (

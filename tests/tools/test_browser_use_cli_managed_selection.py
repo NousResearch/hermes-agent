@@ -4,7 +4,9 @@ import tools.browser_use_cli as bu_cli
 
 
 def test_canonical_nous_selection_routes_browser_use_through_gateway(monkeypatch):
-    import tools.browser_tool as bt
+    from tools import browser_tool_cdp as bt_cdp
+    from tools import browser_tool_cloud as bt_cloud
+    from tools import browser_tool_session as bt_session
 
     class _BrowserUseProvider:
         name = "browser-use"
@@ -18,8 +20,8 @@ def test_canonical_nous_selection_routes_browser_use_through_gateway(monkeypatch
             }
         },
     )
-    monkeypatch.setattr(bt, "_get_cdp_override", lambda: "")
-    monkeypatch.setattr(bt, "_get_cloud_provider", lambda: _BrowserUseProvider())
+    monkeypatch.setattr(bt_cdp, "_get_cdp_override", lambda: "")
+    monkeypatch.setattr(bt_cloud, "_get_cloud_provider", lambda: _BrowserUseProvider())
 
     seen = []
 
@@ -27,7 +29,7 @@ def test_canonical_nous_selection_routes_browser_use_through_gateway(monkeypatch
         seen.append(cache_key)
         return {"cdp_url": "wss://managed.example/cdp/session"}
 
-    monkeypatch.setattr(bt, "_get_session_info", session_info)
+    monkeypatch.setattr(bt_session, "_get_session_info", session_info)
 
     env = {}
     assert bu_cli._resolve_backend_cdp(env, "task-1") is None
@@ -50,10 +52,10 @@ def test_direct_browser_use_selection_stays_on_native_cli_path(monkeypatch):
             }
         },
     )
-    monkeypatch.setattr(bt, "_get_cdp_override", lambda: "")
-    monkeypatch.setattr(bt, "_get_cloud_provider", lambda: _BrowserUseProvider())
+    monkeypatch.setattr(bt_cdp, "_get_cdp_override", lambda: "")
+    monkeypatch.setattr(bt_cloud, "_get_cloud_provider", lambda: _BrowserUseProvider())
     monkeypatch.setattr(
-        bt,
+        bt_session,
         "_get_session_info",
         lambda cache_key: (_ for _ in ()).throw(
             AssertionError("direct Browser Use must not provision a gateway session")

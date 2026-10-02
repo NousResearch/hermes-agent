@@ -538,7 +538,10 @@ class TestBackendCdpResolution:
             bt_session, "_get_session_info",
             lambda task_id: {"cdp_url": "wss://gateway.example/cdp/managed"},
         )
-        monkeypatch.setattr(bu_cli, "_read_browser_cfg", lambda: {"cloud_provider": "nous"})
+        monkeypatch.setattr(
+            "hermes_cli.config.read_raw_config_readonly",
+            lambda: {"browser": {"cloud_provider": "nous"}},
+        )
         env = {}
         assert bu_cli._resolve_backend_cdp(env, "t1") is None
         assert env["BU_CDP_WS"] == "wss://gateway.example/cdp/managed"
@@ -554,7 +557,10 @@ class TestBackendCdpResolution:
             bt_session, "_get_session_info",
             lambda task_id: {"cdp_url": "wss://gateway.example/cdp/legacy"},
         )
-        monkeypatch.setattr(bu_cli, "_read_browser_cfg", lambda: {"use_gateway": True})
+        monkeypatch.setattr(
+            "hermes_cli.config.read_raw_config_readonly",
+            lambda: {"browser": {"use_gateway": True}},
+        )
         env = {}
         assert bu_cli._resolve_backend_cdp(env, "t1") is None
         assert env["BU_CDP_WS"] == "wss://gateway.example/cdp/legacy"

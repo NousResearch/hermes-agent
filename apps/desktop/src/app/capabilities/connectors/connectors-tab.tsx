@@ -191,8 +191,17 @@ export function ConnectorsTab({ gateway, profile }: ConnectorsTabProps) {
         break
 
       case 'reconnect':
+        void startConnect(card, true)
+
+        return
 
       case 'tryAgain':
+        if (card.residency === 'local' && card.ways.local?.installed === true) {
+          void mcp.runProbe(localServerName(card))
+
+          return
+        }
+
         void startConnect(card, true)
 
         return

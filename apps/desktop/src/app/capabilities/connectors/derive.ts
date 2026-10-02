@@ -48,7 +48,7 @@ function hostedPhaseFor(status: string): Phase {
 }
 
 const LOCAL_PHASES = {
-  error: { reason: 'serverError', state: 'broken', verb: 'openLogs' },
+  error: { reason: 'serverError', state: 'broken', verb: 'tryAgain' },
   'needs-auth': { reason: 'serverNeedsAuth', state: 'broken', verb: 'authenticate' },
   off: { reason: undefined, state: 'off', verb: undefined },
   ok: { reason: undefined, state: 'connected', verb: undefined },
@@ -153,7 +153,7 @@ export function localWay(server: LocalServerInput): ConnectorWayLocal {
     state: phase.state,
     target: server.target,
     unused: server.unused,
-    verb: phase.verb === 'authenticate' && server.canAuthenticate === false ? 'openLogs' : phase.verb
+    verb: phase.verb === 'authenticate' && server.canAuthenticate === false ? 'tryAgain' : phase.verb
   }
 }
 

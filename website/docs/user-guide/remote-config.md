@@ -17,9 +17,9 @@ machine with one user should keep `config.yaml`.
 
 ## Turning it on
 
-Set the following in the environment or in `~/.hermes/.env`. A value in
-`config.yaml` cannot select the backend, because the backend is what serves
-config.
+Set the following in the environment, in `~/.hermes/.env`, or in the managed
+`/etc/hermes/.env` (which wins over the other two). A value in `config.yaml`
+cannot select the backend, because the backend is what serves config.
 
 | Variable | Meaning |
 |---|---|
@@ -41,6 +41,14 @@ These values, and the `HERMES_CONFIG_*` variables above, must come from
 (1Password, Bitwarden, a command) supplies any of them, Hermes refuses to
 start.
 
+A Hermes process started for another profile (a `hermes -p <name>` worker, a
+profile's cron or bot child) keeps the `HERMES_CONFIG_*` deployment of the
+process that started it, so it reads that profile's config from the plane too.
+It does not inherit the plane credential: on-prem, put the
+`GATEWAY_RELAY_IDP_*` values where every profile reads them (the managed
+`/etc/hermes/.env`) or in each profile's `.env`. Without one, the process
+exits with an error rather than read a local file.
+
 ## What changes
 
 - **Startup fetches config and fails closed.** Every Hermes process (gateway,
@@ -57,12 +65,15 @@ start.
   running agent within one interval.
 - **Writes go to the profile's own level.** `hermes config set`, `/model`,
   the dashboard, and every other config writer send only the keys that changed,
-  guarded against concurrent edits. Removing a key removes it from the profile
-  level only: if an upper level also sets it, that value still applies, and
-  Hermes warns you.
-- **Locked keys are refused.** `hermes config set` on a locked key prints which
-  level locks it and changes nothing. When a whole document is saved, locked
-  keys are left out, and Hermes prints a note listing them.
+  guarded against concurrent edits. If another process changed the profile
+  meanwhile, Hermes re-reads it and applies only its own change on top, never
+  undoing the other one. Removing a key removes it from the profile level only:
+  if an upper level also sets it, that value still applies, and Hermes warns
+  you.
+- **Locked keys are refused.** `hermes config set` (and a single setting
+  changed in the TUI or desktop app) on a locked key reports which level locks
+  it and changes nothing. When a whole document is saved, locked keys are left
+  out, and Hermes prints a note listing them.
 - **Secrets stay out of the plane.** A secret-shaped key such as `api_key`
   accepts only a `${VAR}` reference, never the secret itself. Put the value in
   `.env` or a secret source and set the reference:
@@ -76,7 +87,11 @@ start.
 - **Schema migrations run in memory.** A document written by an older Hermes is
   migrated when it is read, and the result is not written back. A later write
   from a newer Hermes keeps the profile's stored schema version unless that
-  data is already current, so every later reader still migrates it.
+  data is already current, so every later reader still migrates it. For the
+  same reason, setting a value that one of those migrations rewrites (for
+  example `compression.threshold_tokens: 256000`, an old default, on a profile
+  stored at an older schema) is refused with a message naming the key: it would
+  be saved and then never read back.
 - **Unknown keys** in the fetched document are ignored with a warning, for
   example a key added by a newer Hermes.
 
@@ -92,7 +107,8 @@ warns at startup, and `hermes doctor` flags the file. The managed
 These commands copy or edit `config.yaml` and are refused in remote mode:
 
 - `hermes config edit` (use `hermes config set` instead)
-- profile clone and profile distribution install
+- profile clone, profile rename (the plane keeps a profile's settings under its
+  name), and profile distribution install
 - `hermes backup`, `hermes import`, and snapshot restore
 - `hermes gateway --config <file>`
 

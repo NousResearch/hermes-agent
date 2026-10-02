@@ -331,21 +331,9 @@ def _load_dotenv_with_fallback(
     ``load_pass`` groups the layered files of one ``load_hermes_dotenv`` call: within a pass a later layer
     (project, managed) still sees the earlier layer's output, as it always did; only OTHER passes' output
     is peeled. A bare call (``hermes send``'s direct reload) is its own pass."""
-    raw = path.read_bytes()
-    try:
-        # utf-8-sig strips a leading BOM (PowerShell 5.1 / Notepad); plain utf-8 would keep U+FEFF on the
-        # first key name and silently drop it from os.environ under its canonical name.
-        text = raw.decode("utf-8-sig")
-    except UnicodeDecodeError:
-        if raw.startswith(codecs.BOM_UTF8):  # strip the BOM by hand: utf-8-sig can't once we decode latin-1
-            raw = raw[len(codecs.BOM_UTF8) :]
-        text = raw.decode("latin-1")
-    # Imported here, not at module level: gateway tests stub ``sys.modules["dotenv"]`` with a bare module
-    # exposing only ``load_dotenv``, and ``gateway.run`` imports this module at import time.
-    from dotenv.main import DotEnv
     from dotenv.variables import parse_variables
 
-    assignments = list(DotEnv(dotenv_path=None, stream=io.StringIO(text), interpolate=False).parse())
+    assignments = _dotenv_assignments(path)
 
     with _DOTENV_LOCK:
         if load_pass is None:
@@ -380,6 +368,86 @@ def _load_dotenv_with_fallback(
     # Managed keys are recorded separately: they are administrator policy, not launch-profile residue.
     (_MANAGED_DOTENV_KEYS if managed else _LOADED_DOTENV_KEYS).update(name for name, _value in assignments)
     _sanitize_loaded_credentials()  # httpx encodes headers as ASCII
+
+
+def _dotenv_assignments(path: Path) -> list:
+    """``(name, raw value)`` pairs of one dotenv file, parsed exactly as the loader parses it."""
+    raw = path.read_bytes()
+    try:
+        # utf-8-sig strips a leading BOM (PowerShell 5.1 / Notepad); plain utf-8 would keep U+FEFF on the
+        # first key name and silently drop it from os.environ under its canonical name.
+        text = raw.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        if raw.startswith(codecs.BOM_UTF8):  # strip the BOM by hand: utf-8-sig can't once we decode latin-1
+            raw = raw[len(codecs.BOM_UTF8) :]
+        text = raw.decode("latin-1")
+    # Imported here, not at module level: gateway tests stub ``sys.modules["dotenv"]`` with a bare module
+    # exposing only ``load_dotenv``, and ``gateway.run`` imports this module at import time.
+    from dotenv.main import DotEnv
+
+    return list(DotEnv(dotenv_path=None, stream=io.StringIO(text), interpolate=False).parse())
+
+
+def _bootstrap_env(home: Path | None = None) -> dict:
+    """The process env as ``load_hermes_dotenv`` leaves it for the names the home's ``.env`` and the
+    managed ``.env`` define: both override, managed last, ``${VAR}`` resolved, the loader's parser.
+    Read-only: nothing is published and no file is rewritten (sanitizing imports hermes_cli.config,
+    whose import-time config read must not run before the backend is decided)."""
+    from dotenv.variables import parse_variables
+
+    home = Path(home) if home is not None else _process_hermes_home()
+    env = dict(os.environ)
+    layers = [home / ".env"]
+    try:
+        from hermes_cli import managed_scope
+
+        managed_dir = managed_scope.get_managed_dir()
+    except Exception:  # noqa: BLE001 — same fail-open as _apply_managed_env
+        managed_dir = None
+    if managed_dir is not None:
+        layers.append(managed_dir / ".env")
+    for path in layers:
+        try:
+            assignments = _dotenv_assignments(path)
+        except OSError:
+            continue
+        resolved: dict[str, str | None] = {}
+        for name, value in assignments:
+            if value is not None:
+                value = "".join(atom.resolve({**env, **resolved}) for atom in parse_variables(value))
+            resolved[name] = value
+        env.update({k: v for k, v in resolved.items() if v is not None})
+    return env
+
+
+def selected_config_backend_name(home: Path | None = None) -> str:
+    """The config backend ``load_hermes_dotenv`` selects for *home*, decided without loading or
+    booting anything. For a caller that must decide before Hermes starts (Docker stage2 skips the
+    config-file migration in remote mode, D12)."""
+    from hermes_cli.config_backend import BACKEND_ENV
+
+    return (_bootstrap_env(home).get(BACKEND_ENV) or "").strip().lower() or "file"
+
+
+def apply_config_bootstrap_env(remote_names, home: Path | None = None) -> None:
+    """Publish ``remote_names()`` (the remote backend's deployment and plane credential, D26/D32) from the
+    launch home's ``.env`` and the managed ``.env``, with the values ``load_hermes_dotenv`` gives
+    them. Called before the first config read of a process, which can come before
+    ``load_hermes_dotenv`` (``hermes_cli.config`` reads config at import time): the backend is
+    selected and authenticated from the same deployment either way. A file deployment gets only its
+    selector (the file backend needs nothing else before boot); values the process env holds and
+    no file defines are left alone; ``load_hermes_dotenv`` later publishes the same values."""
+    from hermes_cli.config_backend import BACKEND_ENV
+
+    env = _bootstrap_env(home)
+    if (env.get(BACKEND_ENV) or "").strip().lower() == "remote":
+        names = remote_names()
+    else:
+        names = {BACKEND_ENV}  # the selector itself, so a file deployment is not read as remote meanwhile
+    for name in names:
+        value = env.get(name)
+        if value is not None and os.environ.get(name) != value:
+            os.environ[name] = value
 
 
 def _sanitize_env_file_if_needed(path: Path) -> None:
@@ -534,6 +602,10 @@ def load_hermes_dotenv(
     # remote backend fetches this home's config here, failing closed; the file backend does nothing.
     from hermes_cli.config_backend import get_config_backend
 
+    # The administrator-managed .env is part of the deployment the backend boots from (it may be
+    # where the selector, plane URL or instance id live), so it applies before the boot as well as
+    # last below, where it keeps its precedence over secret-source results.
+    _apply_managed_env(load_pass=load_pass)
     get_config_backend().boot(home_path)
 
     # External sources are skipped for the updater (dotenv + managed env still load): ``update`` must not

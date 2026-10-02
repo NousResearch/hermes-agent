@@ -397,7 +397,7 @@ async def test_shutdown_preserves_dispatch_waiting_for_the_turn_lease(tmp_path, 
     monkeypatch.setattr(adapter, "_event_session_key", lambda event: key)
     runner._enqueue_fifo(key, first, adapter)
     if partial:
-        from gateway.platforms.base import merge_pending_message_event
+        from gateway.platforms.base_pending_merge import merge_pending_message_event
         retained = _event()
         retained.text, retained.message_id = "retained contribution", "retained"
         merge_pending_message_event(adapter._pending_messages, key, retained, merge_text=True)

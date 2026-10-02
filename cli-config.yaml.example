@@ -2184,7 +2184,7 @@ updates:
 # too, whichever profile it is run from. The stanza protects itself: `settings_lock.*` is always
 # locked while enabled.
 #
-#   hermes config lock approvals.mode yolo     # prompts for a password, stores only its hash
+#   hermes config lock approvals.mode command_allowlist   # prompts for a password, stores only its hash
 #   hermes config unlock --minutes 5           # opens a time-boxed window (password if set)
 #   hermes config relock                       # closes it early
 #
@@ -2200,8 +2200,13 @@ updates:
 # window is still open. Two saves of the same file that overlap can still
 # overwrite each other as they can without a lock; the lock does not order them.
 #
-# The check is made on the file as it will be written, so a YAML alias
-# (`approvals: &a {...}` / `other: *a`) cannot carry a change onto a locked key.
+# The check is made on the bytes as they will be written, read back the way
+# every reader reads them: a YAML alias (`other: *a`) or merge key (`<<: *d`)
+# cannot carry a change onto a locked key, and a value that changes kind
+# (`max_turns: 1` to `true`) is a change.
+#
+# It locks config.yaml, not runtime overrides that never write it: a session's
+# YOLO toggle (Shift+Tab, `/yolo`) and `--yolo` are not covered.
 #
 # Fails closed: a stanza this build cannot apply (an unrecognised `enabled`, no
 # usable `keys`, a malformed password hash), a root config.yaml that names a
@@ -2215,7 +2220,7 @@ updates:
 #
 # settings_lock:
 #   enabled: true
-#   keys: [approvals.mode, yolo, providers.*]     # exact dotted paths, or `prefix.*`; matched by
+#   keys: [approvals.mode, command_allowlist, providers.*]   # dotted paths or `prefix.*`; matched by
 #                                                 # spelling, so a literal `approvals.mode:` key is
 #                                                 # locked like the nested approvals: {mode: ...}
 #   password: "scrypt$16384$8$1$<salt>$<hash>"    # written by `hermes config lock`; optional (--no-password)

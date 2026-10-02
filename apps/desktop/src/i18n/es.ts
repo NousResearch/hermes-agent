@@ -5097,7 +5097,7 @@ export const esOverrides = {
       wrongPassword: 'Contraseña incorrecta.',
       remaining: left => `Desbloqueado — quedan ${left}`,
       lockedPaths: 'Rutas bloqueadas',
-      setupHint: 'Configúralo con: hermes config lock approvals.mode yolo'
+      setupHint: 'Configúralo con: hermes config lock approvals.mode command_allowlist'
     },
     statusbar: {
       unknown: 'desconocido',

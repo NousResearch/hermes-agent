@@ -4708,7 +4708,7 @@ export const en: Translations = {
       wrongPassword: 'Incorrect password.',
       remaining: (left: string) => `Unlocked — ${left} left`,
       lockedPaths: 'Locked paths',
-      setupHint: 'Set one up with: hermes config lock approvals.mode yolo'
+      setupHint: 'Set one up with: hermes config lock approvals.mode command_allowlist'
     },
     statusbar: {
       unknown: 'unknown',

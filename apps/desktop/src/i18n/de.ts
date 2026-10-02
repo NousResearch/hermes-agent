@@ -5105,7 +5105,7 @@ export const deOverrides = {
       wrongPassword: 'Falsches Passwort.',
       remaining: left => `Entsperrt — noch ${left}`,
       lockedPaths: 'Gesperrte Pfade',
-      setupHint: 'Einrichten mit: hermes config lock approvals.mode yolo'
+      setupHint: 'Einrichten mit: hermes config lock approvals.mode command_allowlist'
     },
     statusbar: {
       unknown: 'unbekannt',

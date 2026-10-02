@@ -4013,7 +4013,7 @@ def _lock_status_lines() -> list[str]:
         return [f"Settings lock: ENABLED but unusable — {st['reason']}.",
                 "Every config write is refused until you fix settings_lock in the root config.yaml."]
     if not st["enabled"]:
-        return ["Settings lock: off.", "Lock some: hermes config lock approvals.mode yolo"]
+        return ["Settings lock: off.", "Lock some: hermes config lock approvals.mode command_allowlist"]
     lines = ["Settings lock: ON" + ("  (password required to unlock)" if st["password_required"]
                                     else "  (no password set)"),
              "Locked paths:"]

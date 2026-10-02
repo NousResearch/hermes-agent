@@ -4407,7 +4407,7 @@ export const zh = defineLocale({
       wrongPassword: '密码错误。',
       remaining: (left: string) => `已解锁 — 剩余 ${left}`,
       lockedPaths: '已锁定的路径',
-      setupHint: '使用以下命令设置：hermes config lock approvals.mode yolo'
+      setupHint: '使用以下命令设置：hermes config lock approvals.mode command_allowlist'
     },
     statusbar: {
       unknown: '未知',

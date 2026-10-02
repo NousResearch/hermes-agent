@@ -44,7 +44,7 @@ def build_config_parser(subparsers, *, cmd_config: Callable) -> None:
     config_lock = config_subparsers.add_parser(
         "lock", help="Lock named settings so no writer can change them until unlocked")
     config_lock.add_argument("keys", nargs="*",
-                             help="Config paths to lock (e.g. approvals.mode yolo providers.*). Omit to show status.")
+                             help="Config paths to lock (e.g. approvals.mode command_allowlist providers.*). Omit to show status.")
     config_lock.add_argument("--no-password", action="store_true",
                              help="Lock without a password: unlocking then needs only `hermes config unlock`")
     config_lock.add_argument("--clear", action="store_true", help="Remove the lock entirely (needs it unlocked)")

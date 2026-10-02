@@ -23,7 +23,7 @@ import { expect, test } from './test'
 type Page = MockBackendFixture['page']
 
 const PASSWORD = 'e2e-unlock-password'
-const LOCKED_KEYS = ['approvals.mode', 'yolo'] as const
+const LOCKED_KEYS = ['approvals.mode', 'command_allowlist'] as const
 
 let fixture: MockBackendFixture | null = null
 

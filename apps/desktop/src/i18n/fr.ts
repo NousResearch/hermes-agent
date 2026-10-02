@@ -5119,7 +5119,7 @@ export const frOverrides = {
       wrongPassword: 'Mot de passe incorrect.',
       remaining: left => `Déverrouillé — encore ${left}`,
       lockedPaths: 'Chemins verrouillés',
-      setupHint: 'Configurez-le avec : hermes config lock approvals.mode yolo'
+      setupHint: 'Configurez-le avec : hermes config lock approvals.mode command_allowlist'
     },
     statusbar: {
       unknown: 'inconnu',

@@ -314,9 +314,6 @@ def gmail_search(args):
         userId="me", q=args.query, maxResults=args.max
     ).execute()
     messages = results.get("messages", [])
-    if not messages:
-        print("No messages found.")
-        return
 
     output = []
     for msg_meta in messages:

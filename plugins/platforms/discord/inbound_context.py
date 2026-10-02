@@ -5,6 +5,7 @@ from __future__ import annotations
 from gateway.platforms.event import attributed_context
 
 import logging
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 
 if TYPE_CHECKING:
@@ -19,15 +20,118 @@ if TYPE_CHECKING:
 logger = logging.getLogger("plugins.platforms.discord.adapter")
 
 
+@dataclass(frozen=True)
+class DiscordPreparedInput:
+    event: MessageEvent
+    forwarded_text: str
+
+
 class DiscordInboundContextMixin:
+    def _discord_source_admission(self: DiscordAdapter, message: DiscordMessage) -> tuple[bool, bool]:
+        from plugins.platforms.discord.adapter import discord, _scoped_gate_env
+
+        if message.author == self._client.user:
+            return False, False
+        if message.type not in {discord.MessageType.default, discord.MessageType.reply}:
+            return False, False
+        role_authorized = False
+        if getattr(message.author, "bot", False):
+            allow_bots = self._get_allow_bots()
+            bot_tag_continuation = self._is_bot_tag_debounce_continuation(message)
+            if allow_bots == "none":
+                return False, False
+            if (
+                allow_bots == "mentions"
+                and not self._self_is_explicitly_mentioned(message)
+                and not bot_tag_continuation
+            ):
+                return False, False
+            if (
+                self._discord_bots_require_inline_mention()
+                and not self._self_is_raw_mentioned(message)
+                and not bot_tag_continuation
+            ):
+                return False, False
+        else:
+            msg_guild = getattr(message, "guild", None)
+            is_dm = isinstance(message.channel, discord.DMChannel) or msg_guild is None
+            msg_channel_ids = None
+            if not is_dm:
+                msg_channel_ids = {str(message.channel.id)}
+                parent_id = self._get_parent_channel_id(message.channel)
+                if parent_id:
+                    msg_channel_ids.add(parent_id)
+            if not self._is_allowed_user(
+                str(message.author.id), message.author, guild=msg_guild, is_dm=is_dm,
+                channel_ids=msg_channel_ids,
+            ):
+                self._warn_if_fail_closed_default()
+                return False, False
+            role_authorized = bool(getattr(self, "_allowed_role_ids", set()))
+        raw_self_mention = self._self_is_explicitly_mentioned(message)
+        if not isinstance(message.channel, discord.DMChannel) and (
+            message.mentions or raw_self_mention
+        ):
+            other_bots_mentioned = any(
+                mentioned.bot and mentioned != self._client.user
+                for mentioned in message.mentions
+            )
+            if other_bots_mentioned and not raw_self_mention:
+                return False, False
+            ignore_no_mention = _scoped_gate_env("DISCORD_IGNORE_NO_MENTION", "true").lower() in {"true", "1", "yes"}
+            if ignore_no_mention and not raw_self_mention and not other_bots_mentioned:
+                # A thread the bot joined is not someone else's conversation, and the other two
+                # ingress paths already exempt it: _dispatch_recovered_message() and
+                # _handle_message(). Admission runs on both and can veto what they admit, so
+                # without this a third-party mention in a bot thread is dropped here even though
+                # the same message with no mention at all is admitted. ``thread_require_mention``
+                # still gates multi-bot threads, inside _in_bot_thread().
+                if not self._in_bot_thread(message):
+                    parent_id = None
+                    if hasattr(message.channel, "parent_id") and message.channel.parent_id:
+                        parent_id = str(message.channel.parent_id)
+                    free_channels = self._discord_free_response_channels()
+                    channel_keys = self._discord_channel_keys(message, parent_id)
+                    if "*" not in free_channels and not (channel_keys & free_channels):
+                        # Every other silent return in this function is at least guessable from
+                        # the outside; this one is not, and an operator seeing no log line cannot
+                        # tell it apart from the gateway never receiving the event.
+                        logger.debug(
+                            "[%s] admission: dropping message %s — mentions others, not self, "
+                            "not a bot thread, channel not free-response",
+                            self.name, getattr(message, "id", "?"))
+                        return False, False
+        return True, role_authorized
+
     async def _handle_message(
         self: DiscordAdapter, message: DiscordMessage, role_authorized: bool = False, *, recovered: bool = False,
     ) -> bool:
         """Handle one Discord message and report whether it reached dispatch."""
-        from plugins.platforms.discord.adapter import (
-            discord,
-            t,
-        )
+        prepared = await self._prepare_inbound_event(message, role_authorized, recovered=recovered)
+        if prepared is None:
+            return False
+        event = prepared.event
+        # Only live plain text is batched: recovery candidates are complete; coalescing would replay IDs.
+        if (not recovered and event.message_type == MessageType.TEXT and self._text_batch_delay_seconds > 0):
+            if (getattr(event, "_discord_history_backfill_prepared", False)
+                    and self._batch_has_history_context(event, recovered=recovered)):
+                event.channel_context = attributed_context("Forwarded message", prepared.forwarded_text) if prepared.forwarded_text else None
+                delattr(event, "_discord_history_backfill_prepared")
+            self._enqueue_text_event(event)
+            if getattr(event, "_discord_history_backfill_prepared", False):
+                pending = self._pending_text_batches.get(self._text_batch_key(event))
+                if pending is not None:
+                    setattr(pending, "_discord_history_backfill_prepared", True)
+        else:
+            await self.handle_message(event)
+        return True
+
+
+    async def _prepare_inbound_event(
+        self: DiscordAdapter, message: DiscordMessage, role_authorized: bool = False, *, recovered: bool = False,
+    ) -> DiscordPreparedInput | None:
+        """Prepare native input under current channel and mention policy."""
+        from plugins.platforms.discord.adapter import MessageEvent, MessageType, discord, t
 
         # Server channels (not DMs) require @mention unless free-response or an already-joined thread.
         #
@@ -72,11 +176,11 @@ class DiscordInboundContextMixin:
             if allowed_channels:
                 if "*" not in allowed_channels and not (channel_keys & allowed_channels):
                     logger.debug("[%s] Ignoring message in non-allowed channel: %s", self.name, channel_keys)
-                    return False
+                    return None
             ignored_channels = self._get_ignored_channels()
             if "*" in ignored_channels or (channel_keys & ignored_channels):
                 logger.debug("[%s] Ignoring message in ignored channel: %s", self.name, channel_keys)
-                return False
+                return None
             free_channels = self._discord_free_response_channels()
             require_mention = self._discord_require_mention()
             # Voice-linked text channel is free-response while voice is active (exact channel only).
@@ -95,7 +199,7 @@ class DiscordInboundContextMixin:
                     and not mention_prefix
                     and not self._is_bot_tag_debounce_continuation(message)
                 ):
-                    return False
+                    return None
         # Auto-thread: isolate each @mention in a text channel into its own thread (Slack-style).
         auto_threaded_channel = None
         if not is_thread and not isinstance(message.channel, discord.DMChannel):
@@ -136,7 +240,7 @@ class DiscordInboundContextMixin:
                             "[%s] Failed to notify user of auto-thread failure: %s", self.name,
                             notify_error,
                         )
-                    return False
+                    return None
         referenced_attachments = []
         reference = getattr(message, "reference", None)
         resolved_reference = getattr(reference, "resolved", None) if reference else None
@@ -245,7 +349,7 @@ class DiscordInboundContextMixin:
                     getattr(message.author, "display_name", getattr(message.author, "name", "unknown")),
                     getattr(message.channel, "id", "unknown"),
                 )
-                return False
+                return None
             event.text = "(The user sent a message with no text content)"
         if forwarded_text:
             event.add_channel_context(attributed_context("Forwarded message", forwarded_text))
@@ -258,20 +362,7 @@ class DiscordInboundContextMixin:
         # Track participation so follow-ups in this thread don't need @mention.
         if thread_id:
             await self._threads.mark_async(thread_id)
-        # Only live plain text is batched: recovery candidates are complete; coalescing would replay IDs.
-        if (not recovered and msg_type == MessageType.TEXT and self._text_batch_delay_seconds > 0):
-            if (getattr(event, "_discord_history_backfill_prepared", False)
-                    and self._batch_has_history_context(event, recovered=recovered)):
-                event.channel_context = attributed_context("Forwarded message", forwarded_text) if forwarded_text else None
-                delattr(event, "_discord_history_backfill_prepared")
-            self._enqueue_text_event(event)
-            if getattr(event, "_discord_history_backfill_prepared", False):
-                pending = self._pending_text_batches.get(self._text_batch_key(event))
-                if pending is not None:
-                    setattr(pending, "_discord_history_backfill_prepared", True)
-        else:
-            await self.handle_message(event)
-        return True
+        return DiscordPreparedInput(event, forwarded_text)
 
 
     def _pending_history_batch(self: DiscordAdapter, event: MessageEvent, *, recovered: bool) -> MessageEvent | None:

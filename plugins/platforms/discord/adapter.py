@@ -1736,78 +1736,7 @@ class DiscordAdapter(DiscordApprovalMixin, DiscordPlatformEventsMixin, DiscordIn
                 return False, False
         elif self._dedup.contains(message_id):
             return False, False
-        if message.author == self._client.user:
-            return False, False
-        if message.type not in {discord.MessageType.default, discord.MessageType.reply}:
-            return False, False
-        role_authorized = False
-        if getattr(message.author, "bot", False):
-            allow_bots = self._get_allow_bots()
-            bot_tag_continuation = self._is_bot_tag_debounce_continuation(message)
-            if allow_bots == "none":
-                return False, False
-            if (
-                allow_bots == "mentions"
-                and not self._self_is_explicitly_mentioned(message)
-                and not bot_tag_continuation
-            ):
-                return False, False
-            if (
-                self._discord_bots_require_inline_mention()
-                and not self._self_is_raw_mentioned(message)
-                and not bot_tag_continuation
-            ):
-                return False, False
-        else:
-            msg_guild = getattr(message, "guild", None)
-            is_dm = isinstance(message.channel, discord.DMChannel) or msg_guild is None
-            msg_channel_ids = None
-            if not is_dm:
-                msg_channel_ids = {str(message.channel.id)}
-                parent_id = self._get_parent_channel_id(message.channel)
-                if parent_id:
-                    msg_channel_ids.add(parent_id)
-            if not self._is_allowed_user(
-                str(message.author.id), message.author, guild=msg_guild, is_dm=is_dm,
-                channel_ids=msg_channel_ids,
-            ):
-                self._warn_if_fail_closed_default()
-                return False, False
-            role_authorized = bool(getattr(self, "_allowed_role_ids", set()))
-        raw_self_mention = self._self_is_explicitly_mentioned(message)
-        if not isinstance(message.channel, discord.DMChannel) and (
-            message.mentions or raw_self_mention
-        ):
-            other_bots_mentioned = any(
-                mentioned.bot and mentioned != self._client.user
-                for mentioned in message.mentions
-            )
-            if other_bots_mentioned and not raw_self_mention:
-                return False, False
-            ignore_no_mention = _scoped_gate_env("DISCORD_IGNORE_NO_MENTION", "true").lower() in {"true", "1", "yes"}
-            if ignore_no_mention and not raw_self_mention and not other_bots_mentioned:
-                # A thread the bot joined is not someone else's conversation, and the other two
-                # ingress paths already exempt it: _dispatch_recovered_message() and
-                # _handle_message(). Admission runs on both and can veto what they admit, so
-                # without this a third-party mention in a bot thread is dropped here even though
-                # the same message with no mention at all is admitted. ``thread_require_mention``
-                # still gates multi-bot threads, inside _in_bot_thread().
-                if not self._in_bot_thread(message):
-                    parent_id = None
-                    if hasattr(message.channel, "parent_id") and message.channel.parent_id:
-                        parent_id = str(message.channel.parent_id)
-                    free_channels = self._discord_free_response_channels()
-                    channel_keys = self._discord_channel_keys(message, parent_id)
-                    if "*" not in free_channels and not (channel_keys & free_channels):
-                        # Every other silent return in this function is at least guessable from
-                        # the outside; this one is not, and an operator seeing no log line cannot
-                        # tell it apart from the gateway never receiving the event.
-                        logger.debug(
-                            "[%s] admission: dropping message %s — mentions others, not self, "
-                            "not a bot thread, channel not free-response",
-                            self.name, getattr(message, "id", "?"))
-                        return False, False
-        return True, role_authorized
+        return self._discord_source_admission(message)
 
     async def _dispatch_discord_message(self, message: Any) -> bool:
         """Apply Discord ingress policy and dispatch one live event."""

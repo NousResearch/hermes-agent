@@ -29,6 +29,8 @@ export interface TimelinePartMetadata {
 export type ChatMessagePart = Exclude<ThreadMessageLike['content'], string>[number] & TimelinePartMetadata
 
 export type ChatMessage = {
+  /** Display text no longer represents the native message payload. */
+  nativeReplayUnsafe?: boolean
   _reasoning_route?: string
   anthropic_content_blocks?: unknown
   bedrock_content_blocks?: unknown

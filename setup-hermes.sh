@@ -8,8 +8,9 @@
 #   2. Use uv to install and locate bootstrap Python, then let uv exit.
 #      Run `python -m pm.cli install` directly so PM can safely replace uv.
 #      PM owns the final interpreter, tool store, and dependency generation.
-#   3. Point you at `source ./activate` — the venv-style way to put the pm
-#      env (PATH + tool vars) into your current shell.
+#   3. Point you at `source ./activate` (bash/zsh), `source ./activate.fish`
+#      (fish), or `. .\activate.ps1` (PowerShell) — the venv-style way to put
+#      the pm env (PATH + tool vars) into your current shell.
 # There is no pip fallback tier here on purpose.
 # ============================================================================
 
@@ -290,7 +291,9 @@ echo ""
 echo "Next steps:"
 echo ""
 echo "  1. Activate the dev environment (venv-style, in THIS shell):"
-echo "     source ./activate"
+echo "     source ./activate            # bash / zsh"
+echo "     source ./activate.fish       # fish"
+echo "     . .\\activate.ps1             # PowerShell"
 echo ""
 echo "  2. Run the setup wizard to configure API keys:"
 echo "     hermes setup"

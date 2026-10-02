@@ -9,7 +9,7 @@ import textwrap
 import pytest
 
 from tests.pm.test_activate_scripts import (
-    _bash, _bash_env, _isolated_checkout, _posix, _powershell, _spawnable_python,
+    _bash, _bash_env, _fish, _isolated_checkout, _posix, _powershell, _spawnable_python,
 )
 
 # Spawns children with a home it builds itself; the parent's must stay real.
@@ -154,6 +154,110 @@ def test_bash_setup_failure_preserves_caller(tmp_path, already_active):
     '''
     run = subprocess.run([_bash(), "-c", script], cwd=tmp_path, env=env,
                          capture_output=True, text=True, timeout=40)
+    assert run.returncode == 0, run.stdout + run.stderr
+    assert run.stdout == "preserved"
+    calls = (root / "calls.jsonl").read_text(encoding="utf-8").splitlines()
+    assert len(calls) == (2 if already_active else 1)
+    assert json.loads(calls[-1])["python_env"] == dict.fromkeys(("PYTHONHOME", "PYTHONPATH", "VIRTUAL_ENV"))
+
+
+@pytest.mark.platforms("posix")
+@pytest.mark.parametrize("canary", [None, "caller-canary"])
+def test_fish_cold_sync_changed_input_and_warm_noop(tmp_path, canary):
+    fish = _fish()
+    if fish is None:
+        pytest.skip("no fish shell available")
+    assert isinstance(fish, str)
+    root, env = _sync_checkout(tmp_path)
+    assert not (root / ".venv").exists()
+    if canary is not None:
+        env["HERMES_PM_ACTIVATE_CANARY"] = canary
+    from tests.pm.test_activate_scripts import _fake_store
+    _fake_store(tmp_path)
+    activate = _posix(root / "activate.fish")
+    canary_check = (
+        'test "$HERMES_PM_ACTIVATE_CANARY" = caller-canary'
+        if canary
+        else "set -q HERMES_PM_ACTIVATE_CANARY; and exit 8"
+    )
+    script = f'''
+        set -gx PYTHONPATH caller-original
+        set -gx VIRTUAL_ENV caller-venv
+        set -l original_path (string join : $PATH)
+        source "{activate}"
+        printf '%s\\n' "$PYTHONPATH"
+        test "$HERMES_PM_ACTIVATE_CANARY" = env-ok; or exit 2
+        printf second > "{_posix(root / 'input')}"
+        source "{activate}"
+        printf '%s\\n' "$PYTHONPATH"
+        source "{activate}"
+        printf '%s\\n' "$PYTHONPATH"
+        test "$PWD" = "{_posix(tmp_path)}"; or exit 3
+        deactivate
+        test (string join : $PATH) = "$original_path"; or exit 4
+        test "$PYTHONPATH" = caller-original; or exit 5
+        test "$VIRTUAL_ENV" = caller-venv; or exit 6
+        {canary_check}
+        set -q __HERMES_ACTIVATED; and exit 7
+        functions -q deactivate; and exit 9
+        echo ok
+    '''
+    run = subprocess.run(
+        [fish, "-c", script], cwd=tmp_path, env=env,
+        capture_output=True, text=True, timeout=40,
+    )
+    assert run.returncode == 0, run.stdout + run.stderr
+    lines = [line for line in run.stdout.splitlines() if line != "ok"]
+    # fish path-lists join with ':' when expanded as "$PYTHONPATH"
+    first, second, warm = lines
+    assert first.startswith(str(root) + os.pathsep) and "/first/venv/" in first
+    assert second.startswith(str(root) + os.pathsep) and "/second/venv/" in second
+    assert warm == second
+    assert run.stderr.count("setup progress") == 3
+    _assert_syncs(root)
+
+
+@pytest.mark.platforms("posix")
+@pytest.mark.parametrize("already_active", [False, True])
+def test_fish_setup_failure_preserves_caller(tmp_path, already_active):
+    fish = _fish()
+    if fish is None:
+        pytest.skip("no fish shell available")
+    assert isinstance(fish, str)
+    root, env = _sync_checkout(tmp_path)
+    activate = _posix(root / "activate.fish")
+    pre = f'source "{activate}"' if already_active else "true"
+    post = "deactivate" if already_active else "true"
+    script = f'''
+        {pre}
+        set -gx PYTHONHOME caller-home
+        set -gx PYTHONPATH caller-path
+        set -gx VIRTUAL_ENV caller-venv
+        set -l before_path (string join : $PATH)
+        set -l before_py $PYTHONPATH
+        set -l before_home $PYTHONHOME
+        set -l before_venv $VIRTUAL_ENV
+        set -l before_active (set -q __HERMES_ACTIVATED; and echo set; or echo unset)
+        set -l before_cwd $PWD
+        set -l had_deactivate (functions -q deactivate; and echo yes; or echo no)
+        touch "{_posix(root / 'fail')}"
+        if source "{activate}"
+            exit 9
+        end
+        test (string join : $PATH) = "$before_path"; or exit 2
+        test "$PYTHONPATH" = "$before_py"; or exit 3
+        test "$PYTHONHOME" = "$before_home"; or exit 4
+        test "$VIRTUAL_ENV" = "$before_venv"; or exit 5
+        test (set -q __HERMES_ACTIVATED; and echo set; or echo unset) = "$before_active"; or exit 6
+        test "$PWD" = "$before_cwd"; or exit 7
+        test (functions -q deactivate; and echo yes; or echo no) = "$had_deactivate"; or exit 8
+        {post}
+        printf preserved
+    '''
+    run = subprocess.run(
+        [fish, "-c", script], cwd=tmp_path, env=env,
+        capture_output=True, text=True, timeout=40,
+    )
     assert run.returncode == 0, run.stdout + run.stderr
     assert run.stdout == "preserved"
     calls = (root / "calls.jsonl").read_text(encoding="utf-8").splitlines()

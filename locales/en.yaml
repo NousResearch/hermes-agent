@@ -3586,6 +3586,67 @@ explainer:
     and_more: "  • … and {count} more"
     the_model: "The model"
 
+turn_failure:
+  # Failed-turn, truncation and cancellation copy, resolved for the active profile at render time.
+  failed_turn_notice: "Your request was not processed. Send it again if you still want me to carry it out."
+  partial_failed_turn_notice: "This turn did not complete. Some actions may already have run; verify their effects before resending."
+  next_steps:
+    retry: "Wait a minute and send /retry, or switch models with /model."
+    loop: "Your message is saved. Send `continue` to try again, or start a new session with /new. If it happens again, run `hermes doctor` and share the error details."
+  site:
+    context_overflow: "This conversation has grown too long for {model} to read, and Hermes couldn't shrink it enough automatically. Start a new session with /new (your history is kept), or try /compress once more. Switching to a model with a bigger context window also works."
+    truncated: "The model's reply was cut off before it finished (it hit its output length limit), so Hermes didn't run the incomplete action. Nothing was changed. Send `continue`, ask for the work in smaller steps, or raise max_tokens for this model."
+    invalid_response: "{label} sent back an empty or broken reply {attempts} times — it is probably overloaded or rate-limiting you. {next_steps}\n\nDetails: {detail}"
+    loop_error: "Hermes hit repeated errors and stopped this turn so it wouldn't keep retrying. {next_steps}\n\nDetails: {detail}"
+    interpreter_shutdown: "Hermes was shutting down and stopped this turn. Your conversation is saved — reopen it{resume} and send your message again."
+    payload_too_large: "This conversation (including attachments) has grown too large to send to {model}, and Hermes couldn't shrink it enough automatically. Start a new session with /new (your history is kept), or try /compress once more."
+    compression_disabled: "This conversation is too long for {model} and automatic shrinking is turned off in your settings (compression.enabled). Run /compress to shrink it now, /new to start fresh, or pick a model with a bigger context window."
+    server_context_rejection: "The model server rejected this request as too large, but this conversation is only about {tokens} tokens — well under the {window}-token window Hermes knows for {model} — so shrinking it would not help. Another request on the same server (for example a background memory review from an earlier session) was probably holding its capacity, or the server runs {model} with a smaller window than Hermes assumes. Wait a moment and send /retry; if it keeps happening, check the server's context setting."
+    truncated_unreported: "The model's action arrived cut off partway through, so Hermes didn't run it. Nothing was changed. The model didn't report hitting its output limit, so this was most likely a dropped connection or a provider/router cutting the reply short. Send /retry; if it keeps happening, ask for the work in smaller steps."
+    stream_dropped_tool_call: "The connection to {label} kept dropping while the model was writing a large action, so nothing was run. Check your network and send /retry; asking for the file in smaller pieces also helps."
+    stream_closed_tool_call: "{label} kept closing the stream before the model finished writing its action, without reporting an error, so nothing was run. This is usually the provider or a proxy in front of it cutting long replies short. Send /retry; asking for the work in smaller steps also helps."
+    local_processing_error: "Hermes hit an internal error while handling the model's reply and stopped this turn. {next_steps}\n\nDetails: {detail}"
+    reasoning_only: "⚠️ {model} spent all of its output budget thinking and never wrote an answer. Lower its reasoning effort with `/reasoning low`, or switch to a different model with /model. Its last thoughts, which may contain the answer:\n\n{preview}"
+    max_iterations_no_summary: "I ran out of steps for this turn ({limit} tool calls) before finishing, and couldn't produce a summary. Send `continue` to keep going, or raise `max_iterations` in your config."
+    nous_rate_limit: "Wait for the reset and send /retry, or switch models with /model. To avoid waits, add a backup provider with `hermes fallback add`."
+  nonretryable:
+    model_not_found: "Model '{model}' isn't available on {label}. Pick a different model with /model (or `hermes model` in a terminal).{prefix_hint}"
+    format_error: "{label} rejected this request as malformed, so the model didn't answer. Start a clean session with /new or switch models with /model; if it keeps happening, run `hermes doctor`."
+    role_alternation: "{label} requires user and assistant turns to strictly alternate and rejected this conversation's shape. Start a clean session with /new or switch models with /model."
+    ssl_cert_verification: "Hermes couldn't verify {label}'s security certificate, so the connection was refused. This is usually a corporate proxy or an outdated certificate store on this computer — see the terminal or `{home}/logs/agent.log` for the exact fix, or try another provider with /model."
+    provider_policy_blocked: "{label} refused this request because of a policy on your account (its data/privacy settings, or a block the model's upstream provider placed on the account), so the model didn't answer and retrying won't help. Check the account with the provider, or switch models with /model."
+    upstream_blocked: "A firewall/CDN in front of {label} blocked the request before it reached the model, so your key is probably fine. Set a custom User-Agent via the provider's extra_headers, check the proxy/WAF rules, or switch providers with /model."
+    default: "{label} rejected the request and retrying won't help. Pick another model with /model, or check the details in `{home}/logs/agent.log`."
+    prefix_hint: " If you typed the name yourself it may be missing its vendor prefix — did you mean '{suggestion}'?"
+    tail: "{body}\n\nProvider said: {summary}"
+  auth:
+    oauth: "{label} rejected your sign-in, so the model can't be reached. Sign in again: `{relogin}`."
+    api_key: "{label} rejected your API key, so the model can't be reached. Update it in Settings → Providers, or run `hermes setup` in a terminal."
+  content_policy:
+    next_steps: "Try rewording your message or removing sensitive attachments, or switch to another model with /model."
+    body: "{label}'s safety filter refused this request, so the model didn't answer. {next_steps}\n\nProvider said: {summary}"
+  limit_reset: "Limit resets at {time} (in {wait})."
+  exhausted:
+    lead:
+      rate_limit: "{label} rate-limited every one of {attempts} attempts"
+      upstream_rate_limit: "{label} rate-limited every one of {attempts} attempts"
+      overloaded: "{label} reported it was overloaded on all {attempts} attempts"
+      server_error: "{label} returned a server error on all {attempts} attempts"
+      timeout: "{label} didn't respond in time on any of {attempts} attempts"
+      default: "{label} didn't answer after {attempts} attempts"
+    reset: "its usage limit resets in {reset}. Send /retry after that, or switch models with /model."
+    unavailable: "it looks temporarily unavailable. {next_steps}"
+    tail: "{lead} — {situation} To avoid this in future, add a backup provider with `hermes fallback add`.\n\nProvider said: {summary}"
+  interrupt:
+    waiting_for_model_prefix: "Operation interrupted: waiting for model response ("
+    waiting_for_model: "{prefix}{elapsed}s elapsed)."
+    operation: "Operation interrupted."
+    retry: "Operation interrupted during retry ({detail}, attempt {attempt}/{limit})."
+    empty_response: "Operation interrupted: retrying empty response from model (retry {attempt}/{limit})."
+    provider_recovery: "Operation interrupted: waiting for the provider to recover (cycle {cycle}/{total})."
+    api_error: "Operation interrupted: handling API error ({error_type}: {detail})."
+    api_retry: "Operation interrupted: retrying API call after error (retry {attempt}/{limit})."
+
 tips:
   # CLI startup / /new discovery tips (hermes_cli/tips.py). Zero-padded index keeps YAML
   # order stable; pickers read tips.tNNN for the active language.

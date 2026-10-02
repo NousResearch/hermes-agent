@@ -163,10 +163,10 @@ def _resolve_budget_fallback(
                 # The turn ends interrupted, so the pending interrupt message is returned
                 # for requeue instead of being cleared behind a fallback summary. A redirect
                 # also ends it: the budget is spent, so there is no loop to restart into.
-                from agent.conversation_loop import INTERRUPT_WAITING_FOR_MODEL_PREFIX
+                from agent.conversation_loop import waiting_for_model_interrupt
                 interrupted = True
                 _turn_exit_reason = interrupted_during_api_call_reason(agent)
-                final_response = f"{INTERRUPT_WAITING_FOR_MODEL_PREFIX}{time.time() - _summary_start:.1f}s elapsed)."
+                final_response = waiting_for_model_interrupt(time.time() - _summary_start)
 
     # A kanban worker must record a terminal outcome whether or not a fallback path
     # was eligible, so the dispatcher learns the worker could not complete. Only the
@@ -509,7 +509,7 @@ def apply_llm_output_transform(
 def finalize_turn(
     agent, *, final_response, api_call_count, interrupted, failed, messages, conversation_history,
     effective_task_id, turn_id, user_message, original_user_message, _should_review_memory,
-    _turn_exit_reason, _pending_verification_response=None,
+    _turn_exit_reason, failure_error=None, _pending_verification_response=None,
     _pending_verification_response_previewed=False,
 ):
     """Run the post-loop finalization and return the turn ``result`` dict."""
@@ -718,7 +718,7 @@ def finalize_turn(
         result["failure_reason"] = "session_persistence_failed:" + (_cause or "unknown")
     elif _exit_failure is not None:
         if failed:
-            result["error"] = final_response or str(_turn_exit_reason)
+            result["error"] = failure_error or final_response or str(_turn_exit_reason)
         stamp_failure(result, _exit_failure.reason, _exit_failure.retryable)
     # Cleanup failures are surfaced, but the response is returned either way (#8049).
     if _cleanup_errors:

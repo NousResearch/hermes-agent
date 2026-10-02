@@ -52,7 +52,7 @@ def _append_tool_error_results(messages, tool_calls, content_for) -> None:
         })
 
 
-def _partial_exit(agent, messages, conversation_history, api_call_count, final_response: str) -> Dict[str, Any]:
+def _partial_exit(agent, messages, conversation_history, api_call_count, final_response: str, *, error: Optional[str] = None) -> Dict[str, Any]:
     """Terminal partial result. Prior retries or an earlier tool batch leave a tool-result
     tail; close it as interrupt aborts do so the next turn is not tool→user (#48879).
     This path never reaches finalize_turn, so persist here."""
@@ -64,7 +64,7 @@ def _partial_exit(agent, messages, conversation_history, api_call_count, final_r
         "api_calls": api_call_count,
         "completed": False,
         "partial": True,
-        "error": final_response,
+        "error": final_response if error is None else error,
     }, "truncated", True)
 
 
@@ -185,12 +185,9 @@ def validate_tool_calls(
             agent._cleanup_task_resources(effective_task_id)
             # Blame the output cap only when the model reported one; otherwise the args
             # were cut by a stream break or a router rewriting finish_reason (#91717).
-            _copy = (
-                site_copy("truncated") if finish_reason == FINISH_REASON_LENGTH
-                else site_copy("truncated_unreported")
-            )
+            _copy_code = "truncated" if finish_reason == FINISH_REASON_LENGTH else "truncated_unreported"
             return _verdict("return", _partial_exit(
-                agent, messages, conversation_history, api_call_count, _copy,
+                agent, messages, conversation_history, api_call_count, site_copy(_copy_code), error=site_copy(_copy_code, lang="en"),
             ))
 
         agent._invalid_json_retries += 1

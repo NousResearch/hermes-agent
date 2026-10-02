@@ -3474,6 +3474,67 @@ explainer:
   shared:
     and_more: "  • … 還有 {count} 個"
     the_model: "模型"
+turn_failure:
+  # Failed-turn, truncation and cancellation copy, resolved for the active profile at render time.
+  failed_turn_notice: "你的要求尚未處理。若仍希望我執行，請再傳送一次。"
+  partial_failed_turn_notice: "這一輪尚未完成。部分操作可能已執行；請先確認結果，再重新傳送。"
+  next_steps:
+    retry: "請稍候一分鐘，再傳送 /retry，或用 /model 切換模型。"
+    loop: "你的訊息已儲存。傳送 `continue` 可重試，或用 /new 開啟新的工作階段。若再次發生，請執行 `hermes doctor`，並提供錯誤詳細資訊。"
+  site:
+    context_overflow: "這段對話已超過 {model} 能讀取的長度，Hermes 無法自動將它壓縮到足夠短。請用 /new 開啟新的工作階段（歷史紀錄會保留），或再試一次 /compress。也可以切換到上下文視窗較大的模型。"
+    truncated: "模型的回覆因達到輸出長度上限而中斷，因此 Hermes 未執行不完整的操作。沒有任何變更。請傳送 `continue`、要求分成較小的步驟執行，或提高此模型的 max_tokens。"
+    invalid_response: "{label} 連續 {attempts} 次傳回空白或無效的回覆，可能目前負載過高，或正在限制你的請求頻率。{next_steps}\n\n詳細資訊：{detail}"
+    loop_error: "Hermes 接連發生錯誤，已停止這一輪，避免不斷重試。{next_steps}\n\n詳細資訊：{detail}"
+    interpreter_shutdown: "Hermes 正在關閉，已停止這一輪。對話已儲存，請重新開啟{resume}，再傳送一次訊息。"
+    payload_too_large: "這段對話（含附件）已超過可傳送給 {model} 的大小，Hermes 無法自動將它壓縮到足夠小。請用 /new 開啟新的工作階段（歷史紀錄會保留），或再試一次 /compress。"
+    compression_disabled: "這段對話已超過 {model} 能處理的長度，而設定中的自動壓縮已關閉（compression.enabled）。請執行 /compress 立即壓縮、用 /new 重新開始，或選擇上下文視窗較大的模型。"
+    server_context_rejection: "模型伺服器拒絕了這個請求，表示內容過大，但這段對話只有約 {tokens} 個 token，遠低於 Hermes 所知的 {model} 視窗上限 {window} 個 token，因此壓縮也無法解決。可能是同一台伺服器上的另一個請求（例如先前工作階段的背景記憶檢查）占用了容量，或伺服器為 {model} 設定的視窗比 Hermes 預期的小。請稍候再傳送 /retry；若持續發生，請檢查伺服器的上下文設定。"
+    truncated_unreported: "模型傳回的操作內容在中途被截斷，因此 Hermes 未執行。沒有任何變更。模型並未回報達到輸出上限，最可能是連線中斷，或供應商／路由器提早截斷了回覆。請傳送 /retry；若持續發生，請要求分成較小的步驟執行。"
+    stream_dropped_tool_call: "模型撰寫大型操作時，與 {label} 的連線持續中斷，因此未執行任何操作。請檢查網路後傳送 /retry；要求分段撰寫檔案也有幫助。"
+    stream_closed_tool_call: "{label} 持續在模型完成操作內容前關閉串流，且未回報錯誤，因此未執行任何操作。通常是供應商或前置代理提早截斷了較長的回覆。請傳送 /retry；要求分成較小的步驟執行也有幫助。"
+    local_processing_error: "Hermes 處理模型回覆時發生內部錯誤，已停止這一輪。{next_steps}\n\n詳細資訊：{detail}"
+    reasoning_only: "⚠️ {model} 將所有輸出額度用於思考，沒有寫出回答。請用 `/reasoning low` 降低推理強度，或用 /model 切換模型。以下是最後的思考內容，可能包含答案：\n\n{preview}"
+    max_iterations_no_summary: "這一輪的步驟額度已用完（{limit} 次工具呼叫），工作尚未完成，也無法產生摘要。請傳送 `continue` 繼續，或提高設定中的 `max_iterations`。"
+    nous_rate_limit: "請等額度重設後傳送 /retry，或用 /model 切換模型。若想減少等待，可用 `hermes fallback add` 新增備用供應商。"
+  nonretryable:
+    model_not_found: "{label} 無法使用模型「{model}」。請用 /model 選擇其他模型（或在終端機執行 `hermes model`）。{prefix_hint}"
+    format_error: "{label} 因格式錯誤而拒絕此請求，因此模型沒有回覆。請用 /new 開啟新的工作階段，或用 /model 切換模型；如果持續發生，請執行 `hermes doctor`。"
+    role_alternation: "{label} 要求使用者與助理的輪次嚴格交替，因此拒絕了這段對話的訊息排列。請用 /new 開啟新的工作階段，或用 /model 切換模型。"
+    ssl_cert_verification: "Hermes 無法驗證 {label} 的安全憑證，因此連線遭到拒絕。這通常是公司代理伺服器或這台電腦的憑證存放區過舊所造成的。請查看終端機或 `{home}/logs/agent.log` 以了解修正方式，或用 /model 嘗試其他供應商。"
+    provider_policy_blocked: "{label} 因帳號政策（資料／隱私設定，或模型的上游供應商對帳號的封鎖）而拒絕此請求，因此模型沒有回覆，重試也無法解決。請向供應商確認帳號狀態，或用 /model 切換模型。"
+    upstream_blocked: "{label} 前端的防火牆／CDN 在請求送達模型前就將它封鎖，因此你的金鑰應該沒有問題。請透過供應商的 extra_headers 設定自訂 User-Agent、檢查代理伺服器／WAF 規則，或用 /model 切換供應商。"
+    default: "{label} 拒絕了請求，重試也無法解決。請用 /model 選擇其他模型，或查看 `{home}/logs/agent.log` 中的詳細資訊。"
+    prefix_hint: "如果名稱是你自行輸入的，可能缺少供應商前綴。你是不是要用「{suggestion}」？"
+    tail: "{body}\n\n供應商回覆：{summary}"
+  auth:
+    oauth: "{label} 拒絕了你的登入，因此無法連線至模型。請重新登入：`{relogin}`。"
+    api_key: "{label} 拒絕了你的 API 金鑰，因此無法連線至模型。請在「設定 → 供應商」更新金鑰，或在終端機執行 `hermes setup`。"
+  content_policy:
+    next_steps: "請試著改寫訊息、移除敏感附件，或用 /model 切換至其他模型。"
+    body: "{label} 的安全篩選機制拒絕了此請求，因此模型沒有回覆。{next_steps}\n\n供應商回覆：{summary}"
+  limit_reset: "用量限制將於 {time} 重設（還有 {wait}）。"
+  exhausted:
+    lead:
+      rate_limit: "{label} 在全部 {attempts} 次嘗試中都限制了請求頻率"
+      upstream_rate_limit: "{label} 在全部 {attempts} 次嘗試中都限制了請求頻率"
+      overloaded: "{label} 在全部 {attempts} 次嘗試中都回報負載過高"
+      server_error: "{label} 在全部 {attempts} 次嘗試中都傳回伺服器錯誤"
+      timeout: "{label} 在全部 {attempts} 次嘗試中都未及時回應"
+      default: "{label} 在 {attempts} 次嘗試後仍未回應"
+    reset: "使用額度將於 {reset} 後重設。請在那之後傳送 /retry，或用 /model 切換模型。"
+    unavailable: "目前似乎暫時無法使用。{next_steps}"
+    tail: "{lead}。{situation}若想避免日後再發生，可用 `hermes fallback add` 新增備用供應商。\n\n供應商回覆：{summary}"
+  interrupt:
+    waiting_for_model_prefix: "操作已中斷：等待模型回覆（"
+    waiting_for_model: "{prefix}已等待 {elapsed} 秒）。"
+    operation: "操作已中斷。"
+    retry: "重試期間操作已中斷（{detail}，第 {attempt}/{limit} 次嘗試）。"
+    empty_response: "操作已中斷：正在重試模型的空白回覆（第 {attempt}/{limit} 次重試）。"
+    provider_recovery: "操作已中斷：等待供應商恢復（第 {cycle}/{total} 輪）。"
+    api_error: "操作已中斷：正在處理 API 錯誤（{error_type}：{detail}）。"
+    api_retry: "操作已中斷：發生錯誤後正在重試 API 呼叫（第 {attempt}/{limit} 次重試）。"
+
 tips:
   t001: "/bg <prompt> 會在獨立的工作階段執行任務，讓你目前的工作階段保持空閒；/btw <question> 則會回答關於此對話的附帶問題，而不會中斷對話。"
   t002: "/branch 會從目前的工作階段建立分支，讓你在不失去進度的情況下探索不同方向。"

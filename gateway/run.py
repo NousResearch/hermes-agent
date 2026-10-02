@@ -37,7 +37,7 @@ from agent.conversation_compression import (
     COMPRESSION_RETRY_MESSAGES_STATUS_TEMPLATE, COMPRESSION_RETRY_TOKENS_STATUS_TEMPLATE,
     COMPRESSION_RETRY_TOO_LARGE_STATUS_TEMPLATE, IDLE_COMPACTION_STATUS_TEMPLATE,
     PRE_API_COMPRESSION_STATUS_TEMPLATE, PREFLIGHT_COMPRESSION_STATUS_TEMPLATE)
-from agent.conversation_loop import INTERRUPT_WAITING_FOR_MODEL_PREFIX
+from agent.conversation_loop import is_waiting_for_model_interrupt
 from agent.interrupt_compat import request_hard_interrupt
 from agent.message_metadata import ABSORBED_MESSAGE_UIDS, MESSAGE_UID, copy_identity_fields
 from agent.turn_context import compression_made_progress
@@ -717,7 +717,7 @@ def _sanitize_gateway_final_response(platform: Any, text: str) -> str:
 
     # Cancellation metadata, not prose; ACP/TUI already suppress this sentinel, chat surfaces should too.
     # See #7921.
-    if str(text).strip().startswith(INTERRUPT_WAITING_FOR_MODEL_PREFIX):
+    if is_waiting_for_model_interrupt(str(text).strip()):
         return ""
 
     redacted = _redact_gateway_user_facing_secrets(str(text))

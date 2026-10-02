@@ -3474,6 +3474,67 @@ explainer:
   shared:
     and_more: "  • ……还有 {count} 项"
     the_model: "模型"
+turn_failure:
+  # Failed-turn, truncation and cancellation copy, resolved for the active profile at render time.
+  failed_turn_notice: "你的请求尚未处理。如果仍希望我执行，请重新发送。"
+  partial_failed_turn_notice: "本轮未完成。部分操作可能已经执行；请先确认结果，再重新发送。"
+  next_steps:
+    retry: "请稍等一分钟，再发送 /retry，或用 /model 切换模型。"
+    loop: "你的消息已保存。发送 `continue` 可重试，或用 /new 开始新会话。如果再次发生，请运行 `hermes doctor` 并提供错误详情。"
+  site:
+    context_overflow: "这段对话已超过 {model} 能读取的长度，Hermes 无法自动将其压缩到足够短。请用 /new 开始新会话（历史记录会保留），或再试一次 /compress。也可以切换到上下文窗口更大的模型。"
+    truncated: "模型的回复因达到输出长度上限而被截断，因此 Hermes 未执行不完整的操作。没有任何更改。请发送 `continue`、要求分成更小的步骤执行，或提高此模型的 max_tokens。"
+    invalid_response: "{label} 连续 {attempts} 次返回空白或无效的回复，可能负载过高，或正在限制你的请求频率。{next_steps}\n\n详情：{detail}"
+    loop_error: "Hermes 接连发生错误，已停止本轮，避免不断重试。{next_steps}\n\n详情：{detail}"
+    interpreter_shutdown: "Hermes 正在关闭，已停止本轮。对话已保存，请重新打开{resume}，再发送一次消息。"
+    payload_too_large: "这段对话（含附件）已超过可发送给 {model} 的大小，Hermes 无法自动将其压缩到足够小。请用 /new 开始新会话（历史记录会保留），或再试一次 /compress。"
+    compression_disabled: "这段对话已超过 {model} 能处理的长度，而设置中的自动压缩已关闭（compression.enabled）。请运行 /compress 立即压缩、用 /new 重新开始，或选择上下文窗口更大的模型。"
+    server_context_rejection: "模型服务器拒绝了这个请求，表示内容过大，但这段对话只有约 {tokens} 个 token，远低于 Hermes 所知的 {model} 窗口上限 {window} 个 token，因此压缩也无法解决。可能是同一服务器上的另一个请求（例如之前会话的后台记忆检查）占用了容量，或服务器为 {model} 设置的窗口比 Hermes 预期的小。请稍等再发送 /retry；如果持续发生，请检查服务器的上下文设置。"
+    truncated_unreported: "模型返回的操作内容在中途被截断，因此 Hermes 未执行。没有任何更改。模型并未报告达到输出上限，最可能是连接中断，或提供商／路由器提前截断了回复。请发送 /retry；如果持续发生，请要求分成更小的步骤执行。"
+    stream_dropped_tool_call: "模型编写大型操作时，与 {label} 的连接持续中断，因此未执行任何操作。请检查网络后发送 /retry；要求分段编写文件也有帮助。"
+    stream_closed_tool_call: "{label} 持续在模型完成操作内容前关闭流，且未报告错误，因此未执行任何操作。通常是提供商或前置代理提前截断了较长的回复。请发送 /retry；要求分成更小的步骤执行也有帮助。"
+    local_processing_error: "Hermes 处理模型回复时发生内部错误，已停止本轮。{next_steps}\n\n详情：{detail}"
+    reasoning_only: "⚠️ {model} 将所有输出额度用于思考，没有写出回答。请用 `/reasoning low` 降低推理强度，或用 /model 切换模型。以下是最后的思考内容，可能包含答案：\n\n{preview}"
+    max_iterations_no_summary: "本轮的步骤额度已用完（{limit} 次工具调用），工作尚未完成，也无法生成摘要。请发送 `continue` 继续，或提高设置中的 `max_iterations`。"
+    nous_rate_limit: "请等额度重置后发送 /retry，或用 /model 切换模型。若想减少等待，可用 `hermes fallback add` 添加备用提供商。"
+  nonretryable:
+    model_not_found: "{label} 上无法使用模型“{model}”。请用 /model 选择其他模型（或在终端运行 `hermes model`）。{prefix_hint}"
+    format_error: "{label} 因格式错误拒绝了此请求，因此模型没有回复。请用 /new 开始新会话，或用 /model 切换模型；如果问题持续发生，请运行 `hermes doctor`。"
+    role_alternation: "{label} 要求用户与助手的轮次严格交替，因此拒绝了这段对话的消息排列。请用 /new 开始新会话，或用 /model 切换模型。"
+    ssl_cert_verification: "Hermes 无法验证 {label} 的安全证书，因此连接被拒绝。这通常是公司代理或这台电脑的证书库过旧造成的。请查看终端或 `{home}/logs/agent.log` 了解具体修复方法，或用 /model 尝试其他提供商。"
+    provider_policy_blocked: "{label} 因账户政策（数据／隐私设置，或模型的上游提供商对账户的封锁）拒绝了此请求，因此模型没有回复，重试也无法解决。请向提供商确认账户状态，或用 /model 切换模型。"
+    upstream_blocked: "{label} 前端的防火墙／CDN 在请求到达模型前就将其拦截，因此你的密钥应该没有问题。请通过提供商的 extra_headers 设置自定义 User-Agent、检查代理／WAF 规则，或用 /model 切换提供商。"
+    default: "{label} 拒绝了请求，重试也无法解决。请用 /model 选择其他模型，或查看 `{home}/logs/agent.log` 中的详情。"
+    prefix_hint: "如果名称是你手动输入的，可能缺少提供商前缀。你是否想用“{suggestion}”？"
+    tail: "{body}\n\n提供商回复：{summary}"
+  auth:
+    oauth: "{label} 拒绝了你的登录，因此无法连接到模型。请重新登录：`{relogin}`。"
+    api_key: "{label} 拒绝了你的 API 密钥，因此无法连接到模型。请在“设置 → 提供商”更新密钥，或在终端运行 `hermes setup`。"
+  content_policy:
+    next_steps: "请尝试改写消息、移除敏感附件，或用 /model 切换到其他模型。"
+    body: "{label} 的安全过滤器拒绝了此请求，因此模型没有回复。{next_steps}\n\n提供商回复：{summary}"
+  limit_reset: "用量限制将在 {time} 重置（还有 {wait}）。"
+  exhausted:
+    lead:
+      rate_limit: "{label} 在全部 {attempts} 次尝试中都限制了请求频率"
+      upstream_rate_limit: "{label} 在全部 {attempts} 次尝试中都限制了请求频率"
+      overloaded: "{label} 在全部 {attempts} 次尝试中都报告负载过高"
+      server_error: "{label} 在全部 {attempts} 次尝试中都返回服务器错误"
+      timeout: "{label} 在全部 {attempts} 次尝试中都未及时响应"
+      default: "{label} 在 {attempts} 次尝试后仍未响应"
+    reset: "使用额度将在 {reset} 后重置。请在那之后发送 /retry，或用 /model 切换模型。"
+    unavailable: "目前似乎暂时不可用。{next_steps}"
+    tail: "{lead}。{situation}若想避免今后再发生，可用 `hermes fallback add` 添加备用提供商。\n\n提供商回复：{summary}"
+  interrupt:
+    waiting_for_model_prefix: "操作已中断：等待模型回复（"
+    waiting_for_model: "{prefix}已等待 {elapsed} 秒）。"
+    operation: "操作已中断。"
+    retry: "重试期间操作已中断（{detail}，第 {attempt}/{limit} 次尝试）。"
+    empty_response: "操作已中断：正在重试模型的空白回复（第 {attempt}/{limit} 次重试）。"
+    provider_recovery: "操作已中断：等待提供商恢复（第 {cycle}/{total} 轮）。"
+    api_error: "操作已中断：正在处理 API 错误（{error_type}：{detail}）。"
+    api_retry: "操作已中断：发生错误后正在重试 API 调用（第 {attempt}/{limit} 次重试）。"
+
 tips:
   t001: "/bg <prompt> 会在独立会话中运行任务，当前会话保持空闲；/btw <question> 可就本次对话提一个旁支问题，而不打断当前进程。"
   t002: "/branch 会从当前会话分叉出一个新会话，让你探索另一条思路而不丢失已有进展。"

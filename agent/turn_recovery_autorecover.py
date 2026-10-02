@@ -17,6 +17,7 @@ import logging
 from typing import Any, Dict, Optional
 
 from agent.error_classifier import FailoverReason
+from agent.i18n import t
 
 logger = logging.getLogger("agent.conversation_loop")
 
@@ -118,7 +119,7 @@ def auto_recover_after_exhaustion(
         agent, wait_s, _retry, messages=messages, conversation_history=conversation_history,
         api_call_count=api_call_count,
         abort_message="Interrupt detected during automatic recovery wait, aborting.",
-        interrupt_text=f"Operation interrupted: waiting for the provider to recover (cycle {cycle}/{total}).",
+        interrupt_text=t("turn_failure.interrupt.provider_recovery", cycle=cycle, total=total),
         activity_label=f"auto-recovery wait ({cycle}/{total})",
     )
     if interrupted is not None:

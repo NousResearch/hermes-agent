@@ -3474,6 +3474,67 @@ explainer:
   shared:
     and_more: "  • … 他 {count} 件"
     the_model: "モデル"
+turn_failure:
+  # Failed-turn, truncation and cancellation copy, resolved for the active profile at render time.
+  failed_turn_notice: "リクエストは処理されませんでした。引き続き実行を希望する場合は、もう一度送信してください。"
+  partial_failed_turn_notice: "このターンは完了しませんでした。一部の操作はすでに実行された可能性があります。結果を確認してから再送信してください。"
+  next_steps:
+    retry: "1分ほど待って /retry を送信するか、/model でモデルを切り替えてください。"
+    loop: "メッセージは保存されています。`continue` を送信して再試行するか、/new で新しいセッションを開始してください。再発する場合は `hermes doctor` を実行し、エラーの詳細を共有してください。"
+  site:
+    context_overflow: "この会話は {model} が読み取れる長さを超えており、Hermes は自動で十分に短縮できませんでした。/new で新しいセッションを開始するか（履歴は保持されます）、/compress をもう一度試してください。コンテキストウィンドウの大きいモデルへの切り替えも有効です。"
+    truncated: "モデルの応答が出力の長さ制限に達して途中で切れたため、Hermes は未完成の操作を実行しませんでした。変更はありません。`continue` を送信するか、作業を小さな手順に分けるよう依頼するか、このモデルの max_tokens を増やしてください。"
+    invalid_response: "{label} が空または無効な応答を {attempts} 回返しました。過負荷か、リクエスト数の制限が原因と考えられます。{next_steps}\n\n詳細：{detail}"
+    loop_error: "Hermes でエラーが繰り返し発生したため、再試行を続けないよう、このターンを停止しました。{next_steps}\n\n詳細：{detail}"
+    interpreter_shutdown: "Hermes の終了処理により、このターンを停止しました。会話は保存されています。もう一度開いて{resume}、メッセージを再送信してください。"
+    payload_too_large: "添付ファイルを含むこの会話は {model} に送信できるサイズを超えており、Hermes は自動で十分に縮小できませんでした。/new で新しいセッションを開始するか（履歴は保持されます）、/compress をもう一度試してください。"
+    compression_disabled: "この会話は {model} には長すぎますが、設定で自動短縮が無効になっています（compression.enabled）。/compress で今すぐ短縮するか、/new でやり直すか、コンテキストウィンドウの大きいモデルを選んでください。"
+    server_context_rejection: "モデルサーバーがサイズ超過としてリクエストを拒否しましたが、この会話は約 {tokens} トークンで、Hermes が把握する {model} の {window} トークンのウィンドウを大きく下回っています。そのため短縮しても解決しません。同じサーバー上の別のリクエスト（以前のセッションのバックグラウンドメモリ確認など）が容量を占有していたか、サーバーが {model} を想定より小さいウィンドウで動かしている可能性があります。少し待って /retry を送信し、続く場合はサーバーのコンテキスト設定を確認してください。"
+    truncated_unreported: "モデルの操作内容が途中で切れた状態で届いたため、Hermes は実行しませんでした。変更はありません。モデルは出力制限への到達を報告していないため、接続の切断やプロバイダー・ルーターによる応答の打ち切りが考えられます。/retry を送信し、続く場合は作業を小さな手順に分けるよう依頼してください。"
+    stream_dropped_tool_call: "モデルが大きな操作内容を書いている間に {label} への接続が繰り返し切れたため、何も実行されませんでした。ネットワークを確認して /retry を送信してください。ファイルを小さな部分に分けて依頼するのも有効です。"
+    stream_closed_tool_call: "{label} がエラーを報告せず、モデルが操作内容を書き終える前にストリームを繰り返し閉じたため、何も実行されませんでした。通常はプロバイダーか、その前段のプロキシが長い応答を打ち切っています。/retry を送信してください。作業を小さな手順に分けて依頼するのも有効です。"
+    local_processing_error: "モデルの応答を処理中に Hermes で内部エラーが発生し、このターンを停止しました。{next_steps}\n\n詳細：{detail}"
+    reasoning_only: "⚠️ {model} が出力予算をすべて思考に使い、回答を作成しませんでした。`/reasoning low` で推論の強度を下げるか、/model で別のモデルに切り替えてください。回答が含まれている可能性のある最後の思考内容:\n\n{preview}"
+    max_iterations_no_summary: "完了前にこのターンの手順上限（ツール呼び出し {limit} 回）に達し、要約も作成できませんでした。`continue` を送信して続けるか、設定の `max_iterations` を増やしてください。"
+    nous_rate_limit: "上限がリセットされるまで待って /retry を送信するか、/model でモデルを切り替えてください。待ち時間を避けるには、`hermes fallback add` で予備のプロバイダーを追加してください。"
+  nonretryable:
+    model_not_found: "モデル「{model}」は {label} では利用できません。/model で別のモデルを選んでください（ターミナルでは `hermes model`）。{prefix_hint}"
+    format_error: "{label} が形式の不備によりリクエストを拒否したため、モデルは応答しませんでした。/new で新しいセッションを開始するか、/model でモデルを切り替えてください。繰り返す場合は `hermes doctor` を実行してください。"
+    role_alternation: "{label} はユーザーとアシスタントのターンが厳密に交互になることを要求しており、この会話の構成を拒否しました。/new で新しいセッションを開始するか、/model でモデルを切り替えてください。"
+    ssl_cert_verification: "Hermes が {label} のセキュリティ証明書を検証できなかったため、接続が拒否されました。通常は企業のプロキシや、このコンピューターの古い証明書ストアが原因です。具体的な対処方法はターミナルまたは `{home}/logs/agent.log` を確認するか、/model で別のプロバイダーを試してください。"
+    provider_policy_blocked: "{label} がアカウントのポリシー（データ／プライバシー設定、またはモデルの上流プロバイダーによるアカウントのブロック）によりリクエストを拒否しました。モデルは応答せず、再試行しても解決しません。プロバイダーにアカウントを確認するか、/model でモデルを切り替えてください。"
+    upstream_blocked: "{label} の手前にあるファイアウォール／CDN が、モデルに届く前にリクエストをブロックしました。キーにはおそらく問題ありません。プロバイダーの extra_headers で独自の User-Agent を設定するか、プロキシ／WAF のルールを確認するか、/model でプロバイダーを切り替えてください。"
+    default: "{label} がリクエストを拒否しました。再試行しても解決しません。/model で別のモデルを選ぶか、`{home}/logs/agent.log` の詳細を確認してください。"
+    prefix_hint: "名前を手入力した場合、ベンダーの接頭辞が抜けているかもしれません。「{suggestion}」のことですか？"
+    tail: "{body}\n\nプロバイダーからの応答：{summary}"
+  auth:
+    oauth: "{label} がサインインを拒否したため、モデルに接続できません。再度サインインしてください：`{relogin}`。"
+    api_key: "{label} が API キーを拒否したため、モデルに接続できません。「設定 → プロバイダー」で更新するか、ターミナルで `hermes setup` を実行してください。"
+  content_policy:
+    next_steps: "メッセージを言い換えるか、機密性の高い添付ファイルを削除するか、/model で別のモデルに切り替えてください。"
+    body: "{label} の安全フィルターがリクエストを拒否したため、モデルは応答しませんでした。{next_steps}\n\nプロバイダーからの応答：{summary}"
+  limit_reset: "制限は {time} にリセットされます（あと {wait}）。"
+  exhausted:
+    lead:
+      rate_limit: "{label} が {attempts} 回の試行すべてでリクエスト数を制限しました"
+      upstream_rate_limit: "{label} が {attempts} 回の試行すべてでリクエスト数を制限しました"
+      overloaded: "{label} が {attempts} 回の試行すべてで過負荷を報告しました"
+      server_error: "{label} が {attempts} 回の試行すべてでサーバーエラーを返しました"
+      timeout: "{label} が {attempts} 回の試行のいずれにも時間内に応答しませんでした"
+      default: "{label} が {attempts} 回試行しても応答しませんでした"
+    reset: "利用上限は {reset} 後にリセットされます。その後 /retry を送信するか、/model でモデルを切り替えてください。"
+    unavailable: "一時的に利用できないようです。{next_steps}"
+    tail: "{lead}。{situation}今後これを避けるには、`hermes fallback add` で予備のプロバイダーを追加してください。\n\nプロバイダーからの応答：{summary}"
+  interrupt:
+    waiting_for_model_prefix: "操作が中断されました: モデルの応答を待機中（"
+    waiting_for_model: "{prefix}{elapsed} 秒経過）。"
+    operation: "操作が中断されました。"
+    retry: "再試行中に操作が中断されました（{detail}、試行 {attempt}/{limit}）。"
+    empty_response: "操作が中断されました: モデルの空の応答を再試行中（再試行 {attempt}/{limit}）。"
+    provider_recovery: "操作が中断されました: プロバイダーの復旧を待機中（サイクル {cycle}/{total}）。"
+    api_error: "操作が中断されました: API エラーを処理中（{error_type}: {detail}）。"
+    api_retry: "操作が中断されました: エラー後に API 呼び出しを再試行中（再試行 {attempt}/{limit}）。"
+
 tips:
   t001: "/bg <prompt> は現在のセッションを空けたまま別セッションでタスクを実行します。/btw <question> は会話を中断せずに、この会話に関する補足の質問に答えます。"
   t002: "/branch は現在のセッションを分岐させ、進捗を失わずに別の方向を試せるようにします。"

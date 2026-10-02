@@ -17,6 +17,7 @@ from typing import Any, Dict, List, Optional
 
 from agent.codex_responses_adapter import _summarize_user_message_for_log
 from agent.fast_mode import begin_turn as begin_fast_mode_turn
+from agent.i18n import t
 from agent.message_metadata import append_message, without_persistence_fields
 from agent.message_sanitization import _repair_tool_call_arguments, _sanitize_surrogates
 from agent.model_metadata import MINIMUM_CONTEXT_LENGTH, _estimate_tools_tokens_rough
@@ -206,6 +207,18 @@ _COMPRESSION_TIMEOUT_FINAL_RESPONSE = (
 
 # Stable prefix ACP/TUI match on to treat the text as cancellation metadata, not assistant prose.
 INTERRUPT_WAITING_FOR_MODEL_PREFIX = "Operation interrupted: waiting for model response ("
+
+
+def waiting_for_model_interrupt(elapsed: float) -> str:
+    """Resolve cancellation copy in the owning profile at render time."""
+    return t("turn_failure.interrupt.waiting_for_model",
+             prefix=t("turn_failure.interrupt.waiting_for_model_prefix"), elapsed=f"{elapsed:.1f}")
+
+
+def is_waiting_for_model_interrupt(text: str) -> bool:
+    """Recognize old English cancellation metadata and the active profile's translation."""
+    return text.startswith((INTERRUPT_WAITING_FOR_MODEL_PREFIX,
+                            t("turn_failure.interrupt.waiting_for_model_prefix")))
 
 
 def _should_rearm_compression_budget(
@@ -1147,8 +1160,8 @@ def _provider_overflow_exhausted_result(
     agent._persist_session(messages, conversation_history)
     return _partial_turn_result(
         site_copy("context_overflow", model=agent.model),
-        messages, api_call_count, failed=True, compression_exhausted=True,
-        turn_exit_reason="context_compression_exhausted",
+        messages, api_call_count, error=site_copy("context_overflow", lang="en", model=agent.model),
+        failed=True, compression_exhausted=True, turn_exit_reason="context_compression_exhausted",
         failure_reason="context_overflow", failure_retryable=False,
     )
 
@@ -1413,6 +1426,7 @@ class _LoopState:
     max_compression_attempts: Any
     api_call_count: int = 0
     final_response: Any = None
+    failure_error: Any = None  # English diagnostic; gateway classifiers inspect error text.
     interrupted: bool = False
     failed: bool = False
     codex_ack_continuations: int = 0

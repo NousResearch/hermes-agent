@@ -3474,6 +3474,67 @@ explainer:
   shared:
     and_more: "  • … ve {count} tane daha"
     the_model: "Model"
+turn_failure:
+  # Failed-turn, truncation and cancellation copy, resolved for the active profile at render time.
+  failed_turn_notice: "İsteğiniz işlenmedi. Hâlâ yerine getirmemi istiyorsanız yeniden gönderin."
+  partial_failed_turn_notice: "Bu tur tamamlanmadı. Bazı işlemler zaten yapılmış olabilir; yeniden göndermeden önce sonuçlarını kontrol edin."
+  next_steps:
+    retry: "Bir dakika bekleyip /retry gönderin veya /model ile model değiştirin."
+    loop: "Mesajınız kaydedildi. Yeniden denemek için `continue` gönderin veya /new ile yeni bir oturum başlatın. Tekrarlanırsa `hermes doctor` çalıştırıp hata ayrıntılarını paylaşın."
+  site:
+    context_overflow: "Bu konuşma {model} için çok uzadı ve Hermes otomatik olarak yeterince kısaltamadı. /new ile yeni bir oturum başlatın (geçmişiniz korunur) veya /compress komutunu bir kez daha deneyin. Daha büyük bağlam penceresine sahip bir modele de geçebilirsiniz."
+    truncated: "Modelin yanıtı çıktı uzunluğu sınırına ulaştığı için tamamlanmadan kesildi; Hermes eksik işlemi yürütmedi. Hiçbir şey değiştirilmedi. `continue` gönderin, işin daha küçük adımlarla yapılmasını isteyin veya bu model için max_tokens değerini artırın."
+    invalid_response: "{label} {attempts} kez boş veya geçersiz yanıt verdi; muhtemelen aşırı yüklü veya isteklerinizi sınırlandırıyor. {next_steps}\n\nAyrıntılar: {detail}"
+    loop_error: "Hermes tekrarlanan hatalarla karşılaştı ve sürekli yeniden denememek için bu turu durdurdu. {next_steps}\n\nAyrıntılar: {detail}"
+    interpreter_shutdown: "Hermes kapanırken bu turu durdurdu. Konuşmanız kaydedildi; yeniden açıp{resume} mesajınızı tekrar gönderin."
+    payload_too_large: "Ekler dâhil bu konuşma {model} için gönderilemeyecek kadar büyüdü ve Hermes otomatik olarak yeterince küçültemedi. /new ile yeni bir oturum başlatın (geçmişiniz korunur) veya /compress komutunu bir kez daha deneyin."
+    compression_disabled: "Bu konuşma {model} için çok uzun ve ayarlarınızda otomatik kısaltma kapalı (compression.enabled). Şimdi kısaltmak için /compress, baştan başlamak için /new kullanın veya daha büyük bağlam penceresine sahip bir model seçin."
+    server_context_rejection: "Model sunucusu bu isteği çok büyük olduğu için reddetti, ancak konuşma yalnızca yaklaşık {tokens} token içeriyor; Hermes’in {model} için bildiği {window} tokenlık pencerenin çok altında. Bu nedenle kısaltmak işe yaramaz. Aynı sunucudaki başka bir istek, örneğin önceki bir oturumun arka plan bellek incelemesi, kapasiteyi kullanıyor olabilir ya da sunucu {model} için Hermes’in varsaydığından küçük bir pencere kullanıyor olabilir. Biraz bekleyip /retry gönderin; sorun sürerse sunucunun bağlam ayarını kontrol edin."
+    truncated_unreported: "Modelin işlemi yarıda kesilmiş olarak geldi, bu yüzden Hermes yürütmedi. Hiçbir şey değiştirilmedi. Model çıktı sınırına ulaştığını bildirmedi; büyük olasılıkla bağlantı koptu veya sağlayıcı ya da yönlendirici yanıtı kesti. /retry gönderin; sorun sürerse işin daha küçük adımlarla yapılmasını isteyin."
+    stream_dropped_tool_call: "Model büyük bir işlem yazarken {label} bağlantısı sürekli koptu; hiçbir şey yürütülmedi. Ağınızı kontrol edip /retry gönderin. Dosyayı daha küçük parçalar hâlinde istemek de yardımcı olur."
+    stream_closed_tool_call: "{label}, model işlemini yazmayı bitirmeden akışı sürekli kapattı ve hata bildirmedi; hiçbir şey yürütülmedi. Bu genellikle sağlayıcının veya önündeki bir proxy’nin uzun yanıtları kesmesinden kaynaklanır. /retry gönderin; işi daha küçük adımlarla istemek de yardımcı olur."
+    local_processing_error: "Hermes modelin yanıtını işlerken bir iç hatayla karşılaştı ve bu turu durdurdu. {next_steps}\n\nAyrıntılar: {detail}"
+    reasoning_only: "⚠️ {model} tüm çıktı bütçesini düşünmeye harcadı ve yanıt yazmadı. `/reasoning low` ile akıl yürütme düzeyini azaltın veya /model ile farklı bir modele geçin. Yanıtı içerebilecek son düşünceleri:\n\n{preview}"
+    max_iterations_no_summary: "Tamamlamadan bu turun adım sınırına ({limit} araç çağrısı) ulaştım ve özet üretemedim. Devam etmek için `continue` gönderin veya yapılandırmanızda `max_iterations` değerini artırın."
+    nous_rate_limit: "Limitin sıfırlanmasını bekleyip /retry gönderin veya /model ile model değiştirin. Beklememek için `hermes fallback add` ile yedek sağlayıcı ekleyin."
+  nonretryable:
+    model_not_found: "'{model}' modeli {label} üzerinde kullanılamıyor. /model ile başka bir model seçin (veya terminalde `hermes model` çalıştırın).{prefix_hint}"
+    format_error: "{label} bu isteği hatalı biçim nedeniyle reddetti, bu yüzden model yanıt vermedi. /new ile yeni bir oturum başlatın veya /model ile modeli değiştirin; sorun devam ederse `hermes doctor` çalıştırın."
+    role_alternation: "{label}, kullanıcının ve asistanın turlarının kesinlikle dönüşümlü olmasını gerektiriyor ve bu konuşmanın yapısını reddetti. /new ile yeni bir oturum başlatın veya /model ile modeli değiştirin."
+    ssl_cert_verification: "Hermes, {label} güvenlik sertifikasını doğrulayamadığı için bağlantı reddedildi. Bunun nedeni genellikle kurumsal bir proxy veya bu bilgisayardaki güncel olmayan sertifika deposudur. Kesin çözüm için terminale ya da `{home}/logs/agent.log` dosyasına bakın veya /model ile başka bir sağlayıcı deneyin."
+    provider_policy_blocked: "{label}, hesabınızdaki bir politika (veri/gizlilik ayarları veya modelin üst sağlayıcısının hesaba uyguladığı engelleme) nedeniyle isteği reddetti. Model yanıt vermedi ve yeniden denemek işe yaramayacak. Sağlayıcıdaki hesabınızı kontrol edin veya /model ile modeli değiştirin."
+    upstream_blocked: "{label} önündeki bir güvenlik duvarı/CDN, isteği modele ulaşmadan engelledi; anahtarınız muhtemelen doğru. Sağlayıcının extra_headers ayarıyla özel bir User-Agent belirleyin, proxy/WAF kurallarını kontrol edin veya /model ile sağlayıcı değiştirin."
+    default: "{label} isteği reddetti ve yeniden denemek işe yaramayacak. /model ile başka bir model seçin veya `{home}/logs/agent.log` dosyasındaki ayrıntılara bakın."
+    prefix_hint: " Adı kendiniz yazdıysanız sağlayıcı öneki eksik olabilir. '{suggestion}' demek mi istediniz?"
+    tail: "{body}\n\nSağlayıcının yanıtı: {summary}"
+  auth:
+    oauth: "{label} oturum açmanızı reddetti, bu yüzden modele ulaşılamıyor. Yeniden oturum açın: `{relogin}`."
+    api_key: "{label} API anahtarınızı reddetti, bu yüzden modele ulaşılamıyor. Ayarlar → Sağlayıcılar bölümünden güncelleyin veya terminalde `hermes setup` çalıştırın."
+  content_policy:
+    next_steps: "Mesajınızı yeniden ifade etmeyi veya hassas ekleri kaldırmayı deneyin ya da /model ile başka bir modele geçin."
+    body: "{label} güvenlik filtresi bu isteği reddetti, bu yüzden model yanıt vermedi. {next_steps}\n\nSağlayıcının yanıtı: {summary}"
+  limit_reset: "Limit {time} saatinde sıfırlanacak ({wait} sonra)."
+  exhausted:
+    lead:
+      rate_limit: "{label} {attempts} denemenin tamamında istekleri sınırlandırdı"
+      upstream_rate_limit: "{label} {attempts} denemenin tamamında istekleri sınırlandırdı"
+      overloaded: "{label} {attempts} denemenin tamamında aşırı yüklü olduğunu bildirdi"
+      server_error: "{label} {attempts} denemenin tamamında sunucu hatası döndürdü"
+      timeout: "{label} {attempts} denemenin hiçbirinde zamanında yanıt vermedi"
+      default: "{label} {attempts} denemeden sonra yanıt vermedi"
+    reset: "kullanım limiti {reset} sonra sıfırlanacak. Ardından /retry gönderin veya /model ile model değiştirin."
+    unavailable: "hizmet geçici olarak kullanılamıyor gibi görünüyor. {next_steps}"
+    tail: "{lead} — {situation} İleride bunu önlemek için `hermes fallback add` ile yedek sağlayıcı ekleyin.\n\nSağlayıcının yanıtı: {summary}"
+  interrupt:
+    waiting_for_model_prefix: "İşlem kesildi: model yanıtı bekleniyor ("
+    waiting_for_model: "{prefix}{elapsed} sn geçti)."
+    operation: "İşlem kesildi."
+    retry: "Yeniden deneme sırasında işlem kesildi ({detail}, deneme {attempt}/{limit})."
+    empty_response: "İşlem kesildi: modelin boş yanıtı yeniden deneniyor (deneme {attempt}/{limit})."
+    provider_recovery: "İşlem kesildi: sağlayıcının toparlanması bekleniyor (döngü {cycle}/{total})."
+    api_error: "İşlem kesildi: API hatası işleniyor ({error_type}: {detail})."
+    api_retry: "İşlem kesildi: hatadan sonra API çağrısı yeniden deneniyor (deneme {attempt}/{limit})."
+
 tips:
   t001: "/bg <prompt> bir görevi ayrı bir oturumda çalıştırır, mevcut oturumunuz boş kalır; /btw <question> ise bu konuşma hakkındaki yan bir soruyu konuşmayı bölmeden yanıtlar."
   t002: "/branch mevcut oturumu çatallar; böylece ilerlemenizi kaybetmeden farklı bir yönü keşfedebilirsiniz."

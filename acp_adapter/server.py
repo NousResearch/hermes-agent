@@ -971,10 +971,10 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
             final_response = result.get("final_response") or ""  # None on an interrupted turn
             cancelled = bool(state.cancel_event and state.cancel_event.is_set())
             # The local "waiting for model" interrupt status is metadata, not prose; stop_reason carries it.
-            from agent.conversation_loop import INTERRUPT_WAITING_FOR_MODEL_PREFIX
+            from agent.conversation_loop import is_waiting_for_model_interrupt
 
             interrupted = bool(result.get("interrupted")) or cancelled
-            suppress = interrupted and final_response.startswith(INTERRUPT_WAITING_FOR_MODEL_PREFIX)
+            suppress = interrupted and is_waiting_for_model_interrupt(final_response)
             # Send the final text unless already streamed — or if a plugin hook transformed it after.
             if final_response and conn and not suppress and (not streamed_message or result.get("response_transformed")):
                 update = acp.update_agent_message_text(final_response)

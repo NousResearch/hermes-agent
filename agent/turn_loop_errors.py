@@ -30,6 +30,7 @@ class OuterErrorVerdict:
     _turn_exit_reason: Any
     failed: Any
     final_response: Any
+    failure_error: Any = None
 
 
 def handle_outer_loop_error(
@@ -46,10 +47,13 @@ def handle_outer_loop_error(
         _is_interpreter_shutdown_error, _ra,
     )
 
+    failure_error = None
+
     def _verdict(action: str) -> OuterErrorVerdict:
         return OuterErrorVerdict(
             action=action, _outer_error_count=_outer_error_count,
             _turn_exit_reason=_turn_exit_reason, failed=failed, final_response=final_response,
+            failure_error=failure_error,
         )
 
     # Count every escaped exception before classification so permanent failures
@@ -84,9 +88,9 @@ def handle_outer_loop_error(
         _turn_exit_reason = "interpreter_shutdown"
         failed = True
         _sid = getattr(agent, "session_id", None)
-        final_response = site_copy(
-            "interpreter_shutdown", resume=f" (CLI: `hermes --resume {_sid}`)" if _sid else "",
-        )
+        fields = {"resume": f" (CLI: `hermes --resume {_sid}`)" if _sid else ""}
+        final_response = site_copy("interpreter_shutdown", **fields)
+        failure_error = site_copy("interpreter_shutdown", lang="en", **fields)
         return _verdict("break")
 
     # Deterministic local post-processing bugs (traceback via local helpers, never API
@@ -159,13 +163,15 @@ def handle_outer_loop_error(
         detail = short_detail(e)
         if _is_local_processing_error:
             _turn_exit_reason = f"local_processing_error({error_msg[:80]})"
-            final_response = site_copy("local_processing_error", detail=detail)
+            copy_code = "local_processing_error"
         elif _outer_error_count >= _outer_error_cap:
             failed = True
             _turn_exit_reason = f"repeated_outer_errors({error_msg[:80]})"
-            final_response = site_copy("loop_error", detail=detail)
+            copy_code = "loop_error"
         else:
             _turn_exit_reason = f"error_near_max_iterations({error_msg[:80]})"
-            final_response = site_copy("loop_error", detail=detail)
+            copy_code = "loop_error"
+        final_response = site_copy(copy_code, detail=detail)
+        failure_error = site_copy(copy_code, lang="en", detail=detail)
         return _verdict("break")
     return _verdict("fallthrough")

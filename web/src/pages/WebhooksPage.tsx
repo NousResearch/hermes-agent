@@ -109,9 +109,9 @@ export default function WebhooksPage() {
     return api
       .getWebhooks()
       .then(setData)
-      .catch(() => showToast("Failed to load webhooks", "error"))
+      .catch(() => showToast(W.loadFailed, "error"))
       .finally(() => setLoading(false));
-  }, [showToast]);
+  }, [showToast, W.loadFailed]);
 
   useEffect(() => {
     loadWebhooks();
@@ -126,9 +126,11 @@ export default function WebhooksPage() {
         if (st.exit_code !== 0 && st.exit_code !== null) {
           setRestartMessage(null);
           setRestartNeeded(true);
-          setRestartError(`Gateway restart failed with exit ${st.exit_code}.`);
+          setRestartError(
+            W.gatewayRestartFailedExit.replace("{code}", String(st.exit_code)),
+          );
           showToast(
-            `Gateway restart failed (exit ${st.exit_code}) — restart manually`,
+            W.gatewayRestartFailedManual.replace("{code}", String(st.exit_code)),
             "error",
           );
         } else {
@@ -142,7 +144,7 @@ export default function WebhooksPage() {
       }
     }
     setRestartMessage(null);
-  }, [showToast]);
+  }, [showToast, W.gatewayRestartFailedExit, W.gatewayRestartFailedManual]);
 
   const handleRestart = useCallback(async () => {
     setRestarting(true);
@@ -150,18 +152,18 @@ export default function WebhooksPage() {
       await api.restartGateway();
       setRestartNeeded(false);
       setRestartError(null);
-      setRestartMessage("Gateway restarting…");
-      showToast("Gateway restarting…", "success");
+      setRestartMessage(W.gatewayRestarting);
+      showToast(W.gatewayRestarting, "success");
       setTimeout(() => void loadWebhooks(), 4000);
       void watchRestartOutcome();
     } catch (e) {
       setRestartNeeded(true);
       setRestartError(errorMessage(e));
-      showToast(`Failed to restart: ${errorMessage(e)}`, "error");
+      showToast(W.failedToRestart.replace("{error}", errorMessage(e)), "error");
     } finally {
       setRestarting(false);
     }
-  }, [loadWebhooks, showToast, watchRestartOutcome]);
+  }, [loadWebhooks, showToast, watchRestartOutcome, W.gatewayRestarting, W.failedToRestart]);
 
   const handleEnableWebhooks = useCallback(async () => {
     setEnabling(true);
@@ -171,23 +173,23 @@ export default function WebhooksPage() {
       const result = await api.enableWebhooks();
       await loadWebhooks();
       if (result.restart_started) {
-        setRestartMessage("Webhooks enabled; gateway restarting…");
-        showToast("Webhooks enabled; gateway restarting…", "success");
+        setRestartMessage(W.webhooksEnabledRestarting);
+        showToast(W.webhooksEnabledRestarting, "success");
         setTimeout(() => void loadWebhooks(), 4000);
         void watchRestartOutcome();
       } else {
         const detail = result.restart_error ? `: ${result.restart_error}` : ".";
         setRestartMessage(null);
         setRestartNeeded(true);
-        setRestartError(`Gateway restart failed${detail}`);
-        showToast(`Webhooks enabled; gateway restart failed${detail}`, "error");
+        setRestartError(W.gatewayRestartFailedDetail.replace("{detail}", detail));
+        showToast(W.webhooksEnabledRestartFailed.replace("{detail}", detail), "error");
       }
     } catch (e) {
-      showToast(`Failed to enable webhooks: ${errorMessage(e)}`, "error");
+      showToast(W.failedToEnableWebhooks.replace("{error}", errorMessage(e)), "error");
     } finally {
       setEnabling(false);
     }
-  }, [loadWebhooks, showToast, watchRestartOutcome]);
+  }, [loadWebhooks, showToast, watchRestartOutcome, W.webhooksEnabledRestarting, W.gatewayRestartFailedDetail, W.webhooksEnabledRestartFailed, W.failedToEnableWebhooks]);
 
   const resetForm = useCallback(() => {
     setName("");
@@ -200,7 +202,7 @@ export default function WebhooksPage() {
 
   const handleCreate = async () => {
     if (!name.trim()) {
-      showToast("Name required", "error");
+      showToast(W.nameRequired, "error");
       return;
     }
     setCreating(true);
@@ -217,12 +219,12 @@ export default function WebhooksPage() {
         deliver_only: deliverOnly,
         prompt: prompt.trim() || undefined,
       });
-      showToast("Created ✓", "success");
+      showToast(W.created, "success");
       setCreated({ url: res.url, secret: res.secret });
       resetForm();
       loadWebhooks();
     } catch (e) {
-      showToast(`Failed to create: ${errorMessage(e)}`, "error");
+      showToast(W.failedToCreate.replace("{error}", errorMessage(e)), "error");
     } finally {
       setCreating(false);
     }
@@ -236,17 +238,19 @@ export default function WebhooksPage() {
       try {
         await api.setWebhookEnabled(subName, nextEnabled);
         showToast(
-          nextEnabled ? `Enabled: "${subName}"` : `Disabled: "${subName}"`,
+          nextEnabled
+            ? W.enabledNamed.replace("{name}", subName)
+            : W.disabledNamed.replace("{name}", subName),
           "success",
         );
         loadWebhooks();
       } catch (e) {
-        showToast(`Error: ${errorMessage(e)}`, "error");
+        showToast(W.errorPrefix.replace("{error}", errorMessage(e)), "error");
       } finally {
         setTogglingName(null);
       }
     },
-    [loadWebhooks, showToast],
+    [loadWebhooks, showToast, W.enabledNamed, W.disabledNamed, W.errorPrefix],
   );
 
   const webhookDelete = useConfirmDelete({
@@ -254,14 +258,14 @@ export default function WebhooksPage() {
       async (name: string) => {
         try {
           await api.deleteWebhook(name);
-          showToast(`Deleted: "${name}"`, "success");
+          showToast(W.deletedNamed.replace("{name}", name), "success");
           loadWebhooks();
         } catch (e) {
-          showToast(`Error: ${errorMessage(e)}`, "error");
+          showToast(W.errorPrefix.replace("{error}", errorMessage(e)), "error");
           throw e;
         }
       },
-      [loadWebhooks, showToast],
+      [loadWebhooks, showToast, W.deletedNamed, W.errorPrefix],
     ),
   });
 
@@ -278,13 +282,13 @@ export default function WebhooksPage() {
           setCreateModalOpen(true);
         }}
       >
-        New subscription
+        {W.newSubscription}
       </Button>,
     );
     return () => {
       setEnd(null);
     };
-  }, [setEnd, enabled, enabling, loading]);
+  }, [setEnd, enabled, enabling, loading, W.newSubscription]);
 
   if (loading) {
     return (
@@ -464,7 +468,7 @@ export default function WebhooksPage() {
                     disabled={creating}
                     prefix={creating ? <Spinner /> : undefined}
                   >
-                    {creating ? "Creating…" : "Create"}
+                    {creating ? W.creating : W.create}
                   </Button>
                 </div>
               </div>
@@ -492,7 +496,7 @@ export default function WebhooksPage() {
               disabled={enabling}
               prefix={enabling ? <Spinner /> : <Webhook className="h-4 w-4" />}
             >
-              {enabling ? "Enabling…" : "Enable webhooks"}
+              {enabling ? W.enabling : W.enableWebhooks}
             </Button>
           </CardContent>
         </Card>
@@ -513,8 +517,7 @@ export default function WebhooksPage() {
             <div className="flex items-start gap-2 text-sm">
               <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-warning" />
               <span>
-                {restartError ??
-                  "Webhooks are enabled, but the gateway still needs a restart before the receiver can come online."}
+                {restartError ?? W.restartNotice}
               </span>
             </div>
             <Button
@@ -524,7 +527,7 @@ export default function WebhooksPage() {
               disabled={restarting}
               prefix={restarting ? <Spinner /> : <RotateCw className="h-4 w-4" />}
             >
-              {restarting ? "Restarting…" : "Restart gateway"}
+              {restarting ? W.restarting : W.restartGateway}
             </Button>
           </CardContent>
         </Card>
@@ -536,18 +539,17 @@ export default function WebhooksPage() {
           className="flex items-center gap-2 text-muted-foreground"
         >
           <Webhook className="h-4 w-4" />
-          Subscriptions ({subscriptions.length})
+          {W.subscriptions} ({subscriptions.length})
         </H2>
 
         <p className="text-xs text-muted-foreground -mt-1">
-          Subscription changes hot-reload once the webhook receiver is running.
-          Disabled subscriptions reject incoming events.
+          {W.subscriptionsHint}
         </p>
 
         {subscriptions.length === 0 && (
           <Card>
             <CardContent className="py-8 text-center text-sm text-muted-foreground">
-              No webhook subscriptions yet.
+              {W.noSubscriptions}
             </CardContent>
           </Card>
         )}
@@ -575,7 +577,7 @@ export default function WebhooksPage() {
 
                 <div className="flex items-center gap-1 flex-wrap mb-2">
                   {sub.events.length === 0 ? (
-                    <Badge tone="secondary">(all)</Badge>
+                    <Badge tone="secondary">{W.allEvents}</Badge>
                   ) : (
                     sub.events.map((evt) => (
                       <Badge key={evt} tone="secondary">

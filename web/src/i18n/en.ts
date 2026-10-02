@@ -459,6 +459,38 @@ export const en: Translations = {
     enable: "Enable",
     disable: "Disable",
     done: "Done",
+    newSubscription: "New subscription",
+    subscriptions: "Subscriptions",
+    subscriptionsHint:
+      "Subscription changes hot-reload once the webhook receiver is running. Disabled subscriptions reject incoming events.",
+    noSubscriptions: "No webhook subscriptions yet.",
+    allEvents: "(all)",
+    create: "Create",
+    creating: "Creating…",
+    enableWebhooks: "Enable webhooks",
+    enabling: "Enabling…",
+    restartGateway: "Restart gateway",
+    restarting: "Restarting…",
+    restartNotice:
+      "Webhooks are enabled, but the gateway still needs a restart before the receiver can come online.",
+    loadFailed: "Failed to load webhooks",
+    gatewayRestarting: "Gateway restarting…",
+    gatewayRestartFailedExit: "Gateway restart failed with exit {code}.",
+    gatewayRestartFailedManual:
+      "Gateway restart failed (exit {code}) — restart manually",
+    failedToRestart: "Failed to restart: {error}",
+    webhooksEnabledRestarting: "Webhooks enabled; gateway restarting…",
+    gatewayRestartFailedDetail: "Gateway restart failed{detail}",
+    webhooksEnabledRestartFailed:
+      "Webhooks enabled; gateway restart failed{detail}",
+    failedToEnableWebhooks: "Failed to enable webhooks: {error}",
+    nameRequired: "Name required",
+    created: "Created ✓",
+    failedToCreate: "Failed to create: {error}",
+    enabledNamed: 'Enabled: "{name}"',
+    disabledNamed: 'Disabled: "{name}"',
+    deletedNamed: 'Deleted: "{name}"',
+    errorPrefix: "Error: {error}",
   },
 
   channelsPage: {

@@ -462,6 +462,34 @@ export interface Translations {
     enable: string;
     disable: string;
     done: string;
+    newSubscription: string;
+    subscriptions: string;
+    subscriptionsHint: string;
+    noSubscriptions: string;
+    allEvents: string;
+    create: string;
+    creating: string;
+    enableWebhooks: string;
+    enabling: string;
+    restartGateway: string;
+    restarting: string;
+    restartNotice: string;
+    loadFailed: string;
+    gatewayRestarting: string;
+    gatewayRestartFailedExit: string;
+    gatewayRestartFailedManual: string;
+    failedToRestart: string;
+    webhooksEnabledRestarting: string;
+    gatewayRestartFailedDetail: string;
+    webhooksEnabledRestartFailed: string;
+    failedToEnableWebhooks: string;
+    nameRequired: string;
+    created: string;
+    failedToCreate: string;
+    enabledNamed: string;
+    disabledNamed: string;
+    deletedNamed: string;
+    errorPrefix: string;
   };
 
   /** Optional — Channels page + onboarding panels copy. */

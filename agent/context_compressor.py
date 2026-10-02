@@ -2368,18 +2368,27 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
         return False, default
 
     def _durable_write(self, method: str, label: str, *args) -> bool:
-        """Best-effort write of a durable per-session value; True only when the write succeeded."""
+        """Best-effort per-session write; True when persisted or queued for a restore."""
         setter = getattr(getattr(self, "_session_db", None), method, None)
         if not getattr(self, "_session_id", "") or not callable(setter):
             return False
         session_id = self._session_id
-        try:
-            setter(session_id, *args)
+
+        def write():
+            try:
+                setter(session_id, *args)
+                return True
+            except Exception as exc:
+                suffix = "" if isinstance(exc, sqlite3.Error) else " (non-sqlite)"
+                logger.debug("%s persist failed%s: %s", label, suffix, exc)
+            return False
+
+        from agent.context_compressor_state import pending_compressor_state_writes
+        pending = pending_compressor_state_writes(self)
+        if pending is not None:
+            pending.append(write)
             return True
-        except Exception as exc:
-            suffix = "" if isinstance(exc, sqlite3.Error) else " (non-sqlite)"
-            logger.debug("%s persist failed%s: %s", label, suffix, exc)
-        return False
+        return write()
 
     def _load_durable(self, attr: str, method: str, label: str, coerce, default, *args) -> None:
         """Restore ``self.<attr>`` from the bound row; a non-numeric row resets it to ``default``."""

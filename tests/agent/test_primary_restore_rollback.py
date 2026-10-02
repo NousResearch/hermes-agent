@@ -190,3 +190,110 @@ def test_failed_restore_can_retry_and_commit_the_primary_with_one_success_notice
         model=agent.model, messages=[{"role": "user", "content": "probe"}], **agent.request_overrides,
     ).choices[0].message.content == "usable"
     assert requests[-1][0] == "primary.example.test" and requests[-1][1]["policy"] == "primary"
+
+
+
+@pytest.mark.parametrize("stage", ["engine", "prompt"])
+def test_failed_restore_preserves_durable_guards_until_successful_retry(
+    fallback_runtime, monkeypatch, tmp_path, stage,
+):
+    import sqlite3
+
+    from agent.context_compressor import PROACTIVE_PRUNE_REARM_MODEL_CONFIG_KEY
+    from hermes_state import SessionDB
+
+    agent, requests, clients, notices, retired = fallback_runtime
+    state_path = tmp_path / "restore-state.db"
+    session_id = "restore-durable-guards"
+    db = SessionDB(db_path=state_path)
+    db.create_session(session_id, source="test")
+    db.record_compression_failure_cooldown(session_id, 9999999999.0, "fallback overloaded")
+    db.set_compression_fallback_streak(session_id, 3)
+    db.set_compression_overload_streak(session_id, 4)
+    db.set_compression_ineffective_count(session_id, 2)
+    db.patch_session_model_config(session_id, {
+        PROACTIVE_PRUNE_REARM_MODEL_CONFIG_KEY: 12000, "keep_other_setting": "unchanged",
+    })
+    agent.context_compressor.bind_session_state(db, session_id)
+
+    def persisted():
+        with sqlite3.connect(state_path) as reader:
+            reader.row_factory = sqlite3.Row
+            return dict(reader.execute(
+                "SELECT compression_failure_cooldown_until, compression_failure_error, "
+                "compression_fallback_streak, compression_overload_streak, "
+                "compression_ineffective_count, model_config FROM sessions WHERE id = ?",
+                (session_id,),
+            ).fetchone())
+
+    try:
+        before = persisted()
+        _fail_once(agent, monkeypatch, stage)
+        assert not runtime.restore_primary_runtime(agent)
+        assert persisted() == before
+        assert agent._fallback_activated and agent.model == "fallback-model"
+        assert agent.client.chat.completions.create(
+            model=agent.model, messages=[{"role": "user", "content": "probe"}],
+            **agent.request_overrides,
+        ).choices[0].message.content == "usable"
+        assert requests[-1][0] == "fallback.example.test"
+
+        assert runtime.restore_primary_runtime(agent)
+        restored = persisted()
+        assert restored["compression_failure_cooldown_until"] is None
+        assert restored["compression_failure_error"] is None
+        assert restored["compression_fallback_streak"] == 0
+        assert restored["compression_overload_streak"] == 0
+        assert restored["compression_ineffective_count"] == 0
+        config = json.loads(restored["model_config"])
+        assert PROACTIVE_PRUNE_REARM_MODEL_CONFIG_KEY not in config
+        assert config["keep_other_setting"] == "unchanged"
+    finally:
+        agent.context_compressor.bind_session_state()
+        db.close()
+
+
+
+def test_restore_write_deferral_keeps_other_instances_and_workers_independent(
+    tmp_path, monkeypatch, caplog,
+):
+    from concurrent.futures import ThreadPoolExecutor
+    from contextvars import copy_context
+    import logging
+
+    from agent.context_compressor import ContextCompressor
+    from agent.context_compressor_state import defer_compressor_state_writes
+    from hermes_state import SessionDB
+
+    db = SessionDB(db_path=tmp_path / "restore-context.db")
+    db.create_session("first", source="test")
+    db.create_session("second", source="test")
+    first = ContextCompressor(model="first", config_context_length=200000, quiet_mode=True)
+    second = ContextCompressor(model="second", config_context_length=200000, quiet_mode=True)
+    first.bind_session_state(db, "first")
+    second.bind_session_state(db, "second")
+    try:
+        with pytest.raises(RuntimeError, match="abandon restore"):
+            with defer_compressor_state_writes(first):
+                assert first._durable_write("set_compression_fallback_streak", "restore reset", 0)
+                with ThreadPoolExecutor(max_workers=1) as pool:
+                    assert pool.submit(
+                        copy_context().run, first._durable_write,
+                        "set_compression_fallback_streak", "worker verdict", 7,
+                    ).result(timeout=5)
+                assert second._durable_write("set_compression_fallback_streak", "other verdict", 8)
+                raise RuntimeError("abandon restore")
+        assert db.get_compression_fallback_streak("first") == 7
+        assert db.get_compression_fallback_streak("second") == 8
+
+        def rejected_write(*_args):
+            raise RuntimeError("storage blocked")
+
+        monkeypatch.setattr(db, "set_compression_fallback_streak", rejected_write)
+        with caplog.at_level(logging.DEBUG, logger="agent.context_compressor"):
+            with defer_compressor_state_writes(first):
+                assert first._durable_write("set_compression_fallback_streak", "restore reset", 0)
+        assert db.get_compression_fallback_streak("first") == 7
+        assert "restore reset persist failed (non-sqlite): storage blocked" in caplog.text
+    finally:
+        db.close()

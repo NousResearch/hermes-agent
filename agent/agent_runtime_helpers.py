@@ -1383,59 +1383,61 @@ def restore_primary_runtime(agent) -> bool:
         fallback_route = (getattr(agent, "model", ""), getattr(agent, "provider", ""))
     previous_model, previous_provider = (str(v or "unknown") for v in fallback_route)
     provider_fallback_active = bool(getattr(agent, "_provider_fallback_active", False))
+    from agent.context_compressor_state import defer_compressor_state_writes
     try:
-        agent._restore_wait_logged = False
-        _apply_primary_runtime_fields(agent, rt)
-        from agent.turn_recovery import reset_codex_reasoning_replay
-        reset_codex_reasoning_replay(agent)
-        _restore_runtime_capabilities(agent, rt)
-        agent._use_prompt_caching = rt["use_prompt_caching"]
-        # Default to native layout for snapshots predating the native-vs-proxy split.
-        agent._use_native_cache_layout = rt.get(
-            "use_native_cache_layout",
-            agent.api_mode == "anthropic_messages" and agent.provider == "anthropic",
-        )
-        # An operator cache disable (_cache_disabled) must survive snapshot restoration.
-        if getattr(agent, "_cache_disabled", False):
-            agent._use_prompt_caching = False
-            agent._use_native_cache_layout = False
-        _rebuild_primary_client(agent, rt, reason="restore_primary")
-        agent.context_compressor.update_model(
-            model=rt["compressor_model"], context_length=rt["compressor_context_length"],
-            base_url=rt["compressor_base_url"], api_key=rt["compressor_api_key"],
-            provider=rt["compressor_provider"], api_mode=rt.get("compressor_api_mode", ""),
-        )
-        # Same rule as fallback activation: refresh an existing verdict only; never-probed sessions stay lazy.
-        if getattr(agent, "_compression_feasibility_checked", False) is True:
-            from agent.conversation_compression import revalidate_compression_feasibility
-            revalidate_compression_feasibility(agent)
-        _rebind_primary_credential_pool(
-            agent, primary_provider, primary_model, _matches_primary, _load_primary_pool, prefetched_pool, prefetched
-        )
-        # Older snapshots have no reasoning_config; keep the current value.
-        saved_reasoning = rt.get("reasoning_config")
-        if saved_reasoning is not None:
-            agent.reasoning_config = dict(saved_reasoning)
-        agent._fallback_activated = False
-        agent._fallback_index = 0
-        agent._rate_limit_backoff_count = 0
-        # Reset the stale-call circuit breaker: its streak measured the fallback provider.
-        from agent.chat_completion_helpers import _reset_stale_streak, rewrite_prompt_model_identity
-        _reset_stale_streak(agent)
-        # Undo the fallback's identity rewrite so the prompt is byte-identical to the stored copy
-        # again (prefix cache match).
-        rewrite_prompt_model_identity(agent, rt["model"], rt["provider"])
-        logger.info("Primary runtime restored for new turn: %s (%s)", agent.model, agent.provider)
-        agent._provider_fallback_active = False
-        agent._provider_fallback_route = None
-        if provider_fallback_active:
-            # Notification surfaces are best-effort and must never undo a successful restore.
-            with contextlib.suppress(Exception):
-                agent._emit_diagnostic_status(
-                    f"✅ Primary model restored: {agent.model} via {agent.provider}; "
-                    f"fallback {previous_model} via {previous_provider} is no longer active."
-                )
-        return True
+        with defer_compressor_state_writes(compressor):
+            agent._restore_wait_logged = False
+            _apply_primary_runtime_fields(agent, rt)
+            from agent.turn_recovery import reset_codex_reasoning_replay
+            reset_codex_reasoning_replay(agent)
+            _restore_runtime_capabilities(agent, rt)
+            agent._use_prompt_caching = rt["use_prompt_caching"]
+            # Default to native layout for snapshots predating the native-vs-proxy split.
+            agent._use_native_cache_layout = rt.get(
+                "use_native_cache_layout",
+                agent.api_mode == "anthropic_messages" and agent.provider == "anthropic",
+            )
+            # An operator cache disable (_cache_disabled) must survive snapshot restoration.
+            if getattr(agent, "_cache_disabled", False):
+                agent._use_prompt_caching = False
+                agent._use_native_cache_layout = False
+            _rebuild_primary_client(agent, rt, reason="restore_primary")
+            agent.context_compressor.update_model(
+                model=rt["compressor_model"], context_length=rt["compressor_context_length"],
+                base_url=rt["compressor_base_url"], api_key=rt["compressor_api_key"],
+                provider=rt["compressor_provider"], api_mode=rt.get("compressor_api_mode", ""),
+            )
+            # Same rule as fallback activation: refresh an existing verdict only; never-probed sessions stay lazy.
+            if getattr(agent, "_compression_feasibility_checked", False) is True:
+                from agent.conversation_compression import revalidate_compression_feasibility
+                revalidate_compression_feasibility(agent)
+            _rebind_primary_credential_pool(
+                agent, primary_provider, primary_model, _matches_primary, _load_primary_pool, prefetched_pool, prefetched
+            )
+            # Older snapshots have no reasoning_config; keep the current value.
+            saved_reasoning = rt.get("reasoning_config")
+            if saved_reasoning is not None:
+                agent.reasoning_config = dict(saved_reasoning)
+            agent._fallback_activated = False
+            agent._fallback_index = 0
+            agent._rate_limit_backoff_count = 0
+            # Reset the stale-call circuit breaker: its streak measured the fallback provider.
+            from agent.chat_completion_helpers import _reset_stale_streak, rewrite_prompt_model_identity
+            _reset_stale_streak(agent)
+            # Undo the fallback's identity rewrite so the prompt is byte-identical to the stored copy
+            # again (prefix cache match).
+            rewrite_prompt_model_identity(agent, rt["model"], rt["provider"])
+            logger.info("Primary runtime restored for new turn: %s (%s)", agent.model, agent.provider)
+            agent._provider_fallback_active = False
+            agent._provider_fallback_route = None
+            if provider_fallback_active:
+                # Notification surfaces are best-effort and must never undo a successful restore.
+                with contextlib.suppress(Exception):
+                    agent._emit_diagnostic_status(
+                        f"✅ Primary model restored: {agent.model} via {agent.provider}; "
+                        f"fallback {previous_model} via {previous_provider} is no longer active."
+                    )
+            return True
     except Exception as e:
         abandoned = [getattr(agent, name, None) for name in ("client", "_anthropic_client")]
         _restore_switch_snapshot(agent, snapshot)

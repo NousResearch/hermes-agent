@@ -17,7 +17,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from gateway.config import GatewayConfig, Platform, PlatformConfig
+from gateway.config import ChannelOverride, GatewayConfig, Platform, PlatformConfig
 from gateway.session import SessionEntry, SessionSource, build_session_key
 
 
@@ -163,6 +163,37 @@ class TestIsIntentionalModelSwitch:
         sk = build_session_key(_make_source())
         agent = SimpleNamespace(model="fallback/model")
         assert runner._is_intentional_model_switch(sk, agent, "primary/model") is False
+
+
+class TestFallbackEvictionHonorsChannelOverrides:
+    """A ``channel_overrides`` model is the configured model for that chat, so an agent still running it
+    after a successful turn is not a fallback; comparing it with the global default evicted (and rebuilt)
+    the cached agent after every turn."""
+
+    @staticmethod
+    def _evicted_after_turn(monkeypatch, source, agent_model):
+        from gateway.turn_context import TurnContext
+
+        monkeypatch.setattr("gateway.run._resolve_gateway_model", lambda *a, **k: "default/model")
+        runner = _make_runner()
+        runner.config.platforms[Platform.TELEGRAM].channel_overrides = {"c1": ChannelOverride(model="chan/model")}
+        runner._evict_cached_agent = MagicMock()
+        ctx = TurnContext(source=source, session_key=build_session_key(source))
+        ctx.agent_holder[0] = SimpleNamespace(model=agent_model, provider="openrouter")
+        ctx.result_holder[0] = {"final_response": "ok"}
+        runner._run_agent_evict_on_fallback(ctx)
+        return runner._evict_cached_agent.called
+
+    @pytest.mark.parametrize("thread_of_the_channel", [False, True])
+    def test_channel_override_model_keeps_the_cached_agent(self, monkeypatch, thread_of_the_channel):
+        source = _make_source()
+        if thread_of_the_channel:
+            source = SessionSource(platform=Platform.TELEGRAM, user_id="u1", chat_id="t9", parent_chat_id="c1",
+                                   user_name="tester", chat_type="thread")
+        assert self._evicted_after_turn(monkeypatch, source, "chan/model") is False
+
+    def test_fallback_off_the_channel_model_still_evicts(self, monkeypatch):
+        assert self._evicted_after_turn(monkeypatch, _make_source(), "fallback/model") is True
 
 
 class TestOneTurnModelOverrideRestore:

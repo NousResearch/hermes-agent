@@ -182,7 +182,8 @@ class TestChromeFallback:
         with patch("tools.browser_tool_session._run_browser_command", return_value={
                  "success": True, "data": {"url": "https://example.com/"}
              }), \
-             patch("tools.browser_tool._socket_safe_tmpdir", return_value=str(tmp_path)), \
+             patch("tools.browser_tool_session._session_socket_dir",
+                   side_effect=lambda name: os.path.join(str(tmp_path), f"agent-browser-{name}")), \
              patch("tools.browser_tool_install._find_agent_browser", return_value="/usr/bin/agent-browser"), \
              patch("tools.browser_tool_install._chromium_installed", return_value=True), \
              patch("tools.browser_tool_session._needs_chromium_sandbox_bypass", return_value=True), \
@@ -700,7 +701,7 @@ class TestLightpandaSessionLifecycle:
 
     def test_orphan_reaper_sweeps_lightpanda_records(self, tmp_path):
         with patch("tools.browser_lightpanda.reap_orphaned_lightpanda") as reap, \
-             patch("tools.browser_tool._socket_safe_tmpdir", return_value=str(tmp_path)):
+             patch("tools.browser_tool_session._session_socket_roots", return_value=(str(tmp_path),)):
             bt_lifecycle._reap_orphaned_browser_sessions()
         reap.assert_called_once()
 

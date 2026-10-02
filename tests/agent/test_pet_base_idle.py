@@ -88,4 +88,3 @@ def test_paid_row_failure_does_not_install_idle_only_pet(hatch_fixture, monkeypa
     assert store.load_pet("failed-rows") is None
     assert calls
     assert "pet_row_idle" not in [prefix for prefix, _ in calls]
-

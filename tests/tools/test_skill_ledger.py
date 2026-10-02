@@ -907,17 +907,35 @@ def test_file_tool_write_outside_skills_tree_is_not_ledgered(ledger_env, tmp_pat
     assert skill_ledger.list_entries() == []
 
 
-def test_file_tool_write_in_sibling_profile_is_attributed(ledger_env, monkeypatch):
+def _pin_named_profile_layout(tmp_path, monkeypatch):
+    """The REAL named-profile layout: HERMES_HOME=<root>/profiles/active, with the sibling
+    tree at <root>/profiles/sibling — OUTSIDE the active home, exactly where the #129222
+    review found rollback refused."""
+    from tools import skill_ledger
+
+    root = tmp_path / "root"
+    active_home = root / "profiles" / "active"
+    active_skills = active_home / "skills"
+    active_skills.mkdir(parents=True)
+    monkeypatch.setattr(skill_ledger, "get_hermes_home", lambda: active_home)
+    monkeypatch.setenv("HERMES_HOME", str(active_home))
+    return root, active_home
+
+
+def test_file_tool_write_in_sibling_profile_is_attributed(ledger_env, monkeypatch, tmp_path):
     """A direct write into ANOTHER profile's skills tree (the documented fallback the
     cross-profile not-found error teaches) still lands in the acting profile's ledger,
-    with the owning tree named in evidence, and rolls back."""
+    with the owning tree named in evidence, and rolls back — with the sibling tree placed
+    OUTSIDE the active home, the layout that made this unrecoverable pre-fix (#129222)."""
     from tools import skill_ledger
     from tools.file_tools import patch_tool
 
-    monkeypatch.setenv("HERMES_HOME", str(ledger_env["home"]))
-    sibling_skills = ledger_env["home"] / "profiles" / "sibling" / "skills"
+    _root, active_home = _pin_named_profile_layout(tmp_path, monkeypatch)
+    sibling_skills = tmp_path / "root" / "profiles" / "sibling" / "skills"
     target = _seed_skill_file(sibling_skills, name="shared-skill")
     original = target.read_text(encoding="utf-8")
+    # The sibling tree is NOT under the active home — the pre-fix vacuous layout had it inside.
+    assert not str(target).startswith(str(active_home))
 
     patched = json.loads(patch_tool(
         mode="replace", path=str(target),
@@ -931,6 +949,46 @@ def test_file_tool_write_in_sibling_profile_is_attributed(ledger_env, monkeypatc
     ok, msg = skill_ledger.rollback_entry(rows[0]["id"])
     assert ok is True, msg
     assert target.read_text(encoding="utf-8") == original
+
+
+def test_sibling_profile_delete_rolls_back(ledger_env, monkeypatch, tmp_path):
+    """The sharp end of the #129222 finding: a V4A delete of a sibling-tree file leaves a
+    before=1/after=0 entry; rollback must restore the file byte-for-byte, not refuse the
+    entry as out-of-home."""
+    from tools import skill_ledger
+    from tools.file_tools import patch_tool
+
+    _pin_named_profile_layout(tmp_path, monkeypatch)
+    sibling_skills = tmp_path / "root" / "profiles" / "sibling" / "skills"
+    target = _seed_skill_file(sibling_skills, name="doomed-skill")
+    original = target.read_text(encoding="utf-8")
+
+    v4a = f"*** Begin Patch\n*** Delete File: {target}\n*** End Patch\n"
+    deleted = json.loads(patch_tool(mode="patch", patch=v4a, cross_profile=True))
+    assert not deleted.get("error"), deleted
+    assert not target.exists(), "the delete must really happen for this test to mean anything"
+
+    rows = [r for r in skill_ledger.list_entries() if r.get("skill") == "doomed-skill"]
+    assert len(rows) == 1
+    ok, msg = skill_ledger.rollback_entry(rows[0]["id"])
+    assert ok is True, msg
+    assert target.read_text(encoding="utf-8") == original
+
+
+def test_rollback_still_refuses_paths_outside_every_skills_root(ledger_env, monkeypatch, tmp_path):
+    """The widened guard covers the classifiable universe, not the filesystem: a hand-edited
+    entry pointing at an arbitrary path stays refused (no write-anywhere primitive)."""
+    from tools import skill_ledger
+
+    _pin_named_profile_layout(tmp_path, monkeypatch)
+    outsider = tmp_path / "root" / "elsewhere" / "not-a-skill.md"
+    outsider.parent.mkdir(parents=True)
+    outsider.write_text("x", encoding="utf-8")
+    entry_id = skill_ledger.append_entry(
+        "edit", "hand-edited", before=[{"path": str(outsider), "sha256": "0" * 64}], after=[])
+    assert entry_id is not None
+    ok, msg = skill_ledger.rollback_entry(entry_id)
+    assert ok is False and "outside" in msg
 
 
 def test_begin_file_tool_write_skips_entry_when_before_capture_fails(ledger_env, monkeypatch):

@@ -716,14 +716,21 @@ def get_entry(entry_id: str) -> Optional[Dict[str, Any]]:
 
 
 def _validate_entry_paths(entry: Dict[str, Any]) -> Optional[str]:
-    """Every entry path must be under HERMES_HOME — a hand-edited ledger must not
-    become a write-anywhere primitive."""
+    """Every entry path must be under HERMES_HOME or a classifiable skills root — the
+    classifier ledgers exactly that universe (active profile, default root, sibling
+    profiles), so rollback must cover it, while a hand-edited ledger still cannot become
+    a write-anywhere primitive (#129222 review: under a named profile HERMES_HOME is
+    ``<root>/profiles/<active>`` and sibling trees sit OUTSIDE it, which made
+    sibling-tree entries — deletes included — unrecoverable)."""
     home = get_hermes_home()
+    roots = [home]
+    with suppress(Exception):
+        roots.extend(_skills_roots_for_classification())
     for section in ("before", "after"):
         for item in entry.get(section) or []:
             p = Path(str(item.get("path", "")))
-            if not _is_within(home, p):
-                return f"entry references a path outside {home}: {p}"
+            if not any(_is_within(root, p) for root in roots):
+                return f"entry references a path outside {home} and every skills root: {p}"
     return None
 
 

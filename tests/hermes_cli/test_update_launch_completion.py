@@ -17,8 +17,12 @@ from pm.environments import runtime_facts_path
 def _no_tool_downloads(monkeypatch):
     """The launch sync publishes lockfile tools first; these tests cover the sync decision."""
     import pm.client
+    from hermes_cli import _launchers
 
     monkeypatch.setattr(pm.client, "ensure_tools_for_sync", lambda: None)
+    # Scratch launcher publication must not register fixture homes in the
+    # developer's persistent Windows PATH. Launcher registration has its own tests.
+    monkeypatch.setattr(_launchers, "_register_windows_user_path", lambda entry: str(entry))
 
 
 @pytest.fixture

@@ -9,9 +9,8 @@ import { dismissNotification } from '@/store/notifications'
  * `message.complete` / `error` event when a turn fails with
  * `FailoverReason.billing` (see `agent/billing_links.py`). One global slot: a
  * credit wall on the active session's provider is the whole app's problem, and
- * the newest block wins. Cleared when a new turn starts, a later turn on the
- * same session completes successfully without a billing payload, or the user
- * dismisses.
+ * the newest block wins. Cleared with its toast when a new turn starts or
+ * the user dismisses the banner.
  */
 export interface ActiveBillingBlock {
   block: BillingBlock

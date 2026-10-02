@@ -169,3 +169,59 @@ def test_update_asks_once_and_names_each_profile(tmp_path, monkeypatch):
         else:
             assert [line.split("]")[0] for line in said[1:]] == [
                 "  [profile 'default'", "  [profile 'work-a'", "  [profile 'work-b'"]
+
+
+def _profile_homes(tmp_path, monkeypatch, *names):
+    root = tmp_path / ".hermes"
+    homes = [root, *(root / "profiles" / n for n in names)]
+    for profile_home in homes:
+        profile_home.mkdir(parents=True, exist_ok=True)
+        (profile_home / "config.yaml").write_text("memory:\n  provider: twin\n", encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(root))
+    monkeypatch.setattr("hermes_constants.get_default_hermes_root", lambda: root)
+    monkeypatch.setattr(mig, "provider_present", lambda name, home: (home / "plugins" / name).is_dir())
+    monkeypatch.setattr(mig, "catalog_source", lambda name: name)
+    return homes
+
+
+def test_unattended_update_refusal_in_one_profile_does_not_skip_the_others(tmp_path, monkeypatch):
+    """Unattended consent is each home's own allow_lazy_installs: the default home refusing says
+    nothing about a profile that allows it, which must still migrate (not be reported as failed)."""
+    import io
+
+    from hermes_cli import plugins_cmd
+    from hermes_constants import get_hermes_home
+    from pm import install as pm_install
+
+    default, work = _profile_homes(tmp_path, monkeypatch, "work")
+    monkeypatch.setattr("pm.plugins_state.dependency_homes", lambda: [default, work])
+    monkeypatch.setattr("sys.stdin", io.StringIO())  # Desktop / scripted `hermes update`: no terminal
+    monkeypatch.setattr(pm_install, "lazy_installs_allowed", lambda: get_hermes_home() == work)
+
+    def install(*_a, catalog_name, assume_deps_consent, **_kw):
+        if not assume_deps_consent:
+            return {"ok": False, "error": "dependency install skipped (non-interactive)"}
+        (get_hermes_home() / "plugins" / catalog_name).mkdir(parents=True)
+        return {"ok": True}
+
+    monkeypatch.setattr(plugins_cmd, "dashboard_install_plugin", install)
+    said: list[str] = []
+    assert mig.migrate_all_homes(say=said.append) == ["twin"]
+    assert (work / "plugins" / "twin").is_dir() and not (default / "plugins").exists()
+    assert not any("either" in line for line in said)
+
+
+def test_startup_hint_installs_into_the_profile_that_printed_it(tmp_path, monkeypatch):
+    """A bare `hermes plugins install` from a shell targets the sticky profile, so the hint an agent
+    started for a named profile (Desktop, gateway, `hermes -p`) prints must carry `-p`."""
+    from pm import install as pm_install
+
+    default, work = _profile_homes(tmp_path, monkeypatch, "work")
+    monkeypatch.setattr(pm_install, "lazy_installs_allowed", lambda: False)
+    for profile_home, command in ((work, "hermes -p work plugins install twin"),
+                                  (default, "hermes plugins install twin")):
+        monkeypatch.setattr(mig, "_attempted", set())
+        monkeypatch.setenv("HERMES_HOME", str(profile_home))
+        said: list[str] = []
+        assert mig.recover_at_startup("twin", say=said.append) is False
+        assert f"`{command}`" in said[0]

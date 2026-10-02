@@ -74,10 +74,13 @@ def _pending_provider(home: Path, *, say: Callable[[str], None]) -> Optional[str
 
 
 def _install_command(name: str, home: Path) -> str:
-    """The exact command that installs *name* into *home* (``-p`` when it is not the active home)."""
-    from hermes_constants import get_hermes_home, hermes_home_key, profile_name_for_home
+    """The exact command that installs *name* into *home*. ``-p`` is dropped only for the default
+    home while no sticky profile is set: a bare command run from a shell targets the sticky
+    profile, never the home of the agent (Desktop, gateway, ``hermes -p``) that printed it."""
+    from hermes_cli.profiles import get_active_profile
+    from hermes_constants import profile_name_for_home
     profile = profile_name_for_home(home)
-    if profile is None or hermes_home_key(home) == hermes_home_key(get_hermes_home()):
+    if profile is None or (profile == "default" and get_active_profile() == "default"):
         return f"hermes plugins install {name}"
     return f"hermes -p {profile} plugins install {name}"
 
@@ -112,16 +115,28 @@ def migrate_home(home: Path, *, install: Callable[[str], dict], say: Callable[[s
     return name if _install_pending(home, name, install=install, say=say) else None
 
 
+def _interactive() -> bool:
+    return sys.stdin is not None and sys.stdout is not None and sys.stdin.isatty() and sys.stdout.isatty()
+
+
 def _unattended_consent() -> bool:
     """Without a terminal (Desktop, gateway, ``hermes update`` from a script) nobody can answer the
     dependency prompt, so every provider that declares Python deps would fail to migrate. The
-    configured ``memory.provider`` plus ``security.allow_lazy_installs`` (read for the home being
-    migrated) is the same consent that let the bundled provider install its deps on demand; with a
-    terminal the user is still asked."""
+    configured ``memory.provider`` plus ``security.allow_lazy_installs`` (read for the active home,
+    i.e. the one being migrated) is the same consent that let the bundled provider install its deps
+    on demand; with a terminal the user is still asked."""
     from pm.install import lazy_installs_allowed
 
-    interactive = sys.stdin is not None and sys.stdout is not None and sys.stdin.isatty() and sys.stdout.isatty()
-    return not interactive and lazy_installs_allowed()
+    return not _interactive() and lazy_installs_allowed()
+
+
+def _home_consent(home: Path) -> bool:
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    token = set_hermes_home_override(home)
+    try:
+        return _unattended_consent()
+    finally:
+        reset_hermes_home_override(token)
 
 
 def _install_into(home: Path) -> Callable[[str], dict]:
@@ -148,9 +163,11 @@ def migrate_all_homes(*, say: Callable[[str], None] = print) -> list[str]:
 
     Each line names the profile it is about. Homes missing the same provider share one environment,
     so they share one set of dependency answers (#125794): the first install asks, the rest reuse
-    its answers, and when it fails the remaining homes are named in one line instead of failing (or
-    re-prompting) one by one. Ctrl-C ends the migration with a message, not a traceback into the
-    updater.
+    its answers. Homes are grouped by provider AND by their unattended consent (each home's own
+    ``security.allow_lazy_installs``), so a refusal only speaks for homes that would be refused the
+    same way: when an install in a group fails, the rest of that group are named in one line
+    instead of failing (or re-prompting) one by one, and the other groups still migrate. Ctrl-C
+    ends the migration with a message, not a traceback into the updater.
     """
     from hermes_cli.plugins_cmd_install import shared_dependency_answers
     from pm.plugins_state import dependency_homes
@@ -158,20 +175,21 @@ def migrate_all_homes(*, say: Callable[[str], None] = print) -> list[str]:
     def labelled(home: Path) -> Callable[[str], None]:
         return lambda message: say(f"  [{_home_label(home)}] {message.lstrip()}")
 
-    pending: dict[str, list[Path]] = {}
+    pending: dict[tuple[str, bool], list[Path]] = {}
     for home in dependency_homes():
         try:
             name = _pending_provider(home, say=labelled(home))
+            consent = bool(name) and _home_consent(home)
         except Exception as exc:
             logger.debug("memory provider migration skipped for %s: %s", home, exc)
             continue
         if name:
-            pending.setdefault(name, []).append(home)
+            pending.setdefault((name, consent), []).append(home)
 
     installed: list[str] = []
     try:
-        for name, homes in pending.items():
-            if len(homes) > 1:
+        for (name, _consent), homes in pending.items():
+            if len(homes) > 1 and _interactive():
                 say(f"  Memory provider '{name}' is configured in {len(homes)} profiles "
                     f"({', '.join(_home_label(h) for h in homes)}); your answers to its dependency "
                     f"questions apply to all of them.")
@@ -215,6 +233,6 @@ def recover_at_startup(name: str, *, say: Optional[Callable[[str], None]] = None
     if not lazy_installs_allowed():
         report(f"⚠ Memory provider '{name}' is not installed, so external memory is off for this session. "
                f"security.allow_lazy_installs is off, so Hermes did not fetch it: "
-               f"run `hermes plugins install {name}`.")
+               f"run `{_install_command(name, home)}`.")
         return False
     return migrate_home(home, install=_install_into(home), say=report) == name

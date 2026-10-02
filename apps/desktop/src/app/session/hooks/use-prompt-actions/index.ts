@@ -632,20 +632,10 @@ export function usePromptActions({
       const attachments = options?.attachments ?? $composerAttachments.get()
 
       if (isSlashCommandText(visibleText)) {
-        if (attachments.length) {
-          notify({
-            kind: 'warning',
-            title: copy.slashCommandIgnoredTitle,
-            message: copy.slashCommandIgnoredBody
-          })
-
-          return false
-        }
-
         triggerHaptic('selection')
         // Forward the explicit target (background queue drain, tile) — dropping
         // it ran the command against whatever chat happened to be in front.
-        await executeSlashCommand(visibleText, options?.sessionId ? { sessionId: options.sessionId } : undefined)
+        await executeSlashCommand(visibleText, { ...(options?.sessionId ? { sessionId: options.sessionId } : {}), ...(attachments.length ? { attachments } : {}) })
 
         return true
       }

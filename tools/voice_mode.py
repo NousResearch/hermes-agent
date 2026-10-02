@@ -72,6 +72,28 @@ def _sounddevice_output_allowed() -> bool:
     """
     return platform.system() != "Darwin"
 
+def _refresh_portaudio_snapshot(sd=None) -> bool:
+    """Rebuild PortAudio's device snapshot (Pa_Terminate + Pa_Initialize).
+
+    ``sounddevice`` caches the device list from the last ``Pa_Initialize``; a mic
+    hot-plugged after that keeps its old (now dead) device ID, so reopening against
+    the stale snapshot fails forever (#131177). Best-effort: any failure leaves the
+    previous snapshot in place and returns False.
+    """
+    try:
+        sd = sd or _import_audio()[0]
+        terminate, initialize = sd._terminate, sd._initialize
+    except (ImportError, OSError, AttributeError):
+        return False
+    with suppress(Exception):
+        terminate()
+    try:
+        initialize()
+    except Exception as e:
+        logger.debug("PortAudio re-initialize failed: %s", e)
+        return False
+    return True
+
 
 def _play_int16_via_tempfile(audio, sample_rate: int) -> None:
     """Play int16 mono PCM via a temp WAV + play_audio_file (macOS: afplay, no TCC prompt)."""
@@ -780,6 +802,10 @@ class AudioRecorder(_RecorderBase):
                         f"Failed to open audio input stream: {e}. "
                         "Check that a microphone is connected and accessible.") from e
                 logger.info("Audio input stream start timed out; retrying once")
+                # Rebuild the PortAudio device snapshot before the retry: the cached
+                # device list predates the failure, so a hot-plugged mic still has a
+                # dead device ID here (#131177).
+                _refresh_portaudio_snapshot(sd)
         self._stream = stream
 
     def start(self, on_silence_stop=None) -> None:

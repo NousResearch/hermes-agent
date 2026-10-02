@@ -128,3 +128,85 @@ def test_halt_releases_reader_wedged_in_recovered_capture(monkeypatch):
         assert opened[1] in closed, "halt must abort the RECOVERED capture, not the dead one"
     finally:
         detector.stop()
+
+
+def _fake_sounddevice(events, opens, fail_opens):
+    """Minimal sounddevice stub: device query + InputStream + Pa re-init hooks."""
+    from types import SimpleNamespace
+
+    class FakeStream:
+        def start(self):
+            events.append("start")
+
+        def abort(self):
+            events.append("abort")
+
+        def close(self):
+            events.append("close")
+
+    class FakeSD:
+        def query_devices(self, selector, kind=None):
+            return {"name": "hot-plugged mic", "max_input_channels": 1,
+                    "default_samplerate": 16000.0, "hostapi": 0}
+
+        def query_hostapis(self, index):
+            return {"name": "MME"}
+
+        def InputStream(self, **kwargs):
+            opens.append(kwargs.get("device"))
+            if len(opens) <= fail_opens:
+                raise OSError("PaErrorCode -9986: invalid device")
+            return FakeStream()
+
+        def _terminate(self):
+            events.append("terminate")
+
+        def _initialize(self):
+            events.append("initialize")
+
+    return FakeSD(), SimpleNamespace()
+
+
+def _wake_detector():
+    engine = SimpleNamespace(frame_length=1280, reset=lambda: None,
+                             close=lambda: None, process=lambda frame: False)
+    return ww.WakeWordDetector(engine, lambda: None), engine
+
+
+def test_recovery_refreshes_portaudio_snapshot_before_retry(monkeypatch):
+    """#131177: recovery retried _open_capture against a stale Pa_Initialize snapshot,
+    so a hot-plugged mic kept failing on its dead device ID. Recovery must
+    terminate/re-initialize PortAudio before reopening."""
+    detector, engine = _wake_detector()
+    events, opens = [], []
+    sd, np = _fake_sounddevice(events, opens, fail_opens=1)
+    monkeypatch.setattr(ww, "_import_audio", lambda: (sd, np))
+
+    with pytest.raises(OSError, match="invalid device"):
+        detector._open_capture(engine.frame_length)
+
+    cap = detector._recover_capture(engine.frame_length, iter([0]))
+    try:
+        assert cap is not None, "recovery must reopen capture after snapshot refresh"
+        assert events[:2] == ["terminate", "initialize"], f"re-init must precede reopen: {events}"
+        assert events.index("start") > events.index("initialize")
+        assert len(opens) == 2
+    finally:
+        if cap is not None:
+            cap.close()
+
+
+def test_permanently_dead_device_stops_after_exhaustion(monkeypatch):
+    """#131177: a permanently dead device must refresh-then-retry a finite number of
+    times and then stop — never loop forever."""
+    detector, engine = _wake_detector()
+    events, opens = [], []
+    sd, np = _fake_sounddevice(events, opens, fail_opens=999)
+    monkeypatch.setattr(ww, "_import_audio", lambda: (sd, np))
+
+    with pytest.raises(OSError, match="invalid device"):
+        detector._open_capture(engine.frame_length)
+
+    assert detector._recover_capture(engine.frame_length, iter([0, 0, 0])) is None
+    assert len(opens) == 4, "one initial open + three bounded retries, then stop"
+    assert events.count("terminate") == 3 and events.count("initialize") == 3

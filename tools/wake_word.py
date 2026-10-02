@@ -255,6 +255,29 @@ def _describe_input_device(selector: int | str | None, sd=None) -> Dict[str, Any
     return details
 
 
+def _refresh_portaudio_snapshot(sd=None) -> bool:
+    """Rebuild PortAudio's device snapshot (Pa_Terminate + Pa_Initialize).
+
+    ``sounddevice`` caches the device list from the last ``Pa_Initialize``; a mic
+    hot-plugged after that keeps its old (now dead) device ID, so reopening against
+    the stale snapshot fails forever (#131177). Best-effort: any failure leaves the
+    previous snapshot in place and returns False.
+    """
+    try:
+        sd = sd or _import_audio()[0]
+        terminate, initialize = sd._terminate, sd._initialize
+    except (ImportError, OSError, AttributeError):
+        return False
+    with suppress(Exception):
+        terminate()
+    try:
+        initialize()
+    except Exception as e:
+        logger.debug("wake word: PortAudio re-initialize failed: %s", e)
+        return False
+    return True
+
+
 def _resample_audio_frame(np, frame, output_length: int):
     """Convert one native-rate capture block to an exact engine frame."""
     source = np.asarray(frame, dtype=np.float64).reshape(-1)
@@ -684,6 +707,10 @@ class WakeWordDetector:
             logger.warning("wake word: reopening microphone in %.1fs", delay)
             if self._stop.wait(delay):
                 return None
+            # Rebuild the PortAudio device snapshot first: the cached device list
+            # predates the failure, so a hot-plugged mic still has a dead device ID
+            # here (#131177). Retries stay bounded — exhaustion stops below.
+            _refresh_portaudio_snapshot()
             try:
                 cap = self._open_capture(frame_length)
             except Exception as e:

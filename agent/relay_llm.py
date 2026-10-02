@@ -507,7 +507,8 @@ class ManagedLlmStream(Iterator[Any]):
             return self._prefetched_chunks.pop()
         if self._loop is None:
             try:
-                chunk = next(self._stream, self)  # self: exhausted sentinel
+                with self._under_permit():
+                    chunk = next(self._stream, self)  # self: exhausted sentinel
             except BaseException:
                 # A dead provider stream gives its admission back now, not whenever GC collects it.
                 self._close(logical_outcome="failed")
@@ -602,7 +603,8 @@ class ManagedLlmStream(Iterator[Any]):
             loop, self._loop = self._loop, None
             close_loop = loop is not None
             if loop is None:
-                self._close_provider_resources()
+                with self._under_permit():
+                    self._close_provider_resources()
             else:
                 try:
                     close_loop = _aclose_on_loop(loop, self._stream)
@@ -614,6 +616,12 @@ class ManagedLlmStream(Iterator[Any]):
         finally:
             self._release_provider_permit()
             self._release_runtime_lease()
+
+    def _under_permit(self) -> contextlib.AbstractContextManager[None]:
+        """Re-enter the permit around unmanaged provider work: a lazy stream opens (and may
+        tear down) its request on pull and close, after construction left ``active()``."""
+        permit = self._provider_permit
+        return permit.active() if permit is not None else contextlib.nullcontext()
 
     def _release_provider_permit(self) -> None:
         permit, self._provider_permit = self._provider_permit, None

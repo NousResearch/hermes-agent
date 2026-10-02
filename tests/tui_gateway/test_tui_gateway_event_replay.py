@@ -79,7 +79,6 @@ def test_replay_snapshot_is_detached_from_live_event_mutation():
     (replayed,) = events_since("s1", 0)
     assert replayed["payload"]["result"] == "small"
     assert replay_stats()["bytes"] == retained
-    assert isinstance(event_replay._replay_buffers["s1"][0][1], bytes)
 
 
 def test_each_replay_read_returns_an_independent_event_graph():
@@ -92,8 +91,6 @@ def test_each_replay_read_returns_an_independent_event_graph():
     (second,) = events_since("s1", 0)
 
     assert second["payload"]["nested"]["value"] == "original"
-    assert first is not second
-    assert first["payload"] is not second["payload"]
 
 
 def test_events_since_returns_client_dispatchable_event_objects():

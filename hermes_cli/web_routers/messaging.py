@@ -348,11 +348,10 @@ def _normalize_whatsapp_allowed_users(value: Any) -> str:
 
 
 def _whatsapp_phone_from_identifier(value: Any) -> str | None:
+    """Return a phone number only for a phone-addressable WhatsApp JID."""
     raw = str(value or "").strip()
-    if not raw:
-        return None
-    digits = re.sub(r"\D+", "", raw.split("@", 1)[0].split(":", 1)[0])
-    return digits or None
+    match = re.fullmatch(r"([1-9]\d{6,14})(?::\d+)?@s\.whatsapp\.net", raw)
+    return match.group(1) if match else None
 
 
 def _first_str(candidate: Any, keys: tuple[str, ...]) -> str | None:

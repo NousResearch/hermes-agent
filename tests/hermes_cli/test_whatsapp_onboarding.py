@@ -147,6 +147,35 @@ def test_whatsapp_identity_fails_closed_without_live_self_chat(monkeypatch, tmp_
     }
 
 
+def test_whatsapp_identity_fails_closed_for_digit_bearing_lid_self_chat(monkeypatch, tmp_path):
+    session_dir = tmp_path / "session"
+    session_dir.mkdir()
+    (session_dir / "creds.json").write_text(
+        '{"me":{"id":"12345:1@lid","name":"Hermes Self Chat"}}',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(_rt_messaging, "_whatsapp_session_path", lambda: session_dir)
+    monkeypatch.setattr(_rt_messaging, "_profile_scope", lambda profile: contextlib.nullcontext(None))
+    monkeypatch.setattr(
+        _rt_messaging,
+        "_platform_payloads",
+        lambda scoped_dir, entries: [{
+            "gateway_running": True,
+            "state": "connected",
+            "whatsapp_setup": {"mode": "self-chat"},
+        }],
+    )
+
+    result = asyncio.run(_rt_messaging.get_whatsapp_identity())
+
+    assert result == {
+        "connected": False,
+        "account_id": None,
+        "account_name": None,
+        "account_phone": None,
+    }
+
+
 def test_whatsapp_identity_returns_live_self_chat_account(monkeypatch, tmp_path):
     session_dir = tmp_path / "session"
     session_dir.mkdir()

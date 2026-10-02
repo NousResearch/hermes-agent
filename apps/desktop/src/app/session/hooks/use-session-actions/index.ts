@@ -3317,6 +3317,12 @@ export function useSessionActions({
           runtimeIdByStoredSessionIdRef.current.delete(storedSessionId)
           sessionStateByRuntimeIdRef.current.delete(tiledRuntimeId)
           dropSessionState(tiledRuntimeId)
+          // Subagent/todo stores key on the gateway event's session_id, i.e.
+          // the runtime id. When the deleted row is selected, closingRuntimeId
+          // is the foreground runtime, which can differ from the stored→runtime
+          // mapping (cached/tiled runtime), so clear the mapped id as well.
+          clearSessionSubagents(tiledRuntimeId)
+          clearSessionTodos(tiledRuntimeId)
         }
       } catch (err) {
         if (listed?.session) {

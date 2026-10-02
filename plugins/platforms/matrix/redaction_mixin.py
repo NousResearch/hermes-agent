@@ -1,6 +1,11 @@
 """Effective event invalidation for Matrix redactions."""
 
+from __future__ import annotations
+
 import asyncio
+from dataclasses import dataclass
+from urllib.parse import quote
+from plugins.platforms.matrix.client_events import Method
 import logging
 from typing import TYPE_CHECKING, Any
 
@@ -18,13 +23,34 @@ logger = logging.getLogger(__name__)
 
 def _redacted_event_id(event: Any) -> str:
     """The event ID that an ``m.room.redaction`` event redacts, or an empty string."""
-    content = getattr(event, "content", None)
+    content = event.get("content") if isinstance(event, dict) else getattr(event, "content", None)
+    if isinstance(event, dict) and content is not None and not isinstance(content, dict):
+        return ""
+    target = event.get("redacts") if isinstance(event, dict) else getattr(event, "redacts", None)
     # Room version 11 moved ``redacts`` into the content.
-    return str(
-        getattr(event, "redacts", None)
-        or (content.get("redacts") if content else None)
-        or ""
-    )
+    return str(target or (content.get("redacts") if content else None) or "")
+
+
+@dataclass(frozen=True)
+class _PendingRedaction:
+    room_id: str
+    target: str
+    actor: str
+    event_id: str
+
+    def confirmed_author(self, current: Any) -> str | None:
+        if not isinstance(current, dict) or current.get("event_id") != self.target or current.get("room_id") != self.room_id:
+            return None
+        unsigned = current.get("unsigned")
+        redaction = unsigned.get("redacted_because") if isinstance(unsigned, dict) else None
+        if (not isinstance(redaction, dict) or redaction.get("type") != "m.room.redaction"
+                or redaction.get("room_id", self.room_id) != self.room_id
+                or redaction.get("event_id") != self.event_id or redaction.get("sender") != self.actor
+                or _redacted_event_id(redaction) != self.target):
+            return None
+        author = current.get("sender")
+        return author if isinstance(author, str) and author else None
+
 
 
 class MatrixRedactionMixin:
@@ -49,15 +75,16 @@ class MatrixRedactionMixin:
                     action.pending.discard(target)
 
         if room_id and target:
-            await self._withdraw_redacted_message(
-                room_id, str(getattr(event, "sender", "") or ""), target
-            )
+            sender = str(getattr(event, "sender", "") or "")
+            if await self._withdraw_redacted_message(room_id, sender, target):
+                return
+            await self._withdraw_confirmed_redaction(_PendingRedaction(
+                room_id, target, sender, str(getattr(event, "event_id", "") or "")))
 
     async def _withdraw_redacted_message(
         self, room_id: str, sender: str, target: str
-    ) -> None:
-        """Drop ``target`` if it is still waiting for its turn and ``sender`` wrote it. A
-        redaction by anyone else, such as a moderator, leaves the message queued."""
+    ) -> bool:
+        """Drop input that its sender redacted before its turn started."""
         batches = tuple(self._pending_text_batches.items())
         withdrawn = self._parked_voices.discard(room_id, sender, target)
         withdrawn = (
@@ -108,3 +135,22 @@ class MatrixRedactionMixin:
                 target,
                 room_id,
             )
+        return withdrawn
+
+    async def _withdraw_confirmed_redaction(self, redaction: _PendingRedaction) -> None:
+        if self._client is None or not redaction.actor or not redaction.event_id:
+            return
+        cached = self._event_context_cache.history_entry(redaction.room_id, redaction.target)
+        if cached is not None and cached.sender == redaction.actor:
+            return
+        path = (f"/_matrix/client/v3/rooms/{quote(redaction.room_id, safe='')}"
+                f"/event/{quote(redaction.target, safe='')}")
+        try:
+            current = await asyncio.wait_for(self._client.api.request(Method.GET, path),
+                                             self._event_context_cache.timeout_seconds)
+        except Exception:
+            logger.debug("Matrix: could not verify redaction %s", redaction.event_id, exc_info=True)
+            return
+        author = redaction.confirmed_author(current)
+        if author is not None:
+            await self._withdraw_redacted_message(redaction.room_id, author, redaction.target)

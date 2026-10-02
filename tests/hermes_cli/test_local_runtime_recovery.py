@@ -198,6 +198,34 @@ def test_shutdown_during_backoff_cannot_restart_or_remove_another_server(tmp_pat
     assert json.loads(supervisor.state_path().read_text()) == other
 
 
+def test_forced_supervisor_restarts_even_when_runtime_is_disabled(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from hermes_cli.local_runtime import supervisor
+
+    def exercise(restart_when_disabled):
+        sup = supervisor.LlamaServerSupervisor(
+            tmp_path, tmp_path, port=59997,
+            restart_when_disabled=restart_when_disabled)
+        sup.proc = SimpleNamespace(pid=101, poll=lambda: 1)
+        spawned = []
+
+        def spawn():
+            spawned.append(True)
+            sup._stopping = True
+
+        monkeypatch.setattr(sup, "_spawn", spawn)
+        monkeypatch.setattr(sup, "_wait_health", lambda *a: None)
+        monkeypatch.setattr(sup, "_reap_orphaned_children", lambda: None)
+        monkeypatch.setattr(sup, "_runtime_enabled", lambda: False)
+        monkeypatch.setattr(sup, "_port_is_occupied", lambda: False)
+        monkeypatch.setattr(sup._stop_event, "wait", lambda *a: False)
+        sup._watch()
+        return spawned
+
+    assert exercise(False) == []
+    assert exercise(True) == [True]
+
+
 @pytest.mark.platforms("windows")
 def test_supervisor_reaps_owned_job_even_after_router_exit(tmp_path, monkeypatch):
     from types import SimpleNamespace

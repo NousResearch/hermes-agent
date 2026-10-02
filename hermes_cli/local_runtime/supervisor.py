@@ -122,7 +122,8 @@ class LlamaServerSupervisor:
                  models_max: int = 4, port: int | None = None,
                  extra_args: list[str] | None = None,
                  log_path: Path | None = None,
-                 preset_path: Path | None = None):
+                 preset_path: Path | None = None,
+                 restart_when_disabled: bool = False):
         # The exact engine binary (PM store path, backend-selected), handed
         # in by boot — the supervisor never discovers binaries itself: a
         # legacy-directory scan could resurrect bytes pm did not pin.
@@ -134,6 +135,7 @@ class LlamaServerSupervisor:
         self.extra_args = list(extra_args or [])
         self.log_path = log_path or (self.models_dir.parent / "logs" / "llama-server.log")
         self.preset_path = preset_path
+        self._restart_when_disabled = restart_when_disabled
         self.proc: subprocess.Popen | None = None
         self._job = None
         self.primary_model: str | None = None
@@ -273,7 +275,7 @@ class LlamaServerSupervisor:
                 logger.error("llama-server restart limit reached after %s consecutive failures; giving up",
                              self._restarts)
                 return
-            if not self._runtime_enabled():
+            if not self._restart_when_disabled and not self._runtime_enabled():
                 logger.info("local runtime disabled; not restarting llama-server")
                 return
             if self._port_is_occupied():
@@ -301,7 +303,8 @@ class LlamaServerSupervisor:
     def _runtime_enabled() -> bool:
         from hermes_cli.config import load_config
 
-        return bool((load_config() or {}).get("local_runtime", {}).get("enabled"))
+        section = (load_config() or {}).get("local_runtime") or {}
+        return isinstance(section, dict) and bool(section.get("enabled"))
 
     def _port_is_occupied(self) -> bool:
         with socket.socket() as probe:

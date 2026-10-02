@@ -555,10 +555,15 @@ def foreign_state_db_holders(db_path: Path) -> List[Tuple[int, str]]:
                 _iter_darwin_fd_targets,
             )
 
+            errors: List[BaseException] = []
+
             def scan_darwin() -> None:
-                for pid, _fd, target, identity in _iter_darwin_fd_targets():
-                    if pid != os.getpid() and identity in watched_ids:
-                        holders.append((pid, target))
+                try:
+                    for pid, _fd, target, identity in _iter_darwin_fd_targets():
+                        if pid != os.getpid() and identity in watched_ids:
+                            holders.append((pid, target))
+                except BaseException as exc:
+                    errors.append(exc)
 
             worker = threading.Thread(target=scan_darwin, daemon=True)
             worker.start()
@@ -571,6 +576,14 @@ def foreign_state_db_holders(db_path: Path) -> List[Tuple[int, str]]:
                     db_path,
                 )
                 holders.append((-1, "open-file scan timed out"))
+            if errors:
+                exc = errors[0]
+                logger.warning(
+                    "Could not prove state.db has no foreign holders; "
+                    "deferring structural maintenance: %s",
+                    exc,
+                )
+                return [(-1, f"open-file scan failed: {exc}")]
             return holders
         except Exception as exc:
             logger.warning(

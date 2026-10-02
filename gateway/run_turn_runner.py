@@ -8,6 +8,7 @@ keeps intercepting them at call time.
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import dataclasses
 import json
 import logging
@@ -65,7 +66,18 @@ def _clarify_expired_notice() -> str:
     return t("gateway.clarify.expired")
 
 
-class _ExecApprovalDeclined(RuntimeError):
+class _ExecApprovalUndeliverable(RuntimeError):
+    """The approval prompt could not be delivered, and no retry will be made.
+
+    Raised (not returned) so it propagates out of `_approval_notify_sync` to
+    `_await_gateway_decision`, whose notify-failure path drops the central approval
+    queue entry and unblocks the waiting tool with a definitive refusal. Swallowing
+    the failure left the entry pending until the approval timeout, so the tool sat
+    blocked for the full window (default 300s) while the user never received a prompt.
+    """
+
+
+class _ExecApprovalDeclined(_ExecApprovalUndeliverable):
     """The connector refused the approval card's destination.
 
     Raised (not returned) so it propagates out of `_approval_notify_sync` to
@@ -1492,12 +1504,16 @@ class TurnRunner:
                 if outcome == "ambiguous":
                     # Timeout ≠ failure: the card may have posted with a late ack. The prompt
                     # registration stays alive so a tap still resolves; re-sending made duplicate
-                    # cards + orphaned "/approve: nothing pending".
+                    # cards + orphaned "/approve: nothing pending". The card was never *observed*
+                    # posted, so arm the timeout notice too: without it a genuinely undelivered
+                    # prompt stalls the tool for the whole approval window and the user is never told
+                    # the command did NOT run (the same silent-stall class as the text path below).
                     logger.warning(
                         "Button-based approval send timed out — treating "
                         "as possibly-delivered (no re-send; the prompt "
                         "stays armed for a late tap)"
                     )
+                    register_timeout_notice(self, approval_data, command=cmd, card_message_id=None)
                     return
                 if outcome == "declined":
                     # P5(b): the connector AUTHORIZED this destination and
@@ -1541,13 +1557,46 @@ class TurnRunner:
             fut = self._schedule(
                 adapter.send(ctx._status_chat_id, msg, metadata=_interim_metadata(metadata)), "Approval text-send scheduling error",
             )
-            if fut is not None:
-                fut.result(timeout=15)
-                # No card to edit on the text path: the prompt has no buttons to drop and carries
-                # the /approve instructions, so the timeout notice is posted as a new message.
-                register_timeout_notice(self, approval_data, command=cmd, card_message_id=None)
+        except Exception as e:
+            logger.error("Failed to schedule the approval request: %s", e)
+            raise _ExecApprovalUndeliverable(
+                f"exec approval undeliverable: text prompt could not be scheduled ({e})"
+            ) from e
+        if fut is None:
+            # No future = no loop to post on. Nothing was sent.
+            logger.error("Failed to send approval request (no scheduling future)")
+            raise _ExecApprovalUndeliverable(
+                "exec approval undeliverable: no scheduling future (loop unavailable)"
+            )
+        try:
+            outcome = fut.result(timeout=15)
+        except concurrent.futures.TimeoutError:
+            # Narrowly scoped: ONLY the send-wait deadline means "possibly delivered" (the send
+            # coroutine may still post). Keep the entry armed for a late /approve and let the
+            # normal timeout notice fire if nobody answers. A TimeoutError raised anywhere else
+            # (see the scheduler above) is NOT this case — `concurrent.futures.TimeoutError` is
+            # the builtin `TimeoutError` on 3.11+, so a broad handler would silently convert a
+            # genuine scheduling failure into a 300-second stall with no prompt.
+            logger.warning("Text approval prompt send timed out — treating as possibly-delivered")
+            register_timeout_notice(self, approval_data, command=cmd, card_message_id=None)
+            return
         except Exception as e:
             logger.error("Failed to send approval request: %s", e)
+            raise _ExecApprovalUndeliverable(
+                f"exec approval undeliverable: text prompt send raised ({e})"
+            ) from e
+        # A SendResult that says success=False is as undeliverable as a raise — the adapter
+        # answered instead of raising. Falling through would arm the timeout notice for a prompt
+        # the user never received.
+        if not getattr(outcome, "success", True):
+            logger.error("Failed to send approval request (send returned failure)")
+            raise _ExecApprovalUndeliverable(
+                "exec approval undeliverable: text prompt send failed "
+                f"({getattr(outcome, 'error', None) or 'unknown error'})"
+            )
+        # No card to edit on the text path: the prompt has no buttons to drop and carries
+        # the /approve instructions, so the timeout notice is posted as a new message.
+        register_timeout_notice(self, approval_data, command=cmd, card_message_id=None)
 
     # ── run_sync phases ─────────────────────────────────────────────────────────────────────
 

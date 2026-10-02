@@ -1,16 +1,25 @@
 """Native deletion notifications withdraw queued input without trusting a deleting actor."""
 
+from __future__ import annotations
+
 import asyncio
 import subprocess
 import sys
 from types import ModuleType
 from datetime import datetime
+from typing import TYPE_CHECKING, Literal
 from unittest.mock import AsyncMock
 
 import pytest
 
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.event import MessageEvent
+from gateway.platforms.base import BasePlatformAdapter
+
+if TYPE_CHECKING:
+    from discord.types.guild import Guild as GuildPayload
+    from discord.types.threads import Thread as ThreadPayload
+    from discord.types.gateway import MessageDeleteEvent, MessageDeleteBulkEvent
 
 
 @pytest.fixture(scope="module", autouse=True)
@@ -35,7 +44,34 @@ def test_native_deletion_domain_imports_before_platform_modules():
     assert (result.returncode, result.stdout, result.stderr) == (0, "", "")
 
 
-def _pending(adapter, platform, message_id, *, scope="999", chat="555", thread=None):
+def _guild_payload() -> GuildPayload:
+    return {
+        "id": "999", "name": "test", "owner_id": "333", "icon": None,
+        "splash": None, "discovery_splash": None, "emojis": [], "stickers": [],
+        "features": [], "description": None, "incidents_data": None,
+        "region": "", "afk_channel_id": None, "afk_timeout": 60,
+        "verification_level": 0, "default_message_notifications": 0,
+        "explicit_content_filter": 0, "roles": [], "mfa_level": 0,
+        "nsfw_level": 0, "application_id": None, "system_channel_id": None,
+        "system_channel_flags": 0, "rules_channel_id": None,
+        "vanity_url_code": None, "banner": None, "premium_tier": 0,
+        "preferred_locale": "en-US", "public_updates_channel_id": None,
+        "stage_instances": [], "guild_scheduled_events": [],
+    }
+
+
+def _thread_payload(thread_id: str, *, name: str, archive_duration: Literal[60, 1440]) -> ThreadPayload:
+    return {
+        "id": thread_id, "guild_id": "999", "type": 11, "name": name,
+        "parent_id": "444", "owner_id": "333", "message_count": 0,
+        "member_count": 1, "total_message_sent": 0, "rate_limit_per_user": 0,
+        "thread_metadata": {"archived": False, "auto_archive_duration": archive_duration,
+                            "archive_timestamp": "2026-10-02T00:00:00+00:00", "locked": False},
+    }
+
+
+def _pending(adapter: BasePlatformAdapter, platform: Platform, message_id: str, *,
+             scope: str | None = "999", chat: str = "555", thread: str | None = None) -> MessageEvent:
     return MessageEvent(
         text=f"input {message_id}", message_id=message_id,
         source=adapter.build_source(
@@ -59,6 +95,7 @@ async def test_registered_native_deletion_preserves_other_scopes(platform, bulk,
     if platform == Platform.DISCORD:
         pytest.importorskip("discord")
         import plugins.platforms.discord.adapter as module
+        from discord.ext import commands
         adapter = module.DiscordAdapter(PlatformConfig(enabled=True, token="test"))
         other = module.DiscordAdapter(PlatformConfig(enabled=True, token="test-other"))
         adapter._slash_commands = False
@@ -66,21 +103,19 @@ async def test_registered_native_deletion_preserves_other_scopes(platform, bulk,
         monkeypatch.setattr(module, "_wait_for_ready_or_bot_exit", AsyncMock())
         async def wait_for_close(*args):
             await asyncio.Event().wait()
-        monkeypatch.setattr(module.commands.Bot, "start", wait_for_close)
+        monkeypatch.setattr(commands.Bot, "start", wait_for_close)
         monkeypatch.setattr(adapter, "_start_liveness_probe", lambda: None)
         monkeypatch.setattr(adapter, "_wire_plugin_handlers", lambda client: None)
         assert await adapter.connect()
-        await adapter._client._async_setup_hook()
+        client = adapter._client
+        assert client is not None
+        await client._async_setup_hook()
         if thread:
             import discord
-            state = adapter._client._connection
-            guild = discord.Guild(data={"id": "999", "name": "test", "owner_id": "333"}, state=state)
+            state = client._connection
+            guild = discord.Guild(data=_guild_payload(), state=state)
             state._guilds[guild.id] = guild
-            guild._threads[555] = discord.Thread(guild=guild, state=state, data={
-                "id": "555", "type": 11, "name": "test-thread", "parent_id": "444",
-                "owner_id": "333", "message_count": 0, "member_count": 1,
-                "thread_metadata": {"archived": False, "auto_archive_duration": 60,
-                    "archive_timestamp": "2026-10-02T00:00:00+00:00", "locked": False}})
+            guild._threads[555] = discord.Thread(guild=guild, state=state, data=_thread_payload("555", name="test-thread", archive_duration=60))
     else:
         pytest.importorskip("slack_bolt")
         from slack_bolt.async_app import AsyncApp
@@ -90,8 +125,9 @@ async def test_registered_native_deletion_preserves_other_scopes(platform, bulk,
         other = SlackAdapter(PlatformConfig(enabled=True, token="test-other"))
         async def authorize(team_id, enterprise_id, logger):
             return AuthorizeResult(enterprise_id=enterprise_id, team_id=team_id, bot_token="test", bot_user_id="bot")
-        adapter._app = AsyncApp(authorize=authorize, process_before_response=True)
-        adapter._team_clients = {"999": adapter._app.client}
+        app = AsyncApp(authorize=authorize, process_before_response=True)
+        adapter._app = app
+        adapter._team_clients = {"999": app.client}
         adapter._register_bolt_handlers()
     ids = ("101", "102") if bulk else ("101",)
     events = {
@@ -106,19 +142,21 @@ async def test_registered_native_deletion_preserves_other_scopes(platform, bulk,
     adapter._pending_messages.update(events)
     try:
         if platform == Platform.DISCORD:
+            assert isinstance(adapter, module.DiscordAdapter)
             dispatched = []
-            monkeypatch.setattr(adapter._client._connection, "dispatch", lambda *args: dispatched.append(args))
-            data = {"channel_id": "555"}
-            if scope is not None:
-                data["guild_id"] = scope if notification == "valid" else "888"
+            monkeypatch.setattr(client._connection, "dispatch", lambda *args: dispatched.append(args))
             if bulk:
-                data["ids"] = list(ids)
-                adapter._client._connection.parse_message_delete_bulk(data)
+                bulk_data: MessageDeleteBulkEvent = {"channel_id": "555", "ids": list(ids)}
+                if scope is not None:
+                    bulk_data["guild_id"] = scope if notification == "valid" else "888"
+                client._connection.parse_message_delete_bulk(bulk_data)
             else:
-                data["id"] = "101"
-                adapter._client._connection.parse_message_delete(data)
+                single_data: MessageDeleteEvent = {"channel_id": "555", "id": "101"}
+                if scope is not None:
+                    single_data["guild_id"] = scope if notification == "valid" else "888"
+                client._connection.parse_message_delete(single_data)
             for event_name, payload in dispatched:
-                callback = getattr(adapter._client, f"on_{event_name}", None)
+                callback = getattr(client, f"on_{event_name}", None)
                 if callback:
                     await callback(payload)
         else:
@@ -133,7 +171,7 @@ async def test_registered_native_deletion_preserves_other_scopes(platform, bulk,
                 body["team_id"] = "unconfigured-workspace"
             elif notification == "conflicting":
                 event["team"] = "conflicting-workspace"
-            response = await adapter._app.async_dispatch(AsyncBoltRequest(body=body, mode="socket_mode"))
+            response = await app.async_dispatch(AsyncBoltRequest(body=body, mode="socket_mode"))
             assert response.status == 200
         expected = events if notification != "valid" else {
             key: event for key, event in events.items()
@@ -141,8 +179,9 @@ async def test_registered_native_deletion_preserves_other_scopes(platform, bulk,
         assert adapter._pending_messages == expected
     finally:
         if platform == Platform.DISCORD:
+            assert isinstance(adapter, module.DiscordAdapter)
             await adapter._cancel_bot_task()
-            await adapter._client.close()
+            await client.close()
 
 
 @pytest.mark.asyncio
@@ -150,6 +189,7 @@ async def test_registered_native_deletion_preserves_other_scopes(platform, bulk,
 async def test_raw_deletion_uses_the_origin_channel_of_auto_thread_input(notification, monkeypatch):
     discord = pytest.importorskip("discord")
     import plugins.platforms.discord.adapter as module
+    from discord.ext import commands
 
     adapter = module.DiscordAdapter(PlatformConfig(enabled=True, token="test", extra={
         "require_mention": False, "history_backfill": False, "auto_thread": True}))
@@ -161,22 +201,20 @@ async def test_raw_deletion_uses_the_origin_channel_of_auto_thread_input(notific
     async def wait_for_close(*args):
         await asyncio.Event().wait()
 
-    monkeypatch.setattr(module.commands.Bot, "start", wait_for_close)
+    monkeypatch.setattr(commands.Bot, "start", wait_for_close)
     monkeypatch.setattr(adapter, "_start_liveness_probe", lambda: None)
     monkeypatch.setattr(adapter, "_wire_plugin_handlers", lambda client: None)
     assert await adapter.connect()
-    await adapter._client._async_setup_hook()
-    state = adapter._client._connection
-    guild = discord.Guild(data={"id": "999", "name": "test", "owner_id": "333"}, state=state)
+    client = adapter._client
+    assert client is not None
+    await client._async_setup_hook()
+    state = client._connection
+    guild = discord.Guild(data=_guild_payload(), state=state)
     state._guilds[guild.id] = guild
     parent = discord.TextChannel(state=state, guild=guild, data={
         "id": "444", "type": 0, "name": "parent", "position": 0, "permission_overwrites": []})
     guild._channels[parent.id] = parent
-    thread_data = {
-        "id": "101", "type": 11, "name": "new-thread", "parent_id": "444",
-        "owner_id": "333", "message_count": 0, "member_count": 1,
-        "thread_metadata": {"archived": False, "auto_archive_duration": 1440,
-            "archive_timestamp": "2026-10-02T00:00:00+00:00", "locked": False}}
+    thread_data = _thread_payload("101", name="new-thread", archive_duration=1440)
     create_thread = AsyncMock(return_value=thread_data)
     monkeypatch.setattr(state.http, "start_thread_with_message", create_thread)
     message = discord.Message(state=state, channel=parent, data={
@@ -199,20 +237,25 @@ async def test_raw_deletion_uses_the_origin_channel_of_auto_thread_input(notific
         }
         dispatched = []
         monkeypatch.setattr(state, "dispatch", lambda *args: dispatched.append(args))
-        data = {"channel_id": "777" if notification == "wrong-parent" else "444",
-                "guild_id": "888" if notification == "wrong-guild" else "999"}
+        channel_id = "777" if notification == "wrong-parent" else "444"
+        guild_id = "888" if notification == "wrong-guild" else "999"
         if notification == "bulk":
-            data["ids"] = ["101"]
-            state.parse_message_delete_bulk(data)
+            bulk_data: MessageDeleteBulkEvent = {"channel_id": channel_id, "guild_id": guild_id, "ids": ["101"]}
+            state.parse_message_delete_bulk(bulk_data)
         else:
-            data["id"] = "202" if notification == "thread-message" else "101"
-            state.parse_message_delete(data)
+            single_data: MessageDeleteEvent = {"channel_id": channel_id, "guild_id": guild_id,
+                                              "id": "202" if notification == "thread-message" else "101"}
+            state.parse_message_delete(single_data)
         for event_name, payload in dispatched:
-            callback = getattr(adapter._client, f"on_{event_name}", None)
+            callback = getattr(client, f"on_{event_name}", None)
             if callback:
                 await callback(payload)
         pending = [*adapter._pending_text_batches.values(), *adapter._pending_messages.values()]
-        assert {"origin": origin, "pending_ids": sorted(event.message_id for event in pending)} == {
+        pending_ids = []
+        for event in pending:
+            assert event.message_id is not None
+            pending_ids.append(event.message_id)
+        assert {"origin": origin, "pending_ids": sorted(pending_ids)} == {
             "origin": {"chat_id": "101", "parent_chat_id": "444", "thread_id": "101",
                        "auto_thread_created": True, "scope_id": "999", "message_id": "101"},
             "pending_ids": ["202"] if notification in {"single", "bulk"} else ["101", "202"],
@@ -222,4 +265,4 @@ async def test_raw_deletion_uses_the_origin_channel_of_auto_thread_input(notific
             task.cancel()
         await asyncio.gather(*adapter._pending_text_batch_tasks.values(), return_exceptions=True)
         await adapter._cancel_bot_task()
-        await adapter._client.close()
+        await client.close()

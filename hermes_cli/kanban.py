@@ -16,6 +16,7 @@ import time
 from pathlib import Path
 from typing import Optional
 
+from hermes_cli import kanban_db_review as kbr
 from hermes_cli import kanban_db as kb
 from hermes_cli import kanban_db_connect as kbc
 from hermes_cli import kanban_db_dispatch as kbd
@@ -1044,7 +1045,7 @@ def _cmd_request_review(args: argparse.Namespace) -> int:
             "Provide acceptance evidence matching the task.")
         if gate_err:
             return _err(gate_err)
-        ok, reason = kb.request_review(
+        ok, reason = kbr.request_review(
             conn, tid, summary=summary, metadata=metadata, reviewer=getattr(args, "reviewer", None),
             expected_run_id=_worker_run_id_for(tid), force=bool(getattr(args, "force", False)), with_reason=True)
         if not ok:

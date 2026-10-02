@@ -16,6 +16,7 @@ from contextlib import contextmanager
 from typing import Any, Callable, Optional
 
 from agent.redact import redact_sensitive_text
+from hermes_cli import kanban_db_review as kbr
 from hermes_cli.goals import judge_goal
 from tools.registry import no_cache_check_fn, registry, tool_error
 from hermes_cli.config import cfg_get, load_config
@@ -863,7 +864,7 @@ def _handle_request_review(args: dict, **kw) -> str:
     with _board(args.get("board")) as (kb, conn):
         _goal_gate("kanban_request_review", kb.get_task(conn, tid), tid, summary)
         try:
-            ok, fail_reason = kb.request_review(
+            ok, fail_reason = kbr.request_review(
                 conn, tid, summary=summary, metadata=metadata, reviewer=reviewer,
                 expected_run_id=_worker_run_id(tid), with_reason=True)
         except kb.ArtifactPreservationError as artifact_err:

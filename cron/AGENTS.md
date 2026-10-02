@@ -109,6 +109,8 @@ zero outside a kanban task (footprint ladder rung 3).
   the full set plus `kanban_list`/`kanban_unblock` for board routing. The check_fn reads the schema
   build's own selection (`tools/kanban_toolset_context.py`), never the legacy top-level `toolsets`
   key alone.
+- **Review handoffs:** `hermes_cli/kanban_db_review.py::request_review` owns the
+  transition and reviewer provenance; CLI, tool and dashboard callers use it directly.
 - **Dispatcher:** long-lived loop (default 60s) that reclaims stale claims, promotes ready tasks,
   atomically claims, and spawns assigned profiles. Runs **inside the gateway** by default
   (`kanban.dispatch_in_gateway: true`). Standalone: `plugins/kanban/systemd/hermes-kanban-dispatcher.service`.

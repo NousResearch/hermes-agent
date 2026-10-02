@@ -20,6 +20,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from hermes_cli import kanban_db_review as kbr
 from hermes_cli import kanban_db as kb
 from hermes_cli import kanban_db_connect as kbc
 
@@ -300,7 +301,7 @@ def test_reopening_parent_retracts_review_and_blocks_approval(client):
         )
         implementation = kb.claim_task(conn, child_id)
         assert implementation is not None
-        assert kb.request_review(
+        assert kbr.request_review(
             conn,
             child_id,
             summary="ready",
@@ -403,7 +404,7 @@ def test_dashboard_reclaim_of_active_review_preserves_review_phase(client):
         task_id = kb.create_task(conn, title="active review", assignee="reviewer")
         implementation = kb.claim_task(conn, task_id)
         assert implementation is not None
-        assert kb.request_review(
+        assert kbr.request_review(
             conn,
             task_id,
             summary="ready",

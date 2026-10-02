@@ -637,6 +637,9 @@ class Git(BinaryPackage):
         "linux-arm64": "POSIX uses system git by choice",
         "linux-x64-musl": "POSIX uses system git by choice",
         "linux-arm64-musl": "POSIX uses system git by choice",
+        # Android/Termux is POSIX too, and the pinned artifact is a Windows
+        # self-extractor: without this row `pm update` would pin it there.
+        "linux-arm64-bionic": "POSIX uses system git by choice",
         "darwin-x64": "POSIX uses system git by choice",
         "darwin-arm64": "POSIX uses system git by choice",
     }
@@ -707,12 +710,19 @@ class Gh(BinaryPackage):
     name = "gh"
     optional = True
     binary_rel = {"win32": "bin/gh.exe", "posix": "bin/gh"}
+    # GitHub publishes no Android/bionic build, and gh is not one of the
+    # tools the Termux payload takes from pm (see scripts/termux/payload_facts).
+    # Without this row `pm update` re-pins the glibc linux-arm64 archive for
+    # the phone instead of skipping it.
+    gaps = {"linux-arm64-bionic": "upstream publishes no Android binary; gh is not a phone-side pm tool"}
 
     def fetch_url(self, version: str, target: str) -> str:
         # GitHub CLI's Linux release matrix is built with CGO_ENABLED=0,
         # so the generic Linux archive is libc-independent.
         lookup_target = target.removesuffix("-musl") if target in MUSL_TARGETS else target
-        osname, arch = lookup_target.split("-")
+        # Only the first two fields name the platform: a third one (bionic)
+        # names the userland, which the lookup above already resolved.
+        osname, arch = lookup_target.split("-")[:2]
         plat = {"win32": "windows", "linux": "linux", "darwin": "macOS"}[osname]
         arch = {"x64": "amd64", "arm64": "arm64"}[arch]
         ext = "zip" if osname in ("win32", "darwin") else "tar.gz"

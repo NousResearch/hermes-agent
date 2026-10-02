@@ -75,6 +75,69 @@ def test_python_bionic_pin_is_independent_of_desktop_build_version(lock):
     assert py.deb_package == "python"
 
 
+def test_every_package_answers_for_bionic_or_declares_a_gap():
+    """The bionic target is a THREE-field target (linux-arm64-<libc>), so a
+    package that splits its target on '-' or that predates the target crashes
+    instead of declaring a gap. `pm update` walks every target that a package
+    does not gap (cli._pin_artifacts / _pin_tool), so a package that is neither
+    gapped nor answerable for bionic takes the whole update down with it:
+    gh raised ValueError: too many values to unpack (expected 2, got 3), and
+    git happily pinned its Windows self-extractor for the phone.
+    """
+    from pm.registry import all_packages, get_package
+
+    bionic = "linux-arm64-bionic"
+    for name in all_packages():
+        package = get_package(name)
+        if package.missing_reason(bionic) is not None:
+            continue
+        pinned = _lock_row(name)
+        if "any" in pinned:  # one target-independent archive: right for every target
+            continue
+        version = _bionic_version(package, name, pinned)
+        if version is None:  # no auto-update source, or a digest pin; never re-pinned
+            continue
+        urls = package.fetch_urls(version, bionic)
+        assert urls, f"{name} answers for {bionic} with no archive"
+        # A target the package cannot serve must be a DECLARED gap, not another
+        # platform's archive re-labelled: git pinned its Windows PortableGit
+        # self-extractor for bionic, so the phone's download would fail instead
+        # of the resolution. No legitimate bionic artifact is a Windows build
+        # (the real ones are termux .debs, musl tarballs, or a docker:// digest).
+        artifact = urls[0].rsplit("/", 1)[-1].lower()
+        assert ".exe" not in artifact and "windows" not in artifact, (
+            f"{name} answers for {bionic} with its Windows artifact "
+            f"({urls[0]}): declare a gap instead"
+        )
+
+
+def _lock_row(name):
+    import json
+    from pm.paths import lockfile_path
+
+    packages = json.loads(lockfile_path().read_text(encoding="utf-8"))["packages"]
+    return packages.get(name, {}).get("artifacts", {})
+
+
+def _bionic_version(package, name, pinned):
+    """The version `pm update` would pass to fetch_urls for this package."""
+    import json
+    import re as _re
+    from pm.paths import lockfile_path
+
+    packages = json.loads(lockfile_path().read_text(encoding="utf-8"))["packages"]
+    version = packages.get(name, {}).get("version")
+    artifact = pinned.get("linux-arm64-bionic")
+    if artifact is None:
+        return version
+    url = artifact["url"] if isinstance(artifact, dict) else artifact[0]["url"]
+    if url.startswith("docker://"):  # a pinned OCI digest, not a fetched archive
+        return None
+    # the .deb suppliers carry their own version; ffmpeg's minor label does not
+    found = _re.search(r"_(\d+\.\d+\.\d+(?:-\d+)?)_aarch64\.deb$", url)
+    return found.group(1) if found else version
+
+
 def test_uv_bionic_row_matches_supplier(lock):
     """The uv bionic row is an explicit pin of the termux-main pool .deb;
     the row and Uv.fetch_url(bionic arm) must agree."""

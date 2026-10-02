@@ -201,15 +201,42 @@ def test_catalog_install_records_card_image_so_the_row_can_show_it(world, monkey
         "javascript:alert(1)",                                            # not a URL scheme we render
     ],
 )
-def test_sidecar_refuses_card_art_that_is_not_https_on_github(world, rejected):
-    """The Installed tab must never be pointed at a third-party or local resource by install metadata."""
+def test_catalog_install_refuses_card_art_that_is_not_https_on_github(world, monkeypatch, rejected):
+    """The Installed tab must never be pointed at a third-party or local resource by install metadata.
+
+    Driven through a real catalog install so it exercises the allowlist in
+    ``write_catalog_sidecar_record``. Hand-writing the sidecar and reading it back would only
+    re-test the "the tree is not the authority" invariant, because ``read_catalog_sidecar``
+    never consults the in-tree file, so dropping the gate would leave this test green.
+    """
+    # The `world` fixture already patches load_catalog; wrap what it patched so the entry it
+    # returns carries the rejected art. Re-patching with a fresh lambda would drop the fixture's
+    # repo URI and break install.
+    real_load = pc_cat.load_catalog
+
+    def with_rejected_art(catalog_dir=None):
+        return [replace(e, image=rejected) if e.name == "cat-plugin" else e
+                for e in real_load(catalog_dir)]
+
+    monkeypatch.setattr(pc_cat, "load_catalog", with_rejected_art)
+
     entry = pc_cat.get_live_catalog_entry("cat-plugin")
+    assert entry.image == rejected, "the catalog entry must expose the image under test"
     target, _m, _n = cat.install_catalog_entry(entry, force=False)
-    cat.write_catalog_sidecar_record(
-        target, {"name": "cat-plugin", "repo": entry.repo, "image": rejected}, world["sha1"]
-    )
+
+    # The installer-owned record is the authoritative block, so assert on it directly: every
+    # read-side accessor re-applies the allowlist, so the row and sidecar assertions below would
+    # all still pass with the install-time gate deleted.
+    from hermes_cli.plugins_cmd import _read_install_metadata
+    recorded = _read_install_metadata()["cat-plugin"]["catalog"]
+    assert "image" not in recorded, "the rejected art must never reach the installer record"
+
+    # The in-tree file is what the gate writes, and the row is what the Installed tab renders.
+    on_disk = json.loads((target / cat.CATALOG_SIDECAR).read_text(encoding="utf-8"))
+    assert "image" not in on_disk, "the rejected art must never reach the sidecar"
     assert "image" not in cat.read_catalog_sidecar(target)
     assert "catalog_image" not in cat.catalog_row_fields(target, cat.catalog_pins())
+
 
 def test_in_tree_sidecar_cannot_forge_catalog_provenance(world, tmp_path):
     """Provenance is the installer's metadata record, never a file the repo ships: a URL install carrying

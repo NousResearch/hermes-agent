@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 import asyncio
 import enum
 import logging
@@ -102,7 +103,7 @@ class MatrixApprovalMixin:
 
         async def _send_reaction_prompt(
             self, chat_id: str, text: str, metadata: dict | None, make_prompt: Callable,
-            registry: dict, emojis: tuple[str, ...], label: str,
+            registry: dict, emojis: Iterable[str], label: str,
         ) -> SendResult: ...
 
         async def _claim_reaction_prompt(

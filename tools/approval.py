@@ -18,7 +18,7 @@ import logging
 import os
 import threading
 import time
-from typing import Optional
+from typing import Optional, TYPE_CHECKING
 
 from utils import env_var_enabled, is_truthy_value
 from agent.i18n import t
@@ -39,6 +39,10 @@ from tools.approval_floors import (
 from tools.approval_gateway_wait import _await_gateway_decision
 from tools.approval_prompt import _present_with_selected_transport, _transport_choice, prompt_dangerous_approval
 from tools.approval_smart import _smart_verdict
+
+if TYPE_CHECKING:
+    from tools.approval_gateway_wait import _ApprovalEntry
+
 
 logger = logging.getLogger(__name__)
 

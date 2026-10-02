@@ -7,7 +7,7 @@ name: hermes-rich-ui
 repo: https://github.com/jacobhausler/hermes-rich-ui
 sha: "693fe296579ae69cfc78b90624a7b6bfc2564755"
 subdir: ""
-description: "Rich, evidence-backed answer cards — tables, charts, metrics, timelines, sources — rendered inline in the desktop transcript"
+description: "Rich, evidence-backed answer cards — tables, charts, metrics, timelines, sources — rendered inline in the desktop transcript Disclosure — Image and ImageGallery cards load agent-supplied https image URLs (up to 8 per gallery) from any host when the card renders in Desktop"
 maintainer: jacobhausler
 tier: community
 category: desktop                       # README vocabulary: desktop|memory|platform|web|tools|voice|automation|models|general

@@ -44,9 +44,8 @@ import { AvatarPicker } from './avatar-picker'
 import { $selectedBot } from './bot-state'
 import { createCanonicalChat } from './canonical-chat'
 import { groupCreationSource } from './canonical-group-capabilities'
-import { HOSTED_PROFILE_OWNERS_URL } from './canonical-group-locales'
 import { registerCanonicalGroup } from './canonical-group-registry'
-import { canonicalGroupEligibility, canonicalPeerGroupEligibility, captureCanonicalGroupRoute, createCanonicalGroup, createCanonicalPeerGroup, isCanonicalGroupCreateRefusal, readGroupExecutionMode } from './canonical-groups'
+import { canonicalGroupCreateErrorMessage, canonicalGroupEligibility, canonicalPeerGroupEligibility, captureCanonicalGroupRoute, createCanonicalGroup, createCanonicalPeerGroup, readGroupExecutionMode } from './canonical-groups'
 import { $botMeta, botRosterKey, filterBots, ROSTER_KEY, saveBotMeta } from './data'
 import { labeled, ResizableFrame } from './dialog-parts'
 import { GROUP_CHAT_MAX_MEMBERS, mintGroupRoomId, uniqueGroupChatName, updateGroupChat } from './group-chat'
@@ -1149,7 +1148,6 @@ export function CreateGroupChatDialog({ open, roster, onClose, onCreated }: Crea
   const b = useBots()
   const connectionId = useValue(host.state.connectionId)
   const profile = useValue(host.state.profile)
-  const [createRefused, setCreateRefused] = useState(false)
   const [setupCleanup, setSetupCleanup] = useState(false)
   const [setupStorageBlocked, setSetupStorageBlocked] = useState(false)
   const [recoveringSetup, setRecoveringSetup] = useState(false)
@@ -1207,7 +1205,6 @@ export function CreateGroupChatDialog({ open, roster, onClose, onCreated }: Crea
       setChecked({})
       setName('')
       setCreateError('')
-      setCreateRefused(false)
       setSetupCleanup(false)
       setSetupStorageBlocked(false)
       void recoverSetup()
@@ -1249,7 +1246,6 @@ export function CreateGroupChatDialog({ open, roster, onClose, onCreated }: Crea
         return
       }
 
-      setCreateRefused(false)
 
       const roomMembers = durableGroupChatMembers(selected).map((member, index) => ({
         ...member,
@@ -1323,8 +1319,6 @@ export function CreateGroupChatDialog({ open, roster, onClose, onCreated }: Crea
       onCreated?.(groupName)
     } catch (error) {
       if (!ownsInteraction()) {return}
-      const refused = isCanonicalGroupCreateRefusal(error)
-      setCreateRefused(refused)
       const setupReason = (error as { roomSetupReason?: string })?.roomSetupReason
 
       if (setupReason) {void recoverSetup()}
@@ -1333,7 +1327,8 @@ export function CreateGroupChatDialog({ open, roster, onClose, onCreated }: Crea
         : setupReason && ['secure_storage_required', 'setup_journal_unreadable', 'setup_journal_write_failed'].includes(setupReason)
           ? b.canonical.peerSetupStorage : setupReason ? b.canonical.peerSetupFailed : undefined
 
-      setCreateError(setupMessage || (refused ? b.canonical.createRefused : error instanceof Error && error.message === b.canonical.driverUnavailable ? b.canonical.driverUnavailable : b.canonical.peerSetupFailed))
+      setCreateError(setupMessage || canonicalGroupCreateErrorMessage(error, b.canonical,
+        error instanceof Error && error.message === b.canonical.driverUnavailable ? b.canonical.driverUnavailable : b.canonical.peerSetupFailed))
     } finally {
       if (creating.current === generation) {
         creating.current = null
@@ -1362,7 +1357,6 @@ export function CreateGroupChatDialog({ open, roster, onClose, onCreated }: Crea
         {(setupCleanup || createError) && <div className="grid gap-2 text-sm text-(--ui-text-secondary)" role="alert">
           <p>{setupCleanup ? (setupStorageBlocked ? b.canonical.peerSetupStorage : b.canonical.peerSetupCleanup) : createError}</p>
           {setupCleanup && <Button className="justify-self-start" disabled={recoveringSetup || createPending} onClick={() => void recoverSetup()} variant="secondary">{t.common.retry}</Button>}
-          {createRefused && <a className="underline underline-offset-2" href={HOSTED_PROFILE_OWNERS_URL} rel="noreferrer" target="_blank">{b.canonical.hostedProfileOwners}</a>}
         </div>}
         <SearchField
           aria-label={b.group.searchToAdd}

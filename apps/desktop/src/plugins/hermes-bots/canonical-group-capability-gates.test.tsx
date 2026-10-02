@@ -233,14 +233,14 @@ it.each([false, true])('selects the canonical or classic creation path for a mix
   }
 })
 
-it('explains a hosted-profile create refusal in the dialog and room gate without creating classic state', async () => {
+it('shows a generic create refusal without guessing a profile setup failure or creating classic state', async () => {
   request.mockImplementation(async (_route, method) => {
     if (method === 'groups.capabilities') {return CANONICAL_GROUP_CAPABILITIES}
     throw Object.assign(new Error('invalid_params'), { code: 4001, data: { reason: 'invalid_params' } })
   })
   const { onCreated, onClose } = await submitDialog()
   expect(screen.getByRole('alert').textContent).toContain(CANONICAL_GROUP_LOCALES.en.createRefused)
-  expect(screen.getByRole('link').getAttribute('href')).toBe('https://hermes-agent.nousresearch.com/docs/developer-guide/hosted-profile-owners')
+  expect(screen.queryByRole('link')).toBeNull()
   expect(onCreated).not.toHaveBeenCalled()
   expect(onClose).not.toHaveBeenCalled()
   expect(updateGroupChat).not.toHaveBeenCalled()
@@ -250,7 +250,7 @@ it('explains a hosted-profile create refusal in the dialog and room gate without
   await act(async () => { render(<GroupChatWorkspace group="Existing" members={roster} />) })
   await act(async () => { fireEvent.click(screen.getByRole('button', { name: CANONICAL_GROUP_LOCALES.en.startGatewayGroup })) })
   expect(screen.getByRole('alert').textContent).toContain(CANONICAL_GROUP_LOCALES.en.createRefused)
-  expect(screen.getByRole('link').getAttribute('href')).toBe('https://hermes-agent.nousresearch.com/docs/developer-guide/hosted-profile-owners')
+  expect(screen.queryByRole('link')).toBeNull()
   expect(screen.getByRole('textbox')).toBeTruthy()
   expect(updateGroupChat).not.toHaveBeenCalled()
   expect(openWorkspace).not.toHaveBeenCalled()

@@ -13,6 +13,7 @@ import { $wakeWord, toggleWakeWord } from '@/store/wake-word'
 
 import { ACTIVE_ICON_BTN, GHOST_ICON_BTN, PRIMARY_ICON_BTN } from './control-classes'
 import type { ConversationStatus } from './hooks/use-voice-conversation'
+import { ComposerContextMeter } from './context-meter'
 import { ModelPill } from './model-pill'
 import { ReasoningPill } from './reasoning-pill'
 import { StartVoiceButton } from './start-voice-button'
@@ -123,6 +124,7 @@ export function ComposerControls({
               {compactModelPill ? null : <ReasoningPill disabled={disabled} model={state.model} />}
             </>
           )}
+          <ComposerContextMeter />
           {voiceControls}
         </>
       )}

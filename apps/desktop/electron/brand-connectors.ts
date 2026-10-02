@@ -213,6 +213,25 @@ function parseRows(body: unknown): WebRow[] {
   return rows
 }
 
+/** Mail credit does not unlock the desktop. Super admin sets this on Brand billing.
+ *  Null means the server did not answer, so the desktop does not lock by itself. */
+export async function readDesktopUnlocked(appId: string): Promise<boolean | null> {
+  const id = appId.trim().toLowerCase()
+
+  if (!id) {
+    return null
+  }
+
+  const result = await portalJson('GET', `/api/portal/brand-control/${encodeURIComponent(id)}/wallet`)
+  const data = (result.body as { data?: { desktopUnlocked?: unknown } } | null)?.data
+
+  if (!result.ok || typeof data?.desktopUnlocked !== 'boolean') {
+    return null
+  }
+
+  return data.desktopUnlocked
+}
+
 async function portalJson(method: string, urlPath: string, body?: unknown): Promise<{ ok: boolean; status: number; body: unknown }> {
   const response = await session.fromPartition(PARTITION).fetch(`${PORTAL_ORIGIN}${urlPath}`, {
     method,

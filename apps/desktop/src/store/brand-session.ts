@@ -6,6 +6,7 @@ export interface BrandSession {
   appIds: string[]
   activeAppId: string
   isSuper: boolean
+  desktopUnlocked: boolean
 }
 
 export const signedOutBrand = (): BrandSession => ({
@@ -13,8 +14,18 @@ export const signedOutBrand = (): BrandSession => ({
   email: '',
   appIds: [],
   activeAppId: '',
-  isSuper: false
+  isSuper: false,
+  desktopUnlocked: false
 })
+
+/** A signed-out desktop keeps local capabilities. A brand stays free until super admin unlocks it. */
+export function capabilitiesUnlocked(brand: BrandSession): boolean {
+  if (!brand.signedIn) {
+    return true
+  }
+
+  return brand.isSuper || brand.desktopUnlocked
+}
 
 export const $brandSession = atom<BrandSession>(signedOutBrand())
 

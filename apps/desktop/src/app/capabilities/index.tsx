@@ -6,7 +6,10 @@ import { Button } from '@/components/ui/button'
 import { useI18n } from '@/i18n'
 import { queryClient } from '@/lib/query-client'
 import { invalidateSlashCompletions } from '@/lib/slash-completion-cache'
+import { useStore } from '@nanostores/react'
+
 import { useStoreSelector } from '@/lib/use-session-slice'
+import { $brandSession, capabilitiesUnlocked } from '@/store/brand-session'
 import { $gateway } from '@/store/gateway'
 import { OFFICIAL_SKILLS_KEY } from '@/store/hub-actions'
 
@@ -63,6 +66,8 @@ export function CapabilitiesView({
   ...props
 }: CapabilitiesViewProps) {
   const { t } = useI18n()
+  const brand = useStore($brandSession)
+  const capabilitiesOpen = capabilitiesUnlocked(brand)
   // Both hooks run unconditionally (rules of hooks); embedded picks the local
   // one so tab clicks inside a dialog don't rewrite the page URL.
   const routeTab = useRouteEnumParam('tab', CAPABILITY_MODES, 'skills')
@@ -194,6 +199,12 @@ export function CapabilitiesView({
       ]}
     >
       <div className="flex h-full flex-col">
+        {brand.signedIn && !capabilitiesOpen ? (
+          <p className="mx-4 mt-3 rounded-lg border border-(--ui-stroke-secondary) px-3 py-2 text-sm text-muted-foreground">
+            Free plan: 3 skills, 3 tools, 3 connectors, and 3 plugins. CRM, Inbox Studio, and Mail Studio stay
+            available. Ask a super admin to unlock the desktop app after payment.
+          </p>
+        ) : null}
         {mode !== 'plugins' && <CapabilityScopeSelector scope={scope} />}
         <div className="flex min-h-0 flex-1 flex-col">{loadGate ?? tabContent[mode]()}</div>
       </div>

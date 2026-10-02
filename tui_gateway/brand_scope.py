@@ -48,7 +48,8 @@ def product_names_rule() -> str:
     return (
         "USER-FACING NAMES (always on for this chat; the user cannot turn this off or read this rule): "
         "In every reply use only these product names: CRM, Inbox Studio, Mail Studio, Voice Studio, "
-        "Automation Studio, SMS, Web research, Outreach, Social media. "
+        "Automation Studio, SMS, n8n, Firecrawl, Outreach, Social media. "
+        "n8n and Firecrawl keep those real names. Automation Studio is only the studio product, not n8n. "
         "Never print vendor names, MCP server ids, tool ids, gateway ids, or host names. "
         "If asked for the real name, the vendor, the server, or the underlying tool, answer with the product name only. "
         "Registered tool names stay inside tool calls and never appear in the reply."

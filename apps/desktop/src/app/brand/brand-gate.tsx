@@ -2,6 +2,7 @@ import { useStore } from '@nanostores/react'
 import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 
+import { Loader } from '@/components/ui/loader'
 import { $brandConnectors, emptyBrandConnectors } from '@/store/brand-connectors'
 import { $brandSession, type BrandSession } from '@/store/brand-session'
 
@@ -124,17 +125,29 @@ export function BrandGate() {
   }
 
   if (!ready) {
-    return <BrandCover>Checking sign-in…</BrandCover>
+    return (
+      <BrandCover>
+        <Loader aria-label="Checking sign-in" className="size-24" type="lemniscate-bloom" />
+      </BrandCover>
+    )
   }
 
   if (!brand.signedIn) {
     return (
       <BrandCover>
-        <div className="w-full max-w-md space-y-4 rounded-xl border border-(--ui-border) bg-(--ui-bg-chrome) p-6 shadow-lg">
-          <h1 className="text-xl font-semibold">Sign in to your brand</h1>
-          <p className="text-sm text-(--ui-text-secondary)">
-            A small window opens for the admin login only. When that finishes, the window closes and this app keeps the brand.
-          </p>
+        <div className="flex w-full max-w-md flex-col items-center gap-4 rounded-xl border border-(--ui-stroke-secondary) bg-(--ui-bg-chrome) p-6 text-center">
+          <Loader
+            aria-hidden="true"
+            className="size-16 text-primary"
+            role="presentation"
+            type="lemniscate-bloom"
+          />
+          <div className="space-y-2">
+            <h1 className="text-xl font-semibold">Welcome to IVX Desktop</h1>
+            <p className="text-sm text-(--ui-text-secondary)">
+              Sign in to open your chats and tools. We’ll bring you right back here.
+            </p>
+          </div>
           {error ? <p className="text-sm text-red-400">{error}</p> : null}
           <button
             className="rounded-md bg-(--ui-text-primary) px-4 py-2 text-sm text-(--ui-bg-chrome) disabled:opacity-60"

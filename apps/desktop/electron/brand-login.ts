@@ -2,7 +2,7 @@ import { BrowserWindow, ipcMain, session, app } from 'electron'
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 
-import { loadBrandConnectors, rememberInboxAccountId, saveBrandConnector } from './brand-connectors'
+import { loadBrandConnectors, readDesktopUnlocked, rememberInboxAccountId, saveBrandConnector } from './brand-connectors'
 import {
   brandSessionFromCookies,
   isPortalLoginUrl,
@@ -35,7 +35,8 @@ function readSaved(): BrandSession {
         email: parsed.email,
         appIds: Array.isArray(parsed.appIds) ? parsed.appIds : [],
         activeAppId: typeof parsed.activeAppId === 'string' ? parsed.activeAppId : '',
-        isSuper: parsed.isSuper === true
+        isSuper: parsed.isSuper === true,
+        desktopUnlocked: parsed.isSuper === true || parsed.desktopUnlocked === true
       }
     }
   } catch {
@@ -111,7 +112,9 @@ async function currentBrand(): Promise<BrandSession> {
     saved.email === live.email && saved.activeAppId && (live.isSuper || live.appIds.includes(saved.activeAppId))
       ? saved.activeAppId
       : live.activeAppId
-  const next = { ...live, activeAppId: active }
+  const remoteUnlock = live.isSuper ? true : await readDesktopUnlocked(active)
+  const desktopUnlocked = remoteUnlock === null ? saved.desktopUnlocked === true || live.isSuper : remoteUnlock
+  const next = { ...live, activeAppId: active, desktopUnlocked }
 
   writeSaved(next)
   return next
@@ -282,9 +285,12 @@ export function registerBrandLoginIpc(): void {
   ipcMain.handle('hermes:brand:select', async (_event, appId: unknown) => {
     const current = await currentBrand()
     const next = selectBrandApp(current, typeof appId === 'string' ? appId : '')
+    const remoteUnlock = next.isSuper ? true : await readDesktopUnlocked(next.activeAppId)
+    const desktopUnlocked = remoteUnlock === null ? next.desktopUnlocked : remoteUnlock
+    const saved = { ...next, desktopUnlocked }
 
-    writeSaved(next)
-    return next
+    writeSaved(saved)
+    return saved
   })
   ipcMain.handle('hermes:brand:connectors', async () => loadBrandConnectors(await currentBrand()))
   ipcMain.handle('hermes:brand:saveConnector', async (_event, connectorId: unknown, credential: unknown) =>

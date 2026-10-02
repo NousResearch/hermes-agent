@@ -495,10 +495,13 @@ def _dir_holds_board(d: Path) -> bool:
 
 def _board_path(
     env_var: Optional[str], board: Optional[str], default_parts: tuple[str, ...], leaf: str,
+    *, allow_env_override: bool = True,
 ) -> Path:
     """Shared resolver: ``env_var`` override, else legacy ``<root>/<default_parts>``
-    for the ``default`` board, else ``board_dir(slug)/leaf``."""
-    if env_var:
+    for the ``default`` board, else ``board_dir(slug)/leaf``. ``allow_env_override=False``
+    skips the env pin so cross-board surfaces (``boards list``) can address each
+    board's own file even inside a dispatched worker's shell."""
+    if env_var and allow_env_override:
         override = os.environ.get(env_var, "").strip()
         if override:
             return Path(override).expanduser()
@@ -510,10 +513,11 @@ def _board_path(
     return board_dir(slug) / leaf
 
 
-def kanban_db_path(board: Optional[str] = None) -> Path:
+def kanban_db_path(board: Optional[str] = None, *, allow_env_override: bool = True) -> Path:
     """``kanban.db`` path: ``HERMES_KANBAN_DB`` pins it (injected into workers);
-    ``default`` -> ``<root>/kanban.db`` (back-compat), else the board dir."""
-    return _board_path("HERMES_KANBAN_DB", board, ("kanban.db",), "kanban.db")
+    ``default`` -> ``<root>/kanban.db`` (back-compat), else the board dir.
+    ``allow_env_override=False`` ignores the pin for cross-board reads."""
+    return _board_path("HERMES_KANBAN_DB", board, ("kanban.db",), "kanban.db", allow_env_override=allow_env_override)
 
 
 def workspaces_root(board: Optional[str] = None) -> Path:

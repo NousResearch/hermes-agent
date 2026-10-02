@@ -3,7 +3,6 @@ import importlib.util
 import io
 import subprocess
 import sys
-import types
 from pathlib import Path
 
 from tui_gateway import slash_worker
@@ -67,11 +66,6 @@ def test_main_arms_watchdog_then_imports_cli_before_runtime_prep(monkeypatch):
         lambda: events.append(("runtime",)),
     )
 
-    def unexpected_getppid():
-        raise AssertionError("spawn parent PID must come from argv")
-
-    monkeypatch.setattr(slash_worker.os, "getppid", unexpected_getppid)
-    monkeypatch.setattr(sys, "platform", "linux")
     monkeypatch.setattr(
         sys,
         "argv",
@@ -88,26 +82,26 @@ def test_main_arms_watchdog_then_imports_cli_before_runtime_prep(monkeypatch):
     slash_worker.main()
 
     assert events == [
-        ("watchdog", parent_pid),
+        ("watchdog", slash_worker._watchdog_parent(parent_pid, is_windows=sys.platform == "win32")),
         ("cli-import",),
         ("runtime",),
         ("cli", "session-1"),
     ]
 
 
-def test_windows_watchdog_keeps_observed_parent_over_spawn_pid(monkeypatch):
+def test_watchdog_parent_uses_spawn_pid_off_windows():
+    def unexpected_getppid():
+        raise AssertionError("spawn parent PID must come from argv")
+
+    assert slash_worker._watchdog_parent(424242, is_windows=False, getppid=unexpected_getppid) == 424242
+
+
+def test_watchdog_parent_falls_back_to_observed_parent_without_spawn_pid():
+    assert slash_worker._watchdog_parent(0, is_windows=False, getppid=lambda: 777) == 777
+
+
+def test_watchdog_parent_keeps_observed_parent_on_windows():
     # A venv python.exe redirector sits between the gateway and this interpreter on
     # Windows, so the gateway PID never equals os.getppid() there; arming on it
     # would make the watchdog kill a healthy worker on its first poll.
-    armed = []
-    monkeypatch.setitem(sys.modules, "cli", types.SimpleNamespace(HermesCLI=lambda **kw: types.SimpleNamespace()))
-    monkeypatch.setattr(slash_worker, "_start_parent_death_watchdog", armed.append)
-    monkeypatch.setattr(slash_worker, "_prepare_slash_worker_runtime", lambda: None)
-    monkeypatch.setattr(slash_worker.os, "getppid", lambda: 777)
-    monkeypatch.setattr(sys, "platform", "win32")
-    monkeypatch.setattr(sys, "argv", ["slash_worker", "--session-key", "s", "--parent-pid", "424242"])
-    monkeypatch.setattr(sys, "stdin", io.StringIO(""))
-
-    slash_worker.main()
-
-    assert armed == [777]
+    assert slash_worker._watchdog_parent(424242, is_windows=True, getppid=lambda: 777) == 777

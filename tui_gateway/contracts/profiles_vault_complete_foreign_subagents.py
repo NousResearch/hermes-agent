@@ -427,6 +427,10 @@ class VaultItem(Result):
     identifier: str | None = None
     identifier_type: str | None = None
     has_otp: bool | None = None
+    # Every origin the manager bound the item to (``VaultItemMeta.to_dict`` emits it
+    # only when there is more than one); must be declared or ``extra="forbid"`` drops
+    # the item from the listing (#131814).
+    allowed_origins: list[str] | None = None
     backend: str
 
 

@@ -217,8 +217,11 @@ class FileBackend:
 
 
 _FILE_BACKEND = FileBackend()
-_BOOTSTRAP_LOCK = threading.Lock()
+# Reentrant: publishing the deployment can import modules whose import-time config read selects
+# the backend again on the SAME thread (``_BOOTSTRAP_OWNER``); every other thread waits for it.
+_BOOTSTRAP_LOCK = threading.RLock()
 _BOOTSTRAPPED = False
+_BOOTSTRAP_OWNER: Optional[int] = None
 
 
 def _bootstrap_names() -> frozenset:
@@ -232,18 +235,35 @@ def _ensure_bootstrap_env() -> None:
     authenticates the backend comes from the process env, the launch home's ``.env`` and the
     managed ``.env`` (design §4.4 steps 1-2, D26/D32) — also when the first config read comes before
     ``load_hermes_dotenv`` (``hermes_cli.config`` reads config at import time)."""
-    global _BOOTSTRAPPED
-    if _BOOTSTRAPPED:
-        return
-    with _BOOTSTRAP_LOCK:
-        if _BOOTSTRAPPED:
-            return
-        _BOOTSTRAPPED = True
+    if not _BOOTSTRAPPED:
+        _bootstrap(None, None, once=True)
+
+
+def bootstrap_deployment(home: Optional[PathLike] = None, project_env: Optional[PathLike] = None) -> None:
+    """Publish the deployment from an explicit dotenv load's layers (``load_hermes_dotenv``: its
+    home and project ``.env``) before that load's first config read. Runs even when the
+    once-per-process bootstrap already ran: an earlier one did not know this load's project file."""
+    _bootstrap(Path(home) if home is not None else None,
+               Path(project_env) if project_env is not None else None, once=False)
+
+
+def _bootstrap(home: Optional[Path], project_env: Optional[Path], *, once: bool) -> None:
+    global _BOOTSTRAPPED, _BOOTSTRAP_OWNER
+    with _BOOTSTRAP_LOCK:  # another thread's bootstrap in progress: wait for it to publish
+        if (once and _BOOTSTRAPPED) or _BOOTSTRAP_OWNER == threading.get_ident():
+            return  # done, or this thread's own bootstrap re-entering (import-time config read)
+        _BOOTSTRAP_OWNER = threading.get_ident()
         try:
             from hermes_cli.env_loader import apply_config_bootstrap_env
-            apply_config_bootstrap_env(_bootstrap_names)  # names resolved only for a remote deployment
+            # names resolved only for a remote deployment
+            apply_config_bootstrap_env(_bootstrap_names, home, project_env)
         except ImportError:  # no usable python-dotenv (a bare installer interpreter): no .env loads either
-            return
+            pass
+        finally:
+            # Complete only once the deployment is published: a concurrent first reader that saw
+            # the flag earlier would select (and read) the file backend of a remote deployment.
+            _BOOTSTRAP_OWNER = None
+            _BOOTSTRAPPED = True
 
 
 def get_config_backend() -> ConfigBackend:

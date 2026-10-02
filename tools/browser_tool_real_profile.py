@@ -165,6 +165,11 @@ def _launch_real_profile_chrome(real_binary: str, copy_dir: str) -> Tuple[Option
     except OSError:
         pass
     chrome_argv = [real_binary, f"--user-data-dir={copy_dir}", *_REAL_PROFILE_CHROME_FLAGS]
+    if _session._needs_chromium_sandbox_bypass():
+        # Root/docker/AppArmor-userns hosts: the user's Chrome refuses to start without
+        # --no-sandbox (crbug.com/638180) and the launch dies as a misleading "exited
+        # during startup" (#131152); same bypass flags agent-browser's own launch gets.
+        chrome_argv.extend(_session.CHROMIUM_SANDBOX_BYPASS_ARGS)
     _session._ensure_screen_for_headed_chromium()
     browser_env = _bt._build_browser_env()  # carries the Bot Desktop DISPLAY when one is running
     _has_display = bool(browser_env.get("DISPLAY") or browser_env.get("WAYLAND_DISPLAY"))

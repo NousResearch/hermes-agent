@@ -252,6 +252,42 @@ class TestRealProfileCdpLaunch:
         assert "AGENT_BROWSER_IDLE_TIMEOUT_MS" not in captured["env"]
         self._reset()
 
+    def _launch_capturing_chrome_argv(self, tmp_path):
+        captured = {}
+
+        class FakeChrome:
+            def poll(self):
+                return None
+
+        def fake_popen(argv, **kw):
+            captured["chrome_argv"] = argv
+            (tmp_path / "DevToolsActivePort").write_text("41000\n/devtools/browser/x\n")
+            return FakeChrome()
+
+        import tools.browser_tool as bt
+        with patch.object(bt.subprocess, "Popen", side_effect=fake_popen):
+            port, err = bt_real_profile._launch_real_profile_chrome("/usr/bin/chrome", str(tmp_path))
+        return port, err, captured["chrome_argv"]
+
+    def test_sandbox_bypass_host_launches_chrome_with_bypass_flags(self, tmp_path):
+        """#131152: Chrome refuses to start as root (or docker/AppArmor-userns) without
+        --no-sandbox and the launch surfaced as a misleading 'Chrome exited during
+        startup'; those hosts get the same bypass flags agent-browser's launch applies."""
+        with patch.object(bt_session, "_needs_chromium_sandbox_bypass", return_value=True):
+            port, err, argv = self._launch_capturing_chrome_argv(tmp_path)
+        assert err is None and port == 41000
+        assert "--no-sandbox" in argv
+        assert "--disable-dev-shm-usage" in argv
+
+    def test_unprivileged_host_launches_chrome_without_bypass_flags(self, tmp_path):
+        """An unprivileged host keeps the sandbox: the bypass flags are only for hosts
+        where Chromium's sandbox cannot work at all."""
+        with patch.object(bt_session, "_needs_chromium_sandbox_bypass", return_value=False):
+            port, err, argv = self._launch_capturing_chrome_argv(tmp_path)
+        assert err is None and port == 41000
+        assert "--no-sandbox" not in argv
+        assert "--disable-dev-shm-usage" not in argv
+
     def test_reuses_only_session_on_our_copy_dir(self, tmp_path):
         """A live session on a DIFFERENT dir (stale/throwaway) is closed, not reused."""
         import tools.browser_tool as bt

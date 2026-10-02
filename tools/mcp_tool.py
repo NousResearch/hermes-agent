@@ -3595,6 +3595,9 @@ class MCPServerTask:
         ssl_verify: bool = True,
         client_cert=None,
         timeout: float = 5.0,
+        strict_redirect_headers: bool = False,
+        configured_header_names: "set[str] | frozenset[str]" = frozenset(),
+        identity_header_name: "str | None" = None,
     ) -> None:
         """Probe *url* for an MCP-shaped response before the SDK connects.
 
@@ -3620,6 +3623,21 @@ class MCPServerTask:
         raised error propagates as itself rather than being wrapped in an
         ``ExceptionGroup`` (which is what defeats hooks installed inside the
         SDK transport).
+
+        Because that client follows redirects, it needs the SAME
+        redirect-credential authority boundary as the client inside
+        :meth:`_run_http` — otherwise the probe is a taint-free second egress
+        path for the configured headers, ``Authorization`` and the identity
+        header (a package ``X-Tenant`` would be handed to whatever origin a
+        302 names). The monotonic per-chain guard is registered as a request
+        hook here for exactly that reason: it must be the same last-request-hook
+        boundary, so a cross-origin hop inside the probe drops the credential
+        set and a later return to the original origin cannot re-acquire it.
+        Refusing cross-origin redirects outright was rejected instead because
+        the probe is best-effort and must never be the component that breaks a
+        legitimate same-origin redirect chain (many gateways redirect
+        ``/mcp`` -> ``/mcp/``); stripping credentials preserves the diagnostic
+        value of the probe while closing the leak.
         """
         try:
             import httpx as _httpx
@@ -3633,6 +3651,19 @@ class MCPServerTask:
         }
         if client_cert is not None:
             client_kwargs["cert"] = client_cert
+        # Same authoritative boundary as the SDK client in _run_http: a
+        # REQUEST hook registered last, so nothing can re-inject a credential
+        # after the guard stripped it. See _make_redirect_header_stripper.
+        client_kwargs["event_hooks"] = {
+            "request": [
+                _make_redirect_header_stripper(
+                    _httpx.URL(url),
+                    strict=strict_redirect_headers,
+                    configured_header_names=configured_header_names,
+                    identity_header_name=identity_header_name,
+                )
+            ]
+        }
 
         probe_headers = dict(headers) if headers else {}
         try:
@@ -4176,11 +4207,27 @@ class MCPServerTask:
             if config.get("transport") != "sse" and not config.get("skip_preflight") and not self._ready.is_set() and self._auth_type != "oauth":
                 try:
                     _probe_headers = dict(config.get("headers") or {})
+                    # The probe follows redirects on its own client, so it
+                    # inherits the same redirect-credential authority
+                    # boundary as _run_http — otherwise a 302 to another origin
+                    # would hand that origin the package-configured headers.
+                    # Names are captured before any client-generated headers so
+                    # only genuinely configured headers are strict-set members.
+                    _probe_identity = _resolve_identity_header(self.name, config)
                     await self._preflight_content_type(
                         config["url"],
                         headers=_probe_headers,
                         ssl_verify=config.get("ssl_verify", True),
                         client_cert=_resolve_client_cert(self.name, config),
+                        strict_redirect_headers=bool(
+                            config.get("strict_redirect_headers")
+                        ),
+                        configured_header_names={
+                            key.lower() for key in _probe_headers
+                        },
+                        identity_header_name=(
+                            _probe_identity[0] if _probe_identity else None
+                        ),
                     )
                 except NonMcpEndpointError as exc:
                     logger.warning("%s", exc)

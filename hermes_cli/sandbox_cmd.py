@@ -4,7 +4,8 @@ The code is copied to a scratch directory on the host without executing anything
 checkout, no hooks, no repo-configured filters, symlinks kept as links), then run in a container
 with no network, no capabilities, a read-only root, an unprivileged user, no environment from the
 host and no host mount other than that scratch copy. An optional ``--setup`` step installs
-dependencies with network but is otherwise under the same lock. Nothing on the command line can
+dependencies; it has no network either unless ``--setup-network open`` asks for the runtime's
+default network, and is otherwise under the same lock. Nothing on the command line can
 loosen the lock, and the scratch copy is deleted afterwards.
 
 This is a tool the agent is guided to use, not a security boundary (SECURITY.md §2.2).
@@ -34,6 +35,12 @@ _HOME = f"{_MOUNT}/home"
 _SANDBOX_USER = "65534:65534"
 _PIDS_LIMIT = "1024"
 _TIMEOUT_EXIT = 124
+# EX_UNAVAILABLE: distinct from the command's own codes and docker's 125-127, so a skill or script
+# can tell "no isolated runtime here" apart from a failing test run.
+NO_RUNTIME_EXIT = 69
+# The setup step's network. "open" exposes the host's services and the local network to install
+# scripts, so it is never the default; the run step is always "none".
+SETUP_NETWORKS = ("none", "open")
 _PR_RE = re.compile(r"^[1-9][0-9]*$")
 
 
@@ -41,19 +48,28 @@ class SandboxError(Exception):
     """A refusal or setup failure, reported to the user as one line (exit 2)."""
 
 
-def sandbox_run_argv(docker: str, image: str, scratch: str, command: list[str], *, network: bool,
+def sandbox_steps(setup: str | None, setup_network: str, command: list[str]) -> list[tuple[list[str], str]]:
+    """``(command, network)`` per container: the optional setup step, then the run step, whose
+    network is ``none`` whatever the setup step was given."""
+    steps = [(["sh", "-c", setup], setup_network)] if setup else []
+    return steps + [(command, "none")]
+
+
+def sandbox_run_argv(docker: str, image: str, scratch: str, command: list[str], *, network: str,
                      limits: bool, cpus: float, memory_mb: int, name: str) -> list[str]:
     """The ``docker run`` argv for one step. Pure, so the lock is testable without a runtime.
 
-    Only the setup step gets a network (the runtime's default one); every other flag is the same
-    for both steps, and nothing but image, limits and name comes from the caller.
+    ``network`` is ``none`` or ``open`` (the runtime's default network); every other flag is the
+    same for every step, and nothing but image, limits and name comes from the caller.
     """
+    if network not in SETUP_NETWORKS:
+        raise ValueError(f"unknown sandbox network {network!r}")
     argv = [docker, "run", "--rm", "--name", name,
             "--cap-drop", "ALL", "--security-opt", "no-new-privileges",
             "--read-only", "--tmpfs", "/tmp:rw,exec,nosuid,size=1g",
             "--user", _SANDBOX_USER,
             "-v", f"{scratch}:{_MOUNT}", "-w", _SRC]
-    if not network:
+    if network == "none":
         argv += ["--network", "none"]
     if limits:
         argv += ["--pids-limit", _PIDS_LIMIT]
@@ -196,13 +212,17 @@ def cmd_sandbox_run(args) -> int:
 
     docker = find_docker()
     if not docker:
-        print("hermes sandbox run needs Docker or Podman; neither was found.", file=sys.stderr)
-        return 2
+        print("hermes sandbox run: no container runtime found; it needs Docker or Podman.\n"
+              "  Install Docker Desktop (macOS/Windows), Docker Engine or Podman (Linux):\n"
+              "  https://docs.docker.com/get-docker/ or https://podman.io/docs/installation\n"
+              "  Do not run this code on the host instead: it would run as you, with access to your "
+              "keys and tokens.", file=sys.stderr)
+        return NO_RUNTIME_EXIT
     if subprocess.run([docker, "version"], capture_output=True, stdin=subprocess.DEVNULL,
                       timeout=15).returncode != 0:
-        print(f"hermes sandbox run: the container runtime is not reachable; {docker_runtime_start_hint(docker)}.",
-              file=sys.stderr)
-        return 2
+        print(f"hermes sandbox run: the container runtime is not reachable; {docker_runtime_start_hint(docker)}.\n"
+              "  Do not run this code on the host instead.", file=sys.stderr)
+        return NO_RUNTIME_EXIT
 
     from hermes_cli.config import load_config
 
@@ -224,17 +244,22 @@ def cmd_sandbox_run(args) -> int:
         _open_scratch(scratch)
         limits = _cgroup_limits_available(image)
         print(f"hermes sandbox: {label} in {image} (no network, no credentials, read-only root)", file=sys.stderr)
+        if args.setup and args.setup_network == "open":
+            print("hermes sandbox: warning: --setup-network open lets install scripts reach services on "
+                  "this host, the local network and the internet", file=sys.stderr)
 
-        def step(step_command: list[str], network: bool) -> int:
+        def step(step_command: list[str], network: str) -> int:
             name = f"hermes-sandbox-{uuid.uuid4().hex[:10]}"
             argv = sandbox_run_argv(docker, image, str(scratch), step_command, network=network,
                                     limits=limits, cpus=cpus, memory_mb=memory_mb, name=name)
             return _run_step(argv, docker, name, args.timeout)
 
-        if args.setup and (rc := step(["sh", "-c", args.setup], True)) != 0:
-            print(f"hermes sandbox: --setup failed (exit {rc})", file=sys.stderr)
-            return rc
-        return step(command, False)
+        *setup_steps, (run_command, run_network) = sandbox_steps(args.setup, args.setup_network, command)
+        for setup_command, setup_network in setup_steps:
+            if (rc := step(setup_command, setup_network)) != 0:
+                print(f"hermes sandbox: --setup failed (exit {rc})", file=sys.stderr)
+                return rc
+        return step(run_command, run_network)
     finally:
         shutil.rmtree(scratch, ignore_errors=True)
 

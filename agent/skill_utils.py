@@ -2,6 +2,7 @@
 Import-light by design: no tool registry, CLI config, or provider resolution."""
 
 import ast
+import datetime
 import hashlib
 import logging
 import os
@@ -101,6 +102,30 @@ def yaml_load(content: str):
     return _yaml_load_fn(content)
 
 
+def _json_safe_frontmatter(value: Any) -> Any:
+    """YAML resolves unquoted dates/times (``updated: 2025-12-01``) to ``datetime`` objects,
+    and skill metadata ends in ``json.dumps`` (skill_view), so they are kept as ISO text."""
+    if isinstance(value, dict):
+        return {_json_safe_frontmatter(k): _json_safe_frontmatter(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_json_safe_frontmatter(v) for v in value]
+    if isinstance(value, (datetime.date, datetime.time)):
+        return value.isoformat()
+    return value
+
+
+def _coerce_identity_fields(frontmatter: Dict[str, Any]) -> None:
+    """Every consumer treats ``name``/``description`` as text (sliced, slugified, compared to
+    the looked-up name), so a bare ``name:`` or ``name: 2048`` must not silently drop the
+    skill from listings and slash commands. Blank values fall back to the consumer's default."""
+    for key in ("name", "description"):
+        value = frontmatter.get(key)
+        if value is None or (isinstance(value, str) and not value.strip()):
+            frontmatter.pop(key, None)
+        elif isinstance(value, (int, float)):
+            frontmatter[key] = str(value)
+
+
 def parse_frontmatter(content: str) -> Tuple[Dict[str, Any], str]:
     """Parse YAML frontmatter from markdown; returns (frontmatter_dict, body).
     Malformed YAML falls back to key:value line splitting. A leading UTF-8 BOM
@@ -115,7 +140,8 @@ def parse_frontmatter(content: str) -> Tuple[Dict[str, Any], str]:
     try:
         parsed = yaml_load(yaml_content)
         if isinstance(parsed, dict):
-            frontmatter = parsed
+            frontmatter = _json_safe_frontmatter(parsed)
+            _coerce_identity_fields(frontmatter)
     except Exception:
         for line in yaml_content.strip().split("\n"):
             if ":" in line:

@@ -945,6 +945,40 @@ describe('PreviewPane off-screen guest', () => {
     expect(setPreviewGuestHidden).toHaveBeenLastCalledWith(41, false)
   })
 
+  // A guest has no id until it attaches; one that attaches after its session
+  // was already parked must still be reported to main and muted.
+  it('reports and mutes a guest that attaches while its session is already hidden', async () => {
+    const setPreviewGuestHidden = vi.fn()
+    desktopWindow.hermesDesktop = { setPreviewGuestHidden } as unknown as Window['hermesDesktop']
+    act(() => setTreePaneParked('preview-tile:url:late', true))
+
+    let rendered!: ReturnType<typeof render>
+
+    await act(async () => {
+      rendered = render(
+        <PaneVisibleContext value={false}>
+          <PreviewPane tabId="url:late" target={target} />
+        </PaneVisibleContext>
+      )
+    })
+
+    let muted = false
+    const webview = rendered.container.querySelector('webview')!
+    Object.assign(webview, {
+      getWebContentsId: () => 52,
+      isAudioMuted: () => muted,
+      setAudioMuted: (next: boolean) => (muted = next)
+    })
+
+    await act(async () => {
+      webview.dispatchEvent(new Event('dom-ready'))
+    })
+
+    expect(setPreviewGuestHidden).toHaveBeenLastCalledWith(52, true)
+    expect(muted).toBe(true)
+    act(() => setTreePaneParked('preview-tile:url:late', false))
+  })
+
   // A hidden session's kept page keeps running, but is not heard from the chat
   // the user switched to; it comes back with the sound it had.
   async function renderAudibleGuest(tabId: string, mutedBefore: boolean) {

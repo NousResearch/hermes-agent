@@ -15,7 +15,7 @@
  */
 
 import { useStore } from '@nanostores/react'
-import { type RefObject, useEffect } from 'react'
+import { type RefObject, useCallback, useEffect, useState } from 'react'
 
 import { usePaneVisible } from '@/components/pane-shell/pane-visibility'
 import { $parkedTreePanes } from '@/components/pane-shell/tree/parked-panes'
@@ -55,10 +55,16 @@ function muteGuest(webview: OffscreenGuest): boolean {
   }
 }
 
-export function usePreviewGuestOffscreen(webviewRef: RefObject<null | OffscreenGuest>, tabId?: string): void {
+/** Reports and mutes the guest as it goes off screen. Returns a `dom-ready`
+ *  listener the pane must attach to its `<webview>`: a guest has no id until it
+ *  attaches, and one that attaches while its session is already hidden would
+ *  otherwise never be reported or muted (the effects only re-run on change). */
+export function usePreviewGuestOffscreen(webviewRef: RefObject<null | OffscreenGuest>, tabId?: string): () => void {
   const hidden = !usePaneVisible()
   const parkedPanes = useStore($parkedTreePanes)
   const parked = Boolean(tabId) && parkedPanes.has(`${PREVIEW_TILE_PREFIX}:${tabId}`)
+  const [attachedId, setAttachedId] = useState<null | number>(null)
+  const noteGuestReady = useCallback(() => setAttachedId(guestId(webviewRef.current)), [webviewRef])
 
   useEffect(() => {
     const id = guestId(webviewRef.current)
@@ -66,7 +72,7 @@ export function usePreviewGuestOffscreen(webviewRef: RefObject<null | OffscreenG
     if (id !== null) {
       window.hermesDesktop?.setPreviewGuestHidden?.(id, hidden)
     }
-  }, [hidden, webviewRef])
+  }, [attachedId, hidden, webviewRef])
 
   useEffect(() => {
     const webview = webviewRef.current
@@ -88,5 +94,7 @@ export function usePreviewGuestOffscreen(webviewRef: RefObject<null | OffscreenG
         // The guest went away while parked; nothing to restore.
       }
     }
-  }, [parked, webviewRef])
+  }, [attachedId, parked, webviewRef])
+
+  return noteGuestReady
 }

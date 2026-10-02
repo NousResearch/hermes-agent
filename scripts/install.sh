@@ -476,8 +476,8 @@ stage_repository() {
             # Existing treeless checkout: same commit-graph lazy-fetch loop guard (#127711).
             git -C "$INSTALL_DIR" config maintenance.auto false \
                 || log_warn "could not disable maintenance.auto in $INSTALL_DIR"
-            git -C "$INSTALL_DIR" config gc.auto 0 \
-                || log_warn "could not disable gc.auto in $INSTALL_DIR"
+            git -C "$INSTALL_DIR" config gc.writeCommitGraph false \
+                || log_warn "could not disable gc.writeCommitGraph in $INSTALL_DIR"
             git -C "$INSTALL_DIR" config fetch.writeCommitGraph false \
                 || log_warn "could not disable fetch.writeCommitGraph in $INSTALL_DIR"
         fi
@@ -596,13 +596,14 @@ stage_repository() {
             fail "cannot publish cloned checkout"
         fi
         rmdir "$staged"
-        # A treeless checkout plus detached git maintenance auto commit-graph
-        # writes lazy-fetch every missing tree in a loop (#127711). Automatic
-        # maintenance is never needed here; explicit git gc still works.
+        # A treeless checkout must never write a commit-graph: over a graph with
+        # changed-path data that lazy-fetches the trees of every unseen commit, in a
+        # loop (#127711). gc.auto stays on: `hermes update` folds lazy-fetch packs with
+        # `gc --auto`.
         git -C "$INSTALL_DIR" config maintenance.auto false \
             || log_warn "could not disable maintenance.auto in $INSTALL_DIR"
-        git -C "$INSTALL_DIR" config gc.auto 0 \
-            || log_warn "could not disable gc.auto in $INSTALL_DIR"
+        git -C "$INSTALL_DIR" config gc.writeCommitGraph false \
+            || log_warn "could not disable gc.writeCommitGraph in $INSTALL_DIR"
         git -C "$INSTALL_DIR" config fetch.writeCommitGraph false \
             || log_warn "could not disable fetch.writeCommitGraph in $INSTALL_DIR"
         log_success "Hermes Agent cloned"

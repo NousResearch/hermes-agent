@@ -12,9 +12,17 @@ import time
 from pathlib import Path
 from typing import Callable, Iterable, List, Optional
 
-from hermes_cli._subprocess_compat import windows_hide_flags
+from hermes_cli._subprocess_compat import (
+    NO_LAZY_FETCH_ENV,
+    bounded_probe_run,
+    noninteractive_git_env,
+    windows_hide_flags,
+)
 
 logger = logging.getLogger(__name__)
+
+# Folding hundreds of tiny packs takes well under a second; this only bounds a pathological repack.
+LAZY_FETCH_GC_TIMEOUT_SECONDS = 120
 
 # Files younger than this are presumed live (a fetch may be in flight) and are never removed. Lock
 # files live for seconds and a healthy fetch completes in minutes; 10 minutes is abandoned.
@@ -126,31 +134,43 @@ def mark_unmarked_packs_promisor(repo_root: Path) -> int:
     return marked
 
 
-# A tree:0 partial clone that lets detached git maintenance auto write a
-# commit-graph lazy-fetches every missing tree on demand, and each fetch
-# re-triggers maintenance, looping without bound (#127711). A repo cloned or
-# converted to tree:0 never needs automatic maintenance; explicit git gc and
-# git maintenance run still work.
+# In a partial clone whose commit-graph already carries changed-path (Bloom) data, any commit-graph
+# write over commits it has not seen yet needs their trees: one lazy fetch (and one pack) per commit,
+# and each lazy fetch spawns ``git maintenance`` again, which is the unbounded loop of #127711. gc,
+# ``maintenance run --task=commit-graph`` and ``fetch.writeCommitGraph`` all write one (git
+# 2.50.1, 2.53.0 and 2.55.0 alike). So a promisor checkout never writes the graph. ``gc.auto`` stays
+# at its default on purpose: ``gc --auto`` is how consolidate_lazy_fetch_packs folds the lazy-fetch
+# packs, and ``gc.auto=0`` turns that into a no-op.
 _TREE0_MAINTENANCE_OFF = (
     ("maintenance.auto", "false"),
-    ("gc.auto", "0"),
+    ("gc.writeCommitGraph", "false"),
     ("fetch.writeCommitGraph", "false"),
 )
 
 
 def disable_tree0_auto_maintenance(repo_root: Path) -> None:
-    """Turn off automatic maintenance commit-graph writes in a tree:0 clone.
+    """Keep git from writing a commit-graph or running automatic maintenance in a partial clone.
 
-    Never raises: a read-only config must not turn fetch recovery into a
+    Idempotent (a value already in place is not rewritten, so concurrent git never meets a config
+    lock from this) and never raises: a read-only config must not turn fetch recovery into a
     traceback, matching mark_unmarked_packs_promisor above.
     """
     for key, value in _TREE0_MAINTENANCE_OFF:
         try:
+            current = subprocess.run(
+                ["git", "config", "--local", "--get", key],
+                cwd=str(repo_root), capture_output=True, text=True,
+                encoding="utf-8", errors="replace", timeout=30,
+                creationflags=windows_hide_flags(),
+            ).stdout.strip()
+            if current == value:
+                continue
             subprocess.run(
-                ["git", "config", key, value],
+                ["git", "config", "--local", key, value],
                 cwd=str(repo_root), check=True,
                 capture_output=True, text=True,
                 encoding="utf-8", errors="replace", timeout=30,
+                creationflags=windows_hide_flags(),
             )
         except Exception:
             logger.warning("Could not set %s=%s in %s", key, value, repo_root)
@@ -566,23 +586,23 @@ def consolidate_lazy_fetch_packs(repo_root: Path) -> int:
     blob by blob, so ``.git`` grows without bound (2,475 packs / 39 GiB observed for a ~1 GiB
     repo, #129712). ``git gc --auto`` already knows when this is worth doing: it exits in
     milliseconds while the small-pack count sits under ``gc.autoPackLimit`` (default 50) and
-    repacks them into one pack once past it. The gc does not write a commit-graph: on git ≤2.50
-    a freshly written one makes the next lazy fetch abort with "in the commit graph file but
-    not in the object database". gc's repack merges the marked packs into a fresh one; on gits
-    that do not carry the ``.promisor`` marker over, an unmarked pack is the git 2.53+ fetch
-    crash (#124272), so the merged pack is re-marked afterwards. Best-effort like every helper
-    here: never raises, returns 0 for a non-partial checkout or when nothing folded.
+    repacks them into one pack once past it, keeping the ``.promisor`` marker. The gc must not
+    write a commit-graph (see ``_TREE0_MAINTENANCE_OFF``): over a Bloom-carrying graph that is a
+    lazy fetch per unseen commit, so the same call that folds 100 packs would leave 30 new ones.
+    Runs under ``bounded_probe_run`` because ``subprocess.run(timeout=)`` kills only ``git gc``
+    and leaves its ``pack-objects`` child running. Best-effort like every helper here: never
+    raises, returns 0 for a non-partial checkout or when nothing folded.
     """
     try:
         if _partial_clone_filter(repo_root, creationflags=windows_hide_flags()) is None:
             return 0  # only a promisor remote's on-demand fetches write these packs
+        disable_tree0_auto_maintenance(repo_root)
         before = len(list(_pack_dir(repo_root).glob("pack-*.pack")))
-        subprocess.run(
+        bounded_probe_run(
             ["git", "-c", "gc.autoDetach=false", "-c", "gc.writeCommitGraph=false", "gc", "--auto"],
-            cwd=str(repo_root), capture_output=True, timeout=300,
-            creationflags=windows_hide_flags(),
+            timeout=LAZY_FETCH_GC_TIMEOUT_SECONDS, cwd=str(repo_root),
+            env={**noninteractive_git_env(), **NO_LAZY_FETCH_ENV},
         )
-        mark_unmarked_packs_promisor(repo_root)
         folded = before - len(list(_pack_dir(repo_root).glob("pack-*.pack")))
         if folded > 0:
             logger.info("Folded %d lazy-fetch pack(s) in %s", folded, repo_root)

@@ -3824,9 +3824,14 @@ def _launch_external_cron_worker(job: dict) -> bool:
             if dispatch.mode == "scoped" and scoped_spawn_lost_user_bus(worker_env):
                 # systemd-run itself failed before any worker ran, so the captured stderr
                 # holds nothing useful: name the cause, not the exit code.
+                # ``os.getuid`` is POSIX-only, so it is read defensively rather than called:
+                # a host with no uid still gets the cause named instead of an AttributeError
+                # that hides it (scoped dispatch itself is systemd-run/user-D-Bus, Linux-only).
+                uid = os.getuid() if hasattr(os, "getuid") else None  # windows-footgun: ok — scoped dispatch exists only on Linux
+                bus = f"/run/user/{uid}/bus" if uid is not None else "the per-user bus socket"
                 raise RuntimeError(
                     "restart-safe systemd scope could not be created: the user D-Bus session at "
-                    f"/run/user/{os.getuid()}/bus disappeared after the gateway started. On a "  # windows-footgun: ok — scoped dispatch exists only on Linux
+                    f"{bus} disappeared after the gateway started. On a "
                     "system-level service install, run `sudo loginctl enable-linger <gateway-user>`; "
                     "the next fire dispatches without scope isolation."
                 )

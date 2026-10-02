@@ -14,6 +14,53 @@ inside the test, which overrides this fixture's value for that scope.
 import pytest
 
 
+def marked_cron_interpreter(venv_dir, env_name: str) -> str:
+    """A ``venv/bin/python3`` a job can name as its ``interpreter``, which runs the
+    real interpreter with ``env_name`` set — so a test can prove the override was
+    honoured by watching that one variable, not by watching a path.
+
+    POSIX: the venv layout plus a ``#!`` script that re-execs ``sys.executable``.
+    Windows: ``CreateProcessW`` cannot exec a shebang file, so the override must be a
+    REAL Python launcher — a venv-shaped copy of ``sys.executable`` whose
+    ``sitecustomize`` sets the marker. Either way the wrapper is named like an
+    interpreter, so ``_resolve_cron_interpreter`` accepts it on both platforms (#125459).
+    """
+    import shutil
+    import sys
+
+    if sys.platform == "win32":
+        site = venv_dir / "Lib" / "site-packages"
+        site.mkdir(parents=True)
+        (venv_dir / "pyvenv.cfg").write_text(
+            f"home = {sys.base_prefix}\n"
+            f"version = {sys.version_info[0]}.{sys.version_info[1]}\n"
+            "include-system-site-packages = false\n",
+            encoding="utf-8",
+        )
+        (site / "sitecustomize.py").write_text(
+            f"import os\nos.environ[{env_name!r}] = \"1\"\n", encoding="utf-8"
+        )
+        wrapper = venv_dir / "Scripts" / "python3.exe"
+        wrapper.parent.mkdir(parents=True)
+        shutil.copy2(sys.executable, wrapper)
+        return str(wrapper)
+
+    import stat
+
+    wrapper = venv_dir / "bin" / "python3"
+    wrapper.parent.mkdir(parents=True)
+    wrapper.write_text(
+        f"#!{sys.executable}\n"
+        "import os, sys\n"
+        "env = os.environ.copy()\n"
+        f'env[{env_name!r}] = "1"\n'
+        "os.execve(sys.executable, [sys.executable, *sys.argv[1:]], env)\n",
+        encoding="utf-8",
+    )
+    wrapper.chmod(wrapper.stat().st_mode | stat.S_IXUSR)
+    return str(wrapper)
+
+
 @pytest.fixture()
 def make_cron_provider():
     """Factory for minimal CronScheduler test doubles.

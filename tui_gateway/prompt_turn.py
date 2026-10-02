@@ -460,7 +460,7 @@ def _run_post_turn_followups(
     # not consume session A's event.  Unclaimable events are requeued for the poller.
     try:
         from tools.process_registry import process_registry
-        # _finish_turn has released the worker's runtime scope. Queue ownership,
+        # _pre_settle_teardown / _finish_turn has released the worker's runtime scope. Queue ownership,
         # notification policy and nested dispatch still belong to this session.
         with _session_profile_runtime_scope(session):
             drained = process_registry.drain_notifications(
@@ -502,6 +502,7 @@ class _TurnRun:
     prompt_text: str = ""
     marker_key: str = ""
     receipt_attempted: bool = False
+    settled: bool = False
 
 
 def _adopt_out_of_band_turns(session: dict) -> None:
@@ -802,9 +803,14 @@ def _invoke_agent(
             st.result = agent.run_conversation(run_message, **st.run_kwargs)
     finally:
         # Stop AND join before anything emits: a tick surviving past message.complete would
-        # roll the client's usage back to a stale snapshot (unbounded join: same worst case).
+        # roll the client's usage back to a stale snapshot. Bounded join avoids wedging (#131740);
+        # the ticker loop checks _usage_stop.is_set() before emitting (server.py), and fallback
+        # handles mock objects in existing test suites that define join with no args.
         _usage_stop.set()
-        _usage_thread.join()
+        try:
+            _usage_thread.join(timeout=2.0)
+        except TypeError:
+            _usage_thread.join()
 
 
 def _absorb_turn_result(
@@ -1027,48 +1033,123 @@ def _recover_turn_exception(sid: str, session: dict, st: _TurnRun, e: BaseExcept
         _emit("error", sid, {"message": str(e)})
 
 
-def _finish_turn(sid: str, session: dict, st: _TurnRun) -> None:
-    """Finally-path of the turn: release everything, then the "tui turn finished" bookend."""
-    # Drop both pre-turn history snapshots before asking glibc to return pages (a test
-    # inspects these two locals by name).
+def _pre_settle_teardown(
+    sid: str, session: dict, st: _TurnRun,
+    runtime_session_token=None, transport_token=None,
+) -> None:
+    """Drop local snapshots and reset ContextVars/scopes (except home) before settlement (#131740)."""
     history, run_kwargs = st.history, st.run_kwargs
     history.clear()
     if isinstance(run_kwargs, dict):
         run_kwargs.clear()
-    try:  # while the profile HERMES_HOME override is still active (session's own config)
-        from hermes_cli.mem_trim import trim_memory
-        # The finishing session is still marked running here; every OTHER session must be idle (#58576).
-        if _sessions_quiescent(exclude=sid):
-            trim_memory(reason="tui turn completion")
-    except Exception:
-        logger.debug("post-turn memory trim failed", exc_info=True)
-    if st.thinking_started:
-        with contextlib.suppress(Exception):
-            from tools.voice_mode import stop_thinking_sound
-            stop_thinking_sound()
-    if st.tts_queue is not None:
-        st.tts_queue.put(None)  # end-of-text sentinel — flush + finish speaking
     if st.one_turn_restore:
-        try:
+        with contextlib.suppress(Exception):
             _restore_agent_model_runtime(st.agent, st.one_turn_restore)
             _restart_slash_worker(sid, session)
             _persist_live_session_runtime(session)
             _persist_live_session_system_prompt(session)
-        except Exception:
-            logger.debug("TUI one-turn model restore failed", exc_info=True)
+
     scopes = st.scopes
     with contextlib.suppress(Exception):
         if scopes.approval is not None:
             from tools.approval_context import reset_current_session_key
             reset_current_session_key(scopes.approval)
-    if scopes.home is not None:
-        reset_hermes_home_override(scopes.home)
-    if scopes.secret is not None:
-        reset_secret_scope(scopes.secret)
-    if scopes.terminal is not None:
-        from tools.terminal_scope import reset_terminal_scope
-        reset_terminal_scope(scopes.terminal)
-    _clear_session_context(scopes.session_tokens)
+    with contextlib.suppress(Exception):
+        if scopes.secret is not None:
+            reset_secret_scope(scopes.secret)
+    with contextlib.suppress(Exception):
+        if scopes.terminal is not None:
+            from tools.terminal_scope import reset_terminal_scope
+            reset_terminal_scope(scopes.terminal)
+    with contextlib.suppress(Exception):
+        _clear_session_context(scopes.session_tokens)
+    if runtime_session_token is not None:
+        with contextlib.suppress(Exception):
+            _current_runtime_session_record.reset(runtime_session_token)
+    if transport_token is not None:
+        with contextlib.suppress(Exception):
+            reset_transport(transport_token)
+
+
+def _settle_turn(
+    sid: str, session: dict, st: _TurnRun, turn_started_monotonic: float,
+) -> None:
+    """Early turn settlement: clear busy, emit closing bookend, and retire crash marker (#131740)."""
+    # A stale interim closure must not fire during a later turn.
+    with contextlib.suppress(Exception):
+        if getattr(st, "agent", None) is not None:
+            st.agent.interim_assistant_callback = None
+    with contextlib.suppress(Exception):
+        with session["history_lock"]:
+            session["running"] = False
+            session["last_active"] = time.time()
+            if not st.error_retained:
+                _clear_inflight_turn(session)
+            _release_hosted_room_turn_slot(session)
+
+    # Closing bookend of "tui prompt accepted" — exactly one per accepted prompt.
+    # agent.session_id is re-read because compression may have rotated it (an
+    # accepted/finished pair whose id changed IS a rotation trace).
+    with contextlib.suppress(Exception):
+        if isinstance(st.result, dict):
+            status = _result_status(st.result)
+        else:
+            status = "error" if st.error_retained else "complete"
+        logger.info(
+            "tui turn finished: ui_session=%s session_key=%s agent_session_id=%s status=%s "
+            "error_retained=%s duration=%.1fs%s",
+            sid, session.get("session_key") or "", getattr(st.agent, "session_id", "") or "",
+            status, st.error_retained, time.monotonic() - turn_started_monotonic,
+            st.error_detail)
+
+    # Backstop for turns that never reached a terminal frame.
+    if st.receipt_committed:
+        with contextlib.suppress(Exception):
+            _retire_turn_marker(session, st.marker_key)
+        with contextlib.suppress(Exception):
+            with session["history_lock"]:
+                if session.get("_active_turn_marker_key") == st.marker_key:
+                    session.pop("_active_turn_marker_key", None)
+                session.pop("_hosted_room_task", None)
+    session.pop("_auto_continue_scheduled", None)
+    with contextlib.suppress(Exception):
+        _emit_settled_session_info(sid, session, st.agent)
+    st.settled = True
+
+
+def _post_turn_housekeeping(sid: str, session: dict, st: _TurnRun) -> None:
+    """Best-effort post-settle work: trim under home, home reset, audio, and TTS (#58576/#131740)."""
+    try:
+        from hermes_cli.mem_trim import trim_memory
+        # If this turn was already settled, verify that a subsequent turn has not already started
+        # on this session before executing expensive heap trim (#58576/#131740).
+        if getattr(st, "settled", False) and session.get("running"):
+            logger.debug("skipping post-turn trim: subsequent turn already running on %s", sid)
+            return
+        if _sessions_quiescent(exclude=sid):
+            trim_memory(reason="tui turn completion")
+    except Exception:
+        logger.debug("post-turn memory trim failed", exc_info=True)
+    finally:
+        with contextlib.suppress(Exception):
+            if st.scopes.home is not None:
+                reset_hermes_home_override(st.scopes.home)
+        if st.thinking_started:
+            with contextlib.suppress(Exception):
+                from tools.voice_mode import stop_thinking_sound
+                stop_thinking_sound()
+        if st.tts_queue is not None:
+            with contextlib.suppress(Exception):
+                try:
+                    st.tts_queue.put(None, timeout=1.0)
+                except TypeError:
+                    st.tts_queue.put(None)
+
+
+def _finish_turn(sid: str, session: dict, st: _TurnRun) -> None:
+    """Compatibility facade for external tests exercising post-turn trim/cleanup (#58576)."""
+    _post_turn_housekeeping(sid, session, st)
+
 
 
 # Bounded so a contended state.db cannot hold ``_sessions_lock``; a skipped heal is retried on the next prompt.
@@ -1182,39 +1263,83 @@ def _run_prompt_submit(
         except Exception as e:
             _recover_turn_exception(sid, session, st, e)
         finally:
-            _finish_turn(sid, session, st)
-            _current_runtime_session_record.reset(runtime_session_token)
-            reset_transport(transport_token)
-            # A stale interim closure must not fire during a later turn.
-            st.agent.interim_assistant_callback = None
-            with session["history_lock"]:
-                session["running"] = False
-                session["last_active"] = time.time()
-                if not st.error_retained:
-                    _clear_inflight_turn(session)
-                _release_hosted_room_turn_slot(session)
-            # Closing bookend of "tui prompt accepted" — exactly one per accepted prompt.
-            # agent.session_id is re-read because compression may have rotated it (an
-            # accepted/finished pair whose id changed IS a rotation trace).
-            if isinstance(st.result, dict):
-                status = _result_status(st.result)
-            else:
-                status = "error" if st.error_retained else "complete"
-            logger.info(
-                "tui turn finished: ui_session=%s session_key=%s agent_session_id=%s status=%s "
-                "error_retained=%s duration=%.1fs%s",
-                sid, session.get("session_key") or "", getattr(st.agent, "session_id", "") or "",
-                status, st.error_retained, time.monotonic() - _turn_started_monotonic,
-                st.error_detail)
-            # Backstop for turns that never reached a terminal frame.
-            if st.receipt_committed:
-                _retire_turn_marker(session, st.marker_key)
-                with session["history_lock"]:
-                    if session.get("_active_turn_marker_key") == st.marker_key:
-                        session.pop("_active_turn_marker_key", None)
-                    session.pop("_hosted_room_task", None)
-            session.pop("_auto_continue_scheduled", None)
-            _emit_settled_session_info(sid, session, st.agent)
+            try:
+                _pre_settle = globals().get("_pre_settle_teardown")
+                if _pre_settle is not None:
+                    _pre_settle(
+                        sid, session, st,
+                        runtime_session_token=runtime_session_token,
+                        transport_token=transport_token,
+                    )
+            except Exception:
+                logger.error("pre-settle teardown failed for %s", sid, exc_info=True)
+            finally:
+                try:
+                    _settle = globals().get("_settle_turn")
+                    if _settle is not None:
+                        _settle(sid, session, st, _turn_started_monotonic)
+                    else:
+                        try:
+                            if getattr(st, "agent", None) is not None:
+                                st.agent.interim_assistant_callback = None
+                        except Exception:
+                            pass
+                        with session["history_lock"]:
+                            session["running"] = False
+                            session["last_active"] = time.time()
+                            try:
+                                if not st.error_retained:
+                                    _clear = globals().get("_clear_inflight_turn")
+                                    if _clear is not None:
+                                        _clear(session)
+                            except Exception:
+                                pass
+                            try:
+                                _release_slot = globals().get("_release_hosted_room_turn_slot")
+                                if _release_slot is not None:
+                                    _release_slot(session)
+                            except Exception:
+                                pass
+                        if st.receipt_committed:
+                            try:
+                                _retire = globals().get("_retire_turn_marker")
+                                if _retire is not None:
+                                    _retire(session, st.marker_key)
+                            except Exception:
+                                pass
+                        try:
+                            _emit_settled = globals().get("_emit_settled_session_info")
+                            if _emit_settled is not None:
+                                _emit_settled(sid, session, st.agent)
+                        except Exception:
+                            pass
+                        st.settled = True
+                except Exception:
+                    logger.error("settle turn failed for %s", sid, exc_info=True)
+                    try:
+                        with session["history_lock"]:
+                            session["running"] = False
+                            if not st.error_retained:
+                                _clear = globals().get("_clear_inflight_turn")
+                                if _clear is not None:
+                                    _clear(session)
+                            _release_slot = globals().get("_release_hosted_room_turn_slot")
+                            if _release_slot is not None:
+                                _release_slot(session)
+                    except Exception:
+                        pass
+                    if st.receipt_committed:
+                        try:
+                            _retire = globals().get("_retire_turn_marker")
+                            if _retire is not None:
+                                _retire(session, st.marker_key)
+                        except Exception:
+                            pass
+                    st.settled = True
+                finally:
+                    _housekeeping = globals().get("_post_turn_housekeeping")
+                    if _housekeeping is not None:
+                        _housekeeping(sid, session, st)
         return st.result, goal_followup
     def run():
         from agent.notification_presentation import notification_turn

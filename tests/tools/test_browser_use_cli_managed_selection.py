@@ -38,7 +38,9 @@ def test_canonical_nous_selection_routes_browser_use_through_gateway(monkeypatch
 
 
 def test_direct_browser_use_selection_stays_on_native_cli_path(monkeypatch):
-    import tools.browser_tool as bt
+    from tools import browser_tool_cdp as bt_cdp
+    from tools import browser_tool_cloud as bt_cloud
+    from tools import browser_tool_session as bt_session
 
     class _BrowserUseProvider:
         name = "browser-use"

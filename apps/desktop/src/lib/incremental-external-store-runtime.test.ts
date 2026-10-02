@@ -2,6 +2,9 @@ import { fromThreadMessageLike, getAutoStatus, MessageRepository } from '@assist
 import type { ExportedMessageRepository, ThreadMessage } from '@assistant-ui/react'
 import { describe, expect, it, vi } from 'vitest'
 
+import { toChatMessages } from './chat-messages'
+import { toRuntimeMessage } from './chat-runtime'
+
 import { IncrementalExternalStoreRuntimeCore, syncRepositoryIncrementally } from './incremental-external-store-runtime'
 
 const STATUS = getAutoStatus(false, false, false, false, undefined)
@@ -182,4 +185,39 @@ describe('IncrementalExternalStoreRuntimeCore', () => {
       `user-queued-${runtimeId}`
     ])
   })
+})
+
+it('keeps a durable accepted queue from creating a second optimistic reply through production conversion', () => {
+  for (const marked of [true, false]) {
+    const queued = toChatMessages([
+      {
+        id: 7,
+        role: 'user',
+        content: 'next accepted turn',
+        timestamp: 10,
+        display_metadata: { _queued_prompt: marked }
+      }
+    ])[0]
+    const assistant = fromThreadMessageLike(
+      { role: 'assistant', content: [{ type: 'text', text: 'current reply' }] },
+      'assistant-stream-runtime',
+      { type: 'running' }
+    )
+    const queue = fromThreadMessageLike(toRuntimeMessage(queued), queued.id, STATUS)
+    const runtime = new IncrementalExternalStoreRuntimeCore({
+      isRunning: true,
+      messageRepository: exported(chain([assistant, queue])),
+      onNew: async () => {}
+    })
+    const thread = runtime.threads.getMainThreadRuntimeCore() as unknown as { repository: MessageRepository }
+    expect(thread.repository.getMessages().map(item => item.role)).toEqual(
+      marked ? ['assistant', 'user'] : ['assistant', 'user', 'assistant']
+    )
+    expect(
+      thread.repository
+        .getMessages()
+        .slice(0, 2)
+        .map(item => item.id)
+    ).toEqual([assistant.id, queued.id])
+  }
 })

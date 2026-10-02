@@ -37,21 +37,27 @@ const getThreadListAdapter = (store: ExternalStoreAdapter) => store.adapters?.th
 
 function hasAuthoritativeQueuedTail(messages: readonly ThreadMessage[]): boolean {
   const queued = messages.at(-1)
+  const assistant = messages.at(-2)
 
-  if (queued?.role !== 'user' || !queued.id.startsWith('user-queued-')) {
+  if (queued?.role !== 'user' || assistant?.role !== 'assistant' || assistant.status?.type !== 'running') {
     return false
   }
 
-  const runtimeId = queued.id.slice('user-queued-'.length)
-  const assistant = messages.at(-2)
+  if (queued.id.startsWith('user-queued-')) {
+    return assistant.id === `assistant-stream-${queued.id.slice('user-queued-'.length)}`
+  }
 
+  // REST may restore the queue's durable ID instead of its synthetic one.
+  // Only the accepted-row marker can identify that next-turn boundary.
+  const metadata = queued.metadata.custom
   return (
-    assistant?.role === 'assistant' &&
-    assistant.id === `assistant-stream-${runtimeId}` &&
-    assistant.status?.type === 'running'
+    metadata?.queuedPrompt === true &&
+    typeof metadata.rowId === 'number' &&
+    Number.isSafeInteger(metadata.rowId) &&
+    metadata.rowId > 0 &&
+    assistant.id.startsWith('assistant-stream-')
   )
 }
-
 /**
  * Write only the items whose (message, parentId) pair actually moved.
  *

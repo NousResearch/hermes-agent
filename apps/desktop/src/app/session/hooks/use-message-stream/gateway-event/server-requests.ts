@@ -20,6 +20,7 @@ import type { TourAction, TourStep } from '@/lib/tour'
 import { normalizeQuestions, setClarifyRequest } from '@/store/clarify'
 import type { ScopedServerRequest } from '@/store/gateway'
 import { dispatchNativeNotification } from '@/store/native-notifications'
+import type { PreviewOwner } from '@/store/preview'
 import {
   receiveApprovalRequest,
   setSecretRequest,
@@ -53,12 +54,13 @@ const loadPreviewEngine = () => {
 
 const str = (v: unknown): string => (typeof v === 'string' ? v : '')
 
-/** The stored id whose preview tabs a scoped agent request may see. An id that
- *  does not resolve yet (a runtime before its stored id binds) is null — the
- *  ownerless view — never the focused session's tabs. Only an unscoped
- *  request (no id) falls through to the focused session (undefined). */
-const previewOwnerFor = (sessionId: string): null | string | undefined =>
-  sessionId ? storedSessionIdForRuntimeId(sessionId) : undefined
+/** Whose preview tabs a scoped agent request may see: the requesting
+ *  runtime's stored id plus the tabs that runtime opened before the id bound.
+ *  An id that does not resolve yet is null — the ownerless view — never the
+ *  focused session's tabs. Only an unscoped request (no id) falls through to
+ *  the focused session (undefined). */
+const previewOwnerFor = (sessionId: string): PreviewOwner | undefined =>
+  sessionId ? { runtimeId: sessionId, sessionId: storedSessionIdForRuntimeId(sessionId) } : undefined
 
 const num = (v: unknown): number | undefined => (typeof v === 'number' ? v : undefined)
 

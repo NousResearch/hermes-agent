@@ -20,6 +20,7 @@ import driverIife from 'driver.js/dist/driver.js.iife.js?raw'
 
 import { collectTourTargets } from '@/lib/tour/collect-targets'
 import { runTourEngine, type TourAction, type TourResult } from '@/lib/tour/engine'
+import type { PreviewOwner } from '@/store/preview'
 
 import { activePreviewScriptRunner } from './preview-script-runner'
 
@@ -51,7 +52,7 @@ function buildTourScript(action: TourAction): string {
 
 /** Run one tour action in the page of the ACTIVE tab among those `owner`
  *  (the requesting session's stored id; omitted = the focused session) sees. */
-export async function runPreviewTour(action: TourAction, owner?: null | string): Promise<TourResult> {
+export async function runPreviewTour(action: TourAction, owner?: PreviewOwner): Promise<TourResult> {
   const run = activePreviewScriptRunner(owner)
 
   if (!run) {

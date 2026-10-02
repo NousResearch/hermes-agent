@@ -16,7 +16,7 @@
  */
 
 import type { PreviewActAction, PreviewActResult } from '@/lib/preview-act/act-in-page'
-import { previewTabIdsVisibleTo } from '@/store/preview'
+import { type PreviewOwner, previewTabIdsVisibleTo } from '@/store/preview'
 import { isBrowserWindow, windowBrowserTabId } from '@/store/windows'
 
 import { actOnActivePreview } from './preview-act'
@@ -89,12 +89,12 @@ function getBus(): RelayBus | null {
 
 /** True when this renderer has a live webview (or nav handle) for the active
  *  tab among those `owner` (omitted = the focused session) may see. */
-export function hasLivePreviewSurface(owner?: null | string): boolean {
+export function hasLivePreviewSurface(owner?: PreviewOwner): boolean {
   return Boolean(activePreviewScriptRunner(owner) || activePreviewNav(owner))
 }
 
 /** Scope a request to `owner`'s tabs (undefined = an unscoped request). */
-const scopeFor = (owner: null | string | undefined): { tabIds?: string[] } =>
+const scopeFor = (owner: PreviewOwner | undefined): { tabIds?: string[] } =>
   owner === undefined ? {} : { tabIds: previewTabIdsVisibleTo(owner) }
 
 function nextId(prefix: string): string {
@@ -157,7 +157,7 @@ function askPopout<T>(
 
 /** Ask the browser pop-out to run drive_preview for `owner` (the requesting
  *  session's stored id). Null when no pop-out showing one of its tabs answers. */
-export function requestPopoutPreviewAct(payload: ActPayload, owner?: null | string): Promise<PreviewActResult | null> {
+export function requestPopoutPreviewAct(payload: ActPayload, owner?: PreviewOwner): Promise<PreviewActResult | null> {
   return askPopout({ id: nextId('act'), kind: 'act', payload, ...scopeFor(owner) }, ACT_TIMEOUT_MS, response =>
     response.kind === 'act' ? response.result : undefined
   )
@@ -167,7 +167,7 @@ export function requestPopoutPreviewAct(payload: ActPayload, owner?: null | stri
  *  pop-out showing one of its tabs answers. */
 export function requestPopoutPreviewRead(
   payload: PreviewReadOptions = {},
-  owner?: null | string
+  owner?: PreviewOwner
 ): Promise<PreviewReadResult | null> {
   return askPopout({ id: nextId('read'), kind: 'read', payload, ...scopeFor(owner) }, READ_TIMEOUT_MS, response =>
     response.kind === 'read' ? response.result : undefined

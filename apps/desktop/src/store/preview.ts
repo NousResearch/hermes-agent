@@ -13,7 +13,7 @@ import { recordFeatureUse } from './desktop-metrics'
 import { $rightRailActiveTabId, type RightRailTabId, selectRightRailTab } from './layout'
 import { clearExplicitPreviewOpen, noteExplicitPreviewOpen, PREVIEW_TILE_PREFIX } from './preview-explicit'
 import { normalizeProfileKey } from './profile'
-import { $activeSessionId } from './session'
+import { $activeSessionId, $sessions, sessionMatchesStoredId } from './session'
 import { $focusedSessionIsTile, $focusedStoredSessionId } from './session-focus'
 import { canOpenBrowserWindow, isBrowserWindow, openBrowserInNewWindow, windowBrowserTabId } from './windows'
 
@@ -403,31 +403,69 @@ function tabsVisibleTo(tabs: readonly PreviewTab[], sessionId: null | string): P
   return tabs.filter(tab => tabVisibleTo(tab, sessionId, rotated))
 }
 
-/** The tabs an agent tool acting for `sessionId` (default: the focused
- *  session) may read or drive: never another session's hidden tab. A
- *  popped-out Browser renderer answers only for the one tab it shows (the
- *  chat window decided the requester may see it — `previewTabIdsVisibleTo`). */
-export function previewTabsFor(sessionId: null | string = $focusedStoredSessionId.get()): PreviewTab[] {
+/** Who an agent tool acts for: a stored id (null = none bound yet), or that
+ *  plus the runtime asking. A runtime's tabs opened before its stored id bound
+ *  are its own too, even once the selection names that id. */
+export type PreviewOwner = null | string | { runtimeId: string; sessionId: null | string }
+
+function tabsOwnedBy(tabs: readonly PreviewTab[], owner: PreviewOwner): PreviewTab[] {
+  const { runtimeId, sessionId } =
+    owner !== null && typeof owner === 'object' ? owner : { runtimeId: null, sessionId: owner }
+
+  const pending = $pendingRuntimeByTab.get()
+  const rotated = $rotatedSessionIds.get()
+
+  return tabs.filter(
+    tab =>
+      tabVisibleTo(tab, sessionId, rotated) ||
+      (runtimeId !== null && tab.sessionId == null && pending.get(tab.id) === runtimeId)
+  )
+}
+
+/** The tabs an agent tool acting for `owner` (default: the focused session)
+ *  may read or drive: never another session's hidden tab. A popped-out
+ *  Browser renderer answers only for the one tab it shows (the chat window
+ *  decided the requester may see it — `previewTabIdsVisibleTo`). */
+export function previewTabsFor(owner: PreviewOwner = $focusedStoredSessionId.get()): PreviewTab[] {
   if (isBrowserWindow()) {
     const own = windowBrowserTabId()
 
     return $previewTabs.get().filter(tab => tab.id === own)
   }
 
-  return tabsVisibleTo($previewTabs.get(), sessionId)
+  return tabsOwnedBy($previewTabs.get(), owner)
 }
 
-/** Ids of the tabs `sessionId`'s drawer holds, for scoping a request to a
- *  popped-out Browser window. */
-export function previewTabIdsVisibleTo(sessionId: null | string): string[] {
-  return tabsVisibleTo($previewTabs.get(), sessionId).map(tab => tab.id)
+/** Ids of the tabs `owner` may see in ANY profile's rail, for scoping a
+ *  request to a popped-out Browser window: a background session's Browser
+ *  can be popped out while another profile is in view. A background bucket
+ *  counts only when the requester has a tab of its own there, so one
+ *  profile's pins never answer for another profile's session. */
+export function previewTabIdsVisibleTo(owner: PreviewOwner): string[] {
+  const view = tabsOwnedBy($previewTabs.get(), owner)
+
+  const background = Object.entries(tabsByProfile).flatMap(([key, tabs]) => {
+    const visible = key === viewKey ? [] : tabsOwnedBy(tabs, owner)
+
+    return visible.some(tab => !tab.pinned) ? visible : []
+  })
+
+  return [...view, ...background].map(tab => tab.id)
 }
+
+/** The primary's selection names a session the list already holds — one being
+ *  resumed — rather than a stored id no row carries yet, which can only be the
+ *  active runtime's own id arriving. */
+const $selectionIsListed = computed([$focusedStoredSessionId, $sessions], (sessionId, sessions) =>
+  Boolean(sessionId && sessions.some(session => sessionMatchesStoredId(session, sessionId)))
+)
 
 /** Tabs the FOCUSED session sees. The layout-tree mirror renders only these,
  *  so a session switch swaps the drawer; hidden tabs stay in `$previewTabs`.
  *  The primary also shows the tabs its runtime opened before its stored id
  *  arrived: the selection can name that id a beat before the runtime binds it,
- *  and a Browser hidden in that gap would lose its page. */
+ *  and a Browser hidden in that gap would lose its page. Never under a listed
+ *  session: a resume selects it a beat before it unbinds the runtime. */
 export const $visiblePreviewTabs = computed(
   [
     $previewTabs,
@@ -435,13 +473,18 @@ export const $visiblePreviewTabs = computed(
     $rotatedSessionIds,
     $pendingRuntimeByTab,
     $activeSessionId,
-    $focusedSessionIsTile
+    $focusedSessionIsTile,
+    $selectionIsListed
   ],
-  (tabs, sessionId, rotated, pending, activeRuntime, focusedIsTile) =>
+  (tabs, sessionId, rotated, pending, activeRuntime, focusedIsTile, selectionIsListed) =>
     tabs.filter(
       tab =>
         tabVisibleTo(tab, sessionId, rotated) ||
-        (!focusedIsTile && tab.sessionId == null && activeRuntime !== null && pending.get(tab.id) === activeRuntime)
+        (!focusedIsTile &&
+          !selectionIsListed &&
+          tab.sessionId == null &&
+          activeRuntime !== null &&
+          pending.get(tab.id) === activeRuntime)
     )
 )
 
@@ -580,6 +623,19 @@ function forgetGonePendingTabs(): void {
 
   if ([...pending.keys()].some(id => !alive.has(id))) {
     $pendingRuntimeByTab.set(new Map([...pending].filter(([id]) => alive.has(id))))
+  }
+}
+
+/** `runtimeId`'s session state was dropped before its stored id bound: its
+ *  tabs are plain ownerless tabs again, which the next draft's first send
+ *  adopts. Omitted = every runtime (all session states were dropped). */
+export function forgetPendingRuntimeTabs(runtimeId?: string): void {
+  const pending = $pendingRuntimeByTab.get()
+
+  if ([...pending.values()].some(runtime => runtimeId === undefined || runtime === runtimeId)) {
+    $pendingRuntimeByTab.set(
+      new Map(runtimeId === undefined ? [] : [...pending].filter(([, runtime]) => runtime !== runtimeId))
+    )
   }
 }
 

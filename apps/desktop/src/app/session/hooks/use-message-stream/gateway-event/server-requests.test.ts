@@ -8,7 +8,7 @@ import { runTour } from '@/lib/tour'
 import { $previewTabs, closeRightRail, openPreview } from '@/store/preview'
 import { hasOpenServerRequest, resetServerRequestsForTests } from '@/store/server-requests'
 import { setActiveSessionId, setSelectedStoredSessionId, setSessions } from '@/store/session'
-import { $sessionStates, $sessionTiles } from '@/store/session-states'
+import { $sessionStates, $sessionTiles, dropSessionState, publishSessionState } from '@/store/session-states'
 import { $toursEnabled } from '@/store/tours'
 import type { SessionInfo } from '@/types/hermes'
 
@@ -17,14 +17,20 @@ import type { ServerRequestContext } from './server-requests'
 
 vi.mock('@/lib/tour', () => ({ runTour: vi.fn(async () => ({ ok: true })) }))
 
-const hasLivePreviewSurface = vi.hoisted(() => vi.fn((): boolean => false))
-const requestPopoutPreviewAct = vi.hoisted(() => vi.fn(async (_payload: unknown): Promise<unknown> => null))
-const requestPopoutPreviewRead = vi.hoisted(() => vi.fn(async (_payload: unknown): Promise<unknown> => null))
+const hasLivePreviewSurface = vi.hoisted(() => vi.fn((_owner?: unknown): boolean => false))
+
+const requestPopoutPreviewAct = vi.hoisted(() =>
+  vi.fn(async (_payload: unknown, _owner?: unknown): Promise<unknown> => null)
+)
+
+const requestPopoutPreviewRead = vi.hoisted(() =>
+  vi.fn(async (_payload: unknown, _owner?: unknown): Promise<unknown> => null)
+)
 
 vi.mock('@/app/chat/right-rail/preview-popout-bridge', () => ({
-  hasLivePreviewSurface: () => hasLivePreviewSurface(),
-  requestPopoutPreviewAct: (payload: unknown) => requestPopoutPreviewAct(payload),
-  requestPopoutPreviewRead: (payload: unknown) => requestPopoutPreviewRead(payload)
+  hasLivePreviewSurface: (owner?: unknown) => hasLivePreviewSurface(owner),
+  requestPopoutPreviewAct: (payload: unknown, owner?: unknown) => requestPopoutPreviewAct(payload, owner),
+  requestPopoutPreviewRead: (payload: unknown, owner?: unknown) => requestPopoutPreviewRead(payload, owner)
 }))
 
 const deps = {
@@ -337,12 +343,20 @@ describe('window.read claim tolerance (#121609)', () => {
 })
 
 describe('preview pop-out forwarding', () => {
+  // The requester reaches the pop-out: it answers only for that session's tabs.
+  const sessionAOwner = { runtimeId: 'session-a', sessionId: 'stored-a' }
+
   beforeEach(() => {
     hasLivePreviewSurface.mockReturnValue(false)
     requestPopoutPreviewAct.mockClear()
     requestPopoutPreviewAct.mockResolvedValue(null)
     requestPopoutPreviewRead.mockClear()
     requestPopoutPreviewRead.mockResolvedValue(null)
+    publishSessionState('session-a', createClientSessionState('stored-a'))
+  })
+
+  afterEach(() => {
+    dropSessionState('session-a')
   })
 
   it('forwards an active-session act to the pop-out when this window has no live surface', async () => {
@@ -351,7 +365,7 @@ describe('preview pop-out forwarding', () => {
     const { respond } = deliver('preview.act', { action: 'elements', session_id: 'session-a' }, 'session-a')
 
     await vi.waitFor(() => expect(respond).toHaveBeenCalledTimes(1), { timeout: 30_000 })
-    expect(requestPopoutPreviewAct).toHaveBeenCalledWith(expect.objectContaining({ kind: 'elements' }))
+    expect(requestPopoutPreviewAct).toHaveBeenCalledWith(expect.objectContaining({ kind: 'elements' }), sessionAOwner)
     expect(JSON.parse(respond.mock.calls[0][0].value)).toMatchObject({ acted: 'elements', success: true })
   })
 
@@ -370,7 +384,7 @@ describe('preview pop-out forwarding', () => {
     const { respond } = deliver('preview.read', { count: 100, session_id: 'session-a', start: 0 }, 'session-a')
 
     await vi.waitFor(() => expect(respond).toHaveBeenCalledTimes(1), { timeout: 30_000 })
-    expect(requestPopoutPreviewRead).toHaveBeenCalledWith({ count: 100, start: 0 })
+    expect(requestPopoutPreviewRead).toHaveBeenCalledWith({ count: 100, start: 0 }, sessionAOwner)
     expect(JSON.parse(respond.mock.calls[0][0].value)).toMatchObject({ kind: 'url', text: 'page' })
   })
 
@@ -378,7 +392,7 @@ describe('preview pop-out forwarding', () => {
     const { respond } = deliver('preview.read', { session_id: 'session-a' }, 'session-a')
 
     await vi.waitFor(() => expect(respond).toHaveBeenCalledTimes(1), { timeout: 30_000 })
-    expect(requestPopoutPreviewRead).toHaveBeenCalled()
+    expect(requestPopoutPreviewRead).toHaveBeenCalledWith({}, sessionAOwner)
     expect(respond.mock.calls[0][0].value).toBe('')
   })
 })
@@ -441,7 +455,29 @@ describe('preview requests act for the session that asked (#73890)', () => {
     const { respond } = deliver('tour', { action: 'discover', session_id: 'rt-a', surface: 'preview' }, 'rt-a')
 
     await vi.waitFor(() => expect(respond).toHaveBeenCalledTimes(1), { timeout: 30_000 })
-    expect(runTour).toHaveBeenCalledWith(expect.anything(), 'preview', 'stored-a')
+    expect(runTour).toHaveBeenCalledWith(expect.anything(), 'preview', { runtimeId: 'rt-a', sessionId: 'stored-a' })
+  })
+
+  it('drives the tab its runtime opened before the selection named its stored id', async () => {
+    setActiveSessionId('rt-new')
+    setSelectedStoredSessionId(null)
+    publishSessionState('rt-new', createClientSessionState(null))
+    openPreview({ kind: 'url', label: 'n', source: 'https://n.example', url: 'https://n.example' }, null, 'rt-new')
+    const back = vi.fn()
+    const unbind = registerPreviewNav($previewTabs.get()[0]!.id, { back, forward: () => {}, reload: () => {} })
+    // The selection names the stored id before rt-new's state binds it.
+    setSelectedStoredSessionId('stored-new')
+
+    try {
+      const { respond } = deliver('preview.act', { action: 'back', session_id: 'rt-new' }, 'rt-new')
+
+      await vi.waitFor(() => expect(respond).toHaveBeenCalledTimes(1), { timeout: 30_000 })
+      expect(JSON.parse(respond.mock.calls[0][0].value)).toMatchObject({ acted: 'back', success: true })
+      expect(back).toHaveBeenCalledTimes(1)
+    } finally {
+      unbind()
+      dropSessionState('rt-new')
+    }
   })
 
   it('reads no tab for a requester whose stored id is not bound yet, never the focused one', async () => {

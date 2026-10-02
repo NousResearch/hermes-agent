@@ -18,6 +18,7 @@ import { driver as driverFactory } from 'driver.js'
 
 import { runPreviewTour } from '@/app/chat/right-rail/preview-tour'
 import { revealDesktopPane } from '@/store/pane-focus'
+import type { PreviewOwner } from '@/store/preview'
 
 import { collectTourTargets } from './collect-targets'
 import {
@@ -72,7 +73,7 @@ export async function runTour(
   surface: TourSurface = 'app',
   /** The requesting session's stored id, for surface='preview': the tour runs
    *  in that session's page (omitted = the focused session's). */
-  owner?: null | string
+  owner?: PreviewOwner
 ): Promise<TourResult> {
   try {
     if (surface === 'preview') {

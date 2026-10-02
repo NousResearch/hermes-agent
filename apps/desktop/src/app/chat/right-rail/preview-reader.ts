@@ -13,7 +13,7 @@
  * directly (read_file / the conversation's artifact).
  */
 
-import { type PreviewTab, previewTabsFor } from '@/store/preview'
+import { type PreviewOwner, type PreviewTab, previewTabsFor } from '@/store/preview'
 
 import { resolveActivePreviewTab } from './preview-active-tab'
 import { nudgeOverlay } from './preview-nudge'
@@ -114,7 +114,7 @@ function withMultiNote(note: string | undefined, multi: boolean): string | undef
  *  session has no tab open at all. */
 export async function readActivePreview(
   opts: PreviewReadOptions = {},
-  sessionId?: null | string
+  sessionId?: PreviewOwner
 ): Promise<null | PreviewReadResult> {
   const tabs = previewTabsFor(sessionId)
   const tab = resolveActivePreviewTab(tabs)

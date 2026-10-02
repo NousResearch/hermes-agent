@@ -29,6 +29,7 @@
 
 import { actEngineSource, type PreviewActAction, type PreviewActResult } from '@/lib/preview-act/act-in-page'
 import { watchInPage } from '@/lib/preview-act/watch-in-page'
+import type { PreviewOwner } from '@/store/preview'
 
 import {
   clearCharsBack,
@@ -757,7 +758,7 @@ async function driveScroll(
 export async function actOnActivePreview(
   action: Omit<PreviewActAction, 'kind'> & { kind: string },
   signal?: AbortSignal,
-  owner?: null | string
+  owner?: PreviewOwner
 ): Promise<PreviewActResult> {
   const nav = NAV_ACTIONS.find(verb => verb === action.kind)
 

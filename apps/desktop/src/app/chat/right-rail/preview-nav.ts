@@ -10,6 +10,7 @@
  */
 
 import { isElementInHiddenPane } from '@/components/pane-shell/pane-visibility'
+import type { PreviewOwner } from '@/store/preview'
 
 import { activePreviewTabFor } from './preview-active-tab'
 
@@ -39,7 +40,7 @@ export function registerPreviewNav(tabId: string, handle: PreviewNavHandle): () 
  *  session's stored id; omitted = the focused session) may see, for callers
  *  with no focus to key off — the agent's drive_preview, which runs while
  *  focus is in the composer. */
-export function activePreviewNav(owner?: null | string): PreviewNavHandle | null {
+export function activePreviewNav(owner?: PreviewOwner): PreviewNavHandle | null {
   const tab = activePreviewTabFor(owner)
 
   return (tab && handles.get(tab.id)) || null

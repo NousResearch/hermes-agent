@@ -10,6 +10,8 @@
  * of the pane component's static import graph and only load when used.
  */
 
+import type { PreviewOwner } from '@/store/preview'
+
 import { activePreviewTabFor } from './preview-active-tab'
 
 /** Runs JS source in the pane's guest page, resolving its completion value. */
@@ -31,7 +33,7 @@ export function registerPreviewScriptRunner(tabId: string, runner: PreviewScript
 /** The script runner of the ACTIVE tab among those `owner` (the requesting
  *  session's stored id; omitted = the focused session) may see. Null = no live
  *  page behind it. */
-export function activePreviewScriptRunner(owner?: null | string): PreviewScriptRunner | null {
+export function activePreviewScriptRunner(owner?: PreviewOwner): PreviewScriptRunner | null {
   const tab = activePreviewTabFor(owner)
 
   return (tab && runners.get(tab.id)) || null

@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { group } from '@/components/pane-shell/tree/model'
 import { $layoutTree, noteActiveTreeGroup } from '@/components/pane-shell/tree/store'
 import { createClientSessionState } from '@/lib/chat-runtime'
+import type { SessionInfo } from '@/types/hermes'
 
 import { $rightRailActiveTabId, selectRightRailTab } from './layout'
 import {
@@ -22,21 +23,24 @@ import {
   closeRightRailTab,
   commitBrowserTabLocation,
   decodePreviewTabs,
+  dropPreviewTabsForProfile,
   markPreviewTabMissing,
   newBrowserTab,
   noteBrowserPage,
   openPreview,
   previewTabId,
+  previewTabIdsVisibleTo,
   type PreviewTarget,
   progressPreviewServerRestart,
   prunePreviewTabsForSession,
   rekeyPreviewTabsSession,
   renderedHtmlTarget,
   setPreviewRenderMode,
+  setPreviewScope,
   setPreviewTabPinned
 } from './preview'
-import { $activeSessionId, $selectedStoredSessionId } from './session'
-import { publishSessionState } from './session-states'
+import { $activeSessionId, $selectedStoredSessionId, $sessions } from './session'
+import { dropSessionState, publishSessionState } from './session-states'
 
 function fileTarget(source: string): PreviewTarget {
   return { kind: 'file', label: source, path: source, previewKind: 'html', source, url: `file://${source}` }
@@ -535,6 +539,53 @@ describe('preview session scoping (#73890)', () => {
       expect($previewTabs.get()[0]?.sessionId).toBe('stored-r')
     } finally {
       $activeSessionId.set(null)
+    }
+  })
+
+  it("keeps a runtime's pre-stored-id tab out of a session resumed while that runtime is still active", () => {
+    $activeSessionId.set('runtime-r')
+    publishSessionState('runtime-r', createClientSessionState(null))
+    openPreview(fileTarget('/work/agent.html'), null)
+
+    try {
+      // A cold resume selects listed session S a few statements before it
+      // unbinds runtime-r.
+      $sessions.set([{ id: 'stored-s' } as SessionInfo])
+      $selectedStoredSessionId.set('stored-s')
+      expect($visiblePreviewTabs.get()).toHaveLength(0)
+    } finally {
+      $sessions.set([])
+      $activeSessionId.set(null)
+      dropSessionState('runtime-r')
+    }
+  })
+
+  it('lets the next draft adopt a tab whose runtime died before its stored id bound', () => {
+    $activeSessionId.set('runtime-d')
+    publishSessionState('runtime-d', createClientSessionState(null))
+    openPreview(fileTarget('/work/orphan.html'), null)
+    $activeSessionId.set(null)
+    dropSessionState('runtime-d')
+
+    adoptDraftPreviewTabs('stored-next')
+
+    expect($previewTabs.get()[0]?.sessionId).toBe('stored-next')
+  })
+
+  it("scopes a pop-out request to a background profile session's tabs", () => {
+    try {
+      setPreviewScope('prof-x')
+      openPreview(fileTarget('/work/x.html'), 'stored-x1')
+      const xTab = $previewTabs.get()[0]!.id
+      setPreviewScope('prof-y')
+      openPreview(fileTarget('/work/y.html'), 'stored-y1')
+
+      expect(previewTabIdsVisibleTo('stored-x1')).toEqual([xTab])
+      expect(previewTabIdsVisibleTo('stored-y1')).not.toContain(xTab)
+    } finally {
+      setPreviewScope('default')
+      dropPreviewTabsForProfile('prof-x')
+      dropPreviewTabsForProfile('prof-y')
     }
   })
 

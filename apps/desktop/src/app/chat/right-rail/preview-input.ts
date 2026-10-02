@@ -19,6 +19,8 @@
  * must be scaled by the guest's zoom factor on the way back out (#116281).
  */
 
+import type { PreviewOwner } from '@/store/preview'
+
 import { activePreviewTabFor } from './preview-active-tab'
 
 /** The subset of Electron's input events the agent needs to drive a page. */
@@ -60,7 +62,7 @@ export function registerPreviewInput(tabId: string, handle: PreviewInputHandle):
 /** The ACTIVE preview tab's input channel among those `owner` (omitted = the
  *  focused session) may see. Null = nothing real to drive, and the caller
  *  falls back to synthesizing events inside the page. */
-export function activePreviewInput(owner?: null | string): PreviewInputHandle | null {
+export function activePreviewInput(owner?: PreviewOwner): PreviewInputHandle | null {
   const tab = activePreviewTabFor(owner)
 
   return (tab && handles.get(tab.id)) || null

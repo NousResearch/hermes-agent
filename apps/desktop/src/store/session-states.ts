@@ -47,6 +47,7 @@ import { dialedGatewayModeFor } from './gateway'
 import {
   adoptPendingRuntimeTabs,
   dropPreviewTabsForProfile,
+  forgetPendingRuntimeTabs,
   migratePreviewTabsForProfile,
   rekeyPreviewTabsSession,
   setPreviewScope
@@ -1047,6 +1048,8 @@ export function dropSessionState(runtimeId: string) {
   clearSessionProviderWait(runtimeId)
   sessionScopeByRuntimeId.delete(runtimeId)
   sessionOwnerByRuntimeId.delete(runtimeId)
+  // A runtime that never bound a stored id never will now (#73890).
+  forgetPendingRuntimeTabs(runtimeId)
 
   const current = $sessionStates.get()
   setSessionStalled(current[runtimeId]?.storedSessionId, false)
@@ -1082,6 +1085,7 @@ export function clearAllSessionStates() {
   clearAllProviderWaits()
   sessionScopeByRuntimeId.clear()
   sessionOwnerByRuntimeId.clear()
+  forgetPendingRuntimeTabs()
   $stalledSessionIds.set([])
   $sessionStates.set({})
 }

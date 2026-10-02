@@ -12,7 +12,7 @@
 import { findGroup } from '@/components/pane-shell/tree/model'
 import { $activeTreeGroup, $hoveredTreeGroup, $layoutTree } from '@/components/pane-shell/tree/store'
 import { $rightRailActiveTabId } from '@/store/layout'
-import { type PreviewTab, previewTabsFor } from '@/store/preview'
+import { type PreviewOwner, type PreviewTab, previewTabsFor } from '@/store/preview'
 import { explicitOpenBlocksZone, PREVIEW_TILE_PREFIX } from '@/store/preview-explicit'
 
 function tabIdFromPreviewPane(paneId: string | undefined): null | string {
@@ -70,6 +70,6 @@ export function resolveActivePreviewTab(tabs: readonly PreviewTab[] = previewTab
 
 /** The active preview among the tabs `owner` (a stored id; null = a session
  *  with none yet; omitted = the focused session) may see. */
-export function activePreviewTabFor(owner?: null | string): null | PreviewTab {
+export function activePreviewTabFor(owner?: PreviewOwner): null | PreviewTab {
   return resolveActivePreviewTab(previewTabsFor(owner))
 }

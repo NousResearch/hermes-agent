@@ -259,7 +259,7 @@ piper = [
 modal = ["modal==1.5.5"]
 daytona = ["daytona==0.155.0"]
 vercel = ["vercel==0.7.2"]
-google-meet = ["playwright==1.62.0", "websockets==15.0.1"]
+google-meet = ["playwright==1.62.0; sys_platform == 'linux' or sys_platform == 'darwin'", "websockets==15.0.1; sys_platform == 'linux' or sys_platform == 'darwin'"]
 messaging = [
   "python-telegram-bot[webhooks]==22.8",
   "discord.py[voice]==2.7.1",
@@ -600,6 +600,9 @@ wake-openwakeword = "(platform_machine != 'ARM64' or sys_platform != 'win32') an
 stt-whisper = "(platform_machine != 'ARM64' or sys_platform != 'win32') and (platform_machine != 'x86_64' or platform_system != 'Darwin')"
 # NeuTTS excludes Python 3.14.
 neutts = "python_version < '3.14'"
+# google-meet depends on Playwright, which has no Android wheels; the plugin
+# itself is limited to Linux and macOS.
+google-meet = "sys_platform == 'linux' or sys_platform == 'darwin'"
 # KittenTTS: onnxruntime has no Intel macOS wheel; misaki[en]'s torch has no
 # Windows ARM64 wheel.
 kittentts = "(platform_machine != 'ARM64' or sys_platform != 'win32') and (platform_machine != 'x86_64' or sys_platform != 'darwin')"

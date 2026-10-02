@@ -8,6 +8,7 @@ import re
 from contextlib import suppress
 from typing import Any, Dict, Optional
 
+from agent.i18n import t
 from agent.tool_dispatch_helpers import (
     _extract_error_preview, _extract_file_mutation_targets, _extract_landed_file_mutation_paths
 )
@@ -15,131 +16,67 @@ from agent.tool_result_classification import (
     FILE_MUTATING_TOOL_NAMES as _FILE_MUTATING_TOOLS, file_mutation_result_landed
 )
 
-_NO_REPLY = "⚠️ No reply: "
+# One text for "the model produced nothing after retries" on every surface (CLI explainer,
+# gateway ``(empty)`` rewrite, desktop). English source kept as a constant for importers; surfaces
+# rendering to a human use ``empty_response_explanation`` (``explainer.empty_response``).
+EMPTY_RESPONSE_EXPLANATION = (
+    "{model} didn't produce a reply this time, even after retries. "
+    "Send `continue` to try again, or switch models with /model."
+)
 
-# Exact ``turn_exit_reason`` → explanation body (prefixed with ``_NO_REPLY``).
+
+def empty_response_explanation(model: str = "") -> str:
+    """Localized ``EMPTY_RESPONSE_EXPLANATION`` with the model name (or "The model") filled in."""
+    return t("explainer.empty_response", model=model or t("explainer.shared.the_model"))
+
+
+# Exact ``turn_exit_reason`` → catalog key of the explanation body (prefixed with the no-reply marker).
 _EXIT_REASON_EXPLANATIONS: Dict[str, str] = {
-    "empty_response_exhausted": (
-        "the model returned empty content after retries and any "
-        "fallback providers. Try `continue`, switch model/provider, "
-        "or inspect the tool output above."
-    ),
-    "all_retries_exhausted_no_response": (
-        "all API retries were exhausted before a response was "
-        "produced (provider errors / rate limits). Try `continue` "
-        "or switch provider."
-    ),
-    "partial_stream_recovery": (
-        "streaming stopped early and only a partial response was "
-        "recovered. Send `continue` to resume from where it stopped."
-    ),
-    "fallback_prior_turn_content": (
-        "no new content was produced this turn; showing recovered "
-        "prior context. Send `continue` to retry."
-    ),
-    "interrupted_during_api_call": (
-        "the request was interrupted mid-call before a reply was "
-        "received. Send `continue` to retry."
-    ),
-    "budget_exhausted": (
-        "the per-turn iteration/cost budget was exhausted before a "
-        "final answer. Send `continue` to keep going."
-    ),
-    "ollama_runtime_context_too_small": (
-        "the local model's context window was too small to finish. "
-        "Increase the context size or use a larger model."
-    ),
-    "pending_tool_result": (
-        "the turn stopped while a tool result was still pending and "
-        "the model produced no follow-up text. Send `continue` to "
-        "let it summarize."
-    ),
+    "empty_response_exhausted": "explainer.empty_response",
+    "all_retries_exhausted_no_response": "explainer.exit.all_retries_exhausted_no_response",
+    "partial_stream_recovery": "explainer.exit.partial_stream_recovery",
+    "fallback_prior_turn_content": "explainer.exit.fallback_prior_turn_content",
+    "redirect_restart_limit_exceeded": "explainer.exit.redirect_restart_limit_exceeded",
+    "rebuilt_restart_limit_exceeded": "explainer.exit.rebuilt_restart_limit_exceeded",
+    "budget_exhausted": "explainer.exit.budget_exhausted",
+    "ollama_runtime_context_too_small": "explainer.exit.ollama_runtime_context_too_small",
+    "pending_tool_result": "explainer.exit.pending_tool_result",
 }
 
 # Parameterised reasons (``max_iterations_reached(3/3)`` …) matched by prefix.
-_EXIT_REASON_PREFIX_EXPLANATIONS = (
-    ("max_iterations_reached", (
-        "the maximum tool-iteration limit was reached before a "
-        "final answer. Send `continue` to keep going, or raise "
-        "`max_iterations`."
-    )),
-    ("error_near_max_iterations", (
-        "an error occurred near the iteration limit before a final "
-        "answer. Check the tool output above, then send `continue`."
-    )),
-    ("repeated_outer_errors", (
-        "the turn kept failing with repeated errors and was stopped "
-        "early instead of retrying forever. Check the errors above, "
-        "then send `continue` to retry."
-    )),
+# ``interrupted_during_api_call(<issuer>)`` names a system watchdog (#112647).
+_EXIT_REASON_PREFIX_EXPLANATIONS = tuple(
+    (prefix, f"explainer.exit.{prefix}") for prefix in ("interrupted_during_api_call", "max_iterations_reached", "error_near_max_iterations", "repeated_outer_errors")
 )
 
 # ``session_persistence_failed`` refined by the classified cause (lock contention ≠ disk full).
-_PERSISTENCE_CAUSE_EXPLANATIONS: Dict[str, str] = {
-    "compression": (
-        "the turn was stopped because another process was "
-        "compressing this session. Your message should already be "
-        "saved — please send it again after compression completes."
-    ),
-    "compression_closed": (
-        "the turn was stopped because this session was rotated "
-        "by context compression and its live continuation could "
-        "not be adopted. The storage itself is healthy — refresh "
-        "the client (or start a new turn) so it picks up the new "
-        "session id, then send your message again."
-    ),
-    "turn_lease": (
-        "the turn was stopped because another Hermes process "
-        "took over this session. Your reply was not saved — wait "
-        "for the other process to finish, then send your message "
-        "again."
-    ),
-    "locked": (
-        "the turn was stopped because session storage was busy "
-        "(another Hermes process was writing to the state "
-        "database). Your message should already be saved — "
-        "please send it again in a moment."
-    ),
-    "replaced": (
-        "the turn was stopped because the state database file "
-        "was replaced underneath this process. Do not run "
-        "`hermes doctor --fix` or in-place FTS repair — stop "
-        "the process, restore the intended state.db, then "
-        "restart. Unwritten messages were diverted to "
-        "sessions/<session_id>.jsonl and, on the gateway, "
-        "pending_messages/pending-*.json."
-    ),
-    "corrupt": (
-        "the turn was stopped because the state database "
-        "reported structural corruption (the transcript would "
-        "have been lost on restart). Freeing disk space will "
-        "not help. Recovery options:\n"
-        "1. Run `hermes doctor --fix`\n"
-        "2. Stop the gateway, then recover with:\n"
-        "   hermes sessions recover --source {db_path} --inspect-only\n"
-        "   (if it reports recoverable) hermes sessions recover "
-        "--source {db_path} --output recovered-state.db\n"
-        "   — recovery snapshots the damaged file first; do NOT "
-        "run `sqlite3 ... \".recover\"` against the live "
-        "state.db, a vulnerable sqlite3 CLI can corrupt it "
-        "further\n"
-        "3. Restore from a backup in ~/.hermes/backups/\n"
-        "Then send your message again."
-    ),
-    "disk": (
-        "the turn was stopped because session storage could not "
-        "be written (the transcript would have been lost on "
-        "restart). This is often a full disk — free some space "
-        "(or fix state.db permissions), then send your message "
-        "again."
-    ),
-}
-_PERSISTENCE_DEFAULT_EXPLANATION = (
-    "the turn was stopped because session storage could not be "
-    "written (the transcript would have been lost on restart). "
-    "Check the state database health (`hermes doctor`), then "
-    "send your message again."
-)
+_PERSISTENCE_CAUSES = frozenset({"compression", "compression_closed", "turn_lease", "session_row_missing", "locked", "replaced", "deleted_wal", "corrupt", "fts_index", "disk"})
+
+
+def _persistence_explanation_key(cause: Optional[str]) -> str:
+    return f"explainer.persistence.{cause}" if cause in _PERSISTENCE_CAUSES else "explainer.persistence.default"
+
+
+def _file_mutation_identity(path: str, task_id: Optional[str]) -> str:
+    """One key per on-disk target: the file tools' task-resolved absolute path, case-folded
+    on case-insensitive hosts. A failure recorded as ``notes.md`` and the write that later
+    lands as ``/repo/notes.md`` (or ``Notes.md`` on Windows) must meet on the same key."""
+    try:
+        from tools.file_tools_paths import _resolve_path_for_task
+
+        resolved = str(_resolve_path_for_task(path, task_id or "default"))
+    except Exception:
+        resolved = os.path.abspath(os.path.expanduser(path))
+    return os.path.normcase(os.path.normpath(resolved))
+
+
+def _file_stat_signature(identity: str) -> Optional[tuple]:
+    """``(mtime_ns, size)`` of the target, ``None`` when it does not exist (or cannot be read)."""
+    try:
+        st = os.stat(identity)
+    except OSError:
+        return None
+    return (st.st_mtime_ns, st.st_size)
 
 
 def _display_flag_enabled(agent, *, env_var: str, config_key: str, cache_attr: str) -> bool:
@@ -175,11 +112,14 @@ class TurnExplainersMixin:
     """File-mutation failure footer + turn-completion explainer (see module docstring)."""
 
     def _record_file_mutation_result(
-        self, tool_name: str, args: Dict[str, Any], result: Any, is_error: bool
+        self, tool_name: str, args: Dict[str, Any], result: Any, is_error: bool,
+        *, task_id: Optional[str] = None,
     ) -> None:
         """Record a ``write_file`` / ``patch`` outcome for the turn-end verifier.
 
-        Failures store ``{path: {error_preview, tool}}``; a later success on the same path removes the entry.
+        Failures store ``{path: {error_preview, tool, identity, stat}}`` keyed by the model's
+        spelling; ``identity`` is the resolved on-disk target and ``stat`` its signature at
+        failure time. A later success on the same identity (any spelling) removes the entry.
         No-op when the per-turn state dict is not initialised (tool dispatched outside ``run_conversation``).
         """
         if tool_name not in _FILE_MUTATING_TOOLS:
@@ -200,17 +140,42 @@ class TurnExplainersMixin:
             # Hermes-authored content from later user hand-edits.
             mgr = getattr(self, "_checkpoint_mgr", None)
             if mgr is not None and getattr(mgr, "enabled", False):
-                for _p in landed_paths:
-                    with suppress(Exception):
-                        mgr.record_agent_write(_p)
+                from tools.file_tools_paths import container_backend_for_task
+                if container_backend_for_task(task_id or "default") is None:  # container paths carry no host ledger entry
+                    for _p in landed_paths:
+                        with suppress(Exception):
+                            mgr.record_agent_write(_p)
         if is_error and not landed:
             # Keep the FIRST error per path unless a later success replaces it.
             preview = _extract_error_preview(result)
             for path in targets:
-                state.setdefault(path, {"tool": tool_name, "error_preview": preview})
+                identity = _file_mutation_identity(path, task_id)
+                state.setdefault(path, {
+                    "tool": tool_name, "error_preview": preview,
+                    "identity": identity, "stat": _file_stat_signature(identity),
+                })
         else:
-            for path in targets:
-                state.pop(path, None)
+            cleared = {
+                _file_mutation_identity(p, task_id)
+                for p in (landed_paths if landed else targets)
+            }
+            for path, info in list(state.items()):
+                if info.get("identity", _file_mutation_identity(path, task_id)) in cleared:
+                    state.pop(path, None)
+
+    @staticmethod
+    def _file_mutations_still_failed(failed: Dict[str, Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
+        """Drop entries whose target changed on disk since the failed call.
+
+        The recorder only sees write_file/patch receipts; a terminal redirect or an
+        execute_code write leaves none. Re-checking the stat signature at turn end keeps
+        the footer from listing a file that was in fact modified later this turn. Entries
+        without a snapshot (hand-built dicts) are kept as-is.
+        """
+        return {
+            path: info for path, info in failed.items()
+            if "stat" not in info or _file_stat_signature(info["identity"]) == info["stat"]
+        }
 
     def _file_mutation_verifier_enabled(self) -> bool:
         """``display.file_mutation_verifier`` / ``HERMES_FILE_MUTATION_VERIFIER`` (a patchable seam)."""
@@ -275,29 +240,24 @@ class TurnExplainersMixin:
         """
         if not failed:
             return ""
-        lines = [
-            "⚠️ File-mutation verifier: "
-            f"{len(failed)} file(s) were NOT modified this turn despite any "
-            "wording above that may suggest otherwise. Run `git status` or "
-            "`read_file` to confirm."
-        ]
+        lines = [t("explainer.file_mutation.header", count=len(failed))]
         shown = list(failed.items())[:10]
         for path, info in shown:
             preview = (info.get("error_preview") or "").strip()
             tool = info.get("tool") or "patch"
-            lines.append(f"  • `{path}` — [{tool}] {preview or 'failed'}")
+            lines.append(t("explainer.file_mutation.entry", path=path, tool=tool,
+                           preview=preview or t("explainer.file_mutation.failed")))
         remaining = len(failed) - len(shown)
         if remaining > 0:
-            lines.append(f"  • … and {remaining} more")
-        # Neutralize delivery directives the preview carried, then paths it
-        # echoed; the lookbehind prevents double-wrapping the bullet path.
+            lines.append(t("explainer.shared.and_more", count=remaining))
+        # Keep untrusted preview text from becoming a gateway attachment directive.
         return cls._neutralize_footer_paths(
             cls._neutralize_footer_media_directives("\n".join(lines))
         )
 
     @staticmethod
     def _format_turn_completion_explanation(
-        turn_exit_reason: str, persistence_cause: Optional[str] = None
+        turn_exit_reason: str, persistence_cause: Optional[str] = None, db_path=None, model: str = "",
     ) -> str:
         """User-facing explanation for an abnormal turn ending, or "" for normal / unknown reasons.
 
@@ -309,19 +269,32 @@ class TurnExplainersMixin:
         reason = str(turn_exit_reason)
         if reason.startswith("text_response"):
             return ""
-        body = _EXIT_REASON_EXPLANATIONS.get(reason)
-        if body is None:
-            for prefix, text in _EXIT_REASON_PREFIX_EXPLANATIONS:
+        key = _EXIT_REASON_EXPLANATIONS.get(reason)
+        if key is None:
+            for prefix, prefix_key in _EXIT_REASON_PREFIX_EXPLANATIONS:
                 if reason.startswith(prefix):
-                    body = text
+                    key = prefix_key
                     break
-        if body is None and reason == "session_persistence_failed":
-            body = _PERSISTENCE_CAUSE_EXPLANATIONS.get(
-                persistence_cause or "unknown", _PERSISTENCE_DEFAULT_EXPLANATION
-            )
-            if persistence_cause == "corrupt":
-                # Copy-pasteable, so name the real store (profiles / HERMES_HOME do not live under ~/.hermes).
+        if key is not None:
+            body = t(key, model=model or t("explainer.shared.the_model"))
+        elif reason == "session_persistence_failed":
+            from hermes_constants import display_hermes_home, profile_cli_selector
+            from hermes_state_errors import STORAGE_RECOVERY_DOCS_URL
+
+            # Copy-pasteable, so pin every `hermes` command to the profile whose store failed:
+            # a multi-profile backend (Desktop serve) hosts sessions whose state.db is NOT the
+            # process default, and a bare `hermes` follows active_profile (#105887).
+            fill: Dict[str, str] = {
+                "home": display_hermes_home(), "profile_arg": profile_cli_selector(),
+                "recovery_docs": STORAGE_RECOVERY_DOCS_URL, "db_path": "", "backups_dir": "",
+            }
+            if persistence_cause in ("corrupt", "fts_index"):
+                from hermes_constants import get_default_hermes_root
                 from hermes_state import _default_db_path
 
-                body = body.replace("{db_path}", str(_default_db_path()))
-        return _NO_REPLY + body if body else ""
+                fill["db_path"] = str(db_path or _default_db_path())
+                fill["backups_dir"] = str(get_default_hermes_root() / "backups")
+            body = t(_persistence_explanation_key(persistence_cause), **fill)
+        else:
+            body = None
+        return t("explainer.no_reply_prefix") + body if body else ""

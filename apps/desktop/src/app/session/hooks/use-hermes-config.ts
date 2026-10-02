@@ -5,6 +5,7 @@ import { getHermesConfig, getHermesConfigDefaults } from '@/hermes'
 import { BUILTIN_PERSONALITIES, normalizePersonalityValue, personalityNamesFromConfig } from '@/lib/chat-runtime'
 import { normalize } from '@/lib/text'
 import { setDisplayTimestampsFromConfig } from '@/store/display-timestamps'
+import { setShowReasoningFromConfig } from '@/store/reasoning-disclosure'
 import {
   getComposerSelectionGeneration,
   getCurrentModelSource,
@@ -16,11 +17,17 @@ import {
   setDefaultReasoningEffort,
   setIntroPersonality
 } from '@/store/session'
+import { setShowToolActivityFromConfig } from '@/store/tool-activity'
+import { refreshVoiceLiveStatus } from '@/store/voice-live'
 import {
   applyAutoSpeakFromConfig,
+  applyBargeInEnabledFromConfig,
+  applyBargeInThresholdFromConfig,
   applyThinkingSoundFromConfig,
+  applyVoiceSilenceMsFromConfig,
   applyVoiceStopPhraseFromConfig
 } from '@/store/voice-prefs'
+import { setChatFontFamilyFromConfig } from '@/themes/chat-font'
 
 const DEFAULT_VOICE_SECONDS = 120
 const FAST_TIERS = new Set(['fast', 'priority', 'on'])
@@ -138,15 +145,23 @@ export function useHermesConfig({ activeSessionIdRef }: HermesConfigOptions) {
         }
 
         setDisplayTimestampsFromConfig(config.display?.timestamps)
+        setShowReasoningFromConfig(config.display?.show_reasoning)
+        setShowToolActivityFromConfig(config.display?.tool_progress)
         setTerminalFontFamilyFromConfig(config.terminal?.font_family)
+        setChatFontFamilyFromConfig(config.desktop?.font_family)
 
         if (!canPublish()) {
           return
         }
 
         applyAutoSpeakFromConfig(config)
-        applyVoiceStopPhraseFromConfig(config)
+        applyVoiceStopPhraseFromConfig(config, defaults)
+        applyBargeInEnabledFromConfig(config)
+        applyBargeInThresholdFromConfig(config)
         applyThinkingSoundFromConfig(config)
+        applyVoiceSilenceMsFromConfig(config, defaults)
+        // Resolved server-side (mode + whether a key resolves); non-critical.
+        void refreshVoiceLiveStatus().catch(() => undefined)
       } catch {
         // Config is nice-to-have; chat still works without it.
       }

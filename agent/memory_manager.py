@@ -15,7 +15,7 @@ import threading
 import time
 from concurrent.futures import Future, ThreadPoolExecutor, wait
 from functools import partial
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Mapping, NamedTuple, Optional
 
 from agent.redact import redact_for_egress
 
@@ -55,6 +55,36 @@ _PROBE_INTERVAL_S = 60.0
 # Hard cap on calls in flight per (home, provider), orphans included: failed probes pin one more thread
 # each, so admission (probes too) stops here and a backend that stays wedged pins a bounded number.
 _MAX_INFLIGHT_CALLS = 16
+
+
+def resolve_external_prefetch_timeout(
+    mem_config: Optional[Mapping[str, Any]] = None,
+) -> float:
+    """Return the external-provider prefetch timeout from memory config.
+
+    Reads ``memory.external_prefetch_timeout``. Invalid, missing, or
+    non-positive values fall back to ``_EXTERNAL_PREFETCH_TIMEOUT_S`` so a
+    bad config.yaml cannot break agent startup.
+    """
+    if not isinstance(mem_config, Mapping):
+        return _EXTERNAL_PREFETCH_TIMEOUT_S
+    raw = mem_config.get("external_prefetch_timeout", _EXTERNAL_PREFETCH_TIMEOUT_S)
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return _EXTERNAL_PREFETCH_TIMEOUT_S
+    if value <= 0:
+        return _EXTERNAL_PREFETCH_TIMEOUT_S
+    return value
+
+
+def memory_manager_from_config(
+    mem_config: Optional[Mapping[str, Any]] = None,
+) -> MemoryManager:
+    """Build a ``MemoryManager`` with the configured prefetch timeout."""
+    return MemoryManager(
+        external_prefetch_timeout=resolve_external_prefetch_timeout(mem_config),
+    )
 
 
 # -- Signature introspection (providers are duck-typed; call shapes vary) -----
@@ -193,6 +223,18 @@ class _StuckCallGate:
                 state.pop(key, None)
 
 
+class _LatePrefetch(NamedTuple):
+    """Cached recall from a timed-out external prefetch.
+
+    Bound to the originating session so a reused manager cannot replay
+    another session's result. ``value`` is already spill-capped.
+    """
+
+    query: str
+    session_id: str
+    value: str
+
+
 class MemoryManager:
     """Builtin provider (always first) plus at most one external provider.
 
@@ -218,6 +260,10 @@ class MemoryManager:
         self._external_prefetch_timeout = timeout
         # Captured at build time, inside the profile scope the agent is built for.
         self._home_key = hermes_home_key()
+        # Late results from timed-out prefetches (#104405), replayed only for the same session+query.
+        self._late_prefetch: dict[str, _LatePrefetch] = {}
+        self._late_prefetch_generation: int = 0
+        self._late_prefetch_lock = threading.Lock()
         # Single-worker background executor for end-of-turn sync/prefetch, created lazily so
         # the builtin-only path spawns no threads; one worker serializes a provider's writes.
         self._sync_executor: Optional[ThreadPoolExecutor] = None
@@ -343,6 +389,23 @@ class MemoryManager:
     # providers get just the user's instruction (None for a bare invocation).
     _strip_skill_scaffolding = staticmethod(extract_user_instruction_from_skill_message)
 
+    def _spill_external_prefetch(self, text: str, *, session_id: str, provider_name: str) -> str:
+        """Apply the active session spill cap to external prefetch text."""
+        if not text or not str(text).strip():
+            return text or ""
+        return spill_if_oversized(
+            text,
+            session_id=session_id,
+            source=f"{provider_name} memory prefetch",
+            config=self._external_prefetch_spill_config,
+        )
+
+    def _invalidate_late_prefetch(self) -> None:
+        """Drop cached late results so they cannot replay across a session boundary."""
+        with self._late_prefetch_lock:
+            self._late_prefetch.clear()
+            self._late_prefetch_generation += 1
+
     def prefetch_all(self, query: str, *, session_id: str = "") -> str:
         """Merge non-empty prefetch context from all providers (failures are non-fatal)."""
         clean_query = self._strip_skill_scaffolding(query)
@@ -355,12 +418,31 @@ class MemoryManager:
         return "\n\n".join(p for p in parts if p and p.strip())
 
     def _prefetch_provider(self, provider: MemoryProvider, query: str, *, session_id: str = "") -> str:
-        """Run one provider's prefetch; external providers are bounded by a timeout. A stuck external
-        call keeps running on its daemon thread; _PREFETCH_GATE decides whether later turns call again."""
+        """Run one provider's prefetch; external providers are bounded by a timeout.
+
+        A stuck external call keeps running on its daemon thread; _PREFETCH_GATE decides
+        whether later turns call again. A late finish is cached for the originating
+        ``session_id`` and query only. Turn end, session switch, rewind, and compression
+        invalidate that cache so a reused manager cannot replay another turn's recall.
+        Every late value is spill-capped before it is stored or returned.
+        """
         if provider.name == "builtin":
             return provider.prefetch(query, session_id=session_id)
 
-        result_box: dict[str, Any] = {}
+        # A late result from a previously timed-out call replays only for the same
+        # session and query; anything else it held is dropped here.
+        with self._late_prefetch_lock:
+            late = self._late_prefetch.pop(provider.name, None)
+        if late is not None and late.query == query and late.session_id == session_id and late.value:
+            return self._spill_external_prefetch(
+                late.value, session_id=session_id, provider_name=provider.name,
+            )
+
+        result_box: dict[str, str] = {}
+        error_box: dict[str, Exception] = {}
+        consumed = {"yes": False}
+        abandoned = {"yes": False}
+        generation = 0
 
         key = self._registry_key(provider)
 
@@ -368,11 +450,35 @@ class MemoryManager:
             try:
                 result_box["value"] = provider.prefetch(query, session_id=session_id) or ""
             except Exception as exc:  # pragma: no cover - re-raised by caller
-                result_box["error"] = exc
+                error_box["value"] = exc
             finally:
-                self._PREFETCH_GATE.leave(key, thread, ok="error" not in result_box)
+                late_raw = None
+                with self._late_prefetch_lock:
+                    if (
+                        abandoned["yes"]
+                        and not consumed["yes"]
+                        and "value" in result_box
+                        and generation == self._late_prefetch_generation
+                    ):
+                        late_raw = result_box["value"]
+                if late_raw:
+                    spilled = self._spill_external_prefetch(
+                        late_raw, session_id=session_id, provider_name=provider.name,
+                    )
+                    with self._late_prefetch_lock:
+                        if (
+                            abandoned["yes"]
+                            and not consumed["yes"]
+                            and generation == self._late_prefetch_generation
+                        ):
+                            self._late_prefetch[provider.name] = _LatePrefetch(
+                                query, session_id, spilled,
+                            )
+                self._PREFETCH_GATE.leave(key, thread, ok="value" not in error_box)
 
         thread = spawn_context_thread(_run, name=f"memory-prefetch-{provider.name}")
+        with self._late_prefetch_lock:
+            generation = self._late_prefetch_generation
         skipped = self._PREFETCH_GATE.enter(key, thread, self._external_prefetch_timeout)
         if skipped:
             logger.debug("Memory provider '%s' prefetch skipped (%d stuck, %d in flight)",
@@ -386,25 +492,24 @@ class MemoryManager:
             raise
 
         thread.join(self._external_prefetch_timeout)
-        if thread.is_alive():
-            logger.warning(
-                "Memory provider '%s' prefetch timed out after %.1fs; the call keeps running in the "
-                "background (later turns may skip it while the provider stays stuck)", provider.name,
-                self._external_prefetch_timeout,
-            )
-            return ""
-
-        if "error" in result_box:
-            raise result_box["error"]
+        with self._late_prefetch_lock:
+            if thread.is_alive():
+                abandoned["yes"] = True
+                logger.warning(
+                    "Memory provider '%s' prefetch timed out after %.1fs; the call keeps running "
+                    "in the background and its late result is cached for the next turn with the "
+                    "same query. Set memory.external_prefetch_timeout in config.yaml if the "
+                    "backend is routinely slower than %.1fs.", provider.name,
+                    self._external_prefetch_timeout, self._external_prefetch_timeout,
+                )
+                return ""
+            consumed["yes"] = True
+        if "value" in error_box:
+            raise error_box["value"]
         result = result_box.get("value", "")
-        if result and result.strip():
-            # Opt-in spill limits recall replayed with the user turn's api_content;
-            # the registration snapshot leaves provider-ranked results intact by default.
-            result = spill_if_oversized(
-                result, session_id=session_id, source=f"{provider.name} memory prefetch",
-                config=self._external_prefetch_spill_config,
-            )
-        return result
+        return self._spill_external_prefetch(
+            result, session_id=session_id, provider_name=provider.name,
+        )
 
     def describe_recall(self) -> str:
         """Deterministic recall indicator line (e.g. ``"🧠 Provider — recalled 3 memories"``); ``""`` if none.
@@ -647,6 +752,7 @@ class MemoryManager:
         share the same worker. If the executor is unavailable, ``_submit_background`` degrades to inline
         execution — the pre-#16454 synchronous behavior, slow but correct.
         """
+        self._invalidate_late_prefetch()
         if not self._providers or not self._owner_allows("session_boundary"):
             return
         snapshot = list(messages or [])
@@ -668,6 +774,7 @@ class MemoryManager:
         """Notify providers that ``AIAgent.session_id`` rotated without teardown
         (``/resume``, ``/branch``, ``/reset``, ``/new``, compression). ``rewound=True``
         (``/undo``): same id, truncated transcript."""
+        self._invalidate_late_prefetch()
         if not new_session_id or not self._owner_allows("on_session_switch"):
             return
         if rewound:  # forward only when set so it never pollutes providers' **kwargs
@@ -699,6 +806,7 @@ class MemoryManager:
         only to checkpoint (v2+) providers. With ``require_checkpoint`` at least one checkpoint provider
         must succeed — its exception propagates so the caller keeps the uncompressed transcript.
         """
+        self._invalidate_late_prefetch()
         if not self._owner_allows("on_pre_compress"):
             if require_checkpoint:  # the caller keeps the uncompressed transcript
                 raise RuntimeError("Memory pre-compress checkpoint refused; see `hermes logs errors`")

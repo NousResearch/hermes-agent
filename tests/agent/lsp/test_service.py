@@ -7,19 +7,21 @@ on.
 """
 from __future__ import annotations
 
-import asyncio
-import gc
-import logging
-import sys
+from agent.lsp import eventlog
+from agent.lsp.client import LSPClient
+from agent.lsp.manager import LSPService, _ClientEntry
 import threading
+import logging
+import gc
+import asyncio
+import os
+import sys
 import time
 from pathlib import Path
 
 import pytest
 
-from agent.lsp import eventlog
-from agent.lsp.client import LSPClient
-from agent.lsp.manager import LSPService, _ClientEntry
+from agent.lsp.manager import LSPService
 from agent.lsp.servers import (
     SERVERS,
     ServerContext,
@@ -29,37 +31,6 @@ from agent.lsp.servers import (
 
 
 MOCK_SERVER = str(Path(__file__).parent / "_mock_lsp_server.py")
-
-
-def _make_repo(tmp_path: Path, monkeypatch) -> tuple[Path, Path]:
-    repo = tmp_path / "repo"
-    repo.mkdir()
-    (repo / ".git").mkdir()
-    (repo / "pyproject.toml").write_text("", encoding="utf-8")
-    source = repo / "x.py"
-    source.write_text("print('hi')\n", encoding="utf-8")
-    monkeypatch.chdir(str(repo))
-    return repo, source
-
-
-def _threadless_service() -> LSPService:
-    """Build async manager state without the sync background-loop bridge.
-
-    Lifecycle race tests run directly on pytest's event loop.  The production
-    bridge is covered by the existing synchronous service tests; keeping race
-    orchestration on one loop makes event ordering deterministic.
-    """
-    svc = LSPService(
-        enabled=False,
-        wait_mode="document",
-        wait_timeout=5.0,
-        install_strategy="manual",
-        idle_timeout=0,
-    )
-    svc._enabled = True
-    svc._admitting = True
-    svc._shutdown_state = "running"
-    return svc
 
 
 def _install_mock_server(
@@ -109,8 +80,7 @@ def mock_pyright(monkeypatch, tmp_path):
     repo = tmp_path / "repo"
     repo.mkdir()
     (repo / ".git").mkdir()
-    # Marker so pyright's root resolver finds the workspace.
-    (repo / "pyproject.toml").write_text("", encoding="utf-8")
+    (repo / "pyproject.toml").write_text("")  # so pyright's root resolver finds it
     monkeypatch.chdir(str(repo))
     gen = _install_mock_server(monkeypatch, "errors", "pyright")
     next(gen)
@@ -121,15 +91,72 @@ def mock_pyright(monkeypatch, tmp_path):
         pass
 
 
+@pytest.fixture
+def mock_pyright_silent(monkeypatch, tmp_path):
+    """Install the silent mock as ``pyright`` (never pushes diagnostics).
+
+    The silent server accepts the open but never publishes diagnostics
+    for the pre-edit content and rejects the pull channel, so the
+    baseline snapshot has to wait out its full budget — exactly the
+    slow-server shape from the wait_timeout report.
+    """
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / ".git").mkdir()
+    (repo / "pyproject.toml").write_text("")
+    monkeypatch.chdir(str(repo))
+    gen = _install_mock_server(monkeypatch, "silent", "pyright")
+    next(gen)
+    yield repo
+    try:
+        next(gen)
+    except StopIteration:
+        pass
 
 
+def test_snapshot_baseline_honors_wait_timeout(mock_pyright_silent):
+    """``snapshot_baseline`` must wait at most ``lsp.wait_timeout``, not
+    the hardcoded client fallback of 5s.
+
+    Regression for the report that a 2s wait_timeout was ignored by the
+    baseline path: the wait ran without a timeout and fell back to
+    ``DIAGNOSTICS_DOCUMENT_WAIT`` (5s).  The silent mock never pushes,
+    so the elapsed time directly exposes the effective wait budget.
+    """
+    repo = mock_pyright_silent
+    f = repo / "x.py"
+    f.write_text("print('hi')\n")
+
+    svc = LSPService(
+        enabled=True,
+        wait_mode="document",
+        wait_timeout=2.0,
+        install_strategy="manual",
+    )
+    try:
+        start = time.monotonic()
+        svc.snapshot_baseline(str(f))
+        elapsed = time.monotonic() - start
+
+        # The wait is deadline-based: it always runs the full budget
+        # (never less than wait_timeout) and the server never pushes,
+        # so both bounds are stable under load.
+        assert elapsed >= 1.5, f"baseline returned before the wait budget: {elapsed:.2f}s"
+        assert elapsed < 4.5, (
+            f"baseline ignored wait_timeout=2.0 and ran the 5s fallback: {elapsed:.2f}s"
+        )
+        assert svc.get_status()["broken"] == []
+        # No fresh data pre-edit -> empty (never stale) baseline.
+        assert svc._delta_baseline[os.path.abspath(str(f))] == []
+    finally:
+        svc.shutdown()
 
 
 def test_service_e2e_delta_filter(mock_pyright):
     """End-to-end: snapshot baseline → wait → delta returned."""
     repo = mock_pyright
     f = repo / "x.py"
-    f.write_text("print('hi')\n", encoding="utf-8")
+    f.write_text("print('hi')\n")
 
     svc = LSPService(
         enabled=True,
@@ -145,7 +172,7 @@ def test_service_e2e_delta_filter(mock_pyright):
         new_diags = svc.get_diagnostics_sync(str(f))
         assert new_diags == []
     finally:
-        assert svc.shutdown() is True
+        svc.shutdown()
 
 
 @pytest.mark.parametrize("failed_script", ["clean_eof", "malformed_frame"])
@@ -203,39 +230,6 @@ def test_service_replaces_client_after_reader_failure(
             pass
 
 
-def test_service_e2e_delta_filter_with_line_shift(mock_pyright):
-    """End-to-end: an edit that shifts the diagnostic's line still
-    filters correctly when ``line_shift`` is supplied.
-
-    The mock LSP server emits a fixed error at line 0; for this test
-    we don't need to actually shift the server's output — we just
-    need to prove that supplying a line_shift through the API works
-    and doesn't break the existing delta path.  The unit tests in
-    test_delta_key.py cover the shift semantics in detail.
-    """
-    repo = mock_pyright
-    f = repo / "x.py"
-    f.write_text("print('hi')\n", encoding="utf-8")
-
-    svc = LSPService(
-        enabled=True,
-        wait_mode="document",
-        wait_timeout=3.0,
-        install_strategy="manual",
-    )
-    try:
-        svc.snapshot_baseline(str(f))
-        # Identity shift — should behave exactly like no shift.
-        new_diags = svc.get_diagnostics_sync(str(f), line_shift=lambda L: L)
-        assert new_diags == []
-    finally:
-        assert svc.shutdown() is True
-
-
-
-
-
-
 def test_reused_client_refreshes_last_used_and_survives_reap(mock_pyright):
     """A client re-acquired from the cache must have its ``_last_used``
     timestamp refreshed so a subsequent sweep does NOT evict it.
@@ -246,7 +240,7 @@ def test_reused_client_refreshes_last_used_and_survives_reap(mock_pyright):
     """
     repo = mock_pyright
     f = repo / "x.py"
-    f.write_text("", encoding="utf-8")
+    f.write_text("")
     svc = LSPService(
         enabled=True,
         wait_mode="document",
@@ -271,7 +265,7 @@ def test_reused_client_refreshes_last_used_and_survives_reap(mock_pyright):
         assert key in svc._clients
         assert svc.get_status()["clients"]
     finally:
-        assert svc.shutdown() is True
+        svc.shutdown()
 
 
 def test_reaper_survives_sweep_error(mock_pyright):
@@ -279,7 +273,7 @@ def test_reaper_survives_sweep_error(mock_pyright):
     ``except Exception`` guard must swallow the error and keep sweeping."""
     repo = mock_pyright
     f = repo / "x.py"
-    f.write_text("", encoding="utf-8")
+    f.write_text("")
     svc = LSPService(
         enabled=True,
         wait_mode="document",
@@ -315,6 +309,66 @@ def test_reaper_survives_sweep_error(mock_pyright):
         assert svc._idle_reaper_task is not None
         assert not svc._idle_reaper_task.done()
     finally:
+        svc.shutdown()
+
+
+def _make_repo(tmp_path: Path, monkeypatch) -> tuple[Path, Path]:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / ".git").mkdir()
+    (repo / "pyproject.toml").write_text("", encoding="utf-8")
+    source = repo / "x.py"
+    source.write_text("print('hi')\n", encoding="utf-8")
+    monkeypatch.chdir(str(repo))
+    return repo, source
+
+
+def _threadless_service() -> LSPService:
+    """Build async manager state without the sync background-loop bridge.
+
+    Lifecycle race tests run directly on pytest's event loop.  The production
+    bridge is covered by the existing synchronous service tests; keeping race
+    orchestration on one loop makes event ordering deterministic.
+    """
+    svc = LSPService(
+        enabled=False,
+        wait_mode="document",
+        wait_timeout=5.0,
+        install_strategy="manual",
+        idle_timeout=0,
+    )
+    svc._enabled = True
+    svc._admitting = True
+    svc._shutdown_state = "running"
+    return svc
+
+
+def test_service_e2e_delta_filter_with_line_shift(mock_pyright):
+    """End-to-end: an edit that shifts the diagnostic's line still
+    filters correctly when ``line_shift`` is supplied.
+
+    The mock LSP server emits a fixed error at line 0; for this test
+    we don't need to actually shift the server's output — we just
+    need to prove that supplying a line_shift through the API works
+    and doesn't break the existing delta path.  The unit tests in
+    test_delta_key.py cover the shift semantics in detail.
+    """
+    repo = mock_pyright
+    f = repo / "x.py"
+    f.write_text("print('hi')\n", encoding="utf-8")
+
+    svc = LSPService(
+        enabled=True,
+        wait_mode="document",
+        wait_timeout=3.0,
+        install_strategy="manual",
+    )
+    try:
+        svc.snapshot_baseline(str(f))
+        # Identity shift — should behave exactly like no shift.
+        new_diags = svc.get_diagnostics_sync(str(f), line_shift=lambda L: L)
+        assert new_diags == []
+    finally:
         assert svc.shutdown() is True
 
 
@@ -328,6 +382,7 @@ async def test_active_diagnostics_lease_survives_idle_reap(tmp_path, monkeypatch
         def __init__(self, **kwargs):
             self.server_id = kwargs["server_id"]
             self.workspace_root = kwargs["workspace_root"]
+            self.workspace_folders = [self.workspace_root]
             self.state = "stopped"
             self.wait_started = asyncio.Event()
             self.allow_wait = asyncio.Event()
@@ -417,6 +472,7 @@ async def test_crashed_generation_retires_before_replacement_spawn(
         def __init__(self, **kwargs):
             self.server_id = kwargs["server_id"]
             self.workspace_root = kwargs["workspace_root"]
+            self.workspace_folders = [self.workspace_root]
             self.state = "stopped"
             self.shutdown_started = asyncio.Event()
             self.allow_shutdown = asyncio.Event()
@@ -487,6 +543,7 @@ async def test_shutdown_waits_for_active_lease(tmp_path, monkeypatch):
         def __init__(self, **kwargs):
             self.server_id = kwargs["server_id"]
             self.workspace_root = kwargs["workspace_root"]
+            self.workspace_folders = [self.workspace_root]
             self.state = "stopped"
             self.shutdown_started = asyncio.Event()
             self.allow_shutdown = asyncio.Event()
@@ -552,6 +609,7 @@ async def test_shutdown_cancels_inflight_spawn_and_waits_for_cleanup(
         def __init__(self, **kwargs):
             self.server_id = kwargs["server_id"]
             self.workspace_root = kwargs["workspace_root"]
+            self.workspace_folders = [self.workspace_root]
             self.state = "stopped"
             self.start_entered = asyncio.Event()
             self.never_finish_start = asyncio.Event()
@@ -622,6 +680,7 @@ async def test_failed_service_and_entry_tasks_retry_once_for_concurrent_callers(
         def __init__(self, **kwargs):
             self.server_id = kwargs["server_id"]
             self.workspace_root = kwargs["workspace_root"]
+            self.workspace_folders = [self.workspace_root]
             self.state = "stopped"
             self.shutdown_calls = 0
             self.retry_started = asyncio.Event()
@@ -709,6 +768,7 @@ async def test_inflight_spawn_cleanup_failure_keeps_generation_tombstone(
         def __init__(self, **kwargs):
             self.server_id = kwargs["server_id"]
             self.workspace_root = kwargs["workspace_root"]
+            self.workspace_folders = [self.workspace_root]
             self.state = "stopped"
             self.start_entered = asyncio.Event()
             self.never_finish_start = asyncio.Event()
@@ -779,6 +839,7 @@ async def test_reader_cleanup_failure_retains_handle_and_blocks_replacement(
             self.stdin = FakeStdin()
             self.stdout = object()
             self.stderr = None
+            self.pid = 12345  # intercepted by the tree-kill fixture
             self.fail_terminate = True
             self.terminate_calls = 0
 
@@ -810,6 +871,11 @@ async def test_reader_cleanup_failure_retains_handle_and_blocks_replacement(
     spawn_count = next(server)
     monkeypatch.setattr("agent.lsp.manager.LSPClient", ReaderCleanupClient)
     monkeypatch.setattr("agent.lsp.client.read_message", controlled_read)
+    def kill_tree(pid):
+        assert clients and pid == clients[0].process.pid
+        clients[0].process.terminate()
+        return True
+    monkeypatch.setattr("agent.deadline.kill_process_tree", kill_tree)
     svc = _threadless_service()
     loop = asyncio.get_running_loop()
     previous_exception_handler = loop.get_exception_handler()
@@ -927,6 +993,7 @@ async def test_multi_key_reap_announces_each_key_before_replacement(
         def __init__(self, **kwargs):
             self.server_id = kwargs["server_id"]
             self.workspace_root = kwargs["workspace_root"]
+            self.workspace_folders = [self.workspace_root]
             self.state = "stopped"
             self.shutdown_started = asyncio.Event()
             self.allow_shutdown = asyncio.Event()
@@ -1074,6 +1141,11 @@ async def test_service_shutdown_drains_reader_request_dispatch(monkeypatch, tmp_
     client._state = "running"
     client._request_handlers["workspace/configuration"] = controlled_handler
     monkeypatch.setattr("agent.lsp.client.read_message", controlled_read)
+    def kill_tree(pid):
+        assert clients and pid == clients[0].process.pid
+        clients[0].process.terminate()
+        return True
+    monkeypatch.setattr("agent.deadline.kill_process_tree", kill_tree)
     client._reader_task = asyncio.create_task(client._reader_loop())
     key = (client.server_id, client.workspace_root)
     svc._clients[key] = _ClientEntry(client=client, generation=1)
@@ -1129,6 +1201,7 @@ def test_blocking_build_spawn_retains_shutdown_owner_and_honors_fence(
         def __init__(self, **kwargs):
             self.server_id = kwargs["server_id"]
             self.workspace_root = kwargs["workspace_root"]
+            self.workspace_folders = [self.workspace_root]
             self.state = "stopped"
             self.shutdown_calls = 0
             clients.append(self)

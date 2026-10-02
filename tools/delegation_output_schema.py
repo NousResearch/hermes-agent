@@ -49,9 +49,10 @@ def append_output_contract(context: Optional[str], schema: Dict[str, Any]) -> st
     except (TypeError, ValueError):
         schema_text = str(schema)
     block = ("OUTPUT CONTRACT (machine-validated):\n"
-             "Your FINAL response must be a single JSON object that validates "
-             "against this JSON Schema. No prose before or after the JSON; a "
-             "```json code fence is acceptable but not required.\n" f"{schema_text}")
+             "Your FINAL response must be ONLY the JSON value that validates against this JSON "
+             "Schema — no prose before or after it, no code fence, no explanation. Anything else "
+             "costs a correction turn and, if it fails again, is handed to the caller unvalidated.\n"
+             f"{schema_text}")
     base = (context or "").rstrip()
     return f"{base}\n\n{block}" if base else block
 
@@ -66,14 +67,21 @@ def extract_json_candidate(text: str) -> str:
         raw = raw.strip()
         if raw.lower().startswith("json\n"):
             raw = raw.split("\n", 1)[1]
+    # Try each bracket kind's outermost span, earliest opener first, and keep the first that parses:
+    # checking "{" before "[" unconditionally sliced a fenced array down to its first..last object and
+    # rejected every valid array answer.
+    spans = []
     for opener, closer in (("{", "}"), ("[", "]")):
-        if raw.startswith(opener):
-            return raw
-        start = raw.find(opener)
-        end = raw.rfind(closer)
+        start, end = raw.find(opener), raw.rfind(closer)
         if start >= 0 and end > start:
-            return raw[start : end + 1]
-    return raw
+            spans.append((start, raw[start : end + 1]))
+    for _start, candidate in sorted(spans):
+        try:
+            json.loads(candidate)
+            return candidate
+        except ValueError:
+            continue
+    return spans[0][1] if spans else raw
 
 
 def validate_output(text: str, schema: Dict[str, Any]) -> Tuple[bool, List[str]]:
@@ -105,12 +113,3 @@ def build_retry_message(errors: List[str]) -> str:
             "validator. Validation errors:\n" f"{error_block}\n\n"
             "Reply with ONLY the corrected JSON object matching the OUTPUT "
             "CONTRACT schema from your task context. No prose, no explanations.")
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-
-MAX_SCHEMA_RETRIES = 1
-# ---- END PLUGIN-COMPAT ----

@@ -27,6 +27,7 @@ except ImportError:  # pragma: no cover - httpx is a hermes dependency
     httpx = None  # type: ignore[assignment]
 
 from gateway.platforms._shared import get_scoped_secret as _get_scoped_secret
+from hermes_constants import get_hermes_home
 import contextlib
 
 logger = logging.getLogger(__name__)
@@ -51,12 +52,8 @@ E164_RE = re.compile(r"^\+[1-9]\d{6,14}$")
 # -- auth.json helpers (shares the file with the rest of hermes-agent) ------------
 
 def _auth_json_path() -> Path:
-    """``~/.hermes/auth.json`` honouring the active Hermes profile."""
-    try:
-        from hermes_constants import get_hermes_home
-        return Path(get_hermes_home()) / "auth.json"
-    except Exception:
-        return Path(os.path.expanduser("~/.hermes")) / "auth.json"
+    """The active profile's ``auth.json`` (shared with the rest of hermes-agent)."""
+    return get_hermes_home() / "auth.json"
 
 
 def _load_auth() -> Dict[str, Any]:
@@ -64,7 +61,8 @@ def _load_auth() -> Dict[str, Any]:
     if not path.exists():
         return {}
     try:
-        return json.loads(path.read_text(encoding="utf-8")) or {}
+        with path.open("r", encoding="utf-8-sig") as fh:
+            return json.load(fh) or {}
     except (OSError, json.JSONDecodeError) as e:
         logger.warning("photon: could not read %s: %s", path, e)
         return {}
@@ -713,51 +711,3 @@ def print_credential_summary(emit: Any = print) -> None:
         "  my number           : " + (phone if phone else "✗ missing (run `hermes photon setup --phone ...`)"),
         "  assigned number     : " + (assigned if assigned else "✗ missing (run `hermes photon setup`)")]
     emit("\n".join(rows))
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-
-def credential_summary() -> Dict[str, str]:
-    """Return a fully pre-formatted credential status dict (no raw secrets)."""
-    def _present_token() -> str:
-        return (
-            "✓ stored" if load_photon_token()
-            else "✗ missing (run `hermes photon setup`)"
-        )
-
-    def _present_project_id() -> str:
-        sid, _sec = load_project_credentials()
-        return sid or "✗ missing"
-
-    def _present_secret() -> str:
-        _sid, sec = load_project_credentials()
-        return "✓ stored" if sec else "✗ missing"
-
-    def _present_phone() -> str:
-        phone, _assigned = load_user_numbers()
-        return phone or "✗ missing (run `hermes photon setup --phone ...`)"
-
-    def _present_assigned_phone() -> str:
-        _phone, assigned = load_user_numbers()
-        return assigned or "✗ missing (run `hermes photon setup`)"
-
-    return {
-        "device_token": _present_token(),
-        "project_id": _present_project_id(),
-        "project_key": _present_secret(),
-        "phone_number": _present_phone(),
-        "assigned_phone_number": _present_assigned_phone(),
-    }
-
-def get_session(token: str) -> Dict[str, Any]:
-    """GET ``/api/auth/get-session`` — confirm the token + fetch the user."""
-    if httpx is None:
-        raise RuntimeError("httpx is required for Photon")
-    url = f"{_dashboard_host()}/api/auth/get-session"
-    resp = httpx.get(url, headers=_bearer(token), timeout=30.0)
-    resp.raise_for_status()
-    return resp.json() or {}
-# ---- END PLUGIN-COMPAT ----

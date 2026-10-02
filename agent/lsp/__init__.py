@@ -1,30 +1,10 @@
 """Language Server Protocol (LSP) integration for Hermes Agent.
 
-Hermes runs full language servers (pyright, gopls, rust-analyzer,
-typescript-language-server, etc.) as subprocesses and pipes their
-``textDocument/publishDiagnostics`` output into the post-write lint
-delta filter used by ``write_file`` and ``patch``.
-
-LSP is **gated on git workspace detection** — if the agent's cwd is
-inside a git repository, LSP runs against that workspace; otherwise the
-file_operations layer falls back to its existing in-process syntax
-checks.  This keeps users on user-home cwd's (e.g. Telegram gateway
-chats) from spawning daemons they don't need.
-
-Public API:
-
-    from agent.lsp import get_service
-
-    svc = get_service()
-    if svc and svc.enabled_for(path):
-        await svc.touch_file(path)
-        diags = svc.diagnostics_for(path)
-
-The bulk of the wiring is internal — most callers only need the layer
-in :func:`tools.file_operations.FileOperations._check_lint_delta`,
-which is already wired (see that module).
-
-Architecture is documented in ``website/docs/user-guide/features/lsp.md``.
+Real language servers (pyright, gopls, ...) run as subprocesses and their
+``publishDiagnostics`` feed the post-write lint delta filter of ``write_file`` /
+``patch`` (wiring: ``FileOperations._check_lint_delta``).  LSP is **gated on git
+workspace detection** so user-home cwd's (e.g. Telegram gateway chats) never
+spawn daemons; ``get_service()`` returns the singleton or ``None`` when disabled.
 """
 from __future__ import annotations
 
@@ -38,7 +18,6 @@ from agent.lsp.manager import LSPService
 
 logger = logging.getLogger("agent.lsp")
 
-
 @dataclass(frozen=True)
 class _ServiceTombstone:
     """A service whose teardown was not confirmed successful."""
@@ -48,92 +27,91 @@ class _ServiceTombstone:
 
 
 _service: Optional[Union[LSPService, _ServiceTombstone]] = None
+# Routed multiplex profiles (HERMES_HOME override) each get their own service: ``lsp.*`` config
+# (enabled, servers, idle timeout) is per profile, so one process-wide singleton would let the first
+# profile's settings decide whether every other profile gets diagnostics.
+_services_by_home: dict = {}
 _atexit_registered = False
 _service_lock = threading.Lock()
 
 
+def _active(svc: Optional[LSPService]) -> Optional[LSPService]:
+    return svc if (svc is not None and not isinstance(svc, _ServiceTombstone) and svc.is_active()) else None
+
+
+def _register_atexit_once() -> None:
+    global _atexit_registered
+    if not _atexit_registered:
+        atexit.register(_atexit_shutdown)
+        _atexit_registered = True
+
+
 def get_service() -> Optional[LSPService]:
-    """Return the process-wide LSP service singleton, or None when disabled.
-
-    The service is created lazily on first call.  ``None`` is returned
-    when LSP is disabled in config, when no workspace can be detected,
-    or when the platform doesn't support subprocess-based LSP servers.
-
-    On first creation, registers an :mod:`atexit` handler that tears
-    down spawned language servers on Python exit so a long-running
-    CLI or gateway session doesn't leak pyright/gopls/etc. processes
-    when it terminates.
-    """
-    global _service, _atexit_registered
+    """Return the active profile's service; failed teardown blocks its replacement."""
+    global _service
+    from hermes_constants import get_hermes_home_override, hermes_home_key
     with _service_lock:
-        current = _service
-        if isinstance(current, _ServiceTombstone):
+        if get_hermes_home_override() is not None:
+            home_key = hermes_home_key()
+            if home_key not in _services_by_home:
+                _services_by_home[home_key] = LSPService.create_from_config()
+                _register_atexit_once()
+            return _active(_services_by_home[home_key])
+        if _service is None:
+            _service = LSPService.create_from_config()
+            _register_atexit_once()
+        return _active(_service)
+
+
+def release_workspace(path: str) -> int:
+    """Shut down the LSP clients serving ``path`` (a worktree about to be removed) in every started
+    service, without shutting down unrelated workspaces.  Never creates a service.  Returns the count."""
+    with _service_lock:
+        services = [svc for svc in (_service, *_services_by_home.values()) if svc is not None]
+    released = 0
+    for svc in services:
+        try:
+            owner = svc.service if isinstance(svc, _ServiceTombstone) else svc
+            released += owner.release_workspace(path)
+        except Exception as e:  # noqa: BLE001
+            logger.debug("LSP workspace release failed for %s: %s", path, e)
+    return released
+
+
+def _shutdown_owner(current):
+    if current is None:
+        return None
+    svc = current.service if isinstance(current, _ServiceTombstone) else current
+    try:
+        if svc.shutdown() is True:
             return None
-        if current is not None:
-            return current if current.is_active() else None
-        current = LSPService.create_from_config()
-        _service = current
-        if not _atexit_registered:
-            # ``atexit`` handlers run in LIFO order on normal Python
-            # exit and on SystemExit, but NOT on os._exit() or
-            # uncaught signals.  Language servers are stateless
-            # subprocesses — losing them on SIGKILL is fine; they'll
-            # be reaped by the kernel along with their parent.  We
-            # care about clean exits where Python flushes stdio
-            # before terminating; without this hook every
-            # ``hermes chat`` exit would leak pyright processes that
-            # outlive the parent for a few seconds while their
-            # stdout buffers drain.
-            atexit.register(_atexit_shutdown)
-            _atexit_registered = True
-        return current if (current is not None and current.is_active()) else None
+        error = svc._get_shutdown_error() or "teardown incomplete"
+    except Exception as e:  # noqa: BLE001
+        error = f"{type(e).__name__}: {e}"
+        logger.debug("LSP shutdown error: %s", error)
+    return _ServiceTombstone(service=svc, error=error)
 
 
 def shutdown_service() -> bool:
-    """Tear down the LSP service if one was started.
-
-    Returns ``True`` only when teardown completed.  The singleton lock is
-    held through teardown so ``get_service()`` cannot publish a replacement
-    concurrently.  Failed or incomplete teardown leaves a tombstone that
-    continues refusing replacement until a later shutdown call succeeds.
-    """
+    """Serialize teardown with admission, retaining failed owners for a later retry."""
     global _service
     with _service_lock:
-        current = _service
-        if current is None:
-            return True
-        svc = current.service if isinstance(current, _ServiceTombstone) else current
-        try:
-            succeeded = bool(svc.shutdown())
-        except Exception as e:  # noqa: BLE001
-            logger.debug("LSP shutdown error: %s", e)
-            _service = _ServiceTombstone(
-                service=svc,
-                error=f"{type(e).__name__}: {e}",
-            )
-            return False
-        if succeeded:
-            _service = None
-            return True
-        try:
-            error = svc._get_shutdown_error() or "teardown incomplete"
-        except Exception as e:  # noqa: BLE001
-            error = f"teardown incomplete; error unavailable: {type(e).__name__}: {e}"
-        _service = _ServiceTombstone(
-            service=svc,
-            error=error,
-        )
-        return False
+        _service = _shutdown_owner(_service)
+        for home, current in list(_services_by_home.items()):
+            retained = _shutdown_owner(current)
+            if retained is None:
+                del _services_by_home[home]
+            else:
+                _services_by_home[home] = retained
+        return _service is None and not _services_by_home
 
 
 def _atexit_shutdown() -> None:
-    """atexit-registered wrapper.  Logs at debug because by the time
-    atexit fires the user has already seen the agent's final output —
-    a noisy shutdown line on top of that is just clutter."""
+    """atexit wrapper; logs at debug since the user has already seen the final output."""
     try:
         shutdown_service()
     except Exception as e:  # noqa: BLE001
         logger.debug("atexit LSP shutdown failed: %s", e)
 
 
-__all__ = ["get_service", "shutdown_service", "LSPService"]
+__all__ = ["get_service", "release_workspace", "shutdown_service", "LSPService"]

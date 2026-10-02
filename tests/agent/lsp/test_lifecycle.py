@@ -24,9 +24,11 @@ def _reset_singleton():
     after every test so order doesn't matter.
     """
     lsp_module._service = None
+    lsp_module._services_by_home.clear()
     lsp_module._atexit_registered = False
     yield
     lsp_module._service = None
+    lsp_module._services_by_home.clear()
     lsp_module._atexit_registered = False
 
 
@@ -227,3 +229,41 @@ def test_singleton_tombstone_survives_loop_stop_failure():
 
 
 
+
+
+def test_routed_profile_tombstone_retains_config_owner(tmp_path, monkeypatch):
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+    homes = [tmp_path / name for name in ("a", "b")]
+    for home, timeout in zip(homes, (1, 2)):
+        home.mkdir()
+        (home / "config.yaml").write_text(
+            f"lsp:\n  enabled: true\n  install_strategy: manual\n  idle_timeout: 0\n  wait_timeout: {timeout}\n",
+            encoding="utf-8",
+        )
+    monkeypatch.setattr(atexit, "register", lambda fn: None)
+
+    def under(home):
+        token = set_hermes_home_override(str(home))
+        try:
+            return lsp_module.get_service()
+        finally:
+            reset_hermes_home_override(token)
+
+    a, b = (under(home) for home in homes)
+    assert a is not None and b is not None and a is not b
+    assert under(homes[0]) is a
+    assert a.get_status()["wait_timeout"] == 1
+    assert b.get_status()["wait_timeout"] == 2
+    real_stop = a._loop.stop
+    monkeypatch.setattr(a._loop, "stop", lambda: False)
+    try:
+        assert lsp_module.shutdown_service() is False
+        assert under(homes[0]) is None
+        # The other profile completed teardown and can start its own service.
+        replacement_b = under(homes[1])
+        assert replacement_b is not None and replacement_b is not b
+        assert replacement_b.get_status()["wait_timeout"] == 2
+    finally:
+        monkeypatch.setattr(a._loop, "stop", real_stop)
+        assert lsp_module.shutdown_service() is True

@@ -33,7 +33,7 @@ def _read_message_body(positional: Optional[str], file_path: Optional[str]) -> O
         if file_path == "-":
             return sys.stdin.read()
         try:
-            return Path(file_path).read_text(encoding="utf-8")
+            return Path(file_path).read_text(encoding="utf-8-sig")
         except UnicodeDecodeError:
             _fail(
                 f"hermes send: {file_path} is not a text file. --file reads the "
@@ -50,6 +50,13 @@ def _read_message_body(positional: Optional[str], file_path: Optional[str]) -> O
 
     # Reading from a TTY would block the user in a half-broken "type your message" state.
     return (sys.stdin.read() or None) if not sys.stdin.isatty() else None
+
+
+def _invalid_whatsapp_mentions(mentions: list[str]) -> list[str]:
+    """Return mention values that cannot identify a WhatsApp participant."""
+    from gateway.whatsapp_identity import normalize_whatsapp_mention_jid
+
+    return [mention for mention in mentions if not normalize_whatsapp_mention_jid(mention)]
 
 
 def _emit_result(result_json: str, *, json_mode: bool, quiet: bool) -> int:
@@ -111,7 +118,13 @@ def _list_targets(platform_filter: Optional[str], *, json_mode: bool) -> int:
     if not platforms:
         print("No messaging platforms configured or no channels discovered yet.")
         print("Set one up with `hermes gateway setup`, or run the gateway once so")
-        print("channel discovery can populate ~/.hermes/channel_directory.json.")
+        from hermes_constants import get_default_hermes_root, get_hermes_home, hermes_home_key
+        home, root = get_hermes_home(), get_default_hermes_root()
+        print(f"channel discovery can populate {home / 'channel_directory.json'}.")
+        # A gateway started from the default root writes that root's directory, never this profile's.
+        if hermes_home_key(root) != hermes_home_key(home) and (root / "channel_directory.json").exists():
+            print(f"A gateway running from {root} already has {root / 'channel_directory.json'}; "
+                  f"this shell is scoped to profile home {home}, which has none.")
         return _SUCCESS_EXIT
 
     # Unfiltered: the shared formatter over the merged view. Filtered: a minimal view of our own.
@@ -132,62 +145,50 @@ def _list_targets(platform_filter: Optional[str], *, json_mode: bool) -> int:
 
 
 def _load_hermes_env() -> None:
-    """Populate ``os.environ`` from ``~/.hermes/.env`` AND bridge top-level ``config.yaml`` keys into
-    the environment so the gateway config loader sees platform credentials and home channels."""
-    try:
-        from dotenv import load_dotenv
-    except Exception:
-        load_dotenv = None  # type: ignore[assignment]
+    """Populate the credential environment from ``<HERMES_HOME>/.env`` AND bridge top-level ``config.yaml``
+    keys into it so the gateway config loader sees platform credentials and home channels.
+
+    The target is ``os.environ`` for the standalone CLI. Inside a multi-profile host (dashboard console
+    running ``send`` for profile B under its secret scope) it is the installed scope mapping: writing B's
+    ``.env`` into the shared process env would hand every other profile's later reads B's tokens
+    (``gateway.config._getenv`` reads the scope first, so the loader sees the same values either way).
+    The installed scope is already ``build_profile_secret_scope``'s composition — user ``.env``, then
+    the profile's external secret sources over it — so it is authoritative as-is; replaying raw
+    ``.env`` over it would let a stale user value beat the secret-manager one for this request.
+    """
+    import os
     try:
         from hermes_cli.config import get_hermes_home
         home = get_hermes_home()
     except Exception:
         return
-    env_path = home / ".env"
-    if load_dotenv and env_path.exists():
-        try:
-            # utf-8-sig strips a leading BOM (PowerShell 5.1 / Notepad); plain "utf-8" would keep
-            # U+FEFF on the first key name and silently drop it from os.environ.
-            load_dotenv(str(env_path), override=True, encoding="utf-8-sig")
-        except UnicodeDecodeError:
-            try:  # utf-8-sig can't strip a BOM once we fall back to latin-1.
-                import codecs
-                import io
-                raw = env_path.read_bytes().removeprefix(codecs.BOM_UTF8)
-                load_dotenv(stream=io.StringIO(raw.decode("latin-1")), override=True)
+    from agent.secret_scope import current_secret_scope, is_multiplex_active
+    scope = current_secret_scope() if is_multiplex_active() else None
+    if isinstance(scope, dict):
+        target: dict = scope
+    else:
+        target = os.environ
+        env_path = home / ".env"
+        if env_path.exists():
+            try:
+                from hermes_cli.env_loader import _load_dotenv_with_fallback
+                _load_dotenv_with_fallback(env_path, override=True)
             except Exception:
                 pass
-        except Exception:
-            pass
 
-    # Bridge top-level config.yaml scalars into the environment (never overriding existing values).
-    import os
+    # Bridge top-level scalars the user (or the managed layer) actually wrote — never DEFAULT_CONFIG —
+    # into the environment, without overriding existing values.
     config_path = home / "config.yaml"
     if not config_path.exists():
         return
     try:
-        # Raw read is deliberate — only keys the user actually wrote get bridged.
-        from hermes_cli.config import read_user_config_raw
-        raw = read_user_config_raw(config_path)
+        from hermes_cli.config_effective import load_user_config_effective
+        cfg = load_user_config_effective(config_path)
     except Exception:
         return
-    try:
-        from hermes_cli.config import _expand_env_vars
-        raw = _expand_env_vars(raw)
-    except Exception:
-        pass
-
-    # Managed scope: administrator-pinned values win here too (fail-open via the helper).
-    try:
-        from hermes_cli import managed_scope
-        raw = managed_scope.apply_managed_overlay(raw if isinstance(raw, dict) else {})
-    except Exception:
-        pass
-    if not isinstance(raw, dict):
-        return
-    for key, val in raw.items():
-        if isinstance(val, (str, int, float, bool)) and key not in os.environ:
-            os.environ[key] = str(val)
+    for key, val in cfg.items():
+        if isinstance(val, (str, int, float, bool)) and key not in target:
+            target[key] = str(val)
 
 
 def cmd_send(args: argparse.Namespace) -> None:
@@ -206,6 +207,15 @@ def cmd_send(args: argparse.Namespace) -> None:
             "  hermes send --to discord:#ops --file report.md\n"
             "  hermes send --list      # list available targets",
             _USAGE_EXIT)
+    mentions = list(getattr(args, "mentions", None) or [])
+    if mentions and target.split(":", 1)[0].strip().lower() != "whatsapp":
+        _fail("hermes send: --mention is only supported for WhatsApp targets.", _USAGE_EXIT)
+    invalid_mentions = _invalid_whatsapp_mentions(mentions)
+    if invalid_mentions:
+        _fail(
+            "hermes send: invalid --mention value(s): "
+            f"{', '.join(invalid_mentions)}. Use a phone number or participant JID.",
+            _USAGE_EXIT)
     message = _read_message_body(getattr(args, "message", None), getattr(args, "file", None))
     if message is None or not message.strip():
         _fail(
@@ -223,7 +233,10 @@ def cmd_send(args: argparse.Namespace) -> None:
 
     # Routes to the platform adapter (bot-token path for built-ins, live-adapter path for plugin
     # platforms); takes the standard tool-call dict and returns a JSON string.
-    result = send_message_tool({"action": "send", "target": target, "message": message})
+    tool_args = {"action": "send", "target": target, "message": message}
+    if mentions:
+        tool_args["mentions"] = mentions
+    result = send_message_tool(tool_args)
     sys.exit(_emit_result(result, json_mode=getattr(args, "json", False), quiet=getattr(args, "quiet", False)))
 
 
@@ -239,6 +252,9 @@ _SEND_ARGUMENTS = (
         "Read message body from PATH (text only). Use '-' to force stdin. "
         "To send an image/document as an attachment, use MEDIA:<path> in the message text instead."))),
     (("-s", "--subject"), dict(metavar="LINE", default=None, help="Prepend a subject/header line before the message body.")),
+    (("--mention",), dict(dest="mentions", action="append", default=None, metavar="PHONE_OR_JID", help=(
+        "WhatsApp only: add a native participant mention. Repeat for multiple recipients; "
+        "bare phone numbers are normalized to JIDs. Include each matching @<number> near the start of the message text."))),
     (("-l", "--list"), dict(dest="list_targets", action="store_true", default=False,
                             help="List available targets. Optional positional filter: `hermes send --list telegram`.")),
     (("-q", "--quiet"), dict(action="store_true", default=False, help="Suppress stdout on success (exit code only).")),
@@ -248,13 +264,16 @@ _SEND_ARGUMENTS = (
 
 def register_send_subparser(subparsers) -> argparse.ArgumentParser:
     """Create the ``send`` subparser and return it."""
+    from hermes_constants import get_hermes_home
+    hermes_home = get_hermes_home()
     parser = subparsers.add_parser(
         "send",
         help="Send a message to a configured platform (scripts, cron jobs, CI).",
         description=(
             "Pipe text from any shell script to any messaging platform Hermes "
             "is already configured for. Reuses the gateway's platform "
-            "credentials (~/.hermes/.env + ~/.hermes/config.yaml) — no LLM, "
+            f"credentials ({hermes_home / '.env'} + "
+            f"{hermes_home / 'config.yaml'}) — no LLM, "
             "no agent loop, no running gateway required for bot-token "
             "platforms like Telegram/Discord/Slack/Signal."
         ),
@@ -262,9 +281,10 @@ def register_send_subparser(subparsers) -> argparse.ArgumentParser:
             "Examples:\n"
             "  hermes send --to telegram \"deploy finished\"\n"
             "  echo \"RAM 92%\" | hermes send --to telegram:-1001234567890\n"
-            "  hermes send --to discord:#ops --file /tmp/report.md\n"
+            "  hermes send --to discord:#ops --file ./report.md\n"
             "  hermes send --to slack:#eng --subject \"[CI]\" --file build.log\n"
-            "  hermes send --to telegram \"MEDIA:/tmp/chart.png\"   # send a media attachment\n"
+            "  hermes send --to whatsapp:GROUP@g.us --mention 15551234567 \"@15551234567 hello\"\n"
+            "  hermes send --to telegram \"MEDIA:./chart.png\"   # send a media attachment\n"
             "  hermes send --list                  # all platforms\n"
             "  hermes send --list telegram         # filter by platform\n"
             "\n"

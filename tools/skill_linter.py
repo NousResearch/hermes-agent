@@ -42,6 +42,18 @@ _FORBIDDEN_FILES = ("README.md", "CHANGELOG.md", "install.sh", ".env", ".env.exa
 # Presence of the load-bearing section is checked, not exact ordering, so the
 # linter is not a change-detector.
 _EXPECTED_SECTIONS = ("When to Use", "When to use")
+# incident-log-shape: at least this many PR/issue refs AND this density (per 1k chars of prose).
+_INCIDENT_REF_MIN = 4
+_INCIDENT_REF_PER_KCHAR = 0.5  # the 100k incident-log SKILL.md this targets sat at ~0.7
+# references-sprawl: a skill carrying more reference files than this is hoarding per-session notes.
+# Calibration: a deliberately curated large workflow skill sits near 50 topical files; the hoarding
+# shape this catches was 443 one-per-session files.
+_MAX_REFERENCE_FILES = 60
+# oversized-body: SKILL.md is loaded whole by skill_view and then rides in context for every later
+# call of the session, so body size is paid per turn, not once. The authoring standard is ~200 lines;
+# this budget is ~3x that (bundled skills average ~20k chars). The hard cap in skill_manager_tool
+# (100k) is a safety stop, not a target — agent-authored skills grew to sit right under it.
+_BODY_SOFT_BUDGET_CHARS = 24_000
 
 ERROR = "error"
 WARNING = "warning"
@@ -62,7 +74,6 @@ def _err(rule: str, message: str) -> LintFinding:
 
 def _warn(rule: str, message: str) -> LintFinding:
     return LintFinding(WARNING, rule, message)
-
 
 def _strip_code_blocks(body: str) -> str:
     """Remove fenced code blocks so prose-only checks don't fire on examples."""
@@ -114,6 +125,12 @@ def _check_frontmatter(frontmatter: Dict[str, Any], skill_dir: Optional[Path]) -
 
 
 def _check_body(body: str, skill_dir: Optional[Path]) -> Iterator[LintFinding]:
+    if len(body) > _BODY_SOFT_BUDGET_CHARS:
+        yield _warn("oversized-body",
+                    f"SKILL.md body is {len(body):,} chars (~{len(body) // 4:,} tokens); skill_view loads "
+                    f"all of it and it stays in context for every later call of the session. Keep the "
+                    f"always-on rules here (~200 lines) and move topic depth into references/<topic>.md, "
+                    f"linked from the body.")
     # Only backtick-wrapped mentions in PROSE (not fenced code): bare words are too noisy.
     prose = _strip_code_blocks(body)
     for util, tool in _SHELL_UTIL_TO_TOOL.items():
@@ -123,6 +140,12 @@ def _check_body(body: str, skill_dir: Optional[Path]) -> Iterator[LintFinding]:
     if not any(re.search(rf"^#+\s+{re.escape(s)}", body, re.M) for s in _EXPECTED_SECTIONS):
         yield _warn("missing-section", "no '## When to Use' section found; skills need explicit "
                     "trigger conditions near the top.")
+    # Incident-log shape: a skill body dense in PR/issue numbers is narrating history instead of
+    # stating rules. Threshold is per 1k chars so a long body with one citation is fine.
+    refs = len(re.findall(r"(?<![\w/])#\d{3,6}\b|\b(?:PR|issue)\s*#?\d{3,6}\b", prose))
+    if refs >= _INCIDENT_REF_MIN and refs / max(len(prose), 1) * 1000 >= _INCIDENT_REF_PER_KCHAR:
+        yield _warn("incident-log-shape", f"{refs} PR/issue references in prose; write the generalizable "
+                    "rule + why and drop the incident numbers — the rule must stand without the story.")
     if skill_dir is None:
         return
     # Dangling links. Only references/, templates/, assets/ are reliably skill-owned;
@@ -147,7 +170,7 @@ def _check_files(frontmatter: Dict[str, Any], skill_dir: Path) -> Iterator[LintF
             if not script.is_file() or script.suffix not in (".py", ".sh", ".bash"):
                 continue
             try:
-                text = script.read_text(encoding="utf-8", errors="ignore")
+                text = script.read_text(encoding="utf-8-sig", errors="ignore")
             except OSError:
                 continue
             hit = [p for p in _POSIX_PRIMITIVES if p in text]
@@ -162,6 +185,13 @@ def _check_files(frontmatter: Dict[str, Any], skill_dir: Path) -> Iterator[LintF
         if (skill_dir / fname).exists():
             yield _warn("forbidden-file",
                         f"skill ships '{fname}'; skills should not include scaffolding/config files.")
+    refs_dir = skill_dir / "references"
+    if refs_dir.is_dir():
+        n_refs = sum(1 for p in refs_dir.rglob("*.md") if not any(part.startswith("_") for part in p.parts))
+        if n_refs > _MAX_REFERENCE_FILES:
+            yield _warn("references-sprawl",
+                        f"{n_refs} files under references/; that is a per-session log, not topical depth. "
+                        "Merge same-topic files into one rule set and drop incident narration.")
 
 
 def lint_content(content: str, *, skill_dir: Optional[Path] = None) -> List[LintFinding]:
@@ -181,19 +211,5 @@ def lint_content(content: str, *, skill_dir: Optional[Path] = None) -> List[Lint
 def lint_skill(skill_md_path: Path) -> List[LintFinding]:
     """Lint a SKILL.md file on disk, with all on-disk checks enabled."""
     skill_md_path = Path(skill_md_path)
-    content = skill_md_path.read_text(encoding="utf-8", errors="ignore")
+    content = skill_md_path.read_text(encoding="utf-8-sig", errors="ignore")
     return lint_content(content, skill_dir=skill_md_path.parent)
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-
-def format_findings(findings: List[LintFinding]) -> str:
-    """Render findings as a newline-joined human-readable block."""
-    return "\n".join(f.format() for f in findings)
-
-def has_errors(findings: List[LintFinding]) -> bool:
-    return any(f.severity == ERROR for f in findings)
-# ---- END PLUGIN-COMPAT ----

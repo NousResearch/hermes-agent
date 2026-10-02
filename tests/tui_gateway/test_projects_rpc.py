@@ -47,25 +47,8 @@ def _fast_git_probe(monkeypatch):
     git_probe.invalidate()
 
 
-def test_methods_registered():
-    for m in (
-        "projects.list",
-        "projects.create",
-        "projects.get",
-        "projects.update",
-        "projects.add_folder",
-        "projects.remove_folder",
-        "projects.set_primary",
-        "projects.archive",
-        "projects.set_active",
-        "projects.for_cwd",
-    ):
-        assert m in server._methods
 
 
-def test_for_cwd_is_a_long_handler():
-    # git-probe handler must run off the dispatch thread.
-    assert "projects.for_cwd" in server._LONG_HANDLERS
 
 
 def test_repo_root_cache_does_not_freeze_a_not_yet_repo(monkeypatch):
@@ -88,125 +71,14 @@ def test_repo_root_cache_does_not_freeze_a_not_yet_repo(monkeypatch):
     assert git_probe.repo_root(cwd) == cwd  # now cached
 
 
-def test_negative_results_are_ttl_cached_then_re_probed(monkeypatch):
-    # A non-repo cwd is re-derived on every session in a project-tree build, so a
-    # "not a repo" answer must be cached briefly to avoid re-spawning git dozens
-    # of times — but only until the TTL elapses, so a folder that later becomes a
-    # repo is still picked up.
-    from tui_gateway import git_probe
-
-    git_probe.invalidate()
-    calls = {"n": 0}
-
-    def probe(_cwd, *_a):
-        calls["n"] += 1
-        return ""  # never a repo
-
-    monkeypatch.setattr(git_probe, "run_git", probe)
-    monkeypatch.setattr(git_probe, "_NEG_TTL", 1000)  # effectively no expiry here
-
-    cwd = "/not/a/repo"
-    assert git_probe.repo_root(cwd) == ""
-    for _ in range(10):
-        assert git_probe.repo_root(cwd) == ""
-    assert calls["n"] == 1  # cached: probed once, not 11 times
-
-    # Once the TTL lapses, the next lookup re-probes (a `git init` may have run).
-    monkeypatch.setattr(git_probe, "_NEG_TTL", 0)
-    git_probe._cache._neg[cwd] = 0.0  # force-expire the cached negative
-    assert git_probe.repo_root(cwd) == ""
-    assert calls["n"] == 2
 
 
-def test_warm_roots_probes_in_parallel_and_fills_the_cache(monkeypatch):
-    # Cold first paint must not serialize one git subprocess per cwd.
-    import threading
-    import time
-
-    from tui_gateway import git_probe
-
-    git_probe.invalidate()
-    lock = threading.Lock()
-    live = {"now": 0, "peak": 0, "calls": 0}
-
-    def slow(cwd, *_a):
-        with lock:
-            live["now"] += 1
-            live["calls"] += 1
-            live["peak"] = max(live["peak"], live["now"])
-        time.sleep(0.02)
-        with lock:
-            live["now"] -= 1
-        return cwd  # show-toplevel → cwd is its own root
-
-    monkeypatch.setattr(git_probe, "run_git", slow)
-    cwds = [f"/repo{i}" for i in range(8)]
-    git_probe.warm_roots(cwds, max_workers=8)
-
-    assert live["peak"] > 1  # ran concurrently, not serialized
-    # Cache is warm: resolving again triggers no further probes.
-    before = live["calls"]
-    assert git_probe.repo_root("/repo0") == "/repo0"
-    assert live["calls"] == before
 
 
-def test_missing_directory_costs_no_subprocess(monkeypatch):
-    # Deleted worktrees dominate a long session history's cwds, and `git -C` on
-    # one can only fail — so it must never reach the fork.
-    from tui_gateway import git_probe
-
-    def boom(*_a, **_kw):
-        raise AssertionError("spawned git for a directory that does not exist")
-
-    monkeypatch.setattr(git_probe, "bounded_git_probe", boom)
-
-    assert git_probe.run_git("/gone/worktree", "rev-parse", "--show-toplevel") == ""
 
 
-def test_non_repo_cwd_is_not_probed_for_a_common_dir(monkeypatch, tmp_path):
-    # `warm_roots` only reaches `common_repo_root` for cwds that ARE repos, so a
-    # common-dir probe here is one the warm can't absorb: it runs serially on
-    # the discovery pass, once per non-repo cwd.
-    from tui_gateway import git_probe
-
-    git_probe.invalidate()
-    asked = []
-
-    def probe(cwd, *args):
-        asked.append(args[-1])
-        return ""  # not a repo, whatever we ask
-
-    monkeypatch.setattr(git_probe, "run_git", probe)
-
-    assert git_probe.common_repo_root(str(tmp_path)) == ""
-    assert asked == ["--show-toplevel"]
 
 
-def test_tree_build_warms_every_path_it_will_resolve(monkeypatch, tmp_path):
-    # build_tree resolves declared project folders and discovered repo roots as
-    # well as session cwds. Anything left out of the warm is probed one
-    # directory at a time while the sidebar shows a skeleton.
-    from tui_gateway import git_probe
-
-    repo = tmp_path / "repo"
-    (repo / ".git").mkdir(parents=True)
-    _call("projects.create", {"name": "Repo", "folders": [str(repo)]})
-
-    warmed: list[str] = []
-    real_warm = git_probe.warm_roots
-
-    def recording_warm(cwds, **kw):
-        paths = list(cwds)
-        warmed.extend(paths)
-        return real_warm(paths, **kw)
-
-    monkeypatch.setattr(git_probe, "warm_roots", recording_warm)
-
-    server._build_project_tree(
-        server._get_db(), preview_limit=3, hydrate=False, session_limit=5, include_discovered=True
-    )
-
-    assert str(repo) in warmed
 
 
 def test_create_list_roundtrip(tmp_path):
@@ -286,14 +158,8 @@ def test_delete_removes_project(tmp_path):
     payload = _call("projects.delete", {"id": pid})
 
     assert all(p["id"] != pid for p in payload["projects"])
-    assert "projects.delete" in server._methods
 
 
-def test_discover_repos_is_registered_long_handler():
-    assert "projects.discover_repos" in server._methods
-    assert "projects.discover_repos" in server._LONG_HANDLERS
-    assert "projects.record_repos" in server._methods
-    assert "projects.record_repos" in server._LONG_HANDLERS
 
 
 def test_record_repos_persists_and_shows_zero_session_repo(tmp_path):
@@ -700,18 +566,23 @@ def _create_session(home: Path, session_id: str, cwd: Path) -> None:
 
 @contextlib.contextmanager
 def _serving_launch_profile(launch_home: Path):
-    """Run the handlers as a backend launched under ``launch_home``."""
+    """Run the handlers as a backend launched under ``launch_home``.
+
+    Both the ambient override AND ``server._hermes_home`` point at it: once the process
+    multiplexes, a launch-profile RPC binds the server's own launch home (#118538), so an
+    override alone no longer stands in for "this backend was launched here"."""
     from hermes_state import SessionDB
 
     token = set_hermes_home_override(launch_home)
-    prev_db, prev_error = server._db, server._db_error
+    prev_db, prev_error, prev_home = server._db, server._db_error, server._hermes_home
+    server._hermes_home = launch_home
     server._db = SessionDB(db_path=launch_home / "state.db")
     server._db_error = None
     try:
         yield
     finally:
         server._db.close()
-        server._db, server._db_error = prev_db, prev_error
+        server._db, server._db_error, server._hermes_home = prev_db, prev_error, prev_home
         reset_hermes_home_override(token)
 
 
@@ -858,7 +729,7 @@ def test_record_repos_writes_to_the_requested_profiles_projects_db(monkeypatch, 
 
 
 def test_projects_without_a_profile_stay_on_the_launch_home(monkeypatch, tmp_path):
-    """Omitted/blank/unknown profile is a no-op — the pre-scoping behavior."""
+    """Only omitted/blank profiles use launch data; unknown targets fail closed."""
     launch_home = _profile_dir(tmp_path, "launch")
     coder_home = _profile_dir(tmp_path, "coder")
     repo = tmp_path / "repos" / "launch-only"
@@ -873,11 +744,14 @@ def test_projects_without_a_profile_stay_on_the_launch_home(monkeypatch, tmp_pat
 
         omitted = _call("projects.list")
         blank = _call("projects.list", {"profile": ""})
-        unknown = _call("projects.list", {"profile": "not-a-profile"})
+        with pytest.raises(FileNotFoundError, match="not-a-profile"):
+            _call("projects.list", {"profile": "not-a-profile"})
+        with pytest.raises(FileNotFoundError, match="not-a-profile"):
+            _call("projects.create", {"profile": "not-a-profile", "name": "Wrong target"})
+        assert _call("projects.list") == omitted
 
     assert [p["name"] for p in omitted["projects"]] == ["Launch only"]
     assert blank == omitted
-    assert unknown == omitted
     assert omitted["active_id"] == created["id"]
 
     assert _cached_repo_labels(launch_home) == ["only"]

@@ -7,6 +7,7 @@ from pathlib import Path
 import socket
 import sqlite3
 import threading
+import time
 import urllib.error
 import urllib.request
 
@@ -147,9 +148,32 @@ def test_accepted_lost_reply_then_preconnect_failure_keeps_original_attempt(tmp_
             await _send(hw, 'lost', '@reviewer LOST_REPLY')
             assert await asyncio.to_thread(proxy.accepted.wait, 30)
             assert await asyncio.to_thread(target_model.gates['LOST_REPLY'][0].wait, 30)
-            async with asyncio.timeout(30):
-                while not any(row[2] == 'indeterminate' for row in await asyncio.to_thread(attempts)):
-                    await asyncio.sleep(.1)
+            observation_started = time.time()
+            with sqlite3.connect(home / 'state.db') as db:
+                expires_at, = db.execute('SELECT expires_at FROM hosted_room_driver_leases WHERE room_id=?',
+                                         ('linked',)).fetchone()
+            # Losing the response does not retire the live 30s lease immediately.
+            # Bound recovery by its persisted expiry plus three normal 5s scheduler
+            # polls, not a competing 30s stopwatch that can expire before that poll.
+            recovery_wait = max(0, expires_at - observation_started) + 15
+            original, = await asyncio.to_thread(attempts)
+            assert original[1] == 1 and original[2] in {'running', 'indeterminate'}, original
+            try:
+                async with asyncio.timeout(recovery_wait):
+                    while True:
+                        current, = await asyncio.to_thread(attempts)
+                        assert current[:2] == original[:2] and current[2] in {'running', 'indeterminate'}, current
+                        if current[2] == 'indeterminate':
+                            break
+                        await asyncio.sleep(.1)
+            except TimeoutError:
+                with sqlite3.connect(home / 'state.db') as db:
+                    leases = db.execute('SELECT acquired_at,updated_at,expires_at,released_at FROM hosted_room_driver_leases').fetchall()
+                    task_times = db.execute('SELECT status,started_at,updated_at,indeterminate_at FROM hosted_room_driver_tasks').fetchall()
+                pytest.fail(str({'observation_started': observation_started, 'recovery_wait': recovery_wait,
+                    'now': time.time(), 'leases': leases,
+                    'task_times': task_times, 'state': await rpc(hw, 'groups.state', room_id='linked'),
+                    'home_log': (home / 'restart.log').read_text()[-5000:]}))
             before = await asyncio.to_thread(attempts)
             assert len(before) == 1 and before[0][1:] == (1, 'indeterminate'), before
             assert len(target_model.requests) == 1
@@ -165,6 +189,8 @@ def test_accepted_lost_reply_then_preconnect_failure_keeps_original_attempt(tmp_
             assert len(target_model.requests) == 1
             after = await asyncio.to_thread(attempts)
             assert after == [(task_id, 1, 'settled')], after
+            with sqlite3.connect(target / 'state.db') as db:
+                assert db.execute("SELECT COUNT(*) FROM session_admissions WHERE principal_id='api'").fetchone()[0] == 1
     try:
         with daemon(root, target, target_env, barrier=False) as (_, td):
             with daemon(root, home, home_env, barrier=False) as (_, hd):

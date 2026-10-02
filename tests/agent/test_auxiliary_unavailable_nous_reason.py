@@ -5,6 +5,8 @@ back; the failure must still reach the operator (one WARNING) and the goal-loop 
 """
 import logging
 
+import pytest
+
 import hermes_yaml as yaml
 
 import agent.auxiliary_unavailable as unavailable
@@ -64,3 +66,45 @@ def test_never_logged_in_is_debug_but_a_dead_credential_warns(caplog, monkeypatc
     assert levels == {logging.DEBUG}, caplog.records
     assert {rec.levelno for rec in caplog.records if loud in rec.getMessage()} == {logging.WARNING}
     assert "hermes model" in quiet  # the goal judge still gets the remediation text
+
+
+def test_resolver_no_login_error_is_debug_not_warning(caplog, monkeypatch, tmp_path):
+    """The resolver's own "never logged in" error carries ``code=nous_auth_missing``.
+
+    ``test_never_logged_in_is_debug_but_a_dead_credential_warns`` builds that error WITHOUT a code;
+    ``resolve_nous_access_token`` does not. A code alone therefore cannot mean "a credential existed
+    and failed", or every auto-route pass nags a user who never chose Nous.
+    """
+    _reset(monkeypatch)
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    from hermes_cli.auth import resolve_nous_access_token
+
+    with pytest.raises(AuthError) as raised:
+        resolve_nous_access_token()
+    assert raised.value.code == "nous_auth_missing", raised.value
+
+    with caplog.at_level(logging.DEBUG, logger="agent.auxiliary_unavailable"):
+        detail = unavailable.record_nous_credential_failure(raised.value)
+
+    levels = {rec.levelno for rec in caplog.records if detail in rec.getMessage()}
+    assert levels == {logging.DEBUG}, caplog.records
+
+
+def test_dead_credential_with_missing_code_still_warns(caplog, monkeypatch):
+    """A ``nous_auth_missing*`` code with logged-in state IS a dead credential and must still warn.
+
+    Guards the fix's other half: the missing-code family falls through to the persisted-state check
+    instead of being silenced outright. Patches the binding production reads (the function late-imports
+    ``get_provider_auth_state``, so the module attribute is the seam).
+    """
+    _reset(monkeypatch)
+    monkeypatch.setattr("hermes_cli.auth.get_provider_auth_state",
+                        lambda provider: {"tokens": {"access_token": "stale"}})
+    dead = AuthError("Session expired and no refresh token is available.", provider="nous",
+                     code="nous_auth_missing_refresh_token", relogin_required=True)
+
+    with caplog.at_level(logging.DEBUG, logger="agent.auxiliary_unavailable"):
+        detail = unavailable.record_nous_credential_failure(dead)
+
+    levels = {rec.levelno for rec in caplog.records if detail in rec.getMessage()}
+    assert levels == {logging.WARNING}, caplog.records

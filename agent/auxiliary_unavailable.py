@@ -225,10 +225,16 @@ def _nous_credential_present(exc: BaseException) -> bool:
     with no stored state is the normal condition for users who never chose Nous; the auto-route walk
     hits it on every discovery pass and must not warn (the ladder already logs its own summary).
     """
-    if getattr(exc, "code", None):
-        return True
-    from hermes_cli.auth import get_provider_auth_state
+    from hermes_cli.auth import _NOUS_AUTH_MISSING_CODES, get_provider_auth_state
 
+    code = getattr(exc, "code", None)
+    # "Not logged in" is raised WITH a code (``resolve_nous_access_token`` → ``nous_auth_missing``), so a
+    # code alone does not prove a credential existed to fail: the walk then warned on every pass for
+    # users who never chose Nous. Those codes fall through to the persisted-state check — the ground
+    # truth for "was there a login to fail" — which keeps a genuinely dead credential (state present)
+    # at WARNING because it still answers True.
+    if code and str(code) not in _NOUS_AUTH_MISSING_CODES:
+        return True
     with contextlib.suppress(Exception):
         return bool(get_provider_auth_state("nous"))
     return False

@@ -4470,6 +4470,50 @@ def latest_summaries(conn: sqlite3.Connection, task_ids: Iterable[str]) -> dict[
     return {r["task_id"]: r["summary"] for r in rows}
 
 
+# Events that put a task in front of a person: the reason the worker (or the
+# human) gave is in their payload, and nowhere else on the task.
+BLOCK_EVENT_KINDS = ("blocked", "block_loop_detected", "dependency_wait")
+
+
+def latest_block_events(conn: sqlite3.Connection, task_ids: Iterable[str]) -> dict[str, dict[str, Any]]:
+    """``{task_id: {event_id, kind, reason, actor, block_kind, created_at}}`` for
+    each task's newest block event, in one query; tasks without one are omitted."""
+    ids = list(task_ids)
+    if not ids:
+        return {}
+    placeholders = ",".join("?" for _ in ids)
+    kinds = ",".join("?" for _ in BLOCK_EVENT_KINDS)
+    rows = conn.execute(
+        f"""
+        SELECT id, task_id, kind, payload, created_at FROM (
+            SELECT id, task_id, kind, payload, created_at,
+                   ROW_NUMBER() OVER (PARTITION BY task_id ORDER BY id DESC) AS rn
+              FROM task_events
+             WHERE task_id IN ({placeholders}) AND kind IN ({kinds})
+        ) WHERE rn = 1
+        """,
+        [*ids, *BLOCK_EVENT_KINDS],
+    ).fetchall()
+    out: dict[str, dict[str, Any]] = {}
+    for r in rows:
+        try:
+            payload = json.loads(r["payload"]) if r["payload"] else {}
+        except (TypeError, ValueError):
+            payload = {}
+        if not isinstance(payload, dict):
+            payload = {}
+        reason = payload.get("reason")
+        out[r["task_id"]] = {
+            "event_id": int(r["id"]),
+            "kind": r["kind"],
+            "reason": reason if isinstance(reason, str) else None,
+            "actor": payload.get("actor"),
+            "block_kind": payload.get("kind"),
+            "created_at": int(r["created_at"]),
+        }
+    return out
+
+
 def current_run_started_ats(conn: sqlite3.Connection, task_ids: Iterable[str]) -> dict[str, int]:
     """``{task_id: started_at of the run ``tasks.current_run_id`` points at}``
     in one query; tasks with no active run (NULL or dangling pointer) are omitted."""

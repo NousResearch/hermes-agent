@@ -536,14 +536,14 @@ By default, delegation is **flat**: a parent (depth 0) spawns children (depth 1)
 For multi-stage workflows (research → synthesis, or parallel orchestration over sub-problems), a parent can spawn **orchestrator** children that *can* delegate their own workers:
 
 ```python
-delegate_task(
-    goal="Survey three code review approaches and recommend one",
-    role="orchestrator",  # Allows this child to spawn its own workers
-    context="...",
-)
+delegate_task(tasks=[{
+    "goal": "Survey three code review approaches and recommend one",
+    "role": "orchestrator",  # Allows this child to spawn its own workers
+    "context": "...",
+}])
 ```
 
-- `role="leaf"` (default): child cannot delegate further — identical to the flat-delegation behavior.
+- `role="leaf"` (default): child cannot delegate further — identical to the flat-delegation behavior. Depth alone never promotes a child: with `max_spawn_depth: 3`, a task without `role` is still a leaf. The per-task `role` field is only advertised to the model when nesting is available.
 - `role="orchestrator"`: child retains the `delegation` toolset. Gated by `delegation.max_spawn_depth` (default **1** = flat, so `role="orchestrator"` is a no-op at defaults). Raise `max_spawn_depth` to 2 to allow orchestrator children to spawn leaf grandchildren; 3+ for deeper trees. There is no upper ceiling — cost is the practical limit.
 - `delegation.orchestrator_enabled: false`: global kill switch that forces every child to `leaf` regardless of the `role` parameter.
 

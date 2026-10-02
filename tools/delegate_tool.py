@@ -58,8 +58,8 @@ from tools.delegate_tool_results import (  # noqa: F401
 
 _ROLES = frozenset({"leaf", "orchestrator"})
 
-# Nested delegation is granted by depth/role in _build_child_agent, never by the
-# model naming toolsets (there is no model-facing toolsets argument).
+# Nested delegation is granted by an explicit role='orchestrator' (bounded by depth) in _build_child_agent, never by
+# the model naming toolsets (there is no model-facing toolsets argument).
 def _normalize_role(r: Optional[str]) -> str:
     """'leaf' | 'orchestrator'; None/empty/unknown -> 'leaf' (unknown warns)."""
     r_norm = str(r).strip().lower() if r else "leaf"
@@ -176,7 +176,7 @@ def _build_child_agent(
     # callers such as /review pass auxiliary.review here so fallback policy is
     # not accidentally read from the general delegation block.
     routing_cfg: Optional[Dict[str, Any]] = None,
-    # Legacy; accepted for wire compat but ignored (capability is depth-derived).
+    # 'orchestrator' opts this child into delegating (bounded by max_spawn_depth); anything else is a leaf.
     role: str = "leaf",
 ):
     """Build (don't run) a child AIAgent on the main thread. override_* (from delegation config) replace parent
@@ -184,11 +184,22 @@ def _build_child_agent(
     import uuid as _uuid
     from run_agent import AIAgent
     from agent.delegation_context import delegated_child_context
-    # Role is depth-derived: a child may delegate iff the kill switch is on and
-    # depth budget remains below max_spawn_depth. The `role` arg is ignored.
+    # Orchestrator is explicit opt-in: a child is a leaf unless the caller asked for role='orchestrator'.
+    # max_spawn_depth is the ceiling and orchestrator_enabled the kill switch; depth alone never promotes a child
+    # (with max_spawn_depth >= 2 that turned every child -- research, coding, one-shot lookups -- into a delegator).
     child_depth = getattr(parent_agent, "_delegate_depth", 0) + 1
     max_spawn = _get_max_spawn_depth()
-    effective_role = "orchestrator" if _get_orchestrator_enabled() and child_depth < max_spawn else "leaf"
+    effective_role = "leaf"
+    if _normalize_role(role) == "orchestrator":
+        if not _get_orchestrator_enabled():
+            logger.info("delegate_task: role='orchestrator' forced to leaf (delegation.orchestrator_enabled=false)")
+        elif child_depth >= max_spawn:
+            logger.info(
+                "delegate_task: role='orchestrator' at depth %d reaches max_spawn_depth=%d; downgraded to leaf",
+                child_depth, max_spawn,
+            )
+        else:
+            effective_role = "orchestrator"
 
     # One subagent_id shared by the progress callback, spawn_requested event and
     # the live registry; parent_id is set when THIS parent is itself a subagent.
@@ -445,8 +456,8 @@ def delegate_task(
     credentials_cfg: Optional[Dict[str, Any]] = None,
 ) -> str:
     """Spawn child agents (single ``goal`` or ``tasks=[...]`` batch) or control running ones. ``action``
-    list/steer/stop run synchronously and bypass the pause gate, depth limit and async dispatch. ``role`` is legacy
-    (per-task beats top-level; capability is depth-derived). Returns JSON with one results entry per task, or a
+    list/steer/stop run synchronously and bypass the pause gate, depth limit and async dispatch. ``role`` opts a
+    child into orchestration (per-task beats top-level; default leaf; bounded by max_spawn_depth). Returns JSON with one results entry per task, or a
     dispatch handle when running in the background."""
     if parent_agent is None:
         return tool_error("delegate_task requires a parent agent context.")
@@ -537,17 +548,14 @@ def delegate_task(
 def _build_top_level_description(*, independent_completions=None) -> str:
     """delegate_task description: ONLY guidance stated nowhere else in the schema
     (limits live in the 'tasks' parameter description, rebuilt per get_definitions())."""
-    try:
-        orchestration_available = _get_max_spawn_depth() >= 2 and _get_orchestrator_enabled()
-    except Exception:
-        orchestration_available = False
+    orchestration_available = _orchestration_available()
     # Mention recursion only where it's actually available. send_message is deliberately not named (gateway-internal
     # vocabulary); model_tools session-filters the list to tools the session has.
     if orchestration_available:
         restrictions_rule = (
             "- Children cannot call clarify, memory, or cronjob.\n"
-            f"- Children can themselves delegate while depth remains (max_spawn_depth={_get_max_spawn_depth()}); the "
-            "runtime derives this from depth automatically.\n"
+            "- Children cannot delegate unless the task sets role='orchestrator' (for a lead that must decompose; "
+            f"tree capped at max_spawn_depth={_get_max_spawn_depth()}).\n"
         )
     else:
         restrictions_rule = "- Children cannot call delegate_task, clarify, memory, or cronjob.\n"
@@ -606,6 +614,13 @@ def _build_tasks_param_description() -> str:
         "is a one-entry array. Required when spawning."
     )
 
+def _orchestration_available() -> bool:
+    """True when a child could be granted delegation at all (depth budget >= 2 and the kill switch on)."""
+    try:
+        return _get_max_spawn_depth() >= 2 and _get_orchestrator_enabled()
+    except Exception:
+        return False
+
 def _build_dynamic_schema_overrides() -> dict:
     """Per-call schema overrides (ToolEntry.dynamic_schema_overrides): every
     get_definitions() pass rewrites the descriptions to the user's actual limits."""
@@ -617,10 +632,15 @@ def _build_dynamic_schema_overrides() -> dict:
     overrides_params["properties"] = {k: dict(v) for k, v in DELEGATE_TASK_SCHEMA["parameters"]["properties"].items()}
     overrides_params["properties"]["tasks"]["description"] = _build_tasks_param_description()
 
-    if not independent_completions:
+    # Advertise only the per-task knobs this user's config can honour: `group` needs independent completions,
+    # `role` needs nesting (max_spawn_depth >= 2 with the kill switch on). Flat installs (the default) pay nothing.
+    hidden = set() if independent_completions else {"group"}
+    if not _orchestration_available():
+        hidden.add("role")
+    if hidden:
         tasks = overrides_params["properties"]["tasks"]
         tasks["items"] = {**tasks["items"], "properties": {
-            k: v for k, v in tasks["items"]["properties"].items() if k != "group"
+            k: v for k, v in tasks["items"]["properties"].items() if k not in hidden
         }}
 
     return {
@@ -644,8 +664,8 @@ DELEGATE_TASK_SCHEMA = {
         "type": "object",
         "properties": {
             # The handler also accepts the legacy single-goal shape (top-level `goal`/`context`/`output_schema`),
-            # wrapped into a one-entry batch at dispatch, and a per-task `role` (legacy, ignored: capability is
-            # depth-derived). Both unadvertised on purpose (old transcripts only); do not re-add. No maxItems — the
+            # wrapped into a one-entry batch at dispatch, plus a top-level `role` default. Both unadvertised on purpose
+            # (per-task `role` is the advertised knob, and only when nesting is available); do not re-add. No maxItems — the
             # runtime limit (delegation.max_concurrent_children) is enforced with a clear error in delegate_task().
             "tasks": {
                 "type": "array",
@@ -677,6 +697,12 @@ DELEGATE_TASK_SCHEMA = {
                             "pixels on their first turn; non-vision children get path hints for vision_analyze. Text "
                             "files do NOT belong here — put paths in 'context' instead.",
                             items={"type": "string"},
+                        ),
+                        "role": _p(
+                            "string",
+                            "Default leaf (does the work itself, cannot delegate). orchestrator: may spawn its own "
+                            "subagents; only for a lead that must decompose. Research/coding workers are leaves.",
+                            enum=["leaf", "orchestrator"],
                         ),
                         "group": _p(
                             "string",

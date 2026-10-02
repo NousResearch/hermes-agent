@@ -168,11 +168,11 @@ _ORCHESTRATOR_BLOCK = (
 )
 _LEAF_CHILDREN_NOTE = (
     "Your own children MUST be leaves (cannot delegate further) because they will reach the maximum nesting depth. "
-    "The system manages this automatically; no parameter override is available."
+    "The system enforces this; asking for role 'orchestrator' there has no effect."
 )
 _NESTED_CHILDREN_NOTE = (
-    "Your own children can themselves delegate because depth remains. The system determines this automatically "
-    "from the nesting depth; children at the maximum depth cannot delegate further. No parameter override is available."
+    "Your own children are leaves (they do the work themselves) unless you set role 'orchestrator' on a task whose "
+    "worker must itself decompose (depth remains for it). Most workers should stay leaves."
 )
 
 def _build_child_system_prompt(

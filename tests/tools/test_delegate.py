@@ -1586,14 +1586,15 @@ class TestOrchestratorRoleSchema(unittest.TestCase):
             delegate_task(**kwargs)
             return mock_child
 
-    def test_role_is_depth_derived_not_caller_declared(self):
-        """With max_spawn_depth=2 (mocked), a depth-1 child has depth budget
-        left, so it becomes an orchestrator automatically — no role arg
-        needed, and a passed legacy role arg is ignored either way."""
+    def test_role_is_caller_declared_default_leaf(self):
+        """With max_spawn_depth=2 (mocked) a depth-1 child has depth budget
+        left, but depth alone never promotes it: no role -> leaf, explicit
+        role='leaf' -> leaf, role='orchestrator' -> orchestrator."""
         child = self._run_with_mock_child(_SENTINEL)
-        self.assertEqual(child._delegate_role, "orchestrator")
-        # Legacy explicit role='leaf' does not override the depth derivation.
+        self.assertEqual(child._delegate_role, "leaf")
         child = self._run_with_mock_child("leaf")
+        self.assertEqual(child._delegate_role, "leaf")
+        child = self._run_with_mock_child("orchestrator")
         self.assertEqual(child._delegate_role, "orchestrator")
 
 

@@ -1,4 +1,5 @@
-"""Child-facing nesting guidance must agree with depth-derived capability."""
+"""Child-facing nesting guidance must agree with the capability the runtime actually grants
+(explicit role='orchestrator', bounded by max_spawn_depth and the kill switch)."""
 
 import json
 import threading
@@ -10,13 +11,13 @@ from tools import delegate_tool
 from tools.registry import registry
 
 
-@pytest.mark.parametrize("legacy_role", [None, "leaf", "orchestrator"])
+@pytest.mark.parametrize("role", [None, "leaf", "orchestrator"])
 @pytest.mark.parametrize(
     "parent_depth,max_depth,enabled",
     [(1, 5, True), (1, 3, True), (2, 3, True), (1, 5, False)],
 )
 def test_dispatched_child_prompt_matches_depth_capability(
-    tmp_path, monkeypatch, legacy_role, parent_depth, max_depth, enabled,
+    tmp_path, monkeypatch, role, parent_depth, max_depth, enabled,
 ):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     parent = MagicMock()
@@ -47,8 +48,8 @@ def test_dispatched_child_prompt_matches_depth_capability(
     }
     config = {"max_spawn_depth": max_depth, "orchestrator_enabled": enabled}
     args = {"tasks": [{"goal": "Inspect fixture"}], "background": False}
-    if legacy_role is not None:
-        args["role"] = legacy_role
+    if role is not None:
+        args["tasks"][0]["role"] = role
     with (
         patch.object(delegate_tool, "_load_config", return_value=config),
         patch.object(delegate_tool, "_resolve_workspace_hint", return_value=str(tmp_path)),
@@ -61,20 +62,21 @@ def test_dispatched_child_prompt_matches_depth_capability(
     kwargs = agent_class.call_args.kwargs
     prompt = kwargs["ephemeral_system_prompt"]
     depth = parent_depth + 1
-    can_delegate = enabled and depth < max_depth
+    can_delegate = role == "orchestrator" and enabled and depth < max_depth
     assert child._delegate_depth == depth
     assert child._delegate_role == ("orchestrator" if can_delegate else "leaf")
     assert ("delegation" in kwargs["enabled_toolsets"]) == can_delegate
     assert ("CAN spawn your own subagents" in prompt) == can_delegate
-    # Neither sibling note may teach a nonexistent model-controlled role knob.
+    # The notes name the per-task role value, never a raw kwarg spelling.
     assert "role=" not in prompt
     assert "`role`" not in prompt
     assert "Default is 'leaf'" not in prompt
     if can_delegate:
-        assert "automatically" in prompt
         assert "depth" in prompt
         if depth + 1 >= max_depth:
             assert "children MUST be leaves" in prompt
         else:
-            assert "children can themselves delegate because depth remains" in prompt
+            # Grandchildren are leaves unless this orchestrator opts one in.
+            assert "children are leaves" in prompt
+            assert "role 'orchestrator'" in prompt
             assert "orchestrators or leaves" not in prompt

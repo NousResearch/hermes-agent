@@ -17,7 +17,7 @@ import { clearWakeIndicator, syncWakeIndicatorWithVoice } from '@/lib/wake-indic
 import { $voiceConversationStartRequest, takeVoiceConversationStart } from '@/store/composer'
 import { resetBrowseState } from '@/store/composer-input-history'
 import { recordFeatureUse } from '@/store/desktop-metrics'
-import { enqueueQueuedPrompt } from '@/store/composer-queue'
+import { enqueueQueuedPrompt, getQueuedPrompts, removeQueuedPrompt } from '@/store/composer-queue'
 import { $gateway } from '@/store/gateway'
 import { notify, notifyError } from '@/store/notifications'
 import { $voiceLiveStatus, refreshVoiceLiveStatus, selectedVoiceChatMode } from '@/store/voice-live'
@@ -34,7 +34,7 @@ import { useAutoSpeakReplies } from './use-auto-speak-replies'
 import { useVoiceConversation } from './use-voice-conversation'
 import { useVoiceLiveConversation } from './use-voice-live-conversation'
 import { useVoiceRecorder } from './use-voice-recorder'
-import { deliverVoiceTurn } from './voice-turn-delivery'
+import { deliverVoiceTurn, reclaimVoiceAsides } from './voice-turn-delivery'
 
 interface UseComposerVoiceArgs {
   busy: boolean
@@ -185,14 +185,38 @@ export function useComposerVoice({
 
     // Never drop a transcribed turn: busy (or a refused submit) queues it behind
     // the running turn instead of discarding what the user said.
+    const queueKey = queueSessionKey ?? sessionId ?? null
+
     await deliverVoiceTurn({
       busy: busyRef.current,
       enqueue: enqueueQueuedPrompt,
       insertText,
+      onQueued: id => {
+        if (queueKey) {
+          voiceAsidesRef.current = { ids: [...(voiceAsidesRef.current?.ids ?? []), id], key: queueKey }
+        }
+      },
       onSubmit: value => onSubmit(value),
-      queueKey: queueSessionKey ?? sessionId ?? null,
+      queueKey,
       text
     })
+  }
+
+  // Asides queued by voice while the agent worked. A spoken "stop" hands the
+  // floor back to the user, so they move into the composer instead of waiting
+  // (parked) in the queue ahead of what the user says next.
+  const voiceAsidesRef = useRef<null | { ids: string[]; key: string }>(null)
+
+  const stopByVoice = () => {
+    const asides = voiceAsidesRef.current
+
+    voiceAsidesRef.current = null
+
+    if (asides) {
+      reclaimVoiceAsides({ ...asides, getQueued: getQueuedPrompts, insertText, remove: removeQueuedPrompt })
+    }
+
+    setVoiceConversationActive(false)
   }
 
   /** A GPT-Live delegation → Hermes turn. The bubble and the persisted row are
@@ -242,7 +266,7 @@ export function useComposerVoice({
     // hands-free conversation. Flipping the flag is the authoritative off
     // switch — the enabled=false prop + effect below drive conversation.end()
     // teardown (mic close, wake re-arm).
-    onStopWord: () => setVoiceConversationActive(false),
+    onStopWord: stopByVoice,
     onSubmit: submitVoiceTurn,
     onTranscribeAudio,
     pendingResponse: pendingTurnResponse,
@@ -259,7 +283,7 @@ export function useComposerVoice({
     enabled: voiceConversationActive && liveEngineActive,
     onFatalError: () => setVoiceConversationActive(false),
     onInterrupt,
-    onStopWord: () => setVoiceConversationActive(false),
+    onStopWord: stopByVoice,
     onSubmit: submitLiveDelegation,
     pendingResponse: pendingTurnResponse,
     seedHistory: seedLiveHistory

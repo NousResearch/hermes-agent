@@ -2252,6 +2252,8 @@ cli:
   approval:
     bell_context: "approvazione"
     label: "Approvazione"
+    timeout_denying: "⏱ Timeout — comando negato"
+    timed_out_no_response: "timeout (nessuna risposta)"
     outcome_once: "consentito una volta"
     outcome_session: "consentito per la sessione"
     outcome_always: "aggiunto alla allowlist"
@@ -2259,6 +2261,7 @@ cli:
   clarify:
     bell_context: "chiarimento"
     label: "Chiarimento"
+    timed_out_locked_answers: "(chiarimento scaduto dopo {timeout}s — restituite le risposte bloccate)"
   connect:
     bell_context: "configurazione connessione"
     cannot_restart: "Questa connessione non può essere riavviata. Annulla e chiedi di nuovo all'agente."
@@ -3284,6 +3287,7 @@ cli:
     shallow_clone_keeping: "⚠ Clone shallow — impossibile verificare lo stato del push, mantengo: {path}"
     next_session_deepens: "La prossima sessione `hermes -w` approfondisce il clone ed elimina automaticamente i worktree già uniti."
     unpushed_keeping: "⚠ Il worktree ha commit non inviati, mantengo: {path}"
+    uncommitted_keeping: "⚠ Il worktree ha modifiche non committate, mantengo: {path}"
     clean_up_manually: "Per pulire manualmente: git worktree remove --force {path}"
     cleaned_up: "✓ Worktree pulito: {path}"
 display:
@@ -3670,7 +3674,7 @@ tips:
   t197: "Il salvataggio delle traiettorie (--save-trajectories) cattura tracce complete dell'uso degli strumenti per l'addestramento dei modelli."
   t198: "Tre tipi di plugin: generali (strumenti/hook), provider di memoria e motori di contesto."
   t199: "hermes plugins install owner/repo installa i plugin direttamente da GitHub."
-  t200: "Provider di memoria esterni: Honcho, OpenViking e Mem0 sono inclusi; Hindsight e altri tramite hermes plugins install."
+  t200: "Provider di memoria esterni: OpenViking e Mem0 sono inclusi; Honcho, Hindsight e altri tramite hermes plugins install."
   t201: "Gli hook dei plugin includono pre/post_tool_call, pre/post_llm_call e transform_terminal_output per la canonicalizzazione dell'output."
   t202: "Il prompt caching (Anthropic) riduce i costi riutilizzando i prefissi del prompt di sistema in cache."
   t203: "L'agente genera automaticamente i titoli delle sessioni in un thread in background — nessun impatto sulla latenza."

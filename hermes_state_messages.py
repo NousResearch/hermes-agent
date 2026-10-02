@@ -370,10 +370,13 @@ class SessionMessagesMixin:
             if metadata is not None:
                 msg["display_metadata"] = metadata
         if row["role"] == "assistant":
-            for column in ("reasoning", "reasoning_content"):
+            for column in ("reasoning", "reasoning_content", "_reasoning_route"):
                 if row[column] is not None:
                     msg[column] = row[column]
-            for column in ("reasoning_details", "codex_reasoning_items", "codex_message_items"):
+            for column in (
+                "reasoning_details", "anthropic_content_blocks", "bedrock_content_blocks",
+                "codex_reasoning_items", "codex_message_items",
+            ):
                 if row[column]:
                     msg[column] = _json_or(
                         row[column], None, f"Failed to deserialize repaired {column}, falling back to None"

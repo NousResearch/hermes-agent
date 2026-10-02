@@ -2766,6 +2766,100 @@ class TestReactions:
             "T_TEAM", "1111111111.000009") in adapter._reacting_message_ids
 
     @pytest.mark.asyncio
+    async def test_bot_sent_root_thread_reply_earns_reaction(self, adapter):
+        """A reply in a thread whose root the gateway itself sent via send() is a follow-up
+        turn: the bot-sent-root marker must earn the acknowledgement with no second mention."""
+        adapter._team_bot_user_ids = {"T_TEAM": "U_BOT"}
+        adapter._bot_message_ts.add(
+            adapter._workspace_message_marker("T_TEAM", "1111111111.000002"))
+
+        event = {
+            "text": "any update on that?",
+            "user": "U_USER",
+            "channel": "C123",
+            "channel_type": "channel",
+            "team": "T_TEAM",
+            "ts": "1111111111.000010",
+            "thread_ts": "1111111111.000002",
+        }
+        await adapter._handle_slack_message(event)
+
+        assert adapter.handle_message.await_count == 1
+        assert adapter._workspace_message_marker(
+            "T_TEAM", "1111111111.000010") in adapter._reacting_message_ids
+
+    @pytest.mark.asyncio
+    async def test_active_session_thread_reply_earns_reaction(self, adapter):
+        """A mid-conversation follow-up in a thread with a live session carries no mention: the
+        active-session leg must earn the reaction."""
+        adapter._team_bot_user_ids = {"T_TEAM": "U_BOT"}
+        adapter._has_active_session_for_thread = MagicMock(return_value=True)
+
+        event = {
+            "text": "still waiting on that file",
+            "user": "U_USER",
+            "channel": "C123",
+            "channel_type": "channel",
+            "team": "T_TEAM",
+            "ts": "1111111111.000011",
+            "thread_ts": "1111111111.000003",
+        }
+        await adapter._handle_slack_message(event)
+
+        assert adapter.handle_message.await_count == 1
+        assert adapter._workspace_message_marker(
+            "T_TEAM", "1111111111.000011") in adapter._reacting_message_ids
+
+    @pytest.mark.asyncio
+    async def test_bot_authored_root_reply_earns_reaction_after_restart(self, adapter):
+        """Post-restart shape (#63530): the bot posted the root via direct chat.postMessage,
+        then the gateway restarted, so every in-memory marker is empty. The wake check and the
+        cold-start hydrate populate the thread-context cache; reading it back must earn the
+        reaction at zero API cost (no conversations.replies round-trip)."""
+        from plugins.platforms.slack.adapter import _ThreadContextCache
+
+        adapter._team_bot_user_ids = {"T_TEAM": "U_BOT"}
+        adapter._app.client.conversations_replies = AsyncMock()
+        adapter._thread_context_cache["C123:1111111111.000005:T_TEAM"] = _ThreadContextCache(
+            content="<bot-posted root>", parent_user_id="U_BOT", message_count=1)
+
+        event = {
+            "text": "did that help?",
+            "user": "U_USER",
+            "channel": "C123",
+            "channel_type": "channel",
+            "team": "T_TEAM",
+            "ts": "1111111111.000012",
+            "thread_ts": "1111111111.000005",
+        }
+        await adapter._handle_slack_message(event)
+
+        assert adapter.handle_message.await_count == 1
+        assert adapter._workspace_message_marker(
+            "T_TEAM", "1111111111.000012") in adapter._reacting_message_ids
+        # The acknowledgement decision never left the warm cache.
+        adapter._app.client.conversations_replies.assert_not_called()
+
+    def test_cache_leg_boundaries(self, adapter):
+        """Cache-only leg edge cases: a human-authored root earns nothing, and so does a
+        cold-cache miss — "unknown" must not be read as "not engaged" by callers that DO
+        fetch, but earns no reaction on its own."""
+        adapter._team_bot_user_ids = {"T_TEAM": "U_BOT"}
+        base = dict(
+            is_one_to_one_dm=False, is_mentioned=False, is_thread_reply=True,
+            event_thread_ts="1111111111.000005", channel_id="C123", user_id="U_USER",
+            team_id="T_TEAM", is_dm=False)
+
+        from plugins.platforms.slack.adapter import _ThreadContextCache
+
+        adapter._thread_context_cache["C123:1111111111.000005:T_TEAM"] = _ThreadContextCache(
+            content="<human root>", parent_user_id="U_HUMAN", message_count=1)
+        assert adapter._message_earns_reaction(**base) is False
+
+        adapter._thread_context_cache.clear()
+        assert adapter._message_earns_reaction(**base) is False
+
+    @pytest.mark.asyncio
     async def test_unrelated_channel_message_earns_no_reaction(self, adapter):
         """Passing the channel gate is not the same as being addressed: a non-thread message
         with no mention stays untracked even when the adapter routes it."""

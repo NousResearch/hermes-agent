@@ -23,6 +23,33 @@ logger = logging.getLogger("agent.conversation_loop")
 # Post-response housekeeping tools: a round made only of these mutes tool progress.
 _HOUSEKEEPING_TOOLS = frozenset({"memory", "todo_list", "skill_manage", "session_search"})
 
+def trim_native_tool_replay_carriers(assistant_message, retained_ids):
+    # Drop toolUse/tool_use blocks for trimmed calls from the ordered native
+    # replay carriers. Converters replay these sidecars verbatim (authoritative
+    # over normalized tool_calls), so trimming only tool_calls replays the full
+    # batch against fewer toolResults. Non-tool blocks and blocks without a
+    # usable id are always kept.
+    kept = set(retained_ids or ())
+
+    def _keep_tool_block(block_id):
+        return not (isinstance(block_id, str) and block_id.strip()) or block_id in kept
+
+    bedrock_blocks = getattr(assistant_message, "bedrock_content_blocks", None)
+    if isinstance(bedrock_blocks, list):
+        assistant_message.bedrock_content_blocks = [
+            b for b in bedrock_blocks
+            if not (isinstance(b, dict) and isinstance(b.get("toolUse"), dict))
+            or _keep_tool_block(b["toolUse"].get("toolUseId"))
+        ]
+    anthropic_blocks = getattr(assistant_message, "anthropic_content_blocks", None)
+    if isinstance(anthropic_blocks, list):
+        assistant_message.anthropic_content_blocks = [
+            b for b in anthropic_blocks
+            if not (isinstance(b, dict) and b.get("type") == "tool_use")
+            or _keep_tool_block(b.get("id"))
+        ]
+
+
 def max_turn_tool_calls(agent):
     """Per-turn tool-execution cap, tied to the turn iteration limit."""
     try:
@@ -121,6 +148,13 @@ def run_tool_round(
             max_turn_tool_calls(agent),
         )
         assistant_message.tool_calls = assistant_message.tool_calls[:max(0, _turn_tool_remaining)]
+        _retained_ids = {coalesce_tool_call_id(tc) for tc in assistant_message.tool_calls}
+        _retained_ids |= {
+            getattr(tc, "id", "") for tc in assistant_message.tool_calls
+            if isinstance(getattr(tc, "id", ""), str)
+        }
+        _retained_ids.discard("")
+        trim_native_tool_replay_carriers(assistant_message, _retained_ids)
 
     # Mixed batch: the assistant message keeps EVERY emitted call (each tool_call needs a
     # matching result) while only valid ones dispatch.

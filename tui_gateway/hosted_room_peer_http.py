@@ -323,10 +323,13 @@ class PeerRunsHTTPClient:
     def _raise_http_error(
         exc: urllib.error.HTTPError, *, method: str, path: str, deadline: float) -> NoReturn:
         """Raise the classified PeerRunsHTTPError for an HTTP error response."""
-        # A 4xx on admission proves the peer never admitted the run.
+        # A conflict can refer to an existing admission; temporary refusals
+        # likewise do not prove that this logical attempt was never accepted.
+        admission = method == "POST" and path == "/v1/runs"
+        not_admitted = admission and exc.code in {400, 401, 403, 404, 422}
         flags = {
-            "ambiguous": method == "POST" and exc.code >= 500, "status_code": exc.code,
-            "not_admitted": method == "POST" and path == "/v1/runs" and 400 <= exc.code < 500}
+            "ambiguous": method == "POST" and (exc.code >= 500 or (admission and not not_admitted)),
+            "status_code": exc.code, "not_admitted": not_admitted}
         try:
             detail = _read_body(
                 exc, max_bytes=MAX_PEER_ERROR_RESPONSE_BYTES, deadline=deadline, kind=" error",

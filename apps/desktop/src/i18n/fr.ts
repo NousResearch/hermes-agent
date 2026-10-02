@@ -5261,6 +5261,8 @@ export const frOverrides = {
   },
   preview: {
     tab: 'Aperçu',
+    pin: "Épingler à l'espace de travail",
+    unpin: "Détacher de l'espace de travail",
     closePane: "Fermer le panneau d'aperçu",
     loading: "Chargement de l'aperçu",
     unavailable: 'Aperçu indisponible',

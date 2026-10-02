@@ -1,10 +1,11 @@
 import type { SessionInfo } from '@/hermes'
-import { getSessionMessages } from '@/hermes'
+import { getAllSessionMessages } from '@/hermes'
 import { translateNow } from '@/i18n'
 import { notify, notifyError } from '@/store/notifications'
 
 interface ExportSessionParams {
   sessionId: string
+  profile?: string | null
   title?: string | null
   session?: SessionInfo
 }
@@ -31,7 +32,8 @@ export async function exportSession(sessionId: string, params: Omit<ExportSessio
   }
 
   try {
-    const { messages } = await getSessionMessages(sessionId)
+    const profile = params.profile ?? params.session?.profile
+    const { messages } = await getAllSessionMessages(sessionId, profile)
 
     const payload = {
       exported_at: new Date().toISOString(),

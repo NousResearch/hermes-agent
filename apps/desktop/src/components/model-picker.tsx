@@ -1,19 +1,33 @@
+import type { ModelOptionProvider, ModelPricing } from '@hermes/shared'
+import { fuzzyRank, modelSearchText } from '@hermes/shared'
+import { useStore } from '@nanostores/react'
 import { useQuery } from '@tanstack/react-query'
-import { useState } from 'react'
+import { type ReactElement, useMemo, useRef, useState } from 'react'
 
 import { useI18n } from '@/i18n'
-import type { ModelOptionProvider, ModelOptionsResponse, ModelPricing } from '@/types/hermes'
+import { catalogProviderMatches, modelOptionsQueryKey, requestModelOptions } from '@/lib/model-options'
+import { currentPickerSelection } from '@/lib/model-status-label'
+import { foldIncludes, normalize } from '@/lib/text'
+import { cn } from '@/lib/utils'
+import { $customModels, addCustomModel, customModelCandidate, withCustomModels } from '@/store/custom-models'
+import { $localModelsEnabled } from '@/store/local-models-flag'
+import {
+  type LocalModelsOwner,
+  runningModelDownloads,
+  useLocalModelsOwner,
+  useLocalModelsStatus,
+  useLocalRuntimeJobs
+} from '@/store/local-runtime-jobs'
+import type { LocalModelLoadProgress, LocalRuntimeJob } from '@/types/hermes'
 
 import type { HermesGateway } from '../hermes'
-import { getGlobalModelOptions } from '../hermes'
-import { cn } from '../lib/utils'
 import { startManualOnboarding } from '../store/onboarding'
 
 import { InlineNotice } from './notifications'
 import { Button } from './ui/button'
-import { Checkbox } from './ui/checkbox'
 import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from './ui/command'
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from './ui/dialog'
+import { HighlightMatches } from './ui/highlight-matches'
 import { Skeleton } from './ui/skeleton'
 
 interface ModelPickerDialogProps {
@@ -23,12 +37,17 @@ interface ModelPickerDialogProps {
   sessionId?: string | null
   currentModel: string
   currentProvider: string
-  onSelect: (selection: { provider: string; model: string; persistGlobal: boolean }) => void
+  onSelect: (selection: { provider: string; model: string }) => void
+  ownerConnectionId?: null | string
+  profile?: string
+  /** Desktop route profile for provider setup; `profile` may be the backend-side target. */
+  setupProfile?: string
+  request?: <T>(method: string, params?: Record<string, unknown>) => Promise<T>
   /**
-   * Optional class to apply to DialogContent. Use to override z-index when
-   * stacking the picker on top of another fixed overlay (e.g. the desktop
-   * onboarding overlay, which sits at z-1300; the default Dialog z-130 ends
-   * up rendering underneath and blocks pointer events).
+   * Optional class for DialogContent. Use it to lift the picker onto a higher
+   * rung of the overlay ladder when it opens over another fixed overlay (the
+   * desktop onboarding overlay, say) — on the default modal rung it renders
+   * underneath and blocks pointer events.
    */
   contentClassName?: string
 }
@@ -41,35 +60,82 @@ export function ModelPickerDialog({
   currentModel,
   currentProvider,
   onSelect,
+  ownerConnectionId,
+  profile = 'default',
+  request,
+  setupProfile,
   contentClassName
-}: ModelPickerDialogProps) {
+}: ModelPickerDialogProps): ReactElement {
   const { t } = useI18n()
   const copy = t.modelPicker
-  const [persistGlobal, setPersistGlobal] = useState(!sessionId)
   // Own the search term so we can filter manually. cmdk's built-in
   // shouldFilter reorders items by its fuzzy-match score (≈alphabetical with
   // an empty query), which destroys the backend's curated order. We disable
-  // it and do a plain substring filter that preserves array order — matching
-  // the `hermes model` CLI picker, which shows the curated list verbatim.
-  const [search, setSearch] = useState('')
+  // it: an empty query shows the curated list verbatim (like the `hermes
+  // model` CLI picker) and a query ranks with the shared fuzzyRank.
+  const [search, setSearch] = useState<string>('')
+  // "Add custom model…" flips the search into slug entry: the typed id is
+  // offered per provider even while it fuzzy-matches catalog rows.
+  const [slugEntry, setSlugEntry] = useState(false)
+  const searchRef = useRef<HTMLInputElement>(null)
 
   const modelOptions = useQuery({
-    queryKey: ['model-options', sessionId || 'global'],
-    queryFn: () => {
-      if (gw && sessionId) {
-        return gw.request<ModelOptionsResponse>('model.options', {
-          session_id: sessionId
-        })
-      }
-
-      return getGlobalModelOptions()
-    },
+    queryKey: modelOptionsQueryKey(profile, sessionId, ownerConnectionId),
+    queryFn: () => requestModelOptions({ gateway: gw, profile, request, sessionId }),
     enabled: open
   })
 
-  const providers = modelOptions.data?.providers ?? []
-  const optionsModel = String(modelOptions.data?.model ?? currentModel ?? '')
-  const optionsProvider = String(modelOptions.data?.provider ?? currentProvider ?? '')
+  // Live load state for the managed local server: which model is loading
+  // into memory right now, with a REAL percent (per-tensor callback relayed
+  // over the router's SSE stream). Polled only while the picker is open —
+  // 2s idle cadence is enough for a bar under a ~40s load. Errors read as
+  // "nothing loading" (remote-only installs have no local-models routes).
+  // Every local-models read here sits behind the --local launch flag (strict:
+  // the llamacpp provider group hides even with staged models on disk).
+  const localModelsEnabled = $localModelsEnabled.get()
+
+  const owner: LocalModelsOwner = useLocalModelsOwner(profile, ownerConnectionId)
+  const localStatus = useLocalModelsStatus(owner, open && localModelsEnabled)
+
+  const loadingModels: Record<string, LocalModelLoadProgress> = localStatus.data?.loading ?? {}
+
+  // Models on their way into the local library right now (downloads +
+  // quickstart runs), rendered as grayed progress rows. The jobs store
+  // republishes every ~700ms with fresh byte counts while anything runs —
+  // and this dialog stays MOUNTED app-wide when closed — so subscribe only
+  // to download identity (changes when a download starts/ends, and never
+  // while closed); each row selects its own percent scalar (#72163 class).
+  const downloadsKey: string = useLocalRuntimeJobs(
+    owner,
+    (jobs: readonly LocalRuntimeJob[]): string =>
+      open && localModelsEnabled
+        ? runningModelDownloads(jobs)
+            .map(job => `${job.job_id}\u0000${job.target}`)
+            .join('\u0001')
+        : '',
+    open && localModelsEnabled
+  )
+
+  const downloads = useMemo(
+    () =>
+      downloadsKey === ''
+        ? []
+        : downloadsKey.split('\u0001').map(pair => {
+            const [jobId, target] = pair.split('\u0000')
+
+            return { jobId, target }
+          }),
+    [downloadsKey]
+  )
+
+  const customModels = useStore($customModels)
+  const providers = withCustomModels(modelOptions.data?.providers ?? [], customModels)
+
+  const { model: optionsModel, provider: optionsProvider } = currentPickerSelection(
+    { model: currentModel, provider: currentProvider },
+    modelOptions.data
+  )
+
   const loading = modelOptions.isPending && !modelOptions.data
 
   const error = modelOptions.error
@@ -79,26 +145,40 @@ export function ModelPickerDialog({
     : null
 
   const selectModel = (provider: ModelOptionProvider, model: string) => {
-    onSelect({
-      provider: provider.slug,
-      model,
-      persistGlobal: persistGlobal || !sessionId
-    })
+    onSelect({ provider: provider.slug, model })
     onOpenChange(false)
+  }
+
+  const selectCustomModel = (provider: ModelOptionProvider, model: string) => {
+    addCustomModel(provider.slug, model, provider)
+    selectModel(provider, model)
   }
 
   // Open the full onboarding provider selector to add/switch a provider.
   // Reuses the entire onboarding flow (OAuth rows, API-key form, device-code,
   // model-confirm) instead of duplicating provider UI here. Closes the picker
-  // so the onboarding overlay (z-1300) isn't rendered underneath it.
+  // so the onboarding overlay isn't rendered underneath it.
   const addProvider = () => {
-    startManualOnboarding()
+    const ownerProfile = setupProfile ?? profile
+
+    startManualOnboarding(
+      undefined,
+      ownerConnectionId !== undefined ? { connectionId: ownerConnectionId, profile: ownerProfile } : ownerProfile
+    )
     onOpenChange(false)
+  }
+
+  const enterSlug = () => {
+    setSlugEntry(true)
+    searchRef.current?.focus()
   }
 
   return (
     <Dialog onOpenChange={onOpenChange} open={open}>
-      <DialogContent className={cn('max-h-[85vh] max-w-2xl gap-0 overflow-hidden p-0', contentClassName)}>
+      <DialogContent
+        bodyClassName="gap-0 overflow-hidden p-0"
+        className={cn('max-h-[85vh] max-w-2xl', contentClassName)}
+      >
         <DialogHeader className="border-b border-border px-4 py-3">
           <DialogTitle>{copy.title}</DialogTitle>
           <DialogDescription className="font-mono text-xs leading-relaxed">
@@ -111,7 +191,8 @@ export function ModelPickerDialog({
           <CommandInput
             autoFocus
             onValueChange={setSearch}
-            placeholder={copy.search}
+            placeholder={slugEntry ? copy.customModelPlaceholder : copy.search}
+            ref={searchRef}
             value={search}
           />
           <CommandList className="max-h-96">
@@ -119,33 +200,30 @@ export function ModelPickerDialog({
             <ModelResults
               currentModel={optionsModel || currentModel}
               currentProvider={optionsProvider || currentProvider}
+              downloads={downloads}
               error={error}
               loading={loading}
+              loadingModels={loadingModels}
+              offerCustom={slugEntry}
+              onSelectCustomModel={selectCustomModel}
               onSelectModel={selectModel}
+              owner={owner}
               providers={providers}
               search={search}
             />
           </CommandList>
         </Command>
 
-        <DialogFooter className="flex-row items-center justify-between gap-3 bg-card p-3 sm:justify-between">
-          <label className="flex cursor-pointer select-none items-center gap-2 text-xs text-muted-foreground">
-            <Checkbox
-              checked={persistGlobal || !sessionId}
-              disabled={!sessionId}
-              onCheckedChange={checked => setPersistGlobal(checked === true)}
-            />
-            {sessionId ? copy.persistGlobalSession : copy.persistGlobal}
-          </label>
-
-          <div className="flex items-center gap-2">
-            <Button onClick={addProvider} variant="ghost">
-              {copy.addProvider}
-            </Button>
-            <Button onClick={() => onOpenChange(false)} variant="outline">
-              {t.common.cancel}
-            </Button>
-          </div>
+        <DialogFooter className="flex-row items-center justify-end gap-2 bg-card p-3">
+          <Button className="mr-auto" onClick={enterSlug} variant="ghost">
+            {copy.addCustomModelAction}
+          </Button>
+          <Button onClick={addProvider} variant="ghost">
+            {copy.addProvider}
+          </Button>
+          <Button onClick={() => onOpenChange(false)} variant="outline">
+            {t.common.cancel}
+          </Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>
@@ -153,22 +231,33 @@ export function ModelPickerDialog({
 }
 
 function ModelResults({
+  owner,
   loading,
   error,
   providers,
   currentModel,
   currentProvider,
+  downloads,
+  loadingModels,
   onSelectModel,
+  onSelectCustomModel,
+  offerCustom,
   search
 }: {
+  owner: LocalModelsOwner
   loading: boolean
   error: string | null
-  providers: ModelOptionProvider[]
+  providers: readonly ModelOptionProvider[]
   currentModel: string
   currentProvider: string
+  downloads: { jobId: string; target: string }[]
+  loadingModels: Record<string, LocalModelLoadProgress>
   onSelectModel: (provider: ModelOptionProvider, model: string) => void
+  onSelectCustomModel: (provider: ModelOptionProvider, model: string) => void
+  /** Offer the typed id as a custom model even while catalog rows match. */
+  offerCustom: boolean
   search: string
-}) {
+}): ReactElement {
   const { t } = useI18n()
   const copy = t.modelPicker
 
@@ -190,26 +279,63 @@ function ModelResults({
     return <div className="px-4 py-6 text-sm text-muted-foreground">{copy.noAuthenticatedProviders}</div>
   }
 
-  const q = search.trim().toLowerCase()
+  const q = normalize(search)
 
-  const matches = (provider: ModelOptionProvider, model: string) =>
-    !q ||
-    model.toLowerCase().includes(q) ||
-    provider.name.toLowerCase().includes(q) ||
-    provider.slug.toLowerCase().includes(q)
+  // Model rows rank with the same fuzzyRank + modelSearchText the web and TUI
+  // pickers use, so one query orders identically on every surface. A query
+  // that names the provider itself keeps its whole curated list, in order.
+  const rankModels = (provider: ModelOptionProvider, models: readonly string[]) => {
+    if (!q || foldIncludes(provider.name, q) || foldIncludes(provider.slug, q)) {
+      return [...models]
+    }
+
+    return fuzzyRank(models, q, modelSearchText).map(r => r.item)
+  }
 
   // Only configured providers (those with curated models) are selectable
   // here. Switching to a NOT-yet-configured provider goes through the
   // "Add provider" footer button, which opens the full onboarding selector.
-  const configured = providers.filter(p => (p.models ?? []).length > 0)
+  // The local provider sits behind the --local launch flag (strict: staged
+  // models on disk don't show without it). Module-level read — a launch flag
+  // can't change mid-session.
+  const localModelsShown = $localModelsEnabled.get()
+
+  const configured = providers.filter(
+    p => (p.models ?? []).length > 0 && (localModelsShown || p.slug !== LOCAL_PROVIDER_SLUG)
+  )
+
+  // In-flight local downloads render as disabled progress rows: inside the
+  // Local group when it exists, else as their own group (first download —
+  // nothing staged yet, so the backend reports no Local provider at all).
+  const visibleDownloads = downloads.filter(job => !q || foldIncludes(job.target || '', q))
+  const hasLocalGroup = configured.some(p => p.slug === LOCAL_PROVIDER_SLUG)
+
+  const groups = configured.map(provider => ({
+    provider,
+    // Empty query: the backend's curated order, verbatim.
+    models: rankModels(provider, provider.models ?? []),
+    downloads: provider.slug === LOCAL_PROVIDER_SLUG ? visibleDownloads : []
+  }))
+
+  const hasMatches = groups.some(g => g.models.length > 0 || g.downloads.length > 0)
+
+  // A typed id nothing lists: one row per configured provider, current
+  // provider first, so the slug is one Enter away and remembered afterwards.
+  // While the query still matches catalog rows the section stays out of the
+  // way unless the user asked for it via "Add custom model…".
+  const customSlug = offerCustom || !hasMatches ? customModelCandidate(search, configured) : null
+
+  const customProviders = customSlug
+    ? [...configured].sort(
+        (a, b) =>
+          Number(catalogProviderMatches(b, currentProvider)) - Number(catalogProviderMatches(a, currentProvider))
+      )
+    : []
 
   return (
     <>
-      {configured.map(provider => {
-        // Preserve the backend's curated order — filter in place, no re-sort.
-        const models = (provider.models ?? []).filter(m => matches(provider, m))
-
-        if (models.length === 0) {
+      {groups.map(({ provider, models, downloads: groupDownloads }) => {
+        if (models.length === 0 && groupDownloads.length === 0) {
           return null
         }
 
@@ -225,9 +351,13 @@ function ModelResults({
               </div>
             )}
             {models.map(model => {
-              const isCurrent = model === currentModel && provider.slug === currentProvider
+              const isCurrent = model === currentModel && catalogProviderMatches(provider, currentProvider)
               const price = provider.pricing?.[model]
               const locked = unavailable.has(model)
+              // Managed local model loading into memory right now: show the
+              // real load percent inline (keyed by exact model id — remote
+              // providers never match).
+              const loadProgress = loadingModels[model]
 
               return (
                 <CommandItem
@@ -246,12 +376,30 @@ function ModelResults({
                   }}
                   value={`${provider.slug}:${model}`}
                 >
-                  <span className="min-w-0 flex-1 truncate">{model}</span>
-                  {locked && <span className="shrink-0 text-[0.62rem] uppercase tracking-wide opacity-80">{copy.pro}</span>}
+                  <span className="min-w-0 flex-1 truncate">
+                    <HighlightMatches foldSeparators query={search} text={model} />
+                  </span>
+                  {loadProgress && (
+                    <span className="flex shrink-0 items-center gap-1.5" title={copy.loadingIntoMemory}>
+                      <span className="h-1 w-16 overflow-hidden rounded-full bg-(--ui-bg-tertiary)">
+                        <span
+                          className="block h-full rounded-full bg-primary transition-[width] duration-500"
+                          style={{ width: `${Math.max(2, loadProgress.percent)}%` }}
+                        />
+                      </span>
+                      <span className="text-[0.62rem] tabular-nums text-muted-foreground">{loadProgress.percent}%</span>
+                    </span>
+                  )}
+                  {locked && (
+                    <span className="shrink-0 text-[0.62rem] uppercase tracking-wide opacity-80">{copy.pro}</span>
+                  )}
                   <ModelPrice isCurrent={isCurrent} price={price} />
                 </CommandItem>
               )
             })}
+            {groupDownloads.map(job => (
+              <DownloadingModelRow jobId={job.jobId} key={job.jobId} owner={owner} target={job.target} />
+            ))}
             {unavailable.size > 0 && (
               <div className="px-6 pb-2 pt-1 text-[0.62rem] leading-relaxed text-muted-foreground">
                 {copy.proNeedsSubscription}
@@ -260,7 +408,88 @@ function ModelResults({
           </CommandGroup>
         )
       })}
+      {!hasLocalGroup && visibleDownloads.length > 0 && (
+        <CommandGroup heading={copy.localDownloadsHeading} key="local-downloads">
+          {visibleDownloads.map(job => (
+            <DownloadingModelRow jobId={job.jobId} key={job.jobId} owner={owner} target={job.target} />
+          ))}
+        </CommandGroup>
+      )}
+      {customSlug && customProviders.length > 0 && (
+        <CommandGroup heading={copy.customModel} key="custom-model">
+          {customProviders.map(provider => (
+            <CommandItem
+              className="flex items-center gap-2 pl-6 font-mono"
+              key={`custom:${provider.slug}`}
+              onSelect={() => onSelectCustomModel(provider, customSlug)}
+              value={`custom:${provider.slug}:${customSlug}`}
+            >
+              <span className="min-w-0 flex-1 truncate">{customSlug}</span>
+              <span className="shrink-0 text-[0.66rem] text-muted-foreground">{provider.name}</span>
+            </CommandItem>
+          ))}
+        </CommandGroup>
+      )}
     </>
+  )
+}
+
+// The backend's provider row for staged local models (inventory.py's
+// _local_runtime_row). Downloads-in-flight attach to this group.
+const LOCAL_PROVIDER_SLUG = 'llamacpp'
+
+// A model still downloading: visible so the user knows it's coming (and
+// where it will land), disabled so it can't be selected early, with the
+// same byte progress the settings pane shows. Percent is selected here, per
+// row, so the poller's 700ms byte ticks repaint this leaf only.
+function DownloadingModelRow({
+  owner,
+  jobId,
+  target
+}: {
+  owner: LocalModelsOwner
+  jobId: string
+  target: string
+}): ReactElement {
+  const { t } = useI18n()
+  const copy = t.modelPicker
+  const copyLocal = t.settings.localModels
+
+  const percent: number | null = useLocalRuntimeJobs(
+    owner,
+    (jobs: readonly LocalRuntimeJob[]): number | null =>
+      jobs.find((job: LocalRuntimeJob): boolean => job.job_id === jobId)?.percent ?? null,
+    false
+  )
+
+  const paused: boolean = useLocalRuntimeJobs(
+    owner,
+    (jobs: readonly LocalRuntimeJob[]): boolean =>
+      jobs.find((job: LocalRuntimeJob): boolean => job.job_id === jobId)?.status === 'paused',
+    false
+  )
+
+  return (
+    <CommandItem className="flex items-center gap-2 pl-6 font-mono opacity-60" disabled value={`downloading:${jobId}`}>
+      <span className="min-w-0 flex-1 truncate">{target}</span>
+      <span
+        className="flex shrink-0 items-center gap-1.5"
+        title={paused ? copyLocal.downloadPausedLabel : copy.downloading}
+      >
+        <span className="h-1 w-16 overflow-hidden rounded-full bg-(--ui-bg-tertiary)">
+          <span
+            className={cn(
+              'block h-full rounded-full',
+              paused ? 'bg-muted-foreground/60' : 'bg-primary transition-[width] duration-500'
+            )}
+            style={{ width: `${Math.max(2, percent ?? 0)}%` }}
+          />
+        </span>
+        <span className="text-[0.62rem] tabular-nums text-muted-foreground">
+          {paused ? copyLocal.downloadPausedLabel : typeof percent === 'number' ? `${percent}%` : copy.downloading}
+        </span>
+      </span>
+    </CommandItem>
   )
 }
 
@@ -276,26 +505,62 @@ function ModelPrice({ price, isCurrent }: { price?: ModelPricing; isCurrent: boo
 
   if (price.free) {
     return (
-      <span
-        className={cn(
-          'shrink-0 rounded-sm px-1 py-0.5 text-[0.62rem] font-semibold uppercase tracking-wide',
-          isCurrent ? 'bg-primary-foreground/20' : 'bg-emerald-500/15 text-emerald-600 dark:text-emerald-400'
-        )}
-      >
-        {copy.free}
+      <span className="shrink-0 inline-flex items-center gap-1.5">
+        {typeof price.discount_percent === 'number' ? (
+          <span
+            className={cn(
+              'rounded-sm px-1 py-0.5 text-[0.62rem] font-semibold',
+              isCurrent ? 'bg-primary-foreground/20' : 'bg-amber-500/15 text-amber-700 dark:text-amber-400'
+            )}
+          >
+            -{price.discount_percent}%
+          </span>
+        ) : null}
+        <span
+          className={cn(
+            'shrink-0 rounded-sm px-1 py-0.5 text-[0.62rem] font-semibold uppercase tracking-wide',
+            isCurrent ? 'bg-primary-foreground/20' : 'bg-emerald-500/15 text-emerald-600 dark:text-emerald-400'
+          )}
+        >
+          {copy.free}
+        </span>
       </span>
     )
   }
 
+  const onSale = typeof price.discount_percent === 'number' && Boolean(price.was_input || price.was_output)
+
   return (
     <span
       className={cn(
-        'shrink-0 text-[0.66rem] tabular-nums',
+        'shrink-0 inline-flex items-center gap-1.5 text-[0.66rem] tabular-nums',
         isCurrent ? 'text-primary-foreground/80' : 'text-muted-foreground'
       )}
       title={copy.priceTitle}
     >
-      {price.input || '?'} / {price.output || '?'}
+      {onSale ? (
+        <span
+          className={cn(
+            'rounded-sm px-1 py-0.5 text-[0.62rem] font-semibold',
+            isCurrent ? 'bg-primary-foreground/20' : 'bg-amber-500/15 text-amber-700 dark:text-amber-400'
+          )}
+        >
+          -{price.discount_percent}%
+        </span>
+      ) : null}
+      <span>
+        {price.input || '?'} / {price.output || '?'}
+      </span>
+      {onSale ? (
+        <span
+          className={cn(
+            'line-through decoration-from-font opacity-70',
+            isCurrent ? 'text-primary-foreground/60' : 'text-muted-foreground/80'
+          )}
+        >
+          {copy.wasPrice} {price.was_input || '?'} / {price.was_output || '?'}
+        </span>
+      ) : null}
     </span>
   )
 }
@@ -316,9 +581,12 @@ function ProviderHeading({ provider }: { provider: ModelOptionProvider }) {
   const { t } = useI18n()
   const copy = t.modelPicker
 
-  // free_tier is only set for Nous. true → "Free tier", false → "Pro".
+  // Two different facts wear the same badge: `free_tier` is a signed-in Nous
+  // account on the free plan; `free_tier_row` is the no-account route's own
+  // row. Either way the user is on free inference, so say so. Never match the
+  // route by name — the label is copy.
   const tierBadge =
-    provider.free_tier === true ? (
+    provider.free_tier === true || provider.free_tier_row === true ? (
       <span className="rounded-sm bg-emerald-500/15 px-1 py-0.5 text-[0.6rem] font-semibold uppercase tracking-wide text-emerald-600 dark:text-emerald-400">
         {copy.freeTier}
       </span>

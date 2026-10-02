@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest'
 
-import { formatAbandonedClarify, stripTrailingPasteNewlines } from './text.js'
+import { t } from '../i18n/runtime.js'
+
+import { clarifyRevisitState, formatAbandonedClarify, stripTrailingPasteNewlines } from './text.js'
 
 describe('stripTrailingPasteNewlines', () => {
   it('removes trailing newline runs from pasted text', () => {
@@ -18,32 +20,48 @@ describe('stripTrailingPasteNewlines', () => {
 })
 
 describe('formatAbandonedClarify', () => {
-  it('renders the question, numbered options, and reason', () => {
-    const out = formatAbandonedClarify('How do you want to scope?', ['Option A', 'Option B', 'Option C'], 'timed out')
+  it('shows locked answers and marks unanswered questions', () => {
+    const out = formatAbandonedClarify(
+      [
+        { qid: 'q0', question: 'One?' },
+        { qid: 'q1', question: 'Two?' }
+      ],
+      { q0: 'alpha' },
+      'timed out'
+    )
 
     expect(out).toBe(
-      ['ask How do you want to scope?', '  1. Option A', '  2. Option B', '  3. Option C', '  (timed out — no selection)'].join(
-        '\n'
-      )
+      [
+        t('libText.text.clarifyHead', 2),
+        `  ${t('libText.text.clarifyAnswered', 'One?', 'alpha')}`,
+        `  ${t('libText.text.clarifyUnanswered', 'Two?')}`,
+        `  ${t('libText.text.clarifyReason', 'timed out')}`
+      ].join('\n')
     )
   })
 
-  it('handles a prompt with no choices (free-text clarify)', () => {
-    const out = formatAbandonedClarify('What is the target branch?', null, 'cancelled')
+  it('treats an empty locked answer as unanswered in the record', () => {
+    const out = formatAbandonedClarify([{ qid: 'q0', question: 'One?' }], { q0: '' }, 'cancelled')
 
-    expect(out).toBe(['ask What is the target branch?', '  (cancelled — no selection)'].join('\n'))
+    expect(out).toContain(t('libText.text.clarifyUnanswered', 'One?'))
+  })
+})
+
+describe('clarifyRevisitState', () => {
+  it('restores the cursor onto a choice answer', () => {
+    expect(clarifyRevisitState(['red', 'blue'], 'blue')).toEqual({ custom: '', picked: [], sel: 1 })
   })
 
-  it('trims surrounding whitespace on the question', () => {
-    const out = formatAbandonedClarify('  trailing space  ', [], 'timed out')
-
-    expect(out.split('\n')[0]).toBe('ask trailing space')
+  it('stages a typed answer on the Other row for editing', () => {
+    expect(clarifyRevisitState(['red', 'blue'], 'chartreuse')).toEqual({ custom: 'chartreuse', picked: [], sel: 2 })
   })
 
-  it('numbers options 1-based to match the live ClarifyPrompt', () => {
-    const out = formatAbandonedClarify('q', ['first'], 'timed out')
+  it('stages a typed answer for an open-ended question (no choices)', () => {
+    expect(clarifyRevisitState([], 'free text')).toEqual({ custom: 'free text', picked: [], sel: 0 })
+  })
 
-    expect(out).toContain('  1. first')
-    expect(out).not.toContain('  0.')
+  it('resets cleanly for unanswered and empty answers', () => {
+    expect(clarifyRevisitState(['red'], undefined)).toEqual({ custom: '', picked: [], sel: 0 })
+    expect(clarifyRevisitState(['red'], '')).toEqual({ custom: '', picked: [], sel: 0 })
   })
 })

@@ -109,7 +109,7 @@ Hermes 应用多层防护机制：
 ## 限制
 
 - **仅限 macOS。** cua-driver 使用的私有 Apple SPI 在 Linux 或 Windows 上不存在。跨平台 GUI 自动化请使用 `browser` 工具集。
-- **私有 SPI 风险。** Apple 可能在任何 OS 更新中更改 SkyLight 的符号接口。如需在 macOS 版本升级时保持可复现性，请通过 `HERMES_CUA_DRIVER_VERSION` 环境变量固定驱动版本。
+- **私有 SPI 风险。** Apple 可能在任何 OS 更新中更改 SkyLight 的符号接口。Hermes 始终安装最新版 cua-driver，并在已安装的二进制文件低于其测试基线版本（按操作系统分别设定）时发出警告。没有版本固定开关——如需可复现的版本，请将 `HERMES_CUA_DRIVER_CMD` 指向特定的二进制文件。
 - **性能。** 后台模式比前台模式慢——SkyLight 路由事件耗时约 5–20ms，而直接 HID 投递更快。对于 Agent 速度的点击操作无明显影响；若尝试录制速通视频则会有感知。
 - **不支持键盘输入密码。** `type` 对命令行 payload 有硬性屏蔽模式；密码请使用系统自动填充功能。
 
@@ -119,7 +119,6 @@ Hermes 应用多层防护机制：
 
 ```
 HERMES_CUA_DRIVER_CMD=/opt/homebrew/bin/cua-driver
-HERMES_CUA_DRIVER_VERSION=0.5.0    # optional pin
 ```
 
 完全替换后端（用于测试）：
@@ -127,6 +126,25 @@ HERMES_CUA_DRIVER_VERSION=0.5.0    # optional pin
 ```
 HERMES_COMPUTER_USE_BACKEND=noop   # records calls, no side effects
 ```
+
+### Windows 自动启动（可选）
+
+在 Windows 上，cua-driver 可以通过开机计划任务（`cua-driver-serve`）常驻运行。该任务为
+**可选项**：默认情况下 Computer Use 按需、按会话启动驱动——与 macOS 和 Linux 完全一致，
+安装或启用工具集时不会注册任何计划任务（#97389）。
+
+在 `config.yaml` 中设置以下内容即可启用（下次安装驱动或启用工具集时会注册或修复该任务）：
+
+```yaml
+computer_use:
+  autostart: true   # 默认：false（按需启动；不注册计划任务）
+```
+
+通过 SSH 远程驱动 Windows 时需要它：Session 0 没有交互式桌面，按需启动的驱动无法访问
+（参见 [windows-ssh](https://cua.ai/docs/how-to-guides/driver/windows-ssh)）。如果任务已
+存在但你不再需要它，可从管理员终端运行 `cua-driver autostart disable`（或
+`schtasks /Delete /TN cua-driver-serve`）删除——`computer_use.autostart` 为 false 时
+Hermes 不会重新注册。
 
 ## 故障排查
 

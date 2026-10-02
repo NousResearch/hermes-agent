@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { api } from "@/lib/api";
 import type { ActionStatusResponse } from "@/lib/api";
 import { Toast } from "@nous-research/ui/ui/components/toast";
+import { sharedGatewayProfiles, sharedGatewayRestartedMessage } from "@/lib/shared-gateway";
 import { useI18n } from "@/i18n";
 import {
   SystemActionsContext,
@@ -44,10 +45,18 @@ export function SystemActionsProvider({
         setActionStatus(resp);
         if (!resp.running) {
           const ok = resp.exit_code === 0;
+          // A restart of the shared multiplexer reconnected every bot on the device: name the count.
+          const shared =
+            ok && activeAction === "restart"
+              ? sharedGatewayProfiles(await api.getStatus().catch(() => null))
+              : null;
+          if (cancelled) return;
           setToast({
             type: ok ? "success" : "error",
             message: ok
-              ? t.status.actionFinished
+              ? shared
+                ? sharedGatewayRestartedMessage(shared.length)
+                : t.status.actionFinished
               : `${t.status.actionFailed} (exit ${resp.exit_code ?? "?"})`,
           });
           return;
@@ -74,19 +83,17 @@ export function SystemActionsProvider({
           setActiveAction(action);
         } else {
           const resp = await api.updateHermes();
-          // In a Docker install the image is immutable, so `hermes update`
-          // can't apply — the endpoint returns 200 with a structured
-          // {ok:false, error:"docker_update_unsupported", message, update_command}
-          // envelope instead of spawning the action (see #34347 / #36263).
-          // Surface that guidance to the user rather than starting the poll,
-          // which would otherwise report a generic "failed (exit 1)".
-          if (!resp.ok && resp.error === "docker_update_unsupported") {
+          // Some installs cannot apply updates from inside the dashboard. The
+          // endpoint returns a structured {ok:false, message, update_command}
+          // envelope instead of spawning the action; surface that guidance
+          // rather than polling a synthetic failed action.
+          if (!resp.ok) {
             const cmd = resp.update_command ? `  ${resp.update_command}` : "";
             setToast({
               type: "success",
               message:
                 (resp.message ??
-                  "Updates don't apply inside Docker — re-pull the image instead.") +
+                  "Updates don't apply from this dashboard.") +
                 cmd,
             });
             return;

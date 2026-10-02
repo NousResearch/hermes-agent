@@ -294,10 +294,10 @@ const LOADER_CURVES: Record<LoaderType, LoaderCurve> = {
   },
   'fourier-flow': {
     ...baseCurve('Fourier Flow', {
-      durationMs: 8400,
+      durationMs: 2200,
       particleCount: 92,
-      pulseDurationMs: 6800,
-      rotationDurationMs: 44000,
+      pulseDurationMs: 2000,
+      rotationDurationMs: 15000,
       strokeWidth: 4.2,
       trailSpan: 0.31
     }),

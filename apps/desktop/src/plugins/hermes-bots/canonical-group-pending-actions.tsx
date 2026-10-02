@@ -45,7 +45,7 @@ function approvalDetails({ action, labels }: { action: CanonicalPendingAction; l
   const edit = approval?.edit === undefined ? undefined : editPreview(approval.edit)
   const matching = Boolean(text(action.request_id)) && (!approval?.request_id || approval.request_id === action.request_id) &&
     (!approval?.prompt_id || approval.prompt_id === action.request_id)
-  const reviewable = matching && edit !== null && Boolean(actualCommand || description || edit)
+  const reviewable = matching && edit !== null && Boolean(actualCommand || edit)
 
   return { reviewable, content: <div className="grid min-w-0 gap-2">
     {description && description !== actualCommand && <div>

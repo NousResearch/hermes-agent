@@ -1282,9 +1282,9 @@ def _clone_plugins(source_dir: Path, profile_dir: Path) -> None:
     ``config.yaml`` already carries ``plugins.enabled`` and ``memory.provider``; without the code a
     catalog-installed memory provider resolves nowhere in the clone, so the clone silently runs
     without its memory (or, with lazy installs on, re-fetches the latest catalog pin instead of the
-    revision the source runs). The copy keeps each plugin's tree, revision and catalog provenance,
-    so ``hermes plugins update/remove`` work in the clone exactly as in the source. Python
-    dependencies live in the shared venv, already installed for the source's identical copy."""
+    revision the source runs). The copy keeps each plugin's tree, revision and catalog provenance
+    (the install record). Python dependencies live in the shared venv, where the source's
+    selection of the same plugin already put them."""
     source_plugins = source_dir / "plugins"
     if source_plugins.is_dir():
         _copytree_keep_junctions(source_plugins, profile_dir / "plugins",

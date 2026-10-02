@@ -1,13 +1,26 @@
 from __future__ import annotations
 
+import ast
 import importlib.util
 import json
 import sys
 from pathlib import Path
 from typing import Any
 
-REQUIRED_PLUGIN_KEYS = {"name", "version", "description", "kind"}
+# ``kind`` is optional in the loader: ``PluginManager._parse_manifest`` defaults a
+# missing or unknown kind to ``standalone`` (``hermes_cli/plugins.py``), and the
+# documented starter manifest omits it. Only require what the loader actually
+# treats as mandatory.
+REQUIRED_PLUGIN_KEYS = {"name", "version", "description"}
 DEFAULT_PLUGINS_DIR = "plugins"
+DEFAULT_PLUGIN_KIND = "standalone"
+VALID_PLUGIN_KINDS = {"standalone", "backend", "exclusive", "platform", "model-provider"}
+
+# Category traversal mirrors the loader: a directory without its own manifest is
+# a category namespace, scanned one level deeper. Depth is capped at two
+# segments, so ``<root>/a/b/c/`` is ignored.
+MAX_CATEGORY_DEPTH = 1
+IGNORED_PLUGIN_DIRS = {"__pycache__", "hermes_test"}
 
 SCAN_SCHEMA = {
     "description": "Validate Hermes plugin manifests and import/register entry points.",
@@ -20,8 +33,19 @@ SCAN_SCHEMA = {
         },
         "include_import_check": {
             "type": "boolean",
-            "description": "Also import each plugin __init__.py and check for register(ctx).",
+            "description": (
+                "Statically verify each plugin __init__.py declares a callable "
+                "register(ctx) without executing it."
+            ),
             "default": True,
+        },
+        "unsafe_execute_import_check": {
+            "type": "boolean",
+            "description": (
+                "UNSAFE: actually execute each plugin __init__.py via exec_module "
+                "to confirm it imports. Default false keeps the scan read-only."
+            ),
+            "default": False,
         },
     },
 }
@@ -49,15 +73,36 @@ def _load_yaml(path: Path) -> dict[str, Any]:
     return data
 
 
-def _plugin_dirs(root: Path) -> list[Path]:
-    if not root.exists():
+def _plugin_dirs(root: Path, depth: int = 0) -> list[Path]:
+    """Return plugin directories under *root*, including category layouts.
+
+    Mirrors ``PluginManager._scan_directory_level``: a child directory that owns
+    a ``plugin.yaml`` / ``plugin.yml`` is a plugin, while a child without one is a
+    category namespace scanned one level deeper. Traversal is capped at
+    ``MAX_CATEGORY_DEPTH`` extra segments so ``<root>/a/b/c/`` is ignored.
+    """
+    if not root.is_dir():
         return []
-    ignored = {"__pycache__", "hermes_test"}
-    return sorted(
-        path
-        for path in root.iterdir()
-        if path.is_dir() and not path.name.startswith(".") and path.name not in ignored
-    )
+
+    found: list[Path] = []
+    for path in sorted(root.iterdir()):
+        if not path.is_dir() or path.name.startswith("."):
+            continue
+        if path.name in IGNORED_PLUGIN_DIRS:
+            continue
+        if (path / "plugin.yaml").is_file() or (path / "plugin.yml").is_file():
+            found.append(path)
+            continue
+        # A directory with no manifest that also carries no plugin surface is
+        # still reported as an error candidate: the loader ignores it, but the
+        # doctor must still surface a stray top-level directory so a misplaced
+        # plugin is not silently invisible.
+        if depth == 0 and not any(path.iterdir()):
+            found.append(path)
+            continue
+        if depth < MAX_CATEGORY_DEPTH:
+            found.extend(_plugin_dirs(path, depth + 1))
+    return found
 
 
 def _validate_manifest(plugin_dir: Path) -> tuple[dict[str, Any], list[str], list[str]]:
@@ -78,14 +123,55 @@ def _validate_manifest(plugin_dir: Path) -> tuple[dict[str, Any], list[str], lis
         warnings.append(
             "manifest name does not match directory name after dash/underscore normalization"
         )
+    raw_kind = manifest.get("kind")
+    if raw_kind is None:
+        # Optional in the loader: absent kind means standalone.
+        manifest["kind"] = DEFAULT_PLUGIN_KIND
+    elif not isinstance(raw_kind, str) or raw_kind.strip().lower() not in VALID_PLUGIN_KINDS:
+        # The loader warns and falls back to standalone rather than failing.
+        warnings.append(
+            f"unknown kind {raw_kind!r} (valid: {', '.join(sorted(VALID_PLUGIN_KINDS))}); "
+            f"treating as '{DEFAULT_PLUGIN_KIND}'"
+        )
+        manifest["kind"] = DEFAULT_PLUGIN_KIND
+    else:
+        manifest["kind"] = raw_kind.strip().lower()
     for list_key in ("provides_tools", "provides_cli"):
-        value = manifest.get(list_key, [])
+        value = manifest.get(list_key, []) 
         if value is not None and not isinstance(value, list):
             errors.append(f"{list_key} must be a list")
     return manifest, errors, warnings
 
 
-def _check_import(plugin_dir: Path) -> tuple[bool, str]:
+def _check_register_static(plugin_dir: Path) -> tuple[bool, str]:
+    """Verify ``register(ctx)`` exists without executing plugin code.
+
+    The doctor scan is advertised as read-only, so the default path parses the
+    module's AST instead of importing it. That means no module-level plugin code
+    runs during a scan.
+    """
+    init_path = plugin_dir / "__init__.py"
+    if not init_path.is_file():
+        return False, "missing __init__.py"
+    try:
+        tree = ast.parse(init_path.read_text(encoding="utf-8"), filename=str(init_path))
+    except SyntaxError as exc:
+        return False, f"syntax error: {exc}"
+    except Exception as exc:  # pragma: no cover - unreadable file path
+        return False, f"unreadable __init__.py: {type(exc).__name__}: {exc}"
+
+    for node in tree.body:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == "register":
+            return True, "ok"
+        if isinstance(node, ast.Assign):
+            for target in node.targets:
+                if isinstance(target, ast.Name) and target.id == "register":
+                    return True, "ok"
+    return False, "register(ctx) is missing or not callable"
+
+
+def _check_import_execute(plugin_dir: Path) -> tuple[bool, str]:
+    """Actually import the plugin. Runs its module-level code — opt-in only."""
     init_path = plugin_dir / "__init__.py"
     if not init_path.is_file():
         return False, "missing __init__.py"
@@ -119,12 +205,16 @@ def scan_plugins(values: dict[str, Any] | None = None) -> dict[str, Any]:
     values = values or {}
     root = Path(str(values.get("plugins_dir") or DEFAULT_PLUGINS_DIR)).expanduser()
     include_import_check = bool(values.get("include_import_check", True))
+    unsafe_execute = bool(values.get("unsafe_execute_import_check", False))
     plugins: list[dict[str, Any]] = []
     duplicate_tools: dict[str, list[str]] = {}
     duplicate_cli: dict[str, list[str]] = {}
 
     for plugin_dir in _plugin_dirs(root):
         manifest, errors, warnings = _validate_manifest(plugin_dir)
+        # Capture manifest-validation errors before any import-check detail is
+        # appended, so ``manifest_ok`` reflects the manifest alone.
+        manifest_errors = list(errors)
         tools = [str(item) for item in manifest.get("provides_tools", []) or []]
         cli = [str(item) for item in manifest.get("provides_cli", []) or []]
         for tool in tools:
@@ -134,8 +224,16 @@ def scan_plugins(values: dict[str, Any] | None = None) -> dict[str, Any]:
 
         import_result: dict[str, Any] | None = None
         if include_import_check:
-            ok, detail = _check_import(plugin_dir)
-            import_result = {"ok": ok, "detail": detail}
+            ok, detail = (
+                _check_import_execute(plugin_dir)
+                if unsafe_execute
+                else _check_register_static(plugin_dir)
+            )
+            import_result = {
+                "ok": ok,
+                "detail": detail,
+                "mode": "execute" if unsafe_execute else "static",
+            }
             if not ok:
                 errors.append(detail)
 
@@ -143,7 +241,8 @@ def scan_plugins(values: dict[str, Any] | None = None) -> dict[str, Any]:
             {
                 "name": str(manifest.get("name") or plugin_dir.name),
                 "path": str(plugin_dir),
-                "manifest_ok": not any(error.startswith("missing") for error in errors),
+                "kind": str(manifest.get("kind") or DEFAULT_PLUGIN_KIND),
+                "manifest_ok": not manifest_errors,
                 "errors": errors,
                 "warnings": warnings,
                 "provides_tools": tools,

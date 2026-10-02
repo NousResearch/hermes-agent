@@ -3034,13 +3034,13 @@ def test_model_not_found_notice_ignores_successful_summary(monkeypatch):
             "task_index": 0,
             "status": "completed",
             "goal": "Analyze model rejection handling",
-            "summary": "The model was rejected because it is not a valid model ID.",
+            "summary": "The configured model upstage/solar-pro-4 was rejected because it is not a valid model ID.",
         },
         {
             "task_index": 1,
             "status": "success",
             "goal": "Check the fallback path",
-            "summary": "The configured model is not a valid model ID in the example.",
+            "summary": "The configured model upstage/solar-pro-4 is not a valid model ID in the example.",
         },
     ])
     _patch_delegation_config(monkeypatch)

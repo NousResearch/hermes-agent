@@ -1405,7 +1405,8 @@ async def test_native_sync_checkpoints_only_completed_application_admission(
 async def test_startup_replay_executes_admitted_input_before_native_checkpoint(
     tmp_path, monkeypatch, transport, checkpoint
 ):
-    from gateway.config import Platform
+    from gateway.config import GatewayConfig, Platform
+    from gateway.session import SessionStore
     from gateway.platforms.event import MessageEvent
     from gateway.run import GatewayRunner
 
@@ -1425,6 +1426,7 @@ async def test_startup_replay_executes_admitted_input_before_native_checkpoint(
         )
     )
     runner = object.__new__(GatewayRunner)
+    runner.session_store = SessionStore(tmp_path / "sessions", GatewayConfig())
     runner.adapters = {}
     runner.config = SimpleNamespace(multiplex_profiles=False)
     runner._startup_restore_in_progress = True
@@ -1512,6 +1514,7 @@ async def test_startup_replay_executes_admitted_input_before_native_checkpoint(
         await asyncio.gather(dispatch, return_exceptions=True)
         await adapter.disconnect()
         await asyncio.gather(*adapter._background_tasks, return_exceptions=True)
+        runner.session_store.close_all_db_handles()
 
 
 @pytest.mark.asyncio

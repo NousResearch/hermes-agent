@@ -273,6 +273,9 @@ class GatewayStartupMixin:
             self._startup_restore_tasks = []
             # Warm the turn machinery BEFORE the queue drains: inbound turns must not build skeleton prompts.
             await self._await_startup_warmup()
+            from gateway.shutdown_replay import replay_pending_snapshots
+
+            await replay_pending_snapshots(self)
             drained = await self._drain_startup_restore_queue()
         finally:
             # The inbound gate must open no matter what raised above it (bounded wait, warm-up,

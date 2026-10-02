@@ -90,6 +90,44 @@ def _get_oneshot_max_children() -> int:
     )
 
 
+from contextlib import contextmanager
+
+@contextmanager
+def profile_runtime_scope(profile_home):
+    from pathlib import Path
+    from agent.secret_scope import _is_process_home
+    home_path = Path(profile_home)
+
+    if _is_process_home(home_path):
+        from tui_gateway.launch_profile_policy import launch_profile_runtime_scope
+        with launch_profile_runtime_scope(home_path):
+            yield
+        return
+
+    from hermes_cli.env_loader import hydrate_profile_secret_sources
+    from agent.secret_scope import build_profile_secret_scope, set_secret_scope, reset_secret_scope
+    from hermes_constants import set_hermes_home_override, reset_hermes_home_override
+    from tools.terminal_scope import install_profile_terminal_scope, reset_terminal_scope
+
+    hydrate_profile_secret_sources(home_path)
+    secrets = build_profile_secret_scope(home_path)
+    
+    home_tok = None
+    sec_tok = None
+    term_tok = None
+    try:
+        home_tok = set_hermes_home_override(str(home_path))
+        sec_tok = set_secret_scope(secrets, profile_home=str(home_path))
+        term_tok = install_profile_terminal_scope(home_path)
+        yield
+    finally:
+        if term_tok is not None:
+            reset_terminal_scope(term_tok)
+        if sec_tok is not None:
+            reset_secret_scope(sec_tok)
+        if home_tok is not None:
+            reset_hermes_home_override(home_tok)
+
 def _get_max_concurrent_children() -> int:
     """delegation.max_concurrent_children > DELEGATION_MAX_CONCURRENT_CHILDREN env > 10.
 
@@ -489,6 +527,7 @@ def _resolve_child_runtime(
     override_base_url: Optional[str], override_api_key: Optional[str], override_api_mode: Optional[str],
     override_acp_command: Optional[str], override_acp_args: Optional[list[str]],
     routing_cfg: Optional[dict[str, Any]] = None,
+    profile_name: Optional[str] = None,
 ) -> dict[str, Any]:
     """Child credentials, transport and routing (config override > parent inherit) as ``AIAgent`` kwargs. Rules that
     are easy to break: api_mode is re-derived (not inherited) when the child's provider differs from the parent's
@@ -579,8 +618,14 @@ def _resolve_child_runtime(
     except Exception as exc:
         logger.debug("Could not load delegation reasoning_effort: %s", exc)
 
+    if profile_name:
+        # Profile-targeted child: strictly target-owned credentials or keyless sentinel. Never borrow parent key.
+        child_api_key = override_api_key if override_api_key is not None else ""
+    else:
+        child_api_key = override_api_key or parent_api_key
+
     kwargs: dict[str, Any] = {
-        "base_url": effective_base_url, "api_key": override_api_key or parent_api_key, "model": effective_model,
+        "base_url": effective_base_url, "api_key": child_api_key, "model": effective_model,
         "provider": effective_provider, "requested_provider": effective_requested_provider,
         "capabilities": _inherit_parent_capabilities(parent_agent, override_provider, override_base_url),
         "api_mode": effective_api_mode, "acp_command": effective_acp_command, "acp_args": effective_acp_args,

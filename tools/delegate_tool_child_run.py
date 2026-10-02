@@ -7,6 +7,7 @@ import logging
 import contextvars
 import json
 import os
+from pathlib import Path
 import threading
 import time
 from concurrent.futures import TimeoutError as FuturesTimeoutError
@@ -436,6 +437,11 @@ def _lease_child_credential(child: Any) -> tuple[Any, Optional[str]]:
     """Lease a credential from the child's pool (if any) and bind it; ``(pool, lease_id)``. The bound entry must
     serve the child's endpoint: on a mixed same-provider pool the least-leased pick may target another host, so it is
     released and an endpoint-matching entry is leased by id instead (#68237)."""
+    _d_prof = getattr(child, "_delegated_profile", None)
+    _d_real = getattr(child, "_profile_realization", None)
+    from tools.delegate_tool import ProfileRealization
+    if (isinstance(_d_prof, str) and _d_prof) or isinstance(_d_real, ProfileRealization):
+        return None, None
     child_pool = getattr(child, "_credential_pool", None)
     if child_pool is None:
         return None, None
@@ -468,6 +474,47 @@ def _merge_late_steer(result: dict[str, Any], subagent_id: Optional[str], child:
         result["pending_steer"] = f"{existing}\n{late}" if isinstance(existing, str) and existing else late
 
 
+def _run_child_conversation_turn(
+    child: Any,
+    user_message: Any,
+    task_id: str,
+    stream_callback: Any = None,
+) -> Any:
+    """Execute a single child conversation turn under verified target profile scope.
+
+    Verifies ProfileRealization (if present), binds profile_runtime_scope (or launch_profile_runtime_scope),
+    and installs delegated_child_context, restoring the caller's scope on normal and exceptional exits.
+    If realization verification fails, raises RuntimeError(err) pre-execution.
+    """
+    _realization = getattr(child, "_profile_realization", None)
+    _pdir = None
+    if _realization is not None and hasattr(_realization, "verify"):
+        res = _realization.verify()
+        if isinstance(res, tuple) and len(res) == 2:
+            ok, err = res
+            if not ok:
+                raise RuntimeError(err)
+            _pdir = getattr(_realization, "path", None)
+    if _pdir is None:
+        _pdir = getattr(child, "_profile_dir", None)
+
+    if _pdir is not None and isinstance(_pdir, (str, Path)):
+        from tools.delegate_tool_config import profile_runtime_scope
+        scope_ctx = profile_runtime_scope(_pdir)
+    else:
+        import contextlib
+        scope_ctx = contextlib.nullcontext()
+
+    from agent.delegation_context import delegated_child_context
+    with scope_ctx:
+        with delegated_child_context(str(getattr(child, "session_id", "") or "")):
+            return child.run_conversation(
+                user_message=user_message,
+                task_id=task_id,
+                stream_callback=stream_callback,
+            )
+
+
 @dataclass
 class _SchemaOutcome:
     schema: Optional[dict[str, Any]]
@@ -493,15 +540,16 @@ def _validate_child_output_schema(
     # schema re-paste — the child already holds the contract in its context).
     _retry_result = None
     try:
-        # Same identity as the main child turn: this runs on the parent worker's thread, and an
-        # unmarked turn is misread as the dispatcher-owned worker by every HERMES_KANBAN_* gate.
-        from agent.delegation_context import delegated_child_context
-        with delegated_child_context(str(getattr(child, "session_id", "") or "")):
-            _retry_result = child.run_conversation(
-                user_message=build_retry_message(_schema_errors), task_id=child_task_id,
-                stream_callback=relay_child_text,
-            )
+        _retry_result = _run_child_conversation_turn(
+            child=child,
+            user_message=build_retry_message(_schema_errors),
+            task_id=child_task_id,
+            stream_callback=relay_child_text,
+        )
     except Exception as _retry_exc:
+        _realization = getattr(child, "_profile_realization", None)
+        if _realization is not None and isinstance(_retry_exc, RuntimeError) and str(_retry_exc).startswith("Delegation refused:"):
+            raise
         logger.warning("Subagent %d schema-retry turn failed: %s", task_index, _retry_exc)
     if isinstance(_retry_result, dict):
         _retry_text = _retry_result.get("final_response") or ""
@@ -854,11 +902,12 @@ class _ChildRun:
 
         def _run_with_thread_capture():
             worker_thread_holder["t"] = threading.current_thread()
-            from agent.delegation_context import delegated_child_context
-            with delegated_child_context(str(getattr(child, "session_id", "") or "")):
-                return child.run_conversation(
-                    user_message=user_message, task_id=self.child_task_id, stream_callback=self.relay_text,
-                )
+            return _run_child_conversation_turn(
+                child=child,
+                user_message=user_message,
+                task_id=self.child_task_id,
+                stream_callback=self.relay_text,
+            )
 
         future = executor.submit(contextvars.copy_context().run, _run_with_thread_capture)
         # One wait covers both ways out: the worker finishing, or the heartbeat's stale verdict.

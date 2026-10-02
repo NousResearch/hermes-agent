@@ -1,0 +1,54 @@
+{
+  "schemaVersion": 1,
+  "observedAtUtc": "2026-10-02T10:03:16.0119575Z",
+  "reviewedBase": "dd7a4c94287f72745f4fb3cdf7ebdbd5e17421da",
+  "basePr": 105,
+  "osv": {
+    "version": "2.6.0",
+    "allVulns": true,
+    "exitCode": 0,
+    "findings": 0,
+    "lockfiles": [
+      {
+        "path": "uv.lock",
+        "localScanSha256": "a001c0e2c70da8a2945196e0120648c6d207c22a67816a89b1a1f97f05f25a05",
+        "baseGitBlob": "109b22e57a5c0f50c33c05bd244cd8b3db7c8cbb"
+      },
+      {
+        "path": "package-lock.json",
+        "localScanSha256": "dba0f915357b9ce31cbf7aaa6fb429634a3c965e9230e697e5eea76aa1a89b3d",
+        "baseGitBlob": "492c8f756cc740c834e4c2c12a9aee940425fc4f"
+      },
+      {
+        "path": "website/package-lock.json",
+        "localScanSha256": "22bf8c62431e039ae9b2421e1b4c99179a9b3bab94a8337cf53599ce2f4057ad",
+        "baseGitBlob": "64b0895f962c2c7458af92273b7a7be39d4984e3"
+      },
+      {
+        "path": "plugins/platforms/photon/sidecar/package-lock.json",
+        "localScanSha256": "6585bad6d6f307e6f37b8aac36a8b47d74ad3a52733c64e14f46b052a7d8c483",
+        "baseGitBlob": "83952e9392634255c1725d7875e3c3d10a0ae86d"
+      },
+      {
+        "path": "scripts/whatsapp-bridge/package-lock.json",
+        "localScanSha256": "7ff3e36708b8a21eda498b9c810523e3b68513869640dd104e831898f046c469",
+        "baseGitBlob": "6fe50a9382fc65e007ec1e35b0fe554167a6fd94"
+      }
+    ],
+    "resultSha256": "54345d5194d238b6017d0f3181f392109ce35023cc6b4bdfa8c134943dcb578e"
+  },
+  "dependencies": {
+    "PyJWT": "2.15.0",
+    "oauthlib": "4.0.0",
+    "requestsOauthlib": "2.0.0",
+    "googleAuthOauthlib": "1.3.1"
+  },
+  "validation": {
+    "pmCheckLockExitCode": 0,
+    "googleOAuthRequestsOAuthContractsPassed": 2,
+    "pyjwtOptionsReuseEvidencePassed": 1,
+    "existingJWTAuthenticationTestsPassed": 68,
+    "ciForThisCandidate": "Pending",
+    "runtimeTransition": "Not performed"
+  }
+}

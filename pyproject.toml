@@ -439,6 +439,9 @@ hermes-acp = "acp_adapter.entry:main"
 
 [tool.uv]
 override-dependencies = [
+  # Security fix for GHSA-hj66-6f7g-4r5v / GHSA-xpv3-w29h-x7cv.
+  # requests-oauthlib 2.x supports the OAuth2 client API in oauthlib 4.0.0.
+  "oauthlib==4.0.0",
   # discord.py's latest published version, 2.7.1, pins pynacl at <1.6. however, pynacl 1.5.0 has known vulnerabilities.
   # discord.py has updated pynacl to 1.6 on `main`, but has not yet published a patch release.
   # so, we force-override this to pynacl 1.6. here.
@@ -506,6 +509,9 @@ exclude-newer = "14 days"
 # environment resolves under the same cutoff ("Failed to resolve
 # requirements from build-system.requires ... maturin>=1.9,<2").
 [tool.uv.exclude-newer-package]
+# 2026-10-02: oauthlib 4.0.0 (2026-09-28) fixes two revocation advisories.
+# The exact security pin expires out of the 14-day window on 2026-10-12.
+oauthlib = false
 agent-client-protocol = false
 ai-edge-litert = false
 aiohttp = false

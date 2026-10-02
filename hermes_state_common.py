@@ -1127,9 +1127,14 @@ def _write_lock_holder_record(handle) -> None:
     from a live wedged one.
 
     Written under the flock so contenders that time out can tell an orphaned-fd holder (recorded process
-    dead, flock inherited by a forked child — issue #100108) from a live wedged holder.
+    dead, flock inherited by a forked child — issue #100108) from a live wedged holder.  ``pidns`` is the
+    writer's PID-namespace id: the record outlives the process and is probed by contenders sharing the
+    lock file from possibly disjoint PID namespaces (containers on one volume), so a local probe alone
+    must never be treated as proof about a foreign holder.
     """
-    record = {"pid": os.getpid(), "start_ticks": _proc_start_ticks(os.getpid()), "acquired_at": time.time()}
+    from hermes_state_pidns import pid_namespace_id
+    record = {"pid": os.getpid(), "pidns": pid_namespace_id(),
+              "start_ticks": _proc_start_ticks(os.getpid()), "acquired_at": time.time()}
     _rewrite_lock_file(handle, json.dumps(record, sort_keys=True).encode("utf-8"))
 
 
@@ -1140,13 +1145,20 @@ def _clear_lock_holder_record(handle) -> None:
 
 def _lock_holder_provably_dead(record) -> bool:
     """True ONLY when the recorded holder is provably dead or PID-recycled.  Anything indeterminate
-    (no/malformed record, PID owned by another user, /proc unavailable) is False: FAIL CLOSED and defer."""
+    (no/malformed record, PID owned by another user, /proc unavailable, foreign PID namespace)
+    is False: FAIL CLOSED and defer.  An unstamped record (pre-upgrade writer) keeps main's
+    behavior on purpose — these records never expire, so refusing to probe them would
+    permanently disable orphaned-lock cleanup (the rollout boundary; see
+    ``hermes_state_pidns``)."""
     try:
         pid = int(record["pid"])
     except (KeyError, TypeError, ValueError):
         return False
     if pid <= 0:
         return False
+    from hermes_state_pidns import persistent_record_pidns_checkable
+    if not persistent_record_pidns_checkable(record.get("pidns")):
+        return False  # foreign namespace: a local reading is not proof — defer
     try:
         os.kill(pid, 0)
     except ProcessLookupError:

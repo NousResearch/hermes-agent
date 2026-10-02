@@ -90,6 +90,9 @@ def _capture_native_before_transfer(event: MessageEvent) -> None:
 def _rehome_pending_provenance(event: MessageEvent, paths: dict[str, str]) -> None:
     from tools.credential_files import to_agent_visible_cache_path
 
+    from gateway.run_inbound_voice import rehome_pending_voice
+
+    rehome_pending_voice(event, paths)
     if event._pending_native_input is not None:
         event._pending_native_input = event._pending_native_input.rehome_attachments(paths)
     for part, _merge in event._merged_parts:

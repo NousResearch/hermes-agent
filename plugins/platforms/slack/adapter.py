@@ -1006,7 +1006,10 @@ def _extra_or_env_channel_set_getter(
 from plugins.platforms.slack.inbound_context import SlackInboundContextMixin
 
 
-class SlackAdapter(SlackInboundContextMixin, BasePlatformAdapter):
+from plugins.platforms.slack.outbound_targets import SlackOutboundTargetsMixin
+
+
+class SlackAdapter(SlackOutboundTargetsMixin, SlackInboundContextMixin, BasePlatformAdapter):
     """Slack bot adapter (Socket Mode).
     Needs SLACK_BOT_TOKEN (xoxb-, API calls) and SLACK_APP_TOKEN (xapp-, Socket Mode). DMs +
     mention-gated channels, threads, attachments, slash commands, status text."""
@@ -1978,41 +1981,8 @@ class SlackAdapter(SlackInboundContextMixin, BasePlatformAdapter):
         """WebClient for ``chat_id``, workspace-scoped by outbound ``metadata``."""
         return self._get_client(chat_id, team_id=self._metadata_team_id(metadata))
 
-    async def _dm_target(self, chat_id: str, metadata: Optional[dict[str, Any]]) -> str:
-        """``_ensure_dm_conversation`` scoped by outbound ``metadata``."""
-        return await self._ensure_dm_conversation(chat_id, team_id=self._metadata_team_id(metadata))
 
-    async def _ensure_dm_conversation(self, chat_id: str, team_id: Optional[str] = None) -> str:
-        """Resolve a bare user ID (U/W...) to a DM conversation ID via ``conversations.open``
-        (``chat.postMessage``/``files_upload_v2`` reject user IDs); cached per (team, user). Returns
-        ``chat_id`` unchanged when not applicable or on failure (downstream surfaces the error).
 
-        Resolution goes through the workspace-scoped client so multi-workspace installs open the DM with the
-        right bot token, and results are cached per (team, user) so repeated sends don't re-open. See
-        #17261, #19236.
-        """
-        cid = str(chat_id or "")
-        if not cid or cid[0] not in ("U", "W"):
-            return chat_id
-        cache_key = f"{team_id or ''}:{cid}"
-        cached = self._dm_conversation_cache.get(cache_key)
-        if cached:
-            return cached
-        try:
-            response = await self._get_client(cid, team_id=team_id).conversations_open(users=cid)
-            dm_id = ((response or {}).get("channel") or {}).get("id")
-            if dm_id:
-                self._dm_conversation_cache[cache_key] = dm_id
-                self._trim_oldest_dict_entries(
-                    self._dm_conversation_cache, self._DM_CONVERSATION_CACHE_MAX)
-                if team_id:
-                    self._remember_channel_team(dm_id, team_id)
-                return dm_id
-        except Exception as e:
-            logger.warning(
-                "[Slack] conversations.open failed for user target %s: %s "
-                "(check the bot's im:write scope)", cid, e)
-        return chat_id
 
     async def _clear_thread_status_quietly(
         self, chat_id: str, metadata: Optional[dict[str, Any]] = None) -> None:

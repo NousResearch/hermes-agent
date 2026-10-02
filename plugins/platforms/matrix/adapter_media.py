@@ -185,7 +185,7 @@ class MatrixMediaMixin(BasePlatformAdapter):
     def _inbound_media_limit(self) -> int:
         """The inbound size limit: ``MATRIX_MAX_MEDIA_BYTES``, or ``gateway.max_inbound_media_bytes`` when
         that cap is smaller. The media cache applies the gateway cap only after the whole download."""
-        from gateway.platforms.base import get_inbound_media_max_bytes
+        from gateway.platforms.base_media_limits import get_inbound_media_max_bytes
         gateway_limit = get_inbound_media_max_bytes()
         if gateway_limit <= 0:
             return self._max_media_bytes

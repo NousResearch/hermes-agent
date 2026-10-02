@@ -44,7 +44,9 @@ class TestInboundMediaSizeCap:
 
     def test_image_bytes_rejected_when_oversized(self, monkeypatch):
         from gateway.platforms import base
-        monkeypatch.setattr(base, "get_inbound_media_max_bytes", lambda: 16)
+        from gateway.platforms import base_media_limits
+        monkeypatch.setattr(base_media_limits, "get_inbound_media_max_bytes", lambda: 16)
+
         with pytest.raises(ValueError, match="Inbound image payload is too large"):
             cache_image_from_bytes(self._PNG, ext=".png")
 

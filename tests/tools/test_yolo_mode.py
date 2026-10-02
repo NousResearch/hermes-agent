@@ -1,22 +1,13 @@
 """Tests for --yolo (HERMES_YOLO_MODE) approval bypass."""
 
-import os
 import pytest
 
 import tools.approval as approval_module
+from tools import approval_context
 import tools.tirith_security
 
-from tools.approval import (
-    check_all_command_guards,
-    check_dangerous_command,
-    detect_dangerous_command,
-    disable_session_yolo,
-    enable_session_yolo,
-    is_approval_bypass_active_for_session,
-    is_session_yolo_enabled,
-    reset_current_session_key,
-    set_current_session_key,
-)
+from tools.approval import check_all_command_guards, check_dangerous_command, detect_dangerous_command, disable_session_yolo, enable_session_yolo, is_approval_bypass_active_for_session, is_session_yolo_enabled
+from tools.approval_context import reset_current_session_key, set_current_session_key
 
 
 @pytest.fixture(autouse=True)
@@ -108,11 +99,6 @@ class TestYoloMode:
         assert result["message"] is None
         assert called["value"] is False
 
-    def test_yolo_mode_not_set_by_default(self):
-        """HERMES_YOLO_MODE should not be set by default."""
-        # Clean env check — if it happens to be set in test env, that's fine,
-        # we just verify the mechanism exists
-        assert os.getenv("HERMES_YOLO_MODE") is None or True  # no-op, documents intent
 
 
     @pytest.mark.parametrize("value", ["false", "False", "0", "off", "no"])
@@ -176,7 +162,7 @@ class TestYoloMode:
     def test_bypass_query_uses_the_requested_session(self, monkeypatch):
         """Backend mode selection must not leak YOLO across sessions."""
         monkeypatch.setattr(approval_module, "_YOLO_MODE_FROZEN", False)
-        monkeypatch.setattr(approval_module, "_get_approval_mode", lambda: "manual")
+        monkeypatch.setattr(approval_context, "_get_approval_mode", lambda: "manual")
 
         enable_session_yolo("session-a")
 

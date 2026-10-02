@@ -1,8 +1,9 @@
+import { looksLikeSlashCommand, parseSlashCommand } from '@hermes/shared/slash'
 import { type MutableRefObject, useCallback, useEffect, useRef } from 'react'
 
 import { TYPING_IDLE_MS } from '../config/timing.js'
 import { expandTokens } from '../domain/attachments.js'
-import { completionToApplyOnSubmit, looksLikeSlashCommand, parseSlashCommand } from '../domain/slash.js'
+import { completionToApplyOnSubmit } from '../domain/slash.js'
 import type { GatewayClient } from '../gatewayClient.js'
 import type { SessionSteerResponse, ShellExecResponse } from '../gatewayTypes.js'
 import { queueItem, type QueueItem } from '../hooks/useQueue.js'
@@ -10,6 +11,7 @@ import { asRpcResult } from '../lib/rpc.js'
 import { hasInterpolation, INTERPOLATION_RE } from '../protocol/interpolation.js'
 import type { Msg } from '../types.js'
 
+import { reportSlashCommand } from './createSlashHandler.js'
 import type { ComposerActions, ComposerRefs, ComposerState, ComposerToken } from './interfaces.js'
 import { submitPrompt } from './submissionCore.js'
 import { turnController } from './turnController.js'
@@ -38,6 +40,24 @@ export const queueItemFromSlash = (displayCommand: string, expandedCommand: stri
 export const prepareSubmission = (display: string, tokens: ComposerToken[]) => ({
   display,
   text: expandTokens(tokens)(display)
+})
+
+/**
+ * Split a slash submission into the two things it has to be at once.
+ *
+ * A slash command's argument is ordinary user text, so a collapsed paste in it
+ * must resolve BEFORE the command runs — otherwise `/pr-triage [[ … [412 lines]
+ * … ]]` hands the skill the label and the agent faithfully reports that the
+ * paste is truncated. The transcript still shows the compact form, because a
+ * 412-line paste inlined into the scrollback is exactly what collapsing it was
+ * for.
+ *
+ * Image tokens stay as labels: the gateway already holds those files in
+ * `attached_images` and splices them in at submit.
+ */
+export const prepareSlashSubmission = (display: string, tokens: ComposerToken[]) => ({
+  command: expandPasteTokens(tokens)(display),
+  display
 })
 
 export const shouldInterpolateSubmission = (display: string) => hasInterpolation(display)
@@ -245,22 +265,25 @@ export function useSubmission(opts: UseSubmissionOptions) {
       const submissionTokens = [...composerRefs.tokensRef.current]
       const submission = prepareSubmission(full, submissionTokens)
       const toHistory = submission.text
-      const queuePayload = expandPasteTokens(submissionTokens)(full)
 
       if (looksLikeSlashCommand(full)) {
-        appendMessage({ kind: 'slash', role: 'system', text: full })
+        const slash = prepareSlashSubmission(full, submissionTokens)
+
+        appendMessage({ kind: 'slash', role: 'system', text: slash.display })
         composerActions.pushHistory(toHistory)
 
         const parsed = parseSlashCommand(full)
 
         const queued =
-          parsed.name === 'queue' || parsed.name === 'q' ? queueItemFromSlash(full, queuePayload) : undefined
+          parsed.name === 'queue' || parsed.name === 'q' ? queueItemFromSlash(slash.display, slash.command) : undefined
 
         if (queued) {
+          // Handled here, before the slash handler, so it is counted here.
+          reportSlashCommand(gw, parsed.name, getUiState().sid)
           composerActions.enqueue(queued.text, queued.display)
           sys(`queued: "${queued.display.slice(0, 50)}${queued.display.length > 50 ? '…' : ''}"`)
         } else {
-          slashRef.current(full)
+          slashRef.current(slash.command)
         }
 
         composerActions.clearIn()
@@ -329,6 +352,7 @@ export function useSubmission(opts: UseSubmissionOptions) {
       appendMessage,
       composerActions,
       composerRefs,
+      gw,
       handleBusyInput,
       interpolate,
       send,
@@ -416,7 +440,7 @@ export interface UseSubmissionOptions {
   composerState: ComposerState
   gw: GatewayClient
   setLastUserMsg: (value: string) => void
-  slashRef: MutableRefObject<(cmd: string) => boolean>
+  slashRef: MutableRefObject<(cmd: string, typed?: boolean) => boolean>
   submitRef: MutableRefObject<(value: string) => void>
   sys: (text: string) => void
 }

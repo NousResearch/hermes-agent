@@ -56,14 +56,15 @@ cfg = {
     "browser": browser_cfg,
     "display": {"quiet": True},
 }
-import yaml
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+import hermes_yaml as yaml
 
 with open(os.path.join(hh, "config.yaml"), "w", encoding="utf-8") as f:
     yaml.safe_dump(cfg, f)
 os.environ["HERMES_HOME"] = hh
 # Strip web-fetch shortcuts: every arm must drive the browser.
 os.environ.pop("BROWSER_USE_API_KEY", None)
-for k in ("FIRECRAWL_API_KEY", "NOUS_API_KEY", "SERPER_API_KEY"):
+for k in ("FIRECRAWL_API_KEY", "NOUS_API_KEY", "TAVILY_API_KEY", "SERPER_API_KEY"):
     os.environ.pop(k, None)
 os.environ["BU_CDP_URL"] = cdp
 os.environ["PATH"] = (

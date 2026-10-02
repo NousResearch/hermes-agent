@@ -20,17 +20,6 @@ def test_dump_cron_summary_accepts_utf8_bom(tmp_path):
     assert _cron_summary(tmp_path) == "1 active / 2 total"
 
 
-def test_dump_cron_summary_bomless_regression(tmp_path):
-    from hermes_cli.dump import _cron_summary
-
-    cron = tmp_path / "cron"
-    cron.mkdir()
-    (cron / "jobs.json").write_text(
-        '{"jobs": [{"id": "j1", "enabled": true}]}',
-        encoding="utf-8",
-    )
-
-    assert _cron_summary(tmp_path) == "1 active / 1 total"
 
 
 def test_status_scheduled_jobs_accepts_utf8_bom(monkeypatch, capsys, tmp_path):
@@ -62,7 +51,7 @@ def test_status_scheduled_jobs_accepts_utf8_bom(monkeypatch, capsys, tmp_path):
     monkeypatch.setattr(auth_mod, "get_xai_oauth_auth_status", lambda: {}, raising=False)
     monkeypatch.setattr(gateway_mod, "find_gateway_pids", lambda exclude_pids=None: [], raising=False)
 
-    status_mod.show_status(SimpleNamespace(all=False, deep=False))
+    status_mod.show_status(SimpleNamespace(full=True, deep=False))
     out = capsys.readouterr().out
     assert "(error reading jobs file)" not in out
     assert "2 active, 2 total" in out

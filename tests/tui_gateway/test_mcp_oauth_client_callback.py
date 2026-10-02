@@ -12,16 +12,15 @@ Covers the three seams added for remote Desktop backends:
     rejected, replay rejected, unknown session rejected).
 """
 
-import threading
 
 import pytest
 
+from hermes_constants import get_hermes_home
+from tools.connectors import mcp_oauth
+from tools.connectors.mcp_oauth import _validate_client_redirect_uri
 from tools.mcp_dashboard_oauth import DashboardOAuthFlow
 from tui_gateway import mcp_oauth_sessions
-from tui_gateway.mcp_oauth_sessions import (
-    _validate_client_redirect_uri,
-    deliver_callback_flow,
-)
+from tui_gateway.mcp_oauth_sessions import deliver_callback_flow
 
 
 # ---------------------------------------------------------------------------
@@ -72,9 +71,7 @@ def _fake_worker_publishes_url(monkeypatch, state="teststate123"):
     carrying *state* and then waits for the callback like the real worker's
     SDK does."""
 
-    def worker(session_id, hermes_home, server_name, cfg, reconnect_live):
-        rec = mcp_oauth_sessions._sessions.get(session_id)
-        flow = rec["flow"]
+    def worker(hermes_home, server_name, cfg, reconnect_live, *, flow, on_done=None, **_card_options):
         import asyncio
 
         asyncio.run(
@@ -90,23 +87,26 @@ def _fake_worker_publishes_url(monkeypatch, state="teststate123"):
             flow.mark_error(str(exc))
         finally:
             flow.mark_worker_done()
+            if on_done is not None:
+                on_done()
 
-    monkeypatch.setattr(mcp_oauth_sessions, "_worker", worker)
+    monkeypatch.setattr(mcp_oauth_sessions, "run_worker", worker)
+    return worker
 
 
 def test_start_flow_client_redirect_skips_gateway_listener(monkeypatch):
-    _fake_worker_publishes_url(monkeypatch)
+    worker = _fake_worker_publishes_url(monkeypatch)
 
     bound = []
-    real_listener = mcp_oauth_sessions._start_loopback_listener
+    real_receiver = mcp_oauth._start_loopback_receiver
     monkeypatch.setattr(
-        mcp_oauth_sessions,
-        "_start_loopback_listener",
-        lambda flow: bound.append(flow) or real_listener(flow),
+        mcp_oauth,
+        "_start_loopback_receiver",
+        lambda flow: bound.append(flow) or real_receiver(flow),
     )
 
     result = mcp_oauth_sessions.start_flow(
-        "/tmp/hermes-test-home",
+        str(get_hermes_home()),
         "clicky",
         {"url": "https://mcp.example.com/mcp", "auth": "oauth"},
         client_redirect_uri="http://127.0.0.1:8412/callback",
@@ -126,12 +126,48 @@ def test_start_flow_client_redirect_skips_gateway_listener(monkeypatch):
     )
     rec["flow"]._worker_done.wait(5)
 
+    # The connection-card path does not require a dashboard web server: it binds the same backend
+    # receiver, registers the flow for callback relay, and carries the SSH paste hint in detail.
+    import hermes_cli.mcp_config as mcp_config
+
+    monkeypatch.setattr(
+        mcp_config,
+        "_get_mcp_servers",
+        lambda: {"cardy": {"url": "https://mcp.example.com/mcp", "auth": "oauth"}},
+    )
+    monkeypatch.setattr(mcp_oauth, "run_worker", worker)
+    monkeypatch.setenv("SSH_CLIENT", "192.0.2.1 12345 22")
+    attempt = mcp_oauth.start("cardy")
+    assert attempt.flow.redirect_uri.startswith("http://127.0.0.1:")
+    assert attempt.flow.flow_id in mcp_oauth_sessions._sessions
+    deliver_callback_flow(
+        attempt.flow.flow_id, "cardy", code="authcode", state="teststate123"
+    )
+    attempt.flow._worker_done.wait(5)
+
+    # A pre-registered client owns its pinned listener inside the SDK; the receiver picker must
+    # publish that URI without attempting a second bind.
+    pinned = DashboardOAuthFlow(
+        "pinned", "asana", None, str(get_hermes_home()), ""
+    )
+    pinned_bound = []
+    monkeypatch.setattr(
+        mcp_oauth, "_start_loopback_receiver", lambda flow: pinned_bound.append(flow)
+    )
+    assert mcp_oauth.choose_callback_receiver(
+        pinned,
+        {"oauth": {"client_id": "asana-client", "redirect_host": "localhost",
+                   "redirect_port": 27890}},
+    ) is None
+    assert pinned.redirect_uri == "http://localhost:27890/callback"
+    assert pinned_bound == []
+
 
 def test_start_flow_rejects_bad_client_redirect(monkeypatch):
     _fake_worker_publishes_url(monkeypatch)
     with pytest.raises(ValueError):
         mcp_oauth_sessions.start_flow(
-            "/tmp/hermes-test-home",
+            str(get_hermes_home()),
             "clicky2",
             {"url": "https://mcp.example.com/mcp", "auth": "oauth"},
             client_redirect_uri="https://evil.example.com/callback",
@@ -152,7 +188,7 @@ def _make_session(session_id="sess-relay-1", server="hosp", state="s3cr3tstate")
         flow_id=session_id,
         server_name=server,
         profile=None,
-        hermes_home="/tmp/hermes-test-home",
+        hermes_home=str(get_hermes_home()),
         redirect_uri="http://127.0.0.1:9000/callback",
     )
     # Pin the expected state the way publish_authorization_url does.
@@ -166,7 +202,7 @@ def _make_session(session_id="sess-relay-1", server="hosp", state="s3cr3tstate")
     rec = {
         "session_id": session_id,
         "server_name": server,
-        "hermes_home": "/tmp/hermes-test-home",
+        "hermes_home": str(get_hermes_home()),
         "flow": flow,
         "httpd": None,
         "created_at": __import__("time").time(),
@@ -185,7 +221,41 @@ def test_deliver_callback_accepts_matching_state():
     flow = _make_session()
     out = deliver_callback_flow("sess-relay-1", "hosp", code="abc", state="s3cr3tstate")
     assert out == {"ok": True, "session_id": "sess-relay-1"}
-    assert flow._callback == ("abc", "s3cr3tstate")
+    assert flow._callback == ("abc", "s3cr3tstate", None)
+
+
+def test_oauth_callback_rpc_relays_iss():
+    """The gateway ``mcp.servers.oauth.callback`` RPC accepts ``iss`` under the extra=forbid contract
+    and forwards it to the flow; the desktop renderer always sends the key (possibly null)."""
+    import tui_gateway.server as srv
+    from tui_gateway.contracts import registry as contracts
+
+    flow = _make_session()
+    contract = contracts.METHODS["mcp.servers.oauth.callback"]
+    params = {"session_id": "sess-relay-1", "name": "hosp", "code": "abc", "state": "s3cr3tstate",
+              "iss": "https://as.example.com"}
+    params, problem = contracts.validate_params(contract, params)
+    assert problem is None
+    out = srv._methods["mcp.servers.oauth.callback"](1, params)
+    assert out["result"]["ok"] is True
+    assert flow._callback == ("abc", "s3cr3tstate", "https://as.example.com")
+
+
+def test_loopback_listener_forwards_iss():
+    """The gateway-hosted loopback listener parses ``iss`` off the redirect rather than dropping it."""
+    import urllib.request
+
+    flow = _make_session(session_id="sess-relay-loop", server="loopy", state="loopstate")
+    httpd = mcp_oauth._start_loopback_receiver(flow)
+    try:
+        port = httpd.server_address[1]
+        urllib.request.urlopen(
+            f"http://127.0.0.1:{port}/callback?code=abc&state=loopstate&iss=https%3A%2F%2Fas.example.com",
+            timeout=5,
+        ).read()
+    finally:
+        httpd.shutdown()
+    assert flow._callback == ("abc", "loopstate", "https://as.example.com")
 
 
 def test_deliver_callback_rejects_state_mismatch():

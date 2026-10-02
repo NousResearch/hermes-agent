@@ -4,7 +4,7 @@ The ``_ensure_telegram_mock`` helper guarantees that a minimal mock of
 the ``telegram`` package is registered in :data:`sys.modules` **before**
 any test file triggers ``from plugins.platforms.telegram.adapter import ...``.
 
-Without this, ``pytest-xdist`` workers that happen to collect
+Without this, pytest sessions that happen to collect
 ``test_telegram_caption_merge.py`` (bare top-level import, no per-file
 mock) first will cache ``ChatType = None`` from the production
 ImportError fallback, causing 30+ downstream test failures wherever
@@ -25,13 +25,14 @@ pointer to the helper if the anti-pattern is detected.
 
 Rationale: every plugin ships its own ``adapter.py``, and two tests each
 inserting their plugin dir on ``sys.path[0]`` race for
-``sys.modules["adapter"]`` in the same xdist worker. Whichever collects
+``sys.modules["adapter"]`` in the same pytest session. Whichever collects
 first wins; the other fails with ``ImportError``, and the polluted
 ``sys.path`` cascades into unrelated tests. See PR #17764 for the
 incident.
 """
 
 import ast
+import os
 import sys
 from pathlib import Path
 from unittest.mock import MagicMock
@@ -471,13 +472,13 @@ def _run_adapter_antipattern_scan() -> list[str]:
 def pytest_configure(config):
     """Reject plugin-adapter tests that use the sys.path anti-pattern.
 
-    Runs once per pytest session on the controller, BEFORE any xdist
-    worker is spawned. If any file under ``tests/gateway/`` matches the
-    anti-pattern, we fail the whole session with a clear message —
-    before a polluted ``sys.path`` can cascade across workers.
+    Runs once per pytest session, before any test is collected. If any
+    file under ``tests/gateway/`` matches the anti-pattern, we fail the
+    whole session with a clear message — before a polluted ``sys.path``
+    can cascade.
 
-    **Performance**: in the per-file subprocess isolation model (no xdist),
-    every subprocess is a "controller" — so the naive scan would run 257
+    **Performance**: in the per-file subprocess isolation model, every
+    subprocess runs this hook — so the naive scan would run 257
     times, each costing ~1s of AST walking.  We avoid this with two
     strategies:
 
@@ -491,11 +492,6 @@ def pytest_configure(config):
        subprocesses acquire a lock; only the first performs the scan;
        the rest wait and read the cached result.
     """
-    # Only run on the xdist controller (or in non-xdist runs). Skip on
-    # worker subprocesses so we don't scan the filesystem N times.
-    if hasattr(config, "workerinput"):
-        return
-
     fp = _fingerprint_gateway_tests()
     cache_dir = Path.cwd() / ".pytest-cache"
     cache_file = cache_dir / f"gw-adapter-guard-{fp}"
@@ -504,6 +500,10 @@ def pytest_configure(config):
     cache_dir.mkdir(parents=True, exist_ok=True)
 
     # Evict stale cache entries from previous fingerprints (best-effort).
+    # ``.tmp-gw-adapter-guard-*`` staging files (see
+    # ``_write_guard_cache_atomic``) deliberately do NOT match these globs:
+    # a sibling process evicting mid-publish must never unlink a temp file
+    # between its write and its ``os.replace``.
     try:
         for old in cache_dir.glob("gw-adapter-guard-*"):
             if old.name != f"gw-adapter-guard-{fp}":
@@ -517,6 +517,15 @@ def pytest_configure(config):
     # Use filelock to ensure only one process scans at a time.
     # Concurrent subprocesses all hit pytest_configure simultaneously;
     # without a lock they'd all find no cache and all run the scan.
+    #
+    # NOTE: filelock is NOT in CI's app and dev/test dependency closure,
+    # so on CI the _NoLock fallback is
+    # what actually runs. Correctness therefore cannot depend on the lock:
+    # the cache write must be atomic and the read must tolerate a
+    # not-yet-visible cache. Before the atomic-write fix, a reader could
+    # observe a sibling's ``write_text`` mid-truncate, read "" and raise
+    # ``UsageError("")`` — the empty ``ERROR:`` flake that hit
+    # tests/gateway/relay/* files under the 96-way per-file runner.
     try:
         from filelock import FileLock
         lock = FileLock(str(lock_file), timeout=120)
@@ -531,10 +540,10 @@ def pytest_configure(config):
         lock = _NoLock()
 
     with lock:
-        if cache_file.exists():
-            cached = cache_file.read_text(encoding="utf-8")
-            if cached == "clean":
-                return
+        cached = _read_guard_cache(cache_file)
+        if cached == "clean":
+            return
+        if cached is not None:
             raise pytest.UsageError(cached)
 
         # Slow path: this process is the first to acquire the lock.
@@ -547,8 +556,53 @@ def pytest_configure(config):
                 + "\n\n"
                 + _GUARD_HINT
             )
-            cache_file.write_text(msg, encoding="utf-8")
+            _write_guard_cache_atomic(cache_file, msg)
             raise pytest.UsageError(msg)
         else:
-            cache_file.write_text("clean", encoding="utf-8")
+            _write_guard_cache_atomic(cache_file, "clean")
+
+
+def _read_guard_cache(cache_file: Path) -> str | None:
+    """Read the guard cache, treating unreadable/empty content as a miss.
+
+    Returns the cached text, or ``None`` when the cache should be treated as
+    absent (missing file, concurrent delete, or empty content). An empty or
+    vanished file is NEVER a violation — before this guard existed, a reader
+    racing a sibling's non-atomic write raised ``UsageError("")``, failing a
+    perfectly healthy test file with a blank ``ERROR:`` line.
+    """
+    try:
+        cached = cache_file.read_text(encoding="utf-8")
+    except (FileNotFoundError, OSError):
+        return None
+    if not cached.strip():
+        return None
+    return cached
+
+
+def _write_guard_cache_atomic(cache_file: Path, content: str) -> None:
+    """Publish the guard cache atomically (write-temp + ``os.replace``).
+
+    ``Path.write_text`` opens with truncation, so concurrent readers can see
+    an empty or partial file. ``os.replace`` makes the new content appear
+    all-at-once under the final name — readers see either the old state
+    (miss → they scan too, harmless) or the complete verdict, never a
+    torn write. This must hold WITHOUT the filelock, which CI doesn't
+    install.
+
+    The staging name starts with ``.tmp-`` so it can never match the stale
+    eviction globs (``gw-adapter-guard-*`` / ``.gw-adapter-guard-*.lock``);
+    otherwise a sibling's eviction pass could unlink the temp between the
+    write and the ``os.replace``.
+    """
+    tmp = cache_file.with_name(f".tmp-{cache_file.name}.{os.getpid()}")
+    try:
+        tmp.write_text(content, encoding="utf-8")
+        os.replace(tmp, cache_file)
+    except OSError:
+        # Best-effort cache: losing it costs a rescan, never correctness.
+        try:
+            tmp.unlink(missing_ok=True)
+        except OSError:
+            pass
 

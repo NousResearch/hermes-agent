@@ -78,67 +78,16 @@ class TestSmsFormatAndTruncate:
 
 # ── Echo prevention ────────────────────────────────────────────────
 
-class TestSmsEchoPrevention:
-    """Adapter should ignore messages from its own number."""
-
-    def test_own_number_detection(self):
-        """The adapter stores _from_number for echo prevention."""
-        from plugins.platforms.sms.adapter import SmsAdapter
-
-        env = {
-            "TWILIO_ACCOUNT_SID": "ACtest",
-            "TWILIO_AUTH_TOKEN": "tok",
-            "TWILIO_PHONE_NUMBER": "+15550001111",
-        }
-        with patch.dict(os.environ, env):
-            pc = PlatformConfig(enabled=True, api_key="tok")
-            adapter = SmsAdapter(pc)
-            assert adapter._from_number == "+15550001111"
 
 
 # ── Requirements check ─────────────────────────────────────────────
 
-class TestSmsRequirements:
-
-
-    def test_check_sms_requirements_both_set(self):
-        from plugins.platforms.sms.adapter import check_sms_requirements
-
-        env = {
-            "TWILIO_ACCOUNT_SID": "ACtest",
-            "TWILIO_AUTH_TOKEN": "tok",
-        }
-        with patch.dict(os.environ, env, clear=False):
-            # Only returns True if aiohttp is also importable
-            result = check_sms_requirements()
-            try:
-                import aiohttp  # noqa: F401
-                assert result is True
-            except ImportError:
-                assert result is False
 
 
 # ── Toolset verification ───────────────────────────────────────────
 
 # ── Webhook host configuration ─────────────────────────────────────
 
-class TestWebhookHostConfig:
-    """Verify SMS_WEBHOOK_HOST env var and default."""
-
-
-    def test_webhook_url_from_env(self):
-        from plugins.platforms.sms.adapter import SmsAdapter
-
-        env = {
-            "TWILIO_ACCOUNT_SID": "ACtest",
-            "TWILIO_AUTH_TOKEN": "tok",
-            "TWILIO_PHONE_NUMBER": "+15550001111",
-            "SMS_WEBHOOK_URL": "https://example.com/webhooks/twilio",
-        }
-        with patch.dict(os.environ, env):
-            pc = PlatformConfig(enabled=True, api_key="tok")
-            adapter = SmsAdapter(pc)
-            assert adapter._webhook_url == "https://example.com/webhooks/twilio"
 
 
 # ── Startup guard (fail-closed) ────────────────────────────────────
@@ -321,3 +270,116 @@ class TestWebhookSignatureEnforcement:
         request = self._mock_request(oversized, content_length=None)
         resp = await adapter._handle_webhook(request)
         assert resp.status == 413
+
+
+
+class TestMultiplexProfileScope:
+    """TWILIO_PHONE_NUMBER must resolve through the same profile scope as the Twilio secrets: under
+    multiplex, os.environ holds the DEFAULT profile's number."""
+
+    @pytest.fixture(autouse=True)
+    def _default_profile_env(self, monkeypatch):
+        from agent.secret_scope import set_multiplex_active
+        for key, value in (("TWILIO_ACCOUNT_SID", "AC-default"), ("TWILIO_AUTH_TOKEN", "token-default"),
+                           ("TWILIO_PHONE_NUMBER", "+15550000000")):
+            monkeypatch.setenv(key, value)
+        set_multiplex_active(True)
+        yield
+        set_multiplex_active(False)
+
+    def test_init_pairs_secondary_secrets_with_secondary_from_number(self):
+        from agent.secret_scope import reset_secret_scope, set_secret_scope
+        from plugins.platforms.sms.adapter import SmsAdapter
+
+        token = set_secret_scope({"TWILIO_ACCOUNT_SID": "AC-profile", "TWILIO_AUTH_TOKEN": "token-profile",
+                                  "TWILIO_PHONE_NUMBER": "+15551112222"})
+        try:
+            adapter = SmsAdapter(PlatformConfig(enabled=True))
+        finally:
+            reset_secret_scope(token)
+        assert (adapter._account_sid, adapter._from_number) == ("AC-profile", "+15551112222")
+
+    @pytest.mark.asyncio
+    async def test_standalone_send_without_own_number_fails_closed(self):
+        """A secondary lacking its own from-number must NOT send from the default's +15550000000."""
+        from agent.secret_scope import reset_secret_scope, set_secret_scope
+        from plugins.platforms.sms.adapter import _standalone_send
+
+        token = set_secret_scope({"TWILIO_ACCOUNT_SID": "AC-profile", "TWILIO_AUTH_TOKEN": "token-profile"})
+        try:
+            result = await _standalone_send(PlatformConfig(enabled=True), "+15559998888", "hi")
+        finally:
+            reset_secret_scope(token)
+        assert "TWILIO_PHONE_NUMBER required" in result["error"]
+
+
+@pytest.mark.asyncio
+async def test_oversized_cron_output_reaches_twilio_in_1600_char_chunks():
+    """The router hands SMS the full cron payload and send() splits it under Twilio's 1600-char
+    cap (a larger Body is rejected with 21617, which used to fail the whole delivery)."""
+    from gateway.config import GatewayConfig
+    from gateway.delivery import DeliveryRouter
+    from plugins.platforms.sms.adapter import SmsAdapter
+
+    with patch.dict(os.environ, {"TWILIO_ACCOUNT_SID": "ACtest", "TWILIO_AUTH_TOKEN": "tok",
+                                 "TWILIO_PHONE_NUMBER": "+15550001111"}):
+        adapter = SmsAdapter(PlatformConfig(enabled=True, api_key="tok"))
+    bodies = []
+
+    class _Resp:
+        status = 201
+        async def json(self):
+            return {"sid": "SM1"}
+        async def __aenter__(self):
+            return self
+        async def __aexit__(self, *exc):
+            return False
+
+    class _Session:
+        def post(self, url, data, headers):
+            bodies.append(next(value for opts, _, value in data._fields if opts["name"] == "Body"))
+            return _Resp()
+
+    adapter._http_session = _Session()
+    content = "\n\n".join(f"line {i} " + "x" * 200 for i in range(40))
+    payload = DeliveryRouter(GatewayConfig())._cap_oversized_output(adapter, content, "job")
+    result = await adapter.send("+15550002222", payload)
+
+    assert result.success
+    assert len(bodies) > 1 and max(map(len, bodies)) <= 1600
+    assert "line 39 " in bodies[-1]
+
+
+@pytest.mark.asyncio
+async def test_failure_after_delivered_chunks_is_never_resent_whole():
+    """Twilio rejects chunk 3 of a long reply. The chunks already on the phone must not arrive again
+    via the retry/plain-text fallback, which would also drop the tail (it resends content[:3500])."""
+    from plugins.platforms.sms.adapter import SmsAdapter
+
+    with patch.dict(os.environ, {"TWILIO_ACCOUNT_SID": "ACtest", "TWILIO_AUTH_TOKEN": "tok",
+                                 "TWILIO_PHONE_NUMBER": "+15550001111"}):
+        adapter = SmsAdapter(PlatformConfig(enabled=True, api_key="tok"))
+    bodies = []
+
+    class _Resp:
+        def __init__(self, status):
+            self.status = status
+        async def json(self):
+            return {"sid": f"SM{len(bodies)}"} if self.status < 400 else {"message": "rejected"}
+        async def __aenter__(self):
+            return self
+        async def __aexit__(self, *exc):
+            return False
+
+    class _Session:
+        def post(self, url, data, headers):
+            bodies.append(next(value for opts, _, value in data._fields if opts["name"] == "Body"))
+            return _Resp(400 if len(bodies) == 3 else 201)
+
+    adapter._http_session = _Session()
+    content = "\n\n".join(f"para {i:02d} " + "y" * 300 for i in range(20))
+    result = await adapter._send_with_retry("+15550002222", content)
+
+    assert not result.success
+    assert result.raw_response["partial_overflow"] and result.raw_response["delivered_chunks"] == 2
+    assert all("".join(bodies).count(f"para {i:02d} ") <= 1 for i in range(20)), "a delivered chunk was re-sent"

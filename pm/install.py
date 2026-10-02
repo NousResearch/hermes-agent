@@ -3,11 +3,13 @@ and hand back its composed environment."""
 
 from __future__ import annotations
 
+import errno
 import json
 import logging
 import os
 import shutil
 import threading
+import time
 from contextlib import ExitStack, contextmanager, nullcontext
 from dataclasses import dataclass
 from pathlib import Path
@@ -22,6 +24,13 @@ from pm.registry import get_package, walk
 from pm.store import Store, current_target, merge_tree, tree_digest
 
 LOG = logging.getLogger(__name__)
+
+#: Rename failures that mean "a handle is still open" rather than "this can never work".
+#: Measured on Windows 11 / CPython 3.14: a hold on *either* side of the rename reports
+#: ``EACCES`` (winerror 5), while a rename onto an existing non-empty directory reports
+#: ``EEXIST`` (183) and a missing source reports ``ENOENT`` (2) — the latter two are
+#: inherent to the call, so retrying them only delays the error the caller gets anyway.
+_RENAME_HOLD_ERRNOS = frozenset({errno.EACCES, errno.EPERM, errno.EBUSY})
 
 # ``progress(stage, done, total, label)`` reports download/unpack/verify;
 # multi-archive labels follow lockfile order.
@@ -241,6 +250,30 @@ def _remove_entry(store: Store, entry_name: str) -> None:
             time.sleep(0.2 * (attempt + 1))
 
 
+def _rename_with_retry(src, dst) -> None:
+    """Rename an entry directory, retrying transient Windows holds.
+
+    On Windows a live process can hold a path inside the tree being displaced — a
+    mapped DLL of a just-restarted gateway, an antivirus scan, or the updater's own
+    tooling still resolving the entry — and the rename then fails with
+    ``[WinError 5] Access is denied`` until the handle closes. ``_remove_entry``
+    already retries the same holds on removal; a pin change must not abort the whole
+    install for a hold that clears in well under a second.
+
+    Only holds are retried. A missing source or a rename onto an occupied directory
+    fails the same way however long we wait, so those propagate immediately instead of
+    spending the whole budget first (an already-aborted install stays as fast as it was).
+    """
+    for attempt in range(5):
+        try:
+            src.rename(dst)
+            return
+        except OSError as exc:
+            if attempt == 4 or exc.errno not in _RENAME_HOLD_ERRNOS:
+                raise
+            time.sleep(0.2 * (attempt + 1))
+
+
 def _remove_downloads(store: Store, artifacts: list[dict]) -> None:
     """Release this package's archives after publication, under its store lock."""
     for artifact in artifacts:
@@ -263,12 +296,12 @@ def _restore_previous_entry(store: Store, entry, previous) -> None:
     displaced = store.entry(f".displaced-{uuid.uuid4().hex}")
     had_entry = entry.exists() or entry.is_symlink()
     if had_entry:
-        entry.rename(displaced)
+        _rename_with_retry(entry, displaced)
     try:
-        previous.rename(entry)
+        _rename_with_retry(previous, entry)
     except BaseException:
         if had_entry:
-            displaced.rename(entry)
+            _rename_with_retry(displaced, entry)
         raise
     if had_entry:
         _remove_entry(store, displaced.name)
@@ -278,7 +311,7 @@ def _restore_previous_entry(store: Store, entry, previous) -> None:
 def _publish_entry(package, store, staged, entry, previous_entry, target):
     """Keep rollback live through the caller's native facts commit, if any."""
     if entry.exists() or entry.is_symlink():
-        entry.rename(previous_entry)
+        _rename_with_retry(entry, previous_entry)
     try:
         store.publish(staged, entry.name)
         reason = package.verify(entry, target)

@@ -1,13 +1,18 @@
 import { execFileSync } from 'node:child_process'
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync, symlinkSync, statSync, utimesSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync, symlinkSync, statSync, utimesSync, openSync, closeSync, renameSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { createRequire } from 'node:module'
 import { fileURLToPath } from 'node:url'
-import { afterEach, expect, test } from 'vitest'
+import { afterEach, expect, test, vi } from 'vitest'
 import { buildTui } from '../scripts/build/tui.mjs'
 import { buildWeb } from '../scripts/build/web.mjs'
-import { productOutput, publishDirectory, withProduct } from '../scripts/build/frontend-common.mjs'
+import { productOutput, publishDirectory, renameWithRetry, withProduct } from '../scripts/build/frontend-common.mjs'
+
+vi.mock('node:fs', async importOriginal => {
+  const fs = await importOriginal()
+  return { ...fs, renameSync: vi.fn(fs.renameSync) }
+})
 
 const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const require = createRequire(import.meta.url)
@@ -96,7 +101,7 @@ test('publication replaces only builder-owned directories and rechecks ownership
   }
   const staged = path.join(base, 'staged')
   put(staged, 'new.txt', 'new product')
-  expect(() => publishDirectory(staged, unowned)).toThrow(/output/i)
+  await expect(publishDirectory(staged, unowned)).rejects.toThrow(/output/i)
   expect(readFileSync(path.join(unowned, 'keep.txt'), 'utf8')).toBe('not a product')
   expect(readFileSync(path.join(staged, 'new.txt'), 'utf8')).toBe('new product')
 
@@ -129,6 +134,73 @@ test('existing npm build directories can be rebuilt without adopting arbitrary o
   put(unrelated, 'keep', 'source')
   await expect(withProduct(unrelated, () => {}, { source })).rejects.toThrow(/output/i)
 })
+
+test('a transient hold on a published directory is retried instead of failing the build', async () => {
+  // The update tail renames `ui-tui/.dist-<rand>` onto `ui-tui/dist`, which fails with EPERM
+  // while another process still holds a handle inside either directory (an antivirus scan, the
+  // previous build's watcher). That hold is transient, so publication must wait it out.
+  const base = fixture()
+  const out = path.join(base, 'dist')
+  await withProduct(out, product => put(product, 'entry.js', 'previous output'), { source: base })
+  const staged = path.join(base, '.dist-held')
+  put(staged, 'entry.js', 'new output')
+  const held = openSync(path.join(out, 'entry.js'), 'r')
+  const released = new Promise(resolve => setTimeout(() => { closeSync(held); resolve() }, 120))
+  await publishDirectory(staged, out, { source: base })
+  await released
+  expect(readFileSync(path.join(out, 'entry.js'), 'utf8')).toBe('new output')
+  expect(existsSync(`${staged}.previous`)).toBe(false)
+  // A hold inside the staged directory blocks the same rename and is retried the same way.
+  const second = path.join(base, 'dist-two')
+  await withProduct(second, product => put(product, 'entry.js', 'previous output'), { source: base })
+  const stagedTwo = path.join(base, '.dist-held-two')
+  put(stagedTwo, 'entry.js', 'newer output')
+  const heldStaged = openSync(path.join(stagedTwo, 'entry.js'), 'r')
+  const releasedStaged = new Promise(resolve => setTimeout(() => { closeSync(heldStaged); resolve() }, 120))
+  await publishDirectory(stagedTwo, second, { source: base })
+  await releasedStaged
+  expect(readFileSync(path.join(second, 'entry.js'), 'utf8')).toBe('newer output')
+}, 30_000)
+
+test('publication stops retrying a hold that is not transient and keeps the previous product', async () => {
+  const base = fixture()
+  const out = path.join(base, 'dist')
+  await withProduct(out, product => put(product, 'entry.js', 'previous output'), { source: base })
+  const staged = path.join(base, '.dist-permanent')
+  put(staged, 'entry.js', 'new output')
+  // Held open for the whole run, so every attempt fails and the error escapes the retry loop.
+  const held = openSync(path.join(out, 'entry.js'), 'r')
+  await expect(publishDirectory(staged, out, { source: base })).rejects.toMatchObject({ code: 'EPERM' })
+  // The compiler's product is unpublished and the last good product is still in place.
+  expect(readFileSync(path.join(out, 'entry.js'), 'utf8')).toBe('previous output')
+  closeSync(held)
+}, 30_000)
+
+test.each(['ENOENT', 'EEXIST', 'ENOTEMPTY'])('rename retry rethrows %s on the first attempt', async code => {
+  // Windows also reports occupied destinations as EPERM, so real filesystem errors alone
+  // cannot exercise every non-retryable code. Count calls instead of timing the backoff.
+  const failure = Object.assign(new Error('rename failed'), { code })
+  const rename = vi.mocked(renameSync).mockClear().mockImplementation(() => { throw failure })
+  try {
+    await expect(renameWithRetry('source', 'destination')).rejects.toBe(failure)
+    expect(rename).toHaveBeenCalledExactlyOnceWith('source', 'destination')
+  } finally {
+    rename.mockReset()
+  }
+})
+
+test('rename retry preserves filesystem errors for missing sources and occupied destinations', async () => {
+  const base = fixture()
+  await expect(renameWithRetry(path.join(base, 'missing'), path.join(base, 'elsewhere')))
+    .rejects.toMatchObject({ code: 'ENOENT' })
+  // The same for a rename onto an occupied directory (what a stale build left behind).
+  const staged = path.join(base, 'staged')
+  const occupied = path.join(base, 'occupied')
+  put(staged, 'entry.js', 'new output')
+  put(occupied, 'inner/kept.txt', 'stale build output')
+  await expect(renameWithRetry(staged, occupied))
+    .rejects.toMatchObject({ code: expect.stringMatching(/^(EPERM|EEXIST|ENOTEMPTY|EACCES)$/) })
+}, 30_000)
 
 test('web compiles with prepared icons and workspace-local tools without writing source or tsbuildinfo', async () => {
   const { readdirSync, lstatSync } = await import('node:fs')

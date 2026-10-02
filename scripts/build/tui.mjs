@@ -83,7 +83,7 @@ async function buildDeveloperTui() {
     const staged = mkdtempSync(join(repoRoot, 'ui-tui/.dist-'))
     try {
       cpSync(join(result.out, 'dist'), staged, { recursive: true })
-      publishDirectory(staged, join(repoRoot, 'ui-tui/dist'), { source: repoRoot })
+      await publishDirectory(staged, join(repoRoot, 'ui-tui/dist'), { source: repoRoot })
     } finally {
       rmSync(staged, { recursive: true, force: true })
     }

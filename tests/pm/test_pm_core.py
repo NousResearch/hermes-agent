@@ -5,6 +5,7 @@ stores."""
 
 from __future__ import annotations
 
+import errno
 import threading
 from pathlib import Path
 
@@ -240,6 +241,119 @@ def test_activation_trusts_a_recorded_entry_a_deliberate_install_repairs(pm_env,
     assert _install_names(["faketool"]) == 0
     assert "faketool" in checked
     assert binary.read_text(encoding="utf-8") == "good"
+
+
+def test_transient_hold_on_entry_rename_does_not_fail_the_install(pm_env, monkeypatch):
+    """A pin change displaces the live entry with ``entry.rename(previous_entry)``.
+
+    On Windows that rename can fail with ``[WinError 5] Access is denied`` while a
+    handle on a path inside the tree is still open (a mapped DLL of a just-restarted
+    gateway, an AV scan, the updater's own tooling still resolving the entry), and the
+    hold clears in well under a second. ``_remove_entry`` already retries those holds;
+    the rename must too, or one transient hold aborts an install whose new bytes are
+    already downloaded and verified (#124807, rename arm).
+    """
+    from pathlib import Path as _Path
+
+    from pm.cli import _install_names
+
+    lockfile_path, runtime, docroot, _ = pm_env
+    _, digest = make_tar(docroot, "faketool-1.0.tar.gz", {"bin/faketool": "#!x"})
+    _pin(lockfile_path, "faketool", "1.0", digest)
+    assert _install_names(["faketool"]) == 0
+
+    fact = Facts(runtime / "facts.json").get("faketool")
+    entry = runtime / fact["entry"]
+    # Break the live entry so the next install takes the displace-and-republish path,
+    # exactly what the updater drives after a tool pin change.
+    (entry / "bin/faketool").write_bytes(b"corrupt")
+
+    real_rename = _Path.rename
+    holds = {"left": 1}
+
+    def flaky_rename(self, target):
+        # Only the entry -> .previous-<entry> displacement is held, once.
+        # Windows reports a held handle as EACCES (winerror 5/32), never as errno 5 —
+        # the injected signature has to match the real one to prove anything.
+        if holds["left"] and self.name == fact["entry"] and str(target).find(".previous-") != -1:
+            holds["left"] -= 1
+            raise OSError(errno.EACCES, "Access is denied")
+        return real_rename(self, target)
+
+    monkeypatch.setattr(_Path, "rename", flaky_rename)
+    assert _install_names(["faketool"]) == 0
+    assert holds["left"] == 0  # the hold really was exercised
+    # The reinstall completed and the new entry is live.
+    fact = Facts(runtime / "facts.json").get("faketool")
+    assert (runtime / fact["entry"] / "bin/faketool").read_bytes() == b"#!x"
+
+
+def test_rename_retry_skips_errors_no_hold_can_explain(tmp_path, monkeypatch):
+    """Only a held handle is worth waiting for; the rest must fail on the first attempt.
+
+    A missing source (``ENOENT``) or a rename onto an occupied directory (``EEXIST``)
+    raises the same error however long the retry sleeps, so spending the budget first
+    only makes an already-aborted install slower without telling the caller anything
+    new. Measured on Windows: a real hold reports ``EACCES`` (winerror 5), while these
+    two report their own codes.
+    """
+    from pathlib import Path as _Path
+
+    from pm.install import _rename_with_retry
+
+    attempts = {"n": 0}
+    real_rename = _Path.rename
+
+    def counting_rename(self, target):
+        attempts["n"] += 1
+        return real_rename(self, target)
+
+    monkeypatch.setattr(_Path, "rename", counting_rename)
+
+    # A source that does not exist can never be renamed, whatever we wait.
+    with pytest.raises(OSError) as missing:
+        _rename_with_retry(tmp_path / "missing", tmp_path / "elsewhere")
+    assert missing.value.errno == errno.ENOENT
+    assert attempts["n"] == 1
+
+    # A staged tree renamed onto an occupied directory fails the same way every time.
+    staged = tmp_path / "staged"
+    staged.mkdir()
+    occupied = tmp_path / "occupied"
+    (occupied / "inner").mkdir(parents=True)
+    with pytest.raises(OSError) as clash:
+        _rename_with_retry(staged, occupied)
+    assert clash.value.errno in {errno.EEXIST, errno.ENOTEMPTY}
+    assert attempts["n"] == 2  # still one attempt per call
+
+
+def test_rename_retry_still_waits_out_a_held_handle(tmp_path, monkeypatch):
+    """The predicate must not throw away the case it exists for.
+
+    A real handle held inside the source makes the rename fail with ``EACCES``
+    (winerror 5); it clears a moment later, so the retry has to keep trying.
+    """
+    from pathlib import Path as _Path
+
+    from pm.install import _rename_with_retry
+
+    staged = tmp_path / "staged"
+    staged.mkdir()
+    (staged / "entry").write_bytes(b"payload")
+    target = tmp_path / "entry"
+    real_rename = _Path.rename
+    holds = {"left": 2}
+
+    def held_rename(self, dst):
+        if holds["left"] and self == staged:
+            holds["left"] -= 1
+            raise OSError(errno.EACCES, "Access is denied")
+        return real_rename(self, dst)
+
+    monkeypatch.setattr(_Path, "rename", held_rename)
+    _rename_with_retry(staged, target)
+    assert holds["left"] == 0  # the hold was really exercised, and waited out
+    assert (target / "entry").read_bytes() == b"payload"
 
 
 def test_warm_install_verifies_shared_dependencies_once_under_lock(pm_env, monkeypatch):

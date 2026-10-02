@@ -370,7 +370,19 @@ def _check_branch(result: dict, co: _Checkout, selected_branch: str, *,
     result.update(targetSha=target, behind=behind, updateAvailable=behind != 0)
 
 
-def check_for_updates(*, install_root: Path | None = None, home: Path | None = None,
+def check_for_updates(**kwargs) -> dict:
+    """Read-only probe: see :func:`_check_for_updates` for the arguments.
+
+    Runs inside :func:`hermes_cli.config_home.read_only_home` so importing ``hermes_cli.config``
+    here cannot seed SOUL.md or the home skeleton on the probing machine (#131026).
+    """
+    from hermes_cli.config_home import read_only_home
+
+    with read_only_home():
+        return _check_for_updates(**kwargs)
+
+
+def _check_for_updates(*, install_root: Path | None = None, home: Path | None = None,
                       branch: str | None = None, channel: str | None = None,
                       cache_path: Path | None = None, branch_config_path: Path | None = None,
                       force: bool = False,

@@ -52,6 +52,17 @@ def _ensure_directory(path: Path, *, create: bool, secure: bool, home: Path) -> 
         ) from exc
 
 
+def initialize_probe_home(home: Path) -> None:
+    """Create only the cache location needed by read-only source probes.
+
+    Keep this helper import-light: source checks run before normal config/provider
+    discovery and must not seed identity files or the regular home skeleton.
+    """
+    home = Path(home)
+    home.mkdir(parents=True, exist_ok=True)
+    (home / "cache").mkdir(exist_ok=True)
+
+
 def initialize_home(home: Path, subdirs: tuple[str, ...], ensured: set[str], *, seed: bool = True) -> None:
     from hermes_cli.config import _ensure_default_soul_md, is_managed
 

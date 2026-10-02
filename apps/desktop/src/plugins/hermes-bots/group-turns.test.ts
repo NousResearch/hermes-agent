@@ -1173,6 +1173,60 @@ describe('clarify and approvals (#90694)', () => {
 // session. While the poll that wrote it is still running here, the marker is
 // "live": not harvested, and no reason to skip the member (#93127 re-drive).
 describe('in-flight marker', () => {
+  const completedMarker = { before: 1, thread: 't1', turn: 'completed-turn' }
+
+  it.each<{ boundary: string; stored: groupTurns.GroupTurnMarker; completed: groupTurns.GroupTurnMarker }>([
+    { boundary: 'before', stored: { ...completedMarker, before: 2 }, completed: completedMarker },
+    { boundary: 'thread', stored: { ...completedMarker, thread: 't2' }, completed: completedMarker },
+    { boundary: 'turn', stored: { ...completedMarker, turn: 'replacement-turn' }, completed: completedMarker },
+    { boundary: 'legacy position', stored: 2, completed: 1 },
+    { boundary: 'legacy completion against modern marker', stored: completedMarker, completed: 1 },
+    { boundary: 'modern completion against legacy marker', stored: 1, completed: completedMarker }
+  ])('marker retirement preserves a conflicting $boundary inside the write', async ({ stored, completed }) => {
+    const room = await loadRoom()
+    const markers = { helper: stored, 'mini::helper': completedMarker }
+
+    room.chat.updateGroupChat('Room', current => ({ ...current, stranded: structuredClone(markers) }))
+    room.chat.updateGroupChat('Room', current => {
+      room.turns.retireGroupTurnMarker(current, LOCAL_MEMBER, completed)
+
+      // Assert at the deletion boundary, before another completion or hydration can hide it.
+      expect(current.stranded).toEqual(markers)
+
+      return current
+    })
+
+    expect(room.chat.hydrateGroupChatRooms(structuredClone(room.gateway.storage.get('group-chats')))
+      .Room.stranded).toEqual(markers)
+  })
+
+  describe.each([
+    { scope: 'local', member: LOCAL_MEMBER, key: 'helper', otherKey: 'mini::helper' },
+    { scope: 'remote', member: ROUTED_MEMBER, key: 'mini::helper', otherKey: 'helper' }
+  ])('$scope marker retirement', ({ member, key, otherKey }) => {
+    it.each<{ format: string; marker: groupTurns.GroupTurnMarker }>([
+      { format: 'token', marker: completedMarker },
+      { format: 'legacy object', marker: { before: 1, thread: 't1' } },
+      { format: 'legacy number', marker: 1 }
+    ])('retires a matching $format only for the selected member', async ({ marker }) => {
+      const room = await loadRoom()
+
+      room.chat.updateGroupChat('Room', current => ({
+        ...current, stranded: { [key]: structuredClone(marker), [otherKey]: structuredClone(marker) }
+      }))
+      room.chat.updateGroupChat('Room', current => {
+        room.turns.retireGroupTurnMarker(current, member, structuredClone(marker))
+
+        expect(current.stranded).toEqual({ [otherKey]: marker })
+
+        return current
+      })
+
+      expect(room.chat.hydrateGroupChatRooms(structuredClone(room.gateway.storage.get('group-chats')))
+        .Room.stranded).toEqual({ [otherKey]: marker })
+    })
+  })
+
   it.each(['normal', 'recovery'])('%s completion leaves a replacement marker and another room intact', async mode => {
     const room = await loadRoom({ turn: () => 'obsolete answer' })
     const replacement = { before: 7, thread: 'replacement-thread', turn: 'replacement-turn' }

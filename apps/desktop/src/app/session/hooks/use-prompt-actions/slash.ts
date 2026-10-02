@@ -127,6 +127,7 @@ const renderWakeStatus = (status: WakeStatusResponse): string => {
 
 /** Everything a slash handler needs about the invocation it's serving. */
 interface SlashActionCtx {
+  attachments?: SubmitTextOptions['attachments']
   arg: string
   command: string
   name: string
@@ -193,7 +194,7 @@ export function useSlashCommand(deps: SlashCommandDeps) {
   const compressInFlightRef = useRef(new Set<string>())
 
   return useCallback(
-    async (rawCommand: string, options?: { sessionId?: string; recordInput?: boolean; typed?: boolean }) => {
+    async (rawCommand: string, options?: { attachments?: SubmitTextOptions['attachments']; sessionId?: string; recordInput?: boolean; typed?: boolean }) => {
       // Resolve the session this command targets through the SHARED ladder that
       // submit.ts uses. A slash command runs backend commands against a runtime
       // session, and per-session state (`/goal`, `/usage`, `/status`) is keyed by
@@ -396,7 +397,7 @@ export function useSlashCommand(deps: SlashCommandDeps) {
           // its kickoff as a user message into whatever conversation was on
           // screen. Every other target the dispatcher serves (tile, background
           // queue drain, a session created by this very call) had the same leak.
-          await submitPromptText(message, { sessionId, storedSessionId, displayText })
+          await submitPromptText(message, { attachments: ctx.attachments, sessionId, storedSessionId, displayText })
         }
 
         try {
@@ -1305,7 +1306,7 @@ export function useSlashCommand(deps: SlashCommandDeps) {
 
       // The whole dispatcher: resolve the command's desktop surface, then act on
       // its kind. No per-command ladder — behavior lives in the registry.
-      async function runSlash(commandText: string, sessionHint?: string, recordInput = true): Promise<void> {
+      async function runSlash(commandText: string, sessionHint?: string, recordInput = true, attachments?: SubmitTextOptions['attachments']): Promise<void> {
         const command = commandText.trim()
         const { name, arg } = parseSlashCommand(command)
 
@@ -1339,7 +1340,7 @@ export function useSlashCommand(deps: SlashCommandDeps) {
           }).catch(() => undefined)
         }
 
-        const ctx: SlashActionCtx = { arg, command, name, recordInput, sessionHint }
+        const ctx: SlashActionCtx = { arg, attachments, command, name, recordInput, sessionHint }
         const surface = resolveDesktopCommand(`/${name}`)?.surface
 
         switch (surface?.kind) {
@@ -1365,7 +1366,7 @@ export function useSlashCommand(deps: SlashCommandDeps) {
         }
       }
 
-      await runSlash(rawCommand, options?.sessionId, options?.recordInput ?? true)
+      await runSlash(rawCommand, options?.sessionId, options?.recordInput ?? true, options?.attachments)
     },
     [
       activeSessionIdRef,

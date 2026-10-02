@@ -4,48 +4,6 @@ import { defineLocale } from './define-locale'
 import { introJa } from './intro-ja'
 
 export const ja = defineLocale({
-  catalog: {
-    listView: 'リスト表示',
-    cardView: 'カード表示',
-    installTitle: (name: string) => `「${name}」をインストールしますか？`,
-    installDescription:
-      'このスキルは新しいセッションで利用できます。信頼できる提供元からのみインストールしてください。',
-    installTo: 'インストール先',
-    thisComputer: 'このコンピューター',
-    installing: 'インストール中…',
-    installComplete: (name: string) => `「${name}」をインストールしました`,
-    destinationChanged:
-      'インストール先が変更されました。このダイアログを閉じ、インストールリンクを開き直してください。',
-    browse: '閲覧',
-    installed: 'インストール済み',
-    searchSkills: 'スキルを検索',
-    searchPlugins: 'プラグインを検索',
-    allSources: 'すべての提供元',
-    allCategories: 'すべてのカテゴリ',
-    about: '概要',
-    author: '作者',
-    source: '提供元',
-    category: 'カテゴリ',
-    version: 'バージョン',
-    platforms: '対応プラットフォーム',
-    requires: '必要なもの',
-    tools: 'ツール',
-    hooks: 'フック',
-    repository: 'リポジトリ',
-    documentation: 'ドキュメント',
-    noResults: '一致する項目がありません',
-    tryAnother: '別の検索を試すか、フィルターをクリアしてください。',
-    clearFilters: 'フィルターをクリア',
-    loadFailed: 'カタログを読み込めませんでした',
-    retry: '再試行',
-    more: 'さらに表示',
-    pinned: 'レビュー済みコミット',
-    snapshotHint: 'Hermesカタログの情報です。閲覧時に提供元のリポジトリへ接続することはありません。',
-    installHint: 'インストール前にソースを確認してください。変更は新しいセッションに適用されます。',
-    results: (count: number) => `${count.toLocaleString('ja')}件の結果`,
-    back: '結果に戻る'
-  },
-
   externalOpenFailed: {
     title: 'このリンクを開けませんでした',
     message: 'このアドレスを開くブラウザが登録されていません。リンクをコピーして手動で開いてください。',
@@ -91,6 +49,7 @@ export const ja = defineLocale({
   },
   intro: introJa,
   catalog: {
+    browse: '閲覧',
     add: '追加',
     added: '追加済み',
     discover: '見つける',
@@ -644,9 +603,8 @@ export const ja = defineLocale({
           `未検出です。${name} のコマンドラインツールをインストールしてサインインすると、Hermes が自動的に検出します。`,
         disabledDesc: '検出済みですが、Hermes では無効になっています。',
         lockedDesc:
-          'この設定画面の接続ではロックされています。保存済みのログイン情報を表示するには、ここで解除してください。各チャットでは個別に解除を求めます。',
-        unlockedDesc:
-          'この設定画面の接続でのみロック解除済み。30分間使用しないか、この接続が切れるとロックされます。チャットでは個別に解除が必要です。',
+          '検出済み。エージェントがログイン情報を必要とするときにロック解除を求めます。今すぐ解除することもできます。',
+        unlockedDesc: 'このセッションでロック解除済み。30分間操作がないか Hermes を閉じると自動的にロックされます。',
         statusLocked: 'ロック中',
         statusNotDetected: '未検出',
         statusOff: 'オフ',
@@ -654,10 +612,10 @@ export const ja = defineLocale({
         unlock: 'ロック解除',
         unlocking: 'ロック解除中…',
         lock: 'ロック',
-        unlocked: name => `${name} をこの設定画面の接続でのみロック解除しました。`,
+        unlocked: name => `${name} をこのセッションでロック解除しました。`,
         unlockTitle: name => `${name} のロックを解除`,
         unlockDescription:
-          'このロック解除は、この設定画面の接続にのみ適用されます。各チャットでは個別に解除を求めます。マスターパスワードはパスワードマネージャーに渡された後、ローカルで破棄されます。保存・記録されることも、エージェントに表示されることもありません。',
+          'マスターパスワードを入力してください。このマシン上のパスワードマネージャーに渡された後に破棄され、保存・記録されることも、エージェントに表示されることもありません。',
         masterPasswordPlaceholder: 'マスターパスワード'
       }
     },
@@ -731,6 +689,11 @@ export const ja = defineLocale({
       system: { label: 'システム', description: 'OS の外観に合わせる' }
     },
     appearance: {
+      loginStartupFailed:
+        'Windows でスタートアップを有効にできませんでした。Windows の設定でスタートアップ アプリを確認してください。',
+      loginStartupDesc:
+        'サインイン時にデスクトップアプリを最小化して開きます。保存されたプライマリプロファイルを使用します。',
+      loginStartupTitle: 'Windows と同時に Hermes を起動',
       chatTextScaleTitle: 'チャットの文字サイズ',
       chatTextScaleDesc:
         'UI スケールを基準に、会話とメッセージ入力欄の文字を拡大縮小します。サイドバーや操作ボタンのサイズは変わりません。',
@@ -839,11 +802,6 @@ export const ja = defineLocale({
       resumeLastSessionTitle: '起動時に前回のチャットを再開',
       resumeLastSessionDesc:
         'オンの場合、コールドスタート時に直近のチャットを再び開きます。オフにすると常に新しいチャットから始まります。',
-      loginStartupTitle: 'Windows と同時に Hermes を起動',
-      loginStartupDesc:
-        'サインイン時にデスクトップアプリを最小化して開きます。保存されたプライマリプロファイルを使用します。',
-      loginStartupFailed:
-        'Windows でスタートアップを有効にできませんでした。Windows の設定でスタートアップ アプリを確認してください。',
       product: 'プロダクト',
       productDesc: '読みやすいツール活動と簡潔な要約を表示します。',
       technical: 'テクニカル',
@@ -1137,43 +1095,10 @@ export const ja = defineLocale({
       }
     }),
     about: {
-      heading: 'Hermes Desktop',
-      version: value => `バージョン ${value}`,
-      versionUnavailable: 'バージョンを取得できません',
-      bundleOutOfSync: 'アプリのビルドが古くなっています',
-      bundleOutOfSyncDesc:
-        'Hermes ランタイムは更新されましたが、デスクトップアプリ自体は古いビルドのままです。アプリを更新するまで、新しいインターフェース機能(Bot Mode など)は表示されません。下の更新を実行してアプリを再ビルドしてください。それでもこの警告が消えない場合は、最新のデスクトップインストーラーから再インストールしてください。',
-      bundleOutOfSyncAction: 'インストーラーを入手',
-      bundleSwapPending: '再起動して更新を完了',
-      bundleSwapPendingDesc:
-        '更新されたアプリはすでにインストール済みです。Hermes を再起動するだけで新しいビルドが読み込まれます。チャットや設定はそのまま保持されます。',
-      bundleSwapPendingAction: 'Hermes を再起動',
-      updates: '更新',
-      checkNow: '今すぐ確認',
-      checking: '確認中…',
-      seeWhatsNew: '新機能を見る',
-      updateNow: '今すぐ更新',
-      updateSource: '更新ソース',
-      releaseNotes: 'リリースノート',
-      onLatest: '設定した更新ソースは最新です。',
-      installing: '更新をインストール中です。',
-      cantUpdate: 'このビルドはアプリ内から更新できません。',
-      cantReach: '更新サーバーに接続できませんでした。',
-      tapCheck: '更新を探すには「今すぐ確認」を押してください。',
-      updateReady: count => `新しい更新の準備ができました (${count} 件の変更を含みます)。`,
-      updateReadyUnknown: '新しい更新の準備ができました。',
-      lastChecked: age => `前回確認: ${age}`,
-      justNowSuffix: ' · たった今',
-      automaticUpdates: '自動更新',
-      automaticUpdatesDesc: 'Hermes はバックグラウンドで自動的に更新を確認し、利用可能になったら通知します。',
-      updateParked: '安全なチェックアウトを待機しています。',
-      updateParkedDesc: 'ローカル修正は保持されています。上流更新をインストールする前に確認または移動してください。',
       branchCommit: (branch, commit) => `ブランチ ${branch} · コミット ${commit}`,
-      never: '未確認',
-      justNow: 'たった今',
-      minAgo: count => `${count} 分前`,
-      hoursAgo: count => `${count} 時間前`,
-      daysAgo: count => `${count} 日前`
+      updateSource: '更新ソース',
+      automaticUpdatesDesc: 'Hermes はバックグラウンドで自動的に更新を確認し、利用可能になったら通知します。',
+      automaticUpdates: '自動更新',
       updates: '更新'
     },
     config: {
@@ -1770,6 +1695,8 @@ export const ja = defineLocale({
   },
 
   skills: {
+    provenanceSummary: (agent, bundled, hub) => `${agent} 学習済み · ${bundled} 組み込み · ${hub} ハブ`,
+    tabHub: 'スキルハブ',
     plugins: {
       pageBlurb:
         'プラグインはこのアプリ、エージェント、または両方を拡張できます。それぞれに独立したスイッチがあります。'
@@ -1786,7 +1713,6 @@ export const ja = defineLocale({
     },
     tabSkills: 'スキル',
     tabToolsets: 'ツールセット',
-    tabHub: 'スキルハブ',
     all: 'すべて',
     searchSkills: 'スキルを検索...',
     searchToolsets: 'ツールセットを検索...',
@@ -1829,7 +1755,6 @@ export const ja = defineLocale({
       bundled: '組み込み',
       hub: 'ハブ'
     },
-    provenanceSummary: (agent, bundled, hub) => `${agent} 学習済み · ${bundled} 組み込み · ${hub} ハブ`,
     emptyNoneFound: noun => `${noun} が見つかりません`,
     emptyNothingMatches: query => `「${query}」に一致するものはありません。`,
     emptyNoneAvailable: noun => `利用可能な ${noun} はまだありません。`,
@@ -1902,6 +1827,9 @@ export const ja = defineLocale({
   },
 
   commandCenter: {
+    logTailHint: count => `選択したファイルとレベルの最新ログを最大${count}行表示しています。`,
+    allLogLevels: 'すべてのレベル',
+    actionTimedOut: 'アクションはまだ実行中です。最終状態は最新ログで確認してください。',
     close: 'コマンドセンターを閉じる',
     paletteTitle: 'コマンドパレット',
     back: '戻る',
@@ -2013,14 +1941,10 @@ export const ja = defineLocale({
     actionDone: '完了',
     actionFailed: '失敗',
     actionStartedWaiting: 'アクションが開始されました。ステータスを待機中...',
-    actionTimedOut: 'アクションはまだ実行中です。最終状態は最新ログで確認してください。',
     loadingStatus: 'ステータスを読み込み中...',
     recentLogs: '最近のログ',
     logSearchPlaceholder: 'ログ行を検索…',
     noLogs: 'ログはまだ読み込まれていません。',
-    allLogLevels: 'すべてのレベル',
-    noMatchingLogs: '検索に一致するログ行はありません。',
-    logTailHint: count => `選択したファイルとレベルの最新ログを最大${count}行表示しています。`,
     days: count => `${count}日`,
     statSessions: 'セッション',
     statApiCalls: 'API コール',

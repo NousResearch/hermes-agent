@@ -23404,7 +23404,7 @@ def test_workspace_move_rehomes_running_session(monkeypatch, tmp_path):
 
 @pytest.mark.parametrize("replacement", [
     "atomic",
-    pytest.param("in_place", marks=pytest.mark.linux_only),
+    pytest.param("in_place", marks=pytest.mark.platforms("linux")),
 ])
 def test_load_cfg_raw_sees_replacement_with_pinned_mtime_and_size(monkeypatch, tmp_path, replacement):
     """#111105: the raw-config cache must not serve (and later write back) a stale document after a
@@ -23426,12 +23426,10 @@ def test_load_cfg_raw_sees_replacement_with_pinned_mtime_and_size(monkeypatch, t
     else:
         # POSIX ctime detects in-place metadata-preserving overwrites. Windows
         # ctime is creation time, an explicit limit of utils.file_signature.
+        # Wait until the fs clock has passed the cached ctime before rewriting.
+        while other.stat().st_ctime_ns <= st.st_ctime_ns:
+            os.utime(other)
         shutil.copy2(other, cfg)
-    # ctime ticks at the kernel's coarse clock (~4 ms): an in-place rewrite inside the tick of the
-    # cached read leaves every stat field equal. Wait until the fs clock has passed that ctime.
-    while other.stat().st_ctime_ns <= st.st_ctime_ns:
-        os.utime(other)
-    shutil.copy2(other, cfg)
     os.utime(cfg, ns=(st.st_atime_ns, st.st_mtime_ns))
     assert server._load_cfg_raw()["model"]["default"] == "aaaa-route"
 

@@ -3,46 +3,6 @@ import { FIELD_DESCRIPTIONS, FIELD_LABELS } from '@/app/settings/constants'
 import type { Translations } from './types'
 
 export const en: Translations = {
-  catalog: {
-    listView: 'List view',
-    cardView: 'Card view',
-    installTitle: (name: string) => `Install “${name}”?`,
-    installDescription: 'This skill will be available in new sessions. Only install sources you trust.',
-    installTo: 'Install to',
-    thisComputer: 'This computer',
-    installing: 'Installing…',
-    installComplete: (name: string) => `“${name}” installed`,
-    destinationChanged: 'The destination changed. Close this dialog and open the install link again.',
-    browse: 'Browse',
-    installed: 'Installed',
-    searchSkills: 'Search skills',
-    searchPlugins: 'Search plugins',
-    allSources: 'All sources',
-    allCategories: 'All categories',
-    about: 'About',
-    author: 'Author',
-    source: 'Source',
-    category: 'Category',
-    version: 'Version',
-    platforms: 'Platforms',
-    requires: 'Requires',
-    tools: 'Tools',
-    hooks: 'Hooks',
-    repository: 'Repository',
-    documentation: 'Documentation',
-    noResults: 'No matches',
-    tryAnother: 'Try another search or clear your filters.',
-    clearFilters: 'Clear filters',
-    loadFailed: 'Could not load the catalog',
-    retry: 'Try again',
-    more: 'Show more',
-    pinned: 'Reviewed commit',
-    snapshotHint: 'From the Hermes catalog. Browsing never contacts source repositories.',
-    installHint: 'Review the source before installing. Changes apply to new sessions.',
-    results: (count: number) => `${count.toLocaleString()} result${count === 1 ? '' : 's'}`,
-    back: 'Back to results'
-  },
-
   externalOpenFailed: {
     title: 'Couldn’t open this link',
     message: 'No browser is registered to open this address. Copy the link and open it manually.',
@@ -91,6 +51,7 @@ export const en: Translations = {
   // English editorial copy stays in the shipped JSONL; other locales override it.
   intro: { stock: {}, custom: () => [] },
   catalog: {
+    browse: 'Browse',
     add: 'Add',
     added: 'Added',
     discover: 'Discover',
@@ -1120,9 +1081,8 @@ export const en: Translations = {
         notInstalled: name =>
           `Not detected. Install the ${name} command-line tool and sign in to it; Hermes picks it up automatically.`,
         disabledDesc: 'Detected but turned off for Hermes.',
-        lockedDesc: 'Locked for this Settings connection. Unlock here to view saved logins; each chat asks separately.',
-        unlockedDesc:
-          'Unlocked for this Settings connection only. Locks after 30 minutes idle or when this connection disconnects. Chats unlock separately.',
+        lockedDesc: 'Detected. The agent will ask you to unlock it when it needs a login, or unlock now.',
+        unlockedDesc: 'Unlocked for this session. Locks automatically after 30 minutes idle or when Hermes closes.',
         statusLocked: 'Locked',
         statusNotDetected: 'Not detected',
         statusOff: 'Off',
@@ -1130,10 +1090,10 @@ export const en: Translations = {
         unlock: 'Unlock',
         unlocking: 'Unlocking…',
         lock: 'Lock',
-        unlocked: name => `${name} unlocked for this Settings connection only.`,
+        unlocked: name => `${name} unlocked for this session.`,
         unlockTitle: name => `Unlock ${name}`,
         unlockDescription:
-          'This unlock applies only to this Settings connection. Each chat asks separately. Your master password is handed to the password manager and discarded locally; it is never stored, logged, or shown to the agent.',
+          'Enter your master password. It is handed to the password manager on this machine and discarded — it is never stored, logged, or shown to the agent.',
         masterPasswordPlaceholder: 'Master password'
       }
     },
@@ -1206,6 +1166,9 @@ export const en: Translations = {
       system: { label: 'System', description: 'Follow OS appearance' }
     },
     appearance: {
+      loginStartupFailed: 'Windows did not enable startup. Check Startup apps in Windows Settings.',
+      loginStartupDesc: 'Open the desktop app minimized when you sign in. Uses the saved primary profile.',
+      loginStartupTitle: 'Start Hermes with Windows',
       chatTextScaleTitle: 'Chat Text Size',
       chatTextScaleDesc:
         'Scales conversation text and the message editor relative to UI Scale. Sidebars and controls stay the same size.',
@@ -1311,9 +1274,6 @@ export const en: Translations = {
       resumeLastSessionTitle: 'Reopen Last Chat on Launch',
       resumeLastSessionDesc:
         'When enabled, the app reopens your most recent chat on cold start. Turn off to always start with a fresh new chat.',
-      loginStartupTitle: 'Start Hermes with Windows',
-      loginStartupDesc: 'Open the desktop app minimized when you sign in. Uses the saved primary profile.',
-      loginStartupFailed: 'Windows did not enable startup. Check Startup apps in Windows Settings.',
       product: 'Product',
       productDesc: 'Human-friendly tool activity with concise summaries.',
       technical: 'Technical',
@@ -1456,44 +1416,10 @@ export const en: Translations = {
       driverHealth: 'Driver health'
     },
     about: {
-      heading: 'Hermes Desktop',
-      version: value => `Version ${value}`,
-      versionUnavailable: 'Version unavailable',
-      bundleOutOfSync: 'App build out of date',
-      bundleOutOfSyncDesc:
-        'The Hermes runtime was updated, but the desktop app itself is still an older build — new interface features (like Bot Mode) will be missing until it updates. Run the update below to rebuild the app. If that doesn\u2019t clear this warning, reinstall from the latest desktop installer.',
-      bundleOutOfSyncAction: 'Get the installer',
-      bundleSwapPending: 'Restart to finish the update',
-      bundleSwapPendingDesc:
-        'The updated app is already installed — Hermes only needs to restart to load it. Chats and settings are untouched.',
-      bundleSwapPendingAction: 'Restart Hermes',
-      updates: 'Updates',
-      checkNow: 'Check now',
-      checking: 'Checking…',
-      seeWhatsNew: "See what's new",
-      updateNow: 'Update now',
-      updateSource: 'Update source',
-      releaseNotes: 'Release notes',
-      onLatest: 'Your configured update source is up to date.',
-      installing: 'An update is currently installing.',
-      cantUpdate: "This build can't update itself from inside the app.",
-      cantReach: "We couldn't reach the update server.",
-      tapCheck: 'Tap "Check now" to look for updates.',
-      updateReady: count => `A new update is ready (${count} change${count === 1 ? '' : 's'} included).`,
-      updateReadyUnknown: 'A new update is ready.',
-      lastChecked: age => `Last checked ${age}`,
-      justNowSuffix: ' · just now',
-      automaticUpdates: 'Automatic update checks',
-      automaticUpdatesDesc: 'Check for updates and notify me in the background. Installing remains a manual action.',
-      updateParked: 'Update is waiting for a safe checkout.',
-      updateParkedDesc:
-        'Your local repair changes are preserved. Review or move them before installing the upstream update.',
       branchCommit: (branch, commit) => `Branch ${branch} · Commit ${commit}`,
-      never: 'never',
-      justNow: 'just now',
-      minAgo: count => `${count} min ago`,
-      hoursAgo: count => `${count} hours ago`,
-      daysAgo: count => `${count} days ago`
+      updateSource: 'Update source',
+      automaticUpdatesDesc: 'Check for updates and notify me in the background. Installing remains a manual action.',
+      automaticUpdates: 'Automatic update checks',
       updates: 'Updates'
     },
     config: {
@@ -2543,9 +2469,10 @@ export const en: Translations = {
   },
 
   skills: {
+    provenanceSummary: (agent, bundled, hub) => `${agent} learned · ${bundled} built-in · ${hub} hub`,
+    tabHub: 'Browse Hub',
     tabSkills: 'Skills',
     tabToolsets: 'Tools',
-    tabHub: 'Browse Hub',
     configuringProfile: 'Configuring:',
     all: 'All',
     searchSkills: 'Search skills...',
@@ -2589,7 +2516,6 @@ export const en: Translations = {
       bundled: 'Built-in',
       hub: 'Hub'
     },
-    provenanceSummary: (agent, bundled, hub) => `${agent} learned · ${bundled} built-in · ${hub} hub`,
     emptyNoneFound: noun => `No ${noun} found`,
     emptyNothingMatches: query => `Nothing matches “${query}”.`,
     emptyNoneAvailable: noun => `No ${noun} available yet.`,
@@ -2826,6 +2752,9 @@ export const en: Translations = {
   },
 
   commandCenter: {
+    logTailHint: count => `Showing up to ${count} recent lines from the selected file and level.`,
+    allLogLevels: 'All levels',
+    actionTimedOut: 'Action is still running; check recent logs for the final status.',
     close: 'Close command center',
     paletteTitle: 'Command palette',
     back: 'Back',
@@ -2944,7 +2873,6 @@ export const en: Translations = {
     actionDone: 'done',
     actionFailed: 'failed',
     actionStartedWaiting: 'Action started, waiting for status...',
-    actionTimedOut: 'Action is still running; check recent logs for the final status.',
     loadingStatus: 'Loading status...',
     recentLogs: 'Recent logs',
     noLogs: 'No logs loaded yet.',
@@ -2968,12 +2896,9 @@ export const en: Translations = {
     actions: count => `${count} actions`,
     logFile: 'Log file',
     logLevel: 'Level',
-    allLogLevels: 'All levels',
-    noMatchingLogs: 'No log lines match the search.',
-    logTailHint: count => `Showing up to ${count} recent lines from the selected file and level.`,
-    logSearchPlaceholder: 'Filter log lines...',
     logSearchPlaceholder: 'Search log lines...',
     maintenance: {
+      openFile: 'Open file',
       runOps: 'Diagnostics',
       doctor: 'Run doctor',
       doctorDesc: 'Health-check the install, config, and providers',
@@ -3004,7 +2929,6 @@ export const en: Translations = {
       builtinMemory: 'built-in',
       memoryFile: 'Agent memory (MEMORY.md)',
       userFile: 'User profile (USER.md)',
-      openFile: 'Open file',
       bytes: size => size,
       empty: 'empty',
       resetMemory: 'Reset memory',

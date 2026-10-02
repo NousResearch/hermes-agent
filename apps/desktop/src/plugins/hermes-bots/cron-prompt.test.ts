@@ -13,11 +13,9 @@
 
 import { spawnSync } from 'node:child_process'
 import { existsSync } from 'node:fs'
+import { join } from 'node:path'
 
 import { describe, expect, it } from 'vitest'
-
-// eslint-disable-next-line no-restricted-imports -- Native test oracle only; the plugin never imports or exposes this capability.
-import { findGitBash } from '../../../electron/find-git-bash'
 
 import { isLegacyDelegatedRoutine, normalizedProfileName, routineInputError, routinePrompt } from './cron'
 
@@ -31,7 +29,10 @@ function argvOf(prompt: string): string[] {
   const isWindows = process.platform === 'win32'
 
   const shell = isWindows
-    ? findGitBash({ isWindows, env: process.env, fileExists: existsSync })
+    ? [process.env.ProgramFiles, process.env['ProgramFiles(x86)']]
+        .filter((directory): directory is string => Boolean(directory))
+        .map(directory => join(directory, 'Git', 'bin', 'bash.exe'))
+        .find(existsSync)
     : 'sh'
 
   expect(shell, 'Git Bash is required for the Windows shell-quoting regression').not.toBeNull()

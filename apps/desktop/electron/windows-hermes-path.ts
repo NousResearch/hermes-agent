@@ -1,3 +1,6 @@
+import fs from 'node:fs'
+import path from 'node:path'
+
 /**
  * windows-hermes-path.ts
  *
@@ -6,17 +9,17 @@
  * unwrapWindowsVenvHermesCommand(). Each of the three functions here pins one
  * of the Windows resolution bugs that caused desktop reinstall loops:
  *
- *   1. buildPathExtCandidates() — findOnPath() tried the empty extension
+ *   1. buildPathExtCandidates() â€” findOnPath() tried the empty extension
  *      FIRST, so an extensionless Git-Bash `hermes` shim shadowed the real
  *      hermes.cmd/hermes.exe; the shim then failed the --version probe and
  *      the desktop fell through to a spurious bootstrap/repair. The fix:
  *      PATHEXT extensions first, empty extension LAST.
- *   2. chooseUpdaterArgs() — handOffWindowsBootstrapRecovery() must separate
+ *   2. chooseUpdaterArgs() â€” handOffWindowsBootstrapRecovery() must separate
  *      install provenance from updater viability. A bootstrap-complete marker
  *      can outlive a deleted venv, while the updater needs BOTH the venv Python
  *      and Hermes launcher. Marker-only or partial runtimes must use --repair;
  *      only a runnable pair can use --update.
- *   3. resolveVenvHermesCommand() — unwrapWindowsVenvHermesCommand() returned
+ *   3. resolveVenvHermesCommand() â€” unwrapWindowsVenvHermesCommand() returned
  *      the venv python with NO runtime probe (bypassing the caller's
  *      --version check too), so a venv broken mid-update (e.g. missing
  *      python-dotenv) was re-selected forever: Retry / "Repair install"
@@ -72,9 +75,7 @@ export interface BootstrapRecoverySignals {
 }
 
 export function chooseUpdaterArgs(signals: BootstrapRecoverySignals, branch: string): string[] {
-  const canRunUpdater = signals.hasVenvHermes && signals.hasVenvPython
-
-  return canRunUpdater ? ['--update', '--branch', branch] : ['--repair', '--branch', branch]
+  return signals.runtimeUsable ? ['--update', '--branch', branch] : ['--repair', '--branch', branch]
 }
 
 /**
@@ -160,7 +161,6 @@ export function getVenvSitePackagesEntries(
   }
 
   return entries
-  return signals.runtimeUsable ? ['--update', '--branch', branch] : ['--repair', '--branch', branch]
 }
 
 export interface ResolveVenvHermesCommandDeps {
@@ -180,7 +180,7 @@ export interface ResolveVenvHermesCommandDeps {
 /**
  * If `command` is a Windows venv `hermes`/`hermes.exe` console-script shim
  * (i.e. `<venvRoot>/Scripts/hermes(.exe)`), resolve it to the underlying
- * venv python invoked as `python -m hermes_cli.main <backendArgs>` — but
+ * venv python invoked as `python -m hermes_cli.main <backendArgs>` â€” but
  * ONLY after smoke-testing that interpreter with canImportHermesCli(). A
  * venv whose update died mid-`pip install` still has python.exe + hermes.exe
  * on disk, but the backend dies on its first import (e.g.

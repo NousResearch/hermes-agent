@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import { ArchiveSkillConfirmDialog } from '@/app/learning/archive-skill-confirm-dialog'
 import { CodeEditor } from '@/components/chat/code-editor'
@@ -17,31 +17,11 @@ import { CatalogAlert } from '../catalog/catalog-alert'
 import { SkillCatalog } from '../catalog/skill-catalog'
 import { UpdateSkillsButton } from '../catalog/update-skills-button'
 
-  return (
-    <>
-      <span className="truncate">{category}</span>
-      {provenance === 'agent' && (
-        <Badge className="shrink-0 normal-case" variant="default">
-          learned
-        </Badge>
-      )}
-      {provenance === 'bundled' && (
-        <Badge className="shrink-0 normal-case" variant="muted">
-          built-in
-        </Badge>
-      )}
-      {provenance === 'hub' && (
-        <Badge className="shrink-0 normal-case" variant="muted">
-          hub
-        </Badge>
-      )}
-    </>
-  )
-}
 import { SkillDetail } from './skill-detail'
 import { skillsQueryKey, usageOf } from './skills-data'
 
 interface SkillsTabProps {
+  view?: 'installed' | 'browse'
   /** The scope's skill list, straight from the shell's query. */
   skills: SkillInfo[]
   /** Every read and write targets this connection/profile pair. */
@@ -60,6 +40,7 @@ export function SkillsTab(props: SkillsTabProps) {
 }
 
 function ScopedSkillsTab({
+  view,
   onRefresh,
   profile,
   query,
@@ -100,7 +81,7 @@ function ScopedSkillsTab({
   // Older backends do not send provenance at all; do not fabricate an
   // `agent` count because that would turn missing metadata into a false claim.
   const provenanceSummary = useMemo(() => {
-    if (!skills || skills.some(skill => !skill.provenance)) {
+    if (!skills || skills.some(skill => !skill.provenance || skill.provenance === 'external')) {
       return null
     }
 
@@ -109,7 +90,7 @@ function ScopedSkillsTab({
     for (const skill of skills) {
       const provenance = skill.provenance
 
-      if (!provenance) {
+      if (!provenance || provenance === 'external') {
         return null
       }
 
@@ -119,67 +100,6 @@ function ScopedSkillsTab({
     return t.skills.provenanceSummary(counts.agent, counts.bundled, counts.hub)
   }, [skills, t.skills])
 
-  const visibleSkills = useMemo(() => filteredSkills(skills, query, skillsSortDesc), [query, skills, skillsSortDesc])
-
-  // Installed-name set stays unfiltered so search cannot make a skill look absent.
-  const installedSkillNames = useMemo(() => new Set(skills.map(s => s.name)), [skills])
-
-  const visibleOfficial = useMemo(() => {
-    const catalog = (officialData?.skills ?? []).filter(
-      skill => !skill.installed && !installedSkillNames.has(skill.name)
-    )
-
-    return filteredOfficial(catalog, query)
-  }, [installedSkillNames, officialData, query])
-
-  const runningInstallKey = useStoreSelector($hubActions, actions =>
-    Object.keys(actions)
-      .filter(key => actions[key]?.running)
-      .sort()
-      .join('|')
-  )
-
-  const runningInstalls = useMemo(() => new Set(runningInstallKey.split('|').filter(Boolean)), [runningInstallKey])
-
-  // Keep a valid selection: fall back to the first visible row when the
-  // current selection is filtered out (or nothing is selected yet).
-  const activeSkill = useMemo(
-    () => visibleSkills.find(s => s.name === selectedSkill) ?? visibleSkills[0] ?? null,
-    [selectedSkill, visibleSkills]
-  )
-
-  const activeOfficial = useMemo(
-    () => visibleOfficial.find(skill => skill.identifier === selectedOfficial) ?? null,
-    [selectedOfficial, visibleOfficial]
-  )
-
-  function handleInstallOfficial(skill: OfficialSkillInfo) {
-    notify({ kind: 'success', title: t.skills.hub.installStarted(skill.name), message: t.skills.hub.actionLog })
-    void installHubSkill(skill.identifier, profile).catch(err =>
-      notifyHubActionFailed(err, t.skills.hub.actionFailed, skill.name, profile)
-    )
-  }
-
-  async function handleToggleSkill(skill: SkillInfo, enabled: boolean) {
-    setSkills(current => current?.map(row => (row.name === skill.name ? { ...row, enabled } : row)) ?? current)
-
-    try {
-      await setSkillEnabled(skill.name, enabled, profile)
-      // A disabled skill loses its `/name` command, so the composer's cached
-      // `/` list has to be dropped along with the row repaint.
-      invalidateSlashCompletions()
-    } catch (err) {
-      setSkills(
-        current => current?.map(row => (row.name === skill.name ? { ...row, enabled: !enabled } : row)) ?? current
-      )
-      notifyError(err, t.skills.failedToUpdate(skill.name))
-    }
-  }
-
-  // Sequential on purpose: each toggle is a config read-modify-write on the
-  // backend; parallel calls would race the disabled-list save.
-  async function bulkApply(targets: SkillInfo[], enabled: boolean) {
-    if (bulkBusy || targets.length === 0) {
   // The backend saves one disabled-list config value: serialize individual and
   // bulk changes together, not merely the members of a bulk action.
   async function applyEnabled(targets: SkillInfo[], enabled: boolean, bulk = false) {
@@ -336,58 +256,6 @@ function ScopedSkillsTab({
 
   return (
     <>
-      {visibleSkills.length === 0 && visibleOfficial.length === 0 ? (
-        <CapabilityEmpty noun="skills" query={query} />
-      ) : (
-        <MasterDetail pane={skillEditorPane} resizeId="capabilities-split" split="wide">
-          <ListColumn
-            header={
-              <>
-                {provenanceSummary && (
-                  <div className="border-b border-(--ui-stroke-secondary) px-3 py-1 text-[0.65rem] text-(--ui-text-tertiary)">
-                    {provenanceSummary}
-                  </div>
-                )}
-                <ListStrip
-                  left={<SortButton desc={skillsSortDesc} onFlip={() => $skillsSortDesc.set(!$skillsSortDesc.get())} />}
-                  right={
-                    <ListStripMenu
-                      items={[
-                        {
-                          disabled: bulkBusy,
-                          label: t.skills.disableUnused,
-                          onSelect: () => void disableUnused()
-                        }
-                      ]}
-                      label={t.skills.tabSkills}
-                      toggle={bulkSwitch}
-                    />
-                  }
-                />
-              </>
-            }
-          >
-            {visibleSkills.map(skill => (
-              <CapRow
-                active={activeOfficial === null && activeSkill?.name === skill.name}
-                busy={bulkBusy}
-                enabled={skill.enabled}
-                key={skill.name}
-                meta={usageOf(skill) > 0 ? `×${compactNumber(usageOf(skill))}` : undefined}
-                onSelect={() => {
-                  setSelectedSkill(skill.name)
-                  setSelectedOfficial(null)
-                }}
-                onToggle={enabled => void handleToggleSkill(skill, enabled)}
-                subtitle={skillSubtitle(skill)}
-                title={skill.name}
-                toggleLabel={skill.name}
-              />
-            ))}
-            {visibleOfficial.length > 0 && (
-              <div className="flex h-7 shrink-0 items-end px-2 pb-1 text-[0.62rem] font-medium uppercase tracking-wide text-(--ui-text-quaternary)">
-                {t.skills.officialCatalog}
-              </div>
       <SkillCatalog
         actions={
           <>
@@ -411,7 +279,14 @@ function ScopedSkillsTab({
           </>
         }
         installedPending={installedPending || Boolean(installedError)}
-        notice={notice}
+        notice={
+          <>
+            {provenanceSummary && (
+              <p className="px-3 py-1 text-xs text-(--ui-text-tertiary)">{provenanceSummary}</p>
+            )}
+            {notice}
+          </>
+        }
         onQueryChange={onQueryChange}
         profile={profile}
         query={query}
@@ -469,6 +344,7 @@ function ScopedSkillsTab({
           </>
         )}
         skills={skills}
+        view={view}
       />
       {archiveTarget && (
         <ArchiveSkillConfirmDialog

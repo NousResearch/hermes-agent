@@ -23,10 +23,8 @@ import {
   BACKEND_BOOT_WAIT_TIMEOUT_MS,
   isTimeoutError,
   RECONNECT_ATTEMPT_TIMEOUT_MS,
-  TimeoutError,
-  isTimeoutError,
-  RECONNECT_ATTEMPT_TIMEOUT_MS,
   SOURCE_SWITCH_DIAL_TIMEOUT_MS,
+  TimeoutError,
   withTimeout
 } from '@/lib/with-timeout'
 import { notifyError, RECOVERY_ACTIONS } from '@/store/notifications'
@@ -403,6 +401,7 @@ function claimActivationHandoff(scope: string, signal: AbortSignal | undefined):
 
   return handoff.activation
 }
+
 // How long a mid-dial activation holds its prune lease: it must outlast every
 // dial the renderer still treats as in flight, or the pruner reaps the switch
 // target mid-dial and the click resolves on a socket that is already closed
@@ -1082,11 +1081,9 @@ async function openSecondary(
     // settles either. Bound the same way use-gateway-boot.ts bounds the
     // primary's equivalent awaits.
     //
-    // Two bring-ups with different legitimate worst cases: a registry route is a
-    // backend coming up on ANOTHER machine (ssh connect + probes + remote spawn +
-    // ready sentinel), which is the SOURCE_SWITCH_DIAL budget, while a local
-    // profile's pooled child spawns on this machine (measured ~9 s; the
-    // reconnect-class budget is not the binding constraint there).
+    // Both registry-routed and local pooled connections share this activation's
+    // absolute spawn budget, so route resolution and the actual dial cannot each
+    // restart the timeout independently.
     const conn =
       entry.connectionId && desktop.getConnectionFor
         ? await withSpawnIpcTimeout(
@@ -1096,16 +1093,9 @@ async function openSecondary(
                 profile: entry.profile,
                 ...(dialOptions(spawnPriority, speculative) ?? {})
               }),
-            activation,
-        ? await withTimeout(
-            desktop.getConnectionFor({
-              connectionId: entry.connectionId,
-              profile: entry.profile,
-              ...dialPriority(spawnPriority)
-            }),
-            SOURCE_SWITCH_DIAL_TIMEOUT_MS,
-            `Timed out connecting to profile "${entry.profile}"`
-          )
+              activation,
+              `Timed out connecting to profile "${entry.profile}"`
+            )
         : await withSpawnIpcTimeout(
             () => dialProfile(desktop, entry.profile, spawnPriority, speculative),
             activation,
@@ -1578,6 +1568,19 @@ async function gatewayForProfile(
     throw new Error(`Gateway activation superseded for profile "${key}"`)
   }
 
+  // sharedPrimaryRoute is itself a dial into main (it can start the profile's
+  // spawn), so a cooling-down scope has to be held back before it, not just
+  // before openSecondary.
+  const existing = g.secondaries.get(key)
+
+  if (spawnPriority !== 'foreground' && !(existing && isOpen(existing.gateway)) && backgroundDialCoolingDown(key)) {
+    if (activation && entry) {
+      releaseActivationLease(entry, activation)
+    }
+
+    throw new Error(`Backend for "${key}" is reconnecting; retry after it settles.`)
+  }
+
   const sharedPrimary = await sharedPrimaryRoute(key, spawnPriority, speculative, activation)
 
   if (activation && remainingActivationMs(activation) <= 0) {
@@ -1593,15 +1596,6 @@ async function gatewayForProfile(
       releaseActivationLease(entry, activation)
     }
 
-  // sharedPrimaryRoute is itself a dial into main (it can start the profile's spawn), so a
-  // cooling-down scope has to be held back before it, not just before openSecondary.
-  const existing = g.secondaries.get(key)
-
-  if (spawnPriority !== 'foreground' && !(existing && isOpen(existing.gateway)) && backgroundDialCoolingDown(key)) {
-    throw new Error(`Backend for "${key}" is reconnecting; retry after it settles.`)
-  }
-
-  if (await sharedPrimaryRoute(key, spawnPriority)) {
     return { gateway: g.primaryGateway, key, release: noRelease, scopeProfile: true }
   }
 

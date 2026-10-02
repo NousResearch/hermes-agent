@@ -1725,9 +1725,10 @@ try {
         # dependency sync before native modules load, then `update` continues
         # the remaining Desktop/skills stages of the full pipeline.
         Write-HandoffLog "first attempt left retryable update state; retrying once in a fresh process"
+    }
     # Retry only the identified pre-PM update-boundary transition. Current
     # update/build failures propagate and must not trigger another owner.
-    if ($legacyInstall -and $res.Code -ne 0 -and $res.Code -ne 2) {
+    if ($legacyInstall -and $shouldRetry -and $res.Code -ne 0 -and $res.Code -ne 2) {
         Write-HandoffLog "legacy update failed; retrying once from the updated installation"
         Publish-UiProgress "Retrying update"
         $res = Invoke-HermesStep $pythonExe $updateArgs "update"

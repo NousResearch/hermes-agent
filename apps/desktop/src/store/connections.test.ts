@@ -5,7 +5,6 @@ import { setApiRequestConnection, setApiRequestProfile } from '@/api/client'
 import type { DesktopConnectionsRegistry } from '@/global'
 import { BACKEND_BOOT_WAIT_TIMEOUT_MS, SOURCE_SWITCH_DIAL_TIMEOUT_MS } from '@/lib/with-timeout'
 
-import { BACKEND_BOOT_WAIT_TIMEOUT_MS } from '../lib/with-timeout'
 import { deferred } from '../test/deferred'
 
 const $activeGatewayProfile = atom('default')
@@ -708,6 +707,10 @@ describe('selectConnection', () => {
       expect($gatewaySwitching.get()).toBe(false)
     } finally {
       dial.resolve()
+      vi.useRealTimers()
+    }
+  })
+
   it('a slow-but-healthy dial is not a failed switch: the source caps only past the ssh layer budget, and the click lands', async () => {
     vi.useFakeTimers()
 

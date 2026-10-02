@@ -41,11 +41,11 @@ const appearanceSetting = (subpage: AppearanceSubpageId, keywords: readonly stri
   ({ subpage, keywords, copy: appearanceCopy(key) }) satisfies SettingDefinition
 
 /**
- * The manifest of every hand-built settings row — the ones that are not a
+ * The manifest of every hand-built settings row â€” the ones that are not a
  * config-schema field, a credential, or a plugin (those index themselves from
  * backend metadata). A key becomes the row's deep-link id
  * (`<view>.<kebab-case>`), its subpage routes that id, and its copy + keywords
- * feed the command palette — so a row cannot exist without being searchable,
+ * feed the command palette â€” so a row cannot exist without being searchable,
  * and search cannot point at a row that is not there.
  *
  * List *items* (an archived chat, a saved connection, a credential) are not
@@ -255,6 +255,11 @@ export const SETTINGS_MANIFEST = {
     }
   },
   about: {
+    automaticUpdates: {
+      subpage: 'updates',
+      keywords: ['automatic', 'updates', 'background checks'],
+      copy: t => ({ label: t.settings.about.automaticUpdates, description: t.settings.about.automaticUpdatesDesc })
+    },
     updates: {
       subpage: 'updates',
       keywords: ['update', 'auto update', 'download', 'release', 'version'],
@@ -288,7 +293,7 @@ export const notificationKindSettingId = (kind: (typeof NATIVE_NOTIFICATION_KIND
 
 type SettingIds = { readonly [V in ManifestViewKey]: { readonly [K in keyof (typeof SETTINGS_MANIFEST)[V]]: string } }
 
-/** `SETTING_IDS.appearance.tips === 'appearance.tips'` — the id a row carries and a palette hit targets. */
+/** `SETTING_IDS.appearance.tips === 'appearance.tips'` â€” the id a row carries and a palette hit targets. */
 export const SETTING_IDS = Object.fromEntries(
   (Object.keys(SETTINGS_MANIFEST) as ManifestViewKey[]).map(view => [
     view,

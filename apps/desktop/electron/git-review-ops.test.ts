@@ -79,12 +79,12 @@ test('gitFor runs git through a spaced binary path', async () => {
 }, 30_000)
 test('gitFor accepts internally resolved git paths with restricted non-space characters', () => {
   // simple-git's whitelist is `/^([a-z]:)?([a-z0-9/.\_~-]+)$/i`, so parentheses
-  // (`Program Files (x86)`), `+`, and accented profile dirs (`C:\Users\João\...`)
-  // are rejected exactly like a space — a `/\s/` guess still throws on them.
+  // (`Program Files (x86)`), `+`, and accented profile dirs (`C:\Users\Joأ£o\...`)
+  // are rejected exactly like a space â€” a `/\s/` guess still throws on them.
   const restrictedBinaries = [
     String.raw`C:\Git(x86)\cmd\git.exe`,
     String.raw`C:\tools\git+portable\cmd\git.exe`,
-    String.raw`C:\Users\João\AppData\Local\hermes\git\cmd\git.exe`
+    String.raw`C:\Users\Joأ£o\AppData\Local\hermes\git\cmd\git.exe`
   ]
 
   for (const binary of restrictedBinaries) {
@@ -120,7 +120,7 @@ test('gitFor accepts a Windows no-console host tuple with restricted characters'
 test('gitFor suppresses only the known custom-binary warning and restores console.warn', () => {
   const spacedBin = String.raw`C:\Program Files\Git\cmd\git.exe`
   // `windowsGitHost()` resolves nothing in this process (no configured roots, no
-  // HERMES_DESKTOP_PYTHON), so `gitBin` itself is what simple-git validates — the
+  // HERMES_DESKTOP_PYTHON), so `gitBin` itself is what simple-git validates â€” the
   // spaced `Program Files` path, which warns once per factory call.
   const warnings: unknown[][] = []
   const originalWarn = console.warn
@@ -209,7 +209,6 @@ test('reviewList caps the file payload returned to the renderer', async () => {
 
   assert.equal(result.files.length, REVIEW_FILE_CAP)
 }, 30_000)
-})
 
 const mockExecFile = vi.mocked(await import('node:child_process')).execFile
 

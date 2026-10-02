@@ -258,12 +258,12 @@ const catalogQuery = (kind: CatalogKind) =>
     retry: false
   })
 
-export function useCatalog(kind: CatalogKind) {
+export function useCatalog(kind: CatalogKind, enabled = true) {
   return useQuery({
     ...catalogQuery(kind),
     // A failed catalog stays parked across remounts (tab switches) until the
     // user explicitly chooses Try again.
-    enabled: query => query.state.status !== 'error'
+    enabled: query => enabled && query.state.status !== 'error'
   })
 }
 

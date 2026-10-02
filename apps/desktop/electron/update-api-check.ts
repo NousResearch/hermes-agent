@@ -4,17 +4,15 @@
  * Every desktop client used to run `git fetch origin <branch>` (or `ls-remote`)
  * twice every 30 minutes, plus on each window focus. Multiplied across the
  * install base that is tens of millions of pack negotiations a day against one
- * repo — GitHub flagged it. A passive check only needs two facts the API gives
+ * repo â€” GitHub flagged it. A passive check only needs two facts the API gives
  * for free: the remote tip SHA (`GET /repos/{repo}/commits/{branch}` with the
- * `application/vnd.github.sha` media type — a 40-byte body) and, when the tips
+ * `application/vnd.github.sha` media type â€” a 40-byte body) and, when the tips
  * differ, the compare endpoint's `ahead_by` + `commits[]`. `git fetch` now
  * runs only when the user actually applies an update.
  *
  * Pure helpers here (URL builders, cache policy, payload mapping) so they are
  * unit-testable without booting Electron; the bounded network call is injected.
  */
-
-import { canonicalGitHubRemote } from './update-remote'
 
 export const UPDATE_CHECK_TTL_MS = 24 * 60 * 60 * 1000
 // A failed check (offline, 403 rate-limit) is retried sooner than a good one,
@@ -30,10 +28,24 @@ export interface CachedUpdateCheck {
 
 /** `owner/repo` for any GitHub remote form; null for non-GitHub origins. */
 export function githubRepoSlug(originUrl: string): string | null {
-  const canonical = canonicalGitHubRemote(originUrl)
-  const match = /^github\.com\/([^/]+\/[^/]+)$/.exec(canonical)
+  const remote = originUrl.trim()
+  const scp = /^(?:[^@/:]+@)?github\.com:([^/?#]+\/[^/?#]+)$/i.exec(remote)
+  let slug = scp?.[1]
 
-  return match ? match[1] : null
+  if (!slug) {
+    try {
+      const url = new URL(remote)
+
+      if (url.hostname.toLowerCase() !== 'github.com') {return null}
+      slug = url.pathname.replace(/^\/|\/$/g, '')
+    } catch {
+      return null
+    }
+  }
+
+  slug = slug.replace(/\.git$/i, '')
+
+  return /^[^/]+\/[^/]+$/.test(slug) ? slug.toLowerCase() : null
 }
 
 export function branchTipApiUrl(slug: string, branch: string): string {
@@ -155,7 +167,7 @@ export interface UpdateCheckFailure {
  * UI hid the cause.
  *
  * A 403 with `x-ratelimit-remaining: 0` is the anonymous per-IP budget spent
- * by every client behind one exit (office NAT, VPN, proxy) — waiting an hour
+ * by every client behind one exit (office NAT, VPN, proxy) â€” waiting an hour
  * does not help when the neighbours refill it, so the line names the fix the
  * user actually has (a GITHUB_TOKEN in the environment) and the real reset
  * time. Any other 403/429 is reported as what it is rather than as a rate
@@ -173,14 +185,14 @@ export function describeUpdateCheckFailure(error: UpdateCheckFailure | null | un
       minutes === null ? 'within an hour' : minutes === 1 ? 'in about a minute' : `in about ${minutes} minutes`
 
     return error.authenticated
-      ? `GitHub API rate limit reached for your GITHUB_TOKEN (HTTP ${status}) — it resets ${when}.`
+      ? `GitHub API rate limit reached for your GITHUB_TOKEN (HTTP ${status}) â€” it resets ${when}.`
       : `GitHub API rate limit reached (HTTP ${status}): anonymous requests are limited to 60 per hour per network ` +
           `address, shared with everyone behind the same connection. It resets ${when}; ` +
           `setting GITHUB_TOKEN in the environment lifts the limit.`
   }
 
   if (typeof status === 'number' && status >= 500) {
-    return `GitHub is having trouble (HTTP ${status} from api.github.com) — check githubstatus.com and try again later.`
+    return `GitHub is having trouble (HTTP ${status} from api.github.com) â€” check githubstatus.com and try again later.`
   }
 
   if (typeof status === 'number') {
@@ -188,7 +200,7 @@ export function describeUpdateCheckFailure(error: UpdateCheckFailure | null | un
   }
 
   if (code === 'ENOTFOUND' || code === 'EAI_AGAIN') {
-    return 'DNS lookup for api.github.com failed — check your connection or proxy.'
+    return 'DNS lookup for api.github.com failed â€” check your connection or proxy.'
   }
 
   if (code === 'ETIMEDOUT' || error?.message === 'timeout') {
@@ -196,17 +208,17 @@ export function describeUpdateCheckFailure(error: UpdateCheckFailure | null | un
   }
 
   if (code === 'ECONNREFUSED' || code === 'ECONNRESET' || code === 'EHOSTUNREACH' || code === 'ENETUNREACH') {
-    return `Connection to api.github.com failed (${code}) — a firewall or proxy may be blocking it.`
+    return `Connection to api.github.com failed (${code}) â€” a firewall or proxy may be blocking it.`
   }
 
   if (typeof code === 'string' && /CERT|SSL|TLS/i.test(code)) {
-    return `TLS handshake with api.github.com failed (${code}) — a proxy may be intercepting HTTPS.`
+    return `TLS handshake with api.github.com failed (${code}) â€” a proxy may be intercepting HTTPS.`
   }
 
   return `api.github.com: ${error?.message || String(error)}`
 }
 
-/** A git command runner — main.ts injects its runGit; tests inject a fake. */
+/** A git command runner â€” main.ts injects its runGit; tests inject a fake. */
 export type GitRunner = (
   args: string[],
   options?: { cwd?: string }
@@ -218,7 +230,7 @@ export type GitRunner = (
 
 /**
  * Answer "how far behind is HEAD?" from the LOCAL object database when the
- * compare endpoint can't — its 404 on a local-only HEAD (a patched checkout's
+ * compare endpoint can't â€” its 404 on a local-only HEAD (a patched checkout's
  * merge/rebase commits exist nowhere upstream) or a rate limit. Mirrors the
  * ls-remote path's ancestry guard and the backend's banner._tips_behind: a
  * tip reachable from HEAD is a local commit AHEAD, not an update; anything

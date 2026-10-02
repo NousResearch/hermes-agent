@@ -61,6 +61,8 @@ export class LocalBackendBackgroundCapacityError extends Error {
 
 export function isBackgroundCapacitySkip(error: unknown): boolean {
   return error instanceof LocalBackendBackgroundCapacityError && error.silent
+}
+
 export interface LocalBackendSlotEntry {
   process?: unknown
   releaseLocalBackendSlot?: ReleaseLocalBackendSlot | null
@@ -249,7 +251,7 @@ export class LocalBackendSpawnCoordinator {
   /**
    * Adopt a new cap at runtime (the pool size is a live device preference).
    * Raising it drains waiters into the newly freed slots immediately; lowering
-   * it never revokes a granted slot — the running backends simply stay over
+   * it never revokes a granted slot â€” the running backends simply stay over
    * the cap until they exit, and LRU eviction (main.ts) converges the pool.
    */
   setLimit(limit: number): void {

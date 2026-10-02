@@ -42,8 +42,6 @@ import { $connection } from '@/store/session'
 import { Pill } from '../../settings/primitives'
 import { useDeepLinkHighlight } from '../../settings/use-deep-link-highlight'
 import { CapabilityTabs, type CapabilityView } from '../capability-tabs'
-import { CatalogBrowser } from '../catalog-browser'
-import type { CatalogEntry } from '../catalog-data'
 import { CatalogAlert } from '../catalog/catalog-alert'
 import { CatalogBrowser } from '../catalog/catalog-browser'
 import { type CatalogEntry, parseCatalog } from '../catalog/catalog-data'
@@ -71,7 +69,7 @@ function reveal(file: string) {
 
 async function revealPluginsDir() {
   try {
-    // Electron owns the app-level plugin root — deriving it from the backend's
+    // Electron owns the app-level plugin root â€” deriving it from the backend's
     // hermes_home breaks against a remote backend (#66899).
     const dir = await window.hermesDesktop?.desktopPluginsRoot?.()
 
@@ -92,7 +90,7 @@ async function revealPluginsDir() {
 }
 
 /** Copy any changed unified desktop halves into the app root FIRST, then
- *  rescan the root — a concurrent scan would read the pre-copy state. */
+ *  rescan the root â€” a concurrent scan would read the pre-copy state. */
 async function rescanAll(requestGateway: GatewayRequest, scope: null | string) {
   await window.hermesDesktop?.reconcileDesktopPlugins?.().catch(() => undefined)
   await discoverRuntimePlugins()
@@ -194,7 +192,7 @@ function HalfCell({ label, labelContent, children }: { label: string; labelConte
 function Dash() {
   return (
     <span aria-hidden className="w-9 text-center text-(--ui-text-quaternary)">
-      —
+      â€”
     </span>
   )
 }
@@ -229,7 +227,7 @@ function PackageRow({
   const d = t.settings.plugins
   const desktop = pkg.desktop
   const agent = pkg.agent
-  // Manifest `config_schema` → an inline settings form under the row (#46600, #87934).
+  // Manifest `config_schema` â†’ an inline settings form under the row (#46600, #87934).
   const settingsFields = agent?.settings_schema ?? []
   const hasSettings = Boolean(agent?.key) && settingsFields.length > 0
   const [settingsOpen, setSettingsOpen] = useState(false)
@@ -548,17 +546,14 @@ export const PluginsTab = memo(function PluginsTab({
   profile,
   scopeSelector,
   scopeLabel,
-  view = 'installed',
+  view = 'browse',
   query = '',
-  query,
   onQueryChange
 }: {
   query?: string
   onQueryChange?: (value: string) => void
   view?: CapabilityView
   profile: ProfileScope
-  query?: string
-  onQueryChange?: (value: string) => void
   /** The profile selector governs only the Agent half, not the app-level Desktop half. */
   scopeSelector?: ReactNode
   /** Display name of the selected profile for the Agent half label. */
@@ -590,13 +585,6 @@ export const PluginsTab = memo(function PluginsTab({
 
   const [selectedEntryId, setSelectedEntryId] = useState<string | null>(null)
 
-  // Catalog picker viewport (persisted height, collapse toggle, top-edge sash).
-  const heightOverride = useStore($paneHeightOverride(CATALOG_PANE_ID))
-  const height = heightOverride ?? CATALOG_DEFAULT_PX
-  const open = localView === 'installed' && height > CATALOG_COLLAPSED_PX
-  const [pickerMounted, setPickerMounted] = useState(open)
-  const [dragging, setDragging] = useState(false)
-  const sectionRef = useRef<HTMLElement>(null)
   const packageForTarget = useCallback(
     (target: string) =>
       packages.find(pkg => [pkg.key, pkg.agent?.key, pkg.agent?.name, pkg.desktop?.id].includes(target)),
@@ -740,11 +728,9 @@ export const PluginsTab = memo(function PluginsTab({
     )
   }
 
-  const agentBusy = (row: AgentPluginRow) => busyKey === (row.key ?? row.name) || busyKey === row.name
-  const isInstalled = (entry: CatalogEntry) =>
-    agentRows.some(row => (row.catalog_name === entry.name || row.name === entry.name) && !row.update_available)
   const install = (entry: CatalogEntry) =>
     openCatalogPluginInstall({ name: entry.name, repo: entry.repo, sha: entry.sha, subdir: entry.subdir }, scope)
+
   const notice =
     status === 'error' ? (
       <CatalogAlert
@@ -757,51 +743,13 @@ export const PluginsTab = memo(function PluginsTab({
     ) : null
 
   return (
-    <div className="flex h-full min-h-0 flex-col">
-      <CapabilityTabs onChange={setLocalView} value={localView} />
-      {localView === 'browse' && (
-        <CatalogBrowser
-          isInstalled={isInstalled}
-          kind="plugins"
-          onInstall={install}
-          onQueryChange={onQueryChange}
-          query={query}
-        />
-      )}
-      <div className={localView === 'installed' ? 'min-h-32 flex-1 overflow-y-auto' : 'hidden'}>
-        {/* Header: what the two columns mean, and the controls that act on
-            the whole page (install, folder, rescan). */}
-        <div className="flex flex-wrap items-start justify-between gap-3 px-3 pt-3 pb-2">
-          <p className="min-w-0 flex-1 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
-            {p.pageBlurb}
-          </p>
-          <div className="flex shrink-0 items-center gap-1">
-            <Button
-              onClick={() => openPluginInstallRequest({ profile: scope, repo: '' })}
-              size="sm"
-              type="button"
-              variant="secondary"
-            >
-              {d.installModal.installFromGit}
-            </Button>
-            <Tip label={d.openFolder}>
-              <Button
-                aria-label={d.openFolder}
-                onClick={() => void revealPluginsDir()}
-                size="icon"
-                type="button"
-                variant="ghost"
-              >
-                <FolderOpen className="size-3.5" />
-              </Button>
-            </Tip>
-            <Tip label={d.rescan}>
-              <Button
-                aria-label={d.rescan}
-                onClick={() => {
-                  triggerHaptic('selection')
     <CatalogBrowser
-      headerActions={<PluginActions profile={profile} />}
+      headerActions={
+        <>
+          <CapabilityTabs onChange={setLocalView} value={localView} />
+          <PluginActions profile={profile} />
+        </>
+      }
       installedEntries={installedEntries}
       installedPending={status !== 'ready'}
       isInstalled={isInstalled}
@@ -847,24 +795,6 @@ export const PluginsTab = memo(function PluginsTab({
                 if (outcome.kind !== 'consent') {
                   finish(outcome)
 
-      <section
-        className={cn(
-          'relative flex min-h-9 flex-col overflow-hidden border-t border-(--ui-stroke-secondary)',
-          localView !== 'installed' && 'hidden'
-        )}
-        ref={sectionRef}
-      >
-        <div
-          className="group/catsash absolute inset-x-0 top-0 z-10 h-1 -translate-y-1/2 cursor-row-resize"
-          data-testid="plugin-catalog-sash"
-          onDoubleClick={() => setPaneHeightOverride(CATALOG_PANE_ID, undefined)}
-          onPointerDown={startDrag}
-        >
-          <div
-            className={cn(
-              'absolute inset-x-0 top-1/2 h-px -translate-y-1/2 transition-colors',
-              dragging ? 'bg-(--ui-stroke-secondary)' : 'group-hover/catsash:bg-(--ui-stroke-secondary)'
-            )}
                   return
                 }
 
@@ -892,6 +822,7 @@ export const PluginsTab = memo(function PluginsTab({
         )
       }}
       selectedEntryId={selectedEntryId}
+      view={localView}
     />
   )
 })

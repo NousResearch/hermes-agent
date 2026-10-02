@@ -11,9 +11,9 @@ const _READY_RE = /^HERMES_(?:BACKEND|DASHBOARD)_READY port=(\d+)/m
 // (#103792). Match on a token boundary instead; `port=<digits>` keeps prose mentions out.
 export const READY_IN_MERGED_OUTPUT_RE = /(?<!\w)HERMES_(?:BACKEND|DASHBOARD)_READY port=(\d+)/
 
-// The announcement clock starts the instant the backend process is spawned —
+// The announcement clock starts the instant the backend process is spawned â€”
 // before uvicorn binds its socket. On a cold install the child must first
-// compile and import the whole `hermes_cli.main` → `web_server` → FastAPI/
+// compile and import the whole `hermes_cli.main` â†’ `web_server` â†’ FastAPI/
 // uvicorn chain, and on Windows real-time AV (Defender) scans every freshly
 // written `.pyc`. That pre-bind cost can run 30-60s on a slow disk, so a tight
 // 45s deadline kills a *healthy but still-starting* backend and respawns it,
@@ -27,7 +27,7 @@ const MIN_PORT_ANNOUNCE_TIMEOUT_MS = 45_000
 // While the backend prints venv_sync's source-update completion banners it is
 // finishing an owed update tail BEFORE `hermes serve` starts, and that tail
 // legitimately runs minutes (dependency sync alone measured at ~19-22 min,
-// #122206) — far past the 90s cold-start budget, which is sized for imports
+// #122206) â€” far past the 90s cold-start budget, which is sized for imports
 // and AV scans, not repairs. Killing the child mid-repair and respawning it
 // (what the old timeout did) re-runs the repair from scratch on every boot.
 // While a banner is present the deadline is re-armed instead, up to this
@@ -42,7 +42,7 @@ const SOURCE_COMPLETION_MAX_TOTAL_MS = 30 * 60_000
  * one: vitest's advanceTimersByTimeAsync advances Date.now() with the timers,
  * so a `Date.now() + GRACE` deadline re-computed each tick stays GRACE away
  * forever and the cap never fires under tests. The real clock also matches
- * production semantics — the grace measures wall-clock repair time.
+ * production semantics â€” the grace measures wall-clock repair time.
  */
 function realNow() {
   return Number(process.hrtime.bigint() / 1_000_000n)
@@ -78,7 +78,7 @@ function resolvePortAnnounceTimeoutMs(env = process.env) {
  * backend has even bound its port. Pass an explicit `timeoutMs` to override.
  *
  * A single `cleanup()` tears down every listener (data/exit/error/timeout)
- * on every terminal path — resolve, reject, or timeout — so repeated
+ * on every terminal path â€” resolve, reject, or timeout â€” so repeated
  * backend spawns don't leak listener slots on the child.
  */
 function waitForDashboardPort(
@@ -94,7 +94,7 @@ function waitForDashboardPort(
     // awaits claimBackendChild + advanceBootProgress BEFORE this listener
     // attaches. child.stdout is in flowing mode from the tail's listener, so
     // a READY line flushed during that window is emitted once and never
-    // replayed to late listeners — the wait then times out at 90s and a
+    // replayed to late listeners â€” the wait then times out at 90s and a
     // healthy backend is killed. Scanning the tail's buffer (and seeding any
     // trailing partial line) makes the listener-attach ordering irrelevant.
     let buf = ''
@@ -196,17 +196,12 @@ function waitForDashboardPort(
       }
     }
 
-    const timer = setTimeout(() => {
-      cleanup()
-      reject(new Error(`Timed out waiting for Hermes backend port announcement (${timeoutMs}ms)`))
-    }, timeoutMs)
-
     rearmTimer()
     child.stdout.on('data', onData)
     child.on('exit', onExit)
     child.on('error', onError)
 
-    // Listener is live — now recover a sentinel that was already flushed and
+    // Listener is live â€” now recover a sentinel that was already flushed and
     // consumed before this promise existed. The snapshot is taken AFTER the
     // listener attaches, so no chunk can fall between snapshot and listener.
     // Merged-buffer regex here (the tail interleaves both streams). Currently dormant: both

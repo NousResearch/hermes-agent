@@ -21,14 +21,12 @@ import { prefetchCatalogWhenIdle } from './catalog/catalog-data'
 import { ConnectorsTab } from './connectors/connectors-tab'
 import { PluginsTab } from './plugins/plugins-tab'
 import { CapabilityScopeSelector, useCapabilityScope } from './scope-selector'
-import { SkillCatalog } from './skill-catalog'
 import { EmbeddedHubPicker } from './skills/embedded-hub-picker'
 import { SKILLS_QUERY_KEY, skillSearchTerms, useSkillsQuery } from './skills/skills-data'
 import { SkillsTab } from './skills/skills-tab'
 import { refreshToolCalls } from './toolsets/tool-calls'
 import { TOOLSETS_QUERY_KEY, toolsetSearchTerms, useToolsetsQuery, visibleToolsetCount } from './toolsets/toolsets-data'
 import { ToolsetsTab } from './toolsets/toolsets-tab'
-import { UpdateSkillsButton } from './update-skills-button'
 
 // Native catalog browsing and the full Hub each retain their own surface.
 const CAPABILITY_MODES = ['skills', 'toolsets', 'connectors', 'plugins', 'hub'] as const
@@ -37,18 +35,18 @@ type CapabilityMode = (typeof CAPABILITY_MODES)[number]
 
 interface CapabilitiesViewProps extends React.ComponentProps<'section'> {
   setStatusbarItemGroup?: SetStatusbarItemGroup
-  /** Embedded mode (plugin dialogs — e.g. Bot Mode's Advanced section): tab
+  /** Embedded mode (plugin dialogs â€” e.g. Bot Mode's Advanced section): tab
    *  state lives in local React state instead of the route's `?tab=` param,
    *  so an embedding dialog never fights the page router. */
   embedded?: boolean
   /** Pin the WHOLE view to one profile: the scope selector is hidden and
-   *  every tab reads/writes THAT profile. This is the plugin door — Bot Mode
+   *  every tab reads/writes THAT profile. This is the plugin door â€” Bot Mode
    *  renders the real Capabilities surface pinned to a bot. */
   fixedProfile?: string
   /** Pin the view to a REGISTERED gateway connection alongside `fixedProfile`:
    *  every read/write routes to that machine's backend instead of the active
    *  gateway. `''`/`'local'` mean the local pool. This is Bot Mode's
-   *  remote-target door — a bot living on another registered gateway gets the
+   *  remote-target door â€” a bot living on another registered gateway gets the
    *  live surface pointed at ITS backend. Ignored without `fixedProfile`. */
   fixedConnection?: string
 }
@@ -102,13 +100,15 @@ export function CapabilitiesView({
     void refreshToolCalls(scope.profile)
   }, [scope.profile])
 
+  const installedSkillNames = useMemo(() => new Set((skills ?? []).map(skill => skill.name)), [skills])
+
   useRefreshHotkey(refreshCapabilities)
 
   // Plugins is small enough to warm from any tab. Skills (~100k rows) only
   // loads when asked for: an idle parse of it would still block the page.
   useEffect(() => (mode === 'plugins' ? undefined : prefetchCatalogWhenIdle('plugins')), [mode])
 
-  // Rotating placeholder nudges from the user's own data — teach that search
+  // Rotating placeholder nudges from the user's own data â€” teach that search
   // understands categories and tool names, not just titles.
   const searchHints = useMemo(() => {
     if (mode === 'skills' && skills?.length) {
@@ -164,24 +164,6 @@ export function CapabilitiesView({
         view={capabilityView}
       />
     ),
-    skills: () =>
-      capabilityView === 'browse' ? (
-        <SkillCatalog
-          installedNames={installedSkillNames}
-          key={scope.key}
-          onQueryChange={setQuery}
-          profile={scope.profile}
-          query={query}
-        />
-      ) : (
-        <SkillsTab
-          key={`skills-${scope.key}`}
-          onRefresh={() => void refreshCapabilities()}
-          profile={scope.profile}
-          query={query}
-          skills={skills ?? []}
-        />
-      ),
     skills: () => (
       <SkillsTab
         installedError={skillsError}
@@ -192,6 +174,7 @@ export function CapabilitiesView({
         profile={scope.profile}
         query={query}
         skills={skills ?? []}
+        view={capabilityView}
       />
     ),
     toolsets: () => (
@@ -205,8 +188,6 @@ export function CapabilitiesView({
       activeTab={mode}
       onSearchChange={setQuery}
       onTabChange={id => setMode(id as CapabilityMode)}
-      // Connectors and Hub own their search fields.
-      searchHidden={mode === 'connectors' || mode === 'hub'}
       // Catalogs keep search beside their results; Connectors owns its field too.
       searchHidden={mode !== 'toolsets'}
       searchHints={searchHints}
@@ -214,8 +195,9 @@ export function CapabilitiesView({
         mode === 'plugins'
           ? t.catalog.searchPlugins
           : mode === 'skills'
-            ? t.skills.searchSkills
-            ? t.catalog.searchSkills
+            ? capabilityView === 'browse'
+              ? t.catalog.searchSkills
+              : t.skills.searchSkills
             : t.skills.searchToolsets
       }
       searchValue={query}
@@ -231,7 +213,6 @@ export function CapabilitiesView({
         {mode !== 'plugins' && <CapabilityScopeSelector scope={scope} />}
         {mode === 'skills' && (
           <CapabilityTabs
-            actions={<UpdateSkillsButton profile={scope.profile} />}
             onChange={setCapabilityView}
             value={capabilityView}
           />
@@ -249,7 +230,6 @@ export function CapabilitiesView({
             />
           )}
         </div>
-        <div className="flex min-h-0 flex-1 flex-col">{loadGate ?? tabContent[mode]()}</div>
       </div>
     </PageSearchShell>
   )
@@ -257,7 +237,7 @@ export function CapabilitiesView({
 
 // Feature-detection flag for plugins (Bot Mode): TRUE means this build's
 // CapabilitiesView routes `fixedConnection` to the pinned connection's backend.
-// Older builds export CapabilitiesView WITHOUT the prop — passing it there would
+// Older builds export CapabilitiesView WITHOUT the prop â€” passing it there would
 // silently read/write the ACTIVE gateway under the remote bot's profile name,
 // which is exactly the wrong-machine bug the prop exists to prevent. A static
 // property is probe-able without rendering.

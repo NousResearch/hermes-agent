@@ -9,9 +9,7 @@ import type * as HermesApi from '@/hermes'
 import { queryClient } from '@/lib/query-client'
 import type * as HubActions from '@/store/hub-actions'
 
-import { parseCatalog } from './catalog-data'
 import { SkillCatalog } from './skill-catalog'
-import { $catalogCardView } from './store'
 
 const getOfficialSkills = vi.fn()
 import { parseCatalog } from './catalog/catalog-data'
@@ -52,7 +50,7 @@ vi.mock('@/store/notifications', () => ({
   notifyError: vi.fn()
 }))
 
-// The catalog Install button routes through the hub action pipeline — stub the
+// The catalog Install button routes through the hub action pipeline â€” stub the
 // action entrypoint (real module kept: CapabilitiesView reads $hubActions and the
 // query keys from it).
 vi.mock('@/store/hub-actions', async importOriginal => ({
@@ -60,18 +58,30 @@ vi.mock('@/store/hub-actions', async importOriginal => ({
   installHubSkill: vi.fn().mockResolvedValue(undefined)
 }))
 
-// The vision detail navigates to Settings → Models via useNavigate; spy on it
+// The vision detail navigates to Settings â†’ Models via useNavigate; spy on it
 // so the deep-link target is assertable.
 const navigateSpy = vi.fn()
 
-vi.mock('react-router', async importOriginal => ({
-  ...(await importOriginal<typeof ReactRouterDom>()),
-  useNavigate: () => navigateSpy
-}))
+vi.mock('react-router', async importOriginal => {
+  const actual = await importOriginal<typeof ReactRouterDom>()
+
+  return {
+    ...actual,
+    useNavigate: () => {
+      const navigate = actual.useNavigate()
+
+      return (...args: Parameters<typeof navigate>) => {
+        navigateSpy(...args)
+
+        return navigate(...args)
+      }
+    }
+  }
+})
 
 // Import at module scope (after the hoisted vi.mock calls) so the heavy
 // component-tree transform is paid during collection, not billed against the
-// first test's testTimeout — same flake class as messaging/index.test.tsx.
+// first test's testTimeout â€” same flake class as messaging/index.test.tsx.
 const { CapabilitiesView } = await import('./index')
 
 function toolset(overrides: Record<string, unknown> = {}) {
@@ -113,7 +123,6 @@ beforeEach(() => {
   getOfficialSkills.mockResolvedValue({ skills: [] })
   // Scope/install cases exercise the retained list layout; cards have dedicated coverage.
   $catalogCardView.set(false)
-  $catalogCardView.set(true)
   getSkills.mockResolvedValue([])
   getToolsets.mockResolvedValue([toolset()])
   setToolsetEnabled.mockResolvedValue({ ok: true, name: 'web', enabled: false })
@@ -124,7 +133,7 @@ beforeEach(() => {
     path: '/skills/web-research/SKILL.md',
     content: '---\nname: web-research\nversion: 1.2.0\nauthor: Nous\n---\n\n# Web Research\n\nDeep research steps.'
   })
-  // Single profile by default → the scope selector stays hidden (>1 gate),
+  // Single profile by default â†’ the scope selector stays hidden (>1 gate),
   // so existing tests see unchanged single-profile behavior.
   getProfiles.mockResolvedValue({ profiles: [{ name: 'default', is_default: true }] })
   queryClient.setQueryData(['public-catalog', 'skills'], [])
@@ -134,14 +143,14 @@ afterEach(() => {
   cleanup()
   vi.clearAllMocks()
   vi.unstubAllGlobals()
-  // Shared singleton client — drop cached skills/toolsets so each test refetches.
+  // Shared singleton client â€” drop cached skills/toolsets so each test refetches.
   queryClient.clear()
 })
 
 // CapabilitiesView is a heavy module (import cost now paid at module scope above,
-// during collection) but the file still legitimately runs ~14s on CI runners —
+// during collection) but the file still legitimately runs ~14s on CI runners â€”
 // right against the global 15s per-test budget, so slow runners cascade-fail
-// all 11 tests (2× in a row on PR #93612, plus a main run the same hour).
+// all 11 tests (2أ— in a row on PR #93612, plus a main run the same hour).
 // Give this file headroom; the tests are not slow individually.
 describe('CapabilitiesView toolset management', { timeout: 60_000 }, () => {
   it('renders a switch for each toolset and toggles it off', async () => {
@@ -160,7 +169,7 @@ describe('CapabilitiesView toolset management', { timeout: 60_000 }, () => {
   })
 
   it('scopes Tools config to the profile chosen in the selector', async () => {
-    // Two profiles → the "Configuring:" selector renders. Picking a non-active
+    // Two profiles â†’ the "Configuring:" selector renders. Picking a non-active
     // profile must re-fetch toolsets scoped to THAT profile.
     // jsdom's scrollIntoView is missing/non-functional; Radix Select calls it
     // on open. Force a stub so the dropdown can render in the test env.
@@ -300,7 +309,16 @@ describe('CapabilitiesView toolset management', { timeout: 60_000 }, () => {
           <SkillCatalog installedNames={new Set([installedName])} profile="researcher" />
         </QueryClientProvider>
       )
+      fireEvent.click(screen.getByRole('button', { name: /^web-research/ }))
+      const installed = screen.getByRole('button', { name: 'Installed' })
+      expect((installed as HTMLButtonElement).disabled).toBe(true)
+      fireEvent.click(installed)
+      expect(installHubSkill).not.toHaveBeenCalled()
+    }
+  )
+
   it('keeps installed skills on their toggle and installs new cards into the pinned remote profile', async () => {
+    $catalogCardView.set(true)
     const { installHubSkill } = await import('@/store/hub-actions')
     getSkills.mockResolvedValue([
       { name: 'web-research', description: 'Research', enabled: true, category: 'research' }
@@ -313,13 +331,27 @@ describe('CapabilitiesView toolset management', { timeout: 60_000 }, () => {
       ])
     )
 
-      fireEvent.click(screen.getByRole('button', { name: /^web-research/ }))
-      const installed = screen.getByRole('button', { name: 'Installed' })
-      expect((installed as HTMLButtonElement).disabled).toBe(true)
-      fireEvent.click(installed)
-      expect(installHubSkill).not.toHaveBeenCalled()
-    }
-  )
+    render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter>
+          <CapabilitiesView embedded fixedConnection="homelab" fixedProfile="inbox-bot" />
+        </MemoryRouter>
+      </QueryClientProvider>
+    )
+    await screen.findByRole('switch', { name: 'web-research' })
+    expect(screen.getByRole<HTMLButtonElement>('switch', { name: 'web-research' }).disabled).toBe(false)
+    expect(screen.queryByRole('switch', { name: 'Add web-research' })).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: 'Browse' }))
+    await screen.findByRole('switch', { name: 'Add gif-search' })
+    const available = screen.getByRole('button', { name: 'gif-search' }).closest('article')!
+    fireEvent.click(within(available).getByRole('switch', { name: 'Add gif-search' }))
+    await waitFor(() =>
+      expect(installHubSkill).toHaveBeenCalledExactlyOnceWith('official/gifs/gif-search', {
+        connectionId: 'homelab',
+        profile: 'inbox-bot'
+      })
+    )
+  })
 
   it.each([
     {
@@ -341,6 +373,7 @@ describe('CapabilitiesView toolset management', { timeout: 60_000 }, () => {
     'installs $identifier with its source-qualified target in the pinned connection and profile',
     async ({ source, identifier, expectedIdentifier }) => {
       const { installHubSkill } = await import('@/store/hub-actions')
+
       const entry = {
         name: 'community-research',
         identifier,
@@ -348,6 +381,7 @@ describe('CapabilitiesView toolset management', { timeout: 60_000 }, () => {
         category: 'research',
         description: 'Community research workflow'
       }
+
       queryClient.setQueryData(
         ['public-catalog', 'skills'],
         parseCatalog('skills', [
@@ -367,10 +401,10 @@ describe('CapabilitiesView toolset management', { timeout: 60_000 }, () => {
       })
 
       fireEvent.click(screen.getByRole('button', { name: 'Browse' }))
-      fireEvent.click(await screen.findByRole('button', { name: /^community-research/ }))
+      fireEvent.click((await screen.findAllByRole('button', { name: 'community-research' }))[0])
       expect(screen.getByRole('heading', { name: entry.name })).toBeTruthy()
       await act(async () => {
-        fireEvent.click(screen.getByRole('button', { name: 'Install' }))
+        fireEvent.click(screen.getByRole('switch', { name: 'Add community-research' }))
       })
 
       expect(installHubSkill).toHaveBeenCalledExactlyOnceWith(expectedIdentifier, {
@@ -392,20 +426,17 @@ describe('CapabilitiesView toolset management', { timeout: 60_000 }, () => {
     )
     let finishFirst!: () => void
     let finishSecond!: () => void
+
     const firstInstall = new Promise<void>(resolve => {
       finishFirst = resolve
     })
+
     const secondInstall = new Promise<void>(resolve => {
       finishSecond = resolve
     })
+
     vi.mocked(installHubSkill).mockReturnValueOnce(firstInstall).mockReturnValueOnce(secondInstall)
-    render(
-      <QueryClientProvider client={queryClient}>
-        <MemoryRouter>
-          <CapabilitiesView embedded fixedConnection="homelab" fixedProfile="inbox-bot" />
-        </MemoryRouter>
-      </QueryClientProvider>
-    )
+
 
     const scopedView = (connectionId: string, profile: string) => (
       <QueryClientProvider client={queryClient}>
@@ -413,39 +444,33 @@ describe('CapabilitiesView toolset management', { timeout: 60_000 }, () => {
           <CapabilitiesView embedded fixedConnection={connectionId} fixedProfile={profile} />
         </MemoryRouter>
       </QueryClientProvider>
-    await screen.findByRole('switch', { name: 'web-research' })
-    expect(screen.getByRole<HTMLButtonElement>('switch', { name: 'Added web-research' }).disabled).toBe(true)
-    expect(screen.queryByRole('switch', { name: 'Add web-research' })).toBeNull()
-    const available = screen.getByRole('button', { name: 'gif-search' }).closest('article')!
-    fireEvent.click(within(available).getByRole('switch', { name: 'Add gif-search' }))
-    await waitFor(() =>
-      expect(installHubSkill).toHaveBeenCalledExactlyOnceWith('official/gifs/gif-search', {
-        connectionId: 'homelab',
-        profile: 'inbox-bot'
-      })
     )
+
     const view = render(scopedView('homelab', 'researcher'))
     fireEvent.click(screen.getByRole('button', { name: 'Browse' }))
-    fireEvent.click(await screen.findByRole('button', { name: /^community-research/ }))
-    fireEvent.click(screen.getByRole('button', { name: 'Install' }))
-    const pending = screen.getByRole<HTMLButtonElement>('button', { name: 'Installing...' })
+    fireEvent.click((await screen.findAllByRole('button', { name: 'community-research' }))[0])
+    await waitFor(() =>
+      expect(screen.getByRole<HTMLButtonElement>('switch', { name: 'Add community-research' }).disabled).toBe(false)
+    )
+    fireEvent.click(screen.getByRole('switch', { name: 'Add community-research' }))
+    const pending = screen.getByRole<HTMLButtonElement>('switch', { name: 'Add community-research' })
     expect(pending.disabled).toBe(true)
-    expect(pending.querySelector('svg.animate-spin')).not.toBeNull()
+    expect(pending.getAttribute('aria-busy')).toBe('true')
     fireEvent.click(pending)
     expect(installHubSkill).toHaveBeenCalledExactlyOnceWith(identifier, {
       connectionId: 'homelab',
       profile: 'researcher'
     })
 
-    fireEvent.click(screen.getByRole('button', { name: /^other-skill/ }))
-    expect(screen.getByRole<HTMLButtonElement>('button', { name: 'Install' }).disabled).toBe(false)
-    fireEvent.click(screen.getByRole('button', { name: /^community-research/ }))
-    expect(screen.getByRole<HTMLButtonElement>('button', { name: 'Installing...' }).disabled).toBe(true)
+    fireEvent.click(screen.getAllByRole('button', { name: 'other-skill' })[0])
+    expect(screen.getByRole<HTMLButtonElement>('switch', { name: 'Add other-skill' }).disabled).toBe(false)
+    fireEvent.click(screen.getAllByRole('button', { name: 'community-research' })[0])
+    expect(screen.getByRole<HTMLButtonElement>('switch', { name: 'Add community-research' }).disabled).toBe(true)
 
     view.rerender(scopedView('other-gateway', 'writer'))
-    fireEvent.click(await screen.findByRole('button', { name: /^community-research/ }))
-    const nextInstall = screen.getByRole<HTMLButtonElement>('button', { name: 'Install' })
-    expect(nextInstall.disabled).toBe(false)
+    fireEvent.click((await screen.findAllByRole('button', { name: 'community-research' }))[0])
+    const nextInstall = screen.getByRole<HTMLButtonElement>('switch', { name: 'Add community-research' })
+    await waitFor(() => expect(nextInstall.disabled).toBe(false))
     fireEvent.click(nextInstall)
     expect(installHubSkill).toHaveBeenNthCalledWith(2, identifier, {
       connectionId: 'other-gateway',
@@ -456,17 +481,19 @@ describe('CapabilitiesView toolset management', { timeout: 60_000 }, () => {
       finishFirst()
       await firstInstall
     })
-    expect(screen.getByRole<HTMLButtonElement>('button', { name: 'Installing...' }).disabled).toBe(true)
+    expect(screen.getByRole<HTMLButtonElement>('switch', { name: 'Add community-research' }).disabled).toBe(true)
     await act(async () => {
       finishSecond()
       await secondInstall
     })
-    expect(screen.getByRole<HTMLButtonElement>('button', { name: 'Install' }).disabled).toBe(false)
+    expect(screen.getByRole<HTMLButtonElement>('switch', { name: 'Add community-research' }).disabled).toBe(false)
     expect(installHubSkill).toHaveBeenCalledTimes(2)
     expect(document.querySelector('iframe')).toBeNull()
   })
 
   it('loads the public catalog only on Browse and reuses it across skills and tools tab switches', async () => {
+    queryClient.removeQueries({ queryKey: ['public-catalog', 'skills'] })
+
     const fetchCatalog = vi.fn().mockResolvedValue({
       ok: true,
       json: async () => [
@@ -479,32 +506,14 @@ describe('CapabilitiesView toolset management', { timeout: 60_000 }, () => {
         }
       ]
     })
+
     vi.stubGlobal('fetch', fetchCatalog)
 
     await renderSkills() // ?tab=toolsets
     await screen.findByRole('switch', { name: 'Turn Web Search toolset off' })
     expect(fetchCatalog).not.toHaveBeenCalled()
     cleanup()
-  it('fetches the public catalog once across remounts and keeps one search input', async () => {
-    queryClient.clear()
-
-    await act(async () => {
-    const fetch = vi.fn().mockResolvedValue({
-      ok: true,
-      json: async () => [{ name: 'example', source: 'official', identifier: 'official/example' }]
-    })
-
-    vi.stubGlobal('fetch', fetch)
-
-    const view = () =>
-      render(
-        <QueryClientProvider client={queryClient}>
-          <MemoryRouter>
-            <CapabilitiesView embedded fixedProfile="default" />
-          </MemoryRouter>
-        </QueryClientProvider>
-      )
-    })
+    await renderSkills('skills')
     expect(document.querySelector('iframe')).toBeNull()
 
     expect(screen.queryByRole('heading', { name: 'catalog-research' })).toBeNull()
@@ -514,7 +523,8 @@ describe('CapabilitiesView toolset management', { timeout: 60_000 }, () => {
     expect(fetchCatalog).toHaveBeenCalledTimes(1)
     expect(fetchCatalog.mock.calls[0][0]).toMatch(/\/docs\/api\/skills\.json$/)
 
-    fireEvent.click(screen.getByRole('button', { name: 'Installed' }))
+    fireEvent.click(screen.getAllByRole('button', { name: 'Installed' })
+      .find(button => button.closest('[data-capability-tabs]'))!)
     expect(screen.queryByRole('heading', { name: 'catalog-research' })).toBeNull()
     fireEvent.click(screen.getByRole('button', { name: 'Browse' }))
     expect(await screen.findByRole('heading', { name: 'catalog-research' })).toBeTruthy()
@@ -528,7 +538,7 @@ describe('CapabilitiesView toolset management', { timeout: 60_000 }, () => {
 
   it('mounts the hub iframe lazily and keeps it (hidden) across tab switches', async () => {
     // In embedded mode the Skills tab is the initial non-Hub tab, so the
-    // docs-site iframe must not exist at all — an
+    // docs-site iframe must not exist at all â€” an
     // eagerly mounted hub is exactly the Capabilities lag bug.
     await act(async () => {
       render(
@@ -557,7 +567,7 @@ describe('CapabilitiesView toolset management', { timeout: 60_000 }, () => {
     expect(iframe!.closest('section')!.classList.contains('hidden')).toBe(false)
     expect(iframe!.closest('section')!.className).toContain('flex-1')
 
-    // Switch to Skills → the iframe STAYS mounted (no docs-site reload on the
+    // Switch to Skills â†’ the iframe STAYS mounted (no docs-site reload on the
     // next visit) but its section is fully hidden, so nothing from the hub
     // can paint over the installed-skills UI.
     await act(async () => {
@@ -582,23 +592,32 @@ describe('CapabilitiesView toolset management', { timeout: 60_000 }, () => {
     expect(document.querySelector('iframe')).toBeTruthy()
     expect(screen.queryByRole('textbox')).toBeNull()
     expect(screen.queryByRole('switch')).toBeNull()
-    try {
-      const first = view()
-      await screen.findByRole('button', { name: 'example' })
-      expect(fetch).toHaveBeenCalledTimes(1)
-      first.unmount()
-      view()
-      await screen.findByRole('button', { name: 'example' })
-      expect(fetch).toHaveBeenCalledTimes(1)
-      expect(screen.getAllByRole('textbox', { name: 'Search skills' })).toHaveLength(1)
-      expect(document.querySelector('iframe')).toBeNull()
-    } finally {
-      vi.unstubAllGlobals()
-    }
   })
 
-  it('shows a vision explainer that deep-links to Settings → Models', async () => {
-    // Vision has no TOOL_CATEGORIES provider matrix — its model lives in the
+  it('fetches the public catalog once across remounts and keeps one search input', async () => {
+    queryClient.clear()
+
+    const fetchCatalog = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => [{ name: 'example', source: 'official', identifier: 'official/example' }]
+    })
+
+    vi.stubGlobal('fetch', fetchCatalog)
+    const first = await renderSkills('skills')
+    fireEvent.click(screen.getByRole('button', { name: 'Browse' }))
+    await screen.findByRole('button', { name: /^example/ })
+    expect(fetchCatalog).toHaveBeenCalledTimes(1)
+    first.unmount()
+    await renderSkills('skills')
+    fireEvent.click(screen.getByRole('button', { name: 'Browse' }))
+    await screen.findByRole('button', { name: /^example/ })
+    expect(fetchCatalog).toHaveBeenCalledTimes(1)
+    expect(screen.getAllByRole('textbox', { name: 'Search skills' })).toHaveLength(1)
+    expect(document.querySelector('iframe')).toBeNull()
+  })
+
+  it('shows a vision explainer that deep-links to Settings â†’ Models', async () => {
+    // Vision has no TOOL_CATEGORIES provider matrix â€” its model lives in the
     // auxiliary model config, so the detail pane must point there instead of
     // rendering an empty panel.
     getToolsets.mockResolvedValue([
@@ -619,14 +638,14 @@ describe('CapabilitiesView toolset management', { timeout: 60_000 }, () => {
       fireEvent.click(link)
     })
 
-    // Internal route change into the Models section with the aux slot target —
+    // Internal route change into the Models section with the aux slot target â€”
     // consumed by ModelSettings' deep-link highlight. Never an external URL.
     await waitFor(() => expect(navigateSpy).toHaveBeenCalledWith('/settings?tab=config:model&aux=vision'))
   })
 
   it('fixedConnection pins every read to the target connection', async () => {
     // Bot Mode's remote-target door: a bot on another registered gateway gets
-    // the live surface pointed at ITS backend — the reads must carry the
+    // the live surface pointed at ITS backend â€” the reads must carry the
     // (connection, profile) pin, not a bare profile name that would resolve
     // against the ACTIVE gateway (the wrong-machine bug).
     await act(async () => {
@@ -642,13 +661,13 @@ describe('CapabilitiesView toolset management', { timeout: 60_000 }, () => {
     await waitFor(() => expect(getSkills).toHaveBeenCalled())
     expect(getSkills.mock.calls[0][0]).toEqual({ connectionId: 'homelab', profile: 'inbox-bot' })
     expect(getToolsets.mock.calls[0][0]).toEqual({ connectionId: 'homelab', profile: 'inbox-bot' })
-    // Pinned scope → no roster/profiles fetch, selector hidden.
+    // Pinned scope â†’ no roster/profiles fetch, selector hidden.
     expect(getProfiles).not.toHaveBeenCalled()
   })
 
   it('offers (connection, profile) scope rows on multi-connection desktops', async () => {
     // With a v2 registry holding >1 connection, the scope selector lists the
-    // union agent roster — profile + owning device — instead of the local
+    // union agent roster â€” profile + owning device â€” instead of the local
     // profiles list, so a selection identifies WHICH gateway's capabilities
     // are being configured.
     const connections = {
@@ -658,7 +677,7 @@ describe('CapabilitiesView toolset management', { timeout: 60_000 }, () => {
         secureTokenStorage: true,
         connections: [
           { id: 'local', kind: 'local', label: 'This device', tokenSet: false, tokenPreview: null },
-          { id: 'homelab', kind: 'remote', label: 'Homelab', tokenSet: true, tokenPreview: '…' }
+          { id: 'homelab', kind: 'remote', label: 'Homelab', tokenSet: true, tokenPreview: 'â€¦' }
         ]
       })
     }
@@ -689,8 +708,14 @@ describe('CapabilitiesView toolset management', { timeout: 60_000 }, () => {
       await renderSkills()
 
       await waitFor(() => expect(getAgentRoster).toHaveBeenCalled())
-      // The selector paints roster rows labeled profile — device.
+      // The selector paints roster rows labeled profile â€” device.
       expect(await screen.findByText('default — This device (current)')).toBeTruthy()
+      Element.prototype.scrollIntoView = vi.fn()
+      fireEvent.click(screen.getByRole('combobox'))
+      fireEvent.click(await screen.findByRole('option', { name: 'inbox-bot — Homelab' }))
+      await waitFor(() =>
+        expect(getToolsets).toHaveBeenCalledWith({ connectionId: 'homelab', profile: 'inbox-bot' })
+      )
     } finally {
       delete (window as { hermesDesktop?: unknown }).hermesDesktop
     }
@@ -747,26 +772,21 @@ describe('CapabilitiesView toolset management', { timeout: 60_000 }, () => {
 
     // Browse keeps installed entries discoverable, but never reinstallable.
     const detail = within(screen.getByRole('main'))
-    const installed = detail.getByRole<HTMLButtonElement>('button', { name: 'Installed' })
-    expect(installed.disabled).toBe(true)
-    fireEvent.click(installed)
+    expect(detail.getByRole<HTMLButtonElement>('switch', { name: 'web-research' }).disabled).toBe(false)
+    expect(detail.queryByRole('switch', { name: 'Add web-research' })).toBeNull()
     expect(installHubSkill).not.toHaveBeenCalled()
     fireEvent.click(screen.getByRole('button', { name: /^gif-search/ }))
     expect(detail.getByRole('heading', { name: 'gif-search' })).toBeTruthy()
-    expect(screen.queryByRole('switch')).toBeNull()
+    expect(detail.getByRole('switch', { name: 'Add gif-search' })).toBeTruthy()
 
     await act(async () => {
-      fireEvent.click(detail.getByRole('button', { name: 'Install' }))
+      fireEvent.click(detail.getByRole('switch', { name: 'Add gif-search' }))
     })
 
     expect(installHubSkill).toHaveBeenCalledExactlyOnceWith('official/gifs/gif-search', 'researcher')
   })
-  it('lists the built-in optional-skills catalog with Install buttons that route through the hub pipeline', async () => {
-    // The full official catalog renders BELOW the installed list; each row
-    // carries an Install button (no toggle until installed) that routes
-    // through the standard hub action pipeline scoped to the Capabilities
-    // profile. Already-installed catalog entries are filtered out.
   it('lists the built-in optional-skills catalog with Add switches that route through the hub pipeline', async () => {
+    $catalogCardView.set(true)
     // Official optional skills merge into the same catalog as installed ones;
     // an uninstalled row carries an Add switch that routes through the hub
     // action pipeline scoped to the Capabilities profile. A name collision with
@@ -822,6 +842,7 @@ describe('CapabilitiesView toolset management', { timeout: 60_000 }, () => {
       )
     })
 
+    fireEvent.click(screen.getByRole('button', { name: 'Browse' }))
     const install = await screen.findByRole('switch', { name: 'Add gif-search' })
     expect(screen.getByRole('switch', { name: 'web-research' })).toBeTruthy()
     expect(screen.queryByRole('switch', { name: 'Add web-research' })).toBeNull()
@@ -838,7 +859,7 @@ describe('CapabilitiesView toolset management', { timeout: 60_000 }, () => {
 
   it('drops community feed rows that only share a name with an installed skill', async () => {
     // Installs are name-keyed, so a community lookalike of an installed skill
-    // can neither be added beside it nor is it the installed skill itself —
+    // can neither be added beside it nor is it the installed skill itself â€”
     // it must not surface as a second "installed" row under the same name.
     getSkills.mockResolvedValue([
       {
@@ -870,6 +891,7 @@ describe('CapabilitiesView toolset management', { timeout: 60_000 }, () => {
 
     // The feed settles first; then only the installed row keeps the name,
     // while the distinct community skill stays installable.
+    fireEvent.click(screen.getByRole('button', { name: 'Browse' }))
     await screen.findByRole('switch', { name: 'Add gif-search' })
     expect(screen.getAllByRole('button', { name: 'docx' })).toHaveLength(1)
   })

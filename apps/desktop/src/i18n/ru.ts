@@ -24,47 +24,6 @@ const RU_NOUN = (count: number | string, one: string, few: string, many: string)
 }
 
 export const ru = defineLocale({
-  catalog: {
-    listView: 'Список',
-    cardView: 'Карточки',
-    installTitle: (name: string) => `Установить «${name}»?`,
-    installDescription: 'Навык будет доступен в новых сессиях. Устанавливайте только из источников, которым доверяете.',
-    installTo: 'Установить в',
-    thisComputer: 'Этот компьютер',
-    installing: 'Установка…',
-    installComplete: (name: string) => `«${name}» установлен`,
-    destinationChanged: 'Место установки изменилось. Закройте диалог и снова откройте ссылку установки.',
-    browse: 'Обзор',
-    installed: 'Установленные',
-    searchSkills: 'Поиск навыков',
-    searchPlugins: 'Поиск плагинов',
-    allSources: 'Все источники',
-    allCategories: 'Все категории',
-    about: 'Описание',
-    author: 'Автор',
-    source: 'Источник',
-    category: 'Категория',
-    version: 'Версия',
-    platforms: 'Платформы',
-    requires: 'Требования',
-    tools: 'Инструменты',
-    hooks: 'Хуки',
-    repository: 'Репозиторий',
-    documentation: 'Документация',
-    noResults: 'Совпадений нет',
-    tryAnother: 'Попробуйте другой запрос или сбросьте фильтры.',
-    clearFilters: 'Сбросить фильтры',
-    loadFailed: 'Не удалось загрузить каталог',
-    retry: 'Попробовать снова',
-    more: 'Показать ещё',
-    pinned: 'Проверенный коммит',
-    snapshotHint: 'Из каталога Hermes. При просмотре нет обращений к исходным репозиториям.',
-    installHint: 'Проверьте исходный код перед установкой. Изменения применяются к новым сессиям.',
-    results: (count: number) =>
-      `${count.toLocaleString('ru')} ${RU_PLURAL(count, 'результат', 'результата', 'результатов')}`,
-    back: 'Назад к результатам'
-  },
-
   sharedMetrics: {
     consentTitle: 'Помочь улучшить Hermes?',
     consentBody:
@@ -102,6 +61,7 @@ export const ru = defineLocale({
     stripDetails: 'Подробнее'
   },
   catalog: {
+    browse: 'Обзор',
     add: 'Добавить',
     added: 'Добавлено',
     discover: 'Открывайте новое',
@@ -761,6 +721,10 @@ export const ru = defineLocale({
       system: { label: 'Системная', description: 'Следовать настройкам ОС' }
     },
     appearance: {
+      loginStartupFailed: 'Windows не включила автозапуск. Проверьте приложения автозагрузки в настройках Windows.',
+      loginStartupDesc:
+        'Открывать приложение свёрнутым при входе в систему. Используется сохранённый основной профиль.',
+      loginStartupTitle: 'Запускать Hermes вместе с Windows',
       chatTextScaleTitle: 'Размер текста чата',
       chatTextScaleDesc:
         'Масштабирует текст беседы и поле ввода относительно масштаба интерфейса. Размер боковых панелей и элементов управления не меняется.',
@@ -861,10 +825,6 @@ export const ru = defineLocale({
       resumeLastSessionTitle: 'Открывать последний чат при запуске',
       resumeLastSessionDesc:
         'Продолжайте с того места, где остановились. Выключите, чтобы всегда начинать с нового чата.',
-      loginStartupTitle: 'Запускать Hermes вместе с Windows',
-      loginStartupDesc:
-        'Открывать приложение свёрнутым при входе в систему. Используется сохранённый основной профиль.',
-      loginStartupFailed: 'Windows не включила автозапуск. Проверьте приложения автозагрузки в настройках Windows.',
       product: 'Продукт',
       productDesc: 'Дружелюбная активность инструментов с краткими сводками.',
       technical: 'Технический',
@@ -1184,41 +1144,10 @@ export const ru = defineLocale({
       }
     }),
     about: {
-      heading: 'Hermes Desktop',
-      version: value => `Версия ${value}`,
-      versionUnavailable: 'Версия недоступна',
-      bundleOutOfSync: 'Сборка приложения устарела',
-      bundleOutOfSyncDesc:
-        'Рантайм Hermes обновлён, но само приложение — ещё старая сборка: новые функции интерфейса (например, Bot Mode) не появятся до обновления. Запустите обновление ниже, чтобы пересобрать приложение. Если предупреждение не исчезнет, переустановите с последнего установщика.',
-      bundleOutOfSyncAction: 'Скачать установщик',
-      updates: 'Обновления',
-      checkNow: 'Проверить сейчас',
-      checking: 'Проверка…',
-      seeWhatsNew: 'Смотреть, что нового',
-      updateNow: 'Обновить сейчас',
-      updateSource: 'Источник обновлений',
-      releaseNotes: 'Заметки о выпуске',
-      onLatest: 'Настроенный источник обновлений актуален.',
-      installing: 'Сейчас устанавливается обновление.',
-      cantUpdate: 'Эта сборка не может обновляться изнутри приложения.',
-      cantReach: 'Не удалось связаться с сервером обновлений.',
-      tapCheck: 'Нажмите «Проверить сейчас», чтобы найти обновления.',
-      updateReady: count =>
-        `Готово новое обновление (включено ${count} ${RU_PLURAL(count, 'изменение', 'изменения', 'изменений')}).`,
-      updateReadyUnknown: 'Готово новое обновление.',
-      lastChecked: age => `Проверено ${age}`,
-      justNowSuffix: ' · только что',
-      automaticUpdates: 'Автоматические обновления',
-      automaticUpdatesDesc: 'Hermes автоматически проверяет обновления в фоне и сообщает, когда они готовы.',
-      updateParked: 'Обновление ожидает безопасного состояния рабочей копии.',
-      updateParkedDesc:
-        'Локальные исправления сохранены. Проверьте или перенесите их перед установкой обновления из upstream.',
       branchCommit: (branch, commit) => `Ветка ${branch} · Коммит ${commit}`,
-      never: 'никогда',
-      justNow: 'только что',
-      minAgo: count => `${count} ${RU_NOUN(count, 'минуту', 'минуты', 'минут')} назад`,
-      hoursAgo: count => `${count} ${RU_NOUN(count, 'час', 'часа', 'часов')} назад`,
-      daysAgo: count => `${count} ${RU_NOUN(count, 'день', 'дня', 'дней')} назад`
+      updateSource: 'Источник обновлений',
+      automaticUpdatesDesc: 'Hermes автоматически проверяет обновления в фоне и сообщает, когда они готовы.',
+      automaticUpdates: 'Автоматические обновления',
       updates: 'Обновления'
     },
     config: {
@@ -1807,12 +1736,13 @@ export const ru = defineLocale({
     }
   },
   skills: {
+    provenanceSummary: (agent, bundled, hub) => `${agent} обученных · ${bundled} встроенных · ${hub} из хаба`,
+    tabHub: 'Открыть хаб',
     plugins: {
       pageBlurb: 'Плагин может расширять приложение, агента или оба сразу — у каждой части свой переключатель.'
     },
     tabSkills: 'Навыки',
     tabToolsets: 'Инструменты',
-    tabHub: 'Открыть хаб',
     configuringProfile: 'Настраивается:',
     all: 'Все',
     searchSkills: 'Поиск навыков...',
@@ -1856,7 +1786,6 @@ export const ru = defineLocale({
       bundled: 'Встроенный',
       hub: 'Хаб'
     },
-    provenanceSummary: (agent, bundled, hub) => `${agent} обученных · ${bundled} встроенных · ${hub} из хаба`,
     emptyNoneFound: noun => `Не найдено: ${noun}`,
     emptyNothingMatches: query => `Ничего не подходит под «${query}».`,
     emptyNoneAvailable: noun => `${noun} пока недоступны.`,
@@ -1993,6 +1922,9 @@ export const ru = defineLocale({
     tokens: value => `${value} ток`
   },
   commandCenter: {
+    logTailHint: count => `Показано не более ${count} последних строк выбранного файла и уровня.`,
+    allLogLevels: 'Все уровни',
+    actionTimedOut: 'Действие всё ещё выполняется; проверьте последние журналы для итогового статуса.',
     close: 'Закрыть командный центр',
     paletteTitle: 'Палитра команд',
     back: 'Назад',
@@ -2111,7 +2043,6 @@ export const ru = defineLocale({
     actionDone: 'готово',
     actionFailed: 'ошибка',
     actionStartedWaiting: 'Действие запущено, ожидание статуса...',
-    actionTimedOut: 'Действие всё ещё выполняется; проверьте последние журналы для итогового статуса.',
     loadingStatus: 'Загрузка статуса...',
     recentLogs: 'Последние записи журнала',
     noLogs: 'Журналы ещё не загружены.',
@@ -2135,10 +2066,6 @@ export const ru = defineLocale({
     actions: count => `${count} ${RU_NOUN(count, 'действие', 'действия', 'действий')}`,
     logFile: 'Файл журнала',
     logLevel: 'Уровень',
-    allLogLevels: 'Все уровни',
-    noMatchingLogs: 'Нет строк журнала, соответствующих поиску.',
-    logTailHint: count => `Показано не более ${count} последних строк выбранного файла и уровня.`,
-    logSearchPlaceholder: 'Фильтр строк журнала...',
     logSearchPlaceholder: 'Поиск по строкам журнала...',
     maintenance: {
       runOps: 'Диагностика',

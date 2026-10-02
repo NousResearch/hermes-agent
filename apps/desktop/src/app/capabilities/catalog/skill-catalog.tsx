@@ -17,6 +17,7 @@ import { type CatalogEntry, parseCatalog } from './catalog-data'
 
 interface SkillCatalogProps {
   skills: SkillInfo[]
+  view?: 'installed' | 'browse'
   profile: ProfileScope
   query?: string
   onQueryChange?: (value: string) => void
@@ -35,6 +36,7 @@ export function SkillCatalog(props: SkillCatalogProps) {
 
 function ScopedSkillCatalog({
   skills,
+  view,
   profile,
   query,
   onQueryChange,
@@ -66,6 +68,7 @@ function ScopedSkillCatalog({
   } = useQuery({
     queryKey: [...OFFICIAL_SKILLS_KEY, profileScopeKey(profile)],
     queryFn: () => getOfficialSkills(profile),
+    enabled: view !== 'installed',
     staleTime: 60_000,
     retry: false
   })
@@ -125,7 +128,7 @@ function ScopedSkillCatalog({
       }
     }
 
-    const official = officialData?.skills ?? []
+    const official = view === 'installed' ? [] : officialData?.skills ?? []
 
     const officialEntries = parseCatalog(
       'skills',
@@ -201,7 +204,7 @@ function ScopedSkillCatalog({
     ]
 
     return { entries, skillsById, skillsByName, installedIdentifiers, matchInstalled, officialFor }
-  }, [skills, hubData, officialData])
+  }, [skills, hubData, officialData, view])
 
   // Skills install by name, so a same-named entry can never be added beside the installed one.
   const isInstalled = useCallback(
@@ -316,6 +319,7 @@ function ScopedSkillCatalog({
 
         return skill ? renderInstalledDetail(skill) : null
       }}
+      view={view}
     />
   )
 }

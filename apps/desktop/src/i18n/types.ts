@@ -66,46 +66,6 @@ interface AuxTaskCopy {
 }
 
 export interface Translations {
-  catalog: {
-    listView: string
-    cardView: string
-    installTitle: (name: string) => string
-    installDescription: string
-    installTo: string
-    thisComputer: string
-    installing: string
-    installComplete: (name: string) => string
-    destinationChanged: string
-    browse: string
-    installed: string
-    searchSkills: string
-    searchPlugins: string
-    allSources: string
-    allCategories: string
-    about: string
-    author: string
-    source: string
-    category: string
-    version: string
-    platforms: string
-    requires: string
-    tools: string
-    hooks: string
-    repository: string
-    documentation: string
-    noResults: string
-    tryAnother: string
-    clearFilters: string
-    loadFailed: string
-    retry: string
-    more: string
-    pinned: string
-    snapshotHint: string
-    installHint: string
-    results: (count: number) => string
-    back: string
-  }
-
   /** Shared-metrics consent: first-run dialog + Settings › Safety toggles. */
   sharedMetrics: {
     consentTitle: string
@@ -151,6 +111,7 @@ export interface Translations {
     custom: (label: string) => string[]
   }
   catalog: {
+    browse: string
     add: string
     added: string
     discover: string
@@ -1002,6 +963,9 @@ export interface Translations {
     searchPlaceholder: Record<'about' | 'config' | 'gateway' | 'keys' | 'mcp' | 'sessions', string>
     modeOptions: Record<'light' | 'dark' | 'system', ModeOptionCopy>
     appearance: {
+      loginStartupFailed: string
+      loginStartupDesc: string
+      loginStartupTitle: string
       title: string
       intro: string
       colorMode: string
@@ -1094,9 +1058,6 @@ export interface Translations {
       embedsReset: (count: number) => string
       resumeLastSessionTitle: string
       resumeLastSessionDesc: string
-      loginStartupTitle: string
-      loginStartupDesc: string
-      loginStartupFailed: string
       product: string
       productDesc: string
       technical: string
@@ -1222,32 +1183,11 @@ export interface Translations {
       driverHealth: string
     }
     about: {
-      updates: string
-      checkNow: string
-      checking: string
-      seeWhatsNew: string
-      updateNow: string
-      updateSource: string
-      releaseNotes: string
-      onLatest: string
-      installing: string
-      cantUpdate: string
-      cantReach: string
-      tapCheck: string
-      updateReady: (count: number) => string
-      updateReadyUnknown: string
-      lastChecked: (age: string) => string
-      justNowSuffix: string
-      automaticUpdates: string
-      automaticUpdatesDesc: string
-      updateParked: string
-      updateParkedDesc: string
       branchCommit: (branch: string, commit: string) => string
-      never: string
-      justNow: string
-      minAgo: (count: number) => string
-      hoursAgo: (count: number) => string
-      daysAgo: (count: number) => string
+      updateSource: string
+      automaticUpdatesDesc: string
+      automaticUpdates: string
+      updates: string
     }
     config: {
       minimizeToTrayTitle: string
@@ -2151,9 +2091,10 @@ export interface Translations {
   }
 
   skills: {
+    provenanceSummary: (agent: number, bundled: number, hub: number) => string
+    tabHub: string
     tabSkills: string
     tabToolsets: string
-    tabHub: string
     configuringProfile: string
     all: string
     searchSkills: string
@@ -2192,7 +2133,6 @@ export interface Translations {
     bulkNoChange: string
     usageCount: (count: number | string) => string
     provenance: Record<'agent' | 'bundled' | 'hub', string>
-    provenanceSummary: (agent: number, bundled: number, hub: number) => string
     emptyNoneFound: (noun: string) => string
     emptyNothingMatches: (query: string) => string
     emptyNoneAvailable: (noun: string) => string
@@ -2407,6 +2347,9 @@ export interface Translations {
   }
 
   commandCenter: {
+    logTailHint: (count: number) => string
+    allLogLevels: string
+    actionTimedOut: string
     close: string
     paletteTitle: string
     back: string
@@ -2514,7 +2457,6 @@ export interface Translations {
     actionDone: string
     actionFailed: string
     actionStartedWaiting: string
-    actionTimedOut: string
     loadingStatus: string
     recentLogs: string
     noLogs: string
@@ -2538,11 +2480,9 @@ export interface Translations {
     actions: (count: string) => string
     logFile: string
     logLevel: string
-    allLogLevels: string
-    noMatchingLogs: string
-    logTailHint: (count: number) => string
     logSearchPlaceholder: string
     maintenance: {
+      openFile: string
       runOps: string
       doctor: string
       doctorDesc: string
@@ -2573,7 +2513,6 @@ export interface Translations {
       builtinMemory: string
       memoryFile: string
       userFile: string
-      openFile: string
       bytes: (size: string) => string
       empty: string
       resetMemory: string

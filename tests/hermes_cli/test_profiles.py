@@ -521,8 +521,7 @@ class TestBackfillProfileEnvs:
             assert (p / ".env").read_text() == "OPENROUTER_API_KEY=root-key\n"
             if os.name == "posix":
                 assert stat.S_IMODE((p / ".env").stat().st_mode) == 0o600
-            assert (p / ".env").read_text(encoding="utf-8-sig") == "OPENROUTER_API_KEY=root-key\n"
-            assert stat.S_IMODE((p / ".env").stat().st_mode) == 0o600
+        assert (p / ".env").read_text(encoding="utf-8-sig") == "OPENROUTER_API_KEY=root-key\n"
 
 
     def test_placeholder_when_default_has_no_env(self, profile_env):
@@ -1068,10 +1067,6 @@ class TestWrapperScript:
         else:
             assert wrapper.name == "mybot"
             assert content == '#!/bin/sh\nexec /opt/hermes/bin/hermes -p mybot "$@"\n'
-        assert wrapper.name == "mybot"
-        content = wrapper.read_text(encoding="utf-8-sig")
-        assert content.startswith("#!/bin/sh")
-        assert "exec /opt/hermes/bin/hermes -p mybot" in content
 
 
     @pytest.mark.platforms("windows")

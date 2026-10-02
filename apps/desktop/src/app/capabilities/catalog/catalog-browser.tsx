@@ -41,6 +41,7 @@ import { useCatalogFilters } from './use-catalog-filters'
 
 interface CatalogBrowserProps {
   kind: CatalogKind
+  view?: 'installed' | 'browse'
   query?: string
   onQueryChange?: (value: string) => void
   isInstalled: (entry: CatalogEntry) => boolean
@@ -111,6 +112,7 @@ function mergeInstalled(
 // Props take no destructuring defaults: React Compiler 1.0 skips components that have them.
 export const CatalogBrowser = memo(function CatalogBrowser({
   kind,
+  view,
   isInstalled,
   onInstall,
   isInstalling,
@@ -130,7 +132,9 @@ export const CatalogBrowser = memo(function CatalogBrowser({
   const { t } = useI18n()
   const c = t.catalog
   const cardView = useStore($catalogCardView)
-  const { data, isPending, error, refetch } = useCatalog(kind)
+  const catalogEnabled = view !== 'installed'
+  const { data, isPending, error: catalogError, refetch } = useCatalog(kind, catalogEnabled)
+  const error = catalogEnabled ? catalogError : null
   const deferredQuery = useDeferredValue((query ?? '').trim().toLowerCase())
   const [selectedId, setSelectedId] = useState<string | null>(selectedEntryId ?? null)
   const [detailOpen, setDetailOpen] = useState(false)
@@ -167,7 +171,7 @@ export const CatalogBrowser = memo(function CatalogBrowser({
   const root = useRef<HTMLDivElement>(null)
   useEffect(() => (CATALOG_POINTER_ENABLED && root.current ? trackCatalogPointer(root.current) : undefined), [])
 
-  const entries = mergeInstalled(data ?? [], installedEntries ?? [], matchInstalled)
+  const entries = mergeInstalled(catalogEnabled ? data ?? [] : [], installedEntries ?? [], matchInstalled)
   const visible = isSuperseded ? entries.filter(entry => !isSuperseded(entry)) : entries
   const filtered = sortCatalog(filterCatalog(visible, facets, deferredQuery, isInstalled), sort, kind)
 
@@ -338,7 +342,7 @@ export const CatalogBrowser = memo(function CatalogBrowser({
             </CatalogAlert>
           )}
           <div className="min-h-0 flex-1">
-            {isPending && !entries.length ? (
+            {catalogEnabled && isPending && !entries.length ? (
               <PageLoader label={t.skills.loading} />
             ) : error && !entries.length ? (
               <div className="grid h-full place-items-center p-5">

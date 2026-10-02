@@ -11,7 +11,8 @@ import shutil
 import subprocess
 import sys
 import threading
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, List, Mapping, Optional, Set, Tuple
+from hermes_constants import find_node_executable
 from hermes_cli.stderr_timestamp import stamp_line, timestamp
 from tools.mcp_tool_common import _env_ref_name, _prepend_path
 
@@ -444,46 +445,88 @@ def _npx_cached_invocation(args: list) -> Optional[tuple[str, list]]:
     return spec, rest[1:]
 
 
+def _npx_cached_bin(
+    args: list, *, env: Optional[Mapping[str, str]] = None, cwd: Optional[str] = None,
+) -> Optional[tuple[str, list]]:
+    """Resolve a cache-backed ``npx -y <pkg>`` invocation, or leave it to npx.
+
+    Use the same child environment and working directory as the eventual server. If npm's
+    selected cache contains more than one matching entry, the package has no single bin, or its
+    launcher is missing, return ``None`` rather than guessing which cached version npx would use.
+    """
+    invocation = _npx_cached_invocation(args)
+    if invocation is None:
+        return None
+    spec, server_args = invocation
+
+    child_env = os.environ if env is None else env
+    configured_cache = _env_value(child_env, "npm_config_cache", case_insensitive=True)
+    if configured_cache:
+        cache_root = _resolve_npm_cache_path(configured_cache, child_env, cwd)
+    else:
+        home = (
+            _env_value(child_env, "HOME", case_insensitive=True)
+            or _env_value(child_env, "USERPROFILE", case_insensitive=True)
+            or os.path.expanduser("~")
+        )
+        if os.name == "nt":
+            local_app_data = _env_value(child_env, "LOCALAPPDATA", case_insensitive=True)
+            cache_root = (
+                os.path.join(local_app_data, "npm-cache")
+                if local_app_data
+                else os.path.join(home, "AppData", "Local", "npm-cache")
+            )
+        else:
+            cache_root = os.path.join(home, ".npm")
+
+    npx_root = os.path.join(cache_root, "_npx")
+    try:
+        entries = [entry for entry in os.scandir(npx_root) if entry.is_dir()]
+    except OSError:
+        return None
+
+    matches = []
     for entry in entries:
-        manifest = os.path.join(npx_root, entry, "package.json")
+        manifest = os.path.join(entry.path, "package.json")
         try:
             with open(manifest, "r", encoding="utf-8-sig") as fh:
-                deps = (json.load(fh) or {}).get("dependencies") or {}
+                dependencies = (json.load(fh) or {}).get("dependencies") or {}
         except (OSError, ValueError, TypeError):
             continue
-        if spec not in deps:
-            continue
-        try:
-            with open(pkg_json, "r", encoding="utf-8-sig") as fh:
-                bin_field = (json.load(fh) or {}).get("bin")
-        except (OSError, ValueError, TypeError):
-            continue
+        if isinstance(dependencies, dict) and spec in dependencies:
+            matches.append(entry.path)
 
-        for entry in entries:
-            manifest = os.path.join(npx_root, entry, "package.json")
-            try:
-                with open(manifest, "r", encoding="utf-8") as fh:
-                    deps = (json.load(fh) or {}).get("dependencies") or {}
-            except (OSError, ValueError, TypeError):
-                continue
-            if spec not in deps:
-                continue
-            pkg_json = os.path.join(npx_root, entry, "node_modules", spec, "package.json")
-            try:
-                with open(pkg_json, "r", encoding="utf-8") as fh:
-                    bin_field = (json.load(fh) or {}).get("bin")
-            except (OSError, ValueError, TypeError):
-                continue
-            if isinstance(bin_field, str):
-                names = [os.path.basename(spec)]
-            elif isinstance(bin_field, dict) and len(bin_field) == 1:
-                names = list(bin_field.keys())
-            else:
-                continue  # zero or several bins: which one npx would pick is not ours to guess
-            bin_dir = os.path.join(npx_root, entry, "node_modules", ".bin")
-            for candidate in _npx_bin_candidates(bin_dir, names[0]):
-                if os.path.exists(candidate) and os.access(candidate, os.X_OK):
-                    return candidate, server_args
+    if len(matches) != 1:
+        return None
+
+    entry_path = matches[0]
+    package_manifest = os.path.join(entry_path, "node_modules", spec, "package.json")
+    try:
+        with open(package_manifest, "r", encoding="utf-8-sig") as fh:
+            bin_field = (json.load(fh) or {}).get("bin")
+    except (OSError, ValueError, TypeError):
+        return None
+
+    if isinstance(bin_field, str):
+        bin_name = os.path.basename(spec)
+    elif isinstance(bin_field, dict) and len(bin_field) == 1:
+        bin_name = next(iter(bin_field))
+    else:
+        return None
+    if (
+        not isinstance(bin_name, str)
+        or not bin_name
+        or bin_name in {".", ".."}
+        or os.path.basename(bin_name) != bin_name
+        or "/" in bin_name
+        or "\\" in bin_name
+    ):
+        return None
+
+    bin_dir = os.path.join(entry_path, "node_modules", ".bin")
+    for candidate in _npx_bin_candidates(bin_dir, bin_name):
+        if os.path.exists(candidate) and os.access(candidate, os.X_OK):
+            return candidate, server_args
     return None
 
 

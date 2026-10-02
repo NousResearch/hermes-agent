@@ -392,9 +392,23 @@ function currentSessionId(sessionId: null | string | undefined): null | string {
 }
 
 /** True when `sessionId`'s drawer shows `tab`: its own tabs plus every pin.
- *  With no session (a fresh draft) the ownerless tabs are its own. */
-function tabVisibleTo(tab: PreviewTab, sessionId: null | string, rotated: ReadonlyMap<string, string>): boolean {
-  return Boolean(tab.pinned) || latestSessionId(tab.sessionId, rotated) === latestSessionId(sessionId, rotated)
+ *  With no session (a fresh draft) the true draft tabs are its own — never a
+ *  runtime's pending tab, which only that runtime's drawer shows. */
+function tabVisibleTo(
+  tab: PreviewTab,
+  sessionId: null | string,
+  rotated: ReadonlyMap<string, string>,
+  pending: ReadonlyMap<string, string>
+): boolean {
+  if (tab.pinned) {
+    return true
+  }
+
+  if (tab.sessionId == null && pending.has(tab.id)) {
+    return false
+  }
+
+  return latestSessionId(tab.sessionId, rotated) === latestSessionId(sessionId, rotated)
 }
 
 /** Who an agent tool acts for: a stored id (null = none bound yet), or the
@@ -516,7 +530,7 @@ export const $visiblePreviewTabs = computed(
   (tabs, sessionId, rotated, pending, activeRuntime, focusedIsTile, selectionIsListed) =>
     tabs.filter(
       tab =>
-        tabVisibleTo(tab, sessionId, rotated) ||
+        tabVisibleTo(tab, sessionId, rotated, pending) ||
         (!focusedIsTile &&
           !selectionIsListed &&
           tab.sessionId == null &&

@@ -688,6 +688,37 @@ describe('preview session scoping (#73890)', () => {
     }
   })
 
+  // A runtime's pending tab (opened before its stored id bound) belongs to that
+  // runtime's drawer only: a fresh draft — or another runtime — must not see
+  // it, while a true draft tab stays in the draft.
+  it("keeps a runtime's pending tab out of a fresh draft's drawer", () => {
+    $activeSessionId.set('rt-shown')
+
+    try {
+      openPreview(urlTarget('https://pending.example'))
+      const pendingTab = $previewTabs.get()[0]!.id
+
+      expect($visiblePreviewTabs.get().map(tab => tab.id)).toEqual([pendingTab])
+
+      // A fresh draft: no runtime on screen yet.
+      $activeSessionId.set(null)
+      expect($visiblePreviewTabs.get()).toEqual([])
+
+      openPreview(fileTarget('/work/draft-own.html'))
+      expect(paths($visiblePreviewTabs.get())).toEqual(['/work/draft-own.html'])
+
+      // Another runtime on screen sees neither the first runtime's tab.
+      $activeSessionId.set('rt-other')
+      expect($visiblePreviewTabs.get().map(tab => tab.id)).not.toContain(pendingTab)
+
+      // The runtime that opened it still does.
+      $activeSessionId.set('rt-shown')
+      expect($visiblePreviewTabs.get().map(tab => tab.id)).toContain(pendingTab)
+    } finally {
+      $activeSessionId.set(null)
+    }
+  })
+
   it('owns a strip "+" Browser by the focused session, never adopting it elsewhere', () => {
     $selectedStoredSessionId.set('sess-x')
     newBrowserTab()

@@ -420,8 +420,6 @@ DANGEROUS_PATTERNS = [
     # --ha, --har): --hard is the only reset mode starting with "h", and `--help` is special-cased
     # by git before mode resolution.
     (r'\bgit\s+reset\s+--h(?:a(?:r(?:d)?)?)?\b', "git reset --hard (destroys uncommitted changes)"),
-    (r'\bgit\s+push\b.*--forc[a-z]*\b', "git force push (rewrites remote history)"),
-    (r'\bgit\s+push\b.*-f\b', "git force push short flag (rewrites remote history)"),
     (r'\bgit\s+clean\s+-[^\s]*f', "git clean with force (deletes untracked files)"),
     # `-D` = `-d --force`: only the capital short flag is force-delete, so the group opts out of
     # the module-wide re.IGNORECASE and relies on _lower_preserving_flags keeping dash-prefixed
@@ -466,10 +464,12 @@ _QUOTE_MASKED_DANGEROUS_DESCRIPTIONS = frozenset({
     "dynamic shell word may expand to arbitrary program execution flag",
 })
 
-# Preserve approvals stored under the removed interpreter regex rules.
+# Preserve approvals stored under removed regex rules.
 _REMOVED_PATTERN_KEY_ALIASES = {
     "script execution via -e/-c flag": "(python[23]?|perl|ruby|node)\\s+-[ec]\\s+",
     "script execution via heredoc": "(python[23]?|perl|ruby|node)\\s+<<",
+    "git force push (rewrites remote history)": r"git\s+push",
+    "git force push short flag (rewrites remote history)": r"git\s+push",
 }
 # description <-> legacy regex-derived key (the old approval key, kept for backwards compatibility
 # with stored allowlist/session entries), both ways.
@@ -1521,6 +1521,39 @@ def _is_shell_token_spliced_gateway_lifecycle(command: str) -> bool:
     return contains_gateway_lifecycle_command(command)
 
 
+def _git_force_push_findings(command: str | None):
+    # Branches such as feat/aios-f-vat-placeholder contain '-f' but do not
+    # rewrite history. Parse actual argument tokens in executable positions.
+    if not command or "git" not in command.lower():
+        return
+    for start, _, word in _iter_shell_command_word_spans(command):
+        if os.path.basename(_deobfuscate_shell_word_for_detection(word)).lower() != "git":
+            continue
+        tokens = _shell_tokens_with_spans(command, start)
+        args = [token[0] for token in tokens] if tokens else []
+        if args[1:2] != ["push"]:
+            continue
+        index = 2
+        while index < len(args):
+            token = args[index]
+            if token == "--":
+                break
+            option, equals, _ = token.partition("=")
+            if option in {"--repo", "--receive-pack", "--exec", "--push-option"}:
+                index += 1 if equals else 2
+                continue
+            if token.startswith("-o") and not token.startswith("--"):
+                index += 2 if token == "-o" else 1
+                continue
+            if re.match(r"--forc[a-z]*(?:-|$)", option, re.IGNORECASE):
+                yield "git force push (rewrites remote history)"
+                break
+            if token.startswith("-") and not token.startswith("--") and "f" in token[1:]:
+                yield "git force push short flag (rewrites remote history)"
+                break
+            index += 1
+
+
 def detect_dangerous_command(command: str) -> tuple:
     """Check dangerous patterns -> (is_dangerous, pattern_key, description)."""
     if _command_parser_limit_exceeded(command):
@@ -1540,6 +1573,8 @@ def detect_dangerous_command(command: str) -> tuple:
                     return (True, description, description)
             elif pattern_re.search(command_lower):
                 return (True, description, description)
+        for description in _git_force_push_findings(command_variant):
+            return (True, description, description)
     normalized = _normalize_command_for_detection(command)
     for description, _ in _execution_flag_findings(normalized):
         return (True, description, description)

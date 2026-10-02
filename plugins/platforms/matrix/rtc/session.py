@@ -33,6 +33,22 @@ VERDICT_TTL_SECONDS = 5.0
 
 
 @dataclass(frozen=True)
+class _PhysicalHome:
+    path: Path
+    device: int
+    inode: int
+
+    @classmethod
+    def resolve(cls, home: Path) -> Optional[_PhysicalHome]:
+        try:
+            physical = home.resolve(strict=True)
+            stat = physical.stat()
+        except OSError:
+            return None
+        return cls(physical, stat.st_dev, stat.st_ino)
+
+
+@dataclass(frozen=True)
 class _CallBinding:
     source: SessionSource
     fields: tuple
@@ -40,8 +56,8 @@ class _CallBinding:
     api: object
     account: tuple
     home: Path
-    physical_home: Path
-    physical_authorization_home: Optional[Path]
+    physical_home: Optional[_PhysicalHome]
+    physical_authorization_home: Optional[_PhysicalHome]
 
 
 def _source_fields(source: SessionSource) -> tuple:
@@ -102,10 +118,10 @@ class MatrixRTCSessions:
         resolve = getattr(runner, "_resolve_profile_home_for_source", None)
         home = Path(resolve(source) if resolve else get_hermes_home())
         identity = identity_of(source)
-        authorization_home = identity.authorization_home.resolve() if identity is not None else None
+        authorization_home = _PhysicalHome.resolve(identity.authorization_home) if identity is not None else None
         self._bindings[room_id] = _CallBinding(
             source, _source_fields(source), client, getattr(client, "api", None),
-            self._account(), home, home.resolve(), authorization_home)
+            self._account(), home, _PhysicalHome.resolve(home), authorization_home)
         self.invalidate(room_id)
         logger.info("MatrixRTC: call in %s bound to %s", room_id, source.description)
 
@@ -146,8 +162,10 @@ class MatrixRTCSessions:
         resolve = getattr(runner, "_resolve_profile_home_for_source", None)
         home = Path(resolve(source)) if resolve is not None else binding.home
         identity = identity_of(source)
-        authorization_home = identity.authorization_home.resolve() if identity is not None else None
-        return (home == binding.home and home.resolve() == binding.physical_home
+        authorization_home = _PhysicalHome.resolve(identity.authorization_home) if identity is not None else None
+        return (binding.physical_home is not None and home == binding.home
+                and _PhysicalHome.resolve(home) == binding.physical_home
+                and (identity is None or authorization_home is not None)
                 and authorization_home == binding.physical_authorization_home)
 
     # --- authorization ---

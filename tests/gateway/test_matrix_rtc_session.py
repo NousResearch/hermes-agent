@@ -330,10 +330,11 @@ class TestReceiverAuthorizationHook:
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("change", ["control", "speaker-route", "requester-route", "physical-home", "adapter-replaced", "revoked-role"])
+@pytest.mark.parametrize("change", ["control", "speaker-route", "requester-route", "physical-home", "home-recreated", "adapter-replaced", "revoked-role"])
 async def test_call_sources_follow_current_route_home_and_authority(tmp_path, monkeypatch, change):
     from dataclasses import replace
     from pathlib import Path
+    import shutil
     from types import SimpleNamespace
 
     from gateway.config import GatewayConfig, PlatformConfig
@@ -383,6 +384,9 @@ async def test_call_sources_follow_current_route_home_and_authority(tmp_path, mo
         if change == "physical-home":
             expected_home.rename(original_home)
             expected_home.symlink_to(b if profile == "a" else a, target_is_directory=True)
+        if change == "home-recreated":
+            expected_home.rename(original_home)
+            shutil.copytree(original_home, expected_home)
         if change == "adapter-replaced":
             runner.adapters[Platform.MATRIX] = MatrixAdapter(PlatformConfig(enabled=True))
         if change == "revoked-role":
@@ -400,6 +404,9 @@ async def test_call_sources_follow_current_route_home_and_authority(tmp_path, mo
         finally:
             if change == "physical-home":
                 expected_home.unlink()
+                original_home.rename(expected_home)
+            if change == "home-recreated":
+                shutil.rmtree(expected_home)
                 original_home.rename(expected_home)
             runner.adapters[Platform.MATRIX] = adapter
             (home / ".env").write_text(f"GATEWAY_ALLOWED_USERS={ALICE},@owner:hs.tld,@bob:hs.tld\n")

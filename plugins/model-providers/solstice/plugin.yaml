@@ -1,0 +1,5 @@
+name: solstice-provider
+kind: model-provider
+version: 0.1.0
+description: Solstice (per-user-quota OAuth)
+author: Nous Research

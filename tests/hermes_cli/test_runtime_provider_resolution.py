@@ -311,6 +311,45 @@ def test_qwen_oauth_auto_fallthrough_on_auth_failure(monkeypatch):
     assert resolved["provider"] != "qwen-oauth"
 
 
+def test_resolve_runtime_provider_solstice(monkeypatch):
+    """runtime_provider returns the solstice dict from the auth module."""
+    from hermes_cli import solstice as aa
+
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "solstice")
+    monkeypatch.setattr(aa, "solstice_enabled", lambda: True)
+    monkeypatch.setattr(
+        aa,
+        "resolve_solstice_runtime_credentials",
+        lambda **kw: {
+            "provider": "solstice",
+            "api_mode": "chat_completions",
+            "base_url": "https://generativelanguage.googleapis.com/v1alpha",
+            "api_key": "oauth-at-1",
+            "source": "hermes-auth-store",
+        },
+    )
+
+    resolved = rp.resolve_runtime_provider(requested="solstice")
+
+    assert resolved["provider"] == "solstice"
+    assert resolved["api_mode"] == "chat_completions"
+    assert resolved["api_key"] == "oauth-at-1"
+    assert "generativelanguage.googleapis.com" in resolved["base_url"]
+
+
+def test_resolve_runtime_provider_solstice_disabled(monkeypatch):
+    """When solstice is not configured, auto-resolution falls through."""
+    from hermes_cli import solstice as aa
+
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "solstice")
+    monkeypatch.setattr(aa, "solstice_enabled", lambda: False)
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-or-key")
+
+    resolved = rp.resolve_runtime_provider(requested="auto")
+
+    assert resolved["provider"] != "solstice"
+
+
 def test_resolve_runtime_provider_ai_gateway(monkeypatch):
     monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "ai-gateway")
     monkeypatch.setattr(rp, "_get_model_config", lambda: {})

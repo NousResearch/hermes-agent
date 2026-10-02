@@ -4217,7 +4217,7 @@ class BasePlatformAdapter(ABC):
                         chat_id=event.source.chat_id, metadata=warning_metadata):
                     return
             bounded_put(self._auto_tts_failure_notices, session_key, True, 2000)
-            result = await self.send(
+            result = await self._final_delivery_adapter(event.source).send(
                 event.source.chat_id,
                 "Voice reply unavailable; falling back to text. "
                 "Ask the operator to check the configured TTS provider and its dependencies.",

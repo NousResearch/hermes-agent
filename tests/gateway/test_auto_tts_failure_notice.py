@@ -67,6 +67,19 @@ async def test_notice_policy_retry_routing_and_stream_metadata():
 
 
 @pytest.mark.asyncio
+async def test_reconnected_transport_receives_failure_notice():
+    from types import SimpleNamespace
+
+    stale = _DummyAdapter(Platform.TELEGRAM)
+    live = _DummyAdapter(Platform.TELEGRAM)
+    event = _make_voice_event(Platform.TELEGRAM)
+    stale.gateway_runner = SimpleNamespace(_delivery_adapter_for=lambda source: live)
+    await stale._notify_auto_tts_failure(event, build_session_key(event.source), {})
+    assert not stale.sent
+    assert len(live.sent) == 1
+
+
+@pytest.mark.asyncio
 async def test_success_resets_outage_and_disabled_voice_has_no_notice(tmp_path):
     from gateway.platforms.base import SendResult
 

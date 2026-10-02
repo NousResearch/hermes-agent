@@ -1918,8 +1918,8 @@ class GatewayTurnMixin:
                         agent_result.get("last_prompt_tokens", 0) or 0,
                         agent_result.get("context_length", 0) or 0,
                     )
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("[discord] context presence refresh failed: %r", e)
 
         # Re-baseline the cached agent's message_count now that ALL of this turn's writes are done:
         # the coherence guard snapshots at agent-BUILD time, so our own writes would otherwise

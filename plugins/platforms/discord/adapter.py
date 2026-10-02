@@ -2221,7 +2221,7 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             logger.warning("[%s] Slash command sync failed: %s", self.name, e, exc_info=True)
 
     # ── Context-usage presence (member-pane activity) ────────────────────
-    # https://github.com/Robbbbbbbbb/
+    #
     # After each agent turn the gateway calls update_context_presence() with
     # the API-reported prompt tokens and the model's context window.  We
     # render "Playing <pct>% - <used>k / <total>k" (e.g. "12% - 108.4k / 900k")
@@ -2245,9 +2245,9 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         Safe to call from any task; never raises.  A zero/absent context
         length (first turn before warm-up) shows the raw token count only.
         """
+        if not self._context_presence_enabled():
+            return
         try:
-            if not self._context_presence_enabled():
-                return
             tokens = int(prompt_tokens or 0)
             length = int(context_length or 0)
             if length > 0:
@@ -2259,15 +2259,16 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             loop = asyncio.get_running_loop()
         except RuntimeError:
             return  # no loop on this thread; drop the update
-        except Exception:
+        except Exception as e:
+            logger.debug("[%s] presence render failed: %r", self.name, e)
             return
         try:
             task = getattr(self, "_presence_task", None)
             if task is not None and not task.done():
                 task.cancel()
             self._presence_task = loop.create_task(self._push_context_presence())
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("[%s] presence schedule failed: %r", self.name, e)
 
     async def _push_context_presence(self) -> None:
         await asyncio.sleep(1.0)  # coalesce same-turn double-fires
@@ -2286,7 +2287,7 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         except asyncio.CancelledError:
             raise
         except Exception as e:
-            logger.debug("[%s] presence update failed: %s", self.name, e)
+            logger.debug("[%s] presence update failed: %r", self.name, e)
 
     def _missed_message_backfill_enabled(self) -> bool:
         """Whether to reconcile Discord messages missed while the gateway was down."""

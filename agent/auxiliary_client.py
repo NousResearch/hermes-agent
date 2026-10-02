@@ -3716,7 +3716,16 @@ def _recover_provider_pool(provider: str, exc: Exception, *, failed_api_key: str
     status_code = getattr(exc, "status_code", None)
 
     def _rotate(fallback_status: int) -> bool:
-        error_context: Dict[str, Any] = {"message": str(exc)}
+        # The pool sizes its bench from the window the provider reported, so the aux ladder has to
+        # parse the response like the main loop does. Without this a 429 carrying ``retry-after: 30``
+        # leaves last_error_reset_at unset and the entry sits out the blind EXHAUSTED_TTL_429_SECONDS
+        # hour, which drains a healthy pool under a burst. Imported locally because
+        # agent_runtime_helpers imports this module back.
+        from agent.agent_runtime_helpers import extract_api_error_context
+
+        error_context: Dict[str, Any] = dict(extract_api_error_context(exc))
+        if "message" not in error_context:
+            error_context["message"] = str(exc)
         if status_code is not None:
             error_context["status_code"] = status_code
         next_entry = pool.mark_exhausted_and_rotate(

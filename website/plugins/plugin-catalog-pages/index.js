@@ -5,8 +5,8 @@
 //
 // Both are generated at build time from the same plugins.json the catalog grid fetches, so
 // there is no second data source: a merged catalog PR is the only way a page appears,
-// changes or disappears. Entries that opt in with `readme: true` get their README fetched
-// from the pinned commit and rendered through the allowlist in ./readme.js.
+// changes or disappears. Every entry's README is fetched from the pinned commit and rendered
+// through the allowlist in ./readme.js unless the entry sets `readme: false`.
 //
 // The site degrades, never fails: a missing plugins.json (extract-plugins.py did not run)
 // generates zero pages with a warning, and a README that cannot be fetched leaves that
@@ -18,7 +18,7 @@ const { fetchReadme, renderReadme } = require("./readme.js");
 
 const PLUGINS_JSON = path.join("static", "api", "plugins.json");
 const META_JSON = path.join("static", "api", "plugins-meta.json");
-const README_CONCURRENCY = 6;
+const README_CONCURRENCY = 12;
 
 function log(msg) {
   console.warn(`[plugin-catalog-pages] ${msg}`);
@@ -88,7 +88,7 @@ module.exports = function pluginCatalogPages(context) {
       });
       const readmes = Object.fromEntries(wantReadme.map((entry, i) => [entry.name, rendered[i]]));
       if (wantReadme.length) {
-        log(`rendered ${rendered.filter(Boolean).length}/${wantReadme.length} opted-in READMEs from pinned commits`);
+        log(`rendered ${rendered.filter(Boolean).length}/${wantReadme.length} READMEs from pinned commits`);
       }
       return { entries, meta, readmes };
     },

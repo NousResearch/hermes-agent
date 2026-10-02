@@ -14,6 +14,9 @@ import re
 from functools import partial
 from typing import Any, Callable
 
+from agent.message_metadata import DB_ROW_SNAPSHOT
+from agent.vision_message_prep import _provider_model_key
+
 logger = logging.getLogger(__name__)
 
 # Lone surrogates are invalid UTF-8 and crash json.dumps in the OpenAI SDK; also used for
@@ -21,11 +24,16 @@ logger = logging.getLogger(__name__)
 _SURROGATE_RE = re.compile(r'[\ud800-\udfff]')
 
 # Keys handled explicitly by _sanitize_messages; every OTHER key is swept generically.
-_MESSAGE_CORE_KEYS = frozenset({"content", "name", "tool_calls", "role"})
+# The durable snapshot is an immutable compare-and-swap version, not message payload.
+_MESSAGE_CORE_KEYS = frozenset({"content", "name", "tool_calls", "role", DB_ROW_SNAPSHOT})
 
 
 def _sanitize_surrogates(text: str) -> str:
     """Replace lone surrogate code points with U+FFFD; no-op when none present."""
+    # ``str.isascii`` is an O(1) flag check; surrogates are never ASCII, so the
+    # regex scan only runs for the (rare) non-ASCII leaf.
+    if text.isascii():
+        return text
     return _SURROGATE_RE.sub('\ufffd', text)
 
 
@@ -50,6 +58,8 @@ def coerce_tool_name(name: Any, fallback: str = "invalid_tool_call") -> str:
 
 def _strip_non_ascii(text: str) -> str:
     """Drop non-ASCII characters — last resort for ASCII-only system encodings (LANG=C)."""
+    if text.isascii():
+        return text
     return text.encode('ascii', errors='ignore').decode('ascii')
 
 
@@ -132,6 +142,15 @@ def sanitize_outbound_kwargs(agent: Any, api_kwargs: dict) -> None:
     """
     _sanitize_structure_surrogates(api_kwargs)
     if agent._force_ascii_payload:
+        # ``tools`` is built from ``agent.tools`` per attempt and usually aliases it; detach
+        # before the in-place strip so the retry never rewrites the canonical tool schemas.
+        # A structural clone suffices: ``_sanitize_structure`` only rebinds str leaves
+        # inside dict/list containers.
+        if api_kwargs.get("tools") is not None and api_kwargs["tools"] is getattr(agent, "tools", None):
+            # Lazy: conversation_loop imports this module (cycle).
+            from agent.conversation_loop import _clone_message_for_send
+
+            api_kwargs["tools"] = _clone_message_for_send(api_kwargs["tools"])
         _sanitize_structure_non_ascii(api_kwargs)
 
 
@@ -326,7 +345,9 @@ def _strip_images_from_messages(messages: list) -> bool:
 
     ``tool`` / ``tool_calls`` messages left empty get a placeholder, NOT deleted (deleting
     orphans the paired ``tool_call_id`` → HTTP 400); other now-empty messages are dropped.
-    Rewritten messages lose their ``api_content`` sidecar (it carries the removed images).
+    Rewritten messages lose their ``api_content`` sidecar (it carries the removed images):
+    a caller rewriting a persisted row must not leave bytes that replay them next turn. The
+    current callers pass per-call clones, where this is a no-op.
     """
     from agent.context_compressor import _DB_PERSISTED_MARKER
     from agent.turn_context import drop_stale_api_content
@@ -369,9 +390,8 @@ _IMAGE_REJECTION_PHRASES = (
     # Some OpenAI-compatible endpoints (e.g. (issue #57948)
     "unexpected item type in content",
     # ChatGPT-account Codex backend rejects data:image URLs in input_image; keyed on the
-    # field-path apostrophe so other URL errors don't false-trip. Second: its wording for
-    # corrupt/unsupported native image payloads.
-    "image_url'. expected", "image data you provided does not represent a valid image",
+    # field-path apostrophe so other URL errors don't false-trip.
+    "image_url'. expected",
     # DeepSeek's text-only request-body variant error.
     "unknown variant `image_url`, expected `text`", "unknown variant image_url, expected text",
     # OpenRouter HTTP 404 when no upstream endpoint accepts image input (passes the 4xx
@@ -380,6 +400,15 @@ _IMAGE_REJECTION_PHRASES = (
     # request until exhaustion, and the gateway leaves every subsequent message queued behind the stuck turn
     # — the P1 in issue #21160.
     "no endpoints found that support image input",
+)
+
+# Provider error bodies meaning "this particular image payload is bad" — the model CAN see, it
+# just could not decode what it was sent. Disjoint from ``_IMAGE_REJECTION_PHRASES``: the turn
+# recovers the same way (strip and retry) but must NOT remember the model as image-rejecting,
+# or the next request with a good image would be needlessly stripped for the rest of the session.
+_IMAGE_CORRUPT_PHRASES = (
+    # ChatGPT-account Codex backend's wording for corrupt/unsupported native image payloads.
+    "image data you provided does not represent a valid image",
     # Kimi/Moonshot et al. reject truncated/corrupt image bytes baked into history.
     # Kimi / Moonshot / other OpenAI-compatible Chinese providers reject truncated or corrupt image bytes
     # with HTTP 400 "Invalid request: prepare image failed ... failed to decode image: invalid or
@@ -390,11 +419,30 @@ _IMAGE_REJECTION_PHRASES = (
     "failed to decode image",
 )
 
+def strip_images_for_rejecting_model(agent: Any, api_messages: Any) -> bool:
+    """Send-path image strip for a model that rejected image content (see turn_recovery).
+
+    Runs on the per-call ``api_messages`` copy in Hermes's own message format, BEFORE the
+    provider-specific conversion: the part types this stripper knows are that format's, and a
+    converted payload (Bedrock Converse ``{"image": ...}`` blocks carry no ``type``) would slip
+    past it. History is never touched. Keyed on each rejecting (provider, model), so a model
+    that accepts images gets them again.
+    """
+    if _provider_model_key(agent) not in agent._image_rejecting_models:
+        return False
+    return isinstance(api_messages, list) and _strip_images_from_messages(api_messages)
+
 
 def _looks_like_image_content_rejection(error_body: str) -> bool:
     """Return True when a provider error says image/multimodal input is unsupported."""
     body = str(error_body or "").lower()
     return any(phrase in body for phrase in _IMAGE_REJECTION_PHRASES)
+
+
+def _looks_like_corrupt_image_rejection(error_body: str) -> bool:
+    """Return True when the rejection is about a bad image payload, not the model's capability."""
+    body = str(error_body or "").lower()
+    return any(phrase in body for phrase in _IMAGE_CORRUPT_PHRASES)
 
 
 __all__ = [
@@ -404,6 +452,7 @@ __all__ = [
     "_escape_invalid_chars_in_json_strings", "_repair_tool_call_arguments",
     "_strip_non_ascii", "_sanitize_messages_non_ascii", "_sanitize_tools_non_ascii",
     "_strip_images_from_messages", "_sanitize_structure_non_ascii", "sanitize_outbound_kwargs",
+    "strip_images_for_rejecting_model",
     # call_id policy owners
     "deterministic_call_id", "coalesce_tool_call_id", "tool_call_id_variants",
     "tool_result_id_variants", "uniquify_tool_call_ids",
@@ -582,7 +631,63 @@ def stale_thinking_reaches_wire(api_mode: Any, provider: Any, model: Any, base_u
     to preflight yet fully tail-protected to the walk — an infinite compaction loop.
     ``codex_responses`` never reads the text keys (continuity rides the encrypted sidecar).
     """
+    if (api_mode or "") == "anthropic_messages":
+        from agent.anthropic_thinking_policy import native_anthropic_preserves_prior_thinking
+        if native_anthropic_preserves_prior_thinking(base_url, model):
+            return True
     return (api_mode or "") != "codex_responses" and needs_reasoning_echo(provider, model, base_url)
+
+
+def native_anthropic_accounting_projection(messages: Any) -> tuple[Any, tuple[str, ...]]:
+    """Return the native Anthropic wire shadow plus readable replay thinking out-of-band.
+
+    Canonical history may retain storage-only reasoning alongside signed replay carriers.
+    Native conversion prefers ordered anthropic_content_blocks over reasoning_details and
+    never sends reasoning itself. The generic message estimator therefore receives only
+    ordinary wire-shaped fields, while readable thinking is returned separately for the
+    explicit Anthropic accounting seam. Opaque signature/data bytes are never priced.
+    """
+    if not isinstance(messages, list):
+        return messages, ()
+
+    from agent.anthropic_message_convert import assistant_replay_carrier
+
+    projected = []
+    replayed_thinking: list[str] = []
+    for message in messages:
+        if not isinstance(message, dict) or message.get("role") != "assistant":
+            projected.append(message)
+            continue
+
+        # Mirror _convert_assistant_message's actual inputs instead of starting
+        # from canonical storage. Context selection is allowed to return canonical
+        # rows, which can contain timestamp/finish_reason/api_content and other
+        # local metadata that native Anthropic never sees.
+        shadow = {"role": "assistant"}
+        for key in ("content", "tool_calls", "reasoning_content", "cache_control"):
+            if key in message:
+                shadow[key] = message[key]
+        # Canonical input (preflight, tail walk) still holds the api_content sidecar that
+        # build_api_messages substitutes into content; post-build input already carries it in
+        # content. Charge it either way: an ordered turn, or a context-selection clone the
+        # converter reads raw, then overcounts, never undercounts.
+        sidecar = message.get("api_content")
+        if isinstance(sidecar, str) and sidecar:
+            shadow["content"] = sidecar
+
+        _, carrier = assistant_replay_carrier(message)
+        # The converter ignores reasoning_content for an ordered turn and only injects it when the
+        # details carrier holds no thinking, so it must not be charged in addition to the carrier.
+        if carrier:
+            shadow.pop("reasoning_content", None)
+
+        replayed_thinking.extend(
+            block["thinking"]
+            for block in carrier
+            if block.get("type") == "thinking" and isinstance(block.get("thinking"), str) and block["thinking"]
+        )
+        projected.append(shadow)
+    return projected, tuple(replayed_thinking)
 
 
 def apply_reasoning_content_policy(source_msg: dict, api_msg: dict, needs_thinking_pad: bool) -> None:

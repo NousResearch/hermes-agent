@@ -17,10 +17,14 @@ import {
   setDefaultReasoningEffort,
   setIntroPersonality
 } from '@/store/session'
+import { setShowToolActivityFromConfig } from '@/store/tool-activity'
 import { refreshVoiceLiveStatus } from '@/store/voice-live'
 import {
   applyAutoSpeakFromConfig,
+  applyBargeInEnabledFromConfig,
+  applyBargeInThresholdFromConfig,
   applyThinkingSoundFromConfig,
+  applyVoiceSilenceMsFromConfig,
   applyVoiceStopPhraseFromConfig
 } from '@/store/voice-prefs'
 import { setChatFontFamilyFromConfig } from '@/themes/chat-font'
@@ -142,6 +146,7 @@ export function useHermesConfig({ activeSessionIdRef }: HermesConfigOptions) {
 
         setDisplayTimestampsFromConfig(config.display?.timestamps)
         setShowReasoningFromConfig(config.display?.show_reasoning)
+        setShowToolActivityFromConfig(config.display?.tool_progress)
         setTerminalFontFamilyFromConfig(config.terminal?.font_family)
         setChatFontFamilyFromConfig(config.desktop?.font_family)
 
@@ -150,8 +155,11 @@ export function useHermesConfig({ activeSessionIdRef }: HermesConfigOptions) {
         }
 
         applyAutoSpeakFromConfig(config)
-        applyVoiceStopPhraseFromConfig(config)
+        applyVoiceStopPhraseFromConfig(config, defaults)
+        applyBargeInEnabledFromConfig(config)
+        applyBargeInThresholdFromConfig(config)
         applyThinkingSoundFromConfig(config)
+        applyVoiceSilenceMsFromConfig(config, defaults)
         // Resolved server-side (mode + whether a key resolves); non-critical.
         void refreshVoiceLiveStatus().catch(() => undefined)
       } catch {

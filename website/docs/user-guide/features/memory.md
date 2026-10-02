@@ -110,6 +110,8 @@ memory(action="replace", target="memory",
 
 If the substring matches multiple entries, an error is returned asking for a more specific match.
 
+`replace` overwrites the **whole matched entry** with `content` — `old_text` only locates the entry, it is not cut out and replaced. The new `content` must be the complete new entry, including every part of the old one you want to keep. (A whole-entry `old_text` equal to the entry itself is matched exactly and wins over substring matches.)
+
 ## Two Targets Explained
 
 ### `memory` — Agent's Personal Notes
@@ -255,7 +257,7 @@ Beyond viewing, the journey is also where you **prune and correct** what Hermes 
 
 | Command | What it does |
 |---------|--------------|
-| `hermes journey list` | List node ids — skill names and `memory:<source>:<index>` ids for memory chunks. |
+| `hermes journey list` | List node ids — skill names and `memory:<source>:<index>:<fingerprint>` ids for memory chunks (pass one back exactly as printed). |
 | `hermes journey delete <node> [-y]` | Delete a node. Skills are **archived** (restorable), memory chunks are removed. `-y` skips the confirmation. |
 | `hermes journey edit <node>` | Open the node's content (a skill's `SKILL.md` or the memory chunk) in `$EDITOR`. |
 
@@ -314,6 +316,14 @@ Review staged writes from the CLI or any messaging platform:
 This is the answer to "the agent saved a wrong assumption about me": set
 `write_approval: true`, and every save — especially the unprompted background
 ones — waits for your yes/no before it ever enters your profile.
+
+A staged `replace` or `remove` (the background review stages these even with the
+gate off) records the full entry it targets, and `/memory pending` shows it.
+Approval applies to exactly that entry: if it changed after the write was staged,
+the write is refused and stays pending for you to reject. A `replace`/`remove`
+staged before this pinning existed has no verifiable target and is refused too:
+reject it and recreate the change. `/memory approve` lists the full text of
+every entry it overwrote or removed.
 
 ## Background review notifications (`display.memory_notifications`)
 
@@ -497,7 +507,7 @@ Full details in [Gating agent skill writes](./skills.md#gating-agent-skill-write
 
 ## External Memory Providers
 
-For deeper, persistent memory that goes beyond MEMORY.md and USER.md, Hermes ships with 8 external memory provider plugins — including Honcho, OpenViking, Mem0, Hindsight, Holographic, RetainDB, ByteRover, and Supermemory.
+For deeper, persistent memory that goes beyond MEMORY.md and USER.md, Hermes ships with 7 external memory provider plugins — Honcho, OpenViking, Mem0, Holographic, RetainDB, ByteRover, and Supermemory — and more, such as Hindsight, are available from the [plugin catalog](plugins.md) via `hermes plugins install <name>`.
 
 External providers run **alongside** built-in memory (never replacing it) and add capabilities like knowledge graphs, semantic search, automatic fact extraction, and cross-session user modeling.
 

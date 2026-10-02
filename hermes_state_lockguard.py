@@ -12,8 +12,9 @@ descriptors SQLite itself holds. OFD locks belong to the description, not the pr
 ``close()`` elsewhere cannot cancel them, they die with the connection's own descriptor (nothing
 extra to track or retire), and they conflict with a foreign EXCLUSIVE exactly like SQLite's own,
 so the sibling's close-time unlink is refused while a guarded handle is open. The guard is
-lifted before the handle's own close so a true last close still ends the generation normally.
-No-op on Windows and on runtimes without OFD locks.
+lifted before the handle's own close so a true last close still ends the generation normally;
+lifting it first re-takes SQLite's own POSIX locks on the same ranges, so the handle is never
+unlocked while its connection is still open. No-op on Windows and on runtimes without OFD locks.
 
 Ownership model: the guard is a property of the *descriptor*, and a descriptor number is
 reusable. Each ``hold()`` therefore locks every matching descriptor unconditionally (an OFD
@@ -40,17 +41,34 @@ _SHARED_FIRST = _PENDING_BYTE + 2
 _SHARED_SIZE = 510
 _SHM_DMS_BYTE = 128
 
-try:
-    import fcntl
-    # CPython exports F_OFD_SETLK only from 3.12. The kernel ABI values are stable: 37 on every
-    # Linux arch (asm-generic/fcntl.h), 90 on XNU (bsd/sys/fcntl.h, documented in fcntl(2)).
-    _F_OFD_SETLK: Optional[int] = getattr(
-        fcntl, "F_OFD_SETLK", {"linux": 37, "darwin": 90}.get(sys.platform.rstrip("0123456789")))
-    _F_RDLCK, _F_UNLCK, _SEEK_SET = fcntl.F_RDLCK, fcntl.F_UNLCK, os.SEEK_SET
-except ImportError:  # Windows
+# Windows has no POSIX advisory locks, and the module promises to be a no-op there. Gate on the
+# platform FIRST: some Windows installs have a third-party module importable as `fcntl` (stock
+# CPython for Windows ships none), and letting the import decide would arm the guard on a
+# lookalike. Off Windows a partial module is equally fatal at import time — every importer of
+# hermes_state dies before supported() can say "no" (#118026) — so tolerate a missing attribute
+# the same way as a missing module and fall back to the no-op.
+if os.name == "nt":
     fcntl = None  # type: ignore[assignment]
-    _F_OFD_SETLK = None
-    _F_RDLCK = _F_UNLCK = _SEEK_SET = 0
+    _F_OFD_SETLK: Optional[int] = None
+    _F_RDLCK = _F_UNLCK = _SEEK_SET = _F_SETLK = 0
+else:
+    try:
+        import fcntl
+        # CPython exports F_OFD_SETLK only from 3.12. The kernel ABI values are stable: 37 on every
+        # Linux arch (asm-generic/fcntl.h), 90 on XNU (bsd/sys/fcntl.h, documented in fcntl(2)).
+        _F_OFD_SETLK = getattr(
+            fcntl, "F_OFD_SETLK", {"linux": 37, "darwin": 90}.get(sys.platform.rstrip("0123456789")))
+        _F_RDLCK, _F_UNLCK, _SEEK_SET = fcntl.F_RDLCK, fcntl.F_UNLCK, os.SEEK_SET
+        _F_SETLK = fcntl.F_SETLK
+        # The constants alone do not make the guard usable: _ofd_lock() calls fcntl.fcntl(), so a
+        # module that has the constants but no callable would pass supported() and then raise
+        # from the first hold(). Probe the whole capability here, not just the symbols.
+        if not callable(getattr(fcntl, "fcntl", None)):
+            raise ImportError("fcntl module has no fcntl() callable")
+    except (ImportError, AttributeError):
+        fcntl = None  # type: ignore[assignment]
+        _F_OFD_SETLK = None
+        _F_RDLCK = _F_UNLCK = _SEEK_SET = _F_SETLK = 0
 
 # struct flock differs per libc: glibc/musl put type+whence first, Darwin/BSD last.
 _FLOCK_FORMAT = "@qqihh" if sys.platform == "darwin" or "bsd" in sys.platform else "@hhqqi"
@@ -74,11 +92,12 @@ def _flock(lock_type: int, start: int, length: int) -> bytes:
     return struct.pack(_FLOCK_FORMAT, lock_type, _SEEK_SET, start, length, 0)
 
 
-def _ofd_lock(fd: int, lock_type: int, start: int, length: int) -> bool:
-    """Apply a non-blocking OFD lock; False when the range is held EXCLUSIVE elsewhere."""
+def _ofd_lock(fd: int, lock_type: int, start: int, length: int, *, cmd: Optional[int] = None) -> bool:
+    """Apply a non-blocking OFD lock (a process-owned POSIX one with ``cmd=_F_SETLK``); False when
+    the range is held EXCLUSIVE elsewhere."""
     assert fcntl is not None and _F_OFD_SETLK is not None
     try:
-        fcntl.fcntl(fd, _F_OFD_SETLK, _flock(lock_type, start, length))
+        fcntl.fcntl(fd, _F_OFD_SETLK if cmd is None else cmd, _flock(lock_type, start, length))
     except BlockingIOError:
         return False
     return True
@@ -149,7 +168,12 @@ def release(held: Held) -> None:
     """Drop this handle's claim. The last handle on an inode unlocks the range on every descriptor
     still referencing it. Call BEFORE the handle's own close so SQLite's close-time reset sees only
     real holders: a sibling process's intact locks still refuse the unlink, and a true last close
-    ends the generation, so a later ``state.db`` replace never pairs with a stale WAL."""
+    ends the generation, so a later ``state.db`` replace never pairs with a stale WAL.
+
+    The OFD copy is swapped back for the POSIX lock SQLite believes it still holds (a stray close
+    cancelled the real one): unlocked outright, the still-open connection would let a sibling's
+    close take EXCLUSIVE and unlink ``-wal``/``-shm`` under it before its own close runs. SQLite's
+    close upgrades or drops that process-owned lock itself, so a true last close is unaffected."""
     if not supported() or not held:
         return
     with _LOCK:
@@ -167,6 +191,7 @@ def release(held: Held) -> None:
         try:
             for fd, ident in _own_fds_for(set(to_unlock)):
                 start, length = to_unlock[ident]
+                _ofd_lock(fd, _F_RDLCK, start, length, cmd=_F_SETLK)  # never refused: our OFD lock excludes writers
                 _ofd_lock(fd, _F_UNLCK, start, length)
         except OSError:
             pass

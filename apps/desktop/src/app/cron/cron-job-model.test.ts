@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest'
 import {
   cronEditorUpdates,
   cronModelChoiceValue,
+  jobDescription,
   jobIsScriptOnly,
   lastErrorSummary,
   parseCronDeliveryTargets,
@@ -32,6 +33,21 @@ describe('jobIsScriptOnly', () => {
     expect(jobIsScriptOnly({ no_agent: false, script: 'echo hi' })).toBe(false)
     expect(jobIsScriptOnly({ no_agent: true, script: '' })).toBe(false)
     expect(jobIsScriptOnly({ no_agent: true, script: null })).toBe(false)
+  })
+})
+
+describe('jobDescription', () => {
+  it('returns the prompt when present', () => {
+    expect(jobDescription({ prompt: 'Summarize mail', script: 'sync.sh' })).toBe('Summarize mail')
+  })
+
+  it('falls back to the script when the prompt is empty (script-only jobs)', () => {
+    expect(jobDescription({ prompt: '', script: 'sync_quillreach_cron.sh' })).toBe('sync_quillreach_cron.sh')
+  })
+
+  it('returns an empty string when neither prompt nor script is set', () => {
+    expect(jobDescription({ prompt: '', script: '' })).toBe('')
+    expect(jobDescription({ prompt: null, script: null })).toBe('')
   })
 })
 
@@ -170,7 +186,9 @@ describe('nextRunOverdueMs', () => {
   it('keeps upcoming, within-grace, paused and unparseable slots as plain next runs', () => {
     expect(nextRunOverdueMs({ enabled: true, next_run_at: '2026-09-17T21:00:00+04:00' }, now)).toBeNull()
     expect(nextRunOverdueMs({ enabled: true, next_run_at: '2026-09-17T20:30:00+04:00' }, now)).toBeNull()
-    expect(nextRunOverdueMs({ enabled: true, next_run_at: '2026-09-17T13:34:18+04:00', state: 'paused' }, now)).toBeNull()
+    expect(
+      nextRunOverdueMs({ enabled: true, next_run_at: '2026-09-17T13:34:18+04:00', state: 'paused' }, now)
+    ).toBeNull()
     expect(nextRunOverdueMs({ enabled: false, next_run_at: '2026-09-17T13:34:18+04:00' }, now)).toBeNull()
     expect(nextRunOverdueMs({ enabled: true, next_run_at: 'not-a-date' }, now)).toBeNull()
   })

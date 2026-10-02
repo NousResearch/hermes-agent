@@ -297,3 +297,20 @@ def test_non_blocking_listing_opens_no_socket(monkeypatch, tmp_path):
 
     assert live == [], f"cache-only listing ran live probes in the request path: {live}"
     assert any(r.get("slug") == "openrouter" and r.get("models") for r in rows), "OpenRouter row lost its curated snapshot"
+
+
+def test_curated_openrouter_row_keeps_free_tail_past_max_models(monkeypatch):
+    """The OpenRouter row is already curated; its bottom "Free tier" block must survive the picker cap
+    while an ordinary provider row stays capped."""
+    curated = [(f"vendor/model-{i}", "") for i in range(55)] + [("stealth/free-model", "free, stealth model")]
+    other = [f"other-{i}" for i in range(60)]
+    monkeypatch.setattr(model_switch, "list_authenticated_providers", lambda **_: [
+        _make_provider("openrouter", models=[mid for mid, _ in curated][:50]),
+        _make_provider("deepseek", models=other[:50]) | {"total_models": len(other)},
+    ])
+    monkeypatch.setattr(models_mod, "fetch_openrouter_models", lambda **_: curated)
+
+    rows = {r["slug"]: r for r in model_switch_providers.list_picker_providers(max_models=50)}
+
+    assert rows["openrouter"]["models"] == [mid for mid, _ in curated]
+    assert len(rows["deepseek"]["models"]) == 50

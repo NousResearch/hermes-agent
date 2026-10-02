@@ -9,6 +9,8 @@
  * required is a claim that every one of those paths supplies it.
  */
 
+import type { ProfileSessionPreview } from '@hermes/plugin-sdk'
+
 /**
  * The compact age suffixes the sidebar's session rows render ("now", "m", "h",
  * "d"). Structural rather than an import of core's `Translations`, which the
@@ -25,6 +27,8 @@ export interface SidebarRowLabels {
 export interface ProfileRoute {
   connectionId: string
   mode: 'local' | 'remote'
+  /** Electron's authoritative registry primary. Absent on older shells. */
+  primary?: true
   profile: string
   targetProfile: string
 }
@@ -51,6 +55,7 @@ export interface SessionPreview {
   /** Unix seconds, not milliseconds. */
   last_active?: number
   message_count?: number
+  live_message_count?: ProfileSessionPreview['live_message_count']
   preview?: string
   title?: string
 }
@@ -80,6 +85,8 @@ export interface BotMeta {
   /** Legacy single-group scalar, projected alongside `groups`. */
   group?: null | string
   pinned?: boolean
+  /** Raise this bot's Screen tab when it starts driving its desktop (`screen-autoraise.ts`). Opt-in per bot. */
+  screenAutoOpen?: boolean
   shape?: string
   title?: string
   /** Creation timestamp in ms. Deliberately not copied when duplicating a bot. */
@@ -235,39 +242,42 @@ export interface GroupChat {
   watermarks: Record<string, number>
 }
 
-export type GroupPromptKind = 'approval' | 'clarify'
-
 /**
  * One sub-question of a batch clarify, straight off the wire. `choices` and
- * `question` stay unknown because the card re-validates them; the two id
- * spellings are the keys it maps drafts and answers by.
+ * `question` stay unknown because the card re-validates them.
  */
 export interface GroupPromptQuestion {
   choices?: unknown
-  id?: string
   multi_select?: boolean
-  multiSelect?: boolean
-  qid?: string
+  qid: string
   question?: unknown
 }
 
-export interface GroupPrompt {
+interface GroupPromptBase {
   at: number
-  choices: string[]
-  command?: string
   group: string
-  kind: GroupPromptKind
   member: string
   memberKey: string
-  multiSelect: boolean
-  question: string
-  questions?: GroupPromptQuestion[] | null
   requestId: string
   sessionId?: null | string
   /** The thread the blocking question belongs to — part of the mirror key,
    *  since a member can be blocked in two threads at once. */
   thread?: string
 }
+
+interface GroupApprovalPrompt extends GroupPromptBase {
+  choices: string[]
+  command?: string
+  kind: 'approval'
+  question: string
+}
+
+interface GroupClarifyPrompt extends GroupPromptBase {
+  kind: 'clarify'
+  questions: GroupPromptQuestion[]
+}
+
+export type GroupPrompt = GroupApprovalPrompt | GroupClarifyPrompt
 
 export type GroupActivityKind =
   | 'cancelled'
@@ -289,8 +299,9 @@ export interface GroupActivityEvent {
   kind: GroupActivityKind
   member?: string
   preview?: string
-  /** Typed failure cause (gateway `data.reason` or the normalized
-   *  `slot_wait_timeout`); absent on non-failures and untyped failures. */
+  /** Failure cause: the gateway's typed `data.reason`, the normalized
+   *  `slot_wait_timeout`, or the error's redacted first line (#117366);
+   *  absent on non-failures. */
   reason?: string
 }
 

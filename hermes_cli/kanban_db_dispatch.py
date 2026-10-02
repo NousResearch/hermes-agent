@@ -974,10 +974,19 @@ _PROTOCOL_VIOLATION_ERROR = (
 )
 
 
-_EXIT_SUMMARY_MARKER = "Resume this session with:"
 # Rich panel/rule chrome around the rendered response, and the CLI's own preamble lines.
 _LOG_CHROME = re.compile(r"[─━═╭╮╰╯│┃┌┐└┘]+|☤\s*Hermes")
-_LOG_NOISE_PREFIXES = ("session_id:", "Query:", "Initializing agent")
+
+
+def _exit_summary_marker() -> str:
+    """The CLI exit-summary header (``cli_session_mixin.show_exit_summary``), in the active language."""
+    from agent.i18n import t
+    return t("cli.session.exit_resume_hint")
+
+
+def _log_noise_prefixes() -> tuple[str, ...]:
+    from agent.i18n import t
+    return ("session_id:", "Query:", t("cli.chat.initializing_agent"))
 
 
 def _worker_final_output(task_id: str, board: Optional[str] = None) -> str:
@@ -1002,13 +1011,13 @@ def _worker_final_output(task_id: str, board: Optional[str] = None) -> str:
     if not raw:
         return ""
     raw = _EXIT_TRAILER_RE.sub("", raw)
-    cut = raw.rfind(_EXIT_SUMMARY_MARKER)
+    cut = raw.rfind(_exit_summary_marker())
     if cut != -1:
         raw = raw[:cut]
     lines = []
     for ln in raw.splitlines():
         ln = _LOG_CHROME.sub("", ln).strip()
-        if ln and not ln.startswith(_LOG_NOISE_PREFIXES):
+        if ln and not ln.startswith(_log_noise_prefixes()):
             lines.append(ln)
     return " ".join(lines)[-400:]
 
@@ -1471,6 +1480,31 @@ def _set_worker_pid(conn: sqlite3.Connection, task_id: str, pid: int) -> None:
             conn.execute("UPDATE task_runs SET worker_pid = ?, worker_started_at = ? WHERE id = ?",
                          (int(pid), started_at, run_id))
         _kb._append_event(conn, task_id, "spawned", {"pid": int(pid), "started_at": started_at}, run_id=run_id)
+
+
+def adopt_worker_pid(conn: sqlite3.Connection, task_id: str, run_id: int, pid: int) -> bool:
+    """Worker-side half of ``_set_worker_pid``, run by the worker before its first model call.
+
+    A dispatcher killed between spawning the worker and ``_set_worker_pid`` leaves the run with no
+    pid: no liveness check can see the worker, so a TTL expiry reclaims the card and spawns a second
+    worker beside it. The worker fills the missing pid itself (``worker_registered``). False when
+    ``run_id`` is no longer the card's live run: the card was reclaimed before this worker got here,
+    and it must exit without working it."""
+    started_at = _process_fingerprint(int(pid)) or UNVERIFIED_WORKER_FINGERPRINT
+    with _kb.write_txn(conn):
+        row = conn.execute("SELECT status, current_run_id, worker_pid, claim_lock FROM tasks WHERE id = ?",
+                           (task_id,)).fetchone()
+        if row is None or row["status"] != "running" or row["current_run_id"] != int(run_id):
+            return False
+        # Liveness checks are host-local: a pid from another host (or pid namespace) proves nothing here.
+        if row["worker_pid"] is None and (row["claim_lock"] or "").startswith(_kb._host_prefix()):
+            conn.execute("UPDATE tasks SET worker_pid = ?, worker_started_at = ? WHERE id = ?",
+                         (int(pid), started_at, task_id))
+            conn.execute("UPDATE task_runs SET worker_pid = ?, worker_started_at = ? WHERE id = ?",
+                         (int(pid), started_at, int(run_id)))
+            _kb._append_event(conn, task_id, "worker_registered", {"pid": int(pid), "started_at": started_at},
+                              run_id=int(run_id))
+    return True
 
 
 def _clear_failure_counter(conn: sqlite3.Connection, task_id: str) -> None:
@@ -2015,6 +2049,19 @@ def _dispatch_lane_task(
     profile_exists = _profile_exists_fn()
     if profile_exists is not None and not profile_exists(assignee):
         result.skipped_nonspawnable.append(task_id)
+        # Per-task diagnostic so ``show``/``tail`` name the missing profile instead of leaving
+        # the card in ``ready`` with zero board evidence (#122422). Unlike a respawn guard the
+        # condition never expires on its own, so write it once: a repeat only when something
+        # else happened on the card since (reassign, comment) — not one row per tick forever,
+        # and not one row per foreign home per tick on a shared board (#101015).
+        if not dry_run:
+            with _kb.write_txn(conn):
+                last = conn.execute(
+                    "SELECT kind, payload FROM task_events WHERE task_id = ? "
+                    "ORDER BY created_at DESC, id DESC LIMIT 1", (task_id,)).fetchone()
+                if (last is None or last["kind"] != "skipped_nonspawnable"
+                        or last["payload"] != _kb._json_or_null({"assignee": assignee})):
+                    _kb._append_event(conn, task_id, "skipped_nonspawnable", {"assignee": assignee})
         return False
     # Per-profile cap: one profile's local model / API quota / browser pool
     # must not be overwhelmed by a fan-out even with global headroom.
@@ -2448,6 +2495,26 @@ def _module_hermes_argv() -> list[str]:
     return [sys.executable, "-m", "hermes_cli.main"]
 
 
+def _propagate_module_import_root(cmd: list[str], env: dict[str, str]) -> None:
+    """Put the running install's package root on a module-form worker's path.
+
+    ``_resolve_hermes_argv`` proves ``hermes_cli`` importable in THIS process,
+    where a store-python shim has the repo root on ``sys.path`` in-process;
+    the spawned child runs the bare ``sys.executable`` from the task workspace
+    with a scrubbed ``PYTHONPATH`` and cannot import the package the parent
+    just proved importable — it dies before any work and the board
+    auto-blocks (#122299, #122487, #122500). Same-interpreter child, so the
+    root is version-safe to propagate; ``hermes_cli.main``'s own bootstrap
+    then owns dependency activation as usual. A resolved shim path owns its
+    imports and is left alone. Same pin cron's external worker uses (#112729).
+    """
+    if cmd[1:3] != ["-m", "hermes_cli.main"]:
+        return
+    from cron.scheduler_worker_env import pin_hermes_tree_on_pythonpath
+
+    pin_hermes_tree_on_pythonpath(env, Path(__file__).resolve().parents[1])
+
+
 def _absolute_hermes_path(path: str) -> str:
     """Return an absolute filesystem path for a resolved Hermes shim."""
     expanded = os.path.expanduser(path)
@@ -2571,6 +2638,52 @@ def _worker_terminal_timeout_env(
     return str(desired)
 
 
+@contextlib.contextmanager
+def _worker_profile_scope(hermes_home: str, *, bind_home: bool = True):
+    """Bind an assigned profile's runtime scope (secrets + terminal policy, optionally home) for
+    one dispatch-side read or spawn-env build.
+
+    The dispatcher runs detached from any turn, so nothing binds a profile for it: ``load_config``,
+    the toolset probes' ``get_secret`` reads and ``build_subprocess_env``'s passthrough resolution
+    all fall back to the LAUNCH profile's ambient ``os.environ`` / ``TERMINAL_*``. Binding was
+    previously conditional on ``is_multiplex_active()``, so on a single-profile host a worker for
+    profile B was built entirely from the dispatcher's own environment.
+
+    ``bind_home=False`` for the spawn-env build: which variables may cross into a child is the
+    DISPATCHER's ``terminal.env_passthrough`` policy (#109494, read through the home override) —
+    only their VALUES come from the assignee's scope, so that branch binds the secret scope alone.
+    Toolset resolution binds the home and the terminal policy, as it always has.
+
+    The secret mapping is never widened: a profile that is not this process's own home gets its own
+    ``.env`` + external sources ONLY, while the launch home keeps its established
+    env-over-``.env`` precedence (``launch_secret_scope``) so systemd / ``op run`` injection still
+    resolves for a standalone dispatcher.
+    """
+    from agent.secret_scope import build_profile_secret_scope, reset_secret_scope, set_secret_scope
+    from hermes_constants import get_process_hermes_home, reset_hermes_home_override, set_hermes_home_override
+    from tools.terminal_scope import install_profile_terminal_scope, reset_terminal_scope
+    from tui_gateway.launch_profile_policy import launch_secret_scope, launch_terminal_env
+
+    home = Path(hermes_home)
+    is_launch_home = str(home.resolve()) == str(Path(get_process_hermes_home()).resolve())
+    home_token = secret_token = terminal_token = None
+    try:
+        home_token = set_hermes_home_override(str(home)) if bind_home else None
+        secret_token = set_secret_scope(
+            launch_secret_scope(home) if is_launch_home else build_profile_secret_scope(home),
+            profile_home=None if is_launch_home else str(home))
+        terminal_token = install_profile_terminal_scope(
+            home, env_overlay=launch_terminal_env() if is_launch_home else None) if bind_home else None
+        yield
+    finally:
+        if terminal_token is not None:
+            reset_terminal_scope(terminal_token)
+        if secret_token is not None:
+            reset_secret_scope(secret_token)
+        if home_token is not None:
+            reset_hermes_home_override(home_token)
+
+
 def _resolve_worker_cli_toolsets(hermes_home: Optional[str]) -> Optional[list[str]]:
     """Return the assigned profile's effective CLI toolsets for a worker.
 
@@ -2583,25 +2696,12 @@ def _resolve_worker_cli_toolsets(hermes_home: Optional[str]) -> Optional[list[st
     if not hermes_home:
         return None
     try:
-        from agent.secret_scope import (
-            build_profile_secret_scope, is_multiplex_active, reset_secret_scope, set_secret_scope)
-        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
         from hermes_cli.config import load_config
         from hermes_cli.tools_config import _get_platform_tools
 
-        token = set_hermes_home_override(hermes_home)
-        # Toolset availability probes read credentials (``get_secret``); under multiplex an
-        # unscoped read raises and the pin was silently dropped for every worker.
-        secret_token = (
-            set_secret_scope(build_profile_secret_scope(Path(hermes_home)))
-            if is_multiplex_active() else None)
-        try:
+        with _worker_profile_scope(hermes_home):
             cfg = load_config()
             toolsets = sorted(_get_platform_tools(cfg, "cli"))
-        finally:
-            if secret_token is not None:
-                reset_secret_scope(secret_token)
-            reset_hermes_home_override(token)
         return toolsets or None
     except Exception as exc:
         _kb._log.debug(
@@ -2744,9 +2844,8 @@ def _default_spawn(task: Task, workspace: str, *, board: Optional[str] = None) -
 
     profile_arg = normalize_profile_name(task.assignee)
 
-    from agent.secret_scope import (
-        build_profile_secret_scope, is_multiplex_active, reset_secret_scope, set_secret_scope)
-    from tools.environments.local import build_subprocess_env, strip_launch_profile_env
+    from agent.secret_scope import is_multiplex_active
+    from tools.environments.local import _is_routed_home, build_subprocess_env, strip_launch_profile_env
 
     try:
         profile_home = resolve_profile_env(profile_arg)
@@ -2755,22 +2854,20 @@ def _default_spawn(task: Task, workspace: str, *, board: Optional[str] = None) -
         # HERMES_PROFILE (set below) instead.
         profile_home = None
 
-    multiplex_active = is_multiplex_active()
-    # build_subprocess_env's secret scrub resolves terminal.env_passthrough vars
-    # through get_secret(), which raises UnscopedSecretError with no profile scope
-    # installed while multiplexing is on — mirrors _resolve_worker_cli_toolsets's
-    # own scope-then-read ordering a few functions up in this module.
-    secret_token = (
-        set_secret_scope(build_profile_secret_scope(Path(profile_home)))
-        if multiplex_active and profile_home else None)
-    try:
+    # Scrub for a ROUTED home, not only under multiplex: the authority test is "does this worker act
+    # for another profile", exactly as served_profile_child_env decides it (tools/environments/local.py).
+    # Gating on the gateway-wide flag left B's worker inheriting the dispatcher's own OPENAI_API_KEY and
+    # systemd-injected tokens on every single-profile host.
+    routed = bool(profile_home) and _is_routed_home(profile_home)
+    # build_subprocess_env's secret scrub resolves terminal.env_passthrough vars through get_secret(),
+    # which without a bound scope reads the LAUNCH profile's ambient environment for a worker spawned
+    # on B's behalf (and raises under multiplex) — so bind B's secret scope around the build.
+    with (_worker_profile_scope(profile_home, bind_home=False) if profile_home
+          else contextlib.nullcontext()):
         env = build_subprocess_env(
-            scrub_secrets=multiplex_active,
+            scrub_secrets=is_multiplex_active() or routed,
             inherit_profile_home=True,
         )
-    finally:
-        if secret_token is not None:
-            reset_secret_scope(secret_token)
     # The dispatcher is detached from every conversation; its worker must never
     # inherit routing mirrored by a previous gateway turn.
     from gateway.session_context import _VAR_MAP
@@ -2841,6 +2938,9 @@ def _default_spawn(task: Task, workspace: str, *, board: Optional[str] = None) -
     env.pop("HERMES_TUI", None)
 
     cmd = _worker_argv(task, profile_arg, env.get("HERMES_HOME"))
+    # The module argv must carry the import context that made it resolvable:
+    # the shim's in-process path injection is invisible to the bare child.
+    _propagate_module_import_root(cmd, env)
     # A worker spawned by a managed systemd gateway must leave the gateway's
     # cgroup before startup; otherwise restarting the service kills the worker
     # that is performing the handoff.

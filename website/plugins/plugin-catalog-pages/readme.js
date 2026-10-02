@@ -1,6 +1,6 @@
 // README rendering for the per-plugin pages (/docs/plugins/<name>).
 //
-// An entry that opts in with `readme: true` gets its README rendered on its page. The
+// Every entry gets its README rendered on its page (opt out with `readme: false`). The
 // build fetches it from the PINNED commit (extract-plugins.py emits `readmeUrl` as a
 // raw.githubusercontent.com / gitlab.com raw URL at <sha>) — never a branch tip — so the
 // page shows exactly the README the catalog reviewer read, and it only changes when the
@@ -148,9 +148,11 @@ async function renderReadme(markdown, readmeUrl) {
 /** README.md candidates at the pinned commit: the entry's subdir first, then the repo root
  *  (a monorepo plugin often documents itself in the root README), each in both casings. */
 function readmeCandidates(readmeUrl) {
+  // subdir README first, then the repo root; common casings and a docs/ README as fallbacks.
   const root = readmeUrl.replace(/(\/[0-9a-f]{40}\/).+$/, "$1README.md");
   const paths = root === readmeUrl ? [readmeUrl] : [readmeUrl, root];
-  return paths.flatMap((p) => [p, p.replace(/README\.md$/, "readme.md")]);
+  const names = ["README.md", "readme.md", "Readme.md", "README.MD", "README", "docs/README.md"];
+  return paths.flatMap((p) => names.map((n) => p.replace(/README\.md$/, n)));
 }
 
 /** Resolve the README at the pinned commit → `{ markdown, url }` (url = the file that answered), or null. */

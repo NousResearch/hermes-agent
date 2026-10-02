@@ -22,6 +22,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Optional
 
+from hermes_cli.browser_runtime import chromium_executable
 from utils import atomic_json_write
 
 # Short three-segment code, a lookup URL, or /new. Anything else is rejected.
@@ -457,7 +458,7 @@ def run_bot() -> int:
     except ImportError as e:
         state.set(error=f"playwright not installed: {e}", exited=True)
         sys.stderr.write("google_meet bot: playwright is not installed. Run "
-                         "`pip install playwright && python -m playwright install chromium`\n")
+                         "`hermes meet install`\n")
         if rt["bridge"]:
             rt["bridge"].teardown()
         return 3
@@ -472,7 +473,10 @@ def run_bot() -> int:
         context_args["storage_state"] = cfg.auth_state
     try:
         with sync_playwright() as pw:
-            browser = pw.chromium.launch(headless=not cfg.headed, args=chrome_args)
+            browser = pw.chromium.launch(
+                channel="chromium", executable_path=chromium_executable(),
+                headless=not cfg.headed, args=chrome_args,
+            )
             context = browser.new_context(**context_args)
             page = context.new_page()
             try:
@@ -527,15 +531,3 @@ def _parse_duration(raw: str) -> Optional[float]:
 
 if __name__ == "__main__":  # pragma: no cover — subprocess entry point
     sys.exit(run_bot())
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-import json  # noqa: F401,E402
-
-SAY_PCM_FILENAME = "speaker.pcm"
-
-SAY_QUEUE_FILENAME = "say_queue.jsonl"
-# ---- END PLUGIN-COMPAT ----

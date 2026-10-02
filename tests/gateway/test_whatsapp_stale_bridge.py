@@ -38,6 +38,14 @@ class _AsyncCM:
         return False
 
 
+
+@pytest.fixture(autouse=True)
+def _pm_node(monkeypatch):
+    """Stand-in for PM's Node/npm; the user's PATH copy is never picked up."""
+    from plugins.platforms.whatsapp import adapter as whatsapp_adapter
+    monkeypatch.setattr(whatsapp_adapter, "find_node_executable", lambda name: f"/pm/{name}")
+
+
 def _make_adapter(bridge_script: str = "/tmp/test-bridge.js",
                   session_path: Path = Path("/tmp/test-wa-session")):
     """Create a WhatsAppAdapter with test attributes (bypass __init__)."""
@@ -105,15 +113,6 @@ def _fresh_node_modules(bridge_dir: Path) -> None:
     )
 
 
-class TestFileContentHash:
-    def test_hashes_file(self, tmp_path):
-        from plugins.platforms.whatsapp.adapter import _file_content_hash
-
-        f = tmp_path / "x.js"
-        f.write_text("abc", encoding="utf-8")
-        h = _file_content_hash(f)
-        assert len(h) == 16
-        assert h == _file_content_hash(f)  # deterministic
 
 
 class TestStaleBridgeHandshake:

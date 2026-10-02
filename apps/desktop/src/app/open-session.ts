@@ -21,6 +21,7 @@ import {
   focusedSessionNeedsRoute,
   focusedSessionWorkspaceScope,
   focusOpenSession,
+  frontMainIfSelected,
   openSessionTile,
   reuseBlankDraftTile,
   setSessionTileWorkspaceScope
@@ -150,7 +151,8 @@ export function openSession(
     // routes the saved chat elsewhere while leaving the visible blank tab
     // active. Force the tab path so it first focuses an existing target, then
     // spends the scoped blank draft before stacking a new tab.
-    spendBlankDraft = Boolean(botWorkspaceScope) || mainChatOccupied($activeSessionId.get(), $selectedStoredSessionId.get())
+    spendBlankDraft =
+      Boolean(botWorkspaceScope) || mainChatOccupied($activeSessionId.get(), $selectedStoredSessionId.get())
     resolved = spendBlankDraft ? 'tab' : 'in-place'
   }
 
@@ -195,7 +197,20 @@ export function openSession(
   // otherwise load it into main. From a full page (artifacts, skills, …) a
   // `'main'` hit still has to route back: fronting the workspace tab alone
   // leaves the page showing.
-  if (focusedSessionNeedsRoute(focusOpenSession(storedSessionId, workspaceScope), $workspaceIsPage.get())) {
+  const focused = focusOpenSession(storedSessionId, workspaceScope)
+
+  if (focusedSessionNeedsRoute(focused, $workspaceIsPage.get())) {
     navigate(sessionRoute(storedSessionId))
+  }
+
+  // The target may also be the chat MAIN already holds — a Bot Mode roster
+  // click whose owner lost its tile (closing main promoted a neighbour tile
+  // into the workspace pane). focusOpenSession declined the 'main' hit for the
+  // Bot scope because a Bot tab for the same stored id must stay mintable, and
+  // the navigate above changed nothing (the route already points there), so
+  // front the pane here — or a zone parked on another bot's tile leaves the
+  // click looking dead (#125899).
+  if (!focused) {
+    frontMainIfSelected(storedSessionId)
   }
 }

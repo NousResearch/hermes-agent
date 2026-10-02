@@ -42,6 +42,7 @@ except ImportError:
     websockets = None  # type: ignore[assignment]
 
 from gateway.config import Platform, PlatformConfig
+from agent.i18n import t
 from gateway.platforms.base import (
     BasePlatformAdapter, SendResult,
     cache_document_from_bytes_async, cache_image_from_bytes_async, cache_video_from_bytes_async,
@@ -69,11 +70,9 @@ from gateway.session_transcript import TranscriptReadError
 logger = logging.getLogger(__name__)
 
 # AUTH_BIND / sign-token header values
-try:
-    from hermes_cli import __version__ as _HERMES_VERSION
-except ImportError:
-    _HERMES_VERSION = "0.0.0"
-_APP_VERSION = _BOT_VERSION = _HERMES_VERSION
+from hermes_cli.version_info import get_version_info
+
+_APP_VERSION = _BOT_VERSION = get_version_info().base_version
 _YUANBAO_INSTANCE_ID = str(HERMES_INSTANCE_ID)
 _OPERATION_SYSTEM = sys.platform
 
@@ -97,8 +96,20 @@ NO_RECONNECT_CLOSE_CODES = {4012, 4013, 4014, 4018, 4019, 4021}  # permanent err
 HEARTBEAT_TIMEOUT_THRESHOLD = 2  # consecutive missed pongs before reconnect
 REPLY_HEARTBEAT_INTERVAL_S = 2.0   # RUNNING cadence
 REPLY_HEARTBEAT_TIMEOUT_S = 30.0   # auto-FINISH after this much inactivity
-SLOW_RESPONSE_TIMEOUT_S = 120.0  # push SLOW_RESPONSE_MESSAGE when the agent is silent this long
-SLOW_RESPONSE_MESSAGE = "任务有点复杂，正在努力处理中，请耐心等待..."
+SLOW_RESPONSE_TIMEOUT_S = 120.0  # push slow_response_message() when the agent is silent this long
+
+
+def slow_response_message() -> str:
+    """Patience notice pushed after SLOW_RESPONSE_TIMEOUT_S of agent silence (localized; the
+    Chinese wording Yuanbao users historically saw lives in locales/zh.yaml)."""
+    return t("platform.yuanbao.slow_response_notice")
+
+
+# Cron wrapper markers, mirrored from cron/scheduler_delivery.py (``wrap_response``). The wrapper
+# is not keyed yet; when it is, import the same key here so ``strip_cron_wrapper`` keeps matching.
+CRON_WRAPPER_HEADER_PREFIX = "Cronjob Response: "
+CRON_WRAPPER_DIVIDER = "\n-------------\n\n"
+CRON_WRAPPER_FOOTER_PREFIX = '\n\nTo stop or manage this job, send me a new message (e.g. "stop reminder '
 
 # Transcript anchors: [image|ybres:abc]  [file:report.pdf|ybres:xyz]  [voice|ybres:…]
 _YB_RES_REF_RE = re.compile(r"\[(image|voice|video|file(?::[^|\]]*)?)\|ybres:([A-Za-z0-9_\-]+)\]")
@@ -1018,7 +1029,7 @@ class OwnerCommandMiddleware(InboundMiddleware):
         if matched_cmd and not is_owner:
             logger.info("[%s] Reject non-owner slash command: chat=%s from=%s cmd=%s", adapter.name, ctx.chat_id, ctx.from_account, matched_cmd)
             adapter._track_task(asyncio.create_task(
-                adapter.send(ctx.chat_id, f"⚠️ {matched_cmd} is only available to the creator in private chat mode"),
+                adapter.send(ctx.chat_id, t("platform.yuanbao.owner_command_denied", command=matched_cmd)),
                 name=f"yuanbao-owner-cmd-denial-{matched_cmd}"))
             return  # Stop pipeline
         if matched_cmd and is_owner and cmd_line:
@@ -1790,7 +1801,7 @@ class ConnectionManager:
         if not WEBSOCKETS_AVAILABLE:
             msg = "Yuanbao startup failed: 'websockets' package not installed"
             adapter._set_fatal_error("yuanbao_missing_dependency", msg, retryable=True)
-            logger.warning("[%s] %s. Run: pip install websockets", adapter.name, msg)
+            logger.warning("[%s] %s. Run: hermes pm repair", adapter.name, msg)
             return False
         if not adapter._app_key or not adapter._app_secret:
             msg = "Yuanbao startup failed: YUANBAO_APP_ID and YUANBAO_APP_SECRET are required"
@@ -2349,7 +2360,7 @@ class SlowResponseNotifier:
         try:
             await asyncio.sleep(SLOW_RESPONSE_TIMEOUT_S)
             logger.info("[%s] Agent response exceeded %ds for %s, sending wait notice", self._adapter.name, int(SLOW_RESPONSE_TIMEOUT_S), chat_id)
-            await self._sender.send_text_chunk(chat_id, SLOW_RESPONSE_MESSAGE)
+            await self._sender.send_text_chunk(chat_id, slow_response_message())
         except asyncio.CancelledError:
             pass
         except Exception as exc:
@@ -2551,10 +2562,10 @@ class MessageSender:
     @staticmethod
     def strip_cron_wrapper(content: str) -> str:
         """Strip the scheduler's cron header/footer wrapper; unchanged when the shape doesn't match."""
-        if not content.startswith("Cronjob Response: "):
+        if not content.startswith(CRON_WRAPPER_HEADER_PREFIX):
             return content
-        divider = "\n-------------\n\n"
-        footer_prefix = '\n\nTo stop or manage this job, send me a new message (e.g. "stop reminder '
+        divider = CRON_WRAPPER_DIVIDER
+        footer_prefix = CRON_WRAPPER_FOOTER_PREFIX
         divider_pos = content.find(divider)
         footer_pos = content.rfind(footer_prefix)
         if divider_pos < 0 or footer_pos < 0 or footer_pos <= divider_pos or "\n(job_id: " not in content[:divider_pos]:
@@ -2782,7 +2793,7 @@ class YuanbaoAdapter(BasePlatformAdapter):
         if not self._access_policy.is_dm_allowed(user_id):
             return SendResult(success=False, error="DM access denied for this user")
         if len(text) > self.DM_MAX_CHARS:
-            text = text[:self.DM_MAX_CHARS] + "\n...(truncated)"
+            text = text[:self.DM_MAX_CHARS] + t("platform.shared.truncated_suffix")
         return await self.send(f"direct:{user_id}", text, group_code=group_code)
 
     # Media sends delegate to MessageSender.send_media via the named handler strategy.
@@ -2807,205 +2818,3 @@ class YuanbaoAdapter(BasePlatformAdapter):
     async def _get_cached_token(self) -> dict:
         """Current valid sign token (module-level cache)."""
         return await SignManager.get_token(self._app_key, self._app_secret, self._api_domain, route_env=self._route_env)
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-
-AUTH_FAILED_CODES = {4001, 4002, 4003}      # permanent auth failure, re-sign token
-
-AUTH_RETRYABLE_CODES = {4010, 4011, 4099}   # transient, can retry with same token
-
-class FileUrlHandler(MediaSendHandler):
-    """Strategy: send file from a URL (download → COS → TIMFileElem)."""
-
-    async def acquire_file(self, adapter, **kwargs):
-        file_url: str = kwargs["file_url"]
-        logger.info("[%s] FileUrlHandler: downloading %s", adapter.name, file_url)
-        file_bytes, content_type = await media_download_url(
-            file_url, max_size_mb=adapter.MEDIA_MAX_SIZE_MB,
-        )
-        filename = kwargs.get("filename")
-        if not filename:
-            path_part = file_url.split("?")[0]
-            filename = os.path.basename(path_part) or "file"
-        if not content_type or content_type == "application/octet-stream":
-            content_type = guess_mime_type(filename) or "application/octet-stream"
-        return file_bytes, filename, content_type
-
-    def build_msg_body(self, upload_result, **kwargs):
-        return build_file_msg_body(
-            url=upload_result["url"],
-            filename=kwargs["filename"],
-            uuid=kwargs["file_uuid"],
-            size=upload_result["size"],
-        )
-
-class GroupQueryService:
-    """Encapsulates all group query operations (both low-level WS calls and
-    higher-level AI-tool-facing wrappers).
-
-    Responsibilities:
-      - Low-level WS encode/decode for group info and member list queries
-      - Chat-id parsing, error wrapping and result filtering for AI tools
-      - Member cache population on the adapter
-    """
-
-    def __init__(self, adapter: "YuanbaoAdapter") -> None:
-        self._adapter = adapter
-
-    # ------------------------------------------------------------------
-    # Low-level WS query methods
-    # ------------------------------------------------------------------
-
-    async def query_group_info_raw(self, group_code: str) -> Optional[dict]:
-        """Query group info via WS (group name, owner, member count, etc.).
-
-        Returns:
-            Decoded dict or None on failure.
-        """
-        adapter = self._adapter
-        if adapter._connection.ws is None:
-            return None
-        encoded = encode_query_group_info(group_code)
-        from gateway.platforms.yuanbao_proto import decode_conn_msg as _decode
-        decoded = _decode(encoded)
-        req_id = decoded["head"]["msg_id"]
-        try:
-            response = await adapter._connection.send_biz_request(encoded, req_id=req_id)
-            head = response.get("head", {})
-            status = head.get("status", 0)
-            if status != 0:
-                logger.warning("[%s] query_group_info failed: status=%d", adapter.name, status)
-                return None
-            biz_data = response.get("data", b"") or response.get("body", b"")
-            if biz_data and isinstance(biz_data, bytes):
-                return decode_query_group_info_rsp(biz_data)
-            return {"group_code": group_code}
-        except asyncio.TimeoutError:
-            logger.warning("[%s] query_group_info timeout: group=%s", adapter.name, group_code)
-            return None
-        except Exception as exc:
-            logger.warning("[%s] query_group_info failed: %s", adapter.name, exc)
-            return None
-
-    async def get_group_member_list_raw(
-        self, group_code: str, offset: int = 0, limit: int = 200
-    ) -> Optional[dict]:
-        """Query group member list via WS.
-
-        Returns:
-            Decoded dict or None on failure.  Also populates adapter._member_cache.
-        """
-        adapter = self._adapter
-        if adapter._connection.ws is None:
-            return None
-        encoded = encode_get_group_member_list(group_code, offset=offset, limit=limit)
-        from gateway.platforms.yuanbao_proto import decode_conn_msg as _decode
-        decoded = _decode(encoded)
-        req_id = decoded["head"]["msg_id"]
-        try:
-            response = await adapter._connection.send_biz_request(encoded, req_id=req_id)
-            head = response.get("head", {})
-            status = head.get("status", 0)
-            if status != 0:
-                logger.warning("[%s] get_group_member_list failed: status=%d", adapter.name, status)
-                return None
-            biz_data = response.get("data", b"") or response.get("body", b"")
-            if biz_data and isinstance(biz_data, bytes):
-                result = decode_get_group_member_list_rsp(biz_data)
-            else:
-                result = {"members": [], "next_offset": 0, "is_complete": True}
-            if result and result.get("members"):
-                adapter._member_cache[group_code] = (time.time(), result["members"])
-            return result
-        except asyncio.TimeoutError:
-            logger.warning("[%s] get_group_member_list timeout: group=%s", adapter.name, group_code)
-            return None
-        except Exception as exc:
-            logger.warning("[%s] get_group_member_list failed: %s", adapter.name, exc)
-            return None
-
-    # ------------------------------------------------------------------
-    # AI-tool-facing wrappers (chat_id parsing + filtering)
-    # ------------------------------------------------------------------
-
-    async def query_group_info(self, chat_id: str) -> dict:
-        """AI tool: Query current group info.
-
-        No parameters needed (group_code extracted from session context).
-        Returns group name, owner, member count, etc.
-        """
-        if not chat_id.startswith("group:"):
-            return {"error": "This command is only available in group chats"}
-        group_code = chat_id[len("group:"):]
-        result = await self.query_group_info_raw(group_code)
-        if result is None:
-            return {"error": "Failed to query group info"}
-        return result
-
-    async def query_session_members(
-        self,
-        chat_id: str,
-        action: str = "list_all",
-        name: Optional[str] = None,
-    ) -> dict:
-        """AI tool: Query group member list.
-
-        Args:
-            chat_id: Chat ID (extracted from session context)
-            action: 'find' (search by name) | 'list_bots' (list bots) | 'list_all' (list all)
-            name: Search keyword when action='find'
-
-        Returns:
-            {"members": [...], "total": int, "mentionHint": str}
-        """
-        if not chat_id.startswith("group:"):
-            return {"error": "This command is only available in group chats"}
-        group_code = chat_id[len("group:"):]
-        result = await self.get_group_member_list_raw(group_code)
-        if result is None:
-            return {"error": "Failed to query group members"}
-
-        members = result.get("members", [])
-
-        if action == "find" and name:
-            query = name.lower()
-            members = [
-                m for m in members
-                if query in (m.get("nickname", "") or "").lower()
-                or query in (m.get("name_card", "") or "").lower()
-                or query in (m.get("user_id", "") or "").lower()
-            ]
-        elif action == "list_bots":
-            members = [m for m in members if "bot" in (m.get("nickname", "") or "").lower()]
-
-        # Construct mentionHint
-        mention_hint = ""
-        if members and len(members) <= 10:
-            names = [m.get("name_card") or m.get("nickname") or m.get("user_id", "") for m in members]
-            mention_hint = "Mention with @name: " + ", ".join(names)
-
-        return {
-            "members": members[:50],  # Limit return count
-            "total": len(members),
-            "mentionHint": mention_hint,
-        }
-
-REPLY_REF_TTL_S = 300.0            # Reference dedup TTL (5 minutes)
-
-def get_active_adapter() -> Optional["YuanbaoAdapter"]:
-    """Delegate to ``YuanbaoAdapter.get_active()``."""
-    return YuanbaoAdapter.get_active()
-
-async def send_yuanbao_direct(
-    adapter: "YuanbaoAdapter",
-    chat_id: str,
-    message: str,
-    media_files: Optional[List[Tuple[str, bool]]] = None,
-) -> Dict[str, Any]:
-    """Delegate to ``OutboundManager.send_direct``."""
-    return await adapter._outbound.sender.send_direct(chat_id, message, media_files)
-# ---- END PLUGIN-COMPAT ----

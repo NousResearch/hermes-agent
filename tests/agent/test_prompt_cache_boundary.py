@@ -57,8 +57,7 @@ def skills(tmp_path, monkeypatch):
     skills_dir = tmp_path / "skills"
     _write_skill(skills_dir, "triage")
     monkeypatch.setattr(skills_tool, "SKILLS_DIR", skills_dir)
-    monkeypatch.setattr(skill_commands, "_skill_commands", {})
-    monkeypatch.setattr(skill_commands, "_skill_commands_platform", None)
+    monkeypatch.setattr(skill_commands, "_skill_commands_by_key", {})
     monkeypatch.setattr(skill_bundles, "_bundles_cache", {})
     monkeypatch.setattr(skill_bundles, "_bundles_cache_mtime", None)
     skill_commands.scan_skill_commands()

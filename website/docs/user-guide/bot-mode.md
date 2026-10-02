@@ -16,6 +16,19 @@ See [Profiles, agents, and bots](./profiles.md#profiles-agents-and-bots) for how
 Bot Mode relates to messaging bots and delegated subagents.
 :::
 
+## Coming from profiles?
+
+Your profiles keep working exactly as they did; Bot Mode adds the parts a profile alone does not have:
+
+| With plain profiles | With Bot Mode |
+|---|---|
+| A pile of sessions per profile; you pick one or start another | One permanent **Bot Chat** per Bot. Click the Bot and you are back in the same conversation; `/new` compacts it instead of forking it |
+| Switch profiles to talk to a different specialist | Every Bot sits in one roster with its avatar, latest message, and unread state |
+| Profiles never talk to each other | Bots [message each other](#bot-to-bot-messaging) and share [group chats](#groups-and-group-chats) |
+| Scheduled jobs live in `hermes cron`, apart from any chat | Each Bot's [routines](#routines) are scheduled and edited beside its chat |
+
+Nothing moves: config, memory, skills, and credentials stay in `~/.hermes/profiles/<name>/`, and `hermes -p <bot> chat` still opens the same agent.
+
 ## The Bots pane
 
 The roster shows one row per agent profile: avatar, latest-message preview, and timestamp.
@@ -118,7 +131,9 @@ observation window does not extend the turn itself.
 Unresolved member failures remain visible in the collapsed Activity summary after
 the room settles — including a turn the member's backend itself failed (bad
 credentials, provider errors), which is reported the moment the gateway
-reports it instead of looking like twenty minutes of thinking. Expand Activity for the turn sequence; re-address the member to
+reports it instead of looking like twenty minutes of thinking. A failure row names its cause: `builder hit an error — <first line of
+the error>` (secret-shaped tokens redacted, long lines truncated), or `builder couldn't start — too many bots running` when the local
+backend pool had no free slot. Expand Activity for the turn sequence; re-address the member to
 try again. An ambiguous submit failure is not automatically resubmitted.
 
 

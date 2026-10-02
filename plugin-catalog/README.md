@@ -50,10 +50,32 @@ meaningful:
    no prototype patching (`X.prototype.y =`, `Object.defineProperty(...prototype`),
    no `eval`/`new Function`, no `import()` of anything but `@hermes/plugin-sdk`
    / `react` (app bundle chunks, blob or http URLs included), no script-tag
-   injection, no reaching into the app's internal stores. `hermes plugins
-   validate` refuses these at admission (`desktop surface` check); a plugin
-   that needs a capability the SDK lacks asks for an SDK hook instead of
-   patching around it.
+   injection, no reaching into the app's internal stores or its own markup
+   (querying `data-slot` / `data-tour` / `data-sidebar` / `data-testid`
+   elements from `document`, or a `document.body` MutationObserver, to restyle,
+   hide, click or rewrite core UI). `hermes plugins validate` refuses these at
+   admission (`desktop surface` check); a plugin that needs a capability the
+   SDK lacks asks for an SDK hook instead of patching around it.
+9. **No runtime overrides of Hermes core.** A listed plugin extends Hermes only
+   through public surfaces: hooks, middleware, provider profiles and the
+   other `register_*` APIs, and Desktop SDK slots and routes. It must not
+   replace, wrap or rebind core functions, methods, module attributes or
+   private dicts in place (`AIAgent.<method> = ...`, `setattr(server, ...)`,
+   `sys.modules[...]`, writes into a core module's tables). Two plugins
+   patching the same seam silently break each other, and every core release
+   can break both. `hermes plugins validate` refuses these at admission (`no
+   core override` check). If the hook you need does not exist, open an issue
+   describing it: we would rather add the seam than list a patch.
+10. **Dependency security policy is the plugin's.** Hermes's 14-day
+   `exclude-newer` quarantine covers Hermes's own dependencies only; a plugin's
+   `python_dependencies` / `pyproject.toml` install under the plugin's policy
+   (no quarantine, still inside Hermes's core constraints). Reviewers read the
+   dependency list at the pinned SHA: bare floors (`>=X` with no upper bound)
+   and floors on the newest release get a request for the oldest
+   API-compatible floor plus an upper bound, and authors are strongly
+   recommended to run their own release quarantine (`uv --exclude-newer` in
+   their CI) — see the developer guide's *Dependency security policy*. A
+   recent floor alone is not grounds to hold an entry.
 
 ## Entry schema
 
@@ -61,7 +83,9 @@ meaningful:
 name: example-plugin        # [a-z0-9_-]{1,64}, the catalog key
 repo: https://github.com/owner/repo   # https:// only
 sha: <40-hex commit sha>    # mandatory exact pin
-subdir: ""                  # optional path within the repo
+subdir: ""                  # optional; plain relative path inside the repo
+                            # ([A-Za-z0-9._/-]+ only: no '..', '.', empty
+                            # segments, absolute, or backslash forms)
 description: One-line description.
 maintainer: OwnerName
 tier: official              # official | community (default community)
@@ -73,7 +97,7 @@ version: "1.4.0"            # optional human label for the sha (quote it); shown
 image: ""                   # optional https image on a GitHub host, 2:1 (e.g. 1200x600), e.g.
                             # https://raw.githubusercontent.com/owner/repo/<sha>/docs/banner.png
 screenshots: []             # optional, up to 6 https images on a GitHub host; gallery on /docs/plugins/<name>
-readme: false               # optional; true renders the README FROM THE PINNED SHA on /docs/plugins/<name>
+readme: true                # optional, default true; the README at the PINNED SHA renders on /docs/plugins/<name>
 platforms: []               # optional, e.g. [linux, macos]; empty = all
 capabilities:
   provides_tools: []
@@ -93,8 +117,8 @@ code.
 Every entry gets a page at `https://hermes-agent.nousresearch.com/docs/plugins/<name>`
 and every maintainer a page at `/docs/plugins/by/<maintainer>`, both generated
 from these files at docs build time. `screenshots:` fills the page's gallery;
-`readme: true` makes the build fetch `README.md` (from `subdir` if set, else the
-repo root) **at the pinned sha** — GitHub and GitLab repos — and render it
+the build fetches the README (from `subdir` if set, else the repo root) **at the
+pinned sha** — GitHub and GitLab repos, on by default, `readme: false` opts out — and renders it
 through an allowlist (raw HTML dropped, links and images resolved against the
 pinned tree). The page therefore shows the README the reviewer read, and it
 changes only when a reviewed re-pin lands.

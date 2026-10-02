@@ -826,7 +826,8 @@ export function mergeRemoteGroupChatSnapshotIntoRooms(
       watermarks: bounded.watermarks,
       sessions: existing.sessions && typeof existing.sessions === 'object' ? existing.sessions : {},
       stranded: existing.stranded && typeof existing.stranded === 'object' ? existing.stranded : {},
-      externalCursors: existing.externalCursors && typeof existing.externalCursors === 'object' ? existing.externalCursors : {},
+      externalCursors:
+        existing.externalCursors && typeof existing.externalCursors === 'object' ? existing.externalCursors : {},
       members: [...members.values()],
       ...(projectedRoomId || existing.roomId
         ? {

@@ -86,7 +86,7 @@ This guide walks you through the full setup process — from creating your bot o
 
 Discord REST and the Gateway WebSocket are separate transports. A successful REST response (including `fetch_user()` returning HTTP 200) does not prove that the bot can still receive Gateway events. Hermes therefore combines the ready state, client/socket closure state, socket openness, heartbeat ACK age, finite heartbeat latency, and — since the dispatch-side dimension — how long it has been since the last parsed Gateway event.
 
-After the configured number of consecutive unhealthy samples, the adapter emits one retryable fatal event. The existing gateway reconnect watcher creates a fresh adapter; the Discord adapter does not start a second unbounded reconnect loop.
+After the configured number of consecutive unhealthy samples, the adapter emits one retryable fatal event. A closed transport (`socket_closed` / `client_closed`) is a confirmed death and forces the reconnect on the first unhealthy sample; the threshold applies to soft signals only (stale heartbeat ACK, latency, event silence) — see [#118487](https://github.com/NousResearch/hermes-agent/issues/118487). The existing gateway reconnect watcher creates a fresh adapter; the Discord adapter does not start a second unbounded reconnect loop.
 
 Configure the non-secret thresholds in `config.yaml`:
 
@@ -768,7 +768,7 @@ When the agent calls the `clarify` tool — to ask which approach you prefer, ge
 
 Click a numbered button to answer, or click **Other** to type a free-form response (the next message you send in that channel becomes the answer). Open-ended `clarify` calls (no preset choices) skip the buttons and just capture your next message.
 
-The buttons disable themselves once a choice is made so duplicate clicks don't double-resolve the prompt. Configure the response timeout via `agent.clarify_timeout` in `~/.hermes/config.yaml` (default `3600` seconds; `0` or less = unlimited). If you don't respond within the timeout, the agent unblocks with a sentinel message and adapts rather than hanging.
+The buttons disable themselves once a choice is made so duplicate clicks don't double-resolve the prompt. Configure the response timeout via `agent.clarify_timeout` in `~/.hermes/config.yaml` (default `3600` seconds; `0` or less = unlimited). If you don't respond within the timeout, the agent unblocks with `"outcome": "timed_out"` and adapts rather than hanging. Reply `skip` to skip a question.
 
 ### Prompt layout
 

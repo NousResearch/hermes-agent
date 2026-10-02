@@ -92,6 +92,26 @@ class TestBaseDefaultLoop:
         assert result.success is True
         assert result.error == "1 image(s) failed to send: upload failed"
 
+    def test_exception_failure_is_reported_while_success_remains_true(self, monkeypatch):
+        from gateway.platforms.base import SendResult
+
+        adapter = _StubAdapter()
+        calls = 0
+
+        async def send_image_file(*args, **kwargs):
+            nonlocal calls
+            calls += 1
+            if calls == 2:
+                raise RuntimeError("boom-exception")
+            return SendResult(success=True)
+
+        monkeypatch.setattr(adapter, "send_image_file", send_image_file)
+        result = _run(adapter.send_multiple_images(
+            "chat1", [("file:///tmp/a.png", ""), ("file:///tmp/b.png", "")]))
+
+        assert result.success is True
+        assert result.error == "1 image(s) failed to send: boom-exception"
+
     def test_loops_per_image_by_default(self, tmp_path):
         local = tmp_path / "foo.png"
         a = _StubAdapter()
@@ -344,6 +364,20 @@ class TestSlackMultiImage:
         client.files_upload_v2.assert_awaited_once()
         kwargs = client.files_upload_v2.await_args.kwargs
         assert len(kwargs["file_uploads"]) == 3
+
+    def test_fallback_error_is_preserved_on_partial_success(self, adapter, monkeypatch):
+        from gateway.platforms.base import BasePlatformAdapter, SendResult
+
+        client = adapter._get_client("C12345")
+        adapter._client_for = MagicMock(return_value=client)
+        adapter._collect_image_uploads = AsyncMock(side_effect=RuntimeError("batch failed"))
+        fallback = SendResult(success=True, error="1 image(s) failed to send: upload failed")
+        monkeypatch.setattr(BasePlatformAdapter, "send_multiple_images", AsyncMock(return_value=fallback))
+
+        result = _run(adapter.send_multiple_images("C12345", [("https://x.com/a.png", "")]))
+
+        assert result.success is True
+        assert result.error == fallback.error
 
 
 # ---------------------------------------------------------------------------

@@ -20,6 +20,7 @@ import time
 from dataclasses import replace
 from pathlib import Path
 
+from hermes_cli.local_runtime.devices import GGML_DEVICE_GPU
 from hermes_cli.local_runtime.estimator import HardwareBudget
 
 logger = logging.getLogger(__name__)
@@ -56,11 +57,8 @@ _POOL_NEGATIVE_TTL_S = 60.0
 _pool_probe_cache: tuple[float, "tuple[int, bool | None] | None"] | None = None
 
 # '  CUDA0: NVIDIA Example Device (1234-core Example GPU) (46464 MiB, 46284 MiB free)'
-# '  Vulkan0: AMD Radeon RX 6800 XT (16368 MiB, 14692 MiB free)'
-# — greedy name pins the LAST parenthesized group, so names with parentheses parse.
-_DEVICE_LINE_RE = re.compile(
-    r"^\s*(?P<backend>[A-Za-z]+)\d+:\s*(?P<name>.*)\s+"
-    r"\((?P<total>\d+)\s*MiB,\s*(?P<free>\d+)\s*MiB free\)\s*$")
+# — greedy .* pins the LAST parenthesized group, so device names with parentheses parse.
+_DEVICE_LINE_RE = re.compile(r"CUDA\d+:.*\((\d+)\s*MiB,\s*\d+\s*MiB free\)\s*$")
 
 
 def _stdout(*argv: str) -> str:
@@ -299,8 +297,10 @@ def _cuda_driver_pool() -> "tuple[int, bool | None] | None":
     return None
 
 
-def _engine_device_info() -> "tuple[int, int, str, str] | None":
-    """Return total, free, backend and name from an accelerated runtime."""
+def _engine_device_pool() -> "tuple[int, bool | None] | None":
+    """(engine_total_bytes, None) from the installed runtime's own --list-devices, or None. The
+    fallback when the driver API is unreachable: asks the exact binary that will do the
+    allocating. Carries no integrated verdict — callers must gate it."""
     with suppress(Exception):  # a probe miss must never block budgeting
         from hermes_cli.config import get_config_value
         from hermes_cli.local_runtime.binaries import installed_engine
@@ -314,17 +314,10 @@ def _engine_device_info() -> "tuple[int, int, str, str] | None":
         if out.returncode != 0:
             return None
         for line in (out.stdout + out.stderr).splitlines():
-            if (match := _DEVICE_LINE_RE.search(line)) is not None:
-                return (int(match.group("total")) << 20,
-                        int(match.group("free")) << 20,
-                        match.group("backend"), match.group("name").strip())
+            m = _DEVICE_LINE_RE.search(line)
+            if m:
+                return int(m.group(1)) << 20, None
     return None
-
-
-def _engine_device_pool() -> "tuple[int, bool | None] | None":
-    """Allocator total from an accelerated runtime, without an integrated verdict."""
-    info = _engine_device_info()
-    return (info[0], None) if info is not None else None
 
 
 def _device_pool_view() -> "tuple[int, bool | None] | None":
@@ -339,6 +332,36 @@ def _device_pool_view() -> "tuple[int, bool | None] | None":
     view = _cuda_driver_pool() or _engine_device_pool()
     _pool_probe_cache = (now, view)
     return view
+
+
+_accelerator_cache: "dict[str, tuple[float, dict | None]]" = {}
+
+
+def _accelerator_device() -> "dict | None":
+    """The device a Vulkan/HIP engine will place layers on, or None (no such engine, probe miss).
+
+    Mirrors llama.cpp's own placement: discrete devices whenever one exists, an integrated one only
+    otherwise; among discrete devices the largest. Cached per engine binary like
+    ``_device_pool_view`` (a hit lasts the process, a miss retries after the TTL): the hardware
+    endpoint polls this every few seconds and each probe initializes the GPU driver.
+    """
+    with suppress(Exception):  # a probe miss must never block budgeting
+        from hermes_cli.config import get_config_value
+        from hermes_cli.local_runtime.binaries import installed_engine
+        from hermes_cli.local_runtime.devices import probe_devices
+
+        engine = installed_engine(get_config_value("local_runtime.backend", "auto"))
+        if engine is None or engine.backend not in ("vulkan", "hip"):
+            return None
+        key, now = str(engine.binary), time.monotonic()
+        cached = _accelerator_cache.get(key)
+        if cached is not None and (cached[1] is not None or now - cached[0] < _POOL_NEGATIVE_TTL_S):
+            return cached[1]
+        devices = probe_devices(engine.binary.parent, engine.backend)
+        device = max(devices, key=lambda d: (d["type"] == GGML_DEVICE_GPU, d["total"]), default=None)
+        _accelerator_cache[key] = (now, device)
+        return device
+    return None
 
 
 def _unified_pool_bytes(smi_total: int, ram_total: int) -> int | None:
@@ -376,23 +399,14 @@ def probe_budget(*, planning: bool = False) -> HardwareBudget:
     large. The managed server unloads/relaunches itself, so capacity is real.
     """
     ram_total, ram_avail = _ram_bytes()
-    nvidia_vram = _nvidia_vram()
-    vram = nvidia_vram
-    engine_info = _engine_device_info() if vram is None else None
-    if engine_info is not None and engine_info[2].lower() in ("vulkan", "hip"):
-        # llama.cpp is allocator truth for discrete AMD/Intel devices. WMI AdapterRAM is a
-        # legacy 32-bit field and cannot represent modern cards accurately.
-        vram = engine_info[0], engine_info[1], engine_info[3], None
-        unified = None
-    else:
-        # Preserve NVIDIA's no-smi path: the CUDA driver can still identify UMA.
-        unified = _unified_pool_bytes(nvidia_vram[0] if nvidia_vram else 0, ram_total)
+    vram = _nvidia_vram()
 
     # Unified-memory NVIDIA: the CUDA allocator pool is the real capacity. Classification comes
     # from the driver API/engine and must not require nvidia-smi (stripped-PATH sessions lose smi
     # but nvcuda loads via the system loader). Crossing the carve-out costs nothing — it is an OS
     # accounting knob, not a GPU limit. Deliberately NOT clamped to OS RAM: carved-out memory is
     # invisible to GlobalMemoryStatusEx, so a RAM clamp would throw away exactly that capacity.
+    unified = _unified_pool_bytes(vram[0] if vram else 0, ram_total)
     if unified is not None:
         logger.info(
             "unified-memory NVIDIA device: allocator pool %.1f GiB "
@@ -411,7 +425,16 @@ def probe_budget(*, planning: bool = False) -> HardwareBudget:
                            gpu_pci_id=vram[3] if vram else None)
 
     if vram is None:
-        # Metal and CPU paths budget from RAM as UMA; unknown accelerators stay conservative.
+        device = _accelerator_device()
+        if device is not None and device["type"] == GGML_DEVICE_GPU:
+            # Discrete AMD/Intel card behind a Vulkan/HIP engine: its own memory, with system RAM
+            # as spill. Capacity serves the live view too; no per-poll free query exists here.
+            total = device["total"]
+            margin = max(_MARGIN_FLOOR, int(total * _MARGIN_FRACTION))
+            return HardwareBudget(usable_vram_bytes=max(0, total - margin), total_device_bytes=total,
+                                  ram_available_bytes=ram_total if planning else ram_avail,
+                                  uma=False, gpu_name=device["description"], platform=sys.platform)
+        # Integrated GPU, Metal, CPU, or no answer: budget from RAM as unified memory.
         return _uma_budget(ram_total if planning else ram_avail, ram_total)
 
     total, free, gpu_name, gpu_pci_id = vram

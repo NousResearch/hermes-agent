@@ -28,6 +28,7 @@ export interface CanonicalGroupMessages {
   confirmDiscard: string
   unconfirmedSend: string
   restoredPendingSend: string
+  restorePendingSend: string
   groupMessage: string
   attachFiles: string
   removeAttachment: string
@@ -84,6 +85,7 @@ export const CANONICAL_GROUP_LOCALES = {
     confirmDiscard: 'Confirm discard',
     unconfirmedSend: 'The previous send is unconfirmed. Retry its original text before sending another message.',
     restoredPendingSend: 'An unconfirmed send was restored. Retry it before sending another message.',
+    restorePendingSend: 'Restore draft',
     groupMessage: 'Group message',
     attachFiles: 'Attach files',
     removeAttachment: 'Remove attachment',
@@ -136,6 +138,7 @@ export const CANONICAL_GROUP_LOCALES = {
     confirmDiscard: '破棄を確定',
     unconfirmedSend: '前回の送信は未確認です。別のメッセージを送信する前に、元のテキストで再試行してください。',
     restoredPendingSend: '未確認の送信を復元しました。別のメッセージを送信する前に再試行してください。',
+    restorePendingSend: '下書きを復元',
     groupMessage: 'グループメッセージ',
     attachFiles: 'ファイルを添付',
     removeAttachment: '添付ファイルを削除',
@@ -188,6 +191,7 @@ export const CANONICAL_GROUP_LOCALES = {
     confirmDiscard: '确认丢弃',
     unconfirmedSend: '上次发送尚未确认。请先重试发送原始文本，再发送其他消息。',
     restoredPendingSend: '已恢复尚未确认的发送。请先重试，再发送其他消息。',
+    restorePendingSend: '恢复草稿',
     groupMessage: '群组消息',
     attachFiles: '附加文件',
     removeAttachment: '移除附件',
@@ -240,6 +244,7 @@ export const CANONICAL_GROUP_LOCALES = {
     confirmDiscard: '確認捨棄',
     unconfirmedSend: '上次傳送尚未確認。請先重試傳送原始文字，再傳送其他訊息。',
     restoredPendingSend: '已還原尚未確認的傳送。請先重試，再傳送其他訊息。',
+    restorePendingSend: '還原草稿',
     groupMessage: '群組訊息',
     attachFiles: '附加檔案',
     removeAttachment: '移除附件',
@@ -292,6 +297,7 @@ export const CANONICAL_GROUP_LOCALES = {
     confirmDiscard: 'تأكيد التجاهل',
     unconfirmedSend: 'الإرسال السابق غير مؤكّد. أعد المحاولة بالنص الأصلي قبل إرسال رسالة أخرى.',
     restoredPendingSend: 'تمت استعادة إرسال غير مؤكّد. أعد محاولته قبل إرسال رسالة أخرى.',
+    restorePendingSend: 'استعادة المسودة',
     groupMessage: 'رسالة المجموعة',
     attachFiles: 'إرفاق ملفات',
     removeAttachment: 'إزالة المرفق',
@@ -347,6 +353,7 @@ export const CANONICAL_GROUP_LOCALES = {
       'Предыдущая отправка не подтверждена. Повторите её с исходным текстом, прежде чем отправлять другое сообщение.',
     restoredPendingSend:
       'Восстановлена неподтверждённая отправка. Повторите её, прежде чем отправлять другое сообщение.',
+    restorePendingSend: 'Восстановить черновик',
     groupMessage: 'Сообщение группе',
     attachFiles: 'Прикрепить файлы',
     removeAttachment: 'Удалить вложение',
@@ -401,6 +408,7 @@ export const CANONICAL_GROUP_LOCALES = {
     unconfirmedSend:
       "L'envoi précédent n'est pas confirmé. Réessayez son texte d'origine avant d'envoyer un autre message.",
     restoredPendingSend: 'Un envoi non confirmé a été restauré. Réessayez-le avant d\'envoyer un autre message.',
+    restorePendingSend: 'Restaurer le brouillon',
     groupMessage: 'Message de groupe',
     attachFiles: 'Joindre des fichiers',
     removeAttachment: 'Retirer la pièce jointe',
@@ -456,6 +464,7 @@ export const CANONICAL_GROUP_LOCALES = {
       'Der vorherige Versand ist unbestätigt. Wiederholen Sie seinen ursprünglichen Text, bevor Sie eine weitere Nachricht senden.',
     restoredPendingSend:
       'Ein unbestätigter Versand wurde wiederhergestellt. Wiederholen Sie ihn, bevor Sie eine weitere Nachricht senden.',
+    restorePendingSend: 'Entwurf wiederherstellen',
     groupMessage: 'Gruppennachricht',
     attachFiles: 'Dateien anhängen',
     removeAttachment: 'Anhang entfernen',
@@ -510,6 +519,7 @@ export const CANONICAL_GROUP_LOCALES = {
     unconfirmedSend:
       'El envío anterior no está confirmado. Reintenta su texto original antes de enviar otro mensaje.',
     restoredPendingSend: 'Se restauró un envío sin confirmar. Reintántalo antes de enviar otro mensaje.',
+    restorePendingSend: 'Restaurar borrador',
     groupMessage: 'Mensaje de grupo',
     attachFiles: 'Adjuntar archivos',
     removeAttachment: 'Quitar adjunto',

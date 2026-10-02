@@ -2,6 +2,7 @@
 file-serving helpers shared with the local-skill path. Helpers tests patch on the origin module
 (``_is_skill_disabled``, ``_parse_frontmatter``, ``skill_matches_platform``) resolve lazily."""
 
+import datetime
 import json
 import logging
 from contextlib import suppress
@@ -23,7 +24,12 @@ _SKILL_FILE_EXTS = {".md", ".py", ".yaml", ".yml", ".json", ".tex", ".sh"}
 
 
 def _json(payload: dict) -> str:
-    return json.dumps(payload, ensure_ascii=False)
+    # YAML resolves unquoted dates in skill front matter ("updated: 2026-03-05") to
+    # datetime.date/datetime objects; skill_view embeds frontmatter values in its result,
+    # so serialize them as ISO strings instead of failing the whole call (#82812).
+    return json.dumps(
+        payload, ensure_ascii=False,
+        default=lambda o: o.isoformat() if isinstance(o, (datetime.date, datetime.datetime)) else str(o))
 
 
 def _fail(error: str, **extra) -> str:

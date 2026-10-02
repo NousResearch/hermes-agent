@@ -70,12 +70,9 @@ def _read_codex_credential(model: Optional[str] = None) -> Tuple[Optional[str], 
     ``model.base_url`` / profile override), never a default it does not belong to (#121486).
     ``(None, None)`` without a usable token."""
     try:
-        from agent.auxiliary_client import _resolve_codex_credential_and_base
+        from agent.auxiliary_client import _call_scoped_or_unscoped, _resolve_codex_credential_and_base
 
-        try:
-            token, base_url = _resolve_codex_credential_and_base(model=model)
-        except TypeError:
-            token, base_url = _resolve_codex_credential_and_base()
+        token, base_url = _call_scoped_or_unscoped(_resolve_codex_credential_and_base, model=model)
         if isinstance(token, str) and token.strip():
             return token.strip(), base_url
         return None, None
@@ -274,10 +271,11 @@ class OpenAICodexImageGenProvider(StaticImageGenProvider):
         if not prompt:
             return prompt_required_error("openai-codex", aspect)
         tier_id, meta = _resolve_model()
-        try:
-            token, base_url = _read_codex_credential(model=meta.get("openai_model") or tier_id)
-        except TypeError:
-            token, base_url = _read_codex_credential()
+        # Scope by the wire model the request carries (API_MODEL, e.g. gpt-image-2),
+        # not the tier id: GPT_IMAGE_2_TIERS entries have no openai_model key, so the
+        # old meta.get("openai_model") fallback scoped cooldowns to a tier id that
+        # could never match model_cooldown_until (#130053).
+        token, base_url = _read_codex_credential(model=API_MODEL)
         if not token:
             return error_factory("openai-codex", aspect)(_NO_AUTH, "auth_required")
         if not _httpx_available():

@@ -132,3 +132,52 @@ def test_backward_compat_when_model_is_none(codex_pool_home, monkeypatch):
     pool_present, entry = aux._select_pool_entry("openai-codex", model=ENTITLED_MODEL)
     assert pool_present is True
     assert entry is not None
+
+
+def test_scoped_select_internal_typeerror_does_not_silently_downgrade(
+    codex_pool_home, monkeypatch
+):
+    """A TypeError from *inside* the scoped select is a real bug: it must not trigger
+    a silent unscoped retry that re-leases the refused credential (#130053)."""
+    real_select = aux._select_pool_entry
+    monkeypatch.setattr(aux, "_select_pool_entry", real_select)
+
+    class _ExplodingPool:
+        def has_credentials(self):
+            return True
+
+        def select(self, model=None):
+            raise TypeError("simulated bug inside scoped select")
+
+    monkeypatch.setattr(
+        aux, "_load_pool_with_credentials", lambda provider, note="": _ExplodingPool()
+    )
+    pool_present, entry = aux._select_pool_entry("openai-codex", model=ENTITLED_MODEL)
+    assert pool_present is True
+    assert entry is None
+
+
+def test_legacy_pool_without_model_kwarg_falls_back_with_warning(
+    codex_pool_home, monkeypatch, caplog
+):
+    """A legacy pool whose select() takes no model kwarg still works, but loudly (#130053)."""
+    real_select = aux._select_pool_entry
+    monkeypatch.setattr(aux, "_select_pool_entry", real_select)
+
+    class _NoKwargPool:
+        def has_credentials(self):
+            return True
+
+        def select(self):
+            return SimpleNamespace(
+                runtime_api_key="tok", runtime_base_url="https://example.test"
+            )
+
+    monkeypatch.setattr(
+        aux, "_load_pool_with_credentials", lambda provider, note="": _NoKwargPool()
+    )
+    with caplog.at_level("WARNING", logger=aux.logger.name):
+        pool_present, entry = aux._select_pool_entry("openai-codex", model=ENTITLED_MODEL)
+    assert pool_present is True
+    assert entry is not None
+    assert any("does not accept a model scope" in r.message for r in caplog.records)

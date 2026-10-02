@@ -146,6 +146,25 @@ class TestGenerate:
         assert str(request.url) == "https://chatgpt.com/backend-api/codex/images/generations"
         assert request.headers["originator"] == "hermes-agent"
 
+    @pytest.mark.parametrize("tier", [None, "gpt-image-2-low", "gpt-image-2-high"])
+    def test_generate_scopes_credential_to_wire_model(
+        self, provider, codex_backend, monkeypatch, tier,
+    ):
+        """Cooldowns key on the wire model (gpt-image-2), so credential resolution must
+        scope to API_MODEL whatever the quality tier — never the tier id (#130053)."""
+        if tier is not None:
+            monkeypatch.setenv("OPENAI_IMAGE_MODEL", tier)
+        seen = {}
+        real_read = codex_plugin._read_codex_credential
+
+        def _spy(model=None):
+            seen["model"] = model
+            return real_read(model=model)
+
+        monkeypatch.setattr(codex_plugin, "_read_codex_credential", _spy)
+        assert provider.generate("a cat")["success"] is True
+        assert seen["model"] == codex_plugin.API_MODEL == "gpt-image-2"
+
     def test_profile_scope_routes_each_request_without_borrowing_process_override(
         self, provider, codex_backend, monkeypatch,
     ):

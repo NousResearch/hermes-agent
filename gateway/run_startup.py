@@ -119,6 +119,7 @@ class GatewayStartupMixin:
             not getattr(self, "_startup_restore_in_progress", False)
             or getattr(event, "internal", False)
             or getattr(event, "_hermes_startup_restore_replay", False)
+            or event.get_command() in {"approve", "deny"}
         ):
             return False
         self._queue_startup_restore_event(event)

@@ -547,14 +547,13 @@ _BASE_SECURITY_ARGS = [
     "--cap-add", "CHOWN",                         # Package managers need file ownership
     "--cap-add", "FOWNER",                        # Package managers need file ownership
     "--security-opt", "no-new-privileges",         # Block privilege escalation
-    "--pids-limit", "256",                         # Limit process count
     # no-tmp: ok — configures the sandbox's own tmpfs
     "--tmpfs", "/tmp:rw,nosuid,size=512m",         # Size-limited /tmp
     "--tmpfs", "/var/tmp:rw,noexec,nosuid,size=256m",  # No-exec /var/tmp
 ]
 ```
 
-`SETUID`/`SETGID` are **not** in the base list — they're added conditionally when the container starts as root and an init/entrypoint must drop privileges (the s6 privilege-drop path). They're skipped when the container already runs as a non-root `--user`. The `/run` tmpfs is also split out from the base list and mounted per-image (hardened `noexec` by default, `exec` only for s6-overlay images that exec from `/run`).
+`SETUID`/`SETGID` are **not** in the base list — they're added conditionally when the container starts as root and an init/entrypoint must drop privileges (the s6 privilege-drop path). They're skipped when the container already runs as a non-root `--user`. The `/run` tmpfs is also split out from the base list and mounted per-image (hardened `noexec` by default, `exec` only for s6-overlay images that exec from `/run`). `--pids-limit 2048`, and the CPU and memory limits below, are added separately and only when the host's cgroups support them (unprivileged LXCs and some rootless setups do not).
 
 ### Resource Limits
 
@@ -595,6 +594,38 @@ If you add names to `terminal.docker_forward_env`, those variables are intention
 | **modal** | Cloud sandbox | ❌ Skipped | Scalable cloud isolation |
 | **daytona** | Cloud sandbox | ❌ Skipped | Persistent cloud workspaces |
 | **vercel_sandbox** | Cloud microVM | ❌ Skipped | Cloud execution with snapshot persistence |
+
+## Untrusted code {#untrusted-code}
+
+Reviewing a pull request or trying a repository often means running its code: its tests, its build, its install scripts. On the default `local` backend that code runs as you. It can read your SSH keys, `gh` login, `~/.hermes/.env` and anything else your account can read, and stripping secrets from the environment does not change that, because the files are still there.
+
+**For one run: `hermes sandbox run`.** It copies the code without executing anything it carries (no checkout, no hooks, no repo-configured git filters, symlinks kept as links) and runs your command in a throwaway container: no network, all capabilities dropped, a read-only root, an unprivileged user, no host environment and no host mount except the scratch copy, which is deleted afterwards. An optional `--setup` step installs dependencies with network but still without credentials.
+
+```bash
+hermes sandbox run --pr 123 --setup 'pip install --user -e .' -- python -m pytest -q
+```
+
+The bundled `github` skill's PR review runs tests this way. Options and details: [`hermes sandbox`](../reference/cli-commands.md#hermes-sandbox). It needs Docker or Podman.
+
+**For a whole profile: the docker backend, locked down.** When a profile exists to work on code you do not trust, run every command in an ephemeral, air-gapped container:
+
+```yaml
+terminal:
+  backend: docker
+  docker_network: false                  # --network=none: no fetches, no exfiltration
+  container_persistent: false            # tmpfs /workspace, /root, /home
+  docker_persist_across_processes: false # a new container per process, removed on exit
+  docker_forward_env: []                 # nothing forwarded explicitly
+  docker_env: {}
+  env_passthrough: []
+  credential_files: []
+  docker_volumes: []
+  docker_mount_cwd_to_workspace: false   # the host checkout is not mounted
+```
+
+Caveats: credential files that a loaded skill registers (`required_credential_files`), your skills directory and the cache directories are still mounted read-only into every container. With the network off the agent cannot clone or install, so prepare the code first or use `hermes sandbox run --setup`.
+
+**Neither is a boundary against the agent itself.** Both confine commands run through them. Context files, plugins, MCP servers and the agent's own process stay on the host; the [Trust Model](https://github.com/NousResearch/hermes-agent/blob/main/SECURITY.md) explains when to wrap the whole agent instead.
 
 ## Environment Variable Passthrough {#environment-variable-passthrough}
 

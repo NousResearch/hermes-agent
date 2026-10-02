@@ -189,7 +189,7 @@ def test_database_budget_trigger_fences_an_old_replica_writer(tmp_path, monkeypa
             )
 
 
-def test_root_schema_migrates_legacy_replica_before_capacity_pressure(
+def test_root_schema_preserves_active_legacy_history_at_capacity(
     tmp_path, monkeypatch
 ):
     db = _replica_db(tmp_path)
@@ -238,21 +238,180 @@ def test_root_schema_migrates_legacy_replica_before_capacity_pressure(
             "PRAGMA table_info(hosted_room_replicas)"
         )}
         assert {"disbanded_at", "quarantined_at", "quarantine_reason"} <= columns
+        retained = conn.execute(
+            "SELECT event_id,actor_json,payload_json FROM hosted_room_replica_events WHERE room_id='legacy-large'"
+        ).fetchone()
+        assert retained == ("legacy-event", actor_json, payload_json)
         assert conn.execute(
-            "SELECT reason FROM hosted_room_quarantine WHERE room_id='legacy-large'"
-        ).fetchone()[0] == "replica_storage_budget_exceeded"
-    with pytest.raises(replicas.ReplicaHistoryExpiredError):
+            "SELECT authority_gateway_id,last_seq,latest_seq FROM hosted_room_replicas WHERE room_id='legacy-large'"
+        ).fetchone() == (AUTH_A, 1, 1)
+    with pytest.raises(replicas.ReplicaError, match="preserved"):
         replicas.replica_state(db, room_id="legacy-large")
-    assert rooms.append_event(
-        db,
-        room_id="healthy-room",
-        event_id="healthy-event",
-        kind="message.user",
-        actor=USER,
-        payload={"text": "ok"},
-        authority_gateway_id=AUTH_B,
-        authority_epoch=1,
-    )["seq"] == 1
+    with pytest.raises(rooms.HostedRoomError, match="storage is full"):
+        rooms.append_event(
+            db, room_id="healthy-room", event_id="healthy-event", kind="message.user",
+            actor=USER, payload={"text": "ok"}, authority_gateway_id=AUTH_B, authority_epoch=1,
+        )
+
+
+def test_replica_audit_does_not_decode_held_payload_and_bounds_header_reads(tmp_path, monkeypatch):
+    source = _authority_db(tmp_path)
+    page = _seed_room(source, n_events=1)
+    db = _replica_db(tmp_path)
+    replicas.ingest_page(db, room_id="room-1", room_name="Field Room", members=MEMBERS, page=page)
+    opaque = json.dumps({"text": "retained history " * 128})
+    with sqlite3.connect(db) as conn:
+        conn.execute("UPDATE hosted_room_replica_events SET payload_json=? WHERE room_id='room-1'", (opaque,))
+    original_loads = json.loads
+    decoded = []
+
+    def bounded_loads(value, *args, **kwargs):
+        assert value != opaque, "normal metadata/audit reads materialized retained history payload"
+        decoded.append(value)
+        return original_loads(value, *args, **kwargs)
+
+    monkeypatch.setattr(replicas.json, "loads", bounded_loads)
+    # Simulate a legacy row above the current bounded event-read envelope.
+    monkeypatch.setattr(replicas, "MAX_LOG_PAGE_BYTES", 1024)
+    monkeypatch.setattr(rooms, "MAX_GATEWAY_EVENT_BYTES", 1024)
+    with pytest.raises(replicas.ReplicaError, match="preserved"):
+        replicas.replica_state(db, room_id="room-1")
+    with sqlite3.connect(db) as conn:
+        assert conn.execute("SELECT payload_json FROM hosted_room_replica_events WHERE room_id='room-1'").fetchone()[0] == opaque
+    assert opaque not in decoded
+
+    # A legacy oversized metadata blob is also retained, never SELECT*/decoded.
+    large_members = json.dumps([{"kind": "bot", "id": "x" * 2048}])
+    with sqlite3.connect(db) as conn:
+        conn.execute("UPDATE hosted_room_replicas SET members_json=? WHERE room_id='room-1'", (large_members,))
+    monkeypatch.setattr(replicas, "MAX_MEMBERS_JSON_BYTES", 1024, raising=False)
+    with pytest.raises(replicas.ReplicaError, match="metadata"):
+        replicas.replica_state(db, room_id="room-1")
+    assert large_members not in decoded
+
+
+def test_capacity_preservation_keeps_verified_terminal_cleanup(tmp_path, monkeypatch):
+    from gateway import hosted_room_safety as safety
+
+    page = _terminal_page(tmp_path, room_id="room-1", now=1)
+    db = _replica_db(tmp_path)
+    replicas.ingest_page(db, room_id="room-1", room_name="Field Room", members=MEMBERS, page=page, now=2)
+    monkeypatch.setattr(rooms, "MAX_GATEWAY_EVENT_BYTES", 1)
+    with rooms._transaction(db, immediate=True) as conn:
+        assert safety._compact_over_budget_replicas_locked(conn) == 1
+        assert conn.execute("SELECT COUNT(*) FROM hosted_room_replica_events WHERE room_id='room-1'").fetchone()[0] == 0
+        assert conn.execute("SELECT owner_kind FROM hosted_room_id_reservations WHERE room_id='room-1'").fetchone()[0] == "replica"
+    with pytest.raises(replicas.ReplicaHistoryExpiredError):
+        replicas.replica_state(db, room_id="room-1")
+
+
+@pytest.mark.parametrize("envelope", ["count", "page"])
+@pytest.mark.parametrize("conflicting_history", [False, True])
+def test_read_envelope_refusal_does_not_invent_integrity_quarantine(tmp_path, monkeypatch, envelope, conflicting_history):
+    page = _seed_room(_authority_db(tmp_path))
+    db = _replica_db(tmp_path)
+    replicas.ingest_page(db, room_id="room-1", room_name="Field Room", members=MEMBERS, page=page)
+    if conflicting_history:
+        with sqlite3.connect(db) as conn:
+            conn.execute("UPDATE hosted_room_replica_events SET event_id='e0' WHERE seq=2")
+        assert replicas.replica_state(db, room_id="room-1")["safety_reason"] == "duplicate_event_id"
+    expected_reason = "duplicate_event_id" if conflicting_history else None
+    with sqlite3.connect(db) as conn:
+        before = conn.execute("SELECT * FROM hosted_room_replica_events ORDER BY seq").fetchall()
+    with monkeypatch.context() as limits:
+        if envelope == "count":
+            limits.setattr(rooms, "MAX_EVENTS_PER_ROOM", 1)
+            limits.setattr(rooms, "CONTROL_EVENT_COUNT_RESERVE", 0)
+        else:
+            limits.setattr(replicas, "MAX_LOG_PAGE_BYTES", 1)
+        with pytest.raises(replicas.ReplicaCapacityError, match="preserved"):
+            replicas.replica_state(db, room_id="room-1")
+        with sqlite3.connect(db) as conn:
+            assert conn.execute("SELECT quarantine_reason FROM hosted_room_replicas WHERE room_id='room-1'").fetchone()[0] == expected_reason
+            assert conn.execute("SELECT * FROM hosted_room_replica_events ORDER BY seq").fetchall() == before
+    state = replicas.replica_state(db, room_id="room-1")
+    assert state["safety_status"] == ("quarantined" if conflicting_history else "passive")
+    assert state["safety_reason"] == expected_reason
+    assert state["last_seq"] == state["latest_seq"] == 3
+
+
+@pytest.mark.parametrize("column", [
+    "room_id", "name", "authority_gateway_id", "quarantine_reason", "authority_epoch", "last_seq",
+    "latest_seq", "event_bytes", "created_at", "updated_at", "disbanded_at", "quarantined_at",
+])
+def test_legacy_header_bytes_and_types_are_checked_before_fetch(tmp_path, column):
+    page = _seed_room(_authority_db(tmp_path), n_events=1)
+    db = _replica_db(tmp_path)
+    replicas.ingest_page(db, room_id="room-1", room_name="Field Room", members=MEMBERS, page=page)
+    text_columns = {"room_id", "name", "authority_gateway_id", "quarantine_reason"}
+    opaque = ("a\0" if column in text_columns else "not-a-number\0") + "x" * 2048
+    with sqlite3.connect(db) as conn:
+        conn.execute(f"UPDATE hosted_room_replicas SET {column}=? WHERE room_id='room-1'", (opaque,))
+        assert conn.execute(f"SELECT LENGTH({column}),LENGTH(CAST({column} AS BLOB)) FROM hosted_room_replicas").fetchone()[1] > 2048
+
+        def bounded_row(cursor, values):
+            assert all(not isinstance(value, str) or len(value.encode()) <= 1024 for value in values), "header fetched before byte/type guard"
+            return sqlite3.Row(cursor, values)
+
+        conn.row_factory = bounded_row
+        replicas._audit_existing_replicas_locked(conn)
+        with pytest.raises(replicas.ReplicaError, match="metadata"):
+            replicas._load_replica_locked(conn, opaque if column == "room_id" else "room-1")
+    with sqlite3.connect(db) as conn:
+        assert conn.execute(f"SELECT {column} FROM hosted_room_replicas").fetchone()[0] == opaque
+        assert conn.execute("SELECT COUNT(*) FROM hosted_room_replica_events").fetchone()[0] == 1
+
+
+def test_bounded_header_keeps_valid_unicode_character_limits(tmp_path):
+    page = _seed_room(_authority_db(tmp_path), n_events=1)
+    db = _replica_db(tmp_path)
+    name = "🐈" * replicas.MAX_ROOM_NAME_CHARS
+    replicas.ingest_page(db, room_id="room-1", room_name=name, members=MEMBERS, page=page)
+    assert replicas.replica_state(db, room_id="room-1")["name"] == name
+
+
+@pytest.mark.parametrize("column", ["seq", "authority_epoch", "created_at"])
+def test_streamed_event_scalars_are_type_checked_before_fetch(tmp_path, column):
+    page = _seed_room(_authority_db(tmp_path), n_events=1)
+    db = _replica_db(tmp_path)
+    replicas.ingest_page(db, room_id="room-1", room_name="Field Room", members=MEMBERS, page=page)
+    opaque = "not-a-number\0" + "x" * 2048
+    with sqlite3.connect(db) as conn:
+        conn.execute(f"UPDATE hosted_room_replica_events SET {column}=? WHERE room_id='room-1'", (opaque,))
+
+        def bounded_row(cursor, values):
+            assert all(not isinstance(value, str) or len(value.encode()) <= 1024 for value in values), "event scalar fetched before type guard"
+            return sqlite3.Row(cursor, values)
+
+        conn.row_factory = bounded_row
+        replicas._audit_existing_replicas_locked(conn)
+        assert conn.execute("SELECT quarantine_reason FROM hosted_room_replicas").fetchone()[0] == "invalid_event_shape"
+    with sqlite3.connect(db) as conn:
+        assert conn.execute(f"SELECT {column} FROM hosted_room_replica_events").fetchone()[0] == opaque
+
+
+@pytest.mark.parametrize("quota", ["bytes", "rooms"])
+def test_pruning_does_not_count_older_held_history_as_reclaimed(tmp_path, monkeypatch, quota):
+    from gateway import hosted_room_safety as safety
+
+    db = _replica_db(tmp_path)
+    for room_id, text, ended in [("held", "x" * 2048, 1), ("reclaimable", "tiny", 2)]:
+        source = _authority_db(tmp_path, room_id + ".db")
+        rooms.create_room(source, room_id=room_id, name=room_id, members=MEMBERS, authority_gateway_id=AUTH_A)
+        rooms.append_event(source, room_id=room_id, event_id="message", kind="message.user", actor=USER,
+                           payload={"text": text}, authority_gateway_id=AUTH_A, authority_epoch=1)
+        rooms.disband_room(source, room_id=room_id, expected_gateway_id=AUTH_A, expected_epoch=1, now=ended)
+        page = rooms.read_events(source, room_id=room_id, include_disbanded=True)
+        replicas.ingest_page(db, room_id=room_id, room_name=room_id, members=MEMBERS, page=page, now=3)
+    monkeypatch.setattr(replicas, "MAX_LOG_PAGE_BYTES", 1024)
+    with rooms._transaction(db, immediate=True) as conn:
+        before = conn.execute("SELECT * FROM hosted_room_replica_events WHERE room_id='held' ORDER BY seq").fetchall()
+        total = conn.execute("SELECT SUM(event_bytes) FROM hosted_room_replicas").fetchone()[0]
+        safe_bytes = conn.execute("SELECT event_bytes FROM hosted_room_replicas WHERE room_id='reclaimable'").fetchone()[0]
+        options = {"max_replica_event_bytes": total - safe_bytes} if quota == "bytes" else {"max_replica_rooms": 1}
+        assert safety._prune_disbanded_replicas_locked(conn, now=None, **options) == 1
+        assert conn.execute("SELECT * FROM hosted_room_replica_events WHERE room_id='held' ORDER BY seq").fetchall() == before
+        assert conn.execute("SELECT COUNT(*) FROM hosted_room_replicas WHERE room_id='reclaimable'").fetchone()[0] == 0
 
 
 def test_disbanded_replica_room_id_cannot_be_recreated(tmp_path):

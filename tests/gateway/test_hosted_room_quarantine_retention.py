@@ -252,11 +252,14 @@ def test_first_open_compaction_preserves_shared_only_quarantine(tmp_path, monkey
         assert after["reservations"] == before["reservations"]
         assert after["bytes"] == sum(sizes.values()) - sizes["ordinary"]
         assert safety._quarantine_reason_locked(conn, "shared") == "imported_unsafe_history"
-        assert safety._quarantine_reason_locked(conn, "ordinary") == "replica_storage_budget_exceeded"
-        assert before["quarantine"][0] in after["quarantine"]
+        # Legitimate terminal reclamation is expiry, not an integrity fault.
+        assert safety._quarantine_reason_locked(conn, "ordinary") is None
+        assert after["quarantine"] == before["quarantine"]
         assert conn.execute("SELECT quarantine_reason FROM hosted_room_replicas WHERE room_id='shared'").fetchone()[0] is None
         assert conn.execute("SELECT event_bytes FROM hosted_rooms WHERE room_id='authority'").fetchone()[0] == sizes["authority"]
         assert conn.execute("SELECT COUNT(*) FROM hosted_room_events WHERE room_id='authority'").fetchone()[0] == 1
+    with pytest.raises(replicas.ReplicaHistoryExpiredError):
+        replicas.replica_state(db, room_id="ordinary")
     # The retained evidence cannot be consumed by the next schema refresh either.
     with rooms._transaction(db, immediate=True) as conn:
         safety.initialize_safety_schema(conn)

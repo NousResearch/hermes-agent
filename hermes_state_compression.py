@@ -107,7 +107,11 @@ class SessionCompressionMixin:
             if row is None or row["ended_at"] is None:
                 return None
             reason = row["end_reason"]
-            if is_automatic_end_reason(reason) or reason == "compression" or reason in _BOUNDARY_END_REASONS:
+            if (
+                is_automatic_end_reason(reason)
+                or reason in {"compression", "cron_complete"}
+                or reason in _BOUNDARY_END_REASONS
+            ):
                 return None
             superseded = conn.execute(
                 "SELECT 1 FROM sessions WHERE parent_session_id = ?"

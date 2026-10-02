@@ -525,8 +525,12 @@ class SessionSessionsMixin:
                 f"AND {_legacy_reset_child_sql('child', _session_ids_placeholders(_RESET_END_REASONS))}",
                 (session_id, *_RESET_END_REASONS),
             )
+            # A completed scheduler run remains writable without becoming a live run.
+            # Clearing its completion stamp makes the desktop write gate reject the next
+            # message because scheduler ownership is no longer visible.
             conn.execute(
-                "UPDATE sessions SET ended_at = NULL, end_reason = NULL WHERE id = ?", (session_id,),
+                "UPDATE sessions SET ended_at = NULL, end_reason = NULL "
+                "WHERE id = ? AND end_reason != 'cron_complete'", (session_id,),
             )
             # Resuming re-activates the chat: drop the idle sweep's archive (never a manual one).
             self._unarchive_auto_archived_lineage(conn, session_id)

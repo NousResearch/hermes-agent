@@ -65,6 +65,7 @@ import { $defaultReasoningEffort } from '@/store/session'
 import type { LocalModelLoadProgress, LocalRuntimeJob } from '@/types/hermes'
 
 import { type FastControl, ModelEditSubmenu, resolveFastControl } from './model-edit-submenu'
+import { ModelMenuRowIcon, useModelMenuRowDecoration } from './model-menu-row-decorations'
 
 // Lets the host dropdown (model-pill, a kanban field trigger, …) hand the panel
 // a way to dismiss itself so clicking a model row commits + closes, while the
@@ -976,6 +977,7 @@ function ModelFamilyRow({
 
   const isCurrent = activeId !== null
   const { name, tag } = modelDisplayParts(family.id)
+  const decoration = useModelMenuRowDecoration({ label: name, model: family.id, provider: provider.slug })
   const caps = provider.capabilities?.[family.id]
 
   // Live per-model $/Mtok pricing (Nous Portal and other providers that ship
@@ -1085,6 +1087,7 @@ function ModelFamilyRow({
           </button>
         </Tip>
         <span className="flex min-w-0 flex-1 items-center gap-1.5">
+          {decoration.icon !== undefined ? <ModelMenuRowIcon icon={decoration.icon} /> : null}
           <span className="min-w-0 truncate">
             <HighlightMatches foldSeparators query={search} text={name} />
           </span>
@@ -1093,6 +1096,11 @@ function ModelFamilyRow({
               {chip}
             </Badge>
           ))}
+          {decoration.badge ? (
+            <Badge className="shrink-0 uppercase tracking-wide" data-model-menu-row-badge="" size="xs" variant="muted">
+              {decoration.badge}
+            </Badge>
+          ) : null}
         </span>
         {loadProgress ? (
           <span className="ml-auto flex shrink-0 items-center gap-1.5" title={copyPicker.loadingIntoMemory}>

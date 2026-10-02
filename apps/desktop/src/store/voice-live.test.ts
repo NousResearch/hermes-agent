@@ -11,7 +11,7 @@ vi.mock('@/lib/voice-live', () => ({
   fetchVoiceLiveStatus: async () => null
 }))
 
-import { $voiceLiveGrokStatus, $voiceLiveStatus, selectedVoiceChatMode, setVoiceChatMode } from './voice-live'
+const { $voiceLiveGrokStatus, $voiceLiveStatus, selectedVoiceChatMode, setVoiceChatMode } = await import('./voice-live')
 
 describe('setVoiceChatMode', () => {
   it('routes the write through the viewed profile, not the bare active socket', async () => {

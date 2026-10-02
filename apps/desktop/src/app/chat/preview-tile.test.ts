@@ -237,6 +237,56 @@ describe('preview tiles mirror the visible session tabs', () => {
     expect(layout.$rightRailActiveTabId.get()).toBe(bId)
   })
 
+  const browserTarget = (url: string) => ({ kind: 'url', label: url, source: url, url }) as const
+
+  it("keeps a hidden session's live page mounted and re-docks the same body when it returns", async () => {
+    const { preview, session, tree } = await setup()
+    const { registry } = await import('@/contrib/registry')
+    const contribution = (id: string) => registry.getArea('panes').find(pane => pane.id === `preview-tile:${id}`)
+
+    session.$selectedStoredSessionId.set('sess-1')
+    preview.openPreview(browserTarget('https://a.example'))
+    const aTab = preview.$previewTabs.get()[0]!.id
+    const aBody = contribution(aTab)
+
+    expect(aBody).toBeDefined()
+
+    // Off screen: out of the tree (no tab in B's drawer), body still registered.
+    session.$selectedStoredSessionId.set('sess-2')
+    preview.openPreview(browserTarget('https://b.example'))
+    expect(tree.treePanesWithPrefix('preview-tile:')).toEqual([
+      `preview-tile:${preview.$previewTabs.get().find(tab => tab.id !== aTab)!.id}`
+    ])
+    expect(contribution(aTab)).toBe(aBody)
+
+    // Back on A: the very same registration (a re-register would remount it).
+    session.$selectedStoredSessionId.set('sess-1')
+    expect(tree.treePanesWithPrefix('preview-tile:')).toEqual([`preview-tile:${aTab}`])
+    expect(contribution(aTab)).toBe(aBody)
+  })
+
+  it('unmounts only the longest-hidden live page past the cap, and reopens it on return', async () => {
+    const { preview, session, tree } = await setup()
+    const { registry } = await import('@/contrib/registry')
+    const contribution = (id: string) => registry.getArea('panes').find(pane => pane.id === `preview-tile:${id}`)
+    const ids: string[] = []
+
+    for (let index = 0; index < 10; index++) {
+      session.$selectedStoredSessionId.set(`sess-cap-${index}`)
+      preview.openPreview(browserTarget(`https://cap-${index}.example`))
+      ids.push(preview.$previewTabs.get().at(-1)!.id)
+    }
+
+    // Nine hidden, eight kept: the first session's page was let go.
+    expect(contribution(ids[0]!)).toBeUndefined()
+    ids.slice(1).forEach(id => expect(contribution(id)).toBeDefined())
+    expect(preview.$previewTabs.get()).toHaveLength(10)
+
+    session.$selectedStoredSessionId.set('sess-cap-0')
+    expect(contribution(ids[0]!)).toBeDefined()
+    expect(tree.treePanesWithPrefix('preview-tile:')).toEqual([`preview-tile:${ids[0]}`])
+  })
+
   it('does not create panes for another session tabs', async () => {
     const { preview, session, tree } = await setup()
 

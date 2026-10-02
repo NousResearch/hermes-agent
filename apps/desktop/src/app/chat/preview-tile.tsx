@@ -29,6 +29,7 @@ import { $rightRailActiveTabId, type RightRailTabId, selectRightRailTab } from '
 import {
   $browserPages,
   $dockedVisiblePreviewTabs,
+  $poppedBrowserTabIds,
   $previewTabs,
   $visiblePreviewTabs,
   adoptPersistedBrowserTab,
@@ -312,12 +313,36 @@ export function watchPreviewTiles(): void {
   $activeTreeGroup.listen(follow)
 }
 
+/** Hidden sessions' live pages kept mounted at once. WHY a cap: every kept
+ *  Browser is a whole renderer process (plus its page's memory) that keeps
+ *  running while its session is off screen. Eight covers flipping between
+ *  the handful of chats a user is actually working in; past that the
+ *  longest-hidden one is unmounted and reloads from its saved address when
+ *  its session returns (the tab itself is never closed). */
+const HIDDEN_LIVE_PREVIEW_LIMIT = 8
+
+/** A page (live Browser guest or rendered HTML) whose body must survive
+ *  being out of view; a text peek is cheap to re-render. */
+function keepsLiveBody(tabId: string): boolean {
+  const target = targetFor(tabId)
+
+  return target?.kind === 'url' || target?.previewKind === 'html'
+}
+
+/** A tab whose session left the screen keeps its live body when it is a page
+ *  still open in this profile's rail (`targetFor` reads it) and not popped
+ *  out (the pop-out window owns that guest). */
+const retainHiddenPreview = (tabId: string) => keepsLiveBody(tabId) && !$poppedBrowserTabIds.get().has(tabId)
+
 const watchPreviewTileMirror = paneMirror<{ id: string }>({
-  // Only the FOCUSED session's tabs (plus pins) become panes — switching
-  // sessions swaps the drawer; a hidden tab's pane leaves the tree without
-  // closing the tab (paneMirror's sync disposes, it doesn't call close). A
-  // popped-out Browser's pane also leaves the docked tree.
+  // Only the FOCUSED session's tabs (plus pins) are in the tree — switching
+  // sessions swaps the drawer without closing any tab. A hidden session's
+  // live page leaves the tree but stays mounted (hidden, inert) so returning
+  // to that session shows the same guest, not a reload; a popped-out
+  // Browser's pane leaves the docked tree for good.
   source: $dockedVisiblePreviewTabs,
+  retain: retainHiddenPreview,
+  retainLimit: HIDDEN_LIVE_PREVIEW_LIMIT,
   key: tab => tab.id,
   prefix: PREVIEW_TILE_PREFIX,
   // The FIRST preview still opens its own zone docked beside main (identical
@@ -338,11 +363,7 @@ const watchPreviewTileMirror = paneMirror<{ id: string }>({
   // the explicit cross-session workspace, everything else belongs to the
   // session that opened it (#73890).
   tabMenuPrefix: previewTabMenuPrefix,
-  lifecycleKeepAlive: tabId => {
-    const target = targetFor(tabId)
-
-    return target?.kind === 'url' || target?.previewKind === 'html'
-  },
+  lifecycleKeepAlive: keepsLiveBody,
   // The body's own Close (an error state's way out) is the tab's ✕, verbatim.
   render: tabId => <PreviewTilePane onClose={() => closeTabPane(previewPaneId(tabId))} tabId={tabId} />,
   close: tabId => {

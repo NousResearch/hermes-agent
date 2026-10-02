@@ -23,8 +23,13 @@ import pytest
 
 from gateway.platforms.base import BasePlatformAdapter
 from gateway.platforms.event import MessageEvent
+from gateway.run_busy import GatewayBusySessionMixin
+from gateway.run_inbound import GatewayInboundMixin
 from gateway.session import build_session_key
-from tests.gateway.test_active_session_text_merge import _make_adapter, _make_event
+from gateway.session_state import SessionState
+from tests.gateway.test_active_session_text_merge import (
+    _make_adapter, _make_event, _make_initialized_adapter,
+)
 
 
 class _TurnSim:
@@ -138,3 +143,23 @@ async def test_followup_still_queues_when_the_session_stays_active():
     assert session_key in adapter._active_sessions  # guard untouched
     pending = adapter._pending_messages.get(session_key)
     assert pending is not None and pending.text == "still busy here"
+
+
+class _QueueRunner(GatewayBusySessionMixin):
+    """The runner's FIFO, its post-turn chain and its idle-path orphan rescue."""
+
+    _BUSY_QUEUE_MAX_PENDING = 32
+    _hm_rescue_orphaned_fifo = GatewayInboundMixin._hm_rescue_orphaned_fifo
+
+    def __init__(self, adapter: BasePlatformAdapter):
+        self.adapter = adapter
+        self.states: dict[str, SessionState] = {}
+
+    def _delivery_adapter_for(self, source):
+        return self.adapter
+
+    def _session_state(self, key):
+        return self.states.setdefault(key, SessionState())
+
+    def _peek_session_state(self, key):
+        return self.states.get(key)

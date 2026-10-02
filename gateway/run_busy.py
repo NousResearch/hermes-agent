@@ -19,6 +19,7 @@ from agent.session_activity import format_iteration_progress
 from gateway.config import Platform
 from gateway.platforms.base import EphemeralReply
 from gateway.platforms.event import MessageEvent, MessageType
+from gateway.platforms.base_pending import can_join_pending_event, is_pending_redispatch
 from gateway.session import SessionSource
 from gateway.whatsapp_identity import canonical_whatsapp_identifier
 from typing import Any, Dict, List, Optional, Tuple, Union
@@ -109,6 +110,9 @@ class GatewayBusySessionMixin:
             return
         if session_key in pending_slot:
             self._session_state(session_key).conversation.queued_events.append(queued_event)
+        elif overflow := self._overflow_queue(session_key):
+            pending_slot[session_key] = overflow.pop(0)
+            overflow.append(queued_event)
         else:
             pending_slot[session_key] = queued_event
         queued_event._gateway_accepted = True
@@ -365,46 +369,29 @@ class GatewayBusySessionMixin:
             entry = session_store._entries.get(session_key)  # noqa: SLF001
         return getattr(entry, "session_id", None) if entry is not None else None
 
-    # Metadata that must match for two pending events to merge into one slot.
-    _SECURITY_METADATA_KEYS = (
-        "hermes_plugin_id", "hermes_plugin_injection", "gateway_session_key",
-        "gateway_session_id", "gateway_session_strict",
-        "notification_category",
-    )
-
     def _queue_or_replace_pending_event(self, session_key: str, event: MessageEvent) -> None:
         from gateway.platforms.base import merge_pending_message_event
         adapter = self._delivery_adapter_for(event.source)
         if not adapter:
             return
-        # FIFO so each follow-up gets its own turn in arrival order (the single pending slot used to
-        # be silently OVERWRITTEN). Photo bursts still merge into the head slot (album semantics).
         pending_slot = getattr(adapter, "_pending_messages", None)
-        # #28503 — Previously this called ``merge_pending_message_event`` with the default
-        # ``merge_text=False``, which silently OVERWROTE the single pending slot when consecutive text
-        # messages arrived in ``busy_input_mode: queue``.
-        existing = pending_slot.get(session_key) if isinstance(pending_slot, dict) else None
-        same_security_context = existing is not None and (
-            getattr(existing, "internal", False) == getattr(event, "internal", False)
-            and getattr(existing, "allow_gateway_control", True)
-            == getattr(event, "allow_gateway_control", True)
-            and all(
-                (getattr(existing, "metadata", None) or {}).get(key)
-                == (getattr(event, "metadata", None) or {}).get(key)
-                for key in self._SECURITY_METADATA_KEYS
-            )
-        )
-        # Only a photo burst (PHOTO on either side, the other side TEXT or PHOTO) merges into the
-        # head slot. Every other media follow-up — voice, audio, video, document — is an
-        # independent message and takes its own FIFO turn like text does; merging on *any*
-        # ``media_urls`` collapsed three voice notes into one turn (#114363). Telegram albums
-        # (``media_group_id``, photos and videos) are already coalesced by the adapter upstream.
+        if not isinstance(pending_slot, dict):
+            return
+        existing = pending_slot.get(session_key)
+        if is_pending_redispatch(adapter, session_key, event):
+            if existing is not None:
+                self._session_state(session_key).conversation.queued_events.insert(0, existing)
+            pending_slot[session_key] = event
+            event._gateway_accepted = True
+            return
         merge_types = {
             getattr(existing, "message_type", None),
             getattr(event, "message_type", None),
         }
         if (
-            same_security_context
+            existing is not None
+            and not self._overflow_queue(session_key)
+            and can_join_pending_event(existing, event)
             and MessageType.PHOTO in merge_types
             and merge_types <= {MessageType.TEXT, MessageType.PHOTO}
         ):

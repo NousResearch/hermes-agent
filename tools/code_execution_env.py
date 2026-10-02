@@ -183,6 +183,12 @@ def _build_child_env(*, rpc_endpoint: str, rpc_token: str, tmpdir: str,
     if _existing_pp:
         _pp_parts.append(_existing_pp)
     child_env["PYTHONPATH"] = os.pathsep.join(_pp_parts)
+    if _runtime_path is not None:
+        # The runtime site-packages is needed only to boot the kernel. The kernel drops it before
+        # user code runs, so a different interpreter spawned from a cell never imports the
+        # kernel's compiled extensions (a 3.13 tool loading 3.14 NumPy fails to import).
+        child_env["HERMES_KERNEL_CHILD_PYTHONPATH"] = os.pathsep.join(
+            part for part in _pp_parts if part != _runtime_path)
     return child_env
 
 

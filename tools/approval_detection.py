@@ -103,10 +103,14 @@ _WRITE_TARGET_BOUNDARY = r'(?=[\s;&|<>"\']|$)'
 # sudo/env/exec/nohup/setsid/time wrappers. Keeps shutdown/reboot rules from firing on "echo reboot" / "grep
 # 'shutdown' log". Real ;/&/| separators are converted to newlines by the quote-aware _mark_command_starts pass;
 # keeping them here mistakes quoted data (grep '(safe|rm -rf /)') for commands.
+# Every run is possessive: a failed command-name match must not re-split a whitespace run between the
+# leading and trailing \s (cubic on a long blank-line run, and re.search holds the GIL while it runs).
+# Only the last newline of a whitespace run starts a match: an earlier one consumes the same run and
+# reaches the same command word, so trying each would rescan the run once per newline.
 _CMDPOS = (
-    r'(?:^|[\n`]|\$\()' r'\s*'  # start position, optional whitespace
-    r'(?:sudo\s+(?:-[^\s]+\s+)*)?' r'(?:env\s+(?:\w+=\S*\s+)*)?'  # optional sudo with flags, env VAR=VAL pairs
-    r'(?:(?:exec|nohup|setsid|time)\s+)*' r'\s*'  # optional wrapper commands
+    r'(?:^|\n(?![^\S\n]*+\n)|`|\$\()' r'\s*+'  # start position, optional whitespace
+    r'(?:sudo\s++(?:-[^\s]++\s++)*+)?' r'(?:env\s++(?:\w+=\S*+\s++)*+)?'  # optional sudo with flags, env VAR=VAL pairs
+    r'(?:(?:exec|nohup|setsid|time)\s++)*+' r'\s*+'  # optional wrapper commands
 )
 
 

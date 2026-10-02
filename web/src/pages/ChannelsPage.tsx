@@ -54,20 +54,25 @@ function channelsPageCopy(t: Translations): ChannelsPageCopy {
 // whatever the live gateway runtime reports (connected/disconnected/fatal).
 const STATE_BADGE: Record<
   string,
-  { tone: "success" | "warning" | "destructive" | "secondary" | "outline"; label: string }
+  {
+    tone: "success" | "warning" | "destructive" | "secondary" | "outline";
+    labelKey?: keyof ChannelsPageCopy;
+  }
 > = {
-  connected: { tone: "success", label: "Connected" },
-  pending_restart: { tone: "warning", label: "Restart to apply" },
-  gateway_stopped: { tone: "warning", label: "Gateway stopped" },
-  startup_failed: { tone: "destructive", label: "Start failed" },
-  disconnected: { tone: "warning", label: "Disconnected" },
-  not_configured: { tone: "outline", label: "Not configured" },
-  disabled: { tone: "secondary", label: "Disabled" },
-  fatal: { tone: "destructive", label: "Error" },
+  connected: { tone: "success", labelKey: "connected" },
+  pending_restart: { tone: "warning", labelKey: "statusRestartToApply" },
+  gateway_stopped: { tone: "warning", labelKey: "statusGatewayStopped" },
+  startup_failed: { tone: "destructive", labelKey: "statusStartFailed" },
+  disconnected: { tone: "warning", labelKey: "statusDisconnected" },
+  not_configured: { tone: "outline", labelKey: "statusNotConfigured" },
+  disabled: { tone: "secondary", labelKey: "statusDisabled" },
+  fatal: { tone: "destructive", labelKey: "statusError" },
 };
 
-function stateBadge(state: string) {
-  return STATE_BADGE[state] ?? { tone: "outline" as const, label: state };
+function stateBadge(state: string, C: ChannelsPageCopy) {
+  const entry = STATE_BADGE[state];
+  if (!entry) return { tone: "outline" as const, label: state };
+  return { tone: entry.tone, label: entry.labelKey ? C[entry.labelKey] : state };
 }
 
 const TELEGRAM_USER_ID_RE = /^\d+$/;
@@ -78,12 +83,16 @@ const SLACK_TOKEN_PREFIXES: Record<string, string> = {
   SLACK_APP_TOKEN: "xapp-",
 };
 
-function validateMessagingEnvField(field: MessagingPlatformEnvVar, value: string): string | null {
+function validateMessagingEnvField(
+  field: MessagingPlatformEnvVar,
+  value: string,
+  C: ChannelsPageCopy,
+): string | null {
   const trimmed = value.trim();
   if (!trimmed) return null;
 
   if (field.key === "TELEGRAM_BOT_TOKEN" && !TELEGRAM_BOT_TOKEN_RE.test(trimmed)) {
-    return "Paste the complete token from @BotFather (for example, 123456789:ABC…).";
+    return C.telegramTokenInvalid;
   }
 
   if (field.key === "TELEGRAM_ALLOWED_USERS") {
@@ -99,7 +108,9 @@ function validateMessagingEnvField(field: MessagingPlatformEnvVar, value: string
 
   const expectedPrefix = SLACK_TOKEN_PREFIXES[field.key];
   if (expectedPrefix && !trimmed.startsWith(expectedPrefix)) {
-    return `${field.prompt || field.key} must start with ${expectedPrefix}`;
+    return C.slackTokenPrefix
+      .replace("{field}", field.prompt || field.key)
+      .replace("{prefix}", expectedPrefix);
   }
 
   if (field.key === "SLACK_ALLOWED_USERS") {
@@ -112,16 +123,16 @@ function validateMessagingEnvField(field: MessagingPlatformEnvVar, value: string
       .filter(Boolean);
     const invalid = parts.find((part) => part !== "*" && !SLACK_MEMBER_ID_RE.test(part));
     if (invalid) {
-      return `${invalid} does not look like a Slack member ID. Use IDs like U01ABC2DEF3.`;
+      return C.slackMemberIdInvalid.replace("{id}", invalid);
     }
   }
 
   return null;
 }
 
-function formatExpiry(expiresAt: string): string {
+function formatExpiry(expiresAt: string, C: ChannelsPageCopy): string {
   const ms = Date.parse(expiresAt) - Date.now();
-  if (!Number.isFinite(ms) || ms <= 0) return "expired";
+  if (!Number.isFinite(ms) || ms <= 0) return C.expired;
   const seconds = Math.ceil(ms / 1000);
   const minutes = Math.floor(seconds / 60);
   const rest = seconds % 60;
@@ -217,24 +228,24 @@ export default function ChannelsPage() {
       }
     });
     if (Object.keys(env).length === 0 && clearEnv.length === 0) {
-      showToast("Nothing to save — fill in at least one field.", "error");
+      showToast(C.nothingToSave, "error");
       return;
     }
     const missing = editing.env_vars.filter(
       (v) => v.required && !v.is_set && !env[v.key],
     );
     if (missing.length > 0) {
-      showToast(`${missing[0].prompt || missing[0].key} is required`, "error");
+      showToast(C.requiredField.replace("{field}", missing[0].prompt || missing[0].key), "error");
       return;
     }
     const nextFieldErrors: Record<string, string> = {};
     editing.env_vars.forEach((field) => {
-      const message = validateMessagingEnvField(field, draftEnv[field.key] || "");
+      const message = validateMessagingEnvField(field, draftEnv[field.key] || "", C);
       if (message) nextFieldErrors[field.key] = message;
     });
     if (Object.keys(nextFieldErrors).length > 0) {
       setFieldErrors(nextFieldErrors);
-      showToast("Fix the highlighted fields before saving.", "error");
+      showToast(C.fixHighlighted, "error");
       return;
     }
     setSaving(true);
@@ -299,7 +310,7 @@ export default function ChannelsPage() {
     setRestarting(true);
     try {
       await api.restartGateway();
-      showToast("Gateway restarting…", "success");
+      showToast(C.gatewayRestarting, "success");
       setRestartNeeded(false);
       // Give the gateway a moment to come up, then refresh status.
       setTimeout(() => void load(), 4000);
@@ -319,7 +330,7 @@ export default function ChannelsPage() {
         disabled={restarting}
         prefix={restarting ? <Spinner /> : <RotateCw className="h-4 w-4" />}
       >
-        {restarting ? "Restarting…" : "Restart gateway"}
+        {restarting ? "Restarting…" : C.restartGateway}
       </Button>,
     );
     return () => setEnd(null);
@@ -360,7 +371,7 @@ export default function ChannelsPage() {
               disabled={restarting}
               prefix={restarting ? <Spinner /> : <RotateCw className="h-4 w-4" />}
             >
-              {restarting ? "Restarting…" : "Restart now"}
+              {restarting ? "Restarting…" : C.restartNow}
             </Button>
           </CardContent>
         </Card>
@@ -421,7 +432,7 @@ export default function ChannelsPage() {
                 className="font-mondwest text-display text-base tracking-wider"
               >
                 {editing.id === "telegram"
-                  ? "Use your own Telegram bot"
+                  ? C.useOwnTelegramBot
                   : `Configure ${editing.name}`}
               </h2>
               {editing.docs_url && (
@@ -431,7 +442,7 @@ export default function ChannelsPage() {
                   rel="noopener noreferrer"
                   className="mt-1 inline-flex items-center gap-1 text-xs text-primary hover:underline"
                 >
-                  {editing.id === "telegram" ? "BotFather guide" : "Setup guide"}
+                  {editing.id === "telegram" ? C.botFatherGuide : C.setupGuide}
                   <ExternalLink className="h-3 w-3" />
                 </a>
               )}
@@ -530,7 +541,7 @@ export default function ChannelsPage() {
                     className="text-base leading-6 sm:text-xs sm:leading-4"
                     placeholder={
                       field.is_set
-                        ? field.redacted_value || "•••••• (set — leave blank to keep)"
+                        ? field.redacted_value || C.secretSetPlaceholder
                         : field.key
                     }
                     value={draftEnv[field.key] ?? ""}
@@ -571,7 +582,7 @@ export default function ChannelsPage() {
                   disabled={saving}
                   prefix={saving ? <Spinner /> : undefined}
                 >
-                  {saving ? "Saving…" : "Save & enable"}
+                  {saving ? t.common.saving : C.saveAndEnable}
                 </Button>
               </div>
             </div>
@@ -582,7 +593,7 @@ export default function ChannelsPage() {
       {/* Platform list */}
       <div className="grid gap-3">
         {platforms.map((platform) => {
-          const badge = stateBadge(platform.state);
+          const badge = stateBadge(platform.state, C);
           const busy = togglingId === platform.id;
           const StateIcon =
             platform.state === "connected"
@@ -638,7 +649,7 @@ export default function ChannelsPage() {
                         <Switch
                           checked={platform.enabled}
                           onCheckedChange={() => void handleToggle(platform)}
-                          aria-label={`Enable ${platform.name}`}
+                          aria-label={C.enablePlatform.replace("{name}", platform.name)}
                         />
                       )}
                     </div>
@@ -767,7 +778,7 @@ export function WhatsAppOnboardingPanel({
           return;
         }
         if (status.status === "error") {
-          setError(status.error || "WhatsApp setup failed.");
+          setError(status.error || C.whatsappSetupFailed);
           setSetup(null);
           setQrDataUrl("");
           setPhase("idle");
@@ -784,7 +795,7 @@ export function WhatsAppOnboardingPanel({
           setSetup(null);
           setQrDataUrl("");
           setPhase("idle");
-          setError("WhatsApp QR setup expired. Start a new QR setup to try again.");
+          setError(C.whatsappQrExpired);
           return;
         }
         setError(`Still waiting for WhatsApp. Retrying after: ${pollError}`);
@@ -829,7 +840,7 @@ export function WhatsAppOnboardingPanel({
         await updateQr(res.qr_payload);
       }
       if (res.status === "error") {
-        setError(res.error || "WhatsApp setup failed.");
+        setError(res.error || C.whatsappSetupFailed);
         setSetup(null);
         setPhase("idle");
       } else {
@@ -883,7 +894,7 @@ export function WhatsAppOnboardingPanel({
       });
       resetSetup();
       if (result.restart_started) {
-        showToast("WhatsApp saved; gateway restarting…", "success");
+        showToast(C.whatsappSavedRestarting, "success");
         setRestartNeeded(false);
         setTimeout(() => void onChanged(), 4000);
         void watchRestartOutcome();
@@ -900,7 +911,7 @@ export function WhatsAppOnboardingPanel({
   };
 
   const expiresIn = useMemo(
-    () => (setup ? formatExpiry(setup.expires_at) : ""),
+    () => (setup ? formatExpiry(setup.expires_at, C) : ""),
     // tick keeps the memo fresh without recalculating on every render branch.
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [setup, tick],
@@ -915,33 +926,33 @@ export function WhatsAppOnboardingPanel({
     phase === "connected" || phase === "applying"
       ? "WhatsApp is linked but Hermes is not listening yet. Save and restart the gateway to finish setup."
       : setup?.status === "installing"
-        ? "Preparing the WhatsApp bridge. The QR code will appear here when it is ready."
+        ? C.whatsappBridgePreparing
         : setup?.status === "starting"
-          ? "Starting the WhatsApp pairing bridge. The QR code will appear here when it is ready."
-          : "Open WhatsApp on your phone, then go to Linked Devices and scan from there. This QR is not a browser URL.";
+          ? C.whatsappBridgeStarting
+          : C.whatsappQrInstructions;
   const linkedAccountLabel = setup?.account_phone
     ? `+${setup.account_phone}`
     : setup?.account_name || setup?.account_id || "";
   const linkedAccountDetail =
     setup?.account_phone || setup?.account_id
-      ? "This is the WhatsApp account Hermes is now logged into."
-      : "Hermes is logged into the WhatsApp account that scanned the QR code.";
+      ? C.whatsappAccountLinked
+      : C.whatsappAccountLinkedAlt;
   const linkedAccountChatUrl = setup?.account_phone
     ? `https://wa.me/${setup.account_phone}`
     : "";
   const messageInstruction =
     mode === "self-chat"
-      ? "After the restart, open Message Yourself on the linked account and send Hermes a message."
-      : "After the restart, start a chat from another WhatsApp account with the linked account and send Hermes a message.";
+      ? C.whatsappSelfChatHint
+      : C.whatsappOtherChatHint;
   const hasSavedAllowedUsers = Boolean(platform.whatsapp_setup?.allowed_users_set);
   const pairingInstruction =
     mode === "self-chat" && !allowedUsers.trim()
       ? hasSavedAllowedUsers
         ? "Hermes will keep the saved WhatsApp allowlist."
-        : "Self-chat mode will allow the linked account automatically when you save."
+        : C.whatsappSelfChatAuto
       : !allowedUsers.trim() && hasSavedAllowedUsers
         ? "Hermes will keep the saved WhatsApp allowlist."
-        : "If no allowed numbers were entered, Hermes replies with a pairing code. Approve it from the dashboard Pairing page.";
+        : C.whatsappPairingFallback;
   const pairingBusy = ["starting", "waiting", "applying"].includes(phase);
 
   return (
@@ -955,7 +966,7 @@ export function WhatsAppOnboardingPanel({
             disabled={pairingBusy}
             prefix={phase === "starting" ? <Spinner /> : <QrCode className="h-4 w-4" />}
           >
-            {phase === "starting" ? "Starting…" : "Pair with QR"}
+            {phase === "starting" ? "Starting…" : C.pairWithQr}
           </Button>
           <Button
             size="sm"
@@ -1053,7 +1064,7 @@ export function WhatsAppOnboardingPanel({
                     <div className="font-medium">
                       {linkedAccountLabel
                         ? `Linked as ${linkedAccountLabel}`
-                        : "WhatsApp device linked"}
+                        : C.whatsappDeviceLinked}
                     </div>
                     <div className="mt-1 text-muted-foreground">{linkedAccountDetail}</div>
                     <ol className="mt-3 list-decimal space-y-1 pl-5 text-muted-foreground">
@@ -1081,7 +1092,7 @@ export function WhatsAppOnboardingPanel({
                       disabled={phase === "applying"}
                       prefix={phase === "applying" ? <Spinner /> : <Save className="h-4 w-4" />}
                     >
-                      {phase === "applying" ? "Saving…" : "Save and restart"}
+                      {phase === "applying" ? "Saving…" : C.saveAndRestartAction}
                     </Button>
                     <Button size="sm" ghost onClick={() => void cancel()}>
                       Cancel
@@ -1102,7 +1113,7 @@ export function WhatsAppOnboardingPanel({
                 <div className="flex h-60 w-60 flex-col items-center justify-center gap-2 border border-border bg-background/50 p-4 text-center">
                   <Badge tone="success">{C.linked}</Badge>
                   <div className="text-sm text-muted-foreground">
-                    {linkedAccountLabel || "Existing WhatsApp session found"}
+                    {linkedAccountLabel || C.whatsappExistingSession}
                   </div>
                 </div>
               ) : (
@@ -1194,7 +1205,7 @@ function TelegramOnboardingPanel({
           setSetup(null);
           setQrDataUrl("");
           setPhase("idle");
-          setError("Telegram pairing expired. Start a new QR setup to try again.");
+          setError(C.telegramPairingExpired);
           return;
         }
 
@@ -1264,7 +1275,7 @@ function TelegramOnboardingPanel({
   const addAllowedId = () => {
     const trimmed = newAllowedId.trim();
     if (!TELEGRAM_USER_ID_RE.test(trimmed)) {
-      setError("Allowed Telegram user IDs must be numeric.");
+      setError(C.telegramUserIdsNumeric);
       return;
     }
     setError("");
@@ -1301,7 +1312,7 @@ function TelegramOnboardingPanel({
   const apply = async () => {
     if (!setup) return;
     if (allowedIds.length === 0) {
-      setError("Add at least one allowed Telegram user ID.");
+      setError(C.telegramAddUserId);
       return;
     }
     setPhase("applying");
@@ -1312,14 +1323,14 @@ function TelegramOnboardingPanel({
       });
       resetSetup();
       if (result.restart_started) {
-        showToast("Telegram saved; gateway restarting…", "success");
+        showToast(C.telegramSavedRestarting, "success");
         setRestartNeeded(false);
         setTimeout(() => void onChanged(), 4000);
         void watchRestartOutcome();
       } else if (result.restart_started === undefined && result.needs_restart) {
         try {
           await api.restartGateway();
-          showToast("Telegram saved; gateway restarting…", "success");
+          showToast(C.telegramSavedRestarting, "success");
           setRestartNeeded(false);
           setTimeout(() => void onChanged(), 4000);
         } catch (restartError) {
@@ -1339,7 +1350,7 @@ function TelegramOnboardingPanel({
   };
 
   const expiresIn = useMemo(
-    () => (setup ? formatExpiry(setup.expires_at) : ""),
+    () => (setup ? formatExpiry(setup.expires_at, C) : ""),
     // tick keeps the memo fresh without recalculating on every render branch.
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [setup, tick],
@@ -1376,7 +1387,7 @@ function TelegramOnboardingPanel({
             disabled={phase !== "idle"}
             prefix={phase === "starting" ? <Spinner /> : <QrCode className="h-4 w-4" />}
           >
-            {phase === "starting" ? "Starting…" : "Create with QR"}
+            {phase === "starting" ? "Starting…" : C.createWithQr}
           </Button>
         </div>
 
@@ -1489,7 +1500,7 @@ function TelegramOnboardingPanel({
                     disabled={phase === "applying"}
                     prefix={phase === "applying" ? <Spinner /> : <Save className="h-4 w-4" />}
                   >
-                    {phase === "applying" ? "Saving…" : "Save and restart"}
+                    {phase === "applying" ? "Saving…" : C.saveAndRestartAction}
                   </Button>
                   <Button size="sm" ghost onClick={() => void cancel()}>
                     Cancel

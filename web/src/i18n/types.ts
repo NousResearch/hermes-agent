@@ -467,6 +467,23 @@ export interface Translations {
     revokeBodyNamed: string;
     revokeBody: string;
     revoke: string;
+    /** Round-2 sweep additions — en/zh ship them, other locales fall back. */
+    loadFailed: string;
+    missingRequest: string;
+    approved: string;
+    approveFailed: string;
+    clearConfirm: string;
+    cleared: string;
+    clearFailed: string;
+    revoked: string;
+    revokeFailed: string;
+    clearPending: string;
+    pendingHeader: string;
+    noPending: string;
+    ageMinutes: string;
+    approve: string;
+    approvedHeader: string;
+    noApproved: string;
   };
 
   /** Optional — Webhooks page copy. */
@@ -547,6 +564,50 @@ export interface Translations {
     telegramUserIdPlaceholder: string;
     telegramQrAlt: string;
     waiting: string;
+    statusRestartToApply: string;
+    statusGatewayStopped: string;
+    statusStartFailed: string;
+    statusDisconnected: string;
+    statusNotConfigured: string;
+    statusDisabled: string;
+    statusError: string;
+    enablePlatform: string;
+    saveAndEnable: string;
+    nothingToSave: string;
+    fixHighlighted: string;
+    requiredField: string;
+    gatewayRestarting: string;
+    restartGateway: string;
+    restartNow: string;
+    useOwnTelegramBot: string;
+    botFatherGuide: string;
+    setupGuide: string;
+    secretSetPlaceholder: string;
+    whatsappSetupFailed: string;
+    whatsappQrExpired: string;
+    whatsappSavedRestarting: string;
+    whatsappBridgePreparing: string;
+    whatsappBridgeStarting: string;
+    whatsappQrInstructions: string;
+    whatsappAccountLinked: string;
+    whatsappAccountLinkedAlt: string;
+    whatsappSelfChatHint: string;
+    whatsappOtherChatHint: string;
+    whatsappSelfChatAuto: string;
+    whatsappPairingFallback: string;
+    pairWithQr: string;
+    whatsappDeviceLinked: string;
+    saveAndRestartAction: string;
+    whatsappExistingSession: string;
+    telegramPairingExpired: string;
+    telegramUserIdsNumeric: string;
+    telegramAddUserId: string;
+    telegramSavedRestarting: string;
+    createWithQr: string;
+    telegramTokenInvalid: string;
+    slackTokenPrefix: string;
+    slackMemberIdInvalid: string;
+    expired: string;
   };
 
   filesPage?: {

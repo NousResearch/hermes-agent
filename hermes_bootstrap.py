@@ -39,8 +39,6 @@ def _is_cwd_path_entry(entry: str) -> bool:
     """True for the sys.path entries Python inserts for the launch directory."""
     if entry in ("", "."):
         return True
-    if not entry:
-        return False
     try:
         return os.path.abspath(entry) == os.getcwd()
     except OSError:  # pragma: no cover - only pathological cwd removal

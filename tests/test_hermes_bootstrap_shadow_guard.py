@@ -43,10 +43,35 @@ def _poison(workspace: Path, names: tuple[str, ...] = SHADOWING) -> None:
 
 
 def _entry_point_env() -> dict[str, str]:
+    """Env for a child that must be poisoned-workspace-faithful, not shell-faithful.
+
+    ``PYTHONSAFEPATH=1`` (equivalently ``-P``) takes the cwd off the child's
+    ``sys.path``; the probe below deliberately relies on it being there, and the boot
+    child must exercise the guard rather than bypass the whole problem. So the tests own
+    that setting instead of inheriting whatever shell they run in — a worker session
+    exports ``PYTHONSAFEPATH=1`` box-wide from the local dispatch workaround, and every
+    test here would otherwise fail with "No module named probe".
+    """
     env = dict(os.environ)
+    env.pop("PYTHONSAFEPATH", None)
     root = str(Path(hermes_bootstrap.__file__).resolve().parent)
     env["PYTHONPATH"] = os.pathsep.join(p for p in (root, env.get("PYTHONPATH", "")) if p)
     return env
+
+
+def _worker_spawn_argv() -> list[str]:
+    """The exact argv the dispatcher spawns a worker with, tail included.
+
+    ``_worker_argv`` is the production builder (``_module_hermes_argv`` + profile flags
+    + ``chat -q 'work kanban task <id>'``), so a boot test on it covers the spawn shape
+    the dispatcher really uses, not just the interpreter prefix.
+    """
+    task = kbd._kb.Task(
+        id="t_probe", title="boot probe", body=None, assignee="probe", status="ready",
+        priority=0, created_by="test", created_at=0, started_at=None, completed_at=None,
+        workspace_kind="scratch", workspace_path=None, claim_lock=None,
+        claim_expires=None, tenant="default")
+    return kbd._worker_argv(task, "default", None)
 
 
 def test_cwd_entry_with_a_stdlib_shadow_is_demoted(monkeypatch, tmp_path):
@@ -118,20 +143,26 @@ def test_the_entry_point_boots_from_a_poisoned_workspace(tmp_path):
 def test_the_worker_launch_survives_shadows_that_precede_user_code(tmp_path):
     """``runpy`` is imported before any user code, so only the argv can save it.
 
-    The dispatcher spawns ``<python> -P -m hermes_cli.main``; a plain ``-m`` over a
-    workspace ``runpy.py`` dies inside ``pymain_run_module`` ("Could not import runpy
-    module") — no Python-level guard, the shadow guard included, ever runs.
+    The dispatcher spawns ``<python> -P -m hermes_cli.main -p … chat -q 'work kanban task
+    …'``; a plain ``-m`` over a workspace ``runpy.py`` dies inside ``pymain_run_module``
+    ("Could not import runpy module") — no Python-level guard, the shadow guard included,
+    ever runs. The argv exercised here is the one the production builder emits, and the
+    boot target is the worker's own ``chat`` entry (its usage text is the proof), not just
+    the top-level parser. Full-card completion in a poisoned workspace is the live
+    dispatcher receipt in the PR body: it needs a model, so it is not a CI test.
     """
     workspace = tmp_path / "ws"
     _poison(workspace, BEFORE_USER_CODE)
-    argv = kbd._module_hermes_argv()
+    argv = _worker_spawn_argv()
     assert argv[1:3] == ["-P", "-m"], argv
+    assert argv[4:6] == ["-p", "default"], argv
+    assert argv[-3:] == ["chat", "-q", "work kanban task t_probe"], argv
 
     boot = subprocess.run(
         [*argv, "--help"], cwd=workspace, env=_entry_point_env(),
         capture_output=True, text=True, timeout=300, check=False)
     assert boot.returncode == 0, boot.stderr[-2000:]
-    assert "usage: hermes" in boot.stdout
+    assert "usage: hermes chat" in boot.stdout
 
 
 def test_the_import_root_pin_still_matches_the_worker_argv():

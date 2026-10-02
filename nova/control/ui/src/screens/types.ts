@@ -34,11 +34,18 @@ export type Task = {
   agent_id?: string; created_at?: number; started_at?: number | null;
   completed_at?: number | null; priority?: number; consecutive_failures?: number;
   last_error?: string; needs_attention?: boolean;
-  /** "failed" needs a fix and a retry; "decision" needs a person to decide. Empty otherwise. */
-  attention_kind?: "failed" | "decision" | "";
+  /** "failed" needs a fix and a retry; "decision" needs a person to decide; "approval" is a
+   *  held call a person approves or refuses. Empty otherwise. */
+  attention_kind?: "failed" | "decision" | "approval" | "";
+  /** The call a worker was held on, when it needs a person's approval. */
+  approval?: HeldCall;
   /** The runtime's error in operator language, and — where the model record explains it —
    *  the model failure behind it. The raw text stays in `last_error`. */
   error_summary?: { headline: string; detail: string; cause?: ModelError };
+};
+export type HeldCall = {
+  request_id: string; tool: string; action: string; reason: string;
+  requested_at: string; agent_id: string; call: string; arguments: string;
 };
 export type ModelError = {
   category: string; headline: string; remedy: string; owner: string; raw: string;

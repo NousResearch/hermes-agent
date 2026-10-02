@@ -4,6 +4,17 @@ Read-only audit before building risk-gated approvals and earned autonomy. Every 
 is traced to a file and line in this repository, or to TypeSafe's published documentation.
 Line numbers are as of commit `40dc9c632`.
 
+**Status (2026-10-02).** §1 is resolved with option (b), and §2 is closed. Both are in
+`enforcement.py`, `approvals.py` and `decide.py`, and are tested in
+`tests/platform/test_task_approvals.py`.
+
+- **Task work (§1):** an escalated call in a task is filed with its exact arguments in
+  `<home>/nova-approvals/<task>/<request>.json`, and the task is held on the board.
+  - **release** approves that call once, and **reject** (with a reason) refuses it. Either way the worker runs again.
+  - **resume** is refused while a call is waiting.
+- **"Always" (§2):** the rule key is now `nova:<action>:<tool_call_id>`. Escalation records
+  also carry `tool_call_id` and `session_id`, which is the first half of item 3 below.
+
 **The short answer.** Human approval outcomes *are* observable to NOVA, and can be joined
 back to the escalation that caused them, entirely inside NOVA's own plugin — no core patch.
 But the audit found three things that change the plan, and they are listed first.

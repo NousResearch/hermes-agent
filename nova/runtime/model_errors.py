@@ -148,6 +148,12 @@ def summarize_task_error(text: str) -> dict:
             "headline": "The work ran past its time limit",
             "detail": "The dispatcher stopped it at the agent's maximum task runtime.",
         }
+    if lowered.startswith("nova approval needed"):
+        return {
+            "headline": "Waiting for your approval",
+            "detail": "The agent wants to make a call its policy reserves for a person. Approve "
+                      "it to let that exact call run once, or refuse it with a reason.",
+        }
     if lowered.startswith("nova budget:"):
         return {
             "headline": "Monthly budget reached",

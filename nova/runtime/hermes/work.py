@@ -15,6 +15,7 @@ import json
 import os
 import sqlite3
 from contextlib import contextmanager
+from dataclasses import replace
 from pathlib import Path
 from typing import Iterator, Optional
 
@@ -185,7 +186,29 @@ def list_tasks(
             return []
         views = [_row_to_task(row) for row in rows]
         _attach_block_reasons(connection, views)
-    return views
+    return [_with_held_call(home, view) for view in views]
+
+
+def _with_held_call(home: Path, view: TaskView) -> TaskView:
+    """Put a held call's approval request in ``detail["approval"]``.
+
+    A task the policy plugin held for a person carries the call itself — tool, reason and
+    arguments — so the person deciding sees what will run, not only that something asks.
+    A task the runtime's loop breaker moved to triage on its second hold is still waiting
+    for that person, so it reads as held rather than as pending work nobody looks at.
+    """
+    if view.runtime_status not in ("blocked", "triage", "ready"):
+        return view
+    from nova.runtime.hermes import approvals
+
+    try:
+        held = approvals.first_pending(home, view.task_id)
+    except OSError:
+        return view
+    if held is None:
+        return view
+    view.detail["approval"] = approvals.view(held)
+    return replace(view, state="blocked") if view.runtime_status == "triage" else view
 
 
 def _attach_block_reasons(connection: sqlite3.Connection, views: list[TaskView]) -> None:
@@ -197,7 +220,7 @@ def _attach_block_reasons(connection: sqlite3.Connection, views: list[TaskView])
     on the board and invisible on the Work screen, and the task read as "needs a decision"
     with a Resume that would fail the same way. One query for the page, newest event wins.
     """
-    blocked = [view for view in views if view.runtime_status == "blocked"]
+    blocked = [view for view in views if view.runtime_status in ("blocked", "triage")]
     if not blocked:
         return
     marks = ",".join("?" for _ in blocked)
@@ -243,10 +266,11 @@ def get_task(home: Path, task_id: str, *, tenant_id: str = "") -> Optional[TaskV
     if row is None:
         return None
     view = _row_to_task(row)
-    if view.runtime_status == "blocked":
+    if view.runtime_status in ("blocked", "triage"):
         with _readonly(work_store_path(home)) as connection:
             if connection is not None:
                 _attach_block_reasons(connection, [view])
+    view = _with_held_call(home, view)
     if tenant_id:
         # ``view.tenant_id and ...`` short-circuited on an unstamped row, handing it to
         # every tenant that asked. Kept as the default for the single-tenant case it was

@@ -1024,6 +1024,11 @@ class ControlAPI:
             row["error_summary"] = summary
         if block_reason:
             row["block_reason"] = block_reason
+        if view.detail.get("approval"):
+            # A held call: a person approves or refuses it, which is neither a failure to
+            # retry nor a plain resume.
+            row["approval"] = view.detail["approval"]
+            row["attention_kind"] = "approval"
         return row
 
     def automations(self) -> Response:

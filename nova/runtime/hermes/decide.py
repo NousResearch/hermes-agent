@@ -15,6 +15,11 @@ for the transition it wants and lets the runtime decide whether it is legal. The
 holds whatever locking the current schema requires. Imported lazily, inside the functions,
 because ``nova`` must load with only the standard library and PyYAML present.
 
+**A held call is answered with the same verbs.** When a worker's call needs approval, the
+policy plugin files it and holds the task (see ``approvals.py``). Then *release* approves that
+call and *reject* refuses it, and either way the task goes back on the board; *resume* is
+refused, because resuming a held call without answering it would only hold it again.
+
 **The actor is carried, not implied.** ``promote_task`` takes one and writes it into the
 runtime's own event log, so the runtime's record and NOVA's audit name the same human.
 """
@@ -26,6 +31,7 @@ from typing import Any
 
 from nova.errors import RuntimeAdapterError
 from nova.runtime.base import WORK_ACTIONS, WorkDecision
+from nova.runtime.hermes import approvals as _approvals
 
 #: Prefix on a note NOVA attaches, so a board carrying both worker chatter and operator
 #: instruction says which is which without a join. The worker reads the whole comment.
@@ -67,6 +73,11 @@ def decide(
                 reason="no such work item on this board",
             )
         before = getattr(task, "status", "") or ""
+
+        held = _approvals.first_pending(home, task_id) if action in ("release", "reject", "resume") else None
+        if held is not None:
+            return _answer_held_call(kb, connection, home, task_id, held, action,
+                                     actor=actor, reason=reason, before=before)
 
         if action == "release":
             ok, error = kb.promote_task(connection, task_id, actor=actor, reason=reason or None)
@@ -131,6 +142,63 @@ def decide(
         status = (getattr(after, "status", "") if after is not None else "") or before
 
     return WorkDecision(action=action, task_id=task_id, applied=True, resulting_status=status)
+
+
+def _answer_held_call(kb: Any, connection: Any, home: Path, task_id: str, held: dict,
+                      action: str, *, actor: str, reason: str, before: str) -> WorkDecision:
+    """Approve or refuse a held call, then put the task back on the board.
+
+    The answer is recorded before the task moves, so a worker can never run before its
+    grant exists; if the task then cannot move, the answer is taken back and nothing changed.
+    """
+    rid, tool = held.get("request_id", ""), held.get("tool", "the call")
+    if action == "resume":
+        return WorkDecision(
+            action, task_id, False,
+            reason=(f"it is waiting for a person to approve {tool} (request {rid}); approve it "
+                    "with release, or refuse it with reject and a reason"),
+            resulting_status=before,
+        )
+    approve = action == "release"
+    if not approve and not reason:
+        return WorkDecision(
+            action, task_id, False,
+            reason="refusing a held call needs a reason — it is what the worker reads and works around",
+            resulting_status=before,
+        )
+    answered = _approvals.answer(home, held, approve=approve, actor=actor, reason=reason)
+    if before == "triage":
+        # The runtime's loop breaker sends a task held a second time for the same kind of
+        # reason to triage. Each hold here is a different call a person has now answered,
+        # so it is specified back onto the board rather than left there.
+        moved = kb.specify_triage_task(connection, task_id, author=actor)
+        if moved:
+            moved_ok, _ = kb.promote_task(connection, task_id, actor=actor, reason=reason or None)
+            moved = moved_ok or getattr(kb.get_task(connection, task_id), "status", "") == "ready"
+    elif before == "blocked":
+        moved, _ = kb.promote_task(connection, task_id, actor=actor, reason=reason or None)
+    else:
+        moved = True  # not held on the board (the hold could not be written); the answer stands
+    if not moved:
+        _approvals.reopen(home, held)
+        return WorkDecision(action, task_id, False,
+                            reason=f"the task could not be put back on the board from {before!r}",
+                            resulting_status=before)
+    call = _approvals.view(answered)["call"]
+    if approve:
+        note = (f"APPROVED by {actor} (request {rid}): {call}. Make exactly this call again, "
+                "with exactly these arguments; NOVA lets it through once.")
+    else:
+        safe = str(kb.redact_review_value(reason)).strip() or reason
+        note = (f"REFUSED by {actor} (request {rid}): {call}. Reason: {safe}. Do not make this "
+                "call. Finish what you can without it, or block the task saying what you need.")
+    kb.add_comment(connection, task_id, actor, f"{NOTE_PREFIX}: {note}")
+    after = kb.get_task(connection, task_id)
+    return WorkDecision(
+        action, task_id, True,
+        reason=f"{'approved' if approve else 'refused'} {tool} (request {rid})",
+        resulting_status=(getattr(after, "status", "") if after is not None else "") or before,
+    )
 
 
 def _runtime_modules() -> tuple[Any, Any]:

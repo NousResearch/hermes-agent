@@ -12,6 +12,13 @@ It implements ``pre_tool_call``, the runtime's documented policy hook: returning
 escalates it to the same human gate that guards dangerous shell commands — which fails
 closed when no human is present.
 
+That gate only reaches a person in a chat session. A task worker runs unattended, and
+there the runtime refuses every escalation on the spot (``approvals.single_query_mode``),
+so in task work this plugin asks on the board instead: it files the exact call as an
+approval request, holds the task, and lets the call through once — that call, with those
+arguments — after a person approves it in the Control Centre. See "Approval in task work"
+below.
+
 **Every failure path here blocks.** A policy that cannot be read, a decision that raises,
 a document with an unknown schema: all produce a refusal. A governance control that fails
 open is not a control, and a worker that is too restricted fails loudly and visibly,
@@ -21,6 +28,7 @@ while one that is silently unrestricted does not.
 from __future__ import annotations
 
 import calendar
+import hashlib
 import json
 import os
 import re
@@ -301,7 +309,169 @@ def _budget(policy: Dict[str, Any]) -> Optional[Decision]:
     return decision
 
 
-def _record(policy: Dict[str, Any], decision, tool_name: str) -> None:
+# -- approval in task work ---------------------------------------------------
+#
+# The store is one JSON file per request, ``<home>/nova-approvals/<task>/<request>.json``,
+# shared by this plugin (which files a request and spends a grant) and the control plane
+# (which records a person's answer — see ``nova.runtime.hermes.approvals``, which imports
+# these helpers rather than re-implementing the format). It lives outside the profiles and
+# outside every workspace, so an agent's file tools can neither read nor forge it.
+#
+# A request is keyed by the call itself — task, tool and canonical arguments — so what a
+# person approves is exactly what runs. A re-run that changes one character of the
+# arguments is a different call and is asked about again. A grant is spent by renaming
+# its file, which only one process can do, so one approval lets one call through.
+
+APPROVALS_DIRNAME = "nova-approvals"
+PENDING, APPROVED, REFUSED = "pending", "approved", "refused"
+
+#: The start of the block reason a held task carries. The Control Centre reads it as "a
+#: person must decide", not as a failure to retry.
+APPROVAL_BLOCK_PREFIX = "NOVA approval needed"
+
+#: How much of a call's arguments a block reason quotes. The full arguments stay in the
+#: request file; the board's reason is a summary a person can read at a glance.
+_SUMMARY_CHARS = 400
+
+
+def approvals_root(home: Path) -> Path:
+    return Path(home) / APPROVALS_DIRNAME
+
+
+def canonical_args(args: Any) -> str:
+    return json.dumps(args if args is not None else {}, sort_keys=True, separators=(",", ":"),
+                      ensure_ascii=False, default=str)
+
+
+def request_id(task_id: str, tool_name: str, args: Any) -> str:
+    material = json.dumps([task_id, tool_name, canonical_args(args)], ensure_ascii=False)
+    return "ap_" + hashlib.sha256(material.encode("utf-8")).hexdigest()[:20]
+
+
+def request_path(root: Path, task_id: str, rid: str) -> Optional[Path]:
+    """Where a request lives, or None for an id that could name anything else."""
+    if not _PROFILE_NAME.match(task_id or "") or not re.match(r"^ap_[0-9a-f]{20}$", rid or ""):
+        return None
+    return Path(root) / task_id / f"{rid}.json"
+
+
+def read_request(root: Path, task_id: str, rid: str) -> Optional[Dict[str, Any]]:
+    path = request_path(root, task_id, rid)
+    if path is None:
+        return None
+    try:
+        loaded = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return None
+    return loaded if isinstance(loaded, dict) else None
+
+
+def write_request(root: Path, record: Dict[str, Any]) -> None:
+    """Write a request whole or not at all: a reader never sees half a file."""
+    path = request_path(root, record["task_id"], record["request_id"])
+    if path is None:
+        raise ValueError("not a request this store can hold")
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    temporary = path.with_name(f".{path.name}.{os.getpid()}.{uuid.uuid4().hex[:8]}")
+    handle = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    try:
+        os.write(handle, (json.dumps(record, indent=2, sort_keys=True) + "\n").encode("utf-8"))
+        os.fsync(handle)
+    finally:
+        os.close(handle)
+    os.replace(temporary, path)
+
+
+def spend_grant(root: Path, task_id: str, rid: str) -> bool:
+    """Use an approval once. True for exactly one caller, however many race for it."""
+    path = request_path(root, task_id, rid)
+    if path is None:
+        return False
+    try:
+        os.rename(path, path.with_name(f"{rid}.used-{time.time_ns()}.json"))
+    except FileNotFoundError:
+        return False
+    return True
+
+
+def summarize_call(tool_name: str, args: Any) -> str:
+    text = canonical_args(args)
+    if len(text) > _SUMMARY_CHARS:
+        text = text[:_SUMMARY_CHARS] + f"… ({len(text)} characters)"
+    return f"{tool_name} {text}"
+
+
+def _plugin_home() -> Path:
+    """The runtime home: ``<home>/profiles/<agent>/plugins/nova-policy/__init__.py``."""
+    return Path(__file__).resolve().parents[4]
+
+
+def _hold_task(task_id: str, reason: str) -> bool:
+    """Block the task on the board with ``reason``, through the runtime's own API."""
+    try:
+        from hermes_cli import kanban_db as kb
+        from hermes_cli import kanban_db_connect as kbc
+
+        raw_run = os.environ.get("HERMES_KANBAN_RUN_ID", "").strip()
+        with kbc.connect_closing() as connection:
+            return bool(kb.block_task(
+                connection, task_id, reason=reason, kind="needs_input",
+                expected_run_id=int(raw_run) if raw_run.isdigit() else None,
+            ))
+    except Exception:  # noqa: BLE001 — the caller tells the agent to hold it instead
+        return False
+
+
+def _approval_in_task(policy: Dict[str, Any], decision: Decision, tool_name: str,
+                      args: Dict[str, Any], task_id: str) -> Optional[Dict[str, Any]]:
+    """The directive for an escalated call in task work. None lets it run.
+
+    Fails closed like everything else here: a store that cannot be read or written means
+    the call is refused, never that it runs unasked.
+    """
+    root = approvals_root(_plugin_home())
+    rid = request_id(task_id, tool_name, args)
+    record = read_request(root, task_id, rid)
+    status = (record or {}).get("status")
+    if status == APPROVED and spend_grant(root, task_id, rid):
+        _record(policy, Decision(ALLOW, f"approved by {record.get('decided_by') or 'a person'} "
+                                 f"(request {rid}); used once", tool=tool_name,
+                                 action=decision.action, rule="approval-granted"), tool_name)
+        return None
+    if status == REFUSED:
+        why = record.get("decision_reason") or "no reason given"
+        return {"action": "block", "message": (
+            f"BLOCKED by NOVA policy: a person refused this exact call (request {rid}): {why}. "
+            "Do not make it again. Finish what you can without it, or call kanban_block to "
+            "explain what you need."
+        )}
+    if status != PENDING:
+        write_request(root, {
+            "request_id": rid, "task_id": task_id, "status": PENDING,
+            "agent_id": policy.get("agent_id", ""), "tenant_id": policy.get("tenant_id", ""),
+            "tool": tool_name, "action": decision.action, "reason": decision.reason,
+            "args": json.loads(canonical_args(args)),
+            "requested_at": datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z"),
+            "run_id": os.environ.get("HERMES_KANBAN_RUN_ID", ""),
+        })
+    held = _hold_task(task_id, f"{APPROVAL_BLOCK_PREFIX} [{rid}]: {decision.reason} — "
+                               f"{summarize_call(tool_name, args)}")
+    _CACHE["on_hold"] = (rid, held)
+    return {"action": "block", "message": _hold_message(rid, held)}
+
+
+def _hold_message(rid: str, held: bool) -> str:
+    then = ("When a person approves it you will be run again: make exactly this call again, "
+            "with exactly the same arguments, and it will go through once.")
+    if held:
+        return (f"HELD by NOVA policy: this call needs a person's approval. NOVA has asked for "
+                f"it (request {rid}) and put this task on hold. Stop now: make no other tool "
+                f"calls and end your turn. {then}")
+    return (f"HELD by NOVA policy: this call needs a person's approval (request {rid}). Call "
+            f"kanban_block with the reason \"{APPROVAL_BLOCK_PREFIX} [{rid}]\" and stop. {then}")
+
+
+def _record(policy: Dict[str, Any], decision, tool_name: str, call: Optional[Dict[str, str]] = None) -> None:
     """Append a governance record for a refusal or an escalation.
 
     Permitted calls are not recorded: they are the overwhelming majority and recording
@@ -331,6 +501,9 @@ def _record(policy: Dict[str, Any], decision, tool_name: str) -> None:
             "rule": decision.rule,
             "action": decision.action,
             "calls_used": _CALLS_USED,
+            # The runtime's ids for this call, so a person's answer to an escalation
+            # (the approval hooks carry the same ids) can be joined back to it.
+            **{key: value for key, value in (call or {}).items() if value},
         },
         "error": "",
     }
@@ -346,13 +519,20 @@ def _record(policy: Dict[str, Any], decision, tool_name: str) -> None:
         pass
 
 
-def pre_tool_call(tool_name: str = "", args: Optional[Dict[str, Any]] = None, **_: Any):
+def pre_tool_call(tool_name: str = "", args: Optional[Dict[str, Any]] = None,
+                  tool_call_id: str = "", session_id: str = "", **_: Any):
     """The runtime's policy hook. Returns a directive, or None to proceed.
 
     Unrecognised returns are ignored by the runtime, so returning ``None`` for a permitted
     call is the correct way to stay out of the way.
     """
     global _CALLS_USED
+    call = {"tool_call_id": str(tool_call_id or ""), "session_id": str(session_id or "")}
+    held = _CACHE.get("on_hold")
+    if held:
+        # This task is waiting for a person. Nothing more runs in this process: the board
+        # already says why, and a worker that carried on would act past the question.
+        return {"action": "block", "message": _hold_message(*held)}
     try:
         policy = _load_policy()
         # A task no declared delegation put on this agent's queue is not worked at all:
@@ -400,15 +580,27 @@ def pre_tool_call(tool_name: str = "", args: Optional[Dict[str, Any]] = None, **
     if decision.effect == ALLOW:
         return None
 
-    _record(policy or {}, decision, tool_name)
+    _record(policy or {}, decision, tool_name, call)
 
     if decision.effect == REQUIRE_APPROVAL:
+        task_id = os.environ.get("HERMES_KANBAN_TASK", "").strip()
+        if task_id:
+            try:
+                return _approval_in_task(policy, decision, tool_name, args or {}, task_id)
+            except Exception as exc:  # noqa: BLE001 — an approval we cannot track is refused
+                return {"action": "block", "message": (
+                    f"BLOCKED by NOVA policy: {decision.reason}, and the approval request could "
+                    f"not be filed ({type(exc).__name__}). Call kanban_block with this reason."
+                )}
         return {
             "action": "approve",
             "message": decision.reason,
-            # One allowlist grain per action, so approving "refund" once does not also
-            # approve every other escalated action on the same agent.
-            "rule_key": f"nova:{decision.action or tool_name}",
+            # One key per call. The runtime's prompt offers "always", which saves the key to
+            # the profile's allowlist and from then on lets every call carrying it through
+            # before any prompt or hook — so a per-action key turned one click into a NOVA
+            # approval switched off for good, silently. A key no later call can carry means
+            # "once", "session" and "always" all approve this call and nothing else.
+            "rule_key": f"nova:{decision.action or tool_name}:{tool_call_id or uuid.uuid4().hex}",
         }
 
     if decision.effect == DENY:

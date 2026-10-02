@@ -132,13 +132,16 @@ def test_policy_is_per_agent(applied):
     assert support.pre_tool_call(tool_name="erp_stock_query", args={})["action"] == "block"
 
 
-def test_escalation_carries_the_business_action_as_its_rule_key(applied):
-    """Approving 'refund' once must not also approve every other escalated action."""
+def test_escalation_rule_key_names_the_action_and_the_call(applied):
+    """Approving one refund must approve neither another action nor a later refund.
+
+    The key is what the runtime's "always" saves; see ``test_task_approvals.py``.
+    """
     plugin = load_installed_plugin(applied, "customer-support", "nova_p3")
-    refund = plugin.pre_tool_call(tool_name="crm_refund", args={})
-    email = plugin.pre_tool_call(tool_name="email_send", args={})
-    assert refund["rule_key"] != email["rule_key"]
-    assert refund["rule_key"] == "nova:refund"
+    refund = plugin.pre_tool_call(tool_name="crm_refund", args={}, tool_call_id="c1")
+    email = plugin.pre_tool_call(tool_name="email_send", args={}, tool_call_id="c2")
+    assert refund["rule_key"] == "nova:refund:c1"
+    assert email["rule_key"].startswith("nova:send_external_email:")
 
 
 def test_block_message_explains_itself(applied):

@@ -96,9 +96,11 @@ function TaskRow({
       } : {})}
     >
       <div className="flex flex-wrap items-start gap-x-3 gap-y-1.5">
-        <StatusPill state={task.attention_kind === "failed" ? "blocked" : taskState(task.runtime_status)}
+        <StatusPill state={task.attention_kind === "failed" ? "blocked"
+                            : task.attention_kind === "approval" ? "waiting" : taskState(task.runtime_status)}
                     className="mt-0.5 shrink-0">
-          {task.attention_kind === "failed" ? "Failed" : taskLabel(task.runtime_status)}
+          {task.attention_kind === "failed" ? "Failed"
+            : task.attention_kind === "approval" ? "Needs approval" : taskLabel(task.runtime_status)}
         </StatusPill>
         <div className="min-w-0 flex-1 basis-64">
           <p className="text-ink text-[13.5px] leading-snug font-medium">{task.title}</p>
@@ -118,10 +120,10 @@ function TaskRow({
 }
 
 /* ── Approvals ────────────────────────────────────────────────────────────────
-   There is no pending-approval endpoint, so this screen is assembled from three
-   things that are real: work already held for a human, escalations the policy layer
-   has actually made, and the standing requirements declared per agent and channel.
-   It must never look like an inbox of live requests that does not exist. */
+   Assembled from things that are real: calls a worker was held on until a person
+   approves them (first — these are live requests), other work held for a human,
+   escalations the policy layer has actually made, and the standing requirements declared
+   per agent and channel. */
 
 export function ApprovalsScreen({
   tasks, decisions, agents, channels, canSeeDecisions, model, onChanged, onOpenWork,
@@ -132,7 +134,10 @@ export function ApprovalsScreen({
 }) {
   // Only what genuinely waits on a person. A crashed task is not an approval request, and
   // listing one here sent operators to approve something there was nothing to approve.
-  const held = tasks.filter((t) => t.attention_kind === "decision");
+  const held = [
+    ...tasks.filter((t) => t.attention_kind === "approval"),
+    ...tasks.filter((t) => t.attention_kind === "decision"),
+  ];
   const failedCount = tasks.filter((t) => t.attention_kind === "failed").length;
   const escalations = decisions.filter(
     (d) => ["escalate", "require_approval"].includes(String(d.effect)),

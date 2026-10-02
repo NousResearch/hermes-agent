@@ -151,3 +151,4 @@ def test_completion_preflight_runs_in_target_profile_scope(mux):
         return unscoped, scoped
 
     assert asyncio.run(_run()) == ("terminal", "deliver")
+

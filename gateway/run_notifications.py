@@ -1555,13 +1555,27 @@ class GatewayNotificationsMixin:
         from gateway.run import _async_profile_runtime_scope
         from hermes_constants import get_hermes_home_override
         source = self._build_process_event_source(evt)
+        if source is None:
+            # Raw api_server session keys carry no profile discriminator. In a multiplexed gateway,
+            # prove ownership from the served profile's own state.db before falling back to launch scope.
+            raw_sid = _raw_process_event_session_id(evt)
+            if raw_sid:
+                served = self._served_api_server_wake_profile(evt, raw_sid)
+                if served:
+                    source = SessionSource(platform=Platform.API_SERVER, chat_id=raw_sid, profile=served)
         if source is None or not getattr(source, "profile", None):
             # No routed profile: the launch profile's own completion. Bind ITS scope once the
             # process multiplexes — unscoped, a fail-closed ledger read raises on a legitimate
             # launch-profile event (no-op while single-profile).
             from tui_gateway.launch_profile_policy import async_launch_profile_scope_if_multiplexed
             return async_launch_profile_scope_if_multiplexed()
-        profile_home = self._resolve_profile_home_for_source(source)
+        if getattr(self.config, "multiplex_profiles", False) and getattr(source, "profile", None):
+            from gateway.run import _multiplex_profile_homes
+            profile_home = dict(_multiplex_profile_homes(self.config)).get(source.profile)
+            if profile_home is None:
+                profile_home = self._resolve_profile_home_for_source(source)
+        else:
+            profile_home = self._resolve_profile_home_for_source(source)
         if get_hermes_home_override() == str(profile_home):
             return contextlib.nullcontext()  # already inside this profile's scope
         return _async_profile_runtime_scope(profile_home)

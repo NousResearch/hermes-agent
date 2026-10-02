@@ -1,7 +1,9 @@
 import { defineFieldCopy } from '@/app/settings/field-copy'
+import { mergeTranslations } from '@hermes/shared/i18n'
 
 import { defineLocale, type TranslationOverrides } from './define-locale'
 import { introKo } from './intro-ko'
+import { koBulkOverrides } from './ko-bulk'
 
 export const koOverrides = {
   externalOpenFailed: {
@@ -937,4 +939,4 @@ export const koOverrides = {
   },
 } satisfies TranslationOverrides
 
-export const ko = defineLocale(koOverrides)
+export const ko = defineLocale(mergeTranslations(koOverrides as TranslationOverrides, koBulkOverrides))

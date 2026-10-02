@@ -1712,6 +1712,13 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
 
     async def _on_platform_thread_update(self, before, after) -> None:
         """Normalize ``on_thread_update`` renames into ``thread_renamed``; non-rename updates are dropped."""
+        # The event is the only provenance signal: any name other than the one Hermes set came from
+        # someone else, even when its text matches the name Hermes replaced (cache lag looks the same).
+        thread_key = str(getattr(after, "id", ""))
+        renamed = self._semantic_thread_renames.get(thread_key)
+        if renamed and getattr(after, "name", None) != renamed[1]:
+            self._semantic_thread_renames.pop(thread_key, None)
+
         def _build():
             old_name = getattr(before, "name", None)
             new_name = getattr(after, "name", None)

@@ -1,5 +1,7 @@
 import { atom } from 'nanostores'
 
+import type { ProfileScope } from '@/api/client'
+
 /** Which plugin component(s) a legacy deeplink pre-selects after probe. */
 export type PluginInstallLegacyHint = 'agent' | 'desktop' | null
 
@@ -17,7 +19,7 @@ export interface PluginInstallRequest {
   sha?: string
   /** Capabilities profile scope the pick was made under; the agent half
    *  installs into THIS profile (null/undefined = active profile). */
-  profile?: string | null
+  profile?: ProfileScope
 }
 
 export const $pluginInstallRequest = atom<PluginInstallRequest | null>(null)

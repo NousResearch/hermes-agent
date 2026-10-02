@@ -1,9 +1,11 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { setApiRequestConnection, setApiRequestLocalMode, setApiRequestProfile } from '@/api/client'
 import { PLUGIN_CATALOG_URL, type PluginCatalogLookup } from '@/lib/plugin-catalog'
+import { $connection } from '@/store/session'
 
-import { $agentPlugins } from './agent-plugins'
+import { $agentPlugins, $agentPluginsOwner, loadAgentPlugins, scopedAgentPluginRequest } from './agent-plugins'
 import { $notifications } from './notifications'
 import { openCatalogPluginInstall, requestPluginCatalogInstallFromDeepLink } from './plugin-catalog-install'
 import { $pluginInstallRequest } from './plugin-install-request'
@@ -83,7 +85,36 @@ describe('openCatalogPluginInstall', () => {
     $notifications.set([])
   })
 
+  it('keeps default deep-link duplicate detection owned by a legacy remote endpoint', async () => {
+    setApiRequestConnection(null)
+    setApiRequestLocalMode(false)
+    setApiRequestProfile('default')
+    $connection.set({ mode: 'remote', baseUrl: 'https://gateway.example/proxy-a' } as never)
+
+    const request = scopedAgentPluginRequest(
+      'default',
+      vi.fn(async () => ({ plugins: [{ name: 'weather', catalog_name: 'weather', status: 'enabled' }] })) as never
+    )
+
+    await loadAgentPlugins(request, 'default')
+    await requestPluginCatalogInstallFromDeepLink(
+      'weather',
+      lookupFor({ ok: true, entry: { name: 'weather', repo: 'https://github.com/x/weather' } })
+    )
+    expect($pluginInstallRequest.get()).toBeNull()
+    expect($notifications.get()[0]).toMatchObject({ kind: 'success' })
+    $notifications.set([])
+    $connection.set({ mode: 'remote', baseUrl: 'https://gateway.example/proxy-b' } as never)
+    openCatalogPluginInstall({ name: 'weather', repo: 'https://github.com/x/weather' }, null)
+    expect($pluginInstallRequest.get()).toMatchObject({ catalogName: 'weather', profile: null })
+    expect($notifications.get()).toEqual([])
+    $connection.set(null)
+    setApiRequestProfile(null)
+  })
+
   it('short-circuits with a success toast when the entry is installed and current', () => {
+    setApiRequestConnection('local')
+    $agentPluginsOwner.set('local::workbot')
     $agentPlugins.set([
       {
         catalog_name: 'weather',
@@ -100,5 +131,28 @@ describe('openCatalogPluginInstall', () => {
 
     expect($pluginInstallRequest.get()).toBeNull()
     expect($notifications.get()[0]).toMatchObject({ kind: 'success' })
+    setApiRequestConnection(null)
+  })
+
+  it.each([null, 'default'])(
+    'does not reuse remote inventory for an active local legacy catalog pick (%s)',
+    profile => {
+      setApiRequestConnection('local')
+      $agentPluginsOwner.set('pinned-remote::default')
+      $agentPlugins.set([{ name: 'weather', catalog_name: 'weather', status: 'enabled' } as never])
+      openCatalogPluginInstall({ name: 'weather', repo: 'https://github.com/x/weather' }, profile)
+      expect($pluginInstallRequest.get()).toMatchObject({ profile, catalogName: 'weather' })
+      expect($notifications.get()).toEqual([])
+      setApiRequestConnection(null)
+    }
+  )
+
+  it('retains the complete remote pin and never treats another source inventory as installed here', () => {
+    $agentPluginsOwner.set('active-other::default')
+    $agentPlugins.set([{ name: 'weather', catalog_name: 'weather', status: 'enabled' } as never])
+    const profile = { connectionId: 'pinned-remote', profile: 'default' }
+    openCatalogPluginInstall({ name: 'weather', repo: 'https://github.com/x/weather', sha: 'a'.repeat(40) }, profile)
+    expect($pluginInstallRequest.get()).toMatchObject({ profile, catalogName: 'weather', sha: 'a'.repeat(40) })
+    expect($notifications.get()).toEqual([])
   })
 })

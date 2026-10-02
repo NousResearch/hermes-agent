@@ -32,6 +32,16 @@ _FAST_SELECTIONS = {
     "ultrafast": ("ultrafast", "ultrafast", None),
 }
 
+
+def _fast_route_supports(model: str, runtime: dict, tier: Optional[str] = None) -> bool:
+    """The turn's own gate (``run_turn.py::_resolve_turn_agent_config``): a tier /fast accepts must be
+    one the session's next request actually carries, so proxies and other providers are refused."""
+    from hermes_cli.models import resolve_fast_mode_overrides
+
+    return resolve_fast_mode_overrides(
+        model, provider=runtime.get("provider"), base_url=runtime.get("base_url"), tier=tier) is not None
+
+
 # /reasoning display-toggle arguments -> show_reasoning value.
 _REASONING_DISPLAY_TOGGLES = {"show": True, "on": True, "hide": False, "off": False}
 
@@ -811,16 +821,25 @@ class GatewayModelCommandsMixin:
         (persists agent.service_tier, parity with /model)."""
         from agent.fast_mode import service_tier_word
         from gateway.run import _load_gateway_config, _resolve_gateway_model
-        from hermes_cli.models import model_supports_fast_mode, model_supports_ultrafast
 
         # The /reasoning parser strips --global (any position) and normalizes unicode dashes.
         args, persist_global = self._parse_reasoning_command_args(event.get_command_args().strip().lower())
-        session_key = self._session_key_for_source(event.source)
+        # Normalized like /model and /reasoning (#30479): the tier override must land under the key
+        # the next turn reads, and the eligibility check must see that turn's route.
+        source = await asyncio.to_thread(self._normalize_source_for_session_key, event.source)
+        session_key = self._session_key_for_source(source)
         self._service_tier = self._resolve_session_service_tier(session_key=session_key)
-        model = _resolve_gateway_model(_load_gateway_config())
-        if not model_supports_fast_mode(model):
+        user_config = _load_gateway_config()
+        try:
+            # Off the loop: credential resolution can refresh an OAuth token, as the turn does.
+            model, runtime = await asyncio.to_thread(
+                self._resolve_session_agent_runtime, source=source, session_key=session_key, user_config=user_config)
+        except Exception:
+            # No usable route at all (the turn fails too): judge the configured model alone.
+            model, runtime = _resolve_gateway_model(user_config), {}
+        if not _fast_route_supports(model, runtime):
             return t("gateway.fast.not_supported")
-        ultrafast = model_supports_ultrafast(model)
+        ultrafast = _fast_route_supports(model, runtime, tier="ultrafast")
         if args == "ultrafast" and not ultrafast:
             return t("gateway.fast.ultrafast_not_supported", model=model)
         if args and args != "status":

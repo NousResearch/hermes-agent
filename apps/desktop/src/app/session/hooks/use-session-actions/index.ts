@@ -1821,9 +1821,26 @@ export function useSessionActions({
 
               const projectedTail = earlyClarifyProjection?.messages.at(-1)
 
-              const earlyClarifyMessages =
+              const earlyClarifyMessagesWithoutSynthetic =
                 earlyClarifyProjection && suppressUnprovenWarmTranscript && projectedTail
-                  ? [...withoutEarlyClarifyProjection(activatedMessages, pendingClarify!.requestId), projectedTail]
+                  ? discardPendingClarifyToolCall(
+                      withoutEarlyClarifyProjection(activatedMessages, pendingClarify!.requestId),
+                      clarifyPayload!,
+                      false
+                    )
+                  : null
+              // Normalize only the bridge's temporary tool removal. Keep the
+              // pre-activation baseline so activation-time deltas still overlay REST.
+              const earlyClarifyOverlayBaseline = earlyClarifyMessagesWithoutSynthetic
+                ? discardPendingClarifyToolCall(
+                    withoutEarlyClarifyProjection(cachedViewState.messages, pendingClarify!.requestId),
+                    clarifyPayload!,
+                    false
+                  )
+                : null
+              const earlyClarifyMessages =
+                earlyClarifyMessagesWithoutSynthetic && projectedTail
+                  ? [...earlyClarifyMessagesWithoutSynthetic, projectedTail]
                   : earlyClarifyProjection?.messages
 
               const activatedLivenessState = updateSessionState(
@@ -2035,7 +2052,7 @@ export function useSessionActions({
               if (currentForOverlay && !reconciledCurrentLiveTurn) {
                 activatedMessages = overlayConcurrentMessageChanges(
                   activatedMessages,
-                  cachedViewState.messages,
+                  earlyClarifyOverlayBaseline ?? cachedViewState.messages,
                   currentForOverlay
                 )
               }

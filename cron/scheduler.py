@@ -552,6 +552,11 @@ SILENT_MARKER = "[SILENT]"
 # report that merely quotes the token cannot turn a healthy run into a failed one.
 CRON_FAILURE_MARKER = "[CRON_FAILURE]"
 
+# Response marker for cron self-pause: the agent's final response asks the scheduler to pause
+# this job after the run completes. Like CRON_FAILURE_MARKER it is deliberately strict — a
+# report that merely mentions the token mid-sentence must not stop the job.
+PAUSE_MARKER = "[PAUSE]"
+
 
 def _cron_failure_marker_error(text: str) -> Optional[str]:
     """Return failure evidence when an agent response declares a cron failure.
@@ -579,6 +584,22 @@ def _is_cron_silence_response(text: str) -> bool:
     from gateway.response_filters import is_autonomous_silence_response
 
     return is_autonomous_silence_response(text)
+
+
+def _is_cron_pause_response(text: str) -> bool:
+    """True when a cron final response asks the scheduler to pause this job: a standalone
+    ``[PAUSE]`` line (whole response, first line, or last line) — NOT mid-sentence.
+
+    Strict by design (same contract as :data:`CRON_FAILURE_MARKER`): a report that merely
+    quotes ``[PAUSE]`` inside a sentence must not stop the job. Whitespace-trimmed and
+    case-insensitive. Unlike SILENT there are no bracketless variants — an accidental bare
+    "pause" in prose must never disable a schedule.
+    """
+    stripped = (text or "").strip()
+    if not stripped:
+        return False
+    lines = [ln.strip() for ln in stripped.splitlines() if ln.strip()]
+    return any(line.upper() == PAUSE_MARKER for line in (lines[0], lines[-1]))
 
 # Persistent pool for parallel cron jobs: tick() submits and returns; long jobs never block it.
 # Keyed by profile home: one host gateway multiplexes every profile, and ``max_parallel_jobs`` is a
@@ -3440,6 +3461,21 @@ def _run_one_job_body(
         if _consume_interrupted_flag(job["id"], execution_token):
             _finish_interrupted_run(job, execution_id, delivery_error)
             return True
+
+        # Agent-requested self-pause: a standalone [PAUSE] line in the final response means
+        # "this job's stopping condition is met — pause me after this run". Deliberately AFTER
+        # save/deliver (the final message still goes out) and AFTER the terminal-status fence
+        # checks above, so a lost claim or interrupted run never pauses on a stale worker, but
+        # BEFORE _finish_completed_run: mark_job_run's _advance_after_run recomputes next_run_at
+        # and re-arms state="scheduled" for any paused job (#113603), which would undo the pause.
+        if d.success and not d.side_effect_ownership_lost and _is_cron_pause_response(final_response or ""):
+            try:
+                from cron.jobs import pause_job
+                if pause_job(job["id"], reason="Auto-paused: agent returned [PAUSE]") is not None:
+                    logger.info("Job '%s': agent returned %s — job auto-paused", job["id"], PAUSE_MARKER)
+                    _notify_provider_jobs_changed()
+            except Exception as pause_err:
+                logger.error("Job '%s': [PAUSE] auto-pause failed: %s", job["id"], pause_err)
 
         return _finish_completed_run(d, fire_owner, execution_id)
 

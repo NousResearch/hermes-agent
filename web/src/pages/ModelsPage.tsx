@@ -103,6 +103,7 @@ function TokenBar({
   cacheRead: number;
   reasoning: number;
 }) {
+  const { t } = useI18n();
   const total = input + output + cacheRead + reasoning;
   if (total === 0) return null;
 
@@ -113,10 +114,10 @@ function TokenBar({
   // color-mix on the same value so themes don't need to ship two
   // separate hex literals.
   const segments: Array<{ color: string; label: string; value: number }> = [
-    { value: cacheRead, color: "#60a5fa", label: "Cache Read" }, // tailwind blue-400
-    { value: reasoning, color: "#c084fc", label: "Reasoning" }, // tailwind purple-400
-    { value: input, color: "var(--series-input-token)", label: "Input" },
-    { value: output, color: "var(--series-output-token)", label: "Output" },
+    { value: cacheRead, color: "#60a5fa", label: t.models.tokenCacheRead ?? "Cache Read" }, // tailwind blue-400
+    { value: reasoning, color: "#c084fc", label: t.models.tokenReasoning ?? "Reasoning" }, // tailwind purple-400
+    { value: input, color: "var(--series-input-token)", label: t.models.tokenInput ?? "Input" },
+    { value: output, color: "var(--series-output-token)", label: t.models.tokenOutput ?? "Output" },
   ].filter((s) => s.value > 0);
 
   return (

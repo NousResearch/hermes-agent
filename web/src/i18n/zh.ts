@@ -383,6 +383,10 @@ export const zh: Translations = {
         curator: "技能使用审查",
       },
     },
+    tokenCacheRead: "缓存读取",
+    tokenReasoning: "推理",
+    tokenInput: "输入",
+    tokenOutput: "输出",
   },
 
   modelPicker: {

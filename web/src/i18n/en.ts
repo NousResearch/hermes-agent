@@ -398,6 +398,10 @@ export const en: Translations = {
         curator: "Skill-usage review",
       },
     },
+    tokenCacheRead: "Cache Read",
+    tokenReasoning: "Reasoning",
+    tokenInput: "Input",
+    tokenOutput: "Output",
   },
 
   modelPicker: {

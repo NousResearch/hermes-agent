@@ -292,12 +292,19 @@ def _hermetic_environment(tmp_path, monkeypatch):
     #     — trust_env defaults to True (gateway/platforms/base.py gateway_trust_env),
     #     so this is not opt-in
     #   - anthropic._utils._httpx: anthropic's vendored copy of httpx's proxy utils
+    #   - httpx2._utils: the MCP client stack — mcp 2.0.0 moved its HTTP layer to the
+    #     separately-named httpx2 distribution (mcp/computer-use extras; the repo's
+    #     own tools/mcp_tool.py imports it by name), and it ships the same vendored
+    #     _utils.getproxies binding as httpx
+    #   - botocore.utils: botocore ships with boto3 (bedrock extra) and imports
+    #     getproxies by value the same way
     monkeypatch.setattr(
         urllib.request, "getproxies", lambda: urllib.request.getproxies_environment())
     import importlib
 
     for module_name in ("httpx._utils", "requests.utils", "requests.compat",
-                        "aiohttp.helpers", "anthropic._utils._httpx"):
+                        "aiohttp.helpers", "anthropic._utils._httpx",
+                        "httpx2._utils", "botocore.utils"):
         try:
             module = importlib.import_module(module_name)
         except ImportError:

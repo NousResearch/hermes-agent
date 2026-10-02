@@ -1,6 +1,7 @@
 """Tests for the memory provider interface, manager, and builtin provider."""
 
 import json
+import math
 import threading
 import time
 import pytest
@@ -519,12 +520,25 @@ class TestMemoryManager:
         assert resolve_external_prefetch_timeout({"external_prefetch_timeout": 0}) == _EXTERNAL_PREFETCH_TIMEOUT_S
         assert resolve_external_prefetch_timeout({"external_prefetch_timeout": -1}) == _EXTERNAL_PREFETCH_TIMEOUT_S
         assert resolve_external_prefetch_timeout({"external_prefetch_timeout": "nope"}) == _EXTERNAL_PREFETCH_TIMEOUT_S
+        # Non-finite values (YAML .nan/.inf/-.inf and string nan/inf) must not pass;
+        # a non-finite join timeout crashes Thread.join.
+        for bad in (float("nan"), float("inf"), float("-inf"), "nan", "inf", "-inf", None):
+            assert (
+                resolve_external_prefetch_timeout({"external_prefetch_timeout": bad})
+                == _EXTERNAL_PREFETCH_TIMEOUT_S
+            )
+        # A finite positive override is still honored.
+        assert resolve_external_prefetch_timeout({"external_prefetch_timeout": 2.5}) == 2.5
 
     def test_memory_manager_from_config_uses_resolved_timeout(self):
         mgr = memory_manager_from_config({"external_prefetch_timeout": 30})
         assert mgr._external_prefetch_timeout == 30.0
         default_mgr = memory_manager_from_config({})
         assert default_mgr._external_prefetch_timeout == _EXTERNAL_PREFETCH_TIMEOUT_S
+        # A non-finite config value never reaches the manager as a stored timeout.
+        nan_mgr = memory_manager_from_config({"external_prefetch_timeout": float("nan")})
+        assert nan_mgr._external_prefetch_timeout == _EXTERNAL_PREFETCH_TIMEOUT_S
+        assert math.isfinite(nan_mgr._external_prefetch_timeout)
 
     def test_default_config_prefetch_timeout_matches_constant(self):
         from hermes_cli.config_defaults import DEFAULT_CONFIG

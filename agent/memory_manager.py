@@ -10,6 +10,7 @@ import contextvars
 import inspect
 import json
 import logging
+import math
 import re
 import threading
 from concurrent.futures import Future, ThreadPoolExecutor, wait
@@ -37,9 +38,10 @@ def resolve_external_prefetch_timeout(
 ) -> float:
     """Return the external-provider prefetch timeout from memory config.
 
-    Reads ``memory.external_prefetch_timeout``. Invalid, missing, or
-    non-positive values fall back to ``_EXTERNAL_PREFETCH_TIMEOUT_S`` so a
-    bad config.yaml cannot break agent startup.
+    Reads ``memory.external_prefetch_timeout``. Invalid, missing,
+    non-finite (NaN/inf), or non-positive values fall back to
+    ``_EXTERNAL_PREFETCH_TIMEOUT_S`` so a bad config.yaml cannot break
+    agent startup (a non-finite join timeout crashes ``Thread.join``).
     """
     if not isinstance(mem_config, Mapping):
         return _EXTERNAL_PREFETCH_TIMEOUT_S
@@ -48,7 +50,7 @@ def resolve_external_prefetch_timeout(
         value = float(raw)
     except (TypeError, ValueError):
         return _EXTERNAL_PREFETCH_TIMEOUT_S
-    if value <= 0:
+    if not math.isfinite(value) or value <= 0:
         return _EXTERNAL_PREFETCH_TIMEOUT_S
     return value
 
@@ -389,8 +391,8 @@ class MemoryManager:
         self._has_external: bool = False
         timeout = external_prefetch_timeout
         timeout = _EXTERNAL_PREFETCH_TIMEOUT_S if timeout is None else float(timeout)
-        if timeout <= 0:
-            raise ValueError("external_prefetch_timeout must be positive")
+        if not math.isfinite(timeout) or timeout <= 0:
+            raise ValueError("external_prefetch_timeout must be finite and positive")
         self._external_prefetch_timeout = timeout
         self._external_prefetch_threads: Dict[str, threading.Thread] = {}
         self._late_prefetch: Dict[str, _LatePrefetch] = {}

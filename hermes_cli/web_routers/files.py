@@ -51,7 +51,7 @@ from hermes_cli.web_models import (
     ChatImageUpload, FileTicketRequest, FsWriteText, ManagedDirectoryCreate, ManagedFileDelete,
     ManagedFileUpload,
 )
-from utils import atomic_write_bytes, atomic_write_text
+from utils import atomic_write_text, default_new_file_mode, preserve_file_mode
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -1012,16 +1012,51 @@ def upload_managed_file(payload: ManagedFileUpload, request: Request):
     data, _mime_type = _decode_data_url(payload.data_url)
     with _io_errors("File is not writable", "Could not write file"):
         target.parent.mkdir(parents=True, exist_ok=True)
-        owner = target.stat() if os.name == "posix" and target.exists() else None
-        if _is_link(target):
-            # Replace the link itself, as upload-stream's os.replace() does;
-            # a write through it would land in the referent.
-            target.unlink()
-        atomic_write_bytes(target, data)
+        # An overwritten file keeps its mode and owner; a replaced link is a new entry.
+        replaced = None if _is_link(target) else target
+        mode = preserve_file_mode(replaced) if replaced is not None else None
+        owner = replaced.stat() if os.name == "posix" and replaced is not None and replaced.exists() else None
+        out, tmp_path = _open_upload_stage(target)
+        try:
+            with out:
+                out.write(data)
+                out.flush()
+                os.fsync(out.fileno())
+            mode = mode if mode is not None else default_new_file_mode()
+            if mode is not None:  # mkstemp creates 0600
+                os.chmod(tmp_path, mode)
+            _publish_upload(tmp_path, target, overwrite=payload.overwrite)
+        finally:
+            tmp_path.unlink(missing_ok=True)
         if owner is not None:  # os.replace swaps in our uid; keep an overwritten file's owner/group
             with contextlib.suppress(OSError):
                 os.chown(target, owner.st_uid, owner.st_gid, follow_symlinks=False)  # a swapped-in link: never chown its target
     return _managed_write_result(policy, target, display_path)
+
+
+def _open_upload_stage(target: Path):
+    """A sibling temp file for an upload: ``(open binary file, its path)``. The
+    caller removes the path on every exit; ``_publish_upload`` publishes it."""
+    tmp_fd, tmp_name = tempfile.mkstemp(prefix=f".{target.name}.", suffix=".upload", dir=str(target.parent))
+    return os.fdopen(tmp_fd, "wb"), Path(tmp_name)
+
+
+def _publish_upload(tmp_path: Path, target: Path, *, overwrite: bool) -> None:
+    """Publish a complete staged upload at ``target``, so a failed or aborted
+    upload leaves the existing entry as it was.
+
+    Publication acts on the entry itself (a link there is replaced, never
+    written through), and create-only publication is atomic: ``os.link``
+    refuses any entry present at that moment, a dangling link or a file
+    another writer created after admission included.
+    """
+    try:
+        if overwrite:
+            os.replace(tmp_path, target)
+        else:
+            os.link(tmp_path, target)
+    except FileExistsError:
+        raise HTTPException(status_code=409, detail="File already exists")
 
 
 async def stream_upload_to_path(
@@ -1031,39 +1066,34 @@ async def stream_upload_to_path(
     too_large: str,
     not_writable: str,
     write_failed: str,
+    overwrite: bool = True,
 ) -> int:
     """Stream a multipart upload to ``target`` in chunks; returns bytes written.
 
-    Writes a sibling temp file first so a partial/aborted upload never clobbers
-    an existing file, enforces ``_MANAGED_FILE_MAX_BYTES`` as it goes (413
-    ``too_large``), then atomically renames into place. The temp file is
-    removed on EVERY non-success exit — including asyncio.CancelledError when a
-    browser aborts a large upload mid-stream.
+    Staged beside the target and published by ``_publish_upload``, so a partial,
+    aborted (including asyncio.CancelledError when a browser aborts mid-stream)
+    or refused upload never clobbers the existing entry. Enforces
+    ``_MANAGED_FILE_MAX_BYTES`` as it goes (413 ``too_large``).
     """
     from hermes_cli.web_server import _MANAGED_FILE_MAX_BYTES, _UPLOAD_CHUNK_BYTES
-    tmp_fd, tmp_name = tempfile.mkstemp(prefix=f".{target.name}.", suffix=".upload", dir=str(target.parent))
-    tmp_path = Path(tmp_name)
     total = 0
-    renamed = False
+    tmp_path = None
     try:
-        with os.fdopen(tmp_fd, "wb") as out:
-            while True:
-                chunk = await file.read(_UPLOAD_CHUNK_BYTES)
-                if not chunk:
-                    break
-                total += len(chunk)
-                if total > _MANAGED_FILE_MAX_BYTES:
-                    raise HTTPException(status_code=413, detail=too_large)
-                # Only the read stays on the event loop, so an abort still reaches the cleanup below.
-                await asyncio.to_thread(out.write, chunk)
-        await asyncio.to_thread(os.replace, tmp_path, target)
-        renamed = True
-    except PermissionError:
-        raise HTTPException(status_code=403, detail=not_writable)
-    except OSError as exc:
-        raise HTTPException(status_code=500, detail=f"{write_failed}: {exc}")
+        with _io_errors(not_writable, write_failed):
+            out, tmp_path = _open_upload_stage(target)
+            with out:
+                while True:
+                    chunk = await file.read(_UPLOAD_CHUNK_BYTES)
+                    if not chunk:
+                        break
+                    total += len(chunk)
+                    if total > _MANAGED_FILE_MAX_BYTES:
+                        raise HTTPException(status_code=413, detail=too_large)
+                    # Only the read stays on the event loop, so an abort still reaches the cleanup below.
+                    await asyncio.to_thread(out.write, chunk)
+            await asyncio.to_thread(_publish_upload, tmp_path, target, overwrite=overwrite)
     finally:
-        if not renamed:
+        if tmp_path is not None:
             tmp_path.unlink(missing_ok=True)
         await file.close()
     return total
@@ -1086,6 +1116,7 @@ async def upload_managed_file_stream(
         too_large="File is too large",
         not_writable="File is not writable",
         write_failed="Could not write file",
+        overwrite=overwrite,
     )
     return _managed_write_result(policy, target, display_path)
 

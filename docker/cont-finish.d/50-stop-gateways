@@ -14,5 +14,6 @@ done
 # Keep desired_state untouched: this is container shutdown, not a user-requested
 # gateway stop. The next container boot must reconcile and restart the gateways.
 exec /command/s6-setuidgid hermes /bin/sh -c \
-    '/command/s6-svc -d -- "$@" && exec /command/s6-svwait -D -t 40000 -- "$@"' \
+    'for slot do /command/s6-svc -d -- "$slot" || :; done
+     exec /command/s6-svwait -D -t 40000 -- "$@"' \
     sh "$@"

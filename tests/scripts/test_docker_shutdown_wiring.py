@@ -17,6 +17,7 @@ def test_dynamic_gateway_shutdown_hook_is_installed() -> None:
     assert "ENV S6_KILL_FINISH_MAXTIME=45000" in dockerfile
     assert "/run/service/gateway-*" in hook
     assert "s6-svc -d" in hook
+    assert "for slot do" in hook
     assert "s6-svwait -D -t 40000" in hook
     assert "desired_state" in hook
 

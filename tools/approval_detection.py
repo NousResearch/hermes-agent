@@ -1359,6 +1359,53 @@ def _env_split_payload(tokens: list[str]) -> str | None:
     return None
 
 
+
+_GIT_ALIAS_DEF_RE = re.compile(r"^alias\.([^\s=]+)=(.*)$", re.DOTALL)
+
+
+def _git_alias_payloads(tokens: list[str]) -> list[str]:
+    """Project what an invoked ``git -c alias.NAME=VALUE`` alias would run.
+
+    Git expands an alias only when it appears at the subcommand position: a
+    plain value re-enters git as ``git VALUE <args>`` (dangerous-facing rules
+    see the real ``git push --force`` spelling), and a ``!SHELL`` value runs
+    the shell string directly with the leading ``!`` stripped (hardline floor
+    sees the real payload). Definitions without a matching invocation are
+    inert -- git never runs them -- so they stay unexpanded to keep benign
+    configurations from tripping the floor.
+    """
+    if len(tokens) < 3 or len(tokens) > 512:
+        return []
+    if os.path.basename(tokens[0]) != "git":
+        return []
+    definitions: dict[str, str] = {}
+    index = 1
+    while index < len(tokens):
+        token = tokens[index]
+        if token == "--" or not token.startswith("-"):
+            break
+        if token == "-c":
+            candidate = tokens[index + 1] if index + 1 < len(tokens) else ""
+            index += 2
+            match = _GIT_ALIAS_DEF_RE.match(candidate)
+            if match:
+                definitions[match.group(1)] = match.group(2)
+            continue
+        index += 1 if "=" in token else 2 if token in _COMMAND_WRAPPER_OPTIONS_WITH_ARG.get("git", set()) else 1
+    if not definitions or index >= len(tokens):
+        return []
+    name = tokens[index]
+    value = definitions.get(name)
+    if value is None:
+        return []
+    rest = tokens[index + 1:]
+    if value.startswith("!"):
+        payload = value[1:]
+        return [payload] if len(payload) <= 4096 else []
+    expanded = " ".join(["git", value] + rest)
+    return [expanded] if len(expanded) <= 4096 else []
+
+
 def _deny_command_variants(command: str):
     """Add executable projections without reparsing normalized argument data.
 
@@ -1432,6 +1479,18 @@ def _command_detection_variants(command: str):
     # Program-bearing options are parsed in their owning command's context; surfacing only the payload lets the
     # hardline floor inspect what will actually run without promoting similar flags or quoted prose.
     pending = [normalized]
+    # git -c alias.NAME=VALUE smuggling (#131563): the alias value token sits where
+    # position anchors never look. Project only INVOKED aliases (subcommand
+    # position) as their own variants; queue them so carriers inside the payload
+    # recurse through the same execution-flag unwrapping as any other command.
+    for segment in _iter_top_level_shell_segments(command):
+        tokens = _shell_segment_tokens(segment, 0)
+        if not tokens:
+            continue
+        for payload in _git_alias_payloads(tokens):
+            if fresh(payload):
+                yield payload
+                pending.append(payload)
     while pending:
         for _, payload in _execution_flag_findings(pending.pop()):
             if fresh(payload):

@@ -557,3 +557,102 @@ async def test_correction_policy_is_current_after_context_reads(monkeypatch, pha
         await adapter._on_room_message(incoming)
         accepted = bool(adapter.handle_message.await_args_list)
     assert accepted is (change == "unchanged")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("allowed", [True, False])
+async def test_restored_correction_keeps_boundary_and_current_editor_validation(monkeypatch, allowed):
+    import json
+    from gateway.shutdown_pending import PendingQueueSnapshot
+    from gateway.shutdown_pending_codec import decode_pending_event
+
+    adapter = adapter_for(monkeypatch, {ROOM: True})
+    adapter.handle_message = AsyncMock()
+    incoming = edit_event()
+    adapter._client.events["$edit"] = {
+        "room_id": ROOM, "sender": ALICE, "event_id": "$edit",
+        "type": "m.room.message", "content": incoming.content,
+    }
+    await adapter._on_room_message(incoming)
+    admitted = adapter.handle_message.await_args
+    assert admitted is not None
+    pending = admitted.args[0]
+    pending._pending_native_input = adapter.pending_native_input(pending)
+    snapshot = PendingQueueSnapshot.capture("session", [pending])
+    payload = json.loads(json.dumps(snapshot.to_payload()))
+    restored = decode_pending_event(payload["events"][0], adapter=adapter)
+    adapter._process_edits = frozenset({ROOM}) if allowed else frozenset()
+    accepted = await adapter.validate_inbound_event(restored)
+
+    assert (restored.metadata, restored._queue_at_turn_boundary, restored._pending_coalesce_key, accepted) == (
+        {"edited_message": True, "edited_message_original_id": "$original"},
+        True, ("matrix-edit", ROOM, ALICE, "$original"), allowed,
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("change", [
+    "unchanged", "opt-out", "editor", "original-author", "body", "redacted",
+    "membership", "original-thread", "legacy", "profile", "notice", "room",
+    "sender-denied", "original-redacted", "malformed",
+])
+async def test_restored_correction_uses_current_native_author_policy_and_route(monkeypatch, change):
+    import json
+    from gateway.shutdown_pending import PendingQueueSnapshot
+    from gateway.shutdown_pending_codec import decode_pending_event
+
+    adapter = adapter_for(monkeypatch, {ROOM: True})
+    adapter.handle_message = AsyncMock()
+    incoming = edit_event("/approve remains typed")
+    adapter._client.events["$edit"] = {
+        "room_id": ROOM, "sender": ALICE, "event_id": "$edit",
+        "type": "m.room.message", "content": incoming.content,
+    }
+    await adapter._on_room_message(incoming)
+    admitted = adapter.handle_message.await_args
+    assert admitted is not None
+    pending = admitted.args[0]
+    pending._pending_native_input = adapter.pending_native_input(pending)
+    payload = json.loads(json.dumps(PendingQueueSnapshot.capture("session", [pending]).to_payload()))
+    if change == "legacy":
+        payload["events"][0]["native"].pop("correction", None)
+    restored = decode_pending_event(payload["events"][0], adapter=adapter)
+    if change == "opt-out":
+        adapter._process_edits = frozenset()
+    if change == "editor":
+        adapter._client.events["$edit"]["sender"] = BOB
+    if change == "original-author":
+        adapter._client.events["$original"]["sender"] = BOB
+    if change == "body":
+        adapter._client.events["$edit"]["content"]["m.new_content"]["body"] = "changed correction"
+    if change == "redacted":
+        adapter._client.events["$edit"]["unsigned"] = {"redacted_because": {"event_id": "$redaction"}}
+    if change == "original-thread":
+        adapter._client.events["$original"]["content"]["m.relates_to"]["event_id"] = "$changed-thread"
+    if change == "notice":
+        adapter._process_notices = False
+        adapter._client.events["$original"]["content"]["msgtype"] = "m.notice"
+    if change == "room":
+        adapter._is_allowed_matrix_room_event.return_value = False
+    if change == "sender-denied":
+        adapter.set_authorization_check(lambda *args, **kwargs: False)
+    if change == "original-redacted":
+        adapter._client.events["$original"]["unsigned"] = {"redacted_because": {"event_id": "$redaction"}}
+    if change == "malformed":
+        adapter._client.events["$edit"]["content"] = []
+
+    async def request(method, path, **kwargs):
+        if "/state/" in path:
+            return {"membership": "leave" if change == "membership" else "join"}
+        return adapter._client.events.get(unquote(path.rsplit("/", 1)[-1]), {})
+
+    adapter._client.api.request.side_effect = request
+    verified = await adapter.revalidate_pending_event(restored, authorize=lambda source: change != "profile")
+    observed = None if verified is None else (
+        verified, verified._queue_at_turn_boundary, verified._pending_coalesce_key,
+        verified._pending_native_input.to_payload() if verified._pending_native_input is not None else None,
+    )
+    native = pending._pending_native_input
+    assert native is not None
+    assert observed == ((pending, True, ("matrix-edit", ROOM, ALICE, "$original"), native.to_payload())
+                        if change == "unchanged" else None)

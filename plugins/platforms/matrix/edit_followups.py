@@ -8,6 +8,7 @@ from typing import Any, Awaitable, Callable
 from urllib.parse import quote
 
 from gateway.config import PlatformConfig
+from gateway.pending_native import PendingNativeInput
 from gateway.platforms.event import MessageEvent
 from plugins.platforms.matrix.adapter_feedback import ReadReceiptMode
 from plugins.platforms.matrix.client_events import Method
@@ -44,6 +45,7 @@ class MatrixEditFollowupsMixin:
     _allowed_room_ids: set[str]
     _is_allowed_matrix_room_event: Callable[[str], Awaitable[bool]]
     handle_message: Callable[[MessageEvent], Awaitable[None]]
+    pending_native_input: Callable[[MessageEvent], PendingNativeInput | None]
 
     def _edit_policy_allows(
         self, room_id: str, sender: str, event_id: str, target: str, chat_type: str, *, notice: bool,
@@ -83,6 +85,8 @@ class MatrixEditFollowupsMixin:
             allow_gateway_control=False, reply_fallback=False, record=False,
         )
         queued = event.raw_message if isinstance(event.raw_message, dict) else {}
+        if event._pending_native_input is not None and event._pending_native_input.correction is not None:
+            queued = event._pending_native_input.content
         return (ctx is not None
                 and self._edit_policy_allows(
                     room_id, source.user_id, event.message_id, target, ctx[-1].chat_type,
@@ -90,6 +94,50 @@ class MatrixEditFollowupsMixin:
                 )
                 and content.get("body") == queued.get("body")
                 and ctx[-1].thread_id == source.thread_id)
+
+    async def _revalidate_pending_correction(self, event: MessageEvent, raw: dict) -> MessageEvent | None:
+        native = event._pending_native_input
+        if native is None or native.correction is None:
+            return None
+        room_id, sender = event.source.chat_id, event.source.user_id
+        target = native.correction.original_event_id
+        if (not isinstance(sender, str) or not isinstance(event.message_id, str)
+                or not await self._is_allowed_matrix_room_event(room_id)):
+            return None
+        original = await self._edit_original_content(room_id, sender, target)
+        content = await self._edit_new_content(raw, target)
+        if original is None or content is None:
+            return None
+        relation = original.get("m.relates_to")
+        relation = relation if isinstance(relation, dict) else {}
+        revised = {key: value for key, value in content.items() if key != "m.relates_to"}
+        if relation:
+            revised["m.relates_to"] = relation
+        if revised != native.content:
+            return None
+        ctx = await self._resolve_message_context(
+            room_id, sender, target, str(revised.get("body") or ""), revised, relation,
+            allow_gateway_control=False, reply_fallback=False, record=False,
+        )
+        if ctx is None or ctx[-1].thread_id != event.source.thread_id:
+            return None
+        notice = original.get("msgtype") == "m.notice" or content.get("msgtype") == "m.notice"
+        if not self._edit_policy_allows(room_id, sender, event.message_id, target, ctx[-1].chat_type, notice=notice):
+            return None
+        ctx[-1].message_id = event.message_id
+        verified = await self._build_inbound_event(
+            room_id, sender, event.message_id, str(revised.get("body") or ""), revised, relation, ctx=ctx,
+            reply_fallback=False, reply_anchor_override=target,
+            metadata={"edited_message": True, "edited_message_original_id": target},
+            allow_gateway_control=False,
+        )
+        if verified is None or not self._edit_policy_allows(
+                room_id, sender, event.message_id, target, verified.source.chat_type, notice=notice):
+            return None
+        verified.timestamp = event.timestamp
+        native.correction.bind(verified)
+        verified._pending_native_input = self.pending_native_input(verified)
+        return verified
 
     @staticmethod
     def _lifecycle_reaction_target(event: MessageEvent) -> str | None:

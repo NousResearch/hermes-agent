@@ -1306,12 +1306,13 @@ def _verify_head_after_pull(
     if pre_pull_sha and post_pull_sha == pre_pull_sha:
         print()
         print("✗ Code did not move — update was a no-op.")
-        print(
-            f"  HEAD is pinned to {pre_pull_sha[:10]} (detached checkout); "
-            f"origin/{branch} advanced but the working tree stayed put.")
-        print(
-            "  Reattach to the branch and retry: "
-            f"git -C {_m().PROJECT_ROOT} checkout {branch} && hermes update")
+        if _current_branch_name(git_cmd) == "HEAD":
+            print(
+                f"  HEAD is pinned to {pre_pull_sha[:10]} (detached checkout); "
+                f"origin/{branch} advanced but the working tree stayed put.")
+            print("  Reattach to the branch and retry from the checkout root.")
+        else:
+            print(f"  HEAD is still on {branch}, but origin/{branch} advanced and the working tree stayed put.")
         _m()._resume_windows_gateways_after_update(_windows_gateway_resume)
         sys.exit(1)
 

@@ -300,14 +300,20 @@ def test_scoped_memory_store_class_is_built_once(tmp_path):
 # FIRM_AGENT_HOST 4.3 and 6.3-6.4: shared memory in the turn prompt, the turn grant
 # ---------------------------------------------------------------------------
 
-@pytest.mark.parametrize("kind,acting,kept", [("dm", "u1", True), ("dm", None, False), ("channel", "u1", False)])
-def test_turn_grant_reaches_the_tools_only_in_a_verified_private_thread(tmp_path, kind, acting, kept):
+@pytest.mark.parametrize("kind,acting,kept,cross", [("dm", "u1", True, True), ("dm", None, False, False),
+                                                    ("channel", "u1", True, False)])
+def test_turn_grant_is_kept_for_a_lawyer_and_cross_matter_stays_private(tmp_path, kind, acting, kept, cross):
+    """The grant rides every verified turn (a review launch sends it back); cross-matter search uses it
+    only in a private thread (FIRM_AGENT_HOST 6.4)."""
+    from litco.litkit.context import current_cross_matter_grant, turn_scope
     ctx, _ = _ctx(tmp_path, kind=kind, acting_user=acting, turn_grant="grant-abc")
     identity = hermes_runner.turn_identity(ctx)
     assert identity.turn_grant == ("grant-abc" if kept else None)
     assert "grant-abc" not in repr(identity)
+    with turn_scope(identity):
+        assert current_cross_matter_grant() == ("grant-abc" if cross else None)
     prompt = HermesTurnRunner._turn_prompt(ctx)
-    assert ("litkit_cross_matter_search" in prompt) is kept
+    assert ("litkit_cross_matter_search" in prompt) is cross
 
 
 def test_turn_identity_carries_the_sessions_thread(tmp_path):

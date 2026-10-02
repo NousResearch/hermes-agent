@@ -387,15 +387,16 @@ class HermesTurnRunner:
 def turn_identity(ctx: TurnContext) -> TurnIdentity:
     """What the LitKit tools see of this turn.
 
-    The turn grant is kept only where the app may mint one (FIRM_AGENT_HOST 6.4): a private thread
-    with a verified lawyer. A grant on a shared thread would let cross-matter hits reach people
-    walled off from the other matter, so it is dropped here even if the app sent one.
+    The turn grant is kept whenever a verified lawyer acts: a review launch sends it back so LitKit
+    can tie the launch to the post this turn answers. Cross-matter search uses it only in a private
+    thread (FIRM_AGENT_HOST 6.4); a shared thread would let cross-matter hits reach people walled off
+    from the other matter, so ``private_thread`` gates that use.
     """
     req = ctx.request
-    grant = req.turn_grant if req.kind == "dm" and req.acting_user else None
+    grant = req.turn_grant if req.acting_user else None
     return TurnIdentity(turn_id=ctx.turn_id, matter_id=req.matter_id, acting_user=req.acting_user, cwd=ctx.cwd,
                         litkit_channel=(req.litkit_channel.slug or None) if req.litkit_channel is not None else None,
-                        thread_id=req.session_id or None, turn_grant=grant)
+                        thread_id=req.session_id or None, turn_grant=grant, private_thread=req.kind == "dm")
 
 
 def _shared_scope_line(ctx: TurnContext) -> str:
@@ -408,7 +409,8 @@ def _shared_scope_line(ctx: TurnContext) -> str:
 
 
 def _cross_matter_line(ctx: TurnContext) -> str:
-    if turn_identity(ctx).turn_grant is None:
+    identity = turn_identity(ctx)
+    if identity.turn_grant is None or not identity.private_thread:
         return ""
     return (" litkit_cross_matter_search searches this lawyer's other matters. Cite every hit with its matter "
             "name, and never save a hit to memory.")

@@ -27,7 +27,8 @@ from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
 from litco.homes import register_deliverable, safe_segment
 from litco.litkit.client import (TURN_GRANT_HEADER, LitKitClient, LitKitConfig, LitKitError,
                                  LitKitPermissionError, default_client)
-from litco.litkit.context import current_acting_user, current_thread_id, current_turn, current_turn_grant
+from litco.litkit.context import (current_acting_user, current_cross_matter_grant, current_thread_id, current_turn,
+                                  current_turn_grant)
 from litco.litkit.links import document_link, file_link, folder_link
 from litco.litkit.files import (TEXT_SEPARATOR, InputFileMissing, PathOutsideWorkDir, dumps, generate_preview,
                                 input_path, output_dir, output_path, relative, spill, work_dir)
@@ -775,9 +776,12 @@ def litco_deliver_local(args: Dict[str, Any]) -> Any:
 # review, ingest, proposals, tags, work sets
 # ---------------------------------------------------------------------------
 
-REVIEW_ACTIONS = ("list", "status", "records", "resume", "cancel", "pause", "create", "criteria", "work_sets",
-                  "accept_tags")
-CRITERIA_ACTIONS = ("list", "get", "create", "update", "publish", "versions")
+REVIEW_ACTIONS = ("list", "status", "records", "resume", "cancel", "pause", "create", "launch", "withdraw",
+                  "proposal", "criteria", "work_sets", "accept_tags")
+CRITERIA_ACTIONS = ("list", "get", "create", "update", "versions")
+CRITERIA_SET_SCOPES = ("user", "firm")
+REVIEW_TIERS = ("fast", "medium", "high")
+WORK_SET_ROLES = ("inbox", "outbox")
 CRITERION_KEYS = ("key", "title", "description", "seedQuery", "tagName", "tagId", "disposition")
 CRITERION_DISPOSITIONS = ("apply", "propose", "propose_with_ambiguous")
 SCOPE_KINDS = ("workSetId", "documentIds", "filter", "batesRange")
@@ -850,7 +854,8 @@ def _review_scope(value: Any) -> Dict[str, Any]:
 
 def _review_tags(value: Any) -> List[str]:
     if not isinstance(value, list) or not value:
-        raise ValueError("'tags' must be a non-empty list of tag names: the only tags the run may write")
+        raise ValueError("'tags' must be a non-empty list of tag names: the only tags the run may write (or leave "
+                         "it out: the criteria rows name the tags)")
     names = list(dict.fromkeys(str(t).strip() for t in value if str(t).strip()))
     if not names:
         raise ValueError("'tags' must name at least one tag")
@@ -891,19 +896,33 @@ def _optimizations(value: Any) -> List[str]:
 
 
 def _review_create(client: LitKitClient, mid: str, args: Dict[str, Any]) -> Dict[str, Any]:
-    """Propose a review run. LitKit queues a proposal card in the thread; a person launches it there."""
+    """Propose a review run. LitKit posts the proposal's card in the thread; Ana launches it (action=launch)
+    after the person says yes there."""
     body: Dict[str, Any] = {"scope": _review_scope(args.get("scope"))}
     has_set, has_criteria = bool(args.get("criteriaSetId")), args.get("criteria") is not None
     if has_set == has_criteria:
         raise ValueError("give exactly one of criteriaSetId (a registered set, preferred) or criteria")
     if has_set:
         body["criteriaSetId"] = _set_id(args)
+        if args.get("criteriaSetVersion") is not None:
+            version = args["criteriaSetVersion"]
+            if isinstance(version, bool) or not isinstance(version, int) or version < 1:
+                raise ValueError("'criteriaSetVersion' must be a version number (1 or more)")
+            body["criteriaSetVersion"] = version
     else:
+        if args.get("criteriaSetVersion") is not None:
+            raise ValueError("'criteriaSetVersion' goes with criteriaSetId")
         body["criteria"] = _criteria(args.get("criteria"))
-    body["tags"] = _review_tags(args.get("tags"))
-    for key in ("createMissingTags", "applyTags"):
+    # The rows name the tags; when tags are sent, LitKit refuses a list that differs from the rows'.
+    if args.get("tags") is not None:
+        body["tags"] = _review_tags(args.get("tags"))
+    for key in ("createMissingTags", "applyTags", "includeRationaleNotes"):
         if args.get(key) is not None:
             body[key] = bool(args[key])
+    if args.get("tier") is not None:
+        if args["tier"] not in REVIEW_TIERS:
+            raise ValueError(f"'tier' must be one of {', '.join(REVIEW_TIERS)}")
+        body["tier"] = args["tier"]
     if args.get("name"):
         body["name"] = str(args["name"]).strip()[:200]
     # Omitted unless Ana sets it, so the server's default applies (on when Jev is configured).
@@ -942,10 +961,172 @@ def _review_create(client: LitKitClient, mid: str, args: Dict[str, Any]) -> Dict
                               "and ask whether to proceed. Only after an explicit yes, call create again with the "
                               f"same arguments plus quoteId={quote.get('id')} and userConfirmed=true.")
         return result
+    proposal = result.get("proposal") if isinstance(result.get("proposal"), dict) else {}
+    if proposal.get("id"):
+        result["proposalId"] = proposal["id"]
     result["next"] = ("Proposed, not launched. Tell the person what you proposed: the scope, the criteria set and "
-                      "version, the tags, the estimated document count and cost. Launch is on the card in this "
-                      "thread; that is their one decision. Do not send them to the Review screen to set it up. After "
-                      "they launch, follow the run with status and records and report when it finishes.")
+                      "version, the tags, the estimated document count and cost. Then ask whether to launch. When "
+                      "they answer yes in this thread, call action=launch with this proposalId. Do not launch in this "
+                      "turn; LitKit refuses until they have answered.")
+    if body.get("userConfirmed"):
+        # The person's yes to the price may already have told Ana to launch (Hermes ruling 4): one yes, not two.
+        result["next"] = ("Proposed, not launched. If the person's yes to the price also told you to launch this run, "
+                          "call action=launch with this proposalId now; LitKit decides from the thread whether that "
+                          "message covers the launch. Otherwise tell them what you proposed (scope, criteria set and "
+                          "version, tags, document count and cost) and ask whether to launch.")
+    return result
+
+
+LAUNCH_NOT_AVAILABLE = ("This LitKit cannot take a launch from the conversation yet. The Launch button on the card "
+                        "in this thread starts the run.")
+LAUNCH_ASK = ("Nothing launched. Ask the person, in one sentence, whether to launch this run, and call launch only "
+              "after their answer in this thread says yes.")
+LAUNCH_NO_GRANT = ("Nothing launched. LitKit could not tie this launch to the person's message in this turn. Ask "
+                   "whether to launch, and launch in the turn that answers their yes.")
+LAUNCH_REFUSALS = {
+    "no_reply_after_card": LAUNCH_ASK,
+    "reply_from_another_person": LAUNCH_ASK,
+    "reply_edited": LAUNCH_ASK,
+    "later_reply_in_thread": ("Nothing launched. Someone wrote in the thread after the message you are answering. Read "
+                              "it and answer it, then ask whether to launch."),
+    "needs_confirmation": ("Nothing launched. The person's reply was not a plain yes to this run. Answer what they "
+                           "said; if they still want the run, ask them to confirm with a short yes."),
+    "ambiguous_proposal": ("Nothing launched. More than one proposed run is waiting in this thread, so a yes does not "
+                           "say which. Withdraw the proposals you replaced, then ask again."),
+    "authorization_already_used": ("Nothing launched. That message already launched a run, and one message launches "
+                                   "one run. Ask whether to launch this one as well."),
+    "not_this_thread": ("Nothing launched. This run was proposed in another thread and can be launched only from "
+                        "there. If the person wants it run from here, propose it again in this thread."),
+    "needs_reproposal": ("Nothing launched. The scope, criteria or tags changed since the person saw the estimate. "
+                         "Withdraw this proposal, propose again, report the new estimate, and ask."),
+}
+
+
+def _route_missing(status: int, body: Any) -> bool:
+    """An app that predates the route: 405, or a 404 that is not one of the route's own JSON answers."""
+    return status == 405 or (status == 404 and not (isinstance(body, dict) and body.get("error")))
+
+
+def _refusal(proposal_id: str, body: Any) -> Dict[str, Any]:
+    """A 409 from launch or withdraw: LitKit's sentence for the model, as a plain result, not an error."""
+    body = body if isinstance(body, dict) else {}
+    code = str(body.get("error") or "conflict")
+    message = body.get("message") or _error_text(body) or "LitKit refused (HTTP 409)"
+    out: Dict[str, Any] = {"proposalId": proposal_id, "refused": code, "message": message}
+    if body.get("status"):
+        out["proposalStatus"] = body["status"]
+    if isinstance(body.get("launched"), dict):
+        out["launchedRun"] = body["launched"]
+    for key in ("reason", "estimatedDocCount", "currentDocCount"):
+        if body.get(key) is not None:
+            out[key] = body[key]
+    out["next"] = LAUNCH_REFUSALS.get(code) or f"Nothing changed. {message}"
+    return out
+
+
+def _review_launch(client: LitKitClient, mid: str, args: Dict[str, Any]) -> Dict[str, Any]:
+    """Launch a proposed run. LitKit decides from the thread whether the person said to; nothing here asserts it."""
+    proposal_id = _uuid(args, "proposalId")
+    thread_id = current_thread_id()
+    if not thread_id or not _UUID.match(thread_id):
+        raise ValueError("A run can be launched only from the thread it was proposed in.")
+    if not current_acting_user():
+        raise ValueError("A run can be launched only for the person who said yes in the thread, and this turn has "
+                         "no lawyer on it.")
+    # The app-minted turn grant ties the launch to the post this turn answers; LitKit requires it.
+    grant = current_turn_grant()
+    try:
+        status, body = client.json_with_status("POST", f"/api/matters/{mid}/proposals/{proposal_id}/launch",
+                                               json_body={"threadId": thread_id}, ok_statuses=(404, 405, 409),
+                                               extra_headers={TURN_GRANT_HEADER: grant} if grant else None)
+    except LitKitPermissionError as exc:
+        if not str(exc.code or "").startswith("turn_grant"):
+            raise
+        return {"proposalId": proposal_id, "launched": False, "refused": exc.code,
+                "message": (exc.body or {}).get("message") if isinstance(exc.body, dict) else None,
+                "next": LAUNCH_NO_GRANT}
+    if _route_missing(status, body):
+        return {"proposalId": proposal_id, "launched": False, "message": LAUNCH_NOT_AVAILABLE,
+                "next": LAUNCH_NOT_AVAILABLE}
+    if status == 404:
+        raise LitKitError(f"not found, or not visible to this user (HTTP 404: {_error_text(body)})", status=404,
+                          body=body)
+    if status == 409:
+        return {"launched": False, **_refusal(proposal_id, body)}
+    launched = body.get("launched") if isinstance(body, dict) and isinstance(body.get("launched"), dict) else {}
+    job_id = launched.get("reviewJobId")
+    if not job_id:
+        return {"proposalId": proposal_id, "launched": False, "result": body,
+                "next": "LitKit returned no job id, so nothing can be reported as launched. Check with "
+                        "action=proposal before saying anything about the run."}
+    already = bool(body.get("alreadyLaunched"))
+    out: Dict[str, Any] = {"proposalId": proposal_id, "launched": True, "reviewJobId": job_id,
+                           "scopeDocCount": launched.get("scopeDocCount")}
+    if already:
+        out["alreadyLaunched"] = True
+        out["next"] = ("This run was already launched; no second run started. Tell the person it is running, and "
+                       "follow it with status and records.")
+    else:
+        out["next"] = ("Launched. Tell the person the run started and how many documents it covers (this count is "
+                       "the one taken at launch). Follow it with status and records, and report when it finishes.")
+    return out
+
+
+def _review_withdraw(client: LitKitClient, mid: str, args: Dict[str, Any]) -> Dict[str, Any]:
+    """Withdraw a pending proposal, so a later yes cannot launch a card that was replaced."""
+    proposal_id = _uuid(args, "proposalId")
+    status, body = client.json_with_status("POST", f"/api/matters/{mid}/proposals/{proposal_id}/withdraw",
+                                           json_body={}, ok_statuses=(404, 405, 409))
+    if _route_missing(status, body):
+        return {"proposalId": proposal_id, "withdrawn": False,
+                "next": "This LitKit cannot withdraw a proposal from the conversation yet. Tell the person which "
+                        "proposal replaces it."}
+    if status == 404:
+        raise LitKitError(f"not found, or not visible to this user (HTTP 404: {_error_text(body)})", status=404,
+                          body=body)
+    if status == 409:
+        return {"withdrawn": False, **_refusal(proposal_id, body)}
+    return {"proposalId": proposal_id, "withdrawn": True, "result": body}
+
+
+def _review_proposal(client: LitKitClient, mid: str, args: Dict[str, Any]) -> Dict[str, Any]:
+    """A proposal's status and, once launched, its job."""
+    proposal_id = _uuid(args, "proposalId")
+    body = client.get(f"/api/matters/{mid}/proposals/{proposal_id}")
+    row = body.get("proposal") if isinstance(body, dict) and isinstance(body.get("proposal"), dict) else {}
+    payload = row.get("payload") if isinstance(row.get("payload"), dict) else {}
+    out = {"proposalId": proposal_id, "kind": row.get("kind"), "status": row.get("status"),
+           "launched": row.get("launched"), "name": payload.get("name"), "threadId": row.get("threadId"),
+           "createdAt": row.get("createdAt"), "reviewedAt": row.get("reviewedAt")}
+    return {k: v for k, v in out.items() if v is not None or k in ("status", "launched")}
+
+
+def _criteria_update(client: LitKitClient, base: str, args: Dict[str, Any]) -> Any:
+    """A new version of a set: LitKit's publish takes the whole list and the version it edits."""
+    set_id = _set_id(args)
+    body: Dict[str, Any] = {"criteria": _criteria(args.get("criteria"))}
+    if args.get("baseVersion") is not None:
+        version = args["baseVersion"]
+        if isinstance(version, bool) or not isinstance(version, int) or version < 0:
+            raise ValueError("'baseVersion' must be the set's version number you edited")
+    else:
+        found = client.get(f"{base}/{set_id}")
+        version = (found.get("set") or {}).get("currentVersion") if isinstance(found, dict) else None
+        if not isinstance(version, int):
+            raise ValueError("LitKit did not report the set's current version; give baseVersion")
+    body["baseVersion"] = version
+    if args.get("changeNote"):
+        body["changeNote"] = str(args["changeNote"])[:500]
+    status, result = client.json_with_status("POST", f"{base}/{set_id}/publish", json_body=body,
+                                             ok_statuses=(409,))
+    result = result if isinstance(result, dict) else {"result": result}
+    if status == 409 and result.get("error") == "stale_version":
+        result["next"] = ("Someone published since that version. Merge into the returned criteria and update again "
+                          "from currentVersion.")
+    elif status == 409:
+        raise LitKitError(f"HTTP 409: {_error_text(result) or 'conflict'}", status=409, body=result)
+    elif result.get("written") is False:
+        result["next"] = "Nothing changed: these criteria are the current version's."
     return result
 
 
@@ -954,28 +1135,31 @@ def _review_criteria(client: LitKitClient, mid: str, args: Dict[str, Any]) -> An
     base = f"/api/matters/{mid}/criteria-sets"
     if sub == "list":
         return client.get(base)
+    if sub == "publish":
+        # Hosts before LitKit's 0288 sets published in a second step; sessions may still ask for it.
+        if args.get("criteria") is not None:
+            return _criteria_update(client, base, args)
+        _set_id(args)
+        return {"criteriaAction": "publish", "sent": False,
+                "next": "There is no separate publish step: create and update each publish a version. Nothing "
+                        "was sent."}
     if sub not in CRITERIA_ACTIONS:
         raise ValueError(f"criteriaAction must be one of {', '.join(CRITERIA_ACTIONS)}")
     if sub == "create":
-        body: Dict[str, Any] = {"name": str(_require(args, "name"))[:120], "criteria": _criteria(args.get("criteria"))}
+        scope = args.get("setScope") or "user"
+        if scope not in CRITERIA_SET_SCOPES:
+            raise ValueError(f"'setScope' must be one of {', '.join(CRITERIA_SET_SCOPES)}")
+        body: Dict[str, Any] = {"scope": scope, "name": str(_require(args, "name"))[:120],
+                                "criteria": _criteria(args.get("criteria"))}
         if args.get("description"):
             body["description"] = str(args["description"])[:500]
-        if args.get("setScope"):
-            body["scope"] = str(args["setScope"])
         return client.post(base, body)
+    if sub == "update":
+        return _criteria_update(client, base, args)
     set_id = _set_id(args)
     if sub == "get":
         return client.get(f"{base}/{set_id}")
-    if sub == "versions":
-        return client.get(f"{base}/{set_id}/versions")
-    extra: Dict[str, Any] = {}
-    if args.get("changeNote"):
-        extra["changeNote"] = str(args["changeNote"])[:500]
-    if args.get("baseVersion") is not None:
-        extra["baseVersion"] = int(args["baseVersion"])
-    if sub == "update":
-        return client.patch(f"{base}/{set_id}", {"criteria": _criteria(args.get("criteria")), **extra})
-    return client.post(f"{base}/{set_id}/publish", extra)
+    return client.get(f"{base}/{set_id}/versions")
 
 
 @_tool("litkit_review")
@@ -988,6 +1172,12 @@ def litkit_review(args: Dict[str, Any]) -> Any:
         return client.get(base, params={"status": args.get("status"), "limit": args.get("limit")})
     if action == "create":
         return _review_create(client, mid, args)
+    if action == "launch":
+        return _review_launch(client, mid, args)
+    if action == "withdraw":
+        return _review_withdraw(client, mid, args)
+    if action == "proposal":
+        return _review_proposal(client, mid, args)
     if action == "criteria":
         return _review_criteria(client, mid, args)
     if action == "work_sets":
@@ -1117,7 +1307,19 @@ def litkit_work_sets(args: Dict[str, Any]) -> Any:
     mid = _mid(client)
     action = str(args.get("action") or "list")
     if action == "list":
-        return client.get("/api/work-sets", params={"matterId": mid, "role": args.get("role")})
+        # The matter's sets, whoever made or holds them. /api/work-sets is one person's inbox and outbox.
+        role = args.get("role") or None
+        if role is not None and role not in WORK_SET_ROLES:
+            raise ValueError(f"'role' must be one of {', '.join(WORK_SET_ROLES)}, or left out for every set")
+        user = current_acting_user()
+        if role and not user:
+            raise ValueError("'role' needs a lawyer on this turn; leave it out to list every set on the matter")
+        body = client.get(f"/api/matters/{mid}/work-sets")
+        if not role or not isinstance(body, dict) or not isinstance(body.get("sets"), list):
+            return body
+        key = "assignee" if role == "inbox" else "creator"
+        mine = [s for s in body["sets"] if isinstance(s, dict) and ((s.get(key) or {}).get("id") == user)]
+        return {**body, "sets": mine}
     if action == "get":
         return client.get(f"/api/work-sets/{_uuid(args, 'workSetId')}")
     if action == "create":
@@ -1434,7 +1636,7 @@ def litkit_cross_matter_search(args: Dict[str, Any]) -> Any:
     matter's text is written into this matter's home.
     """
     query = str(_require(args, "query"))
-    grant = current_turn_grant()
+    grant = current_cross_matter_grant()
     if not grant or not current_acting_user():
         return dumps({"available": False, "message": CROSS_MATTER_UNAVAILABLE})
     body: Dict[str, Any] = {"query": query[:1000]}
@@ -1573,13 +1775,14 @@ SCHEMAS: Dict[str, Dict[str, Any]] = {
         "documents. Writes nothing to LitKit; findings saved to qa/.",
         {"path": _S, "text": _S, "deliverableClass": _S}),
     "litkit_review": _schema(
-        "litkit_review", "Review & Tag. To start a review, register it: tags (litkit_tags), criteria set "
-        "(action=criteria), scope, then create; the person launches it from the card in the thread. Never tell "
-        "them to set it up in the UI. requiresApproval: show the price; call again with quoteId and "
-        "userConfirmed=true only after a yes. Also list, status, records, resume/cancel/pause, work_sets, "
-        "accept_tags.",
+        "litkit_review", "Review & Tag. Register tags, criteria set "
+        "(action=criteria) and scope; create proposes. Report the estimate, ask whether to launch, and call "
+        "action=launch only after the person says yes in the thread. requiresApproval: quoteId and "
+        "userConfirmed=true only after a yes to the price. Also withdraw, proposal, list, status, records, "
+        "resume/cancel/pause, work_sets, accept_tags.",
         {"action": {"type": "string", "enum": list(REVIEW_ACTIONS)},
          "jobId": _S, "status": _S, "limit": _I,
+         "proposalId": {"type": "string", "description": "launch, withdraw, proposal: the id create returned"},
          "criteriaAction": {"type": "string", "enum": list(CRITERIA_ACTIONS),
                             "description": "with action=criteria (default list)"},
          "criteriaSetId": {"type": "string", "description": "a criteria set id (uuid) or builtin:<name>"},
@@ -1590,16 +1793,23 @@ SCHEMAS: Dict[str, Dict[str, Any]] = {
                           "disposition": {"type": "string", "enum": list(CRITERION_DISPOSITIONS)}},
                           "required": ["title"]}},
          "name": {"type": "string", "description": "criteria set name (create), or the run's name"},
-         "description": _S, "changeNote": _S, "baseVersion": _I,
-         "setScope": {"type": "string", "description": "criteria set scope for criteriaAction=create, if LitKit asks"},
+         "description": _S, "changeNote": _S,
+         "baseVersion": {"type": "integer", "description": "criteriaAction=update: the version you edited (default: "
+                         "the current one)"},
+         "criteriaSetVersion": {"type": "integer", "description": "create: run this version of the set (default: "
+                                "current)"},
+         "tier": {"type": "string", "enum": list(REVIEW_TIERS), "description": "create: model tier (default fast)"},
+         "setScope": {"type": "string", "enum": list(CRITERIA_SET_SCOPES),
+                      "description": "criteriaAction=create: user (default, the person's own set) or firm"},
          "scope": {"type": "object", "description": "documents for create; exactly one of {workSetId}, "
                    "{documentIds:[..]}, {filter:{custodian, dateFrom, dateTo, query, tagIds, ...}}, "
                    "{batesRange:{start, end}}"},
          "tags": {"type": "array", "items": {"type": "string"},
-                  "description": "create: every tag name the run may write (only these can be applied)"},
-         "createMissingTags": _B, "applyTags": {"type": "boolean", "description": "omit for the server default "
-                                                "(tags apply; the person can pick suggest-only on the card); false "
-                                                "leaves them as proposals"},
+                  "description": "create: optional; the criteria rows name the tags. If sent, exactly the rows' "
+                                 "tags"},
+         "createMissingTags": _B, "applyTags": {"type": "boolean", "description": "create: tags apply unless false "
+                                                "(false leaves them as proposals). With criteriaSetId leave it out: "
+                                                "true is refused; set the rows' disposition instead"},
          "quoteId": {"type": "string", "description": "billing phase 2: the quote id from requiresApproval"},
          "userConfirmed": {"type": "boolean", "description": "billing phase 2: true only after the person said yes "
                            "to the quoted price"},
@@ -1634,9 +1844,12 @@ SCHEMAS: Dict[str, Dict[str, Any]] = {
          "kind": {"type": "string", "enum": ["issue", "privilege", "responsive", "custom"]}, "color": _S,
          "tagId": _S, "documentIds": _IDS, "scope": {"type": "string", "enum": ["doc", "attachments", "family"]}}),
     "litkit_work_sets": _schema(
-        "litkit_work_sets", "Work sets (document batches assigned to a reviewer): list, get, create, close, reopen.",
+        "litkit_work_sets", "Work sets (document batches assigned to a reviewer): list (every set on the matter), "
+        "get, create, close, reopen.",
         {"action": {"type": "string", "enum": ["list", "get", "create", "close", "reopen"]}, "workSetId": _S,
-         "assigneeId": _S, "name": _S, "message": _S, "documentIds": _IDS, "role": _S}),
+         "assigneeId": _S, "name": _S, "message": _S, "documentIds": _IDS,
+         "role": {"type": "string", "enum": list(WORK_SET_ROLES),
+                  "description": "list: only sets handed to (inbox) or made by (outbox) this lawyer"}}),
     "litkit_litlex": _schema(
         "litkit_litlex", "LitLex legal research: search, opinion (saved to litlex/), citator, authorities, "
         "statute, resolve citations, cite_check a quotation, brief_check a draft file.",

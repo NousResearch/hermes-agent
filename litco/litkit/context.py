@@ -6,8 +6,9 @@ calls and delegated subagents, so every LitKit call made during the turn sees th
 acting user. Outside a turn (cron, unattended work) nothing is bound: calls carry no
 user assertion and run under the Matter Agent user's own viewer role.
 
-A turn in a lawyer's own private thread may also carry the app-minted turn grant
-(FIRM_AGENT_HOST 6.3), which only ``litkit_cross_matter_search`` sends back.
+A turn with a verified lawyer may also carry the app-minted turn grant (FIRM_AGENT_HOST 6.3),
+which binds the token, the lawyer, the thread and the post the turn answers. ``litkit_review``
+sends it back on a launch; ``litkit_cross_matter_search`` sends it only from a private thread.
 """
 
 from __future__ import annotations
@@ -30,8 +31,10 @@ class TurnIdentity:
     litkit_channel: Optional[str] = None
     # The turn's ``sessionId``: the LitKit thread the turn runs in (a review proposal posts its card there).
     thread_id: Optional[str] = None
-    # The app's grant for cross-matter search; kept out of reprs and logs.
+    # The app's grant for this turn; kept out of reprs and logs.
     turn_grant: Optional[str] = field(default=None, repr=False)
+    # A lawyer's own private (dm) thread: the only place cross-matter search may run (FIRM_AGENT_HOST 6.4).
+    private_thread: bool = False
 
 
 _TURN: ContextVar[Optional[TurnIdentity]] = ContextVar("LITCO_TURN_IDENTITY", default=None)
@@ -65,6 +68,12 @@ def current_thread_id() -> Optional[str]:
 def current_turn_grant() -> Optional[str]:
     turn = _TURN.get()
     return turn.turn_grant if turn is not None else None
+
+
+def current_cross_matter_grant() -> Optional[str]:
+    """The turn grant, only in a private thread: cross-matter hits never reach a shared thread."""
+    turn = _TURN.get()
+    return turn.turn_grant if turn is not None and turn.private_thread else None
 
 
 @contextlib.contextmanager

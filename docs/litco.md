@@ -187,12 +187,12 @@ The assertion is minted fresh for each request and each retry (MAC = base64url, 
 | `litkit_files` | LitSpace list, search, content, upload | list, hits, `files/<name>`, upload result |
 | `litkit_deliver` | `POST …/deliverables` (multipart) | `blocked`, gate summary, version; full response in `qa/` |
 | `litkit_quote_check` | `POST …/quote-check/file` or `…/quote-check` | verified and unverified quotations; full response in `qa/` |
-| `litkit_review` | review-jobs list, status, records, resume, cancel, pause; `create` proposes a run, with `firstPass` passed through when given | pass-through |
+| `litkit_review` | review-jobs list, status, records, resume, cancel, pause; `create` proposes a run (`POST …/review-jobs/propose`; `firstPass`, `tier`, `includeRationaleNotes`, `criteriaSetVersion` passed through when given); `launch` (`POST …/proposals/{p}/launch` with the turn's `threadId` and `X-LitKit-Turn-Grant`, which the host keeps on every turn with a verified lawyer; cross-matter search still sends it only from a private thread) after the person says yes in the thread, LitKit deciding from the post the grant names; `withdraw` (`POST …/proposals/{p}/withdraw`); `proposal` (`GET …/proposals/{p}`); `criteria`, where an edit is `POST …/criteria-sets/{id}/publish` with `baseVersion` | pass-through; `create` adds a top-level `proposalId`; `launch` returns `reviewJobId` and `scopeDocCount`, or LitKit's 409 refusal as a plain result with its `message`; an app without the launch route gets one sentence naming the card's Launch button |
 | `litkit_jev` | `POST …/export/text` (ACL-scoped text), then TypeSafe `POST /v1/systemone` per document | `screen`: counts (read in full, set aside, uncertain) and rows, all probabilities in `jev/`; `ask`: typed answers |
 | `litkit_ingest` | productions, progress, exceptions, ingests, ingest jobs; resume, cancel, reingest, retry | pass-through |
 | `litkit_proposals` | `POST`/`GET …/proposals` | proposal id and status |
 | `litkit_tags` | `/api/tags`, `/api/documents/{id}/tags`, `…/bulk-tag` | list, create, apply, remove |
-| `litkit_work_sets` | `/api/work-sets` | list, get, create, close, reopen |
+| `litkit_work_sets` | list: `GET …/work-sets` (every set on the matter); get, create, close, reopen: `/api/work-sets` | list (`role` filters by assignee or creator against the acting lawyer), get, create, close, reopen |
 | `litkit_litlex` | LitLex search, opinion (saved to `litlex/`), citator, authorities, statute, cite-resolve, cite-check, brief-check | pass-through |
 | `litkit_notify` | `POST /api/notifications/emit` | to the acting lawyer (default), a named member, or the matter |
 | `litkit_remember`, `litkit_recall` | `POST /api/agent/actions` (`remember`, `recall`) | `scope:"user"` keeps a note private to the acting lawyer |

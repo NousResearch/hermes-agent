@@ -454,6 +454,42 @@ def _git_dir(path: Path) -> Optional[Path]:
     return _git_abs_path(path, "--git-dir")
 
 
+def commit_worktree_wip(task_id: str, workspace_path: Optional[str], *, timeout: int = 30) -> bool:
+    """Best-effort ``git add -A && git commit`` of uncommitted work in a worktree
+    workspace, called right before a timed-out worker is SIGTERMed (see
+    :func:`hermes_cli.kanban_db_dispatch.enforce_max_runtime`) so a card hitting
+    ``max_runtime_seconds`` loses no work: the next worker resumes from the
+    commit instead of a clean/missing tree. No-op (returns ``False``) for
+    scratch/dir workspaces, a missing path, a path that isn't a git worktree,
+    or a clean tree — only ever touches the task's OWN branch, never ``main``.
+    """
+    if not workspace_path:
+        return False
+    path = Path(workspace_path).expanduser()
+    if not path.is_dir():
+        return False
+    if not _is_linked_worktree_checkout(path) and _git_toplevel(path) is None:
+        return False
+    try:
+        status = _git(path, "status", "--porcelain", timeout=timeout)
+    except Exception:
+        return False
+    if status.returncode != 0 or not (status.stdout or "").strip():
+        return False  # clean tree, or git itself failed — never fabricate a commit
+    try:
+        add = _git(path, "add", "-A", timeout=timeout)
+        if add.returncode != 0:
+            return False
+        commit = _git(
+            path, "commit", "--no-verify", "-m",
+            f"wip: timeout checkpoint for {task_id} (max_runtime_seconds exceeded)",
+            timeout=timeout,
+        )
+        return commit.returncode == 0
+    except Exception:
+        return False
+
+
 def _git_current_branch(path: Path) -> Optional[str]:
     return _kb._git_out(path, "branch", "--show-current")
 

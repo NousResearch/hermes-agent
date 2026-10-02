@@ -387,6 +387,8 @@ hermes sessions export backup.jsonl --redact
 
 Exported files contain one JSON object per line with full session metadata and all messages.
 
+Filtered exports include matching pinned and archived sessions. Pinning protects a session from pruning, rather than excluding it from a backup. If an explicit `--session-id` cannot be resolved, export exits with a non-zero status and creates no output file.
+
 Each record also carries a `timings` block derived from the message timestamps, so a reader of an export attached to a bug report can tell a single long model gap from many small tool round-trips without reconstructing it by hand. It holds only ids, roles, counts and durations — `wall_clock_ms`, `largest_gap_ms`, `role_counts`, `tool_calls_emitted` and per-message `intervals` — never prompt text, tool arguments or results, so it survives `--redact` unchanged. Hermes does not persist a model/tool stopwatch, so `complete` is always `false`; when a session has no timestamped messages, `available` is `false` and `unavailable_reason` says why. The block is rebuilt on every export and ignored (and not counted toward size limits) on import.
 
 #### HTML

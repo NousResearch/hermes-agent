@@ -28,7 +28,7 @@ import { computed } from 'nanostores'
 import { stableArray, stableRecord } from '@/lib/stable-array'
 
 import { $backgroundRunningSessionIds } from './composer-status'
-import { $sessions, $unreadFinishedSessionIds, lineageAliases } from './session'
+import { $messagingSessions, $sessions, $unreadFinishedSessionIds, lineageAliases } from './session'
 import {
   $attentionSessionIds,
   $draftSessionIds,
@@ -181,4 +181,33 @@ export const $sessionDotStateById = computed(
 
     return (dotStates = stableRecord(dotStates, next))
   }
+)
+
+/** Listed, non-archived rows whose resolved status is unread. Alias keys in
+ *  `$sessionDotStateById` are ignored unless they are themselves a listed row. */
+export function unreadSessionCount(
+  byId: Readonly<Record<string, SessionDotState>>,
+  ...lists: Array<readonly { archived?: boolean; id: string }[]>
+): number {
+  let n = 0
+
+  for (const rows of lists) {
+    for (const row of rows) {
+      if (!row.archived && byId[row.id] === 'unread') {
+        n++
+      }
+    }
+  }
+
+  return n
+}
+
+/** The titlebar badge. Cron sessions are deliberately EXCLUDED: cron runs
+ *  finish unwatched by design, so counting them turns the badge into a cron
+ *  run counter that is permanently lit (#93552). Their unread state stays
+ *  visible where it belongs — the sidebar's cron section rows — and
+ *  "mark all as read" still acks them (ackAllSessionsRead iterates cron rows). */
+export const $unreadSessionCount = computed(
+  [$sessionDotStateById, $sessions, $messagingSessions],
+  (byId, sessions, messaging) => unreadSessionCount(byId, sessions, messaging)
 )

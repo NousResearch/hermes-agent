@@ -30,6 +30,15 @@ def hermes_home(tmp_path, monkeypatch):
     from hermes_cli import goals
 
     goals._DB_CACHE.clear()
+    # Pre-warm the SessionDB cache from this SYNC context. The tests call
+    # GoalManager.set() on the event-loop thread, where _get_session_db()
+    # refuses to construct SessionDB inline (loop-liveness guard) and only
+    # waits _DB_BOOTSTRAP_LOOP_WAIT_S for a background bootstrap. On a loaded
+    # CI runner the init overruns that window, the goal write is silently
+    # dropped by design, and the continuation path no-ops — the recurring
+    # sends == [] flake. Warming here uses the direct construction path, so
+    # the loop-thread set() always finds a cached DB.
+    goals._get_session_db()
     yield home
     goals._DB_CACHE.clear()
 
@@ -75,7 +84,7 @@ def _make_runner_with_adapter(session_id: str = None):
     runner._queued_events = {}
 
     src = _make_source()
-    # Default to a unique session_id so xdist parallel runs on the same worker
+    # Default to a unique session_id so parallel runs
     # don't see each other's GoalManager state (DEFAULT_DB_PATH gets frozen at
     # module-import time, defeating per-test HERMES_HOME monkeypatches).
     session_entry = SessionEntry(

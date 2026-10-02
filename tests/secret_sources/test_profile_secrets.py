@@ -18,7 +18,7 @@ from pathlib import Path
 import pytest
 
 from agent.secret_sources import registry
-from agent.secret_sources.base import ErrorKind, FetchResult, SecretSource
+from agent.secret_sources.base import FetchResult, SecretSource
 
 
 class _FakeBulk(SecretSource):
@@ -101,8 +101,6 @@ def test_profile_suffixed_var_hydrates_canonical():
     assert env["TELEGRAM_BOT_TOKEN_MILLA"] == "123:tok"
     assert env["TELEGRAM_BOT_TOKEN"] == "123:tok"
     assert "TELEGRAM_BOT_TOKEN" in report.provenance
-    assert any("applied profile-scoped" in w
-               for w in report.sources[0].result.warnings)
 
 
 

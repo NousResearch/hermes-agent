@@ -16,7 +16,9 @@ import base64
 import contextlib
 import json
 import logging
+import ntpath
 import os
+import posixpath
 import random
 import re
 import time
@@ -370,10 +372,14 @@ class SimplexAdapter(BasePlatformAdapter):
             file_path = file_source.get("filePath") if isinstance(file_source, dict) else None
             file_id = file_info.get("fileId")
             # The daemon reports filePath relative to its --files-folder; downstream
-            # consumers need an absolute path they can actually open.
-            if file_path and not os.path.isabs(file_path):
+            # consumers need an absolute path they can actually open. The path belongs
+            # to the daemon's world, so judge it by daemon semantics instead of the
+            # host's os.path (ntpath on Windows, and since Python 3.13 ntpath.isabs
+            # judges a drive-less POSIX root relative): a POSIX daemon's "/srv/x.jpg"
+            # and a Windows daemon's "C:/x.jpg" must both pass through untouched.
+            if file_path and not (posixpath.isabs(file_path) or ntpath.isabs(file_path)):
                 if self.files_folder:
-                    file_path = os.path.join(self.files_folder, file_path)
+                    file_path = posixpath.join(self.files_folder, file_path)
                 elif not self._warned_relative_files:
                     self._warned_relative_files = True
                     logger.warning(

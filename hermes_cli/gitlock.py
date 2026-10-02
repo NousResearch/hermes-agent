@@ -185,10 +185,20 @@ def _restore_auto_maintenance(repo_root: Path) -> None:
     """Undo the ``maintenance.auto=false`` an earlier cut of _TREE0_MAINTENANCE_OFF persisted.
 
     It also switched off git's own post-fetch fold (git <= 2.53), so packs piled up until the next
-    update. The install checkout is Hermes-owned; only the exact value it wrote is removed.
+    update. Nothing records who wrote a lone ``maintenance.auto=false``, so it is removed only
+    with the old cut's fingerprint: its sibling keys present and ``maintenance.commit-graph.enabled``
+    not yet written. The first pass of disable_tree0_auto_maintenance writes that key, which makes
+    this a one-time migration; an operator's own setting is never touched, before or after.
     """
     try:
-        if _git_stdout_lines(repo_root, ["config", "--local", "--get", "maintenance.auto"]) == ["false"]:
+        local = dict(line.split(None, 1) for line in _git_stdout_lines(repo_root, [
+            "config", "--local", "--get-regexp",
+            r"^(maintenance\.auto|maintenance\.commit-graph\.enabled|gc\.writecommitgraph|fetch\.writecommitgraph)$"]))
+        old_cut = (local.get("maintenance.auto") == "false"
+                   and local.get("gc.writecommitgraph") == "false"
+                   and local.get("fetch.writecommitgraph") == "false"
+                   and "maintenance.commit-graph.enabled" not in local)
+        if old_cut:
             subprocess.run(
                 ["git", "config", "--local", "--unset", "maintenance.auto"],
                 cwd=str(repo_root), check=True, capture_output=True, timeout=30,

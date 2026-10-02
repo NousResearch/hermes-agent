@@ -298,13 +298,24 @@ def test_maintenance_keys_leave_gits_own_fold_running(tmp_path: Path) -> None:
         for key, value in (("gc.autoPackLimit", "2"), ("gc.autoDetach", "false"), ("maintenance.autoDetach", "false")):
             _run_git("config", key, value, cwd=clone)  # git's own auto gc, in the foreground
         if keys:
-            _run_git("config", "maintenance.auto", "false", cwd=clone)  # what the first cut persisted
+            # what the first cut persisted: all three keys together, none of the new one
+            for key in ("maintenance.auto", "gc.writeCommitGraph", "fetch.writeCommitGraph"):
+                _run_git("config", key, "false", cwd=clone)
             disable_tree0_auto_maintenance(clone)
         for path in ("d0/f.txt", "d1/f.txt", "d2/f.txt"):
             _run_git("cat-file", "-p", _run_git("rev-parse", f"HEAD:{path}", cwd=clone), cwd=clone)
         return len(_packs(clone))
 
     assert lazy_packs("keys", keys=True) <= lazy_packs("stock", keys=False)
+
+
+def test_an_operators_own_maintenance_auto_false_is_never_erased(repo: Path) -> None:
+    _run_git("config", "maintenance.auto", "false", cwd=repo)
+
+    disable_tree0_auto_maintenance(repo)
+    disable_tree0_auto_maintenance(repo)
+
+    assert _run_git("config", "--local", "--get", "maintenance.auto", cwd=repo) == "false"
 
 
 def test_non_partial_checkout_is_left_alone(repo: Path) -> None:

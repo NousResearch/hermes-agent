@@ -786,7 +786,10 @@ def ensure_matrix_deps() -> bool:
     return True
 
 
-class MatrixAdapter(MatrixIntakeMixin, MatrixRedactionMixin, MatrixFollowupMixin, MatrixRichContentMixin, MatrixContextMixin, BasePlatformAdapter):
+from plugins.platforms.matrix.feedback import MatrixFeedbackMixin
+
+
+class MatrixAdapter(MatrixFeedbackMixin, MatrixIntakeMixin, MatrixRedactionMixin, MatrixFollowupMixin, MatrixRichContentMixin, MatrixContextMixin, BasePlatformAdapter):
     """Gateway adapter for Matrix (any homeserver)."""
 
     supports_code_blocks = True  # Matrix renders fenced code blocks (HTML/markdown)
@@ -2951,25 +2954,7 @@ class MatrixAdapter(MatrixIntakeMixin, MatrixRedactionMixin, MatrixFollowupMixin
         self._reaction_redaction_tasks.add(task)
         task.add_done_callback(self._reaction_redaction_tasks.discard)
 
-    async def on_processing_start(self, event: MessageEvent) -> None:
-        if actions := getattr(self, "_reaction_followup_actions", None):
-            self._discard_followup_action(self._event_session_key(event))
-        msg_id, room_id = event.message_id, event.source.chat_id
-        if self._reactions_enabled and msg_id and room_id:
-            reaction_event_id = await self._send_reaction(room_id, msg_id, "\U0001f440")
-            if reaction_event_id:
-                self._pending_reactions[(room_id, msg_id)] = reaction_event_id
 
-    async def on_processing_complete(self, event: MessageEvent, outcome: ProcessingOutcome) -> None:
-        if outcome != ProcessingOutcome.SUCCESS and (actions := getattr(self, "_reaction_followup_actions", None)):
-            self._discard_followup_action(self._event_session_key(event))
-        msg_id, room_id = event.message_id, event.source.chat_id
-        if not self._reactions_enabled or not msg_id or not room_id or outcome == ProcessingOutcome.CANCELLED:
-            return
-        eyes_event_id = self._pending_reactions.pop((room_id, msg_id), None)
-        if eyes_event_id:
-            self._schedule_reaction_redaction(room_id, eyes_event_id, "processing complete")
-        await self._send_reaction(room_id, msg_id, "\u2705" if outcome == ProcessingOutcome.SUCCESS else "\u274c")
 
     async def _on_reaction(self, event: Any) -> bool | None:
         sender = str(getattr(event, "sender", ""))
@@ -3155,34 +3140,7 @@ class MatrixAdapter(MatrixIntakeMixin, MatrixRedactionMixin, MatrixFollowupMixin
             except Exception as exc:
                 logger.debug("Matrix: failed to redact model picker reaction %s: %s", emoji, exc)
 
-    def _background_read_receipt(self, room_id: str, event_id: str) -> None:
 
-        async def _send() -> None:
-            try:
-                await self.send_read_receipt(room_id, event_id)
-            except Exception as exc:  # pragma: no cover — defensive
-                logger.debug("Matrix: background read receipt failed: %s", exc)
-        asyncio.ensure_future(_send())
-
-    async def send_read_receipt(self, room_id: str, event_id: str) -> bool:
-        if not self._client:
-            return False
-        try:
-            room, event = RoomID(room_id), EventID(event_id)
-            if hasattr(self._client, "set_fully_read_marker"):
-                await self._client.set_fully_read_marker(room, event, event)
-            elif hasattr(self._client, "send_receipt"):
-                await self._client.send_receipt(room, event)
-            elif hasattr(self._client, "set_read_markers"):
-                await self._client.set_read_markers(room, fully_read_event=event, read_receipt=event)
-            else:
-                logger.debug("Matrix: client has no read receipt method")
-                return False
-            logger.debug("Matrix: sent read receipt for %s in %s", event_id, room_id)
-            return True
-        except Exception as exc:
-            logger.debug("Matrix: read receipt failed: %s", exc)
-            return False
 
     async def _client_op(self, coro_factory, ok_msg: tuple, err_msg: str, *, level: str = "warning") -> bool:
         """Run one client call when connected: log *ok_msg* and return True, or log the error and return False."""

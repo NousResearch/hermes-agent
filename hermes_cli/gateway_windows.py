@@ -802,7 +802,15 @@ def _remove_startup_entries() -> tuple[list[str], list[str]]:
     """
     done: list[str] = []
     warnings: list[str] = []
-    for path in (get_startup_entry_path(), _legacy_startup_entry_path()):
+    for label, resolver in (
+        ("<current Startup entry>", get_startup_entry_path),
+        ("<legacy Startup entry>", _legacy_startup_entry_path),
+    ):
+        try:
+            path = resolver()
+        except Exception as exc:
+            warnings.append(f"Could not resolve redundant Windows login item {label}: {exc}")
+            continue
         try:
             path.unlink()
             done.append(f"Removed redundant Windows login item: {path}")
@@ -835,7 +843,12 @@ def reconcile_autostart_launchers() -> tuple[list[str], list[str]]:
         return _remove_startup_entries()
     legacy = _legacy_startup_entry_path()
     if legacy.exists():
-        entry = _install_startup_entry(_write_task_script())
+        try:
+            entry = _install_startup_entry(_write_task_script())
+        except OSError as exc:
+            if not legacy.exists() or getattr(exc, "filename", None) != str(legacy):
+                raise
+            return [], [f"Could not remove legacy Windows login item: {legacy} ({exc}; it still fires at logon)"]
         if legacy.exists():  # _install_startup_entry swallows the unlink failure; both would fire at logon
             return [], [f"Could not remove legacy Windows login item: {legacy} (locked or access denied; it still fires at logon beside {entry})"]
         return [f"Migrated legacy Windows login item to: {entry}"], []

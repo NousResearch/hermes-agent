@@ -356,7 +356,7 @@ def test_install_scheduled_task_recreates_instead_of_change(monkeypatch, tmp_pat
     assert "cmd.exe" not in xml_seen["text"]
 
 
-@pytest.mark.windows_only
+@pytest.mark.platforms('windows')
 def test_install_task_success_removes_stale_startup_fallback(monkeypatch, tmp_path, capsys):
     """A recovered Scheduled Task must replace, not duplicate, the fallback."""
     script_path = tmp_path / "Hermes_Gateway_alice.cmd"
@@ -392,7 +392,7 @@ def test_install_task_success_removes_stale_startup_fallback(monkeypatch, tmp_pa
     assert output.count("Removed obsolete Windows login fallback") == 3
 
 
-@pytest.mark.windows_only
+@pytest.mark.platforms('windows')
 def test_install_task_success_tolerates_startup_fallback_resolution_failure(
     monkeypatch, tmp_path, capsys
 ):
@@ -430,7 +430,7 @@ def test_install_task_success_tolerates_startup_fallback_resolution_failure(
     assert next_steps == [True]
 
 
-@pytest.mark.windows_only
+@pytest.mark.platforms('windows')
 def test_gateway_powershell_script_keeps_paths_as_base64_data(monkeypatch, tmp_path):
     """PowerShell 5.1 must never parse arbitrary path characters as source text."""
     tricky_dir = tmp_path / "D’Arcy %HERMES_TEST_EXPAND% & Tools"
@@ -467,7 +467,7 @@ def test_gateway_powershell_script_keeps_paths_as_base64_data(monkeypatch, tmp_p
     assert content.encode("utf-8-sig").startswith(b"\xef\xbb\xbf")
 
 
-@pytest.mark.windows_only
+@pytest.mark.platforms('windows')
 @pytest.mark.parametrize(("child_exit", "expected"), [(75, 75), (78, 0)])
 def test_generated_launcher_supervision_preserves_exit_contract(
     monkeypatch, tmp_path, child_exit, expected,
@@ -594,18 +594,31 @@ def test_uninstall_and_reinstall_sweep_stale_startup_staging_file(monkeypatch, t
 
 
 def _startup_with_fallback_and_legacy_entries(monkeypatch, tmp_path):
-    """A Startup folder holding both the .vbs fallback and the pre-#45610 .cmd launcher."""
+    """An isolated current PowerShell shortcut plus the legacy CMD login launcher."""
     startup = tmp_path / "Startup"
     startup.mkdir(parents=True)
     script = tmp_path / "gateway-service" / "Hermes_Gateway_alice.cmd"
-    vbs, cmd = startup / "Hermes_Gateway_alice.vbs", startup / "Hermes_Gateway_alice.cmd"
-    vbs.write_text(gateway_windows._build_startup_launcher(script), encoding="utf-8")
+    script.parent.mkdir(parents=True)
+    script.with_suffix(".ps1").write_text("# isolated launcher", encoding="utf-8")
+    shortcut, cmd = startup / "Hermes_Gateway_alice.lnk", startup / "Hermes_Gateway_alice.cmd"
+    shortcut.write_bytes(b"fixture shortcut")
     cmd.write_text("@echo off", encoding="utf-8")
     monkeypatch.setattr(gateway_windows, "_assert_windows", lambda: None)
     monkeypatch.setattr(gateway_windows, "get_task_name", lambda: "Hermes_Gateway_alice")
-    monkeypatch.setattr(gateway_windows, "get_startup_entry_path", lambda: vbs)
+    monkeypatch.setattr(gateway_windows, "get_startup_entry_path", lambda: shortcut)
     monkeypatch.setattr(gateway_windows, "_legacy_startup_entry_path", lambda: cmd)
     monkeypatch.setattr(gateway_windows, "_write_task_script", lambda: script)
+    monkeypatch.setattr(gateway_windows, "_legacy_vbs_startup_entry_path", lambda: shortcut.with_suffix(".vbs"))
+    monkeypatch.setattr(gateway_windows, "get_task_script_path", lambda: script)
+
+    def shortcut_writer(argv, **kwargs):
+        # Model only the PowerShell writer subprocess; staging, replacement and
+        # recoverable legacy archives still run through production code.
+        assert argv[-2:] == ["-File", str(script.with_name(script.stem + ".shortcut.tmp.ps1"))]
+        Path(kwargs["env"]["HERMES_SHORTCUT_PATH"]).write_bytes(b"fixture shortcut")
+        return SimpleNamespace(returncode=0, stdout=b"", stderr=b"")
+
+    monkeypatch.setattr(gateway_windows.subprocess, "run", shortcut_writer)
     return startup, script
 
 
@@ -621,12 +634,12 @@ def test_scheduled_task_install_removes_startup_entries_that_would_double_launch
     gateway_windows.install()
 
     assert sorted(p.name for p in startup.iterdir()) == []
-    assert "Removed redundant Windows login item" in capsys.readouterr().out
+    assert "Removed obsolete Windows login fallback" in capsys.readouterr().out
 
 
 def test_reconcile_leaves_one_autostart_mechanism(monkeypatch, tmp_path):
     """#80569: what `hermes update` and `hermes doctor --fix` run. Beside a registered task every
-    Startup entry is redundant; with no task a legacy .cmd next to the .vbs is. After reconcile
+    Startup entry is redundant; with no task a legacy .cmd next to the .lnk is. After reconcile
     nothing is redundant and exactly one mechanism remains."""
     startup, _script = _startup_with_fallback_and_legacy_entries(monkeypatch, tmp_path)
     registered = {"task": True}
@@ -638,37 +651,37 @@ def test_reconcile_leaves_one_autostart_mechanism(monkeypatch, tmp_path):
     assert gateway_windows.redundant_autostart_entries() == []
     assert list(startup.iterdir()) == []
 
-    # No task: the .vbs fallback is the mechanism, a leftover legacy .cmd beside it is the duplicate.
+    # No task: the .lnk fallback is the mechanism, a leftover legacy .cmd beside it is the duplicate.
     registered["task"] = False
     _startup_with_fallback_and_legacy_entries(monkeypatch, tmp_path / "no-task")
     assert [p.suffix for p in gateway_windows.redundant_autostart_entries()] == [".cmd"]
     gateway_windows.reconcile_autostart_launchers()
     assert gateway_windows.redundant_autostart_entries() == []
-    assert [p.name for p in (tmp_path / "no-task" / "Startup").iterdir()] == ["Hermes_Gateway_alice.vbs"]
+    assert [p.name for p in (tmp_path / "no-task" / "Startup").iterdir()] == ["Hermes_Gateway_alice.lnk"]
 
 
 def test_reconcile_warns_when_legacy_entry_cannot_be_removed(monkeypatch, tmp_path):
-    """#80569: no task, legacy .cmd locked. The .vbs gets written but the .cmd survives, so both fire
+    """#80569: no task, legacy .cmd locked. The .lnk gets written but the .cmd survives, so both fire
     at logon; reconcile must warn instead of reporting a migration, and doctor --fix must not count it."""
     import sys
     from hermes_cli import doctor_platform
     from hermes_cli.doctor_report import Finding
 
     startup, _script = _startup_with_fallback_and_legacy_entries(monkeypatch, tmp_path)
-    (startup / "Hermes_Gateway_alice.vbs").unlink()   # legacy-only install
+    (startup / "Hermes_Gateway_alice.lnk").unlink()   # legacy-only install
     monkeypatch.setattr(gateway_windows, "is_task_registered", lambda: False)
-    real_unlink = Path.unlink
+    real_replace = Path.replace
 
-    def locked_unlink(self, *args, **kwargs):
+    def locked_replace(self, *args, **kwargs):
         if self.suffix == ".cmd":
             raise PermissionError(13, "Access is denied", str(self))
-        return real_unlink(self, *args, **kwargs)
+        return real_replace(self, *args, **kwargs)
 
-    monkeypatch.setattr(Path, "unlink", locked_unlink)
+    monkeypatch.setattr(Path, "replace", locked_replace)
 
     done, warnings = gateway_windows.reconcile_autostart_launchers()
     assert done == [] and len(warnings) == 1 and "Hermes_Gateway_alice.cmd" in warnings[0]
-    assert sorted(p.name for p in startup.iterdir()) == ["Hermes_Gateway_alice.cmd", "Hermes_Gateway_alice.vbs"]
+    assert sorted(p.name for p in startup.iterdir()) == ["Hermes_Gateway_alice.cmd", "Hermes_Gateway_alice.lnk"]
     assert [p.suffix for p in gateway_windows.redundant_autostart_entries()] == [".cmd"]
 
     monkeypatch.setattr(sys, "platform", "win32")

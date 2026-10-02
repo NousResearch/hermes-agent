@@ -118,7 +118,7 @@ def test_no_cache_directory_at_all(tmp_path, monkeypatch):
     assert _npx_cached_bin(["-y", "mcp-linear"]) is None
 
 
-@pytest.mark.windows_only
+@pytest.mark.platforms('windows')
 def test_windows_default_localappdata_cache_is_used_without_override(tmp_path, monkeypatch):
     """A normal Windows npm install should not fall back to a slow resident npx process."""
     local_app_data = tmp_path / "AppData" / "Local"
@@ -134,7 +134,7 @@ def test_windows_default_localappdata_cache_is_used_without_override(tmp_path, m
     assert _npx_cached_bin(["-y", "mcp-linear"]) == (str(target), [])
 
 
-@pytest.mark.windows_only
+@pytest.mark.platforms('windows')
 def test_windows_uppercase_server_cache_override_is_relative_to_child_cwd(tmp_path):
     """Windows treats a server's uppercase cache setting as the same npm setting."""
     child_cwd = tmp_path / "child-cwd"
@@ -153,7 +153,7 @@ def test_windows_uppercase_server_cache_override_is_relative_to_child_cwd(tmp_pa
     ) == (str(target), [])
 
 
-@pytest.mark.linux_only
+@pytest.mark.platforms('linux')
 def test_linux_uppercase_server_cache_override_is_relative_to_child_cwd(tmp_path):
     """npm's conventional uppercase cache setting is honored on POSIX too."""
     child_cwd = tmp_path / "child-cwd"
@@ -205,7 +205,7 @@ def _paired_windows_npm_layout(tmp_path):
     return npx, node, npm_cli
 
 
-@pytest.mark.windows_only
+@pytest.mark.platforms('windows')
 def test_effective_cache_honors_uppercase_server_override_without_npm_probe(tmp_path):
     """The conventional Windows spelling bypasses npm config and remains the child setting."""
     from tools.mcp_tool_config import _effective_npx_cache_env
@@ -218,7 +218,7 @@ def test_effective_cache_honors_uppercase_server_override_without_npm_probe(tmp_
     run.assert_not_called()
 
 
-@pytest.mark.windows_only
+@pytest.mark.platforms('windows')
 def test_effective_cache_reads_the_paired_npm_configuration(tmp_path):
     """A project npmrc cache wins over a stale platform-default cache shortcut."""
     from tools.mcp_tool_config import _effective_npx_cache_env
@@ -246,7 +246,7 @@ def test_effective_cache_reads_the_paired_npm_configuration(tmp_path):
     assert observed["kwargs"]["env"]["PATH"] == str(npx.parent)
 
 
-@pytest.mark.windows_only
+@pytest.mark.platforms('windows')
 def test_effective_cache_uses_managed_node_when_paired_npx_omits_one(tmp_path):
     """A paired npm CLI never resolves an arbitrary system Node from PATH."""
     from tools.mcp_tool_config import _effective_npx_cache_env
@@ -274,7 +274,7 @@ def test_effective_cache_uses_managed_node_when_paired_npx_omits_one(tmp_path):
     find_node.assert_called_once_with("node")
 
 
-@pytest.mark.windows_only
+@pytest.mark.platforms('windows')
 def test_effective_cache_expands_a_home_alias_from_the_child_environment(tmp_path):
     """A paired npm result uses the server's HOME, not Hermes's or the cwd."""
     from tools.mcp_tool_config import _effective_npx_cache_env
@@ -298,7 +298,7 @@ def test_effective_cache_expands_a_home_alias_from_the_child_environment(tmp_pat
     assert env["npm_config_cache"] == str(child_home / ".npm-custom")
 
 
-@pytest.mark.windows_only
+@pytest.mark.platforms('windows')
 def test_effective_cache_failure_returns_no_configured_cache(tmp_path):
     """A failed npm config subprocess does not invent a custom cache root."""
     from tools.mcp_tool_config import _effective_npx_cache_env
@@ -311,7 +311,7 @@ def test_effective_cache_failure_returns_no_configured_cache(tmp_path):
         assert _effective_npx_cache_env(str(npx), {"PATH": str(npx.parent)}, str(tmp_path)) is None
 
 
-@pytest.mark.windows_only
+@pytest.mark.platforms('windows')
 def test_preflight_keeps_npx_when_effective_lookup_fails_on_windows():
     """Windows must not guess a default cache after the authoritative probe fails."""
     from tools.mcp_tool import _preflight_stdio_command
@@ -327,7 +327,7 @@ def test_preflight_keeps_npx_when_effective_lookup_fails_on_windows():
     cached.assert_not_called()
 
 
-@pytest.mark.linux_only
+@pytest.mark.platforms('linux')
 def test_preflight_keeps_npx_when_effective_lookup_fails_on_linux(tmp_path):
     """A failed POSIX npm probe never guesses the default cache root."""
     from tools.mcp_tool import _preflight_stdio_command
@@ -365,7 +365,7 @@ def test_preflight_keeps_custom_npx_config_flag_and_child_env():
     cached.assert_not_called()
 
 
-@pytest.mark.windows_only
+@pytest.mark.platforms('windows')
 def test_preflight_keeps_npx_when_paired_npm_fails(tmp_path):
     """A real failed npm CLI probe never guesses a Windows cache launcher."""
     from tools.mcp_tool import _preflight_stdio_command
@@ -388,7 +388,7 @@ def test_preflight_keeps_npx_when_paired_npm_fails(tmp_path):
         "ProgramFiles": str(tmp_path / "program-files"),
         "USERPROFILE": str(tmp_path / "profile"),
     }
-    command, safe_env = _resolve_stdio_command("npx", env)
+    command, safe_env = _resolve_stdio_command(str(npx_dir / "npx.cmd"), env)
 
     with patch("tools.osv_check.check_package_for_malware", return_value=None):
         direct_command, direct_args = asyncio.run(_preflight_stdio_command(
@@ -436,6 +436,16 @@ def test_preflight_checks_original_package_before_cache_access(tmp_path, monkeyp
         seen.append((command, list(arguments)))
         return "malicious package" if rejected else None
 
+    monkeypatch.setattr("tools.osv_check.check_package_for_malware", check)
+    if rejected:
+        monkeypatch.setattr(mcp_tool, "_npx_cached_bin", lambda *a: pytest.fail("cache read before refusal"))
+        with pytest.raises(ValueError, match="malicious package"):
+            asyncio.run(mcp_tool._preflight_stdio_command("server", "npx", args))
+    else:
+        assert asyncio.run(mcp_tool._preflight_stdio_command("server", "npx", args)) == (str(target), ["--port", "7"])
+    assert seen == [("npx", ["-y", "mcp-linear", "--port", "7"])]
+
+
 def test_preflight_checks_npx_before_using_its_cached_binary():
     """The malware scan sees the original invocation before the direct swap."""
     events = []
@@ -461,14 +471,6 @@ def test_preflight_checks_npx_before_using_its_cached_binary():
         ("osv", "npx", ["-y", "mcp-linear"]),
         ("cached", ["-y", "mcp-linear"], {"npm_config_cache": "configured"}, "server-cwd"),
     ]
-    monkeypatch.setattr("tools.osv_check.check_package_for_malware", check)
-    if rejected:
-        monkeypatch.setattr(mcp_tool, "_npx_cached_bin", lambda *a: pytest.fail("cache read before refusal"))
-        with pytest.raises(ValueError, match="malicious package"):
-            asyncio.run(mcp_tool._preflight_stdio_command("server", "npx", args))
-    else:
-        assert asyncio.run(mcp_tool._preflight_stdio_command("server", "npx", args)) == (str(target), ["--port", "7"])
-    assert seen == [("npx", ["-y", "mcp-linear", "--port", "7"])]
 
 
 def test_windows_selects_launchers_never_the_sh_script():

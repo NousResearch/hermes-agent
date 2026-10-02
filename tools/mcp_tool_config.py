@@ -11,7 +11,8 @@ import shutil
 import subprocess
 import sys
 import threading
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, List, Mapping, Optional, Set, Tuple
+from hermes_constants import find_node_executable
 from hermes_cli.stderr_timestamp import stamp_line, timestamp
 from tools.mcp_tool_common import _env_ref_name, _prepend_path
 
@@ -444,25 +445,59 @@ def _npx_cached_invocation(args: list) -> Optional[tuple[str, list]]:
     return spec, rest[1:]
 
 
-    for entry in entries:
-        manifest = os.path.join(npx_root, entry, "package.json")
-        try:
-            with open(manifest, "r", encoding="utf-8-sig") as fh:
-                deps = (json.load(fh) or {}).get("dependencies") or {}
-        except (OSError, ValueError, TypeError):
+
+def _npx_cached_bin(
+    args: list,
+    env: Optional[dict] = None,
+    cwd: Optional[str] = None,
+) -> Optional[tuple]:
+    """Resolve ``npx -y <pkg>`` to the already-installed binary, or None.
+
+    ``npx`` resolves the package and then FORKS, staying resident as the real server's parent
+    for nothing (~48 MB private memory per MCP server, measured); Hermes already supervises the
+    child (shared death supervisor). When the package is in npx's cache we spawn its binary
+    directly. Deliberately conservative — None (caller keeps plain ``npx``, so a cold machine
+    still installs) for a cache miss, a version pin (``pkg@1.2.3``), extra npx flags, a manifest
+    without one obvious bin, or any unreadable cache entry. ``env`` and ``cwd`` are
+    the exact stdio-child settings when supplied, so a per-server
+    ``npm_config_cache`` selects the same package cache that the original ``npx``
+    command would use, including a relative configured cache path.
+    Returns ``(binary_path, remaining_args)``."""
+    invocation = _npx_cached_invocation(args)
+    if invocation is None:
+        return None
+    spec, server_args = invocation
+
+    cache_env = os.environ if env is None else env
+    configured_cache = _env_value(cache_env, "npm_config_cache", case_insensitive=True)
+    child_home = _env_value(cache_env, "HOME") or _env_value(cache_env, "USERPROFILE")
+    default_cache = os.path.join(child_home, ".npm") if child_home else None
+    if configured_cache:
+        cache_roots = [_resolve_npm_cache_path(configured_cache, cache_env, cwd)]
+    elif os.name == "nt":
+        # npm's Windows default is %LOCALAPPDATA%\npm-cache, not ~/.npm.
+        # Falling back to ~/.npm keeps old/portable layouts working without
+        # overriding an explicit npm_config_cache selected by the user.
+        local_app_data = _env_value(cache_env, "LOCALAPPDATA")
+        cache_roots = [os.path.join(local_app_data, "npm-cache")] if local_app_data else []
+        if default_cache:
+            cache_roots.append(default_cache)
+    else:
+        cache_roots = [default_cache] if default_cache else []
+
+    for cache_root in cache_roots:
+        npx_root = os.path.join(cache_root, "_npx")
+        if not os.path.isdir(npx_root):
             continue
-        if spec not in deps:
-            continue
         try:
-            with open(pkg_json, "r", encoding="utf-8-sig") as fh:
-                bin_field = (json.load(fh) or {}).get("bin")
-        except (OSError, ValueError, TypeError):
+            entries = os.listdir(npx_root)
+        except OSError:
             continue
 
         for entry in entries:
             manifest = os.path.join(npx_root, entry, "package.json")
             try:
-                with open(manifest, "r", encoding="utf-8") as fh:
+                with open(manifest, "r", encoding="utf-8-sig") as fh:
                     deps = (json.load(fh) or {}).get("dependencies") or {}
             except (OSError, ValueError, TypeError):
                 continue
@@ -470,7 +505,7 @@ def _npx_cached_invocation(args: list) -> Optional[tuple[str, list]]:
                 continue
             pkg_json = os.path.join(npx_root, entry, "node_modules", spec, "package.json")
             try:
-                with open(pkg_json, "r", encoding="utf-8") as fh:
+                with open(pkg_json, "r", encoding="utf-8-sig") as fh:
                     bin_field = (json.load(fh) or {}).get("bin")
             except (OSError, ValueError, TypeError):
                 continue

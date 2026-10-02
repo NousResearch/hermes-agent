@@ -177,32 +177,45 @@ def test_run_stdio_malware_check_times_out_fail_open():
     """A check that hangs past the timeout must NOT freeze startup: it times
     out, logs, and proceeds (fail-open) so the server still starts."""
     import time
+    import threading
     mock_stdio_cm, mock_session_cm = _stdio_mocks()
 
+    check_started = threading.Event()
+    release_check = threading.Event()
+    check_finished = threading.Event()
+
     def hung_check(_command, _args):
-        time.sleep(0.5)  # outlasts the 0.2s timeout 2.5x; short enough not to stall teardown
+        check_started.set()
+        release_check.wait(10)  # explicit test release, not a scheduler-sensitive sleep
+        check_finished.set()
         return "MALWARE"  # would block startup if awaited to completion
 
     async def _test():
-        with patch("tools.osv_check.check_package_for_malware", side_effect=hung_check), \
+        with patch("tools.osv_check.check_package_for_malware", side_effect=hung_check) as malware_check, \
              patch("tools.mcp_tool._OSV_MALWARE_CHECK_TIMEOUT_S", 0.2), \
              patch("tools.mcp_tool._effective_npx_cache_env", return_value=None), \
-             patch("tools.mcp_tool_config._managed_launcher", return_value=None), \
+             patch("tools.mcp_tool_config._managed_launcher", return_value=("npx", [])), \
              patch("tools.mcp_tool.StdioServerParameters"), \
              patch("tools.mcp_tool.stdio_client", return_value=mock_stdio_cm), \
              patch("tools.mcp_tool.ClientSession", return_value=mock_session_cm):
             server = MCPServerTask("srv")
             start = time.monotonic()
-            await server.start({"command": "npx", "args": ["-y", "pkg"]})
-            elapsed = time.monotonic() - start
-            await server.shutdown()
-        # Returned shortly after the 0.2s timeout (fail-open), not the 0.5s hang.
-        assert elapsed < 1.0, f"startup did not fail-open promptly ({elapsed:.1f}s)"
+            try:
+                await asyncio.wait_for(server.start({"command": "npx", "args": ["-y", "pkg"]}), timeout=2)
+                elapsed = time.monotonic() - start
+                assert check_started.is_set()
+                assert not check_finished.is_set(), "startup waited for the blocked malware check"
+                malware_check.assert_called_once_with("npx", ["-y", "pkg"])
+            finally:
+                release_check.set()
+                await server.shutdown()
+        # The 0.2s preflight timeout releases startup while the checker remains blocked.
+        assert elapsed < 2.0, f"startup did not fail-open promptly ({elapsed:.1f}s)"
 
     asyncio.run(_test())
 
 
-@pytest.mark.windows_only
+@pytest.mark.platforms('windows')
 def test_run_stdio_spawns_the_cached_windows_launcher(tmp_path, monkeypatch):
     """Exercise .npmrc cache resolution through the actual Windows stdio process boundary."""
     pytest.importorskip("mcp")
@@ -322,7 +335,7 @@ sys.stdout.write(cache.group(1) + "\\n")
         server = MCPServerTask("windows-cached-launcher-fixture")
         try:
             await server.start({
-                "command": "npx",
+                "command": str(npx_dir / "npx.cmd"),
                 "args": ["-y", "mcp-linear", "--fixture-arg"],
                 "connect_timeout": 5,
                 "env": {

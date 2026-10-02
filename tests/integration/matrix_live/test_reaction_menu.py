@@ -5,11 +5,13 @@ from __future__ import annotations
 import asyncio
 import json
 import time
+from collections.abc import Callable
+from pathlib import Path
 
 import pytest
 from nio import RoomSendResponse
 
-from tests.fakes.fake_llm_provider import Text, ToolCall
+from tests.fakes.fake_llm_provider import Response, Text, ToolCall
 from tests.integration.matrix_live.conftest import LinuxNioObserver, LiveGateway, LiveRoom, _register
 
 
@@ -27,6 +29,26 @@ def gateway_script():
         ToolCall("tool_call", {"calls": [{"name": "present_menu", "arguments": arguments}]}),
         Text("Menu ready"), Text("Selected the first route"),
     ]
+
+
+@pytest.fixture
+def model_responder(gateway_script: list[Response]) -> list[Response]:
+    return gateway_script
+
+
+@pytest.fixture
+def gateway_home_setup() -> Callable[[Path], None]:
+    def use_yaml_allowlist(home: Path) -> None:
+        path = home / ".env"
+        path.write_text(
+            "".join(
+                line for line in path.read_text(encoding="utf-8").splitlines(keepends=True)
+                if not line.startswith("MATRIX_ALLOWED_USERS=")
+            ),
+            encoding="utf-8",
+        )
+
+    return use_yaml_allowlist
 
 
 @pytest.fixture

@@ -8,18 +8,61 @@ import io
 import json
 import time
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from pathlib import Path
 from urllib.parse import quote
 
 import aiohttp
 import pytest
-from nio import JoinResponse, RoomInviteResponse, RoomMessageText, RoomRedactResponse, RoomSendResponse, UploadResponse
+from nio import (
+    JoinResponse,
+    ProfileSetDisplayNameResponse,
+    RoomInviteResponse,
+    RoomMessageText,
+    RoomRedactResponse,
+    RoomSendResponse,
+    UploadResponse,
+)
 
-from tests.integration.matrix_live.conftest import LiveGateway, LiveRoom
+from testcontainers.core.container import DockerContainer
+from testcontainers.core.network import Network
+
+from tests.integration.matrix_live.conftest import (
+    LiveGateway,
+    LiveRoom,
+    _create_live_room,
+    _synapse_server,
+)
 from tests.integration.matrix_live.context_client import _send, _wait_for_final, hand_off
 from tests.integration.matrix_live.context_client import group_gateway as group_gateway
 from tests.integration.matrix_live.context_client import group_member as group_member
+
+
+@pytest.fixture(scope="module")
+def synapse(docker_engine: None) -> Iterator[tuple[DockerContainer, str, Network]]:
+    with _synapse_server(
+        extra_config=(
+            "rc_registration:\n  per_second: 100\n  burst_count: 100\n"
+            "rc_login:\n  address:\n    per_second: 100\n    burst_count: 100\n"
+        )
+    ) as server:
+        yield server
+
+
+@pytest.fixture
+def live_room(synapse: tuple[DockerContainer, str, Network]) -> LiveRoom:
+    room = _create_live_room(synapse, unique_accounts=True)
+
+    async def set_sender_display_name() -> None:
+        client = room.observer.client(room.homeserver)
+        try:
+            response = await client.set_displayname("alice")
+            assert isinstance(response, ProfileSetDisplayNameResponse), response
+        finally:
+            await client.close()
+
+    asyncio.run(set_sender_display_name())
+    return room
 
 
 def _conversation_roles(request: dict) -> list[str]:

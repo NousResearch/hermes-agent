@@ -321,7 +321,8 @@ def _run_single_child(
     # TUI/RPC registry entry (kill/pause/status by subagent_id); None for test
     # doubles without a stable id. Unregistered in the finally block.
     _subagent_id = _register_child(
-        child, parent_agent, goal, owner_session_id=owner_session_id, owner_transport=owner_transport,
+        child, parent_agent, goal, task_index=task_index,
+        owner_session_id=owner_session_id, owner_transport=owner_transport,
         owner_session_record=owner_session_record,
     )
     run = _ChildRun(child, parent_agent, task_index, goal, _subagent_id, child_progress_cb, heartbeat=heartbeat)
@@ -510,20 +511,37 @@ def delegate_task(
         return tool_error(err)
 
     overall_start = time.monotonic()
+    # Capture owner identity before child construction mutates session context.
+    origin = _capture_origin()
+    owner_session_id = (
+        origin[1] or origin[0] or str(getattr(parent_agent, "session_id", "") or "") or None
+    )
     # Live transcripts: cache/delegation/live/<id>/task-<n>.log per task, a side channel with zero effect on message
     # content or prompt caching. Best-effort: on failure live_paths is empty and delegation proceeds.
     from tools.delegation_live_log import create_live_transcripts
     live_deleg_id, live_writers, live_paths = create_live_transcripts(
-        task_list, context, model=creds.get("model"), provider=creds.get("provider")
+        task_list, context, model=creds.get("model"), provider=creds.get("provider"),
+        owner_session_id=owner_session_id,
     )
     _announce_batch(parent_agent, len(task_list), live_deleg_id)
-    origin = _capture_origin()
 
-    children, err = _build_children(
-        task_list, task_schemas, creds, top_role=top_role, max_iterations=default_max_iter, parent_agent=parent_agent,
-        routing_cfg=routing_cfg, live_deleg_id=live_deleg_id, live_writers=live_writers, task_images=task_images,
-    )
+    try:
+        children, err = _build_children(
+            task_list, task_schemas, creds, top_role=top_role, max_iterations=default_max_iter,
+            parent_agent=parent_agent, routing_cfg=routing_cfg, live_deleg_id=live_deleg_id,
+            live_writers=live_writers, task_images=task_images,
+        )
+    except BaseException:
+        from tools.delegation_live_log import terminalize_manifest
+        terminalize_manifest(
+            live_deleg_id, status="failed", exit_reason="child_construction",
+        )
+        raise
     if err:
+        from tools.delegation_live_log import terminalize_manifest
+        terminalize_manifest(
+            live_deleg_id, status="failed", exit_reason="child_construction",
+        )
         return tool_error(err)
     batch = _Batch(
         task_list, children, parent_agent, creds, context, top_role, max_children,

@@ -249,6 +249,95 @@ class TestSlashCommandSessionIsolation:
         assert event.source.user_id == "U123"
         assert event.source.scope_id == "T123"
 
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("channel_id, is_mpim, extra, expected", [
+        ("G123", True, {}, "dm"),         # group DM: a DM-style session, like its messages
+        ("G123", False, {}, "group"),     # legacy private channel: also a G id, still a channel
+        ("G123", True, {"disable_dms": True}, None),   # disable_dms covers group DMs too
+        ("C999", False, {"allowed_channels": "C123"}, None),   # outside allowed_channels
+        ("G123", True, {"allowed_channels": "C123"}, None),    # an MPIM obeys channel gating too
+        ("D123", False, {"allowed_channels": "C123"}, "dm"),   # a 1:1 DM is gated by disable_dms only
+        ("C123", False, {"ignored_channels": "C123"}, None),   # ignored channels are never touched
+    ])
+    async def test_slash_command_follows_the_message_paths_conversation_rules(
+            self, adapter, channel_id, is_mpim, extra, expected):
+        """A slash command obeys the rules a message in the same conversation does: the message
+        path treats channel_type im and mpim as DMs (a slash payload carries no channel_type, so an
+        MPIM ``G`` id is looked up), disable_dms covers both, and allowed_channels /
+        ignored_channels gate every conversation but a 1:1 DM."""
+        adapter.config.extra.update(extra)
+        adapter._app.client.conversations_info = AsyncMock(
+            return_value={"ok": True, "channel": {"id": channel_id, "is_mpim": is_mpim}})
+        await adapter._handle_slash_command(
+            {"text": "hello", "user_id": "U123", "channel_id": channel_id, "team_id": "T123"})
+
+        if expected is None:
+            adapter.handle_message.assert_not_awaited()
+        else:
+            adapter.handle_message.assert_awaited_once()
+            assert adapter.handle_message.await_args.args[0].source.chat_type == expected
+
+
+def _wire_runner_auth(adapter, monkeypatch, **extra):
+    """The real runner authorization behind the adapter, as connect() wires it."""
+    from gateway.pairing import PairingStore
+
+    for var in ("SLACK_ALLOWED_USERS", "GATEWAY_ALLOWED_USERS", "SLACK_ALLOW_ALL_USERS",
+                "GATEWAY_ALLOW_ALL_USERS"):
+        monkeypatch.delenv(var, raising=False)
+    adapter.config.extra.update(extra)
+    runner = object.__new__(GatewayRunner)
+    runner.config = GatewayConfig(platforms={Platform.SLACK: adapter.config})
+    runner.pairing_store = PairingStore(profile="default")
+    runner.pairing_stores = {"default": runner.pairing_store}
+    runner.adapters = {Platform.SLACK: adapter}
+    adapter.set_authorization_check(runner._make_adapter_auth_check(Platform.SLACK))
+    return runner
+
+
+async def _click_authorized(adapter, user):
+    body = {"channel": {"id": "G123"}, "user": {"id": user, "name": user}, "team": {"id": "T123"},
+            "message": {"ts": "1.0"}}
+    return await adapter._begin_interaction(
+        AsyncMock(), body, {"action_id": "hermes_approve_once", "value": "sk"}, "approval") is not None
+
+
+class TestGroupDmClickAuthorization:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("is_mpim, disable_dms", [(True, False), (False, False), (True, True)])
+    async def test_click_is_authorized_like_a_message_in_that_conversation(
+            self, adapter, monkeypatch, is_mpim, disable_dms):
+        """A button click carries no ``channel_type``; a group DM must still be judged as the DM
+        its messages are (DM allowlist, ``disable_dms``) and a legacy private channel (also a
+        ``G`` id) as a channel, so the operator's DM/group allowlist split holds for approvals."""
+        runner = _wire_runner_auth(
+            adapter, monkeypatch, allow_from=["U_DM"], group_allow_from=["U_GROUP"],
+            disable_dms=disable_dms)
+        adapter._app.client.conversations_info = AsyncMock(
+            return_value={"ok": True, "channel": {"id": "G123", "is_mpim": is_mpim}})
+        verdicts = {}
+        for n, user in enumerate(("U_DM", "U_GROUP", "U_NOBODY")):
+            adapter.handle_message.reset_mock()
+            await adapter._handle_slack_message(
+                {"text": "<@U_BOT> hi", "user": user, "channel": "G123",
+                 "channel_type": "mpim" if is_mpim else "group", "ts": f"171.00{n}"},
+                {"team_id": "T123"})
+            message_ok = bool(adapter.handle_message.await_count) and runner._is_user_authorized(
+                adapter.handle_message.await_args.args[0].source)
+            verdicts[user] = message_ok
+            assert await _click_authorized(adapter, user) == message_ok, user
+        assert any(verdicts.values()) is not disable_dms
+
+    @pytest.mark.asyncio
+    async def test_group_dm_listed_by_id_keeps_its_click_grant(self, adapter, monkeypatch):
+        """An operator who put a group DM's own id in ``group_allowed_chats`` granted its members;
+        that grant still covers their clicks. ``*`` lists group chats, which a group DM is not."""
+        adapter._app.client.conversations_info = AsyncMock(
+            return_value={"ok": True, "channel": {"id": "G123", "is_mpim": True}})
+        for listed, expected in ((["G123"], True), ("*", False)):
+            _wire_runner_auth(adapter, monkeypatch, allow_from=["U_DM"], group_allowed_chats=listed)
+            assert await _click_authorized(adapter, "U_NOBODY") is expected, listed
+
 
 class TestSlackWorkspaceCollisionIsolation:
     @pytest.mark.asyncio

@@ -1,0 +1,29 @@
+name: pushary
+repo: https://github.com/Pushary/hermes-plugin-pushary
+sha: c6f51ff7d6428a25172771578d976d31bc01acc1
+subdir: pushary_plugin
+description: Phone notifications, questions and approvals through Pushary's native Hermes approval transport, with optional per-tool gates.
+maintainer: Pushary
+tier: community
+category: automation
+docs_url: https://github.com/Pushary/hermes-plugin-pushary#readme
+version: "0.5.7"
+readme: false
+capabilities:
+  provides_tools:
+    - pushary_notify
+    - pushary_ask
+    - pushary_wait
+    - pushary_cancel
+    - pushary_propose_scope
+    - pushary_enroll
+    - pushary_ask_end_user
+  provides_hooks:
+    - pre_llm_call
+    - pre_tool_call
+    - post_tool_call
+    - on_session_start
+    - on_session_end
+    - on_session_finalize
+  provides_middleware: []
+  requires_env: []

@@ -62,16 +62,6 @@ class TelegramInboundContextMixin:
             logger.warning("[%s] Failed to observe Telegram group message: %s", adapter_name, exc)
 
 
-    def _merge_into_pending(self: TelegramAdapter, pending: dict, key: str, event: MessageEvent) -> None:
-        """Merge ``event`` into ``pending[key]`` (media + caption) or seed it."""
-        existing = pending.get(key)
-        if existing is None:
-            pending[key] = event
-            return
-        existing.absorb_media(event)
-        if event.text:
-            existing.text = self._merge_caption(existing.text, event.text)
-        existing.absorb_channel_context(event)
 
 
     async def _cache_inbound_document(self: TelegramAdapter, msg, event: MessageEvent) -> bool:

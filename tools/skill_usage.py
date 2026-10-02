@@ -38,6 +38,15 @@ _VALID_STATES = {STATE_ACTIVE, STATE_STALE, STATE_ARCHIVED}
 # Load-bearing built-ins (by frontmatter ``name``) the curator must NEVER archive/consolidate regardless of
 # ``curator.prune_builtins``, pins or LLM judgment — archiving one breaks its slash command. Keep tiny.
 PROTECTED_BUILTIN_SKILLS: Set[str] = set()
+_bundled_names_cache: Optional[Set[str]] = None
+_bundled_names_cache_key: Optional[Tuple[Path, Path, Tuple[int, int], Tuple[int, int]]] = None
+
+
+def invalidate_bundled_names_cache() -> None:
+    """Drop the bundled provenance cache after a skills sync changes the tree."""
+    global _bundled_names_cache, _bundled_names_cache_key
+    _bundled_names_cache = None
+    _bundled_names_cache_key = None
 
 
 def is_protected_builtin(skill_name: str) -> bool:
@@ -148,23 +157,44 @@ def _read_bundled_names() -> Set[str]:
     """Built-in names: ``.bundled_manifest`` ("name:hash" per line) plus the curator suppression list, which
     only ever records built-ins; a pruned built-in whose manifest entry an older sync cleaned after the
     catalog dropped it is still not agent-authored (#95415). Empty if both are missing/unreadable."""
-    lines = _read_lines(_skills_dir() / ".bundled_manifest", "Failed to read bundled manifest: %s")
+    global _bundled_names_cache, _bundled_names_cache_key
+    skills_dir = _skills_dir()
+    bundled_dir = get_bundled_skills_dir(Path(__file__).parent.parent / "skills")
+    manifest_path = skills_dir / ".bundled_manifest"
+    suppressed_path = skills_dir / ".curator_suppressed"
+    try:
+        manifest_stat = manifest_path.stat()
+        manifest_key = (manifest_stat.st_mtime_ns, manifest_stat.st_size)
+    except OSError:
+        manifest_key = (0, 0)
+    try:
+        suppressed_stat = suppressed_path.stat()
+        suppressed_key = (suppressed_stat.st_mtime_ns, suppressed_stat.st_size)
+    except OSError:
+        suppressed_key = (0, 0)
+    cache_key = (skills_dir, bundled_dir, manifest_key, suppressed_key)
+    if cache_key == _bundled_names_cache_key and _bundled_names_cache is not None:
+        return set(_bundled_names_cache)
+
+    lines = _read_lines(manifest_path, "Failed to read bundled manifest: %s")
     names = {n for n in (line.split(":", 1)[0].strip() for line in lines) if n}
     # The manifest is normally authoritative, but restored profiles can contain an
     # untouched copy whose manifest entry was lost.  The installed bundled tree is
     # an independent provenance source, so protect those skills immediately rather
     # than treating them as agent-authored until the next sync.
-    bundled_dir = get_bundled_skills_dir(Path(__file__).parent.parent / "skills")
-    if bundled_dir.exists() and _skills_dir().exists():
+    if bundled_dir.exists() and skills_dir.exists():
         for skill_md in bundled_dir.rglob("SKILL.md"):
             if is_excluded_skill_path(skill_md):
                 continue
             name = _read_skill_name(skill_md, skill_md.parent.name)
-            local_md = _skills_dir() / skill_md.relative_to(bundled_dir)
+            local_md = skills_dir / skill_md.relative_to(bundled_dir)
             if not local_md.is_file() or not _same_skill_tree(skill_md.parent, local_md.parent):
                 continue
             names.add(name)
-    return names | read_suppressed_names()
+    result = names | read_suppressed_names()
+    _bundled_names_cache_key = cache_key
+    _bundled_names_cache = set(result)
+    return result
 
 
 def _same_skill_tree(left: Path, right: Path) -> bool:

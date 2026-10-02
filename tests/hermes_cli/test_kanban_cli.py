@@ -94,6 +94,37 @@ def test_kanban_show_exposes_actionable_block_contract(kanban_home):
     assert "Owner: Matt" in text
 
 
+def test_kanban_show_uses_verified_body_contract_on_explicit_board(kanban_home):
+    kb.create_board("alpha")
+    body = """Source context.
+
+```kanban-block-action
+{"verified": true, "disposition": "Internal owner action", "owner": "Release manager", "action": "Publish the signed release manifest"}
+```
+"""
+    with kbc.connect_closing(board="alpha") as conn:
+        task_id = kb.create_task(
+            conn,
+            title="release",
+            body=body,
+            assignee="publisher",
+        )
+        kb.block_task(
+            conn,
+            task_id,
+            kind="needs_input",
+            reason="Choose staging or production",
+        )
+
+    payload = json.loads(kc.run_slash(f"--board alpha show {task_id} --json"))
+    action = payload["task"]["block_action"]
+    assert action["disposition"] == "Internal owner action"
+    assert action["action_required"] is False
+    assert action["owner"] == "Release manager"
+    assert action["action"] == "Publish the signed release manifest"
+    assert action["reply_format"] == "No reply required."
+
+
 def test_kanban_show_marks_prior_blocked_attempt_historical(kanban_home):
     with kbc.connect_closing() as conn:
         task_id = kb.create_task(conn, title="approval", assignee="publisher")

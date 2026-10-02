@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+import re
 from dataclasses import asdict, dataclass
 from typing import Any, Iterable, Mapping, Optional
 
@@ -9,6 +11,17 @@ from typing import Any, Iterable, Mapping, Optional
 _BLOCK_EVENT_KINDS = frozenset(
     {"blocked", "gave_up", "block_loop_detected", "dependency_wait", "timed_out"}
 )
+_OVERRIDE_BLOCK = re.compile(
+    r"```kanban-block-action\s*(\{.*?\})\s*```",
+    re.IGNORECASE | re.DOTALL,
+)
+_OVERRIDE_KEYS = {"verified", "disposition", "owner", "action"}
+_DISPOSITIONS = {
+    "Matt action required",
+    "Dependency",
+    "Internal owner action",
+    "Stale/recovery",
+}
 
 
 @dataclass(frozen=True)
@@ -86,7 +99,48 @@ def build_block_action(task: Any, *, reason: Optional[str] = None) -> BlockActio
         disposition, owner = "Internal owner action", str(assignee)
     else:
         disposition, owner = "Stale/recovery", str(assignee)
-    return BlockActionContract(**_defaults(disposition, owner, reason, assignee))
+    values = _defaults(disposition, owner, reason, assignee)
+    override = _verified_body_override(_get(task, "body"))
+    if override is not None:
+        values = _defaults(
+            override["disposition"],
+            override["owner"],
+            override["action"],
+            assignee,
+        )
+    return BlockActionContract(**values)
+
+
+def _verified_body_override(body: Any) -> Optional[dict[str, str]]:
+    """Read an explicit source-backed override from a fenced JSON envelope.
+
+    Ordinary prose and partial declarations are ignored. Requiring the full
+    disposition/owner/action tuple prevents a body note from creating an
+    internally contradictory contract by replacing only one field.
+    """
+    if not isinstance(body, str):
+        return None
+    matches = _OVERRIDE_BLOCK.findall(body)
+    if len(matches) != 1:
+        return None
+    try:
+        value = json.loads(matches[0])
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return None
+    if not isinstance(value, dict) or set(value) != _OVERRIDE_KEYS:
+        return None
+    if value.get("verified") is not True or value.get("disposition") not in _DISPOSITIONS:
+        return None
+    owner, action = value.get("owner"), value.get("action")
+    if not isinstance(owner, str) or not owner.strip():
+        return None
+    if not isinstance(action, str) or not action.strip():
+        return None
+    return {
+        "disposition": value["disposition"],
+        "owner": owner.strip(),
+        "action": action.strip(),
+    }
 
 
 def render_block_action(contract: BlockActionContract, *, indent: str = "  ") -> list[str]:

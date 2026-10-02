@@ -118,3 +118,34 @@ class TestPendingInviteAuthorization:
         adapter._join_room_by_id.assert_not_awaited()
         adapter._record_dm_room.assert_not_awaited()
         assert adapter._invite_join_tasks == {}
+
+
+@pytest.mark.asyncio
+async def test_room_left_in_sync_is_joined_again_on_a_new_invite():
+    """A kick or leave removes the room from the joined set, so a later
+    authorised invite joins it again instead of being skipped as joined."""
+    from types import SimpleNamespace
+    from unittest.mock import MagicMock
+
+    from plugins.platforms.matrix.adapter import MatrixAdapter
+
+    room_id = "!rejoin:example.org"
+    adapter = MatrixAdapter(PlatformConfig(enabled=True, token="syt_test_token", extra={
+        "homeserver": "https://matrix.example.org", "user_id": "@hermes:example.org",
+    }))
+    adapter._allowed_user_ids = {"@alice:example.org"}
+    adapter._refresh_dm_cache = AsyncMock()
+    adapter._client = SimpleNamespace(
+        join_room=AsyncMock(), handle_sync=MagicMock(return_value=[]),
+        sync_store=SimpleNamespace(put_next_batch=AsyncMock()),
+    )
+    invite = {"invite_state": {"events": [_member_invite_event(is_direct=False)]}}
+
+    joined_after = []
+    for rooms in ({"join": {room_id: {}}}, {"leave": {room_id: {}}}, {"invite": {room_id: invite}}):
+        await adapter._absorb_sync(adapter._client, {"rooms": rooms, "next_batch": "s1"})
+        await _drain_invite_tasks(adapter)
+        joined_after.append(room_id in adapter._joined_rooms)
+
+    assert joined_after == [True, False, True]
+    assert [call.args for call in adapter._client.join_room.await_args_list] == [(room_id,)]

@@ -15,6 +15,8 @@ class BaseLifecycleMixin:
     name: str
     _OK_EMOJI: str | None
     _FAIL_EMOJI: str | None
+    _background_tasks: set[asyncio.Task]
+    _pending_messages: dict[str, MessageEvent]
 
     async def on_processing_start(self, event: MessageEvent) -> None:
         """Hook called when background processing begins."""

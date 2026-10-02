@@ -108,6 +108,8 @@ class MatrixMediaMixin(BasePlatformAdapter):
                 room_id, sender, event_id, body, source_content, relates_to, ctx=ctx,
                 message_type=MessageType.TEXT, media_urls=[], media_types=[], media_msgtype=msgtype)
             if msg_event is not None:
+                if receipt_event_id:
+                    msg_event._processing_state.receipt_message_id = receipt_event_id
                 msg_event.text = f"{msg_event.text}\n{marker}".strip()
                 await self.handle_message(msg_event)
             return

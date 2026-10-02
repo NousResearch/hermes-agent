@@ -99,6 +99,10 @@ export interface CanonicalGroupMessages {
   approvalEmptyFile: string
   approvalDetailsMissing: string
   pendingRetryTitle: string
+  pendingFilesTitle: string
+  pendingFilesCleanupTitle: string
+  pendingFilesBlockedTitle: string
+  pendingFilesBlockedHelp: string
   pendingUnknownTitle: string
   pendingStoppingTitle: string
   retryReply: string
@@ -226,6 +230,10 @@ export const CANONICAL_GROUP_LOCALES = {
     approvalEmptyFile: 'Empty file',
     approvalDetailsMissing: 'Action details are unavailable. Check again before allowing this.',
     pendingRetryTitle: '{name} couldn’t start this reply.',
+    pendingFilesTitle: 'Sharing files from {name}…',
+    pendingFilesCleanupTitle: 'Finishing file cleanup for {name}…',
+    pendingFilesBlockedTitle: 'Files from {name} need attention.',
+    pendingFilesBlockedHelp: 'File sharing could not finish. Check the computers running this group chat.',
     pendingUnknownTitle: 'We couldn’t confirm whether {name} finished.',
     pendingStoppingTitle: 'Stopping {name}…',
     retryReply: 'Try again',
@@ -352,6 +360,10 @@ export const CANONICAL_GROUP_LOCALES = {
     approvalEmptyFile: '空のファイル',
     approvalDetailsMissing: '操作の詳細を表示できません。許可する前に、詳細を更新してください。',
     pendingRetryTitle: '{name}はこの返信を開始できませんでした。',
+    pendingFilesTitle: '{name}のファイルを共有中…',
+    pendingFilesCleanupTitle: '{name}のファイルの後片付けを完了中…',
+    pendingFilesBlockedTitle: '{name}のファイルを確認してください。',
+    pendingFilesBlockedHelp: 'ファイル共有を完了できませんでした。このグループチャットを実行しているコンピューターを確認してください。',
     pendingUnknownTitle: '{name}が完了したか確認できませんでした。',
     pendingStoppingTitle: '{name}を停止中…',
     retryReply: '再試行',
@@ -471,6 +483,10 @@ export const CANONICAL_GROUP_LOCALES = {
     approvalEmptyFile: '空文件',
     approvalDetailsMissing: '无法显示操作详情。请先刷新详情，再允许此操作。',
     pendingRetryTitle: '{name}未能开始此回复。',
+    pendingFilesTitle: '正在共享{name}的文件…',
+    pendingFilesCleanupTitle: '正在完成{name}的文件清理…',
+    pendingFilesBlockedTitle: '{name}的文件需要处理。',
+    pendingFilesBlockedHelp: '文件共享未能完成。请检查运行此群聊的电脑。',
     pendingUnknownTitle: '无法确认{name}是否已经完成。',
     pendingStoppingTitle: '正在停止{name}…',
     retryReply: '重试',
@@ -590,6 +606,10 @@ export const CANONICAL_GROUP_LOCALES = {
     approvalEmptyFile: '空白檔案',
     approvalDetailsMissing: '無法顯示操作詳細資訊。請先重新整理詳細資訊，再允許此操作。',
     pendingRetryTitle: '{name}未能開始此回覆。',
+    pendingFilesTitle: '正在分享{name}的檔案…',
+    pendingFilesCleanupTitle: '正在完成{name}的檔案清理…',
+    pendingFilesBlockedTitle: '{name}的檔案需要處理。',
+    pendingFilesBlockedHelp: '檔案分享未能完成。請檢查執行此群組聊天的電腦。',
     pendingUnknownTitle: '無法確認{name}是否已經完成。',
     pendingStoppingTitle: '正在停止{name}…',
     retryReply: '重試',
@@ -712,6 +732,10 @@ export const CANONICAL_GROUP_LOCALES = {
     approvalEmptyFile: 'ملف فارغ',
     approvalDetailsMissing: 'تفاصيل الإجراء غير متاحة. حدّثها قبل السماح بهذا الإجراء.',
     pendingRetryTitle: 'لم يتمكن {name} من بدء هذه الإجابة.',
+    pendingFilesTitle: 'جارٍ مشاركة ملفات {name}…',
+    pendingFilesCleanupTitle: 'جارٍ إكمال تنظيف ملفات {name}…',
+    pendingFilesBlockedTitle: 'تحتاج ملفات {name} إلى الانتباه.',
+    pendingFilesBlockedHelp: 'تعذّر إكمال مشاركة الملفات. تحقّق من أجهزة الكمبيوتر التي تشغّل هذه الدردشة الجماعية.',
     pendingUnknownTitle: 'لم نتمكن من تأكيد ما إذا كان {name} قد انتهى.',
     pendingStoppingTitle: 'جارٍ إيقاف {name}…',
     retryReply: 'إعادة المحاولة',
@@ -837,6 +861,10 @@ export const CANONICAL_GROUP_LOCALES = {
     approvalEmptyFile: 'Пустой файл',
     approvalDetailsMissing: 'Подробности действия недоступны. Обновите их перед тем, как разрешить действие.',
     pendingRetryTitle: '{name} не смог начать этот ответ.',
+    pendingFilesTitle: 'Передача файлов от {name}…',
+    pendingFilesCleanupTitle: 'Завершение очистки файлов {name}…',
+    pendingFilesBlockedTitle: 'Файлы от {name} требуют внимания.',
+    pendingFilesBlockedHelp: 'Не удалось завершить передачу файлов. Проверьте компьютеры, на которых работает этот групповой чат.',
     pendingUnknownTitle: 'Не удалось подтвердить, закончил ли {name}.',
     pendingStoppingTitle: 'Останавливаем {name}…',
     retryReply: 'Повторить',
@@ -967,6 +995,10 @@ export const CANONICAL_GROUP_LOCALES = {
     approvalDetailsMissing:
       'Les détails de l’action sont indisponibles. Actualisez-les avant d’autoriser cette action.',
     pendingRetryTitle: '{name} n’a pas pu commencer cette réponse.',
+    pendingFilesTitle: 'Partage des fichiers de {name}…',
+    pendingFilesCleanupTitle: 'Finalisation du nettoyage des fichiers de {name}…',
+    pendingFilesBlockedTitle: 'Les fichiers de {name} nécessitent votre attention.',
+    pendingFilesBlockedHelp: 'Le partage des fichiers n’a pas pu se terminer. Vérifiez les ordinateurs qui exécutent cette discussion de groupe.',
     pendingUnknownTitle: 'Nous n’avons pas pu confirmer si {name} a terminé.',
     pendingStoppingTitle: 'Arrêt de {name}…',
     retryReply: 'Réessayer',
@@ -1100,6 +1132,10 @@ export const CANONICAL_GROUP_LOCALES = {
     approvalDetailsMissing:
       'Die Aktionsdetails sind nicht verfügbar. Aktualisiere sie, bevor du diese Aktion erlaubst.',
     pendingRetryTitle: '{name} konnte diese Antwort nicht beginnen.',
+    pendingFilesTitle: 'Dateien von {name} werden geteilt…',
+    pendingFilesCleanupTitle: 'Dateibereinigung für {name} wird abgeschlossen…',
+    pendingFilesBlockedTitle: 'Dateien von {name} erfordern Aufmerksamkeit.',
+    pendingFilesBlockedHelp: 'Die Dateifreigabe konnte nicht abgeschlossen werden. Prüfe die Computer, auf denen dieser Gruppenchat läuft.',
     pendingUnknownTitle: 'Wir konnten nicht bestätigen, ob {name} fertig ist.',
     pendingStoppingTitle: '{name} wird gestoppt…',
     retryReply: 'Erneut versuchen',
@@ -1227,6 +1263,10 @@ export const CANONICAL_GROUP_LOCALES = {
     approvalEmptyFile: 'Archivo vacío',
     approvalDetailsMissing: 'Los detalles de la acción no están disponibles. Actualízalos antes de permitirla.',
     pendingRetryTitle: '{name} no pudo iniciar esta respuesta.',
+    pendingFilesTitle: 'Compartiendo archivos de {name}…',
+    pendingFilesCleanupTitle: 'Finalizando la limpieza de archivos de {name}…',
+    pendingFilesBlockedTitle: 'Los archivos de {name} necesitan atención.',
+    pendingFilesBlockedHelp: 'No se pudo completar el envío de archivos. Comprueba los equipos que ejecutan este chat de grupo.',
     pendingUnknownTitle: 'No pudimos confirmar si {name} terminó.',
     pendingStoppingTitle: 'Deteniendo a {name}…',
     retryReply: 'Reintentar',

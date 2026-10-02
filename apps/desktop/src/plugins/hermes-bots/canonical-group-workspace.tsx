@@ -11,7 +11,7 @@ import { CanonicalGroupPendingActions } from './canonical-group-pending-actions'
 import { updateCanonicalGroupName } from './canonical-group-registry'
 import { prepareCanonicalGroupSend, readCanonicalGroupSend, retireCanonicalGroupSend } from './canonical-group-send'
 import type { PreparedCanonicalGroupSend } from './canonical-group-send'
-import { actCanonicalGroup, canonicalGroupRequest } from './canonical-groups'
+import { actCanonicalGroup, canonicalGroupRequest, isPendingFileAction } from './canonical-groups'
 import type { CanonicalGroupBinding, CanonicalPendingAction, CanonicalRoomMember } from './canonical-groups'
 
 type RoomEvent = CanonicalGroupEvent
@@ -37,15 +37,26 @@ function sendOutcome(error: unknown): 'refused' | 'retryable' | 'unknown' {
   return TERMINAL_SEND_REFUSALS.has(String(failure.data?.reason)) ? 'refused' : 'retryable'
 }
 
+function onlyPendingFiles(status: DriverStatus): boolean {
+  const actions = status.pending_actions ?? []
+
+  return actions.length > 0 && actions.every(isPendingFileAction) && !(status.counts?.unknown || status.counts?.stopping)
+}
+
+function needsAttention(status: DriverStatus): boolean {
+  return Boolean(status.blocked && !onlyPendingFiles(status) ||
+    status.pending_actions?.some(action => action.kind !== 'stopping' && !isPendingFileAction(action)))
+}
+
 /** Live work comes only from the driver; unresolved members are listed beside it, never instead. */
 function roomStatus(status: DriverStatus, labels: Labels) {
   const actions = status.pending_actions || []
   const approvals = actions.filter(action => action.kind === 'approval').length
   const stopping = (status.counts?.stopping ?? 0) > 0 || actions.some(action => action.kind === 'stopping')
-  const attention = actions.filter(action => action.kind !== 'approval' && action.kind !== 'stopping').length
-  const parts = [stopping ? labels.statusStopping : status.working ? labels.statusWorking : status.running === false ? labels.statusStopped : labels.statusIdle]
+  const attention = actions.filter(action => action.kind !== 'approval' && action.kind !== 'stopping' && !isPendingFileAction(action)).length
+  const parts = [stopping ? labels.statusStopping : status.working || actions.some(isPendingFileAction) ? labels.statusWorking : status.running === false ? labels.statusStopped : labels.statusIdle]
 
-  if (status.blocked) {parts.push(labels.statusBlocked)}
+  if (status.blocked && !onlyPendingFiles(status)) {parts.push(labels.statusBlocked)}
 
   if (approvals) {parts.push(labels.statusApprovals.replace('{count}', String(approvals)))}
 
@@ -259,8 +270,8 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack, actions }
     pendingActions.length))
 
   return <section className="flex h-full min-h-0 flex-col" data-slot="canonical-group-chat">
-    <CanonicalGroupHeader attention={state?.driver_status?.blocked || pendingActions.some(action => action.kind !== 'stopping')}
-      members={members} name={name} onBack={onBack} status={state?.driver_status && roomStatus(state.driver_status, labels)} visible={visible} working={state?.driver_status?.working}>
+    <CanonicalGroupHeader attention={state?.driver_status && needsAttention(state.driver_status)}
+      members={members} name={name} onBack={onBack} status={state?.driver_status && roomStatus(state.driver_status, labels)} visible={visible} working={state?.driver_status?.working || pendingActions.some(isPendingFileAction)}>
       {visible && state && actions?.({ name: state.room.name, refresh: () => void refresh().catch(e => setReadError(String(e))),
         latestFileSeq: events.reduce((latest, event) => event.payload.attachments?.length ? Math.max(latest, event.seq) : latest, 0), visible })}
     </CanonicalGroupHeader>

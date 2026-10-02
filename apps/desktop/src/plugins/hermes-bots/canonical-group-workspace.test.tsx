@@ -513,3 +513,25 @@ it('shows shared confirmation progress and prevents duplicate End requests while
   await act(async () => release({ tombstone: { room_id: binding.roomId, disbanded_at: 123 } }))
   await waitFor(() => expect(onBack).toHaveBeenCalledOnce())
 })
+
+
+it('shows ordinary file publication as work while preserving attention for blocked or uncertain actions', async () => {
+  const output = { kind: 'output_retry', operation: 'ack', blocked: false, member_id: 'atlas', task_id: 'files', execution_generation: 1 }
+  let driver_status = { running: true, working: false, blocked: true, pending_actions: [output] }
+  request.mockImplementation(async (_route, method) => method === 'groups.state'
+    ? { room: { name: 'Launch', members: [{ member_id: 'atlas', profile: 'default', display_name: 'Atlas Bot' }] }, driver_status }
+    : method === 'groups.log' ? { events: [] } : {})
+  const binding = { connectionId: 'home', profile: 'default', roomId: 'file-sharing' }
+  const view = render(<CanonicalGroupWorkspace binding={binding} />)
+  await screen.findByText('Sharing files from Atlas Bot…')
+  expect(screen.getByText(labels.statusWorking)).toBeTruthy()
+  expect(screen.queryByText(new RegExp(labels.statusBlocked))).toBeNull()
+  driver_status = { ...driver_status, pending_actions: [{ ...output, blocked: true }] }
+  view.rerender(<CanonicalGroupWorkspace binding={{ ...binding, roomId: 'file-blocked' }} />)
+  await screen.findByText('Files from Atlas Bot need attention.')
+  expect(screen.getByText(new RegExp(labels.statusBlocked))).toBeTruthy()
+  driver_status = { ...driver_status, pending_actions: [output, { ...output, kind: 'discard', task_id: 'uncertain' }] }
+  view.rerender(<CanonicalGroupWorkspace binding={{ ...binding, roomId: 'file-and-uncertain' }} />)
+  await screen.findByText('Sharing files from Atlas Bot…')
+  expect(screen.getByText(new RegExp(labels.statusBlocked))).toBeTruthy()
+})

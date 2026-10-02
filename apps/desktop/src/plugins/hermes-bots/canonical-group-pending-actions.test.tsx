@@ -16,6 +16,9 @@ vi.mock('./canonical-group-labels', () => ({ useCanonicalGroupLabels: () => ({
   approvalChanges: 'Proposed changes', approvalBefore: 'Before', approvalAfter: 'After', approvalEmptyFile: 'Empty file',
   approvalDetailsMissing: 'Action details are unavailable. Check again before allowing this.',
   pendingRetryTitle: '{name} couldn’t start this reply.', pendingUnknownTitle: 'We couldn’t confirm whether {name} finished.',
+  pendingFilesTitle: 'Sharing files from {name}…', pendingFilesCleanupTitle: 'Finishing file cleanup for {name}…',
+  pendingFilesBlockedTitle: 'Files from {name} need attention.',
+  pendingFilesBlockedHelp: 'File sharing could not finish. Check the computers running this group chat.',
   pendingStoppingTitle: 'Stopping {name}…', retryReply: 'Try again', skipReply: 'Skip this reply', pendingBot: 'Bot',
   pendingActionUnconfirmed: 'We couldn’t confirm this action. Refresh the group chat to check its status.',
   skipUnstartedWarning: 'This bot won’t reply to this message.', discardUnknown: 'Skip this reply?',
@@ -105,4 +108,27 @@ test('unknown work never gains Retry and skip confirmation retains its original 
   fireEvent.click(screen.getByRole('button', { name: 'Skip this reply' }))
   expect(screen.getByText('This bot won’t reply to this message.')).toBeTruthy()
   expect(screen.queryByText(/Skipping won’t undo/)).toBeNull()
+})
+
+
+test('file publication and cleanup remain informational, including blocked refresh without execution controls', async () => {
+  const onAction = vi.fn(), onDiscard = vi.fn(), onRefresh = vi.fn()
+  const action: CanonicalPendingAction = { ...target, kind: 'output_retry', operation: 'ack', blocked: false }
+  const view = render(<CanonicalGroupPendingActions actions={[action]} members={members}
+    onAction={onAction} onDiscard={onDiscard} onRefresh={onRefresh} />)
+  expect(screen.getByText('Sharing files from Atlas Bot…')).toBeTruthy()
+  expect(screen.queryByRole('button')).toBeNull()
+  view.rerender(<CanonicalGroupPendingActions actions={[{ ...action, operation: 'discard' }]} members={members}
+    onAction={onAction} onDiscard={onDiscard} onRefresh={onRefresh} />)
+  expect(screen.getByText('Finishing file cleanup for Atlas Bot…')).toBeTruthy()
+  expect(screen.queryByRole('button')).toBeNull()
+  view.rerender(<CanonicalGroupPendingActions actions={[{ ...action, blocked: true }]} members={members}
+    onAction={onAction} onDiscard={onDiscard} onRefresh={onRefresh} />)
+  expect(screen.getByText('Files from Atlas Bot need attention.')).toBeTruthy()
+  expect(screen.queryByRole('button', { name: /Try again|Skip|Allow/i })).toBeNull()
+  await act(async () => {fireEvent.click(screen.getByRole('button', { name: 'Refresh' }))})
+  expect(onRefresh).toHaveBeenCalledOnce()
+  expect(onAction).not.toHaveBeenCalled()
+  expect(onDiscard).not.toHaveBeenCalled()
+  expect(request).not.toHaveBeenCalled()
 })

@@ -3,6 +3,7 @@ import { useRef, useState } from 'react'
 
 import { CanonicalMemberFace, canonicalMemberName } from './canonical-group-identity'
 import { useCanonicalGroupLabels } from './canonical-group-labels'
+import { isPendingFileAction } from './canonical-groups'
 import type { CanonicalPendingAction, CanonicalRoomMember } from './canonical-groups'
 
 type Labels = ReturnType<typeof useCanonicalGroupLabels>
@@ -86,7 +87,10 @@ function PendingActionRow({ action, member, memberName, canSkip, busy, labels, o
   const disabled = busy || submitting || !validAttempt(action)
   const approval = action.kind === 'approval' ? approvalDetails({ action, labels }) : null
   const choices = action.approval?.choices
-  const title = action.kind === 'approval' ? labels.pendingApprovalTitle : action.kind === 'retry' ? labels.pendingRetryTitle
+  const fileOutput = action.kind === 'output_retry'
+  const filePending = isPendingFileAction(action)
+  const title = fileOutput ? (!filePending ? labels.pendingFilesBlockedTitle : action.operation === 'discard' ? labels.pendingFilesCleanupTitle : labels.pendingFilesTitle)
+    : action.kind === 'approval' ? labels.pendingApprovalTitle : action.kind === 'retry' ? labels.pendingRetryTitle
     : action.kind === 'stopping' ? labels.pendingStoppingTitle : labels.pendingUnknownTitle
   return <article aria-busy={submitting || undefined} className="grid min-w-0 gap-3 border-t border-(--ui-stroke-secondary) py-3"
     data-member-id={action.member_id} data-request-id={action.request_id} data-task-id={action.task_id} data-testid="group-chat-pending-action">
@@ -95,6 +99,7 @@ function PendingActionRow({ action, member, memberName, canSkip, busy, labels, o
       <p className="text-sm font-medium"><bdi>{title.replace('{name}', memberName)}</bdi></p>
     </div>
     {approval?.content}
+    {fileOutput && !filePending && <p className="text-sm text-(--ui-text-secondary)" role="status">{labels.pendingFilesBlockedHelp}</p>}
     <div className="flex flex-wrap items-center justify-end gap-2">
       {approval && <>
         {(!choices || choices.includes('deny')) && <Button disabled={disabled || !text(action.request_id)}
@@ -104,6 +109,8 @@ function PendingActionRow({ action, member, memberName, canSkip, busy, labels, o
         {!approval.reviewable && onRefresh && <Button disabled={busy || submitting}
           onClick={() => void invoke(onRefresh)} size="sm" type="button" variant="secondary">{labels.refresh}</Button>}
       </>}
+      {fileOutput && !filePending && onRefresh && <Button disabled={busy || submitting}
+        onClick={() => void invoke(onRefresh)} size="sm" type="button" variant="text">{labels.refresh}</Button>}
       {canSkip && <Button disabled={disabled} onClick={onSkip} size="sm" type="button" variant="text">{labels.skipReply}</Button>}
       {action.kind === 'retry' && <Button disabled={disabled} onClick={() => void invoke(() => onAction(snapshot(action)))} size="sm" type="button" variant="secondary">{labels.retryReply}</Button>}
     </div>
@@ -121,8 +128,8 @@ export function CanonicalGroupPendingActions({ actions, members, busy = false, o
   const [discard, setDiscard] = useState<{ action: CanonicalPendingAction; name: string; notStarted: boolean } | null>(null)
   const stopping = new Set(actions.filter(action => action.kind === 'stopping').map(attemptKey))
   const retry = new Set(actions.filter(action => action.kind === 'retry').map(attemptKey))
-  const rows = actions.filter(action => ['approval', 'retry', 'discard', 'stopping'].includes(action.kind) &&
-    (!stopping.has(attemptKey(action)) || action.kind === 'stopping') && !(action.kind === 'discard' && retry.has(attemptKey(action))))
+  const rows = actions.filter(action => ['approval', 'retry', 'discard', 'stopping', 'output_retry'].includes(action.kind) &&
+    (!stopping.has(attemptKey(action)) || action.kind === 'stopping' || action.kind === 'output_retry') && !(action.kind === 'discard' && retry.has(attemptKey(action))))
   return <div data-testid="group-chat-pending-actions">
     {rows.map(action => {
       const member = members.find(member => member.member_id === action.member_id)

@@ -328,7 +328,7 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
       typeof message.content === 'string' &&
       message.content.trim() &&
       (!Array.isArray(message.tool_calls) || message.tool_calls.length === 0) &&
-      !isTodoSnapshotMetadata(message.display_metadata)
+      !message.display_kind
     ) {
       unansweredUser = false
     }

@@ -1,6 +1,6 @@
 import type { PluginSessionContext } from '@/contrib/session'
 import { resolveSessionContributionContext } from '@/contrib/session-context'
-import { $browserPages, $previewTabs, type BrowserDocument, openPreview } from '@/store/preview'
+import { $browserPages, $previewTabs, type BrowserDocument, openPreview, setViewerReopen } from '@/store/preview'
 import { ownerLookupSessionRows, sessionMatchesStoredId } from '@/store/session'
 
 import { safeViewerUrl, sameViewerLocation } from '../../electron/plugin-viewer-policy'
@@ -14,6 +14,11 @@ export interface PluginPreviewInput {
   session: PluginSessionContext
   /** Renew a scoped lease while this original tab/document remains open. Runs in the host renderer. */
   onKeepAlive?: () => Promise<void>
+  /** Mint a fresh viewer URL and call `openPreview` again with it. The host
+   *  calls this when it must rebuild the viewer after its document is gone
+   *  (that document spent the one-time capability). Without it, a rebuilt
+   *  viewer reloads the address it was first opened with. */
+  onReopen?: () => Promise<void>
 }
 
 export function currentPluginSession(session: PluginSessionContext): boolean {
@@ -63,6 +68,9 @@ export async function openPluginPreview(input: PluginPreviewInput): Promise<bool
     input.session.runtimeSessionId,
     input.session.profile
   )
+
+  const onReopen = input.onReopen
+  setViewerReopen(tab.id, typeof onReopen === 'function' ? () => onReopen() : undefined)
 
   // A new ticket on a reused tab rebuilds its guest; never bind to the outgoing one.
   const prior = before.find(item => item.id === tab.id)

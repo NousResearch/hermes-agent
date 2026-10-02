@@ -40,11 +40,15 @@ import {
   canPopOutBrowserTab,
   commitBrowserTabLocation,
   failPreviewServerRestart,
+  hasViewerReopen,
   noteBrowserPage,
+  noteViewerDocument,
   popOutBrowserTab,
   type PreviewRenderMode,
   type PreviewTarget,
-  setPreviewRenderMode
+  reopenViewer,
+  setPreviewRenderMode,
+  viewerUrlSpent
 } from '@/store/preview'
 import { $selectedStoredSessionId } from '@/store/session'
 import { canOpenBrowserWindow, isBrowserWindow } from '@/store/windows'
@@ -298,6 +302,14 @@ export function PreviewPane({
   const [loadError, setLoadError] = useState<PreviewLoadErrorState | null>(null)
   const [localReloadKey, setLocalReloadKey] = useState(0)
   const isolatedBrowser = target.browserContext === 'isolated'
+  // An isolated viewer's address carries a one-time capability in its
+  // fragment; steering the live guest there would be a same-document hop the
+  // page never reads. A new viewer address builds a new guest instead.
+  const viewerUrl = isolatedBrowser ? target.url : null
+  // Bumped when a viewer's re-open failed, so the guest is then built from
+  // the address it has (the page explains what is missing).
+  const [viewerReopenRound, setViewerReopenRound] = useState(0)
+  const viewerReopenFailedRef = useRef<null | string>(null)
   const [annotate, setAnnotate] = useState(emptyAnnotateSession)
   const [draftNote, setDraftNote] = useState('')
   const annotateRef = useRef(annotate)
@@ -439,12 +451,20 @@ export function PreviewPane({
       return
     }
 
+    // Reloading a viewer re-runs its page without the capability it already
+    // spent; its opener mints a fresh one and the guest is rebuilt on it.
+    if (isolatedBrowser && tabId && hasViewerReopen(tabId)) {
+      void reopenViewer(tabId)
+
+      return
+    }
+
     if (webviewRef.current?.reloadIgnoringCache) {
       webviewRef.current.reloadIgnoringCache()
     } else {
       webviewRef.current?.reload?.()
     }
-  }, [isWebPreview])
+  }, [isolatedBrowser, isWebPreview, tabId])
 
   const annotateGuest = useCallback((): null | PreviewAnnotateGuest => {
     const webview = webviewRef.current
@@ -1146,6 +1166,35 @@ export function PreviewPane({
       return
     }
 
+    // An isolated viewer's one-time capability was spent by the document that
+    // loaded it (the page strips it from its address). Rebuilding the guest —
+    // its pane was unmounted — from that address cannot connect, so ask the
+    // opener for a fresh one first. Without a re-open (or if it fails) the old
+    // address loads and the page explains itself.
+    if (
+      tabId &&
+      target.browserContext === 'isolated' &&
+      viewerUrlSpent(tabId, initialUrl) &&
+      hasViewerReopen(tabId) &&
+      viewerReopenFailedRef.current !== initialUrl
+    ) {
+      let cancelled = false
+
+      // Success changes target.url, which rebuilds this guest on its own.
+      void reopenViewer(tabId).then(ok => {
+        if (cancelled || ok) {
+          return
+        }
+
+        viewerReopenFailedRef.current = initialUrl
+        setViewerReopenRound(round => round + 1)
+      })
+
+      return () => {
+        cancelled = true
+      }
+    }
+
     const webview = createPreviewWebview(initialUrl, target.browserContext) as PreviewWebview
     let liveDocument: BrowserDocument | undefined
 
@@ -1222,6 +1271,11 @@ export function PreviewPane({
     const onReady = () => {
       const current: BrowserDocument = { isLive: () => liveDocument === current && webview.isConnected }
       liveDocument = current
+
+      if (tabId && target.browserContext === 'isolated') {
+        noteViewerDocument(tabId, targetUrlRef.current)
+      }
+
       notePage()
     }
 
@@ -1430,7 +1484,9 @@ export function PreviewPane({
     noteGuestReady,
     tabId,
     target.browserContext,
-    target.kind
+    target.kind,
+    viewerUrl,
+    viewerReopenRound
   ])
 
   // Steers the LIVE guest when the session opens a new URL (#120265): loadURL
@@ -1441,7 +1497,7 @@ export function PreviewPane({
   // already shows the address (an in-page navigation got there first).
   // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (see eslint rule comment)
   useEffect(() => {
-    if (!isWebPreview || isRemoteHtml) {
+    if (!isWebPreview || isRemoteHtml || viewerUrl !== null) {
       return
     }
 
@@ -1478,7 +1534,7 @@ export function PreviewPane({
       })
       setLoading(false)
     })
-  }, [annotateGuest, consoleState, copy.unreachableDescription, isRemoteHtml, isWebPreview, target.url])
+  }, [annotateGuest, consoleState, copy.unreachableDescription, isRemoteHtml, isWebPreview, target.url, viewerUrl])
 
   return (
     <aside

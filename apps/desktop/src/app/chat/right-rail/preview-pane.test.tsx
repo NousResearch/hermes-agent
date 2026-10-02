@@ -4,7 +4,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { onComposerAttachImagesRequest } from '@/app/chat/composer/focus'
 import { PaneVisibleContext } from '@/components/pane-shell/pane-visibility'
 import { setTreePaneParked } from '@/components/pane-shell/tree/parked-panes'
-import { $previewTabs, closeRightRail, openPreview, previewTabId } from '@/store/preview'
+import {
+  $previewTabs,
+  closeRightRail,
+  noteViewerDocument,
+  openPreview,
+  previewTabId,
+  setViewerReopen
+} from '@/store/preview'
 import { $connection, $selectedStoredSessionId } from '@/store/session'
 
 import { PreviewTilePane } from './preview'
@@ -596,6 +603,60 @@ describe('PreviewPane console state', () => {
 
     await act(async () => rendered.rerender(<PreviewPane reloadRequest={1} tabId="viewer" target={target} />))
     expect(reloadIgnoringCache).not.toHaveBeenCalled()
+  })
+
+  // A viewer's capability is spent by the document that loaded it. A pane
+  // remounted after its session was away asks the opener for a fresh one
+  // instead of rebuilding the guest from the spent address.
+  describe('viewer remount', () => {
+    const spent = 'http://127.0.0.1:9876/view#ticket=one'
+    const fresh = 'http://127.0.0.1:9876/view#ticket=two'
+
+    const viewer = (url: string) =>
+      ({ browserContext: 'isolated', kind: 'url', label: 'Viewer', source: url, transient: true, url }) as const
+
+    afterEach(() => closeRightRail())
+
+    it('builds the guest on a freshly minted capability', async () => {
+      const tab = openPreview(viewer(spent))
+      const reopen = vi.fn(async () => void openPreview(viewer(fresh)))
+      setViewerReopen(tab.id, reopen)
+      noteViewerDocument(tab.id, spent)
+
+      const rendered = render(<PreviewTilePane tabId={tab.id} />)
+
+      await waitFor(() => expect(rendered.container.querySelector('webview')?.getAttribute('src')).toBe(fresh))
+      expect(reopen).toHaveBeenCalledOnce()
+      expect(rendered.container.querySelectorAll('webview')).toHaveLength(1)
+      expect($previewTabs.get().filter(item => item.id === tab.id)).toHaveLength(1)
+    })
+
+    it('falls back to the address it has when the opener cannot re-open', async () => {
+      const tab = openPreview(viewer(spent))
+
+      const reopen = vi.fn(async () => {
+        throw new Error('gone')
+      })
+
+      setViewerReopen(tab.id, reopen)
+      noteViewerDocument(tab.id, spent)
+
+      const rendered = render(<PreviewTilePane tabId={tab.id} />)
+
+      await waitFor(() => expect(rendered.container.querySelector('webview')?.getAttribute('src')).toBe(spent))
+      expect(reopen).toHaveBeenCalledOnce()
+    })
+
+    it('loads a viewer whose capability is unspent without asking the opener', async () => {
+      const tab = openPreview(viewer(spent))
+      const reopen = vi.fn(async () => undefined)
+      setViewerReopen(tab.id, reopen)
+
+      const rendered = render(<PreviewTilePane tabId={tab.id} />)
+
+      expect(rendered.container.querySelector('webview')?.getAttribute('src')).toBe(spent)
+      expect(reopen).not.toHaveBeenCalled()
+    })
   })
 
   it('renders authenticated remote HTML safely and honors source mode', async () => {

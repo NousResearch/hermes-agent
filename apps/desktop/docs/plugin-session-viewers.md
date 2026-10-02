@@ -33,6 +33,19 @@ The existing preview pane opens an absolute HTTP(S) URL. Relative URLs, embedded
 
 Call from a user action, not a background status update. Native viewer/preview navigation does not inherit `ctx.rest` headers. `ctx.socket` remains JSON-only; binary protocols need their own ticket-authorized WebSocket in the viewer page.
 
+The tab belongs to `session` (its stored session, else its runtime until the stored id binds), like any other preview tab that session opens: it shows in that session's drawer, follows it through compression rotation and profile switches, and is pruned with it. Agent preview tools of other sessions do not see it.
+
+### Re-opening a viewer on a fresh capability (optional)
+
+```ts
+const watch = async () => {
+  const { url, onKeepAlive } = await mintTicketUrl() // one ticket per document
+  return host.openPreview({ url, label: 'Viewer', session: owner, onKeepAlive, onReopen: async () => void (await watch()) })
+}
+```
+
+A viewer that bootstraps from a one-time capability (read once, then stripped from its address) cannot be rebuilt from its own address. The host never writes an isolated viewer's live address back onto its tab, and when it must rebuild a viewer whose document already came up (its pane was unmounted, for example after its session was off screen past the hidden-page cap, or the user pressed Reload), it calls `onReopen` first. `onReopen` should mint a new URL and call `host.openPreview` again for the same viewer location; the existing tab is updated in place and its guest is built on the new URL. If `onReopen` is absent, throws or does not change the URL, the host loads the address the tab already has, as before. `onReopen` runs in the trusted renderer and must capture its owner at the user action, exactly like `onKeepAlive`.
+
 ## Owned native viewer
 
 ```ts

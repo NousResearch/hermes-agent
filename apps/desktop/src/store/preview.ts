@@ -221,6 +221,56 @@ const viewerTabs = new Map<string, { owner: string; tab: PreviewTab }>()
 const isLiveViewerTab = (tab: PreviewTab) =>
   tab.target.kind === 'url' && tab.target.transient === true && tab.target.browserContext === 'isolated'
 
+// A viewer's capability lives in the document that loaded it (the page strips
+// it from its address). Memory-only: the address each viewer tab's last live
+// document was built from, and the opener's way to mint a fresh one.
+const spentViewerUrls = new Map<string, string>()
+const viewerReopeners = new Map<string, () => Promise<unknown>>()
+
+/** A viewer document for `url` came up: that capability is now spent. */
+export function noteViewerDocument(tabId: string, url: string): void {
+  spentViewerUrls.set(tabId, url)
+}
+
+/** True when `url` already backed a live document of `tabId`. */
+export function viewerUrlSpent(tabId: string, url: string): boolean {
+  return spentViewerUrls.get(tabId) === url
+}
+
+/** The opener's re-open for a viewer tab (see `openPluginPreview`). */
+export function setViewerReopen(tabId: string, reopen: (() => Promise<unknown>) | undefined): void {
+  if (reopen) {
+    viewerReopeners.set(tabId, reopen)
+  } else {
+    viewerReopeners.delete(tabId)
+  }
+}
+
+/** Ask the viewer's opener for a fresh capability; resolves true when the
+ *  tab now points at a new address. False without a registered re-open. */
+export async function reopenViewer(tabId: string): Promise<boolean> {
+  const reopen = viewerReopeners.get(tabId)
+  const before = $previewTabs.get().find(tab => tab.id === tabId)?.target.url
+
+  if (!reopen || before === undefined) {
+    return false
+  }
+
+  try {
+    await reopen()
+  } catch {
+    return false
+  }
+
+  const after = $previewTabs.get().find(tab => tab.id === tabId)?.target.url
+
+  return after !== undefined && after !== before
+}
+
+export function hasViewerReopen(tabId: string): boolean {
+  return viewerReopeners.has(tabId)
+}
+
 function tabsForScope(key: string): PreviewTab[] {
   return [...(tabsByProfile[key] ?? []), ...Array.from(viewerTabs.values(), entry => entry.tab)]
 }
@@ -291,6 +341,8 @@ $previewTabs.subscribe(tabs => {
   for (const id of viewerTabs.keys()) {
     if (!tabs.some(tab => tab.id === id && isLiveViewerTab(tab))) {
       viewerTabs.delete(id)
+      spentViewerUrls.delete(id)
+      viewerReopeners.delete(id)
     }
   }
 
@@ -704,6 +756,12 @@ export function commitBrowserTabLocation(tabId: string, url: string, title?: str
 
   const tab = tabs[index]
   const nextTitle = title?.trim()
+
+  // An isolated viewer's live address has its capability stripped; writing it
+  // back would rebuild the viewer from an address that cannot connect.
+  if (tab.target.browserContext === 'isolated') {
+    return
+  }
 
   if (tab.target.kind !== 'url' || (tab.target.url === nextUrl && (!nextTitle || tab.target.label === nextTitle))) {
     return

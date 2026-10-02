@@ -458,18 +458,28 @@ function writeSessionState(runtimeId: string, updater: (state: ClientSessionStat
   }
 }
 
-function settleEndedLiveTurn(runtimeId: string) {
-  writeSessionState(runtimeId, state =>
-    isLiveTurnAwaitingEvents(state) ? settleEndedTurn(state, Date.now() / 1000) : state
-  )
+function settleEndedLiveTurn(runtimeId: string): null | string {
+  let settledId: null | string = null
+
+  writeSessionState(runtimeId, state => {
+    if (!isLiveTurnAwaitingEvents(state)) {
+      return state
+    }
+
+    const settled = settleEndedTurn(state, Date.now() / 1000)
+    settledId = settled.heartbeatSettledStreamId ?? null
+
+    return settled
+  })
+
+  return settledId
 }
 
-/** A newer turn the user started meanwhile is live (skipped) or has its own reply. */
-function markTurnWithoutReply(runtimeId: string) {
-  writeSessionState(runtimeId, state => (isLiveTurnAwaitingEvents(state) ? state : stampNoReply(state)))
+function markTurnWithoutReply(runtimeId: string, settledId: string) {
+  writeSessionState(runtimeId, state => (isLiveTurnAwaitingEvents(state) ? state : stampNoReply(state, settledId)))
 }
 
-async function recoverEndedLiveTurn(runtimeId: string) {
+async function recoverEndedLiveTurn(runtimeId: string, settledId: string) {
   const storedSessionId = $sessionStates.get()[runtimeId]?.storedSessionId ?? null
   const refreshTranscript = liveTurnBackend?.refreshTranscript
 
@@ -483,7 +493,7 @@ async function recoverEndedLiveTurn(runtimeId: string) {
     }
   }
 
-  markTurnWithoutReply(runtimeId)
+  markTurnWithoutReply(runtimeId, settledId)
 }
 
 /** The silence window ran out: ask the backend. Running keeps the turn and
@@ -513,8 +523,11 @@ async function onEventSilence(runtimeId: string) {
     return
   }
 
-  settleEndedLiveTurn(runtimeId)
-  await recoverEndedLiveTurn(runtimeId)
+  const settledId = settleEndedLiveTurn(runtimeId)
+
+  if (settledId) {
+    await recoverEndedLiveTurn(runtimeId, settledId)
+  }
 }
 
 /** Record that this session just produced an event. A live turn that then goes

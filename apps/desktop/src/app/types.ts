@@ -183,10 +183,12 @@ export interface ClientSessionState {
   interrupted: boolean
   /** True after message.interim finalized a bubble in the still-running turn. */
   interimBoundaryPending: boolean
-  /** Stream bubble a running=false heartbeat settled before its turn's
-   *  message.complete arrived. The frame can be reordered behind the
-   *  heartbeat (#119569); when it lands it settles onto this bubble instead of
-   *  appending a duplicate. Cleared by the next message.start or complete. */
+  /** Identity of the turn a running=false heartbeat or the silence watchdog
+   *  settled before its end events arrived. Usually its kept stream bubble:
+   *  a reordered message.complete (#119569) settles onto it instead of
+   *  appending a duplicate. The watchdog reserves an id even when settling
+   *  dropped an empty bubble, and its no-reply card takes that id. Cleared by
+   *  message.start or complete. */
   heartbeatSettledStreamId?: null | string
   /** `turn_id` of the newest message.start (tui_gateway/stream_segments.py): a
    *  re-sent start of the same turn is not a new occurrence. */

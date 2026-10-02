@@ -27,36 +27,44 @@ function turnHasReply(messages: ChatMessage[]): boolean {
   return false
 }
 
-function withNoReplyNotice(messages: ChatMessage[]): ChatMessage[] {
+function withNoReplyNotice(messages: ChatMessage[], noticeId: string): { messages: ChatMessage[]; noticeId: string } {
   const last = messages.findLast(message => !message.hidden)
 
   // A turn that ran tools but never wrote text carries the notice on its own bubble.
   if (last?.role === 'assistant') {
-    return messages.map(message =>
-      message === last ? { ...message, error: NO_REPLY_ERROR, errorSurface: NO_REPLY_SURFACE } : message
-    )
+    return {
+      messages: messages.map(message =>
+        message === last ? { ...message, error: NO_REPLY_ERROR, errorSurface: NO_REPLY_SURFACE } : message
+      ),
+      noticeId: last.id
+    }
   }
 
   const occurredAt = Date.now() / 1000
 
-  return [
-    ...messages,
-    {
-      completedAt: occurredAt,
-      error: NO_REPLY_ERROR,
-      errorSurface: NO_REPLY_SURFACE,
-      id: `assistant-no-reply-${Date.now()}`,
-      parts: [],
-      pending: false,
-      role: 'assistant',
-      timestamp: occurredAt
-    }
-  ]
+  return {
+    messages: [
+      ...messages,
+      {
+        completedAt: occurredAt,
+        error: NO_REPLY_ERROR,
+        errorSurface: NO_REPLY_SURFACE,
+        id: noticeId,
+        parts: [],
+        pending: false,
+        role: 'assistant',
+        timestamp: occurredAt
+      }
+    ],
+    noticeId
+  }
 }
 
 /** Settle a live turn the backend reported over whose end events never
- *  arrived, like the running=false edge: nothing is interrupted, the kept
- *  stream bubble is remembered so a late message.complete settles onto it. */
+ *  arrived, like the running=false edge: nothing is interrupted. Its
+ *  `heartbeatSettledStreamId` names the kept stream bubble, or is reserved when
+ *  settling dropped an empty one, so the notice binds to this turn. History
+ *  recovery may await I/O; a newer message.start clears the id first. */
 export function settleEndedTurn(state: ClientSessionState, occurredAt: number): ClientSessionState {
   const messages = sealOpenToolParts(finalizeInterruptedMessages(state.messages, state.streamId, occurredAt))
 
@@ -65,7 +73,9 @@ export function settleEndedTurn(state: ClientSessionState, occurredAt: number): 
     awaitingResponse: false,
     busy: false,
     heartbeatSettledStreamId:
-      state.streamId && messages.some(message => message.id === state.streamId) ? state.streamId : null,
+      state.streamId && messages.some(message => message.id === state.streamId)
+        ? state.streamId
+        : `assistant-no-reply-${Math.round(occurredAt * 1000)}`,
     messages,
     pendingBranchGroup: null,
     streamId: null,
@@ -74,10 +84,14 @@ export function settleEndedTurn(state: ClientSessionState, occurredAt: number): 
   }
 }
 
-/** Stamp the retry card on an ended turn that has no reply, never an
- *  intentional interruption. A newer turn has its own reply. */
-export function stampNoReply(state: ClientSessionState): ClientSessionState {
-  return state.interrupted || turnHasReply(state.messages)
-    ? state
-    : { ...state, messages: withNoReplyNotice(state.messages) }
+/** Stamp the retry card on the settled turn when it still has no reply. Never
+ *  an intentional interruption, and never once a newer turn took the id. */
+export function stampNoReply(state: ClientSessionState, settledId: string): ClientSessionState {
+  if (state.heartbeatSettledStreamId !== settledId || state.interrupted || turnHasReply(state.messages)) {
+    return state
+  }
+
+  const stamped = withNoReplyNotice(state.messages, settledId)
+
+  return { ...state, heartbeatSettledStreamId: stamped.noticeId, messages: stamped.messages }
 }

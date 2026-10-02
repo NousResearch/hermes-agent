@@ -1167,6 +1167,12 @@ def _create_prefixed_full_backup(
         # cap those salvages at one without letting them rotate complete backups out.
         _prune_incomplete_zips(backup_dir, prefix, prune_what)
         return None
+    # Contains a full HERMES_HOME snapshot (config, .env secrets, auth tokens, session data) -
+    # every other backup path in this module restricts its output to 0600/0700; this one didn't.
+    try:
+        os.chmod(out_path, 0o600)
+    except OSError as exc:
+        logger.warning("Could not restrict %s backup permissions on %s: %s", what, out_path, exc)
     _prune_prefixed_zips(backup_dir, prefix, keep, prune_what)
     return out_path
 

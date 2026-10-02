@@ -1570,7 +1570,7 @@ See [Hooks](../user-guide/features/hooks.md) for event signatures and payload sh
 hermes memory <subcommand>
 ```
 
-Set up and manage external memory provider plugins. Bundled providers: openviking, mem0, holographic, retaindb, byterover, supermemory; honcho and hindsight (plugin catalog) after `hermes plugins install <name>`. Only one external provider can be active at a time. Built-in memory (MEMORY.md/USER.md) is always active.
+Set up and manage external memory provider plugins. Bundled providers: openviking, mem0, holographic, retaindb, byterover; honcho, hindsight and supermemory (plugin catalog) after `hermes plugins install <name>` (`hermes update` does this automatically for a provider already named in `memory.provider`). Only one external provider can be active at a time. Built-in memory (MEMORY.md/USER.md) is always active.
 
 Subcommands:
 

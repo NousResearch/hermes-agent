@@ -201,7 +201,7 @@ fallback_providers:
 | Messaging gateway (Telegram, Discord, etc.) | ✔ |
 | Desktop app / TUI chats | ✔ (a chain added or edited while a chat is open applies from its next turn) |
 | Subagent delegation | ✔ (`delegation.fallback_providers` when set; otherwise only unpinned children inherit the parent chain; `[]` disables) |
-| Cron jobs | ✔ (unpinned jobs inherit the configured chain; a job with its own provider/model/base_url never falls back to it) |
+| Cron jobs | ✔ (a job's own `fallback_providers` when set; otherwise only unpinned jobs inherit the configured chain; `[]` disables) |
 | Auxiliary tasks on `provider: auto` | ✔ (try per-task fallback, then the main fallback chain before built-in aux discovery) |
 
 :::tip
@@ -439,7 +439,7 @@ cronjob(
 )
 ```
 
-To keep fallback for a job, leave it unpinned and choose its model with `cron.model` / `cron.model_provider` instead. See [Scheduled Tasks (Cron)](./cron.md#provider-recovery) for details.
+To keep fallback for a pinned job, give it its own chain with `hermes cron edit <job_id> --fallback provider:model` (repeatable; stored as the job's `fallback_providers`), or leave it unpinned and choose its model with `cron.model` / `cron.model_provider`. See [Scheduled Tasks (Cron)](./cron.md#provider-recovery) for details.
 
 ---
 
@@ -458,4 +458,4 @@ To keep fallback for a job, leave it unpinned and choose its model with `cron.mo
 | Title generation | Layered (see above) | `auxiliary.title_generation` |
 | Triage specifier | Layered (see above) | `auxiliary.triage_specifier` |
 | Delegation | Uses `delegation.fallback_providers` when declared; otherwise only unpinned children inherit the parent chain | `delegation.provider` / `delegation.model` / `delegation.fallback_providers` |
-| Cron jobs | Unpinned jobs inherit the configured `fallback_providers` chain; a job with its own `provider` / `model` / `base_url` never falls back to it | Per-job `provider` / `model`, or `cron.model` / `cron.model_provider` |
+| Cron jobs | Uses the job's own `fallback_providers` when declared; otherwise only unpinned jobs inherit the configured chain | Per-job `provider` / `model` / `fallback_providers`, or `cron.model` / `cron.model_provider` |

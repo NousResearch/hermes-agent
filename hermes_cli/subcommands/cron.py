@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import argparse
 from typing import Callable
 
 from hermes_cli.subcommands._shared import add_accept_hooks_flag
@@ -9,6 +10,31 @@ from hermes_cli.subcommands._shared import add_accept_hooks_flag
 
 def _flag(parser, *names, help, **kw):
     parser.add_argument(*names, action="store_true", help=help, **kw)
+
+
+def _fallback_entry(spec: str) -> dict:
+    """``provider:model`` -> one ``fallback_providers`` entry (split on the first colon)."""
+    provider, _, model = spec.partition(":")
+    if not provider.strip() or not model.strip():
+        raise argparse.ArgumentTypeError(
+            f"expected provider:model (e.g. openrouter:z-ai/glm-5.2), got {spec!r}")
+    return {"provider": provider.strip(), "model": model.strip()}
+
+
+def _add_fallback_args(parser, *, editing: bool) -> None:
+    """Per-job ``fallback_providers``: all flags share one dest, so they are mutually exclusive."""
+    group = parser.add_mutually_exclusive_group()
+    group.add_argument("--fallback", dest="fallback_providers", action="append", type=_fallback_entry,
+        metavar="PROVIDER:MODEL",
+        help="Give this job its own fallback chain, tried in order when its provider fails. "
+            "Repeat for more entries. Works for pinned jobs too (they never borrow the global "
+            "fallback_providers chain)." + (" Replaces any existing per-job chain." if editing else ""))
+    group.add_argument("--no-fallback", dest="fallback_providers", action="store_const", const=[],
+        help="Disable fallback for this job entirely (stores fallback_providers: []).")
+    if editing:
+        group.add_argument("--clear-fallback", dest="fallback_providers", action="store_const", const="",
+            help="Remove the job's own fallback setting: unpinned jobs inherit the global chain "
+                "again, pinned jobs have no fallback.")
 
 
 def build_cron_parser(subparsers, *, cmd_cron: Callable) -> None:
@@ -72,6 +98,7 @@ def build_cron_parser(subparsers, *, cmd_cron: Callable) -> None:
             "`hermes model` changes never touch it. Ignored when --model is given.")
     cron_create.add_argument("--provider", dest="model_provider",
         help="Inference provider paired with --model (e.g. 'openrouter', 'nous').")
+    _add_fallback_args(cron_create, editing=False)
     cron_create.add_argument("--reasoning-effort", dest="reasoning_effort",
         help="Pin this job's reasoning (thinking) effort: none, minimal, low, "
             "medium, high, xhigh, max, or ultra. Overrides agent.reasoning_effort "
@@ -144,6 +171,7 @@ def build_cron_parser(subparsers, *, cmd_cron: Callable) -> None:
         help="Release the job's model pin so it follows the main agent model again.")
     cron_edit.add_argument("--provider", dest="model_provider",
         help="Inference provider paired with --model. Pass empty string to clear.")
+    _add_fallback_args(cron_edit, editing=True)
     cron_edit.add_argument("--reasoning-effort", dest="reasoning_effort",
         help="Pin this job's reasoning (thinking) effort: none, minimal, low, "
             "medium, high, xhigh, max, or ultra. Pass empty string to clear "

@@ -472,6 +472,9 @@ def _format_job(job: Dict[str, Any]) -> Dict[str, Any]:
         result["context_from"] = external_refs
     if isinstance(job.get("attach_to_session"), bool):
         result["attach_to_session"] = job["attach_to_session"]
+    if isinstance(job.get("fallback_providers"), list):
+        # Echoed even when [] (fallback disabled), which is a deliberate setting.
+        result["fallback_providers"] = job["fallback_providers"]
     return result
 
 

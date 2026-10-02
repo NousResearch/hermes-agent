@@ -1742,6 +1742,27 @@ def _normalize_reasoning_effort(value: Any) -> Optional[str]:
     return text
 
 
+def _normalize_fallback_providers(value: Any) -> Optional[List[Dict[str, Any]]]:
+    """Per-job fallback chain. ``None``/``""`` = no override (the key is not stored), ``[]`` =
+    fallback disabled, a list (or one entry dict) = the job's own chain in the same entry shape as
+    the global ``fallback_providers``. A non-empty value with no usable entry raises, so a typo
+    can never silently leave a pinned job without the backup the operator asked for."""
+    if value is None or value == "":
+        return None
+    if value == []:
+        return []
+    if not isinstance(value, (list, dict)):
+        raise ValueError("fallback_providers must be a list of {provider, model} entries.")
+    from hermes_cli.fallback_config import get_fallback_chain
+
+    chain = get_fallback_chain({"fallback_providers": value})
+    if not chain:
+        raise ValueError(
+            "fallback_providers has no usable entry; each entry needs a provider and a model "
+            "(e.g. {provider: openrouter, model: z-ai/glm-5.2}).")
+    return chain
+
+
 # Normalizers for create_job (all fields) / update_job (present fields). Invalid values raise BEFORE
 # storing.
 _CREATE_FIELD_NORMALIZERS: Dict[str, Callable[[Any], Any]] = {
@@ -1757,6 +1778,7 @@ _CREATE_FIELD_NORMALIZERS: Dict[str, Callable[[Any], Any]] = {
     "context_from": _normalize_context_from,
     "failure_deliver": _normalize_failure_deliver,
     "interpreter": _normalize_job_optional_text,
+    "fallback_providers": _normalize_fallback_providers,
 }
 _UPDATE_FIELD_NORMALIZERS: Dict[str, Callable[[Any], Any]] = {
     "workdir": lambda v: None if v in {None, "", False} else _normalize_workdir(v),
@@ -1764,6 +1786,7 @@ _UPDATE_FIELD_NORMALIZERS: Dict[str, Callable[[Any], Any]] = {
     "monitor_url": _normalize_job_optional_text,
     "interpreter": _normalize_job_optional_text,
     "reasoning_effort": _normalize_reasoning_effort,
+    "fallback_providers": _normalize_fallback_providers,
 }
 
 
@@ -1835,6 +1858,7 @@ def create_job(
     paused_reason: Optional[str] = None,
     pinned: bool = False,
     interpreter: Optional[str] = None,
+    fallback_providers: Optional[List[Dict[str, Any]]] = None,
 ) -> Dict[str, Any]:
     """Create a new cron job and return the stored record.
 
@@ -1845,7 +1869,8 @@ def create_job(
     source run FIRST each tick; unchanged output suppresses the agent run (mutually exclusive,
     incompatible with ``no_agent``). reasoning_effort: per-job pin; capability NOT validated.
     interpreter: absolute/``~`` Python for ``.py`` script/monitor_script, validated at run time
-    (a venv can be rebuilt or moved after creation)."""
+    (a venv can be rebuilt or moved after creation). fallback_providers: the job's own fallback
+    chain (``[]`` disables fallback; None stores nothing, so the scheduler default applies)."""
     if not isinstance(paused, bool):
         raise ValueError("paused must be a boolean.")
     if paused_reason is not None and not isinstance(paused_reason, str):
@@ -1931,6 +1956,7 @@ def create_job(
     for key, value in (
         ("attach_to_session", normalized_attach), ("reasoning_effort", normalized_reasoning_effort),
         ("failure_deliver", f["failure_deliver"]), ("interpreter", f["interpreter"]),
+        ("fallback_providers", f["fallback_providers"]),
     ):
         if value is not None:
             job[key] = value
@@ -2117,6 +2143,9 @@ def update_job(job_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]
         _normalize_job_updates(job, updates)
         _apply_pin_update(job, updates)
         updated = _apply_skill_fields({**job, **updates})
+        if "fallback_providers" in updates and updates["fallback_providers"] is None:
+            # Clearing the override removes the key: the record reads like a pre-feature job.
+            updated.pop("fallback_providers", None)
         _reject_terminal_activation(job, updated, job_id)
         # Re-check on the MERGED record; scoped to changed fields so legacy records keep loading.
         if {"monitor_script", "monitor_url", "no_agent", "script"}.intersection(updates):

@@ -660,6 +660,40 @@ def test_comment_rejects_caller_supplied_author(worker_env):
         conn.close()
 
 
+def test_explicit_board_routes_show_and_comment_past_current_board_pin(monkeypatch, tmp_path):
+    """Explicit tool board scope wins over a dispatched worker's DB pin."""
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+    monkeypatch.delenv("HERMES_KANBAN_DB", raising=False)
+
+    from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_connect as kbc
+    from tools import kanban_tools as kt
+
+    with kbc.connect_closing(board="alt") as conn:
+        alt_task = kb.create_task(conn, title="alt task", assignee="worker")
+
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(kb.kanban_db_path(board="default")))
+
+    shown = json.loads(kt._handle_show({"task_id": alt_task, "board": "alt"}))
+    assert shown["task"]["id"] == alt_task
+
+    commented = json.loads(kt._handle_comment({
+        "task_id": alt_task,
+        "body": "explicit board comment",
+        "board": "alt",
+    }))
+    assert commented["ok"] is True
+
+    missing = json.loads(kt._handle_show({"task_id": "t_missing", "board": "alt"}))
+    assert "not found" in missing["error"]
+
+    with kbc.connect_closing(board="alt") as conn:
+        assert [c.body for c in kb.list_comments(conn, alt_task)] == ["explicit board comment"]
+
+
 def test_create_happy_path(worker_env):
     from tools import kanban_tools as kt
     out = kt._handle_create({

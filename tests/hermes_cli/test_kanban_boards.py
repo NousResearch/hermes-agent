@@ -100,12 +100,20 @@ class TestPathResolution:
         assert p == fresh_home / "kanban" / "boards" / "atm10-server" / "kanban.db"
 
 
-    def test_env_var_db_override_still_wins(self, fresh_home, tmp_path, monkeypatch):
-        """``HERMES_KANBAN_DB`` pins the file regardless of board= arg."""
+    def test_explicit_board_overrides_db_pin(self, fresh_home, tmp_path, monkeypatch):
+        """An explicit board must bypass a worker's current-board DB pin."""
         forced = tmp_path / "custom.db"
         monkeypatch.setenv("HERMES_KANBAN_DB", str(forced))
         assert kb.kanban_db_path() == forced
-        assert kb.kanban_db_path(board="ignored") == forced
+        assert kb.kanban_db_path(board="explicit") == (
+            fresh_home / "kanban" / "boards" / "explicit" / "kanban.db"
+        )
+
+    def test_explicit_board_validates_slug_despite_db_pin(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_KANBAN_DB", str(tmp_path / "custom.db"))
+
+        with pytest.raises(ValueError, match="invalid board slug"):
+            kb.kanban_db_path(board="Has Spaces")
 
 
 # ---------------------------------------------------------------------------

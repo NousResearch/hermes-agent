@@ -239,6 +239,44 @@ def test_upload_list_download_delete_roundtrip(client):
     ).json()["attachments"] == []
 
 
+def test_explicit_board_lists_attachments_past_current_board_db_pin(client, kanban_home, monkeypatch):
+    """Attachment reads honor an explicit board when a worker DB is pinned."""
+    default_conn = kbc.connect()
+    try:
+        default_task = _make_task(default_conn, "default")
+    finally:
+        default_conn.close()
+
+    alt_conn = kbc.connect(board="alt")
+    try:
+        alt_task = _make_task(alt_conn, "alt")
+        alt_dir = kb.task_attachments_dir(alt_task, board="alt")
+        alt_dir.mkdir(parents=True)
+        blob = alt_dir / "alt.txt"
+        blob.write_bytes(b"alt")
+        kb.add_attachment(
+            alt_conn,
+            alt_task,
+            filename="alt.txt",
+            stored_path=str(blob),
+            size=blob.stat().st_size,
+        )
+    finally:
+        alt_conn.close()
+
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(kb.kanban_db_path(board="default")))
+
+    listed = client.get(f"/api/plugins/kanban/tasks/{alt_task}/attachments?board=alt")
+    assert listed.status_code == 200, listed.text
+    assert [a["filename"] for a in listed.json()["attachments"]] == ["alt.txt"]
+
+    missing = client.get("/api/plugins/kanban/tasks/t_missing/attachments?board=alt")
+    assert missing.status_code == 404
+
+    implicit = client.get(f"/api/plugins/kanban/tasks/{default_task}/attachments")
+    assert implicit.status_code == 200, implicit.text
+
+
 def test_upload_sanitizes_traversal_filename(client):
     task_id = _create_task_via_api(client)
     r = client.post(

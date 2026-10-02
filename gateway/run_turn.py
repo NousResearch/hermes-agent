@@ -3909,6 +3909,10 @@ class GatewayTurnMixin:
                 persist_user_message=next_persist_message,
                 persist_user_display_kind=next_display_kind,
                 reply_expected=next_reply_expected,
+                # A plugin injection that drains as a follow-up is the same event arriving
+                # another way, so it carries the same author. Computed per event here, exactly
+                # as the first turn does: the restored source is the human's either way.
+                turn_author_override=plugin_author_for_event(pending_event),
                 persist_user_display_metadata={
                     **reply_expected_metadata(next_reply_expected), **diagnostic_metadata(pending_event)} or None,
             )

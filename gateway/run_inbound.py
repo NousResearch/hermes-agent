@@ -617,11 +617,21 @@ class GatewayInboundMixin:
     def _hm_merge_pending_for_source(
         self, source: SessionSource, _quick_key: str, event: "MessageEvent", *, merge_text: bool = False
     ) -> None:
-        """Merge *event* into the source adapter's pending slot (no-op without an adapter)."""
+        """Merge *event* into the source adapter's pending slot (no-op without an adapter).
+
+        An internal (plugin) event never merges into a human-held slot: the base adapter already
+        refuses that merge, and absorbing one here would append a plugin's words to a message the
+        human sent, then run the combined turn as the human — the plugin author is lost. Such an
+        event takes its own FIFO slot instead, so it runs as its own turn with its own author.
+        """
         from gateway.platforms.base import merge_pending_message_event
         adapter = self._delivery_adapter_for(source)
-        if adapter:
-            merge_pending_message_event(adapter._pending_messages, _quick_key, event, merge_text=merge_text)
+        if not adapter:
+            return
+        if event.internal:
+            self._enqueue_fifo(_quick_key, event, adapter)
+            return
+        merge_pending_message_event(adapter._pending_messages, _quick_key, event, merge_text=merge_text)
 
     async def _hm_busy_slash_or_photo(
         self, event: "MessageEvent", source: SessionSource, _quick_key: str

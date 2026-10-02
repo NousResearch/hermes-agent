@@ -699,7 +699,9 @@ def _write_provider_config(provider: dict, config: dict, *, managed_feature) -> 
             # Browser Use mode (browser.backend) composes with the provider — keep the driver choice intact.
             _select_into(config, "browser", "cloud_provider", bp, managed_feature)
         else:
-            config.setdefault("browser", {}).pop("use_gateway", None)
+            browser_cfg = config.setdefault("browser", {})
+            browser_cfg.pop("cloud_provider", None)
+            browser_cfg.pop("use_gateway", None)
     if provider.get("browser_backend"):
         config.setdefault("browser", {})["backend"] = provider["browser_backend"]
     # Local engine rows ("Local Browser" resets to auto, "Lightpanda" sets lightpanda); composes with browser.backend.

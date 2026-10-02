@@ -342,6 +342,7 @@ class VoiceToggleAction(WireEnum):
 
 class VoiceToggleParams(Params):
     action: VoiceToggleAction = VoiceToggleAction.status
+    session_id: str | None = None
     profile: str | None = None
 
 

@@ -10,6 +10,7 @@ post-turn follow-ups (queued prompt, goal continuation, notifications).
 from __future__ import annotations
 
 import dataclasses
+import os
 
 from .method_ctx import HandlerRegistry, bind_module
 
@@ -661,6 +662,11 @@ def _prepare_turn_input(sid: str, session: dict, st: _TurnRun, text: Any, images
     fail-closed refusal scope).  The config-model sync is skipped under a /model --once
     override (not pinned as model_override, the sync would clobber it); a model picked
     mid-turn is applied first so the explicit pick wins over a config change."""
+    # Voice toggles arrive on the RPC process, while the turn may run in a
+    # separately spawned interactive agent. Materialize the session state before
+    # launching the turn so the child inherits the runtime flags.
+    os.environ["HERMES_VOICE"] = "1" if session.get("voice_enabled") else "0"
+    os.environ["HERMES_VOICE_TTS"] = "1" if session.get("voice_tts_enabled") else "0"
     from tools.approval_context import set_current_session_key
     scopes = st.scopes
     scopes.approval = set_current_session_key(session["session_key"])

@@ -12,7 +12,7 @@ import time
 from pathlib import Path
 from typing import Callable, Iterable, List, Optional
 
-from hermes_cli._subprocess_compat import windows_hide_flags
+from hermes_cli._subprocess_compat import NO_LAZY_FETCH_ENV, windows_hide_flags
 
 logger = logging.getLogger(__name__)
 
@@ -508,20 +508,85 @@ def is_partial_clone_pack_objects_crash(stderr: str) -> bool:
     return any(terminator in text for terminator in _PACK_OBJECTS_CRASH_TERMINATORS)
 
 
+def _tracking_ref_from_fetch_args(fetch_args: List[str]) -> Optional[str]:
+    """Return the explicit remote-tracking destination in a fetch refspec, if any."""
+    for arg in reversed(fetch_args):
+        if ":refs/remotes/" not in arg:
+            continue
+        target = arg.rsplit(":", 1)[1]
+        if target.startswith("refs/remotes/"):
+            return target
+    return None
+
+
+def _is_missing_local_object_fetch_failure(stderr: str) -> bool:
+    """Match the narrow missing-object diagnostic reported by git fetch (#130509)."""
+    prefix = "error: Could not read "
+    for line in (stderr or "").splitlines():
+        if not line.startswith(prefix):
+            continue
+        object_id = line[len(prefix):].strip()
+        if len(object_id) == 40 and all(char in "0123456789abcdefABCDEF" for char in object_id):
+            return True
+    return False
+
+
+def _drop_unreadable_tracking_ref(git_cmd: List[str], fetch_args: List[str], repo_root: Path) -> bool:
+    """Drop only the fetch target when its remote-tracking ref names a missing local commit.
+
+    Remote-tracking refs are fetch caches, not user branches. Deleting one also removes its
+    remote-tracking reflog; the immediately retried explicit refspec recreates both from origin.
+    Local branches, HEAD, the index, the working tree, and stashes are never touched.
+    """
+    target = _tracking_ref_from_fetch_args(fetch_args)
+    if target is None:
+        return False
+    run_kwargs = dict(
+        cwd=str(repo_root), capture_output=True, text=True, encoding="utf-8", errors="replace",
+        timeout=30, creationflags=windows_hide_flags(),
+    )
+    raw = subprocess.run(git_cmd + ["rev-parse", "--verify", "--quiet", target], **run_kwargs)
+    if raw.returncode != 0 or not raw.stdout.strip():
+        return False
+
+    # A partial clone may otherwise lazy-fetch the very object whose absence we are diagnosing.
+    env = {**os.environ, **NO_LAZY_FETCH_ENV}
+    readable = subprocess.run(
+        git_cmd + ["cat-file", "-e", f"{target}^{{commit}}"], env=env, **run_kwargs)
+    if readable.returncode == 0:
+        return False
+
+    deleted = subprocess.run(git_cmd + ["update-ref", "-d", target], **run_kwargs)
+    if deleted.returncode != 0:
+        logger.warning("Could not drop unreadable remote-tracking ref %s: %s",
+                       target, (deleted.stderr or "").strip())
+        return False
+    logger.info("Dropped unreadable remote-tracking ref %s before retrying fetch", target)
+    return True
+
+
 def fetch_with_partial_clone_recovery(runner: Callable[..., subprocess.CompletedProcess],
                                       git_cmd: List[str], fetch_args: List[str],
                                       repo_root: Path) -> subprocess.CompletedProcess:
-    """Run a fetch; on the pack-objects BUG, mark the unmarked packs and retry it once.
+    """Run a fetch with bounded recovery for known local object-store failures.
 
-    ``runner(git_cmd, args) -> CompletedProcess`` and ``git_cmd + fetch_args`` is the plain
-    fetch argv. On the crash, ``repo_root``'s unmarked packs get a ``.promisor`` file and the
-    identical fetch runs once more. The retry's result is returned whatever its exit code, so the caller keeps its
-    normal failure handling. (A ``-c remote.origin.promisor=`` override does not help: git
-    registers promisor remotes additively, so the repo's own ``true`` still wins.)
+    First retain the existing partial-clone pack-objects recovery: mark unmarked packs and retry
+    once on that exact Git assertion. If the resulting fetch instead reports an exact missing
+    object and the explicit destination remote-tracking ref cannot resolve to a local commit,
+    drop only that broken cache ref and retry the same fetch once. A healthy tracking ref or an
+    unrelated network/auth failure is never mutated.
     """
     result = runner(git_cmd, fetch_args)
-    if result.returncode == 0 or not is_partial_clone_pack_objects_crash(getattr(result, "stderr", "") or ""):
+    if result.returncode != 0 and is_partial_clone_pack_objects_crash(
+            getattr(result, "stderr", "") or ""):
+        mark_unmarked_packs_promisor(repo_root)
+        logger.info("pack-objects crash on a partial clone; retrying the fetch")
+        result = runner(git_cmd, fetch_args)
+
+    if result.returncode == 0 or not _is_missing_local_object_fetch_failure(
+            getattr(result, "stderr", "") or ""):
         return result
-    mark_unmarked_packs_promisor(repo_root)
-    logger.info("pack-objects crash on a partial clone; retrying the fetch")
+    if not _drop_unreadable_tracking_ref(git_cmd, fetch_args, repo_root):
+        return result
+    logger.info("missing local object behind fetch target; retrying after ref recreation")
     return runner(git_cmd, fetch_args)

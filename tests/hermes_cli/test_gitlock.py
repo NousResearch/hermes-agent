@@ -193,3 +193,96 @@ def test_recovery_marks_unmarked_packs_and_retries_the_same_fetch(crash_stderr, 
     assert calls == [(["git"], ["fetch", "origin", "main"])] * 2
     assert (pack_dir / "pack-local.promisor").exists()
     assert result.returncode == 0
+
+# ---- Broken remote-tracking ref recovery (#130509) ----
+
+_MISSING_OBJECT_OID = "aa1a546a2298bce39f7929dedb3b8d1f6cf69d4d"
+_MISSING_OBJECT_STDERR = f"error: Could not read {_MISSING_OBJECT_OID}\n"
+_TRACKING_REFSPEC = "+refs/heads/main:refs/remotes/origin/main"
+
+
+def _init_repo(root: Path) -> None:
+    subprocess.run(["git", "init", "-q"], cwd=root, check=True)
+
+
+def _write_broken_origin_main(root: Path) -> tuple[Path, Path]:
+    ref = root / ".git" / "refs" / "remotes" / "origin" / "main"
+    reflog = root / ".git" / "logs" / "refs" / "remotes" / "origin" / "main"
+    ref.parent.mkdir(parents=True, exist_ok=True)
+    reflog.parent.mkdir(parents=True, exist_ok=True)
+    ref.write_text(_MISSING_OBJECT_OID + "\n", encoding="ascii")
+    reflog.write_text(
+        f"{'0' * 40} {_MISSING_OBJECT_OID} Test <test@example.com> 1700000000 +0000\tfetch\n",
+        encoding="ascii",
+    )
+    return ref, reflog
+
+
+def test_missing_object_recovery_drops_only_broken_target_and_retries(tmp_path):
+    _init_repo(tmp_path)
+    ref, reflog = _write_broken_origin_main(tmp_path)
+    calls = []
+
+    def runner(git_cmd, args):
+        calls.append((list(git_cmd), list(args)))
+        if len(calls) == 1:
+            return CompletedProcess(git_cmd + args, 1, stdout="", stderr=_MISSING_OBJECT_STDERR)
+        return CompletedProcess(git_cmd + args, 0, stdout="", stderr="")
+
+    args = ["fetch", "origin", _TRACKING_REFSPEC]
+    result = fetch_with_partial_clone_recovery(runner, ["git"], args, tmp_path)
+
+    assert result.returncode == 0
+    assert calls == [(["git"], args)] * 2
+    assert not ref.exists()
+    assert not reflog.exists()  # git update-ref -d removes the broken tracking reflog too
+
+
+def test_missing_object_recovery_does_not_drop_a_readable_tracking_ref(tmp_path):
+    _init_repo(tmp_path)
+    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "config", "user.name", "Test"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "commit", "--allow-empty", "-q", "-m", "seed"], cwd=tmp_path, check=True)
+    head = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=tmp_path, check=True, capture_output=True, text=True,
+    ).stdout.strip()
+    subprocess.run(
+        ["git", "update-ref", "refs/remotes/origin/main", head], cwd=tmp_path, check=True)
+
+    calls = []
+
+    def runner(git_cmd, args):
+        calls.append((list(git_cmd), list(args)))
+        return CompletedProcess(git_cmd + args, 1, stdout="", stderr=_MISSING_OBJECT_STDERR)
+
+    args = ["fetch", "origin", _TRACKING_REFSPEC]
+    result = fetch_with_partial_clone_recovery(runner, ["git"], args, tmp_path)
+
+    assert result.returncode == 1
+    assert calls == [(["git"], args)]
+    kept = subprocess.run(
+        ["git", "rev-parse", "refs/remotes/origin/main"],
+        cwd=tmp_path, check=True, capture_output=True, text=True,
+    ).stdout.strip()
+    assert kept == head
+
+
+def test_unrelated_fetch_failure_never_drops_even_a_broken_tracking_ref(tmp_path):
+    _init_repo(tmp_path)
+    ref, _ = _write_broken_origin_main(tmp_path)
+    calls = []
+
+    def runner(git_cmd, args):
+        calls.append((list(git_cmd), list(args)))
+        return CompletedProcess(
+            git_cmd + args, 128, stdout="",
+            stderr="fatal: Authentication failed for 'https://github.com/example/repo.git'\n",
+        )
+
+    args = ["fetch", "origin", _TRACKING_REFSPEC]
+    result = fetch_with_partial_clone_recovery(runner, ["git"], args, tmp_path)
+
+    assert result.returncode == 128
+    assert calls == [(["git"], args)]
+    assert ref.exists()
+

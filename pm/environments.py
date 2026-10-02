@@ -6,6 +6,7 @@ any dependency from that environment has been imported.
 """
 from __future__ import annotations
 
+import functools
 import hashlib
 import json
 import os
@@ -14,9 +15,66 @@ from pathlib import Path
 from hermes_constants import get_default_hermes_root, project_venv_dir
 
 
+def _worktree_main_checkout_uncached(root_str: str) -> str | None:
+    """Main checkout root for a linked git worktree at *root_str*, else ``None``.
+
+    A linked worktree's ``.git`` is a *file* (not a directory) reading
+    ``gitdir: <main>/.git/worktrees/<name>``; the main checkout has no
+    install of its own registered under the worktree's path, so hashing the
+    worktree's own path here previously minted a brand-new, never-installed
+    ``installs/<hash>/`` -- the worktree could never resolve a committed
+    dependency environment even though the main checkout's install was fine.
+    Stdlib-only (this module boots before third-party imports): no
+    subprocess, just the same ``.git`` file git itself writes.
+
+    Only ever reads a single file: ``<root>/.git``. The ``gitdir:`` target is
+    resolved lexically (``os.path.normpath``), never via ``Path.resolve()``,
+    so this never issues stat/readlink syscalls against the main checkout's
+    tree (which, for a real worktree, sits inside the Hermes home and would
+    otherwise trip test isolation guards on every call). Callers must memoize
+    this: it sits on the hot path of every install-state lookup.
+    """
+    root = Path(root_str)
+    git_file = root / ".git"
+    try:
+        if not git_file.is_file():
+            return None
+        text = git_file.read_text(encoding="utf-8-sig").strip()
+    except OSError:
+        return None
+    if not text.startswith("gitdir:"):
+        return None
+    gitdir_raw = text.partition(":")[2].strip()
+    gitdir = Path(gitdir_raw)
+    if not gitdir.is_absolute():
+        gitdir = root / gitdir
+    normalized = os.path.normpath(str(gitdir))
+    marker = f"{os.sep}worktrees{os.sep}"
+    idx = normalized.find(marker)
+    if idx == -1:
+        return None
+    common_git_dir = Path(normalized[:idx])
+    if common_git_dir.name != ".git":
+        return None
+    return str(common_git_dir.parent)
+
+
+@functools.lru_cache(maxsize=None)
+def _worktree_main_checkout_cached(root_str: str) -> str | None:
+    return _worktree_main_checkout_uncached(root_str)
+
+
+def _worktree_main_checkout(root: Path) -> Path | None:
+    result = _worktree_main_checkout_cached(str(root))
+    return Path(result) if result is not None else None
+
+
+@functools.lru_cache(maxsize=None)
 def install_key(project_root: Path) -> str:
-    canonical = str(Path(project_root).resolve())
+    root = Path(project_root).resolve()
+    canonical = str(_worktree_main_checkout(root) or root)
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:16]
+
 
 
 def dependency_home_root() -> Path:

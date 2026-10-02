@@ -36,7 +36,9 @@ def update_tree(tmp_path, monkeypatch):
     git(origin, 'config', 'user.name', 'Fixture')
     git(origin, 'config', 'user.email', 'fixture@example.invalid')
     (origin / 'content.txt').write_text('base\n', encoding='utf-8')
-    (origin / '.gitignore').write_text('.bytecode-fingerprint\n', encoding='utf-8')
+    # Git blob assertions below compare bytes composed by this fixture. Keep
+    # their line endings explicit instead of letting Windows text I/O add CRs.
+    (origin / '.gitignore').write_bytes(b'.bytecode-fingerprint\n')
     git(origin, 'add', 'content.txt', '.gitignore')
     git(origin, '-c', 'commit.gpgsign=false', 'commit', '-qm', 'base')
     git(origin, 'tag', 'v1.0.0')

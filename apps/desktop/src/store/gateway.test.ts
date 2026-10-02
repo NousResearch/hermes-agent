@@ -1023,7 +1023,9 @@ describe('secondary connection timeout (#93454)', () => {
 
       let outcome = 'pending'
 
-      const dial = openGatewayForAgent('homelab', 'default').then(
+      // This is an explicit cold source open, so it carries the foreground
+      // spawn budget; ambient pre-warms retain the short reconnect budget.
+      const dial = openGatewayForAgent('homelab', 'default', { spawnPriority: 'foreground' }).then(
         () => {
           outcome = 'resolved'
         },

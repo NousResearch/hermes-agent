@@ -141,7 +141,10 @@ function lineageFromDb(rows: SessionRow[], rootId: string): string[] {
 }
 
 test('lineage: a real compression rotation is one sidebar row per conversation (#121148)', async () => {
-  const provider = await startScriptedProvider()
+  // The compressor trusts measured provider usage once it exists. Reporting
+  // the fixture's constant 10 tokens hid the growing transcript from that
+  // trigger, so this scenario reports bounded estimates from each real request.
+  const provider = await startScriptedProvider({ estimateUsage: true })
   const sandbox = createCoreSandbox('rotation')
   writeProviderHome(
     sandbox.hermesHome,

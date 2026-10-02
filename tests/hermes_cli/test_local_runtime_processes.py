@@ -174,7 +174,29 @@ def test_failed_setup_never_runs_child_and_releases_handles(tmp_path, monkeypatc
 
     def assign(job, proc):
         children.append(proc)
-        assert psutil.Process(proc.pid).status() == psutil.STATUS_STOPPED
+        # psutil's aggregate Windows status can report "running" for a child
+        # created suspended. Query its owned primary thread's kernel suspend
+        # count, then undo only the increment made by this observation.
+        api = ctypes.WinDLL('kernel32', use_last_error=True)
+        api.OpenThread.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+        api.OpenThread.restype = wintypes.HANDLE
+        api.SuspendThread.argtypes = [wintypes.HANDLE]
+        api.SuspendThread.restype = wintypes.DWORD
+        api.ResumeThread.argtypes = [wintypes.HANDLE]
+        api.ResumeThread.restype = wintypes.DWORD
+        api.CloseHandle.argtypes = [wintypes.HANDLE]
+        api.CloseHandle.restype = wintypes.BOOL
+        threads = psutil.Process(proc.pid).threads()
+        assert len(threads) == 1
+        thread = api.OpenThread(0x0002, False, threads[0].id)  # THREAD_SUSPEND_RESUME
+        assert thread
+        previous = api.SuspendThread(thread)
+        try:
+            assert previous != 0xffffffff and previous >= 1
+        finally:
+            if previous != 0xffffffff:
+                assert api.ResumeThread(thread) == previous + 1
+            assert api.CloseHandle(thread)
         assert not marker.exists()
         # Query the actual kernel object, not implementation source/constants.
         limits = processes._ExtendedLimits()

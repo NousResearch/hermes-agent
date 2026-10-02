@@ -406,6 +406,9 @@ async def proxy_remote_media(url: str, request: Request):
         # validates again at connect, then dials the vetted IP without changing Host/SNI.
         async with create_ssrf_safe_async_client(
             timeout=_MEDIA_PROXY_TIMEOUT_S, follow_redirects=True,
+            # Environment proxies create a separate, unguarded HTTPX mount.
+            # This authenticated media route must always use the pinned transport.
+            trust_env=False,
             event_hooks={"request": [_media_proxy_request_guard]},
         ) as client:
             response = await client.get(url)

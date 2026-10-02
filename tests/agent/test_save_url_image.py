@@ -113,10 +113,10 @@ class TestSaveUrlImage:
 
         assert path.exists()
         assert path.read_bytes() == PNG_1PX
-        # The cache directory must be under HERMES_HOME — gateway cleanup
-        # relies on this being the canonical location.
+        # Generated deliverables stay outside the swept inbound media caches.
         assert path.parent.name == "images"
-        assert path.parent.parent.name == "cache"
+        assert path.parent.parent.name == "generated"
+        assert path.parent.parent.parent.name == "cache"
         # Durable generated-media dir: under HERMES_HOME but OUTSIDE the swept
         # inbound caches — gateway cleanup must never delete the only copy of a
         # generated deliverable (#126445).

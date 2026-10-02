@@ -439,23 +439,28 @@ def test_metadata_write_failure_rolls_back_removal(monkeypatch, tmp_path):
     assert list(target.parent.glob(".demo.remove-*")) == []
 
 
-def test_metadata_write_failure_restores_replaced_git_tree(monkeypatch, tmp_path):
+def test_metadata_write_failure_restores_replaced_git_tree(monkeypatch, tmp_path, isolated_python):
     from hermes_cli import plugins_cmd as pc
+    from pm import client
+    from tests.pm._fixtures import worker_toolchain
 
     repo, old_sha, new_sha = _plugin_repo(tmp_path)
     home = tmp_path / "home"
     monkeypatch.setenv("HERMES_HOME", str(home))
     target, _, _ = pc._install_plugin_core(repo.as_uri(), force=False, ref=old_sha)
     before = _metadata(home)
-    write_metadata = pc._write_install_metadata
-
-    def fail_new_metadata(metadata):
-        if metadata["demo"]["revision"] == new_sha:
-            raise OSError("disk full")
-        write_metadata(metadata)
-
-    monkeypatch.setattr(pc, "_write_install_metadata", fail_new_metadata)
-    with pytest.raises(OSError, match="disk full"):
+    metadata = home / "plugins" / ".install-metadata.json"
+    # Publication now happens in the PM worker, so inject the failure at the
+    # actual durable write rather than the retired parent-process helper.
+    worker_toolchain(client, monkeypatch, isolated_python,
+        "import pm.publication as publication\n"
+        "original = publication.durable_write_bytes\n"
+        "def fail_metadata(path, data):\n"
+        f"    if Path(path) == Path({str(metadata)!r}):\n"
+        "        raise OSError('disk full')\n"
+        "    return original(path, data)\n"
+        "publication.durable_write_bytes = fail_metadata\n")
+    with pytest.raises(pc.PluginOperationError, match="disk full"):
         pc._install_plugin_core(repo.as_uri(), force=True, ref=new_sha)
 
     assert _git(target, "rev-parse", "HEAD") == old_sha
@@ -465,7 +470,6 @@ def test_metadata_write_failure_restores_replaced_git_tree(monkeypatch, tmp_path
 
 def test_reinstall_after_manual_directory_removal_retains_pin(monkeypatch, tmp_path):
     from hermes_cli.plugins_cmd import _install_plugin_core
-    from utils import rmtree_readonly
 
     repo, old_sha, _new_sha = _plugin_repo(tmp_path)
     home = tmp_path / "home"
@@ -476,7 +480,7 @@ def test_reinstall_after_manual_directory_removal_retains_pin(monkeypatch, tmp_p
     # TemporaryDirectory also clears read-only Git objects on Windows.
     with tempfile.TemporaryDirectory(dir=tmp_path) as removed:
         target.rename(Path(removed) / "removed-plugin")
-    rmtree_readonly(target)
+    assert not target.exists()
 
     target, _manifest, _name = _install_plugin_core(repo.as_uri(), force=False)
 

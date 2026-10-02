@@ -642,10 +642,8 @@ class TestStdinHelpers:
         """
         python = shlex.quote(sys.executable)
         code = shlex.quote("import sys; print(sys.stdin.read().strip())")
-        command = f'{shlex.quote(sys.executable)} -c "import sys; print(sys.stdin.read().strip())"'
         session = registry.spawn_local(
             f"{python} -c {code}",
-            command,
             cwd=str(tmp_path),
             use_pty=True,
         )
@@ -901,6 +899,8 @@ class TestSpawnEnvSanitization:
         with patch.dict(os.environ, {
             "PATH": "/usr/bin:/bin",
             "HOME": "/home/user",
+            "USERPROFILE": "/home/user",
+            "HERMES_HOME": "/home/user/.hermes",
             "USER": "tester",
             "TELEGRAM_BOT_TOKEN": "bot-secret",
             "FIRECRAWL_API_KEY": "fc-secret",
@@ -1387,7 +1387,7 @@ class TestKillProcess:
                 result = registry.kill_process(s.id)
 
             assert result["status"] == "killed"
-            terminate.assert_called_once_with(424242, None)
+            terminate.assert_called_once_with(424242)
         finally:
             registry._running.pop(s.id, None)
 

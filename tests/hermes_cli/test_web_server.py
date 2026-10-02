@@ -1200,8 +1200,9 @@ CONFIG_SCHEMA = ProviderConfigSchema(
         ("outside_cdn_redirect", 403),
         ("metadata_redirect", 403),
     ])
+    @pytest.mark.parametrize("environment_proxy", [False, True])
     def test_media_proxy_checks_cdn_and_dns_before_each_request(
-        self, monkeypatch, scenario, expected_status,
+        self, monkeypatch, scenario, expected_status, environment_proxy,
     ):
         """Real router/client/SSRF policy; only DNS and the wire are offline fixtures."""
         import base64
@@ -1262,7 +1263,12 @@ CONFIG_SCHEMA = ProviderConfigSchema(
         monkeypatch.setattr(socket, "getaddrinfo", dns)
         monkeypatch.setattr(AutoBackend, "connect_tcp", connect)
         for key in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy"):
-            monkeypatch.delenv(key, raising=False)
+            if environment_proxy:
+                monkeypatch.setenv(key, "http://untrusted-proxy.invalid:8080")
+            else:
+                monkeypatch.delenv(key, raising=False)
+        monkeypatch.setenv("NO_PROXY", "")
+        monkeypatch.setenv("no_proxy", "")
 
         response = self.client.get("/api/media/proxy", params={"url": start})
         assert response.status_code == expected_status

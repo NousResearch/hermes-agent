@@ -150,7 +150,7 @@ jobs:
       - name: nix flake check
         # --print-build-logs: a check that fails then prints the assertion
         # that failed, and not only the derivation that failed to build.
-        run: nix flake check "${{ inputs.release == true && format('path:{0}/release-source', runner.temp) || '.' }}" --print-build-logs
+        run: nix flake check "${{ inputs.release == true && format('path:{0}/release-source', runner.temp) || '.' }}" --print-build-logs --max-jobs "${{ github.repository == 'NousResearch/hermes-agent' && '32' || '2' }}"
 
       - name: Verify release package runtime identity
         if: inputs.release == true

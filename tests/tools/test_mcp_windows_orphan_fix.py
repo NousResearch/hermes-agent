@@ -37,7 +37,7 @@ def _run_stdio_with_mocks(os_name: str, attach_mock) -> None:
     task._serve_session = _serve
     task._session_kwargs = lambda: {}
 
-    async def fake_preflight(name, command, args):
+    async def fake_preflight(name, command, args, *, env=None, cwd=None):
         return command, args
 
     with (
@@ -114,10 +114,12 @@ class TestWindowsTreeKillHelpers:
             def kill(self):
                 killed.append(self.pid)
 
-        fake_psutil = MagicMock()
-        fake_psutil.Process = FakeProc
-        fake_psutil.wait_procs = lambda procs, timeout: ([], [])  # all exited gracefully
-        monkeypatch.setitem(__import__("sys").modules, "psutil", fake_psutil)
+        import psutil
+
+        # Keep the real SDK/import guard and exception types; replace only the
+        # process operations so no operating-system PID is ever signalled.
+        monkeypatch.setattr(psutil, "Process", FakeProc)
+        monkeypatch.setattr(psutil, "wait_procs", lambda procs, timeout: ([], []))
 
         lifecycle._kill_windows_process_tree(1, 15)
         # SIGTERM pass: descendants only — the direct child was already signalled by the caller.
@@ -125,8 +127,9 @@ class TestWindowsTreeKillHelpers:
         assert killed == []
 
         # Force pass: survivors of the wait are killed. wait_procs reports everyone alive.
-        fake_psutil.wait_procs = lambda procs, timeout: ([], list(procs))
-        lifecycle._kill_windows_process_tree(1, 9)
+        monkeypatch.setattr(psutil, "wait_procs", lambda procs, timeout: ([], list(procs)))
+        import signal
+        lifecycle._kill_windows_process_tree(1, getattr(signal, "SIGKILL", signal.SIGTERM))
         assert sorted(killed) == [2, 3]
 
     def test_ledger_tree_kill_helper_swallows_errors(self):

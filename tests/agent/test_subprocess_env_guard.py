@@ -54,6 +54,10 @@ ALLOWED_RAW_SPAWN_ENV_FILES = {
     # watcher (generated script source), the launchd stderr-timestamp wrapper around the
     # gateway command, and the skills sync that seeds a new profile.
     "hermes_cli/gateway.py",
+    # The Windows supervisor launches Hermes with the gateway's configured
+    # environment; its local shortcut helper receives only fixed script/argv
+    # plus path overlays. These are the Windows counterparts of gateway.py.
+    "hermes_cli/gateway_windows.py",
     "hermes_cli/stderr_timestamp.py",
     "hermes_cli/profiles.py",
     # The compute host runs agent turns for the dashboard: Home Assistant tools, Modal/Daytona

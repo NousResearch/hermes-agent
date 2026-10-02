@@ -4582,6 +4582,7 @@ export const deOverrides = {
   },
   updates: {
     discontinuedTitle: 'Dieser Hermes-Build wird nicht mehr unterstützt',
+    automaticUpdatesSaveFailed: 'Die Speicherung der Einstellung konnte nicht bestätigt werden. Bitte erneut versuchen.',
     discontinuedBody:
       'Dieser Hermes-Build wird nicht mehr unterstützt und funktioniert möglicherweise nicht mehr — deinstallieren Sie ihn. Ihre Daten bleiben auf dem Datenträger.',
     channels: { stable: 'Stabil', canary: 'Canary' },

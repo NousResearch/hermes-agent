@@ -43,6 +43,7 @@ export function preflightStateDb({ python, script, home, log, launcher = null }:
         ? ['/d', '/v:off', '/s', '/c', `""${command}" ${args.map((arg: string): string => `"${arg}"`).join(' ')}"`]
         : args,
       hiddenWindowsChildOptions({
+        shell: false,
         encoding: 'utf8',
         timeout: 30_000,
         stdio: ['ignore', 'pipe', 'pipe'],

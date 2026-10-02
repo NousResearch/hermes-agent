@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { isReauthRequiredError } from './backend-health'
+import { isNousCloudAgentUrl, isReauthRequiredError } from './backend-health'
 import { oauthTicketFailureAuthMessage } from './native-auth-decisions'
 import { resolveRemoteOauthTicket, rosterSourceEnumerationTimeoutMs } from './remote-oauth-ticket'
 
@@ -67,7 +67,7 @@ describe('resolveRemoteOauthTicket', () => {
           const authRejected = statusCode === 401 || statusCode === 403
           expect(isReauthRequiredError(error)).toBe(authRejected)
           expect(error.isCloudBackendDown === true).toBe(
-            baseUrl.includes('.agents.nousresearch.com') && [502, 503, 504].includes(statusCode ?? 0)
+            isNousCloudAgentUrl(baseUrl) && [502, 503, 504].includes(statusCode ?? 0)
           )
 
           if (authRejected) {

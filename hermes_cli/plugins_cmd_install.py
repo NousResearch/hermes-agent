@@ -228,6 +228,14 @@ def _ensure_tree_readable(root: Path, plugins_dir: Path) -> None:
     paths = [root]
     for dirpath, dirnames, filenames in os.walk(root):
         paths.extend(Path(dirpath) / name for name in (*dirnames, *filenames))
+    # Validate every link before opening files or repairing modes: a staged
+    # link must never turn a permissions repair into a write outside the tree.
+    resolved_root = root.resolve()
+    if not resolved_root.is_relative_to(plugins_dir.resolve()):
+        raise _pc().PluginOperationError("Staged plugin escapes the plugin tree")
+    for path in paths:
+        if not path.resolve().is_relative_to(resolved_root):
+            raise _pc().PluginOperationError(f"Installed path {path.relative_to(root)} escapes the plugin tree")
     for path in paths:
         try:
             _probe_readable(path)

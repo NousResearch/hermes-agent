@@ -28,7 +28,12 @@ def server():
     # Import real modules once: patch.dict(sys.modules) evicts every newly
     # imported dependency on exit, so each case used to rebuild the server
     # and leave another idle reaper and atexit callback behind.
+    # SessionDB is lazy in the current server. Warm the real module explicitly
+    # so this fixture's cache-preservation contract does not assume an eager import.
+    import hermes_state
     import tui_gateway.server as mod
+
+    assert sys.modules.get("hermes_state") is hermes_state
 
     # Snapshot the RPC registry: several tests below stub handlers
     # ("slash.exec", "fast.ping", ...) directly in the module-level dict,

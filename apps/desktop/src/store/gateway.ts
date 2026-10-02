@@ -1273,7 +1273,12 @@ function backgroundDialCoolingDown(scope: string, now = Date.now()): boolean {
  *  a scope whose socket accepts and then dies redialed once per tick (session.control.read on a
  *  cross-profile session, #121865). After a failure, background callers fail fast and leave
  *  redialing to scheduleReconnect; a user action (foreground) still dials at once. */
-async function openSecondaryForRequest(entry: Secondary, spawnPriority: SpawnPriority): Promise<void> {
+async function openSecondaryForRequest(
+  entry: Secondary,
+  spawnPriority: SpawnPriority,
+  speculative = false,
+  activation?: MaySpawnActivation
+): Promise<void> {
   if (isOpen(entry.gateway)) {
     return
   }
@@ -1284,7 +1289,7 @@ async function openSecondaryForRequest(entry: Secondary, spawnPriority: SpawnPri
   }
 
   try {
-    await openSecondary(entry, spawnPriority)
+    await openSecondary(entry, spawnPriority, speculative, activation)
   } catch (error) {
     recordDialFailure(entry, error)
     throw error
@@ -1639,12 +1644,8 @@ async function gatewayForProfile(
   }
 
   try {
-    if (!isOpen(entry.gateway)) {
-      await openSecondary(entry, spawnPriority, speculative, activation)
-    }
-
+    await openSecondaryForRequest(entry, spawnPriority, speculative, activation)
     assertActivationLive(activation, `Timed out connecting to profile "${key}"`)
-    await openSecondaryForRequest(entry, spawnPriority)
   } catch (error) {
     release()
     throw error

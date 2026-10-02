@@ -1842,6 +1842,7 @@ jobs:
 
   termux-deb:
     name: Build + publish the termux .deb (aarch64)
+    cache-mode: read
     needs: [validate]
     if: inputs.channel == '' && inputs.disposable_channel == '' && needs.validate.outputs.termux == 'true' && (inputs.upload_release == true || inputs.release-phase == 'candidate' || inputs.build_commit != '')
     runs-on: ubuntu-24.04-arm
@@ -1878,6 +1879,9 @@ jobs:
           toolchain: python
           archive-inputs: true
           cache-python: false
+          # This lane can execute an admitted pushed commit. It may restore
+          # verified shared tools, but it must not publish a cache from that tree.
+          save-tools-cache: false
 
       - name: Derive the channel from the tag
         id: channel
@@ -1955,22 +1959,8 @@ jobs:
             bash scripts/termux/termux_pkg_build.sh "$tool" "$tool" termux-build/payload
           done
 
-      - name: Save the payload builds
-        # Save regardless of the wheelhouse/deb phases' outcome: the staged
-        # tool payload is only stale when the lock or a stager changes, and
-        # losing it to a downstream failure re-pays the full stage cost.
-        if: always()
-        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: |
-            termux-build/payload/python
-            termux-build/payload/node
-            termux-build/payload/uv
-            termux-build/payload/npm
-            termux-build/payload/ffmpeg
-            termux-build/payload/ripgrep
-            termux-build/payload/runtime-libs
-          key: termux-payload-${{ hashFiles('pm/lock.json', 'scripts/termux/build_cpython.sh', 'scripts/termux/build_node.sh', 'scripts/termux/build_uv.sh', 'scripts/termux/runtime_libs.json', 'scripts/termux/stage_runtime_libs.py') }}
+      # Shared payload caches are restore-only in this lane. A missing entry
+      # is rebuilt and verified on the runner without publishing selected-tree bytes.
 
       - name: Ensure the derived builder image (toolchain pre-baked)
         id: builder_image
@@ -2031,18 +2021,7 @@ jobs:
               --out termux-build/payload
           fi
 
-      - name: Save the wheelhouse
-        # Only proven wheels enter the cache. Saving before deb assembly
-        # preserves them if a later packaging step fails.
-        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: |
-            termux-build/payload/wheelhouse
-            termux-build/payload/index.json
-            termux-build/payload/SHA256SUMS
-            termux-build/payload/.work/resolved.txt
-            termux-build/payload/.work/build_set.txt
-          key: termux-wheelhouse-${{ hashFiles('uv.lock', 'pyproject.toml', 'pm/lock.json', 'scripts/termux/runtime_libs.json', 'scripts/termux/build_config.sh', 'scripts/termux/build_wheels.py', 'scripts/termux/termux_build.sh', 'scripts/termux/retag_wheel.py', 'scripts/termux/python_linkage.py', 'scripts/termux/wheelhouse_cache.py', 'scripts/termux/build_environment.py', 'pm/environment.py', 'pm/build_operations.py', 'pm/operations.py', 'pm/pyproject.toml', 'pm/uv.lock', 'scripts/termux/termux-builder.Dockerfile') }}
+      # The wheelhouse remains restore-only for the same selected-tree boundary.
 
       - name: Assemble the .deb
         shell: bash

@@ -4574,6 +4574,7 @@ export const esOverrides = {
   },
   updates: {
     discontinuedTitle: 'Esta versión de Hermes ya no tiene soporte',
+    automaticUpdatesSaveFailed: 'No se pudo confirmar que se guardó el ajuste. Inténtalo de nuevo.',
     discontinuedBody:
       'Esta versión de Hermes ya no tiene soporte y podría dejar de funcionar; desinstálala. Tus datos permanecen en el disco.',
     channels: { stable: 'Estable', canary: 'Canary' },

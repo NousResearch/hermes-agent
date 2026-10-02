@@ -39,6 +39,7 @@ vi.mock('@/store/updates', async (): Promise<Record<string, unknown>> => {
   }
 
   return {
+    $automaticUpdateChecksEnabled: atom<boolean>(true),
     $desktopVersion: atom<DesktopVersionInfo | null>(null),
     $backendUpdateApply: atom<UpdateApplyState>(idle),
     $backendUpdateChecking: atom<boolean>(false),
@@ -51,7 +52,8 @@ vi.mock('@/store/updates', async (): Promise<Record<string, unknown>> => {
     refreshDesktopVersion: vi.fn<() => Promise<DesktopVersionInfo | null>>().mockResolvedValue(null),
     openUpdateOverlayFor: vi.fn(),
     openUpdatesWindow: vi.fn(),
-    startActiveUpdate: vi.fn()
+    startActiveUpdate: vi.fn(),
+    setAutomaticUpdateChecksEnabled: vi.fn()
   }
 })
 

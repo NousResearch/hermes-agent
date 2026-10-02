@@ -17,8 +17,10 @@ function run(root, body, { patched = true, limit = 64 } = {}) {
   const script = path.join(root, 'probe.mjs')
   fs.writeFileSync(script, body)
   const args = [...(patched ? ['--import', adapter] : []), script]
+  assert.ok(limit === 64 || limit === 4096, 'only the two fixture fd limits are supported')
   const result = spawnSync('/bin/sh', ['-c',
-    `ulimit -S -n ${limit} && ulimit -H -n ${limit} && exec "$@"`, 'signing-probe', process.execPath, ...args], {
+    'case "$1" in 64|4096) ;; *) exit 64 ;; esac; ulimit -S -n "$1" && ulimit -H -n "$1" && shift && exec "$@"',
+    'signing-probe', String(limit), process.execPath, ...args], {
     encoding: 'utf8', env: { ...process.env, NODE_OPTIONS: '', DEBUG: '' }, timeout: 30000
   })
   assert.ifError(result.error)

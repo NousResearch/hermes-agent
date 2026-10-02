@@ -459,16 +459,19 @@ jobs:
 
   bootstrap-version:
     name: Bootstrap installer release identity
+    cache-mode: read
     needs: admit
     if: needs.admit.outputs.skip-tests != 'true'
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ needs.admit.outputs.commit }}
+          # Admission binds its output to this exact dispatch SHA on main.
+          ref: ${{ github.sha }}
+          persist-credentials: false
       - name: Stamp and verify the Cargo and Tauri release identity
         env:
-          RELEASE_COMMIT: ${{ needs.admit.outputs.commit }}
+          RELEASE_COMMIT: ${{ github.sha }}
           RELEASE_VERSION: ${{ needs.admit.outputs.version }}
         run: |
           set -euo pipefail

@@ -162,7 +162,9 @@ def test_h2_security_override_matches_uv_lock():
         uv_config = tomllib.load(handle)["tool"]["uv"]
 
     override_pins = _exact_pins(uv_config["override-dependencies"])
-    assert override_pins.get("h2") == _uv_lock_version("h2") == "4.4.1"
+    with (pyproject_path.parent / "uv.lock").open("rb") as handle:
+        locked_versions = {row["version"] for row in tomllib.load(handle)["package"] if row["name"] == "h2"}
+    assert locked_versions == {override_pins.get("h2")} == {"4.4.1"}
 
 
 

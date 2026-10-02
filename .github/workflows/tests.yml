@@ -289,6 +289,18 @@ jobs:
           fetch-depth: 0
           fetch-tags: true
 
+      - name: Admit the official historical release fixture in the fork
+        if: github.repository != 'NousResearch/hermes-agent' && matrix.shard == 'git'
+        # The fork has no calendar release tags. Fetch this public fixture only
+        # into the ephemeral runner; never publish or retarget repository tags.
+        run: |
+          set -euo pipefail
+          git fetch --no-tags https://github.com/NousResearch/hermes-agent.git \
+            refs/tags/v2026.9.24:refs/tags/v2026.9.24
+          test "$(git rev-parse v2026.9.24)" = e3dd27ee2d8b011737a4eea8e3eb3d711ab78690
+          test "$(git rev-parse 'v2026.9.24^{commit}')" = f97608f178d1ffeca59860195ab7da295f7c8e5f
+          git merge-base --is-ancestor 'v2026.9.24^{commit}' HEAD
+
       - name: Set up locked Python, Node and test dependencies
         uses: ./.github/actions/setup-pm
         with:

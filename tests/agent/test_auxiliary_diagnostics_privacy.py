@@ -23,18 +23,21 @@ def test_reasoning_floor_notice_omits_route_credentials_and_request_metadata(mon
 
 def test_routing_failure_keeps_actionable_once_only_notice_without_exception_data(caplog):
     notices = []
-    agent = SimpleNamespace(provider="synthetic-main-provider", model="synthetic-main-model",
+    agent = SimpleNamespace(provider="openai-codex", model="gpt-6-luna",
                             _emit_warning=notices.append)
     error = ValueError("Authorization: Bearer synthetic-token\npassword=synthetic-password")
     for _ in range(2):
         _warn_review_routing_fallback(agent, "synthetic-review-provider", "synthetic-review-model", error)
     assert len(notices) == 1
     assert "ValueError" in notices[0]
-    assert "background reviews run on the main model" in notices[0]
+    assert "could not be routed" in notices[0] and "falling back to" in notices[0]
     assert "hermes doctor" in notices[0]
+    # The already resolved main route remains visible for cost awareness.
+    # Only the failed auxiliary settings and raw exception are private here.
+    assert "openai-codex/gpt-6-luna" in notices[0]
     records = [record for record in caplog.records if record.name == "agent.background_review"]
     assert len(records) == 2
     output = caplog.text + notices[0]
-    for value in ("synthetic-token", "synthetic-password", "synthetic-main-provider",
-                  "synthetic-main-model", "synthetic-review-provider", "synthetic-review-model"):
+    for value in ("synthetic-token", "synthetic-password",
+                  "synthetic-review-provider", "synthetic-review-model"):
         assert value not in output

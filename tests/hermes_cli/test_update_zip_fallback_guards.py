@@ -79,16 +79,18 @@ def test_unknown_command_gets_generic_stage():
 
 
 
-def test_no_zip_fallback_flag_survives_post_swap_handoff():
+def test_no_zip_fallback_flag_is_preserved_in_update_options():
     from hermes_cli.subcommands.update import build_update_parser
 
     parser = argparse.ArgumentParser()
     build_update_parser(parser.add_subparsers(), cmd_update=lambda _args: None)
     assert parser.parse_args(["update"]).no_zip_fallback is False
     args = parser.parse_args(["update", "--no-zip-fallback", "--branch", "main"])
-    child = parser.parse_args(["update", *update_cmd._post_swap_argv_tail(args)])
-    assert child.no_zip_fallback is True
-    assert child.branch == "main"
+    assert args.no_zip_fallback is True
+    assert args.branch == "main"
+    # The completion child performs no Git/ZIP source swap. Source fallback is
+    # authorized from this parsed namespace before the modern handoff.
+    assert not update_cmd._should_zip_fallback_on_update_error(ValueError("not a git failure"))
 
 
 def test_git_error_with_no_zip_fallback_exits_without_archive(monkeypatch):

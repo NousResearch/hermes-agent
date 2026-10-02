@@ -114,10 +114,17 @@ function chunk(model: string, delta: Record<string, unknown>, finish: null | str
 
 const tick = () => new Promise(resolve => setTimeout(resolve, 15))
 
-export function startScriptedProvider(): Promise<ScriptedProvider> {
+export function startScriptedProvider({ estimateUsage = false }: { estimateUsage?: boolean } = {}): Promise<ScriptedProvider> {
   const scripts = new Map<string, Step[]>()
   const completions: RecordedCompletion[] = []
   const started = new Map<string, Gate>()
+
+  const usageFor = (rec: RecordedCompletion) => {
+    const promptTokens = estimateUsage ? Math.ceil(JSON.stringify(rec.body.messages ?? []).length / 4) : 10
+    const completionTokens = estimateUsage ? Math.ceil((rec.sentText.length + rec.sentReasoning.length) / 4) : 10
+
+    return { prompt_tokens: promptTokens, completion_tokens: completionTokens, total_tokens: promptTokens + completionTokens }
+  }
 
   const startedGate = (key: string) => {
     let g = started.get(key)
@@ -194,6 +201,9 @@ export function startScriptedProvider(): Promise<ScriptedProvider> {
     }
 
     res.write(chunk(model, {}, calls.length > 0 ? 'tool_calls' : 'stop'))
+    if (estimateUsage) {
+      res.write(`data: ${JSON.stringify({ id: 'core-e2e', object: 'chat.completion.chunk', created: 0, model, choices: [], usage: usageFor(rec) })}\n\n`)
+    }
     res.write('data: [DONE]\n\n')
     res.end()
     rec.finished = true
@@ -234,7 +244,7 @@ export function startScriptedProvider(): Promise<ScriptedProvider> {
             }
           }
         ],
-        usage: { prompt_tokens: 10, completion_tokens: 10, total_tokens: 20 }
+        usage: usageFor(rec)
       })
     )
   }

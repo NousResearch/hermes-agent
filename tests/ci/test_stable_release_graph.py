@@ -249,6 +249,25 @@ def test_release_gates_extract_consumer_facing_versions():
     assert "actual != expected" in nix_check
 
 
+def test_selected_termux_tree_cannot_publish_shared_caches():
+    job = workflow("desktop-bundled-release.yml")["jobs"]["termux-deb"]
+    assert job["cache-mode"] == "read"
+    assert not any("actions/cache/save@" in step.get("uses", "") for step in job["steps"])
+    setup = next(step for step in job["steps"] if step.get("uses") == "./.github/actions/setup-pm")
+    assert setup["with"]["save-tools-cache"] == "false"
+
+
+def test_bootstrap_release_check_uses_the_admitted_dispatch_identity():
+    job = workflow("stable-release.yml")["jobs"]["bootstrap-version"]
+    assert job["needs"] == "admit"
+    assert job["cache-mode"] == "read"
+    checkout = next(step for step in job["steps"] if "actions/checkout@" in step.get("uses", ""))
+    assert checkout["with"]["ref"] == "${{ github.sha }}"
+    assert checkout["with"]["persist-credentials"] == "false"
+    stamp = next(step for step in job["steps"] if step.get("name") == "Stamp and verify the Cargo and Tauri release identity")
+    assert stamp["env"]["RELEASE_COMMIT"] == "${{ github.sha }}"
+
+
 def test_packaged_stamp_writers_receive_versions_without_rewriting_python_metadata():
     docker_steps = workflow("docker.yml")["jobs"]["build"]["steps"]
     assert not any(step.get("name") == "Stamp release build context" for step in docker_steps)

@@ -221,9 +221,10 @@ describe('intentScript', () => {
       ;(listeners[type] ??= []).push(fn)
     }
 
-    const body = intentScript('tok')
-      .replace(/^<script>/, '')
-      .replace(/<\/script>$/, '')
+    const script = intentScript('tok')
+    expect(script.startsWith('<script>')).toBe(true)
+    expect(script.endsWith('</script>')).toBe(true)
+    const body = script.slice('<script>'.length, -'</script>'.length)
 
     new Function('parent', 'addEventListener', 'window', body)(parent, addEventListener, win)
 

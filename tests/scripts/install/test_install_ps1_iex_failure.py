@@ -40,7 +40,7 @@ def test_failed_iex_install_reports_and_returns_to_the_callers_session(tmp_path)
                "Write-Output \"session alive: $LASTEXITCODE\"")
     result = subprocess.run([_powershell(), "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", command],
                             env=_failing_install_env(tmp_path), capture_output=True, text=True, timeout=60)
-    assert REFUSAL in result.stdout
+    assert REFUSAL in result.stdout, result.stdout + result.stderr
     assert "session alive: 1" in result.stdout, result.stdout + result.stderr
     assert (tmp_path / "home" / "hermes-agent" / "user-file").read_text(encoding="utf-8") == "preserve me"
 
@@ -48,5 +48,5 @@ def test_failed_iex_install_reports_and_returns_to_the_callers_session(tmp_path)
 def test_failed_file_install_still_exits_nonzero(tmp_path):
     result = subprocess.run([_powershell(), "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(INSTALLER)],
                             env=_failing_install_env(tmp_path), capture_output=True, text=True, timeout=60)
-    assert REFUSAL in result.stdout
+    assert REFUSAL in result.stdout, result.stdout + result.stderr
     assert result.returncode == 1

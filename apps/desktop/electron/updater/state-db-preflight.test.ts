@@ -143,6 +143,30 @@ test('a managed installation runs the snapshot through the installation launcher
   }
 })
 
+test.runIf(process.platform === 'win32')('legacy cmd snapshot rejects metacharacters before launching', (): void => {
+  for (const unsafe of ['"', '%', '&', '|', '<', '>', '^', '\r', '\n']) {
+    for (const field of ['launcher', 'home'] as const) {
+      const logs: string[] = []
+
+      const input = {
+        python: null,
+        launcher: path.join(os.tmpdir(), 'preflight-unused.cmd'),
+        script: 'unused.py',
+        home: os.tmpdir(),
+        log: (message: string): void => {
+          logs.push(message)
+        }
+      }
+
+      input[field] = `unsafe${unsafe}${field === 'launcher' ? '.cmd' : 'home'}`
+
+      assert.throws(() => preflightStateDb(input), /unsafe Windows command argument/)
+      assert.equal(logs.length, 1)
+      assert.match(logs[0]!, /Update cancelled before backend shutdown/)
+    }
+  }
+})
+
 test('an older selected checkout without the snapshot helper refuses before backend stop', (): void => {
   const oldRoot: string = fs.mkdtempSync(path.join(os.tmpdir(), 'old-preflight-'))
   let stopped = false

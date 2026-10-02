@@ -328,7 +328,8 @@ def _mcp_refresh_session_agent_locked(sid: str, session: dict, generation: int, 
     try:
         with _session_profile_runtime_scope(session):
             (mcp_agent or _tools_mod("tools.mcp_tool_agent")).refresh_agent_mcp_tools(
-                agent, enabled_override=_load_enabled_toolsets(getattr(agent, "platform", None)), quiet_mode=True)
+                agent, enabled_override=_load_enabled_toolsets(getattr(agent, "platform", None)),
+                disabled_override=_load_disabled_toolsets(), quiet_mode=True)
         info = _session_info(agent, session)
     except Exception as exc:
         # Keep the generation pending: the next idle boundary retries against the latest registry.

@@ -19,7 +19,7 @@ describe('Cloud cookie session recovery', () => {
     const restore = vi.fn(async () => true)
 
     const run = createCloudSessionRecovery({
-      hasNativeSession: url => url.endsWith('native.agents.nousresearch.com'),
+      hasNativeSession: url => new URL(url).hostname === 'native.agents.nousresearch.com',
       restoreCookieSession: restore
     })
 

@@ -4596,6 +4596,7 @@ export const frOverrides = {
   },
   updates: {
     discontinuedTitle: "Cette version de Hermes n'est plus prise en charge",
+    automaticUpdatesSaveFailed: "Impossible de confirmer l'enregistrement du réglage. Réessayez.",
     discontinuedBody:
       "Cette version de Hermes n'est plus prise en charge et risque de ne plus fonctionner — désinstallez-la. Vos données restent sur le disque.",
     channels: { stable: 'Stable', canary: 'Canary' },

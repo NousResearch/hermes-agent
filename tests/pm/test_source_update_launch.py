@@ -578,8 +578,11 @@ def test_failed_tail_attempt_is_counted_and_success_clears_it(source_launch, tmp
     calls = (root / "hermes_cli" / "source_completion.py")
     original = calls.read_text(encoding="utf-8")
     calls.write_text("import sys\nsys.exit(3)\n", encoding="utf-8")
-    with pytest.raises(RuntimeError, match="source update completion failed"):
-        venv_sync.prepare_launch(root, [])
+    # A committed generation can still launch on its managed interpreter when
+    # a product tail fails. The debt and attempt count must survive that
+    # transition, and the user must see why completion is still owed.
+    assert venv_sync.prepare_launch(root, []) == store_python
+    assert "source update completion failed" in capsys.readouterr().err
     assert _completion_attempts_path(root).read_text(encoding="utf-8").strip() == "1"
     assert completion_pending_path(root).is_file(), "a failed attempt must keep the obligation"
 

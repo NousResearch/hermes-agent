@@ -9,6 +9,7 @@ Without a bound owner there is nobody to ask, so the prompt is skipped rather th
 import json
 import sys
 import threading
+from contextvars import ContextVar
 
 import pytest
 
@@ -27,7 +28,7 @@ def _gateway(monkeypatch):
 
     monkeypatch.setattr(terminal_tool, "_callback_tls", threading.local())
     monkeypatch.setattr(unlock, "_callback_tls", threading.local())
-    monkeypatch.setattr(unlock, "_current_session_tls", threading.local())
+    monkeypatch.setattr(unlock, "_current_session", ContextVar("test_vault_session", default=None))
     monkeypatch.setattr(project_tools, "_workspace_callback", None)
     monkeypatch.setattr(skills_tool, "_secret_capture_callback", None)
     monkeypatch.setattr(terminal_tool_sudo, "_sudo_password_cache", {})

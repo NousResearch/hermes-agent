@@ -347,8 +347,13 @@ def test_retirement_refuses_to_downgrade_newer_source(
         source, monkeypatch, retired_channel_archive, transport):
     git(source.root, "checkout", "--detach", source.commits[2])
     if transport == "shallow":
-        import shutil
-        shutil.rmtree(source.root)
+        # Retain the disposable checkout instead of deleting Git's read-only
+        # object files (which Windows refuses). The shallow clone still starts
+        # at an empty, separate destination under this fixture's temp parent.
+        previous = source.root.with_name(source.root.name + "-previous")
+        assert previous.parent.resolve() == source.root.parent.resolve()
+        assert not previous.exists()
+        source.root.rename(previous)
         git(source.root.parent, "clone", "--depth=1", source.origin.as_uri(), str(source.root))
     if transport == "zip":
         (source.root / "pyproject.toml").write_text('[project]\nversion = "1.2.2"\n')

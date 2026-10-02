@@ -677,6 +677,28 @@ class TestClassifyApiError:
         assert result.reason == FailoverReason.unknown
         assert result.retryable is True
 
+    def test_404_llama_swap_no_router_is_model_not_found(self):
+        """llama-swap answers an unrouted model id with 404 'no router for
+        requested model'. Without the pattern this fell to the generic branch
+        and burned three retries on a deterministic failure, the same class
+        already fixed for OpenRouter (#58446) and NVIDIA NIM (#78796)."""
+        body = {
+            "src": "llama-swap",
+            "error": {
+                "message": "no router for requested model",
+                "type": "invalid_request_error",
+                "param": None,
+                "code": "not_found",
+            },
+        }
+        e = MockAPIError(f"Error code: 404 - {body}", status_code=404, body=body)
+        result = classify_api_error(
+            e, provider="custom", model="qwopus", base_url="http://macbookpro:8999/v1"
+        )
+        assert result.reason == FailoverReason.model_not_found
+        assert result.retryable is False
+        assert result.should_fallback is True
+
     # ── Provider policy-block (OpenRouter privacy/guardrail) ──
 
 

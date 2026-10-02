@@ -21,7 +21,6 @@ provider discovery is still running inside ``hermes_cli.auth``'s own import.
 
 from __future__ import annotations
 
-import hmac
 import logging
 import secrets
 import time
@@ -187,7 +186,8 @@ def login(provider: str, cfg: OAuthPKCEConfig, *, open_browser: bool = True) -> 
     if callback.get("error"):
         raise err(f"authorization failed: {callback.get('error_description') or callback['error']}",
                   "oauth_authorization_denied")
-    if not hmac.compare_digest(str(callback.get("state") or ""), state):
+    from gateway.platforms._shared import secrets_match
+    if not secrets_match(callback.get("state"), state):
         raise err("callback state mismatch — the redirect did not come from this login. Aborting.",
                   "oauth_state_mismatch")
     code = str(callback.get("code") or "").strip()

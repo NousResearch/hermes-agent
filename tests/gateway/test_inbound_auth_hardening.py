@@ -110,9 +110,78 @@ def _dashboard_drain(presented: str) -> bool:
     return DrainSecretProvider(secret=strong).verify_token(token=token) is not None
 
 
+def _loopback_login_state(module_name: str, run, mismatch_code: str):
+    """A browser-login callback carrying *presented* as its ``state``; True when it got past the check."""
+    def accepts(presented: str) -> bool:
+        import importlib
+        from types import SimpleNamespace
+        from hermes_cli.auth_constants import AuthError
+        module = importlib.import_module(module_name)
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(module.secrets, "token_urlsafe", lambda _n=32: SECRET)  # the state the login mints
+            for target in (module, importlib.import_module("hermes_cli.auth_device_flow")):
+                mp.setattr(target, "_bind_loopback_callback_server",
+                           lambda *a, **k: SimpleNamespace(server_address=("127.0.0.1", 1455)), raising=False)
+                mp.setattr(target, "_serve_loopback_callback", lambda *a, **k: {"state": presented}, raising=False)
+            try:
+                run(module)
+            except AuthError as exc:
+                return exc.code != mismatch_code  # past the state check, it stops at the missing code
+        return True
+    return accepts
+
+
+_codex_browser_state = _loopback_login_state(
+    "hermes_cli.auth_codex_browser", lambda m: m._codex_browser_login(open_browser=False),
+    "codex_browser_state_mismatch")
+_oauth_pkce_state = _loopback_login_state(
+    "hermes_cli.auth_oauth_pkce_plugin",
+    lambda m: m.login("example-pkce", m.OAuthPKCEConfig(client_id="c", authorize_url="https://idp.example/authorize",
+                                                         token_url="https://idp.example/token"), open_browser=False),
+    "oauth_state_mismatch")
+
+
+def _mcp_flow():
+    from tools.mcp_dashboard_oauth import DashboardOAuthFlow
+    flow = DashboardOAuthFlow(flow_id="f1", server_name="reports", profile=None, hermes_home=os.environ["HERMES_HOME"],
+                              redirect_uri="https://agent.example/api/mcp/oauth/callback/reports")
+    asyncio.run(flow.publish_authorization_url(f"https://idp.example/authorize?state={SECRET}"))
+    return flow
+
+
+def _mcp_dashboard_callback(presented: str) -> bool:
+    import hermes_cli.web_server_mcp as flows
+    from hermes_cli.web_routers.mcp import mcp_oauth_callback
+    flows._mcp_oauth_flows.clear()
+    flows._mcp_oauth_flows["f1"] = _mcp_flow()
+    try:
+        return asyncio.run(mcp_oauth_callback("reports", code="c", state=presented)).status_code != 404
+    finally:
+        flows._mcp_oauth_flows.clear()
+
+
+def _mcp_flow_deliver(presented: str) -> bool:
+    try:
+        _mcp_flow().deliver_callback(code="c", state=presented, error=None)
+    except ValueError:
+        return False
+    return True
+
+
+def _pairing_request_id(presented: str) -> bool:
+    from gateway.pairing import PairingStore
+    store = PairingStore()
+    store.generate_code("telegram", f"user-{len(store.list_pending('telegram'))}-{time.time_ns()}")
+    request_id = store.list_pending("telegram")[0]["request_id"]
+    return store.approve_request("telegram", request_id if presented == SECRET else presented) is not None
+
+
 @pytest.mark.parametrize("accepts", [_bluebubbles, _google_meet, _wecom_signature, _a2a, _dashboard_basic,
-                                     _dashboard_drain],
-                         ids=["bluebubbles", "google_meet", "wecom", "a2a", "dashboard_basic", "dashboard_drain"])
+                                     _dashboard_drain, _codex_browser_state, _oauth_pkce_state,
+                                     _mcp_dashboard_callback, _mcp_flow_deliver, _pairing_request_id],
+                         ids=["bluebubbles", "google_meet", "wecom", "a2a", "dashboard_basic", "dashboard_drain",
+                              "codex_browser_state", "oauth_pkce_state", "mcp_dashboard_callback",
+                              "mcp_flow_deliver", "pairing_request_id"])
 def test_presented_secret_is_compared_timing_safe_and_fails_closed(accepts, monkeypatch):
     calls = []
     real = hmac.compare_digest

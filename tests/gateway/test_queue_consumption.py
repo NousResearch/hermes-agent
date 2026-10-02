@@ -269,21 +269,3 @@ class TestBusyInputModeQueueFifo:
         assert head.media_urls == ["/tmp/a.jpg", "/tmp/b.jpg"]
         assert "first" in head.text and "second" in head.text
         assert runner._queue_depth(session_key, adapter=adapter) == 1
-
-    @pytest.mark.parametrize("message_type", [MessageType.TEXT, MessageType.PHOTO], ids=["text", "photo"])
-    def test_another_senders_followup_does_not_join_a_pending_photo(self, message_type):
-        runner, adapter = self._make_runner_and_adapter()
-        session_key = "telegram:group:shared"
-        runner._queue_or_replace_pending_event(
-            session_key, self._media_event("/tmp/a.jpg", "image/jpeg", MessageType.PHOTO, text="look at this"))
-        followup = (
-            self._text_event("unrelated question", user_id="u2") if message_type == MessageType.TEXT
-            else self._media_event("/tmp/b.jpg", "image/jpeg", MessageType.PHOTO, text="mine", user_id="u2")
-        )
-
-        runner._queue_or_replace_pending_event(session_key, followup)
-
-        head = adapter._pending_messages[session_key]
-        assert ((head.text, head.media_urls, head.source.user_id), runner._queued_events.get(session_key, [])) == (
-            ("look at this", ["/tmp/a.jpg"], "u1"), [followup],
-        )

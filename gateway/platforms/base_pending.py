@@ -369,12 +369,22 @@ class PendingWithdrawalMixin:
                 task.cancel()
         debounce = self._text_debounce_store()
         for key, state in list(debounce.items()):
+            earlier = []
+            for event in state.earlier_events:
+                matched, rest = withdraw(event)
+                found = matched or found
+                if rest is not None:
+                    earlier.append(rest)
+            state.earlier_events[:] = earlier
             matched, rest = withdraw(state.event)
             if not matched:
                 continue
             found = True
             if rest is not None:
                 state.event = rest
+                continue
+            if state.earlier_events:
+                state.event = state.earlier_events.pop()
                 continue
             state.cancel_timer()
             debounce.pop(key, None)

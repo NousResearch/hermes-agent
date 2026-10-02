@@ -39,6 +39,17 @@ def _dispatch_sync(req: dict, transport=None) -> dict | None:
 
 
 @pytest.fixture(autouse=True)
+def _isolated_checkout_recovery_marker(monkeypatch, tmp_path):
+    # Git metadata for an isolated worktree may still belong to the live install.
+    from hermes_cli import _early_recovery
+
+    monkeypatch.setattr(
+        _early_recovery, "interrupted_pull_marker",
+        lambda root: tmp_path / "hermes-update-pull",
+    )
+
+
+@pytest.fixture(autouse=True)
 def _neuter_agent_prewarm_timer(request, monkeypatch):
     """Stub the deferred agent pre-warm timer for every test in this module.
 

@@ -58,6 +58,19 @@ def _carrier(thinking="secret chain", opaque=""):
     ]
 
 
+def _owned_history(agent, history):
+    """Model same-route producer provenance for hand-built signed fixtures."""
+    from agent.agent_runtime_helpers import reasoning_route_fingerprint
+
+    fingerprint = reasoning_route_fingerprint(
+        agent.provider, agent.model, agent.base_url, agent.api_mode
+    )
+    for message in history:
+        if message.get("role") == "assistant":
+            message["_reasoning_route"] = fingerprint
+    return history
+
+
 def _native_turn(agent, question, size, sig):
     """A turn stored by the real producer: Anthropic response -> transport -> assistant row."""
     from agent.chat_completion_helpers import build_assistant_message
@@ -98,8 +111,13 @@ def _agent(db, session_id="s1", model="claude-opus-4-6", route=ANTHROPIC):
     )
     agent._needs_thinking_reasoning_pad = lambda: False
     agent._copy_reasoning_content_for_api = (
-        lambda source, target: copy_reasoning_content_for_api(agent, source, target)
+        lambda source, target, **kwargs: copy_reasoning_content_for_api(
+            agent, source, target, **kwargs
+        )
     )
+    from agent.agent_runtime_helpers import reasoning_replay_field_for_api
+
+    agent._reasoning_replay_field_for_api = lambda: reasoning_replay_field_for_api(agent)
     agent._should_sanitize_tool_calls = lambda: False
     agent._sanitize_api_messages = lambda value: value
     agent._emit_warning = agent._vprint = lambda *args, **kwargs: None
@@ -252,7 +270,7 @@ def test_estimates_charge_exactly_the_thinking_the_wire_replays(tmp_path, monkey
                 body = _signed_turn("Q1", "", "sig_1", thinking="t" * 4000)
                 body[1]["api_content"] = "x" * size
             body += _signed_turn("Q2", "A2", "sig_2")
-        return body + [{"role": "user", "content": "continue"}]
+        return _owned_history(agent, body + [{"role": "user", "content": "continue"}])
 
     if case.startswith("rejected"):
         _reject_signatures(agent, history(1))
@@ -343,6 +361,7 @@ def test_rejected_thinking_never_returns_and_nothing_else_is_suppressed(
         + _signed_turn("Q4", "A4", "sig_new")
         + [{"role": "user", "content": "continue"}]
     )
+    _owned_history(agent, later)
     if boundary == "compression_child":
         # Rotation publishes the child with the session's initial model_config, then carries
         # per-session state; the child's retained tail still holds the rejected rows.

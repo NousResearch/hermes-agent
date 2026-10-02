@@ -648,6 +648,17 @@ def test_non_assistant_reasoning_replay_strip_removes_native_sidecars():
 class TestPerProviderReasoningEcho:
     """Verify the per-provider reasoning_echo opt-in flag."""
 
+    @pytest.fixture(autouse=True)
+    def _isolated_checkout_recovery_marker(self, monkeypatch, tmp_path):
+        # A worktree's git metadata can live under the real Hermes install.
+        # Keep lazy AIAgent imports from probing that install's recovery marker.
+        from hermes_cli import _early_recovery
+
+        monkeypatch.setattr(
+            _early_recovery, "interrupted_pull_marker",
+            lambda root: tmp_path / "hermes-update-pull",
+        )
+
     def _make_agent(self, reasoning_echo_flag=False, provider="custom",
                     model="my-model", base_url="https://gw.example.com/v1"):
         """Build a minimal AIAgent-shaped object without full init."""

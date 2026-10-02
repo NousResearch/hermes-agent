@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Optional
 
 from gateway.run_common import _UNSET
@@ -48,6 +48,55 @@ class VoiceTranscription:
             for part in self.parts
         )
         return GatewayInboundVoiceMixin._prepend_media_prefix(notes, user_text) if notes else user_text
+
+
+def rehome_pending_voice(event: MessageEvent, paths: dict[str, str]) -> None:
+    from tools.credential_files import to_agent_visible_cache_path
+
+    changed = {old: new for old, new in paths.items() if old != new}
+    if not changed:
+        return
+    echoed = getattr(event, "_gateway_pending_stt_echoed_paths", None)
+    if echoed is not None:
+        setattr(
+            event,
+            "_gateway_pending_stt_echoed_paths",
+            {changed.get(path, path) for path in echoed},
+        )
+    transcription = getattr(event, "_gateway_pending_stt_input", None)
+    clips = (
+        transcription.clips
+        if isinstance(transcription, VoiceTranscription)
+        else getattr(event, "_gateway_pending_stt_clips", ())
+    )
+    mapped = {
+        clip.path: replace(clip, path=changed.get(clip.path, clip.path))
+        for clip in clips
+    }
+    if clips:
+        setattr(event, "_gateway_pending_stt_clips", tuple(mapped.values()))
+    if not isinstance(transcription, VoiceTranscription):
+        for attribute in (
+            "_gateway_pending_stt_text",
+            "_gateway_pending_stt_transcripts",
+        ):
+            if hasattr(event, attribute):
+                delattr(event, attribute)
+        return
+    parts = []
+    for part in transcription.parts:
+        if part.clip is not None:
+            parts.append(replace(part, clip=mapped[part.clip.path]))
+            continue
+        note = part.text
+        for old, new in changed.items():
+            note = note.replace(old, to_agent_visible_cache_path(new))
+        parts.append(replace(part, text=note))
+    updated = replace(transcription, clips=tuple(mapped.values()), parts=tuple(parts))
+    updated = replace(updated, text=updated.render(event.text))
+    setattr(event, "_gateway_pending_stt_input", updated)
+    if hasattr(event, "_gateway_pending_stt_text"):
+        setattr(event, "_gateway_pending_stt_text", updated.text)
 
 
 class GatewayInboundVoiceMixin:

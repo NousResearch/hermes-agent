@@ -73,6 +73,29 @@ Controls all color values throughout the CLI. Values are hex color strings.
 | `completion_menu_meta_bg` | Background color for the completion meta column | `#1a1a2e` |
 | `completion_menu_meta_current_bg` | Background color for the active completion meta column | `#333355` |
 
+### Light/dark variants (`light_colors:` / `dark_colors:`)
+
+A skin can adapt to the terminal background. `light_colors` overrides `colors` on a light
+terminal, and `dark_colors` overrides it on a dark one. Each block takes the same keys as
+`colors` and only needs the keys that differ. The classic CLI, the TUI, and the desktop app
+all honor these blocks. Hermes detects the background at startup through
+`HERMES_LIGHT` / `HERMES_TUI_THEME` / `HERMES_TUI_BACKGROUND` / `COLORFGBG`, or an OSC 11
+query, so one skin can follow a terminal that switches between light and dark themes.
+
+```yaml
+colors:            # dark-terminal palette (also the fallback)
+  banner_text: "#FFF8DC"
+  status_bar_bg: "#1a1a2e"
+light_colors:      # used as authored on light terminals
+  banner_text: "#2C1810"
+  status_bar_bg: "#F3E9DC"
+```
+
+In the classic CLI, a key that is missing from `light_colors` falls back to `colors` on a
+light terminal, and its foreground is passed through the built-in light-mode remap. Keys in
+`light_colors` are used exactly as written, so you can supply light fills such as
+`status_bar_bg` and `completion_menu_bg`.
+
 ### Spinner (`spinner:`)
 
 Controls the animated spinner shown while waiting for API responses.

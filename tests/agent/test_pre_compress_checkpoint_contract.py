@@ -339,8 +339,8 @@ def test_live_replay_preserves_summary_boundary_without_changing_display(tmp_pat
     db.append_message("summary-replay", "user", "Original request")
     db.append_message("summary-replay", "assistant", "Original answer")
     db.create_session("plain-replay", source="telegram")
-    db.append_message("plain-replay", "user", "First request")
-    db.append_message("plain-replay", "user", "Second request")
+    db.append_message("plain-replay", "user", "First request", platform_message_id="tg-first")
+    db.append_message("plain-replay", "user", "Second request", platform_message_id="tg-second")
 
     reopened = SessionDB(db_path)
     display_before = reopened.get_messages_as_conversation("summary-replay")
@@ -353,7 +353,7 @@ def test_live_replay_preserves_summary_boundary_without_changing_display(tmp_pat
     assert reopened.get_messages_as_conversation("summary-replay") == display_before
     assert all("_compressed_summary" not in m for m in display_before)
     plain = reopened.get_messages_as_conversation("plain-replay", repair_alternation=True)
-    assert [m["content"] for m in plain] == ["First request\n\nSecond request"]
+    assert [m["content"] for m in plain] == ["First request", "Second request"]
     assert all("_compressed_summary" not in m for m in plain)
 
 

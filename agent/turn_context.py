@@ -144,6 +144,14 @@ def drop_stale_api_content(msg: Dict[str, Any]) -> None:
     msg.pop("api_content", None)
 
 
+def _source_identified_user_row(msg: Dict[str, Any]) -> bool:
+    """True for a user row stamped with a stable client source id (a queued prompt's
+    submission identity — same lookup as ``_db_flush_row``'s ``platform_message_id``)."""
+    return msg.get("role") == "user" and bool(
+        msg.get("platform_message_id") or msg.get("message_id") or msg.get("_source_message_id")
+    )
+
+
 def extract_api_content_sidecar(msg: Mapping[str, Any]) -> Optional[str]:
     """Extract the ``api_content`` sidecar; ``None`` when absent/non-string."""
     v = msg.get("api_content")
@@ -1264,6 +1272,17 @@ def build_api_messages(
         _api_content = api_msg.pop("api_content", None)
         for key in PERSISTENCE_ONLY_MESSAGE_FIELDS:
             api_msg.pop(key, None)
+        # Source ordering/deduplication metadata belongs to the canonical
+        # transcript and SessionDB, never to a provider request. Strip it at
+        # this common API-copy boundary so native Anthropic/Codex paths do not
+        # depend on transport-specific unknown-field filtering.
+        for metadata_key in (
+            "timestamp",
+            "message_id",
+            "platform_message_id",
+            "_source_message_id",
+        ):
+            api_msg.pop(metadata_key, None)
 
         # Inject ephemeral context (memory prefetch + pre_llm_call user hooks)
         # at API time only; `messages` is untouched beyond the api_content stamp.
@@ -1286,7 +1305,14 @@ def build_api_messages(
             # Historical row: replay the exact bytes sent live so the prompt-cache
             # prefix stays byte-stable. User rows carry the injection sidecar; user
             # and assistant rows may carry a sanitize-divergence sidecar.
-            api_msg["content"] = _api_content
+            # A source-identified user row is a queued-prompt boundary: its wire copy
+            # is its SOURCE text — transient sidecar glue (first-contact onboarding
+            # notes, per-turn injections) and source ids must never re-enter the
+            # boundary a provider sees (and that the strict-provider user merge
+            # joins). The glue was delivered live on that row's own turn; stale
+            # guidance never replays as user text.
+            if not _source_identified_user_row(msg):
+                api_msg["content"] = _api_content
 
         # Pass reasoning back to the API for ALL assistant messages so multi-turn
         # reasoning context is preserved.

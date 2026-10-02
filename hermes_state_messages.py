@@ -259,7 +259,8 @@ class SessionMessagesMixin:
         message_timestamp: float, *, keep_reasoning: bool) -> tuple:
         """Bind values for ``_INSERT_MESSAGE_SQL`` from one message dict (*tool_calls* already parsed;
         *keep_reasoning* False NULLs every reasoning column). ``platform_message_id`` falls back to
-        ``message_id`` (yuanbao's message-dict convention)."""
+        ``message_id`` (yuanbao's message-dict convention), then to ``_source_message_id`` (the
+        canonical source identity queued prompts carry)."""
         _str_or_none = lambda v: _scrub_surrogates(v) if isinstance(v, str) else None  # noqa: E731
         _reasoning = lambda key: msg.get(key) if keep_reasoning else None  # noqa: E731
         encoded_content = self._encode_content(msg.get("content"))
@@ -278,7 +279,7 @@ class SessionMessagesMixin:
             _scrub_surrogates(_reasoning("reasoning")), _scrub_surrogates(_reasoning("reasoning_content")),
             *(self._reasoning_json_text(_reasoning(k))
               for k in ("reasoning_details", "codex_reasoning_items", "codex_message_items")),
-            msg.get("platform_message_id") or msg.get("message_id"),
+            msg.get("platform_message_id") or msg.get("message_id") or msg.get("_source_message_id"),
             1 if msg.get("observed") else 0, 1 if msg.get("_compressed_summary") else 0, 1,
             _str_or_none(msg.get("api_content")), _str_or_none(msg.get("display_kind")),
             display_metadata, self._display_identity(self._display_dedupe_key(identity_row)),
@@ -1732,8 +1733,16 @@ class SessionMessagesMixin:
         # session_id) plus its curator reply, and bare tool-call marker content ("[memory]") persisted as an answer.
         messages = _strip_stale_tool_call_markers(_strip_background_review_harness(messages))
         if repair_alternation and messages:
-            from agent.agent_runtime_helpers import repair_message_sequence
+            from agent.agent_runtime_helpers import _merge_consecutive_users, repair_message_sequence
             repaired = repair_message_sequence(None, messages)
+            # The restore-time merge: an ask whose turn got no reply folds into the next one on the
+            # repaired projection — ONE turn while both rows stay stored; the survivor keeps the
+            # first row's identity and records the absorbed uid (#115493). Source-identified
+            # (queued) rows are canonical boundaries and never fold.
+            folded, made = _merge_consecutive_users(messages)
+            if made:
+                messages[:] = folded
+            repaired += made
             if repaired:
                 logger.info("Repaired %d message-alternation violation(s) while "
                     "restoring session %s — durable transcript kept them, "

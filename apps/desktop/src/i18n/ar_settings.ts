@@ -725,8 +725,6 @@ export const arSettings = {
       defaultsLabel: 'الافتراضيات',
       reasoning: 'الاستدلال',
       reasoningOff: 'إيقاف',
-      ultrafast: 'فائق السرعة',
-      useStandardSpeed: 'استخدام السرعة القياسية',
       speed: 'السرعة',
       speedStandard: 'قياسية',
       defaultsFailed: 'فشل حفظ افتراضيات النموذج',

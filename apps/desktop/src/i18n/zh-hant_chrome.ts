@@ -266,8 +266,6 @@ export const zhHantChrome = {
       noOptions: '此模型沒有可用選項',
       options: '選項',
       thinking: '思考',
-      speed: '速度',
-      speedStandard: '標準',
       fast: '快速',
       ultrafast: '極速',
       useStandardSpeed: '使用標準速度',

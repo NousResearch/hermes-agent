@@ -23,10 +23,10 @@ import { $defaultReasoningEffort, markComposerSelectionManual } from '@/store/se
 import type { ModelMenuController } from './model-catalog-menu'
 
 const UNKNOWN_SERVICE_TIER = atom('')
-const optionEdits = new Map<string, number>()
+const optionEdits = new Map<string, symbol>()
 
 const nextEdit = (key: string) => {
-  const revision = (optionEdits.get(key) ?? 0) + 1
+  const revision = Symbol(key)
   optionEdits.set(key, revision)
 
   return revision
@@ -153,6 +153,18 @@ export function useModelMenuController({
             fast: confirmed.fast ?? false,
             serviceTier: modelPresetServiceTier(confirmed) ?? 'normal'
           })
+        }
+      }
+    }).finally(() => {
+      // A settled request only releases its own stamps; a newer writer keeps
+      // its identity, even when another session edits the same model preset.
+      for (const stamp of stamps.values()) {
+        if (optionEdits.get(stamp.ownerKey) === stamp.owner) {
+          optionEdits.delete(stamp.ownerKey)
+        }
+
+        if (optionEdits.get(stamp.presetKey) === stamp.preset) {
+          optionEdits.delete(stamp.presetKey)
         }
       }
     })

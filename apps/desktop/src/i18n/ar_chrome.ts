@@ -366,8 +366,6 @@ export const arChrome = {
       noOptions: 'لا توجد خيارات لهذا النموذج',
       options: 'الخيارات',
       thinking: 'التفكير',
-      speed: 'السرعة',
-      speedStandard: 'قياسية',
       fast: 'سريع',
       ultrafast: 'فائق السرعة',
       useStandardSpeed: 'استخدام السرعة القياسية',

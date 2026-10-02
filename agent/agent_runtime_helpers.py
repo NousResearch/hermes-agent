@@ -590,9 +590,56 @@ def _prune_unanswered_tool_calls(messages: List[Dict]) -> Tuple[List[Dict], int]
     return pruned, repairs
 
 
+def _merge_consecutive_user_pair_content(prev_content: str, new_content: str) -> Optional[Any]:
+    """Merged content for a consecutive-user pair, or None when the pair must stay untouched.
+    A ``\x00json:``-prefixed row is the persisted form of structured (multimodal) content that a
+    prune re-inserted still-encoded (#125299): concatenating it as text would ship hundreds of KB
+    of base64 to the model as plain text and weld the sentinel into an un-decodable stored row, so
+    the decoded parts merge structurally instead (text parts joined, non-text parts kept)."""
+    from hermes_state import SessionDB  # lazy: the constant/decoder live on SessionDB, not the mixin
+
+    prefix = SessionDB._CONTENT_JSON_PREFIX
+    if not (prev_content.startswith(prefix) or new_content.startswith(prefix)):
+        return (prev_content + "\n\n" + new_content) if prev_content and new_content else (prev_content or new_content)
+    parts: List[Dict] = []
+    for content in (prev_content, new_content):
+        decoded = SessionDB._decode_content(content)
+        if isinstance(decoded, str):
+            # A failed decode echoes the prefixed string back; concatenating it would re-create
+            # the un-decodable row, so the pair stays untouched instead.
+            if decoded.startswith(prefix):
+                return None
+            if decoded:
+                parts.append({"type": "text", "text": decoded})
+        elif isinstance(decoded, list):
+            if any(not isinstance(part, dict) for part in decoded):
+                return None
+            parts.extend(decoded)
+        else:
+            return None
+    if not parts:
+        return ""
+    if all(part.get("type") == "text" for part in parts):
+        return "\n\n".join(part.get("text", "") for part in parts if part.get("text"))
+    return parts
+
+
+def _mergeable_user_content_shape(msg: Dict) -> bool:
+    """True when a user row's content can take part in a consecutive-user merge: plain text, or the
+    structured list a prior structural merge in this same pass produced (dict parts). Any other
+    shape stays as persisted."""
+    content = msg.get("content", "")
+    if isinstance(content, str):
+        return True
+    return isinstance(content, list) and all(
+        isinstance(part, dict) and isinstance(part.get("text", ""), str) for part in content
+    )
+
+
 def _merge_consecutive_users(messages: List[Dict]) -> Tuple[List[Dict], int]:
     """Pass 3: merge consecutive plain-text user messages (no user input lost)."""
     from agent.context_compressor import _DB_PERSISTED_MARKER, split_user_originated_turn
+    from hermes_state import SessionDB
 
     repairs = 0
     merged: List[Dict] = []
@@ -607,13 +654,22 @@ def _merge_consecutive_users(messages: List[Dict]) -> Tuple[List[Dict], int]:
             # A /steer row that ended the previous run is already persisted; merging the next
             # prompt into it would rewrite it in place and re-break replay parity.
             and prev.get("display_kind") != STEER_DISPLAY_KIND
-            # Only merge plain-text content; leave multimodal (list) content alone.
-            and isinstance(prev.get("content", ""), str) and isinstance(msg.get("content", ""), str)
+            # Plain text merges as text; a list accumulator from an earlier structural merge in
+            # this pass must keep accepting the following text rows, or the pass would return
+            # with consecutive user rows still stacked (the exact shape this module removes).
+            and _mergeable_user_content_shape(prev) and isinstance(msg.get("content", ""), str)
         ):
             prev_content, new_content = prev.get("content", ""), msg.get("content", "")
-            merged_content = (
-                (prev_content + "\n\n" + new_content) if prev_content and new_content else (prev_content or new_content)
-            )
+            if isinstance(prev_content, list):
+                # Re-encode the accumulator to its persisted sentinel form so the pair merge
+                # decodes it like any other structured row.
+                prev_content = SessionDB._encode_content(prev_content)
+            merged_content = _merge_consecutive_user_pair_content(prev_content, new_content)
+            if merged_content is None:
+                # Undecodable/unsupported encoded shape: keep both rows as persisted rather than
+                # weld the sentinel into text and corrupt the stored row further.
+                merged.append(msg)
+                continue
             had_api_sidecar = "api_content" in prev
             prev["content"] = merged_content
             # The clean-text persist override must replace only the absorbed turn, never the

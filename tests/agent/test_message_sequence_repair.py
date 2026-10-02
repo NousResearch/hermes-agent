@@ -9,6 +9,9 @@ providers (violating role alternation), which retriggered the empty-retry
 recovery every turn.
 """
 
+import json
+
+from agent.agent_runtime_helpers import STEER_DISPLAY_KIND
 from run_agent import AIAgent
 
 
@@ -1579,3 +1582,144 @@ def test_repair_cursor_invalidates_scan_prefix_when_stamped_dict_dirtied():
     assert repairs == 1
     assert _DB_PERSISTED_MARKER not in messages[0]
     assert agent._db_flush_scan_prefix is None
+
+# ── sentinel-encoded multimodal user rows (#125299) ─────────────────────────
+
+def _encoded_multimodal_user_row() -> str:
+    """The persisted shape a prune re-insertion can leave behind: a text+image list content
+    serialized by SessionDB._encode_content with the sentinel prefix."""
+    import json
+    from hermes_state import SessionDB
+    return SessionDB._encode_content([
+        {"type": "text", "text": "screenshot of the error"},
+        {"type": "image_url", "image_url": {"url": "data:image/png;base64," + "A" * 256}},
+    ])
+
+
+def test_repair_merges_encoded_multimodal_row_structurally():
+    """A sentinel-encoded multimodal user row adjacent to a text user row must merge into one
+    structured row (text parts joined, image kept) — never concatenated as plain text, which
+    shipped a 426K-char base64 blob to the model and welded the sentinel into an
+    undecodable stored row (#125299)."""
+    agent = _bare_agent()
+    encoded = _encoded_multimodal_user_row()
+    messages = [
+        {"role": "user", "content": "earlier question"},
+        {"role": "user", "content": encoded},
+    ]
+
+    repairs = AIAgent._repair_message_sequence(agent, messages)
+
+    assert repairs == 1
+    assert len(messages) == 1
+    merged = messages[0]["content"]
+    assert isinstance(merged, list)
+    assert merged[0] == {"type": "text", "text": "earlier question"}
+    assert {"type": "text", "text": "screenshot of the error"} in merged
+    assert any(part.get("type") == "image_url" for part in merged)
+    # The result must survive re-persistence: the state codec decodes it back cleanly.
+    from hermes_state import SessionDB
+    decoded = SessionDB._decode_content(SessionDB._encode_content(merged))
+    assert decoded == merged
+
+
+def test_repair_keeps_undecodable_encoded_row_unmerged():
+    """A sentinel row whose body no longer parses (already corrupted) must not be glued onto the
+    neighbouring text row: both rows stay as persisted instead of welding the sentinel into text."""
+    agent = _bare_agent()
+    corrupt = "\x00json:" + '[{"type": "text", "text": "broken"} EXTRA garbage'
+    messages = [
+        {"role": "user", "content": "first"},
+        {"role": "user", "content": corrupt},
+    ]
+
+    repairs = AIAgent._repair_message_sequence(agent, messages)
+
+    assert repairs == 0
+    assert len(messages) == 2
+    assert messages[0]["content"] == "first"
+    assert messages[1]["content"] == corrupt
+
+
+def test_repair_encoded_row_text_only_decodes_to_plain_merge():
+    """A sentinel row whose decoded parts are all text merges back to a plain string, matching the
+    legacy string+string shape."""
+    agent = _bare_agent()
+    encoded_text_only = "\x00json:" + json.dumps([{"type": "text", "text": "second"}])
+    messages = [
+        {"role": "user", "content": "first"},
+        {"role": "user", "content": encoded_text_only},
+    ]
+
+    repairs = AIAgent._repair_message_sequence(agent, messages)
+
+    assert repairs == 1
+    assert len(messages) == 1
+    assert messages[0]["content"] == "first\n\nsecond"
+
+
+def test_repair_structured_accumulator_keeps_merging_following_text_rows():
+    """After a structural merge the survivor's content is a list; the guard must still accept it so
+    the remaining plain-text user rows in the same run collapse too — the pass is the last repair
+    stage, so a fall-through would ship consecutive user rows to the provider (ehz0ah review)."""
+    agent = _bare_agent()
+    encoded = _encoded_multimodal_user_row()
+    messages = [
+        {"role": "user", "content": encoded},
+        {"role": "user", "content": "second"},
+        {"role": "user", "content": "third"},
+    ]
+
+    repairs = AIAgent._repair_message_sequence(agent, messages)
+
+    assert repairs == 2
+    assert len(messages) == 1
+    merged = messages[0]["content"]
+    assert isinstance(merged, list)
+    assert {"type": "text", "text": "screenshot of the error"} in merged
+    assert {"type": "text", "text": "second"} in merged
+    assert {"type": "text", "text": "third"} in merged
+    assert any(part.get("type") == "image_url" for part in merged)
+    # Still a durable shape: survives the state codec round-trip.
+    from hermes_state import SessionDB
+    decoded = SessionDB._decode_content(SessionDB._encode_content(merged))
+    assert decoded == merged
+
+
+def test_repair_text_row_before_encoded_row_then_text_row_all_collapse():
+    """text + encoded-multimodal + text: the middle merge turns the survivor's content into a list,
+    which must not stop the trailing text row from folding in."""
+    agent = _bare_agent()
+    encoded = _encoded_multimodal_user_row()
+    messages = [
+        {"role": "user", "content": "first"},
+        {"role": "user", "content": encoded},
+        {"role": "user", "content": "third"},
+    ]
+
+    repairs = AIAgent._repair_message_sequence(agent, messages)
+
+    assert repairs == 2
+    assert len(messages) == 1
+    merged = messages[0]["content"]
+    assert isinstance(merged, list)
+    assert {"type": "text", "text": "first"} in merged
+    assert {"type": "text", "text": "third"} in merged
+    assert any(part.get("type") == "image_url" for part in merged)
+
+
+def test_repair_structured_accumulator_still_respects_steer_guard():
+    """Widening the content guard must not weaken the deliberate-shape guards: a /steer row as the
+    previous turn still blocks merging the next user row into it (durable persisted shape)."""
+    agent = _bare_agent()
+    messages = [
+        {"role": "user", "content": "steer instruction", "display_kind": STEER_DISPLAY_KIND},
+        {"role": "user", "content": "next prompt"},
+    ]
+
+    repairs = AIAgent._repair_message_sequence(agent, messages)
+
+    assert repairs == 0
+    assert len(messages) == 2
+    assert messages[0]["display_kind"] == STEER_DISPLAY_KIND
+    assert messages[1]["content"] == "next prompt"

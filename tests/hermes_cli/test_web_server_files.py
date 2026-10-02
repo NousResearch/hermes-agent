@@ -1,6 +1,7 @@
 """Tests for the dashboard-managed file browser API."""
 
 import base64
+import json
 from types import SimpleNamespace
 
 import pytest
@@ -245,6 +246,47 @@ def test_stream_rejects_non_media_active_content(forced_files_client):
         file_path = _seed_file(client, root, name=name)
         response = client.get("/api/files/stream", params={"path": str(file_path)})
         assert response.status_code == 415
+
+
+def test_managed_reads_resolve_docker_mount_inside_locked_root(
+    forced_files_client, monkeypatch,
+):
+    """#85238: the managed read routes must translate a docker container path
+    through the volume translator when its host target sits inside the locked
+    managed root (the hosted /opt/data layout bind-mounts /workspace there)."""
+    client, root = forced_files_client
+    root.mkdir(parents=True, exist_ok=True)
+    (root / "report.txt").write_text("container report", encoding="utf-8")
+    monkeypatch.setenv("TERMINAL_ENV", "docker")
+    monkeypatch.setenv("TERMINAL_DOCKER_VOLUMES", json.dumps([f"{root}:/workspace"]))
+
+    read = client.get("/api/files/read", params={"path": "/workspace/report.txt"})
+    download = client.get("/api/files/download", params={"path": "/workspace/report.txt"})
+    stream = client.get("/api/files/stream", params={"path": "/workspace/report.txt"})
+
+    assert read.status_code == 200, read.text
+    assert base64.b64decode(read.json()["data_url"].split(",", 1)[1]) == b"container report"
+    assert download.status_code == 200, download.text
+    assert download.content == b"container report"
+    # media_only: non-streamable extension 415s — proves resolution reached the file
+    assert stream.status_code == 415
+
+
+def test_managed_reads_reject_docker_mount_outside_locked_root(
+    forced_files_client, monkeypatch, tmp_path,
+):
+    """Translation must not bypass the locked-root refusal: a container path
+    whose host target lives outside the managed root stays 403 (from #85271)."""
+    client, _root = forced_files_client
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "secret.txt").write_text("not managed", encoding="utf-8")
+    monkeypatch.setenv("TERMINAL_ENV", "docker")
+    monkeypatch.setenv("TERMINAL_DOCKER_VOLUMES", json.dumps([f"{outside}:/workspace"]))
+
+    for route in ("/api/files/read", "/api/files/download", "/api/files/stream"):
+        response = client.get(route, params={"path": "/workspace/secret.txt"})
+        assert response.status_code == 403, response.text
 
 
 def test_query_token_does_not_authenticate_other_endpoints(forced_files_client):

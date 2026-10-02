@@ -29,7 +29,8 @@ from hermes_cli._subprocess_compat import windows_hide_flags
 from hermes_cli.sqlite_safe_read import LiveConnectionError, offline_file_access
 from hermes_cli.web_deps import late
 from hermes_cli.web_server_files import (
-    _fs_path, _managed_file_entry, _managed_response_meta, _resolve_managed_path,
+    _agent_fs_path, _fs_path, _managed_file_entry, _managed_response_meta,
+    _resolve_managed_path,
 )
 from hermes_cli.web_models import (
     ChatImageUpload, FsWriteText, ManagedDirectoryCreate, ManagedFileDelete, ManagedFileUpload,
@@ -159,12 +160,29 @@ def _io_errors(denied: str, failed: str):
         raise HTTPException(status_code=500, detail=f"{failed}: {exc}")
 
 
+def _fs_docker_active() -> bool:
+    """True when the gateway runs the docker terminal backend (#85238 detail)."""
+    try:
+        from gateway.platforms.base import _docker_env_active
+
+        return _docker_env_active()
+    except Exception:
+        return False
+
+
+def _fs_sandbox_not_found_detail(path: Path) -> str:
+    """Distinguish an untranslated agent-sandbox path from a plain missing file."""
+    if _fs_docker_active() and str(path).startswith("/"):
+        return "File not found on the gateway host: the path may live inside the agent sandbox"
+    return "File not found"
+
+
 def _fs_regular_file(path: Path) -> tuple[Path, os.stat_result]:
-    target = _fs_path(str(path))
+    target = _agent_fs_path(_fs_path(str(path)))
     try:
         st = target.stat()
     except (FileNotFoundError, NotADirectoryError):
-        raise HTTPException(status_code=404, detail="File not found")
+        raise HTTPException(status_code=404, detail=_fs_sandbox_not_found_detail(target))
     except PermissionError:
         raise HTTPException(status_code=403, detail="File is not readable")
     except OSError as exc:
@@ -530,7 +548,7 @@ def _managed_readable_file(request: Request, path: str) -> tuple[Any, Path, str,
     mime_type). Callers own the live-SQLite 409 (held through the read for
     /api/files/read, point-in-time for streamed responses)."""
     from hermes_cli.web_server import _MANAGED_FILE_MAX_BYTES
-    policy, target, display_path = _resolve_managed_path(path, request)
+    policy, target, display_path = _resolve_managed_path(path, request, for_agent_read=True)
     if not target.exists():
         raise HTTPException(status_code=404, detail="File not found")
     if not target.is_file():
@@ -761,7 +779,7 @@ async def fs_list(path: str, profile: Optional[str] = None):
             return await asyncio.to_thread(backend.list_dir, path, _FS_READDIR_HIDDEN)
         except Exception as exc:
             _raise_fs_backend_error(exc)
-    target = _fs_path(path)
+    target = _agent_fs_path(_fs_path(path))
     try:
         entries = []
         with os.scandir(target) as scan:

@@ -47,6 +47,45 @@ def _fs_path(raw_path: str, *, cwd: str | None = None) -> Path:
         raise HTTPException(status_code=400, detail="Invalid path")
 
 
+def _agent_fs_path(path: Path) -> Path:
+    """Map an agent-visible container path to its host bind mount for reads.
+
+    Docker agents emit container paths (``/workspace/...``) in transcripts and
+    MEDIA tags, while the dashboard fs routes stat the gateway HOST filesystem —
+    the raw path 40s (#85238). Reuse the gateway's MEDIA volume translator, and
+    when no terminal scope is bound (``serve --isolated`` after a failed early
+    bridge) retry once under the profile's complete terminal policy, never
+    replacing an already-bound scope or refusal (retry from #104992). Fails
+    open to the untranslated path — translation is an additive fix, not a gate.
+    """
+    try:
+        candidate = path.expanduser()
+    except (OSError, RuntimeError, ValueError):
+        return path
+    try:
+        from gateway.platforms.base import _translate_docker_container_media_path
+
+        translated = _translate_docker_container_media_path(candidate)
+        if translated is not None:
+            return translated
+
+        from tools.terminal_scope import (
+            build_profile_terminal_scope, get_terminal_scope, reset_terminal_scope,
+            set_terminal_scope,
+        )
+        if get_terminal_scope() is not None:
+            return candidate
+        from hermes_cli.config import get_hermes_home
+
+        token = set_terminal_scope(build_profile_terminal_scope(get_hermes_home()))
+        try:
+            return _translate_docker_container_media_path(candidate) or candidate
+        finally:
+            reset_terminal_scope(token)
+    except Exception:
+        return candidate
+
+
 def _canonical_path(path: Path, *, require_exists: bool = False) -> Path:
     try:
         return path.expanduser().resolve(strict=require_exists)
@@ -139,11 +178,23 @@ def _managed_files_policy(request: Request, *, create_root: bool = True) -> Mana
 
 
 def _resolve_managed_path(
-    raw_path: str | None, request: Request, *, for_write: bool = False
+    raw_path: str | None, request: Request, *, for_write: bool = False,
+    for_agent_read: bool = False,
 ) -> tuple[ManagedFilesPolicy, Path, str]:
     policy = _managed_files_policy(request)
     text = _path_text(raw_path)
     root = policy.locked_root
+
+    if for_agent_read and text and not text.startswith("file:"):
+        # Agent-emitted container paths (/workspace/...) resolve to their host
+        # bind mount before the root checks, so the locked-root refusal below
+        # still governs the translated target (#85238).
+        try:
+            translated = _agent_fs_path(Path(text).expanduser())
+        except (OSError, RuntimeError, ValueError):
+            translated = None
+        if translated is not None and str(translated) != text:
+            text = str(translated)
 
     if root is not None and (not text or text in {".", "/"}):
         candidate = root

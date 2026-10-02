@@ -5,12 +5,19 @@ from pathlib import Path
 import pytest
 
 from hermes_cli import plugins_cmd as pc
+from hermes_cli import plugins_cmd_install as install
+from tests.hermes_cli.plugin_worker_support import isolated_python as isolated_python, plugin_world as plugin_world
+
+
+@pytest.fixture(autouse=True)
+def _offline_pm(plugin_world):
+    (plugin_world.home / "config.yaml").unlink()
 
 
 @pytest.mark.parametrize("target_kind", ["file", "directory", "missing"])
-def test_install_rejects_external_links_before_probing(tmp_path, monkeypatch, target_kind):
-    plugins_dir = tmp_path / "plugins"
-    plugins_dir.mkdir()
+def test_install_rejects_external_links_before_probing(tmp_path, monkeypatch, target_kind, plugin_world):
+    plugins_dir = plugin_world.home / "plugins"
+    plugins_dir.mkdir(exist_ok=True)
     outside = tmp_path / "outside"
     if target_kind == "directory":
         outside.mkdir()
@@ -24,7 +31,7 @@ def test_install_rejects_external_links_before_probing(tmp_path, monkeypatch, ta
         (staging / "escape").symlink_to(outside, target_is_directory=target_kind == "directory")
         return "a" * 40
 
-    real_probe = pc._probe_readable
+    real_probe = install._probe_readable
 
     def probe_inside_only(path):
         assert path.resolve().is_relative_to(plugins_dir), "probed an external link target"
@@ -32,7 +39,7 @@ def test_install_rejects_external_links_before_probing(tmp_path, monkeypatch, ta
 
     monkeypatch.setattr(pc, "_plugins_dir", lambda: plugins_dir)
     monkeypatch.setattr(pc, "_clone_plugin_repo", clone)
-    monkeypatch.setattr(pc, "_probe_readable", probe_inside_only)
+    monkeypatch.setattr(install, "_probe_readable", probe_inside_only)
 
     with pytest.raises(pc.PluginOperationError, match="escapes the plugin tree"):
         pc._install_plugin_core("https://github.com/example/bounded", force=False)
@@ -44,9 +51,9 @@ def test_install_rejects_external_links_before_probing(tmp_path, monkeypatch, ta
         assert outside.read_text(encoding="utf-8") == "untouched"
 
 
-def test_install_preserves_readable_internal_links(tmp_path, monkeypatch):
-    plugins_dir = tmp_path / "plugins"
-    plugins_dir.mkdir()
+def test_install_preserves_readable_internal_links(tmp_path, monkeypatch, plugin_world):
+    plugins_dir = plugin_world.home / "plugins"
+    plugins_dir.mkdir(exist_ok=True)
 
     def clone(staging, *_args):
         staging.mkdir()

@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import pytest
 
-
 class _DummyCLI:
     def __init__(self, **kwargs):
         self.kwargs = kwargs
@@ -22,19 +21,15 @@ class _DummyCLI:
     def run(self):
         return None
 
-
 def _real_finalize(cli_obj):
     """Call the real HermesCLI.finalize_preloaded_skills on a dummy object."""
     return _REAL_FINALIZE(cli_obj)
-
 
 def _capture_real_finalize():
     import cli as cli_mod
     return cli_mod.HermesCLI.__dict__["finalize_preloaded_skills"]
 
-
 _REAL_FINALIZE = _capture_real_finalize()
-
 
 def test_main_applies_preloaded_skills_to_system_prompt(monkeypatch):
     import cli as cli_mod
@@ -63,7 +58,6 @@ def test_main_applies_preloaded_skills_to_system_prompt(monkeypatch):
     assert cli_obj.system_prompt == "base prompt\n\nskill prompt"
     assert cli_obj.preloaded_skills == ["hermes-agent-dev", "github-auth"]
 
-
 def test_main_raises_for_unknown_preloaded_skill(monkeypatch):
     import cli as cli_mod
 
@@ -87,5 +81,3 @@ def test_main_raises_for_unknown_preloaded_skill(monkeypatch):
     # finalized (agent init), preserving the fail-loud contract.
     with pytest.raises(ValueError, match=r"Unknown skill\(s\): missing-skill"):
         _real_finalize(created["cli"])
-
-

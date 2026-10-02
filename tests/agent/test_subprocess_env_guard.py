@@ -1,4 +1,4 @@
-"""Lint guard: no new raw ``os.environ.copy()`` spawn-env sites.
+"""Lint guard: no new raw ``os.environ.copy()`` / ``**os.environ`` spawn-env sites.
 
 Every child-process env in the codebase must be built through
 ``tools.environments.local.build_subprocess_env`` (or its sibling
@@ -7,8 +7,8 @@ wraps) so profile-home propagation and secret-scrubbing have a single owner.
 History: ~11 commits over 6 months each fixed one more spawn site that missed
 ``HERMES_HOME`` or secret-scrub propagation.
 
-This test greps the source tree for ``os.environ.copy()`` appearing within
-``PROXIMITY_LINES`` lines of a spawn call (``Popen`` / ``subprocess.run`` /
+This test greps the source tree for ``os.environ.copy()`` or a ``{**os.environ, ...}``
+spread appearing within ``PROXIMITY_LINES`` lines of a spawn call (``Popen`` / ``subprocess.run`` /
 ``create_subprocess*`` / ``PtyProcess.spawn`` / ``execvpe``) and asserts every
 hit is in the explicit allowlist below.  If you are adding a new spawn site:
 
@@ -24,7 +24,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
 # Directories that make up the shipped source tree.
-SCAN_DIRS = ("agent", "hermes_cli", "tools", "gateway", "cron", "tui_gateway")
+SCAN_DIRS = ("agent", "hermes_cli", "tools", "gateway", "cron", "tui_gateway", "plugins")
 SCAN_ROOT_FILES = ("cli.py", "hermes_constants.py")
 
 # How many lines around an `os.environ.copy()` we look for a spawn call.
@@ -34,7 +34,8 @@ SPAWN_RE = re.compile(
     r"\bPopen\b|\bsubprocess\.run\b|\bcreate_subprocess|\bPtyProcess\.spawn\b"
     r"|\bexecvpe\b|\bptyprocess\.PtyProcess\b|\bspawn\("
 )
-COPY_RE = re.compile(r"\bos\.environ\.copy\(\)")
+# A spread placed after the scrub restores everything it removed (#122751 review B1).
+COPY_RE = re.compile(r"\bos\.environ\.copy\(\)|\*\*os\.environ\b")
 
 # ---------------------------------------------------------------------------
 # ALLOWLIST — intentionally-raw sites.  Each entry is a relative posix path.
@@ -49,6 +50,29 @@ ALLOWED_RAW_SPAWN_ENV_FILES = {
     # only raw copy is the except-fallback for when the tools package itself
     # cannot be imported, so the user's typed command still runs.
     "hermes_cli/bang_shell.py",
+    # These children are Hermes itself and need its full environment: the gateway respawn
+    # watcher (generated script source), the launchd stderr-timestamp wrapper around the
+    # gateway command, and the skills sync that seeds a new profile.
+    "hermes_cli/gateway.py",
+    # The Windows supervisor launches Hermes with the gateway's configured
+    # environment; its local shortcut helper receives only fixed script/argv
+    # plus path overlays. These are the Windows counterparts of gateway.py.
+    "hermes_cli/gateway_windows.py",
+    "hermes_cli/stderr_timestamp.py",
+    "hermes_cli/profiles.py",
+    # The compute host runs agent turns for the dashboard: Home Assistant tools, Modal/Daytona
+    # backends and platform sends read keys that exist only in the process env (#65895).
+    "tui_gateway/host_supervisor.py",
+    # apt/dnf/pacman run as root, through sudo (which resets the environment) or because Hermes
+    # already is root. A root child can read every process's environment anyway, and the scrub
+    # helpers would point TMPDIR into HERMES_HOME's scratch dir, leaving root-owned files there.
+    "tools/bot_desktop/install.py",
+    # The docker/ssh CLIENT process: the user's own backend binary, never code the agent runs,
+    # needing their real HOME for ~/.ssh and ~/.docker. Same as inheriting (``None``) plus the
+    # forwarded values; what crosses into the sandbox is the backend's forward/passthrough policy.
+    "tools/environments/remote_common.py",
+    # Needing provider keys is not a reason to be here: such a child uses
+    # hermes_subprocess_env(inherit_credentials=True), which still drops bot/relay tokens.
 }
 
 
@@ -94,7 +118,7 @@ def test_no_new_raw_environ_copy_spawn_sites():
         if rel not in ALLOWED_RAW_SPAWN_ENV_FILES
     ]
     assert not offenders, (
-        "New raw os.environ.copy() spawn-env site(s) found:\n  "
+        "New raw os.environ.copy() / **os.environ spawn-env site(s) found:\n  "
         + "\n  ".join(offenders)
         + "\nUse tools.environments.local.build_subprocess_env() instead "
         "(scrub_secrets=False, inherit_profile_home=False preserves exact "

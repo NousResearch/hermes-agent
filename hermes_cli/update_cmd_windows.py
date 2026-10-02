@@ -240,11 +240,20 @@ def _hermes_holder_subcommand(cmdline: str) -> str | None:
         tokens = shlex.split(cmdline, posix=False)
     except Exception:
         tokens = cmdline.split()
+    # ``python -c <src> … -m hermes_cli.main <subcommand>``: the entry token belongs to the argv the
+    # inline source carries for a LATER spawn, not to this holder (#107002) -- unless the source is a
+    # Hermes bootstrap running the entry point in this process (#124318).
+    from gateway.status import command_line_runs_inline_source, inline_bootstrap_argv
+    normalized = [t.strip("\"'").replace("\\", "/") for t in tokens]
+    if command_line_runs_inline_source(normalized):
+        tokens = inline_bootstrap_argv(normalized)
+        if tokens is None:
+            return None
 
     def _is_entry(i: int, token: str) -> bool:
-        low = token.lower().strip('"')
+        low = token.lower().strip("\"'").replace("\\", "/")
         return (low.endswith("hermes_cli.main") and i > 0 and tokens[i - 1] == "-m") or (
-            low.rsplit("\\", 1)[-1].rsplit("/", 1)[-1] in ("hermes", "hermes.exe"))
+            low.rsplit("/", 1)[-1] in ("hermes", "hermes.exe")) or low.endswith("hermes_cli/main.py")
 
     entry_idx = next((i for i, token in enumerate(tokens) if _is_entry(i, token)), None)
     if entry_idx is None:
@@ -260,34 +269,6 @@ def _hermes_holder_subcommand(cmdline: str) -> str | None:
         else:
             return token.lower()
     return None
-
-
-def _format_venv_python_holders_message(matches: list[tuple[int, str, str]]) -> str:
-    """Explain which venv processes block the update and how to clear them.
-
-    Labels come from the parsed SUBCOMMAND, never substring: a standalone ``hermes dashboard`` must not be
-    called the Desktop backend, ``--preserve-cache`` must not match "serve". Unknown argv gets no hint.
-
-    See #90778.
-    """
-    hint_by_subcommand = {
-        "serve": "  ← Hermes backend (if the Desktop app is open, close it)",
-        "dashboard": "  ← hermes dashboard (stop it: hermes dashboard stop, or close that terminal)",
-        "gateway": "  ← gateway",
-    }
-    lines = ["✗ Other Hermes processes are running from this install's venv:"]
-    for pid, name, cmdline in matches[:6]:
-        hint = hint_by_subcommand.get(_hermes_holder_subcommand(cmdline) or "", "")
-        lines.append(f"  PID {pid}  {name}  {cmdline[:120]}{hint}")
-    if len(matches) > 6:
-        lines.append(f"  ... and {len(matches) - 6} more")
-    lines.append(
-        "\n  On Windows these keep native extension files (.pyd) locked, so the\n"
-        "  dependency update would fail partway and leave a broken install.\n"
-        "  Close the Hermes desktop app / other Hermes terminals, then re-run:\n    hermes update\n"
-        "  (or use `hermes update --force-venv` to proceed anyway at your own risk)"
-    )
-    return "\n".join(lines)
 
 
 def _venv_launcher_ancestors(pids: list[int]) -> list[int]:
@@ -669,7 +650,7 @@ def _desktop_owns_gateway_lifecycle() -> bool:
         if any(e.get("purpose") in _BACKEND_PURPOSES and spawner_is_dead(e) is False for e in ledger_entries()):
             return True
     psutil = _psutil()
-    for pid, _name, cmdline in _try_call(_m()._detect_venv_python_processes, "Desktop-lifecycle holder scan failed: %s") or []:
+    for pid, _name, cmdline in _try_call(_detect_venv_python_processes, "Desktop-lifecycle holder scan failed: %s") or []:
         if not _looks_like_desktop_control_plane(cmdline):
             continue
         if psutil is None:
@@ -867,6 +848,15 @@ def _pause_windows_gateway_services(service_gateways, token: dict, profiles: dic
         raise RuntimeError(detail) from exc
 
 
+def _owned_gateway_pids(pids, *, keep=(), quiet: bool = True) -> list[int]:
+    """*pids* whose live home this update owns, plus *keep* (PIDs mapped to this install's profile
+    PID files / services). The same home scope the POSIX fleet restart uses (#93349): a gateway of
+    another Hermes install, or one whose home cannot be read, is named (unless *quiet*) and left
+    running, never paused, force-killed or replayed (#124659)."""
+    from hermes_cli.update_cmd_fleet import _scoped_manual_gateway_pids
+    return _scoped_manual_gateway_pids(list(pids), keep=keep, quiet=quiet)
+
+
 def _discover_windows_gateways():
     """``(profile_processes, service_gateways, service_gateway_pids, running_pids)`` for the pause; any indeterminate probe aborts."""
     from hermes_cli.gateway import find_gateway_pids, find_profile_gateway_processes, find_windows_gateway_services
@@ -877,9 +867,10 @@ def _discover_windows_gateways():
         service_gateways = find_windows_gateway_services(profile_processes=profile_process_list)
     service_gateway_pids = {int(service.gateway_pid) for service in service_gateways}
     with _abort_on_error("Could not discover Windows gateway PIDs before update"):
-        running_pids = list(dict.fromkeys(
+        # find_gateway_pids(all_profiles=True) is a HOST-wide scan; only this install's fleet is paused.
+        running_pids = _owned_gateway_pids(dict.fromkeys(
             [*find_gateway_pids(all_profiles=True), *sorted(profile_processes), *sorted(service_gateway_pids)]
-        ))
+        ), keep=set(profile_processes) | service_gateway_pids, quiet=False)
     return profile_processes, service_gateways, service_gateway_pids, running_pids
 
 
@@ -1071,7 +1062,8 @@ def _cold_start_windows_gateway_after_update(token: dict | None = None) -> bool:
         from hermes_cli import gateway_windows
         from hermes_cli.gateway import find_gateway_pids
     with _abort_on_error("Could not re-check gateway liveness before cold-start"):
-        if list(find_gateway_pids(all_profiles=True)):
+        # Another install's live gateway must not suppress this install's cold start (#124659).
+        if _owned_gateway_pids(find_gateway_pids(all_profiles=True)):
             return True
     token = token or {}
     generation = token.get("attested_generation")
@@ -1123,6 +1115,12 @@ def _refresh_windows_gateway_launchers() -> None:
         if gateway_windows.is_installed():
             gateway_windows._write_task_script()
             print("  ✓ Refreshed Windows gateway launcher scripts")
+            # Installs from before #80569 can carry a Startup entry beside the task: both fire at logon.
+            done, warnings = gateway_windows.reconcile_autostart_launchers()
+            for message in done:
+                print(f"  ✓ {message}")
+            for message in warnings:
+                print(f"  ⚠ {message}")
             if gateway_windows.is_task_registered():
                 # A task registered by an older build never picks up template hardening otherwise (#113670).
                 gateway_windows.reconcile_scheduled_task(gateway_windows.get_task_name())
@@ -1242,6 +1240,35 @@ def _relaunch_paused_gateways(token: dict, profiles: dict, unmapped: list) -> tu
     return relaunched, unmapped_relaunched
 
 
+_RELAUNCH_VERIFY_TIMEOUT_S = 30.0
+
+
+def _pending_relaunch_pids(profiles: dict, unmapped: list, pid_exists) -> list[int]:
+    """Old PIDs a restart watcher is still waiting on, sorted; empty when every relaunch can have run.
+
+    ``_spawn_gateway_restart_watcher`` respawns the gateway only once the PID it was handed is gone,
+    so while any of them is alive the relaunch has provably not started yet. Pure function of data
+    (``pid_exists`` is injected) so the decision is testable off Windows.
+    """
+    candidates = [int(pid) for pid in profiles.values()]
+    candidates += [int(entry["pid"]) for entry in unmapped if entry.get("argv") and entry.get("pid")]
+    return sorted({pid for pid in candidates if pid > 0 and pid_exists(pid)})
+
+
+def _relaunch_verify_timeout_s(profiles: dict, unmapped: list, pid_exists) -> float:
+    """Liveness budget for the post-relaunch poll.
+
+    The base window assumes the watchers respawn immediately. When an old PID is still alive the
+    watcher is still in its wait loop, so the poll must reach at least the watcher's own deadline —
+    otherwise ``hermes update`` declares "no stable gateway process appeared" for a gateway that was
+    never scheduled to appear inside the window (#107002).
+    """
+    from hermes_cli.gateway import GATEWAY_RESTART_WATCHER_TIMEOUT_S
+    if not _pending_relaunch_pids(profiles, unmapped, pid_exists):
+        return _RELAUNCH_VERIFY_TIMEOUT_S
+    return float(GATEWAY_RESTART_WATCHER_TIMEOUT_S) + _RELAUNCH_VERIFY_TIMEOUT_S
+
+
 def _verify_relaunched_gateways_alive(token: dict, profiles: dict, unmapped: list) -> None:
     """Gate success on the shared liveness poll: a truthy launch only proves the watcher was created.
 
@@ -1249,8 +1276,12 @@ def _verify_relaunched_gateways_alive(token: dict, profiles: dict, unmapped: lis
     ``all_profiles=True`` covers the fleet. Vouched PIDs are persisted so a death AFTER updater exit
     is reported by the next CLI invocation (best-effort)."""
     with _abort_on_error("Could not load Windows gateway liveness helpers"):
+        from gateway.status import _pid_exists
         from hermes_cli import gateway_windows
-    ready_pids = gateway_windows._wait_for_gateway_ready(timeout_s=30.0, all_profiles=True)
+    timeout_s = _relaunch_verify_timeout_s(profiles, unmapped, _pid_exists)
+    ready_pids = gateway_windows._wait_for_gateway_ready(
+        timeout_s=timeout_s, all_profiles=True, pid_filter=_owned_gateway_pids
+    )
     if not ready_pids:
         token["profiles"] = dict(profiles)
         token["unmapped"] = list(unmapped)

@@ -27,6 +27,7 @@ def _run_launcher(tmp_path: Path, exit_code: int = 0):
         f"sys.exit({exit_code})\n", encoding="utf-8")
     env = dict(os.environ, HERMES_PYTHON=sys.executable,
                OPENAI_API_KEY="synthetic-not-a-credential", UNRELATED_VALUE="do-not-forward",
+               PATHEXT=".COM;.EXE;.BAT;.CMD;.CPL",
                HERMES_HOME=str(tmp_path / "must-not-use-live-home"),
                HERMES_TEST_WORKERS="2", HERMES_TEST_FILE_RETRIES="0")
     result = subprocess.run(
@@ -37,7 +38,7 @@ def _run_launcher(tmp_path: Path, exit_code: int = 0):
     return result, json.loads(capture.read_text())
 
 
-@pytest.mark.windows_only
+@pytest.mark.platforms("windows")
 def test_native_runner_isolates_environment_and_preserves_arguments(tmp_path):
     result, captured = _run_launcher(tmp_path)
     assert result.returncode == 0, result.stdout + result.stderr
@@ -52,9 +53,10 @@ def test_native_runner_isolates_environment_and_preserves_arguments(tmp_path):
     assert env["HERMES_TEST_WORKERS"] == "2"
     assert env["HERMES_TEST_FILE_RETRIES"] == "0"
     assert env["SYSTEMROOT"] == os.environ["SYSTEMROOT"]
+    assert env["PATHEXT"] == ".COM;.EXE;.BAT;.CMD;.CPL"
 
 
-@pytest.mark.windows_only
+@pytest.mark.platforms("windows")
 def test_native_runner_preserves_child_failure_exit_code(tmp_path):
     result, _ = _run_launcher(tmp_path, exit_code=37)
     assert result.returncode == 37

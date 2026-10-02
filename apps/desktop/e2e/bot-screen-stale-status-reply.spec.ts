@@ -1,6 +1,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 
+import { writeEnvFile, writeMockProviderConfig } from '../../../tests-js/scripts/mock-provider-config'
 import { startMockServer } from '../../../tests-js/scripts/mock-server'
 
 import {
@@ -8,9 +9,7 @@ import {
   createSandbox,
   launchDesktop,
   type MockBackendFixture,
-  waitForAppReady,
-  writeEnvFile,
-  writeMockProviderConfig
+  waitForAppReady
 } from './fixtures'
 import { RealSessionBuilder } from './real-session-builder'
 import { expect, test } from './test'
@@ -67,7 +66,7 @@ async function seedBot(hermesHome: string, mockUrl: string, name: string): Promi
   const dir = path.join(hermesHome, 'profiles', name)
   fs.mkdirSync(dir, { recursive: true })
   writeMockProviderConfig(dir, mockUrl)
-  writeEnvFile(dir)
+  writeEnvFile(dir, 'e2e-mock-key', mockUrl)
 
   const builder = await RealSessionBuilder.start(dir)
 
@@ -168,42 +167,7 @@ const pushEvent = (page: Page, type: string, payload: unknown) =>
 
 const hero = (page: Page) => page.locator('button[aria-label^="Screen:"]').first()
 
-test.beforeAll(async () => {
-  const mock = await startMockServer()
-  const sandbox = createSandbox('bots-screen-stale')
-  writeMockProviderConfig(sandbox.hermesHome, mock.url)
-  writeEnvFile(sandbox.hermesHome)
-  await seedBot(sandbox.hermesHome, mock.url, 'alpha')
-
-  const { app, page } = await launchDesktop(buildAppEnv(sandbox))
-  page.on('pageerror', error => pageErrors.push(String(error)))
-
-  fixture = {
-    app,
-    page,
-    mock,
-    mockUrl: mock.url,
-    sandbox,
-    cleanup: async () => {
-      await app.close().catch(() => undefined)
-      await mock.close()
-      sandbox.cleanup()
-    }
-  }
-  await waitForAppReady(fixture, 120_000)
-})
-
-test.afterAll(async () => {
-  await fixture?.cleanup()
-  fixture = null
-})
-
-test('a stale portal display.status reply does not roll back the newer stopped state', async () => {
-  test.setTimeout(300_000)
-  const page = fixture!.page
-
-  await installScreenProbe(page)
-
+async function revealScreenHero(page: Page): Promise<void> {
   const tab = page
     .getByRole('button', { name: 'Bots', exact: true })
     .or(page.getByRole('tab', { name: 'Bots', exact: true }))
@@ -235,10 +199,48 @@ test('a stale portal display.status reply does not roll back the newer stopped s
     .waitFor({ state: 'hidden', timeout: 90_000 })
     .catch(() => undefined)
 
-  // Reveal the routines pane: the Screen hero mounts and fires the portal's one-shot fetch.
   if ((await hero(page).count()) === 0) {
     await page.getByRole('tab', { name: 'Scheduled jobs' }).first().click()
   }
+}
+
+test.beforeAll(async () => {
+  const mock = await startMockServer()
+  const sandbox = createSandbox('bots-screen-stale')
+  writeMockProviderConfig(sandbox.hermesHome, mock.url)
+  writeEnvFile(sandbox.hermesHome, 'e2e-mock-key', mock.url)
+  await seedBot(sandbox.hermesHome, mock.url, 'alpha')
+
+  const { app, page } = await launchDesktop(buildAppEnv(sandbox))
+  page.on('pageerror', error => pageErrors.push(String(error)))
+
+  fixture = {
+    app,
+    page,
+    mock,
+    mockUrl: mock.url,
+    sandbox,
+    cleanup: async () => {
+      await app.close().catch(() => undefined)
+      await mock.close()
+      sandbox.cleanup()
+    }
+  }
+  await waitForAppReady(fixture, 120_000)
+})
+
+test.afterAll(async () => {
+  await fixture?.cleanup()
+  fixture = null
+})
+
+test('a stale portal display.status reply does not roll back the newer stopped state', async () => {
+  test.setTimeout(300_000)
+  const page = fixture!.page
+
+  await installScreenProbe(page)
+  // Reveal the routines pane: the Screen hero mounts and fires the portal's one-shot fetch.
+  await revealScreenHero(page)
 
   await expect(hero(page)).toHaveAttribute('aria-label', 'Screen: Checking the screen…', { timeout: 15_000 })
   await expect.poll(async () => (await probe(page)).held, { timeout: 15_000 }).toBe(1)
@@ -270,6 +272,7 @@ test('pushed display.status / display.lease events keep updating the shipped lis
   const page = fixture!.page
 
   await installScreenProbe(page)
+  await revealScreenHero(page)
   await expect(hero(page)).toBeVisible({ timeout: 15_000 })
 
   // A start made outside this window is pushed as a token-less status: authoritative.

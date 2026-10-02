@@ -4,6 +4,7 @@ import json
 import os
 import subprocess
 import sys
+import sysconfig
 import time
 import xml.etree.ElementTree as ET
 from pathlib import Path
@@ -63,10 +64,15 @@ def _launchers(monkeypatch, tmp_path, exit_code):
     )
 
     def test_code(supervised):
+        # Only the gateway command is replaced. The overlay keeps _build_gateway_argv's PYTHONPATH
+        # contract: the detached spawn's base env (served_profile_child_env) strips Hermes-owned
+        # PYTHONPATH entries, and the test environment does not install the project itself.
         return (
             "import sys; from pathlib import Path; import hermes_cli.gateway_windows as g; "
+            "from hermes_cli.gateway import PROJECT_ROOT; overlay = {}; "
+            "g._prepend_pythonpath(overlay, [str(PROJECT_ROOT)]); "
             f"g._build_gateway_argv=lambda home=None: ([sys.executable, {str(child)!r}, "
-            f"{str(root)!r}, {str(exit_code)!r}], {str(root)!r}, {{}}); "
+            f"{str(root)!r}, {str(exit_code)!r}], {str(root)!r}, overlay); "
             f"g._hermes_home=lambda: Path({str(root)!r}); "
             f"raise SystemExit(g._run_generated_launcher({supervised!r}))"
         )
@@ -91,13 +97,24 @@ def _launchers(monkeypatch, tmp_path, exit_code):
 
 def _exercise_launcher(command, root, exit_code, *, supervised):
     child = None
-    wrapper = subprocess.Popen(command, creationflags=subprocess.CREATE_NO_WINDOW)
+    launcher_log = root / "launcher-probe.log"
+    output = launcher_log.open("wb")
+    wrapper = subprocess.Popen(command, creationflags=subprocess.CREATE_NO_WINDOW,
+                               stdout=output, stderr=subprocess.STDOUT)
     try:
         started = root / "started.json"
         deadline = time.monotonic() + 60
         while not started.exists() and time.monotonic() < deadline:
             time.sleep(0.05)
-        assert started.exists(), "The generated launcher did not start its child"
+        if not started.exists():
+            # The child's own stderr goes to the gateway's stdio sidecar, not the launcher log.
+            child_log = root / "logs" / "gateway-stdio.log"
+            child_output = child_log.read_text(encoding="utf-8", errors="replace") if child_log.exists() else ""
+            pytest.fail(
+                "The generated launcher did not start its child: "
+                + launcher_log.read_text(encoding="utf-8", errors="replace")[-4000:]
+                + "\nchild output: " + child_output[-4000:]
+            )
         state = json.loads(started.read_text(encoding="utf-8"))
         child = psutil.Process(state["pid"])
         assert state["visible"] is False, "The launcher exposed a console window"
@@ -114,12 +131,64 @@ def _exercise_launcher(command, root, exit_code, *, supervised):
         assert state["supervisor_marker"] == ("1" if supervised else "")
     finally:
         (root / "release").touch()
-        wrapper.wait(timeout=60)
+        # Cleanup must not mask an earlier assertion or consume the whole
+        # per-file CI deadline. These are only the two processes this fixture
+        # created; every production lifetime assertion above stays in place.
+        try:
+            wrapper.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            wrapper.kill()
+            wrapper.wait(timeout=10)
         if child is not None:
-            child.wait(timeout=60)
+            try:
+                child.wait(timeout=10)
+            except psutil.TimeoutExpired:
+                if child.is_running():
+                    child.kill()
+                child.wait(timeout=10)
+        output.close()
 
 
-@pytest.mark.windows_only
+@pytest.mark.platforms('windows')
+def test_probe_child_uses_production_pythonpath_without_editable_imports(monkeypatch, tmp_path):
+    monkeypatch.delenv(EXTERNAL_GATEWAY_SUPERVISOR_ENV, raising=False)
+    script_path = _launchers(monkeypatch, tmp_path, 0)
+    root = script_path.parent
+    (root / "release").touch()
+    dependencies = json.dumps(list(dict.fromkeys(
+        sysconfig.get_paths()[name] for name in ("purelib", "platlib")
+    )))
+    # -S skips .pth/editable hooks. Declared dependencies remain available, but
+    # the project itself must arrive through the production argv overlay.
+    driver = (
+        "import json, runpy, sys; sys.path.extend(json.loads(sys.argv[1])); "
+        "sys.argv=sys.argv[2:]; runpy.run_path(sys.argv[0], run_name='__main__')"
+    )
+    command = [sys.executable, "-S", "-c", driver, dependencies,
+               str(root / "probe child.py"), str(root), "0"]
+    env = dict(os.environ)
+    env.pop("PYTHONPATH", None)
+    missing = subprocess.run(
+        command, cwd=root, env=env, capture_output=True, text=True, timeout=30,
+        creationflags=subprocess.CREATE_NO_WINDOW,
+    )
+    assert missing.returncode != 0
+    assert "ModuleNotFoundError: No module named 'gateway'" in missing.stderr
+    assert not (root / "started.json").exists()
+    from hermes_cli.gateway import PROJECT_ROOT
+    gateway_windows._prepend_pythonpath(env, [str(PROJECT_ROOT)])
+    result = subprocess.run(
+        command, cwd=root, env=env, capture_output=True, text=True, timeout=30,
+        creationflags=subprocess.CREATE_NO_WINDOW,
+    )
+    assert result.returncode == 0, result.stderr
+    state = json.loads((root / "started.json").read_text(encoding="utf-8"))
+    assert state["visible"] is False
+    assert state["supervised"] is False
+    assert state["supervisor_marker"] == ""
+
+
+@pytest.mark.platforms('windows')
 @pytest.mark.parametrize(("exit_code", "task_result"), [(78, 0), (0, 0), (75, 75), (1, 1)])
 def test_scheduled_action_waits_for_hidden_child_and_applies_restart_policy(monkeypatch, tmp_path, exit_code, task_result):
     monkeypatch.delenv(EXTERNAL_GATEWAY_SUPERVISOR_ENV, raising=False)
@@ -159,7 +228,7 @@ def _read_shortcut(entry):
     return json.loads(result.stdout)
 
 
-@pytest.mark.windows_only
+@pytest.mark.platforms('windows')
 @pytest.mark.parametrize("inherited_supervisor", ["", "1"])
 def test_shared_launcher_remains_detached_and_startup_uses_it(monkeypatch, tmp_path, inherited_supervisor):
     monkeypatch.setenv(EXTERNAL_GATEWAY_SUPERVISOR_ENV, inherited_supervisor)

@@ -136,7 +136,7 @@ def test_mode_change_is_rechecked_after_stale_backend_stops():
     ]
 
 
-@pytest.mark.linux_only
+@pytest.mark.platforms("linux")
 def test_unrestricted_embedded_daemon_uses_private_socket_and_two_part_ack():
     from tools.computer_use import cua_backend
 

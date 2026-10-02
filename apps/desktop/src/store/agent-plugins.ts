@@ -1,6 +1,15 @@
 import { atom } from 'nanostores'
 
+import {
+  $apiRequestScope,
+  ambientOwnerConnectionId,
+  getApiRequestConnection,
+  type ProfileScope,
+  profileScopeKey
+} from '@/api/client'
+import { requestGatewayForAgent } from '@/store/gateway'
 import { notifyError } from '@/store/notifications'
+import { $connection } from '@/store/session'
 
 /**
  * Feature store for backend (agent) plugins — the native Hermes plugins plus
@@ -18,6 +27,7 @@ import { notifyError } from '@/store/notifications'
 export type AgentPluginServerState =
   | 'connected'
   | 'app_not_running'
+  | 'hermes_not_connected'
   | 'endpoint_unavailable'
   | 'no_interactive_session'
   | 'version_too_old'
@@ -91,11 +101,130 @@ export const COMMIT_SHA_RE = /^[0-9a-f]{40}$/i
 export type AgentPluginsStatus = 'idle' | 'loading' | 'ready' | 'error'
 
 /** The recovering `requestGateway` from `useGatewayRequest`. */
-export type GatewayRequest = <T>(method: string, params?: Record<string, unknown>) => Promise<T>
+export type GatewayRequest = <T>(method: string, params?: Record<string, unknown>, timeoutMs?: number) => Promise<T>
+
+const requestOwners = new WeakMap<GatewayRequest, string>()
+const requestCurrent = new WeakMap<GatewayRequest, () => boolean>()
+let nextRequestOwner = 0
+let canonicalGeneration = 0
+$apiRequestScope.listen((next, previous) => {
+  if (next.connectionId !== previous.connectionId) {
+    canonicalGeneration += 1
+  }
+})
+
+/** Endpoint identity excludes credentials, query, and fragment, but retains the route path. */
+export function agentPluginConnectionOwner(connection = $connection.get()): string | undefined {
+  const canonical = getApiRequestConnection()
+
+  if (canonical) {
+    return canonical
+  }
+
+  if (connection?.connectionId && connection.connectionId !== 'local') {
+    // A cleared canonical tag is intentional primary ownership. A stale
+    // registered descriptor cannot authorize untagged REST writes there.
+    return undefined
+  }
+
+  if (connection?.mode === 'local') {
+    return 'local'
+  }
+
+  if (connection?.mode === 'remote' && connection.baseUrl) {
+    try {
+      const endpoint = new URL(connection.baseUrl)
+
+      return `legacy:${endpoint.origin}${endpoint.pathname.replace(/\/+$/, '')}`
+    } catch {
+      return undefined
+    }
+  }
+
+  return ambientOwnerConnectionId()
+}
+
+export function agentPluginTargetOwner(scope: ProfileScope): string | null {
+  if (scope && typeof scope === 'object') {
+    return profileScopeKey({ connectionId: scope.connectionId || 'local', profile: scope.profile })
+  }
+
+  const connectionId = agentPluginConnectionOwner()
+
+  return connectionId
+    ? profileScopeKey({ connectionId, profile: scope || $apiRequestScope.get().profile || 'default' })
+    : null
+}
+
+/** Bind an explicit capability pin to its owning socket without switching the app. */
+export function scopedAgentPluginRequest(
+  scope: ProfileScope,
+  ambient: GatewayRequest,
+  ambientConnectionId = agentPluginConnectionOwner()
+): GatewayRequest {
+  if (!scope || typeof scope !== 'object') {
+    const connectionId = ambientConnectionId
+    const generation = canonicalGeneration
+
+    const isCurrent = () =>
+      Boolean(connectionId) && generation === canonicalGeneration && agentPluginConnectionOwner() === connectionId
+
+    const request: GatewayRequest = <T>(method: string, params: Record<string, unknown> = {}, timeoutMs?: number) => {
+      if (!isCurrent()) {
+        // Bootstrap reads may recover the first descriptor; no mutation is
+        // authorized until its owner is confirmed. A stale registered
+        // descriptor is a different case and cannot ride this recovery path.
+        if (!connectionId && !$connection.get() && params.action === 'list') {
+          return timeoutMs === undefined ? ambient<T>(method, params) : ambient<T>(method, params, timeoutMs)
+        }
+
+        return Promise.reject(new Error('Plugin target changed; select the backend again.'))
+      }
+
+      return timeoutMs === undefined ? ambient<T>(method, params) : ambient<T>(method, params, timeoutMs)
+    }
+
+    if (connectionId) {
+      requestOwners.set(
+        request,
+        profileScopeKey({ connectionId, profile: scope || $apiRequestScope.get().profile || 'default' })
+      )
+    }
+
+    requestCurrent.set(request, isCurrent)
+
+    return request
+  }
+
+  const connectionId = scope.connectionId?.trim() || 'local'
+  const profile = scope.profile?.trim() || 'default'
+
+  const request: GatewayRequest = <T>(method: string, params = {}, timeoutMs?: number) =>
+    requestGatewayForAgent<T>(connectionId, profile, method, params, timeoutMs, undefined, {
+      spawnPriority: 'foreground'
+    })
+
+  requestOwners.set(request, profileScopeKey({ connectionId, profile }))
+
+  return request
+}
+
+export function agentPluginRequestOwner(request: GatewayRequest, profile?: string | null): string {
+  let owner = requestOwners.get(request)
+
+  if (!owner) {
+    owner = `transport-${++nextRequestOwner}`
+    requestOwners.set(request, owner)
+  }
+
+  return owner.includes('::') ? owner : `${owner}::${profile ?? ''}`
+}
 
 export const $agentPlugins = atom<AgentPluginRow[]>([])
 export const $agentPluginsStatus = atom<AgentPluginsStatus>('idle')
 export const $agentPluginsError = atom<string | null>(null)
+/** Rows and busy state belong to one transport/profile pair, never a bare name. */
+export const $agentPluginsOwner = atom<string | null>(null)
 /** Best available address of the row whose toggle RPC is in flight. */
 export const $agentPluginBusy = atom<string | null>(null)
 
@@ -121,10 +250,25 @@ export const isDesktopRelevantPlugin = (row: AgentPluginRow): boolean => {
 }
 
 let inflight: Promise<void> | null = null
-let inflightProfile: string | null = null
+let inflightOwner: string | null = null
 // Bumped per load so a slow response from a previous profile scope can't
 // overwrite the newer scope's list (async results can land out of order).
 let loadGeneration = 0
+let viewGeneration = 0
+let busyGeneration = 0
+
+/** A scope switch, including A → B → A, revokes old operation tails. */
+export function captureAgentPluginView(request: GatewayRequest, profile?: string | null): () => boolean {
+  const generation = viewGeneration
+  const owner = $agentPluginsOwner.get()
+  const target = agentPluginRequestOwner(request, profile)
+
+  return () =>
+    generation === viewGeneration &&
+    owner === $agentPluginsOwner.get() &&
+    (!owner || owner === target) &&
+    (requestCurrent.get(request)?.() ?? true)
+}
 
 /** Scope a `plugins.manage` payload to a profile. Omitted (null) = the
  *  backend's launch profile — older backends ignore the extra param. */
@@ -136,18 +280,38 @@ const withProfile = (params: Record<string, unknown>, profile?: string | null) =
  *  backend); concurrent callers for the SAME profile share one in-flight
  *  request — a different profile starts fresh so a scope switch can't get a
  *  stale list. */
-export function loadAgentPlugins(request: GatewayRequest, profile?: string | null): Promise<void> {
-  const scope = profile ?? null
+export function loadAgentPlugins(request: GatewayRequest, profile?: string | null, publish = true): Promise<void> {
+  if (!publish) {
+    return request('plugins.manage', withProfile({ action: 'list' }, profile)).then(
+      () => undefined,
+      () => undefined
+    )
+  }
 
-  if (inflight && inflightProfile === scope) {
+  const scope = profile ?? null
+  const owner = agentPluginRequestOwner(request, scope)
+
+  if (inflight && inflightOwner === owner) {
     return inflight
   }
 
   const generation = ++loadGeneration
 
-  inflightProfile = scope
+  inflightOwner = owner
+  const changedOwner = $agentPluginsOwner.get() !== owner
+
+  if (changedOwner) {
+    ++viewGeneration
+    ++busyGeneration
+    $agentPlugins.set([])
+    $agentPluginBusy.set(null)
+    $agentPluginsError.set(null)
+    $agentPluginsStatus.set('loading')
+  }
+
+  $agentPluginsOwner.set(owner)
   inflight = (async () => {
-    if ($agentPluginsStatus.get() !== 'ready') {
+    if (changedOwner || $agentPluginsStatus.get() !== 'ready') {
       $agentPluginsStatus.set('loading')
     }
 
@@ -157,7 +321,7 @@ export function loadAgentPlugins(request: GatewayRequest, profile?: string | nul
         withProfile({ action: 'list' }, scope)
       )
 
-      if (generation !== loadGeneration) {
+      if (generation !== loadGeneration || requestCurrent.get(request)?.() === false) {
         return
       }
 
@@ -165,7 +329,7 @@ export function loadAgentPlugins(request: GatewayRequest, profile?: string | nul
       $agentPluginsStatus.set('ready')
       $agentPluginsError.set(null)
     } catch (e) {
-      if (generation !== loadGeneration) {
+      if (generation !== loadGeneration || requestCurrent.get(request)?.() === false) {
         return
       }
 
@@ -174,7 +338,7 @@ export function loadAgentPlugins(request: GatewayRequest, profile?: string | nul
     } finally {
       if (generation === loadGeneration) {
         inflight = null
-        inflightProfile = null
+        inflightOwner = null
       }
     }
   })()
@@ -196,6 +360,8 @@ export async function toggleAgentPlugin(
   failMessage: string,
   profile?: string | null
 ): Promise<boolean> {
+  const ownsView = captureAgentPluginView(request, profile)
+  const busy = ++busyGeneration
   $agentPluginBusy.set(key)
 
   try {
@@ -217,6 +383,10 @@ export async function toggleAgentPlugin(
 
     const refreshed = result.plugin
 
+    if (!ownsView()) {
+      return true
+    }
+
     if (refreshed) {
       const snapshot = normalizeAgentPluginRow(refreshed)
 
@@ -227,16 +397,22 @@ export async function toggleAgentPlugin(
 
     return true
   } catch (e) {
-    notifyError(e, failMessage)
+    if (ownsView()) {
+      notifyError(e, failMessage)
+    }
 
     return false
   } finally {
-    $agentPluginBusy.set(null)
+    if (busy === busyGeneration) {
+      $agentPluginBusy.set(null)
+    }
   }
 }
 
 export interface AgentPluginInstallResult {
   ok: boolean
+  /** The client stopped waiting; the backend may still finish the install. */
+  timedOut?: boolean
   pluginName?: string
   warnings?: string[]
   missingEnv?: string[]
@@ -260,6 +436,12 @@ export interface AgentPluginLiveNow {
 }
 
 const NO_LIVE: AgentPluginLiveNow = { mcpServers: [], skills: [] }
+
+// Installing a catalog package can clone a repository and resolve Python dependencies.
+// The ordinary Desktop RPC deadline is 30s, which can expire after the backend
+// has already begun an install that will succeed. Keep this wait bounded while
+// giving normal installs time to return their authoritative result.
+const PLUGIN_INSTALL_REQUEST_TIMEOUT_MS = 120_000
 
 export async function installAgentPlugin(
   request: GatewayRequest,
@@ -302,7 +484,8 @@ export async function installAgentPlugin(
           ...(opts.ref ? { ref: opts.ref } : {})
         },
         opts.profile
-      )
+      ),
+      PLUGIN_INSTALL_REQUEST_TIMEOUT_MS
     )
 
     if (!result?.ok) {
@@ -322,9 +505,12 @@ export async function installAgentPlugin(
       nextChat: Object.keys(result.activation?.deferred ?? {}).length > 0
     }
   } catch (e) {
+    const message = e instanceof Error ? e.message : String(e)
+
     return {
       ok: false,
-      error: e instanceof Error ? e.message : String(e),
+      timedOut: /^request timed out after \d+s: plugins\.manage$/.test(message),
+      error: message,
       live: NO_LIVE,
       nextChat: false
     }
@@ -349,6 +535,8 @@ export async function updateAgentPlugin(
   profile?: string | null,
   acceptCapabilities = false
 ): Promise<AgentPluginUpdateOutcome> {
+  const ownsView = captureAgentPluginView(request, profile)
+  const busy = ++busyGeneration
   $agentPluginBusy.set(name)
 
   try {
@@ -371,15 +559,21 @@ export async function updateAgentPlugin(
       throw new Error(failMessage)
     }
 
-    await loadAgentPlugins(request, profile)
+    if (ownsView()) {
+      await loadAgentPlugins(request, profile)
+    }
 
     return { kind: result.unchanged ? 'unchanged' : 'applied' }
   } catch (e) {
-    notifyError(e, failMessage)
+    if (ownsView()) {
+      notifyError(e, failMessage)
+    }
 
     return { kind: 'failed' }
   } finally {
-    $agentPluginBusy.set(null)
+    if (busy === busyGeneration) {
+      $agentPluginBusy.set(null)
+    }
   }
 }
 
@@ -393,6 +587,8 @@ export async function removeAgentPlugin(
   failMessage: string,
   profile?: string | null
 ): Promise<boolean> {
+  const ownsView = captureAgentPluginView(request, profile)
+  const busy = ++busyGeneration
   $agentPluginBusy.set(name)
 
   try {
@@ -402,15 +598,21 @@ export async function removeAgentPlugin(
       throw new Error(failMessage)
     }
 
-    $agentPlugins.set($agentPlugins.get().filter(row => row.name !== name))
+    if (ownsView()) {
+      $agentPlugins.set($agentPlugins.get().filter(row => row.name !== name))
+    }
 
     return true
   } catch (e) {
-    notifyError(e, failMessage)
+    if (ownsView()) {
+      notifyError(e, failMessage)
+    }
 
     return false
   } finally {
-    $agentPluginBusy.set(null)
+    if (busy === busyGeneration) {
+      $agentPluginBusy.set(null)
+    }
   }
 }
 
@@ -437,13 +639,23 @@ export async function saveAgentPluginSettings(
   request: GatewayRequest,
   opts: SaveAgentPluginSettingsOptions
 ): Promise<boolean> {
+  const ownsView = captureAgentPluginView(request, opts.profile)
+  const busy = ++busyGeneration
   $agentPluginBusy.set(opts.key)
 
   try {
     for (const [env, value] of Object.entries(opts.secrets)) {
       if (value) {
+        if (requestCurrent.get(request)?.() === false) {
+          throw new Error('Plugin target changed; an earlier settings write may already have completed.')
+        }
+
         await opts.writeSecret(env, value)
       }
+    }
+
+    if (requestCurrent.get(request)?.() === false) {
+      throw new Error('Plugin target changed; an earlier settings write may already have completed.')
     }
 
     const result =
@@ -458,6 +670,10 @@ export async function saveAgentPluginSettings(
       throw new Error(opts.failMessage)
     }
 
+    if (!ownsView()) {
+      return true
+    }
+
     if (result?.plugin) {
       const refreshed = result.plugin
 
@@ -468,10 +684,14 @@ export async function saveAgentPluginSettings(
 
     return true
   } catch (e) {
-    notifyError(e, opts.failMessage)
+    if (ownsView()) {
+      notifyError(e, opts.failMessage)
+    }
 
     return false
   } finally {
-    $agentPluginBusy.set(null)
+    if (busy === busyGeneration) {
+      $agentPluginBusy.set(null)
+    }
   }
 }

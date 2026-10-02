@@ -2,6 +2,7 @@
 
 import json
 import os
+import sys
 import threading
 import time
 from pathlib import Path
@@ -168,6 +169,56 @@ class TestGatewayPidState:
         # Cleanup for atexit hooks.
         monkeypatch.setenv("HERMES_HOME", str(process_home))
         (process_home / "gateway.pid").unlink(missing_ok=True)
+
+    def test_unscoped_live_identity_mismatch_never_unlinks_active_files(
+        self, tmp_path, monkeypatch
+    ):
+        """A live PID behind a HELD lock is not stale-cleanup authority, even unscoped: an
+        identity rejection (a matcher lagging a launcher shape) must not unlink the live
+        gateway's gateway.pid/gateway.lock (#125610, #123109)."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        record = {
+            "pid": 4242, "kind": "hermes-gateway", "start_time": 123,
+            "argv": ["python", "-m", "hermes_cli.main", "gateway", "run"],
+            "hermes_home": str(tmp_path.resolve()),
+        }
+        pid_path = tmp_path / "gateway.pid"
+        lock_path = tmp_path / "gateway.lock"
+        pid_path.write_text(json.dumps(record), encoding="utf-8")
+        lock_path.write_text(json.dumps(record), encoding="utf-8")
+        monkeypatch.setattr(status, "is_gateway_runtime_lock_active", lambda _path=None: True)
+        monkeypatch.setattr(status, "_pid_exists", lambda _pid: True)
+        monkeypatch.setattr(status, "_get_process_start_time", lambda _pid: 123)
+        monkeypatch.setattr(status, "_read_process_cmdline", lambda _pid: "python -m hermes_cli.main chat")
+        monkeypatch.setattr(status, "get_runtime_status_running_pid", lambda: None)
+
+        assert status.get_running_pid() is None
+        assert pid_path.exists() and lock_path.exists()
+
+    def test_unscoped_live_cross_home_pid_file_is_unlinked_but_held_lock_stays(
+        self, tmp_path, monkeypatch
+    ):
+        """A live gateway.pid that names ANOTHER home's gateway is poison inside this home and goes
+        on refusal (#89315); the HELD gateway.lock is the holder's and stays (#125610)."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        record = {
+            "pid": 4242, "kind": "hermes-gateway", "start_time": 123,
+            "argv": ["python", "-m", "hermes_cli.main", "gateway", "run"],
+            "hermes_home": str((tmp_path / "other-home").resolve()),
+        }
+        pid_path = tmp_path / "gateway.pid"
+        lock_path = tmp_path / "gateway.lock"
+        pid_path.write_text(json.dumps(record), encoding="utf-8")
+        lock_path.write_text("", encoding="utf-8")
+        monkeypatch.setattr(status, "is_gateway_runtime_lock_active", lambda _path=None: True)
+        monkeypatch.setattr(status, "_pid_exists", lambda _pid: True)
+        monkeypatch.setattr(status, "_get_process_start_time", lambda _pid: 123)
+        monkeypatch.setattr(status, "_read_process_cmdline", lambda _pid: "python -m hermes_cli.main gateway run")
+        monkeypatch.setattr(status, "get_runtime_status_running_pid", lambda: None)
+
+        assert status.get_running_pid() is None
+        assert not pid_path.exists()
+        assert lock_path.exists()
 
 
 class TestScopedGatewayPidQuery:
@@ -375,6 +426,18 @@ class TestGatewayRuntimeStatus:
             ), cmdline
 
 
+    def test_command_line_belongs_to_profile_accepts_explicit_default(self):
+        """``--profile default`` names THE DEFAULT PROFILE: a hand-written launchd plist that
+        mirrors the named-profile service shape must still count as the default home's gateway
+        (#100817), while a foreign ``-p coder`` keeps being rejected."""
+        default_home = Path("/opt/hermes-data")
+        for cmdline in (
+            "hermes --profile default gateway run --replace --external-supervisor",
+            "/opt/hermes/.venv/bin/hermes -p default gateway run",
+        ):
+            assert status._command_line_belongs_to_profile(cmdline, default_home) is True, cmdline
+        assert status._command_line_belongs_to_profile("hermes -p coder gateway run", default_home) is False
+
     def test_command_line_belongs_to_profile_normalizes_separators(self):
         """A Windows argv renders HERMES_HOME with backslashes while the
         profile's Path may carry forward slashes (and, on Windows, vice
@@ -559,6 +622,24 @@ class TestRuntimeStatusBackgroundWriter:
         finally:
             release_write.set()
         assert writer.flush(timeout=2.0)
+    def test_write_runtime_status_records_platform_metrics(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        status.write_runtime_status(
+            platform="api_server",
+            platform_state="connected",
+            platform_metrics={
+                "last_heartbeat": "2026-06-25T00:00:00+00:00",
+                "metrics_today": {"requests": 3, "tokens": 42},
+            },
+        )
+
+        payload = status.read_runtime_status()
+        api_status = payload["platforms"]["api_server"]
+        assert api_status["state"] == "connected"
+        assert api_status["metrics"]["last_heartbeat"] == "2026-06-25T00:00:00+00:00"
+        assert api_status["metrics"]["metrics_today"]["requests"] == 3
+        assert api_status["metrics"]["metrics_today"]["tokens"] == 42
 
 
 class TestGetProcessStartTime:
@@ -584,7 +665,7 @@ class TestGetProcessStartTime:
 
 
 class TestTerminatePid:
-    @pytest.mark.windows_only
+    @pytest.mark.platforms("windows")
     def test_force_uses_taskkill_on_windows(self, monkeypatch):
         # Faking _IS_WINDOWS on POSIX could not reproduce the real
         # CREATE_NO_WINDOW creationflags value that windows_hide_flags()
@@ -609,7 +690,7 @@ class TestTerminatePid:
             (["taskkill", "/PID", "123", "/T", "/F"], True, True, 10, windows_hide_flags())
         ]
 
-    @pytest.mark.windows_only
+    @pytest.mark.platforms("windows")
     def test_windows_force_refuses_pid_without_start_time_guard(self, monkeypatch):
         calls = []
         monkeypatch.setattr(status.subprocess, "run", lambda *args, **kwargs: calls.append(args))
@@ -619,7 +700,7 @@ class TestTerminatePid:
 
         assert calls == []
 
-    @pytest.mark.windows_only
+    @pytest.mark.platforms("windows")
     def test_windows_force_refuses_reused_pid(self, monkeypatch):
         monkeypatch.setattr(status, "_get_process_start_time", lambda pid: 999)
         calls = []
@@ -649,7 +730,7 @@ class TestPidExistsZombieProbe:
         monkeypatch.setattr(psutil.Process, "status", spy)
         return calls
 
-    @pytest.mark.windows_only
+    @pytest.mark.platforms("windows")
     def test_windows_skips_zombie_status_probe(self, monkeypatch):
         # Faking os.name on POSIX proves nothing about the cost on the real host; the wine2e
         # runner receipt (red on main, green on the fix) is the live repro for this test.
@@ -657,7 +738,7 @@ class TestPidExistsZombieProbe:
         assert status._pid_exists(os.getpid()) is True
         assert calls == []
 
-    @pytest.mark.linux_only
+    @pytest.mark.platforms("linux")
     def test_posix_still_probes_zombie_status(self, monkeypatch):
         # Control: on POSIX a zombie still answers pid_exists(), so the probe must survive.
         calls = self._spy_status(monkeypatch)
@@ -666,7 +747,7 @@ class TestPidExistsZombieProbe:
 
 
 class TestScopedLocks:
-    @pytest.mark.windows_only
+    @pytest.mark.platforms("windows")
     def test_windows_file_lock_uses_high_offset(self, tmp_path, monkeypatch):
         # Faking _IS_WINDOWS on POSIX could not reproduce the msvcrt
         # byte-range locking path at all: msvcrt does not exist off Windows,
@@ -1287,7 +1368,7 @@ class TestPlannedStopMarker:
 class TestReadProcessCmdlinePsFallback:
     """Tests for _read_process_cmdline falling back to ps on non-Linux."""
 
-    @pytest.mark.linux_only
+    @pytest.mark.platforms('linux')
     def test_ps_fallback_when_proc_unavailable(self, monkeypatch):
         import psutil
 
@@ -1298,6 +1379,12 @@ class TestReadProcessCmdlinePsFallback:
         # psutil precedes ps and may find an unrelated process on CI.
         monkeypatch.setattr(psutil, "Process", inaccessible_process)
         monkeypatch.setattr(status.Path, "read_bytes", lambda self: (_ for _ in ()).throw(FileNotFoundError))
+        # psutil sits between /proc and ps; left real, it reads whatever process holds this pid on the
+        # host (CI saw `/usr/sbin/haveged` at 873) and ps is never reached.
+        def _no_such_process(pid):
+            raise ProcessLookupError(pid)
+
+        monkeypatch.setitem(sys.modules, "psutil", SimpleNamespace(Process=_no_such_process))
         monkeypatch.setattr(
             status.subprocess, "run",
             lambda args, **kwargs: SimpleNamespace(returncode=0, stdout="/usr/libexec/bluetoothuserd\n"),
@@ -1726,6 +1813,44 @@ def test_strict_gateway_identity_rejects_reused_pid(tmp_path, monkeypatch):
 
     with pytest.raises(RuntimeError, match="identity changed"):
         status.get_running_pid_identity_strict(pid_path)
+
+
+def test_strict_gateway_identity_adopts_held_lock_when_pid_file_is_gone(tmp_path, monkeypatch):
+    """A held lock whose record validates against the live process IS the gateway's identity: a
+    --replace relaunch (or a launch-service gateway, #110166) leaves gateway.lock without
+    gateway.pid, and raising there aborted every following `hermes update` (#123430)."""
+    pid_path = tmp_path / "gateway.pid"
+    lock_path = tmp_path / "gateway.lock"
+    record = {"pid": 123, "start_time": 10.0, "kind": "hermes-gateway",
+              "argv": ["python", "-m", "hermes_cli.main", "gateway", "run", "--replace"]}
+    lock_path.write_text(json.dumps(record), encoding="utf-8")
+    monkeypatch.setattr(status, "_get_gateway_lock_path", lambda _path=None: lock_path)
+    monkeypatch.setattr(status, "_is_gateway_runtime_lock_active_strict", lambda _path=None: True)
+    monkeypatch.setattr(status, "_pid_exists", lambda _pid: True)
+    monkeypatch.setattr(status, "_get_process_start_time", lambda _pid: 10.0)
+    monkeypatch.setattr(status, "_read_process_cmdline", lambda _pid: "python -m hermes_cli.main gateway run --replace")
+    monkeypatch.setattr(status, "_IS_WINDOWS", False)
+
+    assert status.get_running_pid_identity_strict(pid_path) == (123, 10.0)
+    # The lock alone is still held to the full proof: a recycled PID is refused, not adopted.
+    monkeypatch.setattr(status, "_get_process_start_time", lambda _pid: 20.0)
+    with pytest.raises(RuntimeError, match="identity changed"):
+        status.get_running_pid_identity_strict(pid_path)
+
+
+def test_pid_record_names_the_entry_point_under_an_inline_launcher(tmp_path, monkeypatch):
+    """The published launcher script runs `python -I -c <script> gateway run`, so sys.argv[0] is
+    "-c"; the persisted record must still read as a gateway when the live cmdline is unreadable
+    (#124029, #123151)."""
+    import types
+
+    entry = types.SimpleNamespace(__file__="/opt/Hermes Agent/hermes-agent/hermes_cli/main.py")
+    monkeypatch.setitem(status.sys.modules, "hermes_cli.main", entry)
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr(status.sys, "argv", ["-c", "gateway", "run"])
+    record = status._build_pid_record()
+    assert record["argv"] == [entry.__file__, "gateway", "run"]
+    assert status._record_looks_like_gateway(record)
 
 
 def test_retained_gateway_state_keeps_watchdog_degraded_like_startup_failed():

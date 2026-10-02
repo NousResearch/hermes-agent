@@ -396,7 +396,7 @@ test('settings retain backend truth across reopen, log filters, memory paths and
       '  language: en',
       'desktop:\n  automatic_update_checks: false\ncurator:\n  enabled: false'
     )
-    writeEnvFile(sandbox.hermesHome)
+    writeEnvFile(sandbox.hermesHome, 'e2e-mock-key', mock.url)
     seedSettingsFiles(sandbox)
 
     for (const relativePath of [

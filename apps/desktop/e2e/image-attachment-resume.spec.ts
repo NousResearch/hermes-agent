@@ -14,16 +14,16 @@
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 
+import { writeEnvFile, writeMockProviderConfig } from '../../../tests-js/scripts/mock-provider-config'
+import { type MockServer, startMockServer } from '../../../tests-js/scripts/mock-server'
+
 import {
   buildAppEnv,
   createSandbox,
   launchDesktop,
   type Sandbox,
   waitForAppReady,
-  writeEnvFile,
-  writeMockProviderConfig,
 } from './fixtures'
-import { type MockServer, startMockServer } from '../../../tests-js/scripts/mock-server'
 import { RealSessionBuilder } from './real-session-builder'
 import { type ElectronApplication, expect, type Page, test } from './test'
 
@@ -61,7 +61,7 @@ async function setupSeededDesktop(): Promise<SeededFixture> {
   const mock = await startMockServer()
   const sandbox = createSandbox('image-attachment')
   writeMockProviderConfig(sandbox.hermesHome, mock.url, undefined, NATIVE_IMAGE_CONFIG)
-  writeEnvFile(sandbox.hermesHome)
+  writeEnvFile(sandbox.hermesHome, 'e2e-mock-key', mock.url)
 
   const builder = await RealSessionBuilder.start(sandbox.hermesHome)
 

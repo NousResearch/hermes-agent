@@ -56,7 +56,7 @@ def test_macos_terminal_argv_keeps_profile_out_of_applescript():
     assert 'do script "exec hermes -p default setup"' in default_args[2]
 
 
-@pytest.mark.macos_only
+@pytest.mark.platforms('macos')
 def test_osascript_option_delimiter_is_not_a_run_argument():
     result = subprocess.run(
         ["osascript", "-e", "on run argv\nreturn item 1 of argv\nend run", "--", "worker"],
@@ -65,7 +65,7 @@ def test_osascript_option_delimiter_is_not_a_run_argument():
     assert result.stdout.strip() == "worker"
 
 
-@pytest.mark.linux_only
+@pytest.mark.platforms('linux')
 def test_linux_terminal_launch_passes_profile_as_one_argument(tmp_path):
     from hermes_cli.web_routers.profiles import _linux_terminal_commands
 
@@ -85,7 +85,7 @@ def test_linux_terminal_launch_passes_profile_as_one_argument(tmp_path):
     assert not (tmp_path / "should-not-run").exists()
 
 
-@pytest.mark.windows_only
+@pytest.mark.platforms('windows')
 def test_absolute_cmd_launcher_runs_without_shell_or_pathexpansion(tmp_path):
     launcher = tmp_path / "managed bin" / "hermes.cmd"
     launcher.parent.mkdir()
@@ -98,7 +98,7 @@ def test_absolute_cmd_launcher_runs_without_shell_or_pathexpansion(tmp_path):
     assert result.stdout.strip() == "LAUNCHED:setup"
 
 
-@pytest.mark.windows_only
+@pytest.mark.platforms('windows')
 def test_open_profile_terminal_scopes_child_home_on_windows(monkeypatch, tmp_path):
     from hermes_cli.web_routers import profiles as routes
 

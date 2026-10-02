@@ -9,21 +9,21 @@
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 
-import {
-  buildAppEnv,
-  createSandbox,
-  launchDesktop,
-  type MockBackendFixture,
-  waitForAppReady,
-  writeEnvFile,
-  writeMockProviderConfig,
-} from './fixtures'
+import { writeEnvFile, writeMockProviderConfig } from '../../../tests-js/scripts/mock-provider-config'
 import {
   MOCK_REPLY,
   startMockServer,
   VERIFICATION_STOP_TEXT,
   VERIFICATION_STOP_TRIGGER,
 } from '../../../tests-js/scripts/mock-server'
+
+import {
+  buildAppEnv,
+  createSandbox,
+  launchDesktop,
+  type MockBackendFixture,
+  waitForAppReady,
+} from './fixtures'
 import { RealSessionBuilder } from './real-session-builder'
 import { expect, test } from './test'
 
@@ -41,7 +41,7 @@ async function setupSeededMockBackend(): Promise<MockBackendFixture> {
     '\ncompression:\n  threshold_tokens: 1\n',
     'utf8',
   )
-  writeEnvFile(sandbox.hermesHome)
+  writeEnvFile(sandbox.hermesHome, 'e2e-mock-key', mock.url)
   const builder = await RealSessionBuilder.start(sandbox.hermesHome)
 
   try {
@@ -122,7 +122,7 @@ test('live verify-on-stop continuations stay out of the transcript', async ({}, 
     '\nauxiliary:\n  title_generation:\n    enabled: false\n',
     'utf8',
   )
-  writeEnvFile(sandbox.hermesHome)
+  writeEnvFile(sandbox.hermesHome, 'e2e-mock-key', mock.url)
   const { app, page } = await launchDesktop(buildAppEnv(sandbox))
 
   const fixture: MockBackendFixture = {

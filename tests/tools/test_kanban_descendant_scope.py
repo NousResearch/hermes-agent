@@ -29,6 +29,9 @@ def _worker_board(tmp_path, monkeypatch):
     }.items():
         monkeypatch.setenv(key, value)
     monkeypatch.delenv("HERMES_DELEGATED_CHILD_CONTEXT", raising=False)
+    # This test uses the runner's already prepared dependencies; CLI ingress
+    # must not build unrelated source products before reaching the scope fence.
+    monkeypatch.setenv("HERMES_DISABLE_LAZY_INSTALLS", "1")
     return conn, own, foreign
 
 
@@ -37,6 +40,7 @@ def test_terminal_descendants_cannot_mutate_even_after_task_is_removed(tmp_path,
     script = tmp_path / "descendant.py"
     script.write_text(
         "import os, sys, json, subprocess\n"
+        "os.environ['HERMES_DISABLE_LAZY_INSTALLS'] = '1'\n"
         f"sys.path.insert(0, {str(ROOT)!r})\n"
         "from tools import kanban_tools as kt\n"
         "from agent.delegation_context import is_dispatcher_owned_worker_context\n"

@@ -1,0 +1,60 @@
+name: Windows bundle SDK
+# The desktop signing adapter downloads and executes the pinned Windows SDK
+# tools. The vitest halves under js-tests run on Linux and skip every
+# runIf(win32) leg, so this is the only lane that runs the real downloader.
+on:
+  pull_request:
+    paths:
+      - 'apps/desktop/scripts/windows-bundle-tools.mjs'
+      - 'apps/desktop/scripts/windows-bundle-tools.test.mjs'
+      - 'scripts/msix-shared.mjs'
+      - 'apps/desktop/scripts/msix-shared.test.mjs'
+      - 'apps/desktop/scripts/sign-msix.mjs'
+      - 'apps/desktop/scripts/sign-msix.test.mjs'
+      - 'apps/desktop/scripts/batch-sign-binaries.mjs'
+      - 'apps/desktop/scripts/batch-sign-binaries.test.mjs'
+      - '.github/workflows/windows-bundle-sdk.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: windows-bundle-sdk-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  windows-bundle-tools:
+    name: Cold Windows SDK (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    # Cold ARM64 npm extraction alone can exceed 15 minutes on the hosted runner.
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x64
+            runner: ${{ github.repository == 'NousResearch/hermes-agent' && 'windows-latest-32-core' || 'windows-latest' }}
+          - arch: arm64
+            runner: ${{ github.repository == 'NousResearch/hermes-agent' && 'windows-latest-32-arm-core' || 'windows-11-arm' }}
+    steps:
+      - name: Require the native target architecture
+        shell: powershell
+        env:
+          EXPECTED_ARCH: ${{ matrix.arch }}
+        run: |
+          $nativeArch = [System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString().ToLowerInvariant()
+          if ($env:RUNNER_ARCH.ToLowerInvariant() -ne $env:EXPECTED_ARCH -or $nativeArch -ne $env:EXPECTED_ARCH) {
+            throw "Expected native $env:EXPECTED_ARCH runner; Actions reports $env:RUNNER_ARCH and Windows reports $nativeArch."
+          }
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-pm
+        with:
+          toolchain: all
+          cache: false
+          cache-python: false
+          cache-node: false
+      - name: Install the locked bundle tooling without native postinstalls
+        run: npm ci --workspace apps/desktop --workspace tests-js --include-workspace-root --include=dev --ignore-scripts --no-audit --no-fund
+      - name: Provision from an empty cache and execute the SDK
+        working-directory: apps/desktop
+        run: node ../../node_modules/vitest/vitest.mjs run --project electron scripts/windows-bundle-tools.test.mjs scripts/msix-shared.test.mjs scripts/sign-msix.test.mjs scripts/batch-sign-binaries.test.mjs

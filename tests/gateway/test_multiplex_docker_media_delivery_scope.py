@@ -137,7 +137,7 @@ def test_native_absolute_host_media_still_delivers(tmp_path, monkeypatch):
     assert base.validate_media_delivery_path(str(media)) == str(media.resolve())
 
 
-@pytest.mark.windows_only
+@pytest.mark.platforms('windows')
 def test_unmapped_container_path_never_uses_host_current_drive(tmp_path, monkeypatch):
     from gateway.platforms import base
 

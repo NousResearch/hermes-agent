@@ -30,6 +30,7 @@ jobs:
       # every time the probe is non-ok — i.e. exactly when the watchdog is
       # supposed to file its issue.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Probe live index
         id: probe

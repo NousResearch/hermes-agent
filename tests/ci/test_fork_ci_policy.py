@@ -1,8 +1,10 @@
 """Regression checks for fork-safe GitHub Actions policy."""
 
 from pathlib import Path
+import re
 
 import pytest
+import hermes_yaml as yaml
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -22,46 +24,40 @@ def test_fork_owner_attribution_exception_is_narrow() -> None:
 
 
 def test_private_runner_assignments_are_removed_from_the_fork() -> None:
-    assignments = {
-        ".github/workflows/js-tests.yml": (
-            "runs-on: ubuntu-latest-32-core",
-            "runs-on: ubuntu-latest",
-        ),
-        ".github/workflows/rust-tests.yml": (
-            "runs-on: ubuntu-latest-32-core",
-            "runs-on: ubuntu-latest",
-        ),
-        ".github/workflows/tests.yml": (
-            "runs-on: ubuntu-latest-96-core",
-            "runs-on: ubuntu-latest",
-        ),
-        ".github/workflows/tests-os.yml": (
-            "runner: windows-latest-32-core",
-            "runner: windows-latest",
-        ),
-        ".github/workflows/nix.yml": (
-            "runs-on: ubuntu-latest-32-core",
-            "runs-on: ubuntu-latest",
-        ),
-    }
-    for relative, (private, public) in assignments.items():
-        workflow = _read(relative)
-        assert private not in workflow
-        assert public in workflow
+    # Upstream can keep its larger runners; every such assignment must select
+    # ordinary hosted capacity when the repository is a fork.
+    relatives = ["js-tests.yml", "rust-tests.yml", "tests.yml", "tests-os.yml", "nix.yml"]
+    conditional = re.compile(
+        r"\$\{\{ github\.repository == 'NousResearch/hermes-agent' && '[^']+-core' "
+        r"\|\| '(ubuntu-latest|windows-latest|windows-11-arm)' \}\}")
+    for name in relatives:
+        workflow = yaml.safe_load(_read(f".github/workflows/{name}"))
+        runners = []
+        for job in workflow["jobs"].values():
+            runners.append(job.get("runs-on", ""))
+            matrix = job.get("strategy", {}).get("matrix", {})
+            if isinstance(matrix, dict):
+                runners.extend(row.get("runner", "") for row in matrix.get("include", []))
+        for runner in runners:
+            if isinstance(runner, str) and "-core" in runner:
+                assert conditional.fullmatch(runner), (name, runner)
 
 
 def test_standard_python_runner_has_bounded_workers() -> None:
     workflow = _read(".github/workflows/tests.yml")
     assert "runs-on: ubuntu-latest" in workflow
-    assert "HERMES_TEST_WORKERS: 4" in workflow
+    workers = re.findall(r"HERMES_TEST_WORKERS: (.+)", workflow)
+    assert workers and all("github.repository == 'NousResearch/hermes-agent'" in value
+                           and "|| '2'" in value for value in workers)
     assert "timeout-minutes: 60" in workflow
 
 
 def test_standard_nix_runner_has_bounded_parallelism() -> None:
     workflow = _read(".github/workflows/nix.yml")
     assert "runs-on: ubuntu-latest" in workflow
-    assert "nix flake check --print-build-logs --max-jobs 2" in workflow
-    assert "timeout-minutes: 90" in workflow
+    assert "--print-build-logs --max-jobs" in workflow
+    assert "github.repository == 'NousResearch/hermes-agent' && '32' || '2'" in workflow
+    assert "timeout-minutes: 60" in workflow
 
 
 @pytest.mark.parametrize("relative", [
@@ -69,15 +65,13 @@ def test_standard_nix_runner_has_bounded_parallelism() -> None:
     ".github/workflows/nix.yml",
 ])
 def test_validation_workflows_accept_manual_runs(relative) -> None:
-    yaml = pytest.importorskip("yaml")
-    # BaseLoader keeps the YAML key `on` as text instead of YAML 1.1's boolean.
-    workflow = yaml.load(_read(relative), Loader=yaml.BaseLoader)
-    assert set(workflow["on"]) == {"pull_request", "push", "workflow_dispatch"}
-    assert workflow["on"]["push"]["branches"] == ["main"]
+    workflow = yaml.safe_load(_read(relative))
+    events = workflow.get("on", workflow.get(True))  # YAML 1.1-compatible loader
+    assert {"pull_request", "push", "workflow_dispatch"} <= set(events)
+    assert events["push"]["branches"] == ["main"]
 
 
 def test_manual_nix_cache_is_main_only_without_delete_permissions() -> None:
-    yaml = pytest.importorskip("yaml")
     workflow = yaml.safe_load(_read(".github/workflows/nix.yml"))
     assert workflow["permissions"] == {"contents": "read"}
     cache_steps = [
@@ -93,7 +87,6 @@ def test_manual_nix_cache_is_main_only_without_delete_permissions() -> None:
 
 
 def test_detect_action_only_receives_declared_inputs() -> None:
-    yaml = pytest.importorskip("yaml")
     action = yaml.safe_load(_read(".github/actions/detect-changes/action.yml"))
     workflow = yaml.safe_load(_read(".github/workflows/ci.yaml"))
     callers = [

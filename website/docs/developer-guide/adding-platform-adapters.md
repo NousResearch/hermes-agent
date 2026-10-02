@@ -150,12 +150,12 @@ def register(ctx):
         # ACTIVE installer (optional) — only for platforms with a
         # lazy-installable SDK.  create_adapter() calls it when check_fn
         # returns False, right before the gateway connects the platform.
-        # Typically wraps tools.lazy_deps.ensure_and_bind(...).  Omit it
+        # Typically wraps pm.extras.ensure_and_bind(...).  Omit it
         # and a False check_fn is a hard block.
         # ensure_deps_fn=ensure_requirements,
         validate_config=validate_config,
         required_env=["MY_PLATFORM_TOKEN"],
-        install_hint="pip install my-platform-sdk",
+        install_hint="Declare my-platform-sdk in this plugin's Python dependencies, then retry hermes plugins enable my-platform",
         # Env-driven auto-configuration — seeds PlatformConfig.extra from
         # env vars before adapter construction. See "Env-Driven Auto-
         # Configuration" section below.
@@ -224,7 +224,7 @@ When you call `ctx.register_platform()`, the following integration points are ha
 | System prompt hints | `platform_hint` injected into LLM context |
 | Message chunking | `max_message_length` for smart splitting |
 | PII redaction | `pii_safe` flag |
-| `hermes status` | Shows plugin platforms with `(plugin)` tag |
+| `hermes status` | Lists plugin platforms alongside built-ins, one row each, using the gateway's own configured check |
 | `hermes gateway setup` | Plugin platforms appear in setup menu |
 | `hermes tools` / `hermes skills` | Plugin platforms in per-platform config |
 | Token lock (multi-profile) | Use `acquire_scoped_lock()` in your `connect()` |

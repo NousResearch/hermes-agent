@@ -51,6 +51,9 @@ sys.exit(2)
 '''
 
 
+pytestmark = pytest.mark.platforms("posix")  # fake bw is a shebang script; the backend under test is host-agnostic
+
+
 @pytest.fixture
 def fake_bw(tmp_path, monkeypatch):
     from agent.vault_backends import bitwarden

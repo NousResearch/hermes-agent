@@ -12,12 +12,6 @@ from pathlib import Path
 
 from hermes_cli._startup_fast import is_desktop_ssh_backend_argv
 
-# Cmdline substrings identifying the long-lived server (``serve`` = the headless name Desktop
-# spawns; reaped on update for the same reason).
-_DASHBOARD_PATTERNS = tuple(
-    f"{launcher} {cmd}"
-    for cmd in ("dashboard", "serve")
-    for launcher in ("hermes", "hermes_cli.main", "hermes_cli/main.py"))
 _PS_RUN_KWARGS = dict(capture_output=True, text=True, encoding="utf-8", errors="replace")
 
 
@@ -86,13 +80,17 @@ def _scan_dashboard_processes(*, exclude_pids: set[int] | None = None) -> list[t
     process; ``_kill_stale_dashboard_processes`` reads it and passes it here. (#37532)
     """
     skip = {os.getpid(), *(exclude_pids or ())}
+    # Canonical token matcher, never argv substrings: ``hermes serve`` is a prefix of ``hermes
+    # server`` and this list decides a SIGTERM — ``herdr --session hermes server`` (a terminal
+    # multiplexer) was killed and its unit restarted by ``hermes update`` (#121156).
+    from hermes_cli.update_cmd_windows import _hermes_holder_subcommand
     try:
         found = [(pid, cmd) for pid, cmd in _iter_process_table()
-                 if pid not in skip and any(p in cmd for p in _DASHBOARD_PATTERNS)]
+                 if pid not in skip and _hermes_holder_subcommand(cmd) in ("dashboard", "serve")]
     except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
         return []
-    # Spawn-ledger augmentation: substring patterns miss profiled launches (`hermes --profile p
-    # serve`); the ledger holds live-verified pids. Unavailable ledger → scan-only.
+    # Spawn-ledger augmentation: an argv scan misses a truncated or unreadable cmdline; the ledger
+    # holds live-verified pids. Unavailable ledger → scan-only.
     with contextlib.suppress(Exception):
         # Every serve/ dashboard registers itself in the machine spawn ledger at startup with live-verified
         # (pid, create_time), so ledger rows are positive identity, not argv guessing. Add any live ledger
@@ -106,6 +104,23 @@ def _scan_dashboard_processes(*, exclude_pids: set[int] | None = None) -> list[t
                     and pid not in seen):
                 found.append((pid, str(entry.get("argv") or "")))
     return found
+
+
+def _ledger_serve_binds() -> dict[int, tuple[str, int]]:
+    """``pid -> (host, port)`` recorded in the spawn ledger for live serve/dashboard backends.
+
+    The entry is written after the bind, so it carries the real port where argv only says
+    ``--port 0`` (Desktop SSH backends ask the OS for a port). Empty when the ledger is unavailable.
+    """
+    binds: dict[int, tuple[str, int]] = {}
+    with contextlib.suppress(Exception):
+        from hermes_cli.process_identity import ledger_entries
+        for entry in ledger_entries():
+            pid, port = entry.get("pid"), entry.get("port")
+            if (entry.get("purpose") in ("serve", "dashboard") and isinstance(pid, int)
+                    and isinstance(port, int) and port > 0):
+                binds[pid] = (str(entry.get("host") or ""), port)
+    return binds
 
 
 def _pid_environ(pid: int) -> dict[str, str] | None:
@@ -746,59 +761,13 @@ def _norm_exe(path) -> str:
 
 def _detect_concurrent_hermes_instances(
     scripts_dir: Path, *, exclude_pid: int | None = None) -> list[tuple[int, str]]:
-    """``(pid, name)`` of other live processes whose .exe is one of our entry-point shims.
+    """Historical main export: stop old updaters without scanning live shims.
 
-    Windows blocks DELETE/REPLACE on a running .exe, so a Desktop-spawned ``hermes.EXE`` makes
-    the update's quarantine rename fail with ``[WinError 32]``. Excludes our PID and every
-    *shim* ancestor (the setuptools launcher is a separate native process from its
-    ``python.exe``); ``proc.parents()`` at once because a per-hop loop bailed on the first
-    AccessDenied. Empty off-Windows / without psutil. Never raises.
+    PM stages a fresh generation instead of replacing a mapped hermes.exe.
+    Returning an empty list would let old callers continue into that mutation.
     """
-    from hermes_cli.main_install_repair import _hermes_exe_shims, _is_windows
-
-    if not _is_windows():
-        return []
-    try:
-        import psutil
-    except Exception:
-        return []
-    shim_paths = {_norm_exe(shim) for shim in _hermes_exe_shims(scripts_dir)}
-    if not shim_paths:
-        return []
-    seed = int(exclude_pid) if exclude_pid is not None else os.getpid()
-    exclude_pids: set[int] = {seed}
-    # Broad ``except Exception`` guards against partially-stubbed psutil in unit tests; this helper is
-    # documented as "never raises". Only the per-ancestor exe()/pid reads skip that ancestor; anything
-    # else aborts the whole walk (BASE semantics).
-    try:
-        for ancestor in psutil.Process(seed).parents():
-            try:
-                anc_exe = ancestor.exe()
-            except Exception:
-                continue
-            if not anc_exe:
-                continue
-            if _norm_exe(anc_exe) in shim_paths:
-                try:
-                    exclude_pids.add(int(ancestor.pid))
-                except Exception:
-                    continue
-    except Exception:
-        pass
-    matches: list[tuple[int, str]] = []
-    try:
-        proc_iter = psutil.process_iter(["pid", "exe", "name"])
-    except Exception:
-        return []
-    for proc in proc_iter:
-        try:
-            info = proc.info
-        except Exception:
-            continue
-        pid, exe = info.get("pid"), info.get("exe")
-        if exe and pid is not None and pid not in exclude_pids and _norm_exe(exe) in shim_paths:
-            matches.append((int(pid), str(info.get("name") or Path(exe).name)))
-    return matches
+    from hermes_cli._old_updater import stop_for_relaunch
+    stop_for_relaunch()
 
 
 def _is_desktop_local_serve_cmdline(command: str) -> bool:

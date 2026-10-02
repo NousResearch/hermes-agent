@@ -28,6 +28,7 @@ import time
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 from urllib.parse import quote
+from urllib.parse import unquote
 
 import pytest
 
@@ -498,6 +499,7 @@ async def test_streamed_explicit_media_resend_is_delivered(tmp_path, monkeypatch
     adapter.send_multiple_images.assert_awaited_once()
     sent_paths = [p for p, _cap in adapter.send_multiple_images.await_args.kwargs["images"]]
     assert sent_paths[0] == f"file://{quote(img.as_posix(), safe='/:')}"
+    assert str(img) in unquote(sent_paths[0])
 
 
 

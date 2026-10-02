@@ -17,6 +17,9 @@ import * as fs from 'node:fs'
 import * as net from 'node:net'
 import * as path from 'node:path'
 
+import { writeEnvFile, writeMockProviderConfig } from '../../../tests-js/scripts/mock-provider-config'
+import { startMockServer } from '../../../tests-js/scripts/mock-server'
+
 import {
   buildAppEnv,
   createSandbox,
@@ -24,10 +27,7 @@ import {
   type MockBackendFixture,
   type Sandbox,
   waitForAppReady,
-  writeEnvFile,
-  writeMockProviderConfig,
 } from './fixtures'
-import { startMockServer } from '../../../tests-js/scripts/mock-server'
 import { type ElectronApplication, expect, type Page, test } from './test'
 
 const DESKTOP_ROOT = path.resolve(import.meta.dirname, '..')
@@ -89,7 +89,7 @@ async function startRemoteGateway(root: string, mockUrl: string, profiles: strin
   const home = path.join(root, 'homelab-home')
   fs.mkdirSync(home, { recursive: true })
   writeMockProviderConfig(home, mockUrl)
-  writeEnvFile(home)
+  writeEnvFile(home, 'e2e-mock-key', mockUrl)
   seedProfiles(home, profiles)
 
   const port = await freePort()
@@ -226,7 +226,7 @@ test.describe('fleet profile rail — two registered gateways', () => {
     mock = await startMockServer()
     sandbox = createSandbox('fleet')
     writeMockProviderConfig(sandbox.hermesHome, mock.url)
-    writeEnvFile(sandbox.hermesHome)
+    writeEnvFile(sandbox.hermesHome, 'e2e-mock-key', mock.url)
     // A named profile on This device too, so the active group has a square
     // beside its home pill. "research" exists on BOTH gateways on purpose: the
     // rail must keep the two apart by gateway, never by name alone.

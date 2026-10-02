@@ -2,7 +2,7 @@
 
 from pathlib import Path
 
-import yaml
+import hermes_yaml as yaml
 
 
 WORKFLOWS = Path(__file__).resolve().parents[2] / ".github" / "workflows"

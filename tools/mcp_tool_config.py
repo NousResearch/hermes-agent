@@ -2,6 +2,7 @@
 interpolation, hidden-whitespace and suspicious-entry filtering, the filtered
 subprocess env, command resolution, the cached-npx binary shortcut and the shared stderr log."""
 
+import codecs
 import json
 import logging
 import os
@@ -10,9 +11,9 @@ import shutil
 import subprocess
 import sys
 import threading
-from datetime import datetime
-from typing import Any, Callable, Dict, List, Mapping, Optional, Set, Tuple
+from typing import Any, Dict, List, Mapping, Optional, Set, Tuple
 from hermes_constants import find_node_executable
+from hermes_cli.stderr_timestamp import stamp_line, timestamp
 from tools.mcp_tool_common import _env_ref_name, _prepend_path
 
 logger = logging.getLogger("tools.mcp_tool")
@@ -62,12 +63,55 @@ def _close_mcp_stderr_logs(*, scope: Optional[str] = None) -> None:
                 logger.warning("Could not close MCP stderr log for %s", key, exc_info=True)
 
 
+class _StderrTee:
+    """A stdio child's stderr, copied into the shared log one stamped line at a time while the last few KB
+    stay readable (raw), so a server that dies at startup can say why on the MCP status surfaces instead of
+    only in the log (#124264). ``sink`` is handed to the child; ``close()`` returns the captured tail."""
+
+    _TAIL_BYTES = 16384
+
+    def __init__(self, log_fh: Any):
+        read_fd, write_fd = os.pipe()
+        self.sink = os.fdopen(write_fd, "wb", buffering=0)
+        self._log, self._tail = log_fh, bytearray()
+        self._reader = threading.Thread(target=self._pump, args=(read_fd,), name="mcp-stderr", daemon=True)
+        self._reader.start()
+
+    def _pump(self, read_fd: int) -> None:
+        decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
+        pending = ""
+        with os.fdopen(read_fd, "rb", buffering=0) as source:
+            while chunk := source.read(65536):
+                self._tail = (self._tail + chunk)[-self._TAIL_BYTES:]
+                # Stamp whole lines only; a partial line waits for its newline (or EOF).
+                *lines, pending = (pending + decoder.decode(chunk)).split("\n")
+                self._write_lines(lines)
+        if rest := pending + decoder.decode(b"", final=True):
+            self._write_lines([rest])
+
+    def _write_lines(self, lines: List[str]) -> None:
+        if not lines:
+            return
+        try:
+            self._log.write("".join(stamp_line(line) for line in lines))
+            self._log.flush()
+        except (OSError, ValueError):  # log closed at shutdown: keep draining the child
+            pass
+
+    def close(self, timeout: float = 2.0) -> str:
+        """Close our write end and give the reader *timeout* to drain (a surviving grandchild can keep
+        the pipe open); the tail read so far."""
+        self.sink.close()
+        self._reader.join(timeout)
+        return self._tail.decode("utf-8", errors="replace")
+
+
 def _write_stderr_log_header(server_name: str) -> None:
-    """Session marker so operators can find each server's output in the shared log
-    (per-line prefixes would need a pipe + reader thread)."""
+    """Session marker so operators can find each server's output in the shared log; it leads with the
+    same stamp as every server line (``_StderrTee``) so ``hermes logs mcp --since`` can filter it."""
     fh = _get_mcp_stderr_log()
     try:
-        fh.write(f"\n===== [{datetime.now():%Y-%m-%d %H:%M:%S}] starting MCP server '{server_name}' =====\n")
+        fh.write(f"\n{timestamp()} ===== starting MCP server '{server_name}' =====\n")
         fh.flush()
     except Exception:
         pass
@@ -165,33 +209,55 @@ def _which_with_config_pathext(command: str, path_arg, env: dict):
     return None
 
 
-def _node_fallback(command: str, *, windows: Optional[bool] = None) -> str:
-    """Well-known Node install locations for bare ``npx``/``npm``/``node``; *command* unchanged when none exists.
+# Bare MCP launchers Hermes ships through PM, keyed to the package that provides them.
+_MANAGED_LAUNCHERS = {"npx": "npm", "npm": "npm", "node": "npm", "uv": "uv", "uvx": "uv"}
 
-    The managed tree comes from ``iter_hermes_node_dirs`` (Windows unpacks into ``<home>\\node``, POSIX into
-    ``<home>/node/bin``) under the active profile's ``get_hermes_home()``; on Windows the real files are
-    ``npx.cmd``/``node.exe`` (``windows`` injectable, as for ``_npx_bin_candidates``)."""
-    from hermes_constants import get_hermes_home, iter_hermes_node_dirs
-    home = os.path.expanduser("~")
-    # /usr/local/bin: canonical Node location (from-source Linux, Hermes Docker image, Intel Homebrew),
-    # needed when a hand-authored env.PATH omits it — npx's shebang re-execs /usr/bin/env node.
-    directories = [*map(str, iter_hermes_node_dirs(get_hermes_home())), os.path.join(home, ".local", "bin"),
-                   os.path.join(os.sep, "usr", "local", "bin")]
-    candidates = (c for d in directories for c in _npx_bin_candidates(d, command, windows=windows))
-    return next((c for c in candidates if os.path.isfile(c) and os.access(c, os.X_OK)), command)
+
+def _managed_launcher(command: str) -> Optional[tuple[str, list[str]]]:
+    """PM's executable for a bare launcher name and the toolchain dirs its children need first on
+    PATH (npx's ``env node``, uvx's sibling uv). Never the user's copy: a missing managed tool is
+    provisioned through PM, which raises naming the remedy when it may not. None only when PM
+    ships no build for this platform (Termux), where the platform's own copy IS the toolchain."""
+    import pm
+
+    package = _MANAGED_LAUNCHERS[command]
+    if pm.get_package(package).missing_reason(pm.current_target()) is not None:
+        return None
+    pm.ensure(package)
+    if package == "uv":
+        launcher = pm.uv_launcher(command)
+        dirs = [str(launcher.parent)] if launcher is not None else []
+    else:
+        from hermes_constants import with_hermes_node_path
+
+        dirs = [d for d in with_hermes_node_path({"PATH": ""})["PATH"].split(os.pathsep) if d]
+    executable = shutil.which(command, path=os.pathsep.join(dirs)) if dirs else None
+    if executable is None:
+        raise RuntimeError(f"Hermes-managed {command} is not installed; run `hermes pm install {package}`")
+    return executable, dirs
 
 
 def _resolve_stdio_command(command: str, env: dict) -> tuple[str, dict]:
-    """Resolve a stdio command against the exact subprocess env (bare ``npx``/``npm``/``node`` under a filtered PATH).
+    """Resolve a stdio command against the exact subprocess env (bare launchers under a filtered PATH).
 
-    A ``PATH`` lookup only runs when the child env actually carries one: ``shutil.which`` with
+    Bare ``npx``/``npm``/``node``/``uv``/``uvx`` resolve to Hermes's PM-managed copies with their
+    toolchain dirs first on the child PATH, never the user's (an absolute ``command:`` stays the
+    user's choice). Anything else resolves on the child env's PATH only: ``shutil.which`` with
     ``path=None`` silently falls back to the PARENT's ``os.environ["PATH"]``, letting a command
     "resolve" against an env the child will never be spawned with. An absent child PATH is a
     miss; an explicitly empty one keeps its cwd-only meaning (same distinction the child's
-    ``execvp`` will see). Bare ``npx``/``npm``/``node`` still fall through to the explicit
-    well-known Node directories, everything else stays as-written for an honest spawn failure."""
+    ``execvp`` will see); a miss stays as-written for an honest spawn failure."""
     resolved_command = os.path.expanduser(str(command).strip())
     resolved_env = dict(env or {})
+    launcher = re.sub(r"\.(cmd|exe)$", "", resolved_command, flags=re.IGNORECASE)  # Windows spellings
+    managed = _managed_launcher(launcher) if launcher in _MANAGED_LAUNCHERS else None
+    if managed is not None:
+        resolved_command, dirs = managed
+        # Moved to the front even when already on PATH behind a user's copy.
+        keys = {os.path.normcase(d) for d in dirs}
+        rest = [p for p in resolved_env.get("PATH", "").split(os.pathsep) if p and os.path.normcase(p) not in keys]
+        resolved_env["PATH"] = os.pathsep.join([*dirs, *rest])
+        return resolved_command, resolved_env
     if os.sep not in resolved_command:
         path_arg = resolved_env.get("PATH")
         which_hit = shutil.which(resolved_command, path=path_arg) if path_arg is not None else None
@@ -199,8 +265,6 @@ def _resolve_stdio_command(command: str, env: dict) -> tuple[str, dict]:
             which_hit = _which_with_config_pathext(resolved_command, path_arg, resolved_env)
         if which_hit:
             resolved_command = which_hit
-        elif resolved_command in {"npx", "npm", "node"}:
-            resolved_command = _node_fallback(resolved_command)
     command_dir = os.path.dirname(resolved_command)
     if command_dir:
         resolved_env = _prepend_path(resolved_env, command_dir)
@@ -382,75 +446,87 @@ def _npx_cached_invocation(args: list) -> Optional[tuple[str, list]]:
 
 
 def _npx_cached_bin(
-    args: list,
-    env: Optional[dict] = None,
-    cwd: Optional[str] = None,
-) -> Optional[tuple]:
-    """Resolve ``npx -y <pkg>`` to the already-installed binary, or None.
+    args: list, *, env: Optional[Mapping[str, str]] = None, cwd: Optional[str] = None,
+) -> Optional[tuple[str, list]]:
+    """Resolve a cache-backed ``npx -y <pkg>`` invocation, or leave it to npx.
 
-    ``npx`` resolves the package and then FORKS, staying resident as the real server's parent
-    for nothing (~48 MB private memory per MCP server, measured); Hermes already supervises the
-    child (shared death supervisor). When the package is in npx's cache we spawn its binary
-    directly. Deliberately conservative — None (caller keeps plain ``npx``, so a cold machine
-    still installs) for a cache miss, a version pin (``pkg@1.2.3``), extra npx flags, a manifest
-    without one obvious bin, or any unreadable cache entry. ``env`` and ``cwd`` are
-    the exact stdio-child settings when supplied, so a per-server
-    ``npm_config_cache`` selects the same package cache that the original ``npx``
-    command would use, including a relative configured cache path.
-    Returns ``(binary_path, remaining_args)``."""
+    Use the same child environment and working directory as the eventual server. If npm's
+    selected cache contains more than one matching entry, the package has no single bin, or its
+    launcher is missing, return ``None`` rather than guessing which cached version npx would use.
+    """
     invocation = _npx_cached_invocation(args)
     if invocation is None:
         return None
     spec, server_args = invocation
 
-    cache_env = os.environ if env is None else env
-    configured_cache = _env_value(cache_env, "npm_config_cache", case_insensitive=True)
+    child_env = os.environ if env is None else env
+    configured_cache = _env_value(child_env, "npm_config_cache", case_insensitive=True)
     if configured_cache:
-        cache_roots = [_resolve_npm_cache_path(configured_cache, cache_env, cwd)]
-    elif os.name == "nt":
-        # npm's Windows default is %LOCALAPPDATA%\npm-cache, not ~/.npm.
-        # Falling back to ~/.npm keeps old/portable layouts working without
-        # overriding an explicit npm_config_cache selected by the user.
-        local_app_data = _env_value(cache_env, "LOCALAPPDATA")
-        cache_roots = [os.path.join(local_app_data, "npm-cache")] if local_app_data else []
-        cache_roots.append(os.path.join(os.path.expanduser("~"), ".npm"))
+        cache_root = _resolve_npm_cache_path(configured_cache, child_env, cwd)
     else:
-        cache_roots = [os.path.join(os.path.expanduser("~"), ".npm")]
+        home = (
+            _env_value(child_env, "HOME", case_insensitive=True)
+            or _env_value(child_env, "USERPROFILE", case_insensitive=True)
+            or os.path.expanduser("~")
+        )
+        if os.name == "nt":
+            local_app_data = _env_value(child_env, "LOCALAPPDATA", case_insensitive=True)
+            cache_root = (
+                os.path.join(local_app_data, "npm-cache")
+                if local_app_data
+                else os.path.join(home, "AppData", "Local", "npm-cache")
+            )
+        else:
+            cache_root = os.path.join(home, ".npm")
 
-    for cache_root in cache_roots:
-        npx_root = os.path.join(cache_root, "_npx")
-        if not os.path.isdir(npx_root):
-            continue
+    npx_root = os.path.join(cache_root, "_npx")
+    try:
+        entries = [entry for entry in os.scandir(npx_root) if entry.is_dir()]
+    except OSError:
+        return None
+
+    matches = []
+    for entry in entries:
+        manifest = os.path.join(entry.path, "package.json")
         try:
-            entries = os.listdir(npx_root)
-        except OSError:
+            with open(manifest, "r", encoding="utf-8-sig") as fh:
+                dependencies = (json.load(fh) or {}).get("dependencies") or {}
+        except (OSError, ValueError, TypeError):
             continue
+        if isinstance(dependencies, dict) and spec in dependencies:
+            matches.append(entry.path)
 
-        for entry in entries:
-            manifest = os.path.join(npx_root, entry, "package.json")
-            try:
-                with open(manifest, "r", encoding="utf-8") as fh:
-                    deps = (json.load(fh) or {}).get("dependencies") or {}
-            except (OSError, ValueError, TypeError):
-                continue
-            if spec not in deps:
-                continue
-            pkg_json = os.path.join(npx_root, entry, "node_modules", spec, "package.json")
-            try:
-                with open(pkg_json, "r", encoding="utf-8") as fh:
-                    bin_field = (json.load(fh) or {}).get("bin")
-            except (OSError, ValueError, TypeError):
-                continue
-            if isinstance(bin_field, str):
-                names = [os.path.basename(spec)]
-            elif isinstance(bin_field, dict) and len(bin_field) == 1:
-                names = list(bin_field.keys())
-            else:
-                continue  # zero or several bins: which one npx would pick is not ours to guess
-            bin_dir = os.path.join(npx_root, entry, "node_modules", ".bin")
-            for candidate in _npx_bin_candidates(bin_dir, names[0]):
-                if os.path.exists(candidate) and os.access(candidate, os.X_OK):
-                    return candidate, server_args
+    if len(matches) != 1:
+        return None
+
+    entry_path = matches[0]
+    package_manifest = os.path.join(entry_path, "node_modules", spec, "package.json")
+    try:
+        with open(package_manifest, "r", encoding="utf-8-sig") as fh:
+            bin_field = (json.load(fh) or {}).get("bin")
+    except (OSError, ValueError, TypeError):
+        return None
+
+    if isinstance(bin_field, str):
+        bin_name = os.path.basename(spec)
+    elif isinstance(bin_field, dict) and len(bin_field) == 1:
+        bin_name = next(iter(bin_field))
+    else:
+        return None
+    if (
+        not isinstance(bin_name, str)
+        or not bin_name
+        or bin_name in {".", ".."}
+        or os.path.basename(bin_name) != bin_name
+        or "/" in bin_name
+        or "\\" in bin_name
+    ):
+        return None
+
+    bin_dir = os.path.join(entry_path, "node_modules", ".bin")
+    for candidate in _npx_bin_candidates(bin_dir, bin_name):
+        if os.path.exists(candidate) and os.access(candidate, os.X_OK):
+            return candidate, server_args
     return None
 
 
@@ -469,6 +545,21 @@ def _interpolate_env_vars(value):
     if isinstance(value, list):
         return [_interpolate_env_vars(v) for v in value]
     return value
+
+
+def _require_rendered_remote(server_name: str, config: dict) -> dict:
+    """*config* back, unless it is a remote server whose ``url`` / ``headers`` still carry a literal
+    ``${VAR}`` after rendering: sending that is a guaranteed 401 that reads as a bad credential
+    (#119092), so fail closed naming the variable instead."""
+    if "url" not in config:
+        return config
+    values = [config.get("url") or "", *(config.get("headers") or {}).values()]
+    unresolved = sorted({m.group(1) for value in values for m in _ENV_VAR_PATTERN.finditer(str(value))})
+    if unresolved:
+        refs = ", ".join(f"${{{ref}}}" for ref in unresolved)
+        raise ValueError(f"MCP server '{server_name}': {refs} in url/headers is not set in this profile's "
+                         ".env or secret source")
+    return config
 
 
 # (server_name, dotted key path) pairs already warned about: config loads repeat per discovery pass.

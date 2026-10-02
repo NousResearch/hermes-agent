@@ -4,7 +4,7 @@ import json as _json
 import logging
 import os
 from pathlib import Path
-from typing import Dict, List, Optional, Set
+from typing import Dict, List, NoReturn, Optional, Set
 
 from hermes_cli.cli_output import print_info as _print_info
 from hermes_cli.colors import Colors, color
@@ -18,14 +18,10 @@ from hermes_cli.toolset_validation import parse_platform_toolsets_value
 # Re-exports: keep ``hermes_cli.tools_config.X`` callers and test patch targets resolving.
 from hermes_cli.tools_config_cua import (  # noqa: F401
     _post_setup_no_window_flags, _cua_driver_cmd, _cua_version_summary, _resolved_cua_driver_cmd, _cua_driver_env,
-    _cua_driver_contract_status, _cua_driver_install_ready, _pip_install, _cua_install_target_writable,
-    install_cua_driver, _CUA_INSTALLER_TIMEOUT, _CUA_INSTALLER_DRAIN_GRACE, _CUA_LOCK_STALE_AFTER,
-    _clear_stale_windows_cua_install_lock, _clear_stale_cua_install_lock, _cua_install_lock_held,
-    _cua_release_endpoint_reachable, _repair_cua_driver_autostart_windows, _run_cua_driver_installer)
+    _cua_driver_contract_status, _cua_driver_install_ready)
 from hermes_cli.tools_config_post_setup import (  # noqa: F401
     _ensure_browser_use_cli, _run_post_setup, valid_post_setup_keys, run_post_setup_command, _POST_SETUP_INSTALLED,
-    _post_setup_already_installed, _module_installed, active_restorable_python_tool_dependencies,
-    restorable_python_tool_dependency, _POST_SETUP_READY)
+    _post_setup_already_installed, _module_installed, _POST_SETUP_READY)
 from hermes_cli.tools_config_providers import (  # noqa: F401
     _plugin_image_gen_providers, _plugin_video_gen_providers, _plugin_web_search_providers, _plugin_browser_providers,
     _plugin_tts_providers, web_provider_capabilities, _visible_providers, provider_readiness_status,
@@ -38,7 +34,25 @@ from hermes_cli.tools_config_providers import (  # noqa: F401
 from hermes_cli.tools_config_mcp import (  # noqa: F401
     _configure_mcp_tools_interactive, _apply_toolset_change, _apply_mcp_change, tools_disable_enable_command)
 
+
+def _pip_install(
+    args: List[str], *, timeout: int = 300, capture_output: bool = True
+) -> NoReturn:
+    # Shim to suppress old updater work until relaunch, not install or report success.
+    from hermes_cli._old_updater import stop_for_relaunch
+
+    stop_for_relaunch()
+
+
 logger = logging.getLogger(__name__)
+
+
+def install_cua_driver(*args, **kwargs) -> NoReturn:
+    # A running pre-PM updater can still import the vendor installer here.
+    # Stop it before any old retry or completion branch can run.
+    from hermes_cli._old_updater import stop_for_relaunch
+
+    stop_for_relaunch()
 
 # Platforms already warned about an all-invalid platform_toolsets list (warn once, not per resolution).
 _warned_invalid_platform_toolsets: Set[str] = set()
@@ -1106,34 +1120,3 @@ def tools_command(args=None, first_install: bool = False, config: dict = None):
     print(color(f"  Tool configuration saved to {display_hermes_home()}/config.yaml", Colors.DIM))
     print(color("  Changes take effect on next 'hermes' or gateway restart.", Colors.DIM))
     print()
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-import shutil  # noqa: F401,E402
-import subprocess  # noqa: F401,E402
-import sys  # noqa: F401,E402
-
-
-_PLUGIN_COMPAT_LAZY = {
-    'MANAGED_FEATURE_COVERAGE_CATEGORY': ('hermes_cli.nous_subscription', 'MANAGED_FEATURE_COVERAGE_CATEGORY'),
-    'NOUS_MANAGED_PROVIDER': ('tools.tool_backend_helpers', 'NOUS_MANAGED_PROVIDER'),
-    'base_url_hostname': ('utils', 'base_url_hostname'),
-    'fal_key_is_configured': ('tools.tool_backend_helpers', 'fal_key_is_configured'),
-    'format_nous_portal_entitlement_message': ('hermes_cli.nous_account', 'format_nous_portal_entitlement_message'),
-    'is_truthy_value': ('utils', 'is_truthy_value'),
-    'save_env_value': ('hermes_cli.config', 'save_env_value'),
-}
-
-
-def __getattr__(name):  # PEP 562 — lazy so no import cycles
-    target = _PLUGIN_COMPAT_LAZY.get(name)
-    if target is None:
-        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-    import importlib
-    from hermes_cli.plugin_compat import warn_once
-    warn_once(__name__, name, *target)
-    return getattr(importlib.import_module(target[0]), target[1])
-# ---- END PLUGIN-COMPAT ----

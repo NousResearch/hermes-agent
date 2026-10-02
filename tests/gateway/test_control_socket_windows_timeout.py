@@ -15,7 +15,7 @@ import pytest
 
 from gateway.control_socket import _MAX_RESPONSE_BYTES, query_gateway_control, windows_pipe_name
 
-pytestmark = pytest.mark.windows_only
+pytestmark = pytest.mark.platforms('windows')
 
 
 @contextlib.contextmanager

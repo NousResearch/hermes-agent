@@ -6,7 +6,9 @@
   "scripts": {
     "dev": "npm run build:ink && tsx --watch src/entry.tsx",
     "start": "tsx src/entry.tsx",
-    "build": "node scripts/build.mjs",
+    "build": "node ../scripts/build/tui.mjs",
+    "i18n:keys": "tsx scripts/i18n-keys.ts",
+    "i18n:keys:check": "tsx scripts/i18n-keys.ts --check",
     "build:ink": "npm run build --prefix packages/hermes-ink",
     "visual": "node scripts/visual/run.mjs",
     "typecheck": "tsc --noEmit -p tsconfig.json",
@@ -14,7 +16,7 @@
     "lint:fix": "eslint src/ packages/ --fix",
     "fmt": "prettier --write 'src/**/*.{ts,tsx}' 'packages/**/*.{ts,tsx}'",
     "fix": "npm run lint:fix && npm run fmt",
-    "check": "npm run build:ink && npm run typecheck && npm run test && npm run lint",
+    "check": "npm run build:ink && npm run typecheck && npm run i18n:keys:check && npm run test && npm run lint",
     "test": "vitest run",
     "test:watch": "vitest"
   },
@@ -25,7 +27,7 @@
     "ink-text-input": "6.0.0",
     "nanostores": "1.4.2",
     "react": "19.2.7",
-    "undici": "6.28.0",
+    "undici": "6.28.1",
     "unicode-animations": "1.0.3"
   },
   "overrides": {

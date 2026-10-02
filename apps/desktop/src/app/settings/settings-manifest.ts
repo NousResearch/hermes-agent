@@ -41,11 +41,11 @@ const appearanceSetting = (subpage: AppearanceSubpageId, keywords: readonly stri
   ({ subpage, keywords, copy: appearanceCopy(key) }) satisfies SettingDefinition
 
 /**
- * The manifest of every hand-built settings row — the ones that are not a
+ * The manifest of every hand-built settings row â€” the ones that are not a
  * config-schema field, a credential, or a plugin (those index themselves from
  * backend metadata). A key becomes the row's deep-link id
  * (`<view>.<kebab-case>`), its subpage routes that id, and its copy + keywords
- * feed the command palette — so a row cannot exist without being searchable,
+ * feed the command palette â€” so a row cannot exist without being searchable,
  * and search cannot point at a row that is not there.
  *
  * List *items* (an archived chat, a saved connection, a credential) are not
@@ -59,6 +59,7 @@ export const SETTINGS_MANIFEST = {
       copy: t => ({ label: t.language.label, description: t.language.description })
     },
     introSplash: appearanceSetting('general', ['splash', 'wordmark', 'empty chat', 'new chat'], 'introSplash'),
+    modelPricing: appearanceSetting('general', ['price', 'cost', 'tokens', 'model picker', 'cache'], 'modelPricing'),
     resumeLastSession: appearanceSetting(
       'general',
       ['resume', 'reopen', 'launch', 'startup', 'last chat', 'session'],
@@ -68,6 +69,7 @@ export const SETTINGS_MANIFEST = {
     tours: appearanceSetting('general', ['tour', 'walkthrough', 'guide', 'onboarding', 'help'], 'tours'),
     theme: appearanceSetting('theme', ['color mode', 'skin', 'light', 'dark'], 'theme'),
     uiScale: appearanceSetting('typography', ['zoom', 'size'], 'uiScale'),
+    chatTextScale: appearanceSetting('typography', ['chat', 'text', 'font', 'size', 'scale', 'zoom'], 'chatTextScale'),
     chatFont: appearanceSetting('typography', ['font', 'typeface', 'family', 'text'], 'chatFont'),
     terminalFont: appearanceSetting(
       'typography',
@@ -101,9 +103,14 @@ export const SETTINGS_MANIFEST = {
       available: () => TRANSLUCENCY_SUPPORTED
     },
     backdrop: appearanceSetting('window-layout', ['background', 'blur'], 'backdrop'),
+    fileBrowser: appearanceSetting(
+      'window-layout',
+      ['file browser', 'files', 'file tree', 'explorer', 'right sidebar', 'panel', 'startup'],
+      'fileBrowser'
+    ),
     composerPopout: appearanceSetting(
       'window-layout',
-      ['composer', 'floating', 'drag', 'popout', 'dock', 'input'],
+      ['composer', 'floating', 'drag', 'popout', 'pop out', 'dock', 'lock', 'peel', 'input'],
       'composerPopout'
     ),
     userBubble: appearanceSetting('chat-display', ['opacity', 'transparent', 'message', 'bubble'], 'userBubble'),
@@ -250,8 +257,13 @@ export const SETTINGS_MANIFEST = {
   about: {
     automaticUpdates: {
       subpage: 'updates',
-      keywords: ['update', 'auto update', 'download', 'release', 'version'],
+      keywords: ['automatic', 'updates', 'background checks'],
       copy: t => ({ label: t.settings.about.automaticUpdates, description: t.settings.about.automaticUpdatesDesc })
+    },
+    updates: {
+      subpage: 'updates',
+      keywords: ['update', 'auto update', 'download', 'release', 'version'],
+      copy: t => ({ label: t.settings.about.updates })
     }
   }
 } as const satisfies Record<string, Record<string, SettingDefinition>>
@@ -281,7 +293,7 @@ export const notificationKindSettingId = (kind: (typeof NATIVE_NOTIFICATION_KIND
 
 type SettingIds = { readonly [V in ManifestViewKey]: { readonly [K in keyof (typeof SETTINGS_MANIFEST)[V]]: string } }
 
-/** `SETTING_IDS.appearance.tips === 'appearance.tips'` — the id a row carries and a palette hit targets. */
+/** `SETTING_IDS.appearance.tips === 'appearance.tips'` â€” the id a row carries and a palette hit targets. */
 export const SETTING_IDS = Object.fromEntries(
   (Object.keys(SETTINGS_MANIFEST) as ManifestViewKey[]).map(view => [
     view,

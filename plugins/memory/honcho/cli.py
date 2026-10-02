@@ -583,14 +583,14 @@ def _ensure_sdk_installed() -> bool:
         print("  Skipping install. Run: pip install 'honcho-ai==2.2.0'\n")
         return False
     print("  Installing honcho-ai...", flush=True)
-    from tools.lazy_deps import install_specs  # env-aware: sealed hosted venvs redirect to the data volume
-    result = install_specs(["honcho-ai==2.2.0"])
-    if result.ok:
+    try:
+        import pm
+        pm.sync_venv(["honcho"], explicit=True)
         print("  Installed.\n")
         return True
-    print(f"  Cannot install: {result.reason}\n" if result.blocked else
-          f"  Install failed:\n{(result.stderr or '').strip()}\n  Run manually: uv pip install 'honcho-ai==2.2.0'\n")
-    return False
+    except Exception as exc:
+        print(f"  Install failed: {exc}\n  Run manually: hermes pm install\n")
+        return False
 
 
 def _device_login_available() -> bool:
@@ -1661,7 +1661,7 @@ Honcho identity management
     p = Path(file_path).expanduser()
     if not p.exists():
         return print(f"  File not found: {p}\n")
-    content = p.read_text(encoding="utf-8").strip()
+    content = p.read_text(encoding="utf-8-sig").strip()
     if not content:
         return print(f"  File is empty: {p}\n")
     if mgr.seed_ai_identity(session_key, content, source=p.name):
@@ -1688,7 +1688,7 @@ def _migrate_upload(mgr, session_key: str, user_files: list[Path]) -> None:
 
 def _migrate_seed(mgr, session_key: str, agent_files: list[Path]) -> None:
     for f in agent_files:
-        content = f.read_text(encoding="utf-8").strip()
+        content = f.read_text(encoding="utf-8-sig").strip()
         if content:
             ok = mgr.seed_ai_identity(session_key, content, source=f.name)
             print(f"    {f.name}: {'seeded' if ok else 'failed'}")

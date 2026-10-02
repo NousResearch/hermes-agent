@@ -232,6 +232,13 @@ _DARWIN_FD_INO_OFFSET = 32
 _DARWIN_FD_PATH_OFFSET = 176
 _DARWIN_LIBPROC = None
 
+# Wall-clock budget for one darwin holder-scan pass (#113187). A single
+# proc_pidfdinfo call can block uninterruptibly in the kernel (a process stuck
+# in uninterruptible I/O on a dead network share), so no per-iteration check
+# can bound it: the whole pass runs in a daemon thread and is abandoned on
+# expiry, failing open per the guard's contract.
+_DARWIN_FD_SCAN_TIMEOUT_SECONDS = 5.0
+
 
 def _darwin_libproc():
     """libproc's fd-enumeration entry points, loaded once per process.
@@ -316,10 +323,32 @@ def _iter_darwin_sidecar_holders(db_path) -> List[Tuple[int, str]]:
     # spelled it; ``os.path.normcase`` is the identity on darwin, so fold case here.
     watched = {path.casefold(): path for path in (base + "-wal", base + "-shm")}
     holders: List[Tuple[int, str]] = []
-    for pid, _fd, target, identity in _iter_darwin_fd_targets():
-        literal = watched.get(target.casefold())
-        if literal is not None and _identity_is_truly_unlinked(identity, literal):
-            holders.append((pid, target))
+    errors: List[BaseException] = []
+
+    def _scan() -> None:
+        try:
+            for pid, _fd, target, identity in _iter_darwin_fd_targets():
+                literal = watched.get(target.casefold())
+                if literal is not None and _identity_is_truly_unlinked(identity, literal):
+                    holders.append((pid, target))
+        except BaseException as exc:
+            errors.append(exc)
+
+    # ponytail: abandoned daemon thread per timed-out scan; a kernel-blocked
+    # proc_pidfdinfo cannot be interrupted, so expiry leaks one thread that
+    # dies with the process. Fail open: partial/empty holders, never a refusal.
+    worker = threading.Thread(target=_scan, daemon=True)
+    worker.start()
+    worker.join(_DARWIN_FD_SCAN_TIMEOUT_SECONDS)
+    if worker.is_alive():
+        logger.warning(
+            "deleted-WAL holder scan timed out after %.1fs for %s; continuing fail-open",
+            _DARWIN_FD_SCAN_TIMEOUT_SECONDS,
+            db_path,
+        )
+        return []
+    if errors:
+        raise errors[0]
     return holders
 
 

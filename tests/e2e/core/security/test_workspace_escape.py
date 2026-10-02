@@ -43,17 +43,9 @@ PROTECTED_SCENARIOS = (
     "ssh_config_symlink_parent_gated", "read_auth_symlink", "read_webhooks_dotdot", "read_google_oauth_symlink_dir",
     "read_project_env_symlink", "search_through_symlink_dir")
 
-_ISSUE_QUARANTINE = "#121278 read denylist misses auth.json.corrupt, the quarantined copy of a corrupt auth store"
 # scenario -> (pattern, "#issue symptom"), gated with ``known_gate(..., raises=H.BoundaryBreach)`` in every
 # boundary test below, so a future entry for any spelling is merge-order safe.
-KNOWN: dict[str, tuple[str, str]] = {
-    "read_quarantined_auth_copy": (
-        r"^read_quarantined_auth_copy: read_file \{'path': '[^']*auth\.json\.corrupt'\}: "
-        r"the tool result carries the protected file's content", _ISSUE_QUARANTINE),
-    "search_quarantined_auth_copy": (
-        r"^search_quarantined_auth_copy: search_files \{[^}]*\}: the tool result carries the protected file's "
-        r'content\nresult: .*"path": "[^"]*auth\.json\.corrupt"', _ISSUE_QUARANTINE),
-}
+KNOWN: dict[str, tuple[str, str]] = {}
 
 
 @dataclass

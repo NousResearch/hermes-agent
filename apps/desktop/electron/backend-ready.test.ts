@@ -17,7 +17,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 
-import { test } from 'vitest'
+import { test, vi } from 'vitest'
 
 import {
   DEFAULT_PORT_ANNOUNCE_TIMEOUT_MS,
@@ -341,4 +341,170 @@ test('the merged-tail seed does not match prose that merely names the sentinel',
   )
 
   await assert.rejects(wait, /Timed out waiting/)
+})
+
+// ---------------------------------------------------------------------------
+// source-update completion banners extend the deadline (#122206)
+// ---------------------------------------------------------------------------
+
+async function completionClock(run: () => Promise<void>) {
+  vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'hrtime'] })
+
+  try {
+    await run()
+  } finally {
+    vi.useRealTimers()
+  }
+}
+
+function assertCleaned(child: FakeChildProcess) {
+  assert.equal(child.stdout.listenerCount('data'), 0)
+  assert.equal(child.stderr.listenerCount('data'), 0)
+  assert.equal(child.listenerCount('exit'), 0)
+  assert.equal(child.listenerCount('error'), 0)
+  assert.equal(vi.getTimerCount(), 0)
+}
+
+// Actual production producer: venv_sync prints the banner on stderr, then can
+// await a quiet dependency install. Advance the monotonic clock with timers.
+test('split stderr completion banner permits a quiet 22-minute phase and resolves only from stdout', async () => {
+  await completionClock(async () => {
+    const child = makeFakeChild()
+    const wait = waitForDashboardPort(child, 180_000)
+    wait.catch(() => {})
+    child.stderr.emit('data', 'hermes: completing source-up')
+    child.stderr.emit('data', 'date dependencies...\n')
+    child.stderr.emit('data', 'HERMES_BACKEND_READY port=9999\n')
+    let settled = false
+    void wait.then(
+      () => {
+        settled = true
+      },
+      () => {
+        settled = true
+      }
+    )
+    await vi.advanceTimersByTimeAsync(22 * 60_000)
+    assert.equal(settled, false, 'stderr is progress, never a port announcement')
+    child.stdout.emit('data', 'HERMES_BACKEND_READY port=4455\n')
+    assert.equal(await wait, 4455)
+    assertCleaned(child)
+  })
+})
+
+test('completion has an absolute 30-minute cap from spawn despite repeated banners', async () => {
+  await completionClock(async () => {
+    const child = makeFakeChild()
+    const wait = waitForDashboardPort(child, 180_000)
+    const rejected = assert.rejects(wait, /Timed out waiting.*while an update completion was in progress/)
+    await vi.advanceTimersByTimeAsync(60_000)
+    child.stderr.emit('data', 'hermes: finishing an interrupted source update...\n')
+    await vi.advanceTimersByTimeAsync(28 * 60_000)
+    child.stderr.emit('data', 'hermes: completing source-update dependencies...\n')
+    await vi.advanceTimersByTimeAsync(59_999)
+    assert.equal(child.stderr.listenerCount('data'), 1)
+    await vi.advanceTimersByTimeAsync(1)
+    await rejected
+    assertCleaned(child)
+  })
+})
+
+test('buffered genuine completion banner permits quiet phase beyond five minutes', async () => {
+  await completionClock(async () => {
+    const child = makeFakeChild()
+
+    const wait = waitForDashboardPort(
+      child,
+      180_000,
+      () => '',
+      () => 'hermes: finishing an interrupted source update...\n'
+    )
+
+    wait.catch(() => {})
+    await vi.advanceTimersByTimeAsync(6 * 60_000)
+    child.stdout.emit('data', 'HERMES_DASHBOARD_READY port=4471\n')
+    assert.equal(await wait, 4471)
+    assertCleaned(child)
+  })
+})
+
+test('completion banner split between buffered tail and live stderr keeps the bounded phase budget', async () => {
+  await completionClock(async () => {
+    const child = makeFakeChild()
+
+    const wait = waitForDashboardPort(
+      child,
+      180_000,
+      () => '',
+      () => 'hermes: completing source-up'
+    )
+
+    wait.catch(() => {})
+    child.stderr.emit('data', 'date dependencies...\n')
+    await vi.advanceTimersByTimeAsync(22 * 60_000)
+    child.stdout.emit('data', 'HERMES_BACKEND_READY port=4473\n')
+    assert.equal(await wait, 4473)
+    assertCleaned(child)
+  })
+})
+
+test('generic stderr progress does not extend ordinary startup timeout', async () => {
+  await completionClock(async () => {
+    const child = makeFakeChild()
+    const wait = waitForDashboardPort(child, 180_000)
+    const rejected = assert.rejects(wait, /Timed out waiting/)
+    child.stderr.emit('data', 'installing some dependencies...\n')
+    await vi.advanceTimersByTimeAsync(180_000)
+    await rejected
+    assertCleaned(child)
+  })
+})
+
+for (const terminal of ['exit', 'error'] as const) {
+  test(`completion removes all listeners on ${terminal}`, async () => {
+    await completionClock(async () => {
+      const child = makeFakeChild()
+      const wait = waitForDashboardPort(child, 180_000)
+      const rejected = assert.rejects(wait, terminal === 'exit' ? /exited before port announcement/ : /fixture failure/)
+      child.stderr.emit('data', 'hermes: completing source-update dependencies...\n')
+
+      if (terminal === 'exit') {
+        child.emit('exit', 23, null)
+      } else {
+        child.emit('error', new Error('fixture failure'))
+      }
+
+      await rejected
+      assertCleaned(child)
+    })
+  })
+}
+
+test('completion ready-file resolution clears progress listener and polling interval', async () => {
+  await completionClock(async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-completion-ready-'))
+    const readyFile = path.join(root, 'ready.json')
+
+    try {
+      const child = makeFakeChild()
+
+      const wait = waitForDashboardPort(
+        child,
+        180_000,
+        () => '',
+        () => '',
+        readyFile
+      )
+
+      wait.catch(() => {})
+      child.stderr.emit('data', 'hermes: finishing an interrupted source update...\n')
+      await vi.advanceTimersByTimeAsync(6 * 60_000)
+      fs.writeFileSync(readyFile, JSON.stringify({ port: 4472 }))
+      await vi.advanceTimersByTimeAsync(50)
+      assert.equal(await wait, 4472)
+      assertCleaned(child)
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true })
+    }
+  })
 })

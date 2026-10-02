@@ -1,6 +1,7 @@
 import { compactNumber } from '@hermes/shared'
 import { type MouseEvent, type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
+import { LogSearchField, useLogSearch } from '@/components/chat/log-search'
 import { LogTail } from '@/components/chat/log-tail'
 import { PageLoader } from '@/components/page-loader'
 import { Button } from '@/components/ui/button'
@@ -29,13 +30,16 @@ import { fmtDateTime } from '@/lib/time'
 import { useStoreSelector } from '@/lib/use-session-slice'
 import { cn } from '@/lib/utils'
 import { upsertDesktopActionTask } from '@/store/activity'
-import { $pinnedSessionIds, pinSession, unpinSession } from '@/store/layout'
+import { $pinnedSessionIds, pinSession, SIDEBAR_SESSIONS_PAGE_SIZE, unpinSession } from '@/store/layout'
 import { notify } from '@/store/notifications'
-import { $sessions, sessionPinId } from '@/store/session'
+import { $sessionProfilesTruncated, $sessions, sessionPinId } from '@/store/session'
 import { confirmSharedGatewayRestart } from '@/store/system-actions'
 
+import { SidebarLoadMoreRow } from '../chat/sidebar/load-more-row'
 import { useRefreshHotkey } from '../hooks/use-refresh-hotkey'
 import { useRouteEnumParam } from '../hooks/use-route-enum-param'
+import { PAGE_INSET_X } from '../layout-constants'
+import { OverlayBreadcrumbHeader } from '../overlays/overlay-breadcrumb-header'
 import { OverlayMain, OverlayNav, OverlaySplitLayout } from '../overlays/overlay-split-layout'
 import { OverlayView } from '../overlays/overlay-view'
 
@@ -46,8 +50,9 @@ export type CommandCenterSection = 'maintenance' | 'sessions' | 'system' | 'usag
 const SECTIONS = ['sessions', 'system', 'usage', 'maintenance'] as const satisfies readonly CommandCenterSection[]
 
 const LOG_FILES = ['agent', 'errors', 'gateway', 'desktop'] as const
-const LOG_LEVELS = ['ALL', 'INFO', 'WARNING', 'ERROR'] as const
 const LOG_TAIL_LINES = 100
+const LOG_LEVELS = ['ALL', 'INFO', 'WARNING', 'ERROR'] as const
+
 const ACTION_POLL_INTERVAL_MS = 1200
 const ACTION_POLL_DEADLINE_MS = 5 * 60 * 1000
 const ACTION_POLL_REQUEST_TIMEOUT_MS = 5000
@@ -60,6 +65,7 @@ type UsagePeriod = (typeof USAGE_PERIODS)[number]
 // component never re-renders from $sessions ticks while on System/Usage/etc.
 const EMPTY_SESSIONS: readonly never[] = []
 const EMPTY_PINNED: readonly string[] = []
+const EMPTY_TRUNCATED: Record<string, boolean> = {}
 
 interface CommandCenterViewProps {
   initialSection?: CommandCenterSection
@@ -67,7 +73,11 @@ interface CommandCenterViewProps {
   onDeleteSession: (sessionId: string) => Promise<void>
   // Accepted for call-site parity; navigation lives in the global Cmd+K palette.
   onNavigateRoute?: (path: string) => void
-  onOpenSession: (sessionId: string) => void
+  onOpenSession: (sessionId: string, session?: SessionInfo) => void
+  /** Grows the shared session window (bumpSessionsLimit + refetch), same
+   *  mechanism as the sidebar's recents "load more". Renders the Sessions
+   *  list's bottom-right button when the backend page is capped. */
+  onLoadMoreSessions?: () => Promise<void> | void
 }
 
 function formatTimestamp(value?: number | null): string {
@@ -139,7 +149,13 @@ function EmptyPanel({ action, description, title }: { action?: ReactNode; descri
   )
 }
 
-export function CommandCenterView({ initialSection, onClose, onDeleteSession, onOpenSession }: CommandCenterViewProps) {
+export function CommandCenterView({
+  initialSection,
+  onClose,
+  onDeleteSession,
+  onLoadMoreSessions,
+  onOpenSession
+}: CommandCenterViewProps) {
   const { t } = useI18n()
   const cc = t.commandCenter
   // $sessions ticks on every streaming token (title updates, new sessions),
@@ -149,18 +165,29 @@ export function CommandCenterView({ initialSection, onClose, onDeleteSession, on
   const sessions = useStoreSelector($sessions, s => (section === 'sessions' ? s : EMPTY_SESSIONS))
   const pinnedSessionIds = useStoreSelector($pinnedSessionIds, s => (section === 'sessions' ? s : EMPTY_PINNED))
 
+  // Mirrors the sidebar: any profile whose backend page was capped means there
+  // is more to load, so the Sessions list gets a "load more" affordance.
+  // Gate like the other selectors: only subscribe on the Sessions tab so
+  // System/Usage/Maintenance don't re-render when $sessionProfilesTruncated
+  // ticks on every session fetch.
+  const sessionProfilesTruncated = useStoreSelector($sessionProfilesTruncated, s =>
+    section === 'sessions' ? s : EMPTY_TRUNCATED
+  )
+
   const [query, setQuery] = useState('')
   const [pendingDelete, setPendingDelete] = useState<SessionInfo | null>(null)
+  const [loadMorePending, setLoadMorePending] = useState(false)
   const [status, setStatus] = useState<StatusResponse | null>(null)
   const [logs, setLogs] = useState<string[]>([])
   const [logFile, setLogFile] = useState<(typeof LOG_FILES)[number]>('agent')
   const [logLevel, setLogLevel] = useState<(typeof LOG_LEVELS)[number]>('WARNING')
   const [logQuery, setLogQuery] = useState('')
+  const systemRequestRef = useRef(0)
+  const systemActionStartingRef = useRef(false)
   const [systemLoading, setSystemLoading] = useState(false)
   const [systemError, setSystemError] = useState('')
-  const [systemAction, setSystemAction] = useState<ActionStatusResponse | null>(null)
   const [systemActionStarting, setSystemActionStarting] = useState(false)
-  const systemRequestRef = useRef(0)
+  const [systemAction, setSystemAction] = useState<ActionStatusResponse | null>(null)
   const [usagePeriod, setUsagePeriod] = useState<UsagePeriod>(30)
   const [usage, setUsage] = useState<AnalyticsResponse | null>(null)
   const [usageLoading, setUsageLoading] = useState(false)
@@ -190,42 +217,48 @@ export function CommandCenterView({ initialSection, onClose, onDeleteSession, on
     })
   }, [debouncedQuery, sessions])
 
-  const refreshSystem = useCallback(async (): Promise<StatusResponse | null> => {
-    const requestId = systemRequestRef.current + 1
-    systemRequestRef.current = requestId
-    setSystemLoading(true)
-    setSystemError('')
+  const refreshSystem = useCallback(
+    async (preserveActionError = false): Promise<StatusResponse | null> => {
+      const requestId = systemRequestRef.current + 1
+      systemRequestRef.current = requestId
+      setSystemLoading(true)
 
-    try {
-      const [nextStatus, nextLogs] = await Promise.all([
-        getStatus(),
-        getLogs({
-          file: logFile,
-          level: logLevel,
-          lines: LOG_TAIL_LINES
-        })
-      ])
+      if (!preserveActionError) {
+        setSystemError('')
+      }
 
-      if (systemRequestRef.current !== requestId) {
+      try {
+        const [nextStatus, nextLogs] = await Promise.all([
+          getStatus(),
+          getLogs({
+            file: logFile,
+            level: logLevel,
+            lines: LOG_TAIL_LINES
+          })
+        ])
+
+        if (systemRequestRef.current !== requestId) {
+          return null
+        }
+
+        setStatus(nextStatus)
+        setLogs(nextLogs.lines)
+
+        return nextStatus
+      } catch (error) {
+        if (systemRequestRef.current === requestId && !preserveActionError) {
+          setSystemError(error instanceof Error ? error.message : String(error))
+        }
+
         return null
+      } finally {
+        if (systemRequestRef.current === requestId) {
+          setSystemLoading(false)
+        }
       }
-
-      setStatus(nextStatus)
-      setLogs(nextLogs.lines)
-
-      return nextStatus
-    } catch (error) {
-      if (systemRequestRef.current === requestId) {
-        setSystemError(error instanceof Error ? error.message : String(error))
-      }
-
-      return null
-    } finally {
-      if (systemRequestRef.current === requestId) {
-        setSystemLoading(false)
-      }
-    }
-  }, [logFile, logLevel])
+    },
+    [logFile, logLevel]
+  )
 
   const refreshUsage = useCallback(async (days: UsagePeriod) => {
     const requestId = usageRequestRef.current + 1
@@ -274,31 +307,52 @@ export function CommandCenterView({ initialSection, onClose, onDeleteSession, on
 
   const sessionListHasResults = filteredSessions.length > 0
 
-  // Client-side substring filter over the fetched tail (matches `hermes logs --search`).
   const visibleLogs = useMemo(() => {
     const needle = logQuery.trim().toLowerCase()
 
-    if (!needle) {
-      return logs
+    return needle ? logs.filter(line => line.toLowerCase().includes(needle)) : logs
+  }, [logQuery, logs])
+
+  const logSearch = useLogSearch(visibleLogs, logQuery)
+
+  // Same cap semantics as the sidebar's recents ("Load more" visible when any
+  // profile's backend page was truncated). Reuses the shared $sessions window:
+  // bumping the limit on the sidebar refetches into the same store both read.
+  const hasMoreSessions = Object.values(sessionProfilesTruncated).some(Boolean)
+
+  const onLoadMore = useCallback(async () => {
+    if (!onLoadMoreSessions || loadMorePending) {
+      return
     }
 
-    return logs.filter(line => line.toLowerCase().includes(needle))
-  }, [logQuery, logs])
+    setLoadMorePending(true)
+
+    try {
+      await Promise.resolve(onLoadMoreSessions())
+    } finally {
+      setLoadMorePending(false)
+    }
+  }, [loadMorePending, onLoadMoreSessions])
 
   const runSystemAction = useCallback(
     async (kind: 'restart' | 'update') => {
+      if (systemActionStartingRef.current || systemAction?.running) {
+        return
+      }
+
+      systemActionStartingRef.current = true
       setSystemActionStarting(true)
       setSystemError('')
       let actionSucceeded = false
 
-      // A profile served by the shared multiplexer restarts every bot on this device: ask first.
-      const shared = kind === 'restart' ? await confirmSharedGatewayRestart() : null
-
-      if (shared === false) {
-        return
-      }
-
       try {
+        // The ownership guard also covers the shared-gateway confirmation.
+        const shared = kind === 'restart' ? await confirmSharedGatewayRestart() : null
+
+        if (shared === false) {
+          return
+        }
+
         const started = kind === 'restart' ? await restartGateway() : await updateHermes()
         let nextStatus: ActionStatusResponse | null = null
 
@@ -361,28 +415,31 @@ export function CommandCenterView({ initialSection, onClose, onDeleteSession, on
       } catch (error) {
         setSystemError(error instanceof Error ? error.message : String(error))
       } finally {
-        setSystemActionStarting(false)
+        try {
+          if (kind === 'restart' && actionSucceeded) {
+            // Gateway startup can finish after the action process exits. Keep
+            // the status card in sync instead of leaving a stale "stopped" pill.
+            for (let attempt = 0; attempt < 16; attempt += 1) {
+              const refreshed = await refreshSystem(true)
 
-        if (kind === 'restart' && actionSucceeded) {
-          // Gateway startup can finish after the action process exits. Keep
-          // the status card in sync instead of leaving a stale "stopped" pill.
-          for (let attempt = 0; attempt < 16; attempt += 1) {
-            const refreshed = await refreshSystem()
+              if (refreshed?.gateway_running) {
+                break
+              }
 
-            if (refreshed?.gateway_running) {
-              break
+              if (attempt < 15) {
+                await new Promise(resolve => window.setTimeout(resolve, 1200))
+              }
             }
-
-            if (attempt < 15) {
-              await new Promise(resolve => window.setTimeout(resolve, 1200))
-            }
+          } else {
+            await refreshSystem(true)
           }
-        } else {
-          await refreshSystem()
+        } finally {
+          systemActionStartingRef.current = false
+          setSystemActionStarting(false)
         }
       }
     },
-    [cc, refreshSystem]
+    [cc, refreshSystem, systemAction?.running]
   )
 
   const navGroups = useMemo(
@@ -404,215 +461,230 @@ export function CommandCenterView({ initialSection, onClose, onDeleteSession, on
     [cc, section, setSection]
   )
 
+  const activeGroup = navGroups.find(group => group.active)
+
   return (
     <OverlayView closeLabel={cc.close} onClose={onClose}>
       <OverlaySplitLayout>
         <OverlayNav groups={navGroups} />
 
-        <OverlayMain>
-          <header className="mb-4 flex items-center justify-between gap-3 max-[47.5rem]:mb-2">
-            {/* Redundant on narrow — the nav dropdown already names the section. */}
-            <div className="min-w-0 max-[47.5rem]:hidden">
-              <h2 className="text-[length:var(--conversation-text-font-size)] font-semibold text-foreground">
-                {cc.sections[section]}
-              </h2>
-              <p className="mt-0.5 text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height) text-(--ui-text-tertiary)">
-                {cc.sectionDescriptions[section]}
-              </p>
-            </div>
-            <div className="flex shrink-0 items-center gap-2">
-              {section === 'sessions' && (
-                <SearchField
-                  containerClassName="max-w-[40vw]"
-                  onChange={next => setQuery(next)}
-                  placeholder={cc.searchPlaceholder}
-                  value={query}
-                />
-              )}
-              {section === 'usage' && (
-                <SegmentedControl
-                  onChange={id => setUsagePeriod(Number(id) as UsagePeriod)}
-                  options={USAGE_PERIODS.map(value => ({ id: String(value), label: cc.days(value) }))}
-                  value={String(usagePeriod)}
-                />
-              )}
-            </div>
-          </header>
-
-          {section === 'sessions' ? (
-            <div className="min-h-0 flex-1 overflow-y-auto">
-              {!sessionListHasResults ? (
-                <EmptyPanel description={debouncedQuery ? cc.noResults : cc.noSessions} />
-              ) : (
-                <ul>
-                  {filteredSessions.map(session => {
-                    const pinId = sessionPinId(session)
-                    const pinned = pinnedSessionIds.includes(pinId)
-
-                    return (
-                      <li className="group flex items-center gap-2 py-2" key={session.id}>
-                        <button
-                          className="min-w-0 flex-1 text-left"
-                          onClick={() => onOpenSession(session.id)}
-                          type="button"
-                        >
-                          <div className="truncate text-[length:var(--conversation-text-font-size)] font-medium text-foreground">
-                            {sessionTitle(session)}
-                          </div>
-                          <div className="truncate text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
-                            {formatTimestamp(session.last_active || session.started_at)}
-                          </div>
-                        </button>
-                        <div className="flex shrink-0 items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100 focus-within:opacity-100">
-                          <RowIconButton
-                            onClick={() => (pinned ? unpinSession(pinId) : pinSession(pinId))}
-                            title={pinned ? cc.unpinSession : cc.pinSession}
-                          >
-                            {pinned ? <BookmarkFilled className="size-3.5" /> : <Bookmark className="size-3.5" />}
-                          </RowIconButton>
-                          <RowIconButton
-                            onClick={() => void exportSession(session.id, { session, title: sessionTitle(session) })}
-                            title={cc.exportSession}
-                          >
-                            <Download className="size-3.5" />
-                          </RowIconButton>
-                          <RowIconButton
-                            className="hover:text-destructive"
-                            onClick={() => setPendingDelete(session)}
-                            title={cc.deleteSession}
-                          >
-                            <Trash2 className="size-3.5" />
-                          </RowIconButton>
-                        </div>
-                      </li>
-                    )
-                  })}
-                </ul>
-              )}
-            </div>
-          ) : section === 'usage' ? (
-            <UsagePanel
-              error={usageError}
-              loading={usageLoading}
-              onRefresh={() => void refreshUsage(usagePeriod)}
-              period={usagePeriod}
-              usage={usage}
-            />
-          ) : section === 'maintenance' ? (
-            <MaintenancePanel />
-          ) : (
-            <div className="grid min-h-0 flex-1 grid-rows-[auto_minmax(0,1fr)] gap-4">
-              <div>
-                {status ? (
-                  <div className="grid gap-2">
-                    <div className="flex items-start justify-between gap-3 max-[47.5rem]:flex-col max-[47.5rem]:gap-2">
-                      <div className="min-w-0">
-                        <div className="flex items-center gap-2">
-                          <span
-                            className={cn(
-                              'size-2 shrink-0 rounded-full',
-                              status.gateway_running ? 'bg-emerald-500' : 'bg-amber-500'
-                            )}
-                          />
-                          <span className="text-[length:var(--conversation-text-font-size)] font-medium text-foreground">
-                            {status.gateway_running ? cc.gatewayRunning : cc.gatewayStopped}
-                          </span>
-                        </div>
-                        <div className="mt-1 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
-                          {cc.hermesActiveSessions(status.version, status.active_sessions)}
-                        </div>
-                      </div>
-                      <div className="flex shrink-0 flex-wrap items-center gap-x-3 gap-y-1 whitespace-nowrap max-[47.5rem]:whitespace-normal">
-                        <Button
-                          disabled={systemActionStarting || systemAction?.running === true}
-                          onClick={() => void runSystemAction('restart')}
-                          size="xs"
-                          variant="text"
-                        >
-                          {cc.restartGateway}
-                        </Button>
-                        <Button
-                          disabled={systemActionStarting || systemAction?.running === true}
-                          onClick={() => void runSystemAction('update')}
-                          size="xs"
-                          variant="textStrong"
-                        >
-                          {cc.updateHermes}
-                        </Button>
-                      </div>
-                    </div>
-                    {systemAction && (
-                      <div className="text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
-                        {systemAction.name} ·{' '}
-                        {systemAction.running
-                          ? cc.actionRunning
-                          : systemAction.exit_code === 0
-                            ? cc.actionDone
-                            : cc.actionFailed}
-                      </div>
-                    )}
-                  </div>
-                ) : (
-                  <PageLoader className="min-h-32" label={cc.loadingStatus} />
-                )}
-              </div>
-
-              <div className="flex min-h-0 flex-col pt-2">
-                <div className="mb-2 flex flex-wrap items-center justify-between gap-x-3 gap-y-1">
-                  <span className="text-[0.625rem] font-medium uppercase tracking-[0.08em] text-(--ui-text-tertiary)">
-                    {cc.recentLogs}
-                  </span>
-                  <div className="flex flex-wrap items-center gap-x-5 gap-y-2">
-                    <div aria-label={cc.logFile} className="flex flex-wrap items-center gap-x-2" role="group">
-                      <span className="text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
-                        {cc.logFile}
-                      </span>
-                      <ResponsiveTabs
-                        align="end"
-                        onChange={id => setLogFile(id as (typeof LOG_FILES)[number])}
-                        tabs={LOG_FILES.map(value => ({ id: value, label: `${value}.log` }))}
-                        value={logFile}
-                      />
-                    </div>
-                    <div aria-label={cc.logLevel} className="flex flex-wrap items-center gap-x-2" role="group">
-                      <span className="text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
-                        {cc.logLevel}
-                      </span>
-                      <ResponsiveTabs
-                        align="end"
-                        onChange={id => setLogLevel(id as (typeof LOG_LEVELS)[number])}
-                        tabs={LOG_LEVELS.map(value => ({
-                          id: value,
-                          label: value === 'ALL' ? cc.allLogLevels : value.toLowerCase()
-                        }))}
-                        value={logLevel}
-                      />
-                    </div>
+        <OverlayMain className="px-0 pb-0">
+          {activeGroup && (
+            <OverlayBreadcrumbHeader
+              group={activeGroup}
+              rootLabel={cc.commandCenter}
+              trailing={
+                <>
+                  {section === 'sessions' && (
                     <SearchField
-                      containerClassName="w-44"
-                      onChange={next => setLogQuery(next)}
-                      placeholder={cc.logSearchPlaceholder}
-                      value={logQuery}
+                      containerClassName="max-w-[40vw]"
+                      onChange={next => setQuery(next)}
+                      placeholder={cc.searchPlaceholder}
+                      value={query}
                     />
-                  </div>
-                  {systemError && (
-                    <span className="inline-flex items-center gap-1 text-[length:var(--conversation-caption-font-size)] text-destructive">
-                      <AlertCircle className="size-3.5" />
-                      {systemError}
-                    </span>
+                  )}
+                  {section === 'usage' && (
+                    <SegmentedControl
+                      onChange={id => setUsagePeriod(Number(id) as UsagePeriod)}
+                      options={USAGE_PERIODS.map(value => ({ id: String(value), label: cc.days(value) }))}
+                      value={String(usagePeriod)}
+                    />
+                  )}
+                </>
+              }
+            />
+          )}
+          <div className={cn('flex min-h-0 flex-1 flex-col', PAGE_INSET_X)}>
+            {section === 'sessions' ? (
+              <div className="flex min-h-0 flex-1 flex-col">
+                <div className="min-h-0 flex-1 overflow-y-auto">
+                  {!sessionListHasResults ? (
+                    <EmptyPanel description={debouncedQuery ? cc.noResults : cc.noSessions} />
+                  ) : (
+                    <ul>
+                      {filteredSessions.map(session => {
+                        const pinId = sessionPinId(session)
+                        const pinned = pinnedSessionIds.includes(pinId)
+
+                        return (
+                          <li className="group flex items-center gap-2 py-2" key={session.id}>
+                            <button
+                              className="min-w-0 flex-1 text-left"
+                              onClick={() => onOpenSession(session.id, session)}
+                              type="button"
+                            >
+                              <div className="truncate text-[length:var(--conversation-text-font-size)] font-medium text-foreground">
+                                {sessionTitle(session)}
+                              </div>
+                              <div className="truncate text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
+                                {formatTimestamp(session.last_active || session.started_at)}
+                              </div>
+                            </button>
+                            <div className="flex shrink-0 items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100 focus-within:opacity-100">
+                              <RowIconButton
+                                onClick={() => (pinned ? unpinSession(pinId) : pinSession(pinId))}
+                                title={pinned ? cc.unpinSession : cc.pinSession}
+                              >
+                                {pinned ? <BookmarkFilled className="size-3.5" /> : <Bookmark className="size-3.5" />}
+                              </RowIconButton>
+                              <RowIconButton
+                                onClick={() =>
+                                  void exportSession(session.id, { session, title: sessionTitle(session) })
+                                }
+                                title={cc.exportSession}
+                              >
+                                <Download className="size-3.5" />
+                              </RowIconButton>
+                              <RowIconButton
+                                className="hover:text-destructive"
+                                onClick={() => setPendingDelete(session)}
+                                title={cc.deleteSession}
+                              >
+                                <Trash2 className="size-3.5" />
+                              </RowIconButton>
+                            </div>
+                          </li>
+                        )
+                      })}
+                    </ul>
                   )}
                 </div>
-                <p className="mb-2 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
-                  {cc.logTailHint(LOG_TAIL_LINES)}
-                </p>
-                <LogTail
-                  className="flex-1 rounded-lg border border-(--ui-stroke-tertiary) bg-(--ui-bg-quinary)"
-                  emptyLabel={logQuery.trim() && logs.length > 0 ? cc.noMatchingLogs : cc.noLogs}
-                  lines={systemLoading && logs.length === 0 ? null : visibleLogs}
-                />
+                {hasMoreSessions && !!onLoadMoreSessions && !debouncedQuery && (
+                  <div className="flex shrink-0 items-end justify-end">
+                    <SidebarLoadMoreRow
+                      loading={loadMorePending}
+                      onClick={() => void onLoadMore()}
+                      step={SIDEBAR_SESSIONS_PAGE_SIZE}
+                    />
+                  </div>
+                )}
               </div>
-            </div>
-          )}
+            ) : section === 'usage' ? (
+              <UsagePanel
+                error={usageError}
+                loading={usageLoading}
+                onRefresh={() => void refreshUsage(usagePeriod)}
+                period={usagePeriod}
+                usage={usage}
+              />
+            ) : section === 'maintenance' ? (
+              <MaintenancePanel />
+            ) : (
+              <div className="grid min-h-0 flex-1 grid-rows-[auto_minmax(0,1fr)] gap-4">
+                <div>
+                  {status ? (
+                    <div className="grid gap-2">
+                      <div className="flex items-start justify-between gap-3 max-[47.5rem]:flex-col max-[47.5rem]:gap-2">
+                        <div className="min-w-0">
+                          <div className="flex items-center gap-2">
+                            <span
+                              className={cn(
+                                'size-2 shrink-0 rounded-full',
+                                status.gateway_running ? 'bg-emerald-500' : 'bg-amber-500'
+                              )}
+                            />
+                            <span className="text-[length:var(--conversation-text-font-size)] font-medium text-foreground">
+                              {status.gateway_running ? cc.gatewayRunning : cc.gatewayStopped}
+                            </span>
+                          </div>
+                          <div className="mt-1 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
+                            {cc.hermesActiveSessions(status.version, status.active_sessions)}
+                          </div>
+                        </div>
+                        <div className="flex shrink-0 flex-wrap items-center gap-x-3 gap-y-1 whitespace-nowrap max-[47.5rem]:whitespace-normal">
+                          <Button
+                            disabled={systemActionStarting || systemAction?.running === true}
+                            onClick={() => void runSystemAction('restart')}
+                            size="xs"
+                            variant="text"
+                          >
+                            {cc.restartGateway}
+                          </Button>
+                          <Button
+                            disabled={systemActionStarting || systemAction?.running === true}
+                            onClick={() => void runSystemAction('update')}
+                            size="xs"
+                            variant="textStrong"
+                          >
+                            {cc.updateHermes}
+                          </Button>
+                        </div>
+                      </div>
+                      {systemAction && (
+                        <div className="text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
+                          {systemAction.name} ·{' '}
+                          {systemAction.running
+                            ? cc.actionRunning
+                            : systemAction.exit_code === 0
+                              ? cc.actionDone
+                              : cc.actionFailed}
+                        </div>
+                      )}
+                    </div>
+                  ) : (
+                    <PageLoader className="min-h-32" label={cc.loadingStatus} />
+                  )}
+                </div>
+
+                <div className="flex min-h-0 flex-col pt-2">
+                  <div className="mb-2 flex flex-wrap items-center justify-between gap-x-3 gap-y-1">
+                    <span className="text-[0.625rem] font-medium uppercase tracking-[0.08em] text-(--ui-text-tertiary)">
+                      {cc.recentLogs}
+                    </span>
+                    <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+                      <div aria-label={cc.logFile} className="flex flex-wrap items-center gap-x-2" role="group">
+                        <span className="text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
+                          {cc.logFile}
+                        </span>
+                        <ResponsiveTabs
+                          align="end"
+                          onChange={id => setLogFile(id as (typeof LOG_FILES)[number])}
+                          tabs={LOG_FILES.map(value => ({ id: value, label: `${value}.log` }))}
+                          value={logFile}
+                        />
+                      </div>
+                      <div aria-label={cc.logLevel} className="flex flex-wrap items-center gap-x-2" role="group">
+                        <span className="text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
+                          {cc.logLevel}
+                        </span>
+                        <ResponsiveTabs
+                          align="end"
+                          onChange={id => setLogLevel(id as (typeof LOG_LEVELS)[number])}
+                          tabs={LOG_LEVELS.map(value => ({
+                            id: value,
+                            label: value === 'ALL' ? cc.allLogLevels : value.toLowerCase()
+                          }))}
+                          value={logLevel}
+                        />
+                      </div>
+                      <LogSearchField
+                        containerClassName="w-44"
+                        onChange={setLogQuery}
+                        placeholder={cc.logSearchPlaceholder}
+                        search={logSearch}
+                        value={logQuery}
+                      />
+                    </div>
+                    {systemError && (
+                      <span className="inline-flex items-center gap-1 text-[length:var(--conversation-caption-font-size)] text-destructive">
+                        <AlertCircle className="size-3.5" />
+                        {systemError}
+                      </span>
+                    )}
+                  </div>
+                  <p className="mb-2 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
+                    {cc.logTailHint(LOG_TAIL_LINES)}
+                  </p>
+                  <LogTail
+                    className="flex-1 rounded-lg border border-(--ui-stroke-tertiary) bg-(--ui-bg-quinary)"
+                    emptyLabel={logQuery.trim() && logs.length > 0 ? cc.noMatchingLogs : cc.noLogs}
+                    lines={systemLoading && logs.length === 0 ? null : visibleLogs}
+                    search={logSearch}
+                  />
+                </div>
+              </div>
+            )}
+          </div>
         </OverlayMain>
       </OverlaySplitLayout>
       {pendingDelete && (

@@ -4,7 +4,12 @@ import { getProfiles } from '@/api/profiles'
 import type { DesktopConnectionsRegistry } from '@/global'
 import { invalidateProfileScopedQueries } from '@/lib/query-client'
 import { persistStringRecord, storedStringRecord } from '@/lib/storage'
-import { BACKEND_BOOT_WAIT_TIMEOUT_MS, isTimeoutError, withTimeout } from '@/lib/with-timeout'
+import {
+  BACKEND_BOOT_WAIT_TIMEOUT_MS,
+  isTimeoutError,
+  SOURCE_SWITCH_DIAL_TIMEOUT_MS,
+  withTimeout
+} from '@/lib/with-timeout'
 import { $connectionsRegistry } from '@/store/connection-registry-state'
 import { $defaultProfileRoute, refreshDefaultProfile } from '@/store/default-profile'
 import {
@@ -31,14 +36,20 @@ import { isPeerInstanceWindow, windowProfileOverride } from '@/store/windows'
 const LAST_PROFILE_STORAGE_KEY = 'hermes.desktop.lastProfileByConnection'
 
 // Every await of a source switch is bounded. A wedged spawn, ticket mint,
-// handshake or IPC (the #93454 class) must surface as a failed click — not a
+// handshake or IPC (the #93454 class) must surface as a failed click أ¢â‚¬â€‌ not a
 // spinner that also swallows every later click on the same source, and never
 // a barrier left up or a wipe left unpainted.
 // Phase one may spawn a cold backend. Match the inner foreground activation's
 // absolute full-open deadline; a reconnect-sized outer guard would reject a
 // healthy child before it announces readiness. Phase two below only commits
 // the already-open socket and retains its shorter bound.
-const SWITCH_DIAL_TIMEOUT_MS = BACKEND_BOOT_WAIT_TIMEOUT_MS
+const SWITCH_DIAL_TIMEOUT_MS = Math.max(BACKEND_BOOT_WAIT_TIMEOUT_MS, SOURCE_SWITCH_DIAL_TIMEOUT_MS)
+//
+// The dial and the commit are different work and so carry different budgets.
+// The commit is local (sever the old bindings, activate, publish) and stays at
+// the reconnect-class 20 s. The dial is the main process's whole remote
+// bring-up chain, which the renderer cannot time from here أ¢â‚¬â€‌ see
+// SOURCE_SWITCH_DIAL_TIMEOUT_MS in lib/with-timeout.ts for its composition.
 const SWITCH_COMMIT_TIMEOUT_MS = 20_000
 const SWITCH_REMEMBER_TIMEOUT_MS = 5_000
 // Matches the primary spawn budget: a healthy cold boot publishes well within
@@ -81,9 +92,9 @@ const $activeConnectionProfile = computed(
 )
 
 // The CONNECTION twin of profile.ts's $activeGatewayProfile subscription.
-// The switch commit point (beginGatewaySwitch → invalidateProfileScopedQueries)
-// runs inside beforeActivate — BEFORE applyActive publishes the new request
-// scope (setApiRequestConnection) — so that invalidation's refetches ride the
+// The switch commit point (beginGatewaySwitch أ¢â€ â€™ invalidateProfileScopedQueries)
+// runs inside beforeActivate أ¢â‚¬â€‌ BEFORE applyActive publishes the new request
+// scope (setApiRequestConnection) أ¢â‚¬â€‌ so that invalidation's refetches ride the
 // OUTGOING backend. Re-invalidate on the actual connection-id change, which
 // applyActive publishes only after the tag moved, so the refetch lands on the
 // backend the tags now name. `listen` (not `subscribe`) skips the mount-time
@@ -173,7 +184,7 @@ async function rememberConnection(connectionId: string): Promise<void> {
  * still publishing its connection identity.
  *
  * Bounded: a primary that never publishes (spawn failure, dead SSH target)
- * must not strand the registry restore forever — after the deadline the
+ * must not strand the registry restore forever أ¢â‚¬â€‌ after the deadline the
  * restore proceeds exactly as it did before this wait existed. The listener
  * is always torn down so a late descriptor can't leak a dangling resolver.
  */
@@ -266,22 +277,26 @@ export async function initializeConnectionsRegistry(): Promise<DesktopConnection
     return $connectionsRegistry.get() ?? registry
   }
 
-  // Residual drift: a window can be live on a source the registry cannot name
-  // (a v1-configured remote that reconciliation has not repaired yet, e.g. a
-  // read-only userData that rejected the healed write). $activeConnectionId is
-  // null there, so the preferred-id guard below would miss and "restore" the
-  // registry primary over a connection that is already up and painting —
-  // re-homing the user onto a different backend seconds after boot. The
-  // registry has no claim on a source it does not know; leave the live one be.
-  if ($connection.get() && $activeConnectionId.get() === null) {
-    return registry
-  }
-
   const lastUsed = registry.connections.some(connection => connection.id === registry.lastUsed)
     ? registry.lastUsed
     : registry.primary
 
   const preferredId = registry.launchMode === 'last-used' ? lastUsed : registry.primary
+  const preferred = registry.connections.find(connection => connection.id === preferredId)
+  const live = $connection.get()
+
+  // An unqualified local descriptor is the post-update empty-backend boot, not
+  // a v1 remote the registry cannot name. launchMode=primary must still select
+  // the registered SSH/remote primary instead of staying on that local spawn.
+  const replaceUnqualifiedLocal =
+    live?.mode === 'local' &&
+    $activeConnectionId.get() === null &&
+    registry.launchMode !== 'last-used' &&
+    Boolean(preferred && preferred.kind !== 'local')
+
+  if (live && $activeConnectionId.get() === null && !replaceUnqualifiedLocal) {
+    return registry
+  }
 
   if (!preferredId) {
     return registry
@@ -301,12 +316,12 @@ export async function initializeConnectionsRegistry(): Promise<DesktopConnection
  * profile. Only the selected source is dialed; merely rendering the switcher
  * never probes or opens remote gateways.
  *
- * Two phases, same commit contract as a Settings → Gateway apply (softSwitch):
- *  1. Dial the target — and for OAuth remotes prove a protected REST read —
+ * Two phases, same commit contract as a Settings أ¢â€ â€™ Gateway apply (softSwitch):
+ *  1. Dial the target أ¢â‚¬â€‌ and for OAuth remotes prove a protected REST read أ¢â‚¬â€‌
  *     WITHOUT activating it. The previous source stays fully bound and
  *     painted, so a dead target loses nothing.
- *  2. Commit: beginGatewaySwitch() — barrier up, machine-context reset,
- *     session bindings wiped — then activate the already-open socket. The
+ *  2. Commit: beginGatewaySwitch() أ¢â‚¬â€‌ barrier up, machine-context reset,
+ *     session bindings wiped أ¢â‚¬â€‌ then activate the already-open socket. The
  *     wipe runs inside the activation's serialized section, synchronously
  *     before the publication, so no route/session effect can observe the new
  *     source while $activeSessionId still names the previous backend's
@@ -315,8 +330,8 @@ export async function initializeConnectionsRegistry(): Promise<DesktopConnection
  *     "session not found" (#93937).
  *
  * Overlap and stalls: clicks can supersede a switch at any point. A switch
- * superseded while queued behind another activation declines its commit —
- * no wipe, no activation — so the winner's wipe is always the one that
+ * superseded while queued behind another activation declines its commit أ¢â‚¬â€‌
+ * no wipe, no activation أ¢â‚¬â€‌ so the winner's wipe is always the one that
  * precedes the final publication, and the barrier is owned by the latest
  * switch. Every await is bounded; a commit that stalls after the wipe lowers
  * the barrier and repaints the source that is still active.
@@ -337,7 +352,7 @@ export async function selectConnection(connectionId: string, options: SelectConn
 
   // A user-initiated source switch collapses "All profiles" browse mode: the
   // picker is a concrete-source action. The silent boot-time restore (below,
-  // from initializeConnectionsRegistry) is not — it must leave the persisted
+  // from initializeConnectionsRegistry) is not أ¢â‚¬â€‌ it must leave the persisted
   // browse-mode preference alone so it survives restart (#93197).
   const restoreOnBoot = pendingTarget === null && $activeConnectionId.get() === null
 
@@ -353,7 +368,7 @@ export async function selectConnection(connectionId: string, options: SelectConn
 
   // The primary local descriptor (startHermes) historically publishes without
   // a profile of its own; a profile-less descriptor on the source we are
-  // landing must not strand the switch — the activation already published the
+  // landing must not strand the switch أ¢â‚¬â€‌ the activation already published the
   // route we asked for, so trust it for the same source instead of comparing
   // against a "default" it never meant.
   const targetIsActive = () => {
@@ -400,7 +415,7 @@ export async function selectConnection(connectionId: string, options: SelectConn
   const revision = ++switchRevision
   pendingTarget = targetKey
   $pendingConnectionId.set(connectionId)
-  // Set by the commit hook once THIS switch has wiped — i.e. it owns the
+  // Set by the commit hook once THIS switch has wiped أ¢â‚¬â€‌ i.e. it owns the
   // barrier and, if the commit then fails, owes the still-active source a
   // repaint. Null while queued, or if it stepped aside before its turn.
   let token = null as GatewaySwitchToken | null
@@ -409,7 +424,7 @@ export async function selectConnection(connectionId: string, options: SelectConn
   const activationController = new AbortController()
 
   try {
-    // Phase 1 — open the target's socket; the active route is untouched.
+    // Phase 1 أ¢â‚¬â€‌ open the target's socket; the active route is untouched.
     // Always use the explicit registry route. `local` must mean This device,
     // and a registry primary can differ from a legacy per-profile override.
     await withTimeout(
@@ -434,7 +449,7 @@ export async function selectConnection(connectionId: string, options: SelectConn
       // the exact failure for caller UX (network failures are not sign-in errors).
       await withTimeout(
         getProfiles({ connectionId, profile: targetProfile }),
-        SWITCH_DIAL_TIMEOUT_MS,
+        SOURCE_SWITCH_DIAL_TIMEOUT_MS,
         `Timed out connecting to "${targetConnection.label}".`
       )
 
@@ -443,11 +458,11 @@ export async function selectConnection(connectionId: string, options: SelectConn
       }
     }
 
-    // Phase 2 — commit. The hook runs inside the activation's serialized
+    // Phase 2 أ¢â‚¬â€‌ commit. The hook runs inside the activation's serialized
     // section, right before the socket is activated: sever the previous
     // backend's bindings, then publish, with nothing in between. A click that
-    // superseded this switch while it was queued makes the hook decline —
-    // neither wipe nor activation — so the user never flips through it.
+    // superseded this switch while it was queued makes the hook decline أ¢â‚¬â€‌
+    // neither wipe nor activation أ¢â‚¬â€‌ so the user never flips through it.
     let markActivationStarted: () => void = () => undefined
 
     const activationStarted = new Promise<void>(resolve => {
@@ -507,8 +522,8 @@ export async function selectConnection(connectionId: string, options: SelectConn
         throw new Error(`Connection "${targetConnection.label}" did not become active.`)
       }
     } finally {
-      // Lower the barrier the moment the commit settles — before the
-      // bookkeeping awaits below — but only if this switch still owns it.
+      // Lower the barrier the moment the commit settles أ¢â‚¬â€‌ before the
+      // bookkeeping awaits below أ¢â‚¬â€‌ but only if this switch still owns it.
       if (token !== null) {
         endGatewaySwitch(token)
       }

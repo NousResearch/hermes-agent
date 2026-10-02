@@ -30,19 +30,18 @@
  * Prerequisite: `npm run build` must have been run so dist/ exists.
  */
 
-import { expect, test } from './test'
+import { writeEnvFile, writeMockProviderConfig } from '../../../tests-js/scripts/mock-provider-config'
+import { startMockServer } from '../../../tests-js/scripts/mock-server'
 
 import {
+  buildAppEnv,
+  createSandbox,
+  launchDesktop,
   type MockBackendFixture,
   waitForAppReady,
-  createSandbox,
-  writeMockProviderConfig,
-  writeEnvFile,
-  buildAppEnv,
-  launchDesktop,
 } from './fixtures'
-import { startMockServer } from '../../../tests-js/scripts/mock-server'
 import { RealSessionBuilder } from './real-session-builder'
+import { expect, test } from './test'
 
 const SESSION_TITLE = 'E2E Warm Resume Jitter Test'
 
@@ -118,7 +117,7 @@ async function setupSeededMockBackend(): Promise<MockBackendFixture> {
   // 2. Create sandbox + write config
   const sandbox = createSandbox('warm-seed')
   writeMockProviderConfig(sandbox.hermesHome, mock.url)
-  writeEnvFile(sandbox.hermesHome)
+  writeEnvFile(sandbox.hermesHome, 'e2e-mock-key', mock.url)
 
   // 3. Produce all 16 user/assistant pairs through the real TUI gateway,
   // AIAgent, mock provider, and SessionDB persistence path before desktop starts.

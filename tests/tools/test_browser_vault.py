@@ -77,7 +77,7 @@ class TestVaultStore:
         blob = (tmp_path / "vault" / "vault.json.enc").read_bytes()
         assert b"s3cret-pw" not in blob
 
-    @pytest.mark.linux_only
+    @pytest.mark.platforms('linux')
     def test_file_permissions_0600(self, store, tmp_path):
         _add_login(store)
         for name in ("vault.json.enc", "vault.key"):

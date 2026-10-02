@@ -216,7 +216,11 @@ async def test_gateway_stop_kills_tool_subprocesses_before_adapter_disconnect_on
 
     call_order: list[str] = []
 
-    def _fake_kill_all(task_id=None):
+    def _fake_kill_all(task_id=None, **kwargs):
+        # kwargs carry kill_all's keyword-only args (source, consume_output);
+        # the shutdown sweep passes source="gateway_shutdown" so a
+        # persist_on_release job (#41225) is still killed on host exit.
+        assert kwargs.get("source") == "gateway_shutdown", kwargs
         call_order.append("kill_all")
         return 2
 

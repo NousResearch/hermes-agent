@@ -7,14 +7,12 @@ resolving/monkeypatching. Origin helpers are imported lazily per function (no cy
 import logging
 from contextlib import suppress
 import os
+import re
 import shutil
 import subprocess
 import sys
 from pathlib import Path
 from typing import Collection, Optional
-
-from hermes_cli.update_cmd_common import _best_effort
-from hermes_constants import project_venv_dir
 
 # Log-record parity with the origin module.
 logger = logging.getLogger("hermes_cli.update_cmd")
@@ -373,61 +371,25 @@ def _download_and_swap_zip(branch: str, zip_url: str) -> None:
         shutil.rmtree(tmp_dir, ignore_errors=True)
 
 
-def _reinstall_python_deps_after_zip(active_tool_dependencies) -> None:
-    """Reinstall Python deps (uv preferred, pip fallback) and re-arm active tool deps."""
-    from hermes_cli.update_cmd import (
-        _ensure_uv_for_termux, _ensure_venv_pip, _m, _refuse_update_for_contended_shims, _shim_quarantine_error_type,
-    )
 
-    from hermes_cli.managed_uv import ensure_uv, update_managed_uv
-    update_managed_uv()  # keep managed uv current — runs `uv self update` if we already have one
-    uv_bin = ensure_uv()
-    pip_cmd = [_m().sys.executable, "-m", "pip"]
-    if not uv_bin:
-        uv_bin = _ensure_uv_for_termux(pip_cmd)
-    if uv_bin:
-        # Same UV-env isolation as the main update path: a user-level UV_PYTHON_INSTALL_DIR / UV_PYTHON
-        # from unrelated software must not steer which interpreter uv resolves here.
-        from hermes_cli.managed_uv import managed_python_env
-        uv_env = managed_python_env()
-        uv_env["VIRTUAL_ENV"] = str(project_venv_dir(_m().PROJECT_ROOT) or _m().PROJECT_ROOT / "venv")
-        if _m()._is_termux_env(uv_env):
-            uv_env.pop("PYTHONPATH", None)
-            uv_env.pop("PYTHONHOME", None)
-        try:
-            _m()._install_python_dependencies_with_optional_fallback([uv_bin, "pip"], env=uv_env)
-        except _shim_quarantine_error_type() as _sqe:
-            # Runs inside the ZIP-fallback error handler, so cmd_update's boundary except cannot catch
-            # it — refuse here with the same defer-via-marker contract.
-            # See #87331.
-            _refuse_update_for_contended_shims(_sqe)
-        install_prefix, install_env = [uv_bin, "pip"], uv_env
-    else:
-        # sys.executable -m pip avoids PEP 668 'externally-managed-environment' errors.
-        _ensure_venv_pip(pip_cmd, _m().sys.executable)
-        _m()._install_python_dependencies_with_optional_fallback(pip_cmd)
-        install_prefix, install_env = pip_cmd, None
-    _m()._restore_active_tool_dependencies(active_tool_dependencies, install_prefix, env=install_env)
-    # Parity with git-pull path: heal the active memory provider's bridge packages after the reinstall.
-    _m()._refresh_active_memory_provider_dependencies()
-    _m()._reapply_plugin_python_dependencies()
+    # The parent stops at the committed swap. PM preparation and dependency
+    # restoration belong to the correlated completion child on selected code.
 
 
-def _update_via_zip(args, *, had_desktop_app_before_update: bool = False, _windows_gateway_resume=None) -> bool:
-    """Update via ZIP archive; used on Windows when git file I/O is broken (antivirus / NTFS filter
-    drivers causing 'Invalid argument'). Swaps the tree, then hands the rest of the run to an
-    interpreter born on the new code (never returns; the child owns the receipt and exit code)."""
+def _update_via_zip(args, *, had_desktop_app_before_update: bool = False,
+                   target_sha: str | None = None, target_repository: str | None = None,
+                   completion_request=None) -> bool:
+    """Update via ZIP when Windows git file I/O fails; dependency/build failures propagate.
+
+    A supplied commit keeps the archive on the target selected before Git failed.
+    """
+    from hermes_cli.update_cmd import _m, _complete_source_update
     if getattr(args, "no_zip_fallback", False):
         from hermes_cli.update_cmd import _finalize_receipt
 
         print("✗ ZIP fallback refused by --no-zip-fallback; the existing code tree is preserved.")
         _finalize_receipt("failed", "Update receipt finalize (ZIP refused) failed: %s")
         raise SystemExit(1)
-    from hermes_cli.update_cmd import _hand_off_post_swap, _m, _read_project_version, _resolve_update_options, _sweep_bytecode_after_update
-    gateway_mode = bool(getattr(args, "gateway", False))
-    opts = _resolve_update_options(args, gateway_mode)
-    # Snapshot before files are replaced, for the completion line.
-    pre_update_version = _read_project_version()
     # The static archive would silently ignore --branch — the exact silent-divergence bug it exists to
     # prevent. Refuse rather than lie.
     branch = _m()._resolve_update_branch(args)
@@ -441,14 +403,22 @@ def _update_via_zip(args, *, had_desktop_app_before_update: bool = False, _windo
         )
         _m().sys.exit(1)
     _abort_zip_update_if_dirty_tree()
-    _download_and_swap_zip(branch, f"https://github.com/NousResearch/hermes-agent/archive/refs/heads/{branch}.zip")
-    _sweep_bytecode_after_update(branch)
-    from dataclasses import replace as _replace
-    _hand_off_post_swap(
-        args, swap="zip", branch=branch, opts=_replace(opts, pre_update_version=pre_update_version),
-        gateway_mode=gateway_mode, had_desktop_app_before_update=had_desktop_app_before_update,
-        _windows_gateway_resume=_windows_gateway_resume)
-    return True  # unreachable: _hand_off_post_swap exits with the child's code
+    # Older callers lack the snapshot/receipt/lifecycle handoff. Refuse before swap.
+    if completion_request is None:
+        from hermes_cli._old_updater import stop_for_relaunch
+        stop_for_relaunch(incomplete=True)
+    if target_sha is not None and not re.fullmatch(r"[0-9a-f]{40}", target_sha):
+        raise ValueError("ZIP update requires an exact full commit SHA")
+    ref = target_sha if target_sha is not None else f"refs/heads/{branch}"
+    repository = target_repository or "NousResearch/hermes-agent"
+    if (not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repository)
+            or any(part in (".", "..") for part in repository.split("/"))):
+        raise ValueError("ZIP update requires a GitHub owner/repository")
+    _download_and_swap_zip(branch, f"https://github.com/{repository}/archive/{ref}.zip")
+    completion_request["expected_sha"] = target_sha
+    completion_request["apply_mode"] = "zip"
+    _complete_source_update(completion_request)
+    return True  # unreachable: completion exits with the child's code
 
 
 def _finish_zip_update(

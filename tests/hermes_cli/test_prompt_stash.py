@@ -26,7 +26,6 @@ from hermes_cli.prompt_stash import (
     resolve_ctrl_s,
 )
 
-
 class _FakeClock:
     """Deterministic monotonic clock for age assertions."""
 
@@ -39,14 +38,11 @@ class _FakeClock:
     def advance(self, secs: float) -> None:
         self.now += secs
 
-
 @pytest.fixture
 def stash():
     return PromptStash(clock=_FakeClock())
 
-
 # --------------------------------------------------------------- no-op cases
-
 
 class TestStashNoOp:
     """An empty or whitespace-only composer must not create a stash entry."""
@@ -59,7 +55,6 @@ class TestStashNoOp:
 
     def test_pop_empty_stash_returns_none(self, stash):
         assert stash.pop() is None
-
 
     def test_open_panel_on_empty_stash_refused(self, stash):
         assert stash.open_panel() is False
@@ -77,9 +72,7 @@ class TestStashNoOp:
         assert len(stash) == 1
         assert stash.peek().preview == "(images only)"
 
-
 # ------------------------------------------------------------- round-tripping
-
 
 class TestRoundTrip:
     """Restore must return the draft byte-for-byte."""
@@ -102,7 +95,6 @@ class TestRoundTrip:
         assert images == []
         # Popping consumed the entry.
         assert len(stash) == 0
-
 
     def test_round_trip_through_resolve_ctrl_s(self, stash):
         """The full gesture: Ctrl+S to park, Ctrl+S on empty to bring back."""
@@ -128,9 +120,7 @@ class TestRoundTrip:
         imgs.append("/tmp/three.png")
         assert restored == ["/tmp/one.png", "/tmp/two.png"]
 
-
 # --------------------------------------------------------------- no clobbering
-
 
 class TestNoSilentClobber:
     """A second Ctrl+S must not destroy the first draft."""
@@ -174,16 +164,13 @@ class TestNoSilentClobber:
             stash.stash(f"d{i}")
         assert len(stash) == MAX_STASH_ITEMS
 
-
 # -------------------------------------------------------------- indicator state
-
 
 class TestIndicatorState:
     def test_empty_stash_has_no_indicator(self, stash):
         assert stash.indicator() == ""
         assert stash.placeholder_hint() == ""
         assert bool(stash) is False
-
 
     def test_count_grows_with_stash(self, stash):
         stash.stash("a")
@@ -192,7 +179,6 @@ class TestIndicatorState:
         assert stash.indicator() == "📌 2"
         stash.stash("c")
         assert stash.indicator() == "📌 3"
-
 
     def test_indicator_clears_after_restoring_last_item(self, stash):
         stash.stash("only")
@@ -205,7 +191,6 @@ class TestIndicatorState:
         assert "Ctrl+S" in hint
         assert "write the migration guide" in hint
 
-
     def test_clear_resets_all_state(self, stash):
         stash.stash("a")
         stash.stash("b")
@@ -216,9 +201,7 @@ class TestIndicatorState:
         assert stash.panel_cursor == 0
         assert stash.indicator() == ""
 
-
 # ----------------------------------------------------------------- previewing
-
 
 class TestBuildPreview:
     def test_empty_text(self):
@@ -245,7 +228,6 @@ class TestBuildPreview:
     def test_whitespace_runs_collapsed(self):
         assert build_preview("a     b\t\tc") == "a b c"
 
-
 class TestStashEntry:
     def test_as_dict_shape_matches_panel_renderer(self, stash):
         stash.stash("draft text")
@@ -271,9 +253,7 @@ class TestStashEntry:
         assert entries[0].stashed_at == 560.0  # newest first
         assert entries[1].stashed_at == 500.0
 
-
 # --------------------------------------------------------------- panel browsing
-
 
 class TestPanelBrowsing:
     @pytest.fixture
@@ -338,14 +318,11 @@ class TestPanelBrowsing:
         assert three.pop(-1) is None
         assert len(three) == 3
 
-
 # ------------------------------------------------------ resolve_ctrl_s table
-
 
 class TestResolveCtrlS:
     def test_empty_buffer_empty_stash_is_noop(self, stash):
         assert resolve_ctrl_s(stash, "") == (ACTION_NOOP, None)
-
 
     def test_content_stashes(self, stash):
         action, payload = resolve_ctrl_s(stash, "some draft")
@@ -380,8 +357,4 @@ class TestResolveCtrlS:
         assert action == ACTION_RESTORED
         assert payload == ("real draft", [])
 
-
-
 # --------------------------------------------------------------------- ages
-
-

@@ -24,6 +24,20 @@ const DEFAULT_PORT_ANNOUNCE_TIMEOUT_MS = 180_000
 // (the historical default) so a malformed override can't reintroduce the loop.
 const MIN_PORT_ANNOUNCE_TIMEOUT_MS = 45_000
 
+// venv_sync emits these banners on stderr before running an owed source-update
+// phase. Dependency completion can be quiet for 19-22 minutes. Only this
+// explicit phase may use the existing absolute 30-minute budget from spawn;
+// repeated banners never move the deadline. Ordinary startup keeps its budget.
+const SOURCE_COMPLETION_BANNER_RE =
+  /hermes: (?:finishing an interrupted source update|completing source-update dependencies)\.\.\./
+
+const SOURCE_COMPLETION_MAX_TOTAL_MS = 30 * 60_000
+
+// A monotonic clock keeps system-clock corrections from extending startup.
+function realNow() {
+  return Number(process.hrtime.bigint() / 1_000_000n)
+}
+
 /**
  * Resolve the port-announcement deadline. Honors the
  * HERMES_DESKTOP_PORT_ANNOUNCE_TIMEOUT_MS env override (for users on slow
@@ -74,8 +88,36 @@ function waitForDashboardPort(
     // healthy backend is killed. Scanning the tail's buffer (and seeding any
     // trailing partial line) makes the listener-attach ordering irrelevant.
     let buf = ''
+    let progressBuf = ''
     let done = false
     let readyFileInterval = null
+    // #122206: the child is finishing an owed source-update completion
+    // (venv_sync banners) before `hermes serve` starts. While that repair is
+    // explicitly in progress the startup deadline becomes the absolute phase cap,
+    // instead of killing a healthy repair mid-run.
+    const startedAt = realNow()
+    let completionInProgress = false
+    let timer
+
+    function completionDeadline() {
+      return completionInProgress ? startedAt + SOURCE_COMPLETION_MAX_TOTAL_MS : null
+    }
+
+    function rearmTimer() {
+      clearTimeout(timer)
+      const deadline = completionDeadline()
+      timer = setTimeout(
+        () => {
+          cleanup()
+          reject(
+            new Error(
+              `Timed out waiting for Hermes backend port announcement (${timeoutMs}ms)${deadline ? ' while an update completion was in progress' : ''}`
+            )
+          )
+        },
+        Math.max(0, (deadline ?? startedAt + timeoutMs) - realNow())
+      )
+    }
 
     function cleanup() {
       if (done) {
@@ -90,6 +132,7 @@ function waitForDashboardPort(
       }
 
       child.stdout.off('data', onData)
+      child.stderr?.off('data', onProgressData)
       child.off('exit', onExit)
       child.off('error', onError)
     }
@@ -109,6 +152,26 @@ function waitForDashboardPort(
 
           return
         }
+
+        // venv_sync's banner is the signal that an owed source-update tail is
+        // running ahead of `hermes serve` (#122206): re-arm the deadline so a
+        // healthy multi-minute repair is not killed and re-run per boot.
+        if (SOURCE_COMPLETION_BANNER_RE.test(line)) {
+          completionInProgress = true
+          rearmTimer()
+        }
+      }
+    }
+
+    function onProgressData(chunk) {
+      // Progress is separate from readiness: a READY-shaped stderr line must
+      // never resolve the port. Retain a bounded suffix for split banners.
+      const progress = progressBuf + chunk.toString()
+      progressBuf = progress.slice(-512)
+
+      if (!completionInProgress && SOURCE_COMPLETION_BANNER_RE.test(progress)) {
+        completionInProgress = true
+        rearmTimer()
       }
     }
 
@@ -135,12 +198,9 @@ function waitForDashboardPort(
       }
     }
 
-    const timer = setTimeout(() => {
-      cleanup()
-      reject(new Error(`Timed out waiting for Hermes backend port announcement (${timeoutMs}ms)`))
-    }, timeoutMs)
-
+    rearmTimer()
     child.stdout.on('data', onData)
+    child.stderr?.on('data', onProgressData)
     child.on('exit', onExit)
     child.on('error', onError)
 
@@ -152,11 +212,18 @@ function waitForDashboardPort(
     // snapshot is empty; any await reintroduced between them makes this the live path again.
     if (!done) {
       const alreadyBuffered = bufferedOutput()
+      // Preserve a partial producer banner across the snapshot/live boundary.
+      progressBuf = alreadyBuffered.slice(-512)
       const m = alreadyBuffered ? alreadyBuffered.match(READY_IN_MERGED_OUTPUT_RE) : null
 
       if (m) {
         cleanup()
         resolve(parseInt(m[1], 10))
+      } else if (alreadyBuffered && SOURCE_COMPLETION_BANNER_RE.test(alreadyBuffered)) {
+        // The repair started before this listener attached (the dormant-gap
+        // path above): seed the banner so the deadline re-arms like a live one.
+        completionInProgress = true
+        rearmTimer()
       }
     }
 

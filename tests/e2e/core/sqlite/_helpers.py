@@ -269,13 +269,18 @@ class Chamber:
                     continue
                 with self._lock:
                     self.deleted_hits.append((name, proc.pid, link))
-        # A closed/reused descriptor or exited child must start a new observation.
+        # A closed/reused descriptor or exited child starts a new observation.
         pending.clear()
         pending.update(still_pending)
 
-    def deleted_hits_snapshot(self) -> list[tuple[str, int, str]]:
+    def deleted_hits_mark(self) -> int:
+        """Position to pass to :meth:`deleted_hits_snapshot` so an episode sees only its own hits."""
         with self._lock:
-            return sorted(set(self.deleted_hits))
+            return len(self.deleted_hits)
+
+    def deleted_hits_snapshot(self, since: int = 0) -> list[tuple[str, int, str]]:
+        with self._lock:
+            return sorted(set(self.deleted_hits[since:]))
 
     # -- reports -------------------------------------------------------------------------------------
     def events(self, name: str) -> list[dict]:

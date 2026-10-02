@@ -26,7 +26,6 @@ import hermes_cli.web_server_lifecycle as _web_server_lifecycle
 
 SLOW_SECONDS = 1  # represents the Defender worst-case (scaled down for CI speed)
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -280,7 +279,6 @@ def test_lifespan_shutdown_joins_statedb_reconcile_worker(monkeypatch):
     assert finished.is_set(), "lifespan shutdown returned before the reconcile worker finished"
     assert not any(t.name == "statedb-eager-reconcile" for t in threading.enumerate())
 
-
 # ---------------------------------------------------------------------------
 # Test 2 — get_status run_in_executor keeps event loop free for other requests
 # ---------------------------------------------------------------------------
@@ -343,7 +341,6 @@ def test_get_status_does_not_block_event_loop():
     assert results.get("status_code") == 200, (
         f"/api/status returned {results.get('status_code')} instead of 200"
     )
-
 
 # ---------------------------------------------------------------------------
 # Test 3 — no orphan accumulation: concurrent probes all receive 200

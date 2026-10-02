@@ -23,7 +23,9 @@ from dataclasses import dataclass, field
 from pathlib import Path, PureWindowsPath
 from typing import Any, Dict, List, Optional, Tuple
 
+from hermes_cli.plugin_validate_core_override import check_core_override
 from hermes_cli.plugin_validate_desktop import check_desktop_surface
+from hermes_cli.plugin_validate_locales import check_language_packs
 from hermes_cli.plugins_manifest import _CONFIG_SCHEMA_TYPES
 
 _UPPER_SNAKE_RE = re.compile(r"^[A-Z][A-Z0-9_]*$")
@@ -354,7 +356,7 @@ def _run_capability_probe(plugin_dir: Path, manifest: dict) -> Tuple[Optional[di
                     json.dumps(_probe_options(manifest)),
                 ],
                 capture_output=True,
-                text=True,
+                text=True, encoding="utf-8", errors="replace",
                 timeout=_PROBE_TIMEOUT,
                 env=env,
             )
@@ -509,11 +511,11 @@ def validate_plugin_dir(plugin_dir: Path) -> ValidationReport:
         )
         return report
 
-    import yaml
+    import hermes_yaml as yaml
 
     try:
         manifest = yaml.safe_load(
-            manifest_file.read_text(encoding="utf-8")
+            manifest_file.read_text(encoding="utf-8-sig")
         )
     except Exception as exc:
         report.add("manifest", False, f"plugin.yaml failed to parse: {exc}")
@@ -527,12 +529,14 @@ def validate_plugin_dir(plugin_dir: Path) -> ValidationReport:
     _check_requires_hermes(report, manifest)
     _check_config_spec(report, manifest)
     _check_requires_env(report, manifest)
-    _check_loadable(report, plugin_dir)
+    _check_loadable(report, plugin_dir, manifest)
     _check_python_dependencies(report, plugin_dir)
     recorded = _check_capabilities(report, manifest, plugin_dir)
     _check_builtin_collisions(report, manifest, recorded)
     _check_security_scan(report, plugin_dir)
+    check_core_override(report, plugin_dir)
     check_desktop_surface(report, plugin_dir)
+    check_language_packs(report, manifest, plugin_dir)
     return report
 
 
@@ -547,7 +551,7 @@ def _dashboard_entrypoint(plugin_dir: Path) -> Optional[str]:
         root.relative_to(plugin_dir.resolve())
         manifest = dashboard / "manifest.json"
         manifest.resolve().relative_to(root)
-        data = json.loads(manifest.read_text(encoding="utf-8"))
+        data = json.loads(manifest.read_text(encoding="utf-8-sig"))
         if not isinstance(data, dict):
             return None
         entry = data.get("entry", "dist/index.js")
@@ -565,20 +569,22 @@ def _dashboard_entrypoint(plugin_dir: Path) -> Optional[str]:
     return None
 
 
-def _check_loadable(report: ValidationReport, plugin_dir: Path) -> None:
+def _check_loadable(report: ValidationReport, plugin_dir: Path, manifest: Optional[dict] = None) -> None:
     """A plugin.yaml with nothing beside it that Hermes can load (no ``register()`` module, no
-    desktop bundle, no portable manifest) installs "successfully" and does nothing — a pip-layout
-    repo whose code lives under ``src/`` behind an entry point is the usual shape."""
+    desktop bundle, no portable manifest, no declared language pack) installs "successfully" and does
+    nothing — a pip-layout repo whose code lives under ``src/`` behind an entry point is the usual shape."""
     present = [rel for rel in _LOADABLE_ENTRYPOINTS if (plugin_dir / rel).is_file()]
     if not present:
         dashboard_entry = _dashboard_entrypoint(plugin_dir)
         if dashboard_entry:
             present.append(dashboard_entry)
+    if (manifest or {}).get("provides_locales") and (plugin_dir / "locales").is_dir():
+        present.append("locales/ (language pack)")
     report.add(
         "loadable", bool(present),
         f"entry: {', '.join(present)}" if present else
-        "nothing to load: no __init__.py, desktop/plugin.js, plugin.json or valid "
-        "dashboard/manifest.json with a contained entry file beside plugin.yaml "
+        "nothing to load: no __init__.py, desktop/plugin.js, plugin.json, contained dashboard entry, "
+        "or declared provides_locales + locales/ beside plugin.yaml "
         "(pip-layout packages need a directory-plugin wrapper with a pyproject.toml declaring the deps)",
     )
 
@@ -587,32 +593,25 @@ def _check_python_dependencies(report: ValidationReport, plugin_dir: Path) -> No
     """Declared deps (pyproject ``[project].dependencies`` or manifest ``python_dependencies``) must be
     well-formed PEP 508 specs the installer will accept; a plugin opting out with
     ``python_runtime: external`` declares none."""
-    from hermes_cli.plugin_python_deps import read_declaration
+    from pm.plugin_declarations import read_python_declaration, unsupported_requirements
 
     try:
-        decl = read_declaration(plugin_dir)
-    except Exception as exc:
+        decl = read_python_declaration(plugin_dir)
+        if decl.external:
+            report.add("python dependencies", True, "external runtime (plugin manages its own)")
+            return
+        urls = unsupported_requirements(decl.requirements)
+        installable = decl.install_requirements
+    except (ValueError, OSError) as exc:
         report.add("python dependencies", False, f"declaration invalid: {exc}")
         return
-    if decl.external:
-        report.add("python dependencies", True, "external runtime (plugin manages its own)")
-        return
-    from hermes_cli.plugin_python_deps import applicable_specs, unsupported_specs
-
-    urls = unsupported_specs(decl.specs)
     if urls:
-        report.warn("python dependencies: direct URL requirement(s) are never auto-installed, users must "
-                    f"install them by hand: {', '.join(urls)}")
-    installable = applicable_specs(decl.specs)
-    rejected = [s for s in installable if not _spec_is_safe(s)]
-    detail = f"{len(installable)} installable from {decl.source}" if decl.source else "none declared"
-    report.add("python dependencies", not rejected,
-               f"unsafe spec(s): {', '.join(rejected)}" if rejected else detail)
+        report.warn("python dependencies: direct URL requirement(s) are not managed by PM; "
+                    f"use a plugin-owned external runtime: {', '.join(urls)}")
+    source = "pyproject" if decl.pyproject is not None else "manifest"
+    detail = f"{len(installable)} requirements from {source}" if decl.requirements else "none declared"
+    report.add("python dependencies", True, detail)
 
-
-def _spec_is_safe(spec: str) -> bool:
-    from tools.lazy_deps import _spec_is_safe as safe
-    return safe(spec)
 
 
 def _check_security_scan(report: ValidationReport, plugin_dir: Path) -> None:

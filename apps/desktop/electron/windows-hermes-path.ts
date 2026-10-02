@@ -1,3 +1,6 @@
+import fs from 'node:fs'
+import path from 'node:path'
+
 /**
  * windows-hermes-path.ts
  *
@@ -6,17 +9,17 @@
  * unwrapWindowsVenvHermesCommand(). Each of the three functions here pins one
  * of the Windows resolution bugs that caused desktop reinstall loops:
  *
- *   1. buildPathExtCandidates() — findOnPath() tried the empty extension
+ *   1. buildPathExtCandidates() â€” findOnPath() tried the empty extension
  *      FIRST, so an extensionless Git-Bash `hermes` shim shadowed the real
  *      hermes.cmd/hermes.exe; the shim then failed the --version probe and
  *      the desktop fell through to a spurious bootstrap/repair. The fix:
  *      PATHEXT extensions first, empty extension LAST.
- *   2. chooseUpdaterArgs() — handOffWindowsBootstrapRecovery() must separate
+ *   2. chooseUpdaterArgs() â€” handOffWindowsBootstrapRecovery() must separate
  *      install provenance from updater viability. A bootstrap-complete marker
  *      can outlive a deleted venv, while the updater needs BOTH the venv Python
  *      and Hermes launcher. Marker-only or partial runtimes must use --repair;
  *      only a runnable pair can use --update.
- *   3. resolveVenvHermesCommand() — unwrapWindowsVenvHermesCommand() returned
+ *   3. resolveVenvHermesCommand() â€” unwrapWindowsVenvHermesCommand() returned
  *      the venv python with NO runtime probe (bypassing the caller's
  *      --version check too), so a venv broken mid-update (e.g. missing
  *      python-dotenv) was re-selected forever: Retry / "Repair install"
@@ -28,9 +31,6 @@
  * mocking Electron or the filesystem, same pattern as backend-probes.ts and
  * backend-command.ts.
  */
-
-import fs from 'node:fs'
-import path from 'node:path'
 
 /**
  * Build the ordered list of extensions findOnPath() should try when
@@ -71,15 +71,11 @@ export function buildPathExtCandidates(pathext: string | undefined, isWindows: b
  * @returns {string[]} updater argv, e.g. ['--update', '--branch', 'main'].
  */
 export interface BootstrapRecoverySignals {
-  hasBootstrapMarker: boolean
-  hasVenvHermes: boolean
-  hasVenvPython: boolean
+  runtimeUsable: boolean
 }
 
 export function chooseUpdaterArgs(signals: BootstrapRecoverySignals, branch: string): string[] {
-  const canRunUpdater = signals.hasVenvHermes && signals.hasVenvPython
-
-  return canRunUpdater ? ['--update', '--branch', branch] : ['--repair', '--branch', branch]
+  return signals.runtimeUsable ? ['--update', '--branch', branch] : ['--repair', '--branch', branch]
 }
 
 /**
@@ -172,15 +168,9 @@ export interface ResolveVenvHermesCommandDeps {
   isCommandScript: (command: string) => boolean
   fileExists: (filePath: string) => boolean
   directoryExists: (filePath: string) => boolean
-  canImportHermesCli: (python: string, opts?: { env?: Record<string, string> }) => Promise<boolean>
+  canImportHermesCli: (python: string, opts?: { env?: Record<string, string>; cwd?: string }) => Promise<boolean>
   getVenvPython: (venvRoot: string) => string
-  getVenvSitePackagesEntries: (venvRoot: string) => string[]
-  buildDesktopBackendEnv: (opts: {
-    hermesHome: string
-    pythonPathEntries: string[]
-    venvRoot: string
-  }) => Record<string, string>
-  hermesHome: string
+  buildDesktopBackendEnv: () => Record<string, string>
   resolvePath: (...segments: string[]) => string
   dirname: (p: string) => string
   basename: (p: string) => string
@@ -190,7 +180,7 @@ export interface ResolveVenvHermesCommandDeps {
 /**
  * If `command` is a Windows venv `hermes`/`hermes.exe` console-script shim
  * (i.e. `<venvRoot>/Scripts/hermes(.exe)`), resolve it to the underlying
- * venv python invoked as `python -m hermes_cli.main <backendArgs>` — but
+ * venv python invoked as `python -m hermes_cli.main <backendArgs>` â€” but
  * ONLY after smoke-testing that interpreter with canImportHermesCli(). A
  * venv whose update died mid-`pip install` still has python.exe + hermes.exe
  * on disk, but the backend dies on its first import (e.g.
@@ -227,9 +217,7 @@ export async function resolveVenvHermesCommand(
     directoryExists,
     canImportHermesCli,
     getVenvPython,
-    getVenvSitePackagesEntries,
     buildDesktopBackendEnv,
-    hermesHome,
     resolvePath,
     dirname,
     basename,
@@ -261,15 +249,9 @@ export async function resolveVenvHermesCommand(
 
   const root = dirname(venvRoot)
 
-  if (
-    !(await canImportHermesCli(python, {
-      env: {
-        PYTHONPATH: [...(directoryExists(root) ? [root] : []), process.env.PYTHONPATH]
-          .filter((entry): entry is string => Boolean(entry))
-          .join(path.delimiter)
-      }
-    }))
-  ) {
+  // Probe with the same semantics the real spawn uses: venv interpreter,
+  // cwd at the checkout root, no PYTHONPATH.
+  if (!(await canImportHermesCli(python, { cwd: directoryExists(root) ? root : undefined }))) {
     rememberLog?.(
       `Ignoring venv Hermes at ${python}: runtime import probe failed (broken/partial venv); falling through to bootstrap.`
     )
@@ -282,11 +264,7 @@ export async function resolveVenvHermesCommand(
     command: python,
     args: ['-m', 'hermes_cli.main', ...backendArgs],
     bootstrap: false,
-    env: buildDesktopBackendEnv({
-      hermesHome,
-      pythonPathEntries: [...(directoryExists(root) ? [root] : []), ...getVenvSitePackagesEntries(venvRoot)],
-      venvRoot
-    }),
+    env: buildDesktopBackendEnv(),
     kind: 'python',
     root,
     shell: false

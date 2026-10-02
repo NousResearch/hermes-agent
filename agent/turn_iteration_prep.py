@@ -17,7 +17,7 @@ from dataclasses import dataclass
 from typing import Any, Dict
 
 from agent.display import KawaiiSpinner
-from agent.interrupt_control import interrupt_issuer
+from agent.interrupt_control import interrupt_issuer, interrupted_during_api_call_reason
 from agent.turn_context_compaction import _reanchor
 from agent.turn_truncation import boosted_output_cap
 
@@ -428,7 +428,7 @@ def apply_retry_restarts(
     ``_preflight_compression_blocked`` so the fallback gets a fresh preflight (#84733).
 
     The two refunding restart paths (redirect and rebuilt-for-fallback) are bounded by
-    ``max_retries`` via ``restart_count`` (a per-turn accumulator) so a runaway
+    ``max_retries`` via ``restart_count`` (restarts since the last response) so a runaway
     interrupt/redirect that keeps re-arming a restart flag cannot refund the budget
     forever and hold the turn lease indefinitely."""
 
@@ -471,10 +471,7 @@ def apply_retry_restarts(
         return _verdict("continue")
 
     if interrupted:
-        _issuer = interrupt_issuer(agent)
-        _turn_exit_reason = (
-            f"interrupted_during_api_call({_issuer})" if _issuer else "interrupted_during_api_call"
-        )
+        _turn_exit_reason = interrupted_during_api_call_reason(agent)
         return _verdict("break")
 
     if _retry.restart_with_compressed_messages:
@@ -542,4 +539,9 @@ def apply_retry_restarts(
         agent._emit_diagnostic_status("❌ The model provider didn't answer after all retries. Send /retry, or switch models with /model.")
         agent._persist_session(messages, conversation_history)
         return _verdict("break")
+    # A response arrived, so the turn is not stuck re-issuing a cancelled request: start
+    # the refunding-restart bound over (restart_count = restarts since the last response).
+    # Counting every mid-turn correction for the whole turn ended healthy interactive
+    # turns on the (max_retries + 1)th message (#128000).
+    restart_count = 0
     return _verdict("fallthrough")

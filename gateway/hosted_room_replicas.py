@@ -355,28 +355,3 @@ def demote_room(
     return {
         "room_id": room_id, "authority_gateway_id": observed_gateway_id, "authority_epoch": observed_epoch,
         "idempotent": False}
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-from pathlib import Path  # noqa: F401,E402
-import time  # noqa: F401,E402
-
-
-_PLUGIN_COMPAT_LAZY = {
-    'MAX_EVENT_JSON_BYTES': ('gateway.hosted_rooms', 'MAX_EVENT_JSON_BYTES'),
-    'MAX_ROOM_ID_CHARS': ('gateway.hosted_rooms', 'MAX_ROOM_ID_CHARS'),
-}
-
-
-def __getattr__(name):  # PEP 562 — lazy so no import cycles
-    target = _PLUGIN_COMPAT_LAZY.get(name)
-    if target is None:
-        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-    import importlib
-    from hermes_cli.plugin_compat import warn_once
-    warn_once(__name__, name, *target)
-    return getattr(importlib.import_module(target[0]), target[1])
-# ---- END PLUGIN-COMPAT ----

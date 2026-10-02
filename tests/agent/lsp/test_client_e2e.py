@@ -152,7 +152,7 @@ async def test_cancelled_start_terminates_spawned_server(tmp_path: Path):
     assert client._proc is None
 
 
-@pytest.mark.linux_only
+@pytest.mark.platforms("linux")
 @pytest.mark.asyncio
 async def test_cancelled_start_hard_kills_sigterm_ignoring_descendant(tmp_path: Path):
     """A launcher exiting on SIGTERM must not let an ignoring server child escape cleanup."""

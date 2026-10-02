@@ -63,7 +63,7 @@ def _load_filter_file_values(path_value: Any) -> list[Any]:
     if path is None:
         return []
     try:
-        raw = path.read_text(encoding="utf-8")
+        raw = path.read_text(encoding="utf-8-sig")
     except OSError as exc:
         logger.warning("[webhook] filter in_file read failed for %s: %s", path, exc)
         return []

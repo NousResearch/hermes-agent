@@ -109,7 +109,7 @@ jobs:
       - name: Upload review status artifact
         if: always() && steps.build-status.outcome != 'skipped'
         continue-on-error: true
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: review-status-review-labels
           path: review-status.json

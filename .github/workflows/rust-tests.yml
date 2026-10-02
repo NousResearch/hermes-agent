@@ -12,8 +12,8 @@ permissions:
   contents: read
 
 concurrency:
-  group: rust-tests-${{ github.ref }}
-  cancel-in-progress: true
+  group: rust-tests-${{ github.ref_type == 'tag' && github.run_id || github.ref }}
+  cancel-in-progress: ${{ github.ref_type != 'tag' }}
 
 jobs:
   bootstrap-installer:
@@ -25,6 +25,7 @@ jobs:
       run:
         working-directory: apps/bootstrap-installer/src-tauri
     steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Install Tauri system dependencies

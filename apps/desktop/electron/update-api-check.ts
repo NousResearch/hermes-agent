@@ -14,8 +14,6 @@
  * unit-testable without booting Electron; the bounded network call is injected.
  */
 
-import { canonicalGitHubRemote } from './update-remote'
-
 export const UPDATE_CHECK_TTL_MS = 24 * 60 * 60 * 1000
 // A failed check (offline, 403 rate-limit) is retried sooner than a good one,
 // but never on every poller tick.
@@ -30,10 +28,27 @@ export interface CachedUpdateCheck {
 
 /** `owner/repo` for any GitHub remote form; null for non-GitHub origins. */
 export function githubRepoSlug(originUrl: string): string | null {
-  const canonical = canonicalGitHubRemote(originUrl)
-  const match = /^github\.com\/([^/]+\/[^/]+)$/.exec(canonical)
+  const remote = originUrl.trim()
+  const scp = /^(?:[^@/:]+@)?github\.com:([^/?#]+\/[^/?#]+)$/i.exec(remote)
+  let slug = scp?.[1]
 
-  return match ? match[1] : null
+  if (!slug) {
+    try {
+      const url = new URL(remote)
+
+      if (url.hostname.toLowerCase() !== 'github.com') {
+        return null
+      }
+
+      slug = url.pathname.replace(/^\/|\/$/g, '')
+    } catch {
+      return null
+    }
+  }
+
+  slug = slug.replace(/\.git$/i, '')
+
+  return /^[^/]+\/[^/]+$/.test(slug) ? slug.toLowerCase() : null
 }
 
 export function branchTipApiUrl(slug: string, branch: string): string {

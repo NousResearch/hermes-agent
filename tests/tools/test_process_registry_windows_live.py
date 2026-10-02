@@ -22,7 +22,8 @@ import time
 
 import pytest
 
-pytestmark = pytest.mark.windows_only
+pytestmark = pytest.mark.platforms('windows')
+pytestmark = pytest.mark.platforms("windows")  # live Windows background-executor E2E
 
 
 @pytest.fixture()
@@ -104,7 +105,6 @@ class TestWindowsSpawnParity:
         assert session.systemd_unit == ""
 
 
-@pytest.mark.windows_only
 def test_pty_close_reports_unsupported_without_injecting_input(registry, tmp_path):
     """Native Windows input stays writable, but unsupported EOF must not write Ctrl-D."""
     code = (
@@ -145,7 +145,6 @@ def test_pty_close_reports_unsupported_without_injecting_input(registry, tmp_pat
             registry.kill_process(session.id)
 
 
-@pytest.mark.windows_only
 @pytest.mark.parametrize("operation", ["poll", "wait", "list_sessions"])
 def test_exited_child_status_does_not_wait_for_inherited_pipe(
     registry, tmp_path, operation
@@ -155,6 +154,16 @@ def test_exited_child_status_does_not_wait_for_inherited_pipe(
     Exercise the actual Windows buffered reader, not a fake pipe or platform.
     Release both fixture processes in finally even when the status call blocks.
     """
+    from hermes_constants import get_hermes_home
+    from hermes_cli.plugins import discover_plugins, get_plugin_manager
+
+    # Completion redaction invokes real output hooks. Warm their scoped discovery
+    # before the pipe timing boundary so plugin imports cannot masquerade as a
+    # BufferedReader lock; the actual transform/redaction path stays enabled.
+    assert get_hermes_home() == tmp_path / "hermes-home"
+    discover_plugins()
+    assert get_plugin_manager().home_path == tmp_path / "hermes-home"
+
     exit_gate = tmp_path / "parent-exit"
     release_gate = tmp_path / "writer-exit"
     writer_code = (

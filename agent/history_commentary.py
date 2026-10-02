@@ -31,7 +31,7 @@ def visible_commentary(text: str, *, strip_thinking=None) -> str:
         strip_thinking = lambda value: strip_think_blocks(None, value)
 
     visible = strip_thinking(text).strip()
-    return redact_sensitive_text(visible) if visible else visible
+    return redact_sensitive_text(visible, vault_prose=True) if visible else visible
 
 
 def _phase_message_items(message: dict, phases: frozenset[str | None]) -> list[str]:

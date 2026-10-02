@@ -79,6 +79,7 @@ def _observer(path: Path):
         chamber.mode = "wal"
         chamber.procs = {"owned-fd-child": proc}
         chamber._lock = threading.Lock()
+        chamber._monitor_stop = threading.Event()
         chamber.deleted_hits = []
         yield chamber, proc
     finally:

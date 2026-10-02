@@ -30,6 +30,13 @@ vi.mock('@/components/ui/button', () => ({
 vi.mock('@/components/page-loader', () => ({
   PageLoader: () => <span>Loading</span>
 }))
+it('keeps the body usable when frontmatter is malformed or absent', async () => {
+  getContent.mockResolvedValue({ content: '---\nrelated_skills: [\n---\nReadable body' })
+  render(<QueryClientProvider client={new QueryClient()}><SkillDetail skill={{ name: 'bad', category: '', description: '', enabled: true }} skills={[]} onSelectSkill={vi.fn()} onEdit={vi.fn()} onArchive={vi.fn()} /></QueryClientProvider>)
+  await screen.findByText('Readable body')
+  expect(screen.queryByText('Related skills')).toBeNull()
+})
+
 afterEach(() => {
   cleanup()
   vi.clearAllMocks()

@@ -205,6 +205,18 @@ def _ocr_scanned_pdf(mod: Any, path: str, exc: BaseException) -> str:
             return mod.to_markdown(path, ocr="hosted", **extra).rstrip("\n") + "\n"
         except Exception as hosted_exc:  # noqa: BLE001
             hosted_error = f"{type(hosted_exc).__name__}: {hosted_exc}"
+    # anydoc can misclassify PDFs whose text layer uses a producer-specific font
+    # encoding. Verify its whole-document verdict with the same pdftotext probe
+    # used for partial scan coverage before falling back to OCR guidance.
+    page_texts = _pdf_page_texts(path)
+    if page_texts:
+        meaningful = [page for page in page_texts if len(page.strip()) >= PDF_EMPTY_PAGE_CHARS]
+        if meaningful and len(meaningful) / len(page_texts) >= PDF_COVERAGE_MIN_RATIO:
+            return (
+                _pdf_coverage_note(path)
+                + "\f".join(page_texts).rstrip("\n")
+                + "\n"
+            )
     return _needs_ocr_warning(path, pages, hosted_error)  # whole doc is scans: the warning IS it
 
 

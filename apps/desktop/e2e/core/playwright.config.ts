@@ -1,3 +1,4 @@
+import '../run-tmp'
 import '../fix-electron-tracing'
 
 import { defineConfig } from '@playwright/test'

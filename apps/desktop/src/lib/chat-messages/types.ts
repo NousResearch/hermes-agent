@@ -49,6 +49,8 @@ export type ChatMessage = {
    *  action footer so only the turn's final reply carries copy/refresh, and
    *  the live view matches rehydration (which merges the turn into one bubble). */
   interim?: boolean
+  /** The user stopped this reply before it finished; its text is partial. */
+  interrupted?: boolean
   /** Locally recovered output not yet represented by a durable completed reply. */
   recovered?: boolean
   /** Whether hydration reached a final assistant source row, rather than a tool round. */
@@ -101,6 +103,10 @@ export type GatewayEventPayload = {
   result?: unknown
   summary?: string
   error?: string | boolean
+  // error — the gateway's machine-readable cause, when it has one (currently
+  // "provider_not_configured" from a failed agent init). Absent on older
+  // gateways; consumers must fall back to string heuristics.
+  code?: string
   // message.complete with status "error" — structured {layer, code, retryable}
   // descriptor naming which stack layer failed (agent/error_surface.py).
   // Absent on older gateways; consumers must fall back to string heuristics.
@@ -134,10 +140,6 @@ export type GatewayEventPayload = {
   question?: string
   // btw.complete / background.complete — id of the side/background task
   task_id?: string
-  choices?: string[] | null
-  multi_select?: boolean
-  // clarify.request batch form: questions replaces question/choices, and
-  // answers (qid → locked answer) rides along on reconnect replay only.
   questions?: unknown
   answers?: Record<string, unknown>
   // connection request (manage_connections MCP targets — inline approval card)

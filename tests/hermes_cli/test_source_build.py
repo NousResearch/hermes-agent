@@ -1,6 +1,6 @@
 """Source orchestration uses real node-deps/npm in an isolated checkout.
 
-Only PM's tool acquisition is substituted with the host's node/npm. Small
+Only PM's tool acquisition (and its installed-node record) is substituted with the host's node/npm. Small
 workspace scripts stand in for the expensive UI compilers; subprocess failures,
 locked dependency selection, environment propagation and publication are real.
 """
@@ -12,11 +12,19 @@ from pathlib import Path
 import shutil
 import subprocess
 import sys
+from types import SimpleNamespace
 
 import pytest
 
 import pm
 from pm.package import Runner
+
+
+def use_host_node_as_pm_node(monkeypatch):
+    """Freshness reads run only under PM's recorded Node; stand the host's node in for it."""
+    node, real = Path(shutil.which("node")), pm.installed_package
+    monkeypatch.setattr(pm, "installed_package", lambda name, **kwargs: (
+        SimpleNamespace(binary=node) if name == "node" else real(name, **kwargs)))
 
 
 def copy_freshness_scripts(root):
@@ -108,6 +116,7 @@ def source_checkout(tmp_path, monkeypatch):
             [str(Path(npm).parent), str(Path(node).parent), os.environ["PATH"]])})
 
     monkeypatch.setattr(pm, "ensure", acquire)
+    use_host_node_as_pm_node(monkeypatch)
     root = tmp_path / "source with spaces"
     root.mkdir()
     workspaces = ["ui-tui", "web", "apps/desktop", "unrelated"]
@@ -264,6 +273,27 @@ def test_update_builds_selected_products_after_one_union_preparation(source_prod
     assert not (root / "node_modules/unrelated").exists()
     assert app.read_text() == ("desktop" if desktop else "previous app")
     assert not list((root / "apps/desktop").glob(".staging-*"))
+
+
+@pytest.mark.platforms("linux")
+def test_update_recompiles_only_products_whose_inputs_changed(source_products):
+    from hermes_cli.source_build import build_update_products
+
+    root, _ = source_products
+
+    def products():
+        return [event["step"] for event in _events(root) if event["step"] != "deps"]
+
+    build_update_products(root, desktop=True)
+    (root / "events.jsonl").unlink()
+    build_update_products(root, desktop=True)
+    assert products() == ["desktop"]
+
+    (root / "events.jsonl").unlink()
+    (root / "web/src").mkdir(parents=True, exist_ok=True)
+    (root / "web/src/changed.ts").write_text("export {}\n", encoding="utf-8")
+    build_update_products(root, desktop=False)
+    assert products() == ["web"]
 
 
 @pytest.mark.platforms("linux")

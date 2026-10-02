@@ -1,6 +1,8 @@
 import { skillInvocationText } from '@hermes/shared'
 
+import { splitLeadingAttachmentRefs } from '@/components/assistant-ui/reference-kinds'
 import { extractImageRefs } from '@/lib/embedded-images'
+import { parseErrorSurface } from '@/lib/error-surface'
 import { dedupeGeneratedImageEchoesInParts } from '@/lib/generated-images'
 import { isTodoToolName } from '@/lib/todos'
 import type { MessageReaction, SessionMessage } from '@/types/hermes'
@@ -10,6 +12,7 @@ import {
   chatMessageText,
   dedupeRepeatedTextInParts,
   reasoningPart,
+  reasoningTextFromDetails,
   renderMediaTags,
   textPart
 } from './parts'
@@ -188,6 +191,23 @@ function parseDisplayMetadata(metadata: SessionMessage['display_metadata']): nul
   return parsed && typeof parsed === 'object' ? (parsed as Record<string, unknown>) : null
 }
 
+// `agent/conversation_loop.py::_failed_turn_display_metadata`: the failed turn's error card,
+// kept on its boundary row so a reopened session shows it after the live frame is gone.
+function failedTurnError(
+  metadata: SessionMessage['display_metadata']
+): null | Pick<ChatMessage, 'error' | 'errorSurface'> {
+  const parsed = parseDisplayMetadata(metadata)
+  const errorSurface = parseErrorSurface(parsed?.error_surface)
+
+  if (!errorSurface) {
+    return null
+  }
+
+  const error = typeof parsed?.error === 'string' && parsed.error.trim() ? parsed.error : errorSurface.code
+
+  return { error, errorSurface }
+}
+
 function timelineTaskCount(metadata: SessionMessage['display_metadata']): number | undefined {
   const count = parseDisplayMetadata(metadata)?.task_count
 
@@ -198,6 +218,10 @@ function timelineDisplayText(metadata: SessionMessage['display_metadata']): stri
   const text = parseDisplayMetadata(metadata)?.display_text
 
   return typeof text === 'string' && text.trim() ? text : undefined
+}
+
+function messageInterrupted(metadata: SessionMessage['display_metadata']): boolean {
+  return parseDisplayMetadata(metadata)?.interrupted === true
 }
 
 function messageReactions(metadata: SessionMessage['display_metadata']): MessageReaction[] {
@@ -434,10 +458,13 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
     // thumbnail pushes any caption text below the clamp's visible area — so
     // pull image refs out into `attachmentRefs` (same shape the local
     // optimistic composer already uses) and render them via the dedicated
-    // attachments row below the bubble instead.
+    // attachments row below the bubble instead. The leading `@file:` block
+    // (attached files, large pastes) moves there too, for the same parity.
     const imageRefExtraction = displayRole === 'user' && rawDisplayContent ? extractImageRefs(rawDisplayContent) : null
-    const displayContent = imageRefExtraction ? imageRefExtraction.cleanedText : rawDisplayContent
-    const extractedAttachmentRefs = imageRefExtraction?.refs.length ? imageRefExtraction.refs : undefined
+    const fileRefExtraction = imageRefExtraction ? splitLeadingAttachmentRefs(imageRefExtraction.cleanedText) : null
+    const displayContent = fileRefExtraction ? fileRefExtraction.text : rawDisplayContent
+    const liftedRefs = [...(fileRefExtraction?.refs ?? []), ...(imageRefExtraction?.refs ?? [])]
+    const extractedAttachmentRefs = liftedRefs.length ? liftedRefs : undefined
 
     const parts: ChatMessagePart[] = []
     const rowId = message.row_id ?? (typeof message.id === 'number' ? message.id : undefined)
@@ -450,9 +477,7 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
     const commentary = codexText?.commentary ?? []
 
     const rawReasoning =
-      message.reasoning ||
-      message.reasoning_content ||
-      (typeof message.reasoning_details === 'string' ? message.reasoning_details : '')
+      message.reasoning || message.reasoning_content || reasoningTextFromDetails(message.reasoning_details)
 
     const reasoning = message.display_reasoning !== undefined ? message.display_reasoning : rawReasoning
 
@@ -552,6 +577,21 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
       flushPendingTools(index)
     }
 
+    const failure = message.display_kind === 'failed_turn' ? failedTurnError(message.display_metadata) : null
+
+    if (failure) {
+      // Stands for no backend row of its own; the boundary row below counts itself.
+      result.push({
+        id: `${message.timestamp || Date.now()}-${index}-failed-turn-error`,
+        role: 'assistant',
+        parts: [],
+        pending: false,
+        serverRowSpan: 0,
+        ...failure,
+        ...(message.timestamp ? { timestamp: message.timestamp } : {})
+      })
+    }
+
     const reactions = messageReactions(message.display_metadata)
     // Gateway resume names the durable row id `row_id`; the REST transcript
     // prefetch ships the same messages.id as a numeric `id`. Either one lets
@@ -570,6 +610,7 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
       ...(rowId !== undefined ? { rowId } : {}),
       ...(pendingAbsorbedRows > 0 ? { serverRowSpan: pendingAbsorbedRows + 1 } : {}),
       ...(reactions.length ? { reactions } : {}),
+      ...(message.role === 'assistant' && messageInterrupted(message.display_metadata) ? { interrupted: true } : {}),
       ...(extractedAttachmentRefs ? { attachmentRefs: extractedAttachmentRefs } : {})
     })
 
@@ -585,7 +626,8 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
 
   return withUniqueToolCallIds(
     withoutGeneratedImageEchoes.filter(
-      m => chatMessageText(m).trim() || m.parts.some(part => part.type !== 'text') || m.attachmentRefs?.length
+      m =>
+        chatMessageText(m).trim() || m.parts.some(part => part.type !== 'text') || m.attachmentRefs?.length || m.error
     )
   )
 }

@@ -15,42 +15,48 @@ from .method_ctx import bind_module
 # Child-session live mirror: a delegated child's activity reaches the gateway only as
 # relayed ``subagent.*`` events on the PARENT sid; translate them into native stream
 # events on the CHILD sid (write_json routes by sid) so its own window is not silent.
-_child_mirrors: dict[str, dict] = {}
+# Both dicts are keyed on (profile_home, child key): stored ids are timestamps that exist in
+# several profiles' stores, and a child runs under its PARENT's profile — a bare-key hit let
+# profile B's lazy resume bind to A's in-flight run and receive its mirror (#120212).
+_child_mirrors: dict[tuple[str | None, str], dict] = {}
 _child_mirrors_lock = threading.Lock()
 # Child sids with a run in flight (refreshed per relayed event, popped on complete) so a
 # lazy watch resume reports running=true during a silent long tool.
-_active_child_runs: dict[str, float] = {}
+_active_child_runs: dict[tuple[str | None, str], float] = {}
 # Anything quiet this long lost its completion event — don't pin "running".
 _CHILD_RUN_STALE_S = 3600.0
 _CHILD_DELTA_EVENTS = {"subagent.thinking": "reasoning.delta", "subagent.text": "message.delta",
                        "subagent.start": "message.delta"}
 
 
-def _child_run_active(child_key: str) -> bool:
-    ts = _active_child_runs.get(child_key)
+def _child_run_active(child_key: str, profile_home) -> bool:
+    """``profile_home`` is the caller's resolved home (Path / str / None = launch profile), never omitted."""
+    ts = _active_child_runs.get((str(profile_home) if profile_home else None, child_key))
     return ts is not None and (time.time() - ts) < _CHILD_RUN_STALE_S
 
 
-def _mirror_subagent_to_child(event_type: str, payload: dict) -> None:
+def _mirror_subagent_to_child(event_type: str, payload: dict, profile_home) -> None:
     child_key = str(payload.get("child_session_id") or "")
     if not child_key:
         return
+    key = (str(profile_home) if profile_home else None, child_key)
     # Liveness registry first: accurate with no window open (one opened mid-run knows busy).
     if event_type == "subagent.complete":
-        _active_child_runs.pop(child_key, None)
+        _active_child_runs.pop(key, None)
     else:
-        _active_child_runs[child_key] = time.time()
-    # Mirror only into a live watch session NOT upgraded to a full agent (an upgraded one owns
-    # a real native stream). Either way drop state so a reopened window starts fresh.
-    live = _find_live_session_by_key(child_key)
+        _active_child_runs[key] = time.time()
+    # Mirror only into a live watch session of the OWNING profile that is NOT upgraded to a full
+    # agent (an upgraded one owns a real native stream). Either way drop state so a reopened
+    # window starts fresh.
+    live = _find_live_session_by_key(child_key, key[0])
     if live is None or live[1].get("agent") is not None:
         with _child_mirrors_lock:
-            _child_mirrors.pop(child_key, None)
+            _child_mirrors.pop(key, None)
         return
     csid = live[0]
     text = str(payload.get("text") or "")
     with _child_mirrors_lock:
-        st = _child_mirrors.setdefault(child_key, {"seq": 0, "open_tool": None, "started": False})
+        st = _child_mirrors.setdefault(key, {"seq": 0, "open_tool": None, "started": False})
         if not st["started"]:
             st["started"] = True
             _emit("message.start", csid)
@@ -67,7 +73,7 @@ def _mirror_subagent_to_child(event_type: str, payload: dict) -> None:
         if st["open_tool"]:
             open_tool = st["open_tool"]
             st["open_tool"] = None
-            if _process_tool_chrome_enabled(csid) or _tool_lifecycle_required_for_ui(str(open_tool.get("name") or "")):
+            if _tool_progress_enabled(csid) or _tool_lifecycle_required_for_ui(str(open_tool.get("name") or "")):
                 _emit("tool.complete", csid, open_tool)
         if event_type == "subagent.tool":
             st["seq"] += 1
@@ -76,14 +82,14 @@ def _mirror_subagent_to_child(event_type: str, payload: dict) -> None:
                     "tool_id": f"submirror:{child_key}:{st['seq']}", "args": {}}
             if preview := str(payload.get("tool_preview") or payload.get("text") or ""):
                 tool["preview"] = preview
-            if not _process_tool_chrome_enabled(csid) and not _tool_lifecycle_required_for_ui(tool_name):
+            if not _tool_progress_enabled(csid) and not _tool_lifecycle_required_for_ui(tool_name):
                 return
             st["open_tool"] = tool
             _emit("tool.start", csid, tool)
         else:
             summary = str(payload.get("summary") or payload.get("text") or "")
             _emit("message.complete", csid, {"text": summary})
-            _child_mirrors.pop(child_key, None)
+            _child_mirrors.pop(key, None)
 
 
 def _agent_presentation_enabled(sid: str, *, diagnostic: bool) -> bool:
@@ -147,7 +153,7 @@ def _agent_cbs(sid: str) -> dict:
             sid, tc_id, name, args, result),
         "tool_progress_callback": lambda event_type, name=None, preview=None, args=None, **kwargs: _on_tool_progress(
             sid, event_type, name, preview, args, **kwargs),
-        "tool_gen_callback": lambda name: _process_tool_chrome_enabled(sid) and _emit("tool.generating", sid, {"name": name}),
+        "tool_gen_callback": lambda name: _tool_progress_enabled(sid) and _emit("tool.generating", sid, {"name": name}),
         "thinking_callback": lambda text: _agent_thinking_update(sid, text),
         # Affection reaction (ily / <3 / good bot) → hearts; core-detected so TUI/desktop share it.
         "reaction_callback": lambda kind: _emit("reaction", sid, {"kind": kind}),
@@ -156,12 +162,13 @@ def _agent_cbs(sid: str) -> dict:
         # Credits/notice spine: AgentNotice → notification.show; recovery → notification.clear.
         "notice_callback": lambda n: _agent_notice_update(sid, n),
         "notice_clear_callback": lambda key: _emit("notification.clear", sid, {"key": key}),
-        "clarify_callback": lambda q, c, multi_select=False, questions=None: (
-            _clarify_block(sid, q, c, multi_select=multi_select, questions=questions)),
+        "clarify_callback": lambda questions: _clarify_block(sid, questions),
         "read_terminal_callback": _read_block("terminal.read", 30),
         "read_preview_callback": _read_block("preview.read", 45),
         # drive_preview / annotate_preview (desktop GUI): same budget as the preview read it ends with.
-        "drive_preview_callback": lambda payload: _ask("preview.act", sid, dict(payload), timeout=45),
+        # The probe ladder lives in server.py (_preview_action_request) so an
+        # absent renderer fails fast instead of burning 45s per action (#94272).
+        "drive_preview_callback": lambda payload: _preview_action_request(sid, dict(payload)),
         # read_window_below (desktop GUI): main process enumerates native windows.
         "read_window_below_callback": lambda: _ask("window.read", sid, {}, timeout=30),
         # manage_connections card. Fire-and-forget: the tool thread waits on its own operation
@@ -538,6 +545,15 @@ def _rebuild_session_agent(sid: str, session: dict, **kwargs):
         config_model_seen = _config_model_target()
         if opened:
             session_db = _open_profile_session_db(profile_home)
+        # A rebuild is not a conversation boundary (/new pops the pins before calling us): carry the
+        # session's /model, /reasoning and /fast picks, else config_model_seen below hides the
+        # reversion from the per-turn sync.
+        if "model_override" not in kwargs and isinstance(session.get("model_override"), dict):
+            kwargs["model_override"] = session["model_override"]
+        for pin, kwarg in (("create_reasoning_override", "reasoning_config_override"),
+                           ("create_service_tier_override", "service_tier_override")):
+            if kwarg not in kwargs and session.get(pin) is not None:
+                kwargs[kwarg] = session[pin]
         agent = _make_agent(sid, session["session_key"], session_db=session_db, **kwargs)
     except BaseException:
         if opened and session_db is not None:
@@ -550,14 +566,26 @@ def _rebuild_session_agent(sid: str, session: dict, **kwargs):
     # Only a DEDICATED handle carries ownership; the shared launch handle outlives every agent and
     # _transfer_db_to_agent refuses it.
     with _sessions_lock:
-        session.update(agent=agent, config_model_seen=config_model_seen)
-        owned = opened or bool(getattr(old_agent, "_owns_session_db", False))
-        if owned and _transfer_db_to_agent(agent, session_db):
-            if old_agent is not None:
-                old_agent._owns_session_db = False
-        elif opened:
+        # session.close claimed this record (``_pop_session_by_id``) while _make_agent ran: its teardown
+        # already closed the agent it saw, so one installed now is never closed (#49852).
+        closed_midbuild = bool(session.get("_closing"))
+        if not closed_midbuild:
+            session.update(agent=agent, config_model_seen=config_model_seen)
+            owned = opened or bool(getattr(old_agent, "_owns_session_db", False))
+            if owned and _transfer_db_to_agent(agent, session_db):
+                if old_agent is not None:
+                    old_agent._owns_session_db = False
+            elif opened:
+                with contextlib.suppress(Exception):
+                    session_db.close()
+    if closed_midbuild:
+        with contextlib.suppress(Exception), _session_profile_runtime_scope(session):
+            if hasattr(agent, "close"):
+                agent.close()
+        if opened:
             with contextlib.suppress(Exception):
                 session_db.close()
+        raise RuntimeError("session was closed while its agent was being rebuilt")
     return agent
 
 

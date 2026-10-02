@@ -954,7 +954,8 @@ class TestSendEmailStandalone(unittest.TestCase):
             _, kwargs = mock_server.starttls.call_args
             self.assertIsInstance(kwargs["context"], ssl.SSLContext)
             send_call = mock_server.send_message.call_args[0][0]
-            self.assertEqual(send_call["Subject"], "Hermes Agent")
+            from agent.i18n import t
+            self.assertEqual(send_call["Subject"], t("platform.email.standalone_subject"))
             self.assertIn("Date", send_call)
             self.assertEqual(send_call["To"], "user@test.com")
             self.assertEqual(send_call["From"], "hermes@test.com")
@@ -1297,6 +1298,29 @@ class TestSenderAuthentication(unittest.TestCase):
             authserv_id="mx.ourserver.com",
         )
         self.assertFalse(ok, reason)
+
+
+def test_oversized_cron_output_is_delivered_as_one_whole_email():
+    """No 4000-char truncation footer pointing at a file on the gateway host: the router hands
+    the whole cron payload to the email adapter, which sends it as a single message."""
+    import asyncio
+    from gateway.config import GatewayConfig, PlatformConfig
+    from gateway.delivery import DeliveryRouter
+
+    with patch.dict(os.environ, {"EMAIL_ADDRESS": "hermes@test.com", "EMAIL_PASSWORD": "secret",
+                                 "EMAIL_IMAP_HOST": "imap.test.com", "EMAIL_SMTP_HOST": "smtp.test.com"}):
+        from plugins.platforms.email.adapter import EmailAdapter
+        adapter = EmailAdapter(PlatformConfig(enabled=True))
+    sent = []
+    smtp = MagicMock()
+    smtp.send_message.side_effect = lambda msg: sent.append(msg.get_payload()[0].get_payload(decode=True).decode())
+    adapter._connect_smtp = lambda: smtp
+    content = "\n\n".join(f"line {i} " + "x" * 200 for i in range(60))
+    payload = DeliveryRouter(GatewayConfig())._cap_oversized_output(adapter, content, "job")
+    result = asyncio.run(adapter.send("user@test.com", payload))
+
+    assert result.success
+    assert sent == [content]
 
 
 if __name__ == "__main__":

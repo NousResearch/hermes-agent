@@ -1,7 +1,3 @@
-"""Onboarding JSON-RPC handlers: the backend owns the setup profile (``hermes_cli.setup_profile``).
-Bodies are rebound onto server.py's globals (method_ctx.bind_module) and reference them bare.
-"""
-
 from .method_ctx import HandlerRegistry, bind_module
 
 _registry = HandlerRegistry()
@@ -10,13 +6,10 @@ method = _registry.method
 
 @method("onboarding.ensure_setup_profile")
 def _(rid, params: dict) -> dict:
-    """Create-or-read the setup profile. Takes no name: the backend picks it and finds it by role."""
     from hermes_cli.setup_profile import ensure_setup_profile
     try:
         setup = ensure_setup_profile()
         if setup.created:
-            # Same credential mirroring profiles.create gives the desktop's clones; auth.json stays
-            # shared with the root so a token refresh never forks.
             _mirror_launch_credentials(setup.path, {"share_auth": True})
     except Exception as e:
         return _err(rid, 5073, str(e))
@@ -25,7 +18,6 @@ def _(rid, params: dict) -> dict:
 
 @method("onboarding.reset_setup_profile")
 def _(rid, params: dict) -> dict:
-    """Restore the setup profile to its created state in place; clears its session history."""
     from hermes_cli.setup_profile import find_setup_profile, reset_setup_profile
     found = find_setup_profile()
     if found is None:
@@ -39,7 +31,6 @@ def _(rid, params: dict) -> dict:
 
 
 def _clear_setup_sessions(profile_dir) -> None:
-    """Close this process's live sessions in the setup profile, then delete its stored sessions."""
     target = Path(profile_dir).resolve()
     with _sessions_lock:
         live = [sid for sid, sess in _sessions.items()

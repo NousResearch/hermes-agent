@@ -11,7 +11,6 @@ from contextlib import contextmanager, suppress
 import logging
 import os
 import signal
-import subprocess
 import time
 from pathlib import Path
 
@@ -27,17 +26,11 @@ def _detect_gpu_vendor() -> str | None:
     """Best-effort GPU vendor for backend selection. NVIDIA via nvidia-smi resolved by the hardware
     probe's PATH-independent ladder (a stripped service PATH must not demote an NVIDIA box to
     vulkan/cpu); anything else defers to select_backend's fallback ladder."""
-    from hermes_cli.local_runtime.hardware import _nvidia_smi_path
+    from hermes_cli.local_runtime.hardware import _cached_nvidia_gpu_query
 
-    smi = _nvidia_smi_path()
-    if smi is None:
-        return None
-    with suppress(OSError, subprocess.TimeoutExpired):
-        out = subprocess.run(
-            [smi, "--query-gpu=name", "--format=csv,noheader"],
-            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10)
-        if out.returncode == 0 and out.stdout.strip():
-            return "nvidia " + out.stdout.strip().splitlines()[0]
+    query = _cached_nvidia_gpu_query()
+    if query is not None and query.get("gpu_name"):
+        return "nvidia " + query["gpu_name"]
     return None
 
 
@@ -215,6 +208,9 @@ def _generate_presets(mdir: Path, preset_path: Path) -> Path | None:
     still hold the card (restart, refresh after a download), and its memory is freed before the new
     instance loads anything. Pricing against live-free once pinned a fitting model's weights to CPU.
 
+    The window is then narrowed to what fits beside other programs' GPU memory
+    (``hardware.launch_budget``), which never moves weights to the CPU.
+
     Degradation ladder on failure: a STALE policy still beats no policy — stock fit (f16 KV at max
     context, no placement) is the silent-busy-wait failure on Windows. Keep serving with the
     previous INI when one exists; only a first boot with no INI at all falls to stock fit.
@@ -223,7 +219,8 @@ def _generate_presets(mdir: Path, preset_path: Path) -> Path | None:
     from hermes_cli.local_runtime.presets import generate_presets
 
     try:
-        for entry in generate_presets(mdir, probe_budget(planning=True), preset_path):
+        capacity = probe_budget(planning=True)
+        for entry in generate_presets(mdir, capacity, preset_path, live=_launch_budget(capacity)):
             if entry.refusal:
                 logger.warning("model refused by physics check: %s", entry.refusal)
         return preset_path
@@ -237,6 +234,71 @@ def _generate_presets(mdir: Path, preset_path: Path) -> Path | None:
         logger.error("preset generation failed (%s) and no previous "
                      "policy file exists; router runs stock fit", exc)
         return None
+
+
+def _launch_budget(capacity, own_bytes: int = 0):
+    """``hardware.launch_budget``, or None when the probe fails: a boot never waits on it."""
+    from hermes_cli.local_runtime.hardware import launch_budget
+
+    try:
+        return launch_budget(capacity, own_bytes=own_bytes)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("free GPU memory probe failed (%s); launch windows use capacity", exc)
+        return None
+
+
+# Router statuses that hold GPU memory. The preset file changes only while every model is out of
+# them: the router unloads a loaded model whose launch flags change on reload.
+_HOLDS_MEMORY = frozenset({"loaded", "loading", "sleeping", "ready"})
+
+
+def refit_idle_presets(sup) -> bool:
+    """Re-plan launch windows against free GPU memory while no model is loaded.
+
+    Boot plans every window once, but models load later (on demand, after an idle unload), and by
+    then other programs may hold more or less of the card. Returns True when the router was given
+    new presets. A request that starts a load between the last status check and the reload is
+    unloaded by the router and fails once; that gap is a few milliseconds, and only when a window
+    changes.
+    """
+    from hermes_cli.local_runtime.hardware import probe_budget
+    from hermes_cli.local_runtime.presets import plan_presets, render_presets
+
+    path = sup.preset_path
+    if path is None or not path.exists() or _any_holds_memory(sup):
+        return False
+    capacity = probe_budget(planning=True)
+    live = _launch_budget(capacity)
+    if live is None:
+        return False
+    last = sup._refit_usable
+    if last is not None and abs(live.usable_vram_bytes - last) < _REFIT_STEP_BYTES:
+        return False
+    text = render_presets(plan_presets(models_dir(), capacity, live=live))
+    # Held across the write and the reload so a restart can't spawn between them; everything
+    # slow ran above.
+    with sup._lifecycle_lock:
+        if sup.proc is None or sup.proc.poll() is not None or _any_holds_memory(sup):
+            return False
+        sup._refit_usable = live.usable_vram_bytes
+        if text == path.read_text(encoding="utf-8-sig"):
+            return False
+        from utils import atomic_write_text
+
+        atomic_write_text(path, text, tmp_prefix=f".{path.name}_", mode=0o600)
+        sup.reload_presets()
+    logger.info("launch windows re-planned for %.1f GiB of free GPU memory",
+                live.usable_vram_bytes / (1 << 30))
+    return True
+
+
+# Smaller changes in free memory don't move a window by a ladder rung; skipping them keeps the
+# idle loop from re-reading every model header each pass.
+_REFIT_STEP_BYTES = 256 << 20
+
+
+def _any_holds_memory(sup) -> bool:
+    return any(status in _HOLDS_MEMORY for status in sup.models(timeout_s=5).values())
 
 
 def _try_lock_boot_fd(fd: int) -> bool:
@@ -397,39 +459,29 @@ def get_supervisor():
     return _SUPERVISOR
 
 
+_SWEEP_EVERY_S = 120
+_REFIT_EVERY_S = 30
+
+
 def _start_idle_sweeper(sup) -> None:
     """Idle-residency loop: every couple of minutes, unload models idle past the supervisor's
-    threshold. Daemon thread tied to the supervisor's lifetime — exits when the server stops."""
+    threshold; every 30 s with nothing loaded, re-plan launch windows against free GPU memory.
+    Daemon thread tied to the supervisor's lifetime — exits when the server stops."""
     import threading
 
     def _loop():
+        last_sweep = time.monotonic()
         while sup.proc is not None and sup.proc.poll() is None:
-            time.sleep(120)
+            time.sleep(_REFIT_EVERY_S)
+            if time.monotonic() - last_sweep >= _SWEEP_EVERY_S:
+                last_sweep = time.monotonic()
+                try:
+                    sup.sweep_idle()
+                except Exception as exc:  # noqa: BLE001
+                    logger.debug("idle sweep skipped: %s", exc)
             try:
-                sup.sweep_idle()
+                refit_idle_presets(sup)
             except Exception as exc:  # noqa: BLE001
-                logger.debug("idle sweep skipped: %s", exc)
+                logger.debug("launch window re-plan skipped: %s", exc)
 
     threading.Thread(target=_loop, daemon=True, name="local-runtime-idle-sweep").start()
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-
-
-_PLUGIN_COMPAT_LAZY = {
-    'get_hermes_home': ('hermes_constants', 'get_hermes_home'),
-}
-
-
-def __getattr__(name):  # PEP 562 — lazy so no import cycles
-    target = _PLUGIN_COMPAT_LAZY.get(name)
-    if target is None:
-        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-    import importlib
-    from hermes_cli.plugin_compat import warn_once
-    warn_once(__name__, name, *target)
-    return getattr(importlib.import_module(target[0]), target[1])
-# ---- END PLUGIN-COMPAT ----

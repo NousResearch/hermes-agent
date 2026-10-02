@@ -68,7 +68,8 @@ class SetupReadyPayload(OpenPayload):
 
     provider_configured: bool
     inference_provider: str
-    free_tier: bool
+    free_tier_account: bool
+    free_tier_route: bool
     has_identity: bool
     other_providers: bool
     error: str = ""
@@ -394,6 +395,26 @@ class SessionReclaimedPayload(Payload):
 
 
 event("session.reclaimed", SessionReclaimedPayload, doc="The backend reclaimed a live session out from under its clients.")
+
+
+class ApprovalCancelledPayload(Payload):
+    """``session_lifecycle._announce_cancelled_gateway_approvals`` (broadcast).
+
+    One frame for every pending approval dropped by an interrupt / reap / teardown (#106678) — the
+    deny-resolve is silent without it, so a reconnecting client's prompt looks lost rather than cancelled.
+    ``cancelled_count`` is the number of dropped entries; ``request_ids`` omits empty/missing ids, so the
+    two can disagree when an entry has no request_id.
+    """
+
+    session_id: str
+    stored_session_id: str
+    reason: str  # interrupt | ws_orphan_reap | idle_timeout | lru_evict | tui_close | ...
+    cancelled_count: int
+    request_ids: list[str]
+
+
+event("approval.cancelled", ApprovalCancelledPayload,
+      doc="Pending gateway approvals were dropped by interrupt/reap/teardown; the wait resolved as deny (not a user refusal).")
 
 
 class SessionControlUpdatePayload(Payload):

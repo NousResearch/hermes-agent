@@ -1,6 +1,8 @@
 """The dock is bounded, session-owned, and only repaints changing live work."""
 from types import SimpleNamespace
 
+from agent.i18n import t
+
 
 def test_dock_scopes_children_and_fits_short_narrow_terminal(monkeypatch):
     from hermes_cli import cli_subagent_monitor as monitor
@@ -15,7 +17,7 @@ def test_dock_scopes_children_and_fits_short_narrow_terminal(monkeypatch):
     assert dock.refresh(now=20)
     text = dock.dock_text(columns=32, rows=14)
     from prompt_toolkit.utils import get_cwidth
-    assert '8 live' in text and 'Ctrl+T' in text and 'read_file' in text
+    assert t('cli.subagents.count_live', count=8) in text and 'Ctrl+T' in text and 'read_file' in text
     assert 'SECRET' not in text
     assert len(text.splitlines()) <= 3
     assert all(get_cwidth(line) <= 32 for line in text.splitlines())

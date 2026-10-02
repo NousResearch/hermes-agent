@@ -1,6 +1,7 @@
 """Tests for credential file passthrough and skills directory mounting."""
 
 import os
+import time
 from pathlib import Path
 from unittest.mock import patch
 
@@ -552,6 +553,24 @@ class TestToAgentVisiblePathPerBackend:
         from tools.credential_files import to_agent_visible_cache_path
         assert to_agent_visible_cache_path("/etc/hosts") == "/etc/hosts"
 
+    def test_symlinked_home_maps_resolved_path(self, tmp_path, monkeypatch):
+        """#103147: ``@file:`` expansion resolves the staged path, but the mount roots
+        keep HERMES_HOME's symlinked spelling; the resolved path must still map."""
+        real_home = tmp_path / "real-hermes"
+        (real_home / "attachments").mkdir(parents=True)
+        link_home = tmp_path / ".hermes"
+        link_home.symlink_to(real_home, target_is_directory=True)
+        monkeypatch.setenv("HERMES_HOME", str(link_home))
+        monkeypatch.setenv("TERMINAL_ENV", "docker")
+        staged = link_home / "attachments" / "paste.txt"
+        staged.write_text("x", encoding="utf-8")
+        from tools.credential_files import to_agent_visible_cache_path
+        assert to_agent_visible_cache_path(str(staged.resolve())) == "/root/.hermes/attachments/paste.txt"
+        assert to_agent_visible_cache_path(str(staged)) == "/root/.hermes/attachments/paste.txt"
+        # A sibling outside the mounted dirs still passes through.
+        outside = real_home / "notes.txt"
+        assert to_agent_visible_cache_path(str(outside)) == str(outside)
+
 
 class TestIterCacheFiles:
     """Tests for iter_cache_files()."""
@@ -563,12 +582,20 @@ class TestIterCacheFiles:
         doc_dir.mkdir(parents=True)
         (doc_dir / "upload.zip").write_bytes(b"PK\x03\x04")
         (doc_dir / "report.pdf").write_bytes(b"%PDF-1.4")
+        old = time.time() - 25 * 3600
+        os.utime(doc_dir / "report.pdf", (old, old))
+        # cache/generated is never swept: sync only its last-24h files (#126445).
+        gen_dir = hermes_home / "cache" / "generated" / "images"
+        gen_dir.mkdir(parents=True)
+        (gen_dir / "fresh.png").write_bytes(b"\x89PNG")
+        (gen_dir / "stale.png").write_bytes(b"\x89PNG")
+        os.utime(gen_dir / "stale.png", (old, old))
         monkeypatch.setenv("HERMES_HOME", str(hermes_home))
 
         entries = iter_cache_files()
         names = {Path(e["container_path"]).name for e in entries}
-        assert "upload.zip" in names
-        assert "report.pdf" in names
+        assert {"upload.zip", "report.pdf", "fresh.png"} <= names
+        assert "stale.png" not in names
 
     @pytest.mark.require_symlinks
     def test_skips_symlinks(self, tmp_path, monkeypatch):

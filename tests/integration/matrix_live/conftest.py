@@ -36,6 +36,8 @@ from testcontainers.core.container import DockerContainer, Reaper
 from testcontainers.core.labels import LABEL_SESSION_ID, SESSION_ID
 from testcontainers.core.network import Network
 
+import hermes_yaml as yaml
+from hermes_cli.config import _deep_merge
 from hermes_platform.host import facts
 from tests.fakes.fake_llm_provider import FakeLLMServer, Responder, Response, Text, write_hermes_home
 from tests.integration.matrix_live.image_build import REPO_ROOT, build_command
@@ -549,6 +551,60 @@ def gateway_busy_input_mode() -> str:
     return "interrupt"
 
 
+def _matrix_feedback_config(config: str, feedback: MatrixFeedbackSettings) -> str:
+    document = yaml.safe_load(config)
+    matrix = document["platforms"]["matrix"]
+    matrix.setdefault("read_receipts", feedback.read_receipts)
+    matrix.setdefault("reactions", feedback.reactions)
+    return yaml.safe_dump(document, sort_keys=False)
+
+
+def _gateway_yaml_config(
+    config: str,
+    feedback: MatrixFeedbackSettings,
+    settings: GatewaySettings,
+    room_id: str,
+    busy_input_mode: str,
+    extra_config: str,
+) -> str:
+    mode = settings.mode
+    document = yaml.safe_load(_matrix_feedback_config(config, feedback))
+    document = _deep_merge(document, {
+        "display": {"busy_input_mode": busy_input_mode, "busy_text_mode": "interrupt"},
+        "approvals": {"mode": "manual", "timeout": 15},
+    })
+    document = _deep_merge(document, yaml.safe_load(extra_config) or {})
+    matrix = document["platforms"]["matrix"]
+    if mode in {"pause-context", "pause-resolution"}:
+        matrix["thread_require_mention"] = True
+    if mode == "pause-resolution":
+        matrix["free_response_rooms"] = [room_id]
+    if mode in {"inspection", "pause-image-context", "image-packs"}:
+        document = _deep_merge({
+            "auxiliary": {
+                "background_review": {"enabled": False},
+                "title_generation": {"model_upgrade_enabled": False},
+            },
+        }, document)
+    if mode == "pause-queued-context":
+        document["display"].update({"busy_input_mode": "queue", "busy_ack_enabled": False})
+    mode_plugins = {
+        "pause-context": "matrix-live-context",
+        "pause-image-context": "matrix-live-context",
+        "pause-image-conversion": "matrix-live-context",
+        "pause-queued-context": "matrix-live-context",
+        "pause-resolution": "matrix-live-resolution",
+    }
+    if plugin := mode_plugins.get(mode):
+        enabled = document.setdefault("plugins", {}).setdefault("enabled", [])
+        if plugin not in enabled:
+            enabled.append(plugin)
+    native_images = mode in {"pause-image-context", "pause-image-conversion", "image-packs"}
+    return ("  image_input_mode: native\n" if native_images else "") + yaml.safe_dump(
+        document, sort_keys=False,
+    )
+
+
 @pytest.fixture
 def gateway(
     request: pytest.FixtureRequest,
@@ -593,27 +649,9 @@ def gateway(
         write_hermes_home(
             home,
             f"http://host.docker.internal:{model.port}/v1",
-            extra_config=(
-                ("  image_input_mode: native\n" if native_images else "")
-                + gateway_config.replace(
-                    "    enabled: true\n",
-                    "    enabled: true\n"
-                    + f"    read_receipts: {matrix_feedback.read_receipts}\n"
-                    + f"    reactions: {str(matrix_feedback.reactions).lower()}\n"
-                    + ("    thread_require_mention: true\n" if mode == "pause-context" or resolution_pause else "")
-                    + (f"    free_response_rooms:\n      - {room_id!r}\n" if resolution_pause else ""),
-                    1,
-                )
-                + ("auxiliary:\n  background_review:\n    enabled: false\n  title_generation:\n    model_upgrade_enabled: false\n"
-                   if mode in {"inspection", "pause-image-context", "image-packs"} else "")
-                + ("display:\n  busy_input_mode: queue\n  busy_ack_enabled: false\n"
-                   if mode == "pause-queued-context" else "")
-                + ("plugins:\n  enabled:\n    - matrix-live-context\n"
-                   if context_pause else "")
-                + ("plugins:\n  enabled:\n    - matrix-live-resolution\n" if resolution_pause else "")
-                + f"display:\n  busy_input_mode: {gateway_busy_input_mode}\n  busy_text_mode: interrupt\n"
-                + "approvals:\n  mode: manual\n  timeout: 15\n"
-                + gateway_extra_config
+            extra_config=_gateway_yaml_config(
+                gateway_config, matrix_feedback, settings, room_id,
+                gateway_busy_input_mode, gateway_extra_config,
             ),
         )
         if native_images:

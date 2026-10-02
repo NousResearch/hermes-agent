@@ -65,7 +65,7 @@ _AUTH_METHOD_RE = re.compile(r"\s*(dmarc|dkim|spf)\s*=\s*([a-z]+)", re.IGNORECAS
 # One token of a clause: a property we read (``header.from=x``; the value may be or contain a quoted-string), or
 # any other whitespace-delimited token consumed whole, so text inside quotes or other values is never read as a prop.
 _QUOTED = r'"(?:[^"\\]|\\.)*"'
-_AUTH_PROP_RE = re.compile(r'(header\.from|header\.d|smtp\.mailfrom|smtp\.from|envelope-from)\s*=\s*((?:%s|[^\s";])+)'
+_AUTH_PROP_RE = re.compile(r'(header\.from|header\.d|header\.i|header\.sender|smtp\.mailfrom|smtp\.mail|smtp\.from|envelope-from|mailfrom|return-path)\s*=\s*((?:%s|[^\s";])+)'
                            r'|(?:%s|[^\s"])+' % (_QUOTED, _QUOTED), re.IGNORECASE)
 
 
@@ -369,10 +369,13 @@ def _verify_sender_authentication(msg: email_lib.message.Message, from_addr: str
         return True, "dmarc=pass"
     # one SMTP transaction has one MAIL FROM verdict: a second spf clause means the SPF signal is not trusted
     if len(results["spf"]) == 1 and (spf := results["spf"][0])[0] == "pass" and aligned(
-            spf[1], ("smtp.mailfrom", "smtp.from", "envelope-from")):
+            spf[1], ("smtp.mailfrom", "smtp.mail", "smtp.from", "envelope-from", "mailfrom", "return-path")):
         return True, "spf=pass aligned"
     # several dkim clauses are normal (one per signature): any single pass whose own header.d aligns is enough
-    if any(r == "pass" and aligned(props, ("header.d",) if any(p == "header.d" for p, _ in props) else ("header.from",))
+    # No header.d and no header.i means the clause names no signing identity: header.from mirrors the
+    # attacker-controlled From, so that case stays unauthenticated (GHSA-rxqh-5572-8m77 residual).
+    if any(r == "pass" and aligned(props, ("header.d",) if any(p == "header.d" for p, _ in props)
+                                   else (("header.i",) if any(p == "header.i" for p, _ in props) else ()))
            for r, props in results["dkim"]):
         return True, "dkim=pass aligned"
     return False, f"authentication failed ({trusted[:120]})"

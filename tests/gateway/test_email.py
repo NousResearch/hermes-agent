@@ -1299,6 +1299,52 @@ class TestSenderAuthentication(unittest.TestCase):
         )
         self.assertFalse(ok, reason)
 
+    def test_dkim_does_not_trust_visible_header_from(self):
+        """DKIM=pass whose only aligned identity is the visible From header
+        must not authenticate: header.from mirrors the attacker-controlled
+        From, not a signing identity (GHSA-rxqh-5572-8m77 residual)."""
+        ok, reason = self._verify(
+            "admin@example.com",
+            ["mx.google.com; dkim=pass header.from=example.com"],
+        )
+        self.assertFalse(ok, reason)
+
+    def test_netease_aliases_authenticate(self):
+        """NetEase/163 stamps SPF as smtp.mail and DKIM as header.i."""
+        ok, reason = self._verify(
+            "user@163.com",
+            ["163mx; spf=pass smtp.mail=user@163.com; dkim=pass header.i=@163.com"],
+        )
+        self.assertTrue(ok, reason)
+
+    def test_netease_alias_misaligned_rejected(self):
+        ok, reason = self._verify(
+            "user@outlook.com",
+            ["163mx; spf=pass smtp.mail=fake@163.com; dkim=pass header.i=@163.com"],
+        )
+        self.assertFalse(ok, reason)
+
+    def test_return_path_alias_authenticates(self):
+        ok, reason = self._verify(
+            "u@example.com",
+            ["mx.example.net; spf=pass return-path=u@example.com"],
+        )
+        self.assertTrue(ok, reason)
+
+    def test_header_i_alias_authenticates(self):
+        ok, reason = self._verify(
+            "a@gmail.com",
+            ["mx.google.com; dkim=pass header.i=@gmail.com"],
+        )
+        self.assertTrue(ok, reason)
+
+    def test_mailfrom_alias_authenticates(self):
+        ok, reason = self._verify(
+            "u@example.com",
+            ["mx.example.net; spf=pass mailfrom=u@example.com"],
+        )
+        self.assertTrue(ok, reason)
+
 
 def test_oversized_cron_output_is_delivered_as_one_whole_email():
     """No 4000-char truncation footer pointing at a file on the gateway host: the router hands

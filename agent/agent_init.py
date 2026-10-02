@@ -1308,6 +1308,24 @@ def _memory_provider_init_kwargs(agent, platform) -> Dict[str, Any]:
     return kwargs
 
 
+def _external_prefetch_timeout(mem_config: Dict[str, Any]) -> Optional[float]:
+    """``memory.external_prefetch_timeout_s`` from the ``memory:`` config section (#85135).
+
+    The constructor parameter existed but nothing wired it, so the 8 s default was fixed in
+    code while a cold Honcho dialectic call reliably exceeds it and the memory supplement was
+    silently dropped. ``None`` (key absent) and unparseable values both keep the default;
+    ``<= 0`` also falls back rather than tripping the manager's ValueError.
+    """
+    raw = (mem_config or {}).get("external_prefetch_timeout_s")
+    if raw is None or isinstance(raw, bool):
+        return None
+    try:
+        timeout = float(raw)
+    except (TypeError, ValueError):
+        return None
+    return timeout if timeout > 0 else None
+
+
 def _init_memory(agent, _agent_cfg, skip_memory, platform, memory_manager=None):
     # Persistent memory (MEMORY.md + USER.md) — loaded from disk
     agent._memory_store = None
@@ -1360,7 +1378,8 @@ def _init_memory(agent, _agent_cfg, skip_memory, platform, memory_manager=None):
             if not is_core_memory_provider(_mem_provider_name):
                 from agent.memory_manager import MemoryManager as _MemoryManager
                 from plugins.memory import load_memory_provider as _load_mem
-                agent._memory_manager = _MemoryManager()
+                agent._memory_manager = _MemoryManager(
+                    external_prefetch_timeout=_external_prefetch_timeout(mem_config))
                 _mp = _load_mem(_mem_provider_name)
                 if _mp is None:
                     # The provider left core for the catalog (or was never installed): fetch it once.

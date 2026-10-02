@@ -167,9 +167,12 @@ CLARIFY_SCHEMA = {
                     "type": "object",
                     "properties": {
                         "question": {"type": "string"},
+                        # No schema-level maxLength: llama.cpp's JSON-schema→grammar converter
+                        # expands it into a bounded repetition capped below 2000, failing every
+                        # request that carries this tool; the cap is enforced at runtime above.
                         "choices": {
                             "type": "array",
-                            "items": {"type": "string", "maxLength": MAX_CHOICE_CHARS},
+                            "items": {"type": "string"},
                             "maxItems": MAX_CHOICES,
                         },
                         "multi_select": {"type": "boolean"},

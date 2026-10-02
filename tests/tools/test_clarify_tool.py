@@ -92,6 +92,17 @@ class TestClarifySchema:
         assert params["required"] == ["questions"]
         assert params["properties"]["questions"]["maxItems"] == MAX_QUESTIONS
 
+    def test_schema_choice_items_carry_no_max_length(self):
+        """llama.cpp's JSON-schema→grammar converter expands `maxLength` into a
+        bounded repetition capped below 2000, so a schema-level cap of
+        MAX_CHOICE_CHARS (8000) fails every request carrying this tool with
+        "Failed to initialize samplers: failed to parse grammar" (#131278).
+        The per-choice cap must stay runtime-only."""
+        items = (CLARIFY_SCHEMA["parameters"]["properties"]["questions"]["items"]
+                 ["properties"]["choices"]["items"])
+        assert items == {"type": "string"}
+        assert "maxLength" not in items
+
 
 class TestClarifyToolMultiSelect:
     """Tests for multi_select (checkbox) support added to clarify_tool."""

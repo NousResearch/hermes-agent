@@ -21,14 +21,15 @@ DEFAULT_WINDOW_SECONDS = 60
 # capacity for the model (https://platform.claude.com/docs/en/build-with-claude/fast-mode).
 _FAST_LIMIT_HEADERS = ("anthropic-fast-input-tokens-limit", "anthropic-fast-output-tokens-limit")
 #: Tiers sent on every request of the session (OpenAI ``service_tier`` values; ``priority`` also
-#: selects Anthropic/xAI fast mode). Ultrafast is OpenAI-only and gated per model.
-STATIC_TIERS = frozenset({"priority", "ultrafast"})
+#: selects Anthropic/xAI fast mode). Ultrafast is OpenAI-only and gated per model; flex is the
+#: cheaper latency-tolerant tier on OpenAI and tier-eligible Gemini models.
+STATIC_TIERS = frozenset({"priority", "ultrafast", "flex"})
 NORMAL_TIER_WORDS = frozenset({"", "normal", "default", "standard", "off", "none"})
 # User/config word -> agent.service_tier. The single table every surface (config loaders, /fast
 # on CLI / gateway / TUI) parses through, so a new tier is one edit.
 SERVICE_TIER_WORDS: dict[str, str] = {
     "fast": "priority", "priority": "priority", "on": "priority",
-    "ultrafast": "ultrafast", "auto": "auto", "cold": "cold",
+    "ultrafast": "ultrafast", "flex": "flex", "auto": "auto", "cold": "cold",
 }
 
 

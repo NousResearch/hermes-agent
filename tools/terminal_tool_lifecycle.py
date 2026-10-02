@@ -197,8 +197,9 @@ def ensure_task_env(task_id: Optional[str] = None):
     """
     from tools.terminal_tool import (
         _active_environments, _creation_locks, _creation_locks_lock, _env_lock,
-        _get_env_config, _last_activity, _resolve_container_task_id,
-        _resolve_task_host_cwd, _select_image, _start_cleanup_thread, resolve_task_overrides,
+        _get_env_config, _last_activity, _live_env_mount_agrees, _release_active_env,
+        _resolve_container_task_id, _resolve_task_host_cwd, _select_image,
+        _start_cleanup_thread, resolve_task_overrides,
     )
     config = _get_env_config()
     env_type = config["env_type"]
@@ -206,12 +207,20 @@ def ensure_task_env(task_id: Optional[str] = None):
         return None
 
     effective_task_id = _resolve_container_task_id(task_id)
+    host_cwd = _resolve_task_host_cwd(config, task_id)
 
     existing = get_active_env(effective_task_id)
-    if existing is not None:
+    if existing is not None and _live_env_mount_agrees(existing, host_cwd):
         with _env_lock:
             _last_activity[effective_task_id] = time.time()
         return existing
+    if existing is not None:
+        # Deferred release: a bring-up never kills an in-flight execution, and a session
+        # with no workspace of its own has no bind to repair — both keep the live env.
+        if not _release_active_env(effective_task_id, task_id, host_cwd, in_use=False):
+            with _env_lock:
+                _last_activity[effective_task_id] = time.time()
+            return existing
 
     image = _select_image(env_type, resolve_task_overrides(task_id), config)
 
@@ -222,13 +231,20 @@ def ensure_task_env(task_id: Optional[str] = None):
 
     with task_lock:
         existing = get_active_env(effective_task_id)
-        if existing is not None:
+        if existing is not None and _live_env_mount_agrees(existing, host_cwd):
             return existing
+        if existing is not None:
+            # Same deferral as above: a bring-up keeps the live env whenever the release
+            # does not apply (in-flight execution, or no workspace to repair).
+            if not _release_active_env(effective_task_id, task_id, host_cwd, in_use=False):
+                with _env_lock:
+                    _last_activity[effective_task_id] = time.time()
+                return existing
         try:
             new_env = _create_configured_env(
                 config, env_type, image=image, cwd=config["cwd"],
                 timeout=config["timeout"], task_id=effective_task_id,
-                host_cwd=_resolve_task_host_cwd(config, task_id),
+                host_cwd=host_cwd,
             )
         except Exception as exc:  # noqa: BLE001 — best-effort bring-up
             logger.warning(

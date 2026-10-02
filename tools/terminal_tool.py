@@ -172,6 +172,12 @@ Persist: background=true, persist_on_release=true keeps the job alive across age
 # Environment lifecycle state.
 _active_environments: Dict[str, Any] = {}
 _last_activity: Dict[str, float] = {}
+# Executions currently inside ``env.execute`` per live env (id-keyed). A release tears the
+# container down (``docker stop`` + ``rm -f``), so it must not run under one: that is what
+# turned a mount disagreement between two sessions into ``exit_code: 137`` on work that had
+# been running for minutes.
+_executions_in_flight: Dict[int, int] = {}
+_in_flight_lock = threading.Lock()
 _env_lock = threading.Lock()
 _creation_locks: Dict[str, threading.Lock] = {}  # Per-task locks for sandbox creation
 _creation_locks_lock = threading.Lock()  # Protects _creation_locks dict itself
@@ -578,27 +584,16 @@ def _lookup_active_env(effective_task_id: str, task_id: Optional[str]):
     return None
 
 
-def _resolve_task_host_cwd(config: Dict[str, Any], task_id: Optional[str]) -> Optional[str]:
-    """Host directory to bind into *task_id*'s container.
+def _session_workspace_mount_source(task_id: Optional[str]) -> Optional[str]:
+    """The host directory THIS session chose as its workspace, or None.
 
-    Single owner of the cwd-mount policy for every creation site. Shared-
-    container mode: the ``TERMINAL_CWD``-derived ``config["host_cwd"]``.
-    Per-session isolation (docker + ``container_persistent: false``): only
-    the SESSION's own registered workspace may mount — the process env var is
-    a launch artifact that outlives the session that set it, so deriving a
-    fresh session's mount from it would leak the previous session's directory.
-    Overrides tagged ``cwd_source: "process"`` are refused for the same reason;
-    ``cwd_source: "session"`` or untagged (ACP/RL) overrides mount.
-    A Windows drive path is not a mount source while the cwd-to-/workspace flag
-    is off. A raw host override must stay out of ``docker run -w`` and fall
-    back to the sanitized config cwd. The Windows bind, including when
-    ``/workspace`` is already claimed, is the volume mount, not this override.
+    The workspace picker records the user's choice as a ``cwd`` override tagged
+    ``cwd_source: "session"``. A ``"process"``-tagged override is a launch artifact
+    (a ``TERMINAL_CWD``/``terminal.cwd`` fallback that outlives the session that set
+    it), never a workspace the user picked. Untagged overrides (ACP ``session/load``
+    project-root switching, RL/benchmark envs) are the session's own, matching the
+    rule the isolation branch already applies.
     """
-    if config.get("env_type") != "docker" or not config.get("docker_mount_cwd_to_workspace"):
-        return None
-    # Top-level CLI parent ("default") is a single-session process — legacy behavior.
-    if not _docker_session_isolation_enabled() or _resolve_container_task_id(task_id) == "default":
-        return config.get("host_cwd")
     overrides = resolve_task_overrides(task_id)
     candidate = overrides.get("cwd")
     if overrides.get("cwd_source") == "process" or not isinstance(candidate, str) or not candidate.strip():
@@ -608,6 +603,171 @@ def _resolve_task_host_cwd(config: Dict[str, Any], task_id: Optional[str]) -> Op
     if not os.path.isdir(candidate) or candidate.startswith(("/workspace", "/root")):
         return None
     return candidate
+
+
+def _live_env_mount_agrees(env: Any, host_cwd: Optional[str]) -> bool:
+    """Whether *env*'s ``/workspace`` bind is backed by *host_cwd*.
+
+    A persistent container is keyed per profile (not per workspace), so the env
+    cached under that key can belong to a DIFFERENT session's workspace. Returning
+    it hands a session someone else's directory: the resolver computes the right
+    source, then ``get_active_env`` short-circuits before it is ever consulted.
+
+    Only compares when a host mount is in play on both sides; a non-container
+    backend, or one with no mount to argue about, always agrees.
+
+    This is also the policy for an explicit ``docker_shared_container_key``: sharing
+    is the deliberate choice of ``_resolve_container_task_id`` (deliberate sharing
+    means identical container identity), NOT a licence for the ``/workspace`` bind to
+    hop between sources. Two profiles that opt into the same key share a container
+    only while they agree on the workspace; a disagreeing pair settles the mount for
+    the profile that asks, exactly as any other reuse would. Callers who want one
+    frozen workspace across profiles pin ``terminal.cwd``.
+    """
+    env_type = getattr(env, "env_type", None)
+    if not env_type or not _is_container_backend(env_type):
+        return True
+    mounted = getattr(env, "host_cwd", None)
+    if host_cwd is None or not isinstance(mounted, str) or not mounted:
+        return True
+    return os.path.abspath(os.path.expanduser(mounted)) == os.path.abspath(os.path.expanduser(host_cwd))
+
+
+def _env_has_executions_in_flight(env: Any) -> bool:
+    """Whether *env* currently has an execution inside ``env.execute``.
+
+    Keyed by object identity (``id``), not by task key: a sibling session resolving
+    another workspace can hold the SAME env under a different key, and the release is
+    decided on the object. Ids are only compared while the env is referenced by
+    ``_active_environments``, so no id can be recycled underneath us.
+    """
+    with _in_flight_lock:
+        return _executions_in_flight.get(id(env), 0) > 0
+
+
+def _note_execution_start(env: Any) -> None:
+    with _in_flight_lock:
+        _executions_in_flight[id(env)] = _executions_in_flight.get(id(env), 0) + 1
+
+
+def _note_execution_end(env: Any) -> None:
+    with _in_flight_lock:
+        remaining = _executions_in_flight.get(id(env), 0) - 1
+        if remaining > 0:
+            _executions_in_flight[id(env)] = remaining
+        else:
+            _executions_in_flight.pop(id(env), None)
+
+
+def _release_active_env(
+    effective_task_id: str, task_id: Optional[str], host_cwd: Optional[str], *, in_use: bool = True,
+) -> bool:
+    """Drop a live env whose ``/workspace`` no longer matches this session's source.
+
+    Closing it is what makes the caller's retry create a container with the right
+    bind (run args are immutable at creation, so reusing in place can never fix the
+    mount). Returns True only when the env was actually dropped, so a caller can
+    tell "released, recreate" from "still busy, keep what is live".
+
+    A mount disagreement is a REQUEST-level conflict, not a reason to destroy a
+    sibling's sandbox: the release tears the container down (``docker stop`` +
+    ``rm -f``), so anything executing in it is killed. Two guards, because the
+    in-flight case is the destructive one:
+
+    * ``in_use=False`` — the caller needs the mount to change before it can run
+      anything (the mount is decided at container creation), so releasing under an
+      in-flight execution would SIGKILL work that had been running for minutes.
+      Callers that only want to know whether reuse is safe pass ``in_use=True`` and
+      simply keep the live env on False.
+    * a caller with NO workspace of its own (``host_cwd`` is None, or the session
+      never attached one and the value is only the backend process cwd) keeps the
+      live env outright. Nothing would be mounted for it, so there is no bind to
+      repair, and that legacy fallback is itself refused as a mount source
+      everywhere else — evicting a sibling's container to impose a directory the
+      policy rejects is strictly worse than sharing.
+    """
+    from tools.terminal_tool_lifecycle import get_active_env
+
+    stale = get_active_env(effective_task_id) or get_active_env(task_id or "")
+    if stale is None or _live_env_mount_agrees(stale, host_cwd):
+        return False
+    if host_cwd is None or _session_workspace_mount_source(task_id) is None:
+        logger.info(
+            "Task %s has no workspace of its own; keeping the live container for %s "
+            "instead of releasing it (no bind to repair).",
+            (task_id or effective_task_id)[:24], effective_task_id[:24],
+        )
+        return False
+    if not in_use and _env_has_executions_in_flight(stale):
+        logger.warning(
+            "Not releasing the container for task %s: an execution is still in flight. "
+            "Releasing would SIGKILL it — the mount is needed before anything runs, so "
+            "this call waits for a later one instead.",
+            effective_task_id[:24],
+        )
+        return False
+    logger.warning(
+        "Docker container for task %s is mounted on %r, not this session's workspace %r "
+        "— releasing it so the right mount is created.",
+        effective_task_id[:24], getattr(stale, "host_cwd", None), host_cwd,
+    )
+    with _env_lock:
+        for key in (effective_task_id, task_id):
+            if key and _active_environments.get(key) is stale:
+                _active_environments.pop(key, None)
+    # Same reason `_unregister_env` does it: a cached ShellFileOperations entry holds a
+    # handle to the container this line is about to destroy, so the next file tool call
+    # would run against a dead sandbox until something else invalidates it.
+    try:
+        from tools.terminal_tool_lifecycle import _clear_file_ops_cache
+        for key in (effective_task_id, task_id):
+            if key:
+                _clear_file_ops_cache(key)
+    except ImportError:
+        pass
+    try:
+        from tools.terminal_tool_lifecycle import _cleanup_env
+        _cleanup_env(stale)
+    except Exception as exc:  # noqa: BLE001 — a failed teardown just leaves it live
+        logger.warning("Could not tear down the stale container for task %s: %s", effective_task_id[:24], exc)
+        return False
+    return True
+
+
+def _resolve_task_host_cwd(config: Dict[str, Any], task_id: Optional[str]) -> Optional[str]:
+    """Host directory to bind-mount at ``/workspace`` for *task_id*'s container.
+
+    Single owner of the cwd-mount policy for every creation site. Shared-
+    container mode: the ``TERMINAL_CWD``-derived ``config["host_cwd"]``, but a
+    workspace the SESSION itself chose always wins over it. Per-session isolation
+    (docker + ``container_persistent: false``): only the SESSION's own registered
+    workspace may mount — the process env var is a launch artifact that outlives
+    the session that set it, so deriving a fresh session's mount from it would
+    leak the previous session's directory.
+    Overrides tagged ``cwd_source: "process"`` are refused for the same reason;
+    ``cwd_source: "session"`` or untagged (ACP/RL) overrides mount.
+
+    The explicit-workspace rule applies in shared mode too because shared mode
+    collapses EVERY session onto one profile-scoped container and derives its
+    mount from the backend process cwd — identically for all of them. A desktop
+    backend launched from ``$HOME`` therefore bound the whole home directory at
+    ``/workspace`` while the workspace the user attached to the session was
+    ignored, so the sandbox could read host secrets (``~/.ssh``, ``~/.hermes``)
+    and the agent saw neither the repo it was aimed at nor its own worktree. A
+    deliberate choice is not a launch artifact and must be honoured in both modes;
+    a ``"process"``-tagged fallback stays refused in both.
+
+    A Windows drive path is not a mount source while the cwd-to-/workspace flag
+    is off. A raw host override must stay out of ``docker run -w`` and fall
+    back to the sanitized config cwd. The Windows bind, including when
+    ``/workspace`` is already claimed, is the volume mount, not this override.
+    """
+    if config.get("env_type") != "docker" or not config.get("docker_mount_cwd_to_workspace"):
+        return None
+    # Top-level CLI parent ("default") is a single-session process — legacy behavior.
+    if not _docker_session_isolation_enabled() or _resolve_container_task_id(task_id) == "default":
+        return _session_workspace_mount_source(task_id) or config.get("host_cwd")
+    return _session_workspace_mount_source(task_id)
 
 
 # One-shot guard for the config-fallback bridge: after the first attempt
@@ -1192,8 +1352,18 @@ def _acquire_env(plan: _ExecPlan, task_id: Optional[str]) -> Any:
 
     with _env_lock:
         env: Any = _lookup_active_env(eff, task_id)
-    if env is not None:
+    if env is not None and _live_env_mount_agrees(env, plan.host_cwd):
         return env
+    if env is not None:
+        # in_use=False: the caller needs this call's mount before it runs anything, so a
+        # release that would kill an in-flight execution is deferred — it keeps the live
+        # env and this call proceeds in it, like every other disagreement case.
+        if not _release_active_env(eff, task_id, plan.host_cwd, in_use=False):
+            logger.info(
+                "Keeping the live container for task %s for this call (release deferred).",
+                eff[:24],
+            )
+            return env
 
     with _creation_locks_lock:
         task_lock = _creation_locks.setdefault(eff, threading.Lock())
@@ -1201,7 +1371,13 @@ def _acquire_env(plan: _ExecPlan, task_id: Optional[str]) -> Any:
     with task_lock:
         with _env_lock:
             env = _lookup_active_env(eff, task_id)
-        if env is not None:
+        if env is not None and _live_env_mount_agrees(env, plan.host_cwd):
+            return env
+        if env is not None and not _release_active_env(eff, task_id, plan.host_cwd, in_use=False):
+            logger.info(
+                "Keeping the live container for task %s for this call (release deferred).",
+                eff[:24],
+            )
             return env
 
         if env_type == "singularity":
@@ -1266,11 +1442,18 @@ def _run_foreground(
             # bounded_capture: model-facing output keeps a head/tail window
             # while streaming so a verbose command can't OOM the gateway;
             # internal env.execute() consumers stay unbounded.
-            result = env.execute(
-                command, timeout=effective_timeout, cwd=command_cwd, bounded_capture=True,
-                **_yield_kwargs(command, env_type=env_type, cwd=command_cwd, effective_task_id=eff,
-                                task_id=task_id, session_key=session_key),
-            )
+            # The in-flight marker makes this env un-releasable while a command runs: a
+            # sibling session's mount disagreement must not tear the container out from
+            # under it (that is the exit_code 137 class).
+            _note_execution_start(env)
+            try:
+                result = env.execute(
+                    command, timeout=effective_timeout, cwd=command_cwd, bounded_capture=True,
+                    **_yield_kwargs(command, env_type=env_type, cwd=command_cwd, effective_task_id=eff,
+                                    task_id=task_id, session_key=session_key),
+                )
+            finally:
+                _note_execution_end(env)
             break
         except Exception as e:
             # A backend exception (e.g. an SSH connect timeout) never reached an exit status, so it

@@ -267,6 +267,325 @@ class TestSessionScopedMountResolution:
         assert terminal_tool._resolve_task_host_cwd(cfg, "t") is None
 
 
+class TestExplicitWorkspaceWinsInSharedMode:
+    """A workspace the user ATTACHED to the session mounts in BOTH modes.
+
+    Shared (persistent) mode collapses every session onto ONE profile-scoped
+    container and derived the mount from the backend process cwd, so a desktop
+    backend launched from ``$HOME`` bound the whole home directory at
+    ``/workspace`` — host secrets readable in the sandbox — while ignoring the
+    workspace the user had attached to that session. A deliberate choice is not
+    a launch artifact: the same explicit-workspace rule the isolation branch
+    already applies now governs shared mode too.
+    """
+
+    def _config(self, host_cwd="/home/user", mount=True):
+        return {
+            "env_type": "docker",
+            "docker_mount_cwd_to_workspace": mount,
+            "host_cwd": host_cwd,
+        }
+
+    def test_attached_workspace_wins_over_process_cwd(self, monkeypatch, tmp_path):
+        """The reported leak: attaching a workspace must displace the $HOME bind."""
+        _disable_isolation(monkeypatch)
+        ws = tmp_path / "worktree"
+        ws.mkdir()
+        terminal_tool.register_task_env_overrides(
+            "tui:sess-1", {"cwd": str(ws), "cwd_source": "session"}
+        )
+        assert terminal_tool._resolve_task_host_cwd(self._config(), "tui:sess-1") == str(ws)
+
+    def test_no_attached_workspace_keeps_legacy_process_cwd(self, monkeypatch):
+        """No choice recorded ⇒ legacy behaviour, so the single-session CLI parent
+        launched from its worktree still mounts that worktree (regression guard)."""
+        _disable_isolation(monkeypatch)
+        assert (
+            terminal_tool._resolve_task_host_cwd(self._config(), "tui:sess-1")
+            == "/home/user"
+        )
+
+    def test_process_tagged_override_never_becomes_a_mount(self, monkeypatch, tmp_path):
+        """A TERMINAL_CWD/terminal.cwd fallback is a launch artifact, not a workspace —
+        refused in shared mode exactly as it is under isolation."""
+        _disable_isolation(monkeypatch)
+        terminal_tool.register_task_env_overrides(
+            "tui:sess-1", {"cwd": str(tmp_path), "cwd_source": "process"}
+        )
+        assert (
+            terminal_tool._resolve_task_host_cwd(self._config(), "tui:sess-1")
+            == "/home/user"
+        )
+
+    def test_nonexistent_attached_workspace_falls_back(self, monkeypatch, tmp_path):
+        _disable_isolation(monkeypatch)
+        terminal_tool.register_task_env_overrides(
+            "tui:sess-1",
+            {"cwd": str(tmp_path / "gone"), "cwd_source": "session"},
+        )
+        assert (
+            terminal_tool._resolve_task_host_cwd(self._config(), "tui:sess-1")
+            == "/home/user"
+        )
+
+    def test_in_container_path_never_becomes_a_mount(self, monkeypatch):
+        _disable_isolation(monkeypatch)
+        terminal_tool.register_task_env_overrides(
+            "tui:sess-1", {"cwd": "/workspace", "cwd_source": "session"}
+        )
+        assert (
+            terminal_tool._resolve_task_host_cwd(self._config(), "tui:sess-1")
+            == "/home/user"
+        )
+
+    def test_mount_flag_off_still_mounts_nothing(self, monkeypatch, tmp_path):
+        _disable_isolation(monkeypatch)
+        ws = tmp_path / "worktree"
+        ws.mkdir()
+        terminal_tool.register_task_env_overrides(
+            "tui:sess-1", {"cwd": str(ws), "cwd_source": "session"}
+        )
+        assert (
+            terminal_tool._resolve_task_host_cwd(self._config(mount=False), "tui:sess-1")
+            is None
+        )
+
+    def test_untagged_acp_override_mounts(self, monkeypatch, tmp_path):
+        """ACP session/load switches the project root mid-session; its override is the
+        session's own (same rule the isolation branch applies)."""
+        _disable_isolation(monkeypatch)
+        ws = tmp_path / "acp-project"
+        ws.mkdir()
+        terminal_tool.register_task_env_overrides("acp:1", {"cwd": str(ws)})
+        assert terminal_tool._resolve_task_host_cwd(self._config(), "acp:1") == str(ws)
+
+    def test_non_docker_backend_ignores_attached_workspace(self, monkeypatch, tmp_path):
+        _disable_isolation(monkeypatch)
+        ws = tmp_path / "worktree"
+        ws.mkdir()
+        terminal_tool.register_task_env_overrides(
+            "tui:sess-1", {"cwd": str(ws), "cwd_source": "session"}
+        )
+        cfg = self._config()
+        cfg["env_type"] = "modal"
+        assert terminal_tool._resolve_task_host_cwd(cfg, "tui:sess-1") is None
+
+    def test_isolation_and_shared_agree_on_the_attached_workspace(self, monkeypatch, tmp_path):
+        """Same workspace, same answer in both modes — the asymmetry was the bug."""
+        ws = tmp_path / "worktree"
+        ws.mkdir()
+        terminal_tool.register_task_env_overrides(
+            "tui:sess-1", {"cwd": str(ws), "cwd_source": "session"}
+        )
+        _disable_isolation(monkeypatch)
+        shared = terminal_tool._resolve_task_host_cwd(self._config(), "tui:sess-1")
+        _enable_isolation(monkeypatch)
+        isolated = terminal_tool._resolve_task_host_cwd(self._config(), "tui:sess-1")
+        assert shared == isolated == str(ws)
+
+
+class TestSharedContainerMountIdentity:
+    """A request for workspace B must never reuse a container mounted on A.
+
+    The resolver can compute B correctly and the session still see A: a persistent
+    container is keyed per PROFILE (`profile:<name>`), so the env cached under that
+    key may belong to a sibling session's workspace, and both reuse sites return it
+    before the fresh mount source is ever consulted. Run args are immutable at
+    creation, so reusing in place can never repair the bind — the stale env has to
+    be released and a new container created.
+    """
+
+    def _env(self, host_cwd, env_type="docker"):
+        class _E:
+            pass
+        e = _E()
+        e.host_cwd = host_cwd
+        e.env_type = env_type
+        e.cleaned = False
+        return e
+
+    def test_mount_agrees_when_sources_match(self, monkeypatch, tmp_path):
+        a = tmp_path / "a"
+        b = tmp_path / "b"
+        a.mkdir(); b.mkdir()
+        assert terminal_tool._live_env_mount_agrees(self._env(str(a)), str(a))
+        # Same path spelled differently (trailing separator, redundant segment).
+        assert terminal_tool._live_env_mount_agrees(self._env(str(a) + "/"), str(a))
+
+    def test_mount_disagrees_on_a_different_workspace(self, monkeypatch, tmp_path):
+        a = tmp_path / "a"
+        b = tmp_path / "b"
+        a.mkdir(); b.mkdir()
+        assert not terminal_tool._live_env_mount_agrees(self._env(str(a)), str(b))
+
+    def test_mount_check_is_off_for_non_container_backends(self, monkeypatch, tmp_path):
+        a = tmp_path / "a"
+        b = tmp_path / "b"
+        a.mkdir(); b.mkdir()
+        assert terminal_tool._live_env_mount_agrees(self._env(str(a), env_type="local"), str(b))
+
+    def test_no_mount_in_play_always_agrees(self, monkeypatch, tmp_path):
+        """A container with no workspace bind, or a session with no host source, has
+        nothing to argue about — refusing to reuse would recreate on every call."""
+        a = tmp_path / "a"
+        a.mkdir()
+        assert terminal_tool._live_env_mount_agrees(self._env(None), str(a))
+        assert terminal_tool._live_env_mount_agrees(self._env(str(a)), None)
+
+    def _fake_registry(self, monkeypatch, entries=None):
+        """A stand-in for ``_active_environments`` that records pops.
+
+        ``dict.get`` is read-only, so the real registry cannot be patched in place.
+        """
+        entries = dict(entries or {})
+        popped = []
+
+        class _Registry(dict):
+            def pop(self, key, default=None):
+                popped.append(key)
+                return entries.pop(key, default)
+
+        reg = _Registry(entries)
+        monkeypatch.setattr(terminal_tool, "_active_environments", reg)
+        monkeypatch.setattr("tools.terminal_tool_lifecycle.get_active_env",
+                            lambda tid: entries.get(tid))
+        return popped, entries
+
+    def _register_workspace(self, session_key: str, path) -> None:
+        """This session ATTACHED ``path`` as its workspace (the picker's cwd_source)."""
+        terminal_tool.register_task_env_overrides(
+            session_key, {"cwd": str(path), "cwd_source": "session"},
+        )
+
+    def test_stale_env_is_released_and_dropped_from_the_cache(self, monkeypatch, tmp_path):
+        a = tmp_path / "a"
+        b = tmp_path / "b"
+        a.mkdir(); b.mkdir()
+        stale = self._env(str(a))
+        torn_down = []
+        popped, _ = self._fake_registry(monkeypatch, {"profile:work": stale})
+        monkeypatch.setattr(
+            "tools.terminal_tool_lifecycle._cleanup_env", lambda env: torn_down.append(env),
+        )
+        self._register_workspace("sess-B", b)
+
+        assert terminal_tool._release_active_env("profile:work", "sess-B", str(b)) is True
+        assert torn_down == [stale]
+        assert "profile:work" in popped
+
+    def test_release_invalidates_the_file_ops_cache_too(self, monkeypatch, tmp_path):
+        """The release destroys the container, and a cached ShellFileOperations entry
+        holds a handle to it — the next ``read_file``/``write_file`` would talk to a dead
+        sandbox. ``_unregister_env`` already clears the cache for exactly this reason."""
+        a = tmp_path / "a"
+        b = tmp_path / "b"
+        a.mkdir(); b.mkdir()
+        stale = self._env(str(a))
+        self._fake_registry(monkeypatch, {"profile:work": stale})
+        monkeypatch.setattr(
+            "tools.terminal_tool_lifecycle._cleanup_env", lambda env: None,
+        )
+        cleared = []
+        monkeypatch.setattr(
+            "tools.terminal_tool_lifecycle._clear_file_ops_cache", lambda tid: cleared.append(tid),
+        )
+        self._register_workspace("sess-B", b)
+
+        assert terminal_tool._release_active_env("profile:work", "sess-B", str(b)) is True
+        assert "profile:work" in cleared
+
+    def test_a_session_without_a_workspace_never_evicts_a_sibling(self, monkeypatch, tmp_path):
+        """The #119170 residual: a session that attached NO workspace used to release the
+        shared container and re-impose the backend process cwd as ``/workspace`` — churning
+        the sandbox (and SIGKILLing whatever ran in it) to mount a directory the mount policy
+        refuses everywhere else. It has no bind of its own to repair, so it keeps what is
+        live."""
+        a = tmp_path / "a"
+        a.mkdir()
+        stale = self._env(str(a))
+        torn_down = []
+        self._fake_registry(monkeypatch, {"profile:work": stale})
+        monkeypatch.setattr(
+            "tools.terminal_tool_lifecycle._cleanup_env", lambda env: torn_down.append(env),
+        )
+
+        released = terminal_tool._release_active_env(
+            "profile:work", "sess-no-workspace", str(tmp_path),
+        )
+        assert released is False
+        assert torn_down == []
+
+    def test_a_process_tagged_cwd_is_not_a_workspace_to_evict_for(self, monkeypatch, tmp_path):
+        """``cwd_source: "process"`` is a launch artifact, refused as a mount source by
+        ``_session_workspace_mount_source`` — so it must not authorise an eviction either."""
+        a = tmp_path / "a"
+        a.mkdir()
+        stale = self._env(str(a))
+        torn_down = []
+        self._fake_registry(monkeypatch, {"profile:work": stale})
+        monkeypatch.setattr(
+            "tools.terminal_tool_lifecycle._cleanup_env", lambda env: torn_down.append(env),
+        )
+        terminal_tool.register_task_env_overrides(
+            "sess-B", {"cwd": str(tmp_path), "cwd_source": "process"},
+        )
+
+        assert terminal_tool._release_active_env("profile:work", "sess-B", str(tmp_path)) is False
+        assert torn_down == []
+
+    def test_an_in_flight_execution_is_never_released(self, monkeypatch, tmp_path):
+        """Releasing under a running command is the ``exit_code: 137`` class: run args are
+        immutable, so the release stops the container while a command is executing in it."""
+        a = tmp_path / "a"
+        b = tmp_path / "b"
+        a.mkdir(); b.mkdir()
+        stale = self._env(str(a))
+        torn_down = []
+        self._fake_registry(monkeypatch, {"profile:work": stale})
+        monkeypatch.setattr(
+            "tools.terminal_tool_lifecycle._cleanup_env", lambda env: torn_down.append(env),
+        )
+        self._register_workspace("sess-B", b)
+
+        terminal_tool._note_execution_start(stale)
+        try:
+            assert terminal_tool._release_active_env(
+                "profile:work", "sess-B", str(b), in_use=False,
+            ) is False
+            assert torn_down == []
+        finally:
+            terminal_tool._note_execution_end(stale)
+
+        # …and once the command is done, the deferred release proceeds.
+        assert terminal_tool._release_active_env(
+            "profile:work", "sess-B", str(b), in_use=False,
+        ) is True
+        assert torn_down == [stale]
+
+    def test_release_is_a_no_op_when_the_mount_already_matches(self, monkeypatch, tmp_path):
+        """Regression guard for the sibling-safety rule: an agreeing container is never
+        torn down, so a session's own sandbox is not destroyed under it."""
+        a = tmp_path / "a"
+        a.mkdir()
+        stale = self._env(str(a))
+        torn_down = []
+        self._fake_registry(monkeypatch, {"profile:work": stale})
+        monkeypatch.setattr(
+            "tools.terminal_tool_lifecycle._cleanup_env", lambda env: torn_down.append(env),
+        )
+        self._register_workspace("sess-B", a)
+        assert terminal_tool._release_active_env("profile:work", "sess-B", str(a)) is False
+        assert torn_down == []
+
+    def test_release_is_a_no_op_without_an_active_env(self, monkeypatch, tmp_path):
+        b = tmp_path / "b"
+        b.mkdir()
+        self._fake_registry(monkeypatch, {})
+        self._register_workspace("sess-B", b)
+        # must not raise
+        assert terminal_tool._release_active_env("profile:work", "sess-B", str(b)) is False
+
+
 class TestRecordedHostCwdDiscardedOnContainers:
     """_resolve_command_cwd must not cd to a recorded HOST path in a sandbox.
 

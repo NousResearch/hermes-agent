@@ -95,3 +95,27 @@ def test_supervisor_with_presets_does_not_scan_unadmitted_files(tmp_path, monkey
     # llama.cpp b10964 dropped the --no-webui spelling; the router must use --no-ui.
     assert "--no-ui" in calls[0]
     assert "--no-webui" not in calls[0]
+
+
+def test_speculative_off_vetoes_catalog_mtp(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    from hermes_cli.local_runtime import catalog
+    from hermes_cli.local_runtime.estimator import ModelProfile
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    model = tmp_path / "model.gguf"
+    model.touch()
+    entry = SimpleNamespace(mtp=True, mmproj=None, sampling={}, draft=None, mtp_draft_depth=2)
+    monkeypatch.setattr(catalog, "entry_for_model", lambda model_id: entry)
+    monkeypatch.setattr(presets, "read_gguf_header", lambda path: SimpleNamespace(sampling_defaults={}))
+    monkeypatch.setattr(presets, "profile_from_gguf", lambda header: ModelProfile(
+        "model", 1 << 30, 0, 32768, []))
+    monkeypatch.setattr("hermes_cli.config.load_config",
+                        lambda: {"local_runtime": {"speculative": "off"}})
+
+    result = presets.preset_for_model(
+        model, HardwareBudget(8 << 30, 8 << 30, 8 << 30), set(), requested_window=32768)
+
+    assert "spec-type" not in result.keys
+    assert "spec-draft-n-max" not in result.keys

@@ -397,35 +397,74 @@ function tabVisibleTo(tab: PreviewTab, sessionId: null | string, rotated: Readon
   return Boolean(tab.pinned) || latestSessionId(tab.sessionId, rotated) === latestSessionId(sessionId, rotated)
 }
 
-function tabsVisibleTo(tabs: readonly PreviewTab[], sessionId: null | string): PreviewTab[] {
-  const rotated = $rotatedSessionIds.get()
+/** Who an agent tool acts for: a stored id (null = none bound yet), or the
+ *  full identity of the runtime asking — its stored id, the runtime itself
+ *  (the tabs it opened before that id bound are its own) and the profile it
+ *  belongs to, whose bucket is the only one whose pins it may use. A bare id
+ *  (no profile) is a request from the chat on screen: the viewed bucket's
+ *  pins. */
+export type PreviewOwner =
+  null | string | { profile?: null | string; runtimeId: null | string; sessionId: null | string }
 
-  return tabs.filter(tab => tabVisibleTo(tab, sessionId, rotated))
+interface OwnerIdentity {
+  /** Normalized profile whose pins the owner shares; null = the view's. */
+  profile: null | string
+  runtimeId: null | string
+  sessionId: null | string
 }
 
-/** Who an agent tool acts for: a stored id (null = none bound yet), or that
- *  plus the runtime asking. A runtime's tabs opened before its stored id bound
- *  are its own too, even once the selection names that id. */
-export type PreviewOwner = null | string | { runtimeId: string; sessionId: null | string }
+function ownerIdentity(owner: PreviewOwner): OwnerIdentity {
+  if (owner === null || typeof owner !== 'object') {
+    return { profile: null, runtimeId: null, sessionId: owner }
+  }
 
-function tabsOwnedBy(tabs: readonly PreviewTab[], owner: PreviewOwner): PreviewTab[] {
-  const { runtimeId, sessionId } =
-    owner !== null && typeof owner === 'object' ? owner : { runtimeId: null, sessionId: owner }
+  return {
+    profile: owner.profile ? normalizeProfileKey(owner.profile) || 'default' : null,
+    runtimeId: owner.runtimeId,
+    sessionId: owner.sessionId
+  }
+}
 
-  const pending = $pendingRuntimeByTab.get()
-  const rotated = $rotatedSessionIds.get()
+/** True when `tab` is `who`'s own — pins aside. A stored owner matches by id
+ *  through every compression rotation. An ownerless tab is one of two things,
+ *  never a shared pool: a RUNTIME's pending tab (opened before its stored id
+ *  bound), which only that runtime owns; or a true DRAFT tab (opened in a
+ *  fresh draft before any runtime existed), which only the draft on screen
+ *  owns — the primary's runtime while it has no stored id, or a request with
+ *  no runtime at all. `inView`: a draft tab outside the viewed bucket belongs
+ *  to no draft on screen. */
+function ownsTab(tab: PreviewTab, who: OwnerIdentity, inView: boolean): boolean {
+  if (tab.sessionId != null) {
+    const rotated = $rotatedSessionIds.get()
 
-  return tabs.filter(
-    tab =>
-      tabVisibleTo(tab, sessionId, rotated) ||
-      (runtimeId !== null && tab.sessionId == null && pending.get(tab.id) === runtimeId)
-  )
+    return who.sessionId != null && latestSessionId(tab.sessionId, rotated) === latestSessionId(who.sessionId, rotated)
+  }
+
+  const draftRuntime = $activeSessionId.get()
+  // A request naming no runtime and no session speaks for the draft on screen.
+  const runtime = who.runtimeId ?? (who.sessionId == null ? draftRuntime : null)
+  const pendingRuntime = $pendingRuntimeByTab.get().get(tab.id)
+
+  if (pendingRuntime !== undefined) {
+    return runtime === pendingRuntime
+  }
+
+  return inView && who.sessionId == null && runtime === draftRuntime
+}
+
+/** `who`'s tabs in one bucket: its own, plus the bucket's pins when it is
+ *  `who`'s profile. */
+function bucketTabsFor(tabs: readonly PreviewTab[], who: OwnerIdentity, key: string): PreviewTab[] {
+  const sharesPins = key === (who.profile ?? viewKey)
+
+  return tabs.filter(tab => (tab.pinned && sharesPins) || ownsTab(tab, who, key === viewKey))
 }
 
 /** The tabs an agent tool acting for `owner` (default: the focused session)
- *  may read or drive: never another session's hidden tab. A popped-out
- *  Browser renderer answers only for the one tab it shows (the chat window
- *  decided the requester may see it — `previewTabIdsVisibleTo`). */
+ *  may read or drive: never another session's hidden tab, and never another
+ *  profile's pin. A popped-out Browser renderer answers only for the one tab
+ *  it shows (the chat window decided the requester may see it —
+ *  `previewTabIdsVisibleTo`). */
 export function previewTabsFor(owner: PreviewOwner = $focusedStoredSessionId.get()): PreviewTab[] {
   if (isBrowserWindow()) {
     const own = windowBrowserTabId()
@@ -433,24 +472,22 @@ export function previewTabsFor(owner: PreviewOwner = $focusedStoredSessionId.get
     return $previewTabs.get().filter(tab => tab.id === own)
   }
 
-  return tabsOwnedBy($previewTabs.get(), owner)
+  return bucketTabsFor($previewTabs.get(), ownerIdentity(owner), viewKey)
 }
 
 /** Ids of the tabs `owner` may see in ANY profile's rail, for scoping a
  *  request to a popped-out Browser window: a background session's Browser
- *  can be popped out while another profile is in view. A background bucket
- *  counts only when the requester has a tab of its own there, so one
- *  profile's pins never answer for another profile's session. */
+ *  can be popped out while another profile is in view. Its own tabs count in
+ *  every bucket; pins only in its own profile's. */
 export function previewTabIdsVisibleTo(owner: PreviewOwner): string[] {
-  const view = tabsOwnedBy($previewTabs.get(), owner)
+  const who = ownerIdentity(owner)
 
-  const background = Object.entries(tabsByProfile).flatMap(([key, tabs]) => {
-    const visible = key === viewKey ? [] : tabsOwnedBy(tabs, owner)
+  const buckets: [string, readonly PreviewTab[]][] = [
+    [viewKey, $previewTabs.get()],
+    ...Object.entries(tabsByProfile).filter(([key]) => key !== viewKey)
+  ]
 
-    return visible.some(tab => !tab.pinned) ? visible : []
-  })
-
-  return [...view, ...background].map(tab => tab.id)
+  return buckets.flatMap(([key, tabs]) => bucketTabsFor(tabs, who, key)).map(tab => tab.id)
 }
 
 /** The primary's selection names a session the list already holds — one being
@@ -1018,13 +1055,24 @@ export function openPreview(
   /** The runtime asking: an ownerless tab is handed to it once its stored id
    *  binds. An agent event passes its own session id; anything else is the
    *  primary's runtime. */
-  runtimeId: null | string = $activeSessionId.get()
+  runtimeId: null | string = $activeSessionId.get(),
+  /** The asking agent's profile, when it is not the chat on screen: only that
+   *  profile's pins may be reused. Omitted = the viewed profile. */
+  profile?: null | string
 ) {
   // Stamp the tip, not an alias: the alias map is memory-only, so a tab
   // stamped with a rotated-away id would be orphaned by the next relaunch.
   const owner = currentSessionId(requestedOwner)
   const current = $previewTabs.get()
-  const visible = tabsVisibleTo(current, owner)
+
+  // Reuse never crosses runtimes: with no stored id yet, the runtime decides
+  // which ownerless tabs are this opener's (its own pending ones, or the
+  // draft's when it is the draft on screen).
+  const visible = bucketTabsFor(
+    current,
+    ownerIdentity({ profile, runtimeId: owner === null ? runtimeId : null, sessionId: owner }),
+    viewKey
+  )
 
   const existing =
     target.kind === 'url'
@@ -1312,13 +1360,14 @@ function dockedTabs(tabs: readonly PreviewTab[]): PreviewTab[] {
   return tabs.filter(tab => !popped.has(tab.id))
 }
 
-/** An agent's `close_preview` for the session that ran it (`owner`, a stored
- *  id). With candidates it closes the first matching tab that session can
- *  see (live Browser page first, then source/url/label); without, it closes
- *  every tab that session owns. Never another session's tabs, never a pin
- *  the agent did not name. */
-export function closeAgentPreview(owner: null | string, candidates: string[]): void {
-  const visible = tabsVisibleTo($previewTabs.get(), owner)
+/** An agent's `close_preview` for the session that ran it (`owner`). With
+ *  candidates it closes the first matching tab that session can see (live
+ *  Browser page first, then source/url/label); without, it closes every tab
+ *  that session owns. Never another session's tabs (another runtime's pending
+ *  ones included), never another profile's pin, never a pin the agent did not
+ *  name. */
+export function closeAgentPreview(owner: PreviewOwner, candidates: string[]): void {
+  const visible = bucketTabsFor($previewTabs.get(), ownerIdentity(owner), viewKey)
 
   if (candidates.length > 0) {
     if (!closeBrowserMatchingLiveUrlIn(visible, candidates)) {

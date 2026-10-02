@@ -1925,7 +1925,14 @@ setSessionOwnerResolver(knownOwnerForSession)
  *  showed one agent's previews in every agent's chat. `bot-row.tsx` documents
  *  the same trap for the roster highlight and resolves it the same way. */
 function railScopeForActiveSession(): string {
-  const owner = knownOwnerForSession($activeSessionId.get() ?? undefined)
+  return previewScopeForRuntime($activeSessionId.get() ?? undefined)
+}
+
+/** The preview-rail profile a runtime's chat belongs to — the bucket whose
+ *  pins its agent may use. Same resolution as the rail's own scope, so the
+ *  primary's runtime always lands on the bucket in view. */
+export function previewScopeForRuntime(runtimeId: string | undefined): string {
+  const owner = knownOwnerForSession(runtimeId)
   const profile = typeof owner === 'string' ? owner : owner?.profile
 
   return normalizeProfileKey(profile || $activeGatewayProfile.get())

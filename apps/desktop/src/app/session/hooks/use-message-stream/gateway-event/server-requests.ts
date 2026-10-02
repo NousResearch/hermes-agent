@@ -31,7 +31,12 @@ import {
 } from '@/store/prompts'
 import { rememberServerRequest } from '@/store/server-requests'
 import { $selectedStoredSessionId, $sessions, lineageAliases, sessionMatchesStoredId } from '@/store/session'
-import { $sessionStates, $sessionTiles, storedSessionIdForRuntimeId } from '@/store/session-states'
+import {
+  $sessionStates,
+  $sessionTiles,
+  previewScopeForRuntime,
+  storedSessionIdForRuntimeId
+} from '@/store/session-states'
 import { requestScrollToBottom } from '@/store/thread-scroll'
 import { $toursEnabled } from '@/store/tours'
 
@@ -55,12 +60,20 @@ const loadPreviewEngine = () => {
 const str = (v: unknown): string => (typeof v === 'string' ? v : '')
 
 /** Whose preview tabs a scoped agent request may see: the requesting
- *  runtime's stored id plus the tabs that runtime opened before the id bound.
- *  An id that does not resolve yet is null — the ownerless view — never the
- *  focused session's tabs. Only an unscoped request (no id) falls through to
- *  the focused session (undefined). */
+ *  runtime's stored id plus the tabs that runtime opened before the id bound,
+ *  and the pins of the profile that runtime belongs to — never the viewed
+ *  profile's pins on another profile's behalf. An id that does not resolve
+ *  yet has no stored id — the runtime's own pending tabs — never the focused
+ *  session's tabs. Only an unscoped request (no id) falls through to the
+ *  focused session (undefined). */
 const previewOwnerFor = (sessionId: string): PreviewOwner | undefined =>
-  sessionId ? { runtimeId: sessionId, sessionId: storedSessionIdForRuntimeId(sessionId) } : undefined
+  sessionId
+    ? {
+        profile: previewScopeForRuntime(sessionId),
+        runtimeId: sessionId,
+        sessionId: storedSessionIdForRuntimeId(sessionId)
+      }
+    : undefined
 
 const num = (v: unknown): number | undefined => (typeof v === 'number' ? v : undefined)
 

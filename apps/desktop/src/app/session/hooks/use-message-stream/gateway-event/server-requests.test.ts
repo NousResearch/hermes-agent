@@ -1,11 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { registerPreviewNav } from '@/app/chat/right-rail/preview-nav'
+import { registerPreviewPageReader } from '@/app/chat/right-rail/preview-reader'
 import { group } from '@/components/pane-shell/tree/model'
 import { $layoutTree, noteActiveTreeGroup } from '@/components/pane-shell/tree/store'
 import { createClientSessionState } from '@/lib/chat-runtime'
 import { runTour } from '@/lib/tour'
-import { $previewTabs, closeRightRail, openPreview } from '@/store/preview'
+import { $previewTabs, closeRightRail, openPreview, setPreviewTabPinned } from '@/store/preview'
 import { hasOpenServerRequest, resetServerRequestsForTests } from '@/store/server-requests'
 import { setActiveSessionId, setSelectedStoredSessionId, setSessions } from '@/store/session'
 import { $sessionStates, $sessionTiles, dropSessionState, publishSessionState } from '@/store/session-states'
@@ -344,7 +345,8 @@ describe('window.read claim tolerance (#121609)', () => {
 
 describe('preview pop-out forwarding', () => {
   // The requester reaches the pop-out: it answers only for that session's tabs.
-  const sessionAOwner = { runtimeId: 'session-a', sessionId: 'stored-a' }
+  // It also names its profile: only that profile's pins may answer it.
+  const sessionAOwner = { profile: 'default', runtimeId: 'session-a', sessionId: 'stored-a' }
 
   beforeEach(() => {
     hasLivePreviewSurface.mockReturnValue(false)
@@ -455,7 +457,11 @@ describe('preview requests act for the session that asked (#73890)', () => {
     const { respond } = deliver('tour', { action: 'discover', session_id: 'rt-a', surface: 'preview' }, 'rt-a')
 
     await vi.waitFor(() => expect(respond).toHaveBeenCalledTimes(1), { timeout: 30_000 })
-    expect(runTour).toHaveBeenCalledWith(expect.anything(), 'preview', { runtimeId: 'rt-a', sessionId: 'stored-a' })
+    expect(runTour).toHaveBeenCalledWith(expect.anything(), 'preview', {
+      profile: 'default',
+      runtimeId: 'rt-a',
+      sessionId: 'stored-a'
+    })
   })
 
   it('drives the tab its runtime opened before the selection named its stored id', async () => {
@@ -477,6 +483,40 @@ describe('preview requests act for the session that asked (#73890)', () => {
     } finally {
       unbind()
       dropSessionState('rt-new')
+    }
+  })
+
+  it("never answers a tile of another profile with the viewed profile's pinned page", async () => {
+    // Profile X's runtime stays open as a tile while the primary's profile
+    // (the bucket in view) has a pinned Browser.
+    $sessionTiles.set([
+      { dir: 'right', ownerProfile: 'prof-p1-x', runtimeId: 'rt-x', storedSessionId: 'stored-x' } as never
+    ])
+    publishSessionState('rt-x', createClientSessionState('stored-x'))
+    openPreview({ kind: 'url', label: 'y', source: 'https://y.example', url: 'https://y.example' }, 'stored-a')
+    const pin = $previewTabs.get()[0]!.id
+    setPreviewTabPinned(pin, true)
+
+    const unbind = registerPreviewPageReader(pin, async () => ({
+      text: 'PROFILE_Y_PRIVATE_TEXT',
+      title: 'y',
+      url: 'https://y.example'
+    }))
+
+    try {
+      const fromX = deliver('preview.read', { session_id: 'rt-x' }, 'rt-a')
+
+      await vi.waitFor(() => expect(fromX.respond).toHaveBeenCalledTimes(1), { timeout: 30_000 })
+      expect(fromX.respond.mock.calls[0][0].value).toBe('')
+
+      // Control: the pin's own profile still reads it.
+      const fromA = deliver('preview.read', { session_id: 'rt-a' }, 'rt-a')
+
+      await vi.waitFor(() => expect(fromA.respond).toHaveBeenCalledTimes(1), { timeout: 30_000 })
+      expect(JSON.parse(fromA.respond.mock.calls[0][0].value)).toMatchObject({ text: 'PROFILE_Y_PRIVATE_TEXT' })
+    } finally {
+      unbind()
+      dropSessionState('rt-x')
     }
   })
 

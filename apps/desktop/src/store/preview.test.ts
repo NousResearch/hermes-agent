@@ -30,6 +30,7 @@ import {
   openPreview,
   previewTabId,
   previewTabIdsVisibleTo,
+  previewTabsFor,
   type PreviewTarget,
   progressPreviewServerRestart,
   prunePreviewTabsForSession,
@@ -615,6 +616,60 @@ describe('preview session scoping (#73890)', () => {
       setPreviewScope('default')
       dropPreviewTabsForProfile('prof-x')
       dropPreviewTabsForProfile('prof-y')
+    }
+  })
+
+  it("authorizes only the requester's own profile pins for a pop-out, never the viewed profile's", () => {
+    try {
+      setPreviewScope('prof-p1-x')
+      openPreview(urlTarget('https://x-pin.example'), 'stored-p1-x')
+      const xPin = $previewTabs.get()[0]!.id
+      setPreviewTabPinned(xPin, true)
+      setPreviewScope('prof-p1-y')
+      openPreview(urlTarget('https://y-private.example'), 'stored-p1-y')
+      const yPin = $previewTabs.get()[0]!.id
+      setPreviewTabPinned(yPin, true)
+      openPreview(fileTarget('/work/x-in-y.html'), 'stored-p1-x')
+      const xOwnInView = $previewTabs.get().find(tab => tab.target.path === '/work/x-in-y.html')!.id
+
+      const fromX = { profile: 'prof-p1-x', runtimeId: 'rt-p1-x', sessionId: 'stored-p1-x' }
+      const fromY = { profile: 'prof-p1-y', runtimeId: 'rt-p1-y', sessionId: 'stored-p1-y' }
+
+      expect(previewTabsFor(fromX).map(tab => tab.id)).toEqual([xOwnInView])
+      expect(previewTabIdsVisibleTo(fromX).sort()).toEqual([xOwnInView, xPin].sort())
+      expect(previewTabsFor(fromY).map(tab => tab.id)).toEqual([yPin])
+      expect(previewTabIdsVisibleTo(fromY)).toEqual([yPin])
+    } finally {
+      setPreviewScope('default')
+      dropPreviewTabsForProfile('prof-p1-x')
+      dropPreviewTabsForProfile('prof-p1-y')
+    }
+  })
+
+  it("keeps one pending runtime's Browser out of another pending runtime's reads, opens and closes", () => {
+    openPreview(urlTarget('https://runtime-a.example'), null, 'rt-pend-a')
+    const aTab = $previewTabs.get()[0]!.id
+    const fromB = { runtimeId: 'rt-pend-b', sessionId: null }
+
+    expect(previewTabsFor(fromB)).toEqual([])
+    expect(previewTabIdsVisibleTo(fromB)).toEqual([])
+
+    openPreview(urlTarget('https://runtime-b.example'), null, 'rt-pend-b')
+    const bTab = $previewTabs.get().find(tab => tab.id !== aTab)?.id
+
+    expect($previewTabs.get().find(tab => tab.id === aTab)?.target.url).toBe('https://runtime-a.example')
+    expect(bTab).toBeDefined()
+
+    closeAgentPreview(fromB, [])
+    expect($previewTabs.get().map(tab => tab.id)).toEqual([aTab])
+
+    // A's own stored id binding still adopts the tab B left alone.
+    publishSessionState('rt-pend-a', createClientSessionState('stored-pend-a'))
+
+    try {
+      expect($previewTabs.get()[0]?.sessionId).toBe('stored-pend-a')
+    } finally {
+      dropSessionState('rt-pend-a')
     }
   })
 

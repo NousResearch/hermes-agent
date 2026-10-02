@@ -10,13 +10,19 @@ import {
   closeAgentPreview,
   completePreviewServerRestart,
   openPreview,
+  type PreviewOwner,
   progressPreviewServerRestart,
   renderedHtmlTarget,
   requestPreviewReload
 } from '@/store/preview'
 import { $activeSessionId, $currentCwd } from '@/store/session'
 import { $focusedStoredSessionId } from '@/store/session-focus'
-import { $focusedRuntimeId, $sessionTiles, storedSessionIdForRuntimeId } from '@/store/session-states'
+import {
+  $focusedRuntimeId,
+  $sessionTiles,
+  previewScopeForRuntime,
+  storedSessionIdForRuntimeId
+} from '@/store/session-states'
 
 type EventHandler = (event: GatewayEvent) => void
 
@@ -43,6 +49,14 @@ function sessionIsOnScreen(sessionId: string): boolean {
  *  stored id yet is a fresh draft, whose tabs are ownerless until adopted. */
 function previewOwnerForEvent(sessionId: string | undefined): null | string {
   return sessionId ? storedSessionIdForRuntimeId(sessionId) : $focusedStoredSessionId.get()
+}
+
+/** The full identity an agent's close acts for: its stored id, the runtime
+ *  (its pending tabs) and its profile (the only pins it may close). */
+function previewCloserForEvent(sessionId: string | undefined): PreviewOwner {
+  return sessionId
+    ? { profile: previewScopeForRuntime(sessionId), runtimeId: sessionId, sessionId: previewOwnerForEvent(sessionId) }
+    : previewOwnerForEvent(sessionId)
 }
 
 export function usePreviewRouting({ baseHandleGatewayEvent, currentCwd, requestGateway }: PreviewRoutingOptions) {
@@ -112,7 +126,9 @@ export function usePreviewRouting({ baseHandleGatewayEvent, currentCwd, requestG
                 renderedHtmlTarget(trimmedLabel ? { ...reached, label: trimmedLabel } : reached),
                 previewOwnerForEvent(event.session_id),
                 // The runtime that ran the tool, should its stored id lag.
-                event.session_id || undefined
+                event.session_id || undefined,
+                // Its profile: another profile's pinned Browser is not its to navigate.
+                event.session_id ? previewScopeForRuntime(event.session_id) : undefined
               )
             }
           )
@@ -132,7 +148,7 @@ export function usePreviewRouting({ baseHandleGatewayEvent, currentCwd, requestG
           return
         }
 
-        const owner = previewOwnerForEvent(event.session_id)
+        const owner = previewCloserForEvent(event.session_id)
 
         if (!target) {
           closeAgentPreview(owner, [])

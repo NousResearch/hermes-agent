@@ -74,13 +74,15 @@ def test_pm_handoff_reports_update_and_gateway_results(
 @pytest.mark.platforms('windows')
 @pytest.mark.parametrize(('output', 'code'), [
     ('✓ Update complete! (v1.0.0)', 0),
-    ('✓ Update complete! (v1.0.0)|✗ Update not complete: 1 gateway(s) still running the old code', 124),
+    ('✓ Update complete! (v1.0.0)|  ✗ hermes-gateway failed to come back after restart.', 124),
+    ('✓ Update complete! (v1.0.0)|Update incomplete — some units were not restarted', 124),
     ('Cloning into the checkout...', 124),
 ])
 def test_update_killed_by_idle_watchdog_after_completing_is_a_success(
     tmp_path: Path, output: str, code: int,
 ) -> None:
-    """#96205: a finished update parked silently in its restart phase is still finished."""
+    """#96205: a finished update parked silently in its restart phase is still finished,
+    unless anything after its banner already reported a failure."""
     install = tmp_path / 'checkout'
     publish_fixture_launcher(install, CLI)
     (install / 'hermes_cli/desktop_update_verify.py').write_text('pass\n')

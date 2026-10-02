@@ -1292,6 +1292,69 @@ json.dump(sorted(leaf_paths(DEFAULT_CONFIG)), sys.stdout, indent=2)
           echo "ok" > $out/result
         '';
 
+        # Extras ADD to what a package ships, through both entry points:
+        # `pkgs.hermes-agent.override { ... }` (the documented overlay path)
+        # and the modules' extraPythonPackages / extraDependencyGroups.
+        # Replacing semantics rebuilt the default package as `minimal` and
+        # dropped every provider group. Each case asserts a positive effect
+        # AND a preserved one, so an implementation that ignored the extras
+        # fails too. Eval-only: a drvPath is the identity of what it builds.
+        extras-extend-package = let
+          testPkg = pythonLock.interpreter.pkgs.pyfiglet;
+          # Not in the default package's groups, so adding it must show.
+          newGroup = "langfuse";
+          path = drv: builtins.unsafeDiscardStringContext drv.drvPath;
+          modulePackage = settings:
+            (evalHomeModule ({ enable = true; } // settings)).config.programs.hermes-agent.package;
+
+          viaModulePlugin = modulePackage { extraPythonPackages = [ testPkg ]; };
+          viaModuleGroup = modulePackage { extraDependencyGroups = [ newGroup ]; };
+          viaModuleShipped = modulePackage { extraDependencyGroups = [ "anthropic" ]; };
+          viaOverlayGroup = hermes-agent.override { extraDependencyGroups = [ newGroup ]; };
+          viaFunctionGroup = hermes-agent.override (prev: {
+            extraDependencyGroups = (prev.extraDependencyGroups or [ ]) ++ [ newGroup ];
+          });
+          viaOverlayShipped = hermes-agent.override { extraDependencyGroups = [ "messaging" ]; };
+
+          cases = [
+            {
+              what = "module extraPythonPackages reaches the package (wrapper PYTHONPATH)";
+              ok = path viaModulePlugin != path hermes-agent;
+            }
+            {
+              what = "module extraPythonPackages keeps the default sealed venv";
+              ok = path viaModulePlugin.hermesVenv == path hermesVenv;
+            }
+            {
+              what = "a new group changes the venv (not ignored)";
+              ok = path viaFunctionGroup.hermesVenv != path hermesVenv;
+            }
+            {
+              what = "module extraDependencyGroups == appending to the package's own";
+              ok = path viaModuleGroup.hermesVenv == path viaFunctionGroup.hermesVenv;
+            }
+            {
+              what = "overlay attrset override == appending (shipped groups survive)";
+              ok = path viaOverlayGroup.hermesVenv == path viaFunctionGroup.hermesVenv;
+            }
+            {
+              what = "module group the package already ships leaves the venv unchanged";
+              ok = path viaModuleShipped.hermesVenv == path hermesVenv;
+            }
+            {
+              what = "overlay group the package already ships leaves the venv unchanged";
+              ok = path viaOverlayShipped.hermesVenv == path hermesVenv;
+            }
+          ];
+          report = lib.concatMapStrings (c: "${if c.ok then "PASS" else "FAIL"}: ${c.what}\n") cases;
+        in pkgs.runCommand "hermes-extras-extend-package" { inherit report; } ''
+          echo "=== Checking extras extend the package's own ==="
+          printf '%s' "$report"
+          if printf '%s' "$report" | grep -q '^FAIL'; then exit 1; fi
+          mkdir -p $out
+          echo "ok" > $out/result
+        '';
+
         # Exercise the actual uv2nix environment, not only the selector.
         python-lock-derived = pkgs.runCommand "hermes-python-lock-derived" { } ''
           set -e

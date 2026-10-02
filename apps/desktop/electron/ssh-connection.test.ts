@@ -98,19 +98,22 @@ test('controlSocketPath is stable, short, and host-distinct', () => {
   assert.match(path.basename(a), /^[0-9a-f]{16}\.sock$/)
 })
 
-test.runIf(process.platform !== 'win32')('controlSocketPath default base stays under sun_path even with the temp-listener suffix', () => {
-  // OpenSSH binds a temporary listener at `<ControlPath>.<16 random chars>` (a
-  // 17-byte suffix) while opening the master. The macOS regression was the
-  // default base under os.tmpdir() (/var/folders/.../T/) pushing it over 104.
-  const p = controlSocketPath('hermes', 'remote-build-server', 22) // no baseDir → default
-  const worstCase = `${p}.0123456789abcdef` // mimic the .<16-char> temp suffix
-  assert.ok(
-    worstCase.length <= 104,
-    `default control socket + temp suffix must fit sun_path (got ${worstCase.length}: ${worstCase})`
-  )
-  // And it must NOT live under the deeply-nested macOS per-user temp dir.
-  assert.ok(!p.includes('/var/folders/'), 'default base must not be os.tmpdir() on macOS')
-})
+test.runIf(process.platform !== 'win32')(
+  'controlSocketPath default base stays under sun_path even with the temp-listener suffix',
+  () => {
+    // OpenSSH binds a temporary listener at `<ControlPath>.<16 random chars>` (a
+    // 17-byte suffix) while opening the master. The macOS regression was the
+    // default base under os.tmpdir() (/var/folders/.../T/) pushing it over 104.
+    const p = controlSocketPath('hermes', 'remote-build-server', 22) // no baseDir → default
+    const worstCase = `${p}.0123456789abcdef` // mimic the .<16-char> temp suffix
+    assert.ok(
+      worstCase.length <= 104,
+      `default control socket + temp suffix must fit sun_path (got ${worstCase.length}: ${worstCase})`
+    )
+    // And it must NOT live under the deeply-nested macOS per-user temp dir.
+    assert.ok(!p.includes('/var/folders/'), 'default base must not be os.tmpdir() on macOS')
+  }
+)
 
 test.runIf(process.platform !== 'win32')(
   'deep HOME uses a private short directory and binds a real listener',
@@ -366,62 +369,68 @@ test('open() abort kills an in-flight SSH child instead of waiting for timeout',
   assert.equal(child._killed, true)
 })
 
-test.runIf(process.platform !== 'win32')('open() is a no-op when the master is already alive and execs verify', async () => {
-  const ops: string[] = []
+test.runIf(process.platform !== 'win32')(
+  'open() is a no-op when the master is already alive and execs verify',
+  async () => {
+    const ops: string[] = []
 
-  const spawnFn = scriptedSpawn(args => {
-    ops.push(args.includes('check') ? 'check' : args.includes('exit 0') ? 'verify' : 'master')
+    const spawnFn = scriptedSpawn(args => {
+      ops.push(args.includes('check') ? 'check' : args.includes('exit 0') ? 'verify' : 'master')
 
-    return { code: 0 } // check succeeds → alive; verify exec succeeds → trusted
-  })
+      return { code: 0 } // check succeeds → alive; verify exec succeeds → trusted
+    })
 
-  const conn = new SshConnection({ host: 'box', user: 'me' }, { spawnFn, mux: true, controlDir: '/tmp/d' })
-  await conn.open()
-  assert.deepEqual(ops, ['check', 'verify'], 'alive master is exec-verified, then trusted without reopening')
-})
+    const conn = new SshConnection({ host: 'box', user: 'me' }, { spawnFn, mux: true, controlDir: '/tmp/d' })
+    await conn.open()
+    assert.deepEqual(ops, ['check', 'verify'], 'alive master is exec-verified, then trusted without reopening')
+  }
+)
 
-test.runIf(process.platform !== 'win32')('open() evicts a wedged master (check passes, exec hangs) and dials fresh', async () => {
-  // The macOS mode-switch wedge: ControlPersist master answers -O check but
-  // every exec through it hangs. open() must verify, evict (-O exit), and
-  // establish a fresh master instead of trusting the corpse.
-  const ops: string[] = []
+test.runIf(process.platform !== 'win32')(
+  'open() evicts a wedged master (check passes, exec hangs) and dials fresh',
+  async () => {
+    // The macOS mode-switch wedge: ControlPersist master answers -O check but
+    // every exec through it hangs. open() must verify, evict (-O exit), and
+    // establish a fresh master instead of trusting the corpse.
+    const ops: string[] = []
 
-  const spawnFn = scriptedSpawn(args => {
-    if (args.includes('check')) {
-      ops.push('check')
+    const spawnFn = scriptedSpawn(args => {
+      if (args.includes('check')) {
+        ops.push('check')
+
+        return { code: 0 }
+      }
+
+      if (args.includes('exit 0')) {
+        ops.push('verify')
+
+        return { hang: true }
+      }
+
+      if (args.includes('-O')) {
+        ops.push('evict')
+
+        return { code: 0 }
+      }
+
+      ops.push('master')
 
       return { code: 0 }
-    }
+    })
 
-    if (args.includes('exit 0')) {
-      ops.push('verify')
+    const conn = new SshConnection(
+      { host: 'box', user: 'me' },
+      { spawnFn, mux: true, controlDir: '/tmp/d', connectTimeoutMs: 50 }
+    )
 
-      return { hang: true }
-    }
-
-    if (args.includes('-O')) {
-      ops.push('evict')
-
-      return { code: 0 }
-    }
-
-    ops.push('master')
-
-    return { code: 0 }
-  })
-
-  const conn = new SshConnection(
-    { host: 'box', user: 'me' },
-    { spawnFn, mux: true, controlDir: '/tmp/d', connectTimeoutMs: 50 }
-  )
-
-  await conn.open()
-  assert.deepEqual(
-    ops,
-    ['check', 'verify', 'evict', 'master'],
-    'wedged master: verified, evicted, then a fresh master is dialed'
-  )
-})
+    await conn.open()
+    assert.deepEqual(
+      ops,
+      ['check', 'verify', 'evict', 'master'],
+      'wedged master: verified, evicted, then a fresh master is dialed'
+    )
+  }
+)
 
 test.runIf(process.platform !== 'win32')('close() removes the control socket when -O exit fails', async () => {
   const dir = path.join(os.tmpdir(), `hermes-ssh-close-${process.pid}-${Date.now()}`)
@@ -447,23 +456,26 @@ test.runIf(process.platform !== 'win32')('close() removes the control socket whe
   fs.rmSync(dir, { recursive: true, force: true })
 })
 
-test.runIf(process.platform !== 'win32')('open() creates the control-socket directory if it does not exist', async () => {
-  const dir = path.join(os.tmpdir(), `hermes-ssh-test-${process.pid}-${Date.now()}`)
-  assert.ok(!fs.existsSync(dir), 'precondition: control dir absent')
-  const spawnFn = scriptedSpawn(args => (args.includes('check') ? { code: 255 } : { code: 0 }))
-  const conn = new SshConnection({ host: 'box', user: 'me' }, { spawnFn, mux: true, controlDir: dir })
+test.runIf(process.platform !== 'win32')(
+  'open() creates the control-socket directory if it does not exist',
+  async () => {
+    const dir = path.join(os.tmpdir(), `hermes-ssh-test-${process.pid}-${Date.now()}`)
+    assert.ok(!fs.existsSync(dir), 'precondition: control dir absent')
+    const spawnFn = scriptedSpawn(args => (args.includes('check') ? { code: 255 } : { code: 0 }))
+    const conn = new SshConnection({ host: 'box', user: 'me' }, { spawnFn, mux: true, controlDir: dir })
 
-  try {
-    await conn.open()
-    assert.ok(fs.existsSync(dir), 'open() created the control-socket directory before spawning ssh')
-  } finally {
     try {
-      fs.rmSync(dir, { recursive: true, force: true })
-    } catch {
-      /* ignore */
+      await conn.open()
+      assert.ok(fs.existsSync(dir), 'open() created the control-socket directory before spawning ssh')
+    } finally {
+      try {
+        fs.rmSync(dir, { recursive: true, force: true })
+      } catch {
+        /* ignore */
+      }
     }
   }
-})
+)
 
 test('open() surfaces a classified auth error', async () => {
   const spawnFn = scriptedSpawn(args => {
@@ -562,7 +574,7 @@ test('mux forward keeps the ControlPersist master alive until the final forward 
   try {
     const spawnFn = scriptedSpawn({ code: 0 })
 
-    const conn = new SshConnection({ host: 'box', user: 'me' }, { spawnFn, controlDir: '/tmp/d' })
+    const conn = new SshConnection({ host: 'box', user: 'me' }, { spawnFn, mux: true, controlDir: '/tmp/d' })
 
     await conn.forward(5000, 6000)
     await conn.forward(5001, 6001)
@@ -605,26 +617,29 @@ test('lifecycle logging passes through redaction', async () => {
   assert.ok(logs.some(l => l.includes('[ssh]')))
 })
 
-test.runIf(process.platform === 'win32')('Windows defaults to one-shot SSH without creating a control directory', async () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-ssh-win-'))
-  const controlDir = path.join(dir, 'unused-control')
-  const spawnFn = scriptedSpawn([{ code: 255 }, { code: 0 }])
-  const conn = new SshConnection({ host: 'box', user: 'me' }, { spawnFn, controlDir })
-  try {
-    await conn.open()
-    assert.equal(conn.controlPath, '')
-    assert.equal(fs.existsSync(controlDir), false)
-    assert.equal(spawnFn.calls.length, 2)
-    for (const args of spawnFn.calls) {
-      assert.equal(args.at(-1), 'exit 0')
-      assert.ok(!args.some(arg => /ControlMaster|ControlPath|ControlPersist/.test(arg)))
+test.runIf(process.platform === 'win32')(
+  'Windows defaults to one-shot SSH without creating a control directory',
+  async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-ssh-win-'))
+    const controlDir = path.join(dir, 'unused-control')
+    const spawnFn = scriptedSpawn([{ code: 255 }, { code: 0 }])
+    const conn = new SshConnection({ host: 'box', user: 'me' }, { spawnFn, controlDir })
+    try {
+      await conn.open()
+      assert.equal(conn.controlPath, '')
+      assert.equal(fs.existsSync(controlDir), false)
+      assert.equal(spawnFn.calls.length, 2)
+      for (const args of spawnFn.calls) {
+        assert.equal(args.at(-1), 'exit 0')
+        assert.ok(!args.some(arg => /ControlMaster|ControlPath|ControlPersist/.test(arg)))
+      }
+      await conn.close()
+      assert.equal(conn._opened, false)
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true })
     }
-    await conn.close()
-    assert.equal(conn._opened, false)
-  } finally {
-    fs.rmSync(dir, { recursive: true, force: true })
   }
-})
+)
 
 test('no-mux: ssh args carry no ControlMaster/ControlPath options', async () => {
   const spawnFn = scriptedSpawn({ code: 0 })
@@ -778,10 +793,10 @@ test('close() does not report a signal-killed -O exit with empty stderr as unrea
 
   const conn = new SshConnection(
     { host: 'box', user: 'me' },
-    { spawnFn, controlDir: '/tmp/d', mux: true, rememberLog: line => logs.push(line) }
     {
       spawnFn,
       controlDir: '/tmp/d',
+      mux: true,
       controlMasterHolders: createControlMasterHolders(),
       rememberLog: line => logs.push(line)
     }
@@ -1247,17 +1262,20 @@ test.runIf(process.platform !== 'win32')('open() rejects a control-dir that is a
   fs.rmSync(tmp, { recursive: true, force: true })
 })
 
-test.runIf(process.platform !== 'win32')('open() enforces 0700 on an existing control dir with lax permissions', async () => {
-  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'ssh-test-'))
-  const dir = path.join(tmp, 'ctrl')
-  fs.mkdirSync(dir, { mode: 0o755 })
-  const spawnFn = scriptedSpawn(args => (args.includes('check') ? { code: 255 } : { code: 0 }))
-  const conn = new SshConnection({ host: 'box', user: 'me' }, { spawnFn, controlDir: dir })
-  await conn.open()
-  const stat = fs.statSync(dir)
-  assert.equal(stat.mode & 0o777, 0o700, 'control dir must be tightened to 0700')
-  fs.rmSync(tmp, { recursive: true, force: true })
-})
+test.runIf(process.platform !== 'win32')(
+  'open() enforces 0700 on an existing control dir with lax permissions',
+  async () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'ssh-test-'))
+    const dir = path.join(tmp, 'ctrl')
+    fs.mkdirSync(dir, { mode: 0o755 })
+    const spawnFn = scriptedSpawn(args => (args.includes('check') ? { code: 255 } : { code: 0 }))
+    const conn = new SshConnection({ host: 'box', user: 'me' }, { spawnFn, controlDir: dir })
+    await conn.open()
+    const stat = fs.statSync(dir)
+    assert.equal(stat.mode & 0o777, 0o700, 'control dir must be tightened to 0700')
+    fs.rmSync(tmp, { recursive: true, force: true })
+  }
+)
 
 test('control socket identity separates installation scope and key identity', () => {
   const base = controlSocketPath('me', 'box', 22, '/tmp/d', {
@@ -1344,23 +1362,26 @@ test.runIf(process.platform !== 'win32')('closing one scope addresses only that 
   assert.equal(second._opened, true)
 })
 
-test.runIf(process.platform !== 'win32')('failed ControlMaster close disowns the master instead of retrying it', async () => {
-  // Old contract kept _opened=true for a retry — which left wedged ControlPersist
-  // masters trusted and reattachable (the macOS mode-switch livelock). New
-  // contract: a master that refuses -O exit is disowned — socket dropped,
-  // connection marked closed — so the next open dials fresh.
-  const spawnFn = scriptedSpawn([{ code: 255, stderr: 'master refused exit' }])
+test.runIf(process.platform !== 'win32')(
+  'failed ControlMaster close disowns the master instead of retrying it',
+  async () => {
+    // Old contract kept _opened=true for a retry — which left wedged ControlPersist
+    // masters trusted and reattachable (the macOS mode-switch livelock). New
+    // contract: a master that refuses -O exit is disowned — socket dropped,
+    // connection marked closed — so the next open dials fresh.
+    const spawnFn = scriptedSpawn([{ code: 255, stderr: 'master refused exit' }])
 
-  const conn = new SshConnection(
-    { host: 'box', user: 'me' },
-    { spawnFn, mux: true, controlDir: '/tmp/d', controlMasterHolders: createControlMasterHolders() }
-  )
+    const conn = new SshConnection(
+      { host: 'box', user: 'me' },
+      { spawnFn, mux: true, controlDir: '/tmp/d', controlMasterHolders: createControlMasterHolders() }
+    )
 
-  conn._opened = true
-  await conn.close()
-  assert.equal(conn._opened, false)
-  assert.equal(spawnFn.calls.length, 1)
-})
+    conn._opened = true
+    await conn.close()
+    assert.equal(conn._opened, false)
+    assert.equal(spawnFn.calls.length, 1)
+  }
+)
 
 test('stopTunnelChild waits for process exit', async () => {
   const child: any = new EventEmitter()

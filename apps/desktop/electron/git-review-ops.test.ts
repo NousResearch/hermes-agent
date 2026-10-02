@@ -209,7 +209,6 @@ test('reviewList caps the file payload returned to the renderer', async () => {
 
   assert.equal(result.files.length, REVIEW_FILE_CAP)
 }, 30_000)
-})
 
 const mockExecFile = vi.mocked(await import('node:child_process')).execFile
 

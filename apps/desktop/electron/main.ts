@@ -72,15 +72,8 @@ import {
 import { dashboardFallbackArgs, serveBackendArgs } from './backend-command'
 import { createBackendConnectionState } from './backend-connection-state'
 import { BackendDialClaims, runForegroundRetryingDialClaim } from './backend-dial-claim'
-import {
-  buildDesktopBackendEnv,
-  hermesManagedNodePathEntries,
-  normalizeHermesHomeRoot,
-  profileBackendParentEnv
-} from './backend-env'
-import { BackendDialClaims } from './backend-dial-claim'
+import { buildDesktopBackendEnv, normalizeHermesHomeRoot, profileBackendParentEnv } from './backend-env'
 import type { HostBackendRecord } from './backend-discovery'
-import { buildDesktopBackendEnv, profileBackendParentEnv } from './backend-env'
 import { createBackendExitRecoveryLatch } from './backend-exit-recovery'
 import { isReauthRequiredError, waitForHermesReady } from './backend-health'
 import {
@@ -215,7 +208,6 @@ import type { RegistryConnection } from './connection-registry'
 import type { RosterProfileMetadata } from './connection-registry'
 import { liveWindowState, overlayWindowState } from './connection-window-state'
 import { describeCrashReason, installCrashForensics } from './crash-forensics'
-import { adoptServedDashboardToken, resolveServedDashboardToken } from './dashboard-token'
 import { registerDeepLinkProtocolOutsideTests } from './deep-link-protocol-registration'
 import {
   adoptServedDashboardToken,
@@ -443,7 +435,6 @@ import {
   undialedSshRouteSeeds
 } from './plugin-profile-routes'
 import { ensurePoolBackendRuntime } from './pool-backend-startup'
-import { clampPoolLimits, parsePoolLimits, POOL_LIMITS_DEFAULTS } from './pool-limits'
 import { clampPoolLimits, parsePoolLimits, POOL_LIMITS_DEFAULTS, POOL_LIMITS_MIN } from './pool-limits'
 import { createPoolRetirer } from './pool-retire'
 import { createPoolRetirementClient } from './pool-retire-http'
@@ -457,6 +448,7 @@ import {
   LocalBackendBackgroundCapacityError,
   LocalBackendSpawnCoordinator,
   type LocalBackendSpawnPriority,
+  type LocalBackendSpawnRequest,
   registerLocalBackendExitFinalizer,
   releaseLocalBackendSlot,
   releaseLocalBackendSlotAfterExit
@@ -3784,48 +3776,16 @@ async function checkUpdates(opts: { force?: boolean } = {}): Promise<UpdaterStat
     }
   }
 
-  const git = args => runGit(args, { cwd: updateRoot }).then(r => r.stdout.trim())
-
-  const [currentSha, dirtyStr, currentBranch, originUrl] = await Promise.all([
-    git(['rev-parse', 'HEAD']),
-    git(['status', '--porcelain']),
-    git(['rev-parse', '--abbrev-ref', 'HEAD']),
-    getOriginUrl(updateRoot)
-  ])
-
-  const slug = githubRepoSlug(originUrl)
-  const cached = readUpdateCheckCache()
-  const now = Date.now()
-
-  if (!force && cacheIsFresh(cached, { branch, currentSha, now, repository: slug })) {
-    return {
-      ...cached.status,
-      dirty: dirtyStr.length > 0,
-      currentBranch
-    }
-  }
   // Checkout install: dispatch through the strategy layer — one mechanism,
   // one stamp, no direct body path. The flow lives in updater/checkout.ts;
   // this is the only production door to the checkout arms.
   return resolveCheckoutUpdateStrategy().check(opts)
 }
 
-  branch = await resolveHealedBranch(updateRoot, branch)
 let updateInFlight = false
 
 // ── bundled / App Installer helpers ─────────────────────────────────────────
 
-  const result = {
-    supported: true,
-    branch,
-    currentBranch,
-    currentSha,
-    dirty: dirtyStr.length > 0,
-    hermesRoot: updateRoot,
-    repository: slug || undefined,
-    fetchedAt: now,
-    ...status
-  }
 /**
  * Keep the native updater instance alive across check, download and install.
  * Its identity comes from the packaged app, not its optional Python payload.
@@ -11318,12 +11278,10 @@ async function ensureRegistryBackend(
   // resolves its live descriptor back to this exact source id; otherwise one
   // Desktop window starts two isolated servers whose transient runtime ids
   // are not interchangeable.
-  if (id === registry.primary && source.kind !== 'local' && source.kind !== 'ssh') {
-    const primaryDescriptor = await ensureBackend(profile, { passive, spawnPriority, speculative })
   const sharedPrimary: (ResolvedConnectionDescriptor & SharedRegistryProfileScope) | null =
     await reuseMatchingPrimaryRemoteBackend({
       connectionId: id,
-      ensurePrimary: ensureBackend,
+      ensurePrimary: requestedProfile => ensureBackend(requestedProfile, { passive, spawnPriority, speculative }),
       profile,
       registry,
       source
@@ -12185,10 +12143,6 @@ function startPoolIdleReaper() {
     const now = Date.now()
 
     for (const [profile, entry] of [...backendPool.entries()]) {
-      if (now - (entry.lastActiveAt || 0) > poolIdleMs()) {
-        // Remote descriptors hold no child/slot. Local children require the
-        // same admission authority as foreground and LRU reclamation.
-        const retiring = entry.process ? poolRetirer.retireIdle(profile, poolIdleMs()) : stopPoolBackend(profile)
       // Remote descriptors hold no child/slot. Local children require the
       // same admission authority as foreground and LRU reclamation.
       // Pinned-tier TTL (#105239): the keepalive refreshes lastActiveAt for
@@ -12441,22 +12395,20 @@ async function runPoolBackendStart(
 
   const backend = await ensurePoolBackendRuntime({
     backend: await resolveHermesBackend(backendArgs),
-    ensureRuntime: backend => ensureRuntime(backend, () => assertPoolEntryStillOwned(poolKey, entry)),
+    ensureRuntime: backend =>
+      ensureRuntime(backend, () =>
+        assertPoolEntryStillOwned(poolKey, entry, backendPool, localBackendLifecycle.signal)
+      ),
     profile
   })
-  const backend = await ensureRuntime(await resolveHermesBackend(backendArgs), () =>
-    assertPoolEntryStillOwned(poolKey, entry, backendPool, localBackendLifecycle.signal)
-  )
 
   // Route old runtimes (no `serve`) through the legacy `dashboard --no-open`.
   backend.args = await getBackendArgsForRuntime(backend)
   assertPoolEntryStillOwned(poolKey, entry, backendPool, localBackendLifecycle.signal)
   const hermesCwd = resolveHermesCwd()
-  const webDist = resolveWebDist()
   // stdout is normally sufficient, but Windows can lose a child pipe during
   // a packaged Desktop launch. The backend's atomic ready-file channel avoids
   // turning a healthy local server into a 90-second startup timeout.
-  const readyFile = IS_WINDOWS || backend.readyFile ? makeDashboardReadyFile() : null
 
   const webDist = resolveDashboardWebDist({
     activeHermesRoot: ACTIVE_HERMES_ROOT,
@@ -12464,7 +12416,7 @@ async function runPoolBackendStart(
     env: process.env
   })
 
-  const readyFile = backend.readyFile ? makeDashboardReadyFile() : null
+  const readyFile = IS_WINDOWS || backend.readyFile ? makeDashboardReadyFile() : null
 
   // Guard BEFORE the "Starting" line: a profile that only exists on a remote
   // backend (remote-primary desktop asked for a forced-local child) rejects
@@ -13371,10 +13323,8 @@ async function runHermesStart({ supervisorRecovery = false }: { supervisorRecove
     backend.args = await getBackendArgsForRuntime(backend)
     backendConnectionState.assertCurrentAttempt(connectionAttempt)
     const hermesCwd = resolveHermesCwd()
-    const webDist = resolveWebDist()
     // Keep the primary local backend on the same reliable Windows readiness
     // channel as secondary profile backends.
-    const readyFile = IS_WINDOWS || backend.readyFile ? makeDashboardReadyFile() : null
 
     const webDist = resolveDashboardWebDist({
       activeHermesRoot: ACTIVE_HERMES_ROOT,
@@ -13382,7 +13332,7 @@ async function runHermesStart({ supervisorRecovery = false }: { supervisorRecove
       env: process.env
     })
 
-    const readyFile = backend.readyFile ? makeDashboardReadyFile() : null
+    const readyFile = IS_WINDOWS || backend.readyFile ? makeDashboardReadyFile() : null
 
     await advanceBootProgress('backend.spawn', `Starting Hermes backend via ${backend.label}`, 84)
     rememberLog(`Starting Hermes backend via ${backend.label}`)
@@ -13952,8 +13902,6 @@ function focusWindow(win) {
     win.maximize()
   }
 
-  if (!win.isVisible()) {
-    win.show()
   // #83998: show() and focus() both seize the Windows OS foreground,
   // dismissing other apps' native save/confirm dialogs while Hermes streams
   // in the background. Reveal without activation, and only take the keyboard
@@ -15748,14 +15696,18 @@ ipcMain.handle('hermes:connection', async (event, profile, extra) => {
     primaryProfileKey()
   )
 
-  return connectDesktopProfileRoute(route, spawnPriorityFrom(extra?.priority), extra?.speculative === true)
-  return connectDesktopProfileRoute(route, spawnPriorityFrom(extra?.priority), event.sender)
+  return connectDesktopProfileRoute(
+    route,
+    spawnPriorityFrom(extra?.priority),
+    extra?.speculative === true,
+    event.sender
+  )
 })
 
 async function connectDesktopProfileRoute(
   route: DesktopProfileRoute,
   spawnPriority: LocalBackendSpawnPriority = 'foreground',
-  speculative = false
+  speculative = false,
   sender?: Electron.WebContents
 ) {
   // Coalesce concurrent renderer dials for one profile scope (#90812): the
@@ -15811,10 +15763,6 @@ async function connectDesktopProfileRoute(
 // local kind delegates to ensureBackend when the v1 route is local, and
 // forces a genuinely-local child when the v1 global mode is remote (the
 // registry 'local' entry always means this machine).
-ipcMain.handle('hermes:connection:for', async (_event, payload) => {
-  const { connectionId, profile, priority, speculative } =
-    payload && typeof payload === 'object' ? (payload as any) : ({} as any)
-
 // An empty connection id is not registry.primary — that substitution dials
 // another SSH host when a scoped caller drops the id. 'local' and an explicit
 // primary id still resolve to those sources. The local kind delegates to
@@ -15822,7 +15770,8 @@ ipcMain.handle('hermes:connection:for', async (_event, payload) => {
 // child when the v1 global mode is remote (the registry 'local' entry always
 // means this machine) unless the profile is remote-only.
 ipcMain.handle('hermes:connection:for', async (event, payload) => {
-  const { connectionId, profile, priority } = payload && typeof payload === 'object' ? (payload as any) : ({} as any)
+  const { connectionId, profile, priority, speculative } =
+    payload && typeof payload === 'object' ? (payload as any) : ({} as any)
   const registry = readDesktopConnectionsRegistry()
   const id = registryDialConnectionId(connectionId, registry.primary)
   const spawnPriority = spawnPriorityFrom(priority)
@@ -15830,7 +15779,7 @@ ipcMain.handle('hermes:connection:for', async (event, payload) => {
   return connectDesktopProfileRoute(
     { connectionId: id, profile: String(profile ?? '').trim() || 'default' },
     spawnPriority,
-    speculative === true
+    speculative === true,
     event.sender
   )
 })

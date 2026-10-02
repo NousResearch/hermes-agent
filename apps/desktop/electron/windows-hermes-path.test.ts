@@ -16,7 +16,12 @@ import assert from 'node:assert/strict'
 
 import { test } from 'vitest'
 
-import { buildPathExtCandidates, chooseUpdaterArgs, resolveVenvHermesCommand } from './windows-hermes-path'
+import {
+  buildPathExtCandidates,
+  chooseUpdaterArgs,
+  getVenvSitePackagesEntries,
+  resolveVenvHermesCommand
+} from './windows-hermes-path'
 
 test('buildPathExtCandidates: Windows tries PATHEXT extensions before the empty extension', () => {
   const extensions = buildPathExtCandidates('.COM;.EXE;.BAT;.CMD', true)

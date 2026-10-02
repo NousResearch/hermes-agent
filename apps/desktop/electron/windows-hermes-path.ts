@@ -1,3 +1,6 @@
+import fs from 'node:fs'
+import path from 'node:path'
+
 /**
  * windows-hermes-path.ts
  *
@@ -72,9 +75,7 @@ export interface BootstrapRecoverySignals {
 }
 
 export function chooseUpdaterArgs(signals: BootstrapRecoverySignals, branch: string): string[] {
-  const canRunUpdater = signals.hasVenvHermes && signals.hasVenvPython
-
-  return canRunUpdater ? ['--update', '--branch', branch] : ['--repair', '--branch', branch]
+  return signals.runtimeUsable ? ['--update', '--branch', branch] : ['--repair', '--branch', branch]
 }
 
 /**
@@ -160,7 +161,6 @@ export function getVenvSitePackagesEntries(
   }
 
   return entries
-  return signals.runtimeUsable ? ['--update', '--branch', branch] : ['--repair', '--branch', branch]
 }
 
 export interface ResolveVenvHermesCommandDeps {

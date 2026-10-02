@@ -196,11 +196,6 @@ function waitForDashboardPort(
       }
     }
 
-    const timer = setTimeout(() => {
-      cleanup()
-      reject(new Error(`Timed out waiting for Hermes backend port announcement (${timeoutMs}ms)`))
-    }, timeoutMs)
-
     rearmTimer()
     child.stdout.on('data', onData)
     child.on('exit', onExit)

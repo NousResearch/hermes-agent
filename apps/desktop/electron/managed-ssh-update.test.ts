@@ -354,31 +354,6 @@ test('update-all deduplicates the same recovery scope and keeps primary preceden
   )
 })
 
-test.runIf(process.platform !== 'win32')(
-  'POSIX managed launcher executes the updater command and atomically publishes its status',
-  async () => {
-    const home = await mkdtemp(path.join(os.tmpdir(), 'hermes-managed-launch-'))
-
-    try {
-      const command = buildPosixManagedUpdateLaunch(
-        {
-          ssh: { exec: async () => '' },
-          platform: 'Linux',
-          hermesPath: '/bin/true',
-          hermesHome: home
-        },
-        CORRELATION
-      )
-
-      const { stdout } = await exec(command, { shell: '/bin/sh' })
-      const statusPath = path.join(home, `.update_exit_code.${CORRELATION}`)
-      let status = ''
-
-      for (let attempt = 0; attempt < 50 && !status; attempt += 1) {
-        try {
-          status = await readFile(statusPath, 'utf8')
-        } catch {
-          await new Promise(resolve => setTimeout(resolve, 10))
 test.runIf(process.platform !== 'win32').each([0, 23])(
   'POSIX managed launcher executes the updater command and atomically publishes status %i',
   async (exitCode: number): Promise<void> => {
@@ -522,7 +497,6 @@ test.runIf(process.platform !== 'win32')(
       )
 
       const { stdout } = await exec(command, { shell: '/bin/sh' })
-      const { stdout } = await exec(command, { shell: 'sh' })
       const parsed = parseRemoteUpdateObservation(stdout, CORRELATION)
 
       assert.equal(parsed.marker, 'absent')
@@ -557,7 +531,6 @@ test.runIf(process.platform !== 'win32')(
       )
 
       const { stdout } = await exec(command, { shell: '/bin/sh' })
-      const { stdout } = await exec(command, { shell: 'sh' })
       const parsed = parseRemoteUpdateObservation(stdout, CORRELATION)
 
       assert.equal(parsed.marker, 'live')

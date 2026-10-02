@@ -61,6 +61,8 @@ export class LocalBackendBackgroundCapacityError extends Error {
 
 export function isBackgroundCapacitySkip(error: unknown): boolean {
   return error instanceof LocalBackendBackgroundCapacityError && error.silent
+}
+
 export interface LocalBackendSlotEntry {
   process?: unknown
   releaseLocalBackendSlot?: ReleaseLocalBackendSlot | null

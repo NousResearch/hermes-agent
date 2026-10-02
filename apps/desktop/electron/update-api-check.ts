@@ -14,7 +14,39 @@
  * unit-testable without booting Electron; the bounded network call is injected.
  */
 
-import { canonicalGitHubRemote } from './update-remote'
+// Retain passive API checks after the old update-remote module was retired.
+// This pure normalizer is the historical host/repository identity contract.
+function canonicalGitHubRemote(url) {
+  if (!url) {
+    return ''
+  }
+
+  let value = String(url).trim()
+
+  if (value.startsWith('git@github.com:')) {
+    value = `github.com/${value.slice('git@github.com:'.length)}`
+  } else if (value.startsWith('ssh://git@github.com/')) {
+    value = `github.com/${value.slice('ssh://git@github.com/'.length)}`
+  } else {
+    try {
+      const parsed = new URL(value)
+
+      if (parsed.hostname && parsed.pathname) {
+        value = `${parsed.hostname}${parsed.pathname}`
+      }
+    } catch {
+      // Leave non-URL forms unchanged.
+    }
+  }
+
+  value = value.trim().replace(/\/+$/, '')
+
+  if (value.endsWith('.git')) {
+    value = value.slice(0, -4)
+  }
+
+  return value.toLowerCase()
+}
 
 export const UPDATE_CHECK_TTL_MS = 24 * 60 * 60 * 1000
 // A failed check (offline, 403 rate-limit) is retried sooner than a good one,

@@ -5085,7 +5085,28 @@ Write only the summary body. Do not include any preamble or prefix."""
         # An older visible assistant reply can precede the active user turn; under the split above,
         # pulling back to it would undo the bounded exception.
         if not split_oversized_turn:
-            cut_idx = self._ensure_last_assistant_message_in_tail(messages, cut_idx, head_end)
+            asst_anchored_cut = self._ensure_last_assistant_message_in_tail(messages, cut_idx, head_end)
+            # The assistant anchor needs the same bound the user anchor got in #80449. In a long
+            # agentic turn whose assistant rows only carry tool_calls (no text reply yet), the
+            # newest text-bearing assistant is the PREVIOUS turn's closer: anchoring to it retains
+            # the whole oversized active turn, the middle collapses to nothing, and the session
+            # wedges in no_progress (#131412). When the anchored region is over the soft ceiling,
+            # keep the walk's tool-group-aligned cut instead.
+            if (
+                asst_anchored_cut < cut_idx
+                and allow_split_turn
+                and self._walk_tail_budget(
+                    messages, asst_anchored_cut, soft_ceiling, 0, cut_at_break=False
+                )[0] > asst_anchored_cut
+            ):
+                if not self.quiet_mode:
+                    logger.debug(
+                        "Assistant reply anchor would retain an over-ceiling region; keeping "
+                        "tool-group-aligned cut at index %d instead of anchoring to %d (#131412)",
+                        cut_idx, asst_anchored_cut,
+                    )
+            else:
+                cut_idx = asst_anchored_cut
 
         # Optional multi-user anchor; n<=1 is gated here (not delegated): re-running the single-user anchor after
         # the assistant anchor could re-trigger its forward turn-pair push. Runs even under the split: the

@@ -150,9 +150,10 @@ def test_a_compressed_conversation_is_one_session_row_with_its_whole_volume(dire
     [(row, value)] = _stored_values(tmp_path, "hermes.session.count")
     assert value == 1
     assert {k: row[k] for k in ("turn_count_bucket", "model_call_count_bucket", "tool_call_count_bucket",
-                                "message_count_bucket")} == {
+                                "message_count_bucket", "user_turn_count_bucket")} == {
         "turn_count_bucket": "3_to_5", "model_call_count_bucket": "3_to_5",
-        "tool_call_count_bucket": "3_to_5", "message_count_bucket": "6_to_10"}
+        "tool_call_count_bucket": "3_to_5", "message_count_bucket": "6_to_10",
+         "user_turn_count_bucket": "3_to_5"}
 
 
 def test_only_compression_joins_segments_and_the_retired_segment_closes_at_hand_off(direct_runtime, tmp_path):
@@ -223,7 +224,8 @@ def test_a_background_review_fork_on_the_session_id_adds_no_session_volume(direc
     lifecycle.finalize_session(session_id="s1")
     _flush()
     [(row, _)] = _stored_values(tmp_path, "hermes.session.count")
-    assert (row["turn_count_bucket"], row["model_call_count_bucket"], row["message_count_bucket"]) == ("1", "1", "2")
+    assert (row["turn_count_bucket"], row["model_call_count_bucket"], row["message_count_bucket"],
+            row["user_turn_count_bucket"]) == ("1", "1", "2", "1")
 
 
 def test_turns_before_switch_ignore_failover_and_review_forks(direct_runtime, tmp_path):

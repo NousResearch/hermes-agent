@@ -844,7 +844,12 @@ def _kill_process_group_posix(proc) -> None:
     """TERM the group, wait, KILL, then sweep setsid escapees. Descendants are
     snapshotted BEFORE the first signal — once the wrapper dies they reparent to
     init — and we wait on the group, not the wrapper, which can exit before
-    grandchildren under load. POSIX-only (_IS_WINDOWS handled by the caller)."""
+    grandchildren under load. POSIX-only (_IS_WINDOWS handled by the caller).
+
+    ``proc`` is duck-typed: anything with ``pid`` + ``kill()`` (+ ``poll``/``wait`` when
+    available) works, including non-subprocess shims. Callers pass only what they
+    actually have — this helper must never fail for a missing optional convenience.
+    """
     try:
         pgid = os.getpgid(proc.pid)
     except ProcessLookupError:
@@ -870,8 +875,9 @@ def _kill_process_group_posix(proc) -> None:
             if not _wait_for_group_exit(proc, pgid, 1.0):
                 os.killpg(pgid, signal.SIGKILL)  # windows-footgun: ok — POSIX only (see _IS_WINDOWS gate in caller)
                 _wait_for_group_exit(proc, pgid, 2.0)
-                with contextlib.suppress(subprocess.TimeoutExpired, OSError):
-                    proc.wait(timeout=0.2)
+                if hasattr(proc, "wait"):  # shims may be poll-only (test fake, #131316)
+                    with contextlib.suppress(subprocess.TimeoutExpired, OSError):
+                        proc.wait(timeout=0.2)
         except ProcessLookupError:
             pass
         except PermissionError:

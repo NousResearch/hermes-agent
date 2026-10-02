@@ -67,3 +67,38 @@ def test_dead_pid_with_pgid_fallback_still_kills_live_group():
     finally:
         proc.kill()
         proc.wait()
+
+
+def test_waitless_poll_only_shim_reaches_killpg_without_attributeerror():
+    """Review catch (#131316): shims without ``.wait`` (poll-only fakes) died with
+    AttributeError on the post-KILL ``proc.wait(timeout=0.2)`` convenience call —
+    the helper now guards it. The killpg path itself must still work."""
+    proc = subprocess.Popen(
+        ["sleep", "5"], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL, start_new_session=True)
+    time.sleep(0.1)
+
+    class WaitLess:
+        """poll-only + kill: exactly the shim shape the reviewer's fake had."""
+
+        def __init__(self, p):
+            self.pid = p.pid
+            self._p = p
+
+        def poll(self):
+            return self._p.poll()
+
+        def kill(self):
+            self._p.kill()
+
+    shim = WaitLess(proc)
+    result = _kill_process_group_posix(shim)
+    deadline = time.monotonic() + 3.0
+    while proc.poll() is None and time.monotonic() < deadline:
+        time.sleep(0.05)
+    try:
+        assert result is None
+        assert proc.poll() is not None, "killpg must terminate a live group"
+    finally:
+        proc.kill()
+        proc.wait()

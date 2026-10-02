@@ -46,6 +46,11 @@ export const zh: Translations = {
     pluginLoadFailed:
       "无法加载此插件的脚本。请检查网络请求（dashboard-plugins/…）以及服务器上的插件路径。",
     pluginNotRegistered: "插件脚本未调用 register()，或执行出错。请打开浏览器控制台查看详情。",
+    gateway: "网关",
+    gatewayHint:
+      "消息平台、API 服务器和 webhook 在「频道」页面配置。这些是网关级别的设置（代理/中继模式和全局允许列表）。",
+    loadFailed: "无法加载{what}。请确认仪表盘服务正在运行，然后点击重试。",
+    loadFailedDetails: "详情：{detail}",
   },
 
   app: {
@@ -59,7 +64,9 @@ export const zh: Translations = {
     activeSessionsLabel: "活跃会话：",
     gatewayStatusLabel: "网关状态：",
     gatewayStrip: {
+      degraded: "降级",
       failed: "启动失败",
+      heartbeatStale: "心跳过期",
       off: "关闭",
       running: "运行中",
       starting: "启动中",
@@ -89,6 +96,20 @@ export const zh: Translations = {
     statusOverview: "状态概览",
     system: "系统",
     webUi: "管理面板",
+    managingProfile: "正在管理配置",
+    currentProfileOption: "此仪表盘（{name}）",
+    managingProfileBanner:
+      "正在管理配置「{name}」 — 配置、密钥、技能、MCP、模型和新对话都作用于该配置。",
+    memoryOomRestartBanner:
+      "你的代理意外重启，很可能是内存耗尽所致。长会话和大量并发任务会增加内存占用。",
+    memoryCriticalBanner:
+      "你的代理内存即将耗尽，可能会重启。建议关闭空闲会话或扩充内存。",
+    memoryElevatedBanner: "你的代理内存偏低。",
+    diskCriticalBanner:
+      "你的代理磁盘空间即将耗尽。新消息、记忆和设置可能无法保存。",
+    diskElevatedBanner:
+      "你的代理磁盘空间正在被占满。建议清理旧会话或扩充存储。",
+    dismiss: "忽略",
   },
 
   // ── System page: Memory section ──
@@ -121,6 +142,9 @@ export const zh: Translations = {
     platformError: "错误",
     recentSessions: "最近会话",
     restartGateway: "重启网关",
+    restartGatewayConfirmTitle: "重启网关？",
+    restartGatewayConfirmMessage:
+      "这将重启 Hermes 网关进程。已连接的频道和活跃会话将在之后重新连接。",
     restartingGateway: "正在重启网关…",
     running: "运行中",
     runningRemote: "运行中（远程）",
@@ -129,8 +153,13 @@ export const zh: Translations = {
     startedInBackground: "已在后台启动 — 请查看日志",
     stopped: "已停止",
     updateHermes: "更新 Hermes",
+    updateHermesConfirmTitle: "更新 Hermes？",
+    updateHermesConfirmMessage:
+      "这将运行 hermes update，并在完成后重启网关。在此之前，活跃会话会保留其提示缓存。",
+    updateHermesConfirmNow: "立即更新",
     updatingHermes: "正在更新 Hermes…",
     waitingForOutput: "等待输出…",
+    disabled: "已禁用",
   },
 
   sessions: {
@@ -236,6 +265,9 @@ export const zh: Translations = {
   },
 
   cron: {
+    loadWhat: "定时任务",
+    scriptRequired:
+      "仅脚本模式的定时任务需要脚本路径。请填写「脚本」字段，或将任务切换回提示词模式。",
     confirmDeleteMessage: "将从此计划移除该任务，此操作无法撤销。",
     confirmDeleteTitle: "删除定时任务？",
     newJob: "新建定时任务",
@@ -284,6 +316,8 @@ export const zh: Translations = {
     noJobs: "暂无定时任务。在上方创建一个。",
     last: "上次",
     next: "下次",
+    overdueSince: "逾期始于",
+    schedulerLastTicked: "调度器上次心跳 {when} — 自那之后到期的任务均未触发",
     pause: "暂停",
     resume: "恢复",
     triggerNow: "立即触发",
@@ -293,6 +327,9 @@ export const zh: Translations = {
       discord: "Discord",
       slack: "Slack",
       email: "邮件",
+      needsHomeChannel: "请先设置主页频道",
+      noneConfigured:
+        "尚未配置任何消息平台。请在「频道」页面设置一个以接收报告。",
     },
   },
 
@@ -303,7 +340,8 @@ export const zh: Translations = {
     nameRequired: "名称必填",
     nameRule:
       "仅允许小写字母、数字、下划线和短横线；首字符必须是字母或数字；最多 64 个字符。",
-    invalidName: "多Agent配置名称非法",    cloneFrom: "从配置文件克隆",
+    invalidName: "多Agent配置名称非法",
+    cloneFrom: "从配置文件克隆",
     cloneFromNone: "无（空白）",
     allProfiles: "多Agent配置列表",
     noProfiles: "暂无多Agent配置。",
@@ -326,6 +364,37 @@ export const zh: Translations = {
     created: "已创建",
     deleted: "已删除",
     renamed: "已重命名",
+    activeProfile: "当前配置",
+    activeBadge: "当前",
+    setActive: "设为当前",
+    activeSet: "已设为当前配置",
+    gatewayRunning: "网关运行中",
+    gatewayStopped: "网关已停止",
+    gatewayRunningWarning: "此配置的网关正在运行 — 它将被停止。",
+    aliasBadge: "别名",
+    description: "描述",
+    descriptionPlaceholder: "这个配置擅长什么？用于按角色路由看板任务。",
+    noDescription: "暂无描述",
+    editDescription: "编辑描述",
+    descriptionSaved: "描述已保存",
+    reviewBadge: "审查",
+    autoGenerate: "自动生成",
+    generating: "生成中…",
+    describeFailed: "无法生成描述",
+    distribution: "分布",
+    advancedOptions: "高级选项",
+    cloneAll: "克隆全部内容（记忆、会话、技能、状态）",
+    noSkillsOption: "不预置内置技能",
+    descriptionOptional: "描述（可选）",
+    modelOptional: "模型（可选）",
+    modelInherit: "继承克隆来源 / 默认值",
+    modelLoading: "正在加载模型…",
+    modelNone:
+      "尚未配置任何模型提供方。请在「密钥」页面添加 API key，或在「模型」页面登录提供方。",
+    editModel: "更换模型",
+    modelSaved: "模型已更新",
+    modelSelect: "选择模型",
+    actions: "操作",
   },
 
   pluginsPage: {
@@ -365,14 +434,33 @@ export const zh: Translations = {
     authRequired: "需要认证",
     authRequiredHint: "运行此命令以完成认证：",
     updateGit: "git pull",
+    updateConsentBody: (name: string, sha: string) =>
+      `${name} 的新目录固定版本（${sha}）引入了已安装版本没有的功能。仅在信任这些功能时才应用：`,
     versionBadge: "版本",
     showInSidebar: "在侧边栏显示",
     hideFromSidebar: "从侧边栏隐藏",
+    catalogHeading: "插件目录",
+    catalogHint:
+      "由 Nous 审核、固定到具体提交的精选插件。从这里安装可获得供应链安全的版本。",
+    catalogSearchPlaceholder: "搜索目录...",
+    catalogEmpty: "没有匹配的目录项。",
+    catalogEmptyDocsLink: "了解 Hermes 插件",
+    catalogInstallBtn: "安装",
+    catalogInstalledBadge: "已安装 ✓",
+    catalogUpdateBtn: "有可用更新",
+    catalogRemovedBadge: "已移除",
+    catalogConfirmTitle: "安装此插件？",
+    catalogConfirmInstallNote: "插件安装已禁用；安装后请先启用再激活。",
+    catalogRequiresEnv: "需要环境变量",
+    removedFromCatalog: "已从目录中移除",
   },
 
   skills: {
     title: "技能",
     searchPlaceholder: "搜索技能和工具集...",
+    loadWhat: "技能",
+    browseHub: "浏览技能中心",
+    createSkill: "创建技能",
     enabledOf: "已启用 {enabled}/{total}",
     all: "全部",
     categories: "分类",
@@ -388,6 +476,10 @@ export const zh: Translations = {
     setupNeeded: "需要配置",
     disabledForCli: "CLI 已禁用",
     more: "还有 {count} 个",
+    profileSelector: "配置",
+    currentProfile: "当前（{name}）",
+    managingProfile:
+      "正在管理配置「{name}」 — 开关仅作用于该配置，而非此仪表盘的配置。",
   },
 
   config: {
@@ -510,6 +602,12 @@ export const zh: Translations = {
   theme: {
     title: "主题",
     switchTheme: "切换主题",
+    fontTitle: "字体",
+    fontDefault: "主题默认字体",
+    fontDefaultHint: "使用当前主题的字体",
+    fontSans: "无衬线",
+    fontSerif: "衬线",
+    fontMono: "等宽",
   },
 
   achievements: {
@@ -632,11 +730,9 @@ export const zh: Translations = {
     slug: "标识",
     slugHint: "— 小写字母、连字符，例如 atm10-server",
     confirmDoneMany:
-      "Mark {n} tasks as done? The workers' claims are released and dependent children become ready.",
-    confirmArchiveMany:
-      "Archive {n} tasks? They disappear from the default board view.",
-    confirmBlockedMany:
-      "Mark {n} tasks as blocked? The workers' claims are released.",
+      "将 {n} 个任务标记为完成？工作者将被释放，依赖的子任务将变为就绪。",
+    confirmArchiveMany: "归档 {n} 个任务？它们将从默认看板视图中消失。",
+    confirmBlockedMany: "将 {n} 个任务标记为阻塞？工作者将被释放。",
     displayName: "显示名称",
     displayNameHint: "（可选）",
     description: "描述",
@@ -665,6 +761,9 @@ export const zh: Translations = {
     createTask: "在此列创建任务",
     noTasks: "— 无任务 —",
     unassigned: "未分配",
+    needsAssignee: "需要指定负责人",
+    needsAssigneeHint:
+      "依赖项已满足，但调度器会跳过此任务，直到你为其分配一个配置。",
     untitled: "（无标题）",
     loadingDetail: "加载中…",
     addComment: "添加评论…（按回车提交）",
@@ -769,6 +868,8 @@ export const zh: Translations = {
       "归档此任务？它将从默认看板视图中消失。",
     confirmBlocked:
       "将此任务标记为阻塞？工作者将被释放。",
+    confirmScheduled:
+      "将此任务移至「已调度」？这适用于已知的时间延迟，而非人工阻塞。",
     completionSummary:
       "{label} 的完成摘要。这将作为任务结果存储。",
     completionSummaryRequired:
@@ -786,5 +887,29 @@ export const zh: Translations = {
       "工作区路径（可选，留空则根据负责人推导）",
     logTruncated: "（显示最后 100 KB — 完整日志位于 ",
     logAt: "）",
+    newTaskTitle: "新任务 — {column}",
+    taskTitleLabel: "标题",
+    assigneeLabel: "负责人",
+    assigneeLabelHint: "（留空 = 由调度器选择）",
+    skillsLabel: "技能",
+    skillsLabelHint: "（可选，逗号分隔）",
+    parentLabel: "父任务",
+    parentLabelHint: "（父任务完成前，子任务保持阻塞）",
+    create: "创建",
+    boardSettings: "设置",
+    boardSettingsTitle:
+      "看板设置 — 名称、描述，以及新任务继承的默认项目目录",
+    boardSettingsTitleFor: "看板设置 — {name}",
+    projectDirectoryOverrideHint:
+      "新任务会继承此项作为其工作区默认值；每个任务仍可在创建对话框中覆盖它。",
+    saving: "保存中…",
+    commentHint:
+      "评论会在工作者下次运行或调用 kanban_show() 时送达 — 无需先阻塞任务。",
+    commentHintTitle:
+      "评论是与任务工作者沟通的渠道。它们会立即出现在讨论串中 — 无需先阻塞任务。运行中的工作者会在下次 kanban_show() 或重启后读取该讨论串；只有当你希望工作者停止并等待你的输入时才需要阻塞。",
+    trash: {
+      confirmTitle: "删除任务？",
+      confirmManyTitle: "删除 {n} 个任务？",
+    },
   },
 };

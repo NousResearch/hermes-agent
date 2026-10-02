@@ -85,3 +85,28 @@ async def test_hermes_title_rename_keeps_the_pin_and_a_human_rename_does_not(mon
     # The moderator then restores Hermes's title: it shows as itself, not as the opening name.
     thread.name = "Database outage"
     assert "Hermes Server / #ops / Database outage" in await turn(thread, 103)
+
+
+@pytest.mark.asyncio
+async def test_a_restore_before_any_turn_retires_the_mask_through_the_update_event(monkeypatch):
+    # Restoring the opening name before Hermes's title was ever read looks like cache lag to the
+    # formatter; only the THREAD_UPDATE says someone else named it, so that event retires the record.
+    monkeypatch.setattr(discord_platform.discord, "Thread", _Thread, raising=False)
+    monkeypatch.setattr(discord_platform, "DISCORD_AVAILABLE", True)
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "false")
+    parent = _Text(700)
+    thread = _Thread(800, parent, name="what broke?")
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="fake"))
+    adapter._client = SimpleNamespace(user=SimpleNamespace(id=999), get_channel=lambda _id: thread)
+
+    async def rename(name):
+        before = SimpleNamespace(id=thread.id, name=thread.name)
+        thread.name = name
+        await adapter._on_platform_thread_update(before, thread)
+
+    assert await adapter.rename_thread("800", "Database outage", only_if_current_name="what broke?")
+    await adapter._on_platform_thread_update(SimpleNamespace(id=800, name="what broke?"), thread)
+    await rename("what broke?")
+    assert adapter._format_thread_chat_name(thread).endswith("what broke?")
+    await rename("Database outage")
+    assert adapter._format_thread_chat_name(thread) == "Hermes Server / #ops / Database outage"

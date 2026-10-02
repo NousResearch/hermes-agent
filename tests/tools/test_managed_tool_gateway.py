@@ -103,6 +103,53 @@ def test_read_nous_access_token_refreshes_expiring_cached_token(tmp_path, monkey
     assert managed_tool_gateway.read_nous_access_token() == "fresh-token"
 
 
+def test_read_nous_access_token_drops_known_expired_token_when_refresh_fails(tmp_path, monkeypatch):
+    monkeypatch.delenv("TOOL_GATEWAY_USER_TOKEN", raising=False)
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    expires_at = (datetime.now(timezone.utc) - timedelta(seconds=60)).isoformat()
+    (tmp_path / "auth.json").write_text(json.dumps({
+        "providers": {
+            "nous": {
+                "access_token": "stale",
+                "refresh_token": "seed",
+                "expires_at": expires_at,
+            }
+        }
+    }))
+
+    def _boom(refresh_skew_seconds=120):
+        raise RuntimeError("portal unreachable")
+
+    monkeypatch.setattr("hermes_cli.auth.resolve_nous_access_token", _boom)
+
+    # A provably-dead cached credential must never be sent: callers turn None into an
+    # actionable re-login error instead of a gateway 401 while status reports
+    # available (issue #22283).
+    assert managed_tool_gateway.read_nous_access_token() is None
+
+
+def test_read_nous_access_token_keeps_unknown_expiry_cached_value_when_refresh_fails(tmp_path, monkeypatch):
+    monkeypatch.delenv("TOOL_GATEWAY_USER_TOKEN", raising=False)
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    cached = "maybe-live"
+    (tmp_path / "auth.json").write_text(json.dumps({
+        "providers": {
+            "nous": {
+                "access_token": cached,
+                "refresh_token": "seed",
+            }
+        }
+    }))
+
+    def _boom(refresh_skew_seconds=120):
+        raise RuntimeError("portal unreachable")
+
+    monkeypatch.setattr("hermes_cli.auth.resolve_nous_access_token", _boom)
+
+    # Expiry unknown (no expires_at): cannot prove dead, keep best-effort.
+    assert managed_tool_gateway.read_nous_access_token() == cached
+
+
 def test_is_managed_tool_gateway_ready_skips_refresh_for_expired_cached_token(tmp_path, monkeypatch):
     monkeypatch.delenv("TOOL_GATEWAY_USER_TOKEN", raising=False)
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))

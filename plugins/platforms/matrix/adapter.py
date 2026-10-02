@@ -2208,67 +2208,6 @@ class MatrixAdapter(MatrixEditFollowupsMixin, MatrixInboundEventMixin, MatrixMed
 
 
 
-    async def _extract_reply_context(
-        self, room_id: str, body: str, source_content: dict, relates_to: dict, *, sender: str,
-        chat_type: str,
-    ) -> MatrixReplyContext:
-        """Resolve an explicit reply and its inline or fetched quoted context."""
-        relation = MatrixRelation.from_content(relates_to)
-        reply_to = relation.reply_target
-        reply_to_text = reply_to_author_id = reply_to_author_name = None
-        reply_to_is_own_message = False
-        reply_to_author_authorized = None
-        reply_media_path = reply_media_type = None
-        parent = self._event_context_cache.history_entry(room_id, reply_to) if reply_to else None
-        retained_parent = self._event_context_cache.retain(room_id, reply_to) if reply_to else None
-        if reply_to and _has_reply_fallback(body, source_content):
-            reply_to_text, reply_to_author_id = _extract_reply_fallback(body)
-            body = _strip_reply_fallback(body)
-            if reply_to_text:
-                reply_to_author_authorized = False
-            if reply_to_author_id:
-                reply_to_author_name = await self._get_display_name(room_id, reply_to_author_id)
-        if reply_to and not reply_to_text:
-            reply_to_text = extract_mx_reply_quote(source_content)
-            if reply_to_text:
-                reply_to_author_authorized = False
-        if reply_to and (
-            not reply_to_text or _is_bare_media_filename("m.image", reply_to_text)
-            or parent is not None and (parent.sender or parent.text or parent.redacted or parent.state_error)
-        ) and self._is_sender_authorized(
-            sender, chat_type=chat_type, chat_id=room_id
-        ) is not False:
-            parent = await self._event_context_cache.resolve(
-                self._client, room_id, reply_to, self._cache_quoted_image,
-            )
-            if parent is not None:
-                reply_to_text = None if parent.state_error or not parent.text else parent.text
-                reply_media_path, reply_media_type = parent.media_path, parent.media_type
-                reply_to_author_id = parent.sender or None
-                if reply_to_author_id:
-                    reply_to_author_name = await self._get_display_name(room_id, reply_to_author_id)
-                    reply_to_is_own_message = reply_to_author_id == self._user_id
-                    if not reply_to_is_own_message:
-                        reply_to_author_authorized = self._is_sender_authorized(
-                            reply_to_author_id, chat_type=chat_type, chat_id=room_id
-                        )
-        if reply_to:
-            cached = self._event_context_cache.history_entry(room_id, reply_to)
-            checked = parent or cached
-            parent = self._event_context_cache.recheck(room_id, checked) if checked is not None else None
-            if parent is not None and parent != checked:
-                parent = await self._event_context_cache.refresh(self._client, room_id, parent)
-            if parent is not None and (parent.text or parent.redacted or parent.state_error):
-                reply_to_text = None if parent.redacted or parent.state_error else parent.text
-                reply_media_path, reply_media_type = parent.media_path, parent.media_type
-        return MatrixReplyContext(
-            body=body, event_id=reply_to, text=reply_to_text,
-            author_id=reply_to_author_id, author_name=reply_to_author_name,
-            is_own_message=reply_to_is_own_message, author_authorized=reply_to_author_authorized,
-            media_path=reply_media_path, media_type=reply_media_type,
-            media_content_id=parent.attachment_identity if parent is not None and reply_media_path else None,
-            parent=parent or retained_parent,
-        )
 
     async def _cache_quoted_image(self, content: dict, event_id: str) -> tuple[str, str] | None:
         encrypted_file = content.get("file")

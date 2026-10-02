@@ -327,7 +327,8 @@ class GatewayBusySessionMixin:
             if (slot_changed or overflow_changed) and state.turn.agent is not None:
                 state.turn.followup_withdrawn = True
             found = found or overflow_changed
-        return found
+        from gateway.shutdown_withdrawal import withdraw_spooled_pending
+        return withdraw_spooled_pending(self, adapter, withdraw) or found
 
     @staticmethod
     def _is_goal_continuation_event(event_or_text: Any) -> bool:

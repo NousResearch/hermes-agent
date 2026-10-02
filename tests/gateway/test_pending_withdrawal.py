@@ -10,7 +10,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from gateway.config import Platform, PlatformConfig
+from gateway.config import GatewayConfig, Platform, PlatformConfig
 from gateway.platforms.base import BasePlatformAdapter, SendResult
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.session import SessionSource
@@ -101,7 +101,7 @@ async def _assert_remaining_turn(store, withdrawn):
 def _runner():
     from gateway.run import GatewayRunner
 
-    runner = object.__new__(GatewayRunner)
+    runner = GatewayRunner(GatewayConfig())
     runner._draining = False
     return runner
 

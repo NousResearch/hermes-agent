@@ -197,6 +197,32 @@ def test_api_get_credentials_refresh_persists_authorized_user_type(api_module, m
     assert saved["type"] == "authorized_user"
 
 
+def test_gmail_search_empty_result_prints_json_array(api_module, capsys):
+    """Regression for #131711: an empty Gmail search through the Python
+    fallback printed "No messages found." instead of the JSON array the gws
+    backend emits, breaking consumers that parse search output as JSON."""
+
+    class EmptyGmail:
+        def users(self):
+            return self
+
+        def messages(self):
+            return self
+
+        def list(self, **_kwargs):
+            return self
+
+        def execute(self):
+            return {"resultSizeEstimate": 0}
+
+    api_module._gws_binary = lambda: None
+    api_module.build_service = lambda *_args, **_kwargs: EmptyGmail()
+
+    api_module.gmail_search(api_module.argparse.Namespace(query="is:unread", max=10))
+
+    assert json.loads(capsys.readouterr().out) == []
+
+
 def _tabbed_doc():
     """A Doc with two tabs (one nested), as the Docs API returns with includeTabsContent."""
     def body(text):

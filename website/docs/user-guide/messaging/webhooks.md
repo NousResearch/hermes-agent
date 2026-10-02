@@ -83,7 +83,7 @@ Routes define how different webhook sources are handled. Each route is a named e
 | `profile` | No | Profile authorized to execute this route when `gateway.multiplex_profiles` is enabled. Omit it for a default-profile-only route; set a profile name (for example `coder`) to bind the route and its secret to `/p/coder/webhooks/<route>`. Dynamic subscriptions set it with `hermes webhook subscribe <name> --route-profile coder`. |
 | `prompt` | No | Template string with dot-notation payload access (e.g. `{pull_request.title}`). If omitted, the full JSON payload is dumped into the prompt. Payload fields are untrusted — see [Authenticated does not mean trusted](#authenticated-does-not-mean-trusted). |
 | `filters` | No | Declarative payload filters evaluated after auth/body/event filtering and before agent or direct delivery work. Non-matches return `{"status":"ignored","reason":"filter"}` with HTTP 200. |
-| `script` | No | Filter/transform script under `~/.hermes/scripts/`. The webhook payload is passed as JSON on stdin. JSON object stdout replaces the payload before templating; text stdout is exposed as `script_output`; empty stdout, `[SILENT]`, or a nonzero exit code ignores the webhook. |
+| `script` | No | Filter/transform script under the receiving profile's `$HERMES_HOME/scripts/`; see [Script Filters and Transforms](#script-filters-and-transforms) for profile routing. The webhook payload is passed as JSON on stdin. JSON object stdout replaces the payload before templating; text stdout is exposed as `script_output`; empty stdout, `[SILENT]`, or a nonzero exit code ignores the webhook. |
 | `skills` | No | List of skill names to load for the agent run. |
 | `toolsets` | No | List of toolset keys (e.g. `["terminal", "file", "web"]`) that **replaces** the platform-level webhook toolset for runs triggered by this route only. Manual config edit only — not settable via `hermes webhook subscribe`, so agent-created subscriptions cannot self-grant elevated tools. Names are validated the same way as `platform_toolsets` entries (unknown or platform-restricted names are dropped). See [Per-route toolsets](#per-route-toolsets). |
 | `deliver` | No | Where to send the response: `github_comment`, `telegram`, `discord`, `slack`, `signal`, `sms`, `whatsapp`, `matrix`, `mattermost`, `homeassistant`, `email`, `dingtalk`, `feishu`, `wecom`, `weixin`, `bluebubbles`, `qqbot`, or `log` (default). |
@@ -203,7 +203,9 @@ How it works:
 
 ### Script Filters and Transforms
 
-Use `script` when declarative filters are not enough. Scripts must live under `~/.hermes/scripts/` for the active profile; relative paths resolve there, and path traversal outside that directory is blocked. `.sh` and `.bash` scripts run with bash, and all other extensions run with the current Python interpreter.
+Use `script` when declarative filters are not enough. Scripts must live under the receiving profile's `$HERMES_HOME/scripts/`; relative paths resolve there, and path traversal outside that directory is blocked. `.sh` and `.bash` scripts run with bash, and all other extensions run with the current Python interpreter.
+
+For multiplexed `/p/<profile>/webhooks/<route>` URLs, scripts belong to the URL's profile, authorized by the route's `profile` field (`--route-profile` for dynamic subscriptions). For example, `hermes webhook subscribe alerts --route-profile coder --script filter.py` reads `filter.py` from the `coder` profile's `scripts/` directory, even without global `-p coder`. Global `-p` selects the gateway's subscriptions file, not the routed script directory. Bare `/webhooks/<route>` URLs use the gateway's own profile home.
 
 The route payload is sent to stdin as JSON:
 

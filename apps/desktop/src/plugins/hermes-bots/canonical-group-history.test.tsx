@@ -1,3 +1,4 @@
+import type * as HermesSdk from '@hermes/plugin-sdk'
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import type { ComponentProps, ReactNode } from 'react'
 import { afterEach, expect, it, vi } from 'vitest'
@@ -6,7 +7,7 @@ import { expectDownloaded, observeDownloads } from './canonical-download-test-ut
 
 const request = vi.hoisted(() => vi.fn())
 vi.mock('@hermes/plugin-sdk', async importOriginal => {
-  const original = await importOriginal<typeof import('@hermes/plugin-sdk')>()
+  const original = await importOriginal<typeof HermesSdk>()
   const { atom } = await import('nanostores')
   const { en } = await import('@/i18n/en')
   const { captureGroupRequests } = await import('./group-test-utils')
@@ -19,7 +20,7 @@ vi.mock('./canonical-group-labels', async () => {
   const { CANONICAL_GROUP_LOCALES } = await import('./canonical-group-locales')
 
   return { useCanonicalGroupLabels: () => ({ ...CANONICAL_GROUP_LOCALES.en, back: 'Back', refresh: 'Refresh', retry: 'Retry',
-    send: 'Send', stop: 'Stop', download: 'Download', discard: 'Discard', cancel: 'Cancel' }) }
+    send: 'Send', stop: 'Stop', download: 'Download', discard: 'Discard', cancel: 'Cancel', you: 'You' }) }
 })
 
 import { CanonicalGroupWorkspace } from './canonical-group-workspace'
@@ -108,14 +109,15 @@ it('binds user/member history downloads to their real event and refuses missing 
   expect(history.queryByRole('button', { name: 'Remove attachment' })).toBeNull()
 })
 
-it('labels Bot messages with the actor the gateway sends, and leaves user and gateway events unlabelled', async () => {
+it('attributes human and Bot messages to logged identities and leaves gateway events unlabelled', async () => {
   const events = [
     { seq: 1, event_id: 'user', kind: 'message.user', actor: { kind: 'user', id: 'desktop' }, payload: { text: 'hello' } },
     { seq: 2, event_id: 'named', kind: 'message.member', payload: { text: 'hi' },
       actor: { kind: 'member', id: 'm-helper', profile: 'helper', display_name: 'Helper Bot' } },
     { seq: 3, event_id: 'unnamed', kind: 'message.member', actor: { kind: 'member', id: 'm-critic', profile: 'critic' },
       payload: { text: 'noted' } },
-    { seq: 4, event_id: 'settled', kind: 'turn.settled', actor: { kind: 'gateway', id: 'gw-1' }, payload: {} }
+    { seq: 4, event_id: 'settled', kind: 'turn.settled', actor: { kind: 'gateway', id: 'gw-1' }, payload: {} },
+    { seq: 5, event_id: 'remote-human', kind: 'message.user', actor: { kind: 'user', id: 'telegram:42', display_name: 'Alex' }, payload: { text: 'from Alex' } }
   ]
 
   request.mockImplementation(async (_route, method) => {
@@ -130,8 +132,9 @@ it('labels Bot messages with the actor the gateway sends, and leaves user and ga
   expect(history.getByText('m-critic')).toBeTruthy()
   expect(history.queryByText('desktop')).toBeNull()
   expect(history.queryByText('gw-1')).toBeNull()
+  expect(history.queryByText('telegram:42')).toBeNull()
   expect(Array.from(screen.getByRole('log').querySelectorAll('strong'), node => node.textContent))
-    .toEqual(['Helper Bot: ', 'm-critic: '])
+    .toEqual(['You: ', 'Helper Bot: ', 'm-critic: ', 'Alex: '])
 })
 
 it('hides empty bookkeeping rows, but keeps unknown kinds and bookkeeping that carries text', async () => {

@@ -231,7 +231,7 @@ it('lists an unresolved member beside live work without disabling Stop or pollin
       : method === 'groups.log' ? { events: [] } : {})
     render(<CanonicalGroupWorkspace binding={{ connectionId: 'remote', profile: 'team', roomId: 'warn' }} />)
     await settle()
-    expect(screen.getByText('Working · 1 need attention')).toBeTruthy()
+    expect(screen.getByText('Working · Needs attention: 1')).toBeTruthy()
     expect(screen.getByText('alpha')).toBeTruthy()
     expect((screen.getByRole('button', { name: 'Stop' }) as HTMLButtonElement).disabled).toBe(false)
     const polls = request.mock.calls.filter(call => call[1] === 'groups.state').length

@@ -77,6 +77,38 @@ describe('collectArtifactsForSession', () => {
     expect(artifacts.map(artifact => artifact.value)).toEqual([...values, explicit])
   })
 
+  it('keeps authoritative tool artifacts even when their URL contains literal braces', () => {
+    const value = 'https://example.com/{literal}/report.html'
+    const artifacts = collectArtifactsForSession(makeSession(), [
+      {
+        content: JSON.stringify({ output_url: value }),
+        role: 'tool',
+        tool_name: 'render_report',
+        timestamp: 2000
+      }
+    ])
+
+    expect(artifacts.map(artifact => artifact.value)).toEqual([value])
+  })
+
+  it('filters templates on every loaded page without discarding concrete artifacts', async () => {
+    const session = makeSession()
+    const concrete = 'https://example.com/alice/report.html'
+    const loadPage = vi.fn(async (_session: SessionInfo, { offset }: { limit: number; offset: number }) => ({
+      messages: offset === 0
+        ? [{ content: 'https://example.com/{owner}/report.html', role: 'assistant' as const }]
+        : offset === 1
+          ? [{ content: concrete, role: 'assistant' as const }]
+          : [],
+      pagination: { limit: 1, offset, total: 2 }
+    }))
+    const result = await loadArtifactsForSessions([session], loadPage)
+
+    expect(result.failures).toEqual([])
+    expect(result.artifacts.map(artifact => artifact.value)).toEqual([concrete])
+    expect(loadPage.mock.calls.map(([, page]) => page.offset)).toEqual([0, 1, 2])
+  })
+
   it('strips Markdown code delimiters from discovered link artifacts', () => {
     const artifacts = collectArtifactsForSession(makeSession(), [
       {

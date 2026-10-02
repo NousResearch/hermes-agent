@@ -1,19 +1,7 @@
 name: hicortex
 repo: https://github.com/gamaze-labs/hicortex-hermes-plugin
 sha: 3321a063bffb087dfcedc239a6f7aaf1ac0b8ef6
-description: >-
-  Shared fleet memory for Hermes agents: every connected agent learns from all other
-  agents connected to the memory, wherever they run. Sessions across machines and harnesses are distilled
-  into one common brain overnight — what one learns, the whole fleet recalls. Pushes a compact per-turn recall index (entries
-  lazy-load via hicortex_get), injects fresh lessons plus a per-agent standing context block at
-  session start — lesson blocks are delimited and carry an explicit reference-data framing line
-  and provenance header — and exposes the full 9-tool memory surface (search, get, recent,
-  ingest, lessons, index, graph, update, delete) through the shared server. The same server
-  also serves Claude Code, OpenClaw, Pi and opencode agents, so mixed-harness fleets share one
-  brain. Stdlib-only, no pip dependencies. Requires a running Hicortex server
-  (npx @gamaze/hicortex init on any machine); data flow: each user message is sent to your
-  configured Hicortex server for recall (default http://localhost:8787); session
-  distillation runs on the server.
+description: "Shared fleet memory for Hermes agents: every connected agent learns from all other agents connected to the memory, wherever they run. Sessions across machines and harnesses are distilled into one common brain overnight — what one learns, the whole fleet recalls. Pushes a compact per-turn recall index (entries lazy-load via hicortex_get), injects fresh lessons plus a per-agent standing context block at session start — lesson blocks are delimited and carry an explicit reference-data framing line and provenance header — and exposes the full 9-tool memory surface (search, get, recent, ingest, lessons, index, graph, update, delete) through the shared server. The same server also serves Claude Code, OpenClaw, Pi and opencode agents, so mixed-harness fleets share one brain. Stdlib-only, no pip dependencies. Requires a running Hicortex server (npx @gamaze/hicortex init on any machine); data flow: each user message is sent to your configured Hicortex server for recall (default http://localhost:8787); session distillation runs on the server. Disclosure — sends every user message (and profile name) to your configured Hicortex server each turn for recall, default http://localhost:8787, plain http with a bearer token is accepted for remote servers with a one-time log warning; the server's standing Identity text and lessons are injected into the system prompt; the model can permanently update or delete shared fleet memories via hicortex_update / hicortex_delete without confirmation."
 maintainer: gamaze-labs
 tier: community
 category: memory

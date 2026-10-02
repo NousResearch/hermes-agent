@@ -14,6 +14,7 @@ import logging
 import re
 import shlex
 import stat
+import sys
 from pathlib import Path
 from typing import Any, Optional
 
@@ -151,7 +152,14 @@ def _read_script_for_guard(env: Any, guard_cwd: str, script_path: str, max_bytes
     try:
         local_path = Path(script_path).expanduser()
         if not local_path.is_absolute():
-            local_path = Path(guard_cwd) / local_path
+            # A drive-relative token on Windows (``C:Usersxrestart``) is a posix-shlex artifact,
+            # not a relative path: anchoring it on the cwd would run `head` against a path that
+            # cannot exist anywhere. Rebuild the separator after the drive letter first.
+            import sys as _sys
+            if _sys.platform == "win32" and _re.match(r"^[A-Za-z]:", str(local_path)):
+                local_path = Path(_re.sub(r"^([A-Za-z]:)", r"\1\\", str(local_path)))
+            else:
+                local_path = Path(guard_cwd) / local_path
         if local_path.is_file():
             metadata = local_path.stat()
             if stat.S_ISREG(metadata.st_mode) and metadata.st_size <= max_bytes:
@@ -165,14 +173,40 @@ def _read_script_for_guard(env: Any, guard_cwd: str, script_path: str, max_bytes
     # pinned the gateway's tool thread for 30+ min on a shlex scan). One
     # byte over budget is enough for lifecycle_guard to fail closed. The
     # `< path` redirect keeps leading-dash paths out of argv.
+    if _is_mangled_windows_token(script_path):
+        return None
     try:
-        result = env.execute(f"head -c {max_bytes + 1} < {shlex.quote(script_path)}")
+        # A POSIX-absolute path inspected on a Windows host arrives as a root-anchored
+        # ``\remote\...`` Path (win32 Path normalizes ``/x`` to ``\x``). The remote
+        # backend's filesystem is POSIX: quote its POSIX spelling, never the win32-
+        # normalized one, or the backend cannot recognize its own file.
+        remote_path = script_path
+        if sys.platform == "win32" and not Path(script_path).drive and script_path.replace("\\", "/").startswith("/"):
+            remote_path = script_path.replace("\\", "/")
+        result = env.execute(f"head -c {max_bytes + 1} < {shlex.quote(remote_path)}")
         if result.get("returncode", -1) == 0:
             output = result.get("output", "")
             return None if output and "\x00" in output else output
     except Exception:
         pass
     return None
+
+
+def _is_mangled_windows_token(script_path: str) -> bool:
+    """True when *script_path* is a posix-shlex artifact: a Windows drive path whose inner
+    separators were eaten (``C:\\UsersfiberAppData...health-check.sh`` — every component fused
+    into one name directly under the drive root). A real Windows path never looks like that:
+    the first component under ``C:\\`` would have to be a 100+ char directory named after the
+    fused absolute path. The escaped re-tokenization in ``_iter_command_segments`` already
+    yields the corrected candidate carrying the real content, so no remote roundtrip is spent
+    on this one."""
+    if sys.platform != "win32" or not re.match(r"^[A-Za-z]:", script_path):
+        return False
+    from pathlib import Path as _Path
+
+    parts = _Path(script_path).parts
+    # Drive + exactly one fused component (then the script name, or just the name).
+    return len(parts) <= 3 and len(parts[-1]) > 60
 
 
 def gateway_lifecycle_block(

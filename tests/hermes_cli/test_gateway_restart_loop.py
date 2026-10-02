@@ -8,6 +8,7 @@ Covers:
 
 import json
 import os
+import sys
 from argparse import Namespace
 
 import pytest
@@ -479,6 +480,13 @@ class TestGatewaySelfTargetingGuard:
         monkeypatch.delenv("_HERMES_GATEWAY", raising=False)
         import hermes_cli.gateway as gw
 
+        # The stop path sweeps the real process table for stray gateways; on a
+        # dev machine that enumerates the operator's running Hermes processes
+        # and stats their profiles (reading the real home the test guard
+        # refuses). No gateway exists in the test's world: empty the scan.
+        monkeypatch.setattr(gw, "_scan_gateway_pids", lambda *a, **k: [])
+        monkeypatch.setattr(gw, "_get_service_pids", lambda *a, **k: [])
+
         class _Reached(Exception):
             pass
 
@@ -793,6 +801,7 @@ class TestTerminalToolGatewayLifecycleGuard:
 
         assert result["exit_code"] == 1
 
+    @pytest.mark.skipif(sys.platform == "win32", reason="os.mkfifo does not exist on Windows")
     def test_non_regular_referenced_script_fails_closed(self, monkeypatch, tmp_path):
         import tools.terminal_tool as tt
 

@@ -307,6 +307,17 @@ _HERMES_BEHAVIORAL_VARS = frozenset({
     "API_SERVER_KEY",
     "API_SERVER_CORS_ORIGINS",
     "API_SERVER_MODEL_NAME",
+    # Serve-mode pins exported by the running desktop app (`hermes serve` /
+    # dashboard shell). A test run launched from a Hermes session inherits
+    # them and flips which handler `mount_spa` registers: HEADLESS answers "/"
+    # with the token page (SPA tests then see 200 where the SPA 404 is
+    # asserted), and a pinned HERMES_WEB_DIST outlives the test's own
+    # `monkeypatch.setattr(web_server, "WEB_DIST", ...)` for any code reading
+    # the env directly. CI never sets these; tests that need them set them
+    # explicitly (`_headless_client`).
+    "HERMES_SERVE_HEADLESS",
+    "HERMES_WEB_DIST",
+    "HERMES_DESKTOP",
     # Platform gating — set by load_gateway_config() as a side effect when
     # a config.yaml is present, so individual test bodies that call the
     # loader leak these values into later tests in the same process.

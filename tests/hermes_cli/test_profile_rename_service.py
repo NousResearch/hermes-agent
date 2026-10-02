@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import os
 import platform
-import pwd
 import subprocess
 from pathlib import Path
 
@@ -25,6 +24,8 @@ def profile_env(tmp_path, monkeypatch):
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     monkeypatch.setenv("HERMES_HOME", str(home))
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
+    import pwd  # POSIX-only; imported here so Windows collection does not fail
+
     real = pwd.getpwuid(os.getuid())
     fake = pwd.struct_passwd((real.pw_name, real.pw_passwd, real.pw_uid, real.pw_gid,
                               real.pw_gecos, str(tmp_path), real.pw_shell))
@@ -63,6 +64,7 @@ def test_rename_removes_the_old_names_service_while_the_gateway_is_stopped(profi
     assert not _host_unit_path(new_dir).exists()
 
 
+@pytest.mark.platforms("posix")
 def test_rename_moves_the_s6_slot_to_the_new_name(profile_env, monkeypatch):
     class _S6:
         def __init__(self):

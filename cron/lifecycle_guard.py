@@ -632,7 +632,13 @@ def _split_segments(tokens: list[str], *, keep_controls: bool = False) -> Iterat
 
 def _iter_command_segments(command: str) -> Iterator[list[str]]:
     """Yield shell-tokenized command segments per logical line; a line shlex rejects (unbalanced
-    quotes) falls back to per-physical-line tokenization."""
+    quotes) falls back to per-physical-line tokenization. On Windows hosts a second tokenization
+    with backslashes escaped is yielded alongside: posix shlex eats ``\\``, so an unquoted
+    ``C:\\Users\\...\\restart.sh`` tokenized to a mangled blob and the referenced-script walk
+    statted a path that cannot exist — a wrapped lifecycle script on a Windows path was never
+    scanned. The escaped variant re-derives the exact original path token-for-token; on POSIX a
+    backslash is not a path separator, so the extra segments only ever add candidates whose files
+    do not exist (additive, fail-closed — never removes a reference)."""
     for line in _split_logical_lines(command.replace("\\\n", "")):
         try:
             tokens = _shlex_tokens(line)
@@ -642,8 +648,23 @@ def _iter_command_segments(command: str) -> Iterator[list[str]]:
                     yield from _split_segments(_shlex_tokens(physical_line))
                 except ValueError:
                     continue
+                if "\\" in physical_line:
+                    try:
+                        yield from _split_segments(_shlex_tokens(physical_line.replace("\\", "\\\\")))
+                    except ValueError:
+                        continue
             continue
         yield from _split_segments(tokens)
+        # The escaped re-tokenization comes FIRST in the fallback order below: on Windows it is
+        # the ACCURATE tokenization of a backslash path (posix shlex ate the separators in the
+        # primary pass), so the walk reads the real file instead of a mangled cwd-anchored one.
+        if "\\" in line:
+            try:
+                yield from _split_segments(_shlex_tokens(line.replace("\\", "\\\\")))
+                continue
+            except ValueError:
+                pass
+            yield from _split_segments(tokens)
 
 
 def _executable_name(token: str) -> str:
@@ -651,6 +672,20 @@ def _executable_name(token: str) -> str:
     the POSIX dot-source builtin is spelled ``.``, so fall back to the raw token or ``.
     ./helper.sh`` would escape the sourced-script scan."""
     return Path(token).name or token
+
+
+_WINDOWS_ABSOLUTE_RE = re.compile(r"^[A-Za-z]:(?![^\\/]?$)|^\\\\")
+# Windows path candidates, in every form shlex leaves them: drive-absolute with a surviving
+# separator (``C:\...``, quoted, or re-derived by the escaped re-tokenization), the mangled
+# drive-relative form after posix shlex ate the separators (``C:Usersxrestart``), and UNC
+# (``\\server\share``). A bare ``C:`` or a POSIX path never matches.
+
+
+def _looks_like_windows_absolute(token: str) -> bool:
+    """True when *token* is a Windows drive-absolute or UNC path (``C:\\...``, ``C:Usersx`` after
+    shlex ate separators, ``\\\\server\\share``). Only tokens with a drive/UNC prefix count — a
+    bare word like ``restart.sh`` must stay un-scanned (it is not a script reference)."""
+    return bool(_WINDOWS_ABSOLUTE_RE.match(token))
 
 
 def _peel_transparent_prefixes(segment: list[str], index: int) -> int:
@@ -820,11 +855,37 @@ def _expand_candidate_path(candidate: str) -> Optional[Path]:
 
 
 def _resolved_or_nothing(candidate: str, cwd: Optional[str]) -> Iterator[Path]:
-    """Yield *candidate* anchored on *cwd* (or the process cwd) when it is a real path."""
+    """Yield *candidate* anchored on *cwd* (or the process cwd) when it is a real path.
+
+    On Windows hosts a drive-relative token (``C:Users...`` — posix shlex ate the separators)
+    must NOT be anchored on *cwd*: ``Path("C:Usersx")`` is drive-relative, and prepending cwd
+    yields a path under cwd that cannot exist, while the real file the command names is never
+    scanned. Rebuild the missing separators instead (``C:`` + ``\\`` + rest) so the drive-
+    absolute file is statted; on POSIX the regex never matches and nothing changes."""
     path = _expand_candidate_path(candidate)
     if path is None:
         return
     if not path.is_absolute():
+        text = str(candidate)
+        if _WINDOWS_ABSOLUTE_RE.match(text) and sys.platform == "win32":
+            import re as _re
+
+            rebuilt = _re.sub(r"^([A-Za-z]:)", r"\1\\", text)
+            rebuilt = rebuilt.replace("\\\\", "\\")
+            try:
+                rebuilt_path = Path(rebuilt)
+            except (ValueError, OSError):
+                return
+            if rebuilt_path.is_absolute():
+                yield rebuilt_path
+                return
+        # A POSIX-absolute candidate ("/remote/x.sh") on a Windows HOST must stay verbatim:
+        # the remote backend's filesystem decides whether it exists, so never anchor it on the
+        # host cwd (which would rewrite it into a host path the backend cannot recognize and
+        # break the remote-read fallback's ability to name the original file).
+        if text.startswith("/") and not _WINDOWS_ABSOLUTE_RE.match(text) and sys.platform == "win32":
+            yield path
+            return
         try:
             path = Path(cwd or Path.cwd()) / path
         except OSError:
@@ -910,7 +971,13 @@ def _references_at(segment: list[str], index: int, cwd: Optional[str]) -> Iterat
 
     # A bare "/" is pathlib's division operator in Python sources, not an executable; resolving it
     # hits the filesystem root and fails the regular-file check, hard-blocking innocent .py scripts.
-    if executable.strip("/") and ("/" in executable or executable.endswith((".sh", ".bash", ".zsh"))):
+    # A Windows-absolute candidate (drive letter or UNC) is path-like without any forward slash:
+    # posix shlex already ate its backslashes into the token, so the literal token is the path.
+    if executable.strip("/") and (
+        "/" in executable
+        or executable.endswith((".sh", ".bash", ".zsh"))
+        or _looks_like_windows_absolute(executable)
+    ):
         yield from _resolved_or_nothing(executable, cwd)
 
 
@@ -1125,6 +1192,13 @@ def _contains_unsafe_gateway_action(
     candidates = [(path, executed) for path in _iter_referenced_shell_scripts(walk_command, cwd=cwd)]
     if walk_command != command:
         candidates += [(path, False) for path in _iter_referenced_shell_scripts(command, cwd=cwd)]
+    if candidates:
+        # Real files first: on Windows the same reference arrives both mangled (posix shlex ate
+        # the separators) and correct (the escaped re-tokenization). Reading the mangled form
+        # first sends the guard's remote fallback (`head -c ... < C:Usersx...`) after a path
+        # that cannot exist anywhere — an avoidable roundtrip and a spurious backend call.
+        # A stable two-bucket partition keeps per-source order otherwise unchanged.
+        candidates = [c for c in candidates if c[0].exists()] + [c for c in candidates if not c[0].exists()]
 
     for script_path, candidate_executed in candidates:
         # Do not touch a FileProvider path even to discover whether the file is hydrated.

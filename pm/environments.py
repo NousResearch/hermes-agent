@@ -91,10 +91,24 @@ def record_activation_inputs(stamps: Path, mtimes: dict[str, int], project_root:
         os.utime(stamp, ns=(mtime, mtime))
 
 
+def _payload_manifest(root: Path) -> Path:
+    """The sealed payload's ``manifest.json`` beside *root*'s tree, or a path guaranteed not to
+    exist: when ``root.parent`` lies OUTSIDE the payload tree (a default install checks the repo
+    out inside the Hermes home), probing there reads operator state the tests' real-home
+    tripwire correctly refuses — and no sealed manifest can exist beside a tree it does not
+    ship with. Returns a path inside *root* in that case so callers probe without I/O against
+    a foreign tree."""
+    root = root.resolve()
+    manifest = root.parent / "manifest.json"
+    if manifest.is_relative_to(root):
+        return manifest
+    return root / "manifest.json"
+
+
 def payload_venv(project_root: Path) -> Path | None:
     """The environment a sealed payload ships beside its tree, or ``None``."""
     root = Path(project_root).resolve()
-    manifest_path = root.parent / "manifest.json"
+    manifest_path = _payload_manifest(root)
     if manifest_path.is_file():
         manifest = json.loads(manifest_path.read_text(encoding="utf-8-sig"))
         if (root.parent / manifest.get("repo", "")).resolve() == root:
@@ -115,7 +129,7 @@ def store_root(project_root: Path) -> Path:
     if override:
         return Path(override).resolve()
     root = Path(project_root).resolve()
-    manifest_path = root.parent / "manifest.json"
+    manifest_path = _payload_manifest(root)
     if manifest_path.is_file():
         manifest = json.loads(manifest_path.read_text(encoding="utf-8-sig"))
         if (root.parent / manifest.get("repo", "")).resolve() == root:

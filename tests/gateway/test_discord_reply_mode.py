@@ -120,6 +120,53 @@ class TestSendWithReplyToMode:
         assert len(calls) == 1
         assert calls[0].kwargs.get("reference") is None
 
+    @pytest.mark.asyncio
+    async def test_routed_profile_reply_has_copy_safe_role_label(self):
+        adapter, channel, _ = _make_discord_adapter("off")
+
+        await adapter.send(
+            "12345", "Implementation result",
+            metadata={"hermes_profile": "sii-worker", "notify": True},
+        )
+
+        sent = channel.send.call_args.kwargs["content"]
+        assert sent == "**[Sii Worker]**\n\nImplementation result"
+
+    @pytest.mark.asyncio
+    async def test_default_profile_reply_is_not_labeled(self):
+        adapter, channel, _ = _make_discord_adapter("off")
+
+        await adapter.send(
+            "12345", "Mission Control response", metadata={"hermes_profile": "default"},
+        )
+
+        assert channel.send.call_args.kwargs["content"] == "Mission Control response"
+
+    @pytest.mark.asyncio
+    async def test_project_profile_progress_message_is_not_labeled(self):
+        adapter, channel, _ = _make_discord_adapter("off")
+
+        await adapter.send(
+            "12345", "Reading skill", metadata={"hermes_profile": "sii-hermes-core"},
+        )
+
+        assert channel.send.call_args.kwargs["content"] == "Reading skill"
+
+    @pytest.mark.asyncio
+    async def test_streamed_profile_reply_edit_has_copy_safe_role_label(self):
+        adapter, channel, _ = _make_discord_adapter("off")
+        msg = AsyncMock()
+        channel.get_partial_message = MagicMock(return_value=msg)
+
+        await adapter.edit_message(
+            "12345", "42", "Streamed result", finalize=True,
+            metadata={"hermes_profile": "strategic-industrial-intelligence", "notify": True},
+        )
+
+        msg.edit.assert_awaited_once_with(
+            content="**[Strategic Industrial Intelligence]**\n\nStreamed result",
+        )
+
 
     @pytest.mark.asyncio
     async def test_first_mode_constructs_reference_without_fetch(self):

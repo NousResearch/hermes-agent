@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 import re
 import subprocess
+from typing import Any
 from urllib.parse import quote
 
 _REPO = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+")
@@ -27,10 +28,25 @@ def _api(endpoint: str, *, query: str | None = None, paginate: bool = False):
     if query is not None:
         command += ["-f", "query=" + query]
     if paginate:
-        command += ["--paginate", "--slurp"]
+        command += ["--paginate"]
     result = subprocess.run(command, stdin=subprocess.DEVNULL, capture_output=True,
                             text=True, encoding="utf-8", errors="replace", timeout=30, check=True)
-    value = json.loads(result.stdout)
+    value: Any
+    if paginate:
+        # Older gh versions do not implement --slurp. --paginate emits one
+        # complete JSON document per page, including non-array endpoints.
+        decoder = json.JSONDecoder()
+        value = []
+        text = result.stdout
+        index = 0
+        while index < len(text):
+            while index < len(text) and text[index].isspace():
+                index += 1
+            if index < len(text):
+                page, index = decoder.raw_decode(text, index)
+                value.append(page)
+    else:
+        value = json.loads(result.stdout)
     if isinstance(value, dict) and value.get("errors"):
         raise ValueError("GitHub returned incomplete GraphQL evidence")
     return value
@@ -61,14 +77,26 @@ def collect_acceptance(contract: str, published_pr: str | None) -> dict:
             raise ValueError("PR is closed or current head is unavailable")
         protection = (pr.get("baseRef") or {}).get("branchProtectionRule") or {}
         required = {(r["context"], (r.get("app") or {}).get("databaseId")) for r in protection.get("requiredStatusChecks", [])}
-        rules = _api(f"repos/{repo}/rules/branches/{quote(branch, safe='')}?per_page=100", paginate=True)
+        rules_unavailable = False
+        try:
+            rules = _api(f"repos/{repo}/rules/branches/{quote(branch, safe='')}?per_page=100", paginate=True)
+        except subprocess.CalledProcessError as exc:
+            # Private repositories without GitHub Pro cannot read rulesets.
+            # In that specific paywall case, validate every observable check on
+            # the exact current PR head. The final PR re-read below rejects a
+            # head/base race, and _classify rejects any stale-head result.
+            stderr = exc.stderr or ""
+            if ("HTTP 403" not in stderr
+                    or "Upgrade to GitHub Pro or make this repository public" not in stderr):
+                raise
+            rules = []
+            rules_unavailable = True
         for page in rules:
             for rule in page:
                 if rule["type"] == "required_status_checks":
                     required.update((r["context"], r.get("integration_id"))
                                     for r in rule["parameters"]["required_status_checks"])
-        receipt["required"] = [{"context": c, "app_id": a} for c, a in sorted(required, key=str)]
-        if not required:
+        if not required and not rules_unavailable:
             receipt["detail"] = "No repository-required checks are configured; explicitly use a local-only contract for non-CI tasks."
             return receipt
         pages = _api(f"repos/{repo}/commits/{sha}/check-runs?per_page=100&filter=latest", paginate=True)
@@ -76,6 +104,13 @@ def collect_acceptance(contract: str, published_pr: str | None) -> dict:
         if len({r["id"] for r in runs}) != pages[0]["total_count"]:
             raise ValueError("Incomplete check-run pagination")
         statuses = [{**s, "sha": sha} for page in _api(f"repos/{repo}/commits/{sha}/statuses?per_page=100", paginate=True) for s in page]
+        if rules_unavailable:
+            required.update((run["name"], run["app"]["id"]) for run in runs)
+            required.update((status["context"], None) for status in statuses)
+            if not required:
+                receipt["detail"] = "No observable checks on exact PR head; cannot establish CI evidence."
+                return receipt
+        receipt["required"] = [{"context": c, "app_id": a} for c, a in sorted(required, key=str)]
         outcomes = []
         for context, app_id in sorted(required, key=str):
             matching = [r for r in runs if r["name"] == context and

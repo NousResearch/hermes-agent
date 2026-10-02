@@ -202,7 +202,9 @@ class GatewayInboundHooksMixin:
             from tools.environments.local import build_subprocess_env
             proc = await asyncio.create_subprocess_shell(
                 exec_cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
-                env=build_subprocess_env(), cwd=cwd,
+                # A routed profile's message runs under its scope, but os.environ is the launch
+                # profile's: drop that residue so the snippet sees the owning profile's own .env.
+                env=build_subprocess_env(strip_launch_profile=True), cwd=cwd,
                 # Its own process group, so cleanup can reach what the shell started (POSIX;
                 # Windows ignores it and _stop_exec_tree walks the tree with taskkill /T).
                 start_new_session=True,  # detached-spawn: ok — awaited; the timeout/cancel path kills its group

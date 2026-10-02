@@ -634,15 +634,19 @@ def test_second_crash_during_replay_is_bounded_and_visibly_ambiguous(isolated_ho
     assert len(_rows()) == 1
 
 
-def _race_sweep(home: str, gate, output):
+def _race_sweep(home: str, gate, release, ready, output):
     os.environ["HERMES_HOME"] = home
     from hermes_constants import set_hermes_home_override
 
     set_hermes_home_override(home)
     from gateway import delivery_ledger as dl
 
-    gate.wait(10)
+    ready.put(True)
+    assert gate.wait(20), "parent did not start recovery writers"
     output.put([row["obligation_id"] for row in dl.sweep_recoverable()])
+    # Keep the winner alive until both concurrent claims have been observed.
+    # A dead winner is correctly eligible for a later recovery sweep.
+    assert release.wait(30), "parent did not release recovery writers"
 
 
 def test_overlapping_recovery_writers_claim_one_publication(isolated_home):
@@ -667,17 +671,31 @@ def test_overlapping_recovery_writers_claim_one_publication(isolated_home):
 
     ctx = multiprocessing.get_context("spawn")
     gate = ctx.Event()
+    release = ctx.Event()
+    ready = ctx.Queue()
     output = ctx.Queue()
     processes = [
-        ctx.Process(target=_race_sweep, args=(str(isolated_home), gate, output))
+        ctx.Process(target=_race_sweep, args=(str(isolated_home), gate, release, ready, output))
         for _ in range(2)
     ]
     for process in processes:
         process.start()
-    gate.set()
-    results = [output.get(timeout=20) for _ in processes]
+    try:
+        for _ in processes:
+            assert ready.get(timeout=20) is True
+        gate.set()
+        results = [output.get(timeout=20) for _ in processes]
+    finally:
+        release.set()
+        for process in processes:
+            process.join(20)
+            if process.is_alive():
+                process.terminate()
+                process.join(5)
+            if process.is_alive():
+                process.kill()
+                process.join(5)
     for process in processes:
-        process.join(20)
         assert process.exitcode == 0
 
     assert sorted(map(len, results)) == [0, 1]

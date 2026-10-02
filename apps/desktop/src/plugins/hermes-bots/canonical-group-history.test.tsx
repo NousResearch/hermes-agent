@@ -5,11 +5,13 @@ import { afterEach, expect, it, vi } from 'vitest'
 import { expectDownloaded, observeDownloads } from './canonical-download-test-utils'
 
 const request = vi.hoisted(() => vi.fn())
-vi.mock('@hermes/plugin-sdk', async () => {
+vi.mock('@hermes/plugin-sdk', async importOriginal => {
+  const original = await importOriginal<typeof import('@hermes/plugin-sdk')>()
+  const { atom } = await import('nanostores')
   const { en } = await import('@/i18n/en')
   const { captureGroupRequests } = await import('./group-test-utils')
 
-  return { host: { requestProfile: captureGroupRequests(request).request }, useI18n: () => ({ locale: 'en', t: en }),
+  return { ...original, atom, host: { requestProfile: captureGroupRequests(request).request }, useI18n: () => ({ locale: 'en', t: en }),
     Button: (props: ComponentProps<'button'>) => <button {...props} />,
     Codicon: () => <span />, Tip: ({ children }: { children: ReactNode }) => <>{children}</> }
 })

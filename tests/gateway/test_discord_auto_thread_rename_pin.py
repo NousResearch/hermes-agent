@@ -4,7 +4,8 @@
 auto-thread once the LLM title arrives, normally before the user's second message, so turn 2 read
 the new name and re-rendered the already-sent prompt: a prompt-cache miss on turn 2 of every
 auto-threaded conversation on the default config. A rename by anyone else is a real metadata
-change and still re-renders.
+change and still re-renders, including one that later restores Hermes's title: equal text is not
+edit provenance.
 """
 
 from datetime import datetime, timezone
@@ -45,7 +46,8 @@ def _message(channel, message_id):
 
 
 @pytest.mark.asyncio
-async def test_hermes_title_rename_keeps_the_pin_and_a_human_rename_does_not(monkeypatch):
+@pytest.mark.parametrize("moderator_name", ["Renamed by a moderator", "what broke?"])
+async def test_hermes_title_rename_keeps_the_pin_and_a_human_rename_does_not(monkeypatch, moderator_name):
     monkeypatch.setattr(discord_platform.discord, "Thread", _Thread, raising=False)
     monkeypatch.setattr(discord_platform, "DISCORD_AVAILABLE", True)
     monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "false")
@@ -72,9 +74,14 @@ async def test_hermes_title_rename_keeps_the_pin_and_a_human_rename_does_not(mon
     # The title lane's call, as gateway/run_topics.py makes it for a native auto-thread.
     assert await adapter.rename_thread("800", "Database outage", only_if_current_name="what broke?")
     assert thread.name == "Database outage"
+    # A message read through a cache that has not caught up with the edit still sees the old name.
+    thread.name = "what broke?"
+    assert await turn(thread, 104) == first
+    thread.name = "Database outage"
     assert await turn(thread, 101) == first
 
-    thread.name = "Renamed by a moderator"
-    after_human_rename = await turn(thread, 102)
-    assert after_human_rename != first
-    assert "Renamed by a moderator" in after_human_rename
+    thread.name = moderator_name
+    assert f"Hermes Server / #ops / {moderator_name}" in await turn(thread, 102)
+    # The moderator then restores Hermes's title: it shows as itself, not as the opening name.
+    thread.name = "Database outage"
+    assert "Hermes Server / #ops / Database outage" in await turn(thread, 103)

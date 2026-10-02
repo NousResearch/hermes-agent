@@ -8,8 +8,9 @@ document on disk with the merged document about to replace it. ``save_config``, 
 the desktop's model switch, the desktop's ``config.set`` RPC, the web Config page, the gateway
 slash commands, the credential lifecycle, the ``hermes auth`` provider switch, ``hermes agent
 import`` and the post-update restore all end in one of those — and a writer added tomorrow is
-covered by using any of them. Writers with an EARLIER side effect (a ``.env`` rotation, an
-``auth.json`` switch) ask first so a refusal never leaves a half-applied change.
+covered by using any of them. Writers with another side effect (a ``.env`` rotation, an
+``auth.json`` switch, a backup copy) write config.yaml first or ask first, so a refusal never
+leaves a half-applied change.
 
 
 The spec is read from the SHARED ROOT ``config.yaml`` only, never the active profile's: a
@@ -62,6 +63,7 @@ The receipt carries two bindings, and lapses when either stops matching:
 from __future__ import annotations
 
 import base64
+import errno
 import hashlib
 import hmac
 import json
@@ -85,11 +87,16 @@ FENCE_FILENAME = ".settings-unlock.lock"
 DEFAULT_UNLOCK_SECONDS = 900
 # A window is time-boxed by contract: no request and no stored receipt may outlive this.
 MAX_UNLOCK_SECONDS = 24 * 3600
+_FENCE_WAIT_SECONDS = 10.0
 
 # scrypt parameters. n=2**14 keeps an interactive unlock well under a second on the machines
 # Hermes runs on while costing a brute-forcer real memory; r/p are the usual defaults.
 _SCRYPT_N, _SCRYPT_R, _SCRYPT_P = 2**14, 8, 1
 _HASH_SCHEME = "scrypt"
+# The admitted domain for a stored (possibly imported) hash: 8x our own memory and 32x its work,
+# so a hand-tuned hash verifies, and a damaged one cannot stall an unlock for minutes.
+_SCRYPT_MAXMEM = 128 * 1024 * 1024
+_SCRYPT_MAX_WORK = 32 * _SCRYPT_N * _SCRYPT_R * _SCRYPT_P
 
 
 class SettingsLockError(RuntimeError):
@@ -101,10 +108,34 @@ class SettingsLockError(RuntimeError):
 
 
 def hermes_root(home: Path | str | None = None) -> Path:
-    """The shared root for a profile home or the root itself (``<root>/profiles/<name>`` → root)."""
-    base = Path(home) if home is not None else Path(
-        os.environ.get("HERMES_HOME") or (Path.home() / ".hermes"))
-    return base.parent.parent if base.parent.name == "profiles" else base
+    """The shared root for a profile home or the root itself (``<root>/profiles/<name>`` → root).
+
+    One identity for every spelling of the same directory: ``profiles/work/../work`` and a
+    directory symlink to a profile must reach the root that owns it, or the profile's own
+    config.yaml is read as the policy. The no-argument form is the same home the config subsystem
+    writes (``get_hermes_home``: ``~``/``$VAR`` expansion, the data-dir suffix, a bound profile).
+    """
+    if home is None:
+        from hermes_constants import get_hermes_home
+
+        home = get_hermes_home()
+    lexical = Path(os.path.abspath(home))
+    for candidate in (lexical, lexical.resolve(strict=False)):
+        if candidate.parent.name == "profiles":
+            return candidate.parent.parent
+    # A profile stored outside the root and linked in as <root>/profiles/<name>, addressed by its
+    # real location: only the canonical root's own profile links can claim it.
+    from hermes_constants import get_default_hermes_root
+
+    default_root = Path(os.path.abspath(get_default_hermes_root()))
+    if lexical != default_root:
+        try:
+            for entry in (default_root / "profiles").iterdir():
+                if entry.is_dir() and os.path.samefile(entry, lexical):
+                    return default_root
+        except OSError:
+            pass
+    return lexical
 
 
 class _RootPolicyUnavailable(Exception):
@@ -112,14 +143,17 @@ class _RootPolicyUnavailable(Exception):
 
 
 # The only ways YAML can spell a key without its literal characters: a numeric escape inside a
-# double-quoted scalar, or an escaped line break splitting it.
-_YAML_ESCAPE = re.compile(r"\\(?:x([0-9A-Fa-f]{2})|u([0-9A-Fa-f]{4})|U([0-9A-Fa-f]{8})|\r?\n[ \t]*)")
+# double-quoted scalar, or an escaped line break splitting it — YAML 1.1 breaks include NEL, LS
+# and PS, not just CR/LF.
+_YAML_ESCAPE = re.compile(
+    r"\\(?:x([0-9A-Fa-f]{2})|u([0-9A-Fa-f]{4})|U([0-9A-Fa-f]{8})|(?:\r\n|[\r\n\x85\u2028\u2029])[ \t]*)")
 
 
 def _may_name_lock(raw: str) -> bool:
     """False only when no spelling of ``settings_lock`` occurs in *raw* — so an unparseable root
     that provably names no lock still reads as "no lock", while ``"settings\\u005flock":`` (which
-    the parser resolves to the key) is never skipped."""
+    the parser resolves to the key) is never skipped. Only the fallback for a root that does not
+    parse: a root that parses is asked directly (see ``_read_root_yaml``)."""
     if LOCK_SECTION in raw:
         return True
     if "\\" not in raw:
@@ -158,17 +192,24 @@ def _read_root_yaml(root: Path) -> dict:
         raise _RootPolicyUnavailable(
             f"the root config.yaml cannot be read ({exc.strerror or type(exc).__name__}), so whether "
             f"it names a {LOCK_SECTION} is unknown") from exc
-    if not _may_name_lock(raw):  # cheap precheck: the dominant install has no lock at all
+    named = _may_name_lock(raw)
+    if not named and "\\" not in raw:  # cheap precheck: the dominant install has no lock at all
         return {}
+    # With an escape anywhere, whether the key is spelled is the parser's answer, not a second
+    # YAML implementation's; the precheck only decides for a root that does not parse.
     try:
         import hermes_yaml
 
         data = hermes_yaml.safe_load(raw)
     except Exception as exc:
+        if not named:
+            return {}
         logger.warning("settings lock: root config.yaml could not be parsed", exc_info=True)
         raise _RootPolicyUnavailable(
             f"the root config.yaml mentions {LOCK_SECTION} but does not parse as a YAML mapping") from exc
     if not isinstance(data, dict):
+        if not named:
+            return {}
         raise _RootPolicyUnavailable(
             f"the root config.yaml mentions {LOCK_SECTION} but does not parse as a YAML mapping")
     return data
@@ -345,11 +386,34 @@ def _spelling(path: tuple) -> str:
     return ".".join(str(segment) for segment in path)
 
 
+def _kind(value: Any) -> type:
+    for kind in (bool, int, float, str, dict, list):  # bool before int: bool subclasses int
+        if isinstance(value, kind):
+            return kind
+    return list if isinstance(value, tuple) else type(value)
+
+
+def _same(a: Any, b: Any) -> bool:
+    """YAML equality, not Python's: ``1 == True`` and ``0 == 0.0`` are different settings to the
+    readers (``max_turns: true`` resolves to unlimited), so the value kind is part of the value.
+    Kinds, not classes, so a ruamel scalar wrapper equals the plain value it stands for."""
+    kind = _kind(a)
+    if kind is not _kind(b):
+        return False
+    if kind is dict:
+        return a.keys() == b.keys() and all(_same(a[key], b[key]) for key in a)
+    if kind is list:
+        return len(a) == len(b) and all(_same(x, y) for x, y in zip(a, b))
+    if kind is float and math.isnan(a) and math.isnan(b):
+        return True
+    return a == b
+
+
 def _changed(before: Any, after: Any) -> list[tuple]:
     flat_before, flat_after = _flatten(before or {}), _flatten(after or {})
     sentinel = object()
     return [path for path in set(flat_before) | set(flat_after)
-            if flat_before.get(path, sentinel) != flat_after.get(path, sentinel)]
+            if not _same(flat_before.get(path, sentinel), flat_after.get(path, sentinel))]
 
 
 def changed_paths(before: Any, after: Any) -> tuple[str, ...]:
@@ -404,9 +468,19 @@ def _parse_hash(stored: object) -> Optional[tuple[int, int, int, bytes, bytes]]:
         salt, digest = base64.b64decode(parts[4], validate=True), base64.b64decode(parts[5], validate=True)
     except Exception:
         return None
-    if n < 2 or r < 1 or p < 1 or not salt or not digest:
+    # The domain verify_password can actually run: scrypt needs a power-of-two cost, and the KDF
+    # is called with an explicit memory budget rather than the build's implicit one, so a hash that
+    # needs more is unusable configuration, never an "incorrect password".
+    if n < 2 or n & (n - 1) or r < 1 or p < 1 or not salt or not digest:
+        return None
+    if _scrypt_memory(n, r, p) > _SCRYPT_MAXMEM or n * r * p > _SCRYPT_MAX_WORK:
         return None
     return n, r, p, salt, digest
+
+
+def _scrypt_memory(n: int, r: int, p: int) -> int:
+    """What OpenSSL's scrypt allocates for these parameters (its ``maxmem`` check)."""
+    return 128 * r * (n + p + 2)
 
 
 def _password_state(stored: object) -> str:
@@ -431,7 +505,7 @@ def verify_password(password: str, stored: object) -> bool:
     n, r, p, salt, expected = parsed
     try:
         actual = hashlib.scrypt(password.encode("utf-8"), salt=salt, n=n, r=r, p=p,
-                                dklen=len(expected))
+                                maxmem=_SCRYPT_MAXMEM, dklen=len(expected))
     except Exception:
         return False
     return hmac.compare_digest(actual, expected)
@@ -567,10 +641,16 @@ def _window_fence(home: Path | str | None = None) -> Iterator[None]:
     closing that window (``FENCE_FILENAME`` beside the receipt)."""
     path = hermes_root(home) / FENCE_FILENAME
     path.parent.mkdir(parents=True, exist_ok=True)
-    with open(path, "a+b") as handle:
+    # Owner-only, like the receipt: flock needs only a read descriptor, so a fence another local
+    # user can open is a fence they can hold to stall relock. Tightened in place on an existing
+    # file — never unlinked and recreated, which would split holders across two inodes.
+    fd = os.open(path, os.O_RDWR | os.O_CREAT | getattr(os, "O_BINARY", 0), 0o600)
+    with os.fdopen(fd, "r+b") as handle:
+        if hasattr(os, "fchmod"):
+            os.fchmod(fd, 0o600)
         try:
             import fcntl
-        except ImportError:  # Windows
+        except ImportError:  # Windows: LK_LOCK already gives up (OSError) after ~10 s
             import msvcrt
 
             handle.seek(0)
@@ -581,11 +661,21 @@ def _window_fence(home: Path | str | None = None) -> Iterator[None]:
                 handle.seek(0)
                 msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
         else:
-            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+            # Bounded: a write holds the fence for one dump, so a holder that outlasts this is not
+            # a writer, and waiting forever would make relock hang instead of report.
+            deadline = time.monotonic() + _FENCE_WAIT_SECONDS
+            while True:
+                try:
+                    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    break
+                except BlockingIOError:
+                    if time.monotonic() >= deadline:
+                        raise OSError(errno.EWOULDBLOCK, f"{path} is held by another process") from None
+                    time.sleep(0.05)
             try:
                 yield
             finally:
-                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+                fcntl.flock(fd, fcntl.LOCK_UN)
 
 
 def end_unlock(home: Path | str | None = None) -> None:
@@ -637,7 +727,7 @@ def _authorize(before: Any, after: Any, home: Path | str | None = None) -> bool:
 
 
 def _start_epoch_for_policy_change(before: Any, after: Any, home: Path | str | None = None) -> None:
-    if _policy_nodes(before) != _policy_nodes(after):
+    if not _same(_policy_nodes(before), _policy_nodes(after)):
         # Any change to the policy — including while it is off, so re-enabling cannot revive a
         # window — starts a new epoch BEFORE the write lands. If that cannot be recorded, the
         # write must not happen: the old receipts would stay live against the new policy.
@@ -662,9 +752,12 @@ def check_write(before: Any, after: Any, home: Path | str | None = None) -> None
 
 def check_config_write(config_path: Path | str, before: Any, after: Any) -> None:
     """:func:`check_write` for the document at *config_path*, with the lock read from the root that
-    owns it (``profiles/<name>`` → root). The ask-first form, for writers that must refuse BEFORE
-    an earlier side effect (a ``.env`` rotation whose config.yaml mirror is locked, an
-    ``auth.json`` provider switch); the write itself goes through :func:`authorized_config_write`.
+    owns it (``profiles/<name>`` → root). The ask-first form, for a writer that must refuse BEFORE
+    an earlier side effect it cannot reorder (the xAI migration's backup copy); the write itself
+    still goes through :func:`authorized_config_write`. Where the config.yaml write can simply go
+    first (credential rotation, the provider switch, logout), it does: once the guarded write has
+    landed nothing after it is lock-governed, so a relock cannot split the operation, which an
+    earlier detached check cannot promise.
     """
     check_write(before, after, Path(config_path).parent)
 
@@ -673,8 +766,9 @@ def check_config_write(config_path: Path | str, before: Any, after: Any) -> None
 def authorized_config_write(config_path: Path | str, before: Any, after: Any) -> Iterator[None]:
     """The seam every ``config.yaml`` writer realises its document under — the whole-document
     primitives ``utils.atomic_roundtrip_yaml_save`` / ``atomic_roundtrip_yaml_update`` wrap their
-    dump in it. *after* is the document that will be written, not the caller's proposal: a YAML
-    alias lets a change to one node land on another, and only the merged document shows it.
+    dump in it. *after* is the canonical reading of the exact bytes that will be written, not the
+    caller's proposal nor the round-trip object: an alias lets a change to one node land on
+    another, and a ``<<:`` merge key's cached values can disagree with what the emitter writes.
 
     A write that needs the unlock window is re-authorised and written while holding the fence
     ``end_unlock`` takes, so authorisation is current at realisation: once a relock has returned,

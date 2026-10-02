@@ -2428,16 +2428,12 @@ def _logout_default_provider_from_config() -> Optional[str]:
     return provider if flow and flow.logout_from_config else None
 
 
-def _reset_config_provider(*, dry_run: bool = False) -> Path:
-    """Reset config.yaml provider back to auto after logout.
-
-    ``dry_run=True`` writes nothing and only asks the operator settings lock whether the reset
-    would be refused — ``logout_command`` asks before it clears auth state, so a refusal cannot
-    leave a logged-out provider still selected in config.yaml."""
+def _reset_config_provider() -> Path:
+    """Reset config.yaml provider back to auto after logout."""
     config_path = get_config_path()
     if not config_path.exists():
         return config_path
-    before = require_readable_config_before_write(config_path)
+    require_readable_config_before_write(config_path)
     config = read_raw_config()
     if not config:
         return config_path
@@ -2446,11 +2442,6 @@ def _reset_config_provider(*, dry_run: bool = False) -> Path:
         model["provider"] = "auto"
         if "base_url" in model:
             model["base_url"] = OPENROUTER_BASE_URL
-    if dry_run:
-        from hermes_cli.settings_lock import check_config_write
-
-        check_config_write(config_path, before, config)
-        return config_path
     atomic_config_replace(config_path, config)
     return config_path
 
@@ -2495,7 +2486,9 @@ def logout_command(args) -> None:
     should_reset_config = _should_reset_config_provider_on_logout(target)
     provider_name = get_auth_provider_display_name(target)
     if should_reset_config:
-        _reset_config_provider(dry_run=True)  # settings lock: refuse before auth state is cleared
+        # config.yaml first: it is the write the operator settings lock may refuse, and a refusal
+        # must not leave auth state already cleared under a config that still selects the provider.
+        _reset_config_provider()
     if not (clear_provider_auth(target) or should_reset_config):
         print(f"No auth state found for {provider_name}.")
         return
@@ -2503,8 +2496,6 @@ def logout_command(args) -> None:
         # A profile logout must not be re-adopted from the cross-profile store on the next boot.
         from hermes_cli.auth_nous import _clear_shared_nous_state
         _clear_shared_nous_state("logout")
-    if should_reset_config:
-        _reset_config_provider()
     print(f"Logged out of {provider_name}.")
     if not should_reset_config:
         print("Model provider configuration was unchanged.")

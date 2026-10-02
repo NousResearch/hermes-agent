@@ -139,9 +139,11 @@ def test_an_unlock_does_not_revive_when_the_same_lock_is_recreated(home, retire)
     assert _text(home / "config.yaml") == before
 
 
-def test_lock_administration_from_a_profile_targets_the_root_it_is_enforced_from(tmp_path, monkeypatch):
-    # `hermes -p work config lock …` / `config lock --clear`: the status, the file written and
-    # the enforcing owner must all be the shared root; the profile's own config stays untouched.
+@pytest.mark.parametrize("spelled", ["absolute", "tilde"])
+def test_lock_administration_from_a_profile_targets_the_root_it_is_enforced_from(tmp_path, monkeypatch, spelled):
+    # `hermes -p work config lock …` / `config lock --clear` / `config relock`: the status, the file
+    # written, the receipt closed and the enforcing owner must all be the shared root, however
+    # HERMES_HOME is spelled; the profile's own config stays untouched.
     import types
 
     from hermes_cli.config import _cmd_config_lock
@@ -152,12 +154,18 @@ def test_lock_administration_from_a_profile_targets_the_root_it_is_enforced_from
     (root / "config.yaml").write_text(CONFIG, encoding="utf-8")
     (profile / "config.yaml").write_text("approvals:\n  mode: manual\ndisplay:\n  theme: dark\n", encoding="utf-8")
     profile_before = _text(profile / "config.yaml")
-    monkeypatch.setenv("HERMES_HOME", str(profile))
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("HERMES_HOME", str(profile) if spelled == "absolute" else "~/hermes/profiles/work")
 
     _cmd_config_lock(types.SimpleNamespace(clear=False, keys=["approvals.mode"], no_password=True))
     assert _raw(root)["settings_lock"]["keys"] == ["approvals.mode"]
     assert _text(profile / "config.yaml") == profile_before
     assert sl.lock_state(profile).status == "valid"
+    assert sl.lock_state().status == "valid"  # the no-argument form every CLI/RPC door uses
+
+    sl.begin_unlock(profile, seconds=60)
+    sl.end_unlock()  # `hermes config relock`
+    assert not sl.is_unlocked(profile)
 
     sl.begin_unlock(profile, seconds=60)
     _cmd_config_lock(types.SimpleNamespace(clear=True, keys=[], no_password=False))
@@ -186,7 +194,20 @@ def test_desktop_config_set_refuses_a_locked_key_until_unlocked(home, monkeypatc
 # ── credential lifecycle (desktop model.connect / web env save / `hermes config set OPENAI_API_KEY`) ──
 
 
-def test_credential_rotation_is_refused_before_env_changes(home):
+def _relock_at(monkeypatch, home: Path, env_writer: str) -> None:
+    """Close the unlock window at the instant *env_writer* runs: the legal relock interleaving."""
+    from hermes_cli import config
+
+    real = getattr(config, env_writer)
+
+    def relock_then_write(*args, **kwargs):
+        sl.end_unlock(home)
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(config, env_writer, relock_then_write)
+
+
+def test_credential_rotation_is_refused_before_env_changes(home, monkeypatch):
     from hermes_cli.credential_lifecycle import save_provider_env_credential
 
     before_cfg, before_env = _text(home / "config.yaml"), _text(home / ".env")
@@ -196,14 +217,18 @@ def test_credential_rotation_is_refused_before_env_changes(home):
     # Not half-rotated: a new .env key under a locked stale mirror would be the #62269 bug again.
     assert _text(home / ".env") == before_env
 
+    # Relock lands at the .env effect: the guarded mirror write must already be on disk, so the
+    # operation completes instead of leaving the new key under the old mirror.
+    _relock_at(monkeypatch, home, "save_env_value")
     sl.begin_unlock(home, seconds=60)
     result = save_provider_env_credential("OPENAI_API_KEY", "sk-NEW")
     assert result["config_updates"] == ["providers.openai.api_key"]
     assert _raw(home)["providers"]["openai"]["api_key"] == "sk-NEW"
     assert "sk-NEW" in _text(home / ".env")
+    assert not sl.is_unlocked(home)
 
 
-def test_credential_removal_is_refused_before_env_changes(home):
+def test_credential_removal_is_refused_before_env_changes(home, monkeypatch):
     from hermes_cli.credential_lifecycle import remove_provider_env_credential
 
     before_cfg, before_env = _text(home / "config.yaml"), _text(home / ".env")
@@ -212,11 +237,13 @@ def test_credential_removal_is_refused_before_env_changes(home):
     assert _text(home / "config.yaml") == before_cfg
     assert _text(home / ".env") == before_env
 
+    _relock_at(monkeypatch, home, "remove_env_value")
     sl.begin_unlock(home, seconds=60)
     result = remove_provider_env_credential("OPENAI_API_KEY")
     assert result["config_scrubbed"] == ["providers.openai.api_key"]
     assert "api_key" not in _raw(home)["providers"]["openai"]
     assert "sk-OLD" not in _text(home / ".env")
+    assert not sl.is_unlocked(home)
 
 
 def test_a_rotation_that_touches_no_mirror_is_unaffected_by_the_lock(home):
@@ -247,20 +274,33 @@ def test_provider_switch_is_refused_and_auth_json_is_not_half_switched(home):
     assert auth._load_auth_store()["active_provider"] == "nous"
 
 
-def test_logout_provider_reset_is_refused_and_its_dry_run_writes_nothing(home):
+def test_logout_is_refused_before_auth_state_is_cleared_and_relock_cannot_split_it(home, monkeypatch):
+    import types
+
     from hermes_cli import auth
+
+    cleared = []
+    monkeypatch.setattr(auth, "is_known_auth_provider", lambda provider: True)
+    monkeypatch.setattr(auth, "_should_reset_config_provider_on_logout", lambda target: True)
+    monkeypatch.setattr(auth, "clear_provider_auth", lambda target: cleared.append(target) or True)
+    logout = types.SimpleNamespace(provider="openai")
 
     before = _text(home / "config.yaml")
     with pytest.raises(sl.SettingsLockError, match="model.provider"):
-        auth._reset_config_provider(dry_run=True)  # what logout_command asks before clearing auth
-    with pytest.raises(sl.SettingsLockError, match="model.provider"):
-        auth._reset_config_provider()
+        auth.logout_command(logout)
     assert _text(home / "config.yaml") == before
+    assert cleared == []
 
+    # Relock lands the moment auth state is cleared: the guarded reset must already be on disk.
+    def clear_then_relock(target):
+        sl.end_unlock(home)
+        cleared.append(target)
+        return True
+
+    monkeypatch.setattr(auth, "clear_provider_auth", clear_then_relock)
     sl.begin_unlock(home, seconds=60)
-    auth._reset_config_provider(dry_run=True)
-    assert _text(home / "config.yaml") == before  # a dry run never writes, unlocked or not
-    auth._reset_config_provider()
+    auth.logout_command(logout)
+    assert cleared == ["openai"]
     assert _raw(home)["model"]["provider"] == "auto"
 
 
@@ -287,13 +327,26 @@ def test_gateway_slash_command_shape_in_a_profile_is_refused_by_the_root_lock(ho
     assert read_user_config_raw(config_path)["approvals"]["mode"] == "off"
 
 
-def test_desktop_roundtrip_save_in_a_profile_is_refused_by_the_root_lock(home):
+@pytest.mark.parametrize("spelling", ["direct", "dot-dot", "alias-symlink", "external-profile"])
+def test_desktop_roundtrip_save_in_a_profile_is_refused_by_the_root_lock(home, tmp_path, spelling):
+    # Every spelling of the same profile directory is owned by the same root: read through any
+    # other identity, the profile's own config.yaml would be taken for the policy (and say "off").
     from hermes_cli.config import read_user_config_raw
     from utils import atomic_roundtrip_yaml_save
 
-
-    config_path = home / "profiles" / "work" / "config.yaml"
-    config_path.parent.mkdir(parents=True)
+    profile = home / "profiles" / "work"
+    if spelling == "external-profile":  # stored elsewhere, linked in as <root>/profiles/work
+        real = tmp_path / "elsewhere" / "work"
+        real.mkdir(parents=True)
+        profile.parent.mkdir(parents=True)
+        profile.symlink_to(real, target_is_directory=True)
+    else:
+        profile.mkdir(parents=True)
+    if spelling == "alias-symlink":
+        (tmp_path / "alias").symlink_to(profile, target_is_directory=True)
+    written = {"direct": profile, "dot-dot": profile / ".." / "work",
+               "alias-symlink": tmp_path / "alias", "external-profile": tmp_path / "elsewhere" / "work"}[spelling]
+    config_path = written / "config.yaml"
     config_path.write_text("# keep me\napprovals:\n  mode: manual\n", encoding="utf-8")
 
     with pytest.raises(sl.SettingsLockError, match="approvals.mode"):
@@ -432,7 +485,12 @@ def test_an_unreadable_root_refuses_a_profile_write_and_only_a_missing_root_is_o
     assert read_user_config_raw(config_path)["approvals"]["mode"] == "off"
 
 
-@pytest.mark.parametrize("spelling", ['"settings\\u005flock"', '"settings\\x5flock"'])
+@pytest.mark.parametrize("spelling", [
+    '"settings\\u005flock"', '"settings\\x5flock"',
+    # An escaped YAML 1.1 line break (NEL, LS, PS) splitting an explicit double-quoted key.
+    *(pytest.param('? "settings\\' + chr(cp) + '  _lock"\n', id=f"escaped-U+{cp:04X}")
+      for cp in (0x85, 0x2028, 0x2029)),
+])
 def test_an_escaped_spelling_of_the_root_stanza_still_governs_a_profile(home, spelling):
     # YAML resolves both spellings to the key `settings_lock`; neither contains it literally.
     from hermes_cli.config import read_user_config_raw
@@ -459,19 +517,37 @@ def test_an_escaped_spelling_of_the_root_stanza_still_governs_a_profile(home, sp
 _ALIAS_LOCK = "settings_lock: {enabled: true, keys: [approvals.mode, allowed]}\n"
 
 
-@pytest.mark.parametrize("document, sibling, value", [
-    ("approvals: &a {mode: manual}\nunlocked_copy: *a\n" + _ALIAS_LOCK, "unlocked_copy", {"mode": "off"}),
-    ("approvals: {mode: manual}\nallowed: &s [one]\nunlocked_copy: *s\n" + _ALIAS_LOCK, "unlocked_copy", ["two"]),
-    ("approvals: {mode: manual}\nsettings_lock: &p {enabled: true, keys: [approvals.mode, allowed]}\n"
-     "unlocked_copy: *p\n", "unlocked_copy", {"enabled": False, "keys": ["approvals.mode", "allowed"]}),
-], ids=["mapping", "sequence", "policy"])
-@pytest.mark.parametrize("target", ["root", "profile"])
-def test_a_yaml_alias_cannot_carry_a_change_onto_a_locked_node(home, document, sibling, value, target):
-    # The proposal changes only the UNLOCKED sibling, so its own diff names no locked path; the
-    # round-trip merge then writes through the node the alias shares. What is judged must be the
-    # document that is written.
+_BOTH = ("replace", "update")
+# (id, document, dotted path the proposal changes, new value, writers the case applies to). The
+# key-update writer REPLACES a binding rather than writing into the node it names, so it carries a
+# change through an alias only when the path reaches inside the shared node.
+_JUDGED = [
+    ("mapping", "approvals: &a {mode: manual}\nunlocked_copy: *a\n" + _ALIAS_LOCK, "unlocked_copy.mode", "off", _BOTH),
+    ("sequence", "approvals: {mode: manual}\nallowed: &s [one]\nunlocked_copy: *s\n" + _ALIAS_LOCK,
+     "unlocked_copy", ["two"], ("replace",)),
+    ("policy", "approvals: {mode: manual}\nsettings_lock: &p {enabled: true, keys: [approvals.mode, allowed]}\n"
+     "unlocked_copy: *p\n", "unlocked_copy.enabled", False, _BOTH),
+    # A `<<:` merge: the round-trip object keeps the inherited value cached, the emitted bytes do not.
+    ("merge-key", "defaults: &d {mode: manual}\napprovals: {<<: *d}\n" + _ALIAS_LOCK, "defaults.mode", "off", _BOTH),
+    ("merge-key-policy", "approvals: {mode: manual}\nlock_template: &p {enabled: true, keys: [approvals.mode, allowed]}\n"
+     "settings_lock: {<<: *p}\n", "lock_template.enabled", False, _BOTH),
+    # Python's 1 == True: `max_turns: 1` becoming `true` is unlimited to its reader.
+    ("int-to-bool", "approvals: {mode: manual}\nallowed: 1\n" + _ALIAS_LOCK, "allowed", True, _BOTH),
+    ("kind-in-list", "approvals: {mode: manual}\nallowed: [0]\n" + _ALIAS_LOCK, "allowed", [False], _BOTH),
+]
+
+
+@pytest.mark.parametrize("writer, target, document, key, value", [
+    pytest.param(writer, target, document, key, value, id=f"{writer}-{target}-{case}")
+    for case, document, key, value, writers in _JUDGED for writer in writers for target in ("root", "profile")])
+def test_what_is_judged_is_the_written_document_as_a_reader_sees_it(home, writer, target, document, key, value):
+    # The proposal may change only an UNLOCKED node, so its own diff names no locked path; aliases
+    # and merge keys then carry it onto a locked one in the bytes that are written, and Python
+    # equality calls a changed kind unchanged. What is judged must be the canonical reading of the
+    # bytes that land.
     import hermes_yaml
     from hermes_cli.config import atomic_config_replace
+    from utils import atomic_roundtrip_yaml_update
 
     root_config = home / "config.yaml"
     config_path = root_config if target == "root" else home / "profiles" / "work" / "config.yaml"
@@ -481,9 +557,16 @@ def test_a_yaml_alias_cannot_carry_a_change_onto_a_locked_node(home, document, s
     before = _text(config_path)
 
     proposal = hermes_yaml.safe_load(before)
-    proposal[sibling] = value
+    *parents, leaf = key.split(".")
+    node = proposal
+    for segment in parents:
+        node = node[segment]
+    node[leaf] = value
     with pytest.raises(sl.SettingsLockError):
-        atomic_config_replace(config_path, proposal)
+        if writer == "replace":
+            atomic_config_replace(config_path, proposal)
+        else:
+            atomic_roundtrip_yaml_update(config_path, key, value)
     assert _text(config_path) == before
     assert sl.lock_state(home).status == "valid"
 
@@ -694,6 +777,28 @@ def test_retired_model_migration_is_refused_and_leaves_no_backup(home):
 
 
 # ── a memory plugin's own config.yaml writer (was a raw, truncating open()+yaml.dump) ────────
+
+
+def test_a_refused_always_approval_is_not_published_to_other_sessions(home):
+    # "Always" persists to command_allowlist; when the lock refuses that write, the approval must
+    # not stay live in memory for every other session. This session's own approval stands.
+    from tools import approval
+
+    (home / "config.yaml").write_text(
+        CONFIG + "settings_lock: {enabled: true, keys: [command_allowlist]}\n", encoding="utf-8")
+    before = _text(home / "config.yaml")
+    pattern = "git reset --hard (destroys uncommitted changes)"
+    approval.load_permanent(set())
+
+    approval._persist_choice("first", "always", [(pattern, "fixture warning", False)])
+    assert _text(home / "config.yaml") == before
+    assert approval.is_approved("first", pattern)
+    assert not approval.is_approved("second", pattern)
+
+    sl.begin_unlock(home, seconds=60)
+    approval._persist_choice("first", "always", [(pattern, "fixture warning", False)])
+    assert pattern in _raw(home)["command_allowlist"]
+    assert approval.is_approved("second", pattern)
 
 
 def test_memory_plugin_config_write_is_refused_atomically(home):

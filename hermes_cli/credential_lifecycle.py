@@ -78,22 +78,15 @@ def _prune_env_pool_entries(env_var: str) -> List[str]:
     return pruned
 
 
-def _scrub_config_yaml_mirrors(old_value: str, new_value: str | None, *, dry_run: bool = False) -> List[str]:
+def _scrub_config_yaml_mirrors(old_value: str, new_value: str | None) -> List[str]:
     """Reconcile config.yaml api_key mirrors holding ``old_value``; return dotted paths touched.
 
     Value-matched on purpose: only an entry holding the SAME credential that just changed in
     ``.env`` is touched. ``new_value=None`` removes the field. Operates on the RAW user config
     so defaults are never baked into the user's file.
-
-    ``dry_run=True`` writes nothing and only asks the operator settings lock whether the write
-    WOULD be refused — for callers that must find out before an earlier side effect (the ``.env``
-    rotation): a refused mirror after a rotated ``.env`` would leave the stale, higher-precedence
-    inline key shadowing the new one, which is the #62269 bug this scrub exists to prevent.
     """
     if not old_value:
         return []
-    import copy
-
     from hermes_cli.config import atomic_config_replace, get_config_path, read_user_config_raw
 
     config_path = get_config_path()
@@ -105,7 +98,6 @@ def _scrub_config_yaml_mirrors(old_value: str, new_value: str | None, *, dry_run
         return []
     if not user_config:
         return []
-    before = copy.deepcopy(user_config)
 
     touched: List[str] = []
 
@@ -143,12 +135,7 @@ def _scrub_config_yaml_mirrors(old_value: str, new_value: str | None, *, dry_run
         _fix(entry, f"providers.{provider_id}", fields=("api_key",))
 
     if touched:
-        if dry_run:
-            from hermes_cli.settings_lock import check_config_write
-
-            check_config_write(config_path, before, user_config)
-        else:
-            atomic_config_replace(config_path, user_config)
+        atomic_config_replace(config_path, user_config)
     return touched
 
 
@@ -195,15 +182,14 @@ def save_provider_env_credential(env_var: str, value: str) -> Dict[str, Any]:
     # scrub below would still move the new value into config.yaml.
     require_env_writable(env_var, "set")
     old_value = load_env().get(env_var)
-    rotates_mirrors = bool(value and old_value and old_value != value)
-    if rotates_mirrors:
-        # Settings lock: refuse BEFORE .env changes when a locked config.yaml mirror would change.
-        _scrub_config_yaml_mirrors(old_value, value, dry_run=True)
-    save_env_value(env_var, value)
-
     config_updates: List[str] = []
-    if rotates_mirrors:
+    if value and old_value and old_value != value:
+        # The mirror first: it is the write the operator settings lock may refuse, and a refusal
+        # after .env had rotated would leave the stale, higher-precedence inline key shadowing the
+        # new one (#62269). Once it has landed, nothing after it is lock-governed, so a relock
+        # cannot split the operation.
         config_updates = _scrub_config_yaml_mirrors(old_value, value)
+    save_env_value(env_var, value)
 
     # A prior removal may have suppressed this env source; a fresh save is an explicit re-add.
     providers = _providers_for_env_var(env_var)
@@ -224,12 +210,10 @@ def remove_provider_env_credential(env_var: str) -> Dict[str, Any]:
     # Before the pool prune and mirror scrub: a refused remove must not strip the other stores.
     require_env_writable(env_var, "remove")
     old_value = load_env().get(env_var)
-    if old_value:
-        # Settings lock: refuse BEFORE .env changes when a locked config.yaml mirror would change.
-        _scrub_config_yaml_mirrors(old_value, None, dry_run=True)
+    # The mirror first, for the same reason as the save path: the settings lock may refuse it.
+    config_scrubbed = _scrub_config_yaml_mirrors(old_value, None) if old_value else []
     removed_from_env = remove_env_value(env_var)
     refs = purge_env_credential_references(env_var)
-    config_scrubbed = _scrub_config_yaml_mirrors(old_value, None) if old_value else []
 
     return {
         "ok": True,

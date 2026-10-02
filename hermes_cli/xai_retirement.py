@@ -160,16 +160,11 @@ def apply_migration(
     if not resolved:
         return unchanged
 
+    import hermes_yaml
     from hermes_cli.config import require_readable_config_before_write
-    from hermes_cli.settings_lock import check_config_write
+    from hermes_cli.settings_lock import authorized_config_write, check_config_write
     from utils import atomic_write_text
-    # Operator settings lock, before the backup copy so a refused migration leaves no trace.
-    check_config_write(config_path, require_readable_config_before_write(config_path), doc)
 
-    backup_path: Optional[Path] = None
-    if backup:
-        from hermes_cli.config_backups import backup_config
-        backup_path = backup_config(config_path, "pre-migrate-xai")
     # Dump to a buffer, then atomic-write: ``open(path, "w")`` truncates before the dump runs, so a
     # crash mid-write would leave config.yaml empty (and with ``--no-backup`` that is the only
     # copy; the ``doc is None`` early return would then hide the damage). atomic_replace also keeps
@@ -177,5 +172,17 @@ def apply_migration(
     # 0640 / container installs; a root-run migration must not flip ownership).
     buf = io.StringIO()
     yaml.dump(doc, buf)
-    atomic_write_text(config_path, buf.getvalue(), preserve_mode=True)
+    text = buf.getvalue()
+    # Operator settings lock, judged on the bytes as a reader will see them (not the round-trip
+    # object, whose merge keys can disagree with what it emits), and asked before the backup copy
+    # so a refused migration leaves no trace.
+    before, after = require_readable_config_before_write(config_path), hermes_yaml.safe_load(text) or {}
+    check_config_write(config_path, before, after)
+
+    backup_path: Optional[Path] = None
+    if backup:
+        from hermes_cli.config_backups import backup_config
+        backup_path = backup_config(config_path, "pre-migrate-xai")
+    with authorized_config_write(config_path, before, after):  # current at the write: relock fence
+        atomic_write_text(config_path, text, preserve_mode=True)
     return ApplyResult(file_path=config_path, backup_path=backup_path, issues_resolved=resolved, config_changed=True)

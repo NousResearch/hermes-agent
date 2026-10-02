@@ -213,6 +213,16 @@ def test_password_round_trip_and_rejections():
     assert sl.verify_password("Correct Horse", stored) is False
     assert sl.verify_password("", stored) is False
 
+    # An imported hash at twice our cost needs more than some builds' implicit scrypt memory cap;
+    # admitted means verifiable, or a correct password reads as "incorrect password".
+    import base64
+    import hashlib
+
+    salt = b"s" * 16
+    digest = hashlib.scrypt(b"correct horse", salt=salt, n=2**15, r=8, p=1, maxmem=64 * 1024 * 1024, dklen=32)
+    imported = f"scrypt$32768$8$1${base64.b64encode(salt).decode()}${base64.b64encode(digest).decode()}"
+    assert sl.verify_password("correct horse", imported) is True
+
 
 @pytest.mark.parametrize("stored", [None, "", 42, "plaintext", "scrypt$bad", "bcrypt$1$1$1$a$b",
                                     "scrypt$x$8$1$YQ==$Yg=="])
@@ -226,7 +236,10 @@ def test_two_hashes_of_one_password_differ_by_salt():
 
 @pytest.mark.parametrize("stored", [123456, True, ["hash"], {"h": 1}, "plaintext", "scrypt$bad",
                                     "bcrypt$16384$8$1$YQ==$Yg==", "scrypt$x$8$1$YQ==$Yg==",
-                                    "scrypt$16384$8$1$not-base64!$Yg==", "scrypt$16384$8$1$$Yg=="])
+                                    "scrypt$16384$8$1$not-base64!$Yg==", "scrypt$16384$8$1$$Yg==",
+                                    # well-formed, but no scrypt can run it: a cost that is not a
+                                    # power of two, and one past the memory budget (1 GiB)
+                                    "scrypt$3$8$1$YQ==$Yg==", "scrypt$1048576$8$1$YQ==$Yg=="])
 def test_a_malformed_password_makes_the_lock_unusable_never_passwordless(tmp_path, stored):
     """`has_password` gates whether the unlock doors ask for anything at all, so a hash this build
     cannot verify must not read as "no password configured" — that opened the window to anyone."""
@@ -358,8 +371,15 @@ def test_the_receipt_never_carries_the_stored_hash(tmp_path):
 def test_the_window_file_is_not_world_readable(tmp_path):
     home = _root(tmp_path, LOCKED)
     sl.begin_unlock(home, seconds=30)
-
     assert sl.unlock_path(home).stat().st_mode & 0o077 == 0
+
+    # Nor is the relock fence: flock needs only read access, so a fence another user can open is
+    # one they can hold to stall `hermes config relock`. Tightened in place when it already exists.
+    fence = home / sl.FENCE_FILENAME
+    fence.touch(mode=0o644)
+    fence.chmod(0o644)
+    sl.end_unlock(home)
+    assert fence.stat().st_mode & 0o077 == 0
 
 
 # ── through the real save_config ─────────────────────────────────────────────

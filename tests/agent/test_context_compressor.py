@@ -436,6 +436,74 @@ class TestSummarizeToolResultClarify:
         assert "Choice B" in summary
 
 
+def _refusals():
+    """Refused-call results from the real producers: the approval gate messages in their terminal /
+    tool_error envelopes, and a pending gateway approval."""
+    from tools import approval
+    from tools.registry import tool_error
+    from tools.terminal_tool import _error_json
+
+    gate = approval._COMMAND_GATE
+    return [
+        ("terminal", {"command": "rm -rf build"},
+         _error_json(gate.cli_denied.format(description="", breaker=""), status="blocked")),
+        ("terminal", {"command": "rm -rf build"},
+         _error_json(gate.transport_denied.format(breaker=""), status="blocked")),
+        ("terminal", {"command": "rm -rf build"},
+         _error_json(gate.cli_timeout.format(breaker=""), status="blocked")),
+        ("write_file", {"path": "AGENTS.md", "content": "a\nb"},
+         tool_error("BLOCKED: write to protected agent-instruction file(s) (AGENTS.md) was denied by "
+                    "the user. The user has NOT consented to this write. Do NOT retry it or attempt "
+                    "the same edit via another path (terminal, execute_code, etc.).")),
+    ]
+
+
+class TestSummarizeToolResultRefusals:
+    """A refused call must not be summarized as done ("ran ...", "wrote to ..."): that turns the
+    user's denial into a record of the action and drops the do-not-retry instruction."""
+
+    @pytest.mark.parametrize("tool_name,args,content", _refusals(),
+                             ids=["cli_denied", "transport_denied", "cli_timeout", "write_guard"])
+    def test_denial_summary_keeps_not_run_and_no_consent(self, tool_name, args, content):
+        summary = _summarize_tool_result(tool_name, json.dumps(args), content)
+
+        assert "BLOCKED, not run" in summary and "did NOT consent" in summary
+        assert "ran `" not in summary and "wrote to" not in summary
+        assert len(summary) <= _PRUNE_MIN_CHARS - 1
+
+    def test_pending_approval_is_not_run(self):
+        from tools.terminal_tool import _error_json
+
+        content = _error_json("", status="pending_approval")
+        summary = _summarize_tool_result("terminal", json.dumps({"command": "rm -rf build"}), content)
+
+        assert summary == "[terminal] `rm -rf build` awaiting the user's approval, not run"
+
+    def test_ordinary_result_summary_unchanged(self):
+        content = json.dumps({"output": "BLOCKED by nothing", "exit_code": 0, "error": None})
+        summary = _summarize_tool_result("terminal", json.dumps({"command": "make"}), content)
+
+        assert summary == "[terminal] ran `make` -> exit 0, 1 lines output"
+
+    def test_prune_keeps_denial_across_passes(self, compressor):
+        tool_name, args, content = _refusals()[0]
+        assert len(content) > _PRUNE_MIN_CHARS
+        messages = [
+            {"role": "assistant", "tool_calls": [{"id": "t1", "type": "function",
+             "function": {"name": tool_name, "arguments": json.dumps(args)}}]},
+            {"role": "tool", "tool_call_id": "t1", "content": content},
+            {"role": "user", "content": "recent request"},
+            {"role": "assistant", "content": "recent response"},
+        ]
+
+        pruned, count = compressor._prune_old_tool_results(messages, protect_tail_count=2)
+        summary = pruned[1]["content"]
+
+        assert count == 1 and "BLOCKED, not run" in summary and "did NOT consent" in summary
+        pruned_again, _ = compressor._prune_old_tool_results(pruned, protect_tail_count=2)
+        assert pruned_again[1]["content"] == summary
+
+
 class TestShouldCompress:
     def test_below_threshold(self, compressor):
         compressor.last_prompt_tokens = 50000

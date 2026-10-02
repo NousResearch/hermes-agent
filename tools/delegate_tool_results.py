@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import json
+from pathlib import Path
 import threading
 from typing import Any, Dict, List, Optional
 from urllib.parse import urlsplit, urlunsplit
@@ -301,14 +302,50 @@ def _build_child_preserving_parent_tools(**kwargs):
     """Build a child without leaking its resolved toolset into the parent."""
     from tools.delegate_tool import _build_child_agent
     import model_tools
-    with _CHILD_CONSTRUCTION_LOCK:
-        parent_tool_names = list(model_tools._last_resolved_tool_names)
-        try:
-            child = _build_child_agent(**kwargs)
-        finally:
-            model_tools._last_resolved_tool_names = parent_tool_names
-    child._delegate_saved_tool_names = parent_tool_names
-    return child
+
+    parent_agent = kwargs.get("parent_agent")
+    ceiling_max_spawn = kwargs.get("ceiling_max_spawn_depth")
+    if not isinstance(ceiling_max_spawn, int):
+        val = getattr(parent_agent, "_delegate_max_spawn_depth", None)
+        ceiling_max_spawn = val if isinstance(val, int) else None
+    if ceiling_max_spawn is None:
+        from tools.delegate_tool_config import _get_max_spawn_depth
+        ceiling_max_spawn = _get_max_spawn_depth()
+
+    ceiling_orch = kwargs.get("ceiling_orchestrator_enabled")
+    if not isinstance(ceiling_orch, bool):
+        val = getattr(parent_agent, "_delegate_orchestrator_enabled", None)
+        ceiling_orch = val if isinstance(val, bool) else None
+    if ceiling_orch is None:
+        from tools.delegate_tool_config import _get_orchestrator_enabled
+        ceiling_orch = _get_orchestrator_enabled()
+
+    kwargs["ceiling_max_spawn_depth"] = ceiling_max_spawn
+    kwargs["ceiling_orchestrator_enabled"] = ceiling_orch
+
+    _realization = kwargs.get("profile_realization")
+    if _realization is not None:
+        ok, err = _realization.verify()
+        if not ok:
+            raise ValueError(err)
+        from tools.delegate_tool_config import profile_runtime_scope
+        scope_ctx = profile_runtime_scope(_realization.path)
+    else:
+        _prof_name = kwargs.get("profile_name")
+        if _prof_name:
+            raise ValueError(f"Delegation refused: profile '{_prof_name}' has no verified realization")
+        import contextlib
+        scope_ctx = contextlib.nullcontext()
+
+    with scope_ctx:
+        with _CHILD_CONSTRUCTION_LOCK:
+            parent_tool_names = list(model_tools._last_resolved_tool_names)
+            try:
+                child = _build_child_agent(**kwargs)
+            finally:
+                model_tools._last_resolved_tool_names = parent_tool_names
+        child._delegate_saved_tool_names = parent_tool_names
+        return child
 
 def _parent_finalization_lock(parent_agent) -> threading.RLock:
     """Per-parent lock serializing lifecycle side effects (created once under the guard)."""

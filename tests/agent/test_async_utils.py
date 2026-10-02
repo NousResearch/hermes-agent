@@ -5,11 +5,10 @@ from __future__ import annotations
 import asyncio
 import gc
 import warnings
-
-import pytest
 from concurrent.futures import Future
 from unittest.mock import patch
 
+import pytest
 
 from agent.async_utils import safe_schedule_threadsafe
 
@@ -97,8 +96,6 @@ class TestSafeScheduleThreadsafe:
             assert _no_unawaited_warnings(caught, coro_name='_sample')
         finally:
             loop.close()
-
-
 
 
 @pytest.mark.parametrize("withdrawal", ["withdraw", "cancel"])

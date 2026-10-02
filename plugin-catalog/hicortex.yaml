@@ -1,6 +1,6 @@
 name: hicortex
 repo: https://github.com/gamaze-labs/hicortex-hermes-plugin
-sha: 29a5249a533ceddaf99074cb4d668e771967db16
+sha: ad5508ddc3dfc429163c0c8d8e00c07742104f5e
 description: >-
   Shared fleet memory for Hermes agents: every connected agent learns from all other
   agents connected to the memory, wherever they run. Sessions across machines and harnesses are distilled
@@ -11,13 +11,14 @@ description: >-
   ingest, lessons, index, graph, update, delete) through the shared server. The same server
   also serves Claude Code, OpenClaw, Pi and opencode agents, so mixed-harness fleets share one
   brain. Stdlib-only, no pip dependencies. Requires a running Hicortex server
-  (npx @gamaze/hicortex init on any machine); privacy: raw sessions never leave the capturing
-  machine — only distilled, redacted memories are stored server-side.
+  (npx @gamaze/hicortex init on any machine); data flow: each user message is sent to your
+  configured Hicortex server for recall (default http://localhost:8787); session
+  distillation runs on the server.
 maintainer: gamaze-labs
 tier: community
 category: memory
 docs_url: https://github.com/gamaze-labs/hicortex-hermes-plugin#readme
-version: "0.7.8"
+version: "0.7.9"
 readme: true
 capabilities:
   provides_tools:

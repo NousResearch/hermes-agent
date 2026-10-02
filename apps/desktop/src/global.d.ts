@@ -36,14 +36,17 @@ declare global {
       // profile's backend from the pool.
       getConnection: (
         profile?: string | null,
-        opts?: { priority?: 'foreground' | 'background' }
+        opts?: { priority?: 'foreground' | 'background'; passive?: boolean }
       ) => Promise<HermesConnection>
       // Registry-scoped backend resolution: dial (connectionId, profile). An
       // empty/local connectionId delegates to the legacy getConnection path.
+      // `passive` mirrors the REST flag: the dial may only be served by a
+      // backend that already exists (#108088) — never a cold spawn.
       getConnectionFor?: (payload: {
         connectionId?: null | string
         profile?: null | string
         priority?: 'foreground' | 'background'
+        passive?: boolean
       }) => Promise<HermesConnection>
       // Registry-scoped fresh WS URL (same result contract as getGatewayWsUrl).
       getGatewayWsUrlFor?: (payload: {

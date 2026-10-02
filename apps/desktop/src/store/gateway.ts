@@ -52,14 +52,23 @@ function dialPriority(spawnPriority: SpawnPriority): { priority: 'foreground' } 
   return spawnPriority === 'foreground' ? { priority: 'foreground' } : {}
 }
 
+// Passive dial marker handed to Electron main (#108088): a passive read may be
+// served only by a backend that already exists — it never cold-spawns one and
+// never refreshes the pool's idle clock, mirroring the REST `hermes:api`
+// passive flag. Background dials keep the pre-passive IPC payload shape.
+function dialPassive(passive: boolean): { passive: true } | Record<never, never> {
+  return passive ? { passive: true } : {}
+}
+
 function dialProfile(
   desktop: NonNullable<typeof window.hermesDesktop>,
   profile: string,
-  spawnPriority: SpawnPriority
+  spawnPriority: SpawnPriority,
+  passive = false
 ): Promise<HermesConnection> {
-  return spawnPriority === 'foreground'
-    ? desktop.getConnection(profile, { priority: 'foreground' })
-    : desktop.getConnection(profile)
+  const opts = { ...dialPriority(spawnPriority), ...dialPassive(passive) }
+
+  return Object.keys(opts).length > 0 ? desktop.getConnection(profile, opts) : desktop.getConnection(profile)
 }
 
 // Read connection state through a call so TS control-flow analysis doesn't
@@ -477,7 +486,8 @@ function isPrimaryRegistryRoute(connectionId: null | string, profile: string): b
 async function ridesPrimaryBackend(
   connectionId: null | string,
   profile: string,
-  spawnPriority: SpawnPriority = 'background'
+  spawnPriority: SpawnPriority = 'background',
+  passive = false
 ): Promise<boolean> {
   const id = String(connectionId ?? '').trim()
   const key = normKey(profile)
@@ -507,7 +517,12 @@ async function ridesPrimaryBackend(
   // same dial `openSecondary` makes next, coalesced by main's claim key.
   try {
     const conn = await withTimeout(
-      desktop.getConnectionFor({ connectionId: id, profile: key, ...dialPriority(spawnPriority) }),
+      desktop.getConnectionFor({
+        connectionId: id,
+        profile: key,
+        ...dialPriority(spawnPriority),
+        ...dialPassive(passive)
+      }),
       RECONNECT_ATTEMPT_TIMEOUT_MS,
       `Timed out resolving the backend route for "${key}"`
     )
@@ -711,7 +726,11 @@ function clearTimer(entry: Secondary): void {
   }
 }
 
-async function openSecondary(entry: Secondary, spawnPriority: SpawnPriority = 'background'): Promise<void> {
+async function openSecondary(
+  entry: Secondary,
+  spawnPriority: SpawnPriority = 'background',
+  passive = false
+): Promise<void> {
   const desktop = window.hermesDesktop
 
   const reauthError = g.reauthFailures.get(entry.scope)?.error
@@ -803,13 +822,14 @@ async function openSecondary(entry: Secondary, spawnPriority: SpawnPriority = 'b
             desktop.getConnectionFor({
               connectionId: entry.connectionId,
               profile: entry.profile,
-              ...dialPriority(spawnPriority)
+              ...dialPriority(spawnPriority),
+              ...dialPassive(passive)
             }),
             SOURCE_SWITCH_DIAL_TIMEOUT_MS,
             `Timed out connecting to profile "${entry.profile}"`
           )
         : await withTimeout(
-            dialProfile(desktop, entry.profile, spawnPriority),
+            dialProfile(desktop, entry.profile, spawnPriority, passive),
             RECONNECT_ATTEMPT_TIMEOUT_MS,
             `Timed out connecting to profile "${entry.profile}"`
           )
@@ -966,7 +986,7 @@ function backgroundDialCoolingDown(scope: string, now = Date.now()): boolean {
  *  a scope whose socket accepts and then dies redialed once per tick (session.control.read on a
  *  cross-profile session, #121865). After a failure, background callers fail fast and leave
  *  redialing to scheduleReconnect; a user action (foreground) still dials at once. */
-async function openSecondaryForRequest(entry: Secondary, spawnPriority: SpawnPriority): Promise<void> {
+async function openSecondaryForRequest(entry: Secondary, spawnPriority: SpawnPriority, passive = false): Promise<void> {
   if (isOpen(entry.gateway)) {
     return
   }
@@ -977,7 +997,7 @@ async function openSecondaryForRequest(entry: Secondary, spawnPriority: SpawnPri
   }
 
   try {
-    await openSecondary(entry, spawnPriority)
+    await openSecondary(entry, spawnPriority, passive)
   } catch (error) {
     recordDialFailure(entry, error)
     throw error
@@ -1167,7 +1187,11 @@ function createSecondary(profile: string, connectionId: null | string = null): S
 // the second dial fails (tunnel/token are per-backend) and the closed socket
 // poisons the active gateway with "not connected" even though the primary is
 // open right next to it.
-async function sharedPrimaryRoute(profile: string, spawnPriority: SpawnPriority = 'background'): Promise<boolean> {
+async function sharedPrimaryRoute(
+  profile: string,
+  spawnPriority: SpawnPriority = 'background',
+  passive = false
+): Promise<boolean> {
   const desktop = window.hermesDesktop
 
   if (!desktop) {
@@ -1183,7 +1207,7 @@ async function sharedPrimaryRoute(profile: string, spawnPriority: SpawnPriority 
     // carry the foreground priority — otherwise the spawn it starts queues as
     // background and the click waits out this probe before being promoted.
     const conn = await withTimeout(
-      dialProfile(desktop, profile, spawnPriority),
+      dialProfile(desktop, profile, spawnPriority, passive),
       RECONNECT_ATTEMPT_TIMEOUT_MS,
       `Timed out resolving the shared-primary route for profile "${profile}"`
     )
@@ -1200,7 +1224,8 @@ async function sharedPrimaryRoute(profile: string, spawnPriority: SpawnPriority 
 async function gatewayForProfile(
   profile: string,
   leaseRequest = false,
-  spawnPriority: SpawnPriority = 'background'
+  spawnPriority: SpawnPriority = 'background',
+  passive = false
 ): Promise<{ gateway: HermesGateway | null; key: string; release: () => void; scopeProfile: boolean }> {
   const key = normKey(profile)
   const noRelease = () => undefined
@@ -1222,7 +1247,7 @@ async function gatewayForProfile(
     throw new Error(`Backend for "${key}" is reconnecting; retry after it settles.`)
   }
 
-  if (await sharedPrimaryRoute(key, spawnPriority)) {
+  if (await sharedPrimaryRoute(key, spawnPriority, passive)) {
     return { gateway: g.primaryGateway, key, release: noRelease, scopeProfile: true }
   }
 
@@ -1271,7 +1296,7 @@ async function gatewayForProfile(
   }
 
   try {
-    await openSecondaryForRequest(entry, spawnPriority)
+    await openSecondaryForRequest(entry, spawnPriority, passive)
   } catch (error) {
     release()
     throw error
@@ -1291,12 +1316,12 @@ export async function requestGatewayForProfile<T>(
   params: Record<string, unknown> = {},
   timeoutMs?: number,
   signal?: AbortSignal,
-  { spawnPriority = 'background' }: { spawnPriority?: SpawnPriority } = {}
+  { spawnPriority = 'background', passive = false }: { spawnPriority?: SpawnPriority; passive?: boolean } = {}
 ): Promise<T> {
   // A user-initiated Settings-scoped RPC (the Vault tab's "Applies to" pick)
   // dials `foreground` so a cold profile spawn is not queued behind background
   // work (#111651); ambient callers keep the background default.
-  const route = await gatewayForProfile(profile, true, spawnPriority)
+  const route = await gatewayForProfile(profile, true, spawnPriority, passive)
 
   try {
     if (!route.gateway) {
@@ -1341,13 +1366,13 @@ export async function requestGatewayForAgent<T>(
   params: Record<string, unknown> = {},
   timeoutMs?: number,
   signal?: AbortSignal,
-  { spawnPriority = 'background' }: { spawnPriority?: SpawnPriority } = {}
+  { spawnPriority = 'background', passive = false }: { spawnPriority?: SpawnPriority; passive?: boolean } = {}
 ): Promise<T> {
   const key = normKey(profile)
   const scope = registryBackendScopeKey(connectionId, key)
 
   if (scope === key) {
-    return requestGatewayForProfile<T>(key, method, params, timeoutMs, signal, { spawnPriority })
+    return requestGatewayForProfile<T>(key, method, params, timeoutMs, signal, { spawnPriority, passive })
   }
 
   // A primary remote selected from the connection registry carries its source
@@ -1359,10 +1384,10 @@ export async function requestGatewayForAgent<T>(
   // Require both owner identities to agree before collapsing the route; a
   // different source or profile must retain its isolated secondary.
   if (isPrimaryRegistryRoute(connectionId, key)) {
-    return requestGatewayForProfile<T>(key, method, params, timeoutMs, signal, { spawnPriority })
+    return requestGatewayForProfile<T>(key, method, params, timeoutMs, signal, { spawnPriority, passive })
   }
 
-  if (await ridesPrimaryBackend(connectionId, key, spawnPriority)) {
+  if (await ridesPrimaryBackend(connectionId, key, spawnPriority, passive)) {
     return requestOnPrimaryGateway<T>(method, { ...params, profile: key }, timeoutMs, signal)
   }
 
@@ -1385,7 +1410,7 @@ export async function requestGatewayForAgent<T>(
   entry.activeRequests += 1
 
   try {
-    await openSecondaryForRequest(entry, spawnPriority)
+    await openSecondaryForRequest(entry, spawnPriority, passive)
 
     const result = await (timeoutMs === undefined && signal === undefined
       ? entry.gateway.request<T>(method, params)

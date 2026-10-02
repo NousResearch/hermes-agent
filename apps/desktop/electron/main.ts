@@ -15562,32 +15562,43 @@ ipcMain.handle('hermes:connection', async (event, profile, extra) => {
     primaryProfileKey()
   )
 
-  return connectDesktopProfileRoute(route, spawnPriorityFrom(extra?.priority), event.sender)
+  return connectDesktopProfileRoute(route, spawnPriorityFrom(extra?.priority), event.sender, extra?.passive === true)
 })
 
 async function connectDesktopProfileRoute(
   route: DesktopProfileRoute,
   spawnPriority: LocalBackendSpawnPriority = 'foreground',
-  sender?: Electron.WebContents
+  sender?: Electron.WebContents,
+  passive = false
 ) {
   // Coalesce concurrent renderer dials for one profile scope (#90812): the
   // renderer-side reconnect lock is per-window, so two windows waking at once
   // both land here. The claim key mirrors ensureBackend()'s own profile
   // normalization so every spelling of the primary coalesces onto one dial.
   const scopeKey = backendScopeKey(route.connectionId, route.profile)
-  const clearSpawnPriority = applySpawnPriority(scopeKey, spawnPriority)
 
-  let connection
+  // Passive dial (#108088): served only by an already-warm backend — never a
+  // cold spawn, never a `lastActiveAt` refresh. It also stays OUT of the dial
+  // claim (same rule as the REST passive path in dispatchRegistryApiRequest):
+  // an interactive open coalescing onto an in-flight passive read must not
+  // inherit its "no warm backend" rejection.
+  const connection = passive
+    ? await (route.connectionId
+        ? ensureRegistryBackend(route.connectionId, route.profile, '', { passive: true })
+        : ensureBackend(route.profile, { passive: true }))
+    : await (async () => {
+        const clearSpawnPriority = applySpawnPriority(scopeKey, spawnPriority)
 
-  try {
-    connection = await backendDialClaims.run(scopeKey, () =>
-      route.connectionId
-        ? ensureRegistryBackend(route.connectionId, route.profile, '', { spawnPriority })
-        : ensureBackend(route.profile, { spawnPriority })
-    )
-  } finally {
-    clearSpawnPriority()
-  }
+        try {
+          return await backendDialClaims.run(scopeKey, () =>
+            route.connectionId
+              ? ensureRegistryBackend(route.connectionId, route.profile, '', { spawnPriority })
+              : ensureBackend(route.profile, { spawnPriority })
+          )
+        } finally {
+          clearSpawnPriority()
+        }
+      })()
 
   // Every republish carries LIVE window state (#102451): the backend pool entry
   // (and the getWindowState() snapshot startHermes baked into it) outlives
@@ -15621,7 +15632,7 @@ async function connectDesktopProfileRoute(
 // child when the v1 global mode is remote (the registry 'local' entry always
 // means this machine) unless the profile is remote-only.
 ipcMain.handle('hermes:connection:for', async (event, payload) => {
-  const { connectionId, profile, priority } = payload && typeof payload === 'object' ? (payload as any) : ({} as any)
+  const { connectionId, profile, priority, passive } = payload && typeof payload === 'object' ? (payload as any) : ({} as any)
   const registry = readDesktopConnectionsRegistry()
   const id = registryDialConnectionId(connectionId, registry.primary)
   const spawnPriority = spawnPriorityFrom(priority)
@@ -15629,7 +15640,8 @@ ipcMain.handle('hermes:connection:for', async (event, payload) => {
   return connectDesktopProfileRoute(
     { connectionId: id, profile: String(profile ?? '').trim() || 'default' },
     spawnPriority,
-    event.sender
+    event.sender,
+    passive === true
   )
 })
 

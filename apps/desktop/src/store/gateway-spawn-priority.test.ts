@@ -33,6 +33,7 @@ const {
   openGatewayForAgent,
   openGatewayForProfile,
   requestGatewayForAgent,
+  requestGatewayForProfile,
   retainGatewayForAgent,
   setPrimaryGateway
 } = await import('./gateway')
@@ -180,5 +181,46 @@ describe('RPC-lease dials forward an explicit spawnPriority (#105104)', () => {
     const seen = priorities(desktop.getConnection, args => (args[1] as { priority?: string } | undefined)?.priority)
     expect(seen.length).toBeGreaterThanOrEqual(1)
     expect(seen.every(priority => priority === 'foreground')).toBe(true)
+  })
+})
+
+// #108088: a passive background read (the bot relay's roster loop) must never
+// cold-spawn a backend or refresh the pool's idle clock, so its dial reaches
+// Electron main tagged `passive: true` — on the shared-remote probe, the
+// registry secondary connect and the plain-profile dial alike. Untagged callers
+// keep the pre-passive IPC payload shape.
+describe('passive RPC-lease dials tag every probe as passive (#108088)', () => {
+  it('requestGatewayForAgent with passive tags the probe and the connect dial', async () => {
+    const desktop = installDesktop()
+
+    await requestGatewayForAgent('homelab', 'research', 'profiles.list', {}, undefined, undefined, {
+      passive: true
+    })
+
+    const seen = priorities(desktop.getConnectionFor, args => (args[0] as { passive?: boolean }).passive)
+    expect(seen.length).toBeGreaterThanOrEqual(1)
+    expect(seen.every(passive => passive === true)).toBe(true)
+  })
+
+  it('requestGatewayForAgent without options never tags a passive dial', async () => {
+    const desktop = installDesktop()
+
+    await requestGatewayForAgent('homelab', 'research', 'session.create', {})
+
+    const seen = priorities(desktop.getConnectionFor, args => (args[0] as { passive?: boolean }).passive)
+    expect(seen.length).toBeGreaterThanOrEqual(1)
+    expect(seen.every(passive => passive === undefined)).toBe(true)
+  })
+
+  it('requestGatewayForProfile with passive tags the plain-profile dial', async () => {
+    const desktop = installDesktop()
+
+    // The v1 resolver probes the shared-primary route first, then dials the
+    // profile secondary — both must carry the passive tag.
+    await requestGatewayForProfile('research', 'profiles.list', {}, undefined, undefined, { passive: true })
+
+    const seen = priorities(desktop.getConnection, args => (args[1] as { passive?: boolean } | undefined)?.passive)
+    expect(seen.length).toBeGreaterThanOrEqual(1)
+    expect(seen.every(passive => passive === true)).toBe(true)
   })
 })

@@ -26,6 +26,11 @@ import type { ProfileRoute, RosterRow } from './types'
 //    (bot_relay.outbox.drain), delivers each on the target connection's
 //    own socket (bot_relay.deliver), and posts the reply back to the
 //    sender gateway (bot_relay.reply) where a waiter wakes the sender.
+// Every loop read is a PASSIVE dial (#108088): the relay polls on a timer,
+// not a user action, so it may never cold-spawn a backend and never refresh
+// the pool's idle clock. Delivery (`bot_relay.deliver` / `bot_relay.reply`)
+// stays non-passive — it is prompted by real work and must reach a live
+// backend even after a cold start.
 // Older backends without the RPCs fail per-call and are skipped — the
 // relay degrades to whatever subset of connections supports it.
 const RELAY_ROSTER_INTERVAL_MS = 60_000
@@ -305,9 +310,15 @@ async function relayAgentsOn(
   labels: Map<string, string>
 ): Promise<RelayAgentRow[] | null> {
   try {
-    const res = await host.requestProfile<{ profiles?: RosterRow[] }>(connection.route, 'profiles.list', {
-      include_sessions: false
-    })
+    const res = await host.requestProfile<{ profiles?: RosterRow[] }>(
+      connection.route,
+      'profiles.list',
+      {
+        include_sessions: false
+      },
+      undefined,
+      { passive: true }
+    )
 
     const profiles = Array.isArray(res?.profiles) ? res.profiles : []
     const label = labels.get(connection.id) || connection.id
@@ -374,7 +385,9 @@ async function syncRelayRosters() {
             }
 
             try {
-              await host.requestProfile(connection.route, 'bot_relay.roster.sync', { agents: [] })
+              await host.requestProfile(connection.route, 'bot_relay.roster.sync', { agents: [] }, undefined, {
+                passive: true
+              })
 
               return true
             } catch {
@@ -448,9 +461,15 @@ async function syncRelayRosters() {
         }
 
         try {
-          await host.requestProfile(connection.route, 'bot_relay.roster.sync', {
-            agents: others
-          })
+          await host.requestProfile(
+            connection.route,
+            'bot_relay.roster.sync',
+            {
+              agents: others
+            },
+            undefined,
+            { passive: true }
+          )
         } catch {
           // Older backend without the relay RPCs — skip this connection.
         }
@@ -520,7 +539,9 @@ async function drainRelayOutboxes() {
         const res = await host.requestProfile<{ envelopes?: RelayEnvelope[] }>(
           sender.route,
           'bot_relay.outbox.drain',
-          {}
+          {},
+          undefined,
+          { passive: true }
         )
 
         for (const envelope of Array.isArray(res?.envelopes) ? res.envelopes : []) {

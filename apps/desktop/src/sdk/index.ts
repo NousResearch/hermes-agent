@@ -251,6 +251,13 @@ export interface PluginProfileRequestOptions {
    *  'background'; an explicit user action passes 'foreground' so its spawn
    *  takes the pool's reserved interactive slot (#102281 primitive). */
   spawnPriority?: SpawnPriority
+  /** Read-only background traffic (#108088): the dial may be served only by a
+   *  backend that already exists. It never cold-spawns the route's backend and
+   *  never refreshes the pool's idle clock — the same semantics the REST
+   *  `hermes:api` path gives its `passive` flag. Intended for recurring
+   *  background polls (the bot relay's roster loop); interactive opens must
+   *  stay non-passive so a click still spawns the backend it needs. */
+  passive?: boolean
 }
 
 async function requestPluginProfile<T>(
@@ -261,13 +268,19 @@ async function requestPluginProfile<T>(
   options?: PluginProfileRequestOptions
 ): Promise<T> {
   const spawnPriority = options?.spawnPriority
+  const passive = options?.passive === true
 
   // Preserve the exact call arity the pool tests pin: pass the deadline and the
   // dial options only when the caller set them, so a plain routed RPC keeps its
   // four-argument shape and a timeout-only caller its five-argument shape.
+  const dialOpts =
+    spawnPriority || passive
+      ? { ...(spawnPriority ? { spawnPriority } : {}), ...(passive ? { passive } : {}) }
+      : undefined
+
   const dialProfile = (profile: string): Promise<T> =>
-    spawnPriority
-      ? requestGatewayForProfile<T>(profile, method, params, timeoutMs, undefined, { spawnPriority })
+    dialOpts
+      ? requestGatewayForProfile<T>(profile, method, params, timeoutMs, undefined, dialOpts)
       : timeoutMs === undefined
         ? requestGatewayForProfile<T>(profile, method, params)
         : requestGatewayForProfile<T>(profile, method, params, timeoutMs)
@@ -277,10 +290,16 @@ async function requestPluginProfile<T>(
       throw new Error('Profile route must include connectionId, profile, and targetProfile')
     }
 
-    if (spawnPriority) {
-      return requestGatewayForAgent<T>(route.connectionId, route.profile, method, params, timeoutMs, undefined, {
-        spawnPriority
-      })
+    if (dialOpts) {
+      return requestGatewayForAgent<T>(
+        route.connectionId,
+        route.profile,
+        method,
+        params,
+        timeoutMs,
+        undefined,
+        dialOpts
+      )
     }
 
     return timeoutMs === undefined

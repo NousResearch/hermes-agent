@@ -87,6 +87,7 @@ const route = (
 interface RelayCall {
   connectionId: string
   method: string
+  options?: { passive?: boolean; spawnPriority?: unknown }
   params: Record<string, unknown>
 }
 
@@ -94,8 +95,19 @@ function respondWith(handler: (call: RelayCall) => unknown) {
   const calls: RelayCall[] = []
 
   ;(hostMock.requestProfile as ReturnType<typeof vi.fn>).mockImplementation(
-    async (target: ProfileRoute, method: string, params: Record<string, unknown>) => {
-      const call = { connectionId: target.connectionId, method, params: structuredClone(params ?? {}) }
+    async (
+      target: ProfileRoute,
+      method: string,
+      params: Record<string, unknown>,
+      _timeoutMs?: unknown,
+      options?: { passive?: boolean; spawnPriority?: unknown }
+    ) => {
+      const call = {
+        connectionId: target.connectionId,
+        method,
+        options: structuredClone(options ?? {}),
+        params: structuredClone(params ?? {})
+      }
 
       calls.push(call)
 
@@ -512,6 +524,79 @@ describe('relay-route socket retention (#93594)', () => {
 
     startBotRelay()
     await expect(pushAndSettle()).resolves.toBeUndefined()
+
+    stopBotRelay()
+  })
+})
+
+describe('every loop read is a passive dial (#108088)', () => {
+  it('roster reads, roster pushes and outbox drains all dial passively', async () => {
+    const calls = respondWith(call => {
+      if (call.method === 'profiles.list') {
+        return { profiles: [{ name: 'default' }] }
+      }
+
+      if (call.method === 'bot_relay.outbox.drain') {
+        return { envelopes: [] }
+      }
+
+      return {}
+    })
+
+    const { startBotRelay, stopBotRelay } = await loadRelay()
+
+    startBotRelay()
+    await vi.advanceTimersByTimeAsync(0)
+    // Roster cycle (profiles.list + bot_relay.roster.sync per connection)…
+    await vi.advanceTimersByTimeAsync(60_000)
+    // …and one push-notified drain pass.
+    await pushAndSettle()
+
+    const loopReads = calls.filter(call =>
+      ['profiles.list', 'bot_relay.roster.sync', 'bot_relay.outbox.drain'].includes(call.method)
+    )
+
+    expect(loopReads.length).toBeGreaterThanOrEqual(6)
+    expect(loopReads.every(call => call.options?.passive === true)).toBe(true)
+
+    stopBotRelay()
+  })
+
+  it('keeps delivery and its reply non-passive — real work must reach a live backend', async () => {
+    const calls = respondWith(call => {
+      if (call.method === 'bot_relay.outbox.drain') {
+        return {
+          envelopes: [
+            { id: 'env-1', message: 'hi', from_profile: 'default', target_connection: 'b', target_profile: 'ops' }
+          ]
+        }
+      }
+
+      if (call.method === 'bot_relay.deliver') {
+        return { reply: 'ok' }
+      }
+
+      if (call.method === 'profiles.list') {
+        return { profiles: [{ name: 'default' }] }
+      }
+
+      return {}
+    })
+
+    const { startBotRelay, stopBotRelay } = await loadRelay()
+
+    startBotRelay()
+    // Only the push-notified drain runs here (no interval tick), and the signal
+    // names 'a' as the sole sender, so exactly one envelope is claimed.
+    await pushAndSettle(1, { connectionId: 'a' })
+
+    const delivers = calls.filter(call => call.method === 'bot_relay.deliver')
+    const replies = calls.filter(call => call.method === 'bot_relay.reply')
+
+    expect(delivers).toHaveLength(1)
+    expect(replies).toHaveLength(1)
+    expect(delivers.every(call => call.options?.passive !== true)).toBe(true)
+    expect(replies.every(call => call.options?.passive !== true)).toBe(true)
 
     stopBotRelay()
   })

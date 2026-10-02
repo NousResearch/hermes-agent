@@ -82,12 +82,13 @@ def _camofox_evaluate(task_id: str, expression: str, *, secret: bool = False) ->
     """Evaluate on the Camofox tab the browser_* tools drive (Camofox mode has no CDP supervisor).
 
     The expression travels as a JSON request body over Camofox's REST API into Playwright's
-    ``page.evaluate``: never subprocess argv. Same raw task_id keying as browser_console's Camofox path.
+    ``page.evaluate``: never subprocess argv. Same raw task_id keying as browser_console's Camofox path,
+    but only on a tab browser_navigate already opened.
     For ``secret`` expressions (the fill) the transport must be loopback or HTTPS, redirects are
     never followed, page exceptions are caught in-page (camofox-browser logs evaluate error
     messages), and failures are reported generically. Hardening follows #114414.
     """
-    from tools.browser_camofox import _ensure_tab, _request
+    from tools.browser_camofox import _NO_SESSION_ERROR, _get_session, _request
 
     if secret and not _camofox_transport_ok():
         return {"success": False, "error_type": "eval_failed",
@@ -95,11 +96,14 @@ def _camofox_evaluate(task_id: str, expression: str, *, secret: bool = False) ->
     if secret:
         expression = ("(() => { try { return (" + expression + "); } catch (_) { return "
                       + json.dumps(_CAMOFOX_FILL_FAILED) + "; } })()")
+    # Never open a tab from a vault call: a blank tab in a shared Camofox profile is a side effect,
+    # and with adopt_existing_tab it can later be adopted in place of the real one.
+    session = _get_session(task_id or "default")
+    if not session.get("tab_id"):
+        return {"success": False, "error_type": "no_session", "error": _NO_SESSION_ERROR}
     try:
-        tab = _ensure_tab(task_id or "default")
-        tab_id = tab.get("tab_id") or tab.get("id")
-        resp = _request("post", f"/tabs/{tab_id}/evaluate", None, allow_redirects=False,
-                        json={"expression": expression, "userId": tab["user_id"]}).json()
+        resp = _request("post", f"/tabs/{session['tab_id']}/evaluate", None, allow_redirects=False,
+                        json={"expression": expression, "userId": session["user_id"]}).json()
     except Exception as exc:
         detail = type(exc).__name__ if secret else str(exc)
         return {"success": False, "error_type": "eval_failed", "error": f"Camofox evaluate failed: {detail}"}

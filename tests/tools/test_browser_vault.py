@@ -848,7 +848,8 @@ class TestCamofoxBackend:
         import tools.browser_camofox as camofox_mod
         from tools import browser_vault_tool
 
-        state = {"url": "https://example.com/login", "reply": None, "posts": [], "cdp": []}
+        state = {"url": "https://example.com/login", "reply": None, "posts": [], "cdp": [],
+                 "session": {"tab_id": "tab-1", "user_id": "u-1"}}
 
         def page(expression):
             if "location.href" in expression:
@@ -877,7 +878,9 @@ class TestCamofoxBackend:
 
         monkeypatch.setattr(camofox_mod, "is_camofox_mode", lambda: True)
         monkeypatch.setattr(camofox_mod, "get_camofox_url", lambda: "http://127.0.0.1:9377")
-        monkeypatch.setattr(camofox_mod, "_ensure_tab", lambda task_id, url="about:blank": {"tab_id": "tab-1", "user_id": "u-1"})
+        monkeypatch.setattr(camofox_mod, "_get_session", lambda task_id: state["session"])
+        # a vault call must never open a tab (POST /tabs) in the user's Camofox profile
+        monkeypatch.setattr(camofox_mod, "_ensure_tab", cdp_path_used)
         monkeypatch.setattr(camofox_mod, "_request", fake_request)
         monkeypatch.setattr(browser_vault_tool, "_ensure_supervisor", cdp_path_used)
         monkeypatch.setattr("tools.browser_tool_session._run_browser_command", cdp_path_used)
@@ -968,6 +971,35 @@ class TestCamofoxBackend:
         out = browser_vault_tool._eval_js_secret("t", "fill()")
         assert out["error_type"] == "human_has_control"
         assert camofox["posts"] == []
+
+    def test_no_tracked_tab_refuses_without_opening_one(self, camofox):
+        """After a gateway restart or in a fresh cron task there is no tab until browser_navigate opens
+        one. A vault call must not create a blank tab in the (possibly shared) Camofox profile."""
+        from tools import browser_vault_tool
+
+        camofox["session"] = {"tab_id": None, "user_id": "u-1"}
+        for out in (browser_vault_tool._eval_js("t", "window.location.href"),
+                    browser_vault_tool._eval_js_secret("t", "fill()")):
+            assert out["success"] is False and out["error_type"] == "no_session"
+            assert "browser_navigate" in out["error"]
+        assert camofox["posts"] == [] and camofox["cdp"] == []
+
+    def test_snapshot_after_a_fill_is_redacted(self, monkeypatch):
+        """Camoufox's ariaSnapshot prints a filled password input's value; browser_snapshot and the
+        navigate auto-snapshot must scrub registered vault values like the agent-browser path does."""
+        import tools.browser_camofox as camofox_mod
+        from agent.redact import clear_vault_redaction_values, register_vault_redaction_value
+
+        secret = "SYNTH-vault-9f3c1e"
+        register_vault_redaction_value(secret)
+        try:
+            monkeypatch.setattr(camofox_mod, "_snapshot_data", lambda session: {
+                "snapshot": f'- textbox "Password" [e2]: {secret}', "refsCount": 1})
+            snapshot, refs = camofox_mod._fetch_snapshot({"tab_id": "tab-1", "user_id": "u-1"})
+        finally:
+            clear_vault_redaction_values()
+        assert secret not in snapshot
+        assert 'textbox "Password" [e2]' in snapshot and refs == 1
 
     def test_tab_focus_is_skipped(self, camofox):
         from tools import browser_vault_tool

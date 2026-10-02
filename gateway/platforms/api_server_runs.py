@@ -109,6 +109,30 @@ def _tool_completed_preview(result: Any, redact_sensitive_text: Callable[..., st
     return preview if len(preview) <= limit else preview[: limit - 3] + "..."
 
 
+# Full tool result for clients rendering the whole output; bounded so one tool cannot flood the stream.
+_TOOL_COMPLETED_RESULT_MAX_CHARS = 100_000
+
+
+def _tool_completed_result(result: Any, redact_sensitive_text: Callable[..., str]) -> str | None:
+    if result is None:
+        return None
+    text = result if isinstance(result, str) else json.dumps(result, ensure_ascii=False, default=str)
+    text = redact_sensitive_text(text, force=True)
+    limit = _TOOL_COMPLETED_RESULT_MAX_CHARS
+    return text if len(text) <= limit else text[: limit - 3] + "..."
+
+
+def _redacted_tool_args(value: Any, redact_sensitive_text: Callable[..., str]) -> Any:
+    """Redact every string leaf so the structure stays valid JSON for the client."""
+    if isinstance(value, str):
+        return redact_sensitive_text(value, force=True)
+    if isinstance(value, dict):
+        return {str(k): _redacted_tool_args(v, redact_sensitive_text) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_redacted_tool_args(v, redact_sensitive_text) for v in value]
+    return value if value is None or isinstance(value, (bool, int, float)) else str(value)
+
+
 _RUN_STREAM_SUBSCRIBER_OVERFLOW = object()
 _RUN_STREAM_WRITE_TIMEOUT = 5.0
 
@@ -330,9 +354,14 @@ def _make_run_event_callback(self, run_id: str, loop: "asyncio.AbstractEventLoop
         fields = _FIXED_EVENT_FIELDS.get(event_type)
         if fields is not None:
             event_fields = fields(tool_name, preview, kwargs)
+            if event_type == "tool.started" and isinstance(args, dict):
+                event_fields["args"] = _redacted_tool_args(args, redact_sensitive_text)
             if event_type == "tool.completed":
                 event_fields["preview"] = _tool_completed_preview(
                     kwargs.get("result"), redact_sensitive_text)
+                result = _tool_completed_result(kwargs.get("result"), redact_sensitive_text)
+                if result is not None:
+                    event_fields["result"] = result
             _push(_run_event(run_id, event_type, **event_fields))
         elif event_type in {"subagent.start", "subagent.complete"}:
             event = _run_event(run_id, event_type)

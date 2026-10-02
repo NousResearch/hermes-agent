@@ -175,7 +175,7 @@ class BaseProcessingMixin:
         (False)."""
         guard = interrupt_event or asyncio.Event()
         self._active_sessions[session_key] = guard
-        reserved = reserve_pending_dispatch(self, session_key, event)
+        reserved = reserve_pending_dispatch(self, session_key, event, accepted=False)
         task = asyncio.create_task(self._process_message_background(event, session_key))
         if not self._track_session_task(session_key, task, event):
             release_pending_dispatch_record(self, session_key, reserved)
@@ -255,7 +255,7 @@ class BaseProcessingMixin:
         interrupt_event = self._active_sessions.get(session_key) or asyncio.Event()
         self._active_sessions[session_key] = interrupt_event
         _thread_metadata = _thread_metadata_for_event(event)
-        record = reserve_pending_dispatch(self, session_key, event)
+        record = reserve_pending_dispatch(self, session_key, event, accepted=False)
         record.task = asyncio.current_task()
         typing_task = self._start_typing_refresh(event, interrupt_event, _thread_metadata)
         try:

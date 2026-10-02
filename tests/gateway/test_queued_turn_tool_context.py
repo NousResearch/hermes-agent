@@ -3,7 +3,6 @@
 import asyncio
 import importlib
 import json
-from types import SimpleNamespace
 from unittest.mock import AsyncMock, call
 
 import pytest
@@ -14,6 +13,7 @@ from gateway.config import GatewayConfig, Platform, PlatformConfig
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.run import GatewayRunner, _profile_runtime_scope
 from gateway.session import SessionSource
+from gateway.turn_context import TurnContext
 from gateway.session_identity import replace_source
 from gateway.session_context import (
     clear_session_vars, get_session_env, get_session_transport, set_session_vars,
@@ -25,7 +25,7 @@ from tools.registry import registry
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("failure", [False, True])
-async def test_queued_tool_context_restores_outer_identity_and_profile(tmp_path, failure):
+async def test_queued_tool_context_restores_outer_identity_and_profile(tmp_path, monkeypatch, failure):
     importlib.import_module("tools.matrix_followup_tool")
     importlib.import_module("tools.matrix_reaction_tool")
     homes = {profile: tmp_path / profile for profile in ("a", "b")}
@@ -84,12 +84,12 @@ async def test_queued_tool_context_restores_outer_identity_and_profile(tmp_path,
             raise RuntimeError("queued execution failed")
         return {"final_response": "Queued answer", "messages": history}
 
-    runner._run_agent_inner = execute
+    monkeypatch.setattr(runner, "_run_agent_inner", execute)
     source = sources["a"]
     queued_sources = [replace_source(source, user_id="@bob:test", message_id="$bob-inbound"),
                       sources["b"], source]
     key = runner._session_key_for_source(source)
-    turn = SimpleNamespace(
+    turn = TurnContext(
         source=source, session_key=key, session_id="sid", run_generation=1,
         _interrupt_depth=0, history=[], _status_thread_metadata={},
         context_prompt="Pinned session prompt",

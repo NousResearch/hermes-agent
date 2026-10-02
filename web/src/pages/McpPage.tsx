@@ -30,6 +30,15 @@ import {
 } from "@/lib/mcp-server-create";
 import { completeMcpDashboardOAuth } from "@/lib/mcp-dashboard-oauth";
 import { errorMessage } from "@/lib/api-error";
+import { en } from "@/i18n/en";
+import type { Translations } from "@/i18n/types";
+
+/** McpPage copy; en seeds the optional block, other locales fall back. */
+type McpPageCopy = NonNullable<Translations["mcpPage"]>;
+function mcpPageCopy(t: Translations): McpPageCopy {
+  return t.mcpPage ?? (en.mcpPage as McpPageCopy);
+}
+
 
 function isHttpUrl(value: string): boolean {
   return /^https?:\/\//i.test(value.trim());
@@ -47,7 +56,7 @@ const TRANSPORT_TONE: Record<string, "success" | "warning" | "secondary"> = {
 
 export default function McpPage() {
   const { t } = useI18n();
-  const M = t.mcpPage;
+  const M = mcpPageCopy(t);
   const [servers, setServers] = useState<McpServer[]>([]);
   const [catalog, setCatalog] = useState<McpCatalogEntry[]>([]);
   const [diagnostics, setDiagnostics] = useState<McpCatalogDiagnostic[]>([]);

@@ -40,6 +40,15 @@ import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { usePageHeader } from "@/contexts/usePageHeader";
 import { cn, themedBody } from "@/lib/utils";
 import { errorMessage } from "@/lib/api-error";
+import { en } from "@/i18n/en";
+import type { Translations } from "@/i18n/types";
+
+/** ChannelsPage copy; en seeds the optional block, other locales fall back. */
+type ChannelsPageCopy = NonNullable<Translations["channelsPage"]>;
+function channelsPageCopy(t: Translations): ChannelsPageCopy {
+  return t.channelsPage ?? (en.channelsPage as ChannelsPageCopy);
+}
+
 
 // State → badge mapping. The backend emits a small, fixed vocabulary plus
 // whatever the live gateway runtime reports (connected/disconnected/fatal).
@@ -135,7 +144,7 @@ function normalizeWhatsAppMode(mode: unknown): "bot" | "self-chat" | null {
 
 export default function ChannelsPage() {
   const { t } = useI18n();
-  const C = t.channelsPage;
+  const C = channelsPageCopy(t);
   const [platforms, setPlatforms] = useState<MessagingPlatform[]>([]);
   const [envPath, setEnvPath] = useState("~/.hermes/.env");
   const [gatewayStartCommand, setGatewayStartCommand] = useState(
@@ -702,7 +711,7 @@ export function WhatsAppOnboardingPanel({
   showToast: (message: string, type: "success" | "error") => void;
 }) {
   const { t } = useI18n();
-  const C = t.channelsPage;
+  const C = channelsPageCopy(t);
   const configuredMode = useMemo(
     () => normalizeWhatsAppMode(platform.whatsapp_setup?.mode),
     [platform.whatsapp_setup?.mode],
@@ -1136,7 +1145,7 @@ function TelegramOnboardingPanel({
   showToast: (message: string, type: "success" | "error") => void;
 }) {
   const { t } = useI18n();
-  const C = t.channelsPage;
+  const C = channelsPageCopy(t);
   const [setup, setSetup] = useState<TelegramOnboardingStartResponse | null>(
     null,
   );

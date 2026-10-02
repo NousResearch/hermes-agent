@@ -29,6 +29,15 @@ import { Label } from "@nous-research/ui/ui/components/label";
 import { usePageHeader } from "@/contexts/usePageHeader";
 import { cn, themedBody } from "@/lib/utils";
 import { errorMessage } from "@/lib/api-error";
+import { en } from "@/i18n/en";
+import type { Translations } from "@/i18n/types";
+
+/** WebhooksPage copy; en seeds the optional block, other locales fall back. */
+type WebhooksPageCopy = NonNullable<Translations["webhooksPage"]>;
+function webhooksPageCopy(t: Translations): WebhooksPageCopy {
+  return t.webhooksPage ?? (en.webhooksPage as WebhooksPageCopy);
+}
+
 
 interface CreatedWebhook {
   url: string;
@@ -37,7 +46,7 @@ interface CreatedWebhook {
 
 function CopyButton({ value }: { value: string }) {
   const { t } = useI18n();
-  const W = t.webhooksPage;
+  const W = webhooksPageCopy(t);
   const [copied, setCopied] = useState(false);
   const handleCopy = useCallback(() => {
     void copyTextToClipboard(value).then((copied) => {
@@ -62,7 +71,7 @@ function CopyButton({ value }: { value: string }) {
 
 export default function WebhooksPage() {
   const { t } = useI18n();
-  const W = t.webhooksPage;
+  const W = webhooksPageCopy(t);
   const [data, setData] = useState<WebhooksResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [enabling, setEnabling] = useState(false);

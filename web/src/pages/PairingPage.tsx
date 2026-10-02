@@ -14,6 +14,15 @@ import { Toast } from "@nous-research/ui/ui/components/toast";
 import { Card, CardContent } from "@nous-research/ui/ui/components/card";
 import { usePageHeader } from "@/contexts/usePageHeader";
 import { errorMessage } from "@/lib/api-error";
+import { en } from "@/i18n/en";
+import type { Translations } from "@/i18n/types";
+
+/** PairingPage copy; en seeds the optional block, other locales fall back. */
+type PairingPageCopy = NonNullable<Translations["pairingPage"]>;
+function pairingPageCopy(t: Translations): PairingPageCopy {
+  return t.pairingPage ?? (en.pairingPage as PairingPageCopy);
+}
+
 
 function getUserKey(user: PairingUser): string {
   return `${user.platform}:${user.user_id}`;
@@ -38,7 +47,7 @@ export default function PairingPage() {
   const { toast, showToast } = useToast();
   const { setEnd } = usePageHeader();
   const { t } = useI18n();
-  const P = t.pairingPage;
+  const P = pairingPageCopy(t);
 
   const loadPairing = useCallback(() => {
     api

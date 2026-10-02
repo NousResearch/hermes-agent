@@ -36,6 +36,10 @@ from plugins.platforms.matrix.adapter import MatrixAdapter
         ("m.text", "wrong-author"),
         ("m.text", "disallowed-room"),
         ("m.text", "missing-mention"),
+        ("m.image", "wrong-author"),
+        ("m.image", "left-room"),
+        ("m.image", "disallowed-room"),
+        ("m.image", "missing-mention"),
     ],
 )
 async def test_restoration_requires_current_native_authority_and_cached_identity(
@@ -165,6 +169,16 @@ async def test_restoration_requires_current_native_authority_and_cached_identity
 
     monkeypatch.setattr(api, "request", request)
     adapter._client = ClientAPI(UserID("@hermes:example.org"), api=api)
+    from gateway import shutdown_pending_codec
+
+    digest = shutdown_pending_codec._file_digest
+    reads = []
+
+    def observed_digest(path):
+        reads.append(path)
+        return digest(path)
+
+    monkeypatch.setattr(shutdown_pending_codec, "_file_digest", observed_digest)
     verified = await adapter.revalidate_pending_event(restored)
     expected = None
     if state in {"current", "edited"}:
@@ -190,4 +204,9 @@ async def test_restoration_requires_current_native_authority_and_cached_identity
             verified.raw_message,
         )
     )
-    assert actual == expected
+    cache_allowed = bool(paths) and state in {
+        "current",
+        "changed-cache",
+        "missing-cache",
+    }
+    assert (actual, bool(reads)) == (expected, cache_allowed)

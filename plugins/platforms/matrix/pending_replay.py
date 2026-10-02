@@ -21,6 +21,7 @@ class MatrixPendingReplayMixin(BasePlatformAdapter):
     _user_id: str
     _event_context_cache: MatrixEventContextCache
     _build_inbound_event: Callable[..., Awaitable[MessageEvent | None]]
+    _resolve_message_context: Callable[..., Awaitable[tuple | None]]
 
     def pending_native_input(self, event: MessageEvent) -> PendingNativeInput | None:
         if not isinstance(event.raw_message, dict) or not isinstance(
@@ -44,14 +45,6 @@ class MatrixPendingReplayMixin(BasePlatformAdapter):
             return None
         cache = get_hermes_home().resolve() / "cache"
         native = event._pending_native_input
-        if event.media_urls and (
-            native is None
-            or not all(
-                Path(path).resolve().is_relative_to(cache) for path in event.media_urls
-            )
-            or not native.attachments_available(event.media_urls)
-        ):
-            return None
         room_id, event_id = event.source.chat_id, event.message_id
         path = (
             f"/_matrix/client/v3/rooms/{quote(room_id, safe='')}"
@@ -101,6 +94,22 @@ class MatrixPendingReplayMixin(BasePlatformAdapter):
                 or kind not in {"m.text", "m.emote", *media_types}
             ):
                 return None
+            body = _normalize_matrix_bang_command(body) if kind == "m.text" else body
+            relates_to = content.get("m.relates_to") or {}
+            ctx = await self._resolve_message_context(
+                room_id, event.source.user_id, event_id, body, content, relates_to
+            )
+            if ctx is None:
+                return None
+            if event.media_urls and (
+                native is None
+                or not all(
+                    Path(path).resolve().is_relative_to(cache)
+                    for path in event.media_urls
+                )
+                or not native.attachments_available(event.media_urls)
+            ):
+                return None
             extras: dict[str, Any] = {}
             if kind in media_types:
                 if native is None or content != native.content:
@@ -125,9 +134,10 @@ class MatrixPendingReplayMixin(BasePlatformAdapter):
                 room_id,
                 event.source.user_id,
                 event_id,
-                _normalize_matrix_bang_command(body) if kind == "m.text" else body,
+                body,
                 content,
-                content.get("m.relates_to") or {},
+                relates_to,
+                ctx=ctx,
                 **extras,
             )
             if verified is None or verified.is_command():

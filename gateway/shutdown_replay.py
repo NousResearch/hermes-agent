@@ -150,6 +150,8 @@ async def _replay_record(
         return 0
     if not bind_spooled_event(runner, adapter, event, home, snapshot.session_key):
         return 0
+    if not runner._is_user_authorized_for_source(event.source):
+        return 0
     owner = gateway_input_owner(event, event.source)
     if owner != record["input_owner"]["owner"] or runner.session_store.has_input_owner(
         session_id, owner

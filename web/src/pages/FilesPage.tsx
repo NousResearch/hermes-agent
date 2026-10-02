@@ -39,6 +39,7 @@ import { api } from "@/lib/api";
 import type { ManagedFileEntry, ManagedFilesResponse } from "@/lib/api";
 import { PluginSlot } from "@/plugins";
 import { errorMessage } from "@/lib/api-error";
+import { useI18n } from "@/i18n";
 
 const DATE_FORMAT = new Intl.DateTimeFormat(undefined, {
   dateStyle: "medium",
@@ -81,6 +82,9 @@ function transferHasFiles(event: ReactDragEvent<HTMLElement>): boolean {
 export default function FilesPage() {
   const { toast, showToast } = useToast();
   const { setAfterTitle, setEnd } = usePageHeader();
+  const { t } = useI18n();
+  const F = t.filesPage;
+  const refreshFilesLabel = F?.refreshFiles ?? "Refresh files";
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const dragDepthRef = useRef(0);
   const [currentPath, setCurrentPath] = useState<string | undefined>(undefined);
@@ -140,7 +144,7 @@ export default function FilesPage() {
           type="button"
           onClick={() => void load()}
           disabled={loading}
-          aria-label="Refresh files"
+          aria-label={refreshFilesLabel}
         >
           {loading ? <Spinner /> : <RefreshCw />}
         </Button>
@@ -150,7 +154,7 @@ export default function FilesPage() {
       setAfterTitle(null);
       setEnd(null);
     };
-  }, [headerPath, load, loading, setAfterTitle, setEnd]);
+  }, [headerPath, load, loading, setAfterTitle, setEnd, refreshFilesLabel]);
 
   const openDirectory = (entry: ManagedFileEntry) => {
     if (entry.is_directory) {
@@ -287,8 +291,8 @@ export default function FilesPage() {
             <Input
               value={pathInput}
               onChange={(event) => setPathInput(event.target.value)}
-              aria-label="Path"
-              placeholder="Path"
+              aria-label={F?.path ?? "Path"}
+              placeholder={F?.path ?? "Path"}
               className="h-9 min-w-0 flex-1 font-mono"
             />
             <Button type="submit" size="sm" outlined className="uppercase">
@@ -334,7 +338,7 @@ export default function FilesPage() {
         onDragLeave={handleDragLeave}
         onDrop={handleDrop}
         disabled={!canUpload}
-        aria-label="Upload files"
+        aria-label={F?.uploadFiles ?? "Upload files"}
         className={`flex min-h-20 w-full min-w-0 items-center justify-between gap-4 border border-dashed px-4 py-3 text-left transition ${
           draggingFiles
             ? "border-primary bg-primary/10 text-foreground"
@@ -368,10 +372,10 @@ export default function FilesPage() {
           )}
 
           <div className="grid min-w-[42rem] grid-cols-[minmax(12rem,1fr)_7rem_10rem_5.5rem] items-center gap-3 border-b border-border px-4 py-2 text-xs font-semibold uppercase tracking-[0.08em] text-text-tertiary">
-            <span>Name</span>
-            <span>Size</span>
-            <span>Modified</span>
-            <span className="text-right">Actions</span>
+            <span>{F?.name ?? "Name"}</span>
+            <span>{F?.size ?? "Size"}</span>
+            <span>{F?.modified ?? "Modified"}</span>
+            <span className="text-right">{F?.actions ?? "Actions"}</span>
           </div>
 
           {listing?.parent && (
@@ -396,7 +400,9 @@ export default function FilesPage() {
               Loading files...
             </div>
           ) : listing && listing.entries.length === 0 ? (
-            <div className="py-12 text-center text-sm text-muted-foreground">No files</div>
+            <div className="py-12 text-center text-sm text-muted-foreground">
+              {F?.noFiles ?? "No files"}
+            </div>
           ) : (
             listing?.entries.map((entry) => (
               <div
@@ -482,7 +488,7 @@ export default function FilesPage() {
       >
         <DialogContent className="max-w-sm">
           <DialogHeader>
-            <DialogTitle>Create folder</DialogTitle>
+            <DialogTitle>{F?.createFolder ?? "Create folder"}</DialogTitle>
             <DialogDescription>
               Target: {activePath || "Loading"}
             </DialogDescription>
@@ -495,7 +501,7 @@ export default function FilesPage() {
               onKeyDown={(event) => {
                 if (event.key === "Enter") void createDirectory();
               }}
-              placeholder="Folder name"
+              placeholder={F?.folderNamePlaceholder ?? "Folder name"}
               disabled={creating}
             />
           </div>

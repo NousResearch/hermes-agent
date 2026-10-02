@@ -368,6 +368,19 @@ export const zh: Translations = {
     reloadDescription:
       "切换到 {model} 会开启一个新的会话。当前会话仍保留在「会话」列表中，智能体的记忆也会保留。现在重新加载以应用？",
   },
+  filesPage: {
+    refreshFiles: "刷新文件",
+    path: "路径",
+    uploadFiles: "上传文件",
+    name: "名称",
+    size: "大小",
+    modified: "修改时间",
+    actions: "操作",
+    noFiles: "没有文件",
+    createFolder: "新建文件夹",
+    folderNamePlaceholder: "文件夹名称",
+  },
+
 
   logs: {
     title: "日志",

@@ -383,6 +383,19 @@ export const en: Translations = {
     reloadDescription:
       "Switching to {model} starts a fresh chat. Your current chat stays in your Sessions list and the agent's memory is kept. Reload now to apply it?",
   },
+  filesPage: {
+    refreshFiles: "Refresh files",
+    path: "Path",
+    uploadFiles: "Upload files",
+    name: "Name",
+    size: "Size",
+    modified: "Modified",
+    actions: "Actions",
+    noFiles: "No files",
+    createFolder: "Create folder",
+    folderNamePlaceholder: "Folder name",
+  },
+
 
   logs: {
     title: "Logs",

@@ -385,7 +385,21 @@ export interface Translations {
     reloadDescription: string;
   };
 
-  // ── Logs page ──
+  // ── Logs page ──  /** Optional — Files page copy. */
+  filesPage?: {
+    refreshFiles: string;
+    path: string;
+    uploadFiles: string;
+    name: string;
+    size: string;
+    modified: string;
+    actions: string;
+    noFiles: string;
+    createFolder: string;
+    folderNamePlaceholder: string;
+  };
+
+
   logs: {
     title: string;
     autoRefresh: string;

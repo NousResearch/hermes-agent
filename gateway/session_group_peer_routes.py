@@ -170,11 +170,21 @@ class CanonicalPeerClient:
         value = getattr(self._client, name)
         if not callable(value):
             return value
+        if name == 'recover_dispatch' and callable(getattr(self._client, 'recover_accepted_dispatch', None)):
+            return lambda **kwargs: self._recover_existing(value, kwargs)
         if name in _NEW_WORK:
             return lambda **kwargs: self._new_work(name, value, kwargs)
         if name in _OBSERVATION:
             return lambda **kwargs: self._observe(name, value, kwargs)
         return value  # revoke_grant_exact included: exact cleanup never swaps the bearer
+
+    def _recover_existing(self, call, kwargs):
+        # End must still observe accepted work. This helper cannot POST a Run;
+        # a missing receipt retains the ordinary retiring/new-admission fence.
+        accepted = self._observe('recover_accepted_dispatch', self._client.recover_accepted_dispatch, kwargs)
+        if accepted is not None:
+            return accepted
+        return self._new_work('recover_dispatch', call, kwargs)
 
     def _status(self, status, grant):
         set_route_status(self._service, self._key, status, grant)

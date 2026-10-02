@@ -426,8 +426,8 @@ class HostedRoomRuntime:
                 "execution_generation": int(task["execution_generation"]),
                 "run_id": info.get("run_id"), "session_id": session_id,
                 "request_id": safe_approval.get("request_id"), "approval": safe_approval}
-        if info.get("status") == "stopping":
-            action = {"kind": "stopping", "task_id": task["identity"].task_id,
+        if info.get("status") in {"stopping", "unknown"}:
+            action = {"kind": info["status"], "task_id": task["identity"].task_id,
                       "execution_generation": int(task["execution_generation"]),
                       "run_id": info.get("run_id"), "session_id": session_id}
         self.pending_action(task["identity"].room_id, _member_id(task), action)

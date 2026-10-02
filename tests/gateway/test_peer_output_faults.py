@@ -32,6 +32,8 @@ class Proxy(BaseHTTPRequestHandler):
 
     def forward(self):
         body = self.rfile.read(int(self.headers.get('Content-Length', 0)))
+        if self.command == 'POST' and self.path == '/v1/runs':
+            self.server.run_posts += 1
         if self.path.endswith('/artifacts/ack') and self.server.mode == 'block_ack':
             self.send_response(503); self.end_headers(); return
         request = urllib.request.Request(self.server.target + self.path, method=self.command,
@@ -43,6 +45,8 @@ class Proxy(BaseHTTPRequestHandler):
             response = error
         with response:
             data = response.read()
+            if self.command == 'GET' and '/v1/runs/' in self.path and response.status == 200:
+                self.server.unknown_observed.set()
             if self.path.endswith('/artifacts/read') and response.status == 200 and self.server.mode == 'hold_read':
                 self.server.entered.set(); self.server.release.wait(30)
             if self.path.endswith('/artifacts/ack') and response.status == 200:
@@ -76,8 +80,8 @@ def pair(tmp_path, mode):
     configure(home, lambda c: c['platform_toolsets'].update(bot_room=['file']))
     configure(peer, lambda c: c['platform_toolsets'].update(api_server=['file', 'bot_room']))
     proxy = ThreadingHTTPServer(('127.0.0.1', 0), Proxy)
-    proxy.mode, proxy.target, proxy.acks = mode, f'http://127.0.0.1:{port}', 0
-    proxy.entered, proxy.release = threading.Event(), threading.Event()
+    proxy.mode, proxy.target, proxy.acks, proxy.run_posts = mode, f'http://127.0.0.1:{port}', 0, 0
+    proxy.entered, proxy.release, proxy.unknown_observed = threading.Event(), threading.Event(), threading.Event()
     threading.Thread(target=proxy.serve_forever, daemon=True).start()
     try:
         yield SimpleNamespace(root=root, home=home, peer=peer, he=he, pe=pe, hm=hm, pm=pm, proxy=proxy,
@@ -259,3 +263,70 @@ def test_delayed_export_does_not_hold_policy_lock_or_block_stop_of_an_admitted_p
                     with sqlite3.connect(p.peer / 'state.db') as db:
                         assert db.execute('SELECT COUNT(*) FROM hosted_room_output_artifacts WHERE acknowledged_at IS NULL OR blob_reclaimed_at IS NULL').fetchone()[0] == 0
             asyncio.run(stop_while_read_is_held())
+
+
+def test_producer_crash_after_share_keeps_unknown_output_until_exact_operator_resolution(tmp_path):
+    from tui_gateway.hosted_room_peer_http import PeerRunsHTTPClient
+    with pair(tmp_path, '') as p:
+        with daemon(p.root, p.home, p.he, barrier=False) as (_, hd):
+            async def share_then_crash(pd, proc):
+                async with websocket(p.home, hd) as hw, websocket(p.peer, pd) as pw:
+                    _, invite = await _join_pair(hw, pw, peer_first=True)
+                    registered = await rpc(hw, 'groups.peer.register', room_id='linked', member_id='reviewer',
+                        target_url=p.url, target_profile='default', grant=invite['grant'], catalog=invite['catalog'])
+                    assert registered['result']['registered']
+                    sent = await rpc(hw, 'groups.send', room_id='linked', event_id='producer-crash',
+                        payload={'text': '@reviewer Create and share the checklist.', 'thread_id': 'thread'})
+                    assert sent['result']['accepted']
+                    assert await asyncio.to_thread(p.pm.shared_event.wait, 20)
+                    assert p.pm.shared['ok']
+                    with sqlite3.connect(p.peer / 'state.db') as db:
+                        assert db.execute('SELECT COUNT(*) FROM hosted_room_output_artifacts WHERE acknowledged_at IS NULL').fetchone()[0] == 1
+                    proc.kill(); proc.wait(timeout=10)
+                    return invite
+            with daemon(p.root, p.peer, p.pe, barrier=False) as (pp, pd):
+                invite = asyncio.run(share_then_crash(pd, pp))
+            p.pm.release.set()
+            p.proxy.unknown_observed.clear()
+            calls = len(p.pm.requests)
+            async def unresolved_then_resolved():
+                async with websocket(p.home, hd) as hw:
+                    assert await asyncio.to_thread(p.proxy.unknown_observed.wait, 110), await rpc(hw, 'groups.state', room_id='linked')
+                    await asyncio.sleep(2.2)
+                    with sqlite3.connect(p.peer / 'state.db') as db:
+                        row = db.execute("SELECT request_id,admission_id,generation,status FROM session_admissions WHERE principal_id='api'").fetchone()
+                        assert row[3] == 'unknown', row
+                        assert db.execute('SELECT COUNT(*) FROM hosted_room_output_artifacts WHERE acknowledged_at IS NULL').fetchone()[0] == 1
+                    events = (await rpc(hw, 'groups.log', room_id='linked'))['result']['events']
+                    assert not any(e['kind'] == 'message.member' for e in events)
+                    state = (await rpc(hw, 'groups.state', room_id='linked'))['result']['driver_status']
+                    assert any(a['kind'] == 'unknown' for a in state['pending_actions']), state
+                    assert not any(a['kind'] in {'retry', 'discard'} for a in state['pending_actions']), state
+                    refused = await rpc(hw, 'groups.disband', room_id='linked')
+                    assert 'error' in refused, refused
+                    await asyncio.sleep(12)  # Cross the normal peer observation/backoff interval.
+                    with sqlite3.connect(p.peer / 'state.db') as db:
+                        assert db.execute('SELECT COUNT(*) FROM hosted_room_output_artifacts WHERE acknowledged_at IS NULL').fetchone()[0] == 1
+                    with sqlite3.connect(p.home / 'state.db') as db:
+                        assert db.execute("SELECT disbanded_at FROM hosted_rooms WHERE room_id='linked'").fetchone()[0] is None
+                    assert len(p.pm.requests) == calls
+                    # A human/operator explicitly resolves this exact unknown accepted execution.
+                    client = PeerRunsHTTPClient(base_url=p.proxy.target, api_key='', proof_install_id=invite['catalog']['installation_id'])
+                    resolved = await asyncio.to_thread(client._request, '/v1/runs/' + row[0] + '/resolve-unknown',
+                        method='POST', room_grant=invite['grant'], body={'admission_id': row[1], 'execution_generation': row[2]})
+                    assert resolved['status'] == 'terminal' and resolved['outcome'] == 'interrupted', resolved
+                    projection = await asyncio.to_thread(client._request, '/v1/runs/' + row[0], room_grant=invite['grant'])
+                    assert projection['status'] == 'cancelled' and 'peer_output_unresolved' not in projection
+                    try:
+                        await end(p, hw)
+                    except TimeoutError:
+                        target = await asyncio.to_thread(client._request, '/v1/runs/' + row[0], room_grant=invite['grant'])
+                        pytest.fail(str({'target': target, 'home': await rpc(hw, 'groups.state', room_id='linked'),
+                            'log': (p.home / 'restart.log').read_text()[-7000:]}))
+                    with sqlite3.connect(p.peer / 'state.db') as db:
+                        assert db.execute("SELECT COUNT(*) FROM session_admissions WHERE principal_id='api'").fetchone()[0] == 1
+                        assert db.execute('SELECT COUNT(*) FROM hosted_room_output_artifacts WHERE acknowledged_at IS NULL OR blob_reclaimed_at IS NULL').fetchone()[0] == 0
+                    assert len(p.pm.requests) == calls
+                    assert p.proxy.run_posts == 1
+            with daemon(p.root, p.peer, p.pe, barrier=False):
+                asyncio.run(unresolved_then_resolved())

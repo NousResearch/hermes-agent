@@ -1613,7 +1613,7 @@ def check_respawn_guard(
     review-trail event is a rework demand and the comment only restates the PR
     already on the card (the worker reporting progress on the PR under rework,
     not opening a new one), when a handoff event followed the comment (the named
-    profile must work on that PR), or when an explicit re-queue followed it (a
+    profile must work on that PR), or when an operator re-queue followed it (a
     deliberate "run it again"). The review lane skips the last two: they are the
     *inputs* to a review handoff. Stale / dead claim locks are NOT a guard
     reason — the reclaim passes own those.
@@ -1717,7 +1717,9 @@ def check_respawn_guard(
     #    the profile that must now work on THAT PR — a closer or the
     #    implementer finishing it, not a duplicate implementation (#111910). A
     #    crash/reclaim is not a handoff, so the worker that opened the PR is
-    #    still not re-spawned against it.
+    #    still not re-spawned against it — and the stale-claim sweep's
+    #    ``reclaimed`` event does not lift the operator re-queue relief below
+    #    either.
     for c in conn.execute(
         "SELECT body, created_at FROM task_comments "
         "WHERE task_id = ? AND created_at >= ? ORDER BY created_at DESC",
@@ -1737,22 +1739,52 @@ def check_respawn_guard(
         ).fetchall()
         if any(_is_handoff_event(e["kind"], e["payload"]) for e in events):
             return None
-        # An explicit re-queue AFTER the PR comment (operator unblock / promote /
-        # status change / reclaim) is a deliberate "run it again" — honor it
-        # instead of deferring. Mirrors the bypass the recent_success check
-        # applies to completed runs above.
+        # An explicit OPERATOR re-queue strictly after the PR comment is a
+        # deliberate "run it again" — honor it instead of deferring. Mirrors the
+        # bypass the recent_success check applies to completed runs above.
+        # Strictly after, like the handoff check above: a same-second tie stays
+        # guarded (fail closed).
         requeued_after_pr = conn.execute(
-            "SELECT 1 FROM task_events "
-            "WHERE task_id = ? AND created_at >= ? "
-            "AND kind IN ('status', 'promoted', 'promoted_manual', "
-            "'unblocked', 'reclaimed') "
-            "LIMIT 1",
+            "SELECT kind, payload FROM task_events "
+            "WHERE task_id = ? AND created_at > ? "
+            "AND kind IN ('unblocked', 'promoted_manual', 'status') "
+            "ORDER BY created_at DESC, id DESC",
             (task_id, int(c["created_at"] or 0)),
-        ).fetchone()
-        if not requeued_after_pr:
+        ).fetchall()
+        if not any(
+            _is_operator_requeue_event(e["kind"], e["payload"])
+            for e in requeued_after_pr
+        ):
             return "active_pr"
 
     return None
+
+
+def _is_operator_requeue_event(kind: str, payload: Optional[str]) -> bool:
+    """True when a task event is an OPERATOR-initiated re-queue of this card.
+
+    Only these may lift ``active_pr``. The dispatcher's own housekeeping must
+    not: ``reclaimed`` is written by the stale-claim sweep
+    (``kanban_db._record_reclaim``, called uncommanded whenever a claim TTL
+    expires) and ``promoted`` by ``recompute_ready`` on every tick, so
+    honouring either respawns a worker against the PR it already opened — the
+    duplicate-PR path this guard exists to close.
+
+    ``unblocked`` (``kanban_db.unblock_task``) and ``promoted_manual``
+    (``kanban_db.promote_task``) are the structured operator verbs. ``status``
+    is the dashboard's direct status write (drag-drop done→ready), which names
+    the acting surface in ``actor``; the ancestor-reopen cascade
+    (``invalidate_descendants_for_parent_reopen``) writes ``status`` too but
+    names no operator — the operator acted on a different card — so it stays
+    guarded. A ``status`` event without an ``actor`` (written before it was
+    recorded) is not trusted either: fail closed.
+    """
+    if kind in ("unblocked", "promoted_manual"):
+        return True
+    if kind != "status":
+        return False
+    data = _kb._json_or(payload, {})
+    return isinstance(data, dict) and bool(data.get("actor"))
 
 
 def _is_handoff_event(kind: str, payload: Optional[str]) -> bool:

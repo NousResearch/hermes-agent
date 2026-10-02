@@ -621,11 +621,26 @@ class GatewayInboundMixin:
     def _hm_merge_pending_for_source(
         self, source: SessionSource, _quick_key: str, event: "MessageEvent", *, merge_text: bool = False
     ) -> None:
-        """Merge *event* into the source adapter's pending slot (no-op without an adapter)."""
+        """Coalesce compatible busy input or queue it behind earlier events."""
         from gateway.platforms.base import merge_pending_message_event
+        from gateway.platforms.base_pending import _can_join_pending_event, is_pending_redispatch
+
         adapter = self._delivery_adapter_for(source)
-        if adapter:
-            merge_pending_message_event(adapter._pending_messages, _quick_key, event, merge_text=merge_text)
+        if not adapter:
+            return
+        self._flush_buffered_pending(_quick_key, adapter)
+        existing = adapter._pending_messages.get(_quick_key)
+        if (
+            existing is None
+            or self._overflow_queue(_quick_key)
+            or existing.message_type not in {MessageType.TEXT, MessageType.PHOTO}
+            or not _can_join_pending_event(existing, event)
+            or is_pending_redispatch(adapter, _quick_key, event)
+        ):
+            self._queue_or_replace_pending_event(_quick_key, event)
+            return
+        merge_pending_message_event(adapter._pending_messages, _quick_key, event, merge_text=merge_text)
+        event._gateway_accepted = True
 
     async def _hm_busy_slash_or_photo(
         self, event: "MessageEvent", source: SessionSource, _quick_key: str
@@ -656,7 +671,7 @@ class GatewayInboundMixin:
         if event.message_type == MessageType.PHOTO:
             logger.debug("PRIORITY photo follow-up for session %s — queueing without interrupt", _quick_key)
             self._hm_merge_pending_for_source(source, _quick_key, event)
-            return True, None
+            return True, None if event._gateway_accepted else self._pending_queue_refusal(event)
         return False, None
 
     def _hm_busy_telegram_grace_queue(
@@ -687,7 +702,7 @@ class GatewayInboundMixin:
     def _hm_text_only(event: "MessageEvent") -> bool:
         return event.message_type == MessageType.TEXT and not event.media_urls and not event.media_types
 
-    def _hm_busy_steer(self, event: "MessageEvent", running_agent: Any, _quick_key: str) -> None:
+    def _hm_busy_steer(self, event: "MessageEvent", running_agent: Any, _quick_key: str) -> bool:
         """Steer mode: inject text mid-run via ``agent.steer()``, else fall back to queue semantics."""
         steer_text = (event.text or "").strip()
         steered = False
@@ -699,9 +714,9 @@ class GatewayInboundMixin:
         if steered:
             self._fold_into_running_turn(running_agent, _quick_key, event)
             logger.debug("PRIORITY steer for session %s", _quick_key)
-            return
+            return True
         logger.debug("PRIORITY steer-fallback-to-queue for session %s", _quick_key)
-        self._queue_or_replace_pending_event(_quick_key, event)
+        return self._queue_or_replace_pending_event(_quick_key, event)
 
     async def _hm_busy_interrupt(
         self, event: "MessageEvent", source: SessionSource, running_agent: Any, _quick_key: str
@@ -740,7 +755,7 @@ class GatewayInboundMixin:
 
         effective_busy_input_mode = self._effective_busy_input_mode(source)
         if self._hm_busy_telegram_grace_queue(event, source, _quick_key, effective_busy_input_mode):
-            return None
+            return None if event._gateway_accepted else self._pending_queue_refusal(event)
 
         _ra_state = self._peek_session_state(_quick_key)
         running_agent = _ra_state.turn.agent if _ra_state else None
@@ -750,11 +765,12 @@ class GatewayInboundMixin:
                 logger.info("HARD STOP (pending) for session %s — sentinel cleared", _quick_key)
                 return EphemeralReply(t("gateway.stop.force_stopped_pending"))
             self._hm_merge_pending_for_source(source, _quick_key, event, merge_text=True)  # picked up after start
-            return None
+            return None if event._gateway_accepted else self._pending_queue_refusal(event)
         if self._draining:
             queue_during_drain = self._queue_during_drain_enabled(effective_busy_input_mode)
             if queue_during_drain:
-                self._queue_or_replace_pending_event(_quick_key, event)
+                if not self._queue_or_replace_pending_event(_quick_key, event):
+                    return self._pending_queue_refusal(event)
             return (
                 t("gateway.busy.drain_queued", action=self._status_action_gerund())
                 if queue_during_drain
@@ -762,11 +778,9 @@ class GatewayInboundMixin:
             )
         if effective_busy_input_mode == "queue":
             logger.debug("PRIORITY queue follow-up for session %s", _quick_key)
-            self._queue_or_replace_pending_event(_quick_key, event)
-            return None
+            return None if self._queue_or_replace_pending_event(_quick_key, event) else self._pending_queue_refusal(event)
         if effective_busy_input_mode == "steer":
-            self._hm_busy_steer(event, running_agent, _quick_key)
-            return None
+            return None if self._hm_busy_steer(event, running_agent, _quick_key) else self._pending_queue_refusal(event)
         # Subagent protection: an interrupt cascades through ``_active_children`` and aborts
         # in-flight delegate_task work (/stop reached its handler above — still an escape hatch).
         # Compression protection: an interrupt would start a new turn on the pre-rotation parent
@@ -779,8 +793,7 @@ class GatewayInboundMixin:
             await self._hm_busy_interrupt(event, source, running_agent, _quick_key)
             return None
         logger.info("PRIORITY interrupt demoted to queue for session %s %s", _quick_key, _demote)
-        self._queue_or_replace_pending_event(_quick_key, event)
-        return None
+        return None if self._queue_or_replace_pending_event(_quick_key, event) else self._pending_queue_refusal(event)
 
     def _hm_quick_commands(self) -> dict:
         """User-defined ``quick_commands`` mapping from config (empty dict when unset/malformed)."""
@@ -1385,6 +1398,8 @@ class GatewayInboundMixin:
 
         event, source, is_internal = self._hm_rescue_orphaned_fifo(event, source, is_internal, _quick_key)
 
+        from gateway.platforms.base_pending import release_pending_dispatch
+        release_pending_dispatch(self._delivery_adapter_for(source), _quick_key, event, claimed=True)
         _claim_state = self._session_state(_quick_key)
         if _active_session_lease is not None:
             _claim_state.turn.lease = _active_session_lease

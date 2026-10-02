@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import itertools
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field, fields
@@ -33,6 +34,14 @@ _SECURITY_METADATA_KEYS = (
     "hermes_plugin_id", "hermes_plugin_injection", "gateway_session_key",
     "gateway_session_id", "gateway_session_strict", "notification_category",
 )
+
+_INGRESS_SEQUENCE = itertools.count()
+
+
+def ingress_order(event: MessageEvent) -> int:
+    if event._ingress_order is None:
+        event._ingress_order = next(_INGRESS_SEQUENCE)
+    return event._ingress_order
 
 
 def _sender_identity(event: MessageEvent) -> tuple[str, ...] | None:

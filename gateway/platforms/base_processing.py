@@ -350,7 +350,13 @@ class BaseProcessingMixin:
                 for reserved in pending_dispatch_records(self, key):
                     if not any(previous is reserved for previous in recorded):
                         recorded.append(reserved)
-            tasks = [task for task in self._background_tasks if not task.done()]
+            candidates = list(self._background_tasks)
+            for attr in ("_pending_text_batch_tasks", "_pending_photo_batch_tasks", "_media_group_tasks"):
+                candidates.extend(getattr(self, attr, {}).values())
+            held_task = getattr(self, "_held_inbound_redispatch_task", None)
+            if held_task is not None:
+                candidates.append(held_task)
+            tasks = [task for task in set(candidates) if not task.done() and task is not asyncio.current_task()]
             if not tasks:
                 break
             for task in tasks:
@@ -365,8 +371,9 @@ class BaseProcessingMixin:
                                "releasing tracking and letting them unwind in the background",
                                self.name, sum(not t.done() for t in tasks))
                 break
-        from gateway.shutdown_pending import flush_adapter_pending
+        from gateway.shutdown_pending import discard_persisted_ingress, flush_adapter_pending
         persisted = flush_adapter_pending(self, pending_reservations)
+        discard_persisted_ingress(self, persisted)
         for key in persisted:
             self._pending_messages.pop(key, None)
             state = self._text_debounce_store().pop(key, None)

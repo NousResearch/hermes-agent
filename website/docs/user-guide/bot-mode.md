@@ -167,11 +167,16 @@ Use the **Move up** and **Move down** arrows beside a room to choose its positio
 
 When the group’s gateway and the receiving Bot support document delivery, you can attach a file or PDF and ask a Bot on another computer to read it. Use **Files** to find the exact version shared in the conversation. Different files with the same name remain separate versions.
 
-Document delivery supports up to **8 files**, **5 MB per file**, and **6 MB in one message**. A Bot’s own incoming-file limit may be lower. Older peers continue to support text; they receive no document bytes through this feature. Images, audio, video and files produced by a peer Bot are separate capabilities.
+Document delivery supports up to **8 files**, **5 MB per file**, and **6 MB in one message**. A Bot’s own incoming-file limit may be lower. Older peers continue to support text; they receive no document bytes through this feature. Images, audio and video are separate capabilities.
 
 Once the receiving gateway accepts the message, it keeps verified private copies for that turn. Closing Desktop does not stop accepted work or require the original file to stay on your computer. If a connection fails, the gateways check the existing attempt and keep unconfirmed replies visible while checking their status.
 
 **Stop** requests cancellation. Copies needed by accepted or uncertain work stay protected until they can be safely released. Ending a group chat does not undo actions a Bot has already completed. This does not let another gateway take over when the group’s host is unavailable.
+
+When both gateways also support document output, a Bot on another computer can create and share a file back to the group. For example: “Mira Bot, turn these notes into a launch checklist and share it. Atlas Bot, review the checklist.” The file appears with Mira Bot’s reply and in **Files** after the group host verifies it. Atlas Bot receives that same published version when it is addressed in the conversation.
+
+You can close Desktop while the Bot works. Reopening shows the published reply and file, and Download retrieves the exact version that was shared. File sharing and cleanup can continue after a Bot finishes its reply; their status is shown separately. A blocked transfer needs attention and does not offer to run the Bot again.
+
 
 ## Bot-to-bot messaging
 

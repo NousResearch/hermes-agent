@@ -1085,6 +1085,8 @@ def _attach_built_agent(current: dict, agent) -> None:
     _session_todo_state(current)
     # Baseline for the per-turn config sync (profile home override still active).
     current["config_model_seen"] = _config_model_target()
+    if placement := _agent_fallback_placement(agent):
+        current["pre_agent_fallback"] = placement
 
 
 def _announce_built_agent(sid: str, key: str, current: dict, agent) -> None:
@@ -1686,6 +1688,24 @@ def _stored_session_runtime_overrides(row: dict | None) -> dict:
     return overrides
 
 
+def _agent_fallback_placement(agent) -> dict | None:
+    """A copy of the pre-agent fallback placement ``_make_agent`` recorded on ``agent``, or None."""
+    placement = getattr(agent, "_pre_agent_fallback", None)
+    return dict(placement) if isinstance(placement, dict) else None
+
+
+def _stored_pre_agent_fallback(row: dict | None, overrides: dict) -> dict | None:
+    """The pre-agent fallback placement a stored chat is still on, or None. Resume restores the model a chat
+    last ran on as ``model_override`` whatever put it there; the ``pre_agent_fallback`` marker (written when
+    the session was BUILT on a fallback, cleared by an explicit /model pick or the return to the primary)
+    says the restored model is only that placement. It counts only while it names the restored model; rows
+    without the marker (older builds included) stay pinned, since nothing records why they ran that model."""
+    placement = _parse_model_config((row or {}).get("model_config"), quiet=True).get("pre_agent_fallback")
+    if not _override_is_fallback_placement(overrides.get("model_override"), placement):
+        return None
+    return {"model": str(placement.get("model") or ""), "provider": str(placement.get("provider") or "")}
+
+
 def _runtime_model_config(agent, existing: dict | None = None) -> dict:
     """Merge the agent's CURRENT runtime identity onto the row's persisted ``model_config``. Falsy agent
     attributes DELETE the key rather than skip the write: resume reads provider/endpoint from this JSON
@@ -1729,6 +1749,10 @@ def _persist_live_session_runtime(session: dict | None) -> None:
             model_config["composer_override_profile"] = composer_profile
         elif "composer_override_profile" in session:
             model_config.pop("composer_override_profile", None)
+        if isinstance(placement := session.get("pre_agent_fallback"), dict):
+            model_config["pre_agent_fallback"] = placement
+        elif "pre_agent_fallback" in session:
+            model_config.pop("pre_agent_fallback", None)
         if (tier_override := session.get("create_service_tier_override")) is not None:
             # agent.service_tier is None for explicit normal; without this the distinction is erased on every persist.
             model_config["service_tier"] = tier_override or "normal"
@@ -2675,6 +2699,15 @@ def _make_agent(
     if fallback_notice:
         # Emitted once on the first successful reply via _emit_pending_fallback_notice -> status_callback.
         agent._pending_fallback_notice = fallback_notice
+        # Built on a fallback because the configured primary could not resolve: turn start returns the
+        # session to the primary once it can (_return_to_configured_primary). The placement also rides on
+        # the session row (created lazily from this init config), so a resume can tell this model apart
+        # from one the user picked: both restore as the same model_override.
+        agent._built_on_pre_agent_fallback = True
+        placement = {"model": str(model or ""), "provider": str(runtime.get("provider") or "")}
+        agent._pre_agent_fallback = placement
+        if isinstance(getattr(agent, "_session_init_model_config", None), dict):
+            agent._session_init_model_config["pre_agent_fallback"] = dict(placement)
     return agent
 
 
@@ -2747,6 +2780,8 @@ def _init_session(
             "auth_user_id": _transport_auth_user_id(current_transport()),
         }
         _session_todo_state(_sessions[sid])
+        if placement := _agent_fallback_placement(agent):
+            _sessions[sid]["pre_agent_fallback"] = placement
     _hydrate_session_cwd(sid, key, session_db, profile_home)
     _register_session_cwd(_sessions[sid])
     _wire_session_agent(sid, key, agent)  # no eager slash-worker pre-warm (see _start_agent_build)

@@ -567,6 +567,8 @@ def _rebuild_session_agent(sid: str, session: dict, **kwargs):
     # _transfer_db_to_agent refuses it.
     with _sessions_lock:
         session.update(agent=agent, config_model_seen=config_model_seen)
+        if placement := _agent_fallback_placement(agent):
+            session["pre_agent_fallback"] = placement
         owned = opened or bool(getattr(old_agent, "_owns_session_db", False))
         if owned and _transfer_db_to_agent(agent, session_db):
             if old_agent is not None:

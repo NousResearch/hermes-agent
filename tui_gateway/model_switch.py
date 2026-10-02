@@ -333,6 +333,9 @@ def _apply_model_switch(
         and not persist_global and session.get("follow_profile_config"))
     had_composer_profile = "composer_override_profile" in session
     previous_composer_profile = session.get("composer_override_profile")
+    if pin_session_override and isinstance(session, dict) and not one_turn:
+        # A deliberate pick replaces the fallback placement; cleared before the commit persists the runtime.
+        session["pre_agent_fallback"] = None
     if records_composer_override:
         profile_model, profile_provider = _config_model_target()
         session["composer_override_profile"] = {
@@ -481,6 +484,80 @@ def _sync_agent_model_with_config(sid: str, session: dict) -> None:
         render_notification(
             lambda: _emit("error", sid, {"message": f"Could not switch to configured model {model}: {e}"}),
             platform="tui", user_config=getattr(session.get("agent"), "_notification_config", None))
+
+
+def _configured_primary_ready(model: str, provider: str) -> bool:
+    """True when the configured primary resolves and its credential pool, if it has one, has a
+    credential selectable for *model* right now. Quiet: this runs at every turn start."""
+    try:
+        from agent.credential_pool import load_pool
+        from hermes_cli.runtime_provider import resolve_runtime_provider
+        runtime = resolve_runtime_provider(requested=provider or None, target_model=model)
+        pool = load_pool(str(runtime.get("provider") or provider or ""))
+        return not pool.has_credentials() or pool.has_available(model=model)
+    except Exception:
+        return False
+
+
+def _return_to_configured_primary(sid: str, session: dict) -> None:
+    """A session whose agent was built on a pre-agent fallback returns to the configured primary
+    once it is usable again. The per-turn config sync cannot: its baseline is the configured model,
+    so it sees no change, and the agent's own primary restore returns to the runtime it was built
+    on, which is the fallback. Without this the session stayed on the fallback until the backend
+    restarted, long after the primary's quota reset (#119195). The messaging gateway re-resolves
+    per message and already recovers. A /model pin wins; a primary that is still unusable is
+    retried quietly on the next turn.
+
+    A resumed chat restores the model it last ran on as ``model_override``, so a chat that ran on the
+    fallback comes back pinned to it. The ``pre_agent_fallback`` placement it was saved with says that
+    override is only the fallback, not a pick, so it returns too."""
+    agent = session.get("agent")
+    if agent is None:
+        return
+    override = session.get("model_override")
+    on_placement = bool(override) and _override_is_fallback_placement(override, session.get("pre_agent_fallback"))
+    if override and not on_placement:
+        return
+    if not (on_placement or getattr(agent, "_built_on_pre_agent_fallback", False)):
+        return
+    model, provider = _config_model_target()
+    if not model:
+        return
+    if model == getattr(agent, "model", "") and (not provider or provider == getattr(agent, "provider", "")):
+        _leave_fallback_placement(session, agent, on_placement)
+        return
+    if not _configured_primary_ready(model, provider):
+        return
+    raw = f"{model} --provider {provider}" if provider else model
+    try:
+        _apply_model_switch(
+            sid, session, raw, confirm_expensive_model=True, pin_session_override=False,
+            persist_override=False)
+    except Exception as e:
+        logger.info("Configured primary %s is not reachable yet for session %s: %s", model, sid, e)
+        return
+    _leave_fallback_placement(session, agent, on_placement)
+
+
+def _override_is_fallback_placement(override: Any, placement: Any) -> bool:
+    """True when the restored ``model_override`` names the fallback the chat was placed on."""
+    if not isinstance(override, dict) or not isinstance(placement, dict):
+        return False
+    model = str(placement.get("model") or "")
+    if not model or model != str(override.get("model") or ""):
+        return False
+    provider = str(placement.get("provider") or "")
+    return not provider or not override.get("provider") or provider == str(override.get("provider"))
+
+
+def _leave_fallback_placement(session: dict, agent: Any, drop_override: bool) -> None:
+    """The session runs the configured primary: forget the placement, and the override it restored,
+    and persist that so the next resume does not bring the fallback back."""
+    agent._built_on_pre_agent_fallback = False
+    session["pre_agent_fallback"] = None
+    if drop_override:
+        session.pop("model_override", None)
+    _persist_live_session_runtime(session)
 
 
 def _pending_switch_selection_warning(model: str, provider: str) -> str | None:

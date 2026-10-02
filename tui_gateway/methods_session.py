@@ -680,6 +680,8 @@ class _Resume:
                 composer_override_profile=(model_config.get("composer_override_profile")
                                            if overrides and overrides.get("model_override") else None),
             )
+        if overrides and (placement := _stored_pre_agent_fallback(self.found, overrides)):
+            record["pre_agent_fallback"] = placement
         return record
 
     def claim(self, sid: str, record: dict) -> dict | None:
@@ -1023,6 +1025,9 @@ def _resume_eager(ctx: _Resume) -> dict:
             if (session := _sessions.get(sid)) is not None:
                 if stored_runtime_overrides.get("model_override") is not None:
                     session["model_override"] = stored_runtime_overrides["model_override"]
+                if "pre_agent_fallback" not in session and (
+                        placement := _stored_pre_agent_fallback(ctx.found, stored_runtime_overrides)):
+                    session["pre_agent_fallback"] = placement
                 model_config = _parse_model_config(ctx.found.get("model_config"), quiet=True)
                 if _row_follows_profile(ctx.found):
                     session["follow_profile_config"] = True

@@ -327,3 +327,79 @@ class TestReceiverAuthorizationHook:
         receiver, transcribed, delivered = self._receiver(monkeypatch)
         await receiver._emit([(MALLORY_ID, b"\x00\x01" * 8000)])
         assert len(transcribed) == 1 and len(delivered) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("change", ["control", "speaker-route", "requester-route", "physical-home", "adapter-replaced", "revoked-role"])
+async def test_call_sources_follow_current_route_home_and_authority(tmp_path, monkeypatch, change):
+    from dataclasses import replace
+    from pathlib import Path
+    from types import SimpleNamespace
+
+    from gateway.config import GatewayConfig, PlatformConfig
+    from gateway.profile_routing import parse_profile_routes
+    from gateway.run import GatewayRunner
+    from gateway.session_identity import canonical_identity, identity_of
+    from plugins.platforms.matrix.adapter import MatrixAdapter
+
+    home = tmp_path / ".hermes"
+    a, b = home / "profiles/a", home / "profiles/b"
+    for directory in (home, a, b):
+        directory.mkdir(parents=True, exist_ok=True)
+        (directory / "config.yaml").write_text("{}\n")
+        (directory / ".env").write_text(f"GATEWAY_ALLOWED_USERS={ALICE},@owner:hs.tld,@bob:hs.tld\n")
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    from hermes_constants import pin_process_hermes_home
+    pin_process_hermes_home(home)
+    monkeypatch.setattr("agent.secret_scope._MULTIPLEX_ACTIVE", True)
+    monkeypatch.setattr("hermes_cli.profiles.profiles_to_serve", lambda **_kwargs: [("default", home), ("a", a), ("b", b)])
+    runner = object.__new__(GatewayRunner)
+    runner._primary_profile_name = "default"
+    runner._profile_adapters = {"a": {}, "b": {}}
+    runner._pairing_stores = {}
+    runner.config = GatewayConfig(multiplex_profiles=True)
+    adapter = MatrixAdapter(PlatformConfig(enabled=True))
+    adapter.gateway_runner = runner
+    adapter._client = SimpleNamespace(api=object())
+    adapter._joined_rooms = {ROOM}
+    adapter._rtc_call_state = {ROOM: remembered(call_state((ALICE, "DEVICEAAA"), ("@bob:hs.tld", "DEVICEBBB")))}
+    runner.adapters = {Platform.MATRIX: adapter}
+
+    for profile in ("a", "b", "a"):
+        runner.config.profile_routes = parse_profile_routes([{"name": "room", "platform": "matrix", "chat_id": ROOM, "profile": profile}])
+        source = adapter.build_source(chat_id=ROOM, user_id=ALICE, chat_type="group")
+        source.role_authorized = change == "revoked-role"
+        assert canonical_identity(source, runner=runner, adapter=adapter) is not None
+        sessions = MatrixRTCSessions(adapter)
+        sessions.bind(ROOM, source)
+        expected_home = a if profile == "a" else b
+        speaker = "@bob:hs.tld" if change == "speaker-route" else ALICE
+        if change == "speaker-route":
+            runner.config.profile_routes.insert(0, parse_profile_routes([{"name": "speaker", "platform": "matrix", "chat_id": ROOM, "user_id": speaker, "profile": "b" if profile == "a" else "a"}])[0])
+        if change == "requester-route":
+            runner.config.profile_routes[0] = replace(runner.config.profile_routes[0], profile="b" if profile == "a" else "a")
+        original_home = expected_home.with_name(expected_home.name + "-original")
+        if change == "physical-home":
+            expected_home.rename(original_home)
+            expected_home.symlink_to(b if profile == "a" else a, target_is_directory=True)
+        if change == "adapter-replaced":
+            runner.adapters[Platform.MATRIX] = MatrixAdapter(PlatformConfig(enabled=True))
+        if change == "revoked-role":
+            (home / ".env").write_text("GATEWAY_ALLOWED_USERS=@somebody:hs.tld\n")
+        try:
+            fresh = sessions.source_for(ROOM, speaker)
+            authorized = sessions.is_user_authorized(ROOM, speaker, "DEVICEAAA" if speaker == ALICE else "DEVICEBBB")
+            actual = (
+                sessions.current(ROOM), authorized,
+                None if fresh is None else (fresh.user_id, fresh.role_authorized, identity_of(fresh).runtime_home, identity_of(fresh).adapter() is adapter),
+                source.user_id, identity_of(source).runtime_home,
+            )
+            expected_source = (speaker, False, expected_home, True) if change in {"control", "revoked-role"} else None
+            assert actual == (change in {"control", "speaker-route", "revoked-role"}, change == "control", expected_source, ALICE, expected_home)
+        finally:
+            if change == "physical-home":
+                expected_home.unlink()
+                original_home.rename(expected_home)
+            runner.adapters[Platform.MATRIX] = adapter
+            (home / ".env").write_text(f"GATEWAY_ALLOWED_USERS={ALICE},@owner:hs.tld,@bob:hs.tld\n")

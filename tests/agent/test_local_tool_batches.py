@@ -103,7 +103,7 @@ def test_local_batch_runs_once_per_entry_through_agent_and_persists_pairs(mcp_se
     if mode != "interrupt":
         assert result["final_response"] == "done"
     expected = {"allow": ["read_alpha", "read_beta"], "scope": []}.get(mode, ["read_alpha"])
-    executed = [json.loads(line) for line in call_log.read_text(encoding="utf-8").splitlines()] if call_log.exists() else []
+    executed = [json.loads(line) for line in call_log.read_text(encoding="utf-8-sig").splitlines()] if call_log.exists() else []
     assert executed == expected
     assert hooks == ([] if mode == "scope" else names[:1] if mode in {"schema", "interrupt"} else names)
     messages = result["messages"]

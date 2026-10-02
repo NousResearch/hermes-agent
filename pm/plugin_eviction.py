@@ -74,6 +74,23 @@ def static_verdicts(entries: list[Entry], python_version: str) -> tuple[dict[Pat
     return reasons, waiting
 
 
+def _spellings(name: str) -> set[str]:
+    """Every spelling a config list may hold for plugin *name* (key, bare leaf, manifest name)."""
+    try:
+        from hermes_cli.plugins_cmd import _plugin_aliases
+
+        return _plugin_aliases(name)
+    except Exception:  # alias discovery must never fail an update
+        return {name, name.split("/")[-1]}
+
+
+def _discard_aliases(names: list, aliases: set[str]) -> None:
+    """Remove *aliases* from the round-tripped list in place, so order and comments survive."""
+    for index in reversed(range(len(names))):
+        if names[index] in aliases:
+            del names[index]
+
+
 class PluginEviction:
     """Config edits disabling the plugins in *reasons*; published like a plugin selection."""
 
@@ -99,10 +116,15 @@ class PluginEviction:
             disabled = plugins.get("disabled")
             if disabled is None:
                 disabled = plugins["disabled"] = []
+            enabled = plugins.get("enabled")
             memory = config.get("memory")
             for name in names:
                 if name not in disabled:
                     disabled.append(name)
+                # Keep the two lists consistent: a plugin that is disabled must not stay enabled
+                # under any spelling the loader matches, or `plugins enable` has nothing to repair.
+                if isinstance(enabled, list):
+                    _discard_aliases(enabled, _spellings(name))
                 # plugins.disabled does not veto memory.provider; the provider joins the union on its own.
                 if isinstance(memory, dict) and str(memory.get("provider") or "").strip() == name:
                     memory["provider"] = ""
@@ -198,7 +220,8 @@ def sync_evicting(package, facts, fact: dict, *, extras, shipped, frozen, explic
     for plugins_dir, name, plugin_dir in entries:
         key = plugin_dir.resolve()
         if key in reasons:
-            notices.append(f"Disabled plugin '{name}' in {plugins_dir.parent}: {reasons[key]}")
+            notices.append(f"Disabled plugin '{name}' in {plugins_dir.parent}: {reasons[key]}; "
+                           f"once it fits this Hermes again, run `hermes plugins enable {name}`")
         elif key in waiting:
             notices.append(f"Left plugin '{name}' in {plugins_dir.parent} out of this update: {waiting[key]}; "
                            "it stays enabled and rejoins once Hermes reports a version it accepts")

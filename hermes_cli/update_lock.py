@@ -17,7 +17,7 @@ import uuid
 from dataclasses import dataclass
 from pathlib import Path
 
-from hermes_mcp_update_gate import (
+from hermes_cli.update_marker_identity import (
     MARKER_NAME,
     UPDATE_MARKER_MAX_AGE_SECONDS,
     UpdateMarkerError,

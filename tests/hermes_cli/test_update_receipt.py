@@ -228,6 +228,11 @@ class TestCommandBoundaryFinalization:
         from types import SimpleNamespace
 
         from hermes_cli import main as hermes_main
+        from hermes_cli import update_owning_install
+
+        # This command-boundary fixture runs this checkout deliberately on a
+        # shared test interpreter. Keep install discovery inside its scope.
+        monkeypatch.setattr(update_owning_install, "owning_install_root", lambda root: None)
 
         def _fake_impl(args, gateway_mode):
             ur.begin_update_receipt()

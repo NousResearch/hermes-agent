@@ -400,7 +400,9 @@ class TestDashboardMcpTestRedaction:
         body = resp.json()
         assert body["ok"] is False
         _assert_fully_redacted(body["error"])
-        assert "Bearer ***" in body["error"]
+        # The pattern+exact-value sanitizer removes the whole Bearer span before the
+        # header redactor runs; require the entire field to be masked.
+        assert body["error"] == "connect failed: Authorization: ***"
         assert SYNTHETIC not in resp.text
 
     def test_probe_error_json_redacts_digest_and_mapping(self, tmp_path, monkeypatch):
@@ -473,4 +475,4 @@ class TestSiblingProbeConsumersRedact:
         out = capsys.readouterr().out
         _assert_fully_redacted(out)
         assert "Authentication failed" in out
-        assert "Bearer ***" in out
+        assert out.rstrip().endswith("Authentication failed: connect failed: Authorization: ***")

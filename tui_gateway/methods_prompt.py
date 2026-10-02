@@ -1072,19 +1072,38 @@ def _(rid, params: dict) -> dict:
 
 @method("approval.respond")
 def _(rid, params: dict) -> dict:
+    expected = params.get("expected_hosted_task_id")
+    generation = params.get("expected_hosted_execution_generation")
+    scoped = expected is not None or generation is not None
     session, err = _sess(params, rid)
     if err:
         # Session-not-found (4001) only: resolve by durable identity before failing.
-        if (err.get("error") or {}).get("code") != 4001:
+        if scoped or (err.get("error") or {}).get("code") != 4001:
             return err
         session = _approval_respond_session_fallback(params)
         if session is None:
             return err
-    return _approval_reply(
-        rid, "resolved",
-        lambda a: a.resolve_gateway_approval(
-            session["session_key"], params.get("choice", "deny"),
-            resolve_all=params.get("all", False), request_id=params.get("request_id")))
+    def respond():
+        return _approval_reply(
+            rid, "resolved",
+            lambda a: a.resolve_gateway_approval(
+                session["session_key"], params.get("choice", "deny"),
+                resolve_all=params.get("all", False), request_id=params.get("request_id")))
+    if scoped:
+        # _lock_in_submit_turn updates the hosted marker under this same lock.
+        # Keep selection and local queue resolution together so a reused prompt
+        # ID cannot receive a response intended for the prior hosted generation.
+        with session["history_lock"]:
+            task = session.get("_hosted_room_task")
+            if not (isinstance(expected, str) and expected and type(generation) is int and generation > 0
+                    and session.get("running") and isinstance(task, dict)
+                    and type(task.get("execution_generation")) is int
+                    and (task.get("task_id"), task.get("execution_generation")) == (expected, generation)
+                    and params.get("choice") in {"once", "deny"} and not params.get("all")
+                    and isinstance(params.get("request_id"), str) and params["request_id"]):
+                return _err(rid, 4001, "hosted approval is no longer current")
+            return respond()
+    return respond()
 
 
 # ── attachments ─────────────────────────────────────────────────────────────

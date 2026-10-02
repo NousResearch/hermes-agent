@@ -559,6 +559,9 @@ class HostedRoomService:
         offered = (action.get("approval") or {}).get("choices")
         if not isinstance(offered, list) or choice not in offered:
             raise RuntimeError("room approval choice is not offered by this request")
+        if choice == "once":
+            from gateway.hosted_room_approval import require_current_approval
+            require_current_approval(self, room_id, member_id, task_id, execution_generation)
         approve = _hook(client, "approve_receipt")
         if route is not None and approve is not None:
             result = approve(
@@ -569,7 +572,8 @@ class HostedRoomService:
             if not session_id:
                 raise RuntimeError("local room approval identity is unavailable")
             result = self.rpc.approve(
-                session_id=session_id, request_id=requested_approval_id, choice=choice)
+                session_id=session_id, request_id=requested_approval_id, choice=choice,
+                expected_task_id=task_id, expected_execution_generation=execution_generation)
         if result is None:
             raise RuntimeError("room approval target is unavailable")
         with self._policy_lock:

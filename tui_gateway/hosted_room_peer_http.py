@@ -281,7 +281,8 @@ class PeerRunsHTTPClient:
         self._terminal_receipts: set[tuple[str, int]] = set()
         self._room_scope: dict[str, Any] | None = None
         self._auth_probe_lock = threading.Lock()
-        self._auth_probe_rejections: OrderedDict[tuple[str, str, str], tuple[float, str, int, str | None]] = (
+        self._auth_probe_rejections: OrderedDict[
+            tuple[str, str, str], tuple[float, str, int | None, str | None, bool, bool, bool]] = (
             OrderedDict())
 
     def bind_receipt_store(self, db_path: Path | str) -> None:
@@ -436,10 +437,13 @@ class PeerRunsHTTPClient:
     def _raise_http_error(
         exc: urllib.error.HTTPError, *, method: str, path: str, deadline: float) -> NoReturn:
         """Raise the classified PeerRunsHTTPError for an HTTP error response."""
-        # A 4xx on admission proves the peer never admitted the run.
+        # A conflict may name work already accepted under this logical key;
+        # temporary refusals likewise do not establish durable non-admission.
+        admission = method == "POST" and path == "/v1/runs"
+        not_admitted = admission and exc.code in {400, 401, 403, 404, 422}
         flags = {
-            "ambiguous": method == "POST" and exc.code >= 500, "status_code": exc.code,
-            "not_admitted": method == "POST" and path == "/v1/runs" and 400 <= exc.code < 500}
+            "ambiguous": method == "POST" and (exc.code >= 500 or (admission and not not_admitted)),
+            "status_code": exc.code, "not_admitted": not_admitted}
         try:
             detail = _read_body(
                 exc, max_bytes=MAX_PEER_ERROR_RESPONSE_BYTES, deadline=deadline, kind=" error",
@@ -796,13 +800,15 @@ class PeerRunsHTTPClient:
                 del self._auth_probe_rejections[key]
                 rejected = None
         if rejected is not None:
-            _, message, status_code, error_code = rejected
-            raise PeerRunsHTTPError(message, status_code=status_code, error_code=error_code)
+            _, message, status_code, error_code, retryable, ambiguous, not_admitted = rejected
+            raise PeerRunsHTTPError(message, status_code=status_code, error_code=error_code,
+                                    retryable=retryable, ambiguous=ambiguous, not_admitted=not_admitted)
 
     def _remember_auth_probe_rejection(self, key: tuple[str, str, str], failure: PeerRunsHTTPError) -> None:
         with self._auth_probe_lock:
             self._auth_probe_rejections[key] = (
-                self.clock() + _AUTH_PROBE_COOLDOWN_SECONDS, str(failure), failure.status_code, failure.error_code)
+                self.clock() + _AUTH_PROBE_COOLDOWN_SECONDS, str(failure), failure.status_code, failure.error_code,
+                failure.retryable, failure.ambiguous, failure.not_admitted)
             self._auth_probe_rejections.move_to_end(key)
             while len(self._auth_probe_rejections) > _MAX_AUTH_PROBE_REJECTIONS:
                 self._auth_probe_rejections.popitem(last=False)

@@ -21,6 +21,29 @@ from tui_gateway.hosted_room_peer_http import (
 )
 
 
+@pytest.mark.parametrize("status", [408, 409, 425, 429])
+def test_admission_conflict_or_temporary_http_error_is_not_proof_of_nonadmission(status):
+    error = urllib.error.HTTPError(
+        "https://peer.example.test/v1/runs", status, "uncertain admission", {},
+        io.BytesIO(b'{"error":{"code":"idempotency_key_conflict"}}'))
+    with pytest.raises(PeerRunsHTTPError) as caught:
+        PeerRunsHTTPClient._raise_http_error(
+            error, method="POST", path="/v1/runs", deadline=time.monotonic() + 5)
+    assert caught.value.ambiguous is True
+    assert caught.value.not_admitted is False
+
+
+def test_documented_invalid_admission_still_proves_rejection():
+    error = urllib.error.HTTPError(
+        "https://peer.example.test/v1/runs", 400, "invalid admission", {},
+        io.BytesIO(b'{"error":{"code":"invalid_idempotency_key"}}'))
+    with pytest.raises(PeerRunsHTTPError) as caught:
+        PeerRunsHTTPClient._raise_http_error(
+            error, method="POST", path="/v1/runs", deadline=time.monotonic() + 5)
+    assert caught.value.not_admitted is True
+    assert caught.value.ambiguous is False
+
+
 class FakePeer(BaseHTTPRequestHandler):
     sessions = []
     runs = {}

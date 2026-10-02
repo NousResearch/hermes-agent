@@ -3,12 +3,7 @@ repo: https://github.com/guberm/hermes-gmail-desktop-plugin
 sha: cc8d4a2c9112976099d85ea5bc6ca501bde17079
 subdir: plugins/gmail
 title: Gmail
-description: >-
-  Hermes Desktop Gmail mailbox UI for search, reading, and thread inspection,
-  with preview-confirmed send, reply, archive, trash, and label changes. Uses
-  the active profile's existing Google Workspace OAuth setup; email is
-  sensitive external content. Gmail actions and data access require user
-  review and configuration.
+description: "Hermes Desktop Gmail mailbox UI for search, reading, and thread inspection, with preview-confirmed send, reply, archive, trash, and label changes. Uses the active profile's existing Google Workspace OAuth setup; email is sensitive external content. Gmail actions and data access require user review and configuration. Disclosure — reads the active profile's Hermes Google Workspace token (google_token.json, refreshed in memory only) and calls the Gmail API; opening an unread message marks it read, other send/trash/label changes go through a confirm step (trash confirm can be turned off); remote email images load only after the user allows them."
 maintainer: guberm
 tier: community
 category: desktop

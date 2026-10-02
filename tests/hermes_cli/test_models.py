@@ -84,6 +84,26 @@ class TestFetchOpenRouterModels:
         # Image-only model advertised supported_parameters WITHOUT tools → must be dropped.
         assert "google/gemini-3-pro-image-preview" not in ids
 
+    def test_appends_live_free_models_outside_curated_snapshot(self, monkeypatch):
+        class _Resp:
+            def __enter__(self): return self
+            def __exit__(self, exc_type, exc, tb): return False
+            def read(self):
+                return (b'{"data":['
+                        b'{"id":"curated/model","pricing":{"prompt":"0.1","completion":"0.1"},"supported_parameters":["tools"]},'
+                        b'{"id":"live/free","pricing":{"prompt":"0","completion":"0"},"supported_parameters":["tools"]}'
+                        b']}')
+
+        monkeypatch.setattr(_models_mod, "OPENROUTER_MODELS", [("curated/model", "")])
+        monkeypatch.setattr(_models_mod, "_openrouter_catalog_cache", None)
+        with (
+            patch("hermes_cli.model_catalog.get_curated_openrouter_models", return_value=[]),
+            patch("hermes_cli.models._urlopen_model_catalog_request", return_value=_Resp()),
+        ):
+            models = fetch_openrouter_models(force_refresh=True)
+
+        assert models == [("curated/model", "recommended"), ("live/free", "free")]
+
 
 class TestOpenRouterToolSupportHelper:
     """Unit tests for _openrouter_model_supports_tools (Kilo port #9068)."""

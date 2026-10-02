@@ -559,14 +559,16 @@ def _codex_wire_model(agent, model_provider: str | None) -> str | None:
 
 def _codex_turn_effort(agent, model: str | None) -> str | None:
     """``turn/start.effort``: only an explicit Hermes reasoning setting overrides codex's own default, clamped
-    to the route's vocabulary like the Responses path (a raw Hermes level such as ``ultra`` fails the turn
-    with 400 "Unsupported value"). Disabled reasoning goes out as ``none`` where the route accepts it."""
+    to the route's vocabulary like the Responses path (a level the model lacks fails the turn with 400
+    "Unsupported value"). ``ultra`` stays ``ultra`` where the model reaches ``max``: codex runs it as its
+    harness mode. Disabled reasoning goes out as ``none`` where the route accepts it."""
     reasoning_config = getattr(agent, "reasoning_config", None)
     # Guard first: _resolve_reasoning fills an unset config with "medium", which would override codex's default.
     if not isinstance(reasoning_config, dict) or not (
             reasoning_config.get("enabled") is False or reasoning_config.get("effort")):
         return None
     from agent.codex_responses_adapter import classify_responses_route
+    from agent.reasoning_effort import route_supported_efforts
     from agent.transports.codex import _resolve_reasoning
     route = classify_responses_route(agent)
     effort, _enabled = _resolve_reasoning(model or "", {
@@ -574,6 +576,11 @@ def _codex_turn_effort(agent, model: str | None) -> str | None:
         "base_url": getattr(agent, "base_url", None), "is_codex_backend": route.is_codex_backend,
         "is_xai_responses": route.is_xai_responses,
     })
+    # ``ultra`` is codex's harness mode, not an inference level: keep it where the route accepts it
+    # instead of the ``max`` the Responses clamp maps it to.
+    if effort == "max" and reasoning_config.get("effort") == "ultra" and "ultra" in route_supported_efforts(
+            getattr(agent, "provider", None), model, "codex_app_server"):
+        return "ultra"
     return effort
 
 

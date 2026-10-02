@@ -2557,7 +2557,10 @@ class CLICommandsMixin:
         from cli import CLI_CONFIG, _parse_reasoning_config
         from agent.reasoning_effort import effort_display_label
         raw = _command_arg(cmd)
-        _route = (getattr(self, "provider", None), getattr(self, "model", None))
+        from hermes_cli.codex_runtime_switch import get_current_runtime
+        # The live agent's api_mode, else the configured runtime: ``ultra`` is verbatim on the Codex app-server.
+        _route = (getattr(self, "provider", None), getattr(self, "model", None),
+                  getattr(getattr(self, "agent", None), "api_mode", None) or get_current_runtime(CLI_CONFIG))
         if not raw:  # show current state
             rc = self.reasoning_config
             level = (_gt("reasoning.level_default") if rc is None else _gt("reasoning.level_disabled")

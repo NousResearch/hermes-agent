@@ -147,14 +147,21 @@ export const opsCommands: SlashCommand[] = [
   },
 
   {
-    help: 'manage browser CDP connection [connect|disconnect|status]',
+    help: 'manage the agent browser [connect|disconnect|status|use]',
     name: 'browser',
     run: (arg, ctx) => {
       const [rawAction = 'status', ...rest] = arg.trim().split(/\s+/).filter(Boolean)
       const action = rawAction.toLowerCase()
 
-      if (!['connect', 'disconnect', 'status'].includes(action)) {
+      if (!['connect', 'disconnect', 'status', 'use'].includes(action)) {
         return ctx.transcript.sys(t('slashCmd.ops.browser.usage'))
+      }
+
+      // `/browser use [on|off]` — same arguments as the classic CLI.
+      const mode = action === 'use' ? (rest[0] ?? 'on').toLowerCase() : undefined
+
+      if (mode && mode !== 'on' && mode !== 'off') {
+        return ctx.transcript.sys(t('slashCmd.ops.browser.useUsage'))
       }
 
       const sid = ctx.sid ?? null
@@ -165,7 +172,12 @@ export const opsCommands: SlashCommand[] = [
       }
 
       ctx.gateway
-        .rpc<BrowserManageResponse>('browser.manage', { action, session_id: sid, ...(url && { url }) })
+        .rpc<BrowserManageResponse>('browser.manage', {
+          action,
+          session_id: sid,
+          ...(url && { url }),
+          ...(mode && { enabled: mode === 'on' })
+        })
         .then(
           ctx.guarded<BrowserManageResponse>(r => {
             // Without a session we can't subscribe to streamed
@@ -174,12 +186,20 @@ export const opsCommands: SlashCommand[] = [
               r.messages?.forEach(message => ctx.transcript.sys(message))
             }
 
+            if (action === 'use') {
+              ctx.transcript.sys(t(mode === 'on' ? 'slashCmd.ops.browser.useEnabled' : 'slashCmd.ops.browser.useDisabled'))
+
+              return ctx.transcript.sys(t('slashCmd.ops.browser.newSessionsOnly'))
+            }
+
             if (action === 'status') {
-              return ctx.transcript.sys(
+              ctx.transcript.sys(
                 r.connected
                   ? t('slashCmd.ops.browser.connected', r.url || t('slashCmd.ops.browser.urlUnavailable'))
                   : t('slashCmd.ops.browser.notConnected')
               )
+
+              return r.browser_use ? ctx.transcript.sys(t('slashCmd.ops.browser.modeBrowserUse')) : undefined
             }
 
             if (action === 'disconnect') {

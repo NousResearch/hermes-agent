@@ -18,7 +18,8 @@ export const slashCmdOpsEn = {
       reloadedOther: (count: string) => `reloaded .env (${count} vars updated)`
     },
     browser: {
-      usage: 'usage: /browser [connect|disconnect|status] [url] · persistent: set browser.cdp_url in config.yaml',
+      usage:
+        'usage: /browser [connect|disconnect|status|use] [url] · persistent: set browser.cdp_url in config.yaml',
       checking: (url: string) => `checking Chromium-family browser remote debugging at ${url}...`,
       connected: (url: string) => `browser connected: ${url}`,
       urlUnavailable: '(url unavailable)',
@@ -26,7 +27,12 @@ export const slashCmdOpsEn = {
       disconnected: 'browser disconnected',
       connectedLive: 'Browser connected to live Chromium-family browser via CDP',
       endpoint: (url: string) => `Endpoint: ${url}`,
-      nextCallUsesEndpoint: 'next browser tool call will use this CDP endpoint'
+      nextCallUsesEndpoint: 'next browser tool call will use this CDP endpoint',
+      useUsage: 'Usage: /browser use [off]',
+      useEnabled: 'Browser Use mode enabled — browser_exec via the Browser Use CLI 3.0',
+      useDisabled: 'Browser Use mode disabled — built-in browser tools restored',
+      newSessionsOnly: 'applies to new sessions — this one keeps its current tools (/new to start one)',
+      modeBrowserUse: 'Browser: Browser Use mode (browser_exec via the Browser Use CLI 3.0)'
     },
     rollback: {
       noSession: 'no active session — nothing to rollback',

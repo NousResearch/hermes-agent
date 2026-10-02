@@ -205,6 +205,17 @@ def get_browser_backend() -> str:
     return (BACKEND_DISABLED if raw is False else "") if isinstance(raw, bool) else str(raw or "").strip().lower()
 
 
+def set_browser_use_mode(enabled: bool) -> None:
+    """``/browser use [off]`` on every surface: persist ``browser.backend`` for the current profile and drop
+    cached tool availability. A live agent keeps its tools (prompt cache); the next one built gets the swap."""
+    from hermes_cli.config import load_config, save_config
+    from tools.registry import invalidate_check_fn_cache
+    config = load_config()
+    config.setdefault("browser", {})["backend"] = _BACKEND_KEY if enabled else BACKEND_DISABLED
+    save_config(config)
+    invalidate_check_fn_cache()
+
+
 def is_legacy_browser_use_cloud_config(browser_cfg: dict) -> bool:
     """True for pre-CLI direct-API Browser Use cloud configs. An explicit backend or
     a non-Browser-Use cloud_provider wins; Camofox is selected via env var, not

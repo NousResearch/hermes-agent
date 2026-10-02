@@ -314,7 +314,7 @@
     },
     {
       "name": "browser.manage",
-      "summary": "Inspect, attach to, or drop the CDP browser the tools use; ``messages`` narrate a connect.",
+      "summary": "Inspect, attach to, or drop the CDP browser the tools use, or switch Browser Use mode (``use``, applies to new sessions); ``messages`` narrate a connect.",
       "params": [
         {
           "name": "params",
@@ -7120,7 +7120,8 @@
         "enum": [
           "status",
           "connect",
-          "disconnect"
+          "disconnect",
+          "use"
         ],
         "title": "BrowserAction",
         "type": "string"
@@ -7397,6 +7398,18 @@
             "default": null,
             "title": "Url"
           },
+          "enabled": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Enabled"
+          },
           "session_id": {
             "anyOf": [
               {
@@ -7458,6 +7471,18 @@
             ],
             "default": null,
             "title": "Messages"
+          },
+          "browser_use": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Browser Use"
           }
         },
         "required": [

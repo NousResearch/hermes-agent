@@ -543,3 +543,41 @@ def test_discovery_loop_cap_blocks_terminal_read_before_dispatch():
     payload = json.loads(messages[1]["content"])
     assert payload["guardrail"]["action"] == "block"
     assert payload["guardrail"]["code"] == "loop_discovery_cap"
+
+
+def test_discovery_loop_cap_blocks_read_only_curl_probe_before_dispatch():
+    agent = _make_agent(
+        "read_file",
+        "terminal",
+        config={"tool_loop_guardrails": {"loop_caps": {"max_discovery_calls": 1}}},
+    )
+    calls = [
+        _mock_tool_call("read_file", json.dumps({"path": "START.txt"}), "c-read"),
+        _mock_tool_call(
+            "terminal",
+            json.dumps({
+                "command": "curl.exe -sS 'https://data.alpaca.markets/v2/stocks/bars?symbols=AAPL%2CMSFT'"
+            }),
+            "c-probe",
+        ),
+    ]
+    messages = []
+
+    def fake_dispatch(name, args, task_id, **kwargs):
+        del args, task_id, kwargs
+        if name == "read_file":
+            return json.dumps({"content": "provider probe next"})
+        return json.dumps({"exit_code": 0, "output": "SHOULD_NOT_RUN"})
+
+    with patch("model_tools.handle_function_call", side_effect=fake_dispatch) as dispatch:
+        agent._execute_tool_calls_sequential(
+            SimpleNamespace(content="", tool_calls=calls),
+            messages,
+            "task-1",
+        )
+
+    assert dispatch.call_count == 1
+    assert dispatch.call_args_list[0].args[0] == "read_file"
+    payload = json.loads(messages[1]["content"])
+    assert payload["guardrail"]["action"] == "block"
+    assert payload["guardrail"]["code"] == "loop_discovery_cap"

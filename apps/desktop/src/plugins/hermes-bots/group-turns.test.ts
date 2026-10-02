@@ -67,6 +67,53 @@ beforeEach(() => {
 })
 
 describe('session resolution', () => {
+  it('resolves a missing canonical title explicitly before creating a new classic thread session', async () => {
+    const room = await loadRoom()
+    const member: GroupMember = { name: 'research', title: '' }
+    const prior = host.request as (method: string, params: Record<string, unknown>) => Promise<unknown>
+    const calls: Array<{ method: string; params: Record<string, unknown> }> = []
+    host.request = async (method: string, params: Record<string, unknown>) => {
+      calls.push({method,params})
+      if (method === 'session.resume') {
+        throw Object.assign(new Error('not_found'), {code:4001,data:{reason:'not_found'}})
+      }
+      return prior(method,params)
+    }
+    const created = await room.turns.ensureGroupChatSession('Classic', member, 'new-thread')
+    expect(created.runtime).toBeTruthy()
+    expect(calls.filter(call=>call.method==='session.resume').at(-1)?.params).toMatchObject({title:'Group: Classic · new-thread',profile:'research'})
+    expect(calls.filter(call=>call.method==='session.create')).toHaveLength(1)
+    // A lost client pointer resolves the existing owner title rather than minting another session.
+    room.chat.updateGroupChat('Classic', current => ({...current,sessions:{}}))
+    host.request = async (method: string, params: Record<string, unknown>) => {
+      calls.push({method,params})
+      if (method === 'session.resume' && params.title === 'Group: Classic · new-thread') {
+        return {session_id:created.runtime,stored_session_id:created.stored}
+      }
+      throw Object.assign(new Error('not_found'), {code:4001,data:{reason:'not_found'}})
+    }
+    expect((await room.turns.ensureGroupChatSession('Classic',member,'new-thread')).stored).toBe(created.stored)
+    expect(calls.filter(call=>call.method==='session.create')).toHaveLength(1)
+  })
+
+  it('does not mint another session for a refused known canonical identity or ambiguous lookup', async () => {
+    for (const failure of [
+      {code:4001,data:{reason:'not_found'}}, {code:4001,data:{reason:'permission_denied'}},
+      {code:4001,data:{reason:'profile_mismatch'}}, {code:4001}, {code:5001,data:{reason:'not_found'}}
+    ]) {
+      const room = await loadRoom()
+      const member: GroupMember = { name:'research',title:'' }
+      const original = await room.turns.ensureGroupChatSession('Classic',member,'existing-thread')
+      const saved = {...room.chat.$groupChats.get().Classic.sessions}
+      const count = room.gateway.sessions.size
+      host.request = async () => {throw Object.assign(new Error('lookup refused'),failure)}
+      await expect(room.turns.ensureGroupChatSession('Classic',member,'existing-thread')).rejects.toThrow(/not starting a new/)
+      expect(room.gateway.sessions.size).toBe(count)
+      expect(room.chat.$groupChats.get().Classic.sessions).toEqual(saved)
+      expect(original.stored).toBeTruthy()
+    }
+  })
+
   it('pins session titles to the roomId, with a legacy fallback to the display name', async () => {
     const room = await loadRoom()
 

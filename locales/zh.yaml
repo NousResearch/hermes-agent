@@ -1389,7 +1389,7 @@ platform:
       host_path: "在此期间，文件位于主机上：`{path}`"
     setup_files:
       not_configured: "🔧 原生附件发送**尚未配置**。\n**第 1 步（一次性，在主机上）：**前往 https://console.cloud.google.com/apis/credentials → *创建凭据* → *OAuth 客户端 ID* → *桌面应用* 创建 OAuth 客户端凭据。下载 JSON，然后在主机上运行：\n```\npython -m plugins.platforms.google_chat.oauth --client-secret /path/to/client_secret.json\n```\n**第 2 步：**回到这里发送 `/setup-files start`。"
-      start_instructions: "1. 在浏览器中打开此 URL 并授权：\n{auth_url}\n\n2. 点击 *允许* 后，浏览器会无法加载 `http://localhost:8765/?...&code=...`。这是正常现象。\n\n3. 从浏览器地址栏复制整个加载失败的 URL，粘贴回这里，格式为：`/setup-files <PASTE_URL>`（或只粘贴 `code=...` 的值）。\n\n提示：该 URL 包含你的访问授权——请勿泄露。"
+      start_instructions: "1. 在浏览器中打开此 URL 并授权：\n{auth_url}\n\n2. 点击 *允许* 后，浏览器会无法加载 `http://localhost:53135/?...&code=...`。这是正常现象。\n\n3. 从浏览器地址栏复制整个加载失败的 URL，粘贴回这里，格式为：`/setup-files <PASTE_URL>`（或只粘贴 `code=...` 的值）。\n\n提示：该 URL 包含你的访问授权——请勿泄露。"
       start_failed: "❌ 无法生成 OAuth URL。请检查网关日志，并确认 client_secret.json 有效。"
       exchange_failed: "❌ 令牌交换失败。代码可能已过期，或 URL 格式有误。发送 `/setup-files start` 获取新的 OAuth URL。"
       revoke_completed: "撤销完成（部分步骤可能已跳过）。"

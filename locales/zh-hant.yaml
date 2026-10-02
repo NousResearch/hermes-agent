@@ -1389,7 +1389,7 @@ platform:
       host_path: "在此之前，檔案位於主機上：`{path}`"
     setup_files:
       not_configured: "🔧 原生附件傳送**尚未設定**。\n**步驟 1（一次性，在主機上）：**前往 https://console.cloud.google.com/apis/credentials → *Create credentials* → *OAuth client ID* → *Desktop app* 建立 OAuth 用戶端憑證。下載 JSON，然後在主機上執行：\n```\npython -m plugins.platforms.google_chat.oauth --client-secret /path/to/client_secret.json\n```\n**步驟 2：**回到這裡傳送 `/setup-files start`。"
-      start_instructions: "1. 在瀏覽器開啟此 URL 並授權：\n{auth_url}\n\n2. 點擊 *Allow* 後，瀏覽器會無法載入 `http://localhost:8765/?...&code=...`。這是正常現象。\n\n3. 從瀏覽器網址列複製整個載入失敗的 URL，以 `/setup-files <PASTE_URL>` 的形式貼回這裡（或只貼 `code=...` 的值）。\n\n提示：這個 URL 包含你的存取授權 — 請妥善保密。"
+      start_instructions: "1. 在瀏覽器開啟此 URL 並授權：\n{auth_url}\n\n2. 點擊 *Allow* 後，瀏覽器會無法載入 `http://localhost:53135/?...&code=...`。這是正常現象。\n\n3. 從瀏覽器網址列複製整個載入失敗的 URL，以 `/setup-files <PASTE_URL>` 的形式貼回這裡（或只貼 `code=...` 的值）。\n\n提示：這個 URL 包含你的存取授權 — 請妥善保密。"
       start_failed: "❌ 無法產生 OAuth URL。請檢查閘道日誌，並確認 client_secret.json 是否有效。"
       exchange_failed: "❌ Token 交換失敗。代碼可能已逾期，或 URL 格式不正確。傳送 `/setup-files start` 取得新的 OAuth URL。"
       revoke_completed: "撤銷完成（部分步驟可能已略過）。"

@@ -134,6 +134,7 @@ describe('decideLinuxGpuLaunch', () => {
 describe('linux GPU marker build identity (#131055)', () => {
   const buildA = '0.0.0+g357f51c49106@2026-09-28T10:11:12Z'
   const buildB = '0.0.0+gaabbccddeeff@2026-10-02T00:00:00Z'
+
   const promoted = {
     state: 'fallback' as const,
     reason: 'gpu-launch-failure' as const,

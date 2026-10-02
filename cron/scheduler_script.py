@@ -82,6 +82,75 @@ def _get_script_timeout() -> int:
     return _sched._DEFAULT_SCRIPT_TIMEOUT if resolved is None else resolved
 
 
+# Floor for a schedule-derived script ceiling: a ``* * * * *`` job still gets a full minute, and
+# a sub-minute ceiling would make the kill race the spawn.
+MIN_DERIVED_SCRIPT_TIMEOUT = 60
+
+# jobs.json key for an explicit per-job script ceiling (seconds).
+JOB_SCRIPT_TIMEOUT_KEY = "timeout_s"
+
+
+def schedule_interval_seconds(schedule, *, now=None) -> Optional[float]:
+    """Seconds between consecutive fires of *schedule*, or None.
+
+    ``interval`` schedules use ``minutes``; ``cron`` schedules use the gap between the fire slot
+    containing *now* and the next one (so a job firing late still gets its slot's full width, and
+    an irregular expression like ``0 9,10 * * *`` is measured by the slot actually running).
+    ``once`` and anything unparseable return None."""
+    if not isinstance(schedule, dict):
+        return None
+    kind = schedule.get("kind")
+    try:
+        if kind == "interval":
+            minutes = float(schedule.get("minutes"))
+            return minutes * 60 if minutes > 0 else None
+        if kind == "cron":
+            from cron import jobs as _jobs
+
+            expr = schedule.get("expr")
+            if not expr or not _jobs._ensure_croniter():
+                return None
+            base = now or _jobs._hermes_now()
+            prev_fire = _jobs.croniter(expr, base).get_prev(float)
+            next_fire = _jobs.croniter(expr, base).get_next(float)
+            gap = next_fire - prev_fire
+            return gap if gap > 0 else None
+    except Exception:
+        return None
+    return None
+
+
+def resolve_job_script_timeout(job, global_timeout: int, *, now=None) -> tuple[int, str]:
+    """Per-job script ceiling: ``(seconds, source)`` with source ``job``/``interval``/``global``.
+
+    Precedence: explicit ``timeout_s`` on the job, else the schedule interval (a recurring job's
+    script must not outlive its own next fire), else the global ``cron.script_timeout_seconds``.
+    The result is NEVER above the global, which stays the operator's hard cap."""
+    global_timeout = int(global_timeout)
+    if not isinstance(job, dict):
+        return global_timeout, "global"
+    raw = job.get(JOB_SCRIPT_TIMEOUT_KEY)
+    if raw is not None and not isinstance(raw, bool):
+        try:
+            explicit = int(float(raw))
+        except (TypeError, ValueError):
+            explicit = 0
+        if explicit > 0:
+            return min(explicit, global_timeout), "job"
+    interval = schedule_interval_seconds(job.get("schedule"), now=now)
+    if interval:
+        derived = max(int(interval), MIN_DERIVED_SCRIPT_TIMEOUT)
+        return min(derived, global_timeout), "interval"
+    return global_timeout, "global"
+
+
+def _job_script_kwargs(job) -> dict[str, Any]:
+    """Per-job ceiling + name for ``_run_job_script`` (see ``resolve_job_script_timeout``)."""
+    timeout, _source = resolve_job_script_timeout(job, _get_script_timeout())
+    name = (job.get("name") or job.get("id")) if isinstance(job, dict) else None
+    return {"timeout_seconds": timeout, "job_name": str(name) if name else None}
+
+
 _DEFAULT_MEDIA_SEND_TIMEOUT = 300
 
 
@@ -432,6 +501,7 @@ def _script_argv(
 def _run_job_script(
     script_path: str, workdir: Optional[str] = None,
     cancel_event: Optional[_CancelEventLike] = None, interpreter: Optional[str] = None,
+    *, timeout_seconds: Optional[int] = None, job_name: Optional[str] = None,
 ) -> tuple[bool, str]:
     """Execute a cron job's script and return ``(success, output)``; on failure *output* is the
     error message for the LLM to report. Env goes through ``build_subprocess_env`` (SECURITY.md
@@ -442,12 +512,23 @@ def _run_job_script(
     Absolute and ~-prefixed paths are also validated to ensure they stay within the scripts dir. workdir:
     Optional absolute path to use as the script's cwd. When set, the subprocess runs in this directory
     instead of the scripts-dir parent. See #69396. interpreter: the job's optional Python for
-    ``.py`` scripts (#8714).
+    ``.py`` scripts (#8714). timeout_seconds: optional per-job ceiling
+    (``resolve_job_script_timeout``); it may only LOWER the global ``cron.script_timeout_seconds``.
+    job_name: label for the ``PHASE=cron_script_timeout`` log line.
     """
     path, err = _resolve_script_path(script_path)
     if path is None:
         return False, err
+    # The global timeout is the hard cap; a per-job ceiling may only lower it. Without this a
+    # 15-minute job under a 1 h global ceiling can wedge for 4 fire slots.
     script_timeout = _get_script_timeout()
+    if timeout_seconds is not None:
+        try:
+            _job_timeout = int(timeout_seconds)
+        except (TypeError, ValueError):
+            _job_timeout = 0
+        if _job_timeout > 0:
+            script_timeout = min(script_timeout, _job_timeout)
     try:
         argv, env_overlay, err = _script_argv(path, interpreter)
         if argv is None:
@@ -487,7 +568,8 @@ def _run_job_script(
         proc = subprocess.Popen(
             argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
             cwd=workdir or str(path.parent), env=env, **popen_kwargs)
-        deadline = time.monotonic() + script_timeout
+        started = time.monotonic()
+        deadline = started + script_timeout
         while True:
             # Tree-kill on cancel AND timeout: killpg misses setsid grandchildren (watchdogs,
             # backgrounded shell jobs); kill_process_tree snapshots descendants BEFORE signalling.
@@ -505,6 +587,10 @@ def _run_job_script(
                 # / #59549). agent.deadline.kill_process_tree snapshots the descendant set via psutil BEFORE
                 # signalling, so own-session grandchildren are reached too — the unified deadline layer's
                 # tree-kill (#85147, d6a5cb9725).
+                logger.warning(
+                    "PHASE=cron_script_timeout job=%s elapsed=%d timeout=%d script=%s",
+                    job_name or path.name, int(time.monotonic() - started), script_timeout,
+                    path.name)
                 return False, f"Script timed out after {script_timeout}s: {path}"
             try:
                 stdout_raw, stderr_raw = proc.communicate(timeout=min(0.1, remaining))
@@ -560,11 +646,12 @@ def _run_job_script_with_claim_heartbeat(
     dispatched job, never re-read, so a stale runner cannot extend a replacement owner's claim."""
     def run() -> tuple[bool, str]:
         return _run_job_script(script_path, workdir=workdir, cancel_event=cancel_event,
-                               interpreter=job.get("interpreter"))
+                               interpreter=job.get("interpreter"), **script_kwargs)
 
     schedule = job.get("schedule")
     claim = job.get("run_claim")
     owner = str(claim.get("by") or "") if isinstance(claim, dict) else ""
+    script_kwargs = _job_script_kwargs(job)
     if not (isinstance(schedule, dict) and schedule.get("kind") == "once" and owner):
         return run()
 

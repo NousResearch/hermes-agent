@@ -126,9 +126,9 @@ export const HOSTED_PROFILE_OWNERS_URL =
 
 export const CANONICAL_GROUP_LOCALES = {
   en: {
-    legacyRoom: 'This classic chat stays usable. Start a separate gateway group with these Bots; the existing history will not be replayed.',
+    legacyRoom: 'Keep chatting here, or start a new group with the same Bots that can keep working when Desktop is closed. Your earlier messages will stay here.',
     checkingDriver: 'Checking group chat…',
-    startGatewayGroup: 'Start shared group chat',
+    startGatewayGroup: 'Start new group',
     classicCount: 'Shared group chats need 2–6 Bots. This conversation stays in the older Desktop mode.',
     classicConnection: 'These Bots can’t share a group chat on this connection. Check their connection settings.',
     peerSetup:
@@ -251,9 +251,9 @@ export const CANONICAL_GROUP_LOCALES = {
     createdGroupSyncFailed: '“{name}” is ready. Some Bot details couldn’t sync.'
   },
   ja: {
-    legacyRoom: 'この従来のチャットは引き続き使えます。同じBotで別のゲートウェイグループを開始できます。既存の履歴は再送されません。',
+    legacyRoom: 'このチャットを続けるか、同じBotで新しいグループを始められます。新しいグループはDesktopを閉じても作業を続けられます。これまでのメッセージはここに残ります。',
     checkingDriver: 'グループチャットを確認中…',
-    startGatewayGroup: '共有グループチャットを開始',
+    startGatewayGroup: '新しいグループを始める',
     classicCount: '共有グループチャットには2～6体のBotが必要です。この会話は以前のDesktop方式のままです。',
     classicConnection: 'この接続では、選択したBotで共有グループチャットを開始できません。接続設定を確認してください。',
     peerSetup:
@@ -379,9 +379,9 @@ export const CANONICAL_GROUP_LOCALES = {
     createdGroupSyncFailed: '「{name}」の準備ができました。一部のBot情報を同期できませんでした。'
   },
   zh: {
-    legacyRoom: '此旧版聊天仍可使用。可用这些Bot另建网关群聊；现有历史不会重新发送。',
+    legacyRoom: '继续在这里聊天，或用相同的Bot开始一个新群聊，让它们在Desktop关闭后仍能继续工作。之前的消息会保留在这里。',
     checkingDriver: '正在检查群聊…',
-    startGatewayGroup: '开始共享群聊',
+    startGatewayGroup: '开始新群聊',
     classicCount: '共享群聊需要2至6个Bot。此对话将继续使用旧版Desktop模式。',
     classicConnection: '这些Bot无法通过此连接共享群聊。请检查它们的连接设置。',
     peerSetup:
@@ -502,9 +502,9 @@ export const CANONICAL_GROUP_LOCALES = {
     createdGroupSyncFailed: '“{name}”已准备就绪。部分Bot信息未能同步。'
   },
   'zh-hant': {
-    legacyRoom: '此舊版聊天仍可使用。可用這些Bot另建閘道群聊；現有歷史不會重新傳送。',
+    legacyRoom: '繼續在這裡聊天，或用相同的Bot開始一個新群聊，讓它們在Desktop關閉後仍能繼續工作。之前的訊息會保留在這裡。',
     checkingDriver: '正在檢查群聊…',
-    startGatewayGroup: '開始共享群聊',
+    startGatewayGroup: '開始新群聊',
     classicCount: '共享群聊需要2至6個Bot。此對話會繼續使用舊版Desktop模式。',
     classicConnection: '這些Bot無法透過此連線共享群聊。請檢查它們的連線設定。',
     peerSetup:
@@ -625,9 +625,9 @@ export const CANONICAL_GROUP_LOCALES = {
     createdGroupSyncFailed: '「{name}」已準備就緒。部分Bot資訊未能同步。'
   },
   ar: {
-    legacyRoom: 'تظل هذه المحادثة القديمة قابلة للاستخدام. ابدأ مجموعة منفصلة عبر البوابة مع هؤلاء البوتات؛ لن يُعاد إرسال السجل الحالي.',
+    legacyRoom: 'تابع المحادثة هنا، أو ابدأ مجموعة جديدة مع البوتات نفسها. يمكن للمجموعة الجديدة مواصلة العمل حتى عند إغلاق Desktop. ستبقى رسائلك السابقة هنا.',
     checkingDriver: 'جارٍ التحقق من محادثة المجموعة…',
-    startGatewayGroup: 'بدء محادثة مجموعة مشتركة',
+    startGatewayGroup: 'بدء مجموعة جديدة',
     classicCount: 'تحتاج المحادثات المشتركة إلى بوتين إلى ستة بوتات. تبقى هذه المحادثة في وضع Desktop السابق.',
     classicConnection: 'لا تستطيع هذه البوتات مشاركة محادثة عبر هذا الاتصال. تحقّق من إعدادات اتصالها.',
     peerSetup:
@@ -750,9 +750,9 @@ export const CANONICAL_GROUP_LOCALES = {
     createdGroupSyncFailed: '«{name}» جاهزة. تعذّرت مزامنة بعض تفاصيل البوتات.'
   },
   ru: {
-    legacyRoom: 'Этот классический чат остаётся доступен. Создайте отдельную группу шлюза с этими Ботами; существующая история не отправится повторно.',
+    legacyRoom: 'Продолжайте общаться здесь или начните новую группу с теми же Ботами, которые смогут продолжать работу после закрытия Desktop. Ваши предыдущие сообщения останутся здесь.',
     checkingDriver: 'Проверяем групповой чат…',
-    startGatewayGroup: 'Начать общий групповой чат',
+    startGatewayGroup: 'Начать новую группу',
     classicCount: 'Для общего чата нужны 2–6 Ботов. Эта беседа остаётся в прежнем режиме Desktop.',
     classicConnection: 'Эти Боты не могут вести общий чат через это подключение. Проверьте настройки их подключений.',
     peerSetup:
@@ -878,9 +878,9 @@ export const CANONICAL_GROUP_LOCALES = {
     createdGroupSyncFailed: '«{name}» готов. Некоторые сведения о Ботах не удалось синхронизировать.'
   },
   fr: {
-    legacyRoom: 'Ce chat classique reste utilisable. Créez un groupe distinct sur la passerelle avec ces Bots ; l’historique existant ne sera pas renvoyé.',
+    legacyRoom: 'Continuez à discuter ici, ou démarrez un nouveau groupe avec les mêmes Bots qui pourront continuer à travailler quand Desktop sera fermé. Vos messages précédents resteront ici.',
     checkingDriver: 'Vérification de la discussion…',
-    startGatewayGroup: 'Démarrer une discussion partagée',
+    startGatewayGroup: 'Démarrer un nouveau groupe',
     classicCount: 'Une discussion partagée nécessite 2 à 6 Bots. Cette conversation reste dans l’ancien mode Desktop.',
     classicConnection:
       'Ces Bots ne peuvent pas partager une discussion sur cette connexion. Vérifiez leurs paramètres de connexion.',
@@ -1010,9 +1010,9 @@ export const CANONICAL_GROUP_LOCALES = {
     createdGroupSyncFailed: '« {name} » est prêt. Certaines informations sur les Bots n’ont pas pu être synchronisées.'
   },
   de: {
-    legacyRoom: 'Dieser klassische Chat bleibt nutzbar. Starte mit diesen Bots eine separate Gateway-Gruppe; der bisherige Verlauf wird nicht erneut gesendet.',
+    legacyRoom: 'Chatte hier weiter oder starte mit denselben Bots eine neue Gruppe, die weiterarbeiten kann, wenn Desktop geschlossen ist. Deine bisherigen Nachrichten bleiben hier.',
     checkingDriver: 'Gruppenchat wird geprüft…',
-    startGatewayGroup: 'Gemeinsamen Gruppenchat starten',
+    startGatewayGroup: 'Neue Gruppe starten',
     classicCount: 'Gemeinsame Gruppenchats brauchen 2–6 Bots. Diese Unterhaltung bleibt im älteren Desktop-Modus.',
     classicConnection:
       'Diese Bots können über diese Verbindung keinen gemeinsamen Gruppenchat führen. Prüfe ihre Verbindungseinstellungen.',
@@ -1145,9 +1145,9 @@ export const CANONICAL_GROUP_LOCALES = {
     createdGroupSyncFailed: '„{name}“ ist bereit. Einige Bot-Details konnten nicht synchronisiert werden.'
   },
   es: {
-    legacyRoom: 'Este chat clásico sigue disponible. Crea otro grupo en la puerta de enlace con estos Bots; el historial existente no se enviará de nuevo.',
+    legacyRoom: 'Sigue chateando aquí o inicia un nuevo grupo con los mismos Bots, que pueden seguir trabajando cuando Desktop esté cerrado. Tus mensajes anteriores permanecerán aquí.',
     checkingDriver: 'Comprobando el chat…',
-    startGatewayGroup: 'Iniciar chat compartido',
+    startGatewayGroup: 'Iniciar nuevo grupo',
     classicCount:
       'Los chats compartidos necesitan entre 2 y 6 Bots. Esta conversación permanece en el modo anterior de Desktop.',
     classicConnection: 'Estos Bots no pueden compartir un chat con esta conexión. Revisa sus ajustes de conexión.',

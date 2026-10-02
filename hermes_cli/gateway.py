@@ -3416,6 +3416,34 @@ def _refuse_temp_home_service_write(definition: str, kind: str) -> bool:
     return True
 
 
+def _running_from_pm_generation_workspace() -> bool:
+    """True when this CLI process itself runs from a PM dependency-generation
+    workspace (``installs/<key>/environments/<gen>/workspace``) — a volatile,
+    garbage-collected tree whose launcher and install key are not the stable
+    install's."""
+    try:
+        from pm.environments import installs_root
+        rel = Path(PROJECT_ROOT).resolve().relative_to(installs_root().resolve())
+    except (ImportError, OSError, RuntimeError, ValueError):
+        return False
+    return len(rel.parts) >= 2 and rel.parts[1] == "environments"
+
+
+def _refuse_volatile_pm_workspace_write(kind: str) -> bool:
+    """Refuse (with guidance) when the running CLI lives in a PM dependency
+    generation workspace: pinning that launcher into the service definition
+    crash-loops the service once the generation is collected (#131164)."""
+    if not _running_from_pm_generation_workspace():
+        return False
+    print(f"✗ Refusing to write the gateway {kind}: this process runs from a PM dependency "
+          "generation workspace (volatile, garbage-collected).")
+    print(
+        "  Run gateway management from the stable install launcher "
+        "(<checkout>/.hermes/bin/hermes or your PATH shim) so the service keeps pointing at it."
+    )
+    return True
+
+
 def _retire_hermes_replace_dropin(system: bool = False) -> bool:
     """Remove only the legacy ``--replace`` drop-in written by Hermes."""
     unit_path = get_systemd_unit_path(system=system)
@@ -3456,6 +3484,11 @@ def refresh_systemd_unit_if_needed(system: bool = False) -> bool:
 
     # Structural variant: refuse ANY temp-dir HERMES_HOME (manual E2E homes lack the pytest markers).
     if _refuse_temp_home_service_write(new_unit, "systemd unit"):
+        return False
+
+    # A CLI running from a PM generation workspace would repoint the unit at that volatile
+    # launcher; the generation is GC-able and its install key mismatches the stable install's.
+    if _refuse_volatile_pm_workspace_write("systemd unit"):
         return False
 
     _prepare_service_launcher(system=system, run_as_user=expected_user)
@@ -3676,6 +3709,8 @@ def systemd_install(
     unit_path.parent.mkdir(parents=True, exist_ok=True)
     new_unit = generate_systemd_unit(system=system, run_as_user=run_as_user)
     if _refuse_temp_home_service_write(new_unit, "systemd unit"):
+        return
+    if _refuse_volatile_pm_workspace_write("systemd unit"):
         return
     print(f"Installing {scope_label} systemd service to: {unit_path}")
     _prepare_service_launcher(system=system, run_as_user=run_as_user)

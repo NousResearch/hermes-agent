@@ -1521,6 +1521,9 @@ def _is_shell_token_spliced_gateway_lifecycle(command: str) -> bool:
     return contains_gateway_lifecycle_command(command)
 
 
+_GIT_GLOBAL_OPTIONS_WITH_ARG = {"-C", "-c", "--git-dir", "--work-tree", "--namespace", "--config-env"}
+
+
 def _git_force_push_findings(command: str | None):
     # Branches such as feat/aios-f-vat-placeholder contain '-f' but do not
     # rewrite history. Parse actual argument tokens in executable positions.
@@ -1529,28 +1532,46 @@ def _git_force_push_findings(command: str | None):
     for start, _, word in _iter_shell_command_word_spans(command):
         if os.path.basename(_deobfuscate_shell_word_for_detection(word)).lower() != "git":
             continue
-        tokens = _shell_tokens_with_spans(command, start)
+        tokens = _shell_tokens_with_spans(_shell_command_segment(command, start), 0)
         args = [token[0] for token in tokens] if tokens else []
-        if args[1:2] != ["push"]:
+        index = 1
+        while index < len(args) and args[index].startswith("-"):
+            token = args[index]
+            option, equals, _ = token.partition("=")
+            # Global options own their operands; a directory named 'push' is
+            # not the subcommand. Attached -Cdir/-cname=value need no next token.
+            index += 2 if option in _GIT_GLOBAL_OPTIONS_WITH_ARG and not equals else 1
+        if args[index:index + 1] != ["push"]:
             continue
-        index = 2
+        index += 1
+        options, repository_seen = True, False
         while index < len(args):
             token = args[index]
-            if token == "--":
-                break
+            if options and token == "--":
+                options = False
+                index += 1
+                continue
             option, equals, _ = token.partition("=")
-            if option in {"--repo", "--receive-pack", "--exec", "--push-option"}:
+            if options and option in {"--repo", "--receive-pack", "--exec", "--push-option"}:
+                repository_seen = repository_seen or option == "--repo"
                 index += 1 if equals else 2
                 continue
-            if token.startswith("-o") and not token.startswith("--"):
+            if options and token.startswith("-o") and not token.startswith("--"):
                 index += 2 if token == "-o" else 1
                 continue
-            if re.match(r"--forc[a-z]*(?:-|$)", option, re.IGNORECASE):
+            if options and re.match(r"--forc[a-z]*(?:-|$)", option, re.IGNORECASE):
                 yield "git force push (rewrites remote history)"
                 break
-            if token.startswith("-") and not token.startswith("--") and "f" in token[1:]:
+            if options and token.startswith("-") and not token.startswith("--") and "f" in token[1:]:
                 yield "git force push short flag (rewrites remote history)"
                 break
+            if not options or not token.startswith("-"):
+                # '+' forces a refspec, but is ordinary data in a remote name
+                # or option value. '--' ends flags, not refspec processing.
+                if repository_seen and token.startswith("+") and len(token) > 1:
+                    yield "git force push (rewrites remote history)"
+                    break
+                repository_seen = True
             index += 1
 
 

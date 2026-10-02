@@ -2221,6 +2221,133 @@ describe('overlayConcurrentMessageChanges', () => {
       ['4-assistant', 'A2 finished']
     ])
   })
+
+  // A long tool-heavy turn folds into ONE committed row that keeps the turn's
+  // own streamed text as text parts — lead-in first, final answer last — while
+  // the live side still holds the sealed segments as bubbles of their own. A
+  // refresh that lands that fold next to the live run painted the turn up to
+  // three times (live journal, session 20260930_112959_428d47): the committed
+  // row plus a stale interim bubble plus the settled tail row, and neither
+  // bubble matches the fold on its own text (the interim is a leading part, the
+  // tail a trailing one).
+  it('folds the live run the committed fold already carries as ordered parts', () => {
+    const leadIn = 'Lead-in: starting the cleanup now.'
+    const tail = 'Cleanup is running in the background.'
+
+    const user = msg('113-user', 'user', 'run it', { rowId: 7465 })
+
+    const durable = {
+      id: '114-assistant',
+      role: 'assistant',
+      rowId: 7466,
+      parts: [
+        { type: 'reasoning', text: 'narration the live window never saw' },
+        { type: 'text', sourceRowId: 7466, text: leadIn },
+        { type: 'tool-call', toolCallId: 'call-run-1', toolName: 'terminal' },
+        { type: 'tool-call', toolCallId: 'call-run-2', toolName: 'terminal' },
+        { type: 'tool-call', toolCallId: 'call-run-3', toolName: 'terminal' },
+        { type: 'text', sourceRowId: 7471, text: tail }
+      ]
+    } as ChatMessage
+
+    const interim = msg('assistant-stream-34', 'assistant', leadIn, { interim: true, pending: false })
+
+    const settledTail = {
+      id: 'assistant-stream-35',
+      role: 'assistant',
+      rowId: 7471,
+      pending: false,
+      parts: [
+        { type: 'tool-call', toolCallId: 'call-run-1', toolName: 'terminal' },
+        { type: 'tool-call', toolCallId: 'call-run-2', toolName: 'terminal' },
+        { type: 'tool-call', toolCallId: 'call-run-3', toolName: 'terminal' },
+        { type: 'text', text: `\n\n${tail}` }
+      ]
+    } as ChatMessage
+
+    const page = [user, durable]
+    const overlaid = overlayConcurrentMessageChanges(page, page, [...page, interim, settledTail])
+
+    expect(overlaid.map(message => message.id)).toEqual([user.id, durable.id])
+  })
+
+  // A live run does not have to start at the turn's first part: the narration
+  // is sealed as an interim bubble and the surviving live row holds the LAST
+  // tool round plus the reply (CDP dump shape from #127665: committed row with
+  // the turn's tools, live row with the last tool blocks + the same reply, one
+  // turn). The walk must find the run inside the committed fold.
+  it('folds a live run that starts mid-turn inside the committed fold', () => {
+    const reply = 'The reply the user saw twice.'
+
+    const user = msg('116-user', 'user', 'do it', { rowId: 116 })
+
+    const durable = {
+      id: '117-assistant',
+      role: 'assistant',
+      rowId: 117,
+      parts: [
+        { type: 'text', text: 'Working on it.' },
+        { type: 'tool-call', toolCallId: 'call-1', toolName: 'terminal' },
+        { type: 'tool-call', toolCallId: 'call-2', toolName: 'terminal' },
+        { type: 'text', text: reply }
+      ]
+    } as ChatMessage
+
+    const live = {
+      id: 'assistant-stream-1-9',
+      role: 'assistant',
+      pending: false,
+      parts: [
+        { type: 'tool-call', toolCallId: 'call-1', toolName: 'terminal' },
+        { type: 'tool-call', toolCallId: 'call-2', toolName: 'terminal' },
+        { type: 'text', text: reply }
+      ]
+    } as ChatMessage
+
+    const page = [user, durable]
+    const overlaid = overlayConcurrentMessageChanges(page, page, [...page, live])
+
+    expect(overlaid.map(message => message.id)).toEqual([user.id, durable.id])
+  })
+
+  // The walk stops where the page stops: a live row that streamed past the fold
+  // keeps its place, and only the segments the committed parts actually spell
+  // out are retired.
+  it('keeps the tail of a live run that grew past the committed fold', () => {
+    const leadIn = 'Lead-in: starting the cleanup now.'
+    const tail = 'Cleanup is running in the background.'
+    const extra = 'Plus a trailing note the fold has not stored yet.'
+
+    const user = msg('113-user', 'user', 'run it', { rowId: 7465 })
+
+    const durable = {
+      id: '114-assistant',
+      role: 'assistant',
+      rowId: 7466,
+      parts: [
+        { type: 'text', sourceRowId: 7466, text: leadIn },
+        { type: 'tool-call', toolCallId: 'call-run-1', toolName: 'terminal' },
+        { type: 'text', sourceRowId: 7471, text: tail }
+      ]
+    } as ChatMessage
+
+    const interim = msg('assistant-stream-34', 'assistant', leadIn, { interim: true, pending: false })
+
+    const grewTail = {
+      id: 'assistant-stream-35',
+      role: 'assistant',
+      pending: false,
+      parts: [
+        { type: 'tool-call', toolCallId: 'call-run-1', toolName: 'terminal' },
+        { type: 'text', text: `${tail}\n\n${extra}` }
+      ]
+    } as ChatMessage
+
+    const page = [user, durable]
+    const overlaid = overlayConcurrentMessageChanges(page, page, [...page, interim, grewTail])
+
+    expect(overlaid.map(message => message.id)).toEqual([user.id, durable.id, grewTail.id])
+  })
 })
 
 describe('preserveEquivalentTranscript', () => {

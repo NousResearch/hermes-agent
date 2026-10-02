@@ -10,6 +10,7 @@ import {
   textPart,
   toChatMessages
 } from '@/lib/chat-messages'
+import { withoutCoveredAssistantPrefix } from '@/lib/chat-messages/coverage'
 import { normalizePersonalityValue } from '@/lib/chat-runtime'
 import { embeddedImageUrls, textWithoutEmbeddedImages } from '@/lib/embedded-images'
 import { parseErrorSurface } from '@/lib/error-surface'
@@ -1625,6 +1626,55 @@ export function overlayConcurrentMessageChanges(
       message.role === 'assistant' && message.id.startsWith('assistant-stream-') && !baselineById.has(message.id)
   )
 
+  // A tool-heavy turn folds into ONE committed row built from its own streamed
+  // text, while the live side still holds each sealed segment as a bubble of
+  // its own: the lead-in duplicates the fold's first text part and the tail its
+  // last, so neither bubble matches the fold on its own text. Walk the live run
+  // against the committed rows the way the resume fold does — ordered parts,
+  // tool-anchored, from every possible offset — and retire what the walk
+  // consumes. Text-only runs stay (no anchor), and a run that grew past the
+  // fold keeps its survivor, so this cannot swallow a coincidentally equal
+  // paragraph.
+  const lastUserInPage = nextMessages.findLastIndex(message => message.role === 'user')
+
+  const committedAfterPrompt = nextMessages
+    .filter((message, index) => index > lastUserInPage && message.role === 'assistant' && !isLiveTailRow(message))
+    // Narration is not an occurrence (see coverage.ts): a committed fold leads
+    // with the turn's reasoning, and the ordered walk would stall on it before
+    // reaching the text and tool parts the live run shares.
+    .map(message => ({ ...message, parts: message.parts.filter(part => part.type !== 'reasoning') }))
+
+  const lastUserLocally = currentMessages.findLastIndex(message => message.role === 'user')
+
+  const liveRunAfterPrompt = currentMessages.filter(
+    (message, index) => index > lastUserLocally && message.role === 'assistant' && isLiveTailReplyId(message.id)
+  )
+
+  const liveRunIds = liveRunAfterPrompt.map(message => message.id)
+  const coveredLiveRunIds = new Set<string>()
+  const committedParts = committedAfterPrompt.flatMap(message => message.parts)
+
+  // A live run does not have to start at the turn's first part: a tool-heavy
+  // turn seals its narration as an interim bubble and the surviving live row
+  // holds the LAST tool round plus the reply, so its parts begin mid-sequence.
+  // Try the walk from every part offset — one ordered, tool-anchored walk that
+  // consumes a row whole proves the same coverage as starting at zero.
+  for (let offset = 0; offset < committedParts.length; offset += 1) {
+    const window = [
+      { id: 'committed-window', parts: committedParts.slice(offset), role: 'assistant' } as ChatMessage
+    ]
+
+    const survivors = new Set(
+      withoutCoveredAssistantPrefix(window, liveRunAfterPrompt).map(message => message.id)
+    )
+
+    for (const id of liveRunIds) {
+      if (!survivors.has(id)) {
+        coveredLiveRunIds.add(id)
+      }
+    }
+  }
+
   for (const current of currentMessages) {
     const baseline = baselineById.get(current.id)
     const changedSinceBaseline = !baseline || !chatMessagesEquivalent(baseline, current)
@@ -1678,6 +1728,10 @@ export function overlayConcurrentMessageChanges(
       })
 
       if (text && committed) {
+        continue
+      }
+
+      if (coveredLiveRunIds.has(current.id)) {
         continue
       }
     }

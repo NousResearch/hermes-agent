@@ -740,6 +740,30 @@ class TestPauseResumeJob:
             assert datetime.fromisoformat(resumed["next_run_at"]) > now
             assert jid not in {j["id"] for j in get_due_jobs()}
 
+    @pytest.mark.parametrize("new_schedule", ["every 1d", "0 9 * * *"])
+    def test_schedule_edit_while_paused_resumes_on_the_new_schedule(
+        self, tmp_cron_dir, monkeypatch, new_schedule,
+    ):
+        """A slot that elapsed while paused stays due on resume only while it belongs to the job's
+        schedule. After the schedule is edited, that slot belongs to the replaced cadence: resume
+        runs on the new schedule, exactly as the same edit on an unpaused job does."""
+        clock = {"now": datetime(2026, 10, 5, 10, 0, 0, tzinfo=timezone.utc)}
+        monkeypatch.setattr("cron.jobs._hermes_now", lambda: clock["now"])
+        edited = create_job(prompt="noisy", schedule="every 30m", deliver="local")
+        resaved = create_job(prompt="steady", schedule="every 30m", deliver="local")
+        for job in (edited, resaved):
+            pause_job(job["id"])
+        clock["now"] += timedelta(hours=3)  # the 10:30 slot elapses while paused
+        old_slot = get_job(resaved["id"])["next_run_at"]
+
+        update_job(edited["id"], {"schedule": new_schedule})
+        update_job(resaved["id"], {"schedule": "every 30m"})  # a re-save is not an edit
+
+        resumed = resume_job(edited["id"])
+        assert datetime.fromisoformat(resumed["next_run_at"]) > clock["now"]
+        assert resume_job(resaved["id"])["next_run_at"] == old_slot
+        assert {j["id"] for j in get_due_jobs()} == {resaved["id"]}
+
 
 class TestResolveJobRef:
     """Name-based job lookup for CLI/tool callers (PR #2627, @buntingszn)."""

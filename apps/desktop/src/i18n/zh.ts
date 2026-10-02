@@ -2303,6 +2303,8 @@ export const zh = defineLocale({
 
   skills: {
     tabSkills: '技能',
+    relatedSkills: '相关技能',
+    missingRelatedSkills: '未安装的相关技能',
     tabToolsets: '工具集',
     configuringProfile: '正在配置：',
     all: '全部',

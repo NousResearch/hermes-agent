@@ -23,7 +23,7 @@ interface SkillCatalogProps {
   actions?: ReactNode
   installedPending?: boolean
   notice?: ReactNode
-  renderInstalledDetail: (skill: SkillInfo) => ReactNode
+  renderInstalledDetail: (skill: SkillInfo, onSelectSkill: (name: string) => void) => ReactNode
   renderInstalledAction?: (skill: SkillInfo) => ReactNode
 }
 
@@ -311,10 +311,13 @@ function ScopedSkillCatalog({
 
         return skill && renderInstalledAction ? renderInstalledAction(skill) : null
       }}
-      renderInstalledDetail={entry => {
+      renderInstalledDetail={(entry, onSelectEntry) => {
         const skill = catalog.skillsById.get(entry.id)
 
-        return skill ? renderInstalledDetail(skill) : null
+        return skill ? renderInstalledDetail(skill, name => {
+          const target = catalog.entries.find(row => row.id === `installed:${name}`)
+          if (target) onSelectEntry(target)
+        }) : null
       }}
     />
   )

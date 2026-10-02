@@ -65,6 +65,8 @@ export const arCapabilities = {
       pageBlurb: 'يمكن للإضافة توسيع هذا التطبيق أو الوكيل أو كليهما — ولكل جزء مفتاح تشغيل مستقل.'
     },
     tabSkills: 'المهارات',
+    relatedSkills: 'المهارات ذات الصلة',
+    missingRelatedSkills: 'المهارات ذات الصلة غير المثبتة',
     tabToolsets: 'مجموعات الأدوات',
     all: 'الكل',
     searchSkills: 'البحث في المهارات',

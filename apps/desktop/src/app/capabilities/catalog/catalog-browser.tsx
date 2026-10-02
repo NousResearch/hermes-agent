@@ -55,7 +55,7 @@ interface CatalogBrowserProps {
   headerActions?: ReactNode
   installedPending?: boolean
   notice?: ReactNode
-  renderInstalledDetail?: (entry: CatalogEntry) => ReactNode
+  renderInstalledDetail?: (entry: CatalogEntry, onSelectEntry: (entry: CatalogEntry) => void) => ReactNode
   renderInstalledAction?: (entry: CatalogEntry) => ReactNode
   selectedEntryId?: string | null
 }
@@ -245,7 +245,7 @@ export const CatalogBrowser = memo(function CatalogBrowser({
       dialog={cardView}
       entry={selected}
       kind={kind}
-      management={renderInstalledDetail?.(selected)}
+      management={renderInstalledDetail?.(selected, openEntry)}
       onCategory={filters.chooseCategory}
       onRelated={entry => setSelectedId(entry.id)}
       onSearch={searchFor}

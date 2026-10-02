@@ -118,7 +118,7 @@
     "d3-force": "3.0.0",
     "dbus-native": "0.15.2",
     "dnd-core": "14.0.1",
-    "dompurify": "3.4.13",
+    "dompurify": "3.4.16",
     "driver.js": "1.8.0",
     "electron-updater": "6.8.9",
     "emojibase-data": "16.0.3",
@@ -183,7 +183,7 @@
     "bippy": "0.5.43",
     "concurrently": "10.0.4",
     "cross-env": "10.1.0",
-    "electron": "40.10.2",
+    "electron": "41.10.6",
     "electron-builder": "27.0.0-alpha.6",
     "esbuild": "0.28.1",
     "jsdom": "29.1.1",
@@ -194,125 +194,5 @@
     "vite": "8.2.0",
     "vitest": "4.1.11",
     "wait-on": "9.0.10"
-  },
-  "build": {
-    "electronVersion": "41.10.6",
-    "appId": "com.nousresearch.hermes",
-    "productName": "Hermes",
-    "executableName": "Hermes",
-    "protocols": [
-      {
-        "name": "Hermes Protocol",
-        "schemes": [
-          "hermes"
-        ]
-      }
-    ],
-    "artifactName": "Hermes-${version}-${os}-${arch}.${ext}",
-    "icon": "assets/icon",
-    "directories": {
-      "output": "release"
-    },
-    "files": [
-      "dist/**",
-      "assets/**",
-      "public/**",
-      "package.json"
-    ],
-    "beforeBuild": "scripts/before-build.mjs",
-    "beforePack": "scripts/before-pack.mjs",
-    "afterExtract": "scripts/after-extract.mjs",
-    "afterPack": "scripts/after-pack.mjs",
-    "extraResources": [
-      {
-        "from": "build/install-stamp.json",
-        "to": "install-stamp.json"
-      },
-      {
-        "from": "assets/icon.ico",
-        "to": "icon.ico"
-      }
-    ],
-    "asar": true,
-    "afterSign": "scripts/notarize.mjs",
-    "asarUnpack": [
-      "**/*.node",
-      "**/prebuilds/**",
-      "dist/**"
-    ],
-    "mac": {
-      "category": "public.app-category.developer-tools",
-      "entitlements": "electron/entitlements.mac.plist",
-      "entitlementsInherit": "electron/entitlements.mac.inherit.plist",
-      "extendInfo": {
-        "CFBundleDisplayName": "Hermes",
-        "CFBundleExecutable": "Hermes",
-        "CFBundleName": "Hermes",
-        "NSAudioCaptureUsageDescription": "Hermes uses audio capture for voice conversations.",
-        "NSCameraUsageDescription": "Hermes uses the camera when a plugin or feature you enable requests it.",
-        "NSMicrophoneUsageDescription": "Hermes uses the microphone for voice input and voice conversations.",
-        "NSCalendarsUsageDescription": "Hermes needs access to Calendar to provide requested meeting and scheduling support.",
-        "NSCalendarsFullAccessUsageDescription": "Hermes needs full access to Calendar to read and manage events when explicitly requested.",
-        "NSRemindersUsageDescription": "Hermes needs access to Reminders to provide requested personal-assistant and scheduling support.",
-        "NSRemindersFullAccessUsageDescription": "Hermes needs full access to Reminders to read and manage reminders when explicitly requested.",
-        "NSScreenCaptureUsageDescription": "Hermes captures the screen when you ask the agent to screenshot or record it.",
-        "NSLocalNetworkUsageDescription": "Hermes connects to devices on your local network when a plugin or feature you enable requests it.",
-        "NSAppleMusicUsageDescription": "Hermes accesses your music library when a plugin or feature you enable requests it."
-      },
-      "gatekeeperAssess": false,
-      "hardenedRuntime": true,
-      "target": [
-        "dmg",
-        "zip"
-      ]
-    },
-    "dmg": {
-      "title": "Install Hermes",
-      "backgroundColor": "#f5f5f7",
-      "iconSize": 96,
-      "window": {
-        "width": 560,
-        "height": 360
-      },
-      "contents": [
-        {
-          "x": 160,
-          "y": 170,
-          "type": "file"
-        },
-        {
-          "x": 400,
-          "y": 170,
-          "type": "link",
-          "path": "/Applications"
-        }
-      ]
-    },
-    "win": {
-      "legalTrademarks": "Hermes",
-      "target": [
-        "nsis",
-        "msi"
-      ],
-      "signAndEditExecutable": false
-    },
-    "linux": {
-      "category": "Development",
-      "maintainer": "Nous Research <support@nousresearch.com>",
-      "synopsis": "Native desktop shell for Hermes Agent.",
-      "target": [
-        "AppImage",
-        "deb",
-        "rpm"
-      ]
-    },
-    "nsis": {
-      "oneClick": false,
-      "allowToChangeInstallationDirectory": true,
-      "perMachine": false,
-      "shortcutName": "Hermes",
-      "uninstallDisplayName": "Hermes",
-      "warningsAsErrors": false
-    }
   }
 }

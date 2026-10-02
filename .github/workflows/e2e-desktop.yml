@@ -26,7 +26,7 @@ jobs:
       review_status: ${{ steps.review-status.outputs.review_status }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       # ── System deps for Electron on headless Ubuntu ───────────────────
       # Electron needs GTK, NSS,atk, etc. even under xvfb. Playwright's

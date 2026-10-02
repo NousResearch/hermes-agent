@@ -70,11 +70,11 @@ jobs:
 
       - name: Checkout code
         if: steps.gate.outputs.configured != '0'
-        uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Install uv
         if: steps.gate.outputs.configured != '0'
-        uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # 8.2.0
+        uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # 10.2.0
         with:
           version: "0.9.28"
           enable-cache: true

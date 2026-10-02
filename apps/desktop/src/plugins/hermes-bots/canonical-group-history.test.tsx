@@ -42,7 +42,7 @@ it('keeps a committed file downloadable in history after Send clears the compose
 
     if (method === 'groups.send') {expect(params.payload.attachments).toEqual([manifest]); sent = true;
 
- return { accepted: true }}
+ return { accepted: true, client_event_id: params.event_id }}
 
     if (method === 'groups.attachment.download') {return { ...manifest, event_id: params.event_id, data_base64: 'QQ==' }}
     throw new Error(`Unexpected method ${method}`)

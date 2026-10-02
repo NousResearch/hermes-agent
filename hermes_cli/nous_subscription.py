@@ -477,6 +477,14 @@ def _has_managed_default_direct(key: str) -> bool:
     return bool(key in ("tts", "stt") and resolve_openai_audio_api_key()) or _any_env(*_FEATURES[key].default_direct_env)
 
 
+def _krea_image_default(config: Dict[str, object], account_info) -> Optional[str]:
+    """Krea 2 Medium Turbo for accounts entitled to Krea when no image model is stored; the free
+    pool is not entitled and keeps the FAL default."""
+    if _section(config, "image_gen").get("model") or not (account_info and account_info.tool_gateway_entitled_for("krea")):
+        return None
+    return MANAGED_IMAGE_DEFAULT_KREA_MODEL
+
+
 def apply_nous_managed_defaults(config: Dict[str, object], *, enabled_toolsets: Optional[Iterable[str]] = None, force_fresh: bool = False) -> set[str]:
     features = get_nous_subscription_features(config, force_fresh=force_fresh)
     account_info = features.account_info
@@ -503,11 +511,9 @@ def apply_nous_managed_defaults(config: Dict[str, object], *, enabled_toolsets: 
     # Video gen is not funded by the free tool pool: only wire managed video for entitled (paid) users.
     for key, category in (("image_gen", None), ("video_gen", "fal-video")):
         if key in selected_toolsets and not fal_key_is_configured() and (category is None or account_info.tool_gateway_entitled_for(category)):
-            # Paid accounts default to Krea; the free pool is not entitled to it and keeps the FAL default.
             model = None
-            if (key == "image_gen" and not features.features[key].explicit_configured
-                    and not _section(config, key).get("model") and account_info.tool_gateway_entitled_for("krea")):
-                model = MANAGED_IMAGE_DEFAULT_KREA_MODEL
+            if key == "image_gen" and not features.features[key].explicit_configured:
+                model = _krea_image_default(config, account_info)
             _select_nous(config, key, model=model)
             changed.add(key)
     return changed
@@ -569,13 +575,13 @@ def get_gateway_eligible_tools(config: Optional[Dict[str, object]] = None, *, fo
     return unconfigured, has_direct, explicit_configured, already_managed
 
 
-def apply_gateway_defaults(config: Dict[str, object], tool_keys: list[str]) -> set[str]:
+def apply_gateway_defaults(config: Dict[str, object], tool_keys: list[str], account_info=None) -> set[str]:
     """Store the managed selection for ``tool_keys``; returns the set of tools actually changed."""
     for key in _DEFAULT_SECTIONS:
         _ensure_section(config, key)
     changed = [key for key in _ALL_GATEWAY_KEYS if key in tool_keys]  # table order: config key order
     for key in changed:
-        _select_nous(config, key)
+        _select_nous(config, key, model=_krea_image_default(config, account_info) if key == "image_gen" else None)
     return set(changed)
 
 
@@ -623,7 +629,7 @@ def prompt_enable_tool_gateway(config: Dict[str, object], *, force_fresh: bool =
     newly_declined = [k for k in unconfigured if k not in chosen_keys and k not in declined]
     if newly_declined or (declined & set(chosen_keys)):
         config["tool_gateway_declined_tools"] = sorted((declined | set(newly_declined)) - set(chosen_keys))
-    changed = apply_gateway_defaults(config, chosen_keys) if chosen_keys else set()
+    changed = apply_gateway_defaults(config, chosen_keys, account_info) if chosen_keys else set()
     if changed or newly_declined:
         from hermes_cli.config import save_config
 

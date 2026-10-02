@@ -67,8 +67,6 @@ _MAX_LOCAL_REFERENCE_BYTES = 3 * 1024 * 1024
 _VALID_CREATIVITY = {"raw", "low", "medium", "high"}
 # Krea 2 generative sliders: integers from -100 to 100, 0 means the slider is off.
 _K2_SLIDERS = ("intensity", "complexity", "movement")
-# Submit failures that prove Krea never created a job, so a FAL retry cannot double-bill.
-_FALLBACK_STATUSES = frozenset({429, 500, 502, 503, 504})
 
 # Polling: Krea recommends 2-5s; 2s backing off to 5s (Large ~1min); ceiling = Krea's 3 min tool timeout.
 _POLL_INITIAL_INTERVAL = 2.0
@@ -113,9 +111,10 @@ def fallback_to_fal_enabled() -> bool:
 
 
 def _fallback_eligible(failure: HttpFailure) -> bool:
-    if failure.kind in ("connection", "request"):
-        return True
-    return failure.kind == "http" and failure.status in _FALLBACK_STATUSES
+    """Only failures that prove Krea created no job: the request never left this host, or the
+    gateway answered 429, which it documents as "no job was created". A dropped connection,
+    a timeout or a 5xx may have happened after Krea accepted the job."""
+    return failure.kind == "unreachable" or (failure.kind == "http" and failure.status == 429)
 
 
 def _resolve_model(explicit: Optional[str] = None) -> Tuple[str, Dict[str, Any]]:

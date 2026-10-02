@@ -797,8 +797,8 @@ def _handle_image_generate(args, **kw):
 def _fall_back_to_fal(raw: str, prompt: str, aspect_ratio: str, sources: Dict[str, Any]) -> str:
     """Rerun a managed Krea request on FAL's default model when Krea refused it before creating a job.
 
-    Only the Krea plugin marks a failure ``fallback_eligible``, and only for connection errors, 429 and
-    5xx on submit: a job that exists has already been authorized for billing and may still complete.
+    Only the Krea plugin marks a failure ``fallback_eligible``, and only when the submit provably never
+    created a job: a job that exists has already been authorized for billing and may still complete.
     Source images never fall back; FAL would route them to an edit endpoint with different semantics."""
     try:
         result = json.loads(raw)

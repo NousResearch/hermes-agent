@@ -16,7 +16,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, NamedTuple, Optional
 
 from hermes_constants import get_hermes_home
 from utils import is_truthy_value
@@ -134,27 +134,43 @@ def _export_session_cdp(env: dict, get_session_info: Callable[[str], Any], cache
     return None
 
 
-def _blocked_url_in_code(code: str) -> Optional[str]:
-    """Return an error if a URL literal fails the URL checks.
+class _CodeUrlVerdict(NamedTuple):
+    """What one pass over a code blob's URL literals decided (see ``_code_url_verdict``)."""
+
+    blocked: Optional[str]
+    local_sidecar: bool
+
+
+def _code_url_verdict(code: str) -> _CodeUrlVerdict:
+    """One pass over the code's URL literals: the blocking error, if any, and whether the call must
+    be served by the LOCAL hybrid sidecar.
+
+    Both answers come from a SINGLE evaluation per URL, deliberately. The routing predicate resolves
+    DNS (``_hybrid_routes_locally`` -> ``_url_is_private`` -> ``socket.getaddrinfo``) and is not
+    memoised, so evaluating it separately per decision lets a host whose answer changes between the
+    two lookups split them: the first lookup looks private, which relaxes the private-address floor,
+    and the second looks public, which clears the local route — and the call then executes against
+    the CLOUD provider with that private URL in it. That is the leak this check exists to prevent.
+    Carry the verdict; never re-derive it.
 
     A private/LAN URL that hybrid routing will hand to a LOCAL Chromium sidecar is allowed here,
     because the cloud provider never sees it — the same verdict ``browser_navigate`` reaches via
-    ``_navigation_session_key``. ``browser_exec`` must route the call to that sidecar to match
-    (see ``_route_backend(force_local_sidecar=...)``): the endpoint is resolved once per call, so
-    allowing the URL while still pointing at the cloud provider would leak the LAN address to it.
+    ``_navigation_session_key``, which likewise derives its relaxation from the session key
+    (``_is_local_sidecar_key``) rather than re-running the predicate. ``browser_exec`` must route the
+    call to that sidecar to match (see ``_route_backend(force_local_sidecar=...)``): the endpoint is
+    resolved once per call, so allowing the URL while still pointing at the cloud provider would
+    leak the LAN address to it.
     """
     from tools.browser_tool import _hybrid_routes_locally, evaluate_url_safety
-    return next(
-        (
-            err.get("error", "Blocked: unsafe URL")
-            for err in (
-                evaluate_url_safety(url, auto_local=_hybrid_routes_locally(url))
-                for url in _URL_RE.findall(code or "")
-            )
-            if err
-        ),
-        None,
-    )
+    local_sidecar = False
+    for url in _URL_RE.findall(code or ""):
+        routes_local = _hybrid_routes_locally(url)  # evaluated exactly once per URL...
+        if routes_local:
+            local_sidecar = True
+        err = evaluate_url_safety(url, auto_local=routes_local)  # ...and reused here
+        if err:
+            return _CodeUrlVerdict(err.get("error", "Blocked: unsafe URL"), local_sidecar)
+    return _CodeUrlVerdict(None, local_sidecar)
 
 
 def _base_subprocess_env() -> dict:
@@ -626,17 +642,22 @@ def browser_exec(code: str, session: str = "", timeout_s: int = _DEFAULT_TIMEOUT
     if not code or not code.strip():
         return tool_error("No code provided. Pass Python that uses the pre-imported helpers, e.g. new_tab(\"https://example.com\") then print(page_info()).")
 
-    blocked = _blocked_url_in_code(code)
-    if blocked:
-        return tool_error(blocked)
+    # ONE pass answers both questions below, and the answer is carried, not re-derived. The routing
+    # predicate resolves DNS and is not memoised, so recomputing it here could disagree with the
+    # pre-flight for a host whose answer changes between lookups (private, then public): the floor
+    # would be relaxed and the call would still be handed to the CLOUD provider with the private URL
+    # in it. `_code_url_verdict` computes each URL's verdict once and returns both decisions,
+    # mirroring how browser_navigate derives its relaxation from the session key
+    # (_is_local_sidecar_key) instead of re-running the predicate.
+    verdict = _code_url_verdict(code)
+    if verdict.blocked:
+        return tool_error(verdict.blocked)
 
     # Hybrid routing: the CDP endpoint is resolved ONCE per call (below), so a private/LAN URL
     # anywhere in the code means the whole call must run on the local sidecar. Allowing the URL
     # while still pointing at the cloud provider would hand the LAN address to it — the leak the
-    # check above exists to prevent. Verdict and route move together, mirroring the per-URL
-    # decision browser_navigate makes via _navigation_session_key.
-    from tools.browser_tool import _hybrid_routes_locally
-    local_sidecar = any(_hybrid_routes_locally(url) for url in _URL_RE.findall(code))
+    # check above exists to prevent. Verdict and route move together.
+    local_sidecar = verdict.local_sidecar
 
     cmd = _find_cli()
     if not cmd:

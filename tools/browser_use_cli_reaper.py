@@ -335,6 +335,13 @@ def _should_reap(runtime_dir: Path, stem: str, *, owner_pid: Optional[int],
     return True, f"owner PID {owner_pid} is live but the session is idle for {int(idle)}s (grace {grace}s)"
 
 
+def _pid_file_recent(path: Path) -> bool:
+    """True when ``path`` exists and was written within the grace (so an unparseable
+    value is more likely a write in flight than a corpse)."""
+    idle = _idle_seconds([path])
+    return idle is not None and idle < _bt.BROWSER_ORPHAN_GRACE_SECONDS
+
+
 def _sweep(only_owner: Optional[int]) -> int:
     reaped = 0
     for runtime_dir in _sweep_dirs():
@@ -342,6 +349,8 @@ def _sweep(only_owner: Optional[int]) -> int:
             pid = _read_pid(runtime_dir / f"{stem}.pid")
             owner_pid = _read_pid(_owner_path(runtime_dir, stem))
 
+            if pid is None and _pid_file_recent(runtime_dir / f"{stem}.pid"):
+                continue  # mid-write / transiently unreadable: not proof the daemon is gone
             if pid is None or not _pid_alive(pid):
                 # Daemon already gone; drop the endpoint so the next call starts clean.
                 _clear_endpoint(runtime_dir, stem)
@@ -361,8 +370,35 @@ def _sweep(only_owner: Optional[int]) -> int:
     return reaped
 
 
+def _daemon_runtime_dir(proc) -> Optional[Path]:
+    """Runtime dir ``proc`` was started with, from its OWN environment; None if unknowable.
+
+    The harness resolves its dir from ``BH_RUNTIME_DIR``/``BH_TMP_DIR``/``BH_HOME``/
+    ``XDG_CONFIG_HOME`` at spawn, and the process keeps that environment, so re-running the
+    same resolution over it names the dir holding its pid file — without enumerating other
+    profiles' dirs. ``environ()`` is unavailable for some processes (macOS hides it for
+    others' processes, and for hardened ones), in which case the answer is None and the
+    caller must not signal.
+    """
+    import psutil
+
+    try:
+        env = proc.environ()
+    except (psutil.Error, OSError):
+        return None
+    if not env:
+        return None
+    explicit = any(env.get(k) for k in ("BH_RUNTIME_DIR", "BH_TMP_DIR", "BH_HOME",
+                                        "BROWSER_HARNESS_HOME", "XDG_CONFIG_HOME"))
+    # The ``~/.config`` fallback expands THIS process's HOME; only trust it when the
+    # daemon was started with the same one.
+    if not explicit and env.get("HOME") != os.environ.get("HOME"):
+        return None
+    return harness_runtime_dir(env)
+
+
 def _sweep_unindexed() -> int:
-    """Stop harness daemons that no longer have a pid file anywhere we sweep.
+    """Stop harness daemons that no longer have a pid file in a dir we sweep.
 
     Observed live: a daemon kept running with its ``bu-<name>.sock``/``.pid`` already
     unlinked (a ``--reload``/restart path removes the endpoint, and a daemon that outlives
@@ -372,7 +408,10 @@ def _sweep_unindexed() -> int:
 
     Fail-closed: only same-user ``browser_harness.daemon`` processes, only when older than
     the grace (so a daemon mid-startup, before it publishes its pid file, is never killed),
-    and never one whose PID is still referenced by a pid file we know about.
+    and never one whose PID is still referenced by a pid file we know about. "No pid file
+    in OUR dirs" is not "no pid file": another hermes profile with its own runtime dir has
+    live daemons we cannot index, so a candidate must also be positively attributable to
+    one of our sweep dirs via its own environment. Unattributable → left alone.
     """
     try:
         import psutil
@@ -380,7 +419,8 @@ def _sweep_unindexed() -> int:
         return 0
 
     indexed = set()
-    for runtime_dir in _sweep_dirs():
+    ours = set(_sweep_dirs())
+    for runtime_dir in ours:
         for stem in _sessions_in(runtime_dir):
             pid = _read_pid(runtime_dir / f"{stem}.pid")
             if pid is not None:
@@ -401,12 +441,14 @@ def _sweep_unindexed() -> int:
                 continue
             if time.time() - (info.get("create_time") or 0) < grace:
                 continue  # may still be publishing its pid file
+            if _daemon_runtime_dir(proc) not in ours:
+                continue  # another profile's (or unattributable): not ours to reap
         except (psutil.NoSuchProcess, psutil.AccessDenied, KeyError, TypeError):
             continue
 
         if _signal_daemon(pid):
             _bt.logger.info("Stopped browser-harness daemon PID %d: running with no endpoint "
-                            "files (unreachable, cannot be reused)", pid)
+                            "files in this profile's runtime dir (unreachable, cannot be reused)", pid)
             reaped += 1
     return reaped
 

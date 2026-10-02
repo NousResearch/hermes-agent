@@ -68,7 +68,7 @@ def _write_harness_daemon_script(base_dir: Path, code: str) -> Path:
 class _FakeDaemon:
     """A real process plus a real AF_UNIX server answering the harness meta protocol."""
 
-    def __init__(self, runtime_dir, stem, *, answer_shutdown=True, respond=True):
+    def __init__(self, runtime_dir, stem, *, answer_shutdown=True, respond=True, env=None):
         self.runtime_dir = runtime_dir
         self.stem = stem
         self.answer_shutdown = answer_shutdown
@@ -85,7 +85,7 @@ class _FakeDaemon:
         )
         self.proc = subprocess.Popen(
             [sys.executable, str(script)],
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=env,
         )
         (runtime_dir / f"{stem}.pid").write_text(str(self.proc.pid), encoding="utf-8")
 
@@ -201,8 +201,8 @@ def runtime_dir(monkeypatch, confined_process_table):
 def daemons(runtime_dir, confined_process_table):
     made = []
 
-    def _make(stem="bu-probe", **kwargs):
-        d = _FakeDaemon(runtime_dir, stem, **kwargs)
+    def _make(stem="bu-probe", runtime=None, **kwargs):
+        d = _FakeDaemon(runtime or runtime_dir, stem, **kwargs)
         made.append(d)
         confined_process_table.add(d.proc.pid)
         return d
@@ -530,6 +530,68 @@ def test_endpoint_less_sweep_spares_indexed_and_foreign_processes(runtime_dir, d
     finally:
         victim.kill()
         victim.wait(timeout=10)
+
+
+@pytest.mark.parametrize("override", ["BH_RUNTIME_DIR", "BH_TMP_DIR"])
+def test_endpoint_less_sweep_spares_another_profiles_live_daemon(
+        runtime_dir, daemons, monkeypatch, override):
+    """A live daemon whose pid file sits in a DIFFERENT profile's runtime dir is not in
+    our ``indexed`` set, is older than the grace and runs the right argv — but it is not a
+    leak, it is another profile's healthy session. It must not be signalled."""
+    other = Path(tempfile.mkdtemp(prefix="bu-other-", dir="/tmp"))
+    try:
+        import tools.browser_tool as bt
+        monkeypatch.setattr(bt, "BROWSER_ORPHAN_GRACE_SECONDS", 0)
+        env = {k: v for k, v in os.environ.items() if k not in ("BH_RUNTIME_DIR", "BH_TMP_DIR")}
+        env[override] = str(other)
+        foreign = daemons(stem="bu", runtime=other, env=env)
+        assert other not in reaper._sweep_dirs(), "precondition: outside our sweep dirs"
+
+        reaper.reap_orphaned_harness_daemons()
+
+        assert foreign.alive(), "another profile's live daemon must never be reaped"
+        assert not foreign.shutdown_requested.is_set()
+        assert (other / "bu.pid").exists(), "its endpoint files must be left intact"
+    finally:
+        shutil.rmtree(other, ignore_errors=True)
+
+
+def test_endpoint_less_sweep_spares_a_daemon_it_cannot_attribute(runtime_dir, daemons, monkeypatch):
+    """Fail closed: when the process table will not say which runtime dir a daemon belongs
+    to (``environ()`` denied, as macOS does for hardened processes), it is left alone — even
+    though the identical daemon in our own dir is reaped."""
+    import psutil
+    import tools.browser_tool as bt
+    monkeypatch.setattr(bt, "BROWSER_ORPHAN_GRACE_SECONDS", 0)
+
+    daemon = daemons(stem="bu-opaque")
+    for suffix in (".pid", ".sock"):
+        (runtime_dir / f"bu-opaque{suffix}").unlink()
+
+    def _denied(self):
+        raise psutil.AccessDenied(self.pid)
+
+    monkeypatch.setattr(psutil.Process, "environ", _denied)
+    reaper.reap_orphaned_harness_daemons()
+
+    assert daemon.alive(), "an unattributable daemon must not be signalled"
+
+
+def test_unreadable_pid_file_does_not_tear_down_a_running_daemons_endpoint(runtime_dir, daemons, monkeypatch):
+    """A pid file caught mid-write parses to None; that is not proof the daemon is gone.
+    Clearing the socket under a live daemon would manufacture the unreachable-leak state
+    the process-table sweep exists to clean up."""
+    import tools.browser_tool as bt
+    monkeypatch.setattr(bt, "BROWSER_ORPHAN_GRACE_SECONDS", 3600)
+
+    daemon = daemons(stem="bu-midwrite")
+    (runtime_dir / "bu-midwrite.pid").write_text("", encoding="utf-8")
+
+    reaper.reap_orphaned_harness_daemons()
+
+    assert daemon.alive()
+    assert (runtime_dir / "bu-midwrite.sock").exists()
+    assert (runtime_dir / "bu-midwrite.pid").exists()
 
 
 # ---------------------------------------------------------------- exit teardown

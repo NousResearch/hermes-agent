@@ -1,6 +1,8 @@
 """Tests for the KittenTTS local provider in tools/tts_tool.py."""
 
 import json
+import os
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -102,3 +104,123 @@ class TestDispatcherBranch:
         result = json.loads(text_to_speech_tool(text="Hello"))
         assert result["success"] is False
         assert "kittentts" in result["error"].lower()
+
+
+class TestShortenEspeakDataPath:
+    """espeak-ng 1.52 keeps the data dir in path_home[160]; a longer path is truncated and
+    espeak_Initialize exit(1)s the backend (#131776). The fix links it short before the
+    kittentts import that fixes phonemizer's data path."""
+
+    @staticmethod
+    def _fake_loader(data_path: str):
+        from types import SimpleNamespace
+        return SimpleNamespace(get_data_path=lambda: data_path)
+
+    def test_short_path_left_alone(self, monkeypatch, tmp_path):
+        import sys
+        data_path = str(tmp_path / "ng-data")
+        loader = self._fake_loader(data_path)
+        monkeypatch.setitem(sys.modules, "espeakng_loader", loader)
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+
+        from tools.tts_tool_local import _shorten_espeak_data_path
+        _shorten_espeak_data_path()
+
+        assert not (tmp_path / "home" / "cache").exists()  # nothing linked
+        assert loader.get_data_path() == data_path  # nothing patched
+
+    def test_long_path_swapped_for_short_symlink(self, monkeypatch, tmp_path):
+        import sys
+        real = tmp_path / ("x" * 170) / "espeak-ng-data"
+        real.mkdir(parents=True)
+        loader = self._fake_loader(str(real))
+        monkeypatch.setitem(sys.modules, "espeakng_loader", loader)
+        home = tmp_path / "home"
+        monkeypatch.setenv("HERMES_HOME", str(home))
+
+        from tools.tts_tool_local import _shorten_espeak_data_path
+        _shorten_espeak_data_path()
+
+        link = home / "cache" / "espeak-ng-data"
+        assert link.is_symlink()
+        assert Path(os.readlink(link)) == Path(str(real))
+        assert loader.get_data_path() == str(link)  # patched: misaki imports read this
+        assert len(os.fsencode(loader.get_data_path())) < 160
+
+    def test_relink_when_symlink_points_elsewhere(self, monkeypatch, tmp_path):
+        import sys
+        stale = tmp_path / "stale-data"
+        stale.mkdir()
+        real = tmp_path / ("y" * 170) / "espeak-ng-data"
+        real.mkdir(parents=True)
+        loader = self._fake_loader(str(real))
+        monkeypatch.setitem(sys.modules, "espeakng_loader", loader)
+        home = tmp_path / "home"
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        link = home / "cache" / "espeak-ng-data"
+        link.parent.mkdir(parents=True)
+        link.symlink_to(stale)
+
+        from tools.tts_tool_local import _shorten_espeak_data_path
+        _shorten_espeak_data_path()
+
+        assert Path(os.readlink(link)) == Path(str(real))
+
+    def test_second_call_is_idempotent(self, monkeypatch, tmp_path):
+        import sys
+        real = tmp_path / ("z" * 170) / "espeak-ng-data"
+        real.mkdir(parents=True)
+        loader = self._fake_loader(str(real))
+        monkeypatch.setitem(sys.modules, "espeakng_loader", loader)
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+
+        from tools.tts_tool_local import _shorten_espeak_data_path
+        _shorten_espeak_data_path()
+        patched = loader.get_data_path()
+        _shorten_espeak_data_path()  # patched value is short -> early return
+
+        assert loader.get_data_path() == patched
+
+    def test_real_file_at_link_target_is_not_clobbered(self, monkeypatch, tmp_path):
+        import sys
+        real = tmp_path / ("w" * 170) / "espeak-ng-data"
+        real.mkdir(parents=True)
+        loader = self._fake_loader(str(real))
+        monkeypatch.setitem(sys.modules, "espeakng_loader", loader)
+        home = tmp_path / "home"
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        link = home / "cache" / "espeak-ng-data"
+        link.parent.mkdir(parents=True)
+        link.write_text("user data, keep it")
+
+        from tools.tts_tool_local import _shorten_espeak_data_path
+        _shorten_espeak_data_path()
+
+        assert link.read_text() == "user data, keep it"
+        assert loader.get_data_path() == str(real)  # not patched
+
+    def test_missing_loader_is_a_noop(self, monkeypatch, tmp_path):
+        import sys
+        monkeypatch.setitem(sys.modules, "espeakng_loader", None)
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        from tools.tts_tool_local import _shorten_espeak_data_path
+        _shorten_espeak_data_path()  # must not raise
+
+    def test_generate_swaps_path_before_model_load(self, monkeypatch, tmp_path, mock_kittentts_module):
+        """The swap must happen before KittenTTS is instantiated: misaki fixes phonemizer's
+        data path at import time, after which no environment value can shorten it."""
+        import sys
+        real = tmp_path / ("v" * 170) / "espeak-ng-data"
+        real.mkdir(parents=True)
+        loader = self._fake_loader(str(real))
+        monkeypatch.setitem(sys.modules, "espeakng_loader", loader)
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+
+        from tools.tts_tool import _generate_kittentts
+        _generate_kittentts("Hello", str(tmp_path / "out.wav"), {})
+
+        fake_cls = mock_kittentts_module[1]
+        assert fake_cls.call_count == 1
+        assert loader.get_data_path() != str(real)  # patched before the model import chain ran
+        assert (tmp_path / "home" / "cache" / "espeak-ng-data").is_symlink()

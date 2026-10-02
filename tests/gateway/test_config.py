@@ -91,6 +91,34 @@ class TestPlatformConfigRoundtrip:
         """YAML 1.1 reads a bare ``off`` as False; any other value that is not a mode keeps the default."""
         assert PlatformConfig.from_dict({"reply_to_mode": raw}).reply_to_mode == expected
 
+    @pytest.mark.parametrize(("yaml_text", "mode", "warning"), [
+        ("{}", "first", None),
+        ("reply_to_mode: null", "first", None),
+        ("reply_to_mode: off", "off", None),
+        ("reply_to_mode: false", "off", None),
+        ('reply_to_mode: " Off "', "off", None),
+        ("reply_to_mode: first", "first", None),
+        ("reply_to_mode: ALL", "all", None),
+        ("reply_to_mode: threaded", "first", "'threaded'"),
+        ("reply_to_mode: true", "first", "True"),
+        ("reply_to_mode: 1", "first", "1"),
+        ('reply_to_mode: ""', "first", "''"),
+    ])
+    def test_reply_mode_warns_only_for_explicit_invalid_yaml(self, yaml_text, mode, warning, caplog, tmp_path, monkeypatch):
+        home = tmp_path / "reply-mode-home"
+        home.mkdir()
+        block = "" if yaml_text == "{}" else f"    {yaml_text}\n"
+        (home / "config.yaml").write_text(
+            "platforms:\n  matrix:\n    enabled: false\n" + block, encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        with caplog.at_level(logging.WARNING, logger="gateway.config"):
+            configured = load_gateway_config().platforms[Platform.MATRIX]
+        expected_messages = [] if warning is None else [
+            f"Ignoring invalid reply_to_mode={warning} (expected off, first or all); using first."
+        ]
+        assert (configured, caplog.messages) == (PlatformConfig(reply_to_mode=mode), expected_messages)
+
     def test_to_dict_from_dict(self):
         pc = PlatformConfig(
             enabled=True,

@@ -47,8 +47,16 @@ def _coerce_reply_to_mode(value: Any) -> str:
     """A reply mode from YAML, where a bare ``off`` parses as False; anything else keeps ``first``."""
     if value is False:
         return "off"
+    if value is None:
+        return "first"
     mode = value.strip().lower() if isinstance(value, str) else ""
-    return mode if mode in {"off", "first", "all"} else "first"
+    if mode in {"off", "first", "all"}:
+        return mode
+    logger.warning(
+        "Ignoring invalid reply_to_mode=%r (expected off, first or all); using first.",
+        value,
+    )
+    return "first"
 
 
 def _env_multiplex_profiles_override() -> "bool | None":

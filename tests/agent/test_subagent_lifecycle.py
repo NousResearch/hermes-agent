@@ -73,7 +73,7 @@ def lifecycle(monkeypatch):
 
 
 
-@pytest.mark.parametrize("limit", ["paused", "depth"])
+@pytest.mark.parametrize("limit", ["paused", "depth", "budget"])
 def test_launch_honours_delegate_task_spawn_admission(monkeypatch, limit):
     """A plugin launch is refused exactly when delegate_task would refuse the same parent, before any child exists."""
     import json
@@ -81,13 +81,20 @@ def test_launch_honours_delegate_task_spawn_admission(monkeypatch, limit):
     import tools.delegate_tool as dt
 
     built = []
-    monkeypatch.setattr(dt, "_build_child_agent", lambda **kw: built.append(kw) or FakeChild())
+    monkeypatch.setattr(dt, "_build_child_agent", lambda **kw: built.append(kw) or FakeChild(f"sa-{len(built)}"))
     monkeypatch.setattr(dt, "_run_single_child", lambda *_a: {"status": "completed", "summary": "x"})
     parent = SimpleNamespace(session_id="parent-1", enabled_toolsets=["file"], _delegate_depth=0)
     if limit == "paused":
         dt.set_spawn_paused(True)
-    else:
+    elif limit == "depth":
         parent._delegate_depth = dt._get_max_spawn_depth()
+    else:
+        # The budget is the one gate with a side effect: an admitted launch must spend it, so the next is refused.
+        monkeypatch.setenv("HERMES_SINGLE_QUERY_SESSION", "1")
+        monkeypatch.setattr(dt, "_get_oneshot_max_children", lambda: 1)
+        SubagentLifecycleService(lambda: parent).launch(SubagentLaunchRequest(goal="first"))
+        assert parent._oneshot_children_spawned == 1
+        built.clear()
     try:
         expected = json.loads(dt.delegate_task(goal="x", parent_agent=parent))["error"]
         with pytest.raises(SubagentLifecycleError) as refused:

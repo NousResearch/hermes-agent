@@ -82,6 +82,7 @@ def _make_message(document=None, caption=None, media_group_id=None, photo=None):
     msg.from_user.id = 1
     msg.from_user.full_name = "Test User"
     msg.message_thread_id = None
+    msg.reply_to_message = None
     msg.reply_text = AsyncMock()
     return msg
 

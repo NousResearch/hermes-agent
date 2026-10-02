@@ -621,14 +621,18 @@ class TestTextBatchFlushRace:
     async def test_superseded_task_does_not_pop_or_process_event(self):
         """A flush task that has been superseded must leave the event in the
         batch dict for the new task to handle."""
+        from gateway.config import Platform
         from gateway.platforms.event import MessageEvent, MessageType
+        from gateway.session import SessionSource
         from plugins.platforms.wecom.adapter import WeComAdapter
 
         adapter = WeComAdapter(PlatformConfig(enabled=True))
         adapter._text_batch_delay_seconds = 0
 
         key = "test-session"
-        event = MessageEvent(text="hello", message_type=MessageType.TEXT)
+        event = MessageEvent(text="hello", message_type=MessageType.TEXT, source=SessionSource(
+            platform=Platform.WECOM, chat_id="test-chat", user_id="test-user",
+        ))
         adapter._pending_text_batches[key] = event
 
         handle_calls = []
@@ -646,8 +650,7 @@ class TestTextBatchFlushRace:
         t2 = asyncio.create_task(asyncio.sleep(0.2))
         adapter._pending_text_batch_tasks[key] = t2
 
-        # Yield long enough for T1's sleep(0) to complete and T1 to run.
-        await asyncio.sleep(0.05)
+        await asyncio.wait_for(t1, timeout=2)
 
         t2.cancel()
         try:
@@ -671,7 +674,13 @@ class TestTextBatchFlushRace:
         adapter._text_batch_delay_seconds = 0
 
         key = "test-session"
-        event = MessageEvent(text="world", message_type=MessageType.TEXT)
+        from gateway.config import Platform
+        from gateway.session import SessionSource
+
+        event = MessageEvent(
+            text="world", message_type=MessageType.TEXT,
+            source=SessionSource(platform=Platform.WECOM, chat_id="test-chat"),
+        )
         adapter._pending_text_batches[key] = event
 
         handle_calls = []
@@ -684,8 +693,7 @@ class TestTextBatchFlushRace:
         t1 = asyncio.create_task(adapter._flush_text_batch(key))
         adapter._pending_text_batch_tasks[key] = t1
 
-        # No superseding task — T1 should process normally.
-        await asyncio.sleep(0.05)
+        await asyncio.wait_for(t1, timeout=2)
 
         assert handle_calls == [event], "active task must call handle_message"
         assert adapter._pending_text_batches.get(key) is None, (

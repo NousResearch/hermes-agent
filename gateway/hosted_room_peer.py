@@ -374,17 +374,20 @@ class HostedMemberDispatch:
     execution_policy_digest: str
     trace_id: str
     document_inputs: list[dict] | None = None
+    document_output: dict | None = None
 
     def as_mapping(self) -> dict[str, Any]:
         """Return the canonical wire mapping used for fingerprinting."""
         value = asdict(self)
         if self.document_inputs is None:
             value.pop("document_inputs")
+        if self.document_output is None:
+            value.pop("document_output")
         return value
 
     @classmethod
     def from_mapping(cls, value: Mapping[str, Any]) -> "HostedMemberDispatch":
-        _exact_fields(value, required=set(_DISPATCH_FIELDS) | {"prompt", "prompt_digest"}, optional={"document_inputs"}, label="dispatch")
+        _exact_fields(value, required=set(_DISPATCH_FIELDS) | {"prompt", "prompt_digest"}, optional={"document_inputs", "document_output"}, label="dispatch")
         if not isinstance(prompt := value["prompt"], str) or not prompt.strip():
             raise HostedRoomPeerError("prompt must be a non-empty string")
         text(prompt, error=HostedRoomPeerError, label="prompt", max_bytes=MAX_PROMPT_BYTES, strip=False)
@@ -395,8 +398,10 @@ class HostedMemberDispatch:
         if "document_inputs" in value:
             from gateway.hosted_room_documents import manifest
             documents = manifest(value["document_inputs"], member_id=value["member_id"])
+        from gateway.hosted_room_peer_output import output_contract
+        output = output_contract(value.get("document_output"))
         return cls(
-            prompt=prompt, prompt_digest=prompt_digest, document_inputs=documents,
+            prompt=prompt, prompt_digest=prompt_digest, document_inputs=documents, document_output=output,
             **{name: check(value[name], field=name) for name, check in _DISPATCH_FIELDS.items()})
 
 

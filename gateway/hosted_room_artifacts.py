@@ -1056,6 +1056,8 @@ class RoomArtifactOutbox:
         """
         with self._lock, self._connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
+            if self.authorize_write is not None:
+                self.authorize_write(conn, scope)
             self._retire_generation(conn, scope)
             conn.execute(
                 """UPDATE hosted_room_output_artifacts

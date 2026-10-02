@@ -28,12 +28,27 @@ def require_output_task(conn, scope: RoomArtifactScope, cancel_generation, *, st
     if (room is None or room["disbanded_at"] is not None
             or room["authority_gateway_id"] != scope.authority_gateway_id
             or room["authority_epoch"] != scope.authority_epoch
-            or scope.home_install_id != scope.authority_gateway_id
-            or scope.target_install_id != scope.home_install_id):
+            or scope.home_install_id != scope.authority_gateway_id):
         raise RoomArtifactError("Group Chat output authority changed")
-    if not any(member["member_id"] == scope.member_id and member["profile"] == scope.target_profile
-               and member.get("target", {}).get("kind", "local") == "local"
-               for member in json.loads(room["members_json"])):
+    member = next((m for m in json.loads(room['members_json']) if m['member_id'] == scope.member_id
+                   and m['profile'] == scope.target_profile), None)
+    if member is None:
+        raise RoomArtifactError("Group Chat output participant changed")
+    target = member.get('target', {})
+    if target.get('kind', 'local') == 'local':
+        if scope.target_install_id != scope.home_install_id:
+            raise RoomArtifactError("Group Chat output local installation changed")
+    elif target.get('kind') == 'peer' and status == 'settled':
+        from tui_gateway.hosted_room_peer_output import consent_key
+        from gateway.hosted_room_peer_output import output_contract
+        saved = conn.execute('SELECT value FROM state_meta WHERE key=?', (consent_key(scope.as_mapping()),)).fetchone()
+        consent = json.loads(saved[0]) if saved else {}
+        if (output_contract(consent.get('contract')) is None or target.get('installation_id') != scope.target_install_id
+                or target.get('profile') != scope.target_profile
+                or consent['target']['target_install_id'] != scope.target_install_id
+                or consent['target']['capability_digest'] != target.get('capability_digest')):
+            raise RoomArtifactError("Group Chat output peer consent changed")
+    else:
         raise RoomArtifactError("Group Chat output participant changed")
     if viewer:
         from gateway.hosted_room_attachments import HostedRoomAttachmentStore

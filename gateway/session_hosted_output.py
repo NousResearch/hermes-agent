@@ -48,12 +48,13 @@ class HostedOutputBinding:
     cancel_generation: int | None
     owner_pid: int
     transport_json: str | None = None
+    peer_dispatch_json: str | None = None
     active: bool = True
     used: bool = False
 
     @property
     def room_local(self) -> bool:
-        return self.transport_json is None
+        return self.transport_json is None and self.peer_dispatch_json is None
 
     def check_write(self, conn, scope):
         if not self.active or os.getpid() != self.owner_pid or scope != self.scope:
@@ -77,7 +78,10 @@ class HostedOutputBinding:
                 "authority_epoch": authority.epoch, "execution_generation": row["generation"],
                 "admission_id": row["admission_id"]}:
             raise RoomArtifactError("Group Chat output admission changed")
-        if self.room_local:
+        if self.peer_dispatch_json is not None:
+            from gateway.session_peer_output import check_binding
+            check_binding(self, conn, scope)
+        elif self.room_local:
             from gateway.hosted_room_output_fence import require_output_task
             require_output_task(conn, self.scope, self.cancel_generation, status="running")
             from gateway.session_hosted_service import _OWNER
@@ -92,8 +96,11 @@ class HostedOutputBinding:
                 raise RoomArtifactError("Group Chat output owner changed")
 
     def _outbox(self, *, authorize=False):
-        return RoomArtifactOutbox(self.authority.db.db_path,
-                                  authorize_write=self.check_write if authorize else None)
+        outbox = RoomArtifactOutbox
+        if self.peer_dispatch_json is not None:
+            from gateway.session_peer_output import PeerDocumentOutbox
+            outbox = PeerDocumentOutbox
+        return outbox(self.authority.db.db_path, authorize_write=self.check_write if authorize else None)
 
     def outbox(self):
         if not self.active or os.getpid() != self.owner_pid:
@@ -234,9 +241,13 @@ async def output_binding(authority, ref, row):
     the owner's event loop. A refusal leaves the turn running without file
     sharing rather than failing it.
     """
-    if not str(row.get("request_id") or "").startswith("hosted:"):
+    peer = row.get("principal_id") == "api" and (row.get("payload", {}).get("api_turn_v1", {}).get("settings", {}).get("room_dispatch") or {}).get("document_output")
+    if not peer and not str(row.get("request_id") or "").startswith("hosted:"):
         return None
     try:
+        if peer:
+            from gateway.session_peer_output import peer_binding
+            return await asyncio.to_thread(peer_binding, authority, ref, row)
         return await asyncio.to_thread(_binding, authority, ref, row)
     except (ValueError, LookupError, OSError, sqlite3.Error, AttributeError, TypeError) as exc:
         logger.warning("Group Chat file sharing is unavailable for admission %s: %s",
@@ -258,19 +269,24 @@ def hosted_output_scope(binding):
 
 def capture_output_result(authority, row, binding):
     """Report the open output of a finished turn with its result, or retire it."""
-    if binding is None or not binding.used:
+    if binding is None or (not binding.used and binding.peer_dispatch_json is None):
         return
     binding.active = False  # no later write can join the reported manifest
     saved = authority.pending_results.get(row["admission_id"])
     if saved is None:
         raise RuntimeStoreError("storage_unavailable")
     value = saved.get("result")
+    if binding.peer_dispatch_json is not None and not binding.used and isinstance(value, dict):
+        value['peer_output_empty'] = binding.scope.as_mapping()
+        return
     if not isinstance(value, dict) or (
             value.get("interrupted") is True or value.get("failed") is True or value.get("error")):
         capture_failed_output(authority, row, binding)
         return
     manifest = terminal_artifact_manifest(binding._outbox().list(binding.scope))
     if manifest is None:
+        if binding.peer_dispatch_json is not None:
+            value["peer_output_empty"] = binding.scope.as_mapping()
         return
     fields = {"artifacts": manifest, "artifact_scope": binding.scope.as_mapping()}
     from gateway.session_results import _redacted
@@ -287,6 +303,9 @@ def capture_failed_output(authority, row, binding):
     binding.active = False
     try:
         binding._outbox().discard_durably(binding.scope)
+        saved = authority.pending_results.get(row["admission_id"])
+        if binding.peer_dispatch_json is not None and saved is not None and isinstance(saved.get("result"), dict):
+            saved["result"]["peer_output_empty"] = binding.scope.as_mapping()
     except (OSError, ValueError, sqlite3.Error) as exc:
         # A committed intent replays when this outbox next opens; an uncommitted
         # one is retired by the room owner's sweep or the outbox's expiry.
@@ -326,3 +345,15 @@ def output_receipt_fields(value):
         logger.warning("Dropping invalid Group Chat output metadata from a terminal receipt")
         return {}
     return {"artifacts": value["artifacts"], "artifact_scope": scope.as_mapping()}
+
+
+def terminal_output_fields(value):
+    if isinstance(value, dict) and value.get('peer_output_empty') and ('artifacts' in value or 'artifact_scope' in value):
+        return {}  # Conflicting output evidence is never proof of an empty outbox.
+    fields = output_receipt_fields(value)
+    if fields or not isinstance(value, dict) or not value.get('peer_output_empty'):
+        return fields
+    try:
+        return {'peer_output_empty': RoomArtifactScope.from_mapping(value['peer_output_empty']).as_mapping()}
+    except (ValueError, TypeError):
+        return {}

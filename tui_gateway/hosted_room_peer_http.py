@@ -46,7 +46,7 @@ _TERMINAL_RUN_STATES = frozenset({"completed", "failed", "interrupted", "cancell
 _ACTIVE_RUN_STATES = frozenset({"queued", "running", "waiting_for_approval", "stopping"})
 _KNOWN_RUN_STATES = _TERMINAL_RUN_STATES | _ACTIVE_RUN_STATES
 _RUN_STATUS_KEYS = ("run_id", "status", "output", "error", "approval", "last_event",
-                    "pending_controls", "execution_generation")
+                    "pending_controls", "execution_generation", "artifacts", "artifact_scope", "peer_output_empty")
 # Older target gateways wrap these inside the generic dispatch error; normalize locally.
 _LEGACY_DISPATCH_MESSAGE_CODES = (
     ("room grant", "invalid_room_grant"),
@@ -504,7 +504,7 @@ class PeerRunsHTTPClient:
             recovered = self._admit_dispatch(checked, grant=grant)
         except PeerRunsHTTPError as exc:
             failure = exc
-            if checked.document_inputs and exc.not_admitted:
+            if (checked.document_inputs or checked.document_output) and exc.not_admitted:
                 failure = PeerRunsHTTPError(str(exc), ambiguous=True, retryable=exc.retryable,
                                            status_code=exc.status_code, error_code=exc.error_code)
             if failure.retryable or failure.ambiguous:
@@ -526,6 +526,9 @@ class PeerRunsHTTPClient:
             "session_id": session_id, "replayed": replayed}
 
     def _admit_dispatch(self, checked: HostedMemberDispatch, *, grant: str) -> Mapping[str, Any]:
+        if checked.document_output is not None:
+            from tui_gateway.hosted_room_peer_output import mark_dispatched
+            mark_dispatched(self.receipt_db_path, checked)
         session_id = self._session_id(checked, grant=grant)
 
         def admit() -> dict[str, Any]:
@@ -677,7 +680,8 @@ class PeerRunsHTTPClient:
             "execution_generation": receipt["execution_generation"],
             "status": "settled" if state == "completed" else "failed",
             "message_id": f"peer-run:{status.get('run_id')}",
-            "content": status.get("output") or status.get("error") or ""}]
+            "content": status.get("output") or status.get("error") or "",
+            **{key: status[key] for key in ("artifacts", "artifact_scope", "peer_output_empty") if key in status}}]
 
     def status(
         self, *, room_id: str, profile: str, session_id: str, grant: str) -> Mapping[str, Any]:
@@ -740,6 +744,35 @@ class PeerRunsHTTPClient:
         if result.get("status") in _TERMINAL_RUN_STATES:
             self._terminal_receipts.add((str(task_id), int(execution_generation)))
         return result
+
+    def output_request(self, *, scope, manifest_digest, operation, grant, **fields):
+        self.bind_room_scope(**{field: scope[field] for field in _RECEIPT_SCOPE_FIELDS})
+        receipt = self._receipt(scope['task_id'], scope['execution_generation'])
+        if receipt is None:
+            # Observation recovery never creates a Run. Canonical accepted state
+            # can outlive both Home's receipt and the target's HTTP receipt.
+            from tui_gateway.hosted_room_peer_output import stored_consent
+            from gateway.hosted_room_peer_output import output_scope
+            from gateway.platforms.api_server_run_scope import room_run_scope_key
+            consent = stored_consent(self.receipt_db_path, scope) if self.receipt_db_path else None
+            if consent is None or consent.get('dispatch') is None:
+                raise PeerRunsHTTPError("peer output Run receipt unavailable")
+            checked = HostedMemberDispatch.from_mapping(consent['dispatch'])
+            if output_scope(checked).as_mapping() != scope:
+                raise PeerRunsHTTPError("peer output persisted dispatch changed")
+            run_id = 'run_' + hashlib.sha256((room_run_scope_key(scope) + '\0' +
+                f"room:{checked.task_id}:{checked.execution_generation}").encode()).hexdigest()[:32]
+            status = self._request('/v1/runs/' + run_id, room_grant=grant)
+            if status.get('run_id') != run_id:
+                raise PeerRunsHTTPError("peer output Run identity changed")
+            receipt = {**{field: scope[field] for field in _RECEIPT_SCOPE_FIELDS},
+                'task_id': checked.task_id, 'execution_generation': checked.execution_generation,
+                'run_id': run_id, 'session_id': self._session_id(checked, grant=grant)}
+            from gateway import hosted_rooms
+            hosted_rooms.upsert_remote_run_receipt(self.receipt_db_path, record=receipt)
+            self._runs[(checked.task_id, checked.execution_generation)] = receipt
+        return self._request(_run_path(receipt, 'artifacts', operation), method='POST', room_grant=grant,
+            body={'artifact_scope': scope, 'manifest_digest': manifest_digest, **fields})
 
     def issue_invitation(
         self, *, room_id: str, home_install_id: str, authority_gateway_id: str,
@@ -806,10 +839,11 @@ class PeerRunsHTTPClient:
             raise PeerRunsHTTPError("peer did not acknowledge the grant revocation", retryable=True)
         return result
 
-    def probe(self, *, grant: str) -> Mapping[str, Any]:
+    def probe(self, *, grant: str, features: str | None = None) -> Mapping[str, Any]:
         """Verify gateway reachability and the live scoped capability catalog."""
         return self._request(
-            "/v1/room-members/capabilities", room_grant=self._require_room_grant(grant))
+            "/v1/room-members/capabilities", room_grant=self._require_room_grant(grant),
+            headers={"Hermes-Room-Features": features} if features else None)
 
     def _scoped_post(self, path: str, grant: str, *, body: dict[str, Any]) -> dict[str, Any]:
         return self._request(

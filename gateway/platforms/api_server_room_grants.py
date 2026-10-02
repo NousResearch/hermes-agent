@@ -208,7 +208,11 @@ async def _handle_room_member_capabilities(
         return _room_grant_error_response(exc, _openai_error=_openai_error)
     from gateway.hosted_room_documents import advertised_capability
     documents = advertised_capability(self) if request.headers.get("Hermes-Room-Features") == "document-input-v1" else None
+    from gateway.session_peer_output import output_available
+    output = output_available(self) if (request.headers.get("Hermes-Room-Features") == "document-output-v1"
+                                      and {"status", "stop", "dispatch"} <= set(claims["permissions"])) else None
     return web.json_response({
+        **({"document_output": output} if output is not None else {}),
         **({"document_inputs": documents} if documents is not None else {}),
         "object": "hermes.room_member.capabilities", **{k: claims[k] for k in _ROOM_IDENTITY_FIELDS},
         "target_profile": profile, "catalog": catalog})

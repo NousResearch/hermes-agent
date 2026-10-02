@@ -239,6 +239,7 @@ def _initialize_run_state(self, *, store_factory) -> None:
 def _http_routes(self) -> list[tuple[str, str, Any]]:
     from gateway.platforms.api_server_room_proof import wrap
     from gateway.hosted_room_documents import DOCUMENT_HTTP_MAX_BYTES
+    from gateway.platforms.api_server_peer_output import http_routes as output_routes
     return [(method, path, wrap(self, handler, max_bytes=DOCUMENT_HTTP_MAX_BYTES if path == "/v1/runs" else None)) for method, path, handler in [
         ("POST", "/v1/runs", self._handle_runs), ("GET", "/v1/runs/{run_id}", self._handle_get_run),
         ("GET", "/v1/runs/{run_id}/events", self._handle_run_events),
@@ -246,7 +247,7 @@ def _http_routes(self) -> list[tuple[str, str, Any]]:
         ("POST", "/v1/runs/{run_id}/clarify", self._handle_run_clarify),
         ("POST", "/v1/runs/{run_id}/steer", self._handle_steer_run),
         ("POST", "/v1/runs/{run_id}/resolve-unknown", self._handle_resolve_unknown_run),
-        ("POST", "/v1/runs/{run_id}/stop", self._handle_stop_run)]]
+        ("POST", "/v1/runs/{run_id}/stop", self._handle_stop_run)]] + output_routes(self)
 
 
 def _idempotency_capabilities(self, *, store_type) -> dict[str, Any]:
@@ -658,6 +659,7 @@ async def _handle_runs(self, request: "web.Request", *, _api_server) -> "web.Res
         v if isinstance(v, dict) else None for v in (
             (body.get("hosted_room_dispatch"), body.get("_room_execution_policy"))
             if isinstance(body, dict) else (None, None)))
+    peer_files = bool(room_dispatch and (room_dispatch.get('document_inputs') or room_dispatch.get('document_output')))
     idempotency_key = request.headers.get("Idempotency-Key", "").strip()
     if len(idempotency_key) > 255 or any(ord(ch) < 33 or ord(ch) > 126 for ch in idempotency_key):
         return _json_error(
@@ -703,7 +705,7 @@ async def _handle_runs(self, request: "web.Request", *, _api_server) -> "web.Res
         outcome, record = self._run_idempotency_store.lookup(
             idempotency_scope, idempotency_key, idempotency_fingerprint,
             retention_until=_room_retention_until(request))
-        if outcome == "reused" and record is not None and room_dispatch and room_dispatch.get("document_inputs"):
+        if outcome == "reused" and record is not None and peer_files:
             from gateway.platforms.api_server_room_documents import recover_unaccepted
             from hermes_state_runtime import RuntimeStoreError
             try:
@@ -715,7 +717,7 @@ async def _handle_runs(self, request: "web.Request", *, _api_server) -> "web.Res
         if outcome == "conflict" or (outcome == "reused" and record is not None):
             return _replay_or_conflict(self, request, outcome, record, gateway_session_key, _openai_error)
     document_bytes = None
-    if room_dispatch and room_dispatch.get("document_inputs"):
+    if peer_files:
         # A missing batch is only reported after the exact accepted-run lookup above.
         # The authenticated manifest remains in the fingerprint; transfer bytes never do.
         from gateway.platforms.api_server_room_documents import accepted_document_run
@@ -729,6 +731,7 @@ async def _handle_runs(self, request: "web.Request", *, _api_server) -> "web.Res
                                status=409 if exc.reason == "admission_conflict" else 503)
         if accepted_status is not None:
             return _accepted_response(document_run_id, accepted_status, gateway_session_key, replayed=True)
+    if room_dispatch and room_dispatch.get("document_inputs"):
         from gateway.hosted_room_documents import advertised_capability, manifest
         limits = advertised_capability(self)
         try:
@@ -753,7 +756,7 @@ async def _handle_runs(self, request: "web.Request", *, _api_server) -> "web.Res
     if limited is not None:
         return limited
     run_id = ("run_" + hashlib.sha256((idempotency_scope + "\0" + idempotency_key).encode()).hexdigest()[:32]
-              if room_dispatch and room_dispatch.get("document_inputs") else f"run_{uuid.uuid4().hex}")
+              if peer_files else f"run_{uuid.uuid4().hex}")
     self._run_owners[run_id] = self._run_idempotency_scope(request)
     # Same precedence as /v1/responses: body session_id > response chain > X-Hermes-Session-Key
     # conversation > run_id (which would otherwise re-key every affinity surface per run).
@@ -779,7 +782,7 @@ async def _handle_runs(self, request: "web.Request", *, _api_server) -> "web.Res
     session_history_delivery = not previous_response_id and not conversation_history
     if not conversation_history and selected_session_id and not previous_response_id:
         conversation_history = await self._conversation_history_for_session(str(selected_session_id))
-    if room_dispatch and room_dispatch.get("document_inputs"):
+    if peer_files:
         # History resolution above can yield. Recheck before allocating the deterministic
         # run's process state: another request may now own its reservation/admission.
         outcome, record = self._run_idempotency_store.lookup(
@@ -847,7 +850,7 @@ async def _handle_runs(self, request: "web.Request", *, _api_server) -> "web.Res
                     _room_document_bytes=document_bytes,
                     **launch.agent_kwargs)
         except RuntimeStoreError as exc:
-            if room_dispatch and room_dispatch.get("document_inputs"):
+            if peer_files:
                 from gateway.platforms.api_server_authority_runs import run_admission
                 try:
                     accepted = run_admission(self, run_id)

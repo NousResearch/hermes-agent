@@ -39,6 +39,7 @@ class GatewayQueuedFollowupMixin:
         _run_agent_deliver_first_response = GatewayRunner._run_agent_deliver_first_response
         _session_env_scope = GatewayRunner._session_env_scope
         _session_key_for_source = GatewayRunner._session_key_for_source
+        _restore_pending_dispatch = GatewayRunner._restore_pending_dispatch
         _strict_session_current = GatewayRunner._strict_session_current
 
     async def _run_agent_queued_followup(
@@ -51,7 +52,6 @@ class GatewayQueuedFollowupMixin:
             reservation = reserve_pending_dispatch(adapter, turn_ctx.session_key, pending_event)
             reservation.task = asyncio.current_task()
         try:
-            from gateway.platforms.base_pending_merge import merge_pending_message_event
             from gateway.run import _preserve_queued_followup_history_offset
             source, session_id, session_key, run_generation = (
                 turn_ctx.source, turn_ctx.session_id, turn_ctx.session_key, turn_ctx.run_generation,
@@ -75,7 +75,7 @@ class GatewayQueuedFollowupMixin:
                 )
                 adapter = self._delivery_adapter_for(source)
                 if adapter and pending_event:
-                    merge_pending_message_event(adapter._pending_messages, session_key, pending_event)
+                    self._restore_pending_dispatch(session_key, pending_event, adapter)
                 elif adapter and hasattr(adapter, 'queue_message'):
                     adapter.queue_message(session_key, pending)
                 return turn_ctx.result_holder[0] or {"final_response": response, "messages": history}

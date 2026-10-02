@@ -1,7 +1,7 @@
 """Move a user from a memory provider that left core onto its catalog plugin.
 
 A bundled ``plugins/memory/<name>`` that becomes a standalone catalog plugin keeps the same provider
-name, config section (``memory.<name>``), data directory and tool names, so the migration is only
+name, the settings it already read, its data directory and tool names, so the migration is only
 "the code now lives under ``HERMES_HOME/plugins/<name>``". Two hooks call :func:`migrate_home`:
 
 * ``hermes update`` — for every profile home that shares the venv (primary; runs where the venv was
@@ -10,8 +10,9 @@ name, config section (``memory.<name>``), data directory and tool names, so the 
   users update through the app and never run ``hermes update`` by hand).
 
 Both install the catalog entry at its reviewed pin through the normal plugin install path (kill
-list, dependency constraints, enable), never a custom source. Offline or absent from the catalog:
-the user gets the exact one-liner instead of silently running without memory.
+list, dependency constraints, enable), never a custom source. Every outcome — installed, refused,
+failed, absent from the catalog — reaches the user (terminal, Desktop, chat platform), never only
+``agent.log``: a provider that silently stays missing is lost memory.
 """
 
 from __future__ import annotations
@@ -58,13 +59,9 @@ def catalog_source(name: str) -> Optional[str]:
     return entry.name if entry is not None else None
 
 
-def migrate_home(home: Path, *, install: Callable[[str], dict], say: Callable[[str], None] = print) -> Optional[str]:
-    """Install the configured provider's catalog plugin into *home* when the provider is gone.
-
-    Returns the installed plugin name, or None when nothing needed doing or the install could not
-    happen (already reported through *say*). Never raises: memory being down must not take the
-    update or the agent down with it.
-    """
+def _pending_provider(home: Path, *, say: Callable[[str], None]) -> Optional[str]:
+    """The provider *home* needs from the catalog, or None (nothing to do, or a catalog miss already
+    reported through *say*). Read-only."""
     name = configured_provider(home)
     from agent.memory_provider import is_core_memory_provider
     if is_core_memory_provider(name) or provider_present(name, home):
@@ -73,17 +70,46 @@ def migrate_home(home: Path, *, install: Callable[[str], dict], say: Callable[[s
         say(f"  ⚠ Memory provider '{name}' is configured but not installed and not in the plugin catalog. "
             f"Install it with `hermes plugins install <source>` or change memory.provider.")
         return None
+    return name
+
+
+def _install_command(name: str, home: Path) -> str:
+    """The exact command that installs *name* into *home* (``-p`` when it is not the active home)."""
+    from hermes_constants import get_hermes_home, hermes_home_key, profile_name_for_home
+    profile = profile_name_for_home(home)
+    if profile is None or hermes_home_key(home) == hermes_home_key(get_hermes_home()):
+        return f"hermes plugins install {name}"
+    return f"hermes -p {profile} plugins install {name}"
+
+
+def _install_pending(home: Path, name: str, *, install: Callable[[str], dict],
+                     say: Callable[[str], None]) -> bool:
     try:
         result = install(name)
     except Exception as exc:  # network, uv, kill list — report, do not raise
         result = {"ok": False, "error": str(exc)}
     if result.get("ok"):
         say(f"  ✓ Memory provider '{name}' moved out of core — installed its plugin from the catalog "
-            f"(nothing was removed or modified; the plugin reads its own config — see `hermes memory status`).")
-        return name
+            f"(memory.provider and your stored memories are unchanged; check its settings with "
+            f"`hermes memory status`).")
+        return True
+    error = str(result.get("error") or "unknown error").rstrip(". ")
     say(f"  ⚠ Memory provider '{name}' moved out of core and could not be installed automatically: "
-        f"{result.get('error') or 'unknown error'}. Run `hermes plugins install {name}`.")
-    return None
+        f"{error}. Run `{_install_command(name, home)}`.")
+    return False
+
+
+def migrate_home(home: Path, *, install: Callable[[str], dict], say: Callable[[str], None] = print) -> Optional[str]:
+    """Install the configured provider's catalog plugin into *home* when the provider is gone.
+
+    Returns the installed plugin name, or None when nothing needed doing or the install could not
+    happen (already reported through *say*). Never raises: memory being down must not take the
+    update or the agent down with it.
+    """
+    name = _pending_provider(home, say=say)
+    if name is None:
+        return None
+    return name if _install_pending(home, name, install=install, say=say) else None
 
 
 def _unattended_consent() -> bool:
@@ -111,21 +137,58 @@ def _install_into(home: Path) -> Callable[[str], dict]:
     return _install
 
 
-def migrate_all_homes(*, say: Callable[[str], None] = print) -> list[str]:
-    """``hermes update`` hook: every profile home sharing this venv. Returns installed plugin names."""
-    from pm.plugins_state import dependency_homes
-    installed: list[str] = []
-    for home in dependency_homes():
-        def say_for_home(message: str, home: Path = home) -> None:
-            say(f"  [{home}] {message.lstrip()}")
+def _home_label(home: Path) -> str:
+    from hermes_constants import profile_name_for_home
+    profile = profile_name_for_home(home)
+    return f"profile '{profile}'" if profile else str(home)
 
+
+def migrate_all_homes(*, say: Callable[[str], None] = print) -> list[str]:
+    """``hermes update`` hook: every profile home sharing this venv. Returns installed plugin names.
+
+    Each line names the profile it is about. Homes missing the same provider share one environment,
+    so they share one set of dependency answers (#125794): the first install asks, the rest reuse
+    its answers, and when it fails the remaining homes are named in one line instead of failing (or
+    re-prompting) one by one. Ctrl-C ends the migration with a message, not a traceback into the
+    updater.
+    """
+    from hermes_cli.plugins_cmd_install import shared_dependency_answers
+    from pm.plugins_state import dependency_homes
+
+    def labelled(home: Path) -> Callable[[str], None]:
+        return lambda message: say(f"  [{_home_label(home)}] {message.lstrip()}")
+
+    pending: dict[str, list[Path]] = {}
+    for home in dependency_homes():
         try:
-            name = migrate_home(home, install=_install_into(home), say=say_for_home)
+            name = _pending_provider(home, say=labelled(home))
         except Exception as exc:
             logger.debug("memory provider migration skipped for %s: %s", home, exc)
             continue
         if name:
-            installed.append(name)
+            pending.setdefault(name, []).append(home)
+
+    installed: list[str] = []
+    try:
+        for name, homes in pending.items():
+            if len(homes) > 1:
+                say(f"  Memory provider '{name}' is configured in {len(homes)} profiles "
+                    f"({', '.join(_home_label(h) for h in homes)}); your answers to its dependency "
+                    f"questions apply to all of them.")
+            with shared_dependency_answers():
+                for index, home in enumerate(homes):
+                    if _install_pending(home, name, install=_install_into(home), say=labelled(home)):
+                        installed.append(name)
+                        continue
+                    rest = homes[index + 1:]
+                    if rest:
+                        say(f"  ⚠ Memory provider '{name}' was not installed for "
+                            f"{', '.join(_home_label(h) for h in rest)} either. Run "
+                            + ", ".join(f"`{_install_command(name, h)}`" for h in rest) + ".")
+                    break
+    except KeyboardInterrupt:
+        say("  ⚠ Memory provider migration cancelled. Profiles already migrated keep their plugin; "
+            "run `hermes plugins install <name>` (with `-p <profile>`) for the rest.")
     return installed
 
 
@@ -150,7 +213,8 @@ def recover_at_startup(name: str, *, say: Optional[Callable[[str], None]] = None
 
     from pm.install import lazy_installs_allowed
     if not lazy_installs_allowed():
-        report(f"Memory provider '{name}' is not installed; security.allow_lazy_installs is off — "
+        report(f"⚠ Memory provider '{name}' is not installed, so external memory is off for this session. "
+               f"security.allow_lazy_installs is off, so Hermes did not fetch it: "
                f"run `hermes plugins install {name}`.")
         return False
     return migrate_home(home, install=_install_into(home), say=report) == name

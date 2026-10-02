@@ -28,10 +28,8 @@ def test_missing_provider_installs_its_catalog_plugin_and_keeps_config(home, mon
 
     assert mig.migrate_home(home, install=fake_install, say=said.append) == "honcho"
     assert calls == ["honcho"]
-    # The message must not imply config.yaml's memory.<name> keys still apply: the
-    # plugin reads its own config, so "unchanged settings" reads as "they work" (#124038).
-    assert "nothing was removed or modified" in said[0]
-    assert "memory.honcho settings" not in said[0]
+    # Must not imply config.yaml's memory.<name> keys still apply: the plugin reads its own (#124038).
+    assert "memory.honcho" not in said[0] and "hermes memory status" in said[0]
     assert "workspace: keep-me" in (home / "config.yaml").read_text()
     # present now → nothing to do, nothing said
     assert mig.migrate_home(home, install=fake_install, say=said.append) is None
@@ -124,3 +122,50 @@ def test_unattended_migration_install_carries_lazy_install_consent(tmp_path, mon
     assert mig._install_into(tmp_path)(name) == {"ok": True}
     assert seen["catalog_name"] == name
     assert seen.get("assume_deps_consent", False) is consent
+
+
+def test_update_asks_once_and_names_each_profile(tmp_path, monkeypatch):
+    """Profiles sharing one environment face one dependency question for a migrating provider
+    (#125794); every line names its profile, and a decline names the rest once with their commands."""
+    from hermes_cli import plugins_cmd_install
+
+    root = tmp_path / ".hermes"
+    homes = [root, root / "profiles" / "work-a", root / "profiles" / "work-b"]
+    for profile_home in homes:
+        profile_home.mkdir(parents=True, exist_ok=True)
+        (profile_home / "config.yaml").write_text("memory:\n  provider: twin\n", encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(root))
+    monkeypatch.setattr("hermes_constants.get_default_hermes_root", lambda: root)
+    monkeypatch.setattr("pm.plugins_state.dependency_homes", lambda: homes)
+    monkeypatch.setattr(mig, "provider_present", lambda name, home: (home / "plugins" / name).is_dir())
+    monkeypatch.setattr(mig, "catalog_source", lambda name: name)
+    monkeypatch.setattr(plugins_cmd_install.sys.stdin, "isatty", lambda: True)
+    monkeypatch.setattr(plugins_cmd_install.sys.stdout, "isatty", lambda: True)
+
+    class Console:
+        def print(self, *args, **kwargs):
+            pass
+
+    def installer(profile_home):
+        def install(name):  # the real consent gate every catalog install passes through
+            consented, reason = plugins_cmd_install._consent_python_deps(name, ("twin-client",), Console())
+            if not consented:
+                return {"ok": False, "error": reason}
+            (profile_home / "plugins" / name).mkdir(parents=True)
+            return {"ok": True}
+        return install
+
+    monkeypatch.setattr(mig, "_install_into", installer)
+    for answer, expected in (("n", []), ("y", ["twin"] * 3)):
+        prompts, said = [], []
+        monkeypatch.setattr("builtins.input", lambda prompt, a=answer: prompts.append(prompt) or a)
+        assert mig.migrate_all_homes(say=said.append) == expected
+        assert len(prompts) == 1
+        if answer == "n":
+            assert "[profile 'default']" in said[1] and "dependency install declined" in said[1]
+            assert "hermes -p work-a plugins install twin" in said[2]
+            assert "hermes -p work-b plugins install twin" in said[2]
+            assert not any((h / "plugins").exists() for h in homes)
+        else:
+            assert [line.split("]")[0] for line in said[1:]] == [
+                "  [profile 'default'", "  [profile 'work-a'", "  [profile 'work-b'"]

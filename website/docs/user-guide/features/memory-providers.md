@@ -493,14 +493,14 @@ See the [upstream Hermes integration docs](https://hindsight.vectorize.io/sdks/i
 
 Hindsight used to ship inside the Hermes tree (and as the `hermes-agent[hindsight]` pip extra). If your `config.yaml` already has `memory.provider: hindsight`, there is nothing to do for most users:
 
-- `hermes update` installs the catalog plugin into every profile home that names the provider. In a terminal it asks before preparing the plugin's Python dependencies. Without a terminal (the Desktop app, a script, a service) nobody can answer, so it prepares them unattended when `security.allow_lazy_installs` is on (the default) and otherwise prints the `hermes plugins install hindsight` one-liner.
-- If the plugin is still missing on the first agent start (`hermes chat`, the gateway, the Desktop app, …), Hermes installs it, dependencies included, and prints `✓ Memory provider 'hindsight' moved out of core — installed its plugin from the catalog (nothing was removed or modified; the plugin reads its own config — see `hermes memory status`).`
-- With `security.allow_lazy_installs: false`, the agent-start path instead logs one line — ``Memory provider 'hindsight' is not installed; security.allow_lazy_installs is off — run `hermes plugins install hindsight`.`` — and you run `hermes plugins install hindsight` yourself.
+- `hermes update` installs the catalog plugin into every profile home that names the provider. Each line names the profile it is about. In a terminal it asks before preparing the plugin's Python dependencies; when several profiles use the provider, the questions are asked once and the answers apply to all of them. Without a terminal (the Desktop app, a script, a service) nobody can answer, so each profile prepares them unattended when its `security.allow_lazy_installs` is on (the default); a profile with it off gets the exact `hermes -p <profile> plugins install hindsight` command instead, and the other profiles still migrate.
+- If the plugin is still missing on the first agent start (`hermes chat`, Desktop, the gateway, …), Hermes installs it, dependencies included, and shows ``✓ Memory provider 'hindsight' moved out of core — installed its plugin from the catalog (memory.provider and your stored memories are unchanged; check its settings with `hermes memory status`).`` Messaging platforms get the line with the first reply.
+- When the agent-start install cannot happen, you see why instead of silently running without external memory: with `security.allow_lazy_installs: false` the warning names the install command for that profile; offline or declined installs show the error and the same command.
 
 What changes on disk: the plugin appears in `~/.hermes/plugins/hindsight/` and `config.yaml` gains `plugins.enabled: [hindsight]`. `memory.provider`, `$HERMES_HOME/hindsight/config.json`, `HINDSIGHT_API_KEY` in `.env` and your memory bank data are untouched. Verify with `hermes memory status` (provider active) and `hermes plugins list` (plugin installed and enabled).
 
 :::warning Where the plugin reads its config
-Hindsight reads **only** `$HERMES_HOME/hindsight/config.json` (per profile home), `~/.hindsight/config.json` (legacy shared), and the `HINDSIGHT_*` variables in `.env` — never `config.yaml`. There is no `memory.hindsight` section in the config schema, and no bundled version of this plugin ever read one: a `memory.hindsight.*` key in `config.yaml` is silently ignored. Edit the plugin's own `config.json` (key table above) or use `hermes memory setup`.
+Hindsight reads `$HERMES_HOME/hindsight/config.json` (per profile home), `~/.hindsight/config.json` (legacy shared), and the `HINDSIGHT_*` variables in `.env`. It does not read a `memory.hindsight` section of `config.yaml`: a `memory.hindsight.*` key there is ignored. Edit the plugin's own `config.json` (key table above) or use `hermes memory setup`.
 :::
 
 ---
@@ -742,11 +742,13 @@ Each provider's data is isolated per [profile](../profiles.md):
 Memory providers are moving out of the Hermes tree into their maintainers' own repositories,
 published through the [plugin catalog](./plugins.md) — Hindsight is the first (see
 [Migrating from bundled Hindsight](#migrating-from-bundled-hindsight)). Nothing changes for you: the
-provider name, your `memory.<name>` settings, its data directory and its tools stay the same.
+provider name, the settings it reads, its data directory and its tools stay the same.
 When a provider you have configured stops shipping with Hermes, `hermes update` installs its
 catalog plugin for every profile that names it; if you update through the Desktop app, the
-agent does the same the first time it starts (unless `security.allow_lazy_installs` is
-`false`, in which case it logs the `hermes plugins install <name>` one-liner instead).
+agent does the same the first time it starts. Every outcome is shown to you — in the terminal,
+in Desktop, or with the first reply on a messaging platform. If the install cannot happen
+(`security.allow_lazy_installs: false`, offline, declined), the warning includes the exact
+`hermes plugins install <name>` command.
 
 ## Building a Memory Provider
 

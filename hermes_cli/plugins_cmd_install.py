@@ -11,12 +11,42 @@ import logging
 import os
 import sys
 import tempfile
+from contextlib import contextmanager
+from contextvars import ContextVar
 from pathlib import Path
 from typing import Any, Callable, Optional
 
 from hermes_cli.cli_output import line_input
 
 logger = logging.getLogger(__name__)
+
+# Answers to the dependency questions, reused while one plugin is installed into several profile
+# homes that share one environment (memory-provider migration on ``hermes update``, #125794).
+_shared_answers: ContextVar[Optional[dict]] = ContextVar("plugin_dependency_answers", default=None)
+
+
+@contextmanager
+def shared_dependency_answers():
+    """Inside this block each dependency question is asked once; repeats reuse the first answer."""
+    token = _shared_answers.set({})
+    try:
+        yield
+    finally:
+        _shared_answers.reset(token)
+
+
+def _ask_yes_no(key: tuple, prompt: str, console) -> bool:
+    answers = _shared_answers.get()
+    if answers is not None and key in answers:
+        console.print(f"  [dim]Reusing your answer for the first profile: {'yes' if answers[key] else 'no'}[/dim]")
+        return answers[key]
+    try:
+        accepted = input(prompt).strip().lower() in {"y", "yes"}
+    except (EOFError, KeyboardInterrupt):
+        accepted = False
+    if answers is not None:
+        answers[key] = accepted
+    return accepted
 
 
 def _pc():
@@ -60,16 +90,9 @@ def _install_plugin_python_deps(
     node_reason = None
     if has_package_json:
         console.print(f"\n[bold]{manifest.get('name', 'this plugin')}[/bold] declares Node dependencies (package.json).")
-        if sys.stdin.isatty() and sys.stdout.isatty():
-            try:
-                node_answer = input(
-                    "  Install them into the plugin's own node_modules now? [y/N]: "
-                ).strip().lower()
-            except (EOFError, KeyboardInterrupt):
-                node_answer = ""
-        else:
-            node_answer = ""
-        if node_answer in {"y", "yes"}:
+        node_ok = sys.stdin.isatty() and sys.stdout.isatty() and _ask_yes_no(
+            ("node", manifest.get("name")), "  Install them into the plugin's own node_modules now? [y/N]: ", console)
+        if node_ok:
             from pm.workspace import install_node_sidecar
 
             node_reason = install_node_sidecar(target, explicit=True)
@@ -114,13 +137,7 @@ def _consent_python_deps(
             "Run `hermes plugins enable` when ready to prepare them.[/dim]\n"
         )
         return False, "dependency install skipped (non-interactive)"
-    try:
-        answer = input(
-            "  Prepare these with Hermes through PM now? [y/N]: "
-        ).strip().lower()
-    except (EOFError, KeyboardInterrupt):
-        answer = ""
-    if answer not in {"y", "yes"}:
+    if not _ask_yes_no(("python", plugin_name, deps), "  Prepare these with Hermes through PM now? [y/N]: ", console):
         console.print(
             "[dim]Skipped — run `hermes plugins enable` when ready "
             "to prepare them.[/dim]\n"

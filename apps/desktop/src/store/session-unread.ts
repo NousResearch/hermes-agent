@@ -295,14 +295,29 @@ export function ackStoredSessionId(storedSessionId: null | string, profileHint?:
   }
 }
 
-/** Sidebar "Mark all as read" — ack every LOADED row (watermark := its current
- *  count, markers retired) so the persisted layer doesn't repaint the dots the
- *  user just dismissed on the next list refresh. Rows not loaded keep their
- *  state: an unseen session in a collapsed profile stays honestly unread. */
-export function ackAllSessionsRead(): void {
+/** PERSISTED HALF of mark-all-read (the exported action below) — ack every
+ *  LOADED row (watermark := its current count, markers retired) so the
+ *  persisted layer doesn't repaint the dots the user just dismissed on the
+ *  next list refresh. Rows not loaded keep their state: an unseen session in
+ *  a collapsed profile stays honestly unread. */
+function ackAllSessionsRead(): void {
   for (const row of rowsFor([$sessions.get(), $cronSessions.get(), $messagingSessions.get()])) {
     ackSessionRow(row)
   }
+}
+
+/** Sidebar "Mark all as read" — THE action, not a call-site composition. The
+ *  dismiss spans both unread layers: clear the transient paint atom AND ack
+ *  the persisted records below it. Living here keeps the pair unfactorable —
+ *  the filter-menu once composed only the transient half from session.ts, and
+ *  recomputeUnread rebuilt every dismissed dot from the untouched watermarks
+ *  and markers on the very next refresh. */
+export function markAllSessionsRead(): void {
+  if ($unreadFinishedSessionIds.get().length > 0) {
+    $unreadFinishedSessionIds.set([])
+  }
+
+  ackAllSessionsRead()
 }
 
 /** DELETE/ARCHIVE CLEANUP — the session is gone from the user's world, so its

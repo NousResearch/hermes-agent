@@ -1528,14 +1528,6 @@ export const setActiveSessionStoredIdRotation = (next: Updater<ActiveSessionStor
 // session-states.ts (live busy→idle edge), cleared here on session open.
 export const $unreadFinishedSessionIds = atom<string[]>([])
 
-/** Sidebar "mark all as read" — clears every finished-unread dot. Purely
- *  renderer-local, like the atom itself. */
-export function markAllSessionsRead() {
-  if ($unreadFinishedSessionIds.get().length > 0) {
-    $unreadFinishedSessionIds.set([])
-  }
-}
-
 // Last time the user actually viewed a session. A finished turn should only
 // re-arm the unread marker if it settles AFTER this baseline; otherwise an
 // already-viewed completion keeps re-lighting the row.

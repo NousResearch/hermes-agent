@@ -65,8 +65,9 @@ import { $profileRailVisible, toggleProfileRailVisible } from '@/store/profile-r
 import { runImportProfileFlow } from '@/store/profile-share'
 import { $projectTree } from '@/store/projects'
 import type { PullRequestBucket } from '@/store/pull-requests'
-import { $unreadFinishedSessionIds, markAllSessionsRead } from '@/store/session'
+import { $unreadFinishedSessionIds } from '@/store/session'
 import type { SessionStatusBucket } from '@/store/session-dot-state'
+import { markAllSessionsRead } from '@/store/session-unread'
 import { $sessionsHaveCost } from '@/store/sidebar-archive'
 
 interface Option<T extends string = string> {

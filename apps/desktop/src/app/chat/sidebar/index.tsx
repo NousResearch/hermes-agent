@@ -124,14 +124,13 @@ import {
   $sessionsLoadError,
   $sessionsLoading,
   $unreadFinishedSessionIds,
-  markAllSessionsRead,
   sessionPinId
 } from '@/store/session'
 import { $sessionDotStateById, sessionStatusBucket } from '@/store/session-dot-state'
 import { $unconfirmedPinWrites } from '@/store/session-pin-sync'
 import { $removedSessionIds } from '@/store/session-removal'
 import { $focusedSessionIsTile, $focusedStoredSessionId, $workingSessionIds } from '@/store/session-states'
-import { ackAllSessionsRead } from '@/store/session-unread'
+import { markAllSessionsRead } from '@/store/session-unread'
 import { markSessionUnread } from '@/store/session-unread-remote'
 import { $archivedSessions, loadArchivedSessions } from '@/store/sidebar-archive'
 import { applySidebarNavPrefs, SIDEBAR_NAV_PREFS_AREA } from '@/store/sidebar-nav'
@@ -1884,9 +1883,6 @@ export function ChatSidebar({
                           onClick={event => {
                             event.stopPropagation()
                             markAllSessionsRead()
-                            // Ack the persisted layer too, or the next list
-                            // refresh repaints every dot just dismissed.
-                            ackAllSessionsRead()
                           }}
                           size="icon-xs"
                           variant="ghost"

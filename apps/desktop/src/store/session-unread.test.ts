@@ -19,6 +19,7 @@ import {
   $sessionSeenCounts,
   $unreadFinishedMarkers,
   forgetSessionUnread,
+  markAllSessionsRead,
   markSessionUnreadFinished
 } from './session-unread'
 
@@ -86,6 +87,30 @@ describe('persisted unread (session-unread)', () => {
 
     // A later refresh with the same count stays read.
     setSessions([session({ id: 's1', message_count: 5 })])
+    expect($unreadFinishedSessionIds.get()).toEqual([])
+  })
+
+  it('mark-all acks the persisted layers so a list refresh does not repaint', () => {
+    // One row is unread by watermark...
+    $sessionSeenCounts.set({ default: { s1: 3 } })
+    setSessions([session({ id: 's1', message_count: 5 }), session({ id: 's2', message_count: 4 })])
+    // ...another by a live-edge marker.
+    markSessionUnreadFinished('s2')
+
+    expect($unreadFinishedSessionIds.get()).toEqual(['s1', 's2'])
+
+    markAllSessionsRead()
+
+    // The paint atom is cleared AND the persisted records are acked: every
+    // watermark moves to its live count and the marker is retired — otherwise
+    // the next recompute rebuilds the dots the user just dismissed.
+    expect($unreadFinishedSessionIds.get()).toEqual([])
+    expect($sessionSeenCounts.get()).toEqual({ default: { s1: 5, s2: 4 } })
+    expect($unreadFinishedMarkers.get()).toEqual({})
+
+    // Cmd-R / app restart: a refresh of the same rows must stay read.
+    setSessions([session({ id: 's1', message_count: 5 }), session({ id: 's2', message_count: 4 })])
+
     expect($unreadFinishedSessionIds.get()).toEqual([])
   })
 

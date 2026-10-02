@@ -8,7 +8,6 @@ import {
   $messagingSessions,
   $sessions,
   $unreadFinishedSessionIds,
-  markAllSessionsRead,
   setCronSessions,
   setMessagingSessions,
   setSessions
@@ -22,6 +21,7 @@ import {
   unreadSessionCount
 } from './session-dot-state'
 import { clearAllSessionStates, publishSessionState } from './session-states'
+import { markAllSessionsRead } from './session-unread'
 import { $unreadWriteGuard } from './session-unread-remote'
 import { $subagentsBySession, type SubagentProgress } from './subagents'
 

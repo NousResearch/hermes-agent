@@ -52,7 +52,7 @@ def _ensure_directory(path: Path, *, create: bool, secure: bool, home: Path) -> 
         ) from exc
 
 
-def initialize_home(home: Path, subdirs: tuple[str, ...], ensured: set[str]) -> None:
+def initialize_home(home: Path, subdirs: tuple[str, ...], ensured: set[str], *, seed: bool = True) -> None:
     from hermes_cli.config import _ensure_default_soul_md, is_managed
 
     managed = is_managed()
@@ -60,12 +60,15 @@ def initialize_home(home: Path, subdirs: tuple[str, ...], ensured: set[str]) -> 
     try:
         _ensure_directory(home, create=not managed, secure=not managed, home=home)
         required = ("cron", "sessions", "logs", "memories") if managed else subdirs
+        if not seed:
+            required = tuple(subdir for subdir in required if subdir != "skills")
         for subdir in required:
             _ensure_directory(home / subdir, create=not managed, secure=not managed, home=home)
         if managed:
             _ensure_directory(home / "logs" / "curator", create=True, secure=False, home=home)
         try:
-            _ensure_default_soul_md(home)
+            if seed:
+                _ensure_default_soul_md(home)
         except OSError as exc:
             raise HomeInitializationError(
                 f"Cannot initialize Hermes home {home}: {exc}. "

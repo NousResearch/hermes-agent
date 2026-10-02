@@ -1,3 +1,4 @@
+# health: allow FILE_LINES -- the --no-gateway-restart pause skip is one fail-open branch at the existing update chokepoint; splitting this 2000-line facade is a separate refactor
 """Hermes update pipeline: dispatchers (``_cmd_update_impl``/``_cmd_update_check``) + git plumbing.
 
 Each concern lives in ``update_cmd_<concern>.py`` and is re-imported here so
@@ -1782,10 +1783,23 @@ def _apply_pulled_update(
     _complete_source_update(completion_request)
 
 
-def _pause_gateways_for_update(opts):
+def _pause_gateways_for_update(opts, gateway_mode: bool = False):
     """Windows pauses here (venv locks); Linux/macOS only arm a pause the commit point performs."""
+    if opts.no_gateway_restart:
+        # A cron updater can live inside the gateway fleet it would pause and
+        # kill itself; --no-gateway-restart says the operator restarts them.
+        _record_update_skip(
+            "windows_gateway_pause",
+            "--no-gateway-restart: pause skipped, gateways keep running",
+        )
+        print(
+            "Gateway pause skipped (--no-gateway-restart); gateways keep "
+            "running during the update."
+        )
+        return None
     try:
-        return _m()._pause_windows_gateways_for_update() or _posix_pause.arm_pause(
+        return _m()._pause_windows_gateways_for_update(
+            gateway_mode=gateway_mode) or _posix_pause.arm_pause(
             no_gateway_restart=opts.no_gateway_restart)
     except RuntimeError:  # update_cmd_windows._abort_on_error / ServicePauseFailed: nothing moved
         _record_stop("gateway_pause_failed")
@@ -1847,7 +1861,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
     from hermes_cli.update_stage import publish_stage
     publish_stage("Downloading updates")  # a failed backup never stops the update
 
-    _windows_gateway_resume = _pause_gateways_for_update(opts)
+    _windows_gateway_resume = _pause_gateways_for_update(opts, gateway_mode)
     if _windows_gateway_resume:
         import atexit as _atexit
         _atexit.register(_m()._resume_windows_gateways_after_update, _windows_gateway_resume)

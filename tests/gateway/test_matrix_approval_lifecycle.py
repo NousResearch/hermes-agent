@@ -63,7 +63,7 @@ async def test_card_controls_and_terminal_work_remain_with_the_owner(tmp_path, m
             target = f"$card-{index}"
             prompt = adapter._approval_prompts_by_event[target]
             with _profile_runtime_scope(tmp_path / "other", {"GATEWAY_ALLOW_ALL_USERS": "true"}):
-                assert not adapter._is_authorized_user("@intruder:example.org")
+                assert not prompt.owner_context.run(adapter._is_authorized_user, "@intruder:example.org")
                 await adapter._handle_approval_reaction("!room:example.org", target, "✅", "@other:example.org")
                 await adapter._handle_approval_reaction("!wrong:example.org", target, "✅", "@owner:example.org")
                 await adapter._handle_approval_reaction("!room:example.org", target, "♾️", "@owner:example.org")

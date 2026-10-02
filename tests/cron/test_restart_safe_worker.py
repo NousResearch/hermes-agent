@@ -283,6 +283,7 @@ def _stub_external_worker_launch(scheduler, monkeypatch):
     return spawned, payloads, handoff, get
 
 
+@pytest.mark.platforms("linux")
 def test_scoped_wrapper_exit_without_user_bus_names_the_cause_and_invalidates_probe(
     tmp_path, monkeypatch
 ):

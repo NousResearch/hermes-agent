@@ -791,6 +791,10 @@ def _snapshot_review_usage(review_agent: Any) -> Dict[str, Any]:
         **{key: getattr(review_agent, key, None) for key in ("model", "provider", "base_url")},
         **{key: int(getattr(review_agent, f"session_{key}", 0) or 0) for key in _USAGE_COUNTERS},
         "estimated_cost_usd": getattr(review_agent, "session_estimated_cost_usd", None),
+        # Provenance from the fork's last estimate; without it this row lands NULL and is
+        # indistinguishable from a computed artifact when auditing by (cost_status, cost_source).
+        "cost_status": getattr(review_agent, "session_cost_status", None),
+        "cost_source": getattr(review_agent, "session_cost_source", None),
     }
 
 
@@ -809,6 +813,7 @@ def _record_review_usage_to_parent(parent_agent: Any, usage: Dict[str, Any]) -> 
             session_id, task="background_review", model=usage.get("model"),
             billing_provider=usage.get("provider"), billing_base_url=usage.get("base_url"),
             estimated_cost_usd=usage.get("estimated_cost_usd"),
+            cost_status=usage.get("cost_status"), cost_source=usage.get("cost_source"),
             api_call_count=counts.pop("api_calls"), **counts,
         )
     except Exception as e:

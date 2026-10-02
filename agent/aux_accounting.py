@@ -75,14 +75,20 @@ def record_aux_usage(
             return
         model = str(getattr(response, "model", "") or "") or "unknown"
         estimated_cost = None
+        cost_status = cost_source = None
         try:
             cost = estimate_usage_cost(model, usage, provider=provider, base_url=base_url)
             if cost.amount_usd is not None:
                 estimated_cost = float(cost.amount_usd)
+            # Provenance travels with the number: without it the row is indistinguishable
+            # from a computed artifact, and auditing session_model_usage by
+            # (cost_status, cost_source) cannot separate real cost from a bad one.
+            cost_status, cost_source = cost.status, cost.source
         except Exception:
             logger.debug("Aux usage cost estimation failed", exc_info=True)
         session_db.record_auxiliary_usage(
             session_id, task, model=model, billing_provider=provider, billing_base_url=base_url,
+            cost_status=cost_status, cost_source=cost_source,
             input_tokens=usage.input_tokens, output_tokens=usage.output_tokens,
             cache_read_tokens=usage.cache_read_tokens, cache_write_tokens=usage.cache_write_tokens,
             reasoning_tokens=usage.reasoning_tokens, estimated_cost_usd=estimated_cost,

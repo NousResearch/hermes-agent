@@ -368,12 +368,24 @@ class SessionUsageMixin:
         self, session_id: str, task: str, *, model: Optional[str]=None, billing_provider: Optional[str]=None,
         billing_base_url: Optional[str]=None, input_tokens: int=0, output_tokens: int=0, cache_read_tokens: int=0,
         cache_write_tokens: int=0, reasoning_tokens: int=0, estimated_cost_usd: Optional[float]=None,
+        cost_status: Optional[str]=None, cost_source: Optional[str]=None,
         api_call_count: int=1,
     ) -> None:
         """Record an auxiliary LLM call's usage (vision, compression, title generation, ...)
         as a per-(model, provider, task) delta in ``session_model_usage`` WITHOUT touching
         the ``sessions`` summary row (the gateway overwrites those counters with absolute
         main-loop totals). ``api_call_count`` may aggregate N calls. Best-effort.
+
+        ``cost_status``/``cost_source`` carry the estimator's provenance
+        (``agent.usage_pricing.estimate_usage_cost().status``/``.source``). They are part
+        of the write contract — ``_MODEL_USAGE_FIELDS`` and ``_record_model_usage`` both
+        already accept them — but this aux signature omitted them, so every
+        ``record_auxiliary_usage`` row landed with NULL provenance. A cost row with no
+        provenance is indistinguishable from a computed artifact: auditing
+        ``session_model_usage`` by ``(cost_status, cost_source)`` is the only reliable way
+        to tell real cost from a bad number, and aux rows were invisible to it. Pass
+        ``None`` when the caller genuinely has no estimate (the columns then stay NULL,
+        which is the honest signal).
 
         See #23270.
         Background-review forks record an aggregate of N fork API calls in one write with

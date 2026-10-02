@@ -186,8 +186,6 @@ def _simulate_note_injection(
 # ---------------------------------------------------------------------------
 
 
-
-
 # ---------------------------------------------------------------------------
 # SessionStore.mark_resume_pending / clear_resume_pending
 # ---------------------------------------------------------------------------
@@ -204,7 +202,6 @@ class TestMarkResumePending:
         assert refreshed.resume_pending is True
         assert refreshed.resume_reason == "restart_timeout"
         assert refreshed.last_resume_marked_at is not None
-
 
 
 class TestClearResumePending:
@@ -277,9 +274,6 @@ class TestResumePendingSystemNote:
         # But still guards against re-running already-recorded tool calls.
         assert "already appear in the history" in note
 
-
-
-
     def test_resume_note_is_persisted_instead_of_original_empty_message(self):
         """The auto-resume note must not leave an empty row in state.db."""
         message, persisted = _prepare_resume_pending_message(
@@ -314,7 +308,6 @@ class TestResumePendingSystemNote:
         assert "what were we doing?" in message
         assert "[System note:" in message
 
-
     def test_resume_pending_fires_without_tool_tail(self):
         """Key improvement over PR #9934: the restart-resume note fires
         even when the transcript's last role is NOT ``tool``."""
@@ -326,7 +319,6 @@ class TestResumePendingSystemNote:
         result = _simulate_note_injection(history, "ping", resume_entry=entry)
         assert "[System note:" in result
         assert "gateway restart" in result
-
 
     def test_no_resume_pending_preserves_tool_tail_note(self):
         """Regression: the old PR #9934 tool-tail behaviour is unchanged."""
@@ -362,7 +354,6 @@ class TestResumePendingSystemNote:
             window_secs=1800,
         )
         assert result == "start a new task"
-
 
     def test_stale_tool_tail_does_not_inject_auto_continue_note(self):
         """The core bug fix: stale tool-tail must not revive a dead task.
@@ -476,12 +467,10 @@ class TestResumePendingSystemNote:
 
 class TestFreshnessHelpers:
 
-
     def test_coerce_iso_string(self):
         iso = "2026-04-18T12:00:00+00:00"
         expected = datetime.fromisoformat(iso).timestamp()
         assert _coerce_gateway_timestamp(iso) == pytest.approx(expected, abs=1e-3)
-
 
     def test_coerce_rejects_garbage(self):
         assert _coerce_gateway_timestamp(None) is None
@@ -490,7 +479,6 @@ class TestFreshnessHelpers:
         assert _coerce_gateway_timestamp(True) is None  # bool rejected
         assert _coerce_gateway_timestamp(False) is None
         assert _coerce_gateway_timestamp([1, 2, 3]) is None
-
 
     def test_is_fresh_window_bounds(self):
         now = 1_700_000_000.0
@@ -507,7 +495,6 @@ class TestFreshnessHelpers:
             now - 3600, now=now, window_secs=3600,
         ) is True
 
-
     def test_last_transcript_timestamp_skips_meta(self):
         history = [
             {"role": "user", "content": "hi", "timestamp": 100.0},
@@ -517,11 +504,9 @@ class TestFreshnessHelpers:
         ]
         assert _last_transcript_timestamp(history) == 200.0
 
-
     def test_auto_continue_freshness_window_reads_env(self, monkeypatch):
         monkeypatch.setenv("HERMES_AUTO_CONTINUE_FRESHNESS", "7200")
         assert _auto_continue_freshness_window() == 7200.0
-
 
 
 # ---------------------------------------------------------------------------
@@ -1504,3 +1489,69 @@ async def test_startup_boot_sends_still_run_when_they_finish_quickly(monkeypatch
     runner._claim_pending_obligations.assert_awaited_once()
     runner._redeliver_claimed_obligations.assert_awaited_once()
 
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("command, choice", [("approve", "once"), ("deny", "deny")])
+@pytest.mark.parametrize("blocking", [False, True])
+async def test_typed_approval_during_startup_restore_reaches_the_current_request(monkeypatch, command, choice, blocking):
+    from agent.i18n import t
+    from tools import approval
+    from tools.approval_gateway_wait import _ApprovalEntry
+
+    runner, adapter = make_restart_runner()
+    runner._startup_restore_in_progress = True
+    runner._startup_restore_queue = []
+    source = make_restart_source(chat_id="restore-control-chat")
+    key = runner._session_key_for_source(source)
+    agent = MagicMock()
+    runner._session_state(key).turn.agent = agent
+    adapter._active_sessions[key] = asyncio.Event()
+    adapter.set_message_handler(runner._handle_message)
+    entry = _ApprovalEntry({"request_id": "current-request", "command": "echo test"})
+    monkeypatch.setitem(approval._gateway_queues, key, [entry] if blocking else [])
+
+    await adapter.handle_message(MessageEvent(text=f"/{command}", message_type=MessageType.TEXT, source=source))
+    while pending := [task for task in adapter._background_tasks if not task.done()]:
+        await asyncio.wait_for(asyncio.gather(*pending), timeout=5)
+
+    reply_key = f"gateway.{command}.no_pending"
+    if blocking:
+        reply_key = "gateway.approve.once_singular" if command == "approve" else "gateway.deny.denied_singular"
+    assert {
+        "sent": adapter.sent,
+        "restore_queue": [event.text for event in runner._startup_restore_queue],
+        "request_result": entry.result,
+        "request_released": entry.event.is_set(),
+        "blocking": approval.has_blocking_approval(key),
+        "agent_calls": [name for name, _args, _kwargs in agent.mock_calls if name in ("interrupt", "steer")],
+    } == {
+        "sent": [t(reply_key, count=1, reason="")],
+        "restore_queue": [],
+        "request_result": choice if blocking else None,
+        "request_released": blocking,
+        "blocking": False,
+        "agent_calls": [],
+    }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("agent_state", [None, _AGENT_PENDING_SENTINEL], ids=["dispatch-cleanup", "pending-setup"])
+async def test_startup_replay_without_a_live_agent_queues_without_an_interrupt_ack(agent_state):
+    runner, adapter = make_restart_runner()
+    runner._startup_restore_in_progress = True
+    runner._startup_restore_queue = []
+    source = make_restart_source(chat_id="restore-sentinel-chat")
+    key = runner._session_key_for_source(source)
+    runner._session_state(key).turn.agent = agent_state
+    adapter._active_sessions[key] = asyncio.Event()
+    event = MessageEvent(text="replayed input", message_type=MessageType.TEXT, source=source)
+    setattr(event, "_hermes_startup_restore_replay", True)
+
+    await adapter.handle_message(event)
+
+    assert {
+        "sent": adapter.sent,
+        "pending": adapter._pending_messages.get(key),
+        "restore_queue": runner._startup_restore_queue,
+        "agent": runner._peek_session_state(key).turn.agent,
+    } == {"sent": [], "pending": event, "restore_queue": [], "agent": agent_state}

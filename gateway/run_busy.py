@@ -960,9 +960,11 @@ class GatewayBusySessionMixin:
 
         _busy_state = self._peek_session_state(session_key)
         running_agent = _busy_state.turn.agent if _busy_state else None
-        # Every task that owns the session guard drains the pending slot when it exits. No turn is
-        # running, so queue the replay without a busy ack.
-        if running_agent is None and getattr(event, "_hermes_startup_restore_replay", False):
+        # The task that owns the session guard drains this pending slot when it exits.
+        if (
+            (running_agent is None or running_agent is _AGENT_PENDING_SENTINEL)
+            and getattr(event, "_hermes_startup_restore_replay", False)
+        ):
             self._queue_or_replace_pending_event(session_key, event)
             return True
         _steer = await self._resolve_busy_steer_or_redirect(event, session_key, effective_mode, running_agent)

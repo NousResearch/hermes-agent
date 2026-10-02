@@ -228,8 +228,13 @@ _SNAPSHOTS: tuple[tuple[str, Optional[str], str, dict], ...] = (
     # Claude 5 rows read from the AWS pricing page on 2026-09-06 (global
     # cross-region endpoint). Sonnet 5 shares _SONNET_5 with the first-party
     # row, not _SONNET: the scheduled 2026-09-01 increase to Sonnet 4.6's rate
-    # was cancelled and the launch rate is standard. In-region/geo profiles
-    # bill 10% above the global rate.
+    # was cancelled and the launch rate is standard. Only the global rate is
+    # encoded: _normalize_bedrock_model_name folds us./eu./global. spellings
+    # into the bare id, so every regional spelling resolves here at the global
+    # rate. The snapshot page's in-region/geo premium (10% above global) is
+    # deliberately NOT modeled per region —
+    # test_bedrock_current_gen_claude_rows_resolve pins that equality, so a
+    # future per-region split must add explicit rows AND revisit that test.
     ("bedrock", _BEDROCK_URL, "bedrock-pricing-2026-09", {
         "anthropic.claude-opus-5": _OPUS,
         "anthropic.claude-sonnet-5": _SONNET_5,

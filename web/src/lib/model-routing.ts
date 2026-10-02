@@ -1,5 +1,5 @@
 /**
- * Pure logic for the Settings → Model routing block.
+ * Pure logic for the Models → Model routing block.
  *
  * Kept React-free (and network-free) so the fallback-chain reducers and the
  * schema-gating predicates can be unit-tested directly. The card component only
@@ -62,6 +62,24 @@ export function hasMainFallbackSupport(
   return (
     hasSchemaKey(schema, ROUTING_KEYS.mainFallback) ||
     hasSchemaKey(schema, "fallback_providers")
+  );
+}
+
+/**
+ * Whether the routing block has anything to render for this schema — i.e. at
+ * least one of the keys it edits is served. The card uses this to bail out, and
+ * the Models page uses the same predicate so its surrounding section (heading /
+ * Save button) appears under exactly the same condition.
+ */
+export function showsRoutingBlock(
+  schema: Record<string, unknown> | null | undefined,
+): boolean {
+  return (
+    hasSchemaKey(schema, ROUTING_KEYS.subagentProvider) ||
+    hasSchemaKey(schema, ROUTING_KEYS.subagentModel) ||
+    hasSchemaKey(schema, ROUTING_KEYS.subagentFallback) ||
+    hasMainFallbackSupport(schema) ||
+    hasSchemaKey(schema, ROUTING_KEYS.hotReload)
   );
 }
 

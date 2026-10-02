@@ -33,6 +33,8 @@ import { compactNumber } from "@hermes/shared";
 import { Button } from "@nous-research/ui/ui/components/button";
 import { Spinner } from "@nous-research/ui/ui/components/spinner";
 import { Stats } from "@nous-research/ui/ui/components/stats";
+import { useToast } from "@nous-research/ui/hooks/use-toast";
+import { Toast } from "@nous-research/ui/ui/components/toast";
 import { Card, CardContent, CardHeader, CardTitle } from "@nous-research/ui/ui/components/card";
 import { Badge } from "@nous-research/ui/ui/components/badge";
 import { Switch } from "@nous-research/ui/ui/components/switch";
@@ -43,6 +45,9 @@ import { useI18n } from "@/i18n";
 import { PluginSlot } from "@/plugins";
 import { ModelPickerDialog } from "@/components/ModelPickerDialog";
 import { ModelReloadConfirm } from "@/components/ModelReloadConfirm";
+import { ModelRoutingCard } from "@/components/ModelRoutingCard";
+import { showsRoutingBlock } from "@/lib/model-routing";
+import { setNestedValue } from "@/lib/nested";
 import { errorMessage } from "@/lib/api-error";
 import { assignmentToPickerCurrent } from "@/lib/model-picker-current";
 
@@ -1161,13 +1166,22 @@ export default function ModelsPage() {
   // hermes_cli/config.py for the rationale: the numbers exclude auxiliary
   // calls and retries, so they're misleading next to provider billing.
   const [showTokens, setShowTokens] = useState(false);
+  // Full config + schema back the Model routing block (subagent preferred +
+  // fallback routes, main-agent fallback, hot-reload) that moved here from the
+  // Settings page. Only the routing keys are ever touched; Save writes the
+  // whole round-tripped config, exactly like the Settings page's Save.
+  const [config, setConfig] = useState<Record<string, unknown> | null>(null);
+  const [schema, setSchema] = useState<Record<string, unknown> | null>(null);
+  const [routingSaving, setRoutingSaving] = useState(false);
   const { t } = useI18n();
+  const { toast, showToast } = useToast();
   const { setAfterTitle, setEnd } = usePageHeader();
 
   useEffect(() => {
     api
       .getConfig()
       .then((cfg) => {
+        setConfig(cfg);
         const dash = (cfg?.dashboard ?? {}) as { show_token_analytics?: unknown };
         setShowTokens(dash.show_token_analytics === true);
       })
@@ -1175,7 +1189,24 @@ export default function ModelsPage() {
         // Default to hidden on any failure — safer than showing wrong numbers.
         setShowTokens(false);
       });
+    api
+      .getSchema()
+      .then((resp) => setSchema(resp.fields))
+      .catch(() => setSchema(null));
   }, []);
+
+  const saveRouting = useCallback(async () => {
+    if (!config) return;
+    setRoutingSaving(true);
+    try {
+      await api.saveConfig(config);
+      showToast(t.config.configSaved, "success");
+    } catch (e) {
+      showToast(`${t.config.failedToSave}: ${errorMessage(e)}`, "error");
+    } finally {
+      setRoutingSaving(false);
+    }
+  }, [config, showToast, t.config.configSaved, t.config.failedToSave]);
 
   const load = useCallback(() => {
     setLoading(true);
@@ -1269,6 +1300,7 @@ export default function ModelsPage() {
   return (
     <div className="flex min-w-0 max-w-full flex-col gap-6">
       <PluginSlot name="models:top" />
+      <Toast toast={toast} />
 
       <div className="grid min-w-0 gap-6 lg:grid-cols-2">
         <ModelSettingsPanel
@@ -1341,6 +1373,28 @@ export default function ModelsPage() {
           </Card>
         )}
       </div>
+
+      {showsRoutingBlock(schema) && config && schema && (
+        <section className="flex min-w-0 flex-col gap-2">
+          <ModelRoutingCard
+            config={config}
+            schema={schema}
+            onChange={(key, value) =>
+              setConfig((prev) => setNestedValue(prev ?? {}, key, value))
+            }
+          />
+          <div className="flex items-center justify-end">
+            <Button
+              size="sm"
+              className="uppercase"
+              onClick={() => void saveRouting()}
+              disabled={routingSaving}
+            >
+              {routingSaving ? t.common.saving : t.common.save}
+            </Button>
+          </div>
+        </section>
+      )}
 
       {loading && !data && (
         <div className="flex items-center justify-center py-24">

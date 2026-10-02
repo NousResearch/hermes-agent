@@ -9,6 +9,7 @@ import {
   parseFallbackRoutes,
   removeFallbackRoute,
   serializeFallbackRoutes,
+  showsRoutingBlock,
   updateFallbackRoute,
 } from "./model-routing";
 
@@ -126,5 +127,16 @@ describe("schema gating", () => {
     expect(hasMainFallbackSupport({ fallback_providers: {} })).toBe(true);
     expect(hasMainFallbackSupport({ model: {} })).toBe(false);
     expect(hasMainFallbackSupport(null)).toBe(false);
+  });
+
+  it("showsRoutingBlock is true for any routing key, false otherwise", () => {
+    expect(showsRoutingBlock({ [ROUTING_KEYS.subagentProvider]: {} })).toBe(true);
+    expect(showsRoutingBlock({ [ROUTING_KEYS.subagentModel]: {} })).toBe(true);
+    expect(showsRoutingBlock({ [ROUTING_KEYS.subagentFallback]: {} })).toBe(true);
+    expect(showsRoutingBlock({ [ROUTING_KEYS.hotReload]: {} })).toBe(true);
+    expect(showsRoutingBlock({ fallback_providers: {} })).toBe(true);
+    expect(showsRoutingBlock({ model: {} })).toBe(false);
+    expect(showsRoutingBlock({})).toBe(false);
+    expect(showsRoutingBlock(null)).toBe(false);
   });
 });

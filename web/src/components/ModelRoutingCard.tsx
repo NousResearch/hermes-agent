@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Plus, Route as RouteIcon, Trash2, Wand2 } from "lucide-react";
 import { Badge } from "@nous-research/ui/ui/components/badge";
 import { Button } from "@nous-research/ui/ui/components/button";
@@ -22,6 +22,7 @@ import {
   parseFallbackRoutes,
   removeFallbackRoute,
   serializeFallbackRoutes,
+  showsRoutingBlock,
   updateFallbackRoute,
   type FallbackRoute,
 } from "@/lib/model-routing";
@@ -69,6 +70,59 @@ function ToggleRow({
       <Switch checked={checked} onCheckedChange={onChange} />
     </div>
   );
+}
+
+/**
+ * Editor state for one fallback chain.
+ *
+ * The value written to config (`onChange`) is the serialized YAML list, which
+ * drops all-blank rows so they never reach config.yaml. The *editor* rows,
+ * however, must keep a blank row: that is exactly what 'Add route' appends, and
+ * what the user then fills in. Deriving the editor rows from config on every
+ * render (the previous behaviour) re-parsed the just-added blank row away — the
+ * 'Add route' button silently did nothing. So the editor owns a draft and only
+ * re-derives it when the incoming config value changed from a value we did NOT
+ * write (form reset, import, an external edit).
+ *
+ * Returns `[rows, commit]`; `commit` updates the draft AND persists the
+ * serialized value in one shot.
+ */
+function useFallbackChain(
+  config: Record<string, unknown>,
+  key: string,
+  onChange: (key: string, value: unknown) => void,
+): [FallbackRoute[], (rows: FallbackRoute[]) => void] {
+  const configValue = getNestedValue(config, key);
+  const [rows, setRows] = useState<FallbackRoute[]>(() =>
+    parseFallbackRoutes(configValue),
+  );
+  // What we last wrote (or read) — compared against the live config value to
+  // tell our own writes apart from an external change.
+  const lastWritten = useRef(
+    JSON.stringify(serializeFallbackRoutes(parseFallbackRoutes(configValue))),
+  );
+
+  useEffect(() => {
+    const incoming = JSON.stringify(
+      serializeFallbackRoutes(parseFallbackRoutes(configValue)),
+    );
+    if (incoming !== lastWritten.current) {
+      lastWritten.current = incoming;
+      setRows(parseFallbackRoutes(configValue));
+    }
+  }, [configValue]);
+
+  const commit = useCallback(
+    (next: FallbackRoute[]) => {
+      setRows(next);
+      const serialized = serializeFallbackRoutes(next);
+      lastWritten.current = JSON.stringify(serialized);
+      onChange(key, serialized);
+    },
+    [key, onChange],
+  );
+
+  return [rows, commit];
 }
 
 /** One provider:model row in a fallback chain, matching the config YAML shape. */
@@ -133,7 +187,7 @@ function RouteRow({
 }
 
 /**
- * Settings → Model routing block.
+ * Models → Model routing block.
  *
  * Surfaces the subagent preferred route (`delegation.provider`/`delegation.model`),
  * the subagent fallback chain (`delegation.fallback_providers`), the main-agent
@@ -142,13 +196,27 @@ function RouteRow({
  * Every control is schema-gated: it only renders when the served config schema
  * exposes the key (the same rule the Waifu page follows). All reads/writes go
  * through the generic config GET/save path — this block never invents an
- * endpoint.
+ * endpoint. The host page owns saving (Config page: its Save button; Models
+ * page: the Save button under this card).
  */
 export function ModelRoutingCard({ config, schema, onChange }: Props) {
   const { t } = useI18n();
   const m: RoutingStrings =
     t.config.modelRouting ?? (en.config.modelRouting as RoutingStrings);
   const [picker, setPicker] = useState<PickerTarget | null>(null);
+
+  // Editor drafts for the two fallback chains. Hooks run before the bail-out
+  // below so they're called unconditionally.
+  const [subagentFallbackRoutes, commitSubagentFallback] = useFallbackChain(
+    config,
+    ROUTING_KEYS.subagentFallback,
+    onChange,
+  );
+  const [mainFallbackRoutes, commitMainFallback] = useFallbackChain(
+    config,
+    ROUTING_KEYS.mainFallback,
+    onChange,
+  );
 
   const providerKey = hasSchemaKey(schema, ROUTING_KEYS.subagentProvider)
     ? ROUTING_KEYS.subagentProvider
@@ -161,7 +229,7 @@ export function ModelRoutingCard({ config, schema, onChange }: Props) {
   const showMainFallback = hasMainFallbackSupport(schema);
   const showHotReload = hasSchemaKey(schema, ROUTING_KEYS.hotReload);
 
-  if (!showSubagent && !showSubagentFallback && !showMainFallback && !showHotReload) {
+  if (!showsRoutingBlock(schema)) {
     return null;
   }
 
@@ -169,16 +237,7 @@ export function ModelRoutingCard({ config, schema, onChange }: Props) {
     provider: providerKey ? String(getNestedValue(config, providerKey) ?? "") : "",
     model: modelKey ? String(getNestedValue(config, modelKey) ?? "") : "",
   };
-  const subagentFallbackRoutes = parseFallbackRoutes(
-    getNestedValue(config, ROUTING_KEYS.subagentFallback),
-  );
-  const mainFallbackRoutes = parseFallbackRoutes(
-    getNestedValue(config, ROUTING_KEYS.mainFallback),
-  );
   const hotReload = getNestedValue(config, ROUTING_KEYS.hotReload) === true;
-
-  const writeRoutes = (key: string, routes: FallbackRoute[]) =>
-    onChange(key, serializeFallbackRoutes(routes));
 
   const applyPick = (target: PickerTarget, provider: string, model: string) => {
     if (target.kind === "subagent") {
@@ -187,14 +246,12 @@ export function ModelRoutingCard({ config, schema, onChange }: Props) {
       return;
     }
     if (target.kind === "subagentFallback") {
-      writeRoutes(
-        ROUTING_KEYS.subagentFallback,
+      commitSubagentFallback(
         updateFallbackRoute(subagentFallbackRoutes, target.index, { provider, model }),
       );
       return;
     }
-    writeRoutes(
-      ROUTING_KEYS.mainFallback,
+    commitMainFallback(
       updateFallbackRoute(mainFallbackRoutes, target.index, { provider, model }),
     );
   };
@@ -268,14 +325,12 @@ export function ModelRoutingCard({ config, schema, onChange }: Props) {
                     index={index}
                     m={m}
                     onUpdate={(i, patch) =>
-                      writeRoutes(
-                        ROUTING_KEYS.subagentFallback,
+                      commitSubagentFallback(
                         updateFallbackRoute(subagentFallbackRoutes, i, patch),
                       )
                     }
                     onRemove={(i) =>
-                      writeRoutes(
-                        ROUTING_KEYS.subagentFallback,
+                      commitSubagentFallback(
                         removeFallbackRoute(subagentFallbackRoutes, i),
                       )
                     }
@@ -290,10 +345,7 @@ export function ModelRoutingCard({ config, schema, onChange }: Props) {
                 outlined
                 prefix={<Plus className="h-3.5 w-3.5" />}
                 onClick={() =>
-                  writeRoutes(
-                    ROUTING_KEYS.subagentFallback,
-                    addFallbackRoute(subagentFallbackRoutes),
-                  )
+                  commitSubagentFallback(addFallbackRoute(subagentFallbackRoutes))
                 }
               >
                 {m.addRoute}
@@ -317,14 +369,12 @@ export function ModelRoutingCard({ config, schema, onChange }: Props) {
                     index={index}
                     m={m}
                     onUpdate={(i, patch) =>
-                      writeRoutes(
-                        ROUTING_KEYS.mainFallback,
+                      commitMainFallback(
                         updateFallbackRoute(mainFallbackRoutes, i, patch),
                       )
                     }
                     onRemove={(i) =>
-                      writeRoutes(
-                        ROUTING_KEYS.mainFallback,
+                      commitMainFallback(
                         removeFallbackRoute(mainFallbackRoutes, i),
                       )
                     }
@@ -339,10 +389,7 @@ export function ModelRoutingCard({ config, schema, onChange }: Props) {
                 outlined
                 prefix={<Plus className="h-3.5 w-3.5" />}
                 onClick={() =>
-                  writeRoutes(
-                    ROUTING_KEYS.mainFallback,
-                    addFallbackRoute(mainFallbackRoutes),
-                  )
+                  commitMainFallback(addFallbackRoute(mainFallbackRoutes))
                 }
               >
                 {m.addRoute}

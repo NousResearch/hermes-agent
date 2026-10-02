@@ -1,6 +1,6 @@
 name: hicortex
 repo: https://github.com/gamaze-labs/hicortex-hermes-plugin
-sha: ad5508ddc3dfc429163c0c8d8e00c07742104f5e
+sha: 3321a063bffb087dfcedc239a6f7aaf1ac0b8ef6
 description: >-
   Shared fleet memory for Hermes agents: every connected agent learns from all other
   agents connected to the memory, wherever they run. Sessions across machines and harnesses are distilled
@@ -18,7 +18,7 @@ maintainer: gamaze-labs
 tier: community
 category: memory
 docs_url: https://github.com/gamaze-labs/hicortex-hermes-plugin#readme
-version: "0.7.9"
+version: "0.7.10"
 readme: true
 capabilities:
   provides_tools:

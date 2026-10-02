@@ -41,6 +41,10 @@ describe('reasoning-effort wire scope', () => {
     expect($currentReasoningEffortWire.get()).toBe('')
     // The pick itself is untouched — only the route claim is withdrawn.
     expect($currentReasoningEffort.get()).toBe('xhigh')
+
+    stampWire('xhigh')
+    setCurrentProvider('openrouter')
+    expect($currentReasoningEffortWire.get()).toBe('')
   })
 
   it('keeps the stamp across a heartbeat that mirrors the runtime model', () => {

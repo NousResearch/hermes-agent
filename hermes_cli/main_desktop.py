@@ -42,15 +42,17 @@ def _renderer_bundle_dir(desktop_dir: Path, *, source_mode: bool) -> Optional[Pa
     if source_mode:
         return desktop_dir / "dist"
 
+    resources = _packaged_resources_dir(desktop_dir)
+    return None if resources is None else resources / "app.asar.unpacked" / "dist"
+
+
+def _packaged_resources_dir(desktop_dir: Path) -> Optional[Path]:
+    """The packaged app's ``resources`` dir (renderer bundle, baked ``install-stamp.json``)."""
     executable = _desktop_packaged_executable(desktop_dir)
     if executable is None:
         return None
-
     # macOS: …/Hermes.app/Contents/MacOS/Hermes → …/Contents/Resources
-    resources = (
-        executable.parent.parent / "Resources" if sys.platform == "darwin" else executable.parent / "resources"
-    )
-    return resources / "app.asar.unpacked" / "dist"
+    return executable.parent.parent / "Resources" if sys.platform == "darwin" else executable.parent / "resources"
 
 
 # The module files the renderer fetches before any app code runs: Vite emits
@@ -134,16 +136,13 @@ def _packaged_desktop_current_for_head(desktop_dir: Path, project_root: Path) ->
     The commit the packaged app actually ships is the missing half; anything unreadable
     means "build".
     """
-    dist_dir = _renderer_bundle_dir(desktop_dir, source_mode=False)
-    if dist_dir is None:
+    resources = _packaged_resources_dir(desktop_dir)
+    if resources is None:
         return False
-    try:
-        stamp = json.loads((dist_dir.parent.parent / "install-stamp.json").read_text(encoding="utf-8-sig"))
-    except (OSError, ValueError):
-        return False
+    from hermes_cli.steward import read_install_stamp
     from hermes_cli.version_info import _run_git
 
-    commit = stamp.get("commit") if isinstance(stamp, dict) else None
+    commit = read_install_stamp(resources).get("commit")
     if not isinstance(commit, str) or commit != _run_git(project_root, "rev-parse", "HEAD"):
         return False
     return not _desktop_build_needed(desktop_dir, project_root, source_mode=False)

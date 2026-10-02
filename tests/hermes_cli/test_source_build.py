@@ -344,9 +344,9 @@ def test_packaged_desktop_is_reused_only_while_it_names_head(tmp_path, monkeypat
     subprocess.run([*git, "commit", "-q", "--allow-empty", "-m", "one"], check=True)
     desktop_dir = root / "apps/desktop"
     exe = desktop_dir / "release/app/Hermes"
-    resources = exe.parent.parent / "Resources" if sys.platform == "darwin" else exe.parent / "resources"
-    (resources / "app.asar.unpacked/dist").mkdir(parents=True)
     monkeypatch.setattr(main_desktop, "_desktop_packaged_executable", lambda _d: exe)
+    resources = main_desktop._packaged_resources_dir(desktop_dir)
+    (resources / "app.asar.unpacked/dist").mkdir(parents=True)
     receipt_current = {"value": True}
     monkeypatch.setattr(main_desktop, "_desktop_build_needed",
                         lambda *_a, **_k: not receipt_current["value"])

@@ -145,6 +145,11 @@ export const arChat = {
     queueDroppedTitle: 'تم إسقاط عنصر قائمة الانتظار',
     queueDroppedBody:
       'أُسقط هذا العنصر في الخلفية لأن جلسته تعذّر استئنافها بعد محاولات متكررة. بقية قائمة الانتظار لم تتأثر.',
+    terminalSelectionMissingTitle: 'تحديد الطرفية غير متاح',
+    terminalSelectionMissingBody:
+      'أعد تحديد أسطر الطرفية (Ctrl/Cmd+L) قبل الإرسال — لا يحتوي هذا الوسم على النص الأصلي.',
+    queuedTerminalSelectionExpiredBody:
+      'تحديد الطرفية في قائمة الانتظار لم يعد متاحا. أعد تحديد الأسطر (Ctrl/Cmd+L) وضع الرسالة في القائمة مجددا.',
     previewUnavailable: 'المعاينة غير متاحة',
     previewLabel: label => `معاينة ${label}`,
     couldNotPreview: label => `تعذرت معاينة ${label}`,

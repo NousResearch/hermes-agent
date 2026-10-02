@@ -102,6 +102,12 @@ _sessions_lock = threading.RLock()  # reentrant: _close_session_by_id may run un
 _cfg_cache: dict | None = None
 _cfg_sig: tuple | None = None
 _cfg_path = None
+
+# Idempotency registry for session.create: maps client-supplied key → sid so a
+# retried create (e.g. response lost in transit) returns the same session
+# instead of spawning a duplicate child. Entries expire with the session.
+_idempotency_keys: dict[str, tuple[str, float]] = {}
+_IDEMPOTENCY_KEY_TTL = 300.0  # 5 min: longer than any realistic retry window
 _session_resume_lock = threading.Lock()
 _SLASH_WORKER_TIMEOUT_S = max(5.0, env_float("HERMES_TUI_SLASH_TIMEOUT_S", 45.0))
 

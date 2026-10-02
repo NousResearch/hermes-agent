@@ -50,13 +50,14 @@ def _ring_vendor_keyless(name: str) -> bool:
 
 
 def _managed_search_fallback(provider, original_error: str, query: str, limit: int):
-    """Try managed Firecrawl for this call only; None leaves the original error for keyless rescue."""
+    """Try managed Firecrawl for this call only; None leaves the original error for keyless rescue.
+    Managed Firecrawl is billed, so a caller on free fast search alone never reaches it."""
     if is_interrupted():
         return {"success": False, "error": "Interrupted"}
     from agent.web_search_provider import get_provider_env
-    from tools.web_tools import _managed_web_search
+    from tools import web_tools as _wt
     if (getattr(provider, "name", "") != "perplexity"
-            or get_provider_env("PERPLEXITY_API_KEY") or not _managed_web_search()):
+            or get_provider_env("PERPLEXITY_API_KEY") or not _wt._managed_web_search() or not _wt._is_tool_gateway_ready()):
         return None
     logger.warning("web_search managed Perplexity failed (%s); serving this call from managed Firecrawl", (original_error or "")[:200])
     try:

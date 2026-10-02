@@ -491,6 +491,8 @@ Pinning sets a durable "keep" flag: pinned sessions are exempt from the
 same flag the Desktop sidebar's Pinned section uses — pin from either surface
 and both see it.
 
+Restoring a session backup preserves its pinned, archived and hidden flags. A restored pinned session keeps its protection from automatic retention cleanup, and an adopted Bot Chat stays hidden with its canonical title protected. Older exports without these flags restore ordinary unpinned, visible sessions.
+
 ```bash
 # Pin one or more sessions (unique ID prefixes work)
 hermes sessions pin 20250305_091523_a1b2c3d4

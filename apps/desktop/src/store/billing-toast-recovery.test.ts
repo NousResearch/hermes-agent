@@ -14,7 +14,11 @@ const block = {
 
 function raiseWall(sessionId: string) {
   setBillingBlock(sessionId, block)
-  notify({ id: `billing-block:${block.provider}`, message: block.message, durationMs: 0 })
+  notify({
+    id: `billing-block:${block.provider}`,
+    message: block.message,
+    durationMs: 0
+  })
 }
 
 afterEach(() => {

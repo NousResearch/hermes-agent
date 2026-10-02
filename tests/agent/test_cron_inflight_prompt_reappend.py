@@ -360,3 +360,23 @@ def test_flagged_scaffolding_row_is_never_the_inflight_task():
     found = ContextCompressor._find_inflight_user_task(msgs)
     assert found is not None
     assert JOB_SENTINEL in str(found.get("content"))
+
+
+def test_replay_replaces_surviving_user_row_with_same_message_uid():
+    """A protected copy of the in-flight request must not remain active beside its replay."""
+    from agent.context_compressor import _INFLIGHT_TASK_REPLAY_HEADER, COMPRESSED_SUMMARY_METADATA_KEY
+
+    uid = "request-uid"
+    carrier = {
+        "role": "assistant",
+        "content": SUMMARY_PREFIX + "\n## Summary\nran steps.\n\n" + _SUMMARY_END_MARKER,
+        COMPRESSED_SUMMARY_METADATA_KEY: True,
+    }
+    original = {"role": "user", "content": JOB_SENTINEL, "message_uid": uid}
+    out = _make_compressor()._reappend_inflight_user_task(
+        [original, carrier], {**original}
+    )
+
+    matching = [m for m in out if m.get("message_uid") == uid]
+    assert len(matching) == 1
+    assert _INFLIGHT_TASK_REPLAY_HEADER in str(matching[0].get("content"))

@@ -1,5 +1,6 @@
 """Backup and import commands for hermes CLI."""
 
+import errno
 import json
 import logging
 import os
@@ -284,16 +285,24 @@ def _iter_external_files(base: Path) -> List[Path]:
     return files
 
 
+# ``lstat`` errnos that mean "this filesystem cannot stat entries of this kind at all" (a live
+# gateway socket on a virtiofs/CIFS bind mount), as opposed to a stat-able file with a problem.
+_UNSTATABLE_ERRNOS = frozenset({errno.ENOTSUP, errno.EOPNOTSUPP, errno.EINVAL})
+
+
 def _is_non_regular_path(path: Path) -> bool:
     """True for symlinks, sockets, devices, and other non-regular filesystem entries.
 
     A failed ``lstat`` is not treated as an exclusion: the archive writer must see the path and
-    report the read failure instead of silently claiming a complete backup.
+    report the read failure instead of silently claiming a complete backup. The exception is an
+    errno saying the filesystem cannot stat this kind of entry at all (``_UNSTATABLE_ERRNOS``,
+    e.g. ``gateway.sock`` on a virtiofs bind mount, #131748): the entry is unarchivable on this
+    host, so skipping it here is the correct classification, not a hidden read failure.
     """
     try:
         return not stat.S_ISREG(path.lstat().st_mode)
-    except OSError:
-        return False
+    except OSError as exc:
+        return exc.errno in _UNSTATABLE_ERRNOS
 
 
 def _is_link_path(path: Path) -> bool:

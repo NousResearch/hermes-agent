@@ -22,6 +22,12 @@ _orphan_stdio_pid_servers: Dict[int, str] = {}
 # grandchildren keep that PGID after the direct child exits, so killpg still reaches them.
 # Separate from _stdio_pids so the PGID survives the child's removal. Empty on Windows.
 _stdio_pgids: Dict[int, int] = {}
+# pid -> process creation time captured at spawn, while the pid is known to be *this* child
+# (Windows only, where _stdio_pgids stays empty). An already-exited root is reaped by walking
+# PIDs/descendants of a bare number (see _signal_mcp_process); if the number is recycled by an
+# unrelated process before the sweep runs, this lets that reuse be detected and the entry
+# dropped instead of signalling the wrong process (#122391).
+_stdio_create_times: Dict[int, float] = {}
 
 
 def _snapshot_child_pids() -> set:
@@ -219,6 +225,46 @@ def shutdown_mcp_servers(*, scope: Optional[str] = None, names: Optional[set] = 
         _close_mcp_stderr_logs(scope=scope)
 
 
+def _drop_recycled_pids(pids: Dict[int, str], create_times: Dict[int, float],
+                        no_pgroups: bool) -> Dict[int, str]:
+    """Windows-only guard (``no_pgroups``: ``os.killpg`` unavailable): an already-exited root is
+    reaped by walking a bare PID number (taskkill /T, or kill_process_tree's PPID-based
+    descendant fallback — see _signal_mcp_process). If that number has since been recycled by an
+    unrelated live process, either path would target that process's tree instead of the MCP
+    orphan's (#122391). On this platform every reaped pid depends on a verified creation-time
+    token; one that never got a token there (capture failed at spawn, before the root could
+    exit) is exactly as unverifiable as a confirmed mismatch — drop it too, rather than let a
+    missing token fall through to a bare-PID kill. POSIX (pgroups available) is untouched: a
+    missing pgid there already falls back to a plain per-pid kill, unrelated to this race."""
+    if not no_pgroups:
+        return pids
+    from gateway.status import _pid_exists
+    for pid in list(pids):
+        recorded = create_times.get(pid)
+        if recorded is None:
+            owner = pids.pop(pid)
+            logger.warning("MCP orphan pid %d (%s) has no verified creation-time token; "
+                           "dropping without signalling it", pid, owner)
+            continue
+        if not _pid_exists(pid):
+            continue  # gone (or gone again) — nothing to reuse, existing kill path handles it
+        try:
+            import psutil
+            current = psutil.Process(pid).create_time()
+        except Exception:
+            # Fail closed: a live pid whose identity can't be verified is treated the same as
+            # a confirmed recycle, never handed to the bare-PID kill path (#122391).
+            owner = pids.pop(pid)
+            logger.warning("MCP orphan pid %d (%s) creation time could not be verified; "
+                           "dropping without signalling it", pid, owner)
+            continue
+        if current != recorded:
+            owner = pids.pop(pid)
+            logger.warning("MCP orphan pid %d (%s) was recycled by an unrelated process since "
+                           "it was recorded; dropping without signalling it", pid, owner)
+    return pids
+
+
 def _take_reapable_pids(include_active: bool, server_name: Optional[str]) -> tuple[Dict[int, str], Dict[int, int]]:
     """Pop the PIDs to reap (and their spawn-time pgids) out of the ledgers under the lock, so
     a future spawn can't collide with stale state. Returns ``(pid -> owner, pid -> pgid)``."""
@@ -236,12 +282,17 @@ def _take_reapable_pids(include_active: bool, server_name: Optional[str]) -> tup
             for pid in active:
                 _stdio_pids.pop(pid, None)
         pgids = {pid: _stdio_pgids.pop(pid) for pid in pids if pid in _stdio_pgids}
+        create_times = {pid: _stdio_create_times.pop(pid) for pid in pids if pid in _stdio_create_times}
+    pids = _drop_recycled_pids(pids, create_times, getattr(os, "killpg", None) is None)
     return pids, pgids
 
 
 def _signal_mcp_process(pid: int, sig: int, server_name: str, pgid: Optional[int], my_pgid: Optional[int]) -> None:
     """SIGTERM/SIGKILL via the spawn-time pgroup on POSIX (reaches reparented grandchildren),
-    falling back to a per-pid signal."""
+    falling back to a per-pid signal. Windows has no process groups (``pgid`` is always
+    ``None``, see ``_stdio_pgids``): a bare per-pid signal only reaches the direct MCP child
+    and leaks any workers it spawned (#122378), so that case routes through the portable
+    ``kill_process_tree`` (``taskkill /F /T`` on Windows) before falling back."""
     killpg = getattr(os, "killpg", None)
     if pgid is not None and killpg is not None:
         if my_pgid is not None and pgid == my_pgid:
@@ -262,6 +313,14 @@ def _signal_mcp_process(pid: int, sig: int, server_name: str, pgid: Optional[int
                 # Pgroup gone or refused — still try the direct child.
                 logger.debug("killpg(%d, %d) failed for MCP server '%s': %s; falling back to kill(pid)",
                              pgid, sig, server_name, exc)
+    elif killpg is None:
+        from agent.deadline import kill_process_tree
+        try:
+            if kill_process_tree(pid, sig=sig):
+                return
+        except Exception:
+            logger.debug("kill_process_tree failed for MCP server '%s' pid %d; "
+                         "falling back to kill(pid)", server_name, pid, exc_info=True)
     try:
         os.kill(pid, sig)
     except (ProcessLookupError, PermissionError, OSError):

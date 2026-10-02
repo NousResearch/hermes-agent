@@ -1,5 +1,9 @@
-from datetime import datetime
+from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
+
+import pytest
+
+from hermes_time import safe_strftime
 
 from gateway.message_timestamps import (
     render_user_content_with_timestamp,
@@ -11,6 +15,16 @@ BERLIN = ZoneInfo("Europe/Berlin")
 
 def _epoch(year, month, day, hour, minute, second):
     return datetime(year, month, day, hour, minute, second, tzinfo=BERLIN).timestamp()
+
+
+@pytest.mark.parametrize("epoch", [1.0, 1_000_000_000.0])
+def test_render_numeric_timestamp_preserves_instant_in_system_timezone(epoch):
+    # Epoch 1 is still in 1969 west of UTC. Windows rejects a naive
+    # astimezone() conversion there, although the Unix timestamp is positive.
+    local = datetime.fromtimestamp(epoch, tz=timezone.utc).astimezone()
+    prefix = safe_strftime(local, "%a %Y-%m-%d %H:%M:%S %Z")
+
+    assert render_user_content_with_timestamp("hello", epoch) == f"[{prefix}] hello"
 
 
 def test_render_user_content_deduplicates_existing_timestamp_and_preserves_embedded_time():

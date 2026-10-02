@@ -8,7 +8,7 @@ persisted message content should stay clean so replay does not accumulate
 from __future__ import annotations
 
 import re
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Optional, Tuple
 
 from hermes_time import safe_strftime
@@ -83,7 +83,9 @@ def format_message_timestamp(ts_value: Any, tz=None) -> str:
     epoch = coerce_message_timestamp(ts_value, tz=tz)
     if epoch is None:
         return ""
-    dt = datetime.fromtimestamp(epoch, tz=tz) if tz is not None else datetime.fromtimestamp(epoch).astimezone()
+    # An early positive epoch can fall in 1969 locally. Starting from aware UTC
+    # avoids Windows' negative-time mktime path in naive astimezone().
+    dt = datetime.fromtimestamp(epoch, tz=tz) if tz is not None else datetime.fromtimestamp(epoch, tz=timezone.utc).astimezone()
     return f"[{safe_strftime(dt, '%a %Y-%m-%d %H:%M:%S %Z')}]"
 
 

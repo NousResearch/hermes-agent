@@ -5,7 +5,7 @@
 # files under `desktop/plugin.js` and never fetches, downloads, or replaces itself.
 name: provider-usage
 repo: https://github.com/PhoeniXAbhisheK/hermes-plugin-provider-usage
-sha: "a75d09c03c0aabb9916d58ca5b1c8e432ea11c1a"   # tag v0.1.0
+sha: "753dfbd35c9ed8fec3127ce48e5521d986d3aabe"   # tag v0.2.0
 description: >-
   Per-provider quota and balance readout in the Hermes desktop status bar.
   Per-provider chips with eye toggles, a popover with every quota window, reset times,
@@ -22,11 +22,11 @@ tier: community
 category: desktop
 requires_hermes: ">=0.21.0"
 docs_url: https://github.com/PhoeniXAbhisheK/hermes-plugin-provider-usage#readme
-version: "0.1.0"
+version: "0.2.0"
 screenshots:
-- https://raw.githubusercontent.com/PhoeniXAbhisheK/hermes-plugin-provider-usage/a75d09c03c0aabb9916d58ca5b1c8e432ea11c1a/media/panel.png
-- https://raw.githubusercontent.com/PhoeniXAbhisheK/hermes-plugin-provider-usage/a75d09c03c0aabb9916d58ca5b1c8e432ea11c1a/media/status-bar.png
-- https://raw.githubusercontent.com/PhoeniXAbhisheK/hermes-plugin-provider-usage/a75d09c03c0aabb9916d58ca5b1c8e432ea11c1a/media/notification.png
+- https://raw.githubusercontent.com/PhoeniXAbhisheK/hermes-plugin-provider-usage/753dfbd35c9ed8fec3127ce48e5521d986d3aabe/media/panel.png
+- https://raw.githubusercontent.com/PhoeniXAbhisheK/hermes-plugin-provider-usage/753dfbd35c9ed8fec3127ce48e5521d986d3aabe/media/status-bar.png
+- https://raw.githubusercontent.com/PhoeniXAbhisheK/hermes-plugin-provider-usage/753dfbd35c9ed8fec3127ce48e5521d986d3aabe/media/notification.png
 capabilities:
   provides_tools: []
   provides_hooks: []

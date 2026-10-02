@@ -6233,7 +6233,7 @@ class TelegramAdapter(BasePlatformAdapter):
 
     def _telegram_group_observe_shared_source(self, source):
         """Return a chat/topic-scoped source for observed Telegram group context."""
-        return dataclasses.replace(source, user_id=None, user_name=None, user_id_alt=None)
+        return dataclasses.replace(source, user_id=None, user_name=None, user_id_alt=None, shared_session=True)
 
     def _telegram_group_observe_attributed_text(self, event: MessageEvent) -> str:
         user_id = event.source.user_id or "unknown"
@@ -6263,8 +6263,10 @@ class TelegramAdapter(BasePlatformAdapter):
         observe_prompt = self._telegram_group_observe_channel_prompt()
         channel_prompt = f"{event.channel_prompt}\n\n{observe_prompt}" if event.channel_prompt else observe_prompt
         if event.message_type == MessageType.COMMAND:
-            # Commands keep the original source (user_id) so _check_slash_access can identify the sender.
-            return dataclasses.replace(event, channel_prompt=channel_prompt)
+            # Commands keep user_id so _check_slash_access can identify the sender, but act on the
+            # shared session the observed transcript and text turns use.
+            return dataclasses.replace(
+                event, source=dataclasses.replace(event.source, shared_session=True), channel_prompt=channel_prompt)
         return dataclasses.replace(
             event, text=self._telegram_group_observe_attributed_text(event),
             source=self._telegram_group_observe_shared_source(event.source), channel_prompt=channel_prompt)

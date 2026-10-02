@@ -38,6 +38,8 @@ export interface ChatBarState {
 
 export interface ChatBarProps {
   busy: boolean
+  /** Only the primary composer handles the global stop-run keybind. */
+  isPrimary?: boolean
   disabled: boolean
   focusKey?: string | null
   /** Durable scope for the current sessionless new-chat lifecycle. */

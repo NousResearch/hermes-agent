@@ -6,7 +6,7 @@ precedence, command resolution, placeholder rendering, shell-quote
 context handling, timeout / failure cleanup, voice_compatible opt-in,
 and max_text_length lookup.
 
-Nothing here talks to a real TTS engine. The shell command itself is
+Nothing here talks to a real TTS engine. The command itself is
 portable: we write bytes to ``{output_path}`` using ``python -c`` so
 the tests run identically on Linux, macOS, and (with minor quoting
 differences) Windows.
@@ -30,6 +30,7 @@ from tools.tts_command_provider import (
     _get_named_provider_config,
     _is_command_provider_config,
     _iter_command_providers,
+    build_command_argv,
     render_command_template as _render_command_tts_template,
     run_command_provider as _run_command_tts,
     shell_quote_context as _shell_quote_context,
@@ -50,7 +51,7 @@ from tools.tts_tool import (
 # ---------------------------------------------------------------------------
 
 def _python_copy_command(output_placeholder: str = "{output_path}") -> str:
-    """Return a cross-platform shell command that copies {input_path} -> output."""
+    """Return a cross-platform command template that copies {input_path} -> output."""
     interpreter = sys.executable
     return (
         f'"{interpreter}" -c "import shutil, sys; '
@@ -60,7 +61,7 @@ def _python_copy_command(output_placeholder: str = "{output_path}") -> str:
 
 
 def _shell_command(*args: str) -> str:
-    """Return a shell command string for subprocess.Popen(shell=True)."""
+    """Serialize argv using the host command-line quoting convention."""
     if os.name == "nt":
         return subprocess.list2cmdline(list(args))
     return " ".join(shlex.quote(str(arg)) for arg in args)
@@ -257,6 +258,24 @@ class TestShellQuoteContext:
 
 
 class TestRenderCommandTtsTemplate:
+    def test_windows_argv_preserves_quoted_paths_empty_args_and_attached_values(self):
+        argv = build_command_argv(
+            r'"C:\Program Files\Acme\tts.exe" --input "{input_path}" --voice={voice} ""',
+            {
+                "input_path": r"C:\Audio Files\input.txt",
+                "voice": "Alice & Bob",
+            },
+            windows=True,
+        )
+
+        assert argv == [
+            r"C:\Program Files\Acme\tts.exe",
+            "--input",
+            r"C:\Audio Files\input.txt",
+            "--voice=Alice & Bob",
+            "",
+        ]
+
     def test_substitutes_all_placeholders(self):
         placeholders = {
             "input_path": "/tmp/in.txt",
@@ -327,6 +346,15 @@ class TestRenderCommandTtsTemplate:
 # ---------------------------------------------------------------------------
 
 class TestRunCommandTts:
+    @pytest.mark.platforms("windows")
+    def test_windows_batch_shim_is_rejected_before_spawn(self, tmp_path, monkeypatch):
+        shim = tmp_path / "fake-tts.cmd"
+        shim.write_text("", encoding="utf-8", newline="\r\n")
+        monkeypatch.setenv("PATH", str(tmp_path))
+        monkeypatch.setenv("PATHEXT", ".CMD")
+
+        with pytest.raises(OSError, match=r"cannot execute \.cmd or \.bat"):
+            _run_command_tts("fake-tts --output harmless.wav", timeout=1)
 
 
     def test_silent_after_progress_still_times_out_with_stderr(self, tmp_path):
@@ -369,7 +397,7 @@ class TestGenerateCommandTts:
         assert out.exists()
         # The command copied the input text file over to output, so it
         # contains the original UTF-8 text.
-        assert out.read_text(encoding="utf-8") == "hello world"
+        assert out.read_text(encoding="utf-8-sig") == "hello world"
 
 
     @pytest.mark.platforms("posix")  # POSIX-only timeout semantics

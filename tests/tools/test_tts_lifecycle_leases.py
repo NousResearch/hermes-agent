@@ -9,8 +9,6 @@ resident local models once the keep-warm window passes (#118037).
 
 from __future__ import annotations
 
-import shlex
-import subprocess
 import threading
 
 import pytest
@@ -57,7 +55,7 @@ def fake_piper(monkeypatch, tmp_path):
     voices_dir = tmp_path / "voices"
     voices_dir.mkdir()
     (voices_dir / "en_US-test-medium.onnx").write_bytes(b"onnx")
-    (voices_dir / "en_US-test-medium.onnx.json").write_text("{}")
+    (voices_dir / "en_US-test-medium.onnx.json").write_text("{}", encoding="utf-8")
     cfg = {"provider": "piper", "piper": {"voice": "en_US-test-medium", "voices_dir": str(voices_dir)}}
     monkeypatch.setattr(tts_tool, "_load_tts_config", lambda: cfg)
     return cfg
@@ -324,8 +322,6 @@ def test_plugin_provider_warm_and_release_follow_the_lease(monkeypatch, timers):
 
 
 def test_command_provider_runs_warm_and_release_commands(monkeypatch, timers):
-    import os
-
     ran: list = []
     done = threading.Event()
 
@@ -351,12 +347,10 @@ def test_command_provider_runs_warm_and_release_commands(monkeypatch, timers):
     tts_tool_lifecycle.release_tts_lease("desktop:read-aloud")
     _pending(timers)[0].fire()
     assert done.wait(5)
-    # The {model} placeholder is unquoted in the template, so the renderer
-    # shell-quotes it for the host platform (list2cmdline on Windows,
-    # shlex.quote elsewhere) — compute the expectation the same way.
-    quote = subprocess.list2cmdline([cfg["providers"]["srv"]["model"]]) if os.name == "nt" \
-        else shlex.quote(cfg["providers"]["srv"]["model"])
-    assert ran == [f"curl -s localhost:5002/load?model={quote}", "curl -s localhost:5002/unload"]
+    assert ran == [
+        ["curl", "-s", "localhost:5002/load?model=kokoro v1"],
+        ["curl", "-s", "localhost:5002/unload"],
+    ]
 
 
 def test_command_hook_thread_resolves_passthrough_under_the_callers_scope(monkeypatch, timers):

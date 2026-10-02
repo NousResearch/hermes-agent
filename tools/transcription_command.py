@@ -19,7 +19,8 @@ from agent.model_metadata import CHARS_PER_TOKEN
 from tools.tts_command_provider import (
     _command_output_format, _command_timeout, _is_command_provider_config as _is_command_stt_provider_config,
     _named_provider_config, _resolve_command_config, command_env_passthrough as _command_stt_env_passthrough,
-    command_failure_detail, render_command_template as _render_command_stt_template,
+    build_command_argv as _build_command_stt_argv, command_failure_detail,
+    render_command_template as _render_command_stt_template,
     run_command_provider as _run_command_stt)
 from tools.transcription_common import (
     BUILTIN_STT_PROVIDERS, _error_result, _log_prompt_unsupported, _ok_result)
@@ -92,7 +93,7 @@ def _transcribe_command_stt(
     try:
         with tempfile.TemporaryDirectory(prefix=f"hermes-cmd-stt-{provider_name}-") as tmpdir:
             output_path = Path(tmpdir) / f"transcript.{output_format}"
-            command = _render_command_stt_template(command_template, {
+            command = _build_command_stt_argv(command_template, {
                 "input_path": str(audio.resolve()), "output_path": str(output_path),
                 "output_dir": str(output_path.parent), "format": output_format,
                 "language": str(language), "model": str(model_override or config.get("model") or ""),

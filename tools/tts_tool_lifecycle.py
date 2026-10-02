@@ -20,8 +20,8 @@ from agent.memory_provider import ctx_bound
 from tools import tts_command_provider
 from tools.tts_command_provider import (
     BUILTIN_TTS_PROVIDERS, _get_command_tts_timeout, _get_named_provider_config,
-    _is_command_provider_config, command_env_passthrough as _command_provider_env_passthrough,
-    render_command_template as _render_command_tts_template)
+    _is_command_provider_config, build_command_argv as _build_command_tts_argv,
+    command_env_passthrough as _command_provider_env_passthrough)
 from tools.tts_tool_delivery import _origin
 from tools.tts_tool_local import (
     _LOCAL_TTS_MODEL_CACHES, _load_kittentts_model_for_config, _load_piper_voice_for_config)
@@ -63,7 +63,7 @@ def _signal_user_tts_provider(name: str, tts_config: Dict[str, Any], hook: str) 
             template = str(cfg.get(f"{hook}_command") or "").strip()
             if not template:
                 return None
-            command = _render_command_tts_template(template, {
+            command = _build_command_tts_argv(template, {
                 "voice": str(cfg.get("voice", "")),
                 "model": str(cfg.get("model", "")),
                 "speed": str(cfg.get("speed", tts_config.get("speed", "")))})

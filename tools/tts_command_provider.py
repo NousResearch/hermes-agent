@@ -1,12 +1,17 @@
-"""Shared runner for user-configured shell ("command") TTS/STT providers.
+"""Shared runner for user-configured ("command") TTS/STT providers.
 
-``tts.providers.<name>: {type: command, command: "piper -f {output_path} < {input_path}"}``
-(and the ``stt.`` twin): ``{placeholders}`` are shell-quoted for their surrounding quote
-context, ``{{``/``}}`` stay literal. Owns the quote-aware rendering, the idle-timeout
-process runner and the generic ``<section>.providers.<name>`` readers, re-imported by
+``tts.providers.<name>: {type: command, command: "voxcpm --text-file {input_path} --out {output_path}"}``
+(and the ``stt.`` twin): templates are tokenized before ``{placeholders}`` are substituted,
+so every value remains one argv element; ``{{``/``}}`` stay literal. Owns argv construction,
+the idle-timeout process runner and the generic ``<section>.providers.<name>`` readers, re-imported by
 ``tts_tool``/``transcription_tools`` under their historical private names. TTS placeholders:
 ``{input_path}``/``{text_path}``, ``{output_path}``, ``{format}``, ``{voice}``, ``{model}``,
 ``{speed}``. Built-in provider names always win over a same-named ``providers`` entry.
+
+Commands are tokenized into an argv list and executed WITHOUT a shell (Aikido #414):
+shell operators (``|``, ``>``, ``<``, ``&&``, ``;``) and ``$VAR``/``%VAR%`` reach the
+program as literal arguments, so stdin/stdout redirects and pipelines are not
+available — engines that read stdin need a small wrapper script.
 """
 
 from __future__ import annotations
@@ -21,7 +26,7 @@ import threading
 import time
 from functools import partial
 from pathlib import Path
-from typing import Any, Dict, FrozenSet, Optional
+from typing import Any, Dict, FrozenSet, Optional, Sequence
 
 from utils import is_truthy_value
 
@@ -79,6 +84,105 @@ def render_command_template(command_template: str, placeholders: Dict[str, str])
     return rendered
 
 
+def _split_windows_commandline(command: str) -> list[str]:
+    """Split a Microsoft C-runtime command line without invoking ``cmd.exe``."""
+    argv: list[str] = []
+    length = len(command)
+    index = 0
+    while index < length:
+        while index < length and command[index] in " \t":
+            index += 1
+        if index >= length:
+            break
+
+        argument: list[str] = []
+        in_quotes = False
+        while index < length:
+            if command[index] in " \t" and not in_quotes:
+                break
+
+            backslashes = 0
+            while index < length and command[index] == "\\":
+                backslashes += 1
+                index += 1
+            if index < length and command[index] == '"':
+                argument.extend("\\" * (backslashes // 2))
+                if backslashes % 2:
+                    argument.append('"')
+                    index += 1
+                elif in_quotes and index + 1 < length and command[index + 1] == '"':
+                    argument.append('"')
+                    index += 2
+                else:
+                    in_quotes = not in_quotes
+                    index += 1
+                continue
+
+            argument.extend("\\" * backslashes)
+            if index >= length or (command[index] in " \t" and not in_quotes):
+                break
+            argument.append(command[index])
+            index += 1
+
+        argv.append("".join(argument))
+        while index < length and command[index] in " \t":
+            index += 1
+    return argv
+
+
+def build_command_argv(
+    command_template: str, placeholders: Dict[str, str], *, windows: Optional[bool] = None,
+) -> list[str]:
+    """Parse a template first, then substitute each placeholder inside its argv element.
+
+    Parsing before substitution keeps spaces, quotes, backslashes, empty values, and
+    shell metacharacters in placeholder values as data instead of command syntax.
+    ``windows`` is explicit for pure construction tests; production uses the host OS.
+    """
+    replacements: list[tuple[str, str]] = []
+    protected = command_template
+    if placeholders:
+        names = "|".join(re.escape(name) for name in placeholders)
+        pattern = re.compile(rf"(?<!\$)(?:\{{\{{(?P<double>{names})\}}\}}|\{{(?P<single>{names})\}})")
+
+        def protect_match(match: re.Match[str]) -> str:
+            name = match.group("double") or match.group("single")
+            token = f"\x00HERMES_CMD_PLACEHOLDER_{len(replacements)}\x00"
+            replacements.append((token, str(placeholders[name])))
+            return token
+
+        protected = pattern.sub(protect_match, protected)
+    protected = protected.replace("{{", "{").replace("}}", "}")
+    use_windows = os.name == "nt" if windows is None else windows
+    argv = _split_windows_commandline(protected) if use_windows else shlex.split(protected, posix=True)
+    for token, value in replacements:
+        argv = [argument.replace(token, value) for argument in argv]
+    return argv
+
+
+def _resolved_command_argv(argv: Sequence[str], env: Dict[str, str]) -> list[str]:
+    """Resolve argv[0] against the child's PATH and reject Windows batch shells."""
+    if not argv or not argv[0]:
+        raise OSError("Command provider command must name an executable")
+    from hermes_platform.resolver import LookupContext, locate_command
+
+    prepared = list(argv)
+    executable = prepared[0]
+    if os.sep not in executable and not (os.altsep and os.altsep in executable):
+        resolution = locate_command(
+            executable,
+            LookupContext(path=env.get("PATH", ""), pathext=env.get("PATHEXT")),
+        )
+        if resolution.command:
+            prepared[0] = resolution.command[0]
+    if os.name == "nt" and Path(prepared[0]).suffix.lower() in {".bat", ".cmd"}:
+        raise OSError(
+            "Windows command providers cannot execute .cmd or .bat files without re-entering cmd.exe; "
+            "configure an .exe or direct interpreter command instead"
+        )
+    return prepared
+
+
 def _signal_process_tree(psutil: Any, proc: subprocess.Popen, method: str) -> None:
     """Apply ``terminate``/``kill`` to *proc* and all descendants (best effort)."""
     try:
@@ -96,7 +200,7 @@ def _signal_process_tree(psutil: Any, proc: subprocess.Popen, method: str) -> No
 
 
 def terminate_command_process_tree(proc: subprocess.Popen) -> None:
-    """Best-effort termination of a shell process and all of its children."""
+    """Best-effort termination of a provider process and all of its children."""
     if proc.poll() is not None:
         return
     if os.name == "nt":
@@ -110,7 +214,7 @@ def terminate_command_process_tree(proc: subprocess.Popen) -> None:
         import psutil  # type: ignore
     except ImportError:
         psutil = None
-    # Without psutil only the shell itself is signalled (children may survive).
+    # Without psutil only the provider itself is signalled (children may survive).
     signal = ((lambda m: getattr(proc, m)()) if psutil is None
               else (lambda m: _signal_process_tree(psutil, proc, m)))
     signal("terminate")
@@ -133,12 +237,17 @@ def command_failure_detail(exc: subprocess.CalledProcessError) -> str:
 
 
 def run_command_provider(
-    command: str, timeout: float, env_passthrough: Optional[list] = None,
+    command: str | Sequence[str], timeout: float, env_passthrough: Optional[list] = None,
 ) -> subprocess.CompletedProcess:
-    """Run a command-provider shell command with process-tree idle cleanup.
+    """Run a command-provider command with process-tree idle cleanup.
     ``timeout`` is an IDLE timeout, reset whenever the command emits output — a slow-but-alive
     provider survives, a silently stalled one is killed. Child env is scrubbed of Hermes secrets
-    while propagating delegated-child lineage markers."""
+    while propagating delegated-child lineage markers.
+
+    The command string is tokenized into an argv list and executed WITHOUT a shell
+    (Aikido #414, same policy as the ``HERMES_LOCAL_STT_COMMAND`` path): shell
+    operators and variable expansion are passed through as literal arguments.
+    """
     from agent.delegation_context import delegated_child_subprocess_env
     from tools.env_passthrough import resolve_passthrough_value
     from tools.environments.local import hermes_subprocess_env
@@ -149,11 +258,13 @@ def run_command_provider(
         value = resolve_passthrough_value(key, os.environ.get(key))
         if value is not None:
             scrubbed[key] = value
+    argv = build_command_argv(command, {}) if isinstance(command, str) else list(command)
+    argv = _resolved_command_argv(argv, scrubbed)
     # Own process group so the whole tree can be signalled on idle timeout. Lossy UTF-8 decode:
     # locale-mismatched bytes must not raise in the reader threads.
     group = ({"creationflags": getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)} if os.name == "nt"
              else {"start_new_session": True})
-    proc = subprocess.Popen(command, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+    proc = subprocess.Popen(argv, shell=False, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                             text=True, encoding="utf-8", errors="replace", env=delegated_child_subprocess_env(scrubbed),
                             stdin=subprocess.DEVNULL, **group)
     output_queue: "queue.Queue[tuple[str, Optional[str]]]" = queue.Queue()
@@ -312,7 +423,7 @@ def _configured_command_tts_output_path(path: Path, config: Dict[str, Any]) -> P
 def _generate_command_tts(
     text: str, output_path: str, provider_name: str, config: Dict[str, Any], tts_config: Dict[str, Any],
 ) -> str:
-    """Generate speech by running a user-configured shell command; returns the audio path it wrote.
+    """Generate speech by running a user-configured command; returns the audio path it wrote.
     Raises ``ValueError`` for bad provider config, ``RuntimeError`` for timeouts / bad exits / no output."""
     command_template = str(config.get("command") or "").strip()
     if not command_template:
@@ -331,7 +442,7 @@ def _generate_command_tts(
             "voice": str(config.get("voice", "")), "model": str(config.get("model", "")),
             "speed": str(config.get("speed", tts_config.get("speed", ""))),
         }
-        command = render_command_template(command_template, placeholders)
+        command = build_command_argv(command_template, placeholders)
         try:
             run_command_provider(command, timeout, env_passthrough=command_env_passthrough(config))
         except subprocess.TimeoutExpired as exc:

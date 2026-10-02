@@ -137,6 +137,12 @@ class BrowserUseBrowserProvider(CloudBrowserProvider):
         payload = (
             {"timeout": _DEFAULT_MANAGED_TIMEOUT_MINUTES, "proxyCountryCode": _DEFAULT_MANAGED_PROXY_COUNTRY_CODE}
             if managed_mode else {})
+        if not managed_mode:
+            # Profiles live in the user's own Browser Use account, so only direct-API sessions use one.
+            from tools.browser_use_cli import configured_browser_use_profile_id
+            profile_id = configured_browser_use_profile_id()
+            if profile_id:
+                payload["profileId"] = profile_id
         # Managed mode propagates network errors raw (retry with the preserved key); direct wraps them.
         response = self._post_create(
             f"{config['base_url']}/browsers", headers, payload, wrap_errors=not managed_mode)

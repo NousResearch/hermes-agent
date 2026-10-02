@@ -13,7 +13,6 @@ Nothing here joins a call. Binding happens when something else joins one, which 
 
 from __future__ import annotations
 
-import copy
 import logging
 import time
 from contextlib import nullcontext, suppress
@@ -23,6 +22,7 @@ from typing import Callable, Optional
 
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.session import SessionSource
+from gateway.session_identity import canonical_identity, clear_identity, identity_of, replace_source
 
 logger = logging.getLogger(__name__)
 
@@ -40,6 +40,8 @@ class _CallBinding:
     api: object
     account: tuple
     home: Path
+    physical_home: Path
+    physical_authorization_home: Optional[Path]
 
 
 def _source_fields(source: SessionSource) -> tuple:
@@ -99,9 +101,11 @@ class MatrixRTCSessions:
         runner = getattr(adapter, "gateway_runner", None)
         resolve = getattr(runner, "_resolve_profile_home_for_source", None)
         home = Path(resolve(source) if resolve else get_hermes_home())
+        identity = identity_of(source)
+        authorization_home = identity.authorization_home.resolve() if identity is not None else None
         self._bindings[room_id] = _CallBinding(
             source, _source_fields(source), client, getattr(client, "api", None),
-            self._account(), home)
+            self._account(), home, home.resolve(), authorization_home)
         self.invalidate(room_id)
         logger.info("MatrixRTC: call in %s bound to %s", room_id, source.description)
 
@@ -112,23 +116,39 @@ class MatrixRTCSessions:
         if self._sources.pop(room_id, None) is not None:
             logger.info("MatrixRTC: call in %s unbound", room_id)
 
+    def _speaker_source(self, bound: SessionSource, user_id: str,
+                        user_name: Optional[str] = None) -> Optional[SessionSource]:
+        source = replace_source(bound, user_id=user_id, user_name=user_name or user_id,
+                                role_authorized=False)
+        runner = getattr(self._adapter, "gateway_runner", None)
+        if callable(getattr(runner, "_canonicalize", None)):
+            registered, _profile = runner._owning_profile(self._adapter, source.platform)
+            if not registered:
+                return None
+            clear_identity(source)
+            if canonical_identity(source, runner=runner, adapter=self._adapter) is None:
+                return None
+        return source
+
     def source_for(self, room_id: str, user_id: str,
                    user_name: Optional[str] = None) -> Optional[SessionSource]:
-        """The bound source with *this speaker* stamped on it, or None when unbound.
-
-        ``copy.copy`` rather than ``dataclasses.replace``: the transport-adapter weakref
-        that authorization delegation reads is set after construction, so rebuilding
-        through ``__init__`` would silently drop it.
-        """
-        bound = self._sources.get(room_id)
-        if bound is None:
+        """Return the current speaker source only within the call's original profile."""
+        if not self.current(room_id):
             return None
-        source = copy.copy(bound)
-        source.user_id = user_id
-        source.user_name = user_name or user_id
-        if user_id != bound.user_id:
-            source.role_authorized = False
+        binding = self._bindings[room_id]
+        source = self._speaker_source(binding.source, user_id, user_name)
+        if source is None or not self._same_home(source, binding):
+            return None
         return source
+
+    def _same_home(self, source: SessionSource, binding: _CallBinding) -> bool:
+        runner = getattr(self._adapter, "gateway_runner", None)
+        resolve = getattr(runner, "_resolve_profile_home_for_source", None)
+        home = Path(resolve(source)) if resolve is not None else binding.home
+        identity = identity_of(source)
+        authorization_home = identity.authorization_home.resolve() if identity is not None else None
+        return (home == binding.home and home.resolve() == binding.physical_home
+                and authorization_home == binding.physical_authorization_home)
 
     # --- authorization ---
 
@@ -141,7 +161,7 @@ class MatrixRTCSessions:
 
     def scope_for(self, room_id: str):
         binding = self._bindings.get(room_id)
-        if binding is None:
+        if binding is None or not self.current(room_id):
             return nullcontext()
         from gateway.run import _profile_runtime_scope
         return _profile_runtime_scope(binding.home)
@@ -168,8 +188,8 @@ class MatrixRTCSessions:
         delivery = getattr(runner, "_delivery_adapter_for", None)
         if delivery is not None and delivery(bound.source) is not adapter:
             return False
-        resolve = getattr(runner, "_resolve_profile_home_for_source", None)
-        return resolve is None or Path(resolve(bound.source)) == bound.home
+        source = self._speaker_source(bound.source, bound.source.user_id)
+        return source is not None and self._same_home(source, bound)
 
     def is_authorized(self, room_id: str, identity: str) -> bool:
         """Allowlist verdict for one LiveKit participant."""
@@ -225,7 +245,8 @@ class MatrixRTCSessions:
             logger.debug("MatrixRTC: %s not in MATRIX_ALLOWED_ROOMS, dropping audio", room_id)
             return False
         bound = self._sources[room_id]
-        return self._user_allowed(bound) and self._user_allowed(source)
+        requester = self._speaker_source(bound, bound.user_id)
+        return requester is not None and self._user_allowed(requester) and self._user_allowed(source)
 
     def _user_allowed(self, source: SessionSource) -> bool:
         """The gateway's full allowlist policy, which resolves MATRIX_ALLOWED_USERS through

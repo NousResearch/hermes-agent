@@ -3,6 +3,7 @@
 import asyncio
 import subprocess
 import sys
+from types import ModuleType
 from datetime import datetime
 from unittest.mock import AsyncMock
 
@@ -10,6 +11,15 @@ import pytest
 
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.event import MessageEvent
+
+
+@pytest.fixture(scope="module", autouse=True)
+def _use_installed_discord_sdk():
+    with pytest.MonkeyPatch.context() as patch:
+        for name in ("discord", "discord.ext", "discord.ext.commands"):
+            if name in sys.modules and not isinstance(sys.modules[name], ModuleType):
+                patch.delitem(sys.modules, name)
+        yield
 
 
 def test_native_deletion_domain_imports_before_platform_modules():
@@ -133,3 +143,83 @@ async def test_registered_native_deletion_preserves_other_scopes(platform, bulk,
         if platform == Platform.DISCORD:
             await adapter._cancel_bot_task()
             await adapter._client.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("notification", ["single", "bulk", "wrong-guild", "wrong-parent", "thread-message"])
+async def test_raw_deletion_uses_the_origin_channel_of_auto_thread_input(notification, monkeypatch):
+    discord = pytest.importorskip("discord")
+    import plugins.platforms.discord.adapter as module
+
+    adapter = module.DiscordAdapter(PlatformConfig(enabled=True, token="test", extra={
+        "require_mention": False, "history_backfill": False, "auto_thread": True}))
+    adapter._slash_commands = False
+    adapter._text_batch_delay_seconds = 60
+    monkeypatch.setattr(adapter, "_acquire_platform_lock", lambda *args: True)
+    monkeypatch.setattr(module, "_wait_for_ready_or_bot_exit", AsyncMock())
+
+    async def wait_for_close(*args):
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(module.commands.Bot, "start", wait_for_close)
+    monkeypatch.setattr(adapter, "_start_liveness_probe", lambda: None)
+    monkeypatch.setattr(adapter, "_wire_plugin_handlers", lambda client: None)
+    assert await adapter.connect()
+    await adapter._client._async_setup_hook()
+    state = adapter._client._connection
+    guild = discord.Guild(data={"id": "999", "name": "test", "owner_id": "333"}, state=state)
+    state._guilds[guild.id] = guild
+    parent = discord.TextChannel(state=state, guild=guild, data={
+        "id": "444", "type": 0, "name": "parent", "position": 0, "permission_overwrites": []})
+    guild._channels[parent.id] = parent
+    thread_data = {
+        "id": "101", "type": 11, "name": "new-thread", "parent_id": "444",
+        "owner_id": "333", "message_count": 0, "member_count": 1,
+        "thread_metadata": {"archived": False, "auto_archive_duration": 1440,
+            "archive_timestamp": "2026-10-02T00:00:00+00:00", "locked": False}}
+    create_thread = AsyncMock(return_value=thread_data)
+    monkeypatch.setattr(state.http, "start_thread_with_message", create_thread)
+    message = discord.Message(state=state, channel=parent, data={
+        "id": "101", "type": 0, "content": "start a task", "attachments": [], "embeds": [],
+        "mentions": [], "mention_roles": [], "author": {"id": "333", "username": "sender", "discriminator": "0", "avatar": None}})
+    ordinary = MessageEvent(text="thread reply", message_id="202", source=adapter.build_source(
+        chat_id="101", chat_type="thread", thread_id="101", parent_chat_id="444", guild_id="999", user_id="333"))
+    adapter._pending_messages["ordinary"] = ordinary
+    try:
+        assert await adapter._handle_message(message)
+        create_thread.assert_awaited_once()
+        queued = next(iter(adapter._pending_text_batches.values()))
+        origin = {
+            "chat_id": queued.source.chat_id,
+            "parent_chat_id": queued.source.parent_chat_id,
+            "thread_id": queued.source.thread_id,
+            "auto_thread_created": queued.source.auto_thread_created,
+            "scope_id": queued.source.scope_id,
+            "message_id": queued.message_id,
+        }
+        dispatched = []
+        monkeypatch.setattr(state, "dispatch", lambda *args: dispatched.append(args))
+        data = {"channel_id": "777" if notification == "wrong-parent" else "444",
+                "guild_id": "888" if notification == "wrong-guild" else "999"}
+        if notification == "bulk":
+            data["ids"] = ["101"]
+            state.parse_message_delete_bulk(data)
+        else:
+            data["id"] = "202" if notification == "thread-message" else "101"
+            state.parse_message_delete(data)
+        for event_name, payload in dispatched:
+            callback = getattr(adapter._client, f"on_{event_name}", None)
+            if callback:
+                await callback(payload)
+        pending = [*adapter._pending_text_batches.values(), *adapter._pending_messages.values()]
+        assert {"origin": origin, "pending_ids": sorted(event.message_id for event in pending)} == {
+            "origin": {"chat_id": "101", "parent_chat_id": "444", "thread_id": "101",
+                       "auto_thread_created": True, "scope_id": "999", "message_id": "101"},
+            "pending_ids": ["202"] if notification in {"single", "bulk"} else ["101", "202"],
+        }
+    finally:
+        for task in adapter._pending_text_batch_tasks.values():
+            task.cancel()
+        await asyncio.gather(*adapter._pending_text_batch_tasks.values(), return_exceptions=True)
+        await adapter._cancel_bot_task()
+        await adapter._client.close()

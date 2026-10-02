@@ -1907,6 +1907,20 @@ class GatewayTurnMixin:
             touch_activity=not bool(getattr(event, "internal", False)),
         )
 
+        # Discord context-presence: show this session's context-window usage
+        # as the bot's member-pane activity after every completed turn.
+        # Fire-and-forget and fail-silent.
+        try:
+            if getattr(source.platform, "value", "") == "discord":
+                _disc = self.adapters.get(Platform.DISCORD)
+                if _disc is not None and hasattr(_disc, "update_context_presence"):
+                    _disc.update_context_presence(
+                        agent_result.get("last_prompt_tokens", 0) or 0,
+                        agent_result.get("context_length", 0) or 0,
+                    )
+        except Exception:
+            pass
+
         # Re-baseline the cached agent's message_count now that ALL of this turn's writes are done:
         # the coherence guard snapshots at agent-BUILD time, so our own writes would otherwise
         # trigger a rebuild next turn (destroying prompt caching).

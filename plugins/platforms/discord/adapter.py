@@ -2220,6 +2220,74 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         except Exception as e:  # pragma: no cover - defensive logging
             logger.warning("[%s] Slash command sync failed: %s", self.name, e, exc_info=True)
 
+    # ── Context-usage presence (member-pane activity) ────────────────────
+    # https://github.com/Robbbbbbbbb/
+    # After each agent turn the gateway calls update_context_presence() with
+    # the API-reported prompt tokens and the model's context window.  We
+    # render "Playing <pct>% - <used>k / <total>k" (e.g. "12% - 108.4k / 900k")
+    # so anyone in the server can see session load in the member pane.  Config:
+    # discord.show_context_presence (YAML) / DISCORD_SHOW_CONTEXT_PRESENCE
+    # (env); on by default, any off-value disables updates and scheduling.
+    #
+    # discord.py needs NO privileged intent for change_presence().  Discord
+    # rate-limits presence updates (5/burst); updates are already turn-spaced,
+    # but we coalesce rapid calls with a short debounce so multi-recipient
+    # turns (one turn touching two chats) can't double-send.
+
+    def _context_presence_enabled(self) -> bool:
+        return self._extra_or_env_flag(
+            "show_context_presence", "DISCORD_SHOW_CONTEXT_PRESENCE", "true", truthy=True
+        )
+
+    def update_context_presence(self, prompt_tokens: int, context_length: int) -> None:
+        """Fire-and-forget presence refresh; called from the turn-complete path.
+
+        Safe to call from any task; never raises.  A zero/absent context
+        length (first turn before warm-up) shows the raw token count only.
+        """
+        try:
+            if not self._context_presence_enabled():
+                return
+            tokens = int(prompt_tokens or 0)
+            length = int(context_length or 0)
+            if length > 0:
+                pct = min(100, round(tokens * 100 / length))
+                name = f"{pct}% - {tokens/1000:.1f}k / {length/1000:.0f}k"
+            else:
+                name = f"{tokens/1000:.1f}k ctx"
+            self._presence_wanted = name[:128]
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return  # no loop on this thread; drop the update
+        except Exception:
+            return
+        try:
+            task = getattr(self, "_presence_task", None)
+            if task is not None and not task.done():
+                task.cancel()
+            self._presence_task = loop.create_task(self._push_context_presence())
+        except Exception:
+            pass
+
+    async def _push_context_presence(self) -> None:
+        await asyncio.sleep(1.0)  # coalesce same-turn double-fires
+        client = self._client
+        wanted = getattr(self, "_presence_wanted", None)
+        if client is None or wanted is None or client.is_closed():
+            return
+        try:
+            from discord import Activity, ActivityType, Status
+            # Playing renders everywhere; CustomActivity ("about me") text is
+            # hidden from non-Nitro viewers, so it's useless for this surface.
+            await client.change_presence(
+                activity=Activity(type=ActivityType.playing, name=wanted),
+                status=Status.online,
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.debug("[%s] presence update failed: %s", self.name, e)
+
     def _missed_message_backfill_enabled(self) -> bool:
         """Whether to reconcile Discord messages missed while the gateway was down."""
         configured = self.config.extra.get("missed_message_backfill")
@@ -7326,6 +7394,7 @@ _YAML_BOOL_ENV_KEYS = (
     ("require_mention", "DISCORD_REQUIRE_MENTION"),
     ("thread_require_mention", "DISCORD_THREAD_REQUIRE_MENTION"),
     ("bots_require_inline_mention", "DISCORD_BOTS_REQUIRE_INLINE_MENTION"),
+    ("show_context_presence", "DISCORD_SHOW_CONTEXT_PRESENCE"),
 )
 # (public websocket_* key, legacy liveness_* alias, env bridge var)
 _YAML_WEBSOCKET_LIVENESS_KEYS = (

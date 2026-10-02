@@ -137,10 +137,12 @@ gateway under the backend, and do NOT "fix" update locks by widening the tree-ki
   answers "which bot received it / who may admit it / where does it run" ONCE per event and pins a
   frozen `RoutingIdentity` on the source (wire-invisible, like `_transport_adapter_ref`). Every
   ingress path calls the canonicalize seam before it derives a key: the adapter side
-  (`platforms/base.py::_canonicalize` — `handle_message`, `_enqueue_text_event`, Telegram photo /
-  album routing, `_handle_message_while_active`, every `_source_session_key`) and the runner side
+  (`platforms/base.py::_canonicalize` — `handle_message`,
+  `platforms/base_text_batching.py::_enqueue_text_event`, Telegram photo /
+  album routing, every `_source_session_key`, and
+  `platforms/base_busy.py::_handle_message_while_active`) and the runner side
   (`run_adapters.py::_canonicalize` — the per-profile / default message, busy and platform-event
-  handlers, the adapter auth-check callback, `run_inbound.py::_hm_admit_event`). No key derivation
+  handlers, the adapter auth-check callback, `run_inbound_admission.py::_hm_admit_event`). No key derivation
   before it; an unresolved identity under multiplexing (route to an unserved profile) is dropped
   with one WARNING at the first seam it reaches, never keyed into `agent:main`. `_transport_owner`,
   `_authorization_home_for_source`, `_resolve_profile_home_for_source`, `_session_key_profile` and

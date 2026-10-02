@@ -1050,7 +1050,13 @@ def _read_discord_prompt_timeout() -> int:
 from plugins.platforms.discord.adapter_media import DiscordMediaMixin
 
 
-class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
+from plugins.platforms.discord.inbound_context import DiscordInboundContextMixin
+
+
+from plugins.platforms.discord.platform_events import DiscordPlatformEventsMixin
+
+
+class DiscordAdapter(DiscordPlatformEventsMixin, DiscordInboundContextMixin, DiscordMediaMixin, BasePlatformAdapter):
     """Discord bot adapter: guild/DM messages, threads, slash commands, button approvals, reactions."""
 
     MAX_MESSAGE_LENGTH = 2000
@@ -1370,6 +1376,14 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                 await adapter_self._on_platform_message_delete(message)
 
             @self._client.event
+            async def on_raw_message_delete(payload):
+                await adapter_self._on_raw_message_delete(payload)
+
+            @self._client.event
+            async def on_raw_bulk_message_delete(payload):
+                await adapter_self._on_raw_bulk_message_delete(payload)
+
+            @self._client.event
             async def on_thread_create(thread):
                 await adapter_self._on_platform_thread_create(thread)
 
@@ -1575,149 +1589,16 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
 
     # --- gateway_platform_event fire-sites ---
 
-    def _thread_id_and_chat_for_channel(self, channel) -> tuple[Optional[str], Optional[str]]:
-        """Return ``(thread_id, chat_id)``; for a thread chat_id is the thread id (dispatch session key)."""
-        if channel is None:
-            return None, None
-        chan_id = getattr(channel, "id", None)
-        if chan_id is None:
-            return None, None
-        is_thread = isinstance(channel, getattr(discord, "Thread", ()))
-        return (str(chan_id) if is_thread else None), str(chan_id)
 
-    def _source_for_platform_event(
-        self, *, chat_id: str, user_id: Optional[str], user_name: Optional[str],
-        thread_id: Optional[str], guild_id: Optional[str], message_id: Optional[str] = None,
-    ):
-        """Build the SessionSource the gateway authorizes against; missing identity raises (fail closed)."""
-        if not user_id or not chat_id:
-            raise ValueError("gateway_platform_event requires actor and chat identities")
-        return self.build_source(
-            chat_id=chat_id, chat_type="thread" if thread_id else "group", user_id=user_id,
-            user_name=user_name, thread_id=thread_id, guild_id=guild_id, message_id=message_id,
-        )
 
-    async def _fire_platform_event(self, event: Dict[str, Any], source) -> None:
-        """Forward one envelope to the gateway boundary; no callback -> fail closed, errors never escape."""
-        handler = getattr(self, "_platform_event_handler", None)
-        if handler is None:
-            return
-        try:
-            await handler(event, source)
-        except Exception:
-            logger.debug("[%s] gateway_platform_event dispatch error", self.name, exc_info=True)
 
-    @staticmethod
-    def _platform_events_subscribed() -> bool:
-        """has_hook fast-path shared by every Discord fire-site."""
-        try:
-            from hermes_cli.lifecycle import has_hook
-            return has_hook("gateway_platform_event")
-        except Exception:
-            return False
 
-    async def _emit_platform_event(self, event_type: str, build) -> None:
-        """Normalize one event via ``build()`` -> ``(payload, source_kwargs)`` (None drops) and dispatch."""
-        if not self._platform_events_subscribed():
-            return
-        try:
-            built = build()
-            if built is None:
-                return
-            payload, source_kwargs = built
-            event = {"platform": "discord", "event_type": event_type, "payload": payload}
-            source = self._source_for_platform_event(**source_kwargs)
-        except Exception:
-            logger.debug("[%s] %s normalize error", self.name, event_type, exc_info=True)
-            return
-        await self._fire_platform_event(event, source)
 
-    def _message_event_parts(self, message, extra_payload):
-        """Shared normalizer for message edit/delete: (payload, source kwargs) or None."""
-        author = getattr(message, "author", None)
-        if author is not None and getattr(author, "bot", False):
-            return None  # bot's own progressive edits are noise, not user events
-        thread_id, chat_id = self._thread_id_and_chat_for_channel(getattr(message, "channel", None))
-        message_id = getattr(message, "id", None)
-        if chat_id is None or message_id is None:
-            return None
-        guild = getattr(message, "guild", None)
-        payload = {
-            "chat_id": str(chat_id)[:128], "message_id": str(message_id)[:128],
-            "thread_id": thread_id[:128] if thread_id else None, **extra_payload(message, author),
-        }
-        return payload, dict(
-            chat_id=str(chat_id), user_id=str(getattr(author, "id", "") or "") or None,
-            user_name=getattr(author, "display_name", None), thread_id=thread_id,
-            guild_id=str(getattr(guild, "id", "")) if guild else None, message_id=str(message_id),
-        )
 
-    @staticmethod
-    def _thread_event_parts(thread, extra_payload):
-        """Shared normalizer for thread create/rename; the owner is the authorized actor
-        because Discord's event carries none (same trade-off as ``message_deleted``)."""
-        thread_id = getattr(thread, "id", None)
-        owner_id = getattr(thread, "owner_id", None)
-        if thread_id is None:
-            return None
-        parent_id = getattr(thread, "parent_id", None)
-        guild = getattr(thread, "guild", None)
-        payload = {
-            "thread_id": str(thread_id)[:128],
-            "parent_chat_id": str(parent_id)[:128] if parent_id is not None else None,
-            **extra_payload(thread, owner_id),
-        }
-        return payload, dict(
-            chat_id=str(thread_id), user_id=str(owner_id) if owner_id is not None else None,
-            user_name=None, thread_id=str(thread_id),
-            guild_id=str(getattr(guild, "id", "")) if guild else None,
-        )
 
-    async def _on_platform_message_edit(self, before, after) -> None:
-        """Normalize ``on_message_edit`` into event_type ``message_edited``."""
-        def _extra(message, author):
-            text = getattr(message, "content", None)
-            edited_at = getattr(message, "edited_at", None)
-            return {
-                "text": text[:8192] if isinstance(text, str) else None,
-                "edited_at": (
-                    str(edited_at.isoformat())[:64]
-                    if edited_at is not None and hasattr(edited_at, "isoformat")
-                    else None
-                ),
-            }
-        message = after if after is not None else before
-        await self._emit_platform_event("message_edited", lambda: self._message_event_parts(message, _extra))
 
-    async def _on_platform_message_delete(self, message) -> None:
-        """Normalize ``on_message_delete`` into ``message_deleted``. Discord omits the
-        deleter, so the author (the only cached identity) is the source; uncached deletions never fire."""
-        def _extra(message, author):
-            return {"author_id": str(getattr(author, "id", "") or "")[:128] or None}
-        await self._emit_platform_event("message_deleted", lambda: self._message_event_parts(message, _extra))
 
-    async def _on_platform_thread_create(self, thread) -> None:
-        """Normalize ``on_thread_create`` into event_type ``thread_created``."""
-        def _extra(thread, owner_id):
-            name = getattr(thread, "name", None)
-            return {
-                "name": name[:256] if isinstance(name, str) else None,
-                "owner_id": str(owner_id)[:128] if owner_id is not None else None,
-            }
-        await self._emit_platform_event("thread_created", lambda: self._thread_event_parts(thread, _extra))
 
-    async def _on_platform_thread_update(self, before, after) -> None:
-        """Normalize ``on_thread_update`` renames into ``thread_renamed``; non-rename updates are dropped."""
-        def _build():
-            old_name = getattr(before, "name", None)
-            new_name = getattr(after, "name", None)
-            if old_name == new_name or not isinstance(new_name, str):
-                return None
-            return self._thread_event_parts(after, lambda _t, _o: {
-                "old_name": old_name[:256] if isinstance(old_name, str) else None,
-                "new_name": new_name[:256],
-            })
-        await self._emit_platform_event("thread_renamed", _build)
 
     async def _cancel_bot_task(self) -> None:
         """Cancel and await the background client.start() task, if running."""
@@ -5979,235 +5860,6 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                 return _Snowflake(int(_ref_mid))
         return None
 
-    async def _handle_message(
-        self, message: DiscordMessage, role_authorized: bool = False, *, recovered: bool = False,
-    ) -> bool:
-        """Handle one Discord message and report whether it reached dispatch."""
-        # Server channels (not DMs) require @mention unless free-response or an already-joined thread.
-        #
-        # Config (discord.* in config.yaml or DISCORD_* env vars):
-        #   discord.require_mention: Require @mention in server channels (default: true)
-        #   discord.free_response_channels: Channel IDs where bot responds without mention
-        #   discord.ignored_channels: Channel IDs where bot NEVER responds (even when mentioned)
-        #   discord.allowed_channels: If set, bot ONLY responds in these channels (whitelist)
-        #   discord.no_thread_channels: Channel IDs where bot responds directly without creating thread
-        #   discord.auto_thread: Auto-create thread on @mention in channels (default: true)
-        #   discord.free_response_auto_thread: Free-response channels also auto-thread (default: false)
-        thread_id = None
-        parent_channel_id = None
-        is_thread = isinstance(message.channel, discord.Thread)
-        if is_thread:
-            thread_id = str(message.channel.id)
-            parent_channel_id = self._get_parent_channel_id(message.channel)
-        is_voice_linked_channel = False
-        # Save stripped text now: create_thread() can clobber message.content (breaks /command detection).
-        raw_content = message.content.strip()
-        normalized_content = raw_content
-        mention_prefix = False
-        snapshot_attachments = []
-        if hasattr(message, "message_snapshots") and message.message_snapshots:
-            snapshot_text_parts = []
-            for snap in message.message_snapshots:
-                if getattr(snap, "content", None):
-                    snapshot_text_parts.append(snap.content.strip())
-                snapshot_attachments.extend(getattr(snap, "attachments", []) or [])
-            if snapshot_text_parts and not raw_content:
-                raw_content = "\n".join(snapshot_text_parts)
-                normalized_content = raw_content
-        if self._self_is_explicitly_mentioned(message):
-            mention_prefix = True
-            if self._client.user:
-                normalized_content = normalized_content.replace(f"<@{self._client.user.id}>", "").strip()
-                normalized_content = normalized_content.replace(f"<@!{self._client.user.id}>", "").strip()
-            message.content = normalized_content
-        if not isinstance(message.channel, discord.DMChannel):
-            channel_ids = {str(message.channel.id)}
-            if parent_channel_id:
-                channel_ids.add(parent_channel_id)
-            channel_keys = self._discord_channel_keys(message, parent_channel_id)
-            allowed_channels = self._get_allowed_channels()
-            if allowed_channels:
-                if "*" not in allowed_channels and not (channel_keys & allowed_channels):
-                    logger.debug("[%s] Ignoring message in non-allowed channel: %s", self.name, channel_keys)
-                    return False
-            ignored_channels = self._get_ignored_channels()
-            if "*" in ignored_channels or (channel_keys & ignored_channels):
-                logger.debug("[%s] Ignoring message in ignored channel: %s", self.name, channel_keys)
-                return False
-            free_channels = self._discord_free_response_channels()
-            require_mention = self._discord_require_mention()
-            # Voice-linked text channel is free-response while voice is active (exact channel only).
-            voice_linked_ids = {str(ch_id) for ch_id in self._voice_text_channels.values()}
-            current_channel_id = str(message.channel.id)
-            is_voice_linked_channel = current_channel_id in voice_linked_ids
-            is_free_channel = (
-                "*" in free_channels
-                or bool(channel_keys & free_channels)
-                or is_voice_linked_channel
-            )
-            in_bot_thread = self._in_bot_thread(message)
-            if require_mention and not is_free_channel and not in_bot_thread:
-                if (
-                    not self._self_is_explicitly_mentioned(message)
-                    and not mention_prefix
-                    and not self._is_bot_tag_debounce_continuation(message)
-                ):
-                    return False
-        # Auto-thread: isolate each @mention in a text channel into its own thread (Slack-style).
-        auto_threaded_channel = None
-        if not is_thread and not isinstance(message.channel, discord.DMChannel):
-            no_thread_channels = self._get_no_thread_channels()
-            # Voice-linked and reply exclusions live in the auto-thread gate below, not in skip_thread.
-            skip_thread = bool(channel_keys & no_thread_channels) or (
-                is_free_channel and not self._discord_free_response_auto_thread()
-            )
-            auto_thread = self._extra_or_env_flag("auto_thread", "DISCORD_AUTO_THREAD", "true", truthy=True)
-            is_reply_message = getattr(message, "type", None) == discord.MessageType.reply
-            if auto_thread and not skip_thread and not is_voice_linked_channel and not is_reply_message:
-                thread = await self._auto_create_thread(message)
-                if thread:
-                    parent_channel_id = str(message.channel.id)
-                    is_thread = True
-                    thread_id = str(thread.id)
-                    # Pre-seed dedup: message.create_thread() fires a second MESSAGE_CREATE for the
-                    # starter (id == thread.id, maybe type=default); mark it so it can't trigger a rerun.
-                    # Must run before the first await below: mark_async yields to the loop, and the
-                    # echo's _discord_message_admission would otherwise claim the id first.
-                    self._dedup.is_duplicate(str(thread.id))
-                    auto_threaded_channel = thread
-                    await self._threads.mark_async(thread_id)
-                else:
-                    # Auto-threading is the routing target; do NOT fall back to an inline parent-channel
-                    # reply (dumps the task into a shared channel). Surface an error and skip the run.
-                    try:
-                        # That breaks thread-first Discord workflows by dumping a new task into a shared
-                        # channel. Surface a short visible error so the user can retry once Discord
-                        # recovers, and skip agent invocation for this message. See #20243.
-                        await message.channel.send(
-                            self.warning_text(
-                                t("platform.discord.thread.auto_create_failed"),
-                                t("platform.discord.thread.auto_create_failed_generic"))
-                        )
-                    except Exception as notify_error:
-                        logger.warning(
-                            "[%s] Failed to notify user of auto-thread failure: %s", self.name,
-                            notify_error,
-                        )
-                    return False
-        referenced_attachments = []
-        reference = getattr(message, "reference", None)
-        resolved_reference = getattr(reference, "resolved", None) if reference else None
-        if resolved_reference is not None:
-            referenced_attachments = list(getattr(resolved_reference, "attachments", []) or [])
-        all_attachments = list(message.attachments) + snapshot_attachments + referenced_attachments
-        if normalized_content.startswith("/"):
-            msg_type = MessageType.COMMAND
-        elif all_attachments:
-            msg_type = self._attachment_message_type(all_attachments[0])
-        else:
-            msg_type = MessageType.TEXT
-        effective_channel = auto_threaded_channel or message.channel
-        if isinstance(message.channel, discord.DMChannel):
-            chat_type = "dm"
-            chat_name = message.author.name
-        elif is_thread:
-            chat_type = "thread"
-            chat_name = self._format_thread_chat_name(effective_channel)
-        else:
-            chat_type = "group"
-            chat_name = getattr(message.channel, "name", str(message.channel.id))
-            if hasattr(message.channel, "guild") and message.channel.guild:
-                chat_name = f"{message.channel.guild.name} / #{chat_name}"
-        # Channel topic (TextChannels only); forum-parented threads inherit the parent topic.
-        chat_topic = self._get_effective_topic(message.channel, is_thread=is_thread)
-        guild = getattr(message, "guild", None)
-        source = self.build_source(
-            chat_id=str(effective_channel.id),
-            chat_name=chat_name,
-            chat_type=chat_type,
-            user_id=str(message.author.id),
-            user_name=message.author.display_name,
-            thread_id=thread_id,
-            chat_topic=chat_topic,
-            is_bot=getattr(message.author, "bot", False),
-            guild_id=str(guild.id) if guild else None,
-            parent_chat_id=parent_channel_id,
-            message_id=str(message.id),
-            role_authorized=role_authorized,
-            auto_thread_created=auto_threaded_channel is not None,
-            auto_thread_initial_name=(
-                getattr(auto_threaded_channel, "_hermes_auto_thread_initial_name", None)
-                or self._derive_auto_thread_name(message.content or "")
-            ) if auto_threaded_channel is not None else None,
-        )
-        media_urls, media_types, media_text_inlined, pending_text_injection = await self._collect_attachment_media(
-            all_attachments)
-        event_text = normalized_content
-        if pending_text_injection:
-            event_text = f"{pending_text_injection}\n\n{event_text}" if event_text else pending_text_injection
-        # ── History backfill ─────────────────────────────────────────
-        # With require_mention, messages between bot turns never reach the transcript; fetch
-        # history after the bot's last message (cold start: last N, stop at first self-message)
-        # and prepend it. DMs skipped (every DM triggers the bot); in-flight arrivals not captured.
-        _channel_context = None
-        _is_dm = isinstance(message.channel, discord.DMChannel)
-        if not _is_dm and self._discord_history_backfill():
-            # Backfill on a gap: mention-gated channels, any thread (processing/restart gaps), any
-            # reply (hydrate context around the referenced message). DMs/fresh auto-threads: nothing.
-            _has_mention_gap = require_mention and not is_free_channel and not in_bot_thread
-            _is_reply = message.reference is not None
-            if (_has_mention_gap or is_thread or _is_reply) and auto_threaded_channel is None:
-                _backfill_text = await self._fetch_channel_context(
-                    message.channel, before=message,
-                    reply_target=self._reply_target(message.reference) if _is_reply else None,
-                )
-                if _backfill_text:
-                    _channel_context = _backfill_text
-        # Keep empty user messages out of the session; with channel_context a bare mention = "catch me up".
-        if (not event_text or not event_text.strip()) and not _channel_context:
-            # Bare mention-only ping with no media/text/backfill: drop rather than spawn an empty turn.
-            if (mention_prefix and not media_urls and not pending_text_injection):
-                logger.info(
-                    "[%s] Ignoring mention-only message from %s in %s", self.name,
-                    getattr(message.author, "display_name", getattr(message.author, "name", "unknown")),
-                    getattr(message.channel, "id", "unknown"),
-                )
-                return False
-            event_text = "(The user sent a message with no text content)"
-        _chan = message.channel
-        _parent_id = str(getattr(_chan, "parent_id", "") or "")
-        _chan_id = str(getattr(_chan, "id", ""))
-        _skills = self._resolve_channel_skills(_chan_id, _parent_id or None)
-        _channel_prompt = self._resolve_channel_prompt(_chan_id, _parent_id or None)
-        reply_to_id = None
-        reply_to_text = None
-        if message.reference:
-            reply_to_id = str(message.reference.message_id)
-            if message.reference.resolved:
-                reply_to_text = getattr(message.reference.resolved, "content", None) or None
-        event = MessageEvent(
-            text=event_text, message_type=msg_type, source=source, raw_message=message,
-            message_id=str(message.id), media_urls=media_urls, media_types=media_types,
-            media_text_inlined=media_text_inlined,
-            reply_to_message_id=reply_to_id, reply_to_text=reply_to_text,
-            timestamp=message.created_at, auto_skill=_skills, channel_prompt=_channel_prompt,
-            channel_context=_channel_context,
-        )
-        if (
-            getattr(getattr(message, "author", None), "bot", False)
-            and self._is_bot_tag_debounce_continuation(message)
-        ):
-            event._bot_tag_debounce = True  # type: ignore[attr-defined]
-
-        # Track participation so follow-ups in this thread don't need @mention.
-        if thread_id:
-            await self._threads.mark_async(thread_id)
-        # Only live plain text is batched: recovery candidates are complete; coalescing would replay IDs.
-        if (not recovered and msg_type == MessageType.TEXT and self._text_batch_delay_seconds > 0):
-            self._enqueue_text_event(event)
-        else:
-            await self.handle_message(event)
-        return True
 
     def _text_batch_delay_for(self, pending: Optional[MessageEvent]) -> float:
         """A bot handoff's continuation chunks arrive at Discord's send rate (~1/s), so a
@@ -7467,4 +7119,5 @@ def register(ctx) -> None:
         max_message_length=2000,
         emoji="🎮",
         allow_update_command=True,
+        reads_non_conversational_mark=True,
     )

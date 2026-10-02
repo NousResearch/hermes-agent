@@ -10,6 +10,8 @@ old request by text (the card stays visible), queues a new sensitive request,
 and taps the stale card. The new request must stay pending.
 """
 
+from collections import OrderedDict
+from typing import TypedDict
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -19,12 +21,19 @@ from gateway.config import PlatformConfig
 from gateway.platforms.whatsapp_cloud import WhatsAppCloudAdapter
 from gateway.relay.adapter import RelayAdapter
 from gateway.relay.descriptor import CONTRACT_VERSION, CapabilityDescriptor
+from gateway.relay.transport import RelayTransport
 from plugins.platforms.discord.adapter import DiscordAdapter
 from plugins.platforms.slack.adapter import SlackAdapter
 from tests.gateway.relay.stub_connector import StubConnector
 from tests.gateway.relay.test_relay_interactive import _event
 from tools import approval
 from tools.approval_gateway_wait import _ApprovalEntry
+
+
+class _ApprovalIdentityArguments(TypedDict, total=False):
+    metadata: dict[str, str]
+    request_id: str
+
 
 SESSION = "agent:main:discord:group:123"
 
@@ -70,7 +79,7 @@ async def test_native_card_resolves_only_its_exact_current_request(
             sent.update(kwargs)
             return SimpleNamespace(id=42)
 
-        adapter._client = SimpleNamespace(
+        adapter._client = MagicMock(
             get_channel=lambda _: SimpleNamespace(send=send), fetch_channel=AsyncMock()
         )
         adapter._allowed_user_ids = {"123"}
@@ -110,7 +119,7 @@ async def test_native_card_resolves_only_its_exact_current_request(
             )
         ).success
         button = client.chat_postMessage.call_args.kwargs["blocks"][1]["elements"][0]
-        adapter._is_interactive_user_authorized = lambda *a, **kw: True
+        adapter._is_interactive_user_authorized = MagicMock(return_value=True)
         body = {
             "message": {"ts": "1234.1", "blocks": []},
             "channel": {"id": "C1"},
@@ -119,7 +128,7 @@ async def test_native_card_resolves_only_its_exact_current_request(
         await adapter._handle_approval_action(AsyncMock(), body, button)
     elif platform == "whatsapp":
         adapter = WhatsAppCloudAdapter.__new__(WhatsAppCloudAdapter)
-        adapter._exec_approval_state = {}
+        adapter._exec_approval_state = OrderedDict()
         adapter._reply_best_effort = AsyncMock()
         adapter._post_message_result = AsyncMock(
             return_value=SimpleNamespace(success=True)
@@ -148,7 +157,8 @@ async def test_native_card_resolves_only_its_exact_current_request(
             supported_ops=("send", "prompt"),
         )
         stub = StubConnector(descriptor)
-        adapter = RelayAdapter(PlatformConfig(), descriptor, transport=stub)
+        transport = MagicMock(spec=RelayTransport, wraps=stub)
+        adapter = RelayAdapter(PlatformConfig(), descriptor, transport=transport)
         assert (
             await adapter.send_exec_approval(
                 "c1",
@@ -158,7 +168,7 @@ async def test_native_card_resolves_only_its_exact_current_request(
             )
         ).success
         prompt_id = stub.sent[-1]["prompt_id"]
-        adapter._send_lifecycle_ack = lambda *a, **kw: None
+        adapter._send_lifecycle_ack = MagicMock(return_value=None)
         await adapter._consume_prompt_response(
             _event({"prompt_id": prompt_id, "option_id": "once"})
         )
@@ -216,7 +226,7 @@ async def test_native_prompt_identity_is_bound_before_delivery(identity_source):
     adapter._team_clients = {"T1": client}
     adapter._team_bot_user_ids = {"T1": "U_BOT"}
     adapter._channel_team = {"C1": "T1"}
-    arguments = {}
+    arguments: _ApprovalIdentityArguments = {}
     if identity_source in {"metadata", "both", "conflicting"}:
         arguments["metadata"] = {"approval_id": "shown-request"}
     if identity_source in {"keyword", "both", "conflicting"}:

@@ -4418,58 +4418,6 @@ class SlackAdapter(SlackInboundContextMixin, BasePlatformAdapter):
         return text, original_text, command_probe_text, is_command_text
 
 
-    async def _build_message_event(
-        self, event: dict, *, text: str, original_text: str, command_probe_text: str,
-        is_command_text: bool, channel_id: str, team_id: str, ts: str, user_id: str,
-        thread_ts: Optional[str], is_dm: bool, media_urls: list[str], media_types: list[str],
-        media_text_inlined: list[bool], channel_context: Optional[str], reply_expected: Optional[bool] = None) -> MessageEvent:
-        """Resolve names, title the DM thread, and build the ``MessageEvent``. Commands are restored
-        from canonical input: the parser needs the token at char zero and enrichment (blocks,
-        unfurls, file text, history) must never mutate arguments."""
-        if is_command_text:
-            text = command_probe_text
-        msg_type = MessageType.COMMAND if is_command_text else self._media_message_type(media_types)
-        user_name = await self._resolve_user_name(user_id, chat_id=channel_id, team_id=team_id)
-        channel_name = await self._resolve_channel_name(channel_id, team_id=team_id)
-        # Best-effort: title the DM thread from the prompt for Slack's AI Agent Messages tab.
-        if is_dm and thread_ts and msg_type != MessageType.COMMAND:
-            await self._set_assistant_thread_title(
-                channel_id, thread_ts, original_text or text, team_id=team_id)
-        source = self.build_source(
-            chat_id=channel_id,
-            chat_name=channel_name,
-            chat_type="dm" if is_dm else "group",
-            user_id=user_id,
-            user_name=user_name,
-            thread_id=thread_ts,
-            scope_id=str(team_id) if team_id else None,
-            message_id=ts,
-            # Workflow/app posts have user=None; flag them so the SLACK_ALLOW_BOTS bypass can
-            # authorize them. Same predicate as the drop gate (api_human_users stay human).
-            is_bot=self._event_declares_bot_sender(event))
-        from gateway.platforms.base import resolve_channel_skills
-        # Remaining ``<@UID>`` are OTHER participants (own mention stripped
-        # above); render as ``@DisplayName`` so the agent knows who is addressed.
-        text = await self._humanize_user_mentions(text, chat_id=channel_id, team_id=team_id)
-        return MessageEvent(
-            text=(command_probe_text if is_command_text else text),
-            message_type=msg_type,
-            source=source,
-            raw_message=event,
-            message_id=ts,
-            media_urls=media_urls,
-            media_types=media_types,
-            media_text_inlined=media_text_inlined,
-            reply_to_message_id=thread_ts if thread_ts != ts else None,
-            channel_prompt=self._channel_prompt_with_identity(channel_id, team_id),
-            channel_context=channel_context,
-            reply_expected=reply_expected,
-            # thread_ts is the thread root, not an explicit reply (root is in channel_context).
-            reply_to_text=None,
-            auto_skill=resolve_channel_skills(self.config.extra, channel_id, None),
-            metadata={
-                "slack_team_id": team_id, "slack_channel_id": channel_id,
-                "slack_thread_ts": thread_ts})
 
     def _note_attachment_failure(
         self, notices: list[str], detail: Optional[str], fallback_msg: str, *fallback_args: Any,

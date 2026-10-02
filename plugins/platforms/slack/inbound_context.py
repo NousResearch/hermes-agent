@@ -27,11 +27,22 @@ class SlackInboundContextMixin:
 
     async def _handle_slack_message_impl(self: SlackAdapter, event: dict, payload: Optional[dict] = None) -> None:
         """Handle an incoming Slack message event."""
-        from plugins.platforms.slack.adapter import _rewrite_known_bang_command, _slack_mention_detection_text
         accepted = await self._prefilter_inbound(event, payload)
         if accepted is None:
             return
         event, dedup_team_id, channel_id = accepted
+        prepared = await self._prepare_slack_message(event, dedup_team_id, channel_id, payload)
+        if prepared is not None:
+            await self.handle_message(prepared)
+
+    async def _prepare_slack_message(
+        self: SlackAdapter, event: dict, dedup_team_id: str, channel_id: str, payload: Optional[dict] = None,
+    ) -> MessageEvent | None:
+        """Prepare accepted input under the current workspace and channel policy."""
+        from plugins.platforms.slack.adapter import (
+            _rewrite_known_bang_command,
+            _slack_mention_detection_text,
+        )
         original_text = event.get("text", "")
         # Slack rejects slash commands inside threads, so a leading ``!`` is rewritten to ``/``
         # — only for known gateway commands, so "!nice work" passes through.
@@ -145,7 +156,62 @@ class SlackInboundContextMixin:
                 f"{msg_event.text}")
         if ts:
             self._remember_processed_message_ts(ts)
-        await self.handle_message(msg_event)
+        return msg_event
+
+
+    async def _build_message_event(
+        self: SlackAdapter, event: dict, *, text: str, original_text: str, command_probe_text: str,
+        is_command_text: bool, channel_id: str, team_id: str, ts: str, user_id: str,
+        thread_ts: Optional[str], is_dm: bool, media_urls: list[str], media_types: list[str],
+        media_text_inlined: list[bool], channel_context: Optional[str], reply_expected: Optional[bool] = None) -> MessageEvent:
+        """Resolve names, title the DM thread, and build the ``MessageEvent``. Commands are restored
+        from canonical input: the parser needs the token at char zero and enrichment (blocks,
+        unfurls, file text, history) must never mutate arguments."""
+        if is_command_text:
+            text = command_probe_text
+        msg_type = MessageType.COMMAND if is_command_text else self._media_message_type(media_types)
+        user_name = await self._resolve_user_name(user_id, chat_id=channel_id, team_id=team_id)
+        channel_name = await self._resolve_channel_name(channel_id, team_id=team_id)
+        # Best-effort: title the DM thread from the prompt for Slack's AI Agent Messages tab.
+        if is_dm and thread_ts and msg_type != MessageType.COMMAND:
+            await self._set_assistant_thread_title(
+                channel_id, thread_ts, original_text or text, team_id=team_id)
+        source = self.build_source(
+            chat_id=channel_id,
+            chat_name=channel_name,
+            chat_type="dm" if is_dm else "group",
+            user_id=user_id,
+            user_name=user_name,
+            thread_id=thread_ts,
+            scope_id=str(team_id) if team_id else None,
+            message_id=ts,
+            # Workflow/app posts have user=None; flag them so the SLACK_ALLOW_BOTS bypass can
+            # authorize them. Same predicate as the drop gate (api_human_users stay human).
+            is_bot=self._event_declares_bot_sender(event))
+        from gateway.platforms.base import resolve_channel_skills
+        # Remaining ``<@UID>`` are OTHER participants (own mention stripped
+        # above); render as ``@DisplayName`` so the agent knows who is addressed.
+        text = await self._humanize_user_mentions(text, chat_id=channel_id, team_id=team_id)
+        return MessageEvent(
+            text=(command_probe_text if is_command_text else text),
+            message_type=msg_type,
+            source=source,
+            raw_message=event,
+            message_id=ts,
+            media_urls=media_urls,
+            media_types=media_types,
+            media_text_inlined=media_text_inlined,
+            reply_to_message_id=thread_ts if thread_ts != ts else None,
+            channel_prompt=self._channel_prompt_with_identity(channel_id, team_id),
+            channel_context=channel_context,
+            reply_expected=reply_expected,
+            # thread_ts is the thread root, not an explicit reply (root is in channel_context).
+            reply_to_text=None,
+            auto_skill=resolve_channel_skills(self.config.extra, channel_id, None),
+            metadata={
+                "slack_team_id": team_id, "slack_channel_id": channel_id,
+                "slack_thread_ts": thread_ts})
+
 
     @staticmethod
     def _link_unfurl_sections(text: str, slack_attachments: list) -> list[str]:

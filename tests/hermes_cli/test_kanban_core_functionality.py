@@ -1031,6 +1031,98 @@ def test_gateway_dispatcher_disables_corrupt_board_without_traceback(
     assert not any(record.exc_info for record in caplog.records)
 
 
+def test_gateway_dispatcher_applies_max_in_progress_change_without_restart(
+    monkeypatch, tmp_path, caplog
+):
+    """A kanban.max_in_progress edit on disk must reach dispatch_once's
+    max_in_progress kwarg within the SAME watcher run — no restart — per
+    t_add96070: the daemon re-resolves every tick, the embedded dispatcher
+    used to read settings once at boot only.
+    """
+    import asyncio
+    import logging
+
+    from gateway.run import GatewayRunner
+    import hermes_cli.config as _cfg_mod
+    import hermes_cli.kanban_db as _kb
+    from hermes_cli import kanban_db_connect as _kbc
+
+    runner = object.__new__(GatewayRunner)
+    runner._running = True
+    db_path = tmp_path / "kanban.db"
+
+    # Mutable config dict: the resource-controller equivalent mutates this
+    # between ticks the same way `hermes config set` mutates config.yaml.
+    live_cfg = {"kanban": {"dispatch_in_gateway": True, "dispatch_interval_seconds": 1,
+                            "max_in_progress": 3}}
+
+    monkeypatch.setattr(_cfg_mod, "load_config", lambda: live_cfg)
+    monkeypatch.setattr(_kb, "list_boards", lambda include_archived=False: [{"slug": _kb.DEFAULT_BOARD}])
+    monkeypatch.setattr(_kb, "read_board_metadata", lambda slug: {"slug": slug})
+    monkeypatch.setattr(_kb, "kanban_db_path", lambda board=None: db_path)
+
+    seen_max_in_progress = []
+
+    def _connect(*args, **kwargs):
+        class _FakeConn:
+            def close(self):
+                pass
+        return _FakeConn()
+
+    def _fake_dispatch_once(conn, *, board=None, **kwargs):
+        seen_max_in_progress.append(kwargs.get("max_in_progress"))
+        # First tick observed: bump the live config, mimicking a resource
+        # controller writing a new cap mid-run.
+        if len(seen_max_in_progress) == 1:
+            live_cfg["kanban"]["max_in_progress"] = 9
+
+        class _Result:
+            spawned = []
+            reclaimed = 0
+            crashed = []
+            timed_out = []
+            promoted = 0
+            auto_blocked = []
+        return _Result()
+
+    monkeypatch.setattr(_kbc, "connect", _connect)
+    import hermes_cli.kanban_db_dispatch as _kbd_mod
+    monkeypatch.setattr(_kbd_mod, "dispatch_once", _fake_dispatch_once)
+    monkeypatch.setattr(_kbd_mod, "reap_worker_zombies", lambda: [])
+    monkeypatch.setattr(_kbd_mod, "has_spawnable_ready", lambda conn: False)
+    monkeypatch.setattr(_kbd_mod, "review_dispatch_enabled", lambda: False)
+
+    calls = {"to_thread": 0}
+
+    async def _to_thread(fn, *args, **kwargs):
+        calls["to_thread"] += 1
+        result = fn(*args, **kwargs)
+        # 3 to_thread calls/tick (reaper, tick_once, ready_nonempty); stop
+        # after 2 full ticks so both dispatch_once calls are observed.
+        if calls["to_thread"] >= 6:
+            runner._running = False
+        return result
+
+    async def _sleep(_delay):
+        return None
+
+    monkeypatch.setattr("gateway.run.asyncio.to_thread", _to_thread)
+    monkeypatch.setattr("gateway.run.asyncio.sleep", _sleep)
+
+    with caplog.at_level(logging.INFO, logger="gateway.run"):
+        asyncio.run(asyncio.wait_for(runner._kanban_dispatcher_watcher(), timeout=3.0))
+
+    assert seen_max_in_progress == [3, 9], (
+        "the second tick must dispatch with the NEW max_in_progress "
+        f"without a restart; saw {seen_max_in_progress}"
+    )
+    messages = [record.getMessage() for record in caplog.records]
+    assert any("settings changed" in msg for msg in messages), (
+        "a settings change must be logged once (so the resource controller "
+        "and operators can see the effective limit actually moved)"
+    )
+
+
 # ---------------------------------------------------------------------------
 # Hallucination gate (created_cards verify + prose scan)
 # ---------------------------------------------------------------------------

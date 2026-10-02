@@ -200,7 +200,7 @@ def sandbox_settings(config: dict, image: str | None) -> tuple[str, float, int]:
     return str(chosen), float(terminal.get("container_cpu") or 0), int(terminal.get("container_memory") or 0)
 
 
-def cmd_sandbox_run(args) -> int:
+def run_sandbox(args) -> int:
     command = list(args.run_command or [])
     if command[:1] == ["--"]:
         command = command[1:]
@@ -263,9 +263,3 @@ def cmd_sandbox_run(args) -> int:
     finally:
         shutil.rmtree(scratch, ignore_errors=True)
 
-
-def cmd_sandbox(args) -> int:
-    if getattr(args, "sandbox_action", None) == "run":
-        return cmd_sandbox_run(args)
-    args.sandbox_parser.print_help()
-    return 0

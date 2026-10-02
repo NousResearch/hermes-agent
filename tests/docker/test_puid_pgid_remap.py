@@ -12,7 +12,6 @@ from __future__ import annotations
 
 from tests.docker.conftest import docker_exec_sh, start_container
 
-
 def test_puid_pgid_remaps_hermes_user(
     built_image: str, container_name: str,
 ) -> None:
@@ -37,8 +36,15 @@ def test_puid_pgid_remaps_hermes_user(
         f"expected hermes GID 1000 after PGID remap, got: {r.stdout.strip()}"
     )
 
-
-
+    # The remapped user must still be able to write to the data volume.
+    r = docker_exec_sh(
+        container_name,
+        "touch /opt/data/test_write && echo WRITE_OK || echo WRITE_FAIL",
+        timeout=10,
+    )
+    assert "WRITE_OK" in r.stdout, (
+        f"hermes user cannot write to /opt/data after remap: {r.stdout}"
+    )
 
 def test_nas_low_uid_accepted(
     built_image: str, container_name: str,
@@ -54,20 +60,4 @@ def test_nas_low_uid_accepted(
     r = docker_exec_sh(container_name, "id -g hermes", timeout=10)
     assert r.stdout.strip() == "100", (
         f"expected hermes GID 100, got: {r.stdout.strip()}"
-    )
-
-
-def test_remap_enables_data_volume_writes(
-    built_image: str, container_name: str,
-) -> None:
-    """After remap, the hermes user must be able to write to /opt/data."""
-    start_container(built_image, container_name, "PUID=1000", "PGID=1000")
-
-    r = docker_exec_sh(
-        container_name,
-        "touch /opt/data/test_write && echo WRITE_OK || echo WRITE_FAIL",
-        timeout=10,
-    )
-    assert "WRITE_OK" in r.stdout, (
-        f"hermes user cannot write to /opt/data after remap: {r.stdout}"
     )

@@ -386,6 +386,40 @@ export interface Translations {
   };
 
   // ── Logs page ──  /** Optional — Files page copy. */
+  /** Optional — MCP page copy. */
+  mcpPage?: {
+    removeServer: string;
+    removeBodyNamed: string;
+    removeBody: string;
+    close: string;
+    name: string;
+    namePlaceholder: string;
+    transport: string;
+    transportHttp: string;
+    transportStdio: string;
+    url: string;
+    urlPlaceholder: string;
+    authentication: string;
+    authNone: string;
+    authBearer: string;
+    authOauth: string;
+    tokenPlaceholder: string;
+    command: string;
+    commandPlaceholder: string;
+    args: string;
+    argsPlaceholder: string;
+    disabled: string;
+    authenticateOauthTitle: string;
+    authenticate: string;
+    testConnection: string;
+    installed: string;
+    endpoint: string;
+    runs: string;
+    installsFrom: string;
+    enable: string;
+    disable: string;
+  };
+
   /** Optional — Pairing page copy. */
   pairingPage?: {
     revokeAccess: string;

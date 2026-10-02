@@ -5,6 +5,7 @@ import { useMemo, useRef } from 'react'
 import type { ChatMessage } from '@/lib/chat-messages'
 import { withUniqueToolCallIdsWithinMessage } from '@/lib/chat-messages'
 import { coalesceToolOnlyAssistants, createToolMergeCache, toRuntimeMessage } from '@/lib/chat-runtime'
+import { dropDuplicateLiveAssistantRows, dropLiveRowsRepresentedByCommitted } from '@/lib/live-row-dedupe'
 
 // The exact fallback status ExportedMessageRepository.fromBranchableArray uses.
 // Normalization happens HERE, once per message, so the cached record below is
@@ -35,7 +36,16 @@ export function useRuntimeMessageRepository(messages: ChatMessage[]): ExportedMe
     let visibleParentId: string | null = null
     let headId: string | null = null
 
-    for (const message of coalesceToolOnlyAssistants(messages, toolMergeCacheRef.current)) {
+    // One reply, one row. This is the last stop before the transcript renders,
+    // and the windowed list can hold a settled live row beside the committed row
+    // that already carries the same answer - the proven shape in the app log: a
+    // committed row of 240 characters beside a settled live row of 242, both
+    // folding to the same text. Both helpers return the input array untouched
+    // when there is nothing to drop, so the identity cache below is unaffected.
+    for (const message of coalesceToolOnlyAssistants(
+      dropLiveRowsRepresentedByCommitted(dropDuplicateLiveAssistantRows(messages)),
+      toolMergeCacheRef.current
+    )) {
       // A repeated id is a transcript bug upstream, but it must not reach the
       // repository: MessageRepository throws on the second link ("A message
       // with the same id already exists in the parent tree") and takes the

@@ -29,6 +29,7 @@ import {
   chatMessagesEquivalent,
   chatPartsEquivalent,
   dedupeInflightUserAgainstTranscript,
+  dropDuplicateLiveAssistantRows,
   goneSessionVerdict,
   isSessionGoneError,
   overlayConcurrentMessageChanges,
@@ -2243,6 +2244,52 @@ describe('overlayConcurrentMessageChanges', () => {
     expect(overlaid.map(message => [message.id, chatMessageText(message)])).toEqual([
       ['3-user', 'prompt b'],
       ['4-assistant', 'Let me check the config.\nThe answer is 42.']
+    ])
+  })
+})
+
+describe('dropDuplicateLiveAssistantRows', () => {
+  // The shape the diagnostic caught in a restored mid-turn session: the
+  // persisted live turn projected the reply under the stored session id and the
+  // inflight snapshot projected it again under the runtime session id, so one
+  // reply owned two live rows (text lengths 242 and 242 in the app log).
+  it('keeps one live row when two projections carry the same reply', () => {
+    const messages = [
+      msg('3-user', 'user', 'prompt b', { rowId: 3 }),
+      msg('assistant-stream-1790534521580-28', 'assistant', 'The answer is 42.', { pending: false }),
+      msg('assistant-stream-bce59318', 'assistant', 'The answer is 42.\n', { pending: false })
+    ]
+
+    expect(dropDuplicateLiveAssistantRows(messages).map(message => message.id)).toEqual([
+      '3-user',
+      'assistant-stream-1790534521580-28'
+    ])
+  })
+
+  it('keeps the structured live tail and drops only the text-only copy', () => {
+    const messages = [
+      msg('3-user', 'user', 'prompt b', { rowId: 3 }),
+      streamingMsg('assistant-stream-bce59318', 'The answer is 42.'),
+      msg('assistant-stream-1790534521580-28', 'assistant', 'The answer is 42.', { pending: false })
+    ]
+
+    expect(dropDuplicateLiveAssistantRows(messages).map(message => message.id)).toEqual([
+      '3-user',
+      'assistant-stream-bce59318'
+    ])
+  })
+
+  it('leaves committed rows and distinct live replies alone', () => {
+    const messages = [
+      msg('4-assistant', 'assistant', 'Committed answer', { rowId: 4 }),
+      msg('assistant-stream-1-2', 'assistant', 'A different live reply', { pending: false }),
+      msg('assistant-stream-1-3', 'assistant', 'And another', { pending: false })
+    ]
+
+    expect(dropDuplicateLiveAssistantRows(messages).map(message => message.id)).toEqual([
+      '4-assistant',
+      'assistant-stream-1-2',
+      'assistant-stream-1-3'
     ])
   })
 })

@@ -1109,7 +1109,7 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
         if first_progress:
             logger.info("Codex stream first substantive progress at %.3f (attempt=%s/%s, model=%s)",
                 now, attempt + 1, max_stream_retries + 1, model)
-        agent._touch_activity("receiving stream response")
+        agent._touch_activity("接收流式响应")
 
     def _interrupt_or_superseded() -> bool:
         # A retired request must NOT break out of the consume loop (that returns a partial ``final`` with

@@ -298,6 +298,84 @@ export interface Translations {
     toolCalls: string;
     noModelsData: string;
     startSession: string;
+    /**
+     * Optional — Models page panel/modal copy: the settings card, the
+     * auxiliary-task modal, the Mixture-of-Agents editor and the hidden
+     * token-analytics note. Falls back to the English literals; only en/zh
+     * seed it, other locales inherit the merged English base.
+     */
+    page?: {
+      modelSettings: string;
+      appliesNewSessions: string;
+      mainModel: string;
+      auxiliaryTask: string;
+      allAuxiliaryTasks: string;
+      current: string;
+      unset: string;
+      change: string;
+      auxiliaryTasksTitle: string;
+      auxiliaryTasks: string;
+      overridesSummary: string;
+      allAutoSummary: string;
+      configure: string;
+      mixtureOfAgents: string;
+      moaSummary: string;
+      notLoaded: string;
+      setMainModel: string;
+      setAuxiliary: string;
+      expensiveWarning: string;
+      switchAnyway: string;
+      resetAllToAuto: string;
+      auxIntro: string;
+      auxIntroAuto: string;
+      auxIntroTail: string;
+      autoUseMain: string;
+      providerDefault: string;
+      resetAuxTitle: string;
+      resetAuxDescription: string;
+      resetAll: string;
+      close: string;
+      useAs: string;
+      missingProviderModel: string;
+      highPricing: string;
+      contextWindow: string;
+      maxOutput: string;
+      moaTitle: string;
+      moaIntro: string;
+      setDefault: string;
+      newPresetName: string;
+      addPreset: string;
+      defaultLabel: string;
+      referenceModels: string;
+      aggregator: string;
+      addReferenceModel: string;
+      remove: string;
+      selectMoaModel: string;
+      moaRecursiveError: string;
+      tokenHiddenBody: string;
+      tokenHiddenIn: string;
+      tokenHiddenEnable: string;
+      tokenHiddenConfig: string;
+      tokenHiddenTail: string;
+      auxTaskLabels: Record<string, string>;
+      auxTaskHints: Record<string, string>;
+    };
+  };
+
+  /**
+   * Optional — model picker dialog + model reload-confirm copy. Shared by the
+   * Models page and the chat side panel; falls back to the English literals.
+   */
+  modelPicker?: {
+    switchModel: string;
+    filterPlaceholder: string;
+    noMatches: string;
+    expensiveWarning: string;
+    switchAnyway: string;
+    close: string;
+    promiseNote: string;
+    reloadTitle: string;
+    reload: string;
   };
 
   // ── Logs page ──

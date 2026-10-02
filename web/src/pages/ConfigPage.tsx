@@ -41,6 +41,7 @@ import { getNestedValue, setNestedValue } from "@/lib/nested";
 import { useToast } from "@nous-research/ui/hooks/use-toast";
 import { Toast } from "@nous-research/ui/ui/components/toast";
 import { AutoField } from "@/components/AutoField";
+import { ModelRoutingCard } from "@/components/ModelRoutingCard";
 import { Button } from "@nous-research/ui/ui/components/button";
 import { ListItem } from "@nous-research/ui/ui/components/list-item";
 import { Spinner } from "@nous-research/ui/ui/components/spinner";
@@ -523,6 +524,14 @@ export default function ConfigPage() {
           )}
         </div>
       </div>
+
+      {!yamlMode && (
+        <ModelRoutingCard
+          config={config}
+          schema={schema}
+          onChange={(key, value) => setConfig(setNestedValue(config, key, value))}
+        />
+      )}
 
       {yamlMode ? (
         <Card>

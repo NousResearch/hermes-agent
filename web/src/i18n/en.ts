@@ -547,6 +547,33 @@ export const en: Translations = {
       discord: "Discord",
       auxiliary: "Auxiliary",
     },
+    modelRouting: {
+      title: "Model routing",
+      subtitle:
+        "Route subagents and the main agent's fallback through config.yaml — no bespoke endpoint, saved with the rest of the form.",
+      subagentTitle: "Subagent preferred model",
+      subagentHint:
+        "Provider + model every delegated child starts on. Empty inherits the parent's route (and credentials).",
+      subagentEmpty: "No preferred route — subagents inherit the main agent.",
+      mainTitle: "Main agent fallback model",
+      mainHint:
+        "The chain the main agent switches to when its primary route fails. Entries are tried in order.",
+      subagentFallbackTitle: "Subagent fallback chain",
+      subagentFallbackHint:
+        "Fallback routes for delegated children. Leave empty to inherit the main chain; adding and then removing every row writes an explicit empty list, which disables fallback for subagents.",
+      pickModel: "Pick model",
+      clearRoute: "Clear",
+      addRoute: "Add route",
+      removeRoute: "Remove route",
+      providerLabel: "Provider",
+      providerPlaceholder: "e.g. openrouter",
+      modelLabel: "Model",
+      modelPlaceholder: "e.g. anthropic/claude-sonnet-4",
+      routeEmpty: "No fallback routes configured.",
+      hotReload: "Hot-reload subagent model",
+      hotReloadHint:
+        "ON: each running subagent re-reads the preferred route before its NEXT request — config changes apply with no restart. OFF: a child freezes provider:model when it spawns.",
+    },
   },
 
   env: {

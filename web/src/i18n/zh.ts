@@ -520,6 +520,32 @@ export const zh: Translations = {
       discord: "Discord",
       auxiliary: "辅助",
     },
+    modelRouting: {
+      title: "模型路由",
+      subtitle:
+        "在 config.yaml 中配置子代理路由与主代理回退模型——无需专用接口，随表单一起保存。",
+      subagentTitle: "子代理优先模型",
+      subagentHint:
+        "每个被委托的子代理启动时使用的服务商 + 模型。留空则继承父代理的路由（及其凭据）。",
+      subagentEmpty: "未设置优先路由——子代理继承主代理。",
+      mainTitle: "主代理回退模型",
+      mainHint: "主代理的主路由失败时依次尝试的模型链，按条目顺序回退。",
+      subagentFallbackTitle: "子代理回退链",
+      subagentFallbackHint:
+        "被委托子代理的回退路由。留空表示继承主代理的回退链；若添加后删除全部条目，则写入显式的空列表，即禁用子代理回退。",
+      pickModel: "选择模型",
+      clearRoute: "清除",
+      addRoute: "添加路由",
+      removeRoute: "移除路由",
+      providerLabel: "服务商",
+      providerPlaceholder: "例如 openrouter",
+      modelLabel: "模型",
+      modelPlaceholder: "例如 anthropic/claude-sonnet-4",
+      routeEmpty: "尚未配置回退路由。",
+      hotReload: "热重载子代理模型",
+      hotReloadHint:
+        "开启：每个运行中的子代理会在「下一次请求」前重新读取优先路由，配置变更无需重启即可生效。关闭：子代理在启动时冻结 provider:model。",
+    },
   },
 
   env: {

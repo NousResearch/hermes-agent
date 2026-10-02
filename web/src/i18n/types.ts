@@ -558,6 +558,33 @@ export interface Translations {
       discord: string;
       auxiliary: string;
     };
+    /**
+     * Optional — Settings → Model routing block copy (subagent preferred route
+     * + fallbacks + hot-reload). Only en/zh ship it; other locales fall back to
+     * the English literals merged in by `mergeTranslations`.
+     */
+    modelRouting?: {
+      title: string;
+      subtitle: string;
+      subagentTitle: string;
+      subagentHint: string;
+      subagentEmpty: string;
+      mainTitle: string;
+      mainHint: string;
+      subagentFallbackTitle: string;
+      subagentFallbackHint: string;
+      pickModel: string;
+      clearRoute: string;
+      addRoute: string;
+      removeRoute: string;
+      providerLabel: string;
+      providerPlaceholder: string;
+      modelLabel: string;
+      modelPlaceholder: string;
+      routeEmpty: string;
+      hotReload: string;
+      hotReloadHint: string;
+    };
   };
 
   // ── Env / Keys page ──

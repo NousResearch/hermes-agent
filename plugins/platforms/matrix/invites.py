@@ -27,7 +27,6 @@ def _is_invited_room_source(source: Any) -> bool:
         return True
 
 
-
 class MatrixInvitesMixin:
     async def _on_invite(self: MatrixAdapter, event: Any) -> None:
         """Join live invitations for this bot and record direct rooms in m.direct."""

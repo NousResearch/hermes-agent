@@ -171,13 +171,16 @@ def _is_skill_disabled(name: str, platform: str = None) -> bool:
 
 
 def _skill_search_dirs() -> Tuple[list, list, Path]:
-    """(project_dirs, all_dirs, active_skills_dir); trusted project-local dirs come FIRST so
-    first-wins dedup / the collision resolver prefer them."""
+    """(project_dirs, all_dirs, active_skills_dir); tier order is profile-local, then external
+    (shared), then trusted project-local dirs LAST so first-wins dedup / the collision resolver
+    prefer the curated tiers. A repo checkout is a lower-trust tier than the curated corpus: it
+    changes under the fleet with a ``git pull``, so it must never silently shadow doctrine."""
     from agent.skill_utils import get_external_skills_dirs, get_project_skills_dirs
     project_dirs = list(get_project_skills_dirs())
     active_skills_dir = _skills_dir()
-    all_dirs = project_dirs + ([active_skills_dir] if active_skills_dir.exists() else [])
+    all_dirs = ([active_skills_dir] if active_skills_dir.exists() else [])
     all_dirs += get_external_skills_dirs()
+    all_dirs += project_dirs
     return project_dirs, all_dirs, active_skills_dir
 
 
@@ -500,18 +503,43 @@ def _provably_same_skill(candidates) -> bool:
         return False
 
 
-def _locate_skill(name: str, local_category_name: Optional[str], project_dirs: list, all_dirs):
-    """Unique on-disk skill for *name*: collision refusal, project-tier precedence, same-root
-    precedence, quarantine gate, not-found listing. ``(error_json, skill_dir, skill_md)``;
-    skill_md set iff no error."""
+def _search_tier(owning_dir: Optional[Path], active_skills_dir: Optional[Path], project_dirs) -> int:
+    """Tier rank of a candidate's owning search dir: 0 profile-local, 1 external (shared),
+    2 project-local. The ladder is deterministic — profile > shared > project — so a repo
+    checkout can never shadow a curated skill; unmatched roots sort last."""
+    if owning_dir is None:
+        return 3
+    if any(Path(d) == Path(owning_dir) for d in project_dirs):
+        return 2
+    if active_skills_dir is not None and Path(owning_dir) == Path(active_skills_dir):
+        return 0
+    return 1
+
+
+def _locate_skill(name: str, local_category_name: Optional[str], project_dirs: list, all_dirs,
+                  active_skills_dir: Optional[Path] = None):
+    """Unique on-disk skill for *name*: tier ladder (profile-local > external/shared >
+    project-local), same-root precedence, quarantine gate, not-found listing.
+    ``(error_json, skill_dir, skill_md)``; skill_md set iff no error."""
     if not all_dirs:
         return _fail(
             "Skills directory does not exist yet. It will be created on first install."), None, None
+    if active_skills_dir is None:
+        with suppress(Exception):
+            active_skills_dir = _skills_dir()
     candidates = _collect_skill_candidates(name, local_category_name, all_dirs)
-    if len(candidates) > 1 and project_dirs:
-        # A project skill intentionally overrides a same-named local/external skill;
-        # ambiguity WITHIN the project tier (two different skills) still refuses.
-        candidates = [c for c in candidates if _under_any(c[1], project_dirs)] or candidates
+    if len(candidates) > 1:
+        # Deterministic tier ladder: the first tier that owns the name wins. Ambiguity WITHIN
+        # the winning tier (two different skills in one tier) still refuses below.
+        ranked = [(_search_tier(_owning_search_dir(smd, all_dirs), active_skills_dir, project_dirs), c)
+                  for _sd, smd in candidates for c in ((_sd, smd),)]
+        best = min(t for t, _c in ranked)
+        if best < max(t for t, _c in ranked):
+            winners = [c for t, c in ranked if t == best]
+            shadowed = [str(smd) for t, (_sd, smd) in ranked if t > best]
+            logger.info("Skill '%s': tier-%d skill wins over %d lower-tier same-name skill(s) — %s",
+                        name, best, len(shadowed), "; ".join(shadowed))
+            candidates = winners
     if len(candidates) > 1:
         # The refusal below guards against one skill silently shadowing another. Copies of ONE
         # skill inside a single search dir (``<root>/x`` symlink view + ``<root>/cat/x`` copy)
@@ -592,7 +620,7 @@ def skill_view(
             return _fail(lookup_error, hint=_LOOKUP_HINT)
         project_dirs, all_dirs, active_skills_dir = _skill_search_dirs()
         error, skill_dir, skill_md = _locate_skill(
-            name, local_category_name, project_dirs, all_dirs)
+            name, local_category_name, project_dirs, all_dirs, active_skills_dir)
         if error is not None:
             return error
         try:  # read once — reused for platform check and main content

@@ -1479,15 +1479,9 @@ def _build_skills_system_prompt_inner(
         if is_compatible and not hides(_entry_name(entry), entry.get("skill_name") or "", entry.get("conditions") or {})
     ]
 
-    # Project-local skills (highest precedence) shadow same-named profile-local skills; tagged [project].
-    project_names: set[str] = set()
-    if project_dirs:
-        from agent.skill_utils import iter_project_skill_files
-        for proj_dir in (d for d in project_dirs if d.exists()):
-            _collect_extra_skills(proj_dir, iter_project_skill_files(proj_dir), hides, project_names, skills_by_category,
-                                  desc_prefix="[project] ", log_fmt="Error reading project skill %s: %s")
-    # Drop shadowed entries BEFORE org labeling so collision flags don't fire on intentional overrides.
-    _label_visible_entries([e for e in visible_entries if _entry_name(e) not in project_names], skills_by_category)
+    # Org-mirror labeling first, before any lower tier joins: labeling reads what the curated
+    # tiers actually expose, so a project-tier name can never perturb it.
+    _label_visible_entries(visible_entries, skills_by_category)
     if snapshot is None:  # persist for fast cold-start reuse (best-effort)
         category_descriptions.update(_read_category_descriptions(skills_dir, "Could not read skill description %s: %s"))
         try:
@@ -1505,6 +1499,16 @@ def _build_skills_system_prompt_inner(
                               skills_by_category, desc_prefix="", log_fmt="Error reading external skill %s: %s")
         for cat, cat_desc in _read_category_descriptions(ext_dir, "Could not read external skill description %s: %s").items():
             category_descriptions.setdefault(cat, cat_desc)
+
+    # Project-local skills: LOWEST tier. A repo checkout changes under the fleet with a `git pull`,
+    # so it may never shadow a curated (profile or shared) skill — it only adds names no higher tier
+    # indexed. Tagged [project] so the index shows WHERE a skill loads from.
+    if project_dirs:
+        from agent.skill_utils import iter_project_skill_files
+        for proj_dir in (d for d in project_dirs if d.exists()):
+            _collect_extra_skills(proj_dir, iter_project_skill_files(proj_dir), hides, seen_skill_names,
+                                  skills_by_category, desc_prefix="[project] ",
+                                  log_fmt="Error reading project skill %s: %s")
 
     result = _render_skills_index(skills_by_category, category_descriptions, compact_categories, available_tools)
     with _SKILLS_PROMPT_CACHE_LOCK:

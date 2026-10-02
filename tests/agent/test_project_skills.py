@@ -250,3 +250,91 @@ class TestQuarantine:
         su.is_quarantined_project_skill(evil_dir / "SKILL.md")
         assert not (project_env["repo"] / ".hermes" / "skills" / ".scan-cache").exists()
         assert (project_env["home"] / "cache" / "project_skill_scans").exists()
+
+
+class TestTierLadder:
+    """A same-named skill resolves deterministically — profile-local > external (shared) >
+    project-local — across the index (``_find_all_skills``), the loader (``_locate_skill``)
+    and the prompt index (``_build_skills_system_prompt_inner``). A repo checkout is a
+    lower-trust tier: it may never silently shadow a curated skill.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _fresh_caches(self, project_env):
+        import agent.prompt_builder as pb
+        import tools.skills_tool as st
+        su._external_dirs_cache_clear()
+        st._SKILLS_CACHE.clear()
+        pb._SKILLS_PROMPT_CACHE.clear()
+        yield
+        su._external_dirs_cache_clear()
+        st._SKILLS_CACHE.clear()
+        pb._SKILLS_PROMPT_CACHE.clear()
+
+    @staticmethod
+    def _write_skill(dir_path, name, description):
+        dir_path.mkdir(parents=True, exist_ok=True)
+        (dir_path / "SKILL.md").write_text(
+            f"---\nname: {name}\ndescription: {description}\n---\n# {name}\n",
+            encoding="utf-8")
+        return dir_path / "SKILL.md"
+
+    @staticmethod
+    def _index(project_env):
+        import agent.prompt_builder as pb
+        import tools.skills_tool as st
+        return pb._build_skills_system_prompt_inner(
+            st._skills_dir(), [], None, None, None, su.get_project_skills_dirs())
+
+    def test_project_tier_scans_last(self, project_env):
+        _trust(project_env["config"], project_env["repo"])
+        import tools.skills_tool as st
+        project_dirs, all_dirs, active = st._skill_search_dirs()
+        assert project_dirs, "trusted repo must contribute the project tier"
+        assert all_dirs.index(active) < all_dirs.index(project_dirs[0])
+
+    def test_project_only_skill_loads_and_is_tagged(self, project_env):
+        """A name no curated tier owns still loads from the repo, tagged [project]."""
+        _trust(project_env["config"], project_env["repo"])
+        import tools.skills_tool as st
+        assert "repo-skill" in [s["name"] for s in st._find_all_skills()]
+        project_dirs, all_dirs, _active = st._skill_search_dirs()
+        error, _skill_dir, skill_md = st._locate_skill("repo-skill", None, project_dirs, all_dirs)
+        assert error is None
+        assert skill_md == project_env["repo"] / ".hermes" / "skills" / "repo-skill" / "SKILL.md"
+        index = self._index(project_env)
+        assert "[project] from repo" in index, "a project-only skill must be indexed and tagged"
+
+    def test_profile_copy_beats_same_name_project_copy(self, project_env):
+        """The collision the ladder exists for: the curated profile copy wins, everywhere."""
+        _trust(project_env["config"], project_env["repo"])
+        curated_md = self._write_skill(project_env["home"] / "skills" / "repo-skill",
+                                       "repo-skill", "curated copy")
+        import tools.skills_tool as st
+        hits = [s for s in st._find_all_skills() if s["name"] == "repo-skill"]
+        assert len(hits) == 1, "a name must resolve to exactly one skill in the index"
+        assert hits[0]["description"].strip() == "curated copy"
+        project_dirs, all_dirs, _active = st._skill_search_dirs()
+        error, _skill_dir, skill_md = st._locate_skill("repo-skill", None, project_dirs, all_dirs)
+        assert error is None
+        assert skill_md == curated_md, "loader must not serve the lower project tier"
+        # The index must carry the curated copy's description, never the shadowed project one.
+        assert "repo-skill: curated copy" in self._index(project_env)
+        assert "[project] from repo" not in self._index(project_env)
+
+    def test_shared_copy_beats_same_name_project_copy(self, project_env):
+        """Tier 2 (external/shared) also sits above the repo checkout."""
+        shared = project_env["home"].parent / "shared-skills"
+        shared_md = self._write_skill(shared / "repo-skill", "repo-skill", "shared copy")
+        project_env["config"].write_text(
+            f"skills:\n  external_dirs: ['{shared}']\n"
+            f"  trusted_project_dirs: ['{project_env['repo']}']\n")
+        su._external_dirs_cache_clear()
+        import tools.skills_tool as st
+        hits = [s for s in st._find_all_skills() if s["name"] == "repo-skill"]
+        assert len(hits) == 1
+        assert hits[0]["description"].strip() == "shared copy"
+        project_dirs, all_dirs, _active = st._skill_search_dirs()
+        error, _skill_dir, skill_md = st._locate_skill("repo-skill", None, project_dirs, all_dirs)
+        assert error is None
+        assert skill_md == shared_md

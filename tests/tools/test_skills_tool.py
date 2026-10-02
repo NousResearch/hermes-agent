@@ -880,8 +880,13 @@ class TestSkillViewCollisionDetection:
         )
 
     def test_nested_local_collides_with_top_level_external(self, tmp_path):
-        """The original bug scenario: nested local + top-level external,
-        same name. Now refuses with both paths surfaced."""
+        """The original bug scenario: nested local + top-level external, same name.
+
+        Yoyodine override (card t_454acff4): skill tiers are LADDERED — profile-local >
+        external (shared) > project-local — so the curated local copy wins deterministically
+        instead of refusing with 'Ambiguous skill name'. Silent shadowing is still impossible:
+        the losing path is logged, and ambiguity WITHIN one tier still refuses.
+        """
         local_dir = tmp_path / "local"
         external_dir = tmp_path / "external"
         local_dir.mkdir()
@@ -900,14 +905,8 @@ class TestSkillViewCollisionDetection:
             raw = skill_view("explore-codebase")
 
         result = json.loads(raw)
-        assert result["success"] is False
-        assert "Ambiguous skill name 'explore-codebase'" in result["error"]
-        assert "matches" in result
-        assert len(result["matches"]) == 2
-        # Both paths surfaced
-        assert any(os.path.join("foundations", "runtime") in p for p in result["matches"])
-        assert any("external" in p for p in result["matches"])
-        assert "hint" in result
+        assert result.get("error") is None, result
+        assert "local" in str(result["_source_path"])
 
 
     def test_support_markdown_does_not_collide_with_real_skill(self, tmp_path):

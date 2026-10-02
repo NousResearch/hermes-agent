@@ -417,7 +417,8 @@ def display_skill_create_dir() -> str:
 
 def get_all_skills_dirs() -> List[Path]:
     """Skill dirs: local ``~/.hermes/skills/`` first, then create_dir, then external.
-    Trusted project dirs are NOT included (higher precedence; see get_project_skills_dirs)."""
+    Trusted project dirs are NOT included (they are the LOWEST tier; see
+    get_project_skills_dirs)."""
     dirs = [get_skills_dir()]
     create_dir = get_skill_create_dir()
     if create_dir is not None and create_dir.is_dir():
@@ -428,8 +429,10 @@ def get_all_skills_dirs() -> List[Path]:
 
 # Project-local skills (<root>/.hermes/skills, <root>/.agents/skills; root = nearest
 # .git ancestor) are a prompt-injection vector if auto-sourced from any clone, so
-# they load only when the root is in ``skills.trusted_project_dirs``; then they
-# override same-named profile/bundled skills. cwd + trust list are session-fixed
+# they load only when the root is in ``skills.trusted_project_dirs``. The tier ladder is
+# deterministic and curated-first — profile-local > external (shared) > project-local —
+# so a repo checkout can never silently shadow fleet doctrine; a same-name project skill
+# only loads when no curated tier indexes that name. cwd + trust list are session-fixed
 # so the skills index stays byte-stable.
 
 PROJECT_SKILLS_SUBDIRS = (os.path.join(".hermes", "skills"), os.path.join(".agents", "skills"))

@@ -17,9 +17,12 @@ def test_headless_terminal_result_survives_cli_exit(tmp_path):
     """Real CLI, tool dispatch, shell child and fresh reader; only the LLM is local."""
     home = tmp_path / "profile"
     home.mkdir()
+    # A shared provider also receives background title-upgrade requests after the
+    # main turn; keep this fixture's request ordering scoped to completion delivery.
     (home / "config.yaml").write_text(
         "model:\n  provider: custom\n  api_mode: chat_completions\n"
         "terminal:\n  env: local\n  oneshot_completion_wait_seconds: 10\n"
+        "auxiliary:\n  title_generation:\n    model_upgrade_enabled: false\n"
         "memory:\n  memory_enabled: false\n  user_profile_enabled: false\n",
         encoding="utf-8",
     )

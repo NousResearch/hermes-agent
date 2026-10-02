@@ -1,6 +1,7 @@
-"""A2A client tools (``a2a`` toolset): a2a_discover/call/list/history/orchestrate talk to *other*
+"""A2A client tools (``a2a`` toolset): a2a_discover/call/status/list/history/orchestrate talk to *other*
 agents. Peers come from config.yaml ``a2a_agents: {name: {url, auth: {type: bearer, token}, timeout,
-capabilities}}``. Stdlib urllib; wire format is A2A v1.0 ``SendMessage`` (v0.3 replies still parse)."""
+capabilities}}``. Stdlib urllib; wire format is A2A v1.0 ``SendMessage`` (v0.3 replies still parse).
+``a2a_call(wait=false)`` + ``a2a_status`` is the accept-then-poll pair for jobs that outlive a reply window."""
 
 from __future__ import annotations
 
@@ -19,6 +20,7 @@ from . import protocol, security
 logger = logging.getLogger(__name__)
 
 _DEFAULT_TIMEOUT = 120
+_ASYNC_CLIENT_TIMEOUT = 30  # returnImmediately must answer at once; a peer that still blocks fails loudly here
 _ORCHESTRATE_MAX_WORKERS = 6  # max parallel peers for fan-out
 
 
@@ -92,40 +94,78 @@ def _rpc_url(base_url: str, card: Optional[dict]) -> str:
     return base_url.rstrip("/")
 
 
-def _send_task(agent_label: str, peer: dict, message: str, context_id: str) -> tuple[str, str, str]:
-    """One SendMessage to a peer -> (reply_text, context_id, state). Raises urllib errors /
-    ValueError for the caller to format; handles redaction, audit, persistence, metrics."""
+def _peer_endpoint(peer: dict, *, fast: bool = False) -> tuple[str, dict, str, int]:
+    """Resolve a peer to ``(rpc_url, headers, tenant, timeout)``. The card fetch is best-effort: it
+    only teaches us the canonical RPC URL and the tenant key to echo back. ``fast`` caps the wait —
+    used by accept-then-poll, where a peer that has not answered at once is not going to."""
     base_url = peer.get("url", "")
     headers = _auth_header(peer.get("auth", {}) or {})
     timeout = int(peer.get("timeout", _DEFAULT_TIMEOUT))
+    if fast:
+        timeout = min(timeout, _ASYNC_CLIENT_TIMEOUT)
     try:
         card = _fetch_card(base_url, headers, min(timeout, 30))  # best-effort, to learn the rpc URL
     except Exception:
         card = None
+    iface = _select_jsonrpc_interface(card)
+    tenant = str(iface["tenant"]) if iface and iface.get("tenant") else str(peer.get("tenant") or "")
+    return _rpc_url(base_url, card), headers, tenant, timeout
+
+
+def _as_bool(value: Any, default: bool = True) -> bool:
+    """Tool args arrive as JSON or as model-typed strings; 'false' must not become True."""
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    return str(value).strip().lower() not in {"false", "0", "no", "off"}
+
+
+def _timeout_hint(exc: Exception) -> str:
+    """Point a caller that ran into the reply ceiling at the mechanism that exists for exactly that."""
+    if not isinstance(exc, TimeoutError) and "timed out" not in f"{type(exc).__name__}: {exc}".lower() \
+            and "timeout" not in f"{type(exc).__name__}: {exc}".lower():
+        return ""
+    return ("\n(The peer did not answer within its timeout. Jobs that can outlive the A2A reply window must be "
+            "sent with wait=false — configuration.returnImmediately=true — and polled via a2a_status, or handed "
+            "off as a kanban card; see the A2A long-jobs docs.)")
+
+
+def _send_task(agent_label: str, peer: dict, message: str, context_id: str, wait: bool = True) -> tuple[str, str, str, str]:
+    """One SendMessage to a peer -> (reply_text, context_id, state, task_id). Raises urllib errors /
+    ValueError for the caller to format; handles redaction, audit, persistence, metrics.
+    ``wait=False`` is accept-then-poll: the peer returns the task id immediately, the reply arrives
+    later through tasks/get (a2a_status) — hence task_id in the return value."""
+    rpc_url, headers, tenant, timeout = _peer_endpoint(peer, fast=not wait)
     ctx = context_id or protocol.new_context_id()
     safe_message = security.redact_outbound(message)
     # v1.0: contextId lives inside the Message, not at the params top level.
     rpc_body = {"jsonrpc": "2.0", "id": protocol.new_task_id(), "method": "SendMessage",
                 "params": {"message": protocol.text_message(protocol.ROLE_USER, safe_message, context_id=ctx)}}
-    iface = _select_jsonrpc_interface(card)
-    tenant = str(iface["tenant"]) if iface and iface.get("tenant") else str(peer.get("tenant") or "")
+    if not wait:
+        # v1.0 field only — we negotiated A2A-Version: 1.0, and a strict peer rejects unknown members.
+        # (v0.2 peers spell this configuration.blocking=false; the adapter accepts both.)
+        rpc_body["params"]["configuration"] = {"returnImmediately": True}
     if tenant:
         rpc_body["params"]["tenant"] = tenant
     security.audit("outbound", agent_label, rpc_body["id"], safe_message)
     protocol.persist_message(ctx, "user", safe_message, rpc_body["id"])
     protocol.metrics.outbound_total += 1
-    resp = _http_post_json(_rpc_url(base_url, card), rpc_body, headers, timeout)
+    resp = _http_post_json(rpc_url, rpc_body, headers, timeout)
     if "error" in resp:
         raise ValueError(f"Peer '{agent_label}' returned an error: {resp['error'].get('message', resp['error'])}")
     payload = protocol.unwrap_send_message_response(resp.get("result", {}))
     reply = _reply_text_from_result(payload)
-    reply_ctx, state = ctx, ""
+    reply_ctx, state, task_id = ctx, "", ""
     if isinstance(payload, dict):
         reply_ctx = payload.get("contextId", ctx)
         state = (payload.get("status") or {}).get("state", "")
+        task_id = str(payload.get("id") or "")  # a bare Message reply has no task to poll
     protocol.persist_message(reply_ctx, "agent", reply, rpc_body["id"])
     protocol.metrics.inbound_total += 1
-    return reply, reply_ctx, state
+    return reply, reply_ctx, state, task_id
 
 
 def _reply_text_from_result(result: Any) -> str:
@@ -175,25 +215,68 @@ def a2a_call(args: dict, **_: Any) -> str:
     agent = str(args.get("agent") or args.get("agent_name") or args.get("name") or "").strip()
     message = str(args.get("message") or args.get("text") or args.get("task") or "").strip()
     context_id = str(args.get("context_id") or args.get("contextId") or "").strip()
+    wait = _as_bool(args.get("wait"), default=True)
     if not agent or not message:
         return "Error: both 'agent' and 'message' are required."
     peer = _resolve_peer(agent)
     if not peer or not peer.get("url"):
         return f"Error: unknown agent '{agent}'. Configure it under 'a2a_agents' in config.yaml or pass a full http(s):// URL."
     try:
-        reply, reply_ctx, state = _send_task(agent, peer, message, context_id)
+        reply, reply_ctx, state, task_id = _send_task(agent, peer, message, context_id, wait=wait)
     except urllib.error.HTTPError as e:
         return _HTTP_CALL_ERRORS.get(e.code, "Error: call to '{agent}' failed — HTTP {code}.").format(agent=agent, code=e.code)
     except ValueError as e:
         return str(e)
     except Exception as e:
-        return f"Error: call to '{agent}' failed — {e}."
+        return f"Error: call to '{agent}' failed — {e}." + _timeout_hint(e)
     short_state = state.replace("TASK_STATE_", "").replace("_", "-").lower()  # v0.3 states pass through
     header = f"[{agent} · context {reply_ctx}" + (f" · {short_state}" if state else "") + "]"
     body = reply or "(no text reply)"
     if state == protocol.STATE_INPUT_REQUIRED:
         body += f"\n\n(The peer needs more input — answer by calling a2a_call again with context_id '{reply_ctx}'.)"
+    elif state in (protocol.STATE_SUBMITTED, protocol.STATE_WORKING):
+        # Accept-then-poll, or a peer that outlived the reply window: the work is still running and
+        # the result is reachable — say so instead of letting the caller read it as a finished answer.
+        poll = f"a2a_status(agent='{agent}', task_id='{task_id}')" if task_id else "a2a_status"
+        body += (f"\n\n(Still running — poll with {poll} until the state is terminal; the reply lands in the "
+                 "task store when the work finishes, even if this request's reply window has passed.)")
     return f"{header}\n{body}"
+
+
+def a2a_status(args: dict, **_: Any) -> str:
+    """Poll a peer task (A2A ``tasks/get``): its state plus whatever the agent produced so far.
+    This is the other half of ``a2a_call(wait=false)`` — the accept-then-poll read side."""
+    agent = str(args.get("agent") or args.get("agent_name") or args.get("name") or "").strip()
+    task_id = str(args.get("task_id") or args.get("taskId") or args.get("id") or "").strip()
+    if not agent or not task_id:
+        return "Error: both 'agent' and 'task_id' are required (task_id is what a2a_call(wait=false) returns)."
+    peer = _resolve_peer(agent)
+    if not peer or not peer.get("url"):
+        return f"Error: unknown agent '{agent}'. Configure it under 'a2a_agents' in config.yaml or pass a full http(s):// URL."
+    rpc_url, headers, tenant, timeout = _peer_endpoint(peer)
+    body: dict[str, Any] = {"jsonrpc": "2.0", "id": protocol.new_task_id(), "method": "GetTask",
+                            "params": {"taskId": task_id}}
+    if tenant:
+        body["params"]["tenant"] = tenant
+    try:
+        resp = _http_post_json(rpc_url, body, headers, timeout)
+    except urllib.error.HTTPError as e:
+        return _HTTP_CALL_ERRORS.get(e.code, "Error: status for '{agent}' failed — HTTP {code}.").format(agent=agent, code=e.code)
+    except Exception as e:
+        return f"Error: status for '{agent}' failed — {e}." + _timeout_hint(e)
+    if "error" in resp:
+        return f"Error: peer '{agent}' returned an error: {resp['error'].get('message', resp['error'])}"
+    task = protocol.unwrap_send_message_response(resp.get("result", {}))
+    if not isinstance(task, dict):
+        return f"Error: peer '{agent}' returned an unexpected tasks/get payload: {task!r}"
+    status = task.get("status") or {}
+    state = str(status.get("state") or "")
+    short_state = state.replace("TASK_STATE_", "").replace("_", "-").lower()
+    body_text = _reply_text_from_result(task) or "(nothing yet)"
+    lines = [f"[{agent} · task {task.get('id') or task_id} · {short_state or 'unknown'}]", body_text]
+    if state in (protocol.STATE_SUBMITTED, protocol.STATE_WORKING):
+        lines.append("(Still running — poll again, or use message/stream / tasks/subscribe for live updates.)")
+    return "\n".join(lines)
 
 
 def a2a_list(args: dict | None = None, **_: Any) -> str:
@@ -245,7 +328,7 @@ def _match_peers_by_capability(capability: str) -> list[tuple[str, dict]]:
 def _call_peer_sync(agent_name: str, peer_entry: dict, message: str, context_id: str = "") -> tuple[str, str]:
     """Call a single peer synchronously -> (agent_name, reply_text)."""
     try:
-        reply, _ctx, _state = _send_task(agent_name, _peer_from_entry(peer_entry), message, context_id)
+        reply, _ctx, _state, _task_id = _send_task(agent_name, _peer_from_entry(peer_entry), message, context_id)
         return (agent_name, reply or "(no reply)")
     except Exception as e:
         return (agent_name, f"Error: {e}")
@@ -302,11 +385,23 @@ _TOOLS: dict[str, tuple[Any, str, dict, list[str]]] = {
     "a2a_call": (a2a_call,
                  "Send a natural-language task to a remote A2A agent and return its reply. The agent is a peer "
                  "(any A2A-compliant framework), not a sub-agent you control. Pass 'context_id' from a previous "
-                 "reply to continue a multi-turn exchange.",
+                 "reply to continue a multi-turn exchange. For a job that may outlive the peer's reply window "
+                 "(long test suites, big analyses) pass wait=false and poll the returned task id with a2a_status.",
                  {"agent": _str("Configured peer name (from a2a_agents) or a full http(s):// URL."),
                   "message": _str("The task / message to send the peer, in natural language."),
-                  "context_id": _str("Optional: context id from a prior reply, to continue the conversation.")},
+                  "context_id": _str("Optional: context id from a prior reply, to continue the conversation."),
+                  "wait": {"type": "boolean",
+                           "description": "Default true: block until the peer replies. false = accept-then-poll — "
+                                          "you get the task id back immediately and poll it with a2a_status. "
+                                          "Required for jobs that can outlive the peer's A2A reply window."}},
                  ["agent", "message"]),
+    "a2a_status": (a2a_status,
+                   "Poll a peer A2A task by task_id (tasks/get): its state and whatever the agent has produced "
+                   "so far. The read side of a2a_call(wait=false); also how to collect a result after a reply "
+                   "window elapsed (the task keeps its outcome instead of losing it).",
+                   {"agent": _str("Configured peer name (from a2a_agents) or a full http(s):// URL."),
+                    "task_id": _str("Task id returned by a2a_call.")},
+                   ["agent", "task_id"]),
     "a2a_list": (a2a_list, "List configured A2A peer agents, persisted A2A conversations, and metrics.", {}, []),
     "a2a_history": (a2a_history,
                     "Recall a persisted A2A conversation transcript by context_id (survives restarts and "

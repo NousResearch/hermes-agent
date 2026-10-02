@@ -31,14 +31,25 @@ a2a_agents:
 
 ## Outbound — call other agents
 
-The agent gets five tools:
+The agent gets six tools:
 
 - `a2a_discover(url)` — what can this agent do?
-- `a2a_call(agent, message, context_id?)` — send it a task, get the reply.
+- `a2a_call(agent, message, context_id?, wait?)` — send it a task, get the reply.
+  `wait=false` is accept-then-poll: you get the task id back immediately instead of
+  blocking for the whole job.
+- `a2a_status(agent, task_id)` — poll a task (the read side of `wait=false`, and
+  how you collect a result after the reply window elapsed).
 - `a2a_list()` — configured peers, saved conversations, metrics.
 - `a2a_history(context_id)` — recall a saved A2A conversation.
 - `a2a_orchestrate(capability, message, mode?)` — fan-out a task to every
   peer advertising a capability (`all` / `first` / `best`).
+
+**Long jobs:** a blocking `message/send` is bounded by `A2A_REPLY_TIMEOUT` and has no
+early ack — the reply is bound to task completion. Jobs expected to outlive that window
+must not use a blocking send: use `wait=false` / `configuration.returnImmediately=true`
+and poll `tasks/get`, or hand the job off as a kanban card. A peer whose reply window
+elapses first returns the task as `TASK_STATE_WORKING` with a poll hint (it is **not**
+failed), and the eventual reply still lands in the task store.
 
 ## Inbound — be callable
 
@@ -83,7 +94,8 @@ via `tasks/get`.
 | `A2A_ALLOW_ALL_USERS` | `false` | Allow any authed peer (dev only). |
 | `A2A_RATE_LIMIT` | `60` | Requests/minute per identity. |
 | `A2A_MAX_PINGPONG_TURNS` | `5` | Anti-loop turn cap per context (max 20). |
-| `A2A_REPLY_TIMEOUT` | `300` | Seconds a request waits for the agent's reply; past it (or when a stream client disconnects) the task stays working and the reply is stored when it arrives, up to the orphan ceiling (24 h). |
+| `A2A_REPLY_TIMEOUT` | `300` | Seconds a *blocking* `message/send` waits for the agent's reply before it stops waiting (and hands the caller a pollable `TASK_STATE_WORKING` task). The orphan sweep never fails a task before this window (floor 300s) or while a request still waits on it. |
+| `A2A_JOB_TIMEOUT` | `3600` | Seconds a task may stay non-terminal once nobody is waiting on its request (parked: reply window elapsed, stream client gone, or accepted via `returnImmediately`) before the watchdog fails it. The reply window bounds one request; this bounds the work — and it is the *only* bound that applies to a parked task. |
 | `A2A_PUSH_SECRET` | bearer token | HMAC secret for push signing. |
 | `A2A_ADVERTISED_TOOLSETS` | all registered | Restrict skills on the Agent Card. |
 

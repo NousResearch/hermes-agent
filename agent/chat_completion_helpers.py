@@ -1790,12 +1790,11 @@ def _fallback_entry_unavailable_without_network(agent, fb: dict, reason=None) ->
     if reason is FailoverReason.timeout:
         base_url = str(fb.get("base_url") or "").strip()
         hostname = base_url_hostname(base_url) if base_url else ""
-        try:
-            import ipaddress
-            is_loopback = bool(hostname) and ipaddress.ip_address(hostname).is_loopback
-        except ValueError:
-            is_loopback = hostname.lower() in {"localhost", "localhost.localdomain"}
-        if hostname and not is_loopback:
+        # A fallback can be local without using loopback: Docker host aliases,
+        # LAN/private addresses, Tailscale, and operator-defined `.lan` names
+        # are all valid local inference endpoints.
+        is_local = is_local_endpoint(base_url) or hostname.lower().endswith(".lan")
+        if hostname and not is_local:
             return "network_unreachable"
     if (fb.get("provider") or "").strip().lower() != "nous":
         return None

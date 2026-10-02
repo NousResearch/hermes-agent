@@ -6598,6 +6598,22 @@ class TelegramAdapter(BasePlatformAdapter):
         self._apply_topic_recovery(event)
         return super()._text_batch_key(event)
 
+    def _apply_topic_recovery(self, event: MessageEvent) -> None:
+        """The recovered message runs in the topic's session, so it also takes the topic's name, bound
+        skill and channel prompt: the lobby's would re-render the session's pinned prompts."""
+        before = event.source.thread_id if event.source is not None else None
+        super()._apply_topic_recovery(event)
+        source = event.source
+        if source is None or source.thread_id == before:
+            return
+        from gateway.platforms.base import resolve_channel_prompt
+        from gateway.session_identity import replace_source
+        chat_id = str(source.chat_id)
+        topic = self._get_dm_topic_info(chat_id, source.thread_id) or {}
+        event.source = replace_source(source, chat_topic=topic.get("name"))
+        event.auto_skill = topic.get("skill")
+        event.channel_prompt = resolve_channel_prompt(self.config.extra, source.thread_id, chat_id)
+
     def _enqueue_text_event(self, event: MessageEvent) -> None:
         """Buffer a text chunk, or hold it while delayed delivery must be dropped."""
         if self._should_drop_delayed_delivery():

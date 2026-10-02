@@ -2242,6 +2242,17 @@ export const zh = defineLocale({
     }
   },
 
+  skillDeepLink: {
+    installTitle: (name: string) => `安装“${name}”？`,
+    installDescription: '此技能将在新会话中可用。请仅安装可信来源的内容。',
+    installTo: '安装到',
+    thisComputer: '此电脑',
+    installing: '正在安装…',
+    installComplete: (name: string) => `已安装“${name}”`,
+    destinationChanged: '安装目标已更改。请关闭此对话框并重新打开安装链接。',
+    installed: '已安装',
+    source: '来源'
+  },
   skills: {
     tabSkills: '技能',
     tabToolsets: '工具集',

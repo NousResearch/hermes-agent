@@ -13,6 +13,17 @@ import { zhHantDiagnostics } from './zh-hant_diagnostics'
 import { zhHantSettings } from './zh-hant_settings'
 
 export const zhHant = defineLocale({
+  skillDeepLink: {
+    installTitle: (name: string) => `安裝「${name}」？`,
+    installDescription: '此技能將於新的工作階段中可用。請僅安裝可信來源的內容。',
+    installTo: '安裝至',
+    thisComputer: '這部電腦',
+    installing: '正在安裝…',
+    installComplete: (name: string) => `已安裝「${name}」`,
+    destinationChanged: '安裝目標已變更。請關閉此對話框並重新開啟安裝連結。',
+    installed: '已安裝',
+    source: '來源'
+  },
   externalOpenFailed: {
     title: '無法開啟此連結',
     message: '沒有註冊用於開啟此位址的瀏覽器。請複製連結並手動開啟。',

@@ -1,6 +1,17 @@
 import type { TranslationOverrides } from './define-locale'
 
 export const arCapabilities = {
+  skillDeepLink: {
+    installTitle: (name: string) => `تثبيت «${name}»؟`,
+    installDescription: 'ستتوفر هذه المهارة في الجلسات الجديدة. ثبّت من المصادر التي تثق بها فقط.',
+    installTo: 'التثبيت في',
+    thisComputer: 'هذا الكمبيوتر',
+    installing: 'جارٍ التثبيت…',
+    installComplete: (name: string) => `تم تثبيت «${name}»`,
+    destinationChanged: 'تغيرت وجهة التثبيت. أغلق هذا الحوار وافتح رابط التثبيت مجددًا.',
+    installed: 'المثبتة',
+    source: 'المصدر'
+  },
   skills: {
     plugins: {
       pageBlurb: 'يمكن للإضافة توسيع هذا التطبيق أو الوكيل أو كليهما — ولكل جزء مفتاح تشغيل مستقل.'
@@ -73,4 +84,4 @@ export const arCapabilities = {
     durationMinutes: (minutes, seconds) => `${minutes} د ${seconds} ث`,
     tokens: value => `${value} رمز`
   }
-} satisfies Pick<TranslationOverrides, 'skills' | 'agents'>
+} satisfies Pick<TranslationOverrides, 'skillDeepLink' | 'skills' | 'agents'>

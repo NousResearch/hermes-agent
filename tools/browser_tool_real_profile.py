@@ -22,6 +22,14 @@ from tools import browser_tool_session as _session
 _RP = "browser.use_real_profile is on, but "
 
 
+def _popen_creationflags() -> int:
+    """Windows: new process group + hidden console for the CLI spawn (POSIX: 0)."""
+    if os.name != "nt":
+        return 0
+    from hermes_cli._subprocess_compat import windows_hide_flags
+    return windows_hide_flags() | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+
+
 def _terminate_real_profile_chrome() -> None:
     """Terminate real-browser processes launched for real-profile sessions (idempotent, atexit-safe);
     agent-browser only ATTACHED to them, so its own session cleanup never kills them."""
@@ -50,19 +58,47 @@ def _real_profile_daemon_env() -> dict:
 
 
 def _agent_browser_session_cmd(session_name: str, *cmd: str, log_label: str) -> Optional[subprocess.CompletedProcess]:
-    """Run ``agent-browser --session <name> <cmd...>``; None when agent-browser is missing or the run fails."""
+    """Run ``agent-browser --session <name> <cmd...>``; None when agent-browser is missing or the run fails.
+
+    Output goes to files, not pipes: a CLI that spawns the daemon hands it the pipe's write
+    end, and after ``timeout`` kills the CLI the post-kill ``communicate()`` wait would block
+    on pipe EOF forever while the daemon lives — wedging the caller (and the real-profile
+    lock) with no deadline (#106244 pattern; same fix as ``browser_tool_session``). The
+    redirect files are read back and unlinked on EVERY exit path (success, timeout, error),
+    exactly like the sibling: fixed names plus a surviving writer would otherwise leave the
+    next call reading the killed run's output.
+    """
     _bt = _origin()
     try:
         browser_cmd = _install._find_agent_browser()
     except FileNotFoundError:
         return None
+    argv = [*_session._agent_browser_argv(browser_cmd), "--session", session_name, *cmd]
+    socket_dir = _session._prepare_session_socket_dir(session_name)
+    stdout_path = os.path.join(socket_dir, "_stdout_rp_cmd")
+    stderr_path = os.path.join(socket_dir, "_stderr_rp_cmd")
     try:
-        return subprocess.run([*_session._agent_browser_argv(browser_cmd), "--session", session_name, *cmd],
-                              capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=15,
-                              env=_real_profile_daemon_env(), stdin=subprocess.DEVNULL)
+        with open(stdout_path, "wb") as out_fh, open(stderr_path, "wb") as err_fh:
+            proc = subprocess.run(argv, stdout=out_fh, stderr=err_fh,
+                                  stdin=subprocess.DEVNULL, env=_real_profile_daemon_env(),
+                                  creationflags=_popen_creationflags(), timeout=15)
+    except subprocess.TimeoutExpired:
+        # File redirection (not pipes) keeps the post-timeout reaping wait bounded:
+        # the daemon the CLI spawned inherits the pipe write end, so a pipe-based
+        # communicate() would block on EOF forever while it lives (#106244 pattern).
+        stdout, stderr = _session._read_command_output_files(stdout_path, stderr_path)
+        _session._unlink_command_output_files(stdout_path, stderr_path)
+        if stderr and stderr.strip():
+            _bt.logger.warning("real-profile %s stderr after timeout: %s", log_label, stderr.strip()[:500])
+        _bt.logger.debug("real-profile %s timed out after 15s", log_label)
+        return None
     except (subprocess.SubprocessError, OSError) as e:
         _bt.logger.debug("real-profile %s failed: %s", log_label, e)
+        _session._unlink_command_output_files(stdout_path, stderr_path)
         return None
+    stdout, stderr = _session._read_command_output_files(stdout_path, stderr_path)
+    _session._unlink_command_output_files(stdout_path, stderr_path)
+    return subprocess.CompletedProcess(argv, proc.returncode, stdout, stderr)
 
 
 def _agent_browser_get_cdp(session_name: str) -> Optional[str]:
@@ -203,16 +239,31 @@ def _attach_agent_browser_to_real_profile(port: int, copy_dir: str) -> Tuple[Opt
         return None, f"{_RP}the local browser engine (agent-browser) is not installed: {e}"
     argv = [*_session._agent_browser_argv(browser_cmd), "--session", _bt._REAL_PROFILE_SESSION,
             "--cdp", str(port), "open", "about:blank"]
+    # File-redirected output (not pipes): the CLI forks the daemon, the daemon inherits
+    # the pipe write end, and the post-timeout communicate() would block on EOF forever
+    # while it lives (#106244 pattern). See _agent_browser_session_cmd.
+    socket_dir = _session._prepare_session_socket_dir(_bt._REAL_PROFILE_SESSION)
+    stdout_path = os.path.join(socket_dir, "_stdout_rp_attach")
+    stderr_path = os.path.join(socket_dir, "_stderr_rp_attach")
     try:
-        proc = subprocess.run(argv, capture_output=True, text=True, encoding="utf-8", errors="replace",
-                              timeout=_bt._get_open_command_timeout(first_open=True), env=_real_profile_daemon_env(),
-                              stdin=subprocess.DEVNULL)
+        with open(stdout_path, "wb") as out_fh, open(stderr_path, "wb") as err_fh:
+            proc = subprocess.run(argv, stdout=out_fh, stderr=err_fh,
+                                  stdin=subprocess.DEVNULL, env=_real_profile_daemon_env(),
+                                  creationflags=_popen_creationflags(),
+                                  timeout=_bt._get_open_command_timeout(first_open=True))
     except subprocess.TimeoutExpired:
+        stdout, stderr = _session._read_command_output_files(stdout_path, stderr_path)
+        _session._unlink_command_output_files(stdout_path, stderr_path)
+        if stderr and stderr.strip():
+            _bt.logger.warning("real-profile attach stderr after timeout: %s", stderr.strip()[:500])
         return None, _RP + "the real-profile browser took too long to start. Retry, or turn the toggle off."
     except (subprocess.SubprocessError, OSError) as e:
+        _session._unlink_command_output_files(stdout_path, stderr_path)
         return None, f"{_RP}the launch failed: {e}"
+    stdout, stderr = _session._read_command_output_files(stdout_path, stderr_path)
+    _session._unlink_command_output_files(stdout_path, stderr_path)
     if proc.returncode != 0:
-        tail = (proc.stderr or proc.stdout or "").strip().splitlines()
+        tail = (stderr or stdout or "").strip().splitlines()
         return None, f"{_RP}the real-profile browser failed to start: {tail[-1] if tail else f'exit {proc.returncode}'}"
     cdp = _agent_browser_get_cdp(_bt._REAL_PROFILE_SESSION)
     our_port = _read_devtools_port(copy_dir)

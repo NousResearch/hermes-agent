@@ -311,6 +311,7 @@ this Hermes understands still loads with a warning.
 |---|---|---|
 | `manifest_version` | int | Manifest **file-format** version. Absent = `1`. Current max: `2`. Independent from `api_version`. |
 | `api_version` | int | Runtime **plugin API generation** the plugin targets (ctx surface / hook signatures). Deliberately a separate axis from `manifest_version` — an `api_version: 1` plugin can use a v2 manifest. |
+| `requires_host_contracts` | mapping | Exact host interface versions the plugin can consume, for example `example.capability: 1`. This is inert unless the user also sets `plugins.entries.<id>.update_admission: required`. A gate-aware application update then checks the fetched candidate's data-only registry before moving the checkout. Required admission fails closed when this mapping is missing, empty, or malformed. |
 | `requires_plugins` | list | Inter-plugin dependencies: `- id: other-plugin` with optional `version_range: ">=1.0,<2"`. **Advisory**: a missing dependency logs a clear warning but the plugin still loads — probe at runtime with `ctx.has_plugin("other-plugin")`. Load **order** honors these edges: when A requires B, B's `register()` runs before A's (topological sort, alphabetical tiebreak; cycles warn and fall back to alphabetical order). |
 | `python_dependencies` | list of str | Declared Python requirements (e.g. `"requests>=2.0,<3"`). Installation requests consent; enabling admits the candidate through PM with the existing core, extras, and enabled-plugin union. Successful preparation publishes the environment and configuration transactionally; failure preserves the previous selection and enabled set. Declining leaves the installed plugin disabled. Pin upper bounds. |
 | `python_runtime` | str | `external` — the plugin manages its own interpreter/venv (sidecar pattern); Hermes installs nothing and leaves any `pyproject.toml` alone. |
@@ -334,9 +335,21 @@ requires_plugins:
     version_range: ">=1.0,<2"
 python_dependencies:
   - "somepkg>=1.0,<2"     # consent before PM admission
+requires_host_contracts:
+  example.capability: 1
 config_schema:
   api_url: {type: str, default: "", description: "Service endpoint"}
 ```
+
+Published host contracts are narrow, versioned interface bundles backed by
+architectural tests. `desktop.plugin_routed_session: 1` guarantees the
+profile-scoped Desktop plugin doors (`rest`, route discovery, retained RPC
+sequences, and session opening), a profile-scoped plugin API backend, and
+`session.create` model, provider, and reasoning overrides applied before agent
+construction. It includes the normalized `model.options` and `config.get`
+reads, profile-scoped secret and plugin-config reads, plus `prompt.submit`, so a plugin can select a route,
+create the bound session, and submit its first prompt without editing Hermes
+source.
 
 :::note Shared dependency admission
 Plugin installation requests Python dependency consent. Enabling the plugin
@@ -376,7 +389,11 @@ When both exist the `pyproject.toml` wins. What Hermes does with them:
   preserves the previous environment and plugin selection; no existing plugin is sacrificed.
 - **Updates retain the union** — `hermes update` includes enabled plugins while preparing
   its new generation. There is no post-update pip reinstall. `hermes plugins update` prepares
-  active replacements before swapping their code and dependency generation together.
+  active replacements before swapping their code and dependency generation together. An enabled
+  plugin marked `update_admission: required` is also checked against the candidate's published
+  host-contract registry before the Git checkout moves or a ZIP candidate swaps live files. This
+  data-only gate does not execute plugin code or replace PM dependency admission. It takes effect
+  only after a Hermes version containing the gate is installed.
 - **Requirement hygiene** — malformed PEP 508 requirements are refused. Environment markers
   remain intact for the target interpreter to evaluate. `hermes-agent` self-dependencies are
   omitted because the checkout supplies Hermes. Direct-URL requirements are not managed;

@@ -303,6 +303,36 @@ def test_zip_refuses_non_main_before_transport(zip_update, monkeypatch, capsys):
     assert (zip_update.root / 'payload.txt').read_bytes() == before
 
 
+def test_zip_candidate_missing_enabled_plugin_contract_is_refused_before_swap(zip_update, capsys):
+    state = zip_update
+    plugin = state.active / "plugins" / "required-plugin"
+    plugin.mkdir(parents=True)
+    (plugin / "plugin.yaml").write_text(
+        "name: required-plugin\nrequires_host_contracts:\n  example.capability: 1\n",
+        encoding="utf-8",
+    )
+    (plugin / "__init__.py").write_text(
+        "raise AssertionError('ZIP admission imported plugin code')\n",
+        encoding="utf-8",
+    )
+    (state.active / "config.yaml").write_text(
+        f"_config_version: {DEFAULT_CONFIG['_config_version'] - 1}\n"
+        "plugins:\n"
+        "  enabled:\n    - required-plugin\n"
+        "  entries:\n    required-plugin:\n      update_admission: required\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(SystemExit) as error:
+        update_cmd_zip._download_and_swap_zip("main", "local fixture")
+
+    assert error.value.code == 1
+    assert (state.root / "payload.txt").read_text(encoding="utf-8") == "old"
+    output = capsys.readouterr().out
+    assert "required-plugin" in output
+    assert "example.capability" in output
+
+
 @pytest.mark.parametrize("windows,folder,executable", [(True, "Scripts", "python.exe"), (False, "bin", "python")])
 def test_venv_layout_explicit_and_native(tmp_path, windows, folder, executable):
     import os

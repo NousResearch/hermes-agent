@@ -53,7 +53,9 @@ def source(tmp_path, monkeypatch):
     monkeypatch.setattr(main, "_run_pre_update_backup", lambda *_: None)
     monkeypatch.setattr(main, "_pause_windows_gateways_for_update", lambda: None)
     monkeypatch.setattr(update_cmd, "_prepare_git_command", lambda: (False, ["git"], False))
-    return SimpleNamespace(home=home, origin=origin, root=checkout, commits=commits, parser=parser)
+    yield SimpleNamespace(home=home, origin=origin, root=checkout, commits=commits, parser=parser)
+    from hermes_cli import update_receipt
+    update_receipt._current.set(None)
 
 
 def record(name, *, repository="NousResearch/hermes-agent", state="active", destination=None):
@@ -465,6 +467,146 @@ def test_source_branch_record_has_no_bundle_and_explicit_branch_is_separate(sour
     assert git(source.root, "rev-parse", "HEAD") == source.commits[2]
     assert "channel_retirement" not in completed[0]
     assert saved(source)["channel"] == "unavailable-preview"
+
+
+def test_enabled_plugin_contract_blocks_source_update_before_checkout_moves(source, monkeypatch, capsys):
+    plugin = source.home / "plugins" / "required-plugin"
+    plugin.mkdir(parents=True)
+    (plugin / "plugin.yaml").write_text(
+        "name: required-plugin\nrequires_host_contracts:\n  example.capability: 1\n",
+        encoding="utf-8",
+    )
+    (plugin / "__init__.py").write_text(
+        "raise AssertionError('update admission imported plugin code')\n",
+        encoding="utf-8",
+    )
+    (source.home / "config.yaml").write_text(
+        "plugins:\n"
+        "  enabled:\n    - required-plugin\n"
+        "  entries:\n    required-plugin:\n      update_admission: required\n",
+        encoding="utf-8",
+    )
+    before = git(source.root, "rev-parse", "HEAD")
+    monkeypatch.setattr(
+        update_cmd,
+        "_complete_source_update",
+        lambda _request: pytest.fail("an incompatible candidate reached completion"),
+    )
+
+    with pytest.raises(SystemExit):
+        update_cmd._cmd_update_impl(source.parser.parse_args(["update", "--branch", "main"]), False)
+
+    assert git(source.root, "rev-parse", "HEAD") == before
+    output = capsys.readouterr().out
+    assert "required-plugin" in output
+    assert "example.capability" in output
+
+
+@pytest.mark.parametrize("declaration", ["", "requires_host_contracts: {}\n"])
+def test_required_plugin_without_contract_declaration_blocks_source_update(
+    source, monkeypatch, capsys, declaration
+):
+    plugin = source.home / "plugins" / "required-plugin"
+    plugin.mkdir(parents=True)
+    (plugin / "plugin.yaml").write_text(
+        f"name: required-plugin\n{declaration}",
+        encoding="utf-8",
+    )
+    (source.home / "config.yaml").write_text(
+        "plugins:\n"
+        "  enabled:\n    - required-plugin\n"
+        "  entries:\n    required-plugin:\n      update_admission: required\n",
+        encoding="utf-8",
+    )
+    before = git(source.root, "rev-parse", "HEAD")
+    monkeypatch.setattr(
+        update_cmd,
+        "_complete_source_update",
+        lambda _request: pytest.fail("a required plugin without a contract reached completion"),
+    )
+
+    with pytest.raises(SystemExit):
+        update_cmd._cmd_update_impl(source.parser.parse_args(["update", "--branch", "main"]), False)
+
+    assert git(source.root, "rev-parse", "HEAD") == before
+    output = capsys.readouterr().out
+    assert "required-plugin" in output
+    assert "requires_host_contracts" in output
+
+
+def test_unreadable_enabled_plugin_declaration_blocks_source_update(source, monkeypatch, capsys):
+    plugin = source.home / "plugins" / "required-plugin"
+    plugin.mkdir(parents=True)
+    (plugin / "plugin.yaml").write_text("requires_host_contracts: [\n", encoding="utf-8")
+    (source.home / "config.yaml").write_text(
+        "plugins:\n"
+        "  enabled:\n    - required-plugin\n"
+        "  entries:\n    required-plugin:\n      update_admission: required\n",
+        encoding="utf-8",
+    )
+    before = git(source.root, "rev-parse", "HEAD")
+    monkeypatch.setattr(
+        update_cmd,
+        "_complete_source_update",
+        lambda _request: pytest.fail("an unreadable plugin declaration reached completion"),
+    )
+
+    with pytest.raises(SystemExit):
+        update_cmd._cmd_update_impl(source.parser.parse_args(["update", "--branch", "main"]), False)
+
+    assert git(source.root, "rev-parse", "HEAD") == before
+    assert "Could not inspect enabled plugin declaration" in capsys.readouterr().out
+
+
+def test_compatible_plugin_contract_allows_source_update(source, monkeypatch):
+    plugin = source.home / "plugins" / "required-plugin"
+    plugin.mkdir(parents=True)
+    (plugin / "plugin.yaml").write_text(
+        "name: required-plugin\nrequires_host_contracts:\n  example.capability: 1\n",
+        encoding="utf-8",
+    )
+    (source.home / "config.yaml").write_text(
+        "plugins:\n"
+        "  enabled:\n    - required-plugin\n"
+        "  entries:\n    required-plugin:\n      update_admission: required\n",
+        encoding="utf-8",
+    )
+    registry = source.origin / "hermes_cli" / "plugin_host_contracts.json"
+    registry.parent.mkdir()
+    registry.write_text(
+        '{"schema": 1, "contracts": {"example.capability": [1]}}\n',
+        encoding="utf-8",
+    )
+    git(source.origin, "add", str(registry.relative_to(source.origin)))
+    git(source.origin, "commit", "-m", "publish host contract")
+    expected = git(source.origin, "rev-parse", "HEAD")
+    completed = []
+    monkeypatch.setattr(update_cmd, "_complete_source_update", lambda request: completed.append(request))
+
+    update_cmd._cmd_update_impl(source.parser.parse_args(["update", "--branch", "main"]), False)
+
+    assert git(source.root, "rev-parse", "HEAD") == expected
+    assert len(completed) == 1
+
+
+def test_plugin_without_required_update_policy_cannot_veto_source_update(source, monkeypatch):
+    plugin = source.home / "plugins" / "ordinary"
+    plugin.mkdir(parents=True)
+    (plugin / "plugin.yaml").write_text(
+        "name: ordinary\nrequires_host_contracts:\n  unavailable.contract: 1\n",
+        encoding="utf-8",
+    )
+    (source.home / "config.yaml").write_text(
+        "plugins:\n  enabled:\n    - ordinary\n",
+        encoding="utf-8",
+    )
+    completed = []
+    monkeypatch.setattr(update_cmd, "_complete_source_update", lambda request: completed.append(request))
+
+    update_cmd._cmd_update_impl(source.parser.parse_args(["update", "--branch", "main"]), False)
+
+    assert git(source.root, "rev-parse", "HEAD") == source.commits[2]
+    assert len(completed) == 1
 
 
 def test_changed_checkout_cannot_repin_selected_channel_during_apply(source, monkeypatch):

@@ -1,0 +1,6 @@
+{
+  "schema": 1,
+  "contracts": {
+    "desktop.plugin_routed_session": [1]
+  }
+}

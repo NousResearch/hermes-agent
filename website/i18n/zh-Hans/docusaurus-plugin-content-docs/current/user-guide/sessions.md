@@ -452,7 +452,7 @@ session_search(query="auth refactor", limit=3)
 
 运行 FTS5，按 session 谱系去重，返回前 N 个 session。每个结果包含：
 
-- `session_id`、`title`、`when`、`source`
+- `session_id`、`title`、`when`、`started_at`、`source`
 - `snippet` — FTS5 高亮的匹配摘录
 - `bookend_start` — session 的前 3 条用户+助手消息（目标/开场）
 - `messages` — FTS5 匹配点前后各 ±5 条消息，锚点消息有标记（命中上下文）

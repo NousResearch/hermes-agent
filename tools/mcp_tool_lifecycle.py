@@ -309,27 +309,37 @@ def _signal_mcp_process(pid: int, sig: int, server_name: str, pgid: Optional[int
                 # Pgroup gone or refused — still try the direct child.
                 logger.debug("killpg(%d, %d) failed for MCP server '%s': %s; falling back to kill(pid)",
                              pgid, sig, server_name, exc)
+    if os.name == "nt":  # Windows has no pgid reaching reparented grandchildren — kill the tree
+        _kill_windows_process_tree(pid, sig)
+        return
     try:
         os.kill(pid, sig)
     except (ProcessLookupError, PermissionError, OSError):
         pass
-    if os.name == "nt":  # Windows has no pgid reaching reparented grandchildren — kill the tree
-        _kill_windows_process_tree(pid, sig)
 
 
 def _kill_windows_process_tree(pid: int, sig: int) -> None:
-    """Windows counterpart of the POSIX killpg path (#61059): after the direct child is signalled,
-    terminate every still-alive descendant (npx.cmd → node.exe) so graceful teardown cannot leave
-    orphans reparented with ParentId=null. Best-effort, per-descendant; never raises."""
+    """Windows counterpart of the POSIX killpg path (#61059): signal the direct child and
+    terminate every descendant (npx.cmd → node.exe) so graceful teardown cannot leave orphans
+    reparented with ParentId=null. The descendants are snapshotted BEFORE the root is signalled:
+    ``os.kill`` is TerminateProcess on Windows, and once the root is gone its tree can no longer
+    be walked (#108084). Best-effort, per-descendant; never raises."""
     import signal as _signal
+    descendants: list = []
     try:
         import psutil
     except ImportError:
-        return
+        psutil = None
+    if psutil is not None:
+        try:
+            descendants = psutil.Process(pid).children(recursive=True)
+        except (psutil.NoSuchProcess, psutil.AccessDenied, OSError):
+            descendants = []
     try:
-        parent = psutil.Process(pid)
-        descendants = parent.children(recursive=True)
-    except (psutil.NoSuchProcess, psutil.AccessDenied, OSError):
+        os.kill(pid, sig)
+    except (ProcessLookupError, PermissionError, OSError):
+        pass
+    if not descendants:
         return
     for child in descendants:
         try:

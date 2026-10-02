@@ -130,6 +130,27 @@ a fix.** A reproduction on current `main` plus a line-level account beats a plau
 rationale. When unsure about intent, asking is cheaper than shipping a fix that fights the
 design.
 
+### Security reports and fixes — follow `SECURITY.md`
+
+Read `SECURITY.md` before filing an issue or opening a PR with a security angle. It is the
+scope authority; these are the rules that matter at submission time:
+
+- **Undisclosed vulnerabilities go private, never public.** If a finding is in scope under
+  `SECURITY.md` §3.1 (isolation escape, unauthorized external-surface access, credential
+  exfiltration, trust-model documentation violation), report it via
+  [GitHub Security Advisories](https://github.com/NousResearch/hermes-agent/security/advisories/new)
+  or security@nousresearch.com. Do not open a public issue or PR for it, and keep
+  reproduction or exploit details out of commit messages, PR bodies, and comments.
+- **Out-of-scope hardening is ordinary public work.** §3.2 items — approval-gate, redaction,
+  or Skills Guard bypasses; prompt injection without a chained §3.1 outcome; consequences of
+  the chosen isolation posture; break-glass settings; third-party skills/plugins — are not
+  vulnerabilities. File them as regular issues/PRs; don't route them through the private
+  channel or describe them as vulnerabilities.
+- **Name the boundary.** A security issue or PR states which §2 trust boundary is crossed,
+  with `path/to/file.py:line` references and a reproduction on current `main`.
+- **Sweeper:** a public issue or PR that discloses an apparent §3.1 vulnerability is never a
+  sweeper close or merge candidate; leave it for a maintainer.
+
 ### The Footprint Ladder (new capability decision)
 
 Choose the highest (least-footprint) rung that correctly solves the problem:

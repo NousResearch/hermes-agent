@@ -34,11 +34,29 @@ def task_output(db_path, binding, task, route, client, *, negotiate=True):
     if saved is not None:
         if saved['target'] != target:
             raise ValueError('peer output recipient changed')
-        return output_contract(saved['contract'])
+        contract = output_contract(saved['contract'])
+        if contract is not None or proven_text_consent(saved):
+            return contract
     if task.get('status') == 'queued' and not negotiate:
         return None
+    if task.get('status') != 'queued':
+        # Absence is not evidence of old text-only work. Recover a positive,
+        # exact canonical receipt or leave this attempt unknown without writing.
+        from tui_gateway.hosted_room_peer_documents import task_documents
+        from tui_gateway.hosted_room_peer_transport import build_member_dispatch
+        dispatch = build_member_dispatch(binding=binding, route=route, room_id=binding.room_id,
+            task_id=task['identity'].task_id, target_profile=route.target_profile,
+            execution_generation=generation, source_event_seq=task['payload']['source_event_seq'],
+            prompt=task['payload']['prompt'], trace_id=route.trace_id,
+            document_inputs=task_documents(db_path, binding, task))
+        recovered = client.recover_output_consent(dispatch=dispatch.as_mapping(), grant=route.grant)
+        contract = output_contract(recovered.document_output)
+        value = {'target': target, 'contract': contract, 'dispatched': True, 'dispatch': recovered.as_mapping(),
+                 'provenance': 'canonical-dispatch-v1'}
+        _save_consent(db_path, scope, saved, value)
+        return contract
     contract = None
-    # Existing/uncertain attempts predate this consent and retain their original wire shape.
+    # New text-only work records explicit negative capability evidence.
     if task.get('status') == 'queued' and getattr(client, 'proof_install_id', None):
         response = client.probe(grant=route.grant, features=OUTPUT_FEATURE)
         live = GatewayRoomCatalog.from_mapping(response.get('catalog'))
@@ -47,12 +65,27 @@ def task_output(db_path, binding, task, route, client, *, negotiate=True):
                        if key not in {'task_id', 'execution_generation'})):
             raise ValueError('peer output capability scope changed')
         contract = output_contract(response.get('document_output'))
-    encoded = json.dumps({'target': target, 'contract': contract, 'dispatched': False}, sort_keys=True, separators=(',', ':'))
-    with hosted_rooms._transaction(db_path, immediate=True) as conn:
-        conn.execute('INSERT OR IGNORE INTO state_meta(key,value) VALUES(?,?)', (consent_key(scope), encoded))
-        if conn.execute('SELECT value FROM state_meta WHERE key=?', (consent_key(scope),)).fetchone()[0] != encoded:
-            raise ValueError('peer output consent changed')
+    _save_consent(db_path, scope, saved, {'target': target, 'contract': contract,
+        'dispatched': False, 'provenance': 'capabilities-v1'})
     return contract
+
+
+def proven_text_consent(saved):
+    return (saved is not None and saved.get('contract') is None
+            and saved.get('provenance') in {'capabilities-v1', 'canonical-dispatch-v1'})
+
+
+def _save_consent(db_path, scope, expected, value):
+    encoded = json.dumps(value, sort_keys=True, separators=(',', ':'))
+    with hosted_rooms._transaction(db_path, immediate=True) as conn:
+        key = consent_key(scope)
+        row = conn.execute('SELECT value FROM state_meta WHERE key=?', (key,)).fetchone()
+        current = json.loads(row[0]) if row else None
+        if current == value:
+            return
+        if current != expected:
+            raise ValueError('peer output consent changed')
+        conn.execute('INSERT OR REPLACE INTO state_meta(key,value) VALUES(?,?)', (key, encoded))
 
 
 def mark_dispatched(db_path, dispatch):
@@ -150,11 +183,14 @@ class PeerOutputSource:
             finally:
                 if self.generation == getattr(self.service, '_peer_output_generation', 0):
                     self.service.runtime.wakeup()
-        spawn_context_thread(execute, name='peer-output-io', daemon=True).start()
+        try:
+            spawn_context_thread(execute, name='peer-output-io', daemon=True).start()
+        except Exception as error:
+            table.pop(key, None)
+            raise OutputPending('Peer output worker could not start') from error
         return key, future
 
-    def _call(self, operation, **fields):
-        import copy
+    def _authorize(self, operation):
         row = self.service._obligation(self.scope.room_id, self.scope.task_id, self.scope.execution_generation)
         expected_op = 'ack' if operation == 'read' else operation
         encoded = lambda value: json.dumps(value, sort_keys=True, separators=(',', ':'))
@@ -162,6 +198,10 @@ class PeerOutputSource:
                 or row['scope_json'] != encoded(self.scope.as_mapping())
                 or row['manifest_json'] != (encoded(self.manifest) if self.manifest is not None else None)):
             raise ValueError('peer output obligation changed')
+
+    def _call(self, operation, **fields):
+        import copy
+        self._authorize(operation)
         key, future = self._start(operation, fields)
         if future is None or not future.done():
             raise OutputPending('Peer output transfer is pending')
@@ -176,6 +216,7 @@ class PeerOutputSource:
         from gateway.hosted_room_peer_output import output_manifest
         if scope != self.scope:
             raise ValueError('peer output scope changed')
+        self._authorize('read')
         for item in output_manifest(self.manifest):
             self._start('read', {'artifact_id': item['artifact_id']})
         value = self._call('read', artifact_id=artifact_id)
@@ -213,7 +254,7 @@ def remember_unreceived_discard(conn, binding, task):
         task_id=task['identity'].task_id, execution_generation=task['execution_generation'])
     key = consent_key(scope)
     row = conn.execute('SELECT value FROM state_meta WHERE key=?', (key,)).fetchone()
-    if row:
-        value = json.loads(row[0])
-        value['unreceived_cancel_generation'] = task['cancel_generation'] + 1
-        conn.execute('UPDATE state_meta SET value=? WHERE key=?', (json.dumps(value, sort_keys=True, separators=(',', ':')), key))
+    value = json.loads(row[0]) if row else {'contract': None, 'provenance': 'consumed-nonadmission-v1'}
+    value['unreceived_cancel_generation'] = task['cancel_generation'] + 1
+    conn.execute('INSERT OR REPLACE INTO state_meta(key,value) VALUES(?,?)',
+                 (key, json.dumps(value, sort_keys=True, separators=(',', ':'))))

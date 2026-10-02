@@ -309,7 +309,12 @@ class HostedRoomService:
             binding=binding, route=route, room_id=identity.room_id, task_id=identity.task_id,
             target_profile=route.target_profile, execution_generation=execution_generation,
             source_event_seq=source_event_seq, prompt=prompt, trace_id=route.trace_id, document_inputs=document_inputs, document_output=document_output)
-        recover(dispatch=dispatch.as_mapping(), grant=route.grant)
+        options = {}
+        if document_output is not None:
+            options['observation_only'] = task['status'] == 'stopping'
+            if document_inputs and task['status'] == 'indeterminate':
+                options['preparation_cancel_generation'] = task['cancel_generation']
+        recover(dispatch=dispatch.as_mapping(), grant=route.grant, **options)
 
     def _member_is_peer(self, room_id: str, member_id: str) -> bool:
         for m in self._room(room_id).get("members") or []:

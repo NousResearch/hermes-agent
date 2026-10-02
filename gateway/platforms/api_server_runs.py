@@ -1213,9 +1213,21 @@ def _load_owned_run(self, request, *, _api_server, permission: Optional[str], ac
 
 async def _handle_get_run(self, request: "web.Request", *, _api_server) -> "web.Response":
     """GET /v1/runs/{run_id} — return pollable run status for external UIs."""
-    _, status, _, _, err = _load_owned_run(
-        self, request, _api_server=_api_server, permission="status", active_fallback=True)
-    return err or web.json_response(status)
+    from gateway.session_peer_output import PeerOutputStateUnavailable, dispatch_evidence
+    try:
+        run_id, status, _, _, err = _load_owned_run(
+            self, request, _api_server=_api_server, permission="status", active_fallback=True)
+        if err is not None:
+            return err
+        if request.get('verified_room_grant') and request.headers.get('Hermes-Room-Features') == 'document-output-v1':
+            from gateway.platforms.api_server_authority_runs import run_admission
+            owned = run_admission(self, run_id)
+            evidence = dispatch_evidence(owned[1]) if owned is not None else None
+            if evidence is not None:
+                status = {**status, 'peer_dispatch_evidence': evidence}
+        return web.json_response(status)
+    except PeerOutputStateUnavailable:
+        return web.json_response({'error': {'code': 'peer_output_state_unavailable'}}, status=503)
 
 
 async def _handle_run_events(self, request: "web.Request", *, _api_server) -> "web.StreamResponse":

@@ -87,10 +87,14 @@ def receipt_fields(row, result):
     try:
         payload = row['payload'].get('api_turn_v1') or {}
         raw = (payload.get('settings') or {}).get('room_dispatch')
-        if not isinstance(raw, dict) or raw.get('document_output') is None:
+        if raw is None:
             return {}
         dispatch = HostedMemberDispatch.from_mapping(raw)
         if row['principal_id'] != 'api' or payload.get('run_owner_scope') != room_run_scope_key(dispatch.as_mapping()):
+            if row['status'] == 'unknown':
+                raise ValueError('unknown peer dispatch owner changed')
+            return {}
+        if dispatch.document_output is None:
             return {}
         if row['status'] == 'unknown':
             return {'peer_output_unresolved': output_scope(dispatch).as_mapping()}
@@ -98,8 +102,8 @@ def receipt_fields(row, result):
         if fields and fields.get('artifact_scope', fields.get('peer_output_empty')) != output_scope(dispatch).as_mapping():
             return {}
         return fields
-    except (ValueError, TypeError, KeyError):
-        return {}
+    except (ValueError, TypeError, KeyError) as error:
+        raise PeerOutputStateUnavailable('canonical peer output state is unreadable') from error
 
 
 def accepted_dispatch_digest(row):
@@ -116,3 +120,25 @@ def accepted_dispatch_digest(row):
     except (ValueError, TypeError, KeyError):
         pass
     return None
+
+
+class PeerOutputStateUnavailable(ValueError):
+    """Canonical evidence cannot safely be projected as a terminal Run."""
+
+
+def dispatch_evidence(row):
+    """Opt-in read proof, including explicit null consent for legacy text Runs."""
+    from gateway.hosted_room_peer import HostedMemberDispatch
+    from gateway.hosted_room_peer_output import dispatch_digest
+    from gateway.platforms.api_server_run_scope import room_run_scope_key
+    try:
+        payload = row['payload']['api_turn_v1']
+        raw = payload['settings']['room_dispatch']
+        if row['principal_id'] != 'api' or raw is None:
+            return None
+        dispatch = HostedMemberDispatch.from_mapping(raw)
+        if payload.get('run_owner_scope') != room_run_scope_key(dispatch.as_mapping()):
+            return None
+        return {'dispatch_digest': dispatch_digest(dispatch), 'document_output': dispatch.document_output}
+    except (ValueError, TypeError, KeyError) as error:
+        raise PeerOutputStateUnavailable('canonical peer dispatch is unreadable') from error

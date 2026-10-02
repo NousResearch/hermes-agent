@@ -14,6 +14,10 @@ from hermes_state_runtime import _epoch
 _RECEIPT = 'gateway.peer-output-disposition.v1.'
 
 
+class OutputNotReady(ValueError):
+    """Exact producer evidence is not terminal; retain and retry observation."""
+
+
 def _snapshot(adapter, request, conn, *, permission='status'):
     from gateway.session_authorities import active_authority
     from gateway.hosted_rooms import local_authority_gateway_id
@@ -43,7 +47,7 @@ def _snapshot(adapter, request, conn, *, permission='status'):
         raise ValueError('output owner scope changed')
     scope = output_scope(dispatch)
     if row['status'] != 'terminal':
-        raise ValueError('output producer is still active')
+        raise OutputNotReady('output producer is unresolved')
     raw = conn.execute('SELECT value FROM state_meta WHERE key=?', (_RESULT_PREFIX + row['admission_id'],)).fetchone()
     result = json.loads(raw[0])['result'] if raw else {}
     manifest = result.get('artifacts')
@@ -96,7 +100,7 @@ async def handle(adapter, request):
             after = _read_snapshot(adapter, request, permission)
             _same(expected, after)
             if after[4] is not None:
-                raise ValueError('output retired during read')
+                raise OutputNotReady('output retired during read; observe its disposition')
             return web.json_response({'metadata': metadata, 'data_base64': base64.b64encode(data).decode()})
         if operation == 'ack':
             if not success or manifest is None:
@@ -130,6 +134,8 @@ async def handle(adapter, request):
             changed = outbox.discard_durably(scope)
         return web.json_response({'acknowledged': True, 'changed': changed} if operation == 'ack'
                                  else {'discarded': True, 'removed': changed})
+    except OutputNotReady:
+        return web.json_response({'error': {'code': 'peer_output_not_ready'}}, status=503)
     except (ValueError, KeyError, TypeError):
         return web.json_response({'error': {'code': 'peer_output_refused'}}, status=409)
 

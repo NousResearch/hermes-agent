@@ -17,6 +17,16 @@ _DESC_BOARD = (
     "board for this one call."
 )
 
+_DESC_SHOW_CONTEXT = (
+    "How much of the task to return. 'full' (default) is the complete "
+    "state. 'compact' keeps the body, attachments, comments and parent "
+    "handoffs, dropping prior attempts, the assignee's recent-work "
+    "history, the run history and the event log. 'minimal' returns the "
+    "task header plus the parent handoff summaries only. Use a trimmed "
+    "mode for routine re-orientation and escalate to 'full' when you "
+    "need the history."
+)
+
 
 def _prop(type_: str, description: str) -> dict[str, str]:
     return {"type": type_, "description": description}
@@ -48,10 +58,20 @@ KANBAN_SHOW_SCHEMA = _schema(
         "and recent events. Use this to (re)orient yourself before "
         "starting work, especially on retries. The response includes a "
         "pre-formatted ``worker_context`` string suitable for inclusion "
-        "verbatim in your reasoning."
+        "verbatim in your reasoning. Pass ``context=\"compact\"`` or "
+        "``context=\"minimal\"`` when you only need the handoff and want a "
+        "smaller response."
     ),
     {
         "task_id": _prop("string", _DESC_TASK_ID_DEFAULT),
+        "context": {
+            "type": "string",
+            # Mirrors hermes_cli.kanban_db.KANBAN_CONTEXT_MODES; the handler validates
+            # against that tuple, and tests/tools/test_kanban_show_context_modes.py pins
+            # the two together.
+            "enum": ["full", "compact", "minimal"],
+            "description": _DESC_SHOW_CONTEXT,
+        },
     },
     [],
 )

@@ -1,9 +1,11 @@
 """An auto-threaded @mention opens the thread's session with the prompt inputs its later messages use.
 
-The first turn's source points at the new thread, but its topic and its channel prompt / skill lookups
-were read from the parent text channel the mention was posted in. The next message in the thread read
-them from the thread, so the pinned session-context prompt (``Channel Topic``) was re-rendered on the
-second turn of every auto-threaded conversation in a channel with a topic: a prompt-cache miss.
+The first turn's source points at the new thread, but its topic was read from the parent text channel
+the mention was posted in. The next message in the thread read the thread's own topic (none outside
+forums), so the pinned session-context prompt (``Channel Topic``) was re-rendered on the second turn of
+every auto-threaded conversation in a channel with a topic: a prompt-cache miss. Channel prompt and
+skill lookups already resolve the same on both turns (exact id, then parent) and are asserted as parity
+guards only.
 """
 
 from datetime import datetime, timezone
@@ -32,33 +34,40 @@ class _Thread:
 
 
 _USER = SimpleNamespace(id=42, display_name="Alice", name="alice")
+_BOT = SimpleNamespace(id=999)
 
 
-def _message(channel, message_id):
+def _message(channel, message_id, mention=False):
     return SimpleNamespace(
-        id=message_id, content="what broke?", mentions=[], attachments=[], reference=None,
+        id=message_id, content=("<@999> " if mention else "") + "what broke?",
+        mentions=[_BOT] if mention else [], attachments=[], reference=None,
         created_at=datetime.now(timezone.utc), channel=channel, author=_USER)
 
 
 @pytest.mark.asyncio
 async def test_auto_thread_first_turn_matches_the_threads_next_message(monkeypatch):
     monkeypatch.setattr(discord_platform.discord, "Thread", _Thread, raising=False)
-    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "false")
+    monkeypatch.delenv("DISCORD_REQUIRE_MENTION", raising=False)
     monkeypatch.setenv("DISCORD_AUTO_THREAD", "true")
     parent = _Text(700)
     thread = _Thread(800, parent)
     adapter = DiscordAdapter(PlatformConfig(enabled=True, token="fake", extra={
         "channel_prompts": {"700": "Answer in haiku."},
         "channel_skill_bindings": [{"id": "700", "skill": "triage"}]}))
-    adapter._client = SimpleNamespace(user=SimpleNamespace(id=999))
+    adapter._client = SimpleNamespace(user=_BOT)
     adapter._text_batch_delay_seconds = 0
     adapter._discord_history_backfill = lambda: False
     adapter._auto_create_thread = AsyncMock(return_value=thread)
     adapter.handle_message = AsyncMock()
 
+    # Default mention gate: an untagged parent message neither threads nor dispatches.
+    assert await adapter._handle_message(_message(parent, 99)) is False
+    adapter._auto_create_thread.assert_not_awaited()
+    adapter.handle_message.assert_not_awaited()
+
     events = []
-    for channel, message_id in ((parent, 100), (thread, 101)):
-        await adapter._handle_message(_message(channel, message_id))
+    for channel, message_id, mention in ((parent, 100, True), (thread, 101, False)):
+        assert await adapter._handle_message(_message(channel, message_id, mention)) is True
         events.append(adapter.handle_message.await_args.args[0])
     adapter._auto_create_thread.assert_awaited_once()
     first, follow_up = events

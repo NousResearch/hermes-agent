@@ -60,6 +60,15 @@ TERMINAL_WORKER_REAP_GRACE_SECONDS = 120
 # also matched ordinary English words like "author"/"authored"/"authoring"/
 # "authoritative" in worker progress prose, parking a healthy card forever
 # (#117009).
+# Rate-limit residue detector: matches ONLY quota/rate-limit vocabulary (never
+# auth/unauthorized/billing), used by the handoff-supersession escape in
+# check_respawn_guard. Auth-flavored residue still parks the card — that is a
+# real credential problem retrying cannot fix.
+_RATE_LIMIT_RESIDUE_RE = re.compile(
+    r"\b(quota|rate[\s_\-]?limit|429|exited rate-limited)\b",
+    re.IGNORECASE,
+)
+
 _RESPAWN_BLOCKER_RE = re.compile(
     r"\b(quota|rate[\s_\-]?limit|429|403|"
     r"auth|authenticat(?:e|es|ed|ing|ion)|authoriz(?:e|es|ed|ing|ation)|"
@@ -1581,6 +1590,20 @@ def check_respawn_guard(
         # stamped rate-limit text; this path intentionally retries forever
         # (spaced by the cooldown) until quota returns or a real run supersedes it.
         return None
+
+    # 1b. Handoff supersession (#review-lane quota residue): a terminal outcome
+    # NEWER than the last rate_limited run (e.g. ``review_requested`` — the
+    # worker finished its edit and handed the card to review) means the stamped
+    # ``last_failure_error`` quota text is stale residue, not a live blocker.
+    # Without this the review lane parks the card forever: the rate-limit
+    # escape above only fires while ``rate_limited`` IS the latest outcome, and
+    # ``blocker_auth`` below happily matches the leftover "quota wall" text.
+    # Any real failure after the handoff (a crashed review run) restamps
+    # ``last_failure_error`` and re-enter the guard normally.
+    if latest_run is not None and latest_run["outcome"] not in ("rate_limited", "crashed", None):
+        err_txt = _kb._lossy_text(row["last_failure_error"] or "")
+        if err_txt and _RATE_LIMIT_RESIDUE_RE.search(err_txt):
+            return None
 
     # 2. Quota / auth blocker: retrying immediately will not help.  A plain
     # crash is different: its persisted error includes the worker's last

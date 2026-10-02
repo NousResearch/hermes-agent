@@ -288,8 +288,11 @@ def test_store_attachment_bytes_roundtrip(kanban_home):
 # ---------------------------------------------------------------------------
 
 
-def test_cli_attach_attachments_and_rm(kanban_home, tmp_path):
+def test_cli_attach_attachments_and_rm(kanban_home, tmp_path, monkeypatch):
     from hermes_cli.kanban import run_slash
+
+    # attach records an uploaded_by: author-attributing, so the explicit signal must be present.
+    monkeypatch.setenv("HERMES_PROFILE", "tester")
 
     conn = kbc.connect()
     try:

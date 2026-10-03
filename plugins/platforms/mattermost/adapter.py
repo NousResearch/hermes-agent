@@ -115,6 +115,7 @@ class MattermostAdapter(BasePlatformAdapter):
         self._ws: Any = None  # aiohttp.ClientWebSocketResponse
         self._ws_task: Optional[asyncio.Task] = None
         self._reconnect_task: Optional[asyncio.Task] = None
+        self._presence_task: Optional[asyncio.Task] = None
         self._closing = False
         # Reply mode: "thread" to nest replies, "off" for flat messages.
         self._reply_mode: str = (
@@ -168,6 +169,40 @@ class MattermostAdapter(BasePlatformAdapter):
 
     async def _api_post(self, path: str, payload: Dict[str, Any]) -> Dict[str, Any]:
         return await self._api("POST", path, payload)
+
+    async def _api_put(self, path: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+        return await self._api("PUT", path, payload)
+
+    async def set_presence(self, state: str = "online") -> bool:
+        """Update Mattermost user presence status ('online', 'away', 'dnd', 'offline')."""
+        if not self._bot_user_id or not self._session or self._session.closed:
+            return False
+        valid_states = {"online", "away", "dnd", "offline"}
+        if state not in valid_states:
+            logger.warning("Mattermost: invalid presence state %r", state)
+            return False
+        try:
+            res = await self._api_put(
+                f"users/{self._bot_user_id}/status",
+                {"user_id": self._bot_user_id, "status": state},
+            )
+            logger.debug("Mattermost: presence set to %s", state)
+            return bool(res and res.get("status") == state)
+        except Exception as exc:
+            logger.debug("Mattermost: set_presence failed: %s", exc)
+            return False
+
+    async def _presence_loop(self) -> None:
+        """Periodically refresh online status (every 2 minutes) to prevent Mattermost idle timeout."""
+        while not self._closing:
+            try:
+                await asyncio.sleep(120)
+                if not self._closing:
+                    await self.set_presence("online")
+            except asyncio.CancelledError:
+                break
+            except Exception as exc:
+                logger.debug("Mattermost: presence loop error: %s", exc)
 
     def _last_post_failure_is_broken_thread_root(self) -> bool:
         """Return True only for clear invalid/missing Mattermost thread roots."""
@@ -247,11 +282,15 @@ class MattermostAdapter(BasePlatformAdapter):
             "Mattermost: authenticated as @%s (%s) on %s", self._bot_username, self._bot_user_id, self._base_url)
         self._ws_task = asyncio.create_task(self._ws_loop())
         self._mark_connected()
+        await self.set_presence("online")
+        self._presence_task = asyncio.create_task(self._presence_loop())
         self._wire_plugin_handlers(None)  # plugin-registered native handlers
         return True
 
     async def disconnect(self) -> None:
         self._closing = True
+        await cancel_task(self._presence_task)
+        self._presence_task = None
         await cancel_task(self._ws_task)
         if self._reconnect_task and not self._reconnect_task.done():
             self._reconnect_task.cancel()
@@ -259,6 +298,10 @@ class MattermostAdapter(BasePlatformAdapter):
             await self._ws.close()
             self._ws = None
         if self._session and not self._session.closed:
+            try:
+                await self.set_presence("offline")
+            except Exception:
+                pass
             await self._session.close()
         logger.info("Mattermost: disconnected")
 
@@ -492,10 +535,10 @@ class MattermostAdapter(BasePlatformAdapter):
                 logger.info("Mattermost: WebSocket closed (%s)", kind)
                 break
 
-    def _apply_channel_gating(self, channel_id: str, message_text: str) -> Optional[str]:
+    def _apply_channel_gating(self, channel_id: str, message_text: str, in_thread: bool = False) -> Optional[str]:
         """Mention-gate a non-DM post; return the cleaned text, or None to ignore it. allowed_channels is a
         whitelist checked first (@mentions elsewhere are ignored); require_mention (default true) is
-        bypassed in free_response_channels."""
+        bypassed in free_response_channels and for replies inside an existing thread (in_thread=True)."""
         allowed_channels = _channel_id_set(_extra_or_secret(self.config.extra, "allowed_channels", "MATTERMOST_ALLOWED_CHANNELS", blank_is_unset=False))
         if allowed_channels and channel_id not in allowed_channels:
             logger.debug("Mattermost: ignoring message in non-allowed channel: %s", channel_id)
@@ -506,7 +549,7 @@ class MattermostAdapter(BasePlatformAdapter):
             _extra_or_secret(self.config.extra, "free_response_channels", "MATTERMOST_FREE_RESPONSE_CHANNELS", blank_is_unset=False))
         mention_patterns = [f"@{self._bot_username}", f"@{self._bot_user_id}"]
         has_mention = any(pattern.lower() in message_text.lower() for pattern in mention_patterns)
-        if require_mention and channel_id not in free_channels and not has_mention:
+        if require_mention and channel_id not in free_channels and not has_mention and not in_thread:
             logger.debug("Mattermost: skipping non-DM message without @mention (channel=%s)", channel_id)
             return None
         if has_mention:  # strip the @mention so the agent sees clean input
@@ -562,7 +605,9 @@ class MattermostAdapter(BasePlatformAdapter):
         channel_id, is_dm = post.get("channel_id", ""), data.get("channel_type", "O") == "D"
         message_text = post.get("message", "")
         if not is_dm:  # DMs need no gating; channels are mention-gated.
-            message_text = self._apply_channel_gating(channel_id, message_text)
+            # Pass in_thread=True when the post is a reply inside an existing thread: the initial
+            # @mention already admitted the thread, so follow-up replies don't need another mention.
+            message_text = self._apply_channel_gating(channel_id, message_text, in_thread=bool(post.get("root_id")))
             if message_text is None:
                 return
         # Thread support: replies use root_id; in thread mode a top-level channel post is itself a valid root.

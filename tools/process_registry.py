@@ -2346,11 +2346,22 @@ class ProcessRegistry(ProcessCheckpointMixin):
         PID. Returns a final result dict when the kill cannot proceed (recycled/dead
         recovered PID, or no runtime handle), else None."""
         if session._pty:
+            if _IS_WINDOWS and session.pid:
+                # Closing the ConPTY only ends the console session — the tree below
+                # the winpty agent survives it (#108987). Reap the host tree while
+                # the agent still anchors the PPID links, like the pipe branch.
+                # POSIX keeps the direct terminate: closing the master makes the
+                # kernel SIGHUP the foreground process group, and a full tree walk
+                # here would add the TERM/KILL grace windows to every PTY kill.
+                self._terminate_host_pid(session.pid, session.host_start_time)
             try:
                 session._pty.terminate(force=True)
             except Exception:
                 if session.pid:
-                    os.kill(session.pid, signal.SIGTERM)
+                    # The tree reap above may already have killed this PID — the
+                    # fallback must not turn a completed kill into an error receipt.
+                    with suppress(ProcessLookupError, OSError):
+                        os.kill(session.pid, signal.SIGTERM)
         elif session.process:
             # Tree kill: on Windows Popen.terminate() only kills the shell wrapper and
             # leaves Git Bash descendants behind.

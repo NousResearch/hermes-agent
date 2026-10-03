@@ -1388,6 +1388,101 @@ class TestKillProcess:
         finally:
             registry._running.pop(s.id, None)
 
+    @pytest.mark.platforms("windows")
+    def test_windows_pty_kill_reaps_host_tree_before_pty_teardown(self, registry):
+        """A Windows PTY kill must reap the whole host tree, not just the ConPTY.
+
+        Closing the ConPTY session ends only the winpty agent — its descendants
+        (bash → python → node, #108987) survive and become unmanageable once the
+        session leaves the registry. The tree must be reaped while the agent
+        still anchors the PPID links ``taskkill /T`` walks, i.e. BEFORE
+        ``terminate(force=True)`` can tear the console down.
+        """
+        s = _make_session(sid="proc_pty_win", command="hermes --tui")
+        s.pid = 41852
+        s.host_start_time = 111
+        calls = []
+
+        class _FakePty:
+            def terminate(self, force=False):
+                calls.append(("pty_terminate", force))
+
+        s._pty = _FakePty()
+        registry._running[s.id] = s
+        try:
+            with patch.object(
+                ProcessRegistry,
+                "_terminate_host_pid",
+                side_effect=lambda pid, start: calls.append(("reap_tree", pid, start)),
+            ):
+                early = registry._signal_kill(s, s.id, False)
+
+            assert early is None
+            reap = ("reap_tree", 41852, 111)
+            assert reap in calls, "PTY kill must reap the host tree on Windows"
+            assert calls.index(reap) < calls.index(("pty_terminate", True)), (
+                "tree reap must precede PTY teardown — after the agent exits, "
+                "taskkill /T can no longer find the descendants")
+        finally:
+            registry._running.pop(s.id, None)
+
+    @pytest.mark.platforms("posix")
+    def test_posix_pty_kill_keeps_direct_terminate(self, registry):
+        """POSIX PTY kills keep the direct teardown: closing the master makes the
+        kernel SIGHUP the foreground process group, and routing every PTY kill
+        through the tree reaper would add the TERM/KILL grace windows."""
+        s = _make_session(sid="proc_pty_posix", command="hermes --tui")
+        s.pid = 41853
+        s.host_start_time = 222
+        terminated = []
+
+        class _FakePty:
+            def terminate(self, force=False):
+                terminated.append(force)
+
+        s._pty = _FakePty()
+        registry._running[s.id] = s
+        try:
+            with patch.object(ProcessRegistry, "_terminate_host_pid") as reap:
+                early = registry._signal_kill(s, s.id, False)
+
+            assert early is None
+            reap.assert_not_called()
+            assert terminated == [True]
+        finally:
+            registry._running.pop(s.id, None)
+
+    def test_pty_kill_fallback_survives_already_dead_pid(self, registry, monkeypatch):
+        """The post-reap SIGTERM fallback must not raise on a dead PID.
+
+        On Windows the tree reap runs before ``_pty.terminate``, so a terminate
+        failure hits an agent PID that taskkill may already have killed — the
+        fallback's ProcessLookupError must stay suppressed instead of turning a
+        completed kill into an error receipt.
+        """
+        import tools.process_registry as pr
+
+        s = _make_session(sid="proc_pty_fallback", command="hermes --tui")
+        s.pid = 41854
+        s.host_start_time = 333
+
+        class _ExplodingPty:
+            def terminate(self, force=False):
+                raise RuntimeError("console already gone")
+
+        s._pty = _ExplodingPty()
+        registry._running[s.id] = s
+
+        def _dead_pid(pid, sig):
+            raise ProcessLookupError()
+
+        monkeypatch.setattr(pr.os, "kill", _dead_pid)
+        try:
+            early = registry._signal_kill(s, s.id, False)
+            assert early is None
+        finally:
+            registry._running.pop(s.id, None)
+
     def test_kill_receipt_rewritten_when_reader_finalises_first(self, registry):
         """A kill racing the reader thread must not persist as a plain exit.
 

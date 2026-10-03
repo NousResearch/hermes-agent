@@ -573,6 +573,37 @@ class TestExtractImageRefs:
         paths, urls = extract_image_refs(body)
         assert paths == [str(img)]
 
+    def test_windows_drive_backslash_path(self, tmp_path: Path):
+        img = tmp_path / "shot.png"
+        img.write_bytes(_png_bytes())
+        body = f"check {str(img).replace('/', chr(92))} now"
+        paths, urls = extract_image_refs(body)
+        assert paths == [str(img)]
+        assert urls == []
+
+    def test_windows_drive_forward_slash_path(self, tmp_path: Path):
+        img = tmp_path / "shot2.jpg"
+        img.write_bytes(_png_bytes())
+        body = f"check {img.as_posix()} now"
+        paths, urls = extract_image_refs(body)
+        # The extractor preserves the separator style the user typed, so compare
+        # resolved paths rather than raw strings.
+        assert [Path(p) for p in paths] == [img]
+        assert urls == []
+
+    def test_windows_relative_drive_path_not_matched(self):
+        # "C:img.png" is drive-relative, not absolute: it must not be extracted.
+        body = "check C:img.png now"
+        paths, urls = extract_image_refs(body)
+        assert paths == []
+        assert urls == []
+
+    def test_drive_letter_inside_url_not_treated_as_local_path(self):
+        body = "see https://example.com/C:/dir/pic.png for details"
+        paths, urls = extract_image_refs(body)
+        assert paths == []
+        assert urls == ["https://example.com/C:/dir/pic.png"]
+
 
 # ─── build_native_content_parts with URLs ────────────────────────────────────
 

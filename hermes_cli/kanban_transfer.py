@@ -293,9 +293,26 @@ def _install_board(
     board_root.mkdir(parents=True, exist_ok=True)
     shutil.move(str(extracted / "kanban.db"), str(board_root / "kanban.db"))
     for tree in ("attachments", "logs"):
-        src = extracted / tree
-        if src.is_dir():
-            shutil.move(str(src), str(board_root / tree))
+        incoming = extracted / tree
+        if not incoming.is_dir():
+            continue
+        dest = board_root / tree
+        # A pre-existing tree (stray logs / a task dir from an older install) must not become
+        # attachments/attachments/: _relocate_imported_rows looks up canonical
+        # attachments/<task_id>/<file>, so a nested copy hides every blob and drops its row
+        # (#JoaoMarcos44 P2). Merge children by name instead; the archive wins on collision.
+        if dest.is_dir():
+            for entry in sorted(incoming.iterdir()):
+                child = dest / entry.name
+                if child.exists():
+                    if entry.is_dir() and child.is_dir():
+                        shutil.rmtree(child)
+                    else:
+                        child.unlink()
+                shutil.move(str(entry), str(child))
+            shutil.rmtree(incoming, ignore_errors=True)
+            continue
+        shutil.move(str(incoming), str(dest))
 
     # Rewritten rather than moved across: the archive's copy names a slug
     # and a workdir that belong to the exporting machine.
@@ -318,10 +335,10 @@ def _install_board(
     return name, stats, warnings, counts
 
 
-def _discard_failed_import(board_root: Path, created: bool) -> None:
+def _discard_failed_import(board_root: Path, created: bool, held: Optional[Path]) -> None:
     """Undo a half-finished import. Left in place it lists as a broken board
     and pushes the retry onto ``<slug>-2``. A directory that was already there
-    (stray logs, no board) only loses the files that made it a board."""
+    (stray logs, no board) is restored to exactly its pre-import contents."""
     kb._INITIALIZED_PATHS.discard(str((board_root / "kanban.db").resolve()))
     if created:
         shutil.rmtree(board_root, ignore_errors=True)
@@ -329,6 +346,20 @@ def _discard_failed_import(board_root: Path, created: bool) -> None:
     for leaf in ("board.json", "kanban.db", "kanban.db-wal", "kanban.db-shm"):
         with contextlib.suppress(FileNotFoundError):
             (board_root / leaf).unlink()
+    # _install_board moved attachments/ and logs/ in before it could fail. Remove what the
+    # attempt brought, then put the pre-existing trees back from the holding copy, so a
+    # retry cannot nest attachments/attachments/ (#JoaoMarcos44 P2).
+    for leaf in ("attachments", "logs"):
+        with contextlib.suppress(FileNotFoundError):
+            path = board_root / leaf
+            if path.is_dir():
+                shutil.rmtree(path, ignore_errors=True)
+            else:
+                path.unlink()
+    if held is not None:
+        for entry in held.iterdir():
+            shutil.move(str(entry), str(board_root / entry.name))
+        shutil.rmtree(held, ignore_errors=True)
 
 
 def import_board(
@@ -370,14 +401,31 @@ def import_board(
 
         board_root = kb.board_dir(target)
         created = not board_root.exists()
+        # A pre-existing directory must be restored exactly on rollback: _install_board moves
+        # attachments/ and logs/ INTO it, so deleting only board metadata leaves the attempt's
+        # trees behind and the next import nests attachments/attachments/ (#JoaoMarcos44 P2).
+        # The holding dir is a COPY taken beside the board, so _install_board's move into
+        # board_root cannot disturb it; only rollback reads it.
+        held = None
+        if not created and board_root.is_dir():
+            held = board_root.parent / f".{target}.rollback-hold"
+            shutil.rmtree(held, ignore_errors=True)
+            held.mkdir(parents=True)
+            for entry in board_root.iterdir():
+                if entry.is_dir():
+                    shutil.copytree(entry, held / entry.name)
+                else:
+                    shutil.copy2(entry, held / entry.name)
         try:
             name, stats, warnings, counts = _install_board(target, extracted, manifest, staged_meta)
         except BaseException as exc:
-            _discard_failed_import(board_root, created)
+            _discard_failed_import(board_root, created, held)
             if isinstance(exc, sqlite3.DatabaseError):
                 raise ValueError(f"archive kanban.db is not a usable kanban database: {exc}") from exc
             raise
 
+    if held is not None:
+        shutil.rmtree(held, ignore_errors=True)
     if activate:
         kb.set_current_board(target)
 

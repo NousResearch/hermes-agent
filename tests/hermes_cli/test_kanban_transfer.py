@@ -383,3 +383,63 @@ def test_failed_import_leaves_no_board_behind(kanban_root, tmp_path):
     assert [b["slug"] for b in kb.list_boards()] == ["default"]
     # A retry with a good archive gets the archive's own slug, not ``alpha-2``.
     assert kt.import_board(str(archive))["board"] == "alpha"
+
+
+def test_failed_import_into_preexisting_dir_leaves_no_attempt_trees(tmp_path, monkeypatch):
+    """A failed import into an existing directory must restore its pre-import state.
+
+    ``_install_board`` moves attachments/ and logs/ INTO the target before it can fail.
+    Rolling back only the board metadata leaves those trees behind, so the next import
+    nests attachments/attachments/ and drops the attachment rows (#JoaoMarcos44 P2).
+    """
+    # Export first, on this machine. The archive carries attachments/<task_id>/.
+    export_root = tmp_path / "exporter"
+    export_root.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(export_root))
+    monkeypatch.setenv("HERMES_KANBAN_HOME", str(export_root))
+    kb.create_board("alpha", name="Alpha Board")
+    with kbc.connect_closing(board="alpha") as conn:
+        task = kb.create_task(conn, title="scratch", body="body", assignee="coder")
+        kb.store_attachment_bytes(conn, task, "notes.txt", b"hello attachment", board="alpha")
+    archive = Path(kt.export_board("alpha", str(tmp_path / "alpha"))["archive"])
+
+    # Import as "the other machine": a fresh root that already holds a stray alpha directory
+    # (noise + a task tree), but no board metadata, so _available_slug picks ``alpha`` again.
+    target_root = tmp_path / "importer"
+    target_root.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(target_root))
+    monkeypatch.setenv("HERMES_KANBAN_HOME", str(target_root))
+    board_root = kb.board_dir("alpha")
+    board_root.mkdir(parents=True, exist_ok=True)
+    (board_root / "stray.log").write_text("pre-existing noise")
+    (board_root / "attachments").mkdir()
+    (board_root / "attachments" / "keep.txt").write_text("mine")
+
+    staged = tmp_path / "restage2"
+    safe_extract_targz(archive, staged)
+    extracted = staged / "alpha"
+    assert (extracted / "attachments").is_dir(), "archive must carry attachments"
+    (extracted / "kanban.db").write_bytes(b"truncated download, not sqlite")
+    broken = tmp_path / "broken2.tar.gz"
+    with tarfile.open(broken, "w:gz") as tf:
+        tf.add(extracted, arcname="alpha")
+
+    with pytest.raises(ValueError, match="not a usable kanban database"):
+        kt.import_board(str(broken))
+
+    # Exactly the pre-import state: no board files, original tree intact, and the attempt's
+    # moved-in tree removed rather than left nested or orphaned.
+    assert not (board_root / "board.json").exists()
+    assert not (board_root / "kanban.db").exists()
+    assert (board_root / "stray.log").read_text() == "pre-existing noise"
+    assert (board_root / "attachments" / "keep.txt").read_text() == "mine"
+    assert not (board_root / "attachments" / "attachments").exists()
+    leftover = [d.name for d in (board_root / "attachments").iterdir() if d.is_dir()]
+    assert not leftover, f"attempt-owned task trees left behind: {leftover}"
+
+    # A retry must not nest: the imported board's attachments land at the top level.
+    result = kt.import_board(str(archive))
+    assert result["board"] == "alpha"
+    installed = kb.board_dir("alpha") / "attachments"
+    assert not (installed / "attachments").exists()
+    assert [d for d in installed.iterdir() if d.is_dir()], "task dirs should sit at top level"

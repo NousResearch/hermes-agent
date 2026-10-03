@@ -183,6 +183,7 @@ export const tr: Translations = {
   analytics: {
     period: "Dönem:",
     totalTokens: "Toplam Token",
+    inclCacheRead: "önbellek dahil",
     totalSessions: "Toplam Oturum",
     apiCalls: "API Çağrıları",
     dailyTokenUsage: "Günlük Token Kullanımı",
@@ -194,6 +195,7 @@ export const tr: Translations = {
     edits: "Agent Yönetildi",
     lastUsed: "Son Kullanım",
     input: "Giriş",
+    cacheRead: "Önbellek Okuma",
     output: "Çıkış",
     total: "Toplam",
     noUsageData: "Bu dönem için kullanım verisi yok",

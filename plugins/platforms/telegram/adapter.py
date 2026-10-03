@@ -2986,12 +2986,17 @@ class TelegramAdapter(BasePlatformAdapter):
         """Register every PTB handler on ``app`` (initial connect and the transient-init rebuild)."""
         table = getattr(app, "handlers", None)
         core_before = {g: len(hs) for g, hs in table.items()} if isinstance(table, dict) else {}
-        app.add_handler(TelegramMessageHandler(filters.TEXT & ~filters.COMMAND, self._handle_text_message))
-        app.add_handler(TelegramMessageHandler(filters.COMMAND, self._handle_command))
+        # Business updates (owner<->contact chats) surface as ``effective_message`` too, so they would match
+        # these handlers as owner DMs and be answered to the contact. Core has no Business support: a Business
+        # plugin's handlers are hoisted ahead of these and claim them first.
+        not_business = ~(filters.UpdateType.BUSINESS_MESSAGES | filters.UpdateType.EDITED_BUSINESS_MESSAGE)
+        app.add_handler(TelegramMessageHandler(filters.TEXT & ~filters.COMMAND & not_business, self._handle_text_message))
+        app.add_handler(TelegramMessageHandler(filters.COMMAND & not_business, self._handle_command))
         app.add_handler(TelegramMessageHandler(
-            filters.LOCATION | getattr(filters, "VENUE", filters.LOCATION), self._handle_location_message))
+            (filters.LOCATION | getattr(filters, "VENUE", filters.LOCATION)) & not_business, self._handle_location_message))
         app.add_handler(TelegramMessageHandler(
-            filters.PHOTO | filters.VIDEO | filters.AUDIO | filters.VOICE | filters.Document.ALL | filters.Sticker.ALL,
+            (filters.PHOTO | filters.VIDEO | filters.AUDIO | filters.VOICE | filters.Document.ALL | filters.Sticker.ALL)
+            & not_business,
             self._handle_media_message))
         app.add_handler(CallbackQueryHandler(self._handle_callback_query))
         # Inline command picker; inert until the owner enables inline mode via BotFather /setinline.

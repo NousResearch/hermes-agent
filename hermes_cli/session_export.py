@@ -217,6 +217,7 @@ def export_projection(transcript: bool) -> Dict[str, bool]:
     ``import_sessions`` brings the flagged rows back archived, never as live context."""
     return {"include_compacted": True} if transcript else {"include_inactive": True}
 
+
 SAVE_USAGE = """/save — export the current session to a file
 Usage: /save <format> [filename] [redact]
 

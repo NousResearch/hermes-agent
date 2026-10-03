@@ -77,7 +77,10 @@ def test_save_json_restores_compacted_history_as_archived(tmp_path, monkeypatch,
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     db = _compacted_store(tmp_path / "state.db")
-    shape = lambda store, **flags: [(m["role"], m["content"]) for m in store.get_messages("s1", **flags)]  # noqa: E731
+
+    def shape(store, **flags):
+        return [(m["role"], m["content"]) for m in store.get_messages("s1", **flags)]
+
     try:
         shown, live = shape(db, include_compacted=True), shape(db)
         snapshot = json.loads(save(db, "json", tmp_path / "saved.json"))

@@ -1307,20 +1307,24 @@ def interruptible_api_call(agent, api_kwargs: dict):
 
 
 def _consume_ephemeral_reasoning_off(agent) -> bool:
-    """Consume the one-shot "answer without thinking" continuation flag.
+    """Read the one-shot "answer without thinking" continuation flag WITHOUT clearing it.
 
     Set by the length-continuation path when a request returned reasoning but NO
     visible content (thinking ate the output cap); continuation turns never replay
     prior reasoning, so thinking ON would re-burn the budget. When True the caller
     overrides the wire reasoning_config with ``{"enabled": False, "effort": "none"}``
-    for exactly the next call. Prompt-cache cost is bounded to ONE cold prefix write
+    for the call in progress. Prompt-cache cost is bounded to ONE cold prefix write
     on config-sensitive providers (Anthropic, OpenAI) — far cheaper than four futile
     full-budget continuations.
+
+    The flag is NOT cleared here. ``_run_api_retry_loop`` rebuilds the request on every
+    attempt of the same call, so clearing on read applied the override to exactly one
+    *attempt* rather than one *call*: after a single transient 429/5xx/stream drop the
+    retry went out at full effort and burned one of the continuation attempts the
+    override exists to protect (#120030). It is cleared per TURN instead, at the top of
+    ``_run_conversation_turn``, so it can never leak into the next turn.
     """
-    consumed = bool(getattr(agent, "_ephemeral_reasoning_off", False))
-    if consumed:
-        agent._ephemeral_reasoning_off = False
-    return consumed
+    return bool(getattr(agent, "_ephemeral_reasoning_off", False))
 
 
 def _reasoning_config_for_wire(agent):
@@ -1401,11 +1405,16 @@ def _alias_tool_search_bridge_for_xai(agent, transport, tools_for_api):
 
 
 def _consume_ephemeral_max_output(agent):
-    """Pop the one-shot ephemeral output cap; whichever path builds the request consumes it."""
-    ephemeral_out = getattr(agent, "_ephemeral_max_output_tokens", None)
-    if ephemeral_out is not None:
-        agent._ephemeral_max_output_tokens = None
-    return ephemeral_out
+    """Read the one-shot ephemeral output cap; whichever path builds the request picks it up.
+
+    Like ``_consume_ephemeral_reasoning_off``, this does NOT clear. The retry loop rebuilds
+    the request on every attempt of the same call, so clearing on read meant a retry resent
+    the pre-override ``max_tokens``: the output-cap clamp re-hit the same context-length 400
+    and clamped a second time, spending another (lossy) compression attempt, or ending the
+    turn while compression was in cooldown (#120030, following #99897). Cleared per TURN at
+    the top of ``_run_conversation_turn``.
+    """
+    return getattr(agent, "_ephemeral_max_output_tokens", None)
 
 
 def _build_anthropic_kwargs(agent, api_messages, tools_for_api, reasoning_config, request_overrides):

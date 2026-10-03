@@ -1,7 +1,9 @@
 import { act, cleanup, renderHook } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { type MicRecorderErrorCopy, useMicRecorder } from './use-mic-recorder'
+import { setDocumentHidden } from '@/test/window-state'
+
+import { type MicRecorderErrorCopy, type MicRecorderOptions, useMicRecorder } from './use-mic-recorder'
 
 // The level meter behind continuous voice mode is an AudioContext on the
 // capture stream. #75329: a torn-down context was still closing when the next
@@ -25,11 +27,20 @@ function deferred() {
   return { promise, resolve }
 }
 
+interface FakeProcessor {
+  connect: ReturnType<typeof vi.fn>
+  disconnect: ReturnType<typeof vi.fn>
+  onaudioprocess: ((event: AudioProcessingEvent) => void) | null
+}
+
+let processors: FakeProcessor[] = []
+
 class FakeAudioContext extends EventTarget {
   static instances: FakeAudioContext[] = []
   static throwOnConstruct = false
   state: AudioContextState = 'running'
   closing = deferred()
+  destination = {}
 
   constructor() {
     super()
@@ -47,6 +58,18 @@ class FakeAudioContext extends EventTarget {
 
   createMediaStreamSource() {
     return { connect: vi.fn() }
+  }
+
+  createGain() {
+    return { connect: vi.fn(), disconnect: vi.fn(), gain: { value: 1 } }
+  }
+
+  createScriptProcessor() {
+    const processor: FakeProcessor = { connect: vi.fn(), disconnect: vi.fn(), onaudioprocess: null }
+
+    processors.push(processor)
+
+    return processor
   }
 
   resume = vi.fn(async () => undefined)
@@ -83,6 +106,7 @@ const flush = () => act(async () => new Promise<void>(resolve => window.setTimeo
 beforeEach(() => {
   FakeAudioContext.instances = []
   FakeAudioContext.throwOnConstruct = false
+  processors = []
   vi.stubGlobal('AudioContext', FakeAudioContext)
   vi.stubGlobal('MediaRecorder', FakeMediaRecorder)
   vi.stubGlobal(
@@ -186,5 +210,121 @@ describe('useMicRecorder level meter', () => {
 
     expect(onMeterFailure).not.toHaveBeenCalled()
     expect(recording).toMatchObject({ meterFailed: false })
+  })
+})
+
+// A minimized or occluded Chromium window never runs requestAnimationFrame
+// callbacks and throttles timers to ~1 Hz, while the audio graph keeps
+// processing. These tests hide the window, keep rAF inert and feed audio
+// through the fake graph: end of speech must still be detected.
+describe('useMicRecorder while the window is hidden', () => {
+  const FRAME_MS = 40
+  const SPEECH = 0.5
+  const SILENCE = 0
+
+  /** Advance wall-clock time in audio-callback-sized steps while the graph "plays" `amplitude`. */
+  function feed(amplitude: number, durationMs: number) {
+    const samples = new Float32Array(2048).fill(amplitude)
+    const event = { inputBuffer: { getChannelData: () => samples } } as unknown as AudioProcessingEvent
+
+    for (let elapsed = 0; elapsed < durationMs; elapsed += FRAME_MS) {
+      vi.setSystemTime(Date.now() + FRAME_MS)
+      act(() => processors.forEach(processor => processor.onaudioprocess?.(event)))
+    }
+  }
+
+  async function startRecorder(options: MicRecorderOptions) {
+    const { result } = renderHook(() => useMicRecorder(copy))
+
+    await act(async () => {
+      await result.current.handle.start(options)
+    })
+
+    return result
+  }
+
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ['Date'] })
+    vi.setSystemTime(new Date('2026-10-02T12:00:00Z'))
+    setDocumentHidden(true)
+  })
+
+  afterEach(() => {
+    setDocumentHidden(false)
+    vi.useRealTimers()
+  })
+
+  it('detects end of speech without requestAnimationFrame', async () => {
+    const onSilence = vi.fn()
+    await startRecorder({ onSilence, silenceLevel: 0.075, silenceMs: 1_250 })
+
+    feed(SPEECH, 600)
+    expect(onSilence).not.toHaveBeenCalled()
+
+    feed(SILENCE, 1_000)
+    expect(onSilence).not.toHaveBeenCalled()
+
+    feed(SILENCE, 400)
+    expect(onSilence).toHaveBeenCalledOnce()
+
+    feed(SILENCE, 2_000)
+    expect(onSilence).toHaveBeenCalledOnce()
+  })
+
+  it('fires the idle timeout when nothing is said', async () => {
+    const onSilence = vi.fn()
+    await startRecorder({ idleSilenceMs: 3_000, onSilence, silenceLevel: 0.075, silenceMs: 1_250 })
+
+    feed(SILENCE, 2_800)
+    expect(onSilence).not.toHaveBeenCalled()
+
+    feed(SILENCE, 400)
+    expect(onSilence).toHaveBeenCalledOnce()
+  })
+
+  it('keeps reporting levels on the same scale as the analyser meter', async () => {
+    const onLevel = vi.fn()
+    await startRecorder({ onLevel })
+
+    feed(0.1, 200)
+
+    // byte time-domain RMS / 42: a constant 0.1 signal sits ~12.8 codes off centre.
+    expect(onLevel).toHaveBeenLastCalledWith(expect.closeTo((0.1 * 128) / 42, 1))
+  })
+
+  it('stops metering once the recording stops', async () => {
+    const onLevel = vi.fn()
+    const result = await startRecorder({ onLevel })
+
+    feed(SPEECH, 200)
+    expect(onLevel).toHaveBeenLastCalledWith(1)
+
+    await act(async () => {
+      await result.current.handle.stop()
+    })
+
+    const calls = onLevel.mock.calls.length
+    feed(SPEECH, 400)
+
+    expect(onLevel).toHaveBeenCalledTimes(calls)
+  })
+
+  it('stops metering when the meter fails', async () => {
+    const onLevel = vi.fn()
+    const onMeterFailure = vi.fn()
+    await startRecorder({ onLevel, onMeterFailure })
+
+    feed(SPEECH, 200)
+    expect(onLevel).toHaveBeenLastCalledWith(1)
+
+    FakeAudioContext.instances[0].dispatchEvent(new Event('error'))
+    await flush()
+
+    expect(onMeterFailure).toHaveBeenCalledOnce()
+
+    const calls = onLevel.mock.calls.length
+    feed(SPEECH, 400)
+
+    expect(onLevel).toHaveBeenCalledTimes(calls)
   })
 })

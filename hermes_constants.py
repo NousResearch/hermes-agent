@@ -9,7 +9,7 @@ import re
 import shutil
 import stat
 import sys
-from collections.abc import MutableMapping
+from collections.abc import Iterator, MutableMapping
 from contextvars import ContextVar, Token
 from pathlib import Path
 
@@ -648,21 +648,27 @@ def _env_get(env: dict[str, str], key: str, default: str = "") -> str:
     return str(env.get(key) or os.getenv(key, default)).strip()
 
 
-def _iter_real_home_candidates(env: dict[str, str] | None = None) -> list[str]:
-    """Return likely OS-user home candidates in trust order."""
+def _iter_real_home_candidates(env: dict[str, str] | None = None) -> Iterator[str]:
+    """Yield home candidates in trust order, resolving fallbacks only as needed."""
     env = env or {}
-    candidates = [_env_get(env, "HERMES_REAL_HOME"), _env_get(env, "HOME")]
+    for key in ("HERMES_REAL_HOME", "HOME"):
+        candidate = _env_get(env, key)
+        if candidate:
+            yield candidate
     with contextlib.suppress(Exception):
         import pwd
-        candidates.append(pwd.getpwuid(os.getuid()).pw_dir.strip())  # windows-footgun: ok — POSIX-only module inside try/except
-    candidates.append(_env_get(env, "USERPROFILE"))
+        candidate = pwd.getpwuid(os.getuid()).pw_dir.strip()  # windows-footgun: ok — POSIX-only module inside try/except
+        if candidate:
+            yield candidate
+    candidate = _env_get(env, "USERPROFILE")
+    if candidate:
+        yield candidate
     drive, path = _env_get(env, "HOMEDRIVE"), _env_get(env, "HOMEPATH")
     if drive and path:
-        candidates.append(f"{drive}{path}" if path.startswith(("\\", "/")) else os.path.join(drive, path))
+        yield f"{drive}{path}" if path.startswith(("\\", "/")) else os.path.join(drive, path)
     expanded = os.path.expanduser("~")
-    if expanded != "~":
-        candidates.append(expanded)
-    return [c for c in candidates if c]
+    if expanded and expanded != "~":
+        yield expanded
 
 
 def get_real_home(env: dict[str, str] | None = None) -> str:

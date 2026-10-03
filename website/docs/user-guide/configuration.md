@@ -73,6 +73,24 @@ cannot override, via a system-level managed directory. See
 [Managed Scope](./managed-scope.md).
 :::
 
+## Gateway completion-log previews
+
+Gateway logs normally record tool names, timing, result lengths, and reply lengths, not
+content. To include bounded previews in the rotating gateway logs, opt in:
+
+```yaml
+logging:
+  tool_previews: true  # default: false
+```
+
+This adds up to 500 characters each of tool arguments, tool results, and the final
+response to completion lines. The same setting covers sequential and concurrent
+tool calls. It does not enable the CLI's `verbose_logging` dumps. The preview
+uses secret redaction before truncation and the normal redacting log formatter,
+but redaction recognizes only known secret patterns. Arbitrary private content
+in tool output or responses may still be written to disk. Keep this setting off
+unless you accept that risk, and protect access to `~/.hermes/logs/`.
+
 ## Runtime Limits
 
 Long-running Hermes server surfaces (including the gateway and

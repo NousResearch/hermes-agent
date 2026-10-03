@@ -1253,6 +1253,9 @@ class TurnRunner:
         baked into the cached agent."""
         ctx = self._ctx
         runner = self._runner
+        from agent.log_previews import gateway_previews_enabled
+        # Re-evaluate on every turn, including agents reused from the session cache.
+        agent._gateway_completion_previews = gateway_previews_enabled(ctx.user_config)
         agent._notification_config = ctx.user_config
         agent._notification_platform = ctx.source.platform
         # ALWAYS attached (never gated to None): its body gates each event class, and subagent-

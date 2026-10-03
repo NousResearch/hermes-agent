@@ -20,6 +20,7 @@ import time
 from dataclasses import dataclass
 from typing import Any, Callable, Optional
 
+from agent.log_previews import completion_preview
 from agent.display import (
     KawaiiSpinner,
     build_tool_preview as _build_tool_preview,
@@ -1087,7 +1088,13 @@ def _commit_tool_result(
         if is_error:
             logger.warning("Tool %s returned error (%.2fs): %s", function_name, tool_duration, error_preview(function_result))
         elif success_log_chars is not None:
-            logger.info("tool %s completed (%.2fs, %d chars)", function_name, tool_duration, success_log_chars)
+            if getattr(agent, "_gateway_completion_previews", False):
+                logger.info("tool %s completed (%.2fs, %d chars) args=%s output_preview=%s",
+                            function_name, tool_duration, success_log_chars,
+                            completion_preview(function_args, json_value=True),
+                            completion_preview(_multimodal_text_summary(function_result)))
+            else:
+                logger.info("tool %s completed (%.2fs, %d chars)", function_name, tool_duration, success_log_chars)
         if not blocked:
             try:
                 agent._record_file_mutation_result(
@@ -1360,9 +1367,12 @@ class _ConcurrentBatch:
             logger.info("tool %s failed (%.2fs): %s", ref.name, duration, str(result)[:200])
         else:
             result_chars = len(result) if isinstance(result, str) else len(str(result))
-            logger.info(
-                "tool %s completed (%.2fs, %d chars)", ref.name, duration, result_chars
-            )
+            if getattr(agent, "_gateway_completion_previews", False):
+                logger.info("tool %s completed (%.2fs, %d chars) args=%s output_preview=%s",
+                            ref.name, duration, result_chars,
+                            completion_preview(ref.args, json_value=True), completion_preview(_multimodal_text_summary(result)))
+            else:
+                logger.info("tool %s completed (%.2fs, %d chars)", ref.name, duration, result_chars)
         return _ToolOutcome(ref, result, duration, is_error, blocked)
 
     def run_worker(self, index: int, start_order: int) -> None:

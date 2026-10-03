@@ -26,6 +26,11 @@ def _aux(timeout, *, reasoning_effort=True, **extra):
     d = {"provider": "auto", "model": "", "base_url": "", "api_key": "", "timeout": timeout, "extra_body": {}}
     if reasoning_effort:
         d["reasoning_effort"] = ""
+    # Per-task fallback ladder, tried in order when this task's primary fails (each entry needs
+    # ``provider``; ``model``/``base_url``/``api_key``/``timeout`` optional). Read by
+    # _try_configured_fallback_chain in agent/auxiliary_client.py -- declaring it here keeps
+    # ``hermes config set`` from warning that a key it genuinely honours is unrecognized.
+    d["fallback_chain"] = []
     d.update(extra)
     return d
 
@@ -770,7 +775,7 @@ DEFAULT_CONFIG = {
         # /review reviewer: a full subagent on the async delegation rail, credentials resolved like
         # delegation.provider pins. "auto" + "" = main agent's model. api_mode forces transport:
         # chat_completions | anthropic_messages | codex_responses.
-        "review": {"provider": "auto", "model": "", "base_url": "", "api_key": "", "api_mode": ""},
+        "review": {"provider": "auto", "model": "", "base_url": "", "api_key": "", "api_mode": "", "fallback_chain": []},
         "mcp": _aux(30),
         # prefer_fast_model opts in to the provider fast tier; auto otherwise = main model.
         "title_generation": {
@@ -788,6 +793,7 @@ DEFAULT_CONFIG = {
             "extra_body": {},
             "reasoning_effort": "",
             "language": "",
+            "fallback_chain": [],
         },
         "memory_query_rewrite": _aux(8, reasoning_effort=False),
         "tts_audio_tags": _aux(30),

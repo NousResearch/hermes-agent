@@ -715,6 +715,7 @@ export const esOverrides = {
       'session.slot.8': 'Cambiar a la sesión reciente 8',
       'session.slot.9': 'Cambiar a la sesión reciente 9',
       'session.focusSearch': 'Buscar sesiones',
+      'session.stop': 'Detener la sesión actual',
       'session.togglePin': 'Fijar / desfijar sesión actual',
       'session.archive': 'Archivar la sesión actual',
       'workspace.newWorktree': 'Nuevo worktree',

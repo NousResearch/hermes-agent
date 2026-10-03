@@ -711,6 +711,7 @@ export const en: Translations = {
       'session.slot.8': 'Switch to recent session 8',
       'session.slot.9': 'Switch to recent session 9',
       'session.focusSearch': 'Search sessions',
+      'session.stop': 'Stop current run',
       'session.togglePin': 'Pin / unpin current session',
       'session.archive': 'Archive current session',
       'conversation.scrollPageUp': 'Scroll conversation up one page',

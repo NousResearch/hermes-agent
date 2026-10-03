@@ -1090,10 +1090,16 @@ export function ContribWiring({ children }: { children: ReactNode }) {
     void archiveSession(sessionId)
   }, [archiveSession])
 
+  // Interrupt the active session's running turn (rebindable `session.stop` hotkey).
+  const interruptActiveSession = useCallback(() => {
+    void cancelRun()
+  }, [cancelRun])
+
   // Single global listener for every rebindable hotkey plus the on-screen
   // keybind editor's capture mode (same as DesktopController).
   useKeybinds({
     archiveSelectedSession,
+    interruptActiveSession,
     openNewSessionTab,
     requestGateway,
     startFreshSession: startFreshSessionDraft,

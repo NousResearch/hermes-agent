@@ -714,6 +714,7 @@ export const frOverrides = {
       'session.slot.8': 'Basculer vers la session récente 8',
       'session.slot.9': 'Basculer vers la session récente 9',
       'session.focusSearch': 'Rechercher des sessions',
+      'session.stop': 'Arrêter la session en cours',
       'session.togglePin': 'Épingler / désépingler la session actuelle',
       'session.archive': 'Archiver la session actuelle',
       'workspace.newWorktree': 'Nouveau worktree',

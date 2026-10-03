@@ -420,6 +420,7 @@ export const zh = defineLocale({
       'session.slot.9': '切换到最近会话 9',
       'session.focusSearch': '搜索会话',
       'session.togglePin': '固定/取消固定当前会话',
+      'session.stop': '停止当前会话',
       'session.archive': '归档当前会话',
       'conversation.scrollPageUp': '向上翻动一页会话',
       'conversation.scrollPageDown': '向下翻动一页会话',

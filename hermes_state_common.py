@@ -719,6 +719,8 @@ BEGIN
     ) WHERE session_id = old.session_id AND (active = 1 OR compacted = 1)
       AND display_identity = old.display_identity;
 END;
+CREATE INDEX IF NOT EXISTS idx_messages_session_active_id
+    ON messages(session_id, active, id);
 CREATE INDEX IF NOT EXISTS idx_messages_active_null
     ON messages(active) WHERE active IS NULL;
 -- Logical-identity recovery (agent.transcript_repair._active_logical_message_row) runs inside the write lock.

@@ -1,14 +1,32 @@
 /**
  * Large-paste-to-attachment policy.
  *
- * Pasting more than ~3k characters converts the content into a text
+ * By default, pasting more than 3k characters converts the content into a text
  * attachment instead of inserting it inline, keeping the composer clean and
  * preventing a single paste from flooding the input. Short pastes stay inline;
- * the threshold lives here so every paste handler shares one policy.
+ * the configurable threshold's default and bounds live here with the policy.
  */
 
 /** Characters beyond which a plain-text paste becomes a `.txt` attachment. */
 export const LARGE_PASTE_ATTACHMENT_THRESHOLD = 3_000
+
+export const LARGE_PASTE_ATTACHMENT_THRESHOLD_MIN = 0
+export const LARGE_PASTE_ATTACHMENT_THRESHOLD_MAX = 100_000
+
+/** Missing or invalid preferences retain the existing paste behavior. */
+export function normalizeLargePasteAttachmentThreshold(value: unknown): number {
+  if (typeof value !== 'number' && (typeof value !== 'string' || value.trim() === '')) {
+    return LARGE_PASTE_ATTACHMENT_THRESHOLD
+  }
+
+  const threshold = Number(value)
+
+  return Number.isInteger(threshold) &&
+    threshold >= LARGE_PASTE_ATTACHMENT_THRESHOLD_MIN &&
+    threshold <= LARGE_PASTE_ATTACHMENT_THRESHOLD_MAX
+    ? threshold
+    : LARGE_PASTE_ATTACHMENT_THRESHOLD
+}
 
 /** Maximum source text retained exclusively for automatic title generation. */
 export const LARGE_PASTE_TITLE_PREVIEW_CHARS = 1_000

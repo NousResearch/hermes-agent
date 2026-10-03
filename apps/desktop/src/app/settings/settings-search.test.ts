@@ -1,8 +1,10 @@
 import { describe, expect, it } from 'vitest'
 
+import { en } from '@/i18n/en'
 import { Settings2, Wrench } from '@/lib/icons'
 import type { ConfigFieldSchema, HermesConfigRecord } from '@/types/hermes'
 
+import { SETTING_IDS, settingDefinition, settingSearchTargets } from './settings-manifest'
 import {
   buildConfigSearchEntries,
   buildCredentialSearchEntries,
@@ -28,6 +30,15 @@ const searchCopy = {
 }
 
 describe('settings search index', () => {
+  it('finds the paste threshold and routes it to Chat attachments', () => {
+    const entry = settingSearchTargets(en).find(target => target.id === SETTING_IDS.chat.largePasteThreshold)!
+    expect(entry).toMatchObject({
+      label: en.settings.config.largePasteThresholdTitle,
+      view: 'config:chat'
+    })
+    expect(entry.keywords).toEqual(expect.arrayContaining(['paste', 'clipboard', 'threshold', 'inline']))
+    expect(settingDefinition(entry.view, entry.id)?.subpage).toBe('attachments')
+  })
   it('builds config results from renderable schema fields with exact deep links', () => {
     const schema: Record<string, ConfigFieldSchema> = {
       'display.personality': { type: 'select' },

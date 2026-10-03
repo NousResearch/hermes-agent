@@ -1031,6 +1031,9 @@ export const ja = defineLocale({
       updates: '更新'
     },
     config: {
+      largePasteThresholdTitle: '長い貼り付けテキストを添付にする文字数',
+      largePasteThresholdDesc:
+        'この文字数を超えるプレーンテキストはテキストファイルとして添付されます。0 に設定すると、常にメッセージ内に貼り付けます。',
       minimizeToTrayTitle: 'トレイに最小化',
       minimizeToTrayDesc:
         'ウィンドウの最小化やメインウィンドウを閉じる操作でシステムトレイ（macOS ではメニューバー）に隠し、Hermes を実行し続けます。終了するにはトレイメニューの「Hermes を終了」または Cmd+Q を使います。初期設定はオフで、このデバイスにのみ適用されます。',

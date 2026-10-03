@@ -5,18 +5,22 @@ Extracted from ``hermes_cli.web_server``; helpers/state that tests monkeypatch o
 """
 
 import asyncio
+import gzip
 import logging
+import re
+from functools import lru_cache
 from pathlib import Path
 from typing import Callable, Optional
 
 from fastapi import APIRouter, HTTPException, Request
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 
 from hermes_cli.web_deps import LateState, late
 from hermes_cli.config import cfg_get
 from hermes_cli.web_routers._common import config_scoped_to_thread
 from hermes_cli.web_server_dashboard import (
-    _BUILTIN_DASHBOARD_THEMES, _discover_user_themes, _invalidate_plugins_hub_cache, _merged_plugins_hub,
+    _BUILTIN_DASHBOARD_THEMES, _IMMUTABLE_ASSET_CACHE_CONTROL, _discover_user_themes, _invalidate_plugins_hub_cache,
+    _merged_plugins_hub,
 )
 from hermes_cli.web_server_memory import _normalize_memory_provider_name, _require_memory_provider_ready
 from hermes_cli.web_models import (
@@ -382,8 +386,50 @@ _PLUGIN_ASSET_CONTENT_TYPES = {
 }
 
 
+# A plugin asset URL is "versioned" when changing the file also changes the URL: a non-empty
+# ``?v=`` query, or a content hash in the filename (``index.3f2a9c1b.js``). Only those are cached
+# as immutable; every other asset is revalidated (ETag -> 304) so an updated plugin is picked up
+# on the next load without re-downloading unchanged files.
+_PLUGIN_ASSET_HASHED_NAME = re.compile(r"\.[0-9a-f]{8,}\.[A-Za-z0-9]+$")
+# Text assets worth compressing. Above the cap a file is sent as-is (and never memoised); with
+# 64 memoised entries of at most 2 MiB before compression, the memo stays small (text gzips ~4x).
+_PLUGIN_ASSET_GZIP_TYPES = frozenset(
+    {"application/javascript", "text/css", "application/json", "text/html", "image/svg+xml"}
+)
+_PLUGIN_ASSET_GZIP_MIN_BYTES = 1024
+_PLUGIN_ASSET_GZIP_MAX_BYTES = 2 * 1024 * 1024
+
+
+@lru_cache(maxsize=64)
+def _gzip_plugin_asset(path: str, mtime_ns: int, size: int) -> bytes:
+    """gzip one plugin file. Keyed on (mtime, size) so an edited file is recompressed."""
+    return gzip.compress(Path(path).read_bytes(), compresslevel=6, mtime=0)
+
+
+def _accepts_gzip(accept_encoding: str) -> bool:
+    for item in accept_encoding.lower().split(","):
+        coding, *params = (part.strip() for part in item.split(";"))
+        if coding == "gzip":
+            for param in params:
+                name, _, value = param.partition("=")
+                if name.strip() == "q":
+                    try:
+                        return float(value) > 0
+                    except ValueError:
+                        return False
+            return True
+    return False
+
+
+def _etag_matches(if_none_match: Optional[str], etag: str) -> bool:
+    if not if_none_match:
+        return False
+    tags = {tag.strip().removeprefix("W/") for tag in if_none_match.split(",")}
+    return "*" in tags or etag in tags
+
+
 @router.get("/dashboard-plugins/{plugin_name}/{file_path:path}")
-async def serve_plugin_asset(plugin_name: str, file_path: str):
+async def serve_plugin_asset(plugin_name: str, file_path: str, request: Request):
     """Serve static assets from a dashboard plugin's ``dashboard/`` directory.
 
     Unauthenticated on purpose: the SPA loads plugin JS via ``<script src>`` and CSS
@@ -411,4 +457,24 @@ async def serve_plugin_asset(plugin_name: str, file_path: str):
     media_type = _PLUGIN_ASSET_CONTENT_TYPES.get(target.suffix.lower())
     if media_type is None:
         raise HTTPException(status_code=404, detail="File not found")
-    return FileResponse(target, media_type=media_type, headers={"Cache-Control": "no-store, no-cache, must-revalidate"})
+
+    stat = target.stat()
+    versioned = bool(request.query_params.get("v")) or bool(_PLUGIN_ASSET_HASHED_NAME.search(target.name))
+    headers = {"Cache-Control": _IMMUTABLE_ASSET_CACHE_CONTROL if versioned else "no-cache"}
+    etag = f'"{stat.st_mtime_ns:x}-{stat.st_size:x}"'
+    use_gzip = False
+    if media_type in _PLUGIN_ASSET_GZIP_TYPES and (
+        _PLUGIN_ASSET_GZIP_MIN_BYTES <= stat.st_size <= _PLUGIN_ASSET_GZIP_MAX_BYTES
+    ):
+        headers["Vary"] = "Accept-Encoding"
+        use_gzip = _accepts_gzip(request.headers.get("accept-encoding", ""))
+        if use_gzip:
+            etag = etag[:-1] + '-gzip"'  # distinct validator per representation
+    headers["ETag"] = etag
+
+    if _etag_matches(request.headers.get("if-none-match"), etag):
+        return Response(status_code=304, headers=headers)
+    if use_gzip:
+        body = await asyncio.to_thread(_gzip_plugin_asset, str(target), stat.st_mtime_ns, stat.st_size)
+        return Response(body, media_type=media_type, headers={**headers, "Content-Encoding": "gzip"})
+    return FileResponse(target, media_type=media_type, headers=headers, stat_result=stat)

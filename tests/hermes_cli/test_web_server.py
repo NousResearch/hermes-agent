@@ -5205,6 +5205,64 @@ class TestDashboardPluginStaticAssetAllowlist:
         # — never 200.
         assert resp.status_code in (403, 404)
 
+    @staticmethod
+    def _write_asset(name: str, body: str) -> None:
+        from hermes_constants import get_hermes_home
+        (get_hermes_home() / "plugins" / "example-dashboard" / "dashboard" / name).write_text(body)
+
+    def test_only_versioned_assets_are_immutable_the_rest_revalidate(self):
+        """Every plugin asset used to be ``no-store``, so each page load re-downloaded every
+        plugin file. A URL that changes with the file (``?v=`` or a content-hashed name) may be
+        cached forever; any other URL is revalidated, and a matching ETag gets a 304."""
+        self._write_asset("index.js", "one")
+        self._write_asset("index.0123abcd.js", "one")
+        for url in ("/dashboard-plugins/example/index.js?v=1.2.0", "/dashboard-plugins/example/index.0123abcd.js"):
+            resp = self.client.get(url)
+            assert resp.status_code == 200
+            assert "immutable" in resp.headers["cache-control"]
+
+        url = "/dashboard-plugins/example/index.js"
+        resp = self.client.get(url)
+        assert resp.status_code == 200
+        assert resp.headers["cache-control"] == "no-cache"
+        etag = resp.headers["etag"]
+        unchanged = self.client.get(url, headers={"If-None-Match": etag})
+        assert unchanged.status_code == 304
+        assert unchanged.content == b""
+
+        self._write_asset("index.js", "two, edited")
+        edited = self.client.get(url, headers={"If-None-Match": etag})
+        assert edited.status_code == 200
+        assert edited.text == "two, edited"
+
+        # A version query never widens what is served.
+        assert self.client.get("/dashboard-plugins/example/plugin_api.py?v=1").status_code == 404
+        assert self.client.get("/dashboard-plugins/example/..%2Fplugin_api.py?v=1").status_code in (403, 404)
+
+    def test_text_assets_are_gzipped_only_for_clients_that_accept_it(self):
+        body = "export const answer = 42;\n" * 200
+        self._write_asset("bundle.js", body)
+        self._write_asset("tiny.js", "x")
+        url = "/dashboard-plugins/example/bundle.js"
+
+        gz = self.client.get(url, headers={"Accept-Encoding": "gzip"})
+        assert gz.status_code == 200
+        assert gz.headers["content-encoding"] == "gzip"
+        assert "accept-encoding" in gz.headers["vary"].lower()
+        assert int(gz.headers["content-length"]) < len(body)
+        assert gz.text == body
+
+        plain = self.client.get(url, headers={"Accept-Encoding": "identity"})
+        assert "content-encoding" not in plain.headers
+        assert plain.text == body
+        assert plain.headers["etag"] != gz.headers["etag"]
+
+        revalidated = self.client.get(url, headers={"Accept-Encoding": "gzip", "If-None-Match": gz.headers["etag"]})
+        assert revalidated.status_code == 304
+
+        tiny = self.client.get("/dashboard-plugins/example/tiny.js", headers={"Accept-Encoding": "gzip"})
+        assert "content-encoding" not in tiny.headers
+
 
 def _fake_httpx_async_client(*, status: int | None = None, raise_exc: bool = False):
     """Build a drop-in for httpx.AsyncClient with a canned GET response."""

@@ -53,3 +53,52 @@ def test_clean_tree_reports_no_known_vulnerabilities(capsys):
     out, issues = _run_audit_one(capsys, ["--workspaces=false"], _audit_json())
     assert "no known vulnerabilities" in out
     assert issues == []
+
+
+def _audit_json_with_vulns(vulns: dict, critical=0, high=0, moderate=0):
+    return json.dumps({
+        "metadata": {"vulnerabilities": {
+            "critical": critical, "high": high, "moderate": moderate,
+            "low": 0, "info": 0, "total": critical + high + moderate,
+        }},
+        "vulnerabilities": vulns,
+    })
+
+
+def test_warn_names_affected_packages(capsys):
+    """The counts-only row leaves users guessing which package/advisory the
+    finding refers to (#126882): the per-package map must be surfaced."""
+    audit = _audit_json_with_vulns(
+        {
+            "js-yaml": {
+                "severity": "high",
+                "via": [{"title": "js-yaml: maxTotalMergeKeys does not limit CPU use for empty merge sources",
+                         "url": "https://github.com/advisories/GHSA-xxxx", "severity": "high"}],
+            },
+            "gulp-esbuild": {"severity": "moderate", "via": ["esbuild"]},
+        },
+        high=1, moderate=1,
+    )
+    out, _ = _run_audit_one(capsys, ["--workspaces=false"], audit)
+    assert "affected: js-yaml (high — js-yaml: maxTotalMergeKeys does not limit CPU use" in out
+    assert "affected: gulp-esbuild (moderate)" in out
+    assert "+2 more" not in out
+
+
+def test_warn_caps_the_affected_package_list(capsys):
+    """A heavily affected tree must not flood the doctor output: five named
+    packages plus a +N summary line."""
+    vulns = {f"pkg-{i}": {"severity": "moderate", "via": []} for i in range(7)}
+    out, _ = _run_audit_one(capsys, ["--workspaces=false"],
+                            _audit_json_with_vulns(vulns, high=1, moderate=6))
+    assert sum(1 for line in out.splitlines() if "affected: pkg-" in line) == 5
+    assert "+2 more package(s)" in out
+
+
+def test_warn_without_per_package_map_keeps_counts_row(capsys):
+    """Older npm or a parse quirk may omit the per-package map: the counts row
+    and remedy must still print, with no empty affected section."""
+    out, issues = _run_audit_one(capsys, ["--workspaces=false"], _audit_json(high=1))
+    assert "lockfile bump" in out
+    assert "affected:" not in out
+    assert issues == ["Browser tools (agent-browser) has 1 npm vulnerability"]

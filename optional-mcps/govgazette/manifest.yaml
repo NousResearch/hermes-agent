@@ -1,0 +1,32 @@
+name: govgazette
+manifest_version: 1
+description: This tool tracks official links, dates, vendors, awards, and opportunities for U.S. federal contracts, including data on exclusions.
+source: https://github.com/mooshee/govgazette-mcp
+transport:
+  type: http
+  url: https://govgazette.com/mcp
+auth:
+  type: none
+tools:
+  default_enabled:
+    - explain_match
+    - exclusion_changes
+    - freshness
+    - document
+    - exclusion_context
+    - detail
+    - research_opportunity
+    - search
+    - search_exclusions
+    - search_opportunities
+    - check_exclusions
+suggest:
+  keywords:
+    - government procurement
+    - federal contracts
+    - govgazette
+    - exclusions
+  hosts:
+    - govgazette.com
+post_install: |
+    No account or key is required for public research; simply verify official links and source dates. Personalized saved searches are disabled out of the box.

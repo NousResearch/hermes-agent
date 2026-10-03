@@ -1019,3 +1019,105 @@ class TestStagedDataIntegration:
             assert env.execute("echo ok")["output"].strip() == "ok"
         finally:
             env.cleanup()
+
+
+@needs_bwrap
+class TestLinkedDotEntryIntegration:
+    """An allowed dot entry is read-only. One that is a symlink into a
+    writable directory stays so: its chain is fixed at construction and
+    every hop is held in place."""
+
+    @pytest.fixture
+    def link_home(self, host_dir, monkeypatch):
+        home = host_dir / "home"
+        _write(home / "dotfiles" / "bash" / "bashrc", "ORIGINAL")
+        (home / ".bashrc").symlink_to("dotfiles/bash/bashrc")
+        _write(home / "chain" / "real", "ORIGINAL")
+        (home / "chain" / "middle").symlink_to("real")
+        (home / ".profile").symlink_to("chain/middle")
+        monkeypatch.setenv("HOME", str(home))
+        return home
+
+    @staticmethod
+    def _run(cwd, command, **kwargs):
+        env = BubblewrapEnvironment(cwd=str(cwd), timeout=30, **kwargs)
+        try:
+            return env.execute(command)
+        finally:
+            env.cleanup()
+
+    @pytest.mark.parametrize("cwd_rel", ["", "dotfiles"])
+    def test_symlink_target_parent_cannot_be_swapped(self, sandbox_root, link_home, cwd_rel):
+        dotfiles = link_home / "dotfiles"
+        result = self._run(
+            link_home / cwd_rel,
+            f"cd {dotfiles} && mv bash bash.old && mkdir bash && echo EVIL > bash/bashrc",
+        )
+        assert result["returncode"] != 0, result["output"]
+        assert (link_home / ".bashrc").read_text().strip() == "ORIGINAL"
+        assert not (dotfiles / "bash.old").exists()
+        result = self._run(link_home / cwd_rel, f"echo EVIL >> {dotfiles}/bash/bashrc; rm -f {dotfiles}/bash/bashrc")
+        assert (link_home / ".bashrc").read_text().strip() == "ORIGINAL"
+
+    @pytest.mark.parametrize("cwd_rel", ["", "chain"])
+    def test_symlink_chain_middle_link_cannot_be_replaced(self, sandbox_root, link_home, cwd_rel):
+        chain = link_home / "chain"
+        result = self._run(link_home / cwd_rel, f"cd {chain} && rm middle && echo EVIL > middle")
+        assert result["returncode"] != 0, result["output"]
+        assert (chain / "middle").is_symlink()
+        assert (link_home / ".profile").read_text().strip() == "ORIGINAL"
+        self._run(link_home / cwd_rel, f"echo EVIL > {chain}/real")
+        assert (chain / "real").read_text().strip() == "ORIGINAL"
+
+    def test_symlink_chain_is_fixed_at_construction(self, sandbox_root, link_home):
+        env = BubblewrapEnvironment(cwd=str(link_home), timeout=30)
+        try:
+            before = _mounts(env._wrap_popen_args(["bash"]))
+            _write(link_home / "other" / "bashrc", "LATER")
+            (link_home / ".bashrc").unlink()
+            (link_home / ".bashrc").symlink_to("other/bashrc")
+            after = _mounts(env._wrap_popen_args(["bash"]))
+            protected = str(link_home / "dotfiles" / "bash" / "bashrc")
+            assert ("--ro-bind-try", protected, protected) in before
+            assert ("--ro-bind-try", protected, protected) in after
+            assert str(link_home / "other" / "bashrc") not in {m[-1] for m in after}
+        finally:
+            env.cleanup()
+
+    def test_symlink_target_under_a_hidden_path_is_never_bound(self, sandbox_root, link_home, work_dir):
+        _write(link_home / ".ssh" / "config")
+        (link_home / ".gitconfig").symlink_to(".ssh/config")
+        env = BubblewrapEnvironment(cwd=str(link_home), timeout=30)
+        try:
+            assert str(link_home / ".ssh" / "config") not in {m[-1] for m in _mounts(env._wrap_popen_args(["bash"]))}
+            assert MARKER not in env.execute(f"cat {link_home}/.gitconfig 2>&1")["output"]
+        finally:
+            env.cleanup()
+
+    def test_symlink_target_outside_home_in_a_writable_cwd_is_read_only(self, sandbox_root, link_home, host_dir):
+        proj = host_dir / "proj"
+        _write(proj / "gitconfig", "ORIGINAL")
+        (link_home / ".gitconfig").symlink_to(proj / "gitconfig")
+        result = self._run(proj, f"echo EVIL >> {link_home}/.gitconfig")
+        assert result["returncode"] != 0, result["output"]
+        assert (proj / "gitconfig").read_text().strip() == "ORIGINAL"
+        assert self._run(proj, "printf ok > other.txt")["returncode"] == 0
+
+    def test_symlink_target_outside_home_in_a_read_write_bind_is_read_only(self, sandbox_root, link_home, host_dir, work_dir):
+        shared = host_dir / "shared"
+        _write(shared / "gitconfig", "ORIGINAL")
+        (link_home / ".gitconfig").symlink_to(shared / "gitconfig")
+        config = BubblewrapConfig(binds=(BindMount(src=str(shared), dest=str(shared), readonly=False),))
+        result = self._run(work_dir, f"echo EVIL >> {shared}/gitconfig", config=config)
+        assert result["returncode"] != 0, result["output"]
+        assert (shared / "gitconfig").read_text().strip() == "ORIGINAL"
+
+    def test_symlink_target_outside_every_writable_bind_gets_no_mount(self, sandbox_root, link_home, host_dir, work_dir):
+        elsewhere = host_dir / "elsewhere"
+        _write(elsewhere / "gitconfig", "ORIGINAL")
+        (link_home / ".gitconfig").symlink_to(elsewhere / "gitconfig")
+        env = BubblewrapEnvironment(cwd=str(work_dir), timeout=30)
+        try:
+            assert str(elsewhere / "gitconfig") not in {m[-1] for m in _mounts(env._wrap_popen_args(["bash"]))}
+        finally:
+            env.cleanup()

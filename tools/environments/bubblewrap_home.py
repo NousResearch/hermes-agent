@@ -294,6 +294,77 @@ def resolve_allowlist(
     return tuple(sorted(units))
 
 
+_MAX_LINK_HOPS = 40
+
+
+def _link_chain(path: str) -> tuple[list[str], str | None]:
+    """Every symlink met while resolving *path*, in order, and the real path it ends at.
+
+    The walk is the one the kernel does: component by component, and a
+    symlink at any component (the entry itself, or a directory on the way)
+    restarts it from the link's target. A loop or a chain longer than
+    _MAX_LINK_HOPS gives (links, None).
+    """
+    links: list[str] = []
+    pending = [part for part in os.path.abspath(path).split(os.sep) if part]
+    current = os.sep
+    while pending:
+        part = pending.pop(0)
+        candidate = os.path.join(current, part)
+        if os.path.islink(candidate):
+            links.append(candidate)
+            if len(links) > _MAX_LINK_HOPS:
+                return links, None
+            target = os.readlink(candidate)
+            base = target if os.path.isabs(target) else os.path.join(current, target)
+            pending = [p for p in os.path.normpath(base).split(os.sep) if p] + pending
+            current = os.sep
+        else:
+            current = candidate
+    return links, current
+
+
+def link_protection(home: str | None, allowlist: tuple[str, ...] | list[str]) -> tuple[str, ...]:
+    """Host paths to hold read-only so the content behind an allowed dot symlink cannot change.
+
+    An allowed dot entry is read-only in the sandbox. One that is a symlink
+    (a shell rc file kept in a dotfiles directory) is only as fixed as its
+    chain: a command with write access to a directory on the way could
+    swap the target, or replace a middle link with a file, and the host
+    would read the new content at its next login. For each such entry
+    this gives:
+
+    - the real path the chain ends at, which the caller binds read-only
+      (a bound file cannot be unlinked or renamed) and whose parents it
+      pins like the parents of a hidden path;
+    - the directory that holds each middle link. A symlink cannot be
+      mounted over, so the directory around it is bound read-only.
+
+    The entry itself, and any link at the top of HOME or of a default-deny
+    directory, lies in a read-only tmpfs and needs nothing. The chain is
+    resolved here, once: the caller keeps the result for the life of the
+    environment, so a link swapped later moves no mount. A path under
+    another one is dropped as covered. The caller decides which of these
+    lie in a writable part of the sandbox; binding one that does not
+    would only show what is hidden.
+    """
+    if home is None:
+        return ()
+    sealed = {home, *(os.path.join(home, rel.replace("/", os.sep)) for rel in DEFAULT_DENY_DIRS)}
+    protected: list[str] = []
+    for unit in allowlist:
+        entry = os.path.join(home, unit.replace("/", os.sep))
+        if not os.path.islink(entry):
+            continue
+        links, real = _link_chain(entry)
+        if real is None or not os.path.lexists(real):
+            continue
+        for path in [os.path.dirname(link) for link in links if os.path.dirname(link) not in sealed] + [real]:
+            if path not in protected and path != os.sep and not _is_within(home, path):
+                protected.append(path)
+    return tuple(p for p in protected if not any(p != other and _is_within(p, other) for other in protected))
+
+
 def resolve_home_root(home: str) -> str | None:
     """The real path of *home* when a layout can be built over it, else None with one warning.
 
@@ -312,18 +383,16 @@ def resolve_home_root(home: str) -> str | None:
     return real
 
 
-def _entry_args(path: str, flag: str, visible: list[str], link_targets: list[str] | None = None) -> list[str]:
+def _entry_args(path: str, flag: str, visible: list[str]) -> list[str]:
     """Mount directive that shows the host entry at *path*, or a symlink made again.
 
     A symlink is never bound through: bwrap would follow it and mount its
     target, which can be a hidden directory. Made again as a link, it
     resolves inside the sandbox, where a hidden target does not exist.
-    The real target is noted in *link_targets* when the caller wants it
-    kept read-only.
+    What the link points at is kept read-only by the caller, from the
+    chain resolved at construction (link_protection).
     """
     if os.path.islink(path):
-        if link_targets is not None:
-            link_targets.append(os.path.realpath(path))
         return ["--symlink", os.readlink(path), path]
     visible.append(path)
     return [flag, path, path]
@@ -352,8 +421,8 @@ def home_layout_args(
     3. for HOME/.config, HOME/.local and HOME/.local/share that exist as
        plain directories: a tmpfs, then the allowed children read-only;
     4. *binds*, (flag, source, destination) directives of the caller that
-       land under HOME (the cwd, operator binds), on top of the entries,
-       then a read-only pin on the target of each allowed dot symlink;
+       land under HOME (the cwd, operator binds, pins), on top of the
+       entries;
     5. an overlay for each of *hidden_paths* that is visible through the
        steps above: a tmpfs for a directory, *empty_file* for a file;
     6. *late_args*, directives of the caller that must sit above the
@@ -374,14 +443,13 @@ def home_layout_args(
 
     argv: list[str] = ["--tmpfs", home]
     visible: list[str] = []
-    link_targets: list[str] = []
     for name in names:
         path = os.path.join(home, name)
         if any(_is_within(path, root) for root in hidden):
             continue
         if name.startswith("."):
             if name in units:
-                argv += _entry_args(path, "--ro-bind-try", visible, link_targets)
+                argv += _entry_args(path, "--ro-bind-try", visible)
         else:
             argv += _entry_args(path, "--bind-try" if home_writable else "--ro-bind-try", visible)
 
@@ -398,19 +466,11 @@ def home_layout_args(
                 continue
             child_path = os.path.join(path, child)
             if os.path.lexists(child_path) and not any(_is_within(child_path, root) for root in hidden):
-                argv += _entry_args(child_path, "--ro-bind-try", visible, link_targets)
+                argv += _entry_args(child_path, "--ro-bind-try", visible)
 
     for flag, src, dest in binds:
         argv += [flag, src, dest]
         visible.append(dest)
-
-    # An allowed dot entry is read-only. One that is a symlink (a shell rc
-    # file kept in a dotfiles directory) points at a target that a writable
-    # bind may cover, so the target is pinned read-only on top of the binds.
-    for target in link_targets:
-        if os.path.exists(target) and any(_is_within(target, root) for root in visible) \
-                and not any(_is_within(target, root) for root in hidden):
-            argv += ["--ro-bind-try", target, target]
 
     for path in hidden:
         if os.path.islink(path) or not any(path != root and _is_within(path, root) for root in visible):

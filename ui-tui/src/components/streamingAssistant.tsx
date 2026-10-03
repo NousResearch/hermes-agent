@@ -80,6 +80,7 @@ export const StreamingAssistant = memo(function StreamingAssistant({
             msg={block.msg}
             prev={prev}
             reasoningActive={block.msg.isLiveReasoning === true}
+            reasoningPeek={ui.reasoningPeek}
             sections={sections}
             t={ui.theme}
             {...(block.tools ? { tools: block.tools } : {})}

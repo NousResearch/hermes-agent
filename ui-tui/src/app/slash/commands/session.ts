@@ -19,7 +19,7 @@ import type { PanelSection } from '../../../types.js'
 import { applyConfiguredTuiTheme } from '../../createGatewayEventHandler.js'
 import { DEFAULT_INDICATOR_STYLE, INDICATOR_STYLES, type IndicatorStyle } from '../../interfaces.js'
 import { patchOverlayState } from '../../overlayStore.js'
-import { patchUiState } from '../../uiStore.js'
+import { getUiState, patchUiState } from '../../uiStore.js'
 import type { SlashCommand } from '../types.js'
 
 const TUI_SESSION_MODEL_RE = new RegExp(`(?:^|\\s)${TUI_SESSION_MODEL_FLAG}(?:\\s|$)`)
@@ -582,6 +582,22 @@ export const sessionCommands: SlashCommand[] = [
                 ctx.transcript.sys(t('slashCmd.session.reasoning.currentWithDisplay', r.value, r.display || 'hide'))
             )
           )
+      }
+
+      // #121979: turn-scoped reasoning display. Peek is client-side only --
+      // it never reaches config.set, so nothing is persisted and the stored
+      // transcript stays clean. Accepts `/reasoning peek|turn` (toggle) and
+      // `/reasoning show|hide --peek|--turn` (explicit scope).
+      const peekTokens = arg.trim().split(/\s+/).filter(Boolean)
+      const peekScope = peekTokens.some(token => token === '--peek' || token === '--turn')
+      const bareToken = peekTokens.filter(token => token !== '--peek' && token !== '--turn').join(' ')
+
+      if (bareToken === 'peek' || bareToken === 'turn' || peekScope) {
+        const next = bareToken === 'hide' ? false : bareToken === 'show' ? true : !getUiState().reasoningPeek
+
+        patchUiState({ reasoningPeek: next })
+
+        return ctx.transcript.sys(next ? 'reasoning peek on (current turn only)' : 'reasoning peek off')
       }
 
       ctx.gateway.rpc<ConfigSetResponse>('config.set', reasoningConfigPayload(arg, ctx.sid ?? '')).then(

@@ -341,7 +341,7 @@ CANONICAL_PROVIDERS: list[ProviderEntry] = [ProviderEntry(*row) for row in (
     ("copilot-acp", "GitHub Copilot ACP", "GitHub Copilot ACP (Spawns copilot --acp --stdio)"),
     ("huggingface", "Hugging Face", "Hugging Face Inference Providers"),
     ("gemini", "Google AI Studio", "Google AI Studio (Native Gemini API)"),
-    ("vertex", "Google Vertex AI", "Google Vertex AI (Gemini via GCP; OAuth2 service account or ADC, GCP billing/quotas)"),
+    ("vertex", "Google Vertex AI", "Google Vertex AI (Gemini + Anthropic Claude via GCP; OAuth2 service account or ADC, GCP billing/quotas)"),
     ("deepseek", "DeepSeek", "DeepSeek (V3, R1, coder, direct API)"), ("xai", "xAI", "xAI Grok (Direct API)"),
     ("zai", "Z.AI / GLM", "Z.AI / GLM (Zhipu direct API)"),
     ("kimi-coding", "Kimi / Kimi Coding Plan", "Kimi Coding Plan (api.kimi.com & Moonshot API)"),

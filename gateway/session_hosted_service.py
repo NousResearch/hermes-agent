@@ -290,7 +290,7 @@ class CanonicalHostedRoomService(CanonicalHostedOutput, HostedControls, HostedRo
                     source_home=self.authority.profile_id, room_id=binding.room_id,
                     member_id=member, profile=profile)
                 return self.member_rpcs[key]
-            def authorized(conn, operation, identity, generation):
+            def authorized(conn, operation, identity, generation, *, new_write=False):
                 # Admission checks must share the FIFO writer's snapshot. Opening
                 # another transaction here would reintroduce the revocation race.
                 from gateway.hosted_rooms import _room_from_row
@@ -302,6 +302,10 @@ class CanonicalHostedRoomService(CanonicalHostedOutput, HostedControls, HostedRo
                         _require_room_authority(conn, binding.room_id, binding.gateway_id, binding.authority_epoch)
                     except (RoomUnavailableError, StaleLeaseError):
                         return False
+                execute = new_write or operation == 'execute'
+                if execute and conn.execute('SELECT 1 FROM state_meta WHERE key=?',
+                        ('gateway.peer.retiring.v1:' + binding.room_id,)).fetchone():
+                    return False
                 owned = conn.execute('SELECT value FROM state_meta WHERE key=?',
                                      (_OWNER + binding.room_id,)).fetchone()
                 if owned is None or owned[0] != owner:
@@ -328,6 +332,10 @@ class CanonicalHostedRoomService(CanonicalHostedOutput, HostedControls, HostedRo
                     if stored is None:
                         return False
                     current = _task_from_row(stored)
+                    if execute and conn.execute("SELECT 1 FROM hosted_room_events WHERE room_id=? AND seq>? "
+                            "AND kind='room.stop_requested' LIMIT 1",
+                            (binding.room_id, current['payload']['source_event_seq'])).fetchone():
+                        return False
                     return (current['identity'] == identity and current['execution_generation'] == generation
                             and current['payload'].get('target_profile') == profile
                             and current['payload'].get('target_member_id', profile) == member
@@ -340,7 +348,7 @@ class CanonicalHostedRoomService(CanonicalHostedOutput, HostedControls, HostedRo
             def authorize_write(conn, identity, generation):
                 # Raise to refuse rather than return False: a guard that only returns False
                 # is ignored wherever the admission hook signals refusal by raising.
-                if not authorized(conn, 'submit', identity, generation):
+                if not authorized(conn, 'submit', identity, generation, new_write=True):
                     raise RuntimeStoreError('permission_denied')
                 return True
             principal = Principal(owner, self.authority.profile_id,
@@ -351,8 +359,8 @@ class CanonicalHostedRoomService(CanonicalHostedOutput, HostedControls, HostedRo
                 authorize_write=authorize_write)
         return self.member_rpcs[key]
 
-    def check_admission(self, ref, row):
-        """Reconstruct the private producer from durable task state before claim."""
+    def check_admission(self, ref, row, *, _for_claim=False):
+        """Validate the producer; the drain also requests its exact writer guard."""
         import json
         from gateway.hosted_room_driver import TaskIdentity, list_tasks
         from gateway.session_hosted_attachments import committed_submission_payload
@@ -376,6 +384,20 @@ class CanonicalHostedRoomService(CanonicalHostedOutput, HostedControls, HostedRo
                     or row['payload'] != committed_submission_payload(rpc, task['payload']['prompt'], task['payload'].get('attachments'), admission=row)
                     or rpc.authorizer('execute', identity, generation) is not True):
                 raise ValueError('changed hosted binding')
+            if _for_claim:
+                from copy import deepcopy
+                if not callable(rpc.authorize_write):
+                    raise ValueError('same-home claim has no writer authority')
+                expected = deepcopy(row)
+
+                def authorize_claim(conn, selected):
+                    if selected['admission_id'] != expected['admission_id']:
+                        raise RuntimeStoreError('admission_changed')
+                    if selected != expected:
+                        raise RuntimeStoreError('permission_denied')
+                    rpc.authorize_write(conn, identity, generation)
+
+                return authorize_claim
             return task
         except (ValueError, TypeError, KeyError, StopIteration) as exc:
             raise RuntimeStoreError('permission_denied') from exc

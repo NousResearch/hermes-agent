@@ -4,6 +4,7 @@ import base64
 import json
 import logging
 import time
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch, MagicMock, AsyncMock
 
@@ -64,7 +65,7 @@ class _FakeAnthropicStream:
 
 
 @pytest.fixture(autouse=True)
-def _clean_env(monkeypatch):
+def _clean_env(monkeypatch, tmp_path):
     """Strip provider env vars so each test starts clean."""
     for key in (
         "OPENROUTER_API_KEY", "OPENAI_BASE_URL", "OPENAI_API_KEY",
@@ -73,6 +74,11 @@ def _clean_env(monkeypatch):
         "NVIDIA_API_KEY", "NVIDIA_BASE_URL",
     ):
         monkeypatch.delenv(key, raising=False)
+    # HERMES_HOME isolation does not cover Claude Code's credentials file, which
+    # resolves from HOME. Without this, a login on the machine running the tests is
+    # seeded into the anthropic pool, refreshed over the network when expired, and
+    # its lock file is created next to the real file.
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "claude-config"))
     # Module-level unhealthy cache (10-min TTL) leaks between tests;
     # earlier tests that call _mark_provider_unhealthy() poison the
     # cache for later ones, causing _resolve_auto_route to skip providers
@@ -645,6 +651,23 @@ class TestAnthropicOAuthFlag:
             # The adapter inside should have is_oauth=True
             adapter = client.chat.completions
             assert adapter._is_oauth is True
+
+    def test_host_claude_code_login_stays_out_of_the_pool(self, monkeypatch, tmp_path):
+        """Only the credential the test supplies reaches the anthropic pool, even when the
+        home directory holds a Claude Code login."""
+        host = tmp_path / "host"
+        (host / ".claude").mkdir(parents=True)
+        (host / ".claude" / ".credentials.json").write_text(json.dumps({"claudeAiOauth": {
+            "accessToken": "sk-ant-oat01-host-login",
+            "refreshToken": "sk-ant-ort01-host-refresh",
+            "expiresAt": int(time.time() * 1000) + 3_600_000,
+        }}))
+        monkeypatch.setenv("HOME", str(host))
+        monkeypatch.setattr(Path, "home", lambda: host)
+        monkeypatch.setenv("ANTHROPIC_TOKEN", "sk-ant-oat01-test-token")
+        from agent.auxiliary_client import load_pool
+
+        assert [e.source for e in load_pool("anthropic").entries()] == ["env:ANTHROPIC_TOKEN"]
 
     def test_api_key_no_oauth_flag(self, monkeypatch):
         """Regular API keys (sk-ant-api-*) should create client with is_oauth=False."""

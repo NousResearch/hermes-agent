@@ -195,12 +195,24 @@ def package_prefixes(
     root: Optional[Path] = None, skill: Optional[str] = None,
     before: Optional[List[Dict[str, str]]] = None) -> List[str]:
     """Tar member prefixes of this skill's package: live location under ``skills/``,
-    the package parent from the before-state SKILL.md path (rollback fills where
-    *root* is gone), the bare skill name, and the name minus an archive suffix."""
+    the same with an archive ``-<timestamp>`` suffix stripped, the package parent
+    from the before-state SKILL.md path (rollback fills where *root* is gone), the
+    bare skill name, and the name minus an archive suffix.
+
+    Every candidate needs its archive-stripped twin, not just ``skill``: a
+    timestamped package is restored from a backup taken while it still lived at
+    the un-suffixed path, so only ``<category>/<name>`` is stored in the tar. The
+    live form is still probed too — a backup taken after archiving stores
+    ``<category>/<name>-<ts>`` — and ``dict.fromkeys`` keeps the first occurrence,
+    so the longer live form is asked for before the shorter stripped one.
+    """
     candidates = [_package_rel(Path(root)) if root is not None else None]
     candidates += [_package_rel(p) for p in _skill_md_parents(before)]
     candidates += [skill, _strip_archive_timestamp(skill) if skill else None]
-    return list(dict.fromkeys(p for p in ((c or "").strip("/") for c in candidates) if p))
+    stripped = [
+        _strip_archive_timestamp(c) for c in list(candidates)
+        if c and _strip_archive_timestamp(c) != c]
+    return list(dict.fromkeys(p for p in ((c or "").strip("/") for c in candidates + stripped) if p))
 
 
 def _read_package_files_from_latest_backup(prefixes: List[str]) -> Dict[str, bytes]:
@@ -244,9 +256,11 @@ def fill_snapshot_from_curator_backup(
     """Union missing skill-package files from the newest curator snapshot. Completeness fill, not
     a gate: failures return *existing* unchanged, and only ABSENT paths are filled. Fill targets go
     where rollback must restore them: under *root* when known (for purge that is
-    ``.archive/<name>/``, NOT the live tree), else the live skills dir; the tar's leading
-    package-dir segment is stripped when *root* already names the package. Every target must stay
-    under ``skills/`` and HERMES_HOME."""
+    ``.archive/<name>/``, NOT the live tree), else the live skills dir; the tar's complete package
+    prefix — *root*'s path relative to ``skills/``, or the bare skill name for a flat layout — is
+    stripped before the member is joined under *root*, so a member stored as
+    ``<category>/<name>/SKILL.md`` lands at ``SKILL.md`` rather than a doubled path. Every target
+    must stay under ``skills/`` and HERMES_HOME."""
     out = list(existing or [])
     prefixes = package_prefixes(root, skill, out)
     if not prefixes:
@@ -260,12 +274,62 @@ def fill_snapshot_from_curator_backup(
         return out
     skills = _skills_dir()
     dest_root = Path(root) if root is not None else None
-    pkg_names = {dest_root.name, _strip_archive_timestamp(dest_root.name)} if dest_root else set()
+    # A backup stores the package under its path relative to ``skills/``, so
+    # that exact prefix must come off before the member is re-joined under the
+    # live root — for a categorized package the stored name is
+    # ``<category>/<name>`` while *root* is already
+    # ``skills/<category>/<name>``, and stripping only the bare ``<name>`` left
+    # the category in place and produced
+    # ``software-development/plan/software-development/plan/SKILL.md``: a path
+    # that never existed, which ``rollback_entry`` would then write on restore.
+    #
+    # Only the CANONICAL prefix (*root* relative to ``skills/``, plus its
+    # archive-suffix-stripped form) is matched whole. The other entries in
+    # *prefixes* come from SKILL.md parents in the before-state and can be
+    # NESTED — a support dir holding its own SKILL.md yields
+    # ``<category>/<name>/references`` — so letting them compete here would let
+    # a nested prefix win a longest-match race and pull a member out of the
+    # package it belongs to, in either direction. The bare skill name stays a
+    # single-segment fallback, applied only when no canonical prefix matched,
+    # because a backup of a flat ``skills/<name>/`` tree stores ``<name>/...``.
+    canonical = set()
+    if dest_root is not None:
+        live = _package_rel(dest_root)
+        if live:
+            canonical.add(live)
+            canonical.add(_strip_archive_timestamp(live))
+    canonical = sorted(canonical, key=len, reverse=True)
+    bare = {dest_root.name, _strip_archive_timestamp(dest_root.name)} if dest_root is not None else set()
     have = {rel for rel in (_rel_posix(str(i.get("path", "")), skills) for i in out) if rel is not None}
-    for rel, data in extra.items():
+
+    def _strip(rel: str):
+        """Remaining path segments for *rel*, or None when it is not ours."""
         parts = rel.split("/")
-        if dest_root is not None and parts and parts[0] in pkg_names:
-            parts = parts[1:]
+        # With no live *root* there is no package to re-root a member under, so
+        # the stored path is already the destination — matching the pre-existing
+        # behaviour of leaving it untouched.
+        if dest_root is None:
+            return parts
+        for prefix in canonical:
+            prefix_parts = prefix.split("/")
+            if parts[:len(prefix_parts)] == prefix_parts:
+                return parts[len(prefix_parts):]
+        return parts[1:] if parts and parts[0] in bare else None
+
+    def _is_canonical(rel: str) -> bool:
+        parts = rel.split("/")
+        return dest_root is not None and any(
+            parts[:len(p.split("/"))] == p.split("/") for p in canonical
+        )
+
+    # Canonical members are placed FIRST. A bare-name member is ambiguous by
+    # construction — `plan/SKILL.md` may be a flat skill of the same name, and
+    # under a categorized root it reduces to the same destination as the
+    # canonical `software-development/plan/SKILL.md`. Letting both race for one
+    # target made the surviving content depend on tar member order, so the
+    # canonical member always wins and an ambiguous one is dropped.
+    for rel, data in sorted(extra.items(), key=lambda kv: not _is_canonical(kv[0])):
+        parts = _strip(rel)
         if not parts:
             continue
         dest = (dest_root if dest_root is not None else skills).joinpath(*parts)

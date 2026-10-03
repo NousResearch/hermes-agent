@@ -819,6 +819,7 @@ async def test_connect_builds_concurrent_update_processor(monkeypatch):
         order.append(f"start {name}")
         if name == "A":
             await gate.wait()
+        order.append(f"end {name}")
 
     chat = SimpleNamespace(effective_chat=SimpleNamespace(id=1))
     tasks = []
@@ -830,7 +831,7 @@ async def test_connect_builds_concurrent_update_processor(monkeypatch):
     gate.set()
     results = await asyncio.gather(*tasks, return_exceptions=True)
     assert results[0] is None and results[2] is None
-    assert order == ["start A", "start C"]
+    assert order == ["start A", "end A", "start C", "end C"]  # C waits for A even after B is cancelled
 
 
 @pytest.mark.asyncio

@@ -376,6 +376,7 @@ def _check_approval_required_write(paths: list[str], task_id: str = "default") -
         pattern_key="ssh_config_write",
         description=description,
         display_target=f"<write to {display_targets}>",
+        audit_surface="file_write",
         cron_deny_message=blocked.format(why="requires approval but this cron session denies it."),
         single_query_deny_message=blocked.format(
             why="requires approval but single-query (-q) sessions run "

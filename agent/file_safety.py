@@ -241,9 +241,12 @@ def build_write_approval_paths(home: str) -> set[str]:
 # state whose rewrite can falsify history and break resume/compression;
 # mcp-tokens/, pairing/, vault/ (key + ciphertext side by side) and
 # browser-profile/ (copied cookies / Login Data) hold credential material.
+# audit/ is the append-only approval event store: rewriting it falsifies the
+# attempt history the log exists to prove, so it joins the same class.
 # Control files (auth.json, config.yaml, webhook_subscriptions.json) are
 # deliberately NOT here (#45947): read-denied, but the user may ask to edit them.
-_HERMES_PROTECTED_SUBPATHS = ("state.db", "sessions", "mcp-tokens", "pairing", "vault", "browser-profile")
+_HERMES_PROTECTED_SUBPATHS = ("state.db", "sessions", "mcp-tokens", "pairing", "vault",
+                              "browser-profile", "audit")
 
 
 def _classify_write_denial(path: str, *, entry: bool = False) -> Optional[str]:

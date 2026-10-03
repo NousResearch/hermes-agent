@@ -93,6 +93,60 @@ def _project_name(source: Path) -> str:
     return tomllib.loads(text)["project"]["name"]
 
 
+def lockfile_registries(lock: Path) -> list[str]:
+    """Registries recorded in *lock*, first-seen order, each URL once.
+
+    ``uv lock --check`` re-resolves. Dropping ``UV_INDEX_URL`` and
+    ``UV_DEFAULT_INDEX`` stops a mirror from replacing the lock's registry,
+    and it also drops a private or mirror-only registry, so the re-resolve
+    looks at PyPI and rejects a lock whose packages were never there. Each
+    recorded URL is passed back as ``--index``: an extra index, consulted
+    before the default, not a new default. ``uv sync --locked`` does not
+    re-resolve; it installs from the lock's absolute urls.
+    """
+    try:
+        text = lock.read_text(encoding="utf-8-sig")
+    except OSError:
+        return []
+    try:
+        import tomllib
+    except ModuleNotFoundError:
+        return _registries_in_lock_text(text)
+    try:
+        document = tomllib.loads(text)
+    except tomllib.TOMLDecodeError:
+        return []
+    seen: list[str] = []
+    packages = document.get("package")
+    if not isinstance(packages, list):
+        return seen
+    for package in packages:
+        if not isinstance(package, dict):
+            continue
+        source = package.get("source")
+        if not isinstance(source, dict):
+            continue
+        registry = source.get("registry")
+        if isinstance(registry, str) and registry and registry not in seen:
+            seen.append(registry)
+    return seen
+
+
+def _registries_in_lock_text(text: str) -> list[str]:
+    """Pre-3.11 stand-in. uv writes one inline ``source`` table per package."""
+    import re
+
+    seen: list[str] = []
+    for match in re.finditer(
+        r'(?m)^source\s*=\s*\{[^}\n]*\bregistry\s*=\s*"([^"]*)"',
+        text,
+    ):
+        registry = match.group(1)
+        if registry and registry not in seen:
+            seen.append(registry)
+    return seen
+
+
 def prune_site_pth(venv_dir: Path) -> None:
     """Drop .pth files that must never execute inside a shipped payload.
 
@@ -286,6 +340,16 @@ class PythonEnvironment:
             env = {key: value for key, value in env.items() if not is_index_redirect(key)}
         env.update(UV_PYTHON=str(self.python), UV_PROJECT_ENVIRONMENT=str(self.destination),
                    UV_CACHE_DIR=str(self.cache), UV_PYTHON_DOWNLOADS="never")
+        # A default-index override (bridged pip index-url included) replaces the
+        # registry a lock records, so uv reports a valid lock as stale.
+        # Verification drops that override. check_lock passes each recorded
+        # registry as --index, because `uv lock --check` re-resolves and a
+        # private or mirror-only registry is not PyPI. `uv sync --locked`
+        # installs from the lock's absolute urls and does not need it. Extra
+        # indexes and transport knobs stay. A resolving `uv lock` does too.
+        if "--locked" in args or (args[:1] == ["lock"] and "--check" in args):
+            env.pop("UV_INDEX_URL", None)
+            env.pop("UV_DEFAULT_INDEX", None)
         with tempfile.TemporaryDirectory(prefix="pm-uv-config-") as config:
             env.update(XDG_CONFIG_HOME=config, XDG_CONFIG_DIRS=config)
             command = [str(self.uv), *args]
@@ -343,8 +407,14 @@ class PythonEnvironment:
             raise classify_uv_failure("lock", result.returncode, result.stderr or result.stdout)
 
     def check_lock(self, source: Path) -> None:
-        result = self._run(["lock", "--check", "--python", str(self.python)],
-                           cwd=source, timeout=1800)
+        command = ["lock", "--check", "--python", str(self.python)]
+        # --index, not --default-index: an extra index is visible during the
+        # re-resolve without replacing PyPI, so a mirror-wins lock (recorded
+        # against PyPI) and a mirror-only lock (recorded against a private
+        # registry) both still resolve.
+        for registry in lockfile_registries(source / "uv.lock"):
+            command += ["--index", registry]
+        result = self._run(command, cwd=source, timeout=1800)
         if result.returncode:
             raise classify_uv_failure("lock", result.returncode, result.stderr or result.stdout)
 

@@ -113,8 +113,14 @@ export function useFileDropZone({ enabled = true, onDropFiles }: FileDropZoneOpt
   const onDrop = useCallback(
     (event: ReactDragEvent) => {
       const kind = enabled ? dragKindOf(event) : null
+      // Some external OS transfers expose their native files only when the
+      // drop fires, with no `Files` type or file items during the drag. The
+      // composer already handles that shape by extracting first; give the
+      // transcript-wide zone the same drop-time fallback. Requiring a native
+      // File keeps metadata-free internal and non-file transfers ignored.
+      const droppedFiles = enabled && !kind ? extractDroppedFiles(event.dataTransfer) : []
 
-      if (!kind) {
+      if (!kind && !droppedFiles.some(candidate => candidate.file)) {
         return
       }
 
@@ -132,7 +138,7 @@ export function useFileDropZone({ enabled = true, onDropFiles }: FileDropZoneOpt
         return
       }
 
-      const files = extractDroppedFiles(event.dataTransfer)
+      const files = kind ? extractDroppedFiles(event.dataTransfer) : droppedFiles
 
       if (files.length) {
         onDropFiles(files)

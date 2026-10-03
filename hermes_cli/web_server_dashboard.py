@@ -745,7 +745,13 @@ def _merged_plugins_hub(force_refresh: bool = False) -> Dict[str, Any]:
 
     agent_names = {r["name"] for r in rows}
     orphan_dashboard = [_strip_dashboard_manifest(p) for p in dashboard_list if str(p["name"]) not in agent_names]
-    memory_providers = _discover_memory_provider_statuses()
+    # Bound to the dashboard's own profile: memory-provider probes (mem0's _load_config, etc.)
+    # read profile secrets via get_secret and fail closed under multiplex with no scope bound
+    # (audit 2026-09-25) — this route iterates every discovered provider, not just the active
+    # one, so it hit the same unscoped-read defect as the portal/cron routes above.
+    from hermes_cli.dashboard_profile_scope import dashboard_profile_secret_scope
+    with dashboard_profile_secret_scope():
+        memory_providers = _discover_memory_provider_statuses()
     try:
         context_engines = [{"name": n, "description": desc} for n, desc in _discover_context_engines()]
     except Exception:

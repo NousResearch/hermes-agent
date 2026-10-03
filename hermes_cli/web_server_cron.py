@@ -140,19 +140,31 @@ def _annotate_cron_job(
 
 @contextlib.contextmanager
 def _cron_store_scope(home: Path):
-    """Point HERMES_HOME and the cron.jobs store at one profile's home for the block.
+    """Point HERMES_HOME, the cron.jobs store, and profile secret scope at one profile's home
+    for the block.
 
     The dashboard is a single process inspecting many profiles; cron.jobs' execution-context
-    override keeps these calls from retargeting a concurrent desktop ticker's load/save.
+    override keeps these calls from retargeting a concurrent desktop ticker's load/save. Secret
+    scope is bound too (audit 2026-09-25): ``cron/scheduler_delivery.py::_home_env_lookup``
+    resolves delivery-target credentials via ``get_secret``, which fails closed under multiplex
+    with no scope bound — the dashboard's own delivery-targets route hit this on every call
+    before this fix, distinct from the correctly-scoped ticker path (``_profile_cron_scope``).
     """
     from cron import jobs as cron_jobs
     from hermes_constants import reset_hermes_home_override, set_hermes_home_override
-    token = set_hermes_home_override(str(home))
+    from agent.secret_scope import (
+        build_profile_secret_scope,
+        reset_secret_scope,
+        set_secret_scope,
+    )
+    home_token = set_hermes_home_override(str(home))
+    secret_token = set_secret_scope(build_profile_secret_scope(home))
     try:
         with cron_jobs.use_cron_store(home):
             yield cron_jobs
     finally:
-        reset_hermes_home_override(token)
+        reset_secret_scope(secret_token)
+        reset_hermes_home_override(home_token)
 
 
 def _call_cron_for_profile(target_profile: Optional[str], func_name: str, *args, **kwargs):

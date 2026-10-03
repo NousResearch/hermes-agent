@@ -1206,8 +1206,8 @@ def drain_truncation_warnings() -> list:
 _SKILLS_PROMPT_CACHE_MAX = 32
 _SKILLS_PROMPT_CACHE: OrderedDict[tuple, str] = OrderedDict()
 _SKILLS_PROMPT_CACHE_LOCK = threading.Lock()
-# v2 added org provenance fields (org_id/org_author); older snapshots are rebuilt.
-_SKILLS_SNAPSHOT_VERSION = 3
+# v2 added org provenance fields (org_id/org_author); v4 added `environments`; older snapshots are rebuilt.
+_SKILLS_SNAPSHOT_VERSION = 4
 
 
 def _skills_prompt_snapshot_path() -> Path:
@@ -1268,8 +1268,8 @@ def _load_skills_snapshot(skills_dir: Path) -> Optional[dict]:
     return None
 
 
-def _requires_apps_list(frontmatter: dict) -> list[str]:
-    raw = frontmatter.get("requires_apps")
+def _frontmatter_str_list(frontmatter: dict, key: str) -> list[str]:
+    raw = frontmatter.get(key)
     items = raw if isinstance(raw, list) else [raw] if raw else []
     return [str(a).strip() for a in items if str(a).strip()]
 
@@ -1289,7 +1289,8 @@ def _build_snapshot_entry(skill_file: Path, skills_dir: Path, frontmatter: dict,
         "skill_name": skill_name, "category": category, "frontmatter_name": str(frontmatter.get("name", skill_name)),
         "description": description, "platforms": [str(p).strip() for p in platforms if str(p).strip()],
         "conditions": extract_skill_conditions(frontmatter),
-        "requires_apps": _requires_apps_list(frontmatter),
+        "requires_apps": _frontmatter_str_list(frontmatter, "requires_apps"),
+        "environments": _frontmatter_str_list(frontmatter, "environments"),
     }
     if org_id:
         entry["org_id"] = org_id
@@ -1522,12 +1523,15 @@ def _build_skills_system_prompt_inner(
         _oneshot_prompt_variant(),
     )
     snapshot = _load_skills_snapshot(skills_dir)
-    app_gated = snapshot is not None and any(
-        entry.get("requires_apps") for entry in snapshot.get("skills", []) if isinstance(entry, dict)
+    # App presence and runtime environments (kanban is context-dependent, never memoized) are not in
+    # the key: an index built from gated entries is re-derived from the snapshot, not served from the LRU.
+    host_gated = snapshot is not None and any(
+        entry.get("requires_apps") or entry.get("environments")
+        for entry in snapshot.get("skills", []) if isinstance(entry, dict)
     )
     with _SKILLS_PROMPT_CACHE_LOCK:
         cached = _SKILLS_PROMPT_CACHE.get(cache_key)
-        if cached is not None and not app_gated:
+        if cached is not None and not host_gated:
             _SKILLS_PROMPT_CACHE.move_to_end(cache_key)
             return cached
 
@@ -1540,8 +1544,9 @@ def _build_skills_system_prompt_inner(
     category_descriptions: dict[str, str] = {}
     # Disk snapshot (fast path) vs. full scan: both yield (entry, is_compatible) pairs so labeling runs identically.
     if snapshot is not None:
-        # Platforms and app presence are host facts that change without SKILL.md changing: re-evaluate both.
+        # Platforms, runtime environments and app presence change without SKILL.md changing: re-evaluate all three.
         candidates = [(entry, skill_matches_platform_list(entry.get("platforms") or [])
+                       and skill_matches_environment({"environments": entry.get("environments") or []})
                        and skill_matches_apps({"requires_apps": entry.get("requires_apps") or []}))
                       for entry in snapshot.get("skills", []) if isinstance(entry, dict)]
         category_descriptions = {str(k): str(v) for k, v in (snapshot.get("category_descriptions") or {}).items()}

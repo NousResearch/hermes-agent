@@ -2,7 +2,8 @@
 
 Authorization comes from ``gateway.group_chat_access``. Every read and control then goes
 through the canonical ``dispatch_group_control`` as the grant's owner, so a chat can never
-reach a room its owner could not open in Desktop.
+reach a room its owner could not open in Desktop. What a group shows and allows when its
+host goes offline is in ``gateway.group_chat_hosts``.
 """
 from __future__ import annotations
 
@@ -101,6 +102,11 @@ def parse(args: str) -> Command:
         return Command('send', ref, text=text.strip())
     if verb == 'stop' and len(words) == 2:
         return Command('stop', ref)
+    if verb == 'continue' and (len(words) == 2 or (len(words) == 3 and words[2].casefold() == 'confirm')):
+        return Command('continue', ref, choice='confirm' if len(words) == 3 else '')
+    if verb == 'keep':
+        # The computer's name as typed; names can hold spaces ("Mac mini").
+        return Command('keep', ref, text=' '.join(words[2:]))
     choice = ' '.join(words[3:]).casefold()
     if verb == 'approve' and len(words) in {4, 5} and choice in {'once', 'deny', 'always', 'always confirm'}:
         return Command('approve', ref, code=words[2].casefold(), choice=choice)
@@ -115,14 +121,19 @@ def approval_code(action: dict) -> str:
     return hashlib.sha256(json.dumps(identity, separators=(',', ':')).encode()).hexdigest()[:6]
 
 
-def help_text(prefix: str) -> str:
+def help_text(prefix: str, *, hosts: bool = False) -> str:
+    """The command list; ``hosts`` adds continue and keep where the gateway offers them."""
     g = prefix + 'group'
-    return '\n'.join(['Group Chats', f'{g} list [page] — your Group Chats',
-                      f'{g} N — status, approvals and recent messages',
-                      f'{g} N send <message> — post a message as you',
-                      f'{g} N stop — stop the work in progress',
-                      f'{g} N approve <code> once|always|deny — answer an approval',
-                      f'{g} N forget <code> — forget an approval this chat always allows', f'{g} help'])
+    lines = ['Group Chats', f'{g} list [page] — your Group Chats',
+             f'{g} N — status, approvals and recent messages',
+             f'{g} N send <message> — post a message as you',
+             f'{g} N stop — stop the work in progress',
+             f'{g} N approve <code> once|always|deny — answer an approval',
+             f'{g} N forget <code> — forget an approval this chat always allows']
+    if hosts:
+        lines += [f'{g} N continue — continue a paused group on this computer',
+                  f'{g} N keep <computer> — choose the computer that keeps a group continued on two']
+    return '\n'.join([*lines, f'{g} help'])
 
 
 def _connect_text(chat, code: str, ttl: int, prefix: str) -> str:
@@ -163,9 +174,10 @@ class _GroupCommand:
         self.runner, self.event, self.authority = runner, event, authority
         self.chat, self.grant, self.prefix = chat, grant, prefix
         from gateway.session_contract import Principal
-        # The owner's own reach, under the messaging chat's transport identity.
+        # The owner's own reach, under the messaging chat's transport identity. A shared chat's says so
+        # (messaging:shared:…), so owner-only gateway actions can refuse it as well.
         self.connection = SimpleNamespace(authority=authority, actor=Principal(
-            grant['owner'], authority.profile_id, _CAPABILITIES, 'messaging:' + grant['grant_id'][:32]))
+            grant['owner'], authority.profile_id, _CAPABILITIES, f'messaging:{grant["kind"]}:' + grant['grant_id'][:32]))
 
     @classmethod
     async def start(cls, runner, event):
@@ -254,7 +266,8 @@ class _GroupCommand:
         return room_id
 
     async def _help(self, command):
-        return help_text(self.prefix)
+        from gateway.group_chat_hosts import PREPARE, PROMOTE, STATUS, advertised
+        return help_text(self.prefix, hosts=await advertised(self, STATUS, PREPARE, PROMOTE))
 
     async def _list(self, command):
         rooms, offset = [], 0
@@ -284,6 +297,7 @@ class _GroupCommand:
         return '\n'.join(lines)
 
     async def _show(self, command):
+        from gateway import group_chat_hosts as hosts
         room_id = self._room_id(command.ref)
         try:
             state = await self._call('groups.state', {'room_id': room_id})
@@ -294,12 +308,17 @@ class _GroupCommand:
         except RuntimeStoreError as exc:
             raise Refused(f'Group {command.ref} isn’t available right now. '
                           f'Send {self.prefix}group list to check.') from exc
-        return '\n'.join(self._detail(command.ref, state, log['events']))
+        hosting = await hosts.host_status(self, room_id)
+        return '\n'.join(self._detail(command.ref, state, log['events'], hosting))
 
-    def _detail(self, ref, state, events):
+    def _detail(self, ref, state, events, hosting=None):
+        from gateway import group_chat_hosts as hosts
         room, status = state['room'], state.get('driver_status') or {}
         labels = _labels(room)
         lines = [f'Group {ref} · {safe(room["name"], 72)}', self._status(status)]
+        if hosting is not None:
+            lines.extend(hosts.host_lines(hosting, group=f'“{safe(room["name"], 72)}”',
+                                          g=f'{self.prefix}group {ref}', may_act=self.chat.kind == 'private'))
         roster = [f'{labels[m["member_id"]]} ({safe("@" + (m.get("handle") or m["member_id"]), 33)})'
                   for m in room['members'][:MAX_ROSTER]]
         extra = len(room['members']) - MAX_ROSTER
@@ -325,6 +344,13 @@ class _GroupCommand:
             parts.append(f'{approvals} approval{"" if approvals == 1 else "s"} waiting')
         if len(actions) > approvals:
             parts.append(f'{len(actions) - approvals} to retry or discard in Desktop')
+        # Work that needs a Bot or file only its former host has, after the group moved.
+        waiting = {}
+        for task in status.get('tasks') or ():
+            if isinstance(task, dict) and task.get('state') == 'waiting_for_host':
+                host = safe(task.get('host_name'), 48) or 'another computer'
+                waiting[host] = waiting.get(host, 0) + 1
+        parts.extend(f'{count} waiting for {host}' for host, count in waiting.items())
         return ' · '.join(parts)
 
     def _approval_lines(self, ref, action, labels):
@@ -432,6 +458,14 @@ class _GroupCommand:
             raise Refused(f'No approval this chat always allows in Group {command.ref} has that code. '
                           f'Send {self.prefix}group {command.ref} to see them.')
         return f'Forgotten. That command will ask for approval again in Group {command.ref}.'
+
+    async def _continue(self, command):
+        from gateway.group_chat_hosts import continue_command
+        return await continue_command(self, command)
+
+    async def _keep(self, command):
+        from gateway.group_chat_hosts import keep_command
+        return await keep_command(self, command)
 
     @staticmethod
     def _preview(event, labels):

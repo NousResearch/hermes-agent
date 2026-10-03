@@ -36,6 +36,8 @@ def clear_git_debris(root: Path) -> None:
     A crashed fetch can leave ``.git/shallow.lock`` (or another lock) behind, and every later
     fetch then fails with "File exists". Aborted fetches on flaky lines also strand
     ``tmp_pack_*`` debris: unchecked it reached 6 GB and corrupted the pack dir (#93732).
+    A partial clone's on-demand fetches also strand one small packfile each — fold those
+    back in (#129712).
     """
     from hermes_cli.gitlock import clear_stale_git_locks, clear_stale_tmp_packs
 
@@ -44,6 +46,21 @@ def clear_git_debris(root: Path) -> None:
     swept = clear_stale_tmp_packs(root)
     if swept:
         print(f"  (removed {len(swept)} aborted-fetch pack temp file(s))")
+    fold_lazy_fetch_packs(root)
+
+
+def fold_lazy_fetch_packs(root: Path) -> None:
+    """Fold a partial clone's lazy-fetch packs (#129712), announcing a slow fold and a timed-out one."""
+    from hermes_cli.gitlock import LAZY_FETCH_GC_TIMEOUT_SECONDS, consolidate_lazy_fetch_packs
+
+    folded = consolidate_lazy_fetch_packs(root, on_fold_start=lambda count: print(
+        f"  Folding {count} lazy-fetch packs into one (one-time; can take several minutes)...", flush=True))
+    if folded is None:
+        print(f"  ⚠ Folding lazy-fetch packs did not finish within {LAZY_FETCH_GC_TIMEOUT_SECONDS // 60} min."
+              " With Hermes closed, run:")
+        print(f'      git -C "{root}" -c gc.writeCommitGraph=false gc --auto')
+    elif folded:
+        print(f"  (folded {folded} lazy-fetch pack(s) into one)")
 
 
 def channel_compare_branch(selected_channel: str, git_cmd: list[str], root: Path) -> str | None:

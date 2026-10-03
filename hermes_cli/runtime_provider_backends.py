@@ -168,7 +168,7 @@ def _resolve_openrouter_runtime(
             openai_key_ok = bool(openai_origin[1]) and openai_origin == base_url_origin(base_url)
         else:
             openai_key_ok = not is_openrouter_url or rp.looks_like_openrouter_key(openai_key)
-        candidates = [explicit_api_key, get_secret_str("OPENROUTER_API_KEY"),
+        candidates = [explicit_api_key, rp._getenv_with_dotenv("OPENROUTER_API_KEY"),
                       openai_key if openai_key_ok else ""]
     else:
         # ``model.api_key`` and ``model.key_env`` back a trusted config base_url only; the key_env

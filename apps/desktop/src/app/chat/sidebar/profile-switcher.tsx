@@ -1096,6 +1096,7 @@ function ProfilePill({
           summary && !active && 'relative'
         )}
         data-connection-id={connectionId}
+        data-profile={profile}
         data-slot={slot}
         onClick={onSelect}
         size="icon-xs"
@@ -1493,6 +1494,7 @@ function ProfileSquare({
                         .join(', ') || label
                     }
                     aria-pressed={active}
+                    data-profile={name}
                     // Hold-to-recolor rides alongside the dnd pointer listener (call
                     // it first so drag tracking still arms), then a timer opens the
                     // picker and flags the trailing click so it doesn't also select.

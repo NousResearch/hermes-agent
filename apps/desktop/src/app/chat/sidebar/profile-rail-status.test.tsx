@@ -150,6 +150,21 @@ describe('ProfileRail per-profile status (#91710)', () => {
     expect(writerSquare.querySelector('[data-slot="profile-status-dot"]')).not.toBeNull()
   })
 
+  it('carries a stable data-profile identity hook on every square (#125929)', () => {
+    profiles.set([
+      { is_default: true, name: 'default' },
+      { is_default: false, name: 'writer' }
+    ])
+
+    render(<ProfileRail />)
+
+    const homePill = screen.getByRole('button', { name: 'Show all profiles' })
+    const writerSquare = screen.getByRole('button', { name: 'writer' })
+
+    expect(homePill.getAttribute('data-profile')).toBe('default')
+    expect(writerSquare.getAttribute('data-profile')).toBe('writer')
+  })
+
   it('leaves every square clean when no profile has unread or live work', () => {
     profiles.set([
       { is_default: true, name: 'default' },

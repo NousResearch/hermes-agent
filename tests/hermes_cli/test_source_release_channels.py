@@ -1,5 +1,6 @@
 """Release-channel checks and updates against actual repositories and HTTP feeds."""
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+import http.client
 import json
 from threading import Thread
 from types import SimpleNamespace
@@ -117,6 +118,107 @@ def test_stable_resolution_uses_promoted_pointer_not_highest_tag(releases, git_c
         releases.tags["stable"], releases.commits[1],
     )
     assert releases.requests
+
+
+def test_truncated_source_release_response_is_unavailable_on_public_path(monkeypatch):
+    from hermes_cli import source_releases
+
+    class Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def read(self, _limit):
+            raise http.client.IncompleteRead(b'{"tag":', 12)
+
+    def urlopen(request, timeout=30):
+        assert request.full_url.endswith("/releases/stable/release-candidates.json")
+        assert timeout == 30
+        return Response()
+
+    monkeypatch.setattr(source_releases.urllib.request, "urlopen", urlopen)
+    assert resolve_source_release("stable") == (None, None)
+
+
+@pytest.mark.parametrize("rev_list_returncode,rev_list_stdout,terminal_sequence,pattern", [
+    (0, "d" * 40 + "\n", 2, "downgrade"),
+    (128, "", 1, "cannot verify"),
+    (128, "", 2, "cannot verify"),
+])
+def test_retirement_downgrade_refuses_when_ancestry_is_unavailable(monkeypatch, tmp_path,
+                                                                    rev_list_returncode, rev_list_stdout,
+                                                                    terminal_sequence, pattern):
+    from hermes_cli.source_releases import _refuse_retirement_downgrade
+
+    class Result:
+        returncode = rev_list_returncode
+        stdout = rev_list_stdout
+
+    def run(argv, **_kwargs):
+        assert argv[1:3] == ["rev-list", "--ancestry-path"]
+        return Result()
+
+    monkeypatch.setattr("subprocess.run", run)
+    request = {"commit": "a" * 40, "sourceVersion": "1.0.0", "sequence": 1}
+    terminal = {"name": "stable", "head": {"sequence": terminal_sequence}}
+    with pytest.raises(ValueError, match=pattern):
+        _refuse_retirement_downgrade(request, terminal, ["git"], tmp_path)
+
+
+@pytest.mark.parametrize("terminal_sequence", [1, 2])
+def test_retirement_downgrade_allows_verified_empty_ancestry(monkeypatch, tmp_path, terminal_sequence):
+    from hermes_cli.source_releases import _refuse_retirement_downgrade
+
+    class Result:
+        returncode = 0
+        stdout = ""
+
+    def run(argv, **_kwargs):
+        if argv[1:3] == ["rev-list", "--ancestry-path"]:
+            return Result()
+        assert argv[1:3] == ["merge-base", "--is-ancestor"]
+        return Result()
+
+    monkeypatch.setattr("subprocess.run", run)
+    request = {"commit": "a" * 40, "sourceVersion": "1.0.0", "sequence": 1}
+    terminal = {"name": "stable", "head": {"sequence": terminal_sequence}}
+    _refuse_retirement_downgrade(request, terminal, ["git"], tmp_path)
+
+
+def test_retirement_downgrade_rejects_divergent_history(tmp_path):
+    from hermes_cli.source_releases import _refuse_retirement_downgrade
+
+    root = tmp_path / "repo"
+    root.mkdir()
+    git(root, "init", "-b", "main")
+    git(root, "config", "user.name", "Release Fixture")
+    git(root, "config", "user.email", "fixture@example.invalid")
+    (root / "content.txt").write_text("base", encoding="utf-8")
+    git(root, "add", ".")
+    git(root, "commit", "-m", "base")
+    (root / "content.txt").write_text("destination", encoding="utf-8")
+    git(root, "commit", "-am", "destination")
+    destination = git(root, "rev-parse", "HEAD")
+    base = git(root, "rev-parse", "HEAD~1")
+    git(root, "checkout", "-b", "divergent", base)
+    (root / "content.txt").write_text("installed", encoding="utf-8")
+    git(root, "commit", "-am", "installed")
+
+    request = {"commit": destination, "sourceVersion": "1.0.0", "sequence": 1}
+    terminal = {"name": "stable", "head": {"sequence": 2}}
+    with pytest.raises(ValueError, match="equal to or an ancestor"):
+        _refuse_retirement_downgrade(request, terminal, ["git"], root)
+
+
+def test_retirement_downgrade_fails_closed_without_git(tmp_path):
+    from hermes_cli.source_releases import _refuse_retirement_downgrade
+
+    request = {"commit": "a" * 40, "sourceVersion": "1.0.0", "sequence": 1}
+    terminal = {"name": "stable", "head": {"sequence": 1}}
+    with pytest.raises(ValueError, match="without Git"):
+        _refuse_retirement_downgrade(request, terminal, None, tmp_path)
 
 
 @pytest.mark.parametrize("channel", ["stable", "canary"])

@@ -98,7 +98,9 @@ def test_update_reads_retry_transient_http_and_honor_retry_after(monkeypatch):
 
     def opener(request, timeout):
         assert timeout == 30
-        attempts.append(request.full_url)
+        attempts.append((request.full_url, request.headers))
+        assert request.headers["User-agent"].startswith("Mozilla/5.0")
+        assert request.headers["Accept"] == "*/*"
         if len(attempts) == 1:
             raise HTTPError(url, 503, "unavailable", headers, None)
         return Response()
@@ -107,8 +109,51 @@ def test_update_reads_retry_transient_http_and_honor_retry_after(monkeypatch):
     reader = ChannelReader("http://127.0.0.1:12345", opener=opener)
     with retrying_reads():
         assert reader.read_bytes("releases/fixture.json") == b"fixture"
-    assert attempts == [url, url]
+    assert [item[0] for item in attempts] == [url, url]
     assert waits == [7.0]
+
+
+def test_read_bytes_normalizes_incomplete_http_response():
+    import http.client
+    from hermes_cli.release_channels import ChannelError, ChannelReader
+
+    def opener(_request, timeout):
+        assert timeout == 30
+        raise http.client.IncompleteRead(b"partial", 1)
+
+    with pytest.raises(ChannelError, match="unavailable"):
+        ChannelReader("https://releases.example", opener=opener).read_bytes("releases/fixture.json")
+
+
+def test_read_bytes_sends_representation_neutral_asset_headers_without_retrying(monkeypatch):
+    from hermes_cli.release_channels import ChannelReader
+
+    url = "https://releases.example/releases/fixture.appinstaller"
+    captured = []
+
+    class Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def geturl(self):
+            return url
+
+        def read(self, _limit):
+            return b"fixture"
+
+    def opener(request, timeout):
+        captured.append((request, timeout))
+        return Response()
+
+    reader = ChannelReader("https://releases.example", opener=opener)
+    assert reader.read_bytes("releases/fixture.appinstaller") == b"fixture"
+    request, timeout = captured[0]
+    assert timeout == 30
+    assert request.get_header("User-agent") == "Mozilla/5.0 (X11; Linux x86_64) hermes-update/1.0"
+    assert request.get_header("Accept") == "*/*"
 
 
 def test_passive_reads_and_missing_objects_make_one_attempt(monkeypatch):

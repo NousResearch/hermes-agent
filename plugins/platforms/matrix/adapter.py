@@ -893,6 +893,8 @@ class MatrixAdapter(BasePlatformAdapter):
         from collections import deque
         self._processed_events: deque = deque(maxlen=1000)  # event dedup, newest kept
         self._processed_events_set: set = set()
+        # Rooms already warned for dropping encrypted events this process lifetime (#131778).
+        self._warned_encrypted_drop_rooms: Set[str] = set()
         self._threads = ThreadParticipationTracker("matrix")  # require_mention bypass
         self._parked_voices = ParkedVoices()  # unmentioned voice awaiting a bare @mention
         self._require_mention: bool = self._parse_require_mention(config)
@@ -1923,6 +1925,7 @@ class MatrixAdapter(BasePlatformAdapter):
         if rooms_join or initial:
             self._joined_rooms.update(rooms_join.keys())
             self._invalidate_room_identities()
+        self._warn_encrypted_drops(rooms_join, client)
         nb = sync_data.get("next_batch")  # incremental syncs resume from here
         if nb:
             await client.sync_store.put_next_batch(nb)
@@ -1935,6 +1938,28 @@ class MatrixAdapter(BasePlatformAdapter):
             logger.warning("Matrix: %s: %s", "initial sync event dispatch error" if initial else "sync event dispatch error", exc)
         self._schedule_pending_invite_joins(sync_data)
         return nb
+
+    def _warn_encrypted_drops(self, rooms_join: Dict[str, Any], client: Any) -> None:
+        """Fail loud when encrypted room events arrive but no decryptor is attached (#131778).
+
+        With E2EE off, or after the optional mode degraded (missing deps / failed setup) and
+        kept the connection, ``m.room.encrypted`` timeline events dispatch to an empty
+        ROOM_ENCRYPTED handler set — mautrix drops them without a trace, so an encrypted room
+        looks connected but deaf: syncs succeed, no errors, no warnings. One warning per room
+        per process; with a decryptor attached, mautrix's own machinery already reports
+        decryption failures."""
+        if getattr(client, "crypto", None) is not None:
+            return
+        for room_id, room_data in rooms_join.items():
+            if room_id in self._warned_encrypted_drop_rooms:
+                continue
+            events = ((room_data or {}).get("timeline", {}) or {}).get("events", ()) or ()
+            if any(isinstance(ev, dict) and ev.get("type") == "m.room.encrypted" for ev in events):
+                self._warned_encrypted_drop_rooms.add(room_id)
+                logger.warning(
+                    "Matrix: dropping encrypted messages in %s — this process has no E2EE decryptor "
+                    "(E2EE off or unavailable). %s. Without it, messages in encrypted rooms never "
+                    "reach the agent.", room_id, _E2EE_INSTALL_HINT)
 
     async def _dispatch_sync(self, sync_data: Dict[str, Any]) -> None:
         """Dispatch a sync response through the mautrix event machinery."""

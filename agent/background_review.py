@@ -376,7 +376,9 @@ _MEMORY_REVIEW_PROMPT = (
     "Review the conversation above and consider saving to memory if appropriate.\n\n"
     "Memory has " + _MEMORY_ROUTING_BLOCK +
     "If something stands out, save it once, in the right store, using the memory tool with the "
-    "matching target. If nothing is worth saving, just say 'Nothing to save.' and stop."
+    "matching target. Save new independent facts with 'add' before proposing a batch that "
+    "rewrites or removes other entries; a staged edit must not delay an addition that fits. "
+    "If nothing is worth saving, just say 'Nothing to save.' and stop."
 )
 
 # Shared shape contract for anything written into a skill. The failure mode this prevents is the
@@ -526,6 +528,8 @@ _SKILL_REVIEW_PROMPT = (
 _COMBINED_REVIEW_PROMPT = (
     "Review the conversation above and update two things:\n\n"
     "**Memory**: " + _MEMORY_ROUTING_BLOCK +
+    "Save independent new facts via 'add' before any proposed rewrite/removal, so a staged "
+    "edit cannot hold an addition that fits.\n\n"
     "**Skills**: how to do this class of task. Be ACTIVE — most sessions produce at least one "
     "skill update. A pass that does nothing is a missed learning opportunity, not a neutral "
     "outcome.\n\n"
@@ -1185,7 +1189,11 @@ def _run_review_fork(
     prompt_extra = f" Exception — these configured tools are also allowed: {extra_list}." if configured_extra_tools else ""
     # Keep the deny/prompt wording in sync with the whitelist: a memory-less review must not
     # tell the model that memory is available, or it will burn iterations on denied calls.
-    memory_phrase_deny = " and memory for notes (add only)" if "memory" in review_whitelist else ""
+    memory_phrase_deny = (
+        " and memory for notes (adds save when approval is off and there is room, even "
+        "alongside staged edits; edits retaining old text need explicit opt-in; other changes "
+        "stage)" if "memory" in review_whitelist else ""
+    )
     memory_phrase_prompt = "memory and skill " if "memory" in review_whitelist else "skill "
     set_thread_tool_whitelist(
         review_whitelist,

@@ -52,6 +52,16 @@ def write_approval_enabled(subsystem: str) -> bool:
         return False
 
 
+def unattended_literal_preservation_enabled() -> bool:
+    """Opt-in for background edits that retain every original memory entry verbatim."""
+    try:
+        from hermes_cli.config import load_config, cfg_get
+        return _normalize_enabled(cfg_get(
+            load_config(), MEMORY, "auto_apply_literal_preserving_reviews", default=False))
+    except Exception:
+        return False
+
+
 def _normalize_enabled(value: Any) -> bool:
     """Coerce a config value to bool; unknown → False (gate off). The string branch
     covers hand-edited configs (YAML already parses bare on/off/yes/no)."""

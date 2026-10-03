@@ -209,7 +209,8 @@ def test_approve_refuses_staged_remove_whose_entry_changed(hermes_home, shape):
 
     out = handle_pending_subcommand(wa.MEMORY, ["approve", pid], memory_store=load_on_disk_store())
 
-    assert load_on_disk_store().memory_entries == [_KEPT, newer], out
+    expected = [_KEPT, newer] + (["Deploys via make ship"] if shape == "batch" else [])
+    assert load_on_disk_store().memory_entries == expected, out
     assert "changed since it was staged" in out
     assert wa.get_pending(wa.MEMORY, pid) is not None
     # The pending list shows the whole entry the write targets, not just its search string.

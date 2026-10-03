@@ -8,6 +8,9 @@ from typing import List, Optional
 
 from tools import write_approval as wa
 
+_MEMORY_REJECT_NOTE = ("Reject drops only pending proposals; "
+                       "entries already saved on disk are kept.")
+
 
 def _fmt_state(subsystem: str) -> str:
     on = wa.write_approval_enabled(subsystem)
@@ -19,17 +22,55 @@ def _fmt_pending_list(subsystem: str) -> str:
     if not records:
         return f"No pending {subsystem} writes."
     lines = [f"Pending {subsystem} writes ({len(records)}):"]
+    snapshots = {}  # One current disk snapshot per memory target, only for this listing.
     for r in records:
         origin = r.get("origin", "foreground")
         tag = " [auto]" if origin == "background_review" else ""
         lines.append(f"  {r['id']}{tag}  {r.get('summary', '')}")
         if subsystem == wa.MEMORY:
             lines.extend(f"      {line}" for line in _matched_entries(r["payload"]))
+            lines.extend(f"      {line}" for line in _pending_addition_lines(r["payload"], snapshots))
     lines.append("")
     lines.append(f"Apply: /{subsystem} approve <id>   Reject: /{subsystem} reject <id>")
+    if subsystem == wa.MEMORY:
+        lines.append(_MEMORY_REJECT_NOTE)
     if subsystem == wa.SKILLS:
         lines.append("Review full diff: /skills diff <id>")
     return "\n".join(lines)
+
+
+def _pending_addition_lines(payload: dict, snapshots: dict) -> List[str]:
+    """Label additions by current disk state, not by a stale session or inferred ownership.
+
+    This also covers records staged before independent saves had any review UI. Reading
+    directly avoids changing the session's frozen prompt snapshot. An unreadable target
+    is unknown, never an empty store. The labels do not claim which writer saved an entry.
+    """
+    ops = (payload.get("operations") or []) if payload.get("action") == "batch" else [payload]
+    contents = []
+    for op in ops:
+        if not isinstance(op, dict) or op.get("action") != "add":
+            continue
+        content = op.get("content") or op.get("new_text") or ""
+        if isinstance(content, str) and content.strip():
+            contents.append(content.strip())
+    if not contents:
+        return []
+    target = payload.get("target", "memory")
+    entries = None
+    if target in ("memory", "user"):
+        if target not in snapshots:
+            from tools.memory_tool import MemoryStore
+            try:
+                raw, read_ok = MemoryStore._read_raw_checked(MemoryStore._path_for(target))
+                snapshots[target] = set(MemoryStore._parse_entries(raw)) if read_ok else None
+            except OSError:
+                snapshots[target] = None
+        entries = snapshots[target]
+    return [f"- add: {content} (" + (
+        "disk status unavailable" if entries is None else
+        "already on disk; kept on reject" if content in entries else
+        "not on disk; pending approval") + ")" for content in contents]
 
 
 def handle_pending_subcommand(
@@ -142,9 +183,11 @@ def _reject(subsystem: str, rest: List[str]) -> str:
     target = rest[0]
     if target.lower() == "all":
         n = sum(1 for rec in wa.list_pending(subsystem) if wa.discard_pending(subsystem, rec["id"]))
-        return f"Rejected {n} pending {subsystem} write(s)."
+        note = f"\n{_MEMORY_REJECT_NOTE}" if subsystem == wa.MEMORY and n else ""
+        return f"Rejected {n} pending {subsystem} write(s).{note}"
     if wa.discard_pending(subsystem, target):
-        return f"Rejected pending {subsystem} write '{target}'."
+        note = f"\n{_MEMORY_REJECT_NOTE}" if subsystem == wa.MEMORY else ""
+        return f"Rejected pending {subsystem} write '{target}'.{note}"
     return f"No pending {subsystem} write with id '{target}'."
 
 

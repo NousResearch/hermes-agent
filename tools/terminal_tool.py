@@ -75,6 +75,11 @@ def _safe_parse_import_env(name: str, default: Any, converter, type_label: str):
 # Hard cap on foreground timeout; override via TERMINAL_MAX_FOREGROUND_TIMEOUT env var.
 FOREGROUND_MAX_TIMEOUT = _safe_parse_import_env("TERMINAL_MAX_FOREGROUND_TIMEOUT", 600, int, "integer")
 
+# Grace added on top of the effective timeout for the foreground hard watchdog:
+# when the backend execute call cannot finish in time, the tool returns exit 124
+# instead of blocking the turn forever.
+HARD_TIMEOUT_GRACE = _safe_parse_import_env("TERMINAL_HARD_TIMEOUT_GRACE", 60, int, "integer")
+
 # Disk usage warning threshold (in GB)
 DISK_USAGE_WARNING_THRESHOLD_GB = _safe_parse_import_env("TERMINAL_DISK_WARNING_GB", 500.0, float, "number")
 
@@ -1266,11 +1271,46 @@ def _run_foreground(
             # bounded_capture: model-facing output keeps a head/tail window
             # while streaming so a verbose command can't OOM the gateway;
             # internal env.execute() consumers stay unbounded.
-            result = env.execute(
-                command, timeout=effective_timeout, cwd=command_cwd, bounded_capture=True,
+            # Hard watchdog: the tool's own timeout only covers the phase while
+            # the command is still running. Finalization can still block without
+            # a bound on a stdout pipe that a spawned GUI child keeps open (e.g.
+            # Windows `cmd start "" "app.exe"`), wedging the turn for hours. Run
+            # the execute call on a worker (same context propagation as tool
+            # dispatch) and hard-fail past timeout + HARD_TIMEOUT_GRACE so the
+            # turn always recovers.
+            from tools.thread_context import propagate_context_to_thread
+
+            _exec_kwargs = dict(
+                timeout=effective_timeout, cwd=command_cwd, bounded_capture=True,
                 **_yield_kwargs(command, env_type=env_type, cwd=command_cwd, effective_task_id=eff,
                                 task_id=task_id, session_key=session_key),
             )
+            _exec_result: list = []
+            _exec_error: list = []
+
+            def _run_exec() -> None:
+                try:
+                    _exec_result.append(env.execute(command, **_exec_kwargs))
+                except Exception as _exc:
+                    _exec_error.append(_exc)
+
+            _exec_thread = threading.Thread(
+                target=propagate_context_to_thread(_run_exec),
+                name=f"term-watchdog-{eff[:8]}", daemon=True,
+            )
+            _exec_thread.start()
+            _exec_thread.join(timeout=effective_timeout + HARD_TIMEOUT_GRACE)
+            if _exec_thread.is_alive():
+                logger.error(
+                    "Terminal hard watchdog fired after %ds - Command: %s - Task: %s, Backend: %s",
+                    effective_timeout + HARD_TIMEOUT_GRACE,
+                    _safe_command_preview(command), eff, env_type)
+                return _error_json(
+                    f"Command timed out after {effective_timeout} seconds (hard watchdog)",
+                    exit_code=124)
+            if _exec_error:
+                raise _exec_error[0]
+            result = _exec_result[0]
             break
         except Exception as e:
             # A backend exception (e.g. an SSH connect timeout) never reached an exit status, so it

@@ -252,11 +252,17 @@ class PluginContext:
         """Return True when another plugin is loaded and enabled (runtime probe for advisory
         ``requires_plugins``). Matches on registry key or manifest name.
 
+        Iterates a snapshot: ``register()`` bodies run on worker threads
+        (``run_with_load_deadline``) that insert into ``_plugins`` concurrently,
+        and a bare ``.items()`` walk raises ``RuntimeError: dictionary changed
+        size during iteration`` under that contention (observed as random
+        ``Failed to load plugin '<name>-platform'`` warnings).
+
         See #64165.
         """
         return any(
             loaded.enabled and (key == plugin_id or loaded.manifest.name == plugin_id)
-            for key, loaded in self._manager._plugins.items()
+            for key, loaded in list(self._manager._plugins.items())
         )
 
     def _segments(self, key: str) -> tuple[str, ...]:

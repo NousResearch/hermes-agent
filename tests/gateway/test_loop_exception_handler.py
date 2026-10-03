@@ -69,10 +69,10 @@ def test_transient_classifier_matches_known_network_errors(exc_cls):
 def test_transient_classifier_tolerates_missing_chain_attributes():
     """Regression for #57298: objects without __cause__/__context__ don't crash.
 
-    A ``traceback.TracebackException`` (or any duck-typed exception-like
-    object) may lack ``__cause__`` and ``__context__`` as instance
-    attributes.  The classifier must return ``False`` instead of raising
-    ``AttributeError``.
+    A duck-typed exception-like object may omit exception-chain attributes.
+    The classifier must return ``False`` instead of raising ``AttributeError``.
+    Ordinary ``TracebackException.from_exception`` populates both attributes
+    and is not the missing-attribute fixture.
     """
 
     class TracebackLike:
@@ -144,9 +144,11 @@ def test_classifier_preserves_cause_precedence():
     assert _is_transient_network_error(exc) is False
 
 
-def test_loop_handler_still_swallows_wrapped_transient(monkeypatch, caplog):
-    exc = RuntimeError("wrapper")
-    exc.__cause__ = TimedOut("retry")
+@pytest.mark.parametrize("edge", ["__cause__", "__context__"])
+def test_loop_handler_logs_transient_without_traceback(monkeypatch, caplog, edge):
+    from types import SimpleNamespace
+
+    exc = SimpleNamespace(**{edge: TimedOut("retry")})
     loop = asyncio.new_event_loop()
     try:
         forwarded = []
@@ -155,6 +157,29 @@ def test_loop_handler_still_swallows_wrapped_transient(monkeypatch, caplog):
         loop.call_exception_handler({"exception": exc})
         assert forwarded == []
         assert "Gateway swallowed transient network error" in caplog.text
+        record = next(r for r in caplog.records if "Gateway swallowed" in r.message)
+        assert record.exc_info is None
+    finally:
+        loop.close()
+
+
+def test_loop_handler_still_swallows_wrapped_transient(monkeypatch, caplog):
+    try:
+        raise RuntimeError("wrapper") from TimedOut("retry")
+    except RuntimeError as caught:
+        exc = caught
+    loop = asyncio.new_event_loop()
+    try:
+        forwarded = []
+        monkeypatch.setattr(loop, "default_exception_handler", forwarded.append)
+        loop.set_exception_handler(_gateway_loop_exception_handler)
+        loop.call_exception_handler({"exception": exc})
+        assert forwarded == []
+        assert "Gateway swallowed transient network error" in caplog.text
+        record = next(r for r in caplog.records if "Gateway swallowed" in r.message)
+        assert record.exc_info == (type(exc), exc, exc.__traceback__)
+        assert exc.__traceback__ is not None
+        assert "TimedOut: retry" in caplog.text
     finally:
         loop.close()
 

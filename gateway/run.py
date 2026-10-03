@@ -562,9 +562,12 @@ def _gateway_loop_exception_handler(
                 task_name = task.get_name() if hasattr(task, "get_name") else repr(task)
             except Exception:
                 task_name = repr(task)
+        # logging's traceback formatter requires a real BaseException, not
+        # merely an object with an available cause/context chain.
+        exc_info = (type(exc), exc, exc.__traceback__) if isinstance(exc, BaseException) else None
         logger.warning(
             "Gateway swallowed transient network error from %s: %s: %s", task_name or "<unknown task>",
-            type(exc).__name__, exc, exc_info=(type(exc), exc, exc.__traceback__))
+            type(exc).__name__, exc, exc_info=exc_info)
         return
     loop.default_exception_handler(context)
 

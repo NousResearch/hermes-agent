@@ -284,6 +284,23 @@ async def test_eventless_followup_keeps_effective_prompt_through_next_human(
 
 
 @pytest.mark.asyncio
+async def test_terminal_batch_timeout_interrupt_is_not_requeued_as_user_input(monkeypatch):
+    runner = _make_runner(monkeypatch)
+    adapter = MagicMock()
+    adapter.get_pending_message.return_value = None
+    source = _human_source()
+
+    result = {
+        "interrupted": True,
+        "interrupt_message": "terminal batch tool did not complete",
+    }
+    pending_event, pending = await runner._run_agent_drain_pending(result, adapter, source, KEY)
+
+    assert pending_event is None
+    assert pending is None
+
+
+@pytest.mark.asyncio
 async def test_event_backed_followup_overrides_inherited_channel_prompt(monkeypatch):
     runner = _make_runner(monkeypatch)
     calls: list[dict] = []

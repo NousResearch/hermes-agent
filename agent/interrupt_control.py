@@ -135,7 +135,7 @@ class InterruptControlMixin:
         # full next message.
         tool_interrupt_reason = (
             (tool_reason or _REASON_HARD_STOP) if hard_cancel
-            else (_REASON_NEW_MESSAGE if message else _REASON_USER_INTERRUPT)
+            else (tool_reason or (_REASON_NEW_MESSAGE if message else _REASON_USER_INTERRUPT))
         )
 
         def _publish_interrupt_state() -> None:

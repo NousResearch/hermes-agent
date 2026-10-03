@@ -974,7 +974,9 @@ def _run_sequential_tool_execution_middleware(
             # A timed-out shell may still be unwinding. Never release a later
             # prepared command into overlapping execution.
             prepared.batch.close()
-            agent.interrupt("terminal batch tool did not complete")
+            agent.interrupt(
+                tool_reason="terminal_batch_timeout",
+            )
         future.cancel()
         if state == "timeout":
             _interrupt_worker_tids(agent, worker_tid)
@@ -1885,7 +1887,12 @@ def _execute_tool_calls_sequential(agent, assistant_message, messages: list, eff
             if not _skip_remaining_sequential(
                 agent, messages, tool_calls[i:], effective_task_id,
                 notice="remaining tool call(s)",
-                content="[Tool execution skipped — {name} was not started. User sent a new message]",
+                content=(
+                    "[Tool execution skipped — {name} was not started. "
+                    "Terminal batch timed out]"
+                    if getattr(agent, "_tool_interrupt_reason", None) == "terminal_batch_timeout"
+                    else "[Tool execution skipped — {name} was not started. User sent a new message]"
+                ),
                 flush_stage="skipped tool result",
             ):
                 return

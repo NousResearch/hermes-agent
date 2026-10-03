@@ -339,17 +339,39 @@ class GatewayVoiceMixin:
     def _should_echo_stt_transcripts(self) -> bool:
         return bool(getattr(self.config, "stt_echo_transcripts", True))
 
-    async def _send_voice_reply(self, event: MessageEvent, text: str) -> None:
+    def _is_required_composite_delivery(self, event: MessageEvent) -> bool:
+        """True when the finalized text may only be released AFTER its voice half landed: exact
+        ``all`` mode on Telegram, where the chat owner explicitly asked for a spoken reply (#128151).
+
+        Scope is deliberately narrow. ``voice_only`` answers voice input and must not be promoted to
+        universal pairing; ``off`` and an unset mode keep today's best-effort reply. A Discord voice
+        channel also stores ``all`` (join) but its "voice half" is live playback, not a delivered
+        attachment, so suppressing text on a playback hiccup would break the VC feature.
+
+        ponytail: the issue asks for this obligation at the Telegram OUTBOUND PRODUCER boundary
+        (cron/control notices, streaming finals and no-agent lanes included). Those producers
+        deliver outside this turn runner, and whether a half-delivered composite is retried or
+        merely reported is a delivery-accounting decision this fix does not pretend to make."""
+        if getattr(event.source.platform, "value", None) != "telegram":
+            return False
+        return self._voice_mode.get(self._voice_key_for_source(event.source)) == "all"
+
+    async def _send_voice_reply(self, event: MessageEvent, text: str) -> bool:
         """Generate TTS audio and send as a voice message before the text reply. The TTS tool
         may return one combined file or several separately valid ones (combination unavailable /
-        over a platform limit); legacy single-file results keep working."""
+        over a platform limit); legacy single-file results keep working.
+
+        Returns whether the VOICE obligation is satisfied: either audio reached the platform, or
+        there was nothing to speak (blank after speech normalization -- a code-only reply has no
+        voice half to lose). Every other path is a failure the caller may refuse to release text
+        over (#128151)."""
         audio_path, actual_paths = None, []
         try:
             from tools.tts_text_normalize import _strip_markdown_for_tts
             from tools.tts_tool import text_to_speech_tool
             tts_text = _strip_markdown_for_tts(text)
             if not tts_text:
-                return
+                return True
             # Platforms whose native voice bubbles require Ogg/Opus (OPUS_VOICE_PLATFORMS) get an
             # explicit .ogg path; the TTS tool's container repair guarantees real Ogg/Opus bytes.
             audio_path = build_auto_tts_output_path(event.source.platform)
@@ -360,23 +382,26 @@ class GatewayVoiceMixin:
             except (json.JSONDecodeError, TypeError):
                 logger.warning("Auto voice reply TTS returned invalid JSON: %s",
                                raw[:200] if raw else raw)
-                return
+                return False
             candidates = result.get("file_paths") or [result.get("file_path", audio_path)]
             paths = [str(p) for p in candidates if p and os.path.isfile(p)]
             if not result.get("success") or not paths:
                 logger.warning("Auto voice reply TTS failed: %s", result.get("error"))
-                return
+                return False
             actual_paths = paths
-            await self._deliver_voice_reply(event, actual_paths)
+            return await self._deliver_voice_reply(event, actual_paths)
         except Exception as e:
             logger.warning("Auto voice reply failed: %s", e, exc_info=True)
+            return False
         finally:
             for p in ({audio_path, *actual_paths} - {None}):
                 with suppress(OSError):
                     os.unlink(p)
 
-    async def _deliver_voice_reply(self, event: MessageEvent, audio_paths: List[str]) -> None:
-        """Play the files in the connected voice channel, else send them as voice messages."""
+    async def _deliver_voice_reply(self, event: MessageEvent, audio_paths: List[str]) -> bool:
+        """Play the files in the connected voice channel, else send them as voice messages.
+        Returns whether at least one attachment was ACCEPTED by the platform: a refused upload
+        left the chat without its voice half even though the file existed locally (#128151)."""
         adapter = self._delivery_adapter_for(event.source)
         guild_id = self._get_guild_id(event)
         play = getattr(adapter, "play_in_voice_channel", None)
@@ -384,14 +409,21 @@ class GatewayVoiceMixin:
         if guild_id and callable(play) and callable(is_in_vc) and is_in_vc(guild_id):
             for path in audio_paths:
                 await play(guild_id, path)
-            return
+            return True
         if not callable(send_voice := getattr(adapter, "send_voice", None)):
-            return
+            return False
         reply_anchor = self._reply_anchor_for_event(event)
         # notify=True mirrors the final-text path in platforms/base.py so notification-gating
         # adapters (Telegram "important" mode) deliver it. Clone: shared w/ typing-indicator state.
         thread_meta = dict(self._thread_metadata_for_source(event.source, reply_anchor) or {})
         thread_meta["notify"] = True
+        accepted = False
         for path in audio_paths:
-            await send_voice(chat_id=event.source.chat_id, audio_path=path, reply_to=reply_anchor,
-                             metadata=thread_meta)
+            result = await send_voice(chat_id=event.source.chat_id, audio_path=path,
+                                      reply_to=reply_anchor, metadata=thread_meta)
+            # Default True: adapters that return no verdict are not asserting a refusal.
+            if getattr(result, "success", True):
+                accepted = True
+            else:
+                logger.warning("Auto voice reply upload refused: %s", getattr(result, "error", result))
+        return accepted

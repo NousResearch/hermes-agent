@@ -1930,10 +1930,14 @@ class GatewayTurnMixin:
         _streaming_tts_done = adapter is not None and bool(
             getattr(adapter, "_streaming_tts_turn_completed", lambda *_a, **_k: False)(session_key, run_generation)
         )
+        # In exact ``all`` mode the text half is gated on the voice half: an unsent reply is the
+        # recoverable outcome, an unpaired one is not (#128151).
+        _voice_obliged = not _streaming_tts_done and self._is_required_composite_delivery(event)
+        _voice_delivered = True
         if not _streaming_tts_done and self._should_send_voice_reply(
             event, response, agent_messages, already_sent=bool(agent_result.get("already_sent")),
         ):
-            await self._send_voice_reply(event, response)
+            _voice_delivered = await self._send_voice_reply(event, response)
 
         # Streamed responses still need MEDIA: files delivered (chunks carry the tags verbatim). Never
         # skip when the agent failed: the error text is new content streaming didn't show.
@@ -1952,6 +1956,13 @@ class GatewayTurnMixin:
             # /loop and /goal hooks that read the return value.
             with suppress(Exception):
                 event._streamed_final_response = str(response or "")
+            return None
+
+        if _voice_obliged and not _voice_delivered:
+            logger.warning(
+                "Releasing no text: /voice all requires paired TTS and the voice half was not "
+                "delivered (chat=%s platform=%s session=%s)",
+                source.chat_id, source.platform.value, session_entry.session_id)
             return None
 
         return response

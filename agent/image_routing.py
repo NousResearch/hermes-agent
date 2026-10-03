@@ -425,16 +425,24 @@ def _sniff_mime_from_bytes(raw: bytes) -> Optional[str]:
 
 
 # Formats every major vision provider accepts natively. Anything else is transcoded
-# to PNG before declaring media_type or the provider returns HTTP 400 and the turn
+# (PNG, or JPEG for lossy photos) before declaring media_type or the provider returns HTTP 400 and the turn
 # fails; chat platforms freely accept AVIF (Chromium screenshots), HEIC (iPhone),
 # TIFF, BMP and ICO. SVG is vector — Pillow cannot rasterize it — so it is skipped.
 _UNIVERSALLY_SUPPORTED_MIMES = frozenset({"image/png", "image/jpeg", "image/gif", "image/webp"})
 
 
-def _transcode_to_png(raw: bytes) -> Optional[bytes]:
-    """Decode with Pillow and re-encode as PNG; None when impossible. HEIC/HEIF and
-    AVIF need optional Pillow plugins, registered on demand; a missing plugin just
-    looks like "can't decode" so the caller skips the image and the turn proceeds."""
+# Lossy camera formats: re-encoding them losslessly buys no quality, only bytes. A 24MP
+# iPhone HEIC of ~2.5 MB becomes a ~22 MB PNG (~30 MB as base64), enough to 413 a request
+# on its own; as JPEG it stays within a few MB. Alpha forces PNG so transparency survives.
+_LOSSY_PHOTO_MIMES = frozenset({"image/heic", "image/heif", "image/avif"})
+
+
+def _transcode_for_provider(raw: bytes, source_mime: str = "") -> Optional[Tuple[bytes, str]]:
+    """Decode with Pillow and re-encode for the provider: ``(bytes, mime)``, None when
+    impossible. PNG by default; JPEG for opaque lossy camera formats (see
+    ``_LOSSY_PHOTO_MIMES``). HEIC/HEIF and AVIF need optional Pillow plugins, registered
+    on demand; a missing plugin just looks like "can't decode" so the caller skips the
+    image and the turn proceeds."""
     try:
         from PIL import Image
     except ImportError:
@@ -452,14 +460,17 @@ def _transcode_to_png(raw: bytes) -> Optional[bytes]:
         import pillow_avif  # type: ignore  # noqa: F401  -- registers AVIF on import
     try:
         with Image.open(BytesIO(raw)) as im:
+            buf = BytesIO()
+            if source_mime in _LOSSY_PHOTO_MIMES and "A" not in im.getbands() and "transparency" not in im.info:
+                im.convert("RGB").save(buf, format="JPEG", quality=90)
+                return buf.getvalue(), "image/jpeg"
             # Normalise exotic modes to RGBA so PNG can serialise and transparency survives.
             if im.mode not in {"RGB", "RGBA", "L", "LA", "P"}:
                 im = im.convert("RGBA")
-            buf = BytesIO()
             im.save(buf, format="PNG", optimize=False)
-            return buf.getvalue()
+            return buf.getvalue(), "image/png"
     except Exception as exc:
-        logger.info("image_routing: Pillow could not transcode image to PNG -- %s", exc)
+        logger.info("image_routing: Pillow could not transcode image -- %s", exc)
         return None
 
 
@@ -515,14 +526,14 @@ def _file_to_data_url(path: Path) -> Optional[str]:
         return None
     mime = _guess_mime(path, raw=raw)
     if mime not in _accepted_mimes():
-        if (transcoded := _transcode_to_png(raw)) is None:
+        if (transcoded := _transcode_for_provider(raw, mime)) is None:
             logger.warning(
                 "image_routing: %s is %s which is not accepted by the active provider "
-                "and could not be transcoded to PNG; skipping this attachment.", path, mime,
+                "and could not be transcoded; skipping this attachment.", path, mime,
             )
             return None
-        logger.info("image_routing: transcoded %s (%s) -> image/png for provider compatibility", path.name, mime)
-        raw, mime = transcoded, "image/png"
+        source_mime, (raw, mime) = mime, transcoded
+        logger.info("image_routing: transcoded %s (%s) -> %s for provider compatibility", path.name, source_mime, mime)
     return f"data:{mime};base64,{base64.b64encode(raw).decode('ascii')}"
 
 

@@ -1,7 +1,7 @@
 """Discord onboarding: check a bot token against Discord and walk the user through setup.
 
 The Developer Portal is where Discord setup goes wrong: a token copied from the wrong page, the
-Message Content Intent left off (the bot connects and sees empty messages), an invite URL built
+Message Content Intent left off (Discord then refuses the bot's connection), an invite URL built
 by hand, and Developer Mode just to learn your own user ID. ``GET /applications/@me`` with the
 bot token answers all of it at once — the token works, which intents are on, how many servers the
 bot is in, and who owns the application — so the CLI wizard and the dashboard/Desktop check route
@@ -137,13 +137,18 @@ def _prompt_checked_token(prompt) -> tuple[str, Optional[DiscordBotCheck]]:
     """A token Discord accepted (with its check), an unverifiable one (offline: ``None`` check),
     or ``("", None)`` when the user gave up."""
     from hermes_cli.cli_output import print_error, print_success, print_warning
+    from hermes_cli.config import _check_non_ascii_credential
     from tools.discord_tool import DiscordAPIError
     for _attempt in range(3):
-        token = _prompt_discord_bot_token(prompt).strip()
+        # Same stripping save_env_value applies, done first: a non-ASCII paste can't go in an HTTP header.
+        token = _check_non_ascii_credential("DISCORD_BOT_TOKEN", _prompt_discord_bot_token(prompt)).strip()
         if not token:
             return "", None
         try:
             check = check_bot_token(token)
+        except ValueError:  # whitespace/control characters inside the paste: not a header-safe token
+            print_error("That isn't a bot token (it contains a line break). Copy it again from the Bot page.")
+            continue
         except DiscordAPIError as exc:
             if exc.status == 401:
                 print_error("Discord rejected that token. On the Bot page click Reset Token, "
@@ -166,7 +171,7 @@ def _ensure_message_content_intent(token: str, check: DiscordBotCheck, prompt) -
     for _attempt in range(5):
         if check.message_content:
             break
-        print_warning("Message Content Intent is OFF: the bot would receive every message with the text blank.")
+        print_warning("Message Content Intent is OFF: Discord will refuse the bot's connection until it's on.")
         print_info(f"   Turn it on here: {check.bot_settings_url}")
         print_info("   (Privileged Gateway Intents → Message Content Intent → Save Changes)")
         if prompt("Press Enter once it's saved to re-check, or type 'skip'").strip().lower() == "skip":
@@ -196,16 +201,19 @@ def _print_invite(check: DiscordBotCheck) -> None:
 
 def _prompt_allowlist(check: Optional[DiscordBotCheck], prompt, prompt_yes_no) -> None:
     from hermes_cli.cli_output import print_info, print_success
-    from hermes_cli.config import save_env_value
+    from hermes_cli.config import get_env_value, save_env_value
     print()
     print_info("🔒 Security: only allowlisted Discord users can talk to your bot.")
-    allowed: list = []
-    if check and check.owners:
+    # Reconfiguring keeps whoever is already allowed; the wizard only adds.
+    allowed = _clean_discord_user_ids(get_env_value("DISCORD_ALLOWED_USERS") or "")
+    if allowed:
+        print_info(f"   Already allowed: {', '.join(allowed)}")
+    if check and check.owners and not all(uid in allowed for uid, _name in check.owners):
         who = ", ".join(f"@{name}" for _uid, name in check.owners)
         question = (f"Allow yourself ({who}) to talk to the bot?" if len(check.owners) == 1
                     else f"Allow your team ({who}) to talk to the bot?")
         if prompt_yes_no(question, True):
-            allowed = [uid for uid, _name in check.owners]
+            allowed += [uid for uid, _name in check.owners if uid not in allowed]
     print_info("   Others need their Discord user ID: Settings → Advanced → Developer Mode,")
     print_info("   then right-click their name → Copy User ID. Usernames work too.")
     raw = prompt("Other allowed users (comma-separated, Enter to skip)" if allowed
@@ -267,7 +275,7 @@ def interactive_setup() -> None:
     print_success("Discord token saved")
     if check is None:
         print_info("Make sure Message Content Intent is on (Bot page → Privileged Gateway Intents), "
-                   "or the bot will see blank messages.")
+                   "or Discord will refuse the bot's connection.")
     else:
         check = _ensure_message_content_intent(token, check, prompt)
         _print_invite(check)

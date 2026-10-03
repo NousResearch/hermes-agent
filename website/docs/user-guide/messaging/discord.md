@@ -136,7 +136,7 @@ If you prefer to keep your bot private (Public Bot = OFF), you **must** use the 
 
 ## Step 3: Enable Privileged Gateway Intents
 
-This is the most critical step in the entire setup. Without the correct intents enabled, your bot will connect to Discord but **will not be able to read message content**.
+This is the most critical step in the entire setup. Hermes always asks Discord for message content, so if **Message Content Intent** is off, Discord **refuses the bot's connection** and the bot never comes online.
 
 On the **Bot** page, scroll down to **Privileged Gateway Intents**. You'll see three toggles:
 
@@ -148,11 +148,11 @@ On the **Bot** page, scroll down to **Privileged Gateway Intents**. You'll see t
 
 **Enable both Server Members Intent and Message Content Intent** by toggling them **ON**.
 
-- Without **Message Content Intent**, your bot receives message events but the message text is empty — the bot literally cannot see what you typed.
+- Without **Message Content Intent**, Discord rejects the connection; `gateway.log` shows "Discord rejected the connection because privileged Gateway Intents are not enabled".
 - Without **Server Members Intent**, the bot cannot resolve usernames for the allowed users list and may fail to identify who is messaging it.
 
 :::warning[This is the #1 reason Discord bots don't work]
-If your bot is online but never responds to messages, the **Message Content Intent** is almost certainly disabled. Go back to the [Developer Portal](https://discord.com/developers/applications), select your application → Bot → Privileged Gateway Intents, and make sure **Message Content Intent** is toggled ON. Click **Save Changes**.
+If your bot stays offline and `gateway.log` mentions privileged Gateway Intents, the **Message Content Intent** is disabled. Go back to the [Developer Portal](https://discord.com/developers/applications), select your application → Bot → Privileged Gateway Intents, and make sure **Message Content Intent** is toggled ON. Click **Save Changes**.
 :::
 
 **Regarding server count:**
@@ -863,7 +863,7 @@ Refreshing the directory (`/channels refresh` on platforms that expose it, or a 
 
 ### Bot is online but not responding to messages
 
-**Cause**: Either Message Content Intent is disabled, or Discord auth is failing closed because no access policy is configured.
+**Cause**: Usually Discord auth is failing closed because no access policy is configured. (A disabled Message Content Intent keeps the bot offline instead; see Step 3.)
 
 **Fix**:
 

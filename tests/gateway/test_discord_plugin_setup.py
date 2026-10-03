@@ -20,11 +20,17 @@ def _offline(_token):
     raise OSError("offline")
 
 
-def _patch_setup_io(monkeypatch, prompts, saved, removed, existing, infos=None, yes=False, check=_offline):
+def _patch_setup_io(monkeypatch, prompts, saved, removed, existing, infos=None, yes=False, check=_offline,
+                    writes=None):
     prompt_iter = iter(prompts)
     monkeypatch.setattr(onboarding, "check_bot_token", check)
     monkeypatch.setattr(config_mod, "get_env_value", lambda key: existing.get(key, ""))
-    monkeypatch.setattr(config_mod, "save_env_value", lambda k, v: saved.update({k: v}))
+    def _save(key, value):
+        if writes is not None:
+            writes.append((key, value))
+        saved[key] = value
+
+    monkeypatch.setattr(config_mod, "save_env_value", _save)
 
     def _remove(key):
         removed.append(key)
@@ -44,9 +50,9 @@ def _patch_setup_io(monkeypatch, prompts, saved, removed, existing, infos=None, 
 
 
 # Discord prompts: bot_token (password), allowed_users, home_channel.
-_PROMPTS_NONEMPTY = ["«redacted:discord-bot-token»", "", "123456789012345678"]
-_PROMPTS_BLANK = ["«redacted:discord-bot-token»", "", ""]
-_PROMPTS_WHITESPACE = ["«redacted:discord-bot-token»", "", "   "]
+_PROMPTS_NONEMPTY = ["fake-bot-token.part2.part3", "", "123456789012345678"]
+_PROMPTS_BLANK = ["fake-bot-token.part2.part3", "", ""]
+_PROMPTS_WHITESPACE = ["fake-bot-token.part2.part3", "", "   "]
 
 
 class TestDiscordHomeChannelClear:
@@ -68,24 +74,26 @@ class TestDiscordHomeChannelClear:
 
 
 class TestDiscordTokenCheckedWithDiscord:
-    """The wizard asks Discord about the pasted token: a rejected token is never saved, and an
-    accepted one yields the invite link and an allowlist seeded with the bot's owner."""
+    """The wizard asks Discord about the pasted token: a rejected token is never written, and an
+    accepted one yields the invite link and adds the bot's owner to whoever is already allowed."""
 
-    def test_rejected_token_reprompts_and_owner_is_allowlisted(self, monkeypatch, tmp_path):
+    def test_rejected_token_never_written_and_owner_added_to_allowlist(self, monkeypatch, tmp_path):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         standin = DiscordStandin().start()
         try:
             monkeypatch.setattr(discord_tool, "DISCORD_API_BASE", standin.api_base)
-            saved, removed, infos, errors = {}, [], [], []
-            _patch_setup_io(monkeypatch, ["not.the.token", TOKEN, "", ""], saved, removed,
-                            existing={}, infos=infos, yes=True, check=_real_check)
+            saved, removed, infos, errors, writes = {}, [], [], [], []
+            # A rejected token, then the real one pasted with rich-text curly quotes around it.
+            prompts = ["not.the.token", f"\u201c{TOKEN}\u201d", "", ""]
+            _patch_setup_io(monkeypatch, prompts, saved, removed, existing={"DISCORD_ALLOWED_USERS": "999"},
+                            infos=infos, yes=True, check=_real_check, writes=writes)
             monkeypatch.setattr(cli_output_mod, "print_error", lambda *a, **_kw: errors.append(" ".join(map(str, a))))
             interactive_setup()
         finally:
             standin.stop()
-        assert saved["DISCORD_BOT_TOKEN"] == TOKEN
         assert any("rejected" in e for e in errors)
-        assert saved["DISCORD_ALLOWED_USERS"] == "1"  # the stand-in application's owner
+        assert [v for k, v in writes if k == "DISCORD_BOT_TOKEN"] == [TOKEN]
+        assert saved["DISCORD_ALLOWED_USERS"] == "999,1"  # existing entry kept, stand-in owner added
         invite = next(line.strip() for line in infos if "oauth2/authorize" in line)
         assert f"client_id={APP_ID}" in invite and f"permissions={onboarding.INVITE_PERMISSIONS}" in invite
 
@@ -97,7 +105,7 @@ class TestDiscordTokenShapeGuard:
     def test_numeric_app_id_reprompts_then_accepts_real_token(self, monkeypatch, tmp_path):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         saved, removed, errors = {}, [], []
-        real_token = "«redacted»." + "part2.part3"
+        real_token = "fake-bot-token." + "part2.part3"
         _patch_setup_io(
             monkeypatch,
             ["1234567890123456789", real_token, "", ""],

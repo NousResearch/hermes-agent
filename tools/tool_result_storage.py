@@ -290,6 +290,45 @@ def extract_persisted_path(content: str) -> str | None:
     return match.group(1).strip() if match else None
 
 
+def _preview_with_metadata(content: str, max_chars: int) -> tuple[str, bool]:
+    """Preview that keeps the result's metadata visible.
+
+    A terminal-style result serializes ``{"output": ..., "exit_code": ...}`` with the bulky
+    ``output`` first, so a head-only preview is nothing but the start of ``output`` and the
+    model loses ``exit_code`` / ``error`` / ``hint`` entirely — it cannot tell whether the
+    command failed. When the result parses as a JSON object, emit the metadata first, then
+    the head *and* the tail of the largest string field (the tail is usually where the
+    error is). Anything else previews exactly as before.
+    """
+    try:
+        payload = json.loads(content)
+    except (TypeError, ValueError):
+        return generate_preview(content, max_chars=max_chars)
+    if not isinstance(payload, dict) or not payload:
+        return generate_preview(content, max_chars=max_chars)
+    big_key = max(payload,
+                  key=lambda k: len(payload[k]) if isinstance(payload[k], str) else 0)
+    big_val = payload[big_key]
+    if not isinstance(big_val, str) or len(big_val) <= max_chars:
+        return generate_preview(content, max_chars=max_chars)
+    extras = {k: v for k, v in payload.items() if k != big_key}
+    try:
+        metadata = json.dumps(extras, ensure_ascii=False, indent=1, sort_keys=True, default=str)
+    except (TypeError, ValueError):
+        return generate_preview(content, max_chars=max_chars)
+    meta_budget = min(len(metadata), max(1, max_chars // 2))
+    meta_block = metadata[:meta_budget]
+    if len(metadata) > meta_budget:
+        meta_block += "\n...[metadata truncated]"
+    labels = len(big_key) * 2 + 40
+    chunk = max(0, (max_chars - len(meta_block) - labels) // 2)
+    head = big_val[:chunk]
+    tail = big_val[len(big_val) - chunk:] if chunk else ""
+    has_more = (len(head) + len(tail)) < len(big_val)
+    preview = (f"{meta_block}\n\n{big_key} (head):\n{head}\n\n{big_key} (tail):\n{tail}")
+    return preview, has_more
+
+
 def maybe_persist_tool_result(content: str, tool_name: str, tool_use_id: str, env=None,
                               config: BudgetConfig = DEFAULT_BUDGET,
                               threshold: int | float | None = None) -> str:
@@ -304,7 +343,7 @@ def maybe_persist_tool_result(content: str, tool_name: str, tool_use_id: str, en
     # and the preview carry the pageable text inside an MCP envelope (#90426).
     persisted_content = _pageable_text(content)
     filename = _safe_result_filename(tool_use_id)
-    preview, has_more = generate_preview(persisted_content, max_chars=config.preview_size)
+    preview, has_more = _preview_with_metadata(persisted_content, max_chars=config.preview_size)
 
     def _persisted(path: str, host_suffix: str = "") -> str:
         logger.info("Persisted large tool result: %s (%s, %d chars -> %s%s)",

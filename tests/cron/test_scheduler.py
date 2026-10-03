@@ -1619,6 +1619,32 @@ class TestBuildJobPromptSkillIndex:
         assert 'skill_view(name="large-skill")' in result
         assert "A very large skill body" not in result
 
+    def test_deferred_skill_config_is_injected(self):
+        def _skill_view(name: str) -> str:
+            return json.dumps({
+                "success": True,
+                "description": "Uses configured data.",
+                "metadata": {
+                    "hermes": {
+                        "config": [{
+                            "key": "cron_config.data_dir",
+                            "description": "Directory used by the cron skill",
+                        }],
+                    },
+                },
+                "content": "The full body stays deferred.",
+            })
+
+        with patch("tools.skills_tool.skill_view", side_effect=_skill_view), \
+             patch("agent.skill_utils._load_raw_config", return_value={
+                 "skills": {"config": {"cron_config": {"data_dir": "/tmp/cron-data"}}}
+             }):
+            result = _build_job_prompt({"skills": ["cron-config"], "prompt": "run"})
+
+        assert "[Skill config (from" in result
+        assert "cron_config.data_dir = /tmp/cron-data" in result
+        assert "The full body stays deferred." not in result
+
 
 class TestBuildJobPromptAbsoluteSkillPath:
     """Cron jobs may store absolute skill paths; normalize before skill_view."""

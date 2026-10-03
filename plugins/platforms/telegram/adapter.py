@@ -6267,8 +6267,18 @@ class TelegramAdapter(BasePlatformAdapter):
         return dataclasses.replace(source, user_id=None, user_name=None, user_id_alt=None)
 
     def _telegram_group_observe_attributed_text(self, event: MessageEvent) -> str:
+        # Local import: don't force gateway.session at module load (mirrors slack adapter).
+        from gateway.session import neutralize_untrusted_inline_text
+
         user_id = event.source.user_id or "unknown"
-        return f"[{event.source.user_name or user_id}|{user_id}]\n{event.text or ''}"
+        # Display names are attacker-influenceable (anyone can set theirs on Telegram):
+        # neutralize newlines/control chars and strip the bracket delimiter so a hostile
+        # name can neither close this attribution early nor forge bracketed structure
+        # inside gateway-built context (same delimiter class as #127053; the shared
+        # [Name] prefix path is fixed separately in #127066, this one never used it).
+        safe_name = neutralize_untrusted_inline_text(event.source.user_name or user_id)
+        safe_name = "".join(ch for ch in safe_name if ch not in "[]")
+        return f"[{safe_name}|{user_id}]\n{event.text or ''}"
 
     def _telegram_group_observe_channel_prompt(self) -> str:
         username = self._current_bot_username() or "unknown"

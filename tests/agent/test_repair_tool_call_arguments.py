@@ -24,28 +24,14 @@ class TestRepairToolCallArguments:
 
     # -- Stage 1.5: missing commas (#122711) --
 
-    def test_missing_comma_between_members(self):
-        # The reported class: a dropped separator between object members. The strict
-        # parser reports "Expecting ',' delimiter" at the position AFTER the previous
-        # value ends; insertion is parser-guided, so the comma lands in the right spot.
-        result = _repair_tool_call_arguments(
-            '{"date": "2026-09-25" "summary": "alle 10:30"}', "t")
-        assert json.loads(result) == {"date": "2026-09-25", "summary": "alle 10:30"}
-
-    def test_missing_comma_multiple_and_non_ascii(self):
-        result = _repair_tool_call_arguments(
-            '{"a": "à" "b": "è" "c": 1}', "t")
-        assert json.loads(result) == {"a": "à", "b": "è", "c": 1}
-
-    def test_missing_comma_between_array_elements(self):
-        result = _repair_tool_call_arguments('{"items": ["a" "b"]}', "t")
-        assert json.loads(result) == {"items": ["a", "b"]}
-
-    def test_missing_comma_inside_truncated_text(self):
-        # A dropped comma AND truncation together: closer-rebalancing closes the
-        # structure, then comma insertion retries on the closed text.
-        result = _repair_tool_call_arguments('{"a": 1 "b": 2', "t")
-        assert json.loads(result) == {"a": 1, "b": 2}
+    def test_missing_comma_repair_handles_nested_values_and_truncation(self):
+        cases = (
+            ('{"a": "à" "b": "è" "c": 1}', {"a": "à", "b": "è", "c": 1}),
+            ('{"items": ["a" "b"]}', {"items": ["a", "b"]}),
+            ('{"a": 1 "b": 2', {"a": 1, "b": 2}),
+        )
+        for broken, expected in cases:
+            assert json.loads(_repair_tool_call_arguments(broken, "t")) == expected
 
     def test_trailing_comma_in_array(self):
         result = _repair_tool_call_arguments('{"a": [1, 2,]}', "t")
@@ -117,5 +103,4 @@ class TestRepairToolCallArguments:
 
 
     # -- Stage 4: control-char escape fallback --
-
 

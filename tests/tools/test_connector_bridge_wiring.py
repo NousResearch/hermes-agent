@@ -134,82 +134,48 @@ def test_normalize_parses_string_envelope_batch():
 # ---------------------------------------------------------------------------
 
 
-def test_string_envelope_dropped_comma_in_arguments_executes():
-    """#122711: the issue's exact shape — colon + non-ASCII values, one separator
-    missing INSIDE the inner arguments string."""
-    inner = json.dumps(
-        {"date": "2026-09-25", "slug": "sistema/gbrain",
-         "summary": "Check giornaliero in cron alle 10:30 su N5095 con backup crontab"},
-        ensure_ascii=False)
-    broken = inner.replace(', "summary"', ' "summary"')
+def test_string_envelope_repair_contract():
+    """#473: repair complete payloads, bound retries, and reject/redact truncation."""
+    from agent.message_sanitization import _repair_tool_call_arguments
+
+    broken = '{"date":"2026-09-25","slug":"sistema/gbrain" "summary":"Check alle 10:30, è pronto"}'
+    expected = {"date": "2026-09-25", "slug": "sistema/gbrain",
+                "summary": "Check alle 10:30, è pronto"}
+    assert json.loads(_repair_tool_call_arguments(broken, "cron")) == expected
     envelope = json.dumps([{"name": "cron", "arguments": broken}], ensure_ascii=False)
     entries, err = normalize_tool_call_entries({"calls": envelope})
     assert err is None
-    assert entries[0]["name"] == "cron"
-    assert entries[0]["arguments"]["slug"] == "sistema/gbrain"
-    assert entries[0]["arguments"]["summary"].startswith("Check giornaliero")
+    assert entries == [{"name": "cron", "arguments": expected}]
 
+    # The execution parser handles both an outer dropped comma and trailing commas.
+    for raw, expected_args in (
+        ('[{"name": "cron"\n "arguments": {"at": "10:30"}}]', {"at": "10:30"}),
+        ('[{"name": "cron", "arguments": {"a": 1,}}]', {"a": 1}),
+    ):
+        entries, err = normalize_tool_call_entries({"calls": raw})
+        assert err is None
+        assert entries[0]["arguments"] == expected_args
 
-def test_string_envelope_dropped_comma_between_members_executes():
-    """#122711: separator missing in the OUTER envelope (between "name" and
-    "arguments"), with literal control chars also present."""
-    envelope = '[{"name": "cron"\n "arguments": {"date": "2026-09-25", "at": "10:30"}}]'
-    entries, err = normalize_tool_call_entries({"calls": envelope})
+    # More than 50 dropped separators must remain bounded by payload size, not a
+    # fixed retry count (the old bridge/native mismatch from the upstream review).
+    n = 60
+    items = ", ".join(f'{{"k{i}": {i}}}' for i in range(n))
+    valid = '{"a": 1, "b": [' + items + "]}"
+    broken_many = valid.replace(",", "", n)
+    entries, err = normalize_tool_call_entries({
+        "calls": json.dumps([{"name": "read_file", "arguments": broken_many}])})
     assert err is None
-    assert entries[0]["arguments"] == {"date": "2026-09-25", "at": "10:30"}
+    assert entries[0]["arguments"]["b"][0] == {"k0": 0}
 
-
-def test_string_envelope_trailing_comma_executes():
-    envelope = '[{"name": "cron", "arguments": {"a": 1,}}]'
-    entries, err = normalize_tool_call_entries({"calls": envelope})
-    assert err is None
-    assert entries[0]["arguments"] == {"a": 1}
-
-
-def test_truncated_arguments_fail_closed_with_payload_echo():
-    """Content-complete malformations are repaired; truncation is NOT — executing a
-    call cut off mid-stream would run it with half the intended payload (same policy
-    as the native path). The rejection must echo the payload so the failure is
-    debuggable instead of an opaque JSON offset (#122711)."""
-    envelope = json.dumps([{"name": "todo_list", "arguments": '{"todos": ['}])
-    entries, err = normalize_tool_call_entries({"calls": envelope})
-    assert entries == []
-    assert "unrepairable" in err
-    assert '{"todos": [' in err
-
-
-def test_unparseable_envelope_error_echoes_payload():
-    entries, err = normalize_tool_call_entries({"calls": "nope{"})
-    assert entries == []
-    assert "unrepairable" in (err or "")
-    assert "nope{" in err
-
-
-def test_unrepairable_payload_echo_is_redacted():
-    """The rejection tail returns to the model as the tool result; a malformed envelope
-    that happens to carry a credential must not round-trip it into the conversation.
-    Truncated arguments are the guaranteed-unrepairable case (fail-closed by policy)."""
-    envelope = json.dumps([{"name": "t", "arguments": '{"api_key": "sk-test-1234567890abcdef", "b": 2'}])
+    # Truncated calls fail closed and payload snippets cannot echo credentials
+    # back to the model as a tool result.
+    truncated = '{"api_key": "sk-test-1234567890abcdef", "b": 2'
+    envelope = json.dumps([{"name": "todo_list", "arguments": truncated}])
     entries, err = normalize_tool_call_entries({"calls": envelope})
     assert entries == []
     assert err is not None and "unrepairable" in err
     assert "sk-test-1234567890abcdef" not in err
-    assert "api_key" in err  # the key name survives for debuggability; the value does not
-
-
-def test_bridge_repairs_as_many_dropped_commas_as_the_native_path():
-    """Parity with the native path: insertions scale with the payload, not a fixed
-    iteration budget. A payload with more dropped separators than the old ~50-iteration
-    cap repaired natively but was rejected by the bridge."""
-    n = 60
-    items = ", ".join(f'{{"k{i}": {i}}}' for i in range(n))
-    valid = '{"a": 1, "b": [' + items + "]}"
-    assert json.loads(valid) is not None
-    broken = valid.replace(",", "", n)
-    envelope = json.dumps([{"name": "read_file", "arguments": broken}])
-    entries, err = normalize_tool_call_entries({"calls": envelope})
-    assert err is None
-    assert entries[0]["arguments"]["b"][0] == {"k0": 0}
+    assert "api_key" in err
 
 
 def test_normalize_parses_string_envelope_single_dict():

@@ -1195,6 +1195,24 @@
       }
     },
     {
+      "name": "groups.custody.automatic",
+      "summary": "On the host: the room owner (or the operator) lets the group move by itself, or asks first.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/GroupsCustodyAutomaticParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/GroupsCustodyAutomaticResult"
+        }
+      }
+    },
+    {
       "name": "groups.custody.designate",
       "summary": "The room owner designates (or not) one custodian to continue the group; its operator must allow it.",
       "params": [
@@ -12110,6 +12128,19 @@
             ],
             "default": null,
             "title": "Owner Name"
+          },
+          "automatic": {
+            "default": true,
+            "title": "Automatic",
+            "type": "boolean"
+          },
+          "voters": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Voters",
+            "type": "array"
           }
         },
         "required": [
@@ -12151,6 +12182,14 @@
             "title": "Successor",
             "type": "boolean"
           },
+          "always_on": {
+            "title": "Always On",
+            "type": "boolean"
+          },
+          "voter": {
+            "title": "Voter",
+            "type": "boolean"
+          },
           "name": {
             "anyOf": [
               {
@@ -12180,7 +12219,9 @@
           "install_id",
           "public_key",
           "role",
-          "successor"
+          "successor",
+          "always_on",
+          "voter"
         ],
         "title": "CustodyCustodian",
         "type": "object"
@@ -12264,6 +12305,14 @@
             "title": "Opted Out",
             "type": "boolean"
           },
+          "voter": {
+            "title": "Voter",
+            "type": "boolean"
+          },
+          "always_on": {
+            "title": "Always On",
+            "type": "boolean"
+          },
           "watermark": {
             "anyOf": [
               {
@@ -12287,6 +12336,18 @@
             "default": null,
             "title": "Acknowledged At"
           },
+          "last_seen": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Last Seen"
+          },
           "divergent": {
             "title": "Divergent",
             "type": "boolean"
@@ -12297,6 +12358,8 @@
           "state",
           "successor",
           "opted_out",
+          "voter",
+          "always_on",
           "divergent"
         ],
         "title": "CustodyCustodianStatus",
@@ -12340,6 +12403,26 @@
           "signature"
         ],
         "title": "CustodyHead",
+        "type": "object"
+      },
+      "CustodyWaiting": {
+        "additionalProperties": false,
+        "description": "A task held back until a majority of voters stores its ``task.admitted``.",
+        "properties": {
+          "task_id": {
+            "title": "Task Id",
+            "type": "string"
+          },
+          "seq": {
+            "title": "Seq",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "task_id",
+          "seq"
+        ],
+        "title": "CustodyWaiting",
         "type": "object"
       },
       "CustodyWatermark": {
@@ -14017,6 +14100,50 @@
         "title": "GatewayReadyPayload",
         "type": "object"
       },
+      "GatewayRoomIdentity": {
+        "additionalProperties": false,
+        "description": "How this installation shows up in other installations' Group Chats.",
+        "properties": {
+          "install_id": {
+            "title": "Install Id",
+            "type": "string"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Name"
+          },
+          "operator_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Operator Name"
+          },
+          "always_on": {
+            "title": "Always On",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "install_id",
+          "always_on"
+        ],
+        "title": "GatewayRoomIdentity",
+        "type": "object"
+      },
       "GoalContractSnapshot": {
         "additionalProperties": false,
         "description": "``hermes_cli/goals.py::GoalContract.to_dict``.",
@@ -14715,6 +14842,17 @@
           "max_log_limit": {
             "title": "Max Log Limit",
             "type": "integer"
+          },
+          "room_identity": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/GatewayRoomIdentity"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
           }
         },
         "required": [
@@ -14908,6 +15046,66 @@
         "title": "GroupsCustodyAllowResult",
         "type": "object"
       },
+      "GroupsCustodyAutomaticParams": {
+        "additionalProperties": false,
+        "properties": {
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "room_id": {
+            "title": "Room Id",
+            "type": "string"
+          },
+          "enabled": {
+            "title": "Enabled",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "room_id",
+          "enabled"
+        ],
+        "title": "GroupsCustodyAutomaticParams",
+        "type": "object"
+      },
+      "GroupsCustodyAutomaticResult": {
+        "additionalProperties": false,
+        "properties": {
+          "room_id": {
+            "title": "Room Id",
+            "type": "string"
+          },
+          "automatic": {
+            "title": "Automatic",
+            "type": "boolean"
+          },
+          "configuration_seq": {
+            "title": "Configuration Seq",
+            "type": "integer"
+          },
+          "pending": {
+            "title": "Pending",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "room_id",
+          "automatic",
+          "configuration_seq",
+          "pending"
+        ],
+        "title": "GroupsCustodyAutomaticResult",
+        "type": "object"
+      },
       "GroupsCustodyChangeResult": {
         "additionalProperties": false,
         "properties": {
@@ -15076,6 +15274,46 @@
             "title": "At Risk After Seq",
             "type": "integer"
           },
+          "protected_seq": {
+            "title": "Protected Seq",
+            "type": "integer"
+          },
+          "automatic": {
+            "title": "Automatic",
+            "type": "boolean"
+          },
+          "voters": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Voters",
+            "type": "array"
+          },
+          "voter_sets": {
+            "items": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "title": "Voter Sets",
+            "type": "array"
+          },
+          "mode": {
+            "title": "Mode",
+            "type": "string"
+          },
+          "waiting_for_copies": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CustodyWaiting"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
           "configuration_seq": {
             "title": "Configuration Seq",
             "type": "integer"
@@ -15111,6 +15349,11 @@
           "role",
           "custodians",
           "at_risk_after_seq",
+          "protected_seq",
+          "automatic",
+          "voters",
+          "voter_sets",
+          "mode",
           "configuration_seq",
           "configuration"
         ],
@@ -16619,6 +16862,18 @@
             "default": true,
             "title": "Driver Started",
             "type": "boolean"
+          },
+          "protected": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Protected"
           }
         },
         "required": [

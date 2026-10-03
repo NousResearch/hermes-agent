@@ -30,6 +30,8 @@ GROUP_METHODS = {
     'groups.custody.add': 'session:control',
     'groups.custody.remove': 'session:control',
     'groups.custody.allow': 'session:operator',
+    # The room's owner, or this installation's operator: checked inside (4001 not_owner).
+    'groups.custody.automatic': 'session:control',
     'groups.peer.register': 'session:control',
     'groups.peer.invite': 'session:operator',
     'groups.peer.revoke': 'session:operator',
@@ -66,6 +68,7 @@ _FIELDS = {
     'groups.custody.add': {'room_id', 'target_url', 'catalog', 'grant', 'successor'},
     'groups.custody.remove': {'room_id', 'install_id'},
     'groups.custody.allow': {'room_id', 'successor'},
+    'groups.custody.automatic': {'room_id', 'enabled'},
     'profiles.list': {'include_sessions'},
 }
 
@@ -143,6 +146,12 @@ def _group(authority, actor, home, method, params, *, author=None, remember=None
             db_path, params['room_id']):
         # A copy of another gateway's room: read-only, shown to the operator or the room's recorded owner.
         return replication.read_copy(authority, actor, method, params)
+    if method == 'groups.custody.automatic':
+        # The owner's switch, reachable from the owner's private chat: its own owner check.
+        replication.refuse_shared_chat(actor)
+        if service is None:
+            raise RuntimeStoreError('runtime_coordination_required')
+        return replication.custody_automatic(service, actor, params)
     if getattr(authority, 'hosted_room_service', None) is not None and 'room_id' in params:
         if room_authorizer is None:
             raise RuntimeStoreError('permission_denied')
@@ -178,12 +187,17 @@ def _group(authority, actor, home, method, params, *, author=None, remember=None
 
     def capabilities():
         import time
+        from gateway.hosted_room_custody import local_always_on, local_names
         from gateway.session_group_peers import room_link
+        name, operator_name = local_names()
         return {'protocol_version': rooms.PROTOCOL_VERSION, 'driver': service is not None,
                 'persistent_process': True, 'authority_gateway_id': gateway_id, 'server_time': time.time(),
                 'room_link': room_link(authority),
                 'features': ['room_identity', 'monotonic_log', 'replayable_disband', 'peer_setup_recovery'],
-                'methods': list(GROUP_METHODS), 'max_log_limit': rooms.MAX_LOG_LIMIT}
+                'methods': list(GROUP_METHODS), 'max_log_limit': rooms.MAX_LOG_LIMIT,
+                # Whose computer this is, before anyone adds one of its Bots to a Group Chat.
+                'room_identity': {'install_id': gateway_id, 'name': name, 'operator_name': operator_name,
+                                  'always_on': local_always_on()}}
 
     def listing():
         limit, offset = params.get('limit', rooms.MAX_ROOM_LIST_LIMIT), params.get('offset', 0)
@@ -282,8 +296,12 @@ def _execution_control(service, method, params, *, author=None, remember=None):
         event = service.send(room_id=params.get('room_id'),
                              event_id=user_event_id(params.get('event_id')),
                              payload=params.get('payload'), **({'actor': author} if author else {}))
+        # Majority mode only: stored on a majority of the room's voters, waited for briefly.
+        replication = getattr(service, 'replication', None)
+        protected = replication.protect(params['room_id'], event['seq']) if replication is not None and type(
+            event.get('seq')) is int else None
         return {'event': event, 'client_event_id': params.get('event_id'),
-                'accepted': True, 'driver_started': True}
+                'accepted': True, 'driver_started': True, **({} if protected is None else {'protected': protected})}
 
     def attempt_control():
         if (type(params.get('execution_generation')) is not int

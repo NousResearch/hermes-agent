@@ -244,12 +244,13 @@ async def _handle_room_member_capabilities(
     from gateway.session_peer_output import output_available
     output = output_available(self) if (request.headers.get("Hermes-Room-Features") == "document-output-v1"
                                       and {"status", "stop", "dispatch"} <= set(claims["permissions"])) else None
-    from gateway.hosted_room_custody import local_consent, local_names
+    from gateway.hosted_room_custody import local_always_on, local_consent, local_names
     from gateway.hosted_room_identity import local_public_key
     # The home pins this key at custody enrollment; the reply is authenticated by the pinned grant.
     name, operator_name = local_names()
     room_identity = {"install_id": installation_id, "public_key": local_public_key(), "name": name,
-                     "operator_name": operator_name, "allowed": local_consent(_grant_db(self), claims["room_id"])}
+                     "operator_name": operator_name, "allowed": local_consent(_grant_db(self), claims["room_id"]),
+                     "always_on": local_always_on()}
     return web.json_response({
         **({"document_output": output} if output is not None else {}),
         **({"document_inputs": documents} if documents is not None else {}),

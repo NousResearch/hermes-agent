@@ -136,13 +136,13 @@ def test_custodians_acknowledge_with_watermarks_and_successors_bound_the_tail_at
     assert status["head"]["seq"] == held["seq"]  # the host signs its own head at its latest event
     # Not designated: its copy holds everything, and still nothing is safe from losing this host.
     assert status["at_risk_after_seq"] == 0
-    assert not custody.wait_protected(pair.source, "room", 1, timeout=0)
+    # A laptop never votes: the host alone does, so protection is only its own log (mode ask).
+    assert (status["voters"], status["mode"], status["protected_seq"]) == ([HOME], "ask", held["seq"])
     custody.designate_successor(pair.source, room_id="room", install_id=TARGET, successor=True)
     _configure(pair.source)
     pub._publish_one(KEY)
     latest = rooms.room_state(pair.source, room_id="room")["latest_seq"]
     assert custody.custody_status(pair.source, "room")["at_risk_after_seq"] == latest
-    assert custody.wait_protected(pair.source, "room", latest, timeout=0)
     append(pair.source, "only-here")
     assert custody.custody_status(pair.source, "room")["at_risk_after_seq"] == latest  # the new tail is at risk
     # The custodian holds the configuration and pins every custodian's key from it.
@@ -339,6 +339,18 @@ def test_a_copy_only_grant_is_renewed_through_acknowledgements_past_its_horizon(
     assert renewed_on == [23, 46] and _held_grant(pair) != token
 
 
+def test_a_quiet_group_renews_copy_only_grants_on_its_keepalives(pair, monkeypatch):
+    pub, clock, token = _copy_only_route(pair, monkeypatch)
+    key = ("room", "custody@" + TARGET)
+    pub._publish_one(key)
+    clock[0] += 24 * DAY  # nothing written since, and less than a week of the grant left
+    pub._exchanged[("room", TARGET)] -= publisher.KEEPALIVE_SECONDS
+    sent = len(pair.http.requests)
+    pub._publish_one(key)
+    assert len(pair.http.requests) == sent + 1 and pair.http.requests[-1][1]["page"]["events"] == []
+    assert _held_grant(pair) != token
+
+
 def test_a_refused_copy_only_route_resumes_on_a_renewed_grant_or_a_later_probe(pair, monkeypatch):
     from tui_gateway.hosted_room_peer_http import PeerRunsHTTPClient, PeerRunsHTTPError
     from tests.gateway.fixtures.passive_copy import grant, reserve
@@ -417,8 +429,9 @@ def test_the_new_host_reconfigures_custody_without_losing_a_custodian(pair, monk
         with pytest.raises(custody.CustodyError, match="keeps no copy"):
             custody.reconfigure_after_transition_locked(conn, "room", successor="install:nobody", previous_host=HOME)
         moved = custody.reconfigure_after_transition_locked(conn, "room", successor=TARGET, previous_host=HOME)
+    # The previous host may continue the group again: the owner can move it back.
     assert [(c["install_id"], c["role"], c["successor"]) for c in moved["custodians"]] == [
-        (HOME, "custodian", False), ("install:other", "custodian", False), (TARGET, "authority", False)]
+        (HOME, "custodian", True), ("install:other", "custodian", False), (TARGET, "authority", False)]
     assert moved["owner_name"] == "Dana"
     # The new host's own recompute keeps every custodian its records never enrolled.
     following = custody.maintain_configuration(

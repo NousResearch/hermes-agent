@@ -157,6 +157,18 @@ class GroupsCapabilitiesParams(ProfileParams):
     pass
 
 
+class GatewayRoomIdentity(Result):
+    """How this installation shows up in other installations' Group Chats."""
+
+    install_id: str
+    #: ``gateway.display_name``, else the host name.
+    name: str | None = None
+    #: ``gateway.owner_name``: the person who runs this installation; null when unset.
+    operator_name: str | None = None
+    #: No battery, unless ``group_chat.always_on`` says otherwise.
+    always_on: bool
+
+
 class GroupsCapabilitiesResult(Result):
     server_time: float | None = None
     protocol_version: int
@@ -167,6 +179,7 @@ class GroupsCapabilitiesResult(Result):
     features: list[str]
     methods: list[str]
     max_log_limit: int
+    room_identity: GatewayRoomIdentity | None = None
 
 
 method("groups.capabilities", params=GroupsCapabilitiesParams, result=GroupsCapabilitiesResult,
@@ -254,6 +267,11 @@ class GroupsSendResult(Result):
     client_event_id: str | None = None
     accepted: bool = True
     driver_started: bool = True
+    #: Majority mode only: the send is stored on a majority of the room's voters, so an automatic move
+    #: keeps it. The gateway waits briefly for it; a send that is not protected stays in the room,
+    #: inside the tail at risk, and clients offer it again after a move. Absent in other modes, where
+    #: dispatch doesn't wait for copies.
+    protected: bool | None = None
 
 
 method("groups.send", params=GroupsSendParams, result=GroupsSendResult,
@@ -707,6 +725,10 @@ class CustodyCustodian(Result):
     role: str
     #: May continue the group: its operator allowed it and the room owner designated it.
     successor: bool
+    #: Reported by the installation: no battery, unless its operator says otherwise.
+    always_on: bool
+    #: Votes on moving the group by itself: the host, or an always-on successor (at most seven).
+    voter: bool
     name: str | None = None
     operator_name: str | None = None
 
@@ -715,6 +737,17 @@ class CustodyConfiguration(Result):
     configuration_seq: int
     custodians: list[CustodyCustodian]
     owner_name: str | None = None
+    #: The owner lets the group move by itself (``groups.custody.automatic``).
+    automatic: bool = True
+    #: The voters in the owner's order, the host first.
+    voters: list[str] = []
+
+
+class CustodyWaiting(Result):
+    """A task held back until a majority of voters stores its ``task.admitted``."""
+
+    task_id: str
+    seq: int
 
 
 class CustodyCustodianStatus(Result):
@@ -728,8 +761,12 @@ class CustodyCustodianStatus(Result):
     allowed: bool | None = None
     designated: bool | None = None
     opted_out: bool
+    voter: bool
+    always_on: bool
     watermark: CustodyWatermark | None = None
     acknowledged_at: float | None = None
+    #: When the host last heard from it (any acknowledgment, idle heartbeats included).
+    last_seen: float | None = None
     divergent: bool
 
 
@@ -744,6 +781,16 @@ class GroupsCustodyStatusResult(Result):
     custodians: list[CustodyCustodianStatus]
     #: The highest seq an eligible successor durably holds; later events are at risk.
     at_risk_after_seq: int
+    #: The highest seq a majority of voters durably holds, counting the host.
+    protected_seq: int
+    automatic: bool
+    #: The voters in the owner's order, the host first.
+    voters: list[str]
+    #: The voter sets whose majorities protection needs now: two while a change is not settled.
+    voter_sets: list[list[str]]
+    #: ``majority`` (3+ voters), ``careful`` (exactly 2) or ``ask``.
+    mode: str
+    waiting_for_copies: CustodyWaiting | None = None
     configuration_seq: int
     configuration: CustodyConfiguration
     watermark: CustodyWatermark | None = None
@@ -792,6 +839,20 @@ class GroupsCustodyAllowResult(Result):
     confirmed: bool
 
 
+class GroupsCustodyAutomaticParams(RoomParams):
+    enabled: bool
+
+
+class GroupsCustodyAutomaticResult(Result):
+    room_id: str
+    #: The value requested.
+    automatic: bool
+    #: The latest configuration; the switch rides in the next one once earlier changes settle.
+    configuration_seq: int
+    #: True until the switch is in force: in a configuration stored on a majority of the voters.
+    pending: bool
+
+
 method("groups.custody.status", params=GroupsCustodyStatusParams, result=GroupsCustodyStatusResult,
        doc="Who keeps this Group Chat's history, how far each copy reaches, and the tail at risk.")
 method("groups.custody.designate", params=GroupsCustodyDesignateParams, result=GroupsCustodyDesignateResult,
@@ -802,6 +863,8 @@ method("groups.custody.remove", params=GroupsCustodyRemoveParams, result=GroupsC
        doc="Stop keeping a copy on one custodian-only installation.")
 method("groups.custody.allow", params=GroupsCustodyAllowParams, result=GroupsCustodyAllowResult,
        doc="On a member installation: allow (or not) the room owner to continue the group here.")
+method("groups.custody.automatic", params=GroupsCustodyAutomaticParams, result=GroupsCustodyAutomaticResult,
+       doc="On the host: the room owner (or the operator) lets the group move by itself, or asks first.")
 
 
 # ── bot relay ─────────────────────────────────────────────────────────────────────────────────

@@ -19,8 +19,12 @@ Two workers rotate the routes. Checkpoints keep the pending page's coordinates (
 events), so a lost reply or a restart re-sends the same page. No transaction spans HTTP, and
 an OS lock per (room, participant) keeps two processes from sending one copy concurrently.
 The workers start only once a route exists, so a gateway without one runs no extra thread.
-Every page carries the head the host signs for the page's end (``custody.head``), which the
-custodian keeps to vouch for its copy.
+
+A caught-up custodian still hears from the host: a voter about every ``HEARTBEAT_SECONDS`` (an
+empty page carrying the custody report and the lease request), any other custodian every
+``KEEPALIVE_SECONDS``, so the host always knows who is reachable and the lease layer (#105197)
+renews its grants even when the group is quiet. Every page and heartbeat carries the head the host
+signs for the page's end (``custody.head``), which the custodian keeps to vouch for its copy.
 """
 
 from __future__ import annotations
@@ -47,6 +51,11 @@ from tui_gateway.hosted_room_peer_http import PeerRunsHTTPClient, PeerRunsHTTPEr
 
 POLL_SECONDS = 5.0
 PAGE_TIMEOUT_SECONDS = 3.0
+# A voter hears from the host about this often, even when nothing happens; other custodians less.
+HEARTBEAT_SECONDS = 5.0
+KEEPALIVE_SECONDS = 60.0
+# How long a send may wait for a majority of voters in majority mode, at most.
+SEND_PROTECTION_SECONDS = 10.0
 # A copy-only route its custodian refused as unauthorized is probed again this often.
 REAUTHORIZATION_PROBE_SECONDS = 60 * 60
 PAGE_LIMIT = 32
@@ -221,6 +230,10 @@ class HostedRoomReplicationPublisher:
         self._error: str | None = None
         self._work_record_error: str | None = None
         self._custody_error: str | None = None
+        # When each (room, custodian) last acknowledged anything, on this process's monotonic clock.
+        self._exchanged: dict[tuple[str, str], float] = {}
+        #: Called with a room id after a custodian acknowledged, when protection may have moved.
+        self.on_acknowledged: Any = None
 
     @contextmanager
     def _transaction(self):
@@ -246,12 +259,20 @@ class HostedRoomReplicationPublisher:
             self._stop.clear()
         self.wakeup()
 
-    def wakeup(self) -> None:
-        """Rescan now, starting the workers on the first route that wants a copy."""
+    def wakeup(self, room_id: str | None = None) -> None:
+        """Rescan now, starting the workers on the first route that wants a copy.
+
+        With ``room_id``, that room's routes are due at once: new events reach its copies without
+        waiting for the next poll.
+        """
         with self._condition:
             if not self._enabled or self._stop.is_set():
                 return
             self._scan_at = 0.0
+            if room_id is not None:
+                for key in self._due:
+                    if isinstance(key, tuple) and key[0] == room_id:
+                        self._due[key] = 0.0
             self._condition.notify_all()
             if self._alive():
                 return
@@ -365,19 +386,35 @@ class HostedRoomReplicationPublisher:
         endpoint = local_room_link_endpoint()
         url, key, failed = endpoint.get("url") if endpoint.get("available") else None, local_public_key(), None
         name, owner_name = custody.local_names()
+        always_on = custody.local_always_on()
         for room_id in room_ids:
             try:
                 custody.maintain_configuration(
                     self.db_path, room_id=room_id, local_gateway_id=self.local_id, public_key=key, endpoint=url,
-                    name=name, owner_name=owner_name)
+                    name=name, owner_name=owner_name, always_on=always_on)
             except (rooms.HostedRoomError, sqlite3.Error):
                 failed = "custody_configuration_unavailable"  # one room never stalls the others' copies
         self._custody_error = failed
 
     def wait_protected(self, room_id: str, seq: int, timeout: float) -> bool:
-        """Whether an eligible successor holds ``seq`` of this hosted room within ``timeout``."""
+        """Whether a majority of the room's voters, counting this host, holds ``seq`` within ``timeout``."""
         from gateway.hosted_room_custody import wait_protected
         return wait_protected(self.db_path, room_id, seq, timeout)
+
+    def protect(self, room_id: str, seq: int) -> bool | None:
+        """In majority mode, whether a majority of voters holds event ``seq`` of this hosted room.
+
+        A send waits for it, at most ``SEND_PROTECTION_SECONDS`` and never beyond what is left of the
+        host's lease. Every other mode reports nothing (None): dispatch there doesn't wait for copies,
+        so a message offered again after a move could run its turn twice.
+        """
+        from gateway import hosted_room_custody as custody
+        if custody.room_mode(self.db_path, room_id) != "majority":
+            return None
+        self.wakeup(room_id)
+        remaining = custody.lease_remaining(room_id)
+        timeout = SEND_PROTECTION_SECONDS if remaining is None else min(SEND_PROTECTION_SECONDS, remaining)
+        return custody.wait_protected(self.db_path, room_id, seq, timeout)
 
     def _take(self) -> _Work | None:
         with self._condition:
@@ -651,9 +688,14 @@ class HostedRoomReplicationPublisher:
         # Each turn can deliver one anchored record and one history page, so neither waits for
         # the conversation to go quiet and neither blocks the other on transport loss.
         self._publish_work_records(route, checkpoint, client)
+        from gateway import hosted_room_custody as custody
+        install_id = route.link.catalog.installation_id
+        with closing(open_sqlite(self.db_path, timeout=0.25)) as conn:
+            voter = custody.is_voter_locked(conn, key[0], install_id)
         cursor, pending = checkpoint["acked_seq"], checkpoint["pending_end"]
-        if pending is None and cursor >= route.room["latest_seq"] and checkpoint["status"] == "acked":
-            return False
+        idle = pending is None and cursor >= route.room["latest_seq"] and checkpoint["status"] == "acked"
+        if idle and not self._heartbeat_due(key[0], install_id, voter):
+            return False  # a caught-up copy hears from the host only on its heartbeat
         limit = PAGE_LIMIT if pending is None else max(1, pending - cursor)
         page = rooms.read_events(self.db_path, room_id=key[0], since_seq=cursor, limit=limit, include_disbanded=True)
         expected_authority = {"gateway_id": route.room["authority_gateway_id"], "epoch": route.room["authority_epoch"]}
@@ -677,10 +719,13 @@ class HostedRoomReplicationPublisher:
             checkpoint.update(values)
         if self._stop.is_set():
             return False
-        from gateway import hosted_room_custody as custody
         with closing(open_sqlite(self.db_path, timeout=0.25)) as conn:
-            # With every page, the head this host signs for the page's end.
-            report = custody.report_locked(conn, key[0], route.link.catalog.installation_id, head_seq=page["cursor"])
+            # With every page and heartbeat, the head this host signs for the page's end.
+            report = custody.report_locked(conn, key[0], install_id, head_seq=page["cursor"])
+        # A voter's push carries the lease layer's request, built before the send: never optimistic.
+        request = custody.lease_request(key[0]) if voter else None
+        if request is not None:
+            report["lease_request"] = request
         try:
             reply = client.replicate_page(
                 grant=route.link.grant, room_id=key[0], room_name=name, members=route.room["members"], page=page,
@@ -695,12 +740,16 @@ class HostedRoomReplicationPublisher:
         ):
             self._save(route, checkpoint, status="invalid_ack")
             return False
-        install_id = route.link.catalog.installation_id
         reported = reply["custody"] if isinstance(reply.get("custody"), dict) else {}
-        allowed = reported.get("allowed")
-        if isinstance(allowed, bool):
-            # The operator's current consent to continue the group, from an authenticated acknowledgment.
-            custody.record_allowed(self.db_path, room_id=key[0], install_id=install_id, allowed=allowed)
+        allowed, always_on = reported.get("allowed"), reported.get("always_on")
+        # The operator's current consent to continue the group and whether the computer is always on,
+        # from an authenticated acknowledgment, which also counts as seen.
+        custody.record_reported(self.db_path, room_id=key[0], install_id=install_id,
+                                allowed=allowed if isinstance(allowed, bool) else None,
+                                always_on=always_on if isinstance(always_on, bool) else None)
+        if request is not None:
+            custody.lease_acknowledged(key[0], install_id, reported.get("lease_grant"), request)
+        self._exchanged[(key[0], install_id)] = time.monotonic()
         if "watermark" not in reply:
             # An older Hermes keeps the pages but no custody watermark: it never counts as holding history.
             custody.mark_unsupported(self.db_path, room_id=key[0], install_id=install_id)
@@ -714,6 +763,11 @@ class HostedRoomReplicationPublisher:
             if acknowledged in {"divergent", "invalid"}:
                 self._save(route, checkpoint, status="divergent_copy" if acknowledged == "divergent" else "invalid_ack")
                 return False
+            if acknowledged == "acknowledged" and callable(self.on_acknowledged):
+                try:
+                    self.on_acknowledged(key[0])  # protection may have moved: queued work can look again
+                except Exception:
+                    self._custody_error = "custody_wakeup_failed"
         saved = self._save(
             route, checkpoint, acked_seq=page["cursor"], source_latest_seq=page["latest_seq"],
             pending_end=None, pending_latest=None, pending_name=None,
@@ -764,6 +818,18 @@ class HostedRoomReplicationPublisher:
                          "AND generation=?", (status, time.time(), *route.key, route.generation))
             return dict(conn.execute(f"SELECT * FROM {ROUTES_TABLE} WHERE room_id=? AND member_id=?",
                                      route.key).fetchone())
+
+    def _heartbeat_due(self, room_id: str, install_id: str, voter: bool) -> bool:
+        """Whether a caught-up custodian should hear from the host now: voters about every
+        ``HEARTBEAT_SECONDS``, other custodians every ``KEEPALIVE_SECONDS``."""
+        now, last = time.monotonic(), self._exchanged.get((room_id, install_id))
+        if last is None and not voter:
+            # A process that just started has nothing new to say to a custodian that does not vote.
+            self._exchanged[(room_id, install_id)] = now
+            return False
+        interval = HEARTBEAT_SECONDS if voter else KEEPALIVE_SECONDS
+        # Routes come round every POLL_SECONDS; half a round of slack keeps the cadence at one interval.
+        return last is None or now - last >= interval - POLL_SECONDS / 2
 
     def _publish_work_records(self, route: _Route, checkpoint: dict, client: PeerRunsHTTPClient) -> None:
         """Send this participant's frozen record once its history anchor is acknowledged."""

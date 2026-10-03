@@ -662,7 +662,8 @@ def ingest_page(
         watermark = after_ingest_locked(conn, room_id, new_events, report=custody_report)
     return {
         "room_id": room_id, "stored_seq": new_last, "ingested": len(new_events), "authority": authority,
-        "caught_up": new_last >= latest_seq, "watermark": watermark}
+        "caught_up": new_last >= latest_seq, "watermark": watermark,
+        "copy_authority": {"gateway_id": verified_head[0], "epoch": verified_head[1]}}
 
 
 def _follow_lineage(

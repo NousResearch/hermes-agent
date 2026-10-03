@@ -1,4 +1,7 @@
 """Custody on the canonical surface: custody-only invitations, consent, owner controls and reading a copy."""
+import sqlite3
+from contextlib import closing
+
 import pytest
 
 from gateway import hosted_room_custody as custody
@@ -105,7 +108,8 @@ async def test_a_shared_messaging_chat_never_changes_custody(gateway):
     for method, params in (('groups.custody.designate', {'install_id': 'install:nobody', 'successor': True}),
                            ('groups.custody.add', {'target_url': 'https://backup.example', 'grant': 'g',
                                                    'catalog': catalog('install:backup').as_mapping()}),
-                           ('groups.custody.remove', {'install_id': 'install:nobody'})):
+                           ('groups.custody.remove', {'install_id': 'install:nobody'}),
+                           ('groups.custody.automatic', {'enabled': False})):
         assert await call(shared, method, room_id='hosted', **params) == 'permission_denied', method
     assert (await call(shared, 'groups.custody.status', room_id='hosted'))['role'] == 'authority'
     private = AuthorityConnection(gateway.authority, object(), {'user_id': 'owner'})
@@ -136,3 +140,43 @@ async def test_owner_controls_refuse_what_custody_cannot_be(gateway):
                       catalog=catalog('install:backup').as_mapping(), grant=grant.replace('.', '!')) == 'invalid_params'
     assert await call(gateway.owner, 'groups.custody.remove', room_id='hosted',
                       install_id='install:nobody') == 'room_custody_invalid'
+
+
+@pytest.mark.asyncio
+async def test_the_owner_or_the_operator_switches_automatic_moves(gateway):
+    await call(gateway.owner, 'groups.create', room_id='hosted', name='Hosted', members=[
+        MEMBERS[0], member('reviewer', target='install:participant')])
+    methods = (await call(gateway.owner, 'groups.capabilities'))['methods']
+    assert 'groups.custody.automatic' in methods
+    # The room's recorded owner, from any of its sessions (for example its private chat).
+    owner = AuthorityConnection(gateway.authority, object(), {'user_id': 'owner'})
+    switched = await call(owner, 'groups.custody.automatic', room_id='hosted', enabled=False)
+    # Nothing to wait for: no other computer keeps the group yet.
+    assert switched == {'room_id': 'hosted', 'automatic': False, 'configuration_seq': 0, 'pending': False}
+    contract.GroupsCustodyAutomaticResult.model_validate(switched)
+    with closing(sqlite3.connect(gateway.authority.db.db_path)) as conn:
+        assert custody.automatic_locked(conn, 'hosted') is False  # rides in the next configuration
+    stranger = AuthorityConnection(gateway.authority, object(), {'user_id': 'stranger'})
+    assert await call(stranger, 'groups.custody.automatic', room_id='hosted', enabled=True) == 'not_owner'
+    operator = AuthorityConnection(gateway.authority, object(), {'user_id': 'stranger'}, operator=True)
+    assert (await call(operator, 'groups.custody.automatic', room_id='hosted', enabled=True))['automatic'] is True
+    for params in ({'enabled': 'no'}, {'enabled': True, 'extra': 1}, {}):
+        assert await call(owner, 'groups.custody.automatic', room_id='hosted', **params) == 'invalid_params'
+
+
+@pytest.mark.asyncio
+async def test_capabilities_say_whose_computer_this_is(gateway, monkeypatch):
+    """Before the owner adds a Bot from this computer, Desktop shows whose computer it is."""
+    from gateway import run
+    monkeypatch.setattr(run, '_load_gateway_config', lambda: {
+        'gateway': {'display_name': 'Studio Mini', 'owner_name': 'Dana'}, 'group_chat': {'always_on': True}})
+    custody.local_always_on(refresh=True)  # read once a minute
+    capabilities = await call(gateway.owner, 'groups.capabilities')
+    contract.GroupsCapabilitiesResult.model_validate(capabilities)
+    assert capabilities['room_identity'] == {'install_id': rooms.local_authority_gateway_id(), 'name': 'Studio Mini',
+                                             'operator_name': 'Dana', 'always_on': True}
+    monkeypatch.setattr(run, '_load_gateway_config', lambda: {'group_chat': {'always_on': False}})
+    custody.local_always_on(refresh=True)
+    unset = (await call(gateway.owner, 'groups.capabilities'))['room_identity']
+    assert (unset['operator_name'], unset['always_on']) == (None, False)  # never the OS account name
+    assert unset['name']  # the host name stands in for a display name

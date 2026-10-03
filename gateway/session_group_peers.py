@@ -146,7 +146,8 @@ def enroll_custody(service, room_id, install_id, probe, endpoint):
     custody.enroll_custodian(service.db_path, room_id=room_id, install_id=install_id,
                              public_key=identity.get('public_key'), endpoint=endpoint, name=identity.get('name'),
                              operator_name=identity.get('operator_name'), role='custodian',
-                             active='replicate' in permissions, allowed=allowed)
+                             active='replicate' in permissions, allowed=allowed,
+                             always_on=identity['always_on'] if isinstance(identity.get('always_on'), bool) else None)
 
 
 def register(service, params):

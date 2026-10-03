@@ -94,12 +94,35 @@ def _republish(service, room_id):
     appended = custody.maintain_configuration(
         service.db_path, room_id=room_id, local_gateway_id=hosted_rooms.local_authority_gateway_id(),
         public_key=local_public_key(), endpoint=endpoint.get('url') if endpoint.get('available') else None,
-        name=name, owner_name=owner_name)
+        name=name, owner_name=owner_name, always_on=custody.local_always_on())
     service.replication.wakeup()
     if appended is not None:
         return appended['configuration_seq']
     with closing(open_sqlite(service.db_path)) as conn:
         return custody.configuration_locked(conn, room_id)['configuration_seq']
+
+
+def custody_automatic(service, actor, params):
+    """The room owner (or this installation's operator) lets the group move by itself, or not.
+
+    On the host. The switch rides in the next configuration, once any change before it is stored on
+    a majority of the voters; ``configuration_seq`` is the latest configuration now, and ``pending``
+    stays true until the switch is in force (``hosted_room_custody.automatic_pending``).
+    """
+    from gateway import hosted_room_custody as custody
+    if set(params) != {'room_id', 'enabled'} or type(params['enabled']) is not bool:
+        raise RuntimeStoreError('invalid_params')
+    room_id = params['room_id']
+    if 'session:operator' not in actor.capabilities:
+        with service.authority.db._read_ctx() as conn:
+            row = conn.execute('SELECT value FROM state_meta WHERE key=?', (_OWNER + str(room_id),)).fetchone()
+        if row is None or row[0] != actor.subject:
+            raise RuntimeStoreError('not_owner')
+    service._owned_authority(room_id)
+    custody.set_automatic(service.db_path, room_id=room_id, enabled=params['enabled'])
+    configuration_seq = _republish(service, room_id)
+    return {'room_id': room_id, 'automatic': params['enabled'], 'configuration_seq': configuration_seq,
+            'pending': custody.automatic_pending(service.db_path, room_id, enabled=params['enabled'])}
 
 
 def custody_control(service, method, params):
@@ -168,7 +191,8 @@ def _add_custodian(service, params):
             endpoint=target_url, name=identity.get('name'), operator_name=identity.get('operator_name'),
             role='custodian_only', active=True,
             allowed='successor' in permissions or identity.get('allowed') is True,
-            designated=params.get('successor', False))
+            designated=params.get('successor', False),
+            always_on=identity['always_on'] if isinstance(identity.get('always_on'), bool) else None)
     return {'room_id': room_id, 'install_id': install_id, 'configuration_seq': _republish(service, room_id)}
 
 

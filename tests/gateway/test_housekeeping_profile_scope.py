@@ -2,11 +2,12 @@
 profile's runtime scope on a multiplexed gateway.
 
 The housekeeping thread has no turn on the stack, so nothing bound a profile for it: under
-``gateway.multiplex_profiles`` the skills-sync pulls resolved Nous credentials through the
+``gateway.multiplex_profiles`` the (then in-core) skills-sync pulls resolved Nous credentials through the
 fail-closed reader and logged ``no profile secret scope on a multiplexed call`` four times per
 hourly tick, per chore, while the launch profile's home/credentials leaked into every served
 profile's pull. The MCP config reconciler already iterated the served profiles under
-``_profile_runtime_scope``; the sync/curator ticks now ride the same iteration.
+``_profile_runtime_scope``; the curator and plugin ``on_maintenance_tick`` ticks ride the same
+iteration, each profile's hook delivered by ITS OWN plugin manager.
 """
 
 import json
@@ -66,22 +67,36 @@ def two_homes(tmp_path, monkeypatch):
     return a, b
 
 
-def _record_credential_chores(monkeypatch):
-    """Replace the three credential-reading chores with recorders of (home, Nous override) they see."""
+def _record_credential_chores(monkeypatch, *homes):
+    """Record (home, Nous override) seen by the curator chore and by a REAL ``on_maintenance_tick``
+    plugin enabled in each profile's own ``plugins/`` (the Skill Sync plugin's pull rides it)."""
     import agent.curator as curator
-    import tools.skills_sync_client as ssc
-    import tools.skills_sync_client_org as sso
     from hermes_cli.auth_nous import _nous_inference_env_override
     from hermes_constants import get_hermes_home
 
-    seen: dict = {"sync": [], "org": [], "curator": []}
+    curator_seen: list = []
+    monkeypatch.setattr(curator, "maybe_run_curator", lambda *a, **k: curator_seen.append(
+        [get_hermes_home().name, _nous_inference_env_override()]))
+    log = homes[0].parent / "maintenance-ticks.jsonl"
+    for home in homes:
+        plugin = home / "plugins" / "tick_probe"
+        plugin.mkdir(parents=True)
+        (plugin / "plugin.yaml").write_text("name: tick_probe\nversion: 0.1.0\n", encoding="utf-8")
+        (plugin / "__init__.py").write_text(
+            "import json\n"
+            "def _tick(surface, **_):\n"
+            "    from hermes_cli.auth_nous import _nous_inference_env_override\n"
+            "    from hermes_constants import get_hermes_home\n"
+            f"    with open({str(log)!r}, 'a', encoding='utf-8') as f:\n"
+            "        f.write(json.dumps([get_hermes_home().name, _nous_inference_env_override(), surface]) + '\\n')\n"
+            "def register(ctx):\n"
+            "    ctx.register_hook('on_maintenance_tick', _tick)\n", encoding="utf-8")
+        with (home / "config.yaml").open("a", encoding="utf-8") as cfg:
+            cfg.write("plugins:\n  enabled: [tick_probe]\n")
 
-    def _rec(key):
-        return lambda *a, **k: seen[key].append((get_hermes_home().name, _nous_inference_env_override()))
-
-    monkeypatch.setattr(ssc, "maybe_pull_skills", _rec("sync"))
-    monkeypatch.setattr(sso, "maybe_pull_org_skills", _rec("org"))
-    monkeypatch.setattr(curator, "maybe_run_curator", _rec("curator"))
+    def seen() -> dict:
+        ticks = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()] if log.exists() else []
+        return {"maintenance": ticks, "curator": curator_seen}
     return seen
 
 
@@ -89,7 +104,7 @@ def _run_60_ticks(runner):
     gateway_run._start_gateway_housekeeping(_Ticks(60), interval=0, runner=runner)
 
 
-def test_multiplexed_sync_ticks_run_once_per_profile_in_its_own_scope(two_homes, monkeypatch, caplog):
+def test_multiplexed_maintenance_ticks_run_once_per_profile_in_its_own_scope(two_homes, monkeypatch, caplog):
     """Under multiplex every credential-reading chore visits each served profile inside ITS scope:
     A's tick reads A's override, B's reads B's (B never sees A's), and no fail-closed credential
     read fires the ``no profile secret scope`` warning. The ambient home is untouched afterwards."""
@@ -97,7 +112,7 @@ def test_multiplexed_sync_ticks_run_once_per_profile_in_its_own_scope(two_homes,
     from hermes_constants import get_hermes_home
 
     a, b = two_homes
-    seen = _record_credential_chores(monkeypatch)
+    seen = _record_credential_chores(monkeypatch, a, b)
     set_multiplex_active(True)
     try:
         with caplog.at_level(logging.WARNING):
@@ -105,8 +120,8 @@ def test_multiplexed_sync_ticks_run_once_per_profile_in_its_own_scope(two_homes,
     finally:
         set_multiplex_active(False)
 
-    expected = [(a.name, "https://a.example/v1"), (b.name, "https://b.example/v1")]
-    assert seen == {"sync": expected, "org": expected, "curator": expected}
+    expected = [[a.name, "https://a.example/v1"], [b.name, "https://b.example/v1"]]
+    assert seen() == {"maintenance": [[*e, "gateway"] for e in expected], "curator": expected}
     assert not [r for r in caplog.records if "no profile secret scope" in r.getMessage()]
     assert get_hermes_home() == a
 
@@ -282,16 +297,15 @@ def test_prune_unlinks_transcripts_under_the_configured_sessions_dir(two_homes, 
     assert not (b / "sessions" / "old.jsonl").exists(), "profile b's transcript survived"
 
 
-def test_single_profile_sync_ticks_run_once_against_the_process_home(two_homes, monkeypatch):
+def test_single_profile_maintenance_ticks_run_once_against_the_process_home(two_homes, monkeypatch):
     """Control: a single-profile gateway (multiplex off) still runs each chore exactly once against
     the process home — the named profile directory on disk is not visited."""
-    a, _b = two_homes
-    seen = _record_credential_chores(monkeypatch)
+    a, b = two_homes
+    seen = _record_credential_chores(monkeypatch, a, b)
 
     _run_60_ticks(SimpleNamespace(config=SimpleNamespace(multiplex_profiles=False)))
 
-    assert {k: [h for h, _ in v] for k, v in seen.items()} == {
-        "sync": [a.name], "org": [a.name], "curator": [a.name]}
+    assert {k: [e[0] for e in v] for k, v in seen().items()} == {"maintenance": [a.name], "curator": [a.name]}
 
 
 def test_multiplexed_plugin_update_check_visits_every_served_profiles_plugins(two_homes, monkeypatch):

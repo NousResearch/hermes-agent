@@ -1,4 +1,4 @@
-"""The CLI's startup housekeeping (curator pass, skill sync) must never hold the prompt.
+"""The CLI's startup housekeeping (curator pass, plugin maintenance hook) must never hold the prompt.
 
 A due weekly curator pass on a large library snapshotted and pruned the skills tree for
 six minutes on the main thread, between the banner and the input box.

@@ -473,6 +473,7 @@ Payload fields below are the exact event-specific fields supplied by each call s
 | `on_session_reset` | Observer | CLI/TUI session boundary and gateway after the replacement session exists; return ignored. | CLI: `session_id`, `platform`, `reason`; TUI: `session_id`, `platform`; gateway: those plus `reason`, `old_session_id`, `new_session_id` | Session and routing identifiers. |
 | `agent_loop_stopped` | Observer | Immediately after a real running agent is interrupted — gateway `_interrupt_and_clear_session` or TUI/desktop `session.interrupt`; return ignored. | `session_key`, `platform`, `reason`, `invalidation_reason` | Session/routing identifiers and interruption reasons; no message body. |
 | `on_skill_lifecycle` | Observer | After an authoritative skill-usage state change; return ignored. | `action`, `skill_name`, `provenance`, `task_id`, `session_id`, `use_count`, `reused`, `reuse_after_patch` | Exposes the local skill name and provenance. |
+| `on_maintenance_tick` | Observer | Best-effort background maintenance for the profile in scope, off any turn and off the main thread: once at classic CLI startup (after the curator pass), on each gateway housekeeping curator tick (hourly, once per served profile inside that profile's runtime scope and delivered by that profile's own plugins), and on each `hermes serve` maintenance tick (hourly, first after 90 s; skipped while a gateway owns the profile). Return ignored. | `surface` (`"cli"` \| `"gateway"` \| `"serve"`) | None; resolve `get_hermes_home()` inside the callback to act on the right profile. |
 | `subagent_start` | Observer | Child constructed and about to run; return ignored. | `parent_session_id`, `parent_turn_id`, `parent_subagent_id`, `child_session_id`, `child_subagent_id`, `child_role`, `child_goal` | Child goal may contain user/project content. |
 | `subagent_stop` | Observer | Child exit; return ignored. | `parent_session_id`, `parent_turn_id`, `child_session_id`, `child_role`, `child_summary`, `child_status`, `tool_call_history`, `duration_ms` | Summary and redacted tool-history metadata may reveal project structure. |
 | `pre_gateway_dispatch` | Directive/control | Incoming non-internal message before auth/pairing/dispatch; first valid `skip`, `rewrite`, or `allow` controls flow. | `event`, `gateway`, `session_store` | Extremely privileged in-process objects expose inbound user/routing data and host handles. |
@@ -1644,6 +1645,10 @@ Auxiliary LLM calls — session titling, context compression, MoA advisors and t
 ### `on_skill_lifecycle`
 
 Fires after an authoritative skill-usage state change. It is observer-only and exposes the local `skill_name`, provenance, correlation IDs, usage count, and reuse flags.
+
+### `on_maintenance_tick`
+
+Periodic best-effort maintenance for plugins that keep local state in step with a remote service (the private Skill Sync plugin pulls skills on it). Callbacks run in background threads, so slow network work never blocks a prompt or a turn, but keep them bounded: the gateway runs every housekeeping chore on one thread. Plugins are per profile, so each served profile's tick reaches only the plugins enabled in that profile.
 
 ### Kanban lifecycle observers
 

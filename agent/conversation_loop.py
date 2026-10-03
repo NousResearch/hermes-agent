@@ -35,7 +35,9 @@ from agent.conversation_compression import (
     PRE_API_COMPRESSION_STATUS_TEMPLATE,
     compression_skipped_due_to_lock,
     conversation_history_after_compression,
+    over_limit_local_stop_status,
     preflight_compression_should_continue_turn,
+    ProviderBoundRequestOverLimit,
 )
 from agent.context_engine import automatic_compaction_status_message
 from agent.display import KawaiiSpinner
@@ -1958,6 +1960,7 @@ def run_conversation(
     truncated_tool_call_retries = 0
     truncated_response_parts: List[str] = []
     compression_attempts = 0
+    _transcript_rewritten_this_turn = False
     # One resolved per-turn compression attempt cap, shared by every site that
     # consumes ``compression_attempts``: the pre-API pressure gate, the
     # overflow/413 retry handlers, and the post-tool compaction gate. The
@@ -2733,6 +2736,10 @@ def run_conversation(
                 approx_tokens=request_pressure_tokens,
                 task_id=effective_task_id,
             )
+            if messages is not _pre_api_input and (
+                len(messages) != len(_pre_api_input) or messages != _pre_api_input
+            ):
+                _transcript_rewritten_this_turn = True
             # Remaining pressure, not list identity, decides whether the
             # compacted (or no-op) transcript is safe to send. Re-measure
             # from the post-compress messages so a new list that did not
@@ -2772,11 +2779,9 @@ def run_conversation(
                     f"{int(getattr(_compressor, 'context_length', 0) or 0):,}",
                 )
                 agent._emit_status(
-                    "❌ Context compression timed out or failed while the "
-                    "request is still over the model window. No messages "
-                    "were dropped, and the over-limit request was not sent. "
-                    "Run /compress to retry, /new for a clean session, or "
-                    "check auxiliary.compression."
+                    over_limit_local_stop_status(
+                        transcript_rewritten=_transcript_rewritten_this_turn
+                    )
                 )
                 api_call_count -= 1
                 agent._api_call_count = api_call_count
@@ -2913,11 +2918,9 @@ def run_conversation(
                     f"{_safe_limit:,}",
                 )
                 agent._emit_status(
-                    "❌ Context compression timed out or failed while the "
-                    "request is still over the model window. No messages "
-                    "were dropped, and the over-limit request was not sent. "
-                    "Run /compress to retry, /new for a clean session, or "
-                    "check auxiliary.compression."
+                    over_limit_local_stop_status(
+                        transcript_rewritten=_transcript_rewritten_this_turn
+                    )
                 )
                 api_call_count -= 1
                 agent._api_call_count = api_call_count
@@ -3268,6 +3271,11 @@ def run_conversation(
                             is_github_responses=agent._is_copilot_url(),
                             sanitize_harmony_tokens=agent._is_codex_backend(),
                         )
+                    from agent.conversation_compression import (
+                        refuse_over_limit_provider_dispatch,
+                    )
+
+                    refuse_over_limit_provider_dispatch(agent, next_api_kwargs)
                     if _use_streaming:
                         return agent._interruptible_streaming_api_call(
                             next_api_kwargs, on_first_delta=_stop_spinner
@@ -4531,6 +4539,39 @@ def run_conversation(
                 else:
                     final_response = f"{INTERRUPT_WAITING_FOR_MODEL_PREFIX}{api_elapsed:.1f}s elapsed)."
                 agent._persist_session(messages, conversation_history)
+                break
+
+            except ProviderBoundRequestOverLimit as over_limit:
+                if thinking_spinner:
+                    thinking_spinner.stop("")
+                    thinking_spinner = None
+                if agent.thinking_callback:
+                    agent.thinking_callback("")
+                logger.error(
+                    "Final provider-bound request ~%s tokens at or over "
+                    "context=%s; refusing to send over-limit input",
+                    f"{over_limit.pressure:,}",
+                    f"{over_limit.limit:,}",
+                )
+                agent._emit_status(
+                    over_limit_local_stop_status(
+                        transcript_rewritten=_transcript_rewritten_this_turn
+                    )
+                )
+                api_call_count -= 1
+                agent._api_call_count = api_call_count
+                try:
+                    agent.iteration_budget.refund()
+                except Exception:
+                    pass
+                final_response = (
+                    "Context compression failed while the request is over "
+                    "the model context window. The over-limit request was "
+                    "not sent. Run /compress to retry or /new for a clean "
+                    "session."
+                )
+                failed = True
+                _turn_exit_reason = "compression_timeout_over_limit"
                 break
 
             except Exception as api_error:

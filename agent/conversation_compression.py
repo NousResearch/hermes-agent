@@ -1269,6 +1269,99 @@ def preflight_compression_should_continue_turn(
     return True
 
 
+class ProviderBoundRequestOverLimit(Exception):
+    """Local refuse: final estimated provider-bound pressure exceeds the window.
+
+    Not a provider HTTP error. Callers must fail closed without overflow
+    retry, fallback, or treating this as a 413/context-length recovery.
+    """
+
+    def __init__(self, pressure: int, limit: int):
+        self.pressure = int(pressure)
+        self.limit = int(limit)
+        super().__init__(
+            f"final estimated provider-bound request pressure {self.pressure} "
+            f"exceeds resolved safe dispatch limit {self.limit}"
+        )
+
+
+def resolved_safe_dispatch_limit(agent: Any) -> int:
+    """INPUT dispatch refuse ceiling: full ``context_length``.
+
+    ``max_tokens`` is reserved only when computing the compaction *trigger*
+    (``ContextCompressor._compute_threshold_tokens``, #43547). Output-cap
+    recovery after a provider error clamps the output reservation without
+    inventing a second pre-dispatch input ceiling.
+    """
+    compressor = getattr(agent, "context_compressor", None)
+    return int(getattr(compressor, "context_length", 0) or 0)
+
+
+def estimate_provider_bound_request_pressure(api_kwargs: Any) -> int:
+    """Estimate the payload that actually reaches the provider client.
+
+    Chat-completions: ``messages`` plus optional top-level ``system`` and
+    ``tools``. Codex Responses: ``input`` plus ``instructions`` and ``tools``.
+    Anthropic Messages: ``messages`` plus top-level ``system`` and ``tools``.
+    """
+    if not isinstance(api_kwargs, dict):
+        return 0
+    messages = api_kwargs.get("messages")
+    system_prompt = ""
+    if isinstance(messages, list):
+        extra = api_kwargs.get("system")
+        if extra:
+            system_prompt = extra if isinstance(extra, str) else str(extra)
+    else:
+        messages = api_kwargs.get("input")
+        extra = api_kwargs.get("instructions")
+        if extra:
+            system_prompt = extra if isinstance(extra, str) else str(extra)
+        if not isinstance(messages, list):
+            messages = []
+    tools = api_kwargs.get("tools")
+    if not isinstance(tools, list):
+        tools = None
+    return estimate_request_tokens_rough(
+        messages,
+        system_prompt=system_prompt,
+        tools=tools,
+    )
+
+
+def refuse_over_limit_provider_dispatch(agent: Any, api_kwargs: Any) -> None:
+    """Fail closed immediately before the provider client is invoked.
+
+    Compression admission exemptions are not dispatch-safety exemptions.
+    """
+    limit = resolved_safe_dispatch_limit(agent)
+    if limit <= 0:
+        return
+    pressure = estimate_provider_bound_request_pressure(api_kwargs)
+    if pressure >= limit:
+        raise ProviderBoundRequestOverLimit(pressure, limit)
+
+
+def over_limit_local_stop_status(*, transcript_rewritten: bool) -> str:
+    """Bounded local diagnostic. Do not claim the transcript is unchanged
+    when compaction actually rewrote or shortened it.
+    """
+    if transcript_rewritten:
+        return (
+            "❌ Context compression did not bring the request under the model "
+            "window. Transcript content was compacted or dropped, but the "
+            "remaining request is still over the model window and was not sent. "
+            "Run /compress to retry, /new for a clean session, or check "
+            "auxiliary.compression."
+        )
+    return (
+        "❌ Context compression timed out or failed while the request is still "
+        "over the model window. No messages were dropped, and the over-limit "
+        "request was not sent. Run /compress to retry, /new for a clean "
+        "session, or check auxiliary.compression."
+    )
+
+
 def _adopt_live_compression_child(
     agent: Any,
     session_db: Any,

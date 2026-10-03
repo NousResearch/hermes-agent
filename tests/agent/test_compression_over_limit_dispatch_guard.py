@@ -320,7 +320,9 @@ def test_exhausted_attempts_over_limit_blocked(agent):
 
 
 def test_lock_skip_over_limit_still_defers_to_provider_path(agent):
-    """Lock-skip remains defer, not fail-closed, even when the estimate is over."""
+    """Lock-skip still defers preflight (does not burn the attempt budget),
+    but that deferral is not a dispatch-safety exemption. An over-limit
+    assembled request must not reach the provider."""
 
     def lock_skip(messages, *args, **kwargs):
         agent._compression_skipped_due_to_lock = "pid=1:tid=2:agent=aa:nonce=bb"
@@ -339,6 +341,10 @@ def test_lock_skip_over_limit_still_defers_to_provider_path(agent):
         ),
         patch(
             "agent.conversation_loop.estimate_messages_tokens_rough",
+            return_value=OVER_LIMIT,
+        ),
+        patch(
+            "agent.conversation_compression.estimate_request_tokens_rough",
             return_value=OVER_LIMIT,
         ),
         patch.object(
@@ -364,5 +370,6 @@ def test_lock_skip_over_limit_still_defers_to_provider_path(agent):
     ):
         result = agent.run_conversation("hello", conversation_history=_history())
     assert compress.call_count == 1
-    assert agent.client.chat.completions.create.call_count == 1
-    assert result.get("failed") is not True
+    assert agent.client.chat.completions.create.call_count == 0
+    assert result.get("failed") is True
+    assert not result.get("compression_exhausted")

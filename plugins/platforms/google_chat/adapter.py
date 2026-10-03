@@ -48,6 +48,7 @@ httplib2 = pubsub_v1 = gax_exceptions = service_account = AuthorizedHttp = build
 HttpError: Any = Exception  # type: ignore
 
 _google_modules_loaded: bool = False
+_google_modules_lock = threading.Lock()
 # (global name, module, attribute-or-None) rebound by ``_load_google_modules``.
 _GOOGLE_IMPORTS = (
     ("httplib2", "httplib2", None), ("pubsub_v1", "google.cloud.pubsub_v1", None),
@@ -108,17 +109,22 @@ def _load_google_modules() -> bool:
     global GOOGLE_CHAT_AVAILABLE, _google_modules_loaded
     if _google_modules_loaded:
         return GOOGLE_CHAT_AVAILABLE
-    _google_modules_loaded = True
-    try:
-        loaded = {
-            name: getattr(importlib.import_module(module), attr) if attr else importlib.import_module(module)
-            for name, module, attr in _GOOGLE_IMPORTS
-        }
-    except ImportError:
-        GOOGLE_CHAT_AVAILABLE = False
-        return False
-    globals().update(loaded)
-    GOOGLE_CHAT_AVAILABLE = True
+    with _google_modules_lock:
+        if _google_modules_loaded:
+            return GOOGLE_CHAT_AVAILABLE
+        try:
+            loaded = {
+                name: getattr(importlib.import_module(module), attr) if attr else importlib.import_module(module)
+                for name, module, attr in _GOOGLE_IMPORTS
+            }
+        except ImportError:
+            GOOGLE_CHAT_AVAILABLE = False
+            _google_modules_loaded = True
+            return False
+        globals().update(loaded)
+        GOOGLE_CHAT_AVAILABLE = True
+        # Publish only after every dependency and the availability result are ready.
+        _google_modules_loaded = True
     return True
 
 from gateway.config import Platform, PlatformConfig

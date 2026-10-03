@@ -50,6 +50,23 @@ def test_claim_unknown_job_returns_false(temp_home):
     assert claim_job_for_fire("nope-does-not-exist") is False
 
 
+def test_release_fire_claim_only_for_owner(temp_home):
+    """Owner-fenced release: the owner clears its aborted claim; a
+    stranger's owner token never releases another winner's claim."""
+    from cron.jobs import claim_job_for_fire, create_job, get_job, release_fire_claim
+
+    job = create_job(prompt="x", schedule="every 5m", name="t")
+    jid = job["id"]
+    assert claim_job_for_fire(jid, return_job=True)["fire_claim"]
+    owner = get_job(jid)["fire_claim"]["by"]
+
+    assert release_fire_claim(jid, expected_owner="someone-else") is False
+    assert get_job(jid)["fire_claim"] is not None
+
+    assert release_fire_claim(jid, expected_owner=owner) is True
+    assert get_job(jid)["fire_claim"] is None
+
+
 def test_claim_paused_job_returns_false(temp_home):
     """A paused job can't be claimed."""
     from cron.jobs import create_job, claim_job_for_fire, pause_job

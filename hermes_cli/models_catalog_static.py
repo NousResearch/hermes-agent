@@ -6,6 +6,8 @@ maps. Split out of ``hermes_cli.models``.
 
 from __future__ import annotations
 
+import threading
+
 from typing import NamedTuple
 
 
@@ -371,7 +373,22 @@ CANONICAL_PROVIDERS: list[ProviderEntry] = [ProviderEntry(*row) for row in (
 # credentials, not here: ``models._provider_has_credentials`` / ``_lap_canonical_rows`` route
 # through ``auth.get_auth_status`` (external_process → the binary resolves; OAuth → auth.json /
 # credential-pool entry), so an admitted row reads authenticated=False until the user signs in.
+#
+# LAZY: this runs on the FIRST READ of CANONICAL_PROVIDERS (or of the dicts
+# derived from it), never during this module's import. ``list_providers()``
+# imports every model-provider plugin, and plugins routinely do
+# ``from hermes_cli.models import _PROVIDER_MODELS, CANONICAL_PROVIDERS`` at
+# their own import time. Running discovery here handed those plugins a
+# PARTIALLY INITIALISED ``hermes_cli.models``: under a models-first import
+# order they got ``ImportError: cannot import name 'CANONICAL_PROVIDERS' from
+# partially initialized module``; under a discovery-first order the plugin's
+# own providers never reached CANONICAL_PROVIDERS at all. Deferring to first
+# read means the module is always fully initialised before a plugin imports it.
 _canonical_slugs = {p.slug for p in CANONICAL_PROVIDERS}
+
+_canonical_extend_lock = threading.RLock()
+_canonical_extended = False
+_canonical_extend_active = False
 
 
 def _plugin_provider_enters_picker(pp) -> bool:
@@ -379,36 +396,199 @@ def _plugin_provider_enters_picker(pp) -> bool:
     return pp.name not in _canonical_slugs
 
 
-def sync_plugin_provider_catalog() -> int:
-    """Admit every registered plugin provider without a built-in row; return how many were added.
+def _extend_canonical_from_plugins() -> None:
+    """Idempotent, lazy auto-extend of :data:`CANONICAL_PROVIDERS`.
 
-    Runs at import and again from ``providers._sync_auth_registry`` whenever a profile is registered
-    after this module was imported. The import-time pass alone observes a *partial* registry: a
-    plugin whose own imports pull ``hermes_cli.models`` in mid-``_discover_providers()``, or a
-    profile registered later at runtime, would otherwise never reach the picker, ``hermes model``,
-    ``/model`` or the Desktop ``model.options`` list until restart — the catalog twin of the auth
-    registry window (#102123). Idempotent by slug; built-in rows are never rewritten.
+    Safe to call from anywhere after import; the first call does the work and
+    every later call is a no-op. Never call it at this module's import time.
     """
+    global _canonical_extended, _canonical_extend_active
+    with _canonical_extend_lock:
+        if _canonical_extended:
+            return
+        if _canonical_extend_active:
+            # Re-entrant read: a plugin being imported by our own
+            # list_providers() call is reading CANONICAL_PROVIDERS. Serve the
+            # as-yet unextended list rather than recursing, and do NOT latch —
+            # the outer call still owes us the append pass.
+            return
+        try:
+            from providers import discovery_in_progress as _discovery_in_progress
+            if _discovery_in_progress():
+                # Someone ELSE is mid-discovery and a plugin it is importing is
+                # reading us. The registry is half-populated: serve the current
+                # list, do not latch, so the first read after discovery
+                # completes still extends.
+                return
+        except Exception:
+            pass
+        _canonical_extend_active = True
+        added: list[ProviderEntry] = []
+        try:
+            from providers import list_providers as _list_providers_for_canonical
+            for _pp in _list_providers_for_canonical():
+                if not _plugin_provider_enters_picker(_pp):
+                    continue
+                _label = _pp.display_name or _pp.name
+                entry = ProviderEntry(_pp.name, _label, _pp.description or f"{_label} (direct API)")
+                list.append(CANONICAL_PROVIDERS, entry)
+                _canonical_slugs.add(_pp.name)
+                added.append(entry)
+        except Exception:
+            pass
+        finally:
+            _canonical_extend_active = False
+            _canonical_extended = True
+        for entry in added:
+            dict.setdefault(_PROVIDER_LABELS, entry.slug, entry.label)
+            _KNOWN_PROVIDER_NAMES_HOOK(entry.slug)
+
+
+def sync_plugin_provider_catalog() -> int:
+    """Admit plugin providers registered AFTER the lazy auto-extend ran; return how many were added.
+
+    Called from ``providers._sync_auth_registry`` whenever a profile is registered after this module
+    was imported (a runtime ``register_provider()``, or a plugin registered once discovery finished).
+    Before the first read the lazy extend still owes its full pass, and that pass reads the live
+    registry, so there is nothing to do yet — and running discovery here would put it back on the
+    import path this module keeps it off. Idempotent by slug; built-in rows are never rewritten.
+    """
+    if not _canonical_extended or _canonical_extend_active:
+        return 0
     try:
         from providers import list_providers
         profiles = list_providers()
     except Exception:
         return 0
     added = 0
-    for pp in profiles:
-        if not _plugin_provider_enters_picker(pp):
-            continue
-        label = pp.display_name or pp.name
-        CANONICAL_PROVIDERS.append(ProviderEntry(pp.name, label, pp.description or f"{label} (direct API)"))
-        _canonical_slugs.add(pp.name)
-        _PROVIDER_LABELS[pp.name] = label
-        added += 1
+    with _canonical_extend_lock:
+        for pp in profiles:
+            if not _plugin_provider_enters_picker(pp):
+                continue
+            label = pp.display_name or pp.name
+            list.append(CANONICAL_PROVIDERS, ProviderEntry(pp.name, label, pp.description or f"{label} (direct API)"))
+            _canonical_slugs.add(pp.name)
+            dict.__setitem__(_PROVIDER_LABELS, pp.name, label)
+            _KNOWN_PROVIDER_NAMES_HOOK(pp.name)
+            added += 1
     return added
 
 
-_PROVIDER_LABELS: dict[str, str] = {p.slug: p.label for p in CANONICAL_PROVIDERS}
+def _ensure_canonical_extended() -> None:
+    if not _canonical_extended:
+        _extend_canonical_from_plugins()
+
+
+# Set by hermes_cli.models once its own derived set exists; a no-op until then
+# (the set is built from _PROVIDER_LABELS, which is already topped up above).
+_KNOWN_PROVIDER_NAMES_HOOK = lambda slug: None  # noqa: E731
+
+
+class _LazyCanonicalProviders(list):
+    """``list`` whose first read triggers the plugin auto-extend.
+
+    A subclass so every existing reader (``for p in CANONICAL_PROVIDERS``,
+    ``len(...)``, ``enumerate(...)``, ``[...][i]``, ``list(...)``) keeps
+    working unchanged while discovery moves out of import time.
+    """
+
+    __slots__ = ()
+
+    def __iter__(self):
+        _ensure_canonical_extended()
+        return list.__iter__(self)
+
+    def __len__(self):
+        _ensure_canonical_extended()
+        return list.__len__(self)
+
+    def __getitem__(self, item):
+        _ensure_canonical_extended()
+        return list.__getitem__(self, item)
+
+    def __contains__(self, item):
+        _ensure_canonical_extended()
+        return list.__contains__(self, item)
+
+    def __reversed__(self):
+        _ensure_canonical_extended()
+        return list.__reversed__(self)
+
+    def __repr__(self):
+        _ensure_canonical_extended()
+        return list.__repr__(self)
+
+    def index(self, *args):
+        _ensure_canonical_extended()
+        return list.index(self, *args)
+
+    def count(self, item):
+        _ensure_canonical_extended()
+        return list.count(self, item)
+
+    def copy(self):
+        _ensure_canonical_extended()
+        return list(list.__iter__(self))
+
+
+class _LazyProviderLabels(dict):
+    """``dict`` whose first read triggers the plugin auto-extend.
+
+    A ``dict`` subclass is safe here: ``dict_merge`` checks that ``tp_iter`` is
+    unchanged before taking its fast path, so ``dict(x)`` / ``{**x}`` do go
+    through ``__iter__``/``keys()``. (A ``set`` subclass would NOT be — see
+    ``_KNOWN_PROVIDER_NAMES`` in ``hermes_cli/models.py``.)
+    """
+
+    __slots__ = ()
+
+    def __iter__(self):
+        _ensure_canonical_extended()
+        return dict.__iter__(self)
+
+    def __len__(self):
+        _ensure_canonical_extended()
+        return dict.__len__(self)
+
+    def __getitem__(self, key):
+        _ensure_canonical_extended()
+        return dict.__getitem__(self, key)
+
+    def __contains__(self, key):
+        _ensure_canonical_extended()
+        return dict.__contains__(self, key)
+
+    def __repr__(self):
+        _ensure_canonical_extended()
+        return dict.__repr__(self)
+
+    def get(self, key, default=None):
+        _ensure_canonical_extended()
+        return dict.get(self, key, default)
+
+    def keys(self):
+        _ensure_canonical_extended()
+        return dict.keys(self)
+
+    def values(self):
+        _ensure_canonical_extended()
+        return dict.values(self)
+
+    def items(self):
+        _ensure_canonical_extended()
+        return dict.items(self)
+
+    def copy(self):
+        _ensure_canonical_extended()
+        return dict(dict.items(self))
+
+
+CANONICAL_PROVIDERS = _LazyCanonicalProviders(CANONICAL_PROVIDERS)
+
+_PROVIDER_LABELS = _LazyProviderLabels(
+    {p.slug: p.label for p in list.__iter__(CANONICAL_PROVIDERS)}
+)
 _PROVIDER_LABELS["custom"] = "Custom endpoint"  # special case: not a named provider
-sync_plugin_provider_catalog()
 
 
 # ---------------------------------------------------------------------------

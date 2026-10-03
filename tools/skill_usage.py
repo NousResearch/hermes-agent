@@ -263,6 +263,11 @@ def is_agent_created(skill_name: str) -> bool:
         _find_skill_dir(skill_name) is not None or _find_external_skill_dir(skill_name) is None)
 
 
+def skill_exists(skill_name: str) -> bool:
+    """Return whether *skill_name* resolves to a local or configured external skill."""
+    return _find_skill_dir(skill_name) is not None or _find_external_skill_dir(skill_name) is not None
+
+
 def is_hub_installed(skill_name: str) -> bool:
     return skill_name in _read_hub_installed_names()
 

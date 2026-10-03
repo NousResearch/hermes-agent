@@ -130,7 +130,12 @@ def _apply_one(subsystem: str, rec, memory_store):
             result = apply_memory_pending(payload, memory_store)
         else:
             from tools.skill_manager_tool import apply_skill_pending
-            result = json.loads(apply_skill_pending(payload))
+            from tools.skill_provenance import reset_current_write_origin, set_current_write_origin
+            token = set_current_write_origin(rec.get("origin", "foreground"))
+            try:
+                result = json.loads(apply_skill_pending(payload))
+            finally:
+                reset_current_write_origin(token)
         return bool(result.get("success")), result.get("error", ""), result
     except Exception as e:
         return False, str(e), {}

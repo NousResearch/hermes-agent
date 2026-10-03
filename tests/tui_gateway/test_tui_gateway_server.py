@@ -20821,6 +20821,7 @@ def test_get_usage_perf_readouts_present():
         session_prompt_tokens = 27_873
         session_cache_read_tokens = 24_369
         _api_latency_history = deque([2.1, 4.3], maxlen=10)
+        _api_decode_duration_history = deque([2.1, 4.3], maxlen=10)
         _api_output_history = deque([130, 190], maxlen=10)
 
     usage = server._get_usage(_PerfAgent())

@@ -3956,6 +3956,7 @@ export interface Translations {
       toggleSessionTimer: string
       toggleTerminal: string
       toggleTokensPerSecond: string
+      resetTokensPerSecond: string
       toggleVersion: string
       toggleFreeTier: string
       toggleWorkspace: string

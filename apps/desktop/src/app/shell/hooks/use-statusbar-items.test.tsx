@@ -263,3 +263,41 @@ describe('useStatusbarItems session timer — runtime cache anchor', () => {
     expect(since).not.toBe(parentRowStartedAt * 1000)
   })
 })
+
+describe('statusbar tokens-per-second — reset throughput', () => {
+  type GatewayFn = <T = unknown>(method: string, params?: Record<string, unknown>) => Promise<T>
+
+  function throughputItem(requestGateway: GatewayFn) {
+    const { result } = renderHook(() => useStatusbarItems({ ...statusbarOptions, requestGateway }), { wrapper })
+
+    return result.current.statusbarItems.find(item => item.id === 'tokens-per-second')
+  }
+
+  it('offers a reset row that clears the focused session average', () => {
+    const calls: Array<{ method: string; params?: Record<string, unknown> }> = []
+    setActiveSessionId('sess-live')
+
+    const requestGateway = (async (method: string, params?: Record<string, unknown>) => {
+      calls.push({ method, params })
+
+      return undefined
+    }) as GatewayFn
+    const item = throughputItem(requestGateway)
+
+    expect(item?.variant).toBe('menu')
+    const reset = item?.menuItems?.find(menuItem => menuItem.id === 'reset-throughput')
+    expect(reset?.disabled).toBe(false)
+    reset?.onSelect?.()
+    expect(calls).toEqual([{ method: 'session.usage.reset_throughput', params: { session_id: 'sess-live' } }])
+
+    setActiveSessionId(null)
+  })
+
+  it('disables the reset row with no focused session', () => {
+    setActiveSessionId(null)
+
+    const item = throughputItem(async () => undefined as never)
+
+    expect(item?.menuItems?.find(menuItem => menuItem.id === 'reset-throughput')?.disabled).toBe(true)
+  })
+})

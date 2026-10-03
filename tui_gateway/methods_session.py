@@ -1460,6 +1460,23 @@ def _(rid, params: dict, session: dict) -> dict:
     return _ok(rid, usage)
 
 
+@_session_method("session.usage.reset_throughput")
+def _(rid, params: dict, session: dict) -> dict:
+    """Clear the rolling throughput histories (``avg_tps`` / ``avg_latency_s``) for the
+    session's live agent and return the fresh usage snapshot. The next completed
+    model call re-seeds the average, so the tokens/sec readout restarts from current
+    conditions instead of dragging a stale (e.g. cold-start) average."""
+    agent = session.get("agent")
+    if agent is not None:
+        with contextlib.suppress(Exception):
+            from agent.turn_usage import reset_throughput_history
+            reset_throughput_history(agent)
+    usage: dict = _session_usage_snapshot(session)
+    if agent is None and not usage:
+        usage = {"calls": 0, "input": 0, "output": 0, "total": 0}
+    return _ok(rid, usage)
+
+
 def _account_usage_lines(session: dict) -> list[str]:
     """Rendered account-limit lines for the session's route: the live agent's provider/endpoint when
     built, else the configured ``model.provider`` (on-disk credentials suffice, e.g. Codex OAuth)."""

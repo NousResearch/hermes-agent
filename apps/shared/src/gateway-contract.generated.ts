@@ -3355,6 +3355,36 @@ export interface SessionUsageResult {
   credits_lines?: string[] | null
   [key: string]: unknown
 }
+export interface SessionResetThroughputParams {
+  session_id: string
+  profile?: string | null
+}
+export interface SessionResetThroughputResult {
+  model?: string
+  input?: number
+  output?: number
+  reasoning?: number
+  prompt?: number
+  completion?: number
+  total?: number
+  calls?: number
+  compressions?: number | null
+  context_used?: number | null
+  context_max?: number | null
+  context_percent?: number | null
+  context_source?: string | null
+  context_estimated?: boolean | null
+  cache_hit_pct?: number | null
+  cache_read?: number | null
+  cache_write?: number | null
+  avg_latency_s?: number | null
+  avg_tps?: number | null
+  active_subagents?: number | null
+  dev_credits_spent_micros?: number | null
+  cost_usd?: number | null
+  cost_status?: string | null
+  [key: string]: unknown
+}
 export interface SessionContextBreakdownParams {
   session_id: string
   profile?: string | null
@@ -5274,6 +5304,8 @@ export interface RpcMethods {
   'session.undo': { params: SessionUndoParams; result: SessionUndoResult }
   /** Token / context / cost counters for the session (+ Nous credit lines when available). */
   'session.usage': { params: SessionUsageParams; result: SessionUsageResult }
+  /** Clear the session's rolling throughput histories (avg_tps / avg_latency_s); returns the fresh usage snapshot. */
+  'session.usage.reset_throughput': { params: SessionResetThroughputParams; result: SessionResetThroughputResult }
   /** Re-home a stored session's workspace; git identity is replaced and a live agent follows. */
   'session.workspace.move': { params: SessionWorkspaceMoveParams; result: SessionWorkspaceMoveResult }
   /** Strict provider check through the same runtime resolution the agent uses on session creation. */
@@ -5581,6 +5613,7 @@ export const RPC_METHODS = [
   'session.title',
   'session.undo',
   'session.usage',
+  'session.usage.reset_throughput',
   'session.workspace.move',
   'setup.runtime_check',
   'setup.status',

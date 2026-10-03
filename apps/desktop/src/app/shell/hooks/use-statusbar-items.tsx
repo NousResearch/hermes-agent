@@ -350,6 +350,17 @@ export function useStatusbarItems({
   const approvalModeItem = useApprovalModeStatusbarItem(activeGatewayProfile, requestApprovalModeGateway)
   const systemResourcesItem = useSystemResourcesStatusbarItem()
 
+  // Restart the tokens/sec average from current conditions (a cold-start load
+  // no longer drags it): clears the backend's rolling histories for the
+  // focused session. Fail-open — a status readout must never surface an error.
+  const resetThroughput = useCallback(() => {
+    if (!activeSessionId) {
+      return
+    }
+
+    void requestGateway('session.usage.reset_throughput', { session_id: activeSessionId }).catch(() => undefined)
+  }, [activeSessionId, requestGateway])
+
   const gatewayMenuContent = useMemo(
     () => (close: () => void) => (
       <GatewayMenuPanel
@@ -707,9 +718,17 @@ export function useStatusbarItems({
         icon: <Zap className="size-3" />,
         id: 'tokens-per-second',
         label: tokensPerSecond || '—',
+        menuItems: [
+          {
+            disabled: !activeSessionId,
+            id: 'reset-throughput',
+            label: copy.resetTokensPerSecond,
+            onSelect: resetThroughput
+          }
+        ],
         title: copy.tokensPerSecondTitle,
         toggleLabel: copy.toggleTokensPerSecond,
-        variant: 'text'
+        variant: 'menu'
       },
       {
         detail: <LiveDuration since={sessionStartedAt} />,
@@ -741,6 +760,7 @@ export function useStatusbarItems({
       ...(backendVersionItem ? [backendVersionItem] : [])
     ],
     [
+      activeSessionId,
       approvalModeItem,
       backendVersionItem,
       busy,
@@ -754,6 +774,7 @@ export function useStatusbarItems({
       copy,
       currentUsage.compressions,
       gaugeUsage,
+      resetThroughput,
       sessionStartedAt,
       gatewayState,
       systemResourcesItem,

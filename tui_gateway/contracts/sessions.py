@@ -505,6 +505,18 @@ method("session.usage", params=SessionUsageParams, result=SessionUsageResult,
        doc="Token / context / cost counters for the session (+ Nous credit lines when available).")
 
 
+class SessionResetThroughputParams(SessionParams):
+    pass
+
+
+class SessionResetThroughputResult(Usage):
+    pass
+
+
+method("session.usage.reset_throughput", params=SessionResetThroughputParams, result=SessionResetThroughputResult,
+       doc="Clear the session's rolling throughput histories (avg_tps / avg_latency_s); returns the fresh usage snapshot.")
+
+
 class SessionContextBreakdownParams(SessionParams):
     pass
 

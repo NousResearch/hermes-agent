@@ -2195,8 +2195,9 @@ def _get_usage(agent) -> dict:
     with contextlib.suppress(Exception):
         # Mirrors the classic CLI bar (cli.py _get_status_bar_snapshot / PR #98250): hit =
         # session_cache_read_tokens / session_prompt_tokens (CanonicalUsage.prompt_tokens = input +
-        # cache_read + cache_write) latency/tps read the deque(maxlen=10) history maintained per API call in
-        # agent/conversation_loop.py.
+        # cache_read + cache_write) latency reads the wall-clock deque(maxlen=10) history maintained per
+        # API call in agent/conversation_loop.py; tps reads the decode-phase deque (first token →
+        # completion) alongside it.
         _prompt_total = int(getattr(agent, "session_prompt_tokens", 0) or 0)
         _cache_read = int(getattr(agent, "session_cache_read_tokens", 0) or 0)
         if _prompt_total > 0 and _cache_read > 0:
@@ -2204,12 +2205,19 @@ def _get_usage(agent) -> dict:
     with contextlib.suppress(Exception):  # a status-bar readout must never break usage reporting
         _lhist = list(getattr(agent, "_api_latency_history", []) or [])
         _ohist = list(getattr(agent, "_api_output_history", []) or [])
+        # Decode-phase durations (first token → completion); older histories recorded
+        # before decode tracking fall back to the wall clock.
+        _dhist = list(getattr(agent, "_api_decode_duration_history", []) or []) or _lhist
         if _n := min(len(_lhist), len(_ohist)):
             _total_lat = sum(_lhist[-_n:])
-            _avg_vel = (sum(_ohist[-_n:]) / _total_lat) if _total_lat > 0 else None
-            for _key, _val in (("avg_latency_s", _total_lat / _n), ("avg_tps", _avg_vel)):
-                if _val is not None and _val == _val and 0 < _val < 1e6:  # guard NaN/negative/absurd provider timings
-                    usage[_key] = round(float(_val), 1)
+            _avg_lat = _total_lat / _n
+            if _avg_lat is not None and _avg_lat == _avg_lat and 0 < _avg_lat < 1e6:  # guard NaN/negative/absurd provider timings
+                usage["avg_latency_s"] = round(float(_avg_lat), 1)
+        if _m := min(len(_dhist), len(_ohist)):
+            _decode_total = sum(_dhist[-_m:])
+            _avg_vel = (sum(_ohist[-_m:]) / _decode_total) if _decode_total > 0 else None
+            if _avg_vel is not None and _avg_vel == _avg_vel and 0 < _avg_vel < 1e6:
+                usage["avg_tps"] = round(float(_avg_vel), 1)
     # Live count of background/async subagents (CLI status bar ⛓ parity, same async_delegation registry).
     with contextlib.suppress(Exception):
         from tools.async_delegation import active_count as _async_active_count

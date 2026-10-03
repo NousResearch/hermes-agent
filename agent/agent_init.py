@@ -2351,6 +2351,9 @@ _USAGE_STATE: Dict[str, Any] = {
     # Status-bar latency/velocity history (last 10 calls), shared by loop + codex_runtime.
     "_api_latency_history": lambda: deque(maxlen=10),
     "_api_output_history": lambda: deque(maxlen=10),
+    # Decode-phase durations (first token → completion) for throughput: the wall clock
+    # minus model-load/prefill wait, so a cold local model doesn't read as slow output.
+    "_api_decode_duration_history": lambda: deque(maxlen=10),
 }
 
 # Constructor params stored verbatim under the same name.

@@ -5145,6 +5145,7 @@ export const deOverrides = {
       toggleSessionTimer: 'Session-Timer',
       toggleTerminal: 'Terminal',
       toggleTokensPerSecond: 'Tokens pro Sekunde',
+      resetTokensPerSecond: 'Durchsatzstatistik zurücksetzen',
       toggleVersion: 'Version & Updates',
       toggleFreeTier: 'Gratis-Tarif',
       toggleWorkspace: 'Workspace',

@@ -4403,6 +4403,7 @@ export const zh = defineLocale({
       toggleSessionTimer: '会话计时',
       toggleTerminal: '终端',
       toggleTokensPerSecond: '每秒 token 数',
+      resetTokensPerSecond: '重置吞吐量统计',
       toggleVersion: '版本与更新',
       toggleFreeTier: 'Free tier',
       toggleWorkspace: '工作区',

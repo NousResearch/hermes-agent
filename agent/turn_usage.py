@@ -45,6 +45,54 @@ def _loop_mod():
     return _cl
 
 
+def decode_duration_for_tps(api_duration: float, api_start_time=None, first_chunk_at=None) -> float:
+    """Decode-phase duration for throughput math: wall clock minus time-to-first-token.
+
+    A cold local model spends most of a call loading (queue + prefill) before the
+    first token streams; dividing output tokens by the full wall clock then reports
+    the load wait as generation slowness. The first stream chunk timestamp
+    (``agent._last_api_first_chunk_at``) marks where generation actually started,
+    so throughput divides by ``api_duration - ttft`` instead. Falls back to the
+    full ``api_duration`` whenever the chunk timing is missing or implausible
+    (non-streamed call, stale timestamp from another attempt, clock skew).
+    """
+    try:
+        duration = float(api_duration)
+    except (TypeError, ValueError):
+        return api_duration
+    try:
+        if api_start_time is None or first_chunk_at is None:
+            return duration
+        ttft = float(first_chunk_at) - float(api_start_time)
+    except (TypeError, ValueError):
+        return duration
+    if not (ttft == ttft and 0 <= ttft < duration):  # NaN / negative / beyond the call
+        return duration
+    decode = duration - ttft
+    return decode if decode > 0 else duration
+
+
+def reset_throughput_history(agent: Any) -> None:
+    """Clear the rolling histories behind ``avg_tps``/``avg_latency_s`` (latency, decode
+    phase, output — appended together per call).
+
+    The next completed call re-seeds them, so the status-bar readout restarts from
+    current conditions instead of dragging a stale (e.g. cold-start) average.
+    """
+    with suppress(Exception):
+        hist = getattr(agent, "_api_latency_history", None)
+        if hist is not None:
+            hist.clear()
+    with suppress(Exception):
+        dhist = getattr(agent, "_api_decode_duration_history", None)
+        if dhist is not None:
+            dhist.clear()
+    with suppress(Exception):
+        ohist = getattr(agent, "_api_output_history", None)
+        if ohist is not None:
+            ohist.clear()
+
+
 def _fold_moa_usage(agent, canonical_usage):
     """MoA: fold advisor fan-out usage into REPORTED token counts (only aggregator usage is
     returned, so advisor spend would be invisible) and flush the full-turn trace when
@@ -73,10 +121,17 @@ def _fold_moa_usage(agent, canonical_usage):
 def record_response_usage(
     agent: Any, response: Any, *, messages: List[Dict[str, Any]], api_call_count: int,
     api_duration: float, compression_attempts: int, max_compression_attempts: int,
+    api_start_time: float | None = None, first_chunk_at: float | None = None,
 ) -> ResponseUsageOutcome:
     """Fold ``response.usage`` into compressor, anchors, session counters, state.db
     and the API-call log line (see module docstring). No-usage responses only
-    consume a pending compaction verdict. Returns the loop-visible outcome."""
+    consume a pending compaction verdict. Returns the loop-visible outcome.
+
+    ``api_start_time`` + ``first_chunk_at`` (default: the attempt's
+    ``agent._last_api_first_chunk_at``) feed the rolling throughput history with
+    the decode phase only, so model-load / prefill wait doesn't read as
+    generation slowness.
+    """
     rearmed = False
     compressor = agent.context_compressor
     # Count every completed provider attempt, including providers that omit usage.
@@ -179,11 +234,19 @@ def record_response_usage(
     agent.session_cache_read_tokens += canonical_usage.cache_read_tokens
     agent.session_cache_write_tokens += canonical_usage.cache_write_tokens
     agent.session_reasoning_tokens += canonical_usage.reasoning_tokens
-    # Rolling history for status-bar averages (last 10).
+    # Rolling history for status-bar averages (last 10). Latency keeps the full wall
+    # clock; throughput divides by the decode phase (first token → completion), so a
+    # cold local model's load/prefill wait doesn't read as generation slowness.
     with suppress(Exception):
+        if first_chunk_at is None:
+            first_chunk_at = getattr(agent, "_last_api_first_chunk_at", None)
+        _tps_duration = decode_duration_for_tps(api_duration, api_start_time, first_chunk_at)
         hist = getattr(agent, "_api_latency_history", None)
         if hist is not None:
             hist.append(float(api_duration))
+        dhist = getattr(agent, "_api_decode_duration_history", None)
+        if dhist is not None:
+            dhist.append(float(_tps_duration))
         ohist = getattr(agent, "_api_output_history", None)
         if ohist is not None:
             ohist.append(int(canonical_usage.output_tokens or 0))

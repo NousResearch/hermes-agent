@@ -3667,6 +3667,7 @@ export const ru = defineLocale({
       toggleSessionTimer: 'Таймер сеанса',
       toggleTerminal: 'Терминал',
       toggleTokensPerSecond: 'Токенов в секунду',
+      resetTokensPerSecond: 'Сбросить статистику пропускной способности',
       toggleVersion: 'Версия и обновления',
       toggleWorkspace: 'Рабочее пространство',
       cacheHitRateTitle: 'Доля попаданий в кэш промпта за сеанс — кэшированные токены дешевле, чем выше, тем дешевле',

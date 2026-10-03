@@ -4015,6 +4015,7 @@
     "shell.statusbar.providerModelTitle",
     "shell.statusbar.releaseAvailable",
     "shell.statusbar.resetStatusbar",
+    "shell.statusbar.resetTokensPerSecond",
     "shell.statusbar.restart",
     "shell.statusbar.running",
     "shell.statusbar.showTerminal",

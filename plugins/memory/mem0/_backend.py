@@ -78,8 +78,14 @@ class SelfHostedBackend(Mem0Backend):
         return resp.json() if resp.content else {}
 
     def search(self, query: str, *, filters: dict, top_k: int = 10, rerank: bool = False) -> list[dict]:
-        # rerank is platform-only; the self-hosted /search ignores it. user_id belongs in filters (top-level is deprecated).
-        return _unwrap_results(self._json("POST", "/search", json={"query": query, "top_k": top_k, **({"filters": filters} if filters else {})}))
+        # rerank is platform-only; the self-hosted /search ignores it. The current server reads the
+        # session ids from ``filters`` (top-level is deprecated there and merged into filters), but a
+        # server built before that contract — the shipped ``mem0/mem0-api-server`` image on mem0ai
+        # 0.1.x — only reads them top-level and answers 500 ("At least one of 'user_id', 'agent_id',
+        # or 'run_id' must be provided") when they arrive inside filters alone. Send them both ways.
+        session_ids = {k: v for k, v in (filters or {}).items() if k in ("user_id", "agent_id", "run_id") and v}
+        return _unwrap_results(self._json("POST", "/search", json={
+            "query": query, "top_k": top_k, **session_ids, **({"filters": filters} if filters else {})}))
 
     def add(self, messages: list, *, user_id: str, agent_id: str, infer: bool = False, metadata: dict | None = None) -> dict:
         return self._json("POST", "/memories", json={"messages": messages, **_add_kwargs(user_id, agent_id, infer, metadata)})

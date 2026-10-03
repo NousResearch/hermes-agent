@@ -20,6 +20,16 @@ name: OSV-Scanner
 # Findings land in the repo's Security tab (Code Scanning > OSV-Scanner).
 # fail-on-vuln is disabled so the job does not block merges on pre-existing
 # vulnerabilities in pinned deps that we may need to patch deliberately.
+#
+# --config=osv-scanner.toml (repo root) scopes the scan to production
+# dependencies by suppressing the dev group of the npm lockfiles.
+# Without it the weekly report reads as if dev-only advisories ship: on
+# Aug 20 2026 it flagged the @xmldom/xmldom and electron advisories
+# against this repo although every copy of both packages in every
+# scanned lockfile is a "dev": true node (issue #116275). Python
+# entries in uv.lock are unaffected — the scanner does not group them,
+# so those findings keep reporting. Review suppressed findings by
+# running the scan locally without --config.
 
 on:
   schedule:
@@ -42,6 +52,7 @@ jobs:
       # Scan explicit lockfiles rather than recursing, so we only look at
       # the five sources of truth and skip vendored / test / worktree dirs.
       scan-args: |-
+        --config=osv-scanner.toml
         --lockfile=uv.lock
         --lockfile=package-lock.json
         --lockfile=website/package-lock.json

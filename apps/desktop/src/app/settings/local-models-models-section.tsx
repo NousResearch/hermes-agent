@@ -40,9 +40,10 @@ export function LocalModelsModelsSection({
   const copy = t.settings.localModels
   const hasRecommendation = catalog.some(c => c.recommended)
   const sortedCatalog = [...catalog].sort((a, b) => fitRank(a) - fitRank(b))
+  const sectionTitle = hasRecommendation ? `Nous · ${copy.recommended} · ${copy.modelsTitle}` : copy.modelsTitle
 
   return (
-    <SettingsSection icon={Download} meta={`${catalog.length}`} title={copy.modelsTitle}>
+    <SettingsSection icon={Download} meta={`${catalog.length}`} title={sectionTitle}>
       {!hasRecommendation && (
         <ListRow
           action={

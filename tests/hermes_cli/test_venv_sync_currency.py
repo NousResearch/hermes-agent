@@ -4,6 +4,7 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import sys
 
 import hermes_yaml as yaml
 
@@ -13,6 +14,10 @@ from pm import paths
 from pm.lock import Lockfile
 from tests.pm.test_plugin_survival_contract import admission_env  # noqa: F401
 
+# The fake pin must match the interpreter the admission fixture really builds
+# with, or the #85356 version-drift check (correctly) flags the venv.
+RUNNING_PY = f"{sys.version_info[0]}.{sys.version_info[1]}"
+
 
 def test_check_uses_real_pm_selection_and_keeps_invalid_evidence(admission_env, monkeypatch, capsys):
     monkeypatch.setattr("pm.client.is_runtime", lambda: True)
@@ -21,7 +26,7 @@ def test_check_uses_real_pm_selection_and_keeps_invalid_evidence(admission_env, 
     ensure = importlib.import_module('pm.install')
     pin_path = root / 'pins.json'
     pins = Lockfile(pin_path)
-    pins.set_pin('python', '1.0', {'any': {'url': 'https://example.invalid/python', 'sha256': 'a' * 64}})
+    pins.set_pin('python', RUNNING_PY, {'any': {'url': 'https://example.invalid/python', 'sha256': 'a' * 64}})
     pins.save()
     monkeypatch.setattr(paths, 'lockfile_path', lambda: pin_path)
     # A historical foreign-root stamp must not certify a PM environment.
@@ -70,11 +75,11 @@ def test_check_uses_real_pm_selection_and_keeps_invalid_evidence(admission_env, 
     assert any(problem.startswith('venv:') for problem in ensure.check())
     facts_path.write_bytes(pristine)
 
-    pins.set_pin('python', '1.0', {'any': {'url': 'https://example.invalid/python', 'sha256': 'b' * 64}})
+    pins.set_pin('python', RUNNING_PY, {'any': {'url': 'https://example.invalid/python', 'sha256': 'b' * 64}})
     pins.save()
     check('would-sync')
     assert any(problem.startswith('venv:') for problem in ensure.check())
-    pins.set_pin('python', '1.0', {'any': {'url': 'https://example.invalid/python', 'sha256': 'a' * 64}})
+    pins.set_pin('python', RUNNING_PY, {'any': {'url': 'https://example.invalid/python', 'sha256': 'a' * 64}})
     pins.save()
 
     marker = selected / 'pyvenv.cfg'

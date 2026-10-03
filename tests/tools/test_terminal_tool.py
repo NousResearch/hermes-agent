@@ -122,3 +122,31 @@ def test_sudo_rewrite_preserves_env_operands_and_prose(monkeypatch):
 def test_count_real_sudo_invocations_ignores_mentions(monkeypatch):
     assert terminal_tool_sudo._count_real_sudo_invocations("grep sudo README.md") == 0
     assert terminal_tool_sudo._count_real_sudo_invocations("sudo a; sudo b") == 2
+
+
+def test_sudo_rewrite_ignores_heredoc_bodies():
+    """A `sudo` line inside a heredoc body is data, not a local sudo.
+
+    `ssh host 'bash -s' <<'EOF' … sudo -n … EOF` pipes a script to the REMOTE shell. The
+    body used to be scanned as local code (a bare `sudo` opens a command line), so the
+    agent machine popped a local sudo password prompt for a password only a local sudo
+    could ever use. Masking heredoc bodies leaves the payload untouched.
+    """
+    payloads = (
+        "ssh h 'bash -s' <<'EOF'\nsudo -n systemctl restart x\nEOF",
+        "ssh h bash -s <<EOF\nsudo -n systemctl restart x\nEOF",
+        "ssh h bash -s <<-EOF\n\tsudo -n systemctl restart x\n\tEOF",
+        "ssh h bash -s <<A <<B\nsudo x\nA\nsudo y\nB",
+    )
+    for command in payloads:
+        assert terminal_tool_sudo._count_real_sudo_invocations(command) == 0
+        assert terminal_tool_sudo._transform_sudo_command(command) == (command, None)
+
+
+def test_sudo_rewrite_still_reaches_sudo_after_a_heredoc(monkeypatch):
+    """Masking the body must not hide a real local sudo on a later line, and must not
+    disturb the body's bytes (offsets survive masking)."""
+    monkeypatch.setenv("SUDO_PASSWORD", "testpass")
+    command = "cat <<EOF >/tmp/f\nhello $HOME\nEOF\nsudo -n true"
+    assert terminal_tool_sudo._transform_sudo_command(command) == (
+        "cat <<EOF >/tmp/f\nhello $HOME\nEOF\nsudo -S -p '' -n true", "testpass\n")

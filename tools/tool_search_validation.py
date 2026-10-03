@@ -136,6 +136,37 @@ def validate_deferred_call_args(name: str, args: Dict[str, Any]) -> Optional[str
         return None
 
 
+def _echo_args(arguments: Any) -> str:
+    """Compact JSON for an echoed argument object; oversized payloads collapse to ``{...}``."""
+    text = json.dumps(arguments, ensure_ascii=False, separators=(",", ":"))
+    return "{...}" if len(text) > _ECHO_ARGS_MAX_CHARS else text
+
+
+def _echo_single_shape(name: str, arguments: Any) -> str:
+    """The caller's own payload restated in the advertised single-call ``tool_call`` shape."""
+    return '{"name":%s,"arguments":%s}' % (
+        json.dumps(name, ensure_ascii=False), _echo_args(arguments))
+
+
+def _no_name_error(args: Dict[str, Any], *, position: Optional[int] = None) -> str:
+    """Rejection for a call that carries no tool name.
+
+    Qwen2.5 via Ollama (#103752) aims at a tool but sends its arguments flattened at
+    the top level with no ``name`` and no ``arguments`` wrapper. Stating only the
+    missing field left the model re-sending the identical call forever, so the error
+    restates the valid shape with the caller's OWN arguments inside — the same
+    correction pattern as ``local_batch_error`` — and names the direct-call exit for
+    a tool that was never deferred.
+    """
+    where = f"calls[{position}]" if position is not None else "tool_call"
+    return (
+        f"{where} requires a 'name' argument; the arguments were sent flattened at the "
+        "top level with no 'name' and no 'arguments' object. Retry with: "
+        f"{_echo_single_shape('<tool name>', args)}. If the tool you want is already "
+        "listed in your tools, call it directly instead of via tool_call."
+    )
+
+
 def normalize_tool_call_entries(args: Dict[str, Any]) -> Tuple[List[Dict[str, Any]], Optional[str]]:
     """Normalize ``tool_call`` arguments into a ``calls[]`` list of entries.
 
@@ -147,9 +178,10 @@ def normalize_tool_call_entries(args: Dict[str, Any]) -> Tuple[List[Dict[str, An
     """
     raw_calls = args.get("calls")
     if raw_calls is None:
-        # Legacy single shape.
+        # Legacy single shape. A flattened payload with no name at all (Qwen2.5 via
+        # Ollama, #103752) gets the echoed correction, not a bare constraint.
         if not str(args.get("name") or "").strip():
-            return [], "tool_call requires 'calls' (an array of {name, arguments})"
+            return [], _no_name_error(args)
         raw_calls = [{"name": args.get("name"), "arguments": args.get("arguments")}]
     if isinstance(raw_calls, str):
         # Tolerate the model emitting the batch envelope as a JSON string —
@@ -169,7 +201,11 @@ def normalize_tool_call_entries(args: Dict[str, Any]) -> Tuple[List[Dict[str, An
             return [], f"tool_call calls[{position}] must be an object with 'name' and 'arguments'"
         name = str(raw.get("name") or "").strip()
         if not name:
-            return [], f"tool_call calls[{position}] requires a 'name'"
+            # An entry that already carries "arguments" is the flattened shape wrapped
+            # one level too deep: echo that, not the whole entry.
+            return [], _no_name_error(
+                raw.get("arguments") if isinstance(raw.get("arguments"), dict) else raw,
+                position=position)
         if name in BRIDGE_TOOL_NAMES:
             return [], f"tool_call cannot invoke '{name}' (it is itself a bridge tool)"
         raw_args = raw.get("arguments")
@@ -198,10 +234,9 @@ def local_batch_error(entries: List[Dict[str, Any]]) -> str:
     shape with the caller's OWN first entry: small models re-send an identical batch
     when told only the constraint, and the echoed payload is what gets them unstuck."""
     first = entries[0]
-    args = json.dumps(first.get("arguments", {}), ensure_ascii=False, separators=(",", ":"))
-    if len(args) > _ECHO_ARGS_MAX_CHARS:
-        args = "{...}"  # keep the correction readable; the model still has its own arguments
-    retry = '{"calls":[{"name":%s,"arguments":%s}]}' % (json.dumps(first["name"], ensure_ascii=False), args)
+    args = _echo_args(first.get("arguments", {}))
+    retry = '{"calls":[{"name":%s,"arguments":%s}]}' % (
+        json.dumps(first["name"], ensure_ascii=False), args)
     remaining = (f" then issue the remaining {len(entries) - 1} call(s) as separate tool_call invocations"
                  if len(entries) > 1 else "")
     return (

@@ -1098,6 +1098,9 @@ def check_dangerous_command(command: str, env_type: str,
         subject=f"Command flagged as dangerous ({description})", noun="dangerous commands",
         advice="Find an alternative approach that avoids this command.",
         autoapprove_log_prefix="AUTO-APPROVED dangerous command in non-interactive non-gateway context",
+        fail_closed_when_no_human=True,
+        no_human_block_message=(f"BLOCKED: approval required ({description}) but no interactive user or gateway is present "
+                                "to approve this dangerous command."),
     )
 
 

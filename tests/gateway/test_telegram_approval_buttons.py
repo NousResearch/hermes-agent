@@ -356,3 +356,118 @@ class TestTelegramApprovalCallback:
         assert runner.last_source.platform == Platform.TELEGRAM
         assert runner.last_source.user_id == "222"
 
+
+class TestTelegramApprovalResolutionKeepsPrompt:
+    """Resolving an approval appends the decision to the original prompt text
+    instead of replacing it, so the chat keeps audit context (#128982)."""
+
+    def _query(self, data, user="Norbert"):
+        query = AsyncMock()
+        query.data = data
+        query.message = MagicMock()
+        query.message.chat_id = 12345
+        query.from_user = MagicMock()
+        query.from_user.first_name = user
+        query.from_user.id = "12345"
+        query.answer = AsyncMock()
+        query.edit_message_text = AsyncMock()
+        update = MagicMock()
+        update.callback_query = query
+        return query, update, MagicMock()
+
+    @pytest.mark.asyncio
+    async def test_resolved_edit_keeps_command_text(self):
+        adapter = _make_adapter()
+        prompt_html = "⚠️ <b>Header</b>\n\n<pre>rm -rf /important</pre>\n\ndeadline line"
+        adapter._approval_state[7] = {
+            "session_key": "agent:main:telegram:group:12345:99", "text": prompt_html}
+        query, update, context = self._query("ea:once:7")
+
+        with patch.dict(os.environ, {"TELEGRAM_ALLOWED_USERS": "*"}, clear=False):
+            with patch("tools.approval.resolve_gateway_approval", return_value=1):
+                await adapter._handle_callback_query(update, context)
+
+        edit_kwargs = query.edit_message_text.call_args[1]
+        assert "HTML" in repr(edit_kwargs["parse_mode"])
+        assert edit_kwargs["reply_markup"] is None
+        assert "rm -rf /important" in edit_kwargs["text"]
+        assert "Approved once" in edit_kwargs["text"]
+        assert "Norbert" in edit_kwargs["text"]
+        assert utf16_len(edit_kwargs["text"]) <= adapter.MAX_MESSAGE_LENGTH
+
+    @pytest.mark.asyncio
+    async def test_expired_edit_keeps_command_text(self):
+        adapter = _make_adapter()
+        prompt_html = "⚠️ <b>Header</b>\n\n<pre>rm -rf /important</pre>"
+        adapter._approval_state[8] = {
+            "session_key": "agent:main:telegram:group:12345:99", "text": prompt_html}
+        query, update, context = self._query("ea:once:8")
+
+        with patch.dict(os.environ, {"TELEGRAM_ALLOWED_USERS": "*"}, clear=False):
+            with patch("tools.approval.resolve_gateway_approval", return_value=0):
+                await adapter._handle_callback_query(update, context)
+
+        edit_kwargs = query.edit_message_text.call_args[1]
+        assert "rm -rf /important" in edit_kwargs["text"]
+        assert "expired" in edit_kwargs["text"].lower()
+
+    @pytest.mark.asyncio
+    async def test_legacy_plain_state_falls_back_to_short_edit(self):
+        """Pre-fix in-memory shape (bare session key) keeps the old short edit."""
+        adapter = _make_adapter()
+        adapter._approval_state[9] = "agent:main:telegram:group:12345:99"
+        query, update, context = self._query("ea:once:9")
+
+        with patch.dict(os.environ, {"TELEGRAM_ALLOWED_USERS": "*"}, clear=False):
+            with patch("tools.approval.resolve_gateway_approval", return_value=1):
+                await adapter._handle_callback_query(update, context)
+
+        edit_kwargs = query.edit_message_text.call_args[1]
+        assert "MARKDOWN_V2" in repr(edit_kwargs["parse_mode"])
+        assert "rm -rf" not in edit_kwargs["text"]
+
+    @pytest.mark.asyncio
+    async def test_send_stores_prompt_text(self):
+        """The send path keeps the exact HTML shown to the user."""
+        from types import SimpleNamespace
+
+        adapter = _make_adapter()
+        adapter._send_control_message = AsyncMock(
+            return_value=SimpleNamespace(message_id=77))
+        prompt = SimpleNamespace(
+            text="⚠️ <b>H</b>\n\n<pre>ls</pre>",
+            session_key="agent:main:telegram:dm:1:2",
+            actions=[("Allow Once", "once", None), ("Deny", "deny", None)],
+            chat_id="12345", metadata={})
+
+        result = await adapter._send_exec_approval_prompt(prompt)
+
+        assert result.success is True
+        approval_id = next(iter(adapter._approval_state))
+        stored = adapter._approval_state[approval_id]
+        assert stored["session_key"] == "agent:main:telegram:dm:1:2"
+        assert stored["text"] == "⚠️ <b>H</b>\n\n<pre>ls</pre>"
+
+
+class TestApprovalResolutionHtml:
+    """Unit contract for the prompt + decision composition."""
+
+    def test_empty_prompt_returns_none(self):
+        assert _make_adapter()._approval_resolution_html("", "x") is None
+
+    def test_short_prompt_appends_escaped_decision(self):
+        out = _make_adapter()._approval_resolution_html(
+            "<pre>ls</pre>", "Approved once by Alice_Bob")
+        assert out.startswith("<pre>ls</pre>")
+        assert out.endswith("— Approved once by Alice_Bob")
+
+    def test_over_budget_cut_keeps_cap_and_valid_html(self):
+        adapter = _make_adapter()
+        body = "<pre>" + "x" * 4050 + "&amp;" + "y" * 60 + "</pre>\n\ntail"
+        out = adapter._approval_resolution_html(body, "Approved once by Norbert")
+        assert utf16_len(out) <= adapter.MAX_MESSAGE_LENGTH
+        assert out.endswith("— Approved once by Norbert")
+        assert "…" in out
+        assert out.count("<pre>") == out.count("</pre>")
+        assert "&am…" not in out and "&a…" not in out
+

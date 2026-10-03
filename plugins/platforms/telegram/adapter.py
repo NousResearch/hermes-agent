@@ -696,7 +696,7 @@ class TelegramAdapter(BasePlatformAdapter):
         self._max_doc_bytes: int = 2 * 1024 * 1024 * 1024 if extra.get("base_url") else 20 * 1024 * 1024
         self._model_picker_state: Dict[str, dict] = {}  # per-chat interactive picker state
         self._choice_picker_state: Dict[str, dict] = {}
-        self._approval_state: Dict[int, str] = {}  # message_id → session_key
+        self._approval_state: Dict[int, Dict[str, str]] = {}  # approval_id → {"session_key", "text"}
         self._slash_confirm_state: Dict[str, str] = {}  # confirm_id → session_key
         self._clarify_state: Dict[str, str] = {}  # clarify_id → session_key
         # "important" (default): only final responses, approvals and slash confirmations notify;
@@ -4333,7 +4333,8 @@ class TelegramAdapter(BasePlatformAdapter):
             buttons = [InlineKeyboardButton(label, callback_data=f"ea:{choice}:{approval_id}")
                        for label, choice, _ in prompt.actions]
             return prompt.text, InlineKeyboardMarkup(self._rows_of_two(buttons)), (
-                lambda msg: self._approval_state.__setitem__(approval_id, prompt.session_key))
+                lambda msg: self._approval_state.__setitem__(
+                    approval_id, {"session_key": prompt.session_key, "text": prompt.text}))
         return await self._send_prompt(
             "send_exec_approval", prompt.chat_id, prompt.metadata, build, parse_mode=ParseMode.HTML,
             thread_id=self._metadata_thread_id(prompt.metadata), reply_to_mode=self._reply_to_mode)
@@ -4708,6 +4709,41 @@ class TelegramAdapter(BasePlatformAdapter):
         with contextlib.suppress(Exception):
             await query.edit_message_text(text=self.format_message(text_md), parse_mode=ParseMode.MARKDOWN_V2, reply_markup=None)
 
+    def _approval_resolution_html(self, prompt_text: str, decision: str) -> Optional[str]:
+        """Original approval prompt plus the decision line, within the 4096-char
+        cap — or None when no prompt text was kept (decision-only fallback).
+
+        The stored prompt is already-escaped HTML; the plain-text decision is
+        escaped on append so audit context (the command) survives resolution
+        (#128982). Over-budget bodies are cut with ``_ea_fit`` in UTF-16 units
+        plus HTML repair: never split an entity, and re-close a ``<pre>`` the
+        cut leaves open (the only tag spanning content in these prompts).
+        """
+        if not prompt_text:
+            return None
+        tail = "\n\n— " + _html.escape(decision)
+        budget = self.MAX_MESSAGE_LENGTH - utf16_len(tail)
+        if budget < 1:
+            return None
+        body = prompt_text
+        if utf16_len(body) > budget:
+            # Room for the "</pre>" repair below, which rides outside the fit.
+            reserve = len("</pre>") if "<pre>" in body else 0
+            body = self._ea_fit(body, max(0, budget - 1 - reserve), suffix="…", escape=lambda s: s)
+            body = re.sub(r"&[^;\s]*$", "", body)
+            if body.count("<pre>") > body.count("</pre>"):
+                body += "</pre>"
+        return body + tail
+
+    async def _edit_approval_resolution(self, query, prompt_text: str, decision: str) -> None:
+        """Replace the approval prompt with prompt + decision (HTML); decision-only
+        MarkdownV2 edit when no prompt text was kept."""
+        combined = self._approval_resolution_html(prompt_text, decision)
+        if combined is None:
+            await self._edit_md_quiet(query, decision)
+        else:
+            await self._edit_html_quiet(query, combined)
+
     async def _handle_inline_query(self, update: "Update", context: "ContextTypes.DEFAULT_TYPE") -> None:
         """Answer ``@botname <query>`` with a searchable command/skill picker (the ``/`` menu is capped at
         60 slots). Results are computed per keystroke, 50 per page; tapping sends ``/cmd`` text as the
@@ -4819,9 +4855,19 @@ class TelegramAdapter(BasePlatformAdapter):
         except (ValueError, IndexError):
             await query.answer(text=_toast("platform.telegram.approval.toast_invalid_data"))
             return
-        session_key = await self._claim_callback_state(
+        session_key = None
+        prompt_text = ""
+        record = await self._claim_callback_state(
             query, cb, self._approval_state, approval_id, _unauthorized(),
             _toast("platform.telegram.approval.toast_already_resolved"))
+        if not record:
+            return
+        if isinstance(record, dict):
+            session_key = record.get("session_key") or ""
+            prompt_text = record.get("text") or ""
+        else:
+            # Pre-fix in-memory shape (plain session key): decision-only edit below.
+            session_key = record
         if not session_key:
             return
         user_display = getattr(query.from_user, "first_name", None) or t("platform.telegram.user_fallback")
@@ -4842,12 +4888,12 @@ class TelegramAdapter(BasePlatformAdapter):
             label_key = {"once": "resolved_once", "session": "resolved_session", "always": "resolved_always", "deny": "resolved_deny"}.get(
                 choice, "resolved_generic")
             label = t(f"platform.telegram.approval.{label_key}")
-            edit_text = t("platform.telegram.approval.resolved_by_user", label=label, user=user_display)
+            decision = t("platform.telegram.approval.resolved_by_user", label=label, user=user_display)
         else:
             label = t("platform.telegram.approval.expired")
-            edit_text = t("platform.telegram.approval.expired_detail", label=label)
+            decision = t("platform.telegram.approval.expired_detail", label=label)
         await query.answer(text=label[:_TOAST_LIMIT])
-        await self._edit_md_quiet(query, edit_text)
+        await self._edit_approval_resolution(query, prompt_text, decision)
         # Typing was paused when the approval was sent; the text /approve and /deny paths resume it too.
         if count and cb["chat_id"] is not None:
             self.resume_typing_for_chat(str(cb["chat_id"]))

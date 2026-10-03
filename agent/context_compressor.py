@@ -1842,7 +1842,12 @@ def _sum_template(template: str, **defaults):
 def _sum_kanban_show(name, args, content, content_len, line_count):
     """Keep a dispatcher-owned worker's OWN card (title+body, truncated) so compression never
     strips the worker's goal/write-set/done-when (#126702); all other kanban_show results get
-    the generic stub. Fail-open: unparseable results fall through to the stub shape."""
+    the generic stub. Fail-open: unparseable results fall through to the stub shape.
+    Re-summarizing a row that is already in kept form yields the generic stub: a demotion
+    pass reaching it via ``keep_own_card=False`` must land on a stub, not on a fresh copy
+    of the kept text (the documented pressure escape must stay reachable)."""
+    if content.startswith(_KANBAN_OWN_CARD_PREFIX):
+        return f"[kanban_show] own card ({content_len:,} chars result)"
     task = _json_dict(content).get("task") or {}
     task_id = task.get("id") if isinstance(task, dict) else None
     if task_id and task_id == owned_kanban_task():
@@ -3177,7 +3182,10 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
             nonlocal demoted
             if i in spared:
                 return
-            if self._demote_tool_result_at(result, i, call_id_to_tool, min_prune_chars):
+            # Pressure pass: the own-card keep is an overridable guard, not an
+            # absolute one — pass keep_own_card=False so a huge kept card can
+            # never wedge the hard budget backstop (#126702 review).
+            if self._demote_tool_result_at(result, i, call_id_to_tool, min_prune_chars, keep_own_card=False):
                 demoted += 1
 
         if demote_end <= prune_boundary or _protected_region_tokens() <= soft_ceiling:
@@ -3196,7 +3204,9 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
             if (
                 last_tool_idx is not None and last_tool_idx not in spared and last_tool_idx >= prune_boundary
                 and _protected_region_tokens() > soft_ceiling
-            ) and self._demote_tool_result_at(result, last_tool_idx, call_id_to_tool, min_prune_chars):
+            ) and self._demote_tool_result_at(
+                result, last_tool_idx, call_id_to_tool, min_prune_chars, keep_own_card=False,
+            ):
                 demoted += 1
         if demoted and not self.quiet_mode:
             logger.info(

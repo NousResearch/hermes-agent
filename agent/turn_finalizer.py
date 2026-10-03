@@ -14,6 +14,7 @@ from typing import Any, Callable, List, Optional, Tuple
 
 from agent.codex_responses_adapter import _summarize_user_message_for_log
 from agent.delegation_context import is_dispatcher_owned_worker_context
+from agent.fast_mode import requested_service_tier
 from agent.interrupt_control import interrupted_during_api_call_reason
 from agent.turn_failure_copy import exit_reason_failure, stamp_failure
 from agent.context_compressor import _DB_PERSISTED_MARKER
@@ -694,10 +695,10 @@ def finalize_turn(
             else getattr(agent.context_compressor, "last_prompt_tokens", 0)
         ) or 0,
         **{key: getattr(agent, f"session_{key}") for key in _SESSION_COST_KEYS},
-        # Requested service tier, for billing audits (`hermes -z --usage-file`).
-        "service_tier": (
-            (getattr(agent, "request_overrides", {}) or {}).get("extra_body") or {}
-        ).get("service_tier"),
+        # Requested and served service tier of the last call, for billing audits
+        # (`hermes -z --usage-file`). They differ when the endpoint downgraded the request.
+        "service_tier": getattr(agent, "_last_requested_service_tier", None) or requested_service_tier(agent),
+        "service_tier_served": getattr(agent, "_last_served_service_tier", None),
         "session_id": agent.session_id,
     }
     if agent._tool_guardrail_halt_decision is not None:

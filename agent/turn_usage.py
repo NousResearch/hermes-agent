@@ -15,6 +15,7 @@ from contextlib import suppress
 from dataclasses import dataclass
 from typing import Any, Dict, List
 
+from agent.fast_mode import record_served_service_tier
 from agent.image_token_cost import calibrate_from_usage
 from agent.usage_anchor import capture_usage_anchor, set_usage_anchor
 from agent.usage_pricing import estimate_usage_cost, normalize_usage, with_served_service_tier
@@ -83,6 +84,7 @@ def record_response_usage(
     # Token/cost accounting below stays gated on real usage, but the request itself
     # must remain observable.
     agent.session_api_calls += 1
+    record_served_service_tier(agent, response)
     if not (hasattr(response, 'usage') and response.usage):
         if getattr(compressor, "awaiting_real_usage_after_compression", False):
             # No usage -> cannot adjudicate the prior compaction; consume the

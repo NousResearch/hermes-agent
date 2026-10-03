@@ -12,8 +12,11 @@ new speed.
 
 from __future__ import annotations
 
+import logging
 import time
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 BOUNDED_MODES = frozenset({"auto", "cold"})
 DEFAULT_WINDOW_SECONDS = 60
@@ -104,3 +107,38 @@ def mark_fast_mode_unavailable(agent: Any) -> bool:
         return False
     unavailable.add(model)
     return True
+
+
+# The Codex backend (ChatGPT sign-in) echoes ``service_tier: "default"`` whatever tier was
+# requested, so its echo cannot show a downgrade; it is still recorded.
+_UNAUTHORITATIVE_TIER_ECHO_PROVIDERS = frozenset({"openai-codex"})
+
+
+def requested_service_tier(agent: Any) -> str | None:
+    """The ``service_tier`` this agent puts on the wire now: top-level (OpenAI Responses /
+    chat, the shape ``/fast`` sends) or inside ``extra_body`` (custom providers)."""
+    overrides = effective_request_overrides(agent)
+    tier = overrides.get("service_tier")
+    if tier is None:
+        extra_body = overrides.get("extra_body")
+        tier = extra_body.get("service_tier") if isinstance(extra_body, dict) else None
+    return tier if isinstance(tier, str) and tier.strip() else None
+
+
+def record_served_service_tier(agent: Any, response: Any) -> None:
+    """Record the tier requested and the tier the response says it was SERVED at, per call (a
+    later tier-less response clears the previous call's value). A paid tier the endpoint did not
+    serve is logged as a warning: the call ran, and bills, at the served tier."""
+    served = getattr(response, "service_tier", None)
+    served = served.strip().lower() if isinstance(served, str) and served.strip() else None
+    requested = requested_service_tier(agent)
+    agent._last_requested_service_tier, agent._last_served_service_tier = requested, served
+    if not (requested and served) or served == requested.strip().lower():
+        return
+    provider = getattr(agent, "provider", None)
+    if provider in _UNAUTHORITATIVE_TIER_ECHO_PROVIDERS:
+        logger.debug("service_tier requested=%s served-echo=%s on %s (echo not authoritative)",
+                     requested, served, provider)
+        return
+    logger.warning("service_tier requested=%s but served=%s (model=%s provider=%s); this call ran "
+                   "and bills at the served tier", requested, served, getattr(agent, "model", None), provider)

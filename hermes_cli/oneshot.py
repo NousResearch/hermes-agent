@@ -24,8 +24,9 @@ from hermes_cli.fallback_config import get_fallback_chain
 _ALL_TOOLSETS = {"all", "*"}
 
 # Keys copied from the run result into the ``--usage-file`` report. ``service_tier`` is a
-# billing-audit field: the tier REQUESTED via request_overrides.extra_body (None when unset), so
-# batch pipelines can verify the tier they pay for went out on the wire. ``partial`` /
+# billing-audit field: the tier REQUESTED on the wire (None when unset), so batch pipelines can
+# verify the tier they pay for went out; ``service_tier_served`` is the tier the endpoint reported
+# serving (a downgrade shows as the two differing). ``partial`` /
 # ``interrupted`` / ``turn_exit_reason`` say WHY ``completed`` is false, so a pipeline can tell
 # an iteration-budget stop from a Ctrl-C without parsing stderr (#111770).
 _USAGE_KEYS = (
@@ -226,6 +227,7 @@ def _write_usage_file(path: Optional[str], result: dict, failure: Optional[str] 
         report = {key: result.get(key) for key in _USAGE_KEYS}
         report["failed"] = bool(result.get("failed")) or failure is not None
         report["service_tier"] = result.get("service_tier")
+        report["service_tier_served"] = result.get("service_tier_served")
         if isinstance(result.get("auxiliary_usage"), dict):
             _auxiliary_report(report, result["auxiliary_usage"])
         if failure is not None:

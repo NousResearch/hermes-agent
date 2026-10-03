@@ -188,7 +188,7 @@ class TestBackendSwapRetargetsDaemons:
 
         # Like browser-harness: one daemon per BU_NAME latches its first endpoint; --reload stops it.
         cli = _fake_cli(tmp_path, f'''
-latch="{tmp_path}/daemon-${{BU_NAME:-default}}"
+latch="${{BH_RUNTIME_DIR:-{tmp_path}}}/daemon-${{BU_NAME:-default}}"
 if [ "${{1:-}}" = "--reload" ]; then rm -f "$latch"; exit 0; fi
 cat > /dev/null
 [ -f "$latch" ] || echo "$BU_CDP_URL" > "$latch"

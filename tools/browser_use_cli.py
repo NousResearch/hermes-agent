@@ -765,6 +765,18 @@ def stop_harness_daemons(home_key: Optional[str] = None) -> None:
     """Stop every harness daemon this process drove (only ``home_key``'s when given), through the
     harness's own identity-checked ``--reload``; the next browser_exec respawns one on the endpoint
     it resolves then."""
+    with _browser_use_sessions_lock:
+        snapshot = [(key, state) for key, state in _browser_use_sessions.items()
+                    if home_key in (None, state["home_key"])]
+    for key, state in snapshot:
+        with state["operation_lock"]:
+            with _browser_use_sessions_lock:
+                if _browser_use_sessions.get(key) is not state:
+                    continue
+            if _stop_browser_use_state(state):
+                with _browser_use_sessions_lock:
+                    if _browser_use_sessions.get(key) is state:
+                        _browser_use_sessions.pop(key, None)
     with _driven_daemons_lock:
         daemons = sorted(key for key, home in _driven_daemons.items() if home_key in (None, home))
         for key in daemons:
@@ -995,9 +1007,10 @@ def browser_exec(code: str, session: str = "", timeout_s: int = _DEFAULT_TIMEOUT
     started = time.time()
     def dispatch() -> dict[str, Any]:
         _attach_vault_supervisor(env, task_id)
-        with _driven_daemons_lock:
-            daemon = daemon_identity(env)
-            _driven_daemons[daemon] = hermes_home_key()
+        if lifecycle_state is None:
+            with _driven_daemons_lock:
+                daemon = daemon_identity(env)
+                _driven_daemons[daemon] = hermes_home_key()
         # The first call starts the daemon and may run long (navigation, user code): own it as soon as
         # it publishes its pid, so a Hermes killed mid-call takes it along (the call's end owns it too).
         from agent.periodic_scheduler import schedule

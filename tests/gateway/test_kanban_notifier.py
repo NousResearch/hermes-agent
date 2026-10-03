@@ -1,5 +1,6 @@
 import asyncio
 import sqlite3
+from types import SimpleNamespace
 
 
 from gateway.config import Platform
@@ -844,3 +845,109 @@ def test_notifier_unexpected_delivery_error_keeps_other_subscriptions(tmp_path, 
     assert unseen[tid_good] == []
     # The failed settle is retried next tick instead of being silently consumed.
     assert "completed" in [e.kind for e in unseen[tid_bad]]
+
+
+def test_wake_guard_suppresses_a_replayed_wake(monkeypatch):
+    """A rewound claim must not re-wake a session that was already woken.
+
+    ``wake()`` resumes the creator's session and runs a whole extra turn, so it is
+    not idempotent; only ``last_wake_event_id`` distinguishes "already delivered"
+    from "never delivered" after the retryable cursor was rewound.
+    """
+    from gateway import wake as wake_mod
+    from gateway.kanban_watchers_notifier import _KanbanNotification
+
+    calls = []
+
+    async def _fake_deliver_wake(*args, **kwargs):
+        calls.append(kwargs)
+
+    monkeypatch.setattr(wake_mod, "deliver_wake", _fake_deliver_wake)
+
+    events = [SimpleNamespace(id=7, kind="completed"), SimpleNamespace(id=9, kind="completed")]
+    sub = {"last_wake_event_id": 9, "wake_agent": True, "task_id": "t1", "platform": "telegram",
+           "chat_id": "c1", "thread_id": "", "delivery_mode": "notify", "chat_type": "dm"}
+    claim = {"sub": sub, "old_cursor": 0, "cursor": 9, "events": events,
+             "task": SimpleNamespace(id="t1", title="wake task", status="completed",
+                                       assignee="worker", result="done", board=None),
+             "board": None}
+    adapter = RecordingAdapter()
+    runner = _make_runner(adapter)
+
+    # Already woken up to 9: the replayed claim must send nothing.
+    replayed = _KanbanNotification(runner, claim, platform_cls=Platform, sub_fail_counts={})
+    replayed.adapter = runner.adapters[Platform.TELEGRAM]  # bound by _deliver() in the real flow
+    replayed.build_wake_text()
+    asyncio.run(replayed.wake())
+    assert calls == [], f"a replayed claim re-woke the session: {calls}"
+
+    # Watermark below the delivered events (settle failed, nothing recorded): must send.
+    fresh = _KanbanNotification(runner, {**claim, "sub": dict(sub, last_wake_event_id=0)},
+                                platform_cls=Platform, sub_fail_counts={})
+    fresh.adapter = runner.adapters[Platform.TELEGRAM]
+    fresh.build_wake_text()
+    asyncio.run(fresh.wake())
+    assert len(calls) == 1, "the first wake must still be delivered"
+
+
+def test_record_notify_wake_persists_its_watermark(tmp_path, monkeypatch):
+    """The watermark must survive in the DB (it is what the guard reads next tick)."""
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(tmp_path / "wake-wm.db"))
+    kb.init_db()
+    conn = kbc.connect()
+    try:
+        tid = kb.create_task(conn, title="wm task", assignee="worker")
+        kbn.add_notify_sub(conn, task_id=tid, platform="telegram", chat_id="chat-wm")
+        kbn.record_notify_wake(conn, task_id=tid, platform="telegram", chat_id="chat-wm", event_id=12)
+        kbn.record_notify_wake(conn, task_id=tid, platform="telegram", chat_id="chat-wm", event_id=4)
+        subs = kbn.list_notify_subs(conn)
+    finally:
+        conn.close()
+    assert len(subs) == 1
+    assert subs[0]["last_wake_event_id"] == 12, "MAX() must keep the highest watermark"
+
+
+def test_unexpected_delivery_error_spends_the_max_send_failures_budget(tmp_path, monkeypatch):
+    """A permanently throwing delivery must retire the sub, not traceback every tick."""
+    from gateway.kanban_watchers_notifier import MAX_SEND_FAILURES, _KanbanNotification
+
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(tmp_path / "budget.db"))
+    kb.init_db()
+    conn = kbc.connect()
+    tid = kb.create_task(conn, title="broken task", assignee="worker")
+    kbn.add_notify_sub(conn, task_id=tid, platform="telegram", chat_id="chat-broken")
+    kb.complete_task(conn, tid, summary="done")
+    conn.close()
+
+    fail_counts = {}
+    unsubbed = []
+
+    async def _explode():
+        raise RuntimeError("delivery is broken")
+
+    async def _rewind():
+        return None
+
+    for _ in range(MAX_SEND_FAILURES + 2):
+        notif = _KanbanNotification.__new__(_KanbanNotification)
+        notif.sub = {"task_id": tid, "platform": "telegram", "chat_id": "chat-broken", "thread_id": ""}
+        notif.sub_key = ("telegram", "chat-broken", "")
+        notif.sub_fail_counts = fail_counts
+        notif.task_id = tid
+        notif.platform_str = "telegram"
+        notif.board_slug = None
+        notif.settled = False
+        notif.d = {"cursor": 1, "old_cursor": 0, "events": [], "task": None, "board": None}
+        notif.runner = None
+        notif._deliver = _explode
+        notif.rewind = _rewind
+        async def _unsub():
+            unsubbed.append(True)
+
+        notif.unsub = _unsub
+        asyncio.run(notif.deliver())
+
+    assert len(unsubbed) == 1, f"the sub must be dropped exactly once at the budget: {unsubbed}"
+    # The counter resets on the drop, so only the iterations after it remain.
+    remaining = MAX_SEND_FAILURES + 2 - MAX_SEND_FAILURES
+    assert fail_counts[notif.sub_key] == remaining

@@ -136,6 +136,10 @@ class GatewayKanbanWatchersMixin:
     def _kanban_advance(self, sub: dict, cursor: int, board: Optional[str] = None) -> None:
         self._kanban_sub_op(board, "advance_notify_cursor", sub, new_cursor=cursor)
 
+    def _kanban_record_wake(self, sub: dict, event_id: int, board: Optional[str] = None) -> None:
+        """Persist the wake watermark; a duplicate wake re-runs the creator's turn."""
+        self._kanban_sub_op(board, "record_notify_wake", sub, event_id=event_id)
+
     def _kanban_unsub(self, sub: dict, board: Optional[str] = None) -> None:
         self._kanban_sub_op(board, "remove_notify_sub", sub)
 

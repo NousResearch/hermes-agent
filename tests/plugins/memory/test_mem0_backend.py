@@ -295,9 +295,10 @@ def _install_fake_mem0(monkeypatch):
             return cls(MemoryConfig(**config))
 
     class FakeOpenAI:
-        def __init__(self, *, api_key, base_url):
+        def __init__(self, *, api_key, base_url, default_headers=None):
             self.api_key = api_key
             self.base_url = base_url
+            self.default_headers = default_headers
             state.clients.append(self)
             self.chat = SimpleNamespace(
                 completions=SimpleNamespace(create=self._create)
@@ -441,6 +442,7 @@ class TestOSSBackend:
         client = state.clients[0]
         assert client.api_key == "configured-openai-sentinel"
         assert client.base_url == "https://openai.example/v1"
+        assert client.default_headers is None
         request = state.requests[0]
         assert request["model"] == "gpt-5-mini"
         assert request["tools"] == tools
@@ -460,6 +462,44 @@ class TestOSSBackend:
         assert len(callback_calls) == 1
         assert callback_calls[0][0] is adapter
         assert callback_calls[0][2] == request
+
+    def test_direct_openai_adds_session_header_for_opencode_relay(self, monkeypatch):
+        state, _, factory = _install_fake_mem0(monkeypatch)
+        config = factory.provider_to_class["openai"][1](
+            model="deepseek-v4.1-flash",
+            api_key="configured-openai-sentinel",
+            openai_base_url="https://opencode.ai/zen/go/v1",
+        )
+
+        module = importlib.import_module("plugins.memory.mem0._openai_llm")
+        from agent.portal_tags import (
+            reset_affinity_scope,
+            reset_conversation_context,
+            set_affinity_scope,
+            set_conversation_context,
+        )
+
+        affinity_token = set_affinity_scope(None)
+        conversation_token = set_conversation_context(None)
+        try:
+            adapter = module.DirectOpenAILLM(config)
+
+            # Construction happens during provider initialization, outside any turn. It
+            # must not freeze the one-shot fallback into the long-lived SDK client.
+            assert state.clients[0].default_headers is None
+
+            turn_token = set_conversation_context("mem0-session-sentinel")
+            try:
+                adapter.generate_response([{"role": "user", "content": "remember tea"}])
+            finally:
+                reset_conversation_context(turn_token)
+        finally:
+            reset_conversation_context(conversation_token)
+            reset_affinity_scope(affinity_token)
+
+        assert state.requests[0]["extra_headers"] == {
+            "x-opencode-session": "mem0-session-sentinel"
+        }
 
     def test_direct_openai_preserves_explicit_non_reasoning_override(self, monkeypatch):
         state, _, factory = _install_fake_mem0(monkeypatch)

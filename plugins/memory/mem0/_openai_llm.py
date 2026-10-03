@@ -44,11 +44,18 @@ class DirectOpenAILLM(OpenAILLM):
         if not api_key:
             raise ValueError("OpenAI API key is required for the Hermes Mem0 OSS provider")
         from openai import OpenAI
-        self.client = OpenAI(api_key=api_key, base_url=self.config.openai_base_url or get_secret("OPENAI_BASE_URL", "") or "https://api.openai.com/v1")
+        base_url = self.config.openai_base_url or get_secret("OPENAI_BASE_URL", "") or "https://api.openai.com/v1"
+        self._base_url = base_url
+        self.client = OpenAI(api_key=api_key, base_url=base_url)
 
     def generate_response(self, messages: List[Dict[str, str]], response_format=None, tools: Optional[List[Dict]] = None, tool_choice: str = "auto", **kwargs):
         params = self._get_supported_params(messages=messages, **kwargs)
         params.update({"model": self.config.model, "messages": messages})
+        # Resolve affinity in the active turn, not when Mem0 constructs its long-lived
+        # private client.  Construction can happen outside a conversation and produce
+        # a one-shot fallback that would otherwise be reused for every extraction.
+        from agent.opencode_affinity import merge_session_affinity_headers
+        merge_session_affinity_headers(params, "openai", self._base_url)
         # No OpenRouter-only fields; ``store`` is opt-in so OpenAI-compatible endpoints never receive unknown fields.
         if self.config.store is not None:
             params["store"] = self.config.store

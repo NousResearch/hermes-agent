@@ -194,7 +194,20 @@ def _probe_apikey_provider(pname, env_vars, default_url, base_env, supports_heal
         else:
             r = httpx.get(url, headers=headers, timeout=10)
         if pname == "Alibaba/DashScope" and not base and r.status_code == 401:
-            r = httpx.get("https://dashscope.aliyuncs.com/compatible-mode/v1/models", headers=headers, timeout=10)
+            url = "https://dashscope.aliyuncs.com/compatible-mode/v1/models"
+            r = httpx.get(url, headers=headers, timeout=10)
+        if r.status_code == 200 and not base.rstrip("/").endswith("/anthropic"):
+            # A public catalog can return 200 for an expired key (or no key).
+            # Only an authentication rejection on the same anonymous request
+            # establishes that the successful request actually tested the key.
+            anonymous_headers = {k: v for k, v in headers.items()
+                                 if k.lower() not in {"authorization", "x-goog-api-key", "x-api-key"}}
+            try:
+                anonymous = httpx.get(url, headers=anonymous_headers, timeout=10)
+            except Exception:
+                return _row(pname, "warn", "(catalog reachable — key not verified; anonymous check failed)", label=label)
+            if anonymous.status_code not in (401, 403):
+                return _row(pname, "warn", "(catalog reachable — key not verified; endpoint did not reject an anonymous request)", label=label)
     except Exception as e:
         return _row(pname, "warn", f"({e})", label=label)
     if r.status_code == 401:

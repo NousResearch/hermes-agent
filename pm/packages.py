@@ -34,6 +34,7 @@ from pm.update import (
     node_latest_versions,
     npm_dist_tags,
     pbs_versions,
+    version_key,
 )
 
 LOG = logging.getLogger(__name__)
@@ -215,6 +216,11 @@ class Uv(_BionicDebArm, BinaryPackage, DebPackage):
         return f"https://github.com/astral-sh/uv/releases/download/{version}/uv-{triple}.{ext}"
 
     def latest_versions(self, target: str, locked=None) -> list[str]:
+        # Bionic is a manual pin from the termux repo, which lags astral's
+        # releases (and builds uv from source). Resolving it against the
+        # upstream tags produces a .deb url termux does not ship -> 404.
+        if target == "linux-arm64-bionic":
+            return []
         return github_release_tags("astral-sh/uv")
 
 
@@ -478,6 +484,11 @@ class Nodejs(_BionicDebArm, BinaryPackage, DebPackage):
         return f"{base}/v{version}/node-v{version}-{plat}.{ext}"
 
     def latest_versions(self, target: str, locked=None) -> list[str]:
+        # Bionic is a manual pin from the termux repo, whose nodejs .deb
+        # carries a `-1` revision and lags nodejs.org. Resolving it against
+        # the upstream release list produces a url termux does not ship.
+        if target == "linux-arm64-bionic":
+            return []
         # Keep one Node version across targets. If unofficial musl publication
         # lags nodejs.org, the later artifact pin/download fails before the
         # lockfile is written rather than selecting glibc bytes on musl.
@@ -1200,16 +1211,18 @@ class LlamaCppCuda(LlamaCpp):
         return ""
 
     def _release_infix(self, version: str, arch: str) -> str:
-        """The full infix the release's own asset list advertises for this tag."""
-        head, tail = f"llama-b{version}-bin-", f"-{arch}.zip"
-        return next(
-            (
-                name[len(head) : -len(".zip")]
-                for name in _github_release_digests("ggml-org/llama.cpp", f"b{version}")
-                if name.startswith(head) and name.endswith(tail)
-            ),
-            "",
-        )
+        """The newest `win-cuda-<line>-<arch>` infix the release advertises.
+
+        Constrained to `win-cuda-` (the release also ships `win-cpu-` and
+        `win-vulkan-` for the same arch) and taking the highest CUDA line,
+        since a tag can carry both, e.g. 12.4 and 13.4 for x64."""
+        head, tail = f"llama-b{version}-bin-win-cuda-", f"-{arch}.zip"
+        infixes = [
+            name[len(f"llama-b{version}-bin-") : -len(".zip")]
+            for name in _github_release_digests("ggml-org/llama.cpp", f"b{version}")
+            if name.startswith(head) and name.endswith(tail)
+        ]
+        return max(infixes, key=version_key, default="")
 
     def _asset_names(self, version: str, target: str) -> list[str]:
         infix = self._cuda_infix(version, target)

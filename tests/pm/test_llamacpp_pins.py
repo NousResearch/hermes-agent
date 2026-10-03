@@ -42,11 +42,17 @@ def test_llamacpp_cuda_infix_tracks_the_release_not_a_hardcode(monkeypatch):
     assert cuda._asset_names("11370", "win32-x64")[0].endswith("win-cuda-13.4-x64.zip")
 
     # With the release's assets visible, the advertised infix wins even when
-    # it differs from the static default.
+    # it differs from the static default -- and the newest CUDA line wins when
+    # a tag ships several (b11370 carries both 12.4 and 13.4 for x64).
     monkeypatch.setattr(
         packages,
         "_github_release_digests",
-        lambda *a, **k: {"llama-b99999-bin-win-cuda-99.9-x64.zip": "0" * 64},
+        lambda *a, **k: {
+            "llama-b99999-bin-win-cuda-99.9-x64.zip": "0" * 64,
+            "llama-b99999-bin-win-cuda-88.8-x64.zip": "0" * 64,
+            # a non-cuda archive for the same arch must not match
+            "llama-b99999-bin-win-cpu-x64.zip": "0" * 64,
+        },
     )
     monkeypatch.setattr(packages, "_cuda_infix_cache", {})
     assert cuda._asset_names("99999", "win32-x64") == [

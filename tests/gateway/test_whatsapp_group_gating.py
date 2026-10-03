@@ -1,7 +1,11 @@
 import json
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
-from gateway.config import Platform, PlatformConfig, load_gateway_config
+import pytest
+
+from gateway.config import GatewayConfig, Platform, PlatformConfig, load_gateway_config
+from gateway.run import GatewayRunner
 
 
 def _make_adapter(require_mention=None, mention_patterns=None, free_response_chats=None,
@@ -259,3 +263,55 @@ def test_device_qualified_bot_ids_match_bare_mention_and_quote_ids():
         _group_message("and this?", botIds=device_qualified, quotedParticipant="447999674698@s.whatsapp.net")
     ) is True
     assert adapter._should_process_message(_group_message("hello everyone", botIds=device_qualified)) is False
+
+
+@pytest.mark.asyncio
+async def test_group_reply_expectation_from_bridge_addressing_and_ambiguity():
+    adapter = _make_adapter(require_mention=False, group_policy="open", mention_patterns=[r"^chompy\b"])
+    cases = [
+        (_group_message("@15551230000 help", mentionedIds=["15551230000@lid"]), True),
+        (_group_message("help", quotedParticipant="15551230000@lid", hasQuotedMessage=True), True),
+        (_group_message("chompy help"), True),
+        (_group_message("/status"), True),
+        (_group_message("the cake is a lie"), False),
+        (_group_message("Can you help me?"), None),
+        (_group_message("reply", hasQuotedMessage=True, quotedParticipant=""), None),
+        (_group_message("side chatter", botIds=[]), None),
+        ({**_dm_message("question"), "chatId": "123@s.whatsapp.net"}, True),
+    ]
+    for data, expected in cases:
+        event = await adapter._build_message_event(data)
+        assert event is not None
+        assert event.reply_expected is expected, data
+
+
+@pytest.mark.asyncio
+async def test_merged_whatsapp_group_turn_retains_addressed_reply_expectation():
+    from gateway.platforms.base import merge_pending_message_event
+
+    adapter = _make_adapter(require_mention=False, group_policy="open")
+    chatter = await adapter._build_message_event(_group_message("side chatter"))
+    mention = await adapter._build_message_event(
+        _group_message("@15551230000 help", mentionedIds=["15551230000@s.whatsapp.net"])
+    )
+    assert chatter is not None and mention is not None
+    assert chatter.reply_expected is False
+    pending = {"group": chatter}
+    merge_pending_message_event(pending, "group", mention, merge_text=True)
+    assert pending["group"].reply_expected is True
+
+    runner = GatewayRunner(GatewayConfig())
+    runner._deliver_queued_first_response = AsyncMock()
+    turn_ctx = SimpleNamespace(
+        session_key="group", stream_consumer_holder=[None], mute_notification_reply=False,
+        persist_user_display_kind=None, reply_expected=False,
+        source=pending["group"].source, _status_thread_metadata=None,
+        event_message_id=None, inbound_message_id=None, run_generation=1,
+    )
+    result = {"final_response": "NO_REPLY", "failed": False}
+    await runner._run_agent_deliver_first_response(turn_ctx, None, result, result, None)
+    runner._deliver_queued_first_response.assert_not_awaited()
+
+    turn_ctx.reply_expected = pending["group"].reply_expected
+    await runner._run_agent_deliver_first_response(turn_ctx, None, result, result, None)
+    assert "silence marker" in runner._deliver_queued_first_response.await_args.args[0]

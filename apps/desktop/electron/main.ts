@@ -13057,7 +13057,28 @@ async function runHermesStart({ supervisorRecovery = false }: { supervisorRecove
   // no-op when the preference file already exists.
   migrateActiveProfileIfMissing()
 
+  // #127974: a reconnect, a renderer retry, or a supervisor respawn can land
+  // while a boot is still dialing. Wait the superseded boot out (bounded, with
+  // restart backoff) so the replacement cannot spawn a competing child that
+  // fails as `superseded by a newer connection attempt` and leaves its exit to
+  // be logged as a stale backend exit.
+  await backendConnectionState.awaitSupersededStart()
+
   const connectionAttempt = backendConnectionState.startAttempt()
+
+  // Another caller already owns this generation's boot: take its connection
+  // instead of dialing a second backend in parallel.
+  if (connectionAttempt.joined) {
+    const shared = backendConnectionState.getPromise()
+
+    if (!shared) {
+      throw new Error('Hermes backend start was superseded by a newer connection attempt.')
+    }
+
+    rememberLog('[boot] joining the Hermes backend start already in flight')
+
+    return shared
+  }
 
   // ONE launch-profile decision for this attempt (#108417): routing pin,
   // --profile argv, and the child env all derive from the same read, so a

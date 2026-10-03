@@ -11,12 +11,14 @@ type FakeProcess = { id: string }
 
 function deferred<T>() {
   let resolve!: (value: T) => void
+  let reject!: (error: unknown) => void
 
-  const promise = new Promise<T>(next => {
+  const promise = new Promise<T>((next, fail) => {
     resolve = next
+    reject = fail
   })
 
-  return { promise, resolve }
+  return { promise, reject, resolve }
 }
 
 test('an invalidated remote attempt cannot publish a late descriptor', async () => {
@@ -234,4 +236,128 @@ test('distinguishes a pending connection attempt from a cached settled descripto
 
   assert.equal(state.getPromise(), connection.promise)
   assert.equal(state.getPendingPromise(), null)
+})
+
+// #127974: a renderer retry, a reconnect, or a supervisor respawn that lands
+// while a boot is still dialing used to mint a SECOND, equally current attempt.
+// Both spawned a child and the loser surfaced as "superseded by a newer
+// connection attempt" while its exit was logged as a stale backend exit. A
+// start in flight must be joined, not raced.
+test('a second start joins the boot already in flight instead of racing it', async () => {
+  const state = createBackendConnectionState<FakeProcess, string>()
+  const boot = deferred<string>()
+  const first = state.startAttempt()
+
+  state.setPromise(first, boot.promise)
+
+  const second = state.startAttempt()
+
+  assert.equal(second, first, 'the second start must reuse the attempt that is already dialing')
+  assert.equal(second.joined, true, 'the second caller must know it is joining, not owning')
+
+  boot.resolve('http://127.0.0.1:63853')
+  assert.equal(await second.promise, 'http://127.0.0.1:63853')
+
+  // A settled boot releases the flight, so the next start dials on its own.
+  const third = state.startAttempt()
+  assert.notEqual(third, first)
+  assert.equal(third.joined, false)
+})
+
+// #127974 step 2: `[boot] Restarting desktop connection` used to invalidate a
+// boot that was still in flight and immediately dial a replacement, so the two
+// overlapped and the abandoned one finished as a stale exit. The replacement now
+// waits (bounded, backed off) for the superseded boot to settle.
+test('a replacement waits for the superseded in-flight boot to settle', async () => {
+  const slept: number[] = []
+  const state = createBackendConnectionState<FakeProcess, string>({
+    settleTimeoutMs: 50,
+    sleep: (ms: number) => {
+      slept.push(ms)
+
+      return Promise.resolve()
+    },
+    supersedeBackoffBaseMs: 250,
+    supersedeBackoffMaxMs: 1_000
+  })
+
+  const staleBoot = deferred<string>()
+  const first = state.startAttempt()
+
+  state.setPromise(first, staleBoot.promise)
+
+  // The reconnect invalidates the boot in flight; the retry that follows asks
+  // for a replacement.
+  state.invalidate()
+
+  let replacementDialed = false
+  const waiting = state.awaitSupersededStart().then(() => {
+    replacementDialed = true
+  })
+
+  await Promise.resolve()
+  await Promise.resolve()
+
+  assert.equal(replacementDialed, false, 'the replacement must not dial while the superseded boot is settling')
+  assert.deepEqual(slept, [250], 'a supersede waits one backoff interval before re-dialing')
+
+  staleBoot.resolve('stale')
+  await waiting
+
+  assert.equal(replacementDialed, true)
+  const replacement = state.startAttempt()
+  assert.notEqual(replacement, first)
+  assert.equal(replacement.joined, false)
+})
+
+test('the restart backoff escalates across consecutive supersedes and resets after a healthy boot', async () => {
+  const slept: number[] = []
+  const state = createBackendConnectionState<FakeProcess, string>({
+    settleTimeoutMs: 25,
+    sleep: (ms: number) => {
+      slept.push(ms)
+
+      return Promise.resolve()
+    },
+    supersedeBackoffBaseMs: 250,
+    supersedeBackoffMaxMs: 1_000
+  })
+
+  for (let round = 0; round < 4; round += 1) {
+    const boot = deferred<string>()
+    const attempt = state.startAttempt()
+
+    state.setPromise(attempt, boot.promise)
+    state.invalidate()
+    const waiting = state.awaitSupersededStart()
+
+    // A superseded boot fails, exactly as runHermesStart does when its claim
+    // comes back null.
+    boot.reject(new Error('Hermes backend start was superseded by a newer connection attempt.'))
+    await waiting
+  }
+
+  assert.deepEqual(
+    slept,
+    [250, 500, 1_000, 1_000],
+    'the backoff doubles per consecutive supersede, then holds at the cap'
+  )
+
+  const healthy = state.startAttempt()
+
+  state.setPromise(healthy, Promise.resolve('http://127.0.0.1:53748'))
+  await healthy.promise
+  await Promise.resolve()
+
+  const next = deferred<string>()
+  const after = state.startAttempt()
+
+  state.setPromise(after, next.promise)
+  state.invalidate()
+  const waiting = state.awaitSupersededStart()
+
+  next.reject(new Error('Hermes backend start was superseded by a newer connection attempt.'))
+  await waiting
+
+  assert.deepEqual(slept, [250, 500, 1_000, 1_000, 250], 'a healthy boot resets the restart backoff')
 })

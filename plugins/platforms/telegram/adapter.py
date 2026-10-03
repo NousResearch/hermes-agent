@@ -4313,6 +4313,7 @@ class TelegramAdapter(BasePlatformAdapter):
         return "\n\n" + _bold_label_html(t("gateway.exec_approval.smart_deny_line"))
 
     _EA_REASON_BUDGET = 500  # escaped chars; the reason shares the 4096 cap with the command
+    _EA_TEXT_BUDGET = MAX_MESSAGE_LENGTH  # UTF-16 units; a longer card is rejected whole
 
     def _ea_escape(self, text: str) -> str:
         return _html.escape(text)

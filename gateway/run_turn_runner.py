@@ -59,10 +59,90 @@ def _renders_exec_approval_buttons(adapter_cls: type) -> bool:
     return getattr(adapter_cls, "send_exec_approval", None) is not None
 
 
+def _fit_approval_description(adapter, desc: str, approval_data: dict, session_key: str, fits_for) -> Optional[str]:
+    """Fit the unverified model annotation in ``desc`` to one approval prompt.
+
+    ``desc`` was composed for uncapped surfaces. ``fits_for()`` returns ``fits(candidate, plain)``,
+    which tells whether the prompt shows ``candidate`` whole within the prompt's budget and shows
+    everything it shows for the scanner-only ``plain``, or None when that budget is not established
+    for this adapter and chat; the annotation is then left out and the prompt renders exactly as it
+    would without it. Otherwise the annotation is shortened between both delimiters, or left out,
+    until it fits. The scanner text comes from the queued request, which never carries the
+    annotation, and is never shortened here. None when the request is no longer queued (answered or
+    withdrawn since): there is nothing left to approve.
+    """
+    from gateway.run import _redact_approval_command
+    from tools.approval import _build_enhanced_description_with_context, list_gateway_approvals
+
+    explanation = approval_data.get("explanation")
+    if not explanation or not isinstance(adapter, BasePlatformAdapter):
+        return desc
+    pending = next((a for a in list_gateway_approvals(session_key)
+                    if a.get("request_id") == approval_data.get("request_id")), None)
+    if pending is None:
+        return None
+    scanner = pending.get("description")
+    if not scanner or not str(scanner).strip():
+        return desc
+    scanner = _redact_approval_command(scanner)
+    fits = fits_for()
+    if fits is None:
+        return scanner
+    if fits(desc, scanner):
+        return desc
+    best, lo, hi = scanner, 0, len(desc)
+    while lo <= hi:  # longest annotation budget that still fits
+        mid = (lo + hi) // 2
+        candidate = _redact_approval_command(_build_enhanced_description_with_context(scanner, explanation, mid))
+        if fits(candidate, scanner):
+            best, lo = candidate, mid + 1
+        else:
+            hi = mid - 1
+    return best
+
+
+def _card_fits(adapter, command: str, smart_denied: bool):
+    """``fits`` for ``adapter``'s approval card, or None when it declares no ``_EA_TEXT_BUDGET``
+    (e.g. the relay connector renders the card natively under a per-platform cap the contract does
+    not negotiate). The card cuts the reason at ``_EA_REASON_BUDGET`` and may size the command
+    preview from the reason's length (``_format_exec_approval``): a candidate fits when its reason
+    is uncut, its command preview is the plain card's, and the whole text is within the budget."""
+    budget = adapter._EA_TEXT_BUDGET
+    if not budget or budget <= 0:
+        return None
+
+    def rendered(reason: str) -> tuple:
+        if adapter._EA_REASON_BUDGET:
+            reason = adapter._ea_fit(reason, adapter._EA_REASON_BUDGET)
+        return reason, adapter._ea_fit(command, adapter._exec_approval_cmd_budget(reason, smart_denied))
+
+    def fits(candidate: str, plain: str) -> bool:
+        return rendered(candidate) == (candidate, rendered(plain)[1]) and adapter.message_len_fn(
+            adapter._format_exec_approval(command, candidate, smart_denied)) <= budget
+    return fits
+
+
+def _text_fits(adapter, chat_id, render):
+    """``fits`` for the text prompt ``render(description)``: sent whole where ``send()`` splits long
+    messages, else within the chat's own cap (``max_message_length_for_chat``, counted with
+    ``message_len_fn_for_chat``), or None where the adapter does not establish that cap as the
+    chat's own (``_EA_CHAT_LIMIT_ESTABLISHED``; e.g. the relay, whose ``send`` op is not split here)."""
+    if adapter.splits_long_messages:
+        return lambda candidate, plain: True
+    if not adapter._EA_CHAT_LIMIT_ESTABLISHED:
+        return None
+    cap, len_fn = adapter.max_message_length_for_chat(chat_id), adapter.message_len_fn_for_chat(chat_id)
+    return lambda candidate, plain: len_fn(render(candidate)) <= cap
+
+
 # Rendered on a native clarify card whose wait ended without a click (mirrors the notice the
 # Slack click handler shows on a dead entry).
 def _clarify_expired_notice() -> str:
     return t("gateway.clarify.expired")
+
+
+class ApprovalDeliveryError(RuntimeError):
+    """No actionable approval prompt reached the user; fail the pending request."""
 
 
 class _ExecApprovalDeclined(RuntimeError):
@@ -1467,15 +1547,38 @@ class TurnRunner:
         # Redact credentials before display: Tirith's findings are already redacted, but the raw
         # command string still leaks secrets. Both the button and plain-text paths use this value.
         cmd = _redact_approval_command(approval_data.get("command", ""))
-        desc = approval_data.get("description") or ea_default_reason_text()
+        # An absent reason takes the localized default; a present but blank one is an insufficient
+        # prompt and fails closed before any send.
+        desc = approval_data["description"] if "description" in approval_data else ea_default_reason_text()
+        if not desc or not str(desc).strip():
+            raise ValueError("Approval description is empty")
+        desc = _redact_approval_command(desc)
         flags = {k: approval_data.get(k, d) for k, d in (("allow_permanent", True), ("allow_session", True), ("smart_denied", False))}
+
+        def arm_timeout_notice(card_message_id) -> None:
+            # Runs only after the prompt was (or may have been) delivered. Notice
+            # bookkeeping failing must neither re-send the prompt as text nor raise,
+            # which would withdraw the user's pending decision.
+            try:
+                register_timeout_notice(self, approval_data, command=cmd, card_message_id=card_message_id)
+            except Exception:
+                logger.warning("Approval expiry-notice registration failed", exc_info=True)
+
         # Check the *class*, not the instance — MagicMock auto-creates attributes in tests.
         if _renders_exec_approval_buttons(type(adapter)):
             try:
+                card_desc = _fit_approval_description(
+                    adapter, desc, approval_data, ctx.session_key or "",
+                    lambda: _card_fits(adapter, cmd, flags["smart_denied"]))
+                if card_desc is None:
+                    # Answered or withdrawn before its card went out: no prompt; the waiter
+                    # returns the outcome already recorded.
+                    logger.info("Approval request settled before its prompt was sent; not sending it")
+                    return
                 fut = self._schedule(
                     adapter.send_exec_approval(
                         chat_id=ctx._status_chat_id, command=cmd, session_key=ctx.session_key or "",
-                        description=desc, metadata=ctx._status_thread_metadata, **flags,
+                        description=card_desc, metadata=ctx._status_thread_metadata, **flags,
                     ),
                     "send_exec_approval scheduling error",
                 )
@@ -1485,9 +1588,7 @@ class TurnRunner:
                 if outcome == "sent":
                     # Without this, a card whose timer runs out keeps live buttons and nobody
                     # learns the command did NOT run (only the TUI registered a settle hook).
-                    register_timeout_notice(
-                        self, approval_data, command=cmd,
-                        card_message_id=getattr(fut.result(timeout=0), "message_id", None))
+                    arm_timeout_notice(getattr(fut.result(timeout=0), "message_id", None))
                     return
                 if outcome == "ambiguous":
                     # Timeout ≠ failure: the card may have posted with a late ack. The prompt
@@ -1534,20 +1635,37 @@ class TurnRunner:
                 logger.warning("Button-based approval failed, falling back to text: %s", e)
         # Plain-text prompt with the adapter's typed prefix (e.g. `!approve`): typed "/" is blocked
         # in Slack threads and reserved by Matrix clients.
-        msg = _format_exec_approval_fallback(cmd, desc, getattr(adapter, "typed_command_prefix", "/"), **flags)
+        prefix = getattr(adapter, "typed_command_prefix", "/")
+
+        def text_prompt(description: str) -> str:
+            return _format_exec_approval_fallback(cmd, description, prefix, **flags)
+
+        text_desc = _fit_approval_description(
+            adapter, desc, approval_data, ctx.session_key or "",
+            lambda: _text_fits(adapter, ctx._status_chat_id, text_prompt))
+        if text_desc is None:
+            logger.info("Approval request settled before its prompt was sent; not sending it")
+            return
+        msg = text_prompt(text_desc)
         try:
             # Mark as approval prompt so WeCom routes through the control lane.
             metadata = {**(ctx._status_thread_metadata or {}), "is_approval_prompt": True}
             fut = self._schedule(
                 adapter.send(ctx._status_chat_id, msg, metadata=_interim_metadata(metadata)), "Approval text-send scheduling error",
             )
-            if fut is not None:
-                fut.result(timeout=15)
-                # No card to edit on the text path: the prompt has no buttons to drop and carries
-                # the /approve instructions, so the timeout notice is posted as a new message.
-                register_timeout_notice(self, approval_data, command=cmd, card_message_id=None)
+            if fut is None:
+                raise ApprovalDeliveryError("Approval text-send: loop unavailable")
+            outcome = _approval_send_outcome(fut, timeout=15)
+        except ApprovalDeliveryError:
+            raise
         except Exception as e:
-            logger.error("Failed to send approval request: %s", e)
+            raise ApprovalDeliveryError("Failed to send approval request") from e
+        if outcome in {"failed", "declined"}:
+            raise ApprovalDeliveryError("Failed to send approval request")
+        # Ambiguous delivery keeps the pending request armed for a late reply;
+        # the decision wait still blocks on silence. Never send a duplicate.
+        # Preserve upstream expiry notices for delivered or possibly-delivered prompts.
+        arm_timeout_notice(None)
 
     # ── run_sync phases ─────────────────────────────────────────────────────────────────────
 

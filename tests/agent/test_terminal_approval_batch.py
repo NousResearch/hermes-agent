@@ -16,9 +16,9 @@ from tools import approval
 from tools.thread_context import propagate_context_to_thread
 
 
-def _call(call_id, command):
+def _call(call_id, command, **extra):
     return SimpleNamespace(id=call_id, type="function", function=SimpleNamespace(
-        name="terminal", arguments=json.dumps({"command": command})))
+        name="terminal", arguments=json.dumps({"command": command, **extra})))
 
 
 def _agent():
@@ -96,7 +96,10 @@ def test_desktop_publishes_final_commands_before_wait_and_runs_in_order(tmp_path
         if name != "terminal":
             return None, args
         policy.append(args["command"])
-        return None, {**args, "command": commands[args["command"]]}
+        return None, {**args, "command": commands[args["command"]],
+                      "approval_purpose": "inspect the temporary workspace",
+                      "approval_effect": "remove absent test paths",
+                      "approval_risk": "test-local file removal"}
 
     def started(call_id, name, args):
         if name != "terminal":
@@ -123,6 +126,10 @@ def test_desktop_publishes_final_commands_before_wait_and_runs_in_order(tmp_path
             second = published.get(timeout=5)
             assert [first["command"], second["command"]] == list(commands.values())
             assert policy == list(commands)
+            for prompt in (first, second):
+                assert "inspect the temporary workspace" in prompt["description"]
+                assert "remove absent test paths" in prompt["description"]
+                assert "test-local file removal" in prompt["description"]
             assert executed == []
             assert approval.ack_gateway_approval(key, second["request_id"])
             assert executed == []
@@ -262,7 +269,12 @@ def test_failed_command_re_gates_later_prepared_approvals(tmp_path, monkeypatch)
         "session_key": key, "source": "desktop", "agent": agent, "cwd": str(tmp_path),
     }})
     tokens = server._set_session_context(key)
-    calls = [_call(call_id, commands[call_id]) for call_id in ("failing", "later")]
+    # The re-gated prompt comes from the live guard, which reads terminal_tool's
+    # own arguments rather than the prepared slot: the explanation must survive it.
+    context = {"approval_purpose": "check the batch workspace",
+               "approval_effect": "write a marker file",
+               "approval_risk": "test-local file write"}
+    calls = [_call(call_id, commands[call_id], **context) for call_id in ("failing", "later")]
     executed = []
     messages = []
     errors = []
@@ -304,6 +316,8 @@ def test_failed_command_re_gates_later_prepared_approvals(tmp_path, monkeypatch)
             regated = published.get(timeout=10)
             assert regated["command"] == commands["later"]
             assert regated["request_id"] != later_request["request_id"]
+            for request in (first_request, later_request, regated):
+                assert all(value in request["description"] for value in context.values())
             assert not effect.exists()
             assert approval.resolve_gateway_approval(key, "once", request_id=regated["request_id"]) == 1
 

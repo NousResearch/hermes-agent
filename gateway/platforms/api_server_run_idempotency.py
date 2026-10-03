@@ -8,7 +8,7 @@ import threading
 import time
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Callable, Dict
 
 from hermes_cli.sqlite_util import add_column_if_missing
 
@@ -126,13 +126,19 @@ class RunIdempotencyStore:
             self._conn.execute("BEGIN IMMEDIATE")
             try:
                 yield
-            except Exception:
+            except BaseException:
                 self._conn.rollback()
                 raise
 
     def reserve(self, scope: str, key: str, fingerprint: str, run_id: str, status: Dict[str, Any], *,
-                owner_pid: int = 0, owner_started: int = 0, retention_until: float = 0):
-        """Atomically reserve a key; return ``(outcome, stored_record)``."""
+                owner_pid: int = 0, owner_started: int = 0, retention_until: float = 0,
+                register_owner: Callable[[], None] | None = None):
+        """Atomically reserve a key and, for a new row, register its live owner.
+
+        ``register_owner`` runs after the insert but before commit. Its failure
+        rolls the reservation back, so a durable queued row can never outlive
+        failed task registration.
+        """
         now = time.time()
         retention_until = max(0.0, float(retention_until or 0))
         encoded = _encode_status(status)
@@ -151,6 +157,8 @@ class RunIdempotencyStore:
                 ") VALUES(?,?,?,?,?,?,?,?,?,?)",
                 (scope, key, fingerprint, run_id, encoded, int(owner_pid or 0), int(owner_started or 0),
                  retention_until, now, now))
+            if register_owner is not None:
+                register_owner()
             self._conn.commit()
             return "created", _record(run_id, encoded, owner_pid, owner_started, now) | {"status": status}
 

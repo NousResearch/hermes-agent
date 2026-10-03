@@ -513,6 +513,46 @@ class _RunLaunch:
             self.queue.put_nowait(event)
 
 
+def _settle_prelaunch_run(self, run: _RunLaunch, status: str, **fields: Any) -> None:
+    """Terminalize a registered task that failed before either run executor took ownership."""
+    self._set_run_status(run.run_id, status, **fields, last_event=f"run.{status}")
+    with suppress(Exception):
+        run.put_event(_run_event(run.run_id, f"run.{status}", **fields))
+        run.put_event(None)
+    _retire_live_run(self, run.run_id)
+
+
+async def _execute_admitted_run(
+    self, run: _RunLaunch, *, live_owner_eligible: bool, _api_server
+) -> None:
+    """Resolve the executor only after the durable reservation owns this task."""
+    try:
+        # A custom eager task factory may enter the coroutine during create_task().
+        # Yield before admission so no external side effect can precede the SQLite commit.
+        await asyncio.sleep(0)
+        # A canonical Bot Chat held live by a Desktop is that Desktop's turn;
+        # handing it off prevents this gateway from becoming a second writer (#114959).
+        admitted = (
+            await self._admit_to_live_bot_chat(run.session_id, run.user_message, run.turn_author)
+            if live_owner_eligible else None)
+    except asyncio.CancelledError:
+        if run.run_id in self._shutdown_interrupted_run_ids:
+            _settle_prelaunch_run(
+                self, run, "interrupted", error="Gateway shutdown interrupted the run.")
+        else:
+            _settle_prelaunch_run(self, run, "cancelled")
+        raise
+    except Exception as exc:
+        logger.exception("[api_server] run %s admission failed", run.run_id)
+        _settle_prelaunch_run(
+            self, run, "failed", error=_api_server._redact_api_error_text(exc))
+        return
+    if admitted is not None:
+        await _execute_run_via_live_owner(self, run, *admitted, _api_server=_api_server)
+    else:
+        await _execute_run(self, run, _api_server=_api_server)
+
+
 def _forget_run(self, run_id: str, *tables) -> None:
     """Drop *run_id* from the given run-keyed dicts/sets, then release its owner stamp."""
     for table in tables:
@@ -717,17 +757,6 @@ async def _handle_runs(self, request: "web.Request", *, _api_server) -> "web.Res
     self._run_approval_sessions[run_id] = run_id  # approval session key (see _RunLaunch)
     initial_status = self._set_run_status(
         run_id, "queued", created_at=created_at, session_id=session_id, model=body.get("model", self._model_name))
-    if idempotency_key:
-        outcome, record = self._run_idempotency_store.reserve(
-            idempotency_scope, idempotency_key, idempotency_fingerprint, run_id, initial_status,
-            owner_pid=self._run_owner_pid, owner_started=self._run_owner_started,
-            retention_until=_room_retention_until(request))
-        if outcome != "created":
-            _forget_run(
-                self, run_id, self._run_streams, self._run_streams_created, self._run_approval_sessions,
-                self._run_statuses, self._run_owners)
-            return _replay_or_conflict(self, request, outcome, record, gateway_session_key, _openai_error)
-        self._run_idempotency_ids.add(run_id)
     launch = _RunLaunch(
         self, run_id, q, session_id, gateway_session_key, _declared_selected, user_message,
         conversation_history, session_history_delivery,
@@ -739,16 +768,55 @@ async def _handle_runs(self, request: "web.Request", *, _api_server) -> "web.Res
         browser_control_principal=_api_server._api_request_browser_control_principal.get(),
         browser_control_transport_family=_api_server._api_request_browser_control_transport_family.get(),
         turn_author=turn_author)
+    task: Optional[asyncio.Task[Any]] = None
+
+    def _register_task() -> None:
+        nonlocal task
+        coro = _execute_admitted_run(
+            self, launch, live_owner_eligible=bool(selected_session_id), _api_server=_api_server)
+        try:
+            candidate = asyncio.create_task(coro)
+            if candidate is None:
+                raise RuntimeError("run task registration returned no task")
+            task = candidate
+            self._active_run_tasks[run_id] = task
+            if idempotency_key:
+                self._run_idempotency_ids.add(run_id)
+        except BaseException:
+            if task is None:
+                coro.close()
+            else:
+                task.cancel()
+            raise
+
+    try:
+        if idempotency_key:
+            outcome, record = self._run_idempotency_store.reserve(
+                idempotency_scope, idempotency_key, idempotency_fingerprint, run_id, initial_status,
+                owner_pid=self._run_owner_pid, owner_started=self._run_owner_started,
+                retention_until=_room_retention_until(request), register_owner=_register_task)
+            if outcome != "created":
+                _forget_run(
+                    self, run_id, self._run_streams, self._run_streams_created,
+                    self._run_approval_sessions, self._run_statuses, self._run_owners,
+                    self._active_run_tasks)
+                return _replay_or_conflict(
+                    self, request, outcome, record, gateway_session_key, _openai_error)
+        else:
+            _register_task()
+    except BaseException:
+        if task is not None:
+            task.cancel()
+            with suppress(asyncio.CancelledError):
+                await task
+        _forget_run(
+            self, run_id, self._run_streams, self._run_streams_created,
+            self._run_approval_sessions, self._run_statuses, self._run_owners,
+            self._run_idempotency_ids, self._active_run_tasks)
+        raise
+    if task is None:
+        raise RuntimeError("run admission committed without task ownership")
     self._activate_admitted_request()
-    # A canonical Bot Chat that a Desktop holds live is that Desktop's to run: executing here would
-    # be a second writer beside its lease (#114959). The owner's mailbox takes the turn and its
-    # receipt drives this run's status, so `peer run` keeps its run_id and `peer status` still works.
-    admitted = await self._admit_to_live_bot_chat(session_id, user_message, turn_author) if selected_session_id else None
-    if admitted is not None:
-        task = self._active_run_tasks[run_id] = asyncio.create_task(
-            _execute_run_via_live_owner(self, launch, *admitted, _api_server=_api_server))
-    else:
-        task = self._active_run_tasks[run_id] = asyncio.create_task(_execute_run(self, launch, _api_server=_api_server))
     with suppress(TypeError):
         self._background_tasks.add(task)  # tracked for shutdown drain
     if hasattr(task, "add_done_callback"):

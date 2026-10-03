@@ -312,15 +312,17 @@ export async function initializeConnectionsRegistry(): Promise<DesktopConnection
   if ($activeConnectionId.get() === preferredId) {
     const active = $connection.get()
     const preferredConnection = preferred
+
     const shouldValidateProfile =
       active?.registryScoped === true &&
       preferredConnection?.kind !== 'local'
+
     const startupProfile = shouldValidateProfile
       ? await resolveStartupProfile(preferredId, $activeGatewayProfile.get())
       : null
 
     if (startupProfile && startupProfile !== normalizeProfileKey($activeGatewayProfile.get())) {
-      await selectConnection(preferredId, { profile: startupProfile })
+      await selectConnection(preferredId, { profile: startupProfile, restore: true })
     } else {
       await rememberConnection(preferredId)
     }
@@ -360,6 +362,8 @@ export interface SelectConnectionOptions {
   /** Land on this profile of the target source instead of the one last used
    *  there. The fleet profile rail passes the exact square the user clicked. */
   profile?: null | string
+  /** Preserve browse mode when validating a route during silent startup restore. */
+  restore?: boolean
 }
 
 export async function selectConnection(connectionId: string, options: SelectConnectionOptions = {}): Promise<void> {
@@ -374,7 +378,7 @@ export async function selectConnection(connectionId: string, options: SelectConn
   // picker is a concrete-source action. The silent boot-time restore (below,
   // from initializeConnectionsRegistry) is not — it must leave the persisted
   // browse-mode preference alone so it survives restart (#93197).
-  const restoreOnBoot = pendingTarget === null && $activeConnectionId.get() === null
+  const restoreOnBoot = options.restore === true || (pendingTarget === null && $activeConnectionId.get() === null)
 
   const currentConnectionId = $activeConnectionId.get()
   const currentProfile = normalizeProfileKey($activeGatewayProfile.get())

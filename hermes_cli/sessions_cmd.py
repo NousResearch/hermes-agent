@@ -9,6 +9,7 @@ import — must run without opening ``SessionDB()``, which a malformed schema pr
 import json
 import os
 import shutil
+import socket
 import sqlite3
 import sys
 from functools import partial
@@ -415,6 +416,9 @@ def _render_html(args, sessions):
 
 
 def _render_jsonl(args, sessions):
+    machine_id = getattr(args, "machine", None) or socket.gethostname()
+    for s in sessions:
+        s["machine_id"] = machine_id
     lines = "".join(json.dumps(s, ensure_ascii=False) + "\n" for s in sessions)
     return lines, f"Exported {len(sessions)} {'session' if args.session_id else 'sessions'} to {args.output}"
 
@@ -1185,6 +1189,56 @@ def _cmd_set_journal_mode(args):
     return cmd_set_journal_mode(args)
 
 
+def _cmd_import_hermes(db, args):
+    """Import a Hermes sessions export (JSONL) into the local state.db."""
+    import json as _json
+
+    if not os.path.isfile(args.input):
+        print(f"Error: File not found: {args.input}")
+        return
+
+    sessions = []
+    with open(args.input, "r", encoding="utf-8") as f:
+        for lineno, line in enumerate(f, 1):
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                sessions.append(_json.loads(line))
+            except _json.JSONDecodeError as e:
+                print(f"Warning: line {lineno}: skipping malformed JSON ({e})")
+
+    if not sessions:
+        print("No sessions found in input file.")
+        return
+
+    if getattr(args, "machine", None):
+        sessions = [s for s in sessions if s.get("machine_id") == args.machine]
+        if not sessions:
+            print(f"No sessions from machine '{args.machine}' in input file.")
+            return
+
+    if args.dry_run:
+        print(f"Would import {len(sessions)} session(s):")
+        for s in sessions[:20]:
+            print(f"  {s.get('id', '?')}  {s.get('source', '?')}  ({len(s.get('messages', []))} messages)")
+        if len(sessions) > 20:
+            print(f"  ... {len(sessions) - 20} more")
+        return
+
+    result = db.import_sessions(sessions)
+    imported = result.get("imported", 0)
+    skipped = result.get("skipped", 0)
+    errors = result.get("errors", [])
+    print(f"Imported {imported} session(s), skipped {skipped} (already present).")
+    if errors:
+        print(f"  {len(errors)} error(s):")
+        for err in errors[:10]:
+            print(f"    {err.get('session_id', '?')}: {err.get('error', '?')}")
+        if len(errors) > 10:
+            print(f"    ... {len(errors) - 10} more")
+
+
 _PRE_DB_HANDLERS = {
     "repair": _cmd_repair, "recover": _cmd_recover, "import": _cmd_import,
     "repair-profiles": _cmd_repair_profiles,  # opens every profile's store itself
@@ -1198,6 +1252,7 @@ _DB_HANDLERS = {
     "retitle-skills": _cmd_retitle_skills, "browse": _cmd_browse, "optimize": _cmd_optimize,
     "clean-markers": _cmd_clean_markers, "optimize-storage": _cmd_optimize_storage,
     "repair-routing": _cmd_repair_routing, "repair-prompts": _cmd_repair_prompts, "stats": _cmd_stats,
+    "import-hermes": _cmd_import_hermes,
 }
 
 

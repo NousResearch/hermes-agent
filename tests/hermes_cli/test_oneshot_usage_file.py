@@ -90,6 +90,19 @@ class TestAuxiliaryLedger:
             "api_calls": 4, "total_tokens": 1298, "estimated_cost_usd": pytest.approx(0.1244),
         }
 
+    def test_aux_total_tokens_count_prompt_cache(self):
+        """``total_tokens`` is prompt + completion: a cache hit is prompt volume, so aux totals
+        must carry ``cache_read_tokens``/``cache_write_tokens`` (input_tokens is miss-only)."""
+        from hermes_cli.oneshot import _auxiliary_report
+
+        by_task = {"compression": {"api_calls": 1, "input_tokens": 200, "output_tokens": 20,
+                                   "cache_read_tokens": 10_000, "cache_write_tokens": 500,
+                                   "reasoning_tokens": 0, "estimated_cost_usd": 0.01}}
+        report = {"total_tokens": 1_000, "api_calls": 1, "estimated_cost_usd": 0.5}
+        _auxiliary_report(report, by_task)
+        assert report["auxiliary"]["total_tokens"] == 10_720
+        assert report["total_including_auxiliary"]["total_tokens"] == 11_720
+
     def test_waits_for_in_flight_title_thread(self, tmp_path):
         import threading
         import time

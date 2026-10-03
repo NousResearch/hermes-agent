@@ -11,6 +11,7 @@ import { Tip } from '@/components/ui/tooltip'
 import type { HermesReviewScope } from '@/global'
 import { useDelayedTrue } from '@/hooks/use-delayed-true'
 import { useI18n } from '@/i18n'
+import { GitBranch, History, Pencil } from '@/lib/icons'
 import { displayPath } from '@/lib/display-path'
 import { cn } from '@/lib/utils'
 import { $panesFlipped } from '@/store/layout'
@@ -91,15 +92,16 @@ export function ReviewPane() {
           </div>
           <SegmentedControl<HermesReviewScope>
             className="mr-1"
+            iconOnly
             onChange={id => {
               $reviewScope.set(id)
               clearReviewSelection()
               void refreshReview()
             }}
             options={[
-              { id: 'uncommitted', label: c.scopeUncommitted },
-              { id: 'branch', label: c.scopeBranch },
-              { id: 'lastTurn', label: c.scopeLastTurn }
+              { id: 'uncommitted', label: c.scopeUncommitted, icon: Pencil },
+              { id: 'branch', label: c.scopeBranch, icon: GitBranch },
+              { id: 'lastTurn', label: c.scopeLastTurn, icon: History }
             ]}
             value={scope}
           />

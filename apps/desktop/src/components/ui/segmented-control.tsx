@@ -1,6 +1,8 @@
 import type { IconComponent } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 
+import { Tip } from './tooltip'
+
 export interface SegmentedControlOption<T extends string> {
   id: T
   label: string
@@ -14,6 +16,10 @@ interface SegmentedControlProps<T extends string> {
   className?: string
   /** Dims the whole track and blocks selection (e.g. gated behind a prerequisite). */
   disabled?: boolean
+  /** Render each option as its icon alone, named by tooltip + aria-label.
+   *  For fixed-size tracks (narrow panes) where text labels would wrap and
+   *  collide with neighbors. Options without an icon fall back to text. */
+  iconOnly?: boolean
 }
 
 /**
@@ -24,6 +30,7 @@ interface SegmentedControlProps<T extends string> {
 export function SegmentedControl<T extends string>({
   className,
   disabled = false,
+  iconOnly = false,
   onChange,
   options,
   value
@@ -38,22 +45,28 @@ export function SegmentedControl<T extends string>({
     >
       {options.map(({ id, label, icon: Icon }) => {
         const active = value === id
+        // Icon-only mode keeps the track a fixed size at every width: the
+        // name moves to the tooltip and the accessible name. An option
+        // without an icon has nowhere to put its name, so it keeps the text.
+        const unnamed = iconOnly && !!Icon
 
         return (
-          <button
-            aria-pressed={active}
-            className={cn(
-              'flex items-center justify-center gap-1 rounded-[3px] px-2.5 py-0.5 text-[0.6875rem] font-medium transition-colors disabled:cursor-default',
-              active ? 'bg-background text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground'
-            )}
-            disabled={disabled}
-            key={id}
-            onClick={() => onChange(id)}
-            type="button"
-          >
-            {Icon && <Icon className="size-3" />}
-            {label}
-          </button>
+          <Tip key={id} label={unnamed ? label : ''}>
+            <button
+              aria-label={unnamed ? label : undefined}
+              aria-pressed={active}
+              className={cn(
+                'flex items-center justify-center gap-1 rounded-[3px] px-2.5 py-0.5 text-[0.6875rem] font-medium transition-colors disabled:cursor-default',
+                active ? 'bg-background text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground'
+              )}
+              disabled={disabled}
+              onClick={() => onChange(id)}
+              type="button"
+            >
+              {Icon && <Icon className="size-3" />}
+              {!unnamed && label}
+            </button>
+          </Tip>
         )
       })}
     </div>

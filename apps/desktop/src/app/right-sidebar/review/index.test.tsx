@@ -63,11 +63,17 @@ describe('ReviewPane header gating', () => {
   it('renders the three scope options and switches scope on selection', () => {
     renderPane()
 
-    expect(screen.getByText('Uncommitted')).toBeTruthy()
-    expect(screen.getByText('Branch')).toBeTruthy()
-    expect(screen.getByText('Last turn')).toBeTruthy()
+    // Icon-only segments: a fixed-size track cannot wrap or collide with the
+    // header icons at narrow pane widths, so the name lives in the
+    // accessible name (and the tooltip) instead of rendered text.
+    expect(screen.getByLabelText('Uncommitted')).toBeTruthy()
+    expect(screen.getByLabelText('Branch')).toBeTruthy()
+    expect(screen.getByLabelText('Last turn')).toBeTruthy()
+    expect(screen.queryByText('Uncommitted')).toBeNull()
+    expect(screen.queryByText('Branch')).toBeNull()
+    expect(screen.queryByText('Last turn')).toBeNull()
 
-    fireEvent.click(screen.getByText('Branch'))
+    fireEvent.click(screen.getByLabelText('Branch'))
 
     expect($reviewScope.get()).toBe('branch')
   })

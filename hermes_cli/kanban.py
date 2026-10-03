@@ -359,6 +359,12 @@ def _cmd_create(args: argparse.Namespace) -> int:
     if max_retries is not None and max_retries < 1:
         return _err(f"kanban: --max-retries must be >= 1 (got {max_retries}); "
                     "use 1 to trip on the first failure.", 2)
+    # --notify-chat and --notify-platform are a pair: half a target can't
+    # deliver, and silently ignoring it would recreate the exact
+    # hand-back-goes-unseen failure the flag exists to prevent.
+    if bool(getattr(args, "notify_chat", None)) != bool(getattr(args, "notify_platform", None)):
+        return _err("kanban: --notify-chat and --notify-platform must be given "
+                    "together (a partial notify target can't deliver).", 2)
     with kbc.connect_closing() as conn:
         task_id = kb.create_task(
             conn, title=args.title, body=body, assignee=args.assignee,
@@ -378,6 +384,21 @@ def _cmd_create(args: argparse.Namespace) -> int:
                              if is_dispatcher_owned_worker_context() else None),
         )
         task = kb.get_task(conn, task_id)
+        # Explicit notify subscription for CLI/subprocess creates. The
+        # in-gateway `kanban` tool auto-subscribes the calling session off
+        # its ContextVars (HERMES_SESSION_PLATFORM/CHAT_ID); a bare CLI or
+        # subprocess create has no session channel, so the auto path no-ops
+        # and the card would hand back silently. --notify-chat closes that
+        # gap by writing the same notify-sub row explicitly.
+        notify_chat = getattr(args, "notify_chat", None)
+        notify_platform = getattr(args, "notify_platform", None)
+        if notify_chat and notify_platform:
+            kbn.add_notify_sub(
+                conn, task_id=task_id,
+                platform=notify_platform, chat_id=notify_chat,
+                thread_id=getattr(args, "notify_thread", None),
+                notifier_profile=_profile_author(),
+            )
     if getattr(args, "json", False):
         _print_json(_task_to_dict(task))
     else:

@@ -17,6 +17,7 @@ from tools import browser_tool_lightpanda_fallback as bt_lightpanda_fallback
 from tools import browser_tool_real_profile as bt_real_profile
 from tools import browser_tool_session as bt_session
 from tools import browser_tool_install as bt_install
+from tools import browser_tool_lifecycle as bt_lifecycle
 
 
 def _auth_db(path, value=None):
@@ -247,8 +248,9 @@ class TestRealProfileCdpLaunch:
         # #100855: the attach daemon lives in a reaper-visible socket dir claimed by this
         # process, and never self-terminates (Chrome is ours, not the daemon's).
         socket_dir = captured["env"]["AGENT_BROWSER_SOCKET_DIR"]
-        assert socket_dir == str(tmp_path / f"agent-browser-{bt._REAL_PROFILE_SESSION}")
-        assert (tmp_path / f"agent-browser-{bt._REAL_PROFILE_SESSION}" / f"{bt._REAL_PROFILE_SESSION}.owner_pid").read_text() == str(os.getpid())
+        expected_socket_dir = str(tmp_path / bt_lifecycle._socket_dir_for_session(bt._REAL_PROFILE_SESSION).rsplit("/", 1)[-1])
+        assert socket_dir == expected_socket_dir
+        assert (tmp_path / expected_socket_dir.rsplit("/", 1)[-1] / f"{bt._REAL_PROFILE_SESSION}.owner_pid").read_text() == str(os.getpid())
         assert "AGENT_BROWSER_IDLE_TIMEOUT_MS" not in captured["env"]
         self._reset()
 

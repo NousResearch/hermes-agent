@@ -21,11 +21,14 @@
 #
 # Reads tags from the local checkout, so it needs one fetched with tags
 # (actions/checkout with fetch-depth: 0, or `fetch-tags: true`). A shallow
-# checkout has no tags and this exits non-zero rather than silently emitting an
-# empty matrix.
+# checkout has no tags and emits an empty list with a warning; the caller can
+# then run the HEAD -> NEXT self-update leg without inventing an old baseline.
 #
-# Only vYYYY.M.D[.N] release tags are considered; the repo also carries
-# backup/* and one-off tags that are not releases.
+# Only stable and canonical canary release tags are considered. A canary is
+# valid as an OLD baseline only when it points before the checkout under test.
+# The repository may temporarily have no historical baseline (for example when
+# a new line has only its current canary tag); callers decide whether that is a
+# warning (scheduled/manual) or a release-gate failure.
 
 set -euo pipefail
 
@@ -68,16 +71,19 @@ fi
 # lexicographic sort gets wrong.
 mapfile -t tags < <(
   git -C "$REPO" tag --list 'v*' \
-    | grep -E '^v[0-9]{4}\.[0-9]+\.[0-9]+(\.[0-9]+)?$' \
-    | sort -V
+    | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+(\.[0-9]+)?(\+canary\.20[0-9]{6}T[0-9]{6}Z)?$' \
+    | while IFS= read -r tag; do
+        commit="$(git -C "$REPO" rev-list -1 "$tag^{commit}")"
+        head="$(git -C "$REPO" rev-parse HEAD)"
+        [ "$commit" != "$head" ] && printf '%s\n' "$tag"
+      done | sort -V
 )
 
 total="${#tags[@]}"
 if [ "$total" -eq 0 ]; then
-  echo "error: no release tags found in $REPO" >&2
-  echo '       A shallow clone has no tags: fetch with tags (actions/checkout' >&2
-  echo '       with fetch-depth: 0, or fetch-tags: true).' >&2
-  exit 1
+  echo "warning: no historical release tags found in $REPO" >&2
+  printf '[]\n'
+  exit 0
 fi
 
 if [ "$total" -le "$COUNT" ]; then

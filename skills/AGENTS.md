@@ -25,9 +25,12 @@ stored under `skills.config.<key>`, prompted during setup, injected at load). To
 
 Every new or modernised skill — bundled, optional, or contributed — meets all of these before merge:
 
-1. **`description` ≤ 60 chars, one sentence, ends with a period.** Long descriptions bloat listings
-   and dilute attention when many skills load. State the capability, not the implementation; no
-   marketing words ("powerful", "comprehensive", "seamless", "advanced"); don't repeat the name.
+1. **`description` ≤ 60 chars, one sentence, ends with a period.** This 60-char hardline for
+   shipped/contributed skills is intentionally tighter than `SKILL_PROMPT_DESC_LIMIT` (currently 240,
+   see `agent/skill_utils.py`), which is only the system-prompt truncation/new-skill-creation ceiling —
+   the two are separate, intentional limits, not drift. Long descriptions bloat listings and dilute
+   attention when many skills load. State the capability, not the implementation; no marketing words
+   ("powerful", "comprehensive", "seamless", "advanced"); don't repeat the name.
    Check: `len(re.search(r'^description: (.*)$', text, re.M).group(1)) <= 60`.
 2. **Prose references native Hermes tools or the MCP servers the skill expects, in backticks**
    (`terminal`, `web_extract`, `read_file`, `patch`, `search_files`, `vision_analyze`,

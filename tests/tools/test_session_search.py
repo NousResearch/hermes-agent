@@ -265,6 +265,41 @@ class TestDiscoveryShape:
         assert "s_newest" not in sids
 
 
+    def test_all_filtered_hits_report_filters_without_redundant_role_advice(self, db):
+        phrase = "rare amber compass"
+        for sid in ("s_live", "s_seen"):
+            db.create_session(sid, source="cli")
+            db.append_message(sid, role="assistant", content=phrase)
+        db.append_message("s_live", role="tool", content=phrase)
+
+        result = json.loads(session_search(
+            query=phrase, db=db, current_session_id="s_live",
+            exclude_session_ids=["s_seen"], role_filter="user,assistant,tool",
+        ))
+
+        assert result["results"] == []
+        assert "current session's live context" in result["message"]
+        assert "exclude_session_ids" in result["message"]
+        assert "role_filter" not in result["message"]
+        assert "No matching sessions found" not in result["message"]
+
+    @pytest.mark.parametrize("kwargs, marker", [
+        ({"current_session_id": "s_title"}, "current session's live context"),
+        ({"exclude_session_ids": ["s_title"]}, "exclude_session_ids"),
+        ({"after": "2099-01-01"}, "requested time window"),
+    ])
+    def test_filtered_title_match_reports_filter_not_fts_failure(self, db, kwargs, marker):
+        db.create_session("s_title", source="cli")
+        db.set_session_title("s_title", "Rare Amber Compass")
+        db.append_message("s_title", role="assistant", content="unrelated body text")
+
+        result = json.loads(session_search(query="Rare Amber Compass", db=db, **kwargs))
+
+        assert result["results"] == []
+        assert marker in result["message"]
+        assert "FTS5 ANDs" not in result["message"]
+
+
 class TestDiscoverySort:
     def test_sort_newest_orders_by_recency(self, db):
         _seed_modpack_sessions(db)

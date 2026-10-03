@@ -85,6 +85,37 @@ def test_build_welcome_banner_does_not_center_pad_hero_art():
     assert hero_line.startswith("\u2502  \u2800X"), repr(hero_line)
 
 
+def test_welcome_banner_renders_a_user_skin_with_unquoted_hex_colors(tmp_path, monkeypatch):
+    """YAML reads ``banner_border: #A93333`` as null. The startup banner must still render with that
+    skin active — a null color used to raise out of ``console.print`` and abort the CLI."""
+    import io
+
+    from hermes_cli import skin_engine
+
+    home = tmp_path / ".hermes"
+    (home / "skins").mkdir(parents=True)
+    (home / "skins" / "unquoted.yaml").write_text(
+        "name: unquoted\ncolors:\n  banner_border: #A93333\n  banner_title: #C7A96B\n", encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr(skin_engine, "_active_skin", None)
+    monkeypatch.setattr(skin_engine, "_active_skin_name", "default")
+    skin_engine.set_active_skin("unquoted")
+
+    buf = io.StringIO()
+    with (
+        patch.object(model_tools, "check_tool_availability", return_value=([], [])),
+        patch.object(banner, "get_available_skills", return_value={}),
+        patch.object(banner, "get_update_result", return_value=None),
+        patch.object(banner, "get_latest_release_tag", return_value=None),
+        patch.object(tools.mcp_tool_discovery, "get_mcp_status", return_value=[]),
+    ):
+        console = Console(file=buf, force_terminal=True, color_system="truecolor", width=120)
+        banner.build_welcome_banner(console=console, model="m", cwd="/tmp", tools=[],
+                                    get_toolset_for_tool=lambda _: None)
+
+    assert "Hermes Agent" in buf.getvalue()
+
+
 def test_baked_banner_uses_live_identity(monkeypatch):
     from hermes_cli import banner, version_info
 

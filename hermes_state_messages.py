@@ -934,22 +934,30 @@ class SessionMessagesMixin:
         rows = conn.execute(sql, params).fetchall()
         return [int(r["id"]) for r in rows], sum(_tool_calls_len(r["tool_calls"]) for r in rows)
 
-    def _clone_message_rows(self, conn, tail_ids: list[int], *, session_id: Optional[str] = None) -> int:
+    def _clone_message_rows(self, conn, tail_ids: list[int], *, session_id: Optional[str] = None) -> tuple[int, int]:
         """Pure-SQL clone of *tail_ids* as fresh live rows (new id/display order, active=1, compacted=0;
-        message payload columns stay byte-exact and FTS triggers index the clones), into *session_id* when given."""
+        message payload columns stay byte-exact and FTS triggers index the clones), into *session_id* when given.
+
+        Returns ``(inserted, tool_call_count)`` for the rows that were actually inserted.
+        A row whose ``platform_message_id`` is already active in the target is skipped
+        and does not contribute to either count.
+        """
         retarget = session_id is not None
         target_session = session_id if retarget else None
         kept_ids = []
+        kept_tool_calls = 0
         for row in conn.execute(
-            f"SELECT id, session_id, platform_message_id FROM messages WHERE id IN ({_placeholders(tail_ids)})",
+            "SELECT id, session_id, platform_message_id, tool_calls FROM messages "
+            f"WHERE id IN ({_placeholders(tail_ids)})",
             tail_ids,
         ).fetchall():
             owner = target_session or row["session_id"]
             if self._active_platform_message_exists(conn, owner, row["platform_message_id"]):
                 continue
             kept_ids.append(int(row["id"]))
+            kept_tool_calls += _tool_calls_len(row["tool_calls"])
         if not kept_ids:
-            return 0
+            return 0, 0
         tail_ids = kept_ids
         # A clone is a newly positioned display generation. Copy its indexed
         # identity, but let the insert trigger assign order from rows that are
@@ -961,7 +969,7 @@ class SessionMessagesMixin:
             f"SELECT {col_list}, {'?, ' if retarget else ''}1, 0 FROM messages "
             f"WHERE id IN ({_placeholders(tail_ids)}) ORDER BY id",
             [session_id, *tail_ids] if retarget else tail_ids)
-        return len(tail_ids)
+        return len(tail_ids), kept_tool_calls
 
     def _archive_named_rows(
         self, conn, session_id: str, compacted_messages: list[dict[str, Any]], covered: list[int], *,
@@ -998,13 +1006,9 @@ class SessionMessagesMixin:
         self._carry_parent_timestamps(conn, session_id, compacted_messages)
         inserted, tool_calls_total = self._insert_message_rows(conn, session_id, compacted_messages)
         if unseen:
-            _ids, unseen_tool_calls = self._tail_rows_after_watermark(
-                conn,
-                f"SELECT id, tool_calls FROM messages WHERE id IN ({_placeholders(unseen)}) ORDER BY id",
-                tuple(unseen))
-            self._clone_message_rows(conn, unseen)
-            inserted += len(unseen)
-            tool_calls_total += unseen_tool_calls
+            cloned, cloned_tool_calls = self._clone_message_rows(conn, unseen)
+            inserted += cloned
+            tool_calls_total += cloned_tool_calls
         # A carried copy whose stored identity was computed differently lands in its own
         # display_order group and would project twice; re-fold before publishing (#122167).
         self._reconcile_display_orders(conn, session_id)
@@ -1061,7 +1065,7 @@ class SessionMessagesMixin:
                     conn, session_id, compacted_messages, proved[0], tail_count=tail_count,
                     carried_messages=carried_messages, patched_model_config=patched_model_config, patch=patch,
                     merged_away=proved[1])
-            tail_ids, tail_tool_calls = ([], 0) if watermark is None else self._tail_rows_after_watermark(
+            tail_ids, _tail_tool_calls = ([], 0) if watermark is None else self._tail_rows_after_watermark(
                 conn, "SELECT id, tool_calls FROM messages WHERE session_id = ? AND active = 1 AND id > ? ORDER BY id",
                 (session_id, int(watermark)))
             # Rewind targets sit AT/BELOW the watermark (all the compressor saw); unbounded, a
@@ -1090,10 +1094,9 @@ class SessionMessagesMixin:
             self._carry_parent_timestamps(conn, session_id, compacted_messages)
             inserted, tool_calls_total = self._insert_message_rows(conn, session_id, compacted_messages)
             if tail_ids:
-                cloned = self._clone_message_rows(conn, tail_ids)
+                cloned, cloned_tool_calls = self._clone_message_rows(conn, tail_ids)
                 inserted += cloned
-                if cloned:
-                    tool_calls_total += tail_tool_calls
+                tool_calls_total += cloned_tool_calls
             # A carried copy whose stored identity was computed differently lands in its own
             # display_order group and would project twice; re-fold before publishing (#122167).
             self._reconcile_display_orders(conn, session_id)

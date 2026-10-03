@@ -124,6 +124,31 @@ def test_isolation_host_keeps_every_user_import_path_out_of_process(tmp_path, mo
     assert blocked.verdict == "in_process" and "register_platform" in blocked.reasons[0]
 
 
+
+def test_managed_scope_pins_host_isolation_over_the_profiles_own_config(tmp_path, monkeypatch):
+    """The isolated party must not be able to opt out: an operator pin in the managed scope
+    (/etc/hermes/config.yaml) wins over a profile config that says in_process."""
+    from hermes_cli import managed_scope
+    from tools.registry import registry
+
+    _home_with_plugins(tmp_path, monkeypatch, {"hostprobe": PROBE_PLUGIN}, isolation="in_process")
+    managed = tmp_path / "managed"
+    managed.mkdir()
+    (managed / "config.yaml").write_text(yaml.safe_dump({"plugins": {"isolation": "host"}}), encoding="utf-8")
+    monkeypatch.setenv("HERMES_MANAGED_DIR", str(managed))
+    managed_scope.invalidate_managed_cache()
+    manager = PluginManager()
+    manager.discover_and_load()
+    try:
+        assert not any("hostprobe" in name for name in sys.modules)
+        result = json.loads(registry.dispatch("hostprobe_pid", {}, scope=manager.scope_key))
+        assert result["pid"] != os.getpid()
+    finally:
+        host = getattr(manager, "_plugin_host_instance", None)
+        if host is not None:
+            host.shutdown()
+        managed_scope.invalidate_managed_cache()
+
 MODEL_PROVIDER_PLUGIN = '''
 import os
 from providers import register_provider

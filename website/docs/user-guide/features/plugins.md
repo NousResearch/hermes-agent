@@ -819,6 +819,22 @@ What changes in `host` mode:
   model-provider profiles that build their own SDK client (`create_client`), streaming dashboard
   endpoints, and plugins that monkeypatch Hermes modules. Run those with `isolation: in_process`.
 
+**Locking it for a shared deployment.** `plugins.isolation` is ordinary profile config, so whoever can
+edit a profile's `config.yaml` can turn it off. When the profiles belong to people you are isolating from
+each other, pin it in the [managed scope](../managed-scope.md) instead; the managed value wins over every
+profile's own config and `hermes config set` refuses to change it:
+
+```yaml
+# /etc/hermes/config.yaml (root-owned, read by every profile on the machine)
+plugins:
+  isolation: host
+  host:
+    launcher: [...]      # pin the sandbox runner too, if you use one
+```
+
+Run the agents' terminal on an isolated backend (Docker, SSH, ...) as well, so the agent itself cannot
+reach the operator's files.
+
 `hermes plugins validate <dir>` and `hermes plugins show <name>` report whether a plugin runs in the host
 and, if not, why. Across the plugin catalog at the time of writing, 299 of 348 entries run in the host
 unchanged.

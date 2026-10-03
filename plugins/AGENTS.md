@@ -109,6 +109,9 @@ Invariants:
 - **A host never spawns a host** (`HERMES_PLUGIN_HOST_PROCESS=1` makes `isolation_mode()` in-process
   there) and must not start while a module import holds its lock (model-provider discovery is the
   known case).
+- **The isolated party cannot opt out when an operator pins it:** `isolation_mode()` / `host_launcher()`
+  read through the managed overlay (`load_config_readonly`), so `/etc/hermes/config.yaml` beats the
+  profile's own config. Never switch them to a raw user-config read.
 - Plugins stay tenant-unaware: no new API, same `ctx`. Per-profile env comes from
   `served_profile_child_env`, so a host sees only its own profile's secrets.
 

@@ -316,9 +316,13 @@ export function useGatewayBoot({
     // signals that fire around wake (power resume, network online, the window
     // becoming visible).
     let primaryConnection: HermesConnection | null = null
+    // Bumped whenever the primary route is recorded, so a reconnect whose
+    // lookup started before a boot/connection apply cannot re-own the primary.
+    let primaryRouteRevision = 0
 
     const recordPrimaryConnection = (connection: HermesConnection) => {
       primaryConnection = connection
+      primaryRouteRevision += 1
       setPrimaryGatewayConnection(connection)
     }
 
@@ -468,6 +472,8 @@ export function useGatewayBoot({
         // Profile-less resolution remains intentional for boot/connection apply.
         // A registry primary needs both identity fields; a legacy primary uses
         // its explicit profile so a foreground secondary cannot retarget it.
+        const lookupRevision = primaryRouteRevision
+
         const conn = await withTimeout(
           primaryConnection?.registryScoped && primaryConnection.connectionId
             ? (desktop.getConnectionFor?.({
@@ -479,11 +485,14 @@ export function useGatewayBoot({
           'Timed out reconnecting to Hermes backend'
         )
 
-        recordPrimaryConnection(conn)
-
-        if (cancelled) {
+        // A boot/connection apply that recorded a newer primary route during
+        // the lookup owns the socket; recording, publishing or dialing the old
+        // route would undo it and pin later reconnects to the old gateway.
+        if (cancelled || lookupRevision !== primaryRouteRevision) {
           return
         }
+
+        recordPrimaryConnection(conn)
 
         // Only publish the primary descriptor when the primary is active.
         // Otherwise a background-profile view would inherit the primary's

@@ -261,8 +261,119 @@ uv_bootstrap_target() {
 # sha256-verified, so the byte authority is pm/lock.json - no astral-latest,
 # no curl|sh.
 UV_CMD=""
+
+bootstrap_sha256() {
+    if command -v sha256sum >/dev/null 2>&1; then
+        sha256sum "$1" | cut -d' ' -f1
+    else
+        shasum -a 256 "$1" | cut -d' ' -f1
+    fi
+}
+
+bootstrap_path_uid() {
+    case "$(uname -s)" in
+        Darwin) stat -f '%u' "$1" 2>/dev/null ;;
+        *) stat -c '%u' "$1" 2>/dev/null ;;
+    esac
+}
+
+bootstrap_owned() {
+    [ "$(bootstrap_path_uid "$1")" = "$(id -u)" ]
+}
+
+bootstrap_receipt_matches() {
+    local _receipt="$1" _tool="$2" _version="$3" _target="$4" _artifact="$5" _launcher="$6"
+    [ -f "$_receipt" ] && [ ! -L "$_receipt" ] && bootstrap_owned "$_receipt" || return 1
+    local _schema="" _got_tool="" _got_version="" _got_target="" _got_artifact="" _owner="" _launcher_sha=""
+    local _key _value
+    while IFS='=' read -r _key _value || [ -n "$_key$_value" ]; do
+        case "$_key" in
+            schema) [ -z "$_schema" ] || return 1; _schema="$_value" ;;
+            tool) [ -z "$_got_tool" ] || return 1; _got_tool="$_value" ;;
+            version) [ -z "$_got_version" ] || return 1; _got_version="$_value" ;;
+            target) [ -z "$_got_target" ] || return 1; _got_target="$_value" ;;
+            artifact_sha256) [ -z "$_got_artifact" ] || return 1; _got_artifact="$_value" ;;
+            owner) [ -z "$_owner" ] || return 1; _owner="$_value" ;;
+            launcher_sha256) [ -z "$_launcher_sha" ] || return 1; _launcher_sha="$_value" ;;
+            *) return 1 ;;
+        esac
+    done < "$_receipt"
+    [ "$_schema" = 1 ] && [ "$_got_tool" = "$_tool" ] \
+        && [ "$_got_version" = "$_version" ] && [ "$_got_target" = "$_target" ] \
+        && [ "$_got_artifact" = "$_artifact" ] && [ "$_owner" = "$(id -u)" ] \
+        && [ "$_launcher_sha" = "$(bootstrap_sha256 "$_launcher")" ]
+}
+
+bootstrap_entry_verified() {
+    local _entry="$1" _launcher="$2" _sidecar="$3" _tool="$4" _version="$5" _target="$6" _artifact="$7"
+    [ -d "$_entry" ] && [ ! -L "$_entry" ] && bootstrap_owned "$_entry" || return 1
+    [ -f "$_launcher" ] && [ ! -L "$_launcher" ] && [ -x "$_launcher" ] \
+        && bootstrap_owned "$_launcher" || return 1
+    local _inner="$_entry/.hermes-bootstrap-receipt" _receipt=""
+    if [ -e "$_inner" ] || [ -L "$_inner" ]; then
+        bootstrap_receipt_matches "$_inner" "$_tool" "$_version" "$_target" "$_artifact" "$_launcher" \
+            || return 1
+        _receipt="$_inner"
+    fi
+    if [ -e "$_sidecar" ] || [ -L "$_sidecar" ]; then
+        bootstrap_receipt_matches "$_sidecar" "$_tool" "$_version" "$_target" "$_artifact" "$_launcher" \
+            || return 1
+        [ -z "$_receipt" ] || cmp -s "$_receipt" "$_sidecar" || return 1
+        _receipt="$_sidecar"
+    fi
+    [ -n "$_receipt" ]
+}
+
+bootstrap_write_receipt() {
+    local _entry="$1" _launcher="$2" _tool="$3" _version="$4" _target="$5" _artifact="$6"
+    local _receipt="$_entry/.hermes-bootstrap-receipt" _tmp="$_entry/.hermes-bootstrap-receipt.tmp.$$"
+    (umask 077; printf '%s\n' \
+        'schema=1' \
+        "tool=$_tool" \
+        "version=$_version" \
+        "target=$_target" \
+        "artifact_sha256=$_artifact" \
+        "owner=$(id -u)" \
+        "launcher_sha256=$(bootstrap_sha256 "$_launcher")" > "$_tmp") \
+        || return 1
+    mv -f "$_tmp" "$_receipt"
+}
+
+bootstrap_publish_sidecar() {
+    local _receipt="$1" _sidecar="$2" _dir _tmp
+    _dir="${_sidecar%/*}"
+    if [ -e "$_dir" ] || [ -L "$_dir" ]; then
+        [ -d "$_dir" ] && [ ! -L "$_dir" ] && bootstrap_owned "$_dir" || return 1
+    else
+        (umask 077; mkdir -p "$_dir") || return 1
+    fi
+    _tmp="$_sidecar.tmp.$$"
+    (umask 077; cp "$_receipt" "$_tmp") || return 1
+    mv -f "$_tmp" "$_sidecar"
+}
+
+bootstrap_quarantine_entry() {
+    local _entry="$1" _sidecar="$2" _label="$3" _suffix _quarantine
+    _suffix="$(date -u +%Y%m%d-%H%M%S)-$$"
+    if [ -e "$_entry" ] || [ -L "$_entry" ]; then
+        _quarantine="${_entry}.quarantine-${_suffix}"
+        mv "$_entry" "$_quarantine" || fail "cannot quarantine untrusted cached $_label at $_entry"
+        log_warn "untrusted cached $_label moved aside to $_quarantine"
+    fi
+    if [ -e "$_sidecar" ] || [ -L "$_sidecar" ]; then
+        mv "$_sidecar" "${_sidecar}.quarantine-${_suffix}" \
+            || fail "cannot quarantine the cached $_label integrity receipt"
+    fi
+}
+
+bootstrap_uv_version_matches() {
+    local _launcher="$1" _out _name _version _rest
+    _out="$("$_launcher" --version 2>/dev/null)" || return 1
+    read -r _name _version _rest <<< "$_out"
+    [ "$_name" = uv ] && [ "$_version" = "$UV_PIN_VERSION" ]
+}
+
 ensure_uv() {
-    [ -n "$UV_CMD" ] && return 0
     # Always the pinned artifact, never a uv already on PATH: Hermes runs only
     # its own packaged toolchain.
     local _target
@@ -274,61 +385,89 @@ ensure_uv() {
     fi
     local _store="${HERMES_RUNTIME_DIR:-$HERMES_HOME/tools}"
     local _entry="$_store/uv-$UV_PIN_VERSION-$_target"
+    local _sidecar="$_store/.bootstrap-integrity/uv-$UV_PIN_VERSION-$_target.receipt"
+    local _integrity_dir="${_sidecar%/*}"
     UV_CMD="$_entry/uv"
-    if [ ! -x "$UV_CMD" ]; then
-        log "Downloading uv $UV_PIN_VERSION ($_target)"
-        local _tmp
-        # no-tmp: ok — last-resort fallback when mktemp itself is missing
-        _tmp="$(mktemp -d 2>/dev/null || echo "/tmp/hermes-uv-bootstrap.$$")"
-        mkdir -p "$_tmp"
-        local _fetched_from="$UV_PIN_URL"
-        # Only network availability failures permit trying identical mirrored bytes.
-        if curl -LsSf "$UV_PIN_URL" -o "$_tmp/uv.tar.gz"; then
-            :
+    if [ -e "$_store" ] || [ -L "$_store" ]; then
+        if [ ! -d "$_store" ] || [ -L "$_store" ] || ! bootstrap_owned "$_store"; then
+            fail "bootstrap tool store is not owned by the current user: $_store"
+        fi
+    else
+        (umask 077; mkdir -p "$_store") || fail "cannot create bootstrap tool store: $_store"
+    fi
+    if [ -e "$_integrity_dir" ] || [ -L "$_integrity_dir" ]; then
+        if [ ! -d "$_integrity_dir" ] || [ -L "$_integrity_dir" ] || ! bootstrap_owned "$_integrity_dir"; then
+            fail "bootstrap integrity directory is not owned by the current user: $_integrity_dir"
+        fi
+    fi
+    if bootstrap_entry_verified "$_entry" "$UV_CMD" "$_sidecar" uv "$UV_PIN_VERSION" "$_target" "$UV_PIN_SHA256"; then
+        if bootstrap_uv_version_matches "$UV_CMD"; then
+            log_success "uv ready ($("$UV_CMD" --version 2>/dev/null))"
+            return 0
+        fi
+    fi
+    if [ -e "$_entry" ] || [ -L "$_entry" ] || [ -e "$_sidecar" ] || [ -L "$_sidecar" ]; then
+        bootstrap_quarantine_entry "$_entry" "$_sidecar" uv
+    fi
+
+    log "Downloading uv $UV_PIN_VERSION ($_target)"
+    local _tmp
+    _tmp="$(mktemp -d "$_store/.uv-bootstrap.XXXXXX")" \
+        || fail "cannot stage pinned uv under $_store"
+    local _fetched_from="$UV_PIN_URL"
+    # Only network availability failures permit trying identical mirrored bytes.
+    if curl -LsSf "$UV_PIN_URL" -o "$_tmp/uv.tar.gz"; then
+        :
+    else
+        local _curl_status=$?
+        case "$_curl_status" in
+            5|6|7|18|22|28|52|55|56) ;;
+            *) rm -rf "$_tmp"; fail "failed to download pinned uv from $UV_PIN_URL (curl $_curl_status)" ;;
+        esac
+        if [ -n "${UV_PIN_MIRROR:-}" ] && curl -LsSf "$UV_PIN_MIRROR" -o "$_tmp/uv.tar.gz"; then
+            _fetched_from="$UV_PIN_MIRROR"
         else
-            local _curl_status=$?
-            case "$_curl_status" in
-                5|6|7|18|22|28|52|55|56) ;;
-                *) rm -rf "$_tmp"; fail "failed to download pinned uv from $UV_PIN_URL (curl $_curl_status)" ;;
-            esac
-            if [ -n "${UV_PIN_MIRROR:-}" ] && curl -LsSf "$UV_PIN_MIRROR" -o "$_tmp/uv.tar.gz"; then
-                _fetched_from="$UV_PIN_MIRROR"
-            else
-                rm -rf "$_tmp"
-                fail "failed to download pinned uv from $UV_PIN_URL or ${UV_PIN_MIRROR:-no mirror}"
-            fi
-        fi
-        local _digest
-        if command -v sha256sum >/dev/null 2>&1; then
-            _digest="$(sha256sum "$_tmp/uv.tar.gz" | cut -d' ' -f1)"
-        else
-            _digest="$(shasum -a 256 "$_tmp/uv.tar.gz" | cut -d' ' -f1)"
-        fi
-        if [ "$_digest" != "$UV_PIN_SHA256" ]; then
             rm -rf "$_tmp"
-            fail "uv download digest mismatch from $_fetched_from (expected $UV_PIN_SHA256, got $_digest)"
+            fail "failed to download pinned uv from $UV_PIN_URL or ${UV_PIN_MIRROR:-no mirror}"
         fi
-        if ! tar -xzf "$_tmp/uv.tar.gz" -C "$_tmp"; then
-            rm -rf "$_tmp"
-            fail "failed to extract pinned uv archive"
-        fi
-        local _unpacked
-        _unpacked="$(find "$_tmp" -mindepth 1 -maxdepth 2 -name uv -type f | head -n1)"
-        if [ -z "$_unpacked" ]; then
-            rm -rf "$_tmp"
-            fail "uv binary not found in the downloaded archive"
-        fi
-        mkdir -p "$_entry"
-        mv "$_unpacked" "$UV_CMD"
-        [ -f "$(dirname "$_unpacked")/uvx" ] && mv "$(dirname "$_unpacked")/uvx" "$_entry/uvx"
-        chmod +x "$UV_CMD"
-        chmod +x "$_entry/uvx" 2>/dev/null || true
+    fi
+    local _digest
+    _digest="$(bootstrap_sha256 "$_tmp/uv.tar.gz")"
+    if [ "$_digest" != "$UV_PIN_SHA256" ]; then
         rm -rf "$_tmp"
+        fail "uv download digest mismatch from $_fetched_from (expected $UV_PIN_SHA256, got $_digest)"
     fi
-    # Bootstrap keeps the installer private; only UV_CMD invokes it.
-    if ! "$UV_CMD" --version >/dev/null 2>&1; then
-        fail "pinned uv staged but does not run on this host"
+    if ! tar -xzf "$_tmp/uv.tar.gz" -C "$_tmp"; then
+        rm -rf "$_tmp"
+        fail "failed to extract pinned uv archive"
     fi
+    local _unpacked _source_dir _staged="$_tmp/entry"
+    _unpacked="$(find "$_tmp" -mindepth 1 -maxdepth 2 -name uv -type f | head -n1)"
+    if [ -z "$_unpacked" ] || [ -L "$_unpacked" ]; then
+        rm -rf "$_tmp"
+        fail "uv binary not found in the downloaded archive"
+    fi
+    _source_dir="$(dirname "$_unpacked")"
+    mkdir "$_staged" || { rm -rf "$_tmp"; fail "cannot stage pinned uv entry"; }
+    mv "$_unpacked" "$_staged/uv" || { rm -rf "$_tmp"; fail "cannot stage pinned uv launcher"; }
+    if [ -f "$_source_dir/uvx" ] && [ ! -L "$_source_dir/uvx" ]; then
+        mv "$_source_dir/uvx" "$_staged/uvx" || { rm -rf "$_tmp"; fail "cannot stage pinned uvx launcher"; }
+    fi
+    chmod +x "$_staged/uv"
+    chmod +x "$_staged/uvx" 2>/dev/null || true
+    if ! bootstrap_uv_version_matches "$_staged/uv"; then
+        rm -rf "$_tmp"
+        fail "pinned uv artifact does not report the pinned version $UV_PIN_VERSION"
+    fi
+    bootstrap_write_receipt "$_staged" "$_staged/uv" uv "$UV_PIN_VERSION" "$_target" "$UV_PIN_SHA256" \
+        || { rm -rf "$_tmp"; fail "cannot record pinned uv cache integrity"; }
+    bootstrap_publish_sidecar "$_staged/.hermes-bootstrap-receipt" "$_sidecar" \
+        || { rm -rf "$_tmp"; fail "cannot publish pinned uv cache integrity"; }
+    if [ -e "$_entry" ] || [ -L "$_entry" ] || ! mv "$_staged" "$_entry"; then
+        rm -rf "$_tmp"
+        fail "cannot atomically publish pinned uv cache entry"
+    fi
+    rm -rf "$_tmp"
     log_success "uv ready ($("$UV_CMD" --version 2>/dev/null))"
 }
 

@@ -491,6 +491,134 @@ function Invoke-DownloadWithProgress {
     if ($streamError) { throw $streamError }
 }
 
+function Get-BootstrapOwnerId {
+    return [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+}
+
+function Test-BootstrapPathPresent([string]$Path) {
+    try { Get-Item -LiteralPath $Path -Force -ErrorAction Stop | Out-Null; return $true } catch { return $false }
+}
+
+function Test-BootstrapOwnedPath([string]$Path, [bool]$Container) {
+    try {
+        $item = Get-Item -LiteralPath $Path -Force -ErrorAction Stop
+        if ([bool]$item.PSIsContainer -ne $Container) { return $false }
+        if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { return $false }
+        $owner = (Get-Acl -LiteralPath $Path -ErrorAction Stop).GetOwner(
+            [System.Security.Principal.SecurityIdentifier]
+        ).Value
+        return $owner -eq (Get-BootstrapOwnerId)
+    } catch {
+        return $false
+    }
+}
+
+function Read-BootstrapReceipt([string]$Path) {
+    if (-not (Test-BootstrapOwnedPath $Path $false)) { return $null }
+    $values = @{}
+    try {
+        foreach ($line in [IO.File]::ReadAllLines($Path)) {
+            $at = $line.IndexOf('=')
+            if ($at -lt 1) { return $null }
+            $key = $line.Substring(0, $at)
+            if ($values.ContainsKey($key)) { return $null }
+            $values[$key] = $line.Substring($at + 1)
+        }
+    } catch {
+        return $null
+    }
+    if ($values.Count -ne 7) { return $null }
+    return $values
+}
+
+function Test-BootstrapEntry {
+    param(
+        [string]$Entry, [string]$Launcher, [string]$Sidecar,
+        [string]$Tool, [string]$Version, [string]$Target, [string]$ArtifactSha256
+    )
+    if (-not (Test-BootstrapOwnedPath $Entry $true) -or
+        -not (Test-BootstrapOwnedPath $Launcher $false)) { return $false }
+    $inner = Join-Path $Entry '.hermes-bootstrap-receipt'
+    $receipt = $null
+    $receiptPath = $null
+    if (Test-BootstrapPathPresent $inner) {
+        $receipt = Read-BootstrapReceipt $inner
+        if (-not $receipt) { return $false }
+        $receiptPath = $inner
+    }
+    if (Test-BootstrapPathPresent $Sidecar) {
+        $sidecarReceipt = Read-BootstrapReceipt $Sidecar
+        if (-not $sidecarReceipt) { return $false }
+        if ($receiptPath -and [IO.File]::ReadAllText($receiptPath) -cne [IO.File]::ReadAllText($Sidecar)) {
+            return $false
+        }
+        $receipt = $sidecarReceipt
+        $receiptPath = $Sidecar
+    }
+    if (-not $receipt) { return $false }
+    if ($receipt.schema -ne '1' -or $receipt.tool -ne $Tool -or
+        $receipt.version -ne $Version -or $receipt.target -ne $Target -or
+        $receipt.artifact_sha256 -ne $ArtifactSha256.ToLowerInvariant() -or
+        $receipt.owner -ne (Get-BootstrapOwnerId)) { return $false }
+    try {
+        $digest = (Get-FileHash -LiteralPath $Launcher -Algorithm SHA256 -ErrorAction Stop).Hash.ToLowerInvariant()
+    } catch {
+        return $false
+    }
+    return $digest -eq $receipt.launcher_sha256
+}
+
+function Write-BootstrapReceipt {
+    param(
+        [string]$Entry, [string]$Launcher, [string]$Tool,
+        [string]$Version, [string]$Target, [string]$ArtifactSha256
+    )
+    $receipt = Join-Path $Entry '.hermes-bootstrap-receipt'
+    $tmp = "$receipt.tmp-$PID"
+    $digest = (Get-FileHash -LiteralPath $Launcher -Algorithm SHA256 -ErrorAction Stop).Hash.ToLowerInvariant()
+    $content = @(
+        'schema=1', "tool=$Tool", "version=$Version", "target=$Target",
+        "artifact_sha256=$($ArtifactSha256.ToLowerInvariant())",
+        "owner=$(Get-BootstrapOwnerId)", "launcher_sha256=$digest"
+    ) -join "`n"
+    [IO.File]::WriteAllText($tmp, $content + "`n", (New-Object System.Text.UTF8Encoding($false)))
+    Move-Item -LiteralPath $tmp -Destination $receipt -Force
+    return $receipt
+}
+
+function Publish-BootstrapSidecar([string]$Receipt, [string]$Sidecar) {
+    $directory = Split-Path -Parent $Sidecar
+    if (Test-BootstrapPathPresent $directory) {
+        if (-not (Test-BootstrapOwnedPath $directory $true)) {
+            Fail "bootstrap integrity directory is not owned by the current user: $directory"
+        }
+    } else {
+        New-Item -ItemType Directory -Path $directory -Force | Out-Null
+    }
+    $tmp = "$Sidecar.tmp-$PID"
+    Copy-Item -LiteralPath $Receipt -Destination $tmp -Force
+    if (Test-BootstrapPathPresent $Sidecar) {
+        Fail "refusing to overwrite an unquarantined bootstrap integrity receipt: $Sidecar"
+    }
+    Move-Item -LiteralPath $tmp -Destination $Sidecar
+}
+
+function Move-BootstrapEntryAside([string]$Entry, [string]$Sidecar, [string]$Label) {
+    $suffix = "$((Get-Date).ToUniversalTime().ToString('yyyyMMdd-HHmmss'))-$PID-$(Get-Random)"
+    if (Test-BootstrapPathPresent $Entry) {
+        $quarantine = "$Entry.quarantine-$suffix"
+        try { Move-Item -LiteralPath $Entry -Destination $quarantine -ErrorAction Stop } catch {
+            Fail "cannot quarantine untrusted cached $Label at $Entry : $($_.Exception.Message)"
+        }
+        Write-Warn "untrusted cached $Label moved aside to $quarantine"
+    }
+    if (Test-BootstrapPathPresent $Sidecar) {
+        try { Move-Item -LiteralPath $Sidecar -Destination "$Sidecar.quarantine-$suffix" -ErrorAction Stop } catch {
+            Fail "cannot quarantine the cached $Label integrity receipt: $($_.Exception.Message)"
+        }
+    }
+}
+
 # Provision uv for this host from the pinned pm/lock.json artifact. Stages
 # the EXACT artifact pm itself uses into the same store slot
 # (<store>\uv-<version>-<target>\), sha256-verified, so pm adopts the same
@@ -505,15 +633,32 @@ function Get-Uv {
     }
     $entry = Join-Path (Get-PmStoreRoot) "uv-$($script:UvPinVersion)-$target"
     $uvExe = Join-Path $entry "uv.exe"
-    if (Test-Path $uvExe) {
-        if (Test-UvAtLeastPin $uvExe) { return $uvExe }
-        Log "cached pinned uv does not run; downloading our own copy"
-        Remove-Item -Path $uvExe -Force
+    $store = Get-PmStoreRoot
+    $sidecar = Join-Path $store ".bootstrap-integrity\uv-$($script:UvPinVersion)-$target.receipt"
+    $integrityDir = Split-Path -Parent $sidecar
+    if (Test-BootstrapPathPresent $store) {
+        if (-not (Test-BootstrapOwnedPath $store $true)) {
+            Fail "bootstrap tool store is not owned by the current user: $store"
+        }
+    } else {
+        New-Item -ItemType Directory -Path $store -Force | Out-Null
+    }
+    if ((Test-BootstrapPathPresent $integrityDir) -and
+        -not (Test-BootstrapOwnedPath $integrityDir $true)) {
+        Fail "bootstrap integrity directory is not owned by the current user: $integrityDir"
+    }
+    if ((Test-BootstrapEntry -Entry $entry -Launcher $uvExe -Sidecar $sidecar -Tool uv `
+            -Version $script:UvPinVersion -Target $target -ArtifactSha256 $pin.Sha256) -and
+        (Test-UvAtPin $uvExe)) {
+        return $uvExe
+    }
+    if ((Test-BootstrapPathPresent $entry) -or (Test-BootstrapPathPresent $sidecar)) {
+        Move-BootstrapEntryAside $entry $sidecar uv
     }
     Log "downloading uv $($script:UvPinVersion) ($target)"
-    $tmpDir = Join-Path ([IO.Path]::GetTempPath()) "hermes-uv-bootstrap-$PID"
+    $tmpDir = Join-Path $store ".uv-bootstrap-$PID-$(Get-Random)"
     try {
-        New-Item -ItemType Directory -Force -Path $tmpDir | Out-Null
+        New-Item -ItemType Directory -Path $tmpDir | Out-Null
         $zipPath = Join-Path $tmpDir "uv.zip"
         Invoke-VerifiedDownload -Url $pin.Url -MirrorUrl $pin.MirrorUrl -Sha256 $pin.Sha256 -OutFile $zipPath
         $extractDir = Join-Path $tmpDir "unpacked"
@@ -521,15 +666,28 @@ function Get-Uv {
         # The zip carries uv.exe (+ uvx.exe) at the root or under one
         # versioned wrapper dir — take whichever layout arrived.
         $found = Get-ChildItem -Path $extractDir -Filter "uv.exe" -Recurse | Select-Object -First 1
-        if (-not $found) { Fail "uv.exe not found in the downloaded archive" }
-        New-Item -ItemType Directory -Force -Path $entry | Out-Null
-        Move-Item -Path $found.FullName -Destination $uvExe -Force
+        if (-not $found -or ($found.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+            Fail "uv.exe not found in the downloaded archive"
+        }
+        $stagedEntry = Join-Path $tmpDir "entry"
+        New-Item -ItemType Directory -Path $stagedEntry | Out-Null
+        $stagedUv = Join-Path $stagedEntry "uv.exe"
+        Move-Item -LiteralPath $found.FullName -Destination $stagedUv
         $uvx = Get-ChildItem -Path $extractDir -Filter "uvx.exe" -Recurse | Select-Object -First 1
-        if ($uvx) { Move-Item -Path $uvx.FullName -Destination (Join-Path $entry "uvx.exe") -Force }
+        if ($uvx -and -not ($uvx.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+            Move-Item -LiteralPath $uvx.FullName -Destination (Join-Path $stagedEntry "uvx.exe")
+        }
+        if (-not (Test-UvAtPin $stagedUv)) {
+            Fail "pinned uv artifact does not report the pinned version $($script:UvPinVersion)"
+        }
+        $receipt = Write-BootstrapReceipt -Entry $stagedEntry -Launcher $stagedUv -Tool uv `
+            -Version $script:UvPinVersion -Target $target -ArtifactSha256 $pin.Sha256
+        Publish-BootstrapSidecar $receipt $sidecar
+        if (Test-BootstrapPathPresent $entry) { Fail "refusing to replace an unquarantined uv cache entry" }
+        Move-Item -LiteralPath $stagedEntry -Destination $entry
     } finally {
         Remove-Item -Path $tmpDir -Recurse -Force -ErrorAction SilentlyContinue
     }
-    if (-not (Test-UvAtLeastPin $uvExe)) { Fail "pinned uv staged but does not run on this host" }
     return $uvExe
 }
 
@@ -540,13 +698,34 @@ function Get-PinnedGit {
     $target = "win32-$(Get-WindowsArch)"
     $pin = $script:GitPinFiles[$target]
     if (-not $pin) { return $null }
-    $entry = Join-Path (Get-PmStoreRoot) "git-$($script:GitPinVersion)-$target"
+    $store = Get-PmStoreRoot
+    $entry = Join-Path $store "git-$($script:GitPinVersion)-$target"
     $gitExe = Join-Path $entry "cmd\git.exe"
-    if (Test-Path $gitExe) { return $gitExe }
+    $sidecar = Join-Path $store ".bootstrap-integrity\git-$($script:GitPinVersion)-$target.receipt"
+    $integrityDir = Split-Path -Parent $sidecar
+    if (Test-BootstrapPathPresent $store) {
+        if (-not (Test-BootstrapOwnedPath $store $true)) {
+            Fail "bootstrap tool store is not owned by the current user: $store"
+        }
+    } else {
+        New-Item -ItemType Directory -Path $store -Force | Out-Null
+    }
+    if ((Test-BootstrapPathPresent $integrityDir) -and
+        -not (Test-BootstrapOwnedPath $integrityDir $true)) {
+        Fail "bootstrap integrity directory is not owned by the current user: $integrityDir"
+    }
+    if ((Test-BootstrapEntry -Entry $entry -Launcher $gitExe -Sidecar $sidecar -Tool git `
+            -Version $script:GitPinVersion -Target $target -ArtifactSha256 $pin.Sha256) -and
+        (Test-GitAtPin $gitExe)) {
+        return $gitExe
+    }
+    if ((Test-BootstrapPathPresent $entry) -or (Test-BootstrapPathPresent $sidecar)) {
+        Move-BootstrapEntryAside $entry $sidecar git
+    }
     Log "installing git $($script:GitPinVersion) ($target)"
-    $tmpDir = Join-Path ([IO.Path]::GetTempPath()) "hermes-git-bootstrap-$PID"
+    $tmpDir = Join-Path $store ".git-bootstrap-$PID-$(Get-Random)"
     try {
-        New-Item -ItemType Directory -Force -Path $tmpDir | Out-Null
+        New-Item -ItemType Directory -Path $tmpDir | Out-Null
         $sfxPath = Join-Path $tmpDir "portable-git.7z.exe"
         Invoke-VerifiedDownload -Url $pin.Url -MirrorUrl $pin.MirrorUrl -Sha256 $pin.Sha256 -OutFile $sfxPath
         $extractDir = Join-Path $tmpDir "unpacked"
@@ -567,12 +746,16 @@ function Get-PinnedGit {
         if ($sfx.ExitCode) {
             Fail "pinned git self-extractor exited $($sfx.ExitCode) (it reports nothing under -y; usual causes: disk full, path-length limit, antivirus lock)"
         }
-        if (-not (Test-Path (Join-Path $extractDir "cmd\git.exe"))) { Fail "git.exe not found in the downloaded archive" }
-        if (Test-Path $entry) { Remove-Item -Recurse -Force $entry }
-        # Prerequisites run first, so on a fresh host the store root does not
-        # exist yet; Move-Item never creates the destination's parent.
-        New-Item -ItemType Directory -Force -Path (Split-Path -Parent $entry) | Out-Null
-        Move-Item $extractDir $entry
+        $stagedGit = Join-Path $extractDir "cmd\git.exe"
+        if (-not (Test-BootstrapOwnedPath $stagedGit $false)) { Fail "git.exe not found in the downloaded archive" }
+        if (-not (Test-GitAtPin $stagedGit)) {
+            Fail "pinned Git artifact does not report the pinned version $($script:GitPinVersion)"
+        }
+        $receipt = Write-BootstrapReceipt -Entry $extractDir -Launcher $stagedGit -Tool git `
+            -Version $script:GitPinVersion -Target $target -ArtifactSha256 $pin.Sha256
+        Publish-BootstrapSidecar $receipt $sidecar
+        if (Test-BootstrapPathPresent $entry) { Fail "refusing to replace an unquarantined Git cache entry" }
+        Move-Item -LiteralPath $extractDir -Destination $entry
     } finally {
         Remove-Item -Path $tmpDir -Recurse -Force -ErrorAction SilentlyContinue
     }
@@ -689,15 +872,22 @@ function Invoke-Logged {
     $global:LASTEXITCODE = $exitCode
 }
 
-# Does the uv at $Path run, and is it at least the pinned version? The
-# bootstrap passes flags an older uv lacks (`python install --no-bin` arrived
-# in 0.7), and a broken shim can exist without running.
-function Test-UvAtLeastPin([string]$Path) {
+# Run a cached launcher only after ownership + receipt + checksum verification.
+# Exact versions are required: a different binary does not own this pin's slot.
+function Test-UvAtPin([string]$Path) {
     $global:LASTEXITCODE = 0
     $out = Invoke-Native { & $Path --version 2>$null }
     if ($LASTEXITCODE -or -not $out) { return $false }
-    $have = ("$out".Trim() -split '\s+')[1] -replace '[^0-9.].*$', ''
-    try { return ([version]$have -ge [version]$script:UvPinVersion) } catch { return $false }
+    $parts = "$out".Trim() -split '\s+'
+    return $parts.Count -ge 2 -and $parts[0] -eq 'uv' -and $parts[1] -eq $script:UvPinVersion
+}
+
+function Test-GitAtPin([string]$Path) {
+    $global:LASTEXITCODE = 0
+    $out = Invoke-Native { & $Path --version 2>$null }
+    if ($LASTEXITCODE -or -not $out) { return $false }
+    $expected = $script:GitPinVersion -replace '\+', '.windows.'
+    return "$out".Trim() -eq "git version $expected"
 }
 function Fail([string]$msg) {
     # Throw, never exit: the entry points below own reporting and the exit

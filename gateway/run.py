@@ -5862,13 +5862,8 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
 
     _start_gateway_configure_logging(verbosity)
 
-    # A platform that left core for a catalog plugin (Home Assistant) must be installed before the
-    # runner loads platform config; the outcome is logged and handed to this home's first agent.
-    try:
-        from hermes_cli.left_core_migration import recover_at_startup as _recover_left_core
-        await asyncio.to_thread(_recover_left_core)
-    except Exception:
-        logger.debug("left-core plugin migration skipped", exc_info=True)
+    from gateway.run_startup import recover_left_core_at_gateway_start
+    await asyncio.to_thread(recover_left_core_at_gateway_start)  # before the runner loads platform config
 
     runner = GatewayRunner(config)
     # Multiplex: swap the launch-home file handlers for per-profile routers so each profile's records

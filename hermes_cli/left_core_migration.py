@@ -100,6 +100,8 @@ class LeftCoreFeature:
     toolsets: tuple[str, ...] = ()
     # Platforms whose core default composite (``hermes-<platform>``) never carried those toolsets.
     off_platforms: tuple[str, ...] = ()
+    # Gateway platform the plugin ships: a running gateway serves it only after a restart.
+    platform: str = ""
 
 
 LEFT_CORE: tuple[LeftCoreFeature, ...] = (
@@ -107,7 +109,7 @@ LEFT_CORE: tuple[LeftCoreFeature, ...] = (
         plugin="homeassistant", label="Home Assistant", in_use=homeassistant_in_use,
         unchanged="HASS_TOKEN/HASS_URL, platforms.homeassistant and the ha_* tool names are unchanged",
         secret_env=("HASS_TOKEN",), private_env=("HASS_URL",),
-        toolsets=("homeassistant",), off_platforms=("acp", "webhook"),
+        toolsets=("homeassistant",), off_platforms=("acp", "webhook"), platform="homeassistant",
     ),
 )
 
@@ -274,6 +276,15 @@ def migrate_all_homes(*, say: Callable[[str], None] = print) -> list[str]:
     return installed
 
 
+def _gateway_serves(home: Path) -> bool:
+    """A live gateway serves *home*: it loaded its platforms before this agent-start install."""
+    try:
+        from gateway.status import resolve_gateway_liveness
+        return resolve_gateway_liveness(profile_dir=home, use_cache=False).running
+    except Exception:
+        return False
+
+
 def recover_at_startup(*, say: Optional[Callable[[str], None]] = None) -> list[str]:
     """Agent/gateway start hook for the active home: one attempt per process per home. With *say*
     (an agent's startup-warning sink) outcomes are delivered now, together with any a gateway-start
@@ -320,6 +331,8 @@ def recover_at_startup(*, say: Optional[Callable[[str], None]] = None) -> list[s
         for feature in features:
             if _install_one(home, feature, install=_install_into(home), say=report):
                 installed.append(feature.plugin)
+                if say is not None and feature.platform and _gateway_serves(home):
+                    report(f"Restart the gateway (`hermes gateway restart`) so it serves {feature.label}.")
         return installed
     except Exception as exc:  # never take agent/gateway start down
         logger.warning("left-core plugin migration failed: %s", exc, exc_info=True)

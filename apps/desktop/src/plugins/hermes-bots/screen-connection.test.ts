@@ -4,12 +4,14 @@
  * screen pane. The event must also have arrived on the bot's own connection.
  */
 
-import { describe, expect, it, vi } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type * as routing from './routing'
 import type { RosterRow } from './types'
 
-const routeMock = vi.fn<() => { connectionId: string; profile: string } | null>(() => null)
+const routeMock = vi.fn<
+  () => { connectionId: string; profile: string; targetProfile?: string } | null
+>(() => null)
 
 vi.mock('@hermes/plugin-sdk', () => ({
   host: { requestProfile: vi.fn() },
@@ -24,9 +26,7 @@ vi.mock('./routing', async importOriginal => {
   const resolveBotConnectionRoute = (bot: RosterRow): ReturnType<typeof actual.resolveBotConnectionRoute> => {
     const route = routeMock()
 
-    return route
-      ? { status: 'resolved', route: { ...route, mode: 'remote', targetProfile: route.profile } }
-      : actual.resolveBotConnectionRoute(bot)
+    return route ? { status: 'resolved', route: { ...route, mode: 'remote' } } : actual.resolveBotConnectionRoute(bot)
   }
 
   return {
@@ -51,6 +51,10 @@ import { displayRequest, isEventForBotScreen } from './screen-connection'
 const bot = { name: 'ops' } as RosterRow
 const orphan = { name: 'ops', remoteSource: true } as RosterRow
 const key = '/home/hermes/.hermes'
+
+beforeEach(() => {
+  vi.clearAllMocks()
+})
 
 describe('isEventForBotScreen', () => {
   it('ignores a same-profile-path event that arrived from another host', () => {
@@ -86,9 +90,22 @@ describe('displayRequest', () => {
     await displayRequest(bot, 'display.start', { force: true })
 
     expect(host.requestProfile).toHaveBeenCalledWith(
-      { connectionId: 'conn-a', profile: 'bot-profile', mode: 'remote', targetProfile: 'bot-profile' },
+      { connectionId: 'conn-a', profile: 'bot-profile', mode: 'remote' },
       'display.start',
       { profile: 'bot-profile', force: true }
+    )
+  })
+
+  it('uses the target profile when the routed profile is an alias', async () => {
+    routeMock.mockReturnValue({ connectionId: 'conn-a', profile: 'moxie', targetProfile: 'default' })
+    vi.mocked(host.requestProfile).mockResolvedValue({})
+
+    await displayRequest(bot, 'display.start')
+
+    expect(host.requestProfile).toHaveBeenCalledWith(
+      { connectionId: 'conn-a', profile: 'moxie', mode: 'remote', targetProfile: 'default' },
+      'display.start',
+      { profile: 'default' }
     )
   })
 

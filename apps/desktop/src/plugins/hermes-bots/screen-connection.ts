@@ -121,7 +121,7 @@ export function displayRequest<T>(bot: RosterRow, method: string, params: Record
     return Promise.reject(new Error(`Bot ${bot.name} has no connection owner`))
   }
 
-  const profile = typeof route === 'string' ? route : route.profile
+  const profile = typeof route === 'string' ? route : route.targetProfile || route.profile
 
   return host.requestProfile<T>(route, method, { profile, ...params })
 }

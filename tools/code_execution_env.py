@@ -175,6 +175,14 @@ def _build_child_env(*, rpc_endpoint: str, rpc_token: str, tmpdir: str,
         _pp_parts.append(_runtime_path)
     if _uses_hermes_python_environment(child_python):
         _pp_parts.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        # PM install (#124049): the runtime interpreter is the bundled interpreter,
+        # which is not inside a venv — CPython picks no site-packages up from a
+        # pyvenv.cfg, and the strip removed the injected entry. Re-append the
+        # runtime site-packages or the kernel imports no third-party module. A
+        # venv child supplies its own; unchanged there.
+        from tools.environments.local_pythonpath import _get_hermes_site_packages, _state
+        if not _state()._in_venv:
+            _pp_parts.extend(str(sp) for sp in _get_hermes_site_packages(child_env))
     elif child_python not in _external_env_logged:
         # Surface once per interpreter so "import hermes_constants fails" is diagnosable.
         _external_env_logged.add(child_python)

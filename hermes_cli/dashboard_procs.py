@@ -886,7 +886,6 @@ def _remote_lock_roots(base_dir: Path | None) -> list[Path]:
 def _lock_owned_serve_pids(base_dir: Path | None = None) -> set[int]:
     """PIDs claimed by valid ``{hermes_home}/desktop-ssh/<ownershipId>/backend.lock.json`` records
     (best-effort: a bad record contributes no PID; never raises)."""
-    import json
     owned: set[int] = set()
     entries: list[Path] = []
     for root in _remote_lock_roots(base_dir):
@@ -895,20 +894,27 @@ def _lock_owned_serve_pids(base_dir: Path | None = None) -> set[int]:
         except OSError:
             continue
     for entry in entries:
-        ownership_id = entry.name
-        lock_path = entry / "backend.lock.json"
-        try:  # validateOwnershipId(): exactly 32 lowercase hex chars
-            if not entry.is_dir() or not _is_hex(ownership_id, 32) or not lock_path.is_file():
-                continue
-            data = lock_path.read_bytes()
-            if len(data) > 65536:
-                continue
-            parsed = json.loads(data)
-        except (OSError, UnicodeDecodeError, ValueError):
-            continue
-        if _valid_lockfile_payload(parsed, ownership_id):
-            owned.add(parsed["pid"])  # validated as int above
+        lock = read_valid_backend_lock(entry / "backend.lock.json")
+        if lock is not None:
+            owned.add(lock["pid"])  # validated as int
     return owned
+
+
+def read_valid_backend_lock(lock_path: Path) -> dict | None:
+    """The validated body of one ``desktop-ssh/<ownershipId>/backend.lock.json``, or None when it is
+    missing, unreadable, oversized or does not match the writer's schema (never raises)."""
+    import json
+    ownership_id = lock_path.parent.name
+    try:  # validateOwnershipId(): exactly 32 lowercase hex chars
+        if not _is_hex(ownership_id, 32) or not lock_path.is_file():
+            return None
+        data = lock_path.read_bytes()
+        if len(data) > 65536:
+            return None
+        parsed = json.loads(data)
+    except (OSError, UnicodeDecodeError, ValueError):
+        return None
+    return parsed if _valid_lockfile_payload(parsed, ownership_id) else None
 
 
 # Covers the gap between process start and the Desktop client writing backend.lock.json.

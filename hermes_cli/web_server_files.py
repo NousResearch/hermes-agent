@@ -205,12 +205,21 @@ def _managed_file_entry(policy: ManagedFilesPolicy, target: Path) -> Dict[str, A
     if policy.locked_root is not None and not _path_is_under(policy.locked_root, resolved):
         raise HTTPException(status_code=403, detail="Path outside managed files root")
 
+    broken = False
     try:
         st = resolved.stat()
-    except OSError as exc:
-        raise HTTPException(status_code=500, detail=f"Could not stat path: {exc}")
+    except OSError:
+        # A dangling symlink (target deleted) must not abort the whole
+        # directory listing: one dead link would 500 the Files page and hide
+        # every sibling. Fall back to lstat on the link itself so the entry
+        # still shows up, flagged as broken.
+        try:
+            st = target.lstat()
+        except OSError as exc:
+            raise HTTPException(status_code=500, detail=f"Could not stat path: {exc}")
+        broken = True
 
-    is_dir = resolved.is_dir()
+    is_dir = False if broken else resolved.is_dir()
     mime_type = None if is_dir else (mimetypes.guess_type(resolved.name)[0] or "application/octet-stream")
     return {
         "name": target.name or resolved.name or str(resolved),
@@ -219,4 +228,5 @@ def _managed_file_entry(policy: ManagedFilesPolicy, target: Path) -> Dict[str, A
         "size": None if is_dir else st.st_size,
         "mtime": st.st_mtime,
         "mime_type": mime_type,
+        "broken_symlink": broken,
     }

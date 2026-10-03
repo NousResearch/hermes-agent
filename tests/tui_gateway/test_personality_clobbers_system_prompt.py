@@ -141,3 +141,26 @@ def test_switching_personality_leaves_no_stale_text(tmp_path, monkeypatch):
         f"  expected (manual): {MANUAL_PROMPT!r}\n"
         f"  got: {saved!r}"
     )
+
+
+def test_desktop_live_personality_matches_restart_overlay(tmp_path, monkeypatch):
+    """The live RPC and startup resolver must agree without rewriting the manual prompt."""
+    from hermes_cli.personality import resolve_ephemeral_system_prompt
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr(server, "_hermes_home", Path(tmp_path))
+    monkeypatch.setattr(server, "_cfg_path", None)
+    monkeypatch.setattr(server, "_cfg_cache", None)
+    _seed_config(str(tmp_path))
+    session = _make_session("live")
+    with (
+        patch.dict(server._sessions, {"live": session}, clear=False),
+        patch.object(server, "_persist_live_session_runtime"),
+        patch.object(server, "_emit"),
+        patch.object(server, "_session_info", return_value={}),
+    ):
+        response = _set({"key": "personality", "value": "personality_1", "session_id": "live"})
+    assert "result" in response, response
+    config = yaml.safe_load((tmp_path / "config.yaml").read_text())
+    assert config["agent"]["system_prompt"] == MANUAL_PROMPT
+    assert session["agent"].ephemeral_system_prompt == resolve_ephemeral_system_prompt(config)

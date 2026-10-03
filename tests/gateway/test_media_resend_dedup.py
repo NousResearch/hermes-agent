@@ -486,6 +486,7 @@ async def test_streamed_explicit_media_resend_is_delivered(tmp_path, monkeypatch
     runner = SimpleNamespace(
         _thread_metadata_for_source=lambda source, anchor=None: {},
         _reply_anchor_for_event=lambda event: None,
+        _session_key_for_source=lambda source: "test-session-key",
     )
 
     await GatewayRunner._deliver_media_from_response(

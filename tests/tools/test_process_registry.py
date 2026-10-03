@@ -946,8 +946,8 @@ class TestSpawnEnvSanitization:
                 self.commands = []
                 self._responses = iter([
                     {"output": "6 0\nhello\n"},
-                    {"output": "1\n"},
-                    {"output": "0\n"},
+                    {"output": "exit 0\n"},
+                    {"output": "6 6\n"},
                 ])
 
             def execute(self, command, **kwargs):
@@ -969,7 +969,8 @@ class TestSpawnEnvSanitization:
         assert "'/path with spaces/hermes_bg.log'" in env.commands[0][0]
         assert "cat '/path with spaces/hermes_bg.log'" not in env.commands[0][0]
         assert "'/path with spaces/hermes_bg.pid'" in env.commands[1][0]
-        assert "'/path with spaces/hermes_bg.exit'" in env.commands[2][0]
+        assert "'/path with spaces/hermes_bg.exit'" in env.commands[1][0]
+        assert "'/path with spaces/hermes_bg.log'" in env.commands[2][0]
 
 
 class TestEnvPollerIncrementalRead:
@@ -1039,8 +1040,8 @@ class TestEnvPollerIncrementalRead:
             session,
             [
                 {"output": "8 0\nand new"},
-                {"output": "1\n"},
-                {"output": "0\n"},
+                {"output": "exit 0\n"},
+                {"output": "8 8\n"},
             ],
         )
         assert session.output_buffer == "already here and new"
@@ -1053,10 +1054,10 @@ class TestEnvPollerIncrementalRead:
             session,
             [
                 {"output": "11 0\nfirst chunk"},
-                {"output": "0\n"},          # still running, poll again
+                {"output": "running\n"},    # still running, poll again
                 {"output": "17 11\n and more"},
-                {"output": "1\n"},          # gone now
-                {"output": "0\n"},
+                {"output": "exit 0\n"},     # gone now
+                {"output": "17 17\n"},
             ],
         )
         assert "O=0" in commands[0]
@@ -1076,10 +1077,10 @@ class TestEnvPollerIncrementalRead:
             session,
             [
                 {"output": "11 0\nfirst chunk"},
-                {"output": "0\n"},          # still running, poll again
+                {"output": "running\n"},    # still running, poll again
                 {"output": "5 0\nfresh"},
-                {"output": "1\n"},
-                {"output": "0\n"},
+                {"output": "exit 0\n"},
+                {"output": "5 5\n"},
             ],
         )
         assert session.output_buffer == "fresh"
@@ -1094,8 +1095,8 @@ class TestEnvPollerIncrementalRead:
             session,
             [
                 {"output": ""},
-                {"output": "1\n"},
-                {"output": "0\n"},
+                {"output": "exit 0\n"},
+                {"output": ""},
             ],
         )
         assert session.output_buffer == "keep me"
@@ -1109,11 +1110,207 @@ class TestEnvPollerIncrementalRead:
             session,
             [
                 {"output": "20 0\n" + "x" * 20},
-                {"output": "1\n"},
-                {"output": "0\n"},
+                {"output": "exit 0\n"},
+                {"output": "20 20\n"},
             ],
         )
         assert session.output_buffer == "x" * 10
+
+
+@pytest.mark.platforms("posix")
+class TestSpawnViaEnvCwd:
+    """A sandbox background process runs in the cwd it was spawned with.
+
+    The environment's own ``cwd`` is shared by every session using the
+    backend and moves with whichever command last reported one, so a
+    background job must not fall back to it when a directory was resolved.
+    """
+
+    @pytest.fixture()
+    def env(self, tmp_path):
+        from tools.environments.local import LocalEnvironment
+
+        shared = tmp_path / "shared_env_cwd"
+        shared.mkdir()
+        env = LocalEnvironment(cwd=str(shared), timeout=30)
+        yield env
+        env.cleanup()
+
+    def test_process_runs_in_the_requested_cwd_not_the_env_cwd(self, registry, env, tmp_path):
+        requested = tmp_path / "requested_workdir"
+        requested.mkdir()
+        session = registry.spawn_via_env(env, "pwd", cwd=str(requested))
+        deadline = time.monotonic() + 30
+        while not session.exited and time.monotonic() < deadline:
+            time.sleep(0.1)
+        assert session.exited
+        assert os.path.realpath(session.output_buffer.strip()) == os.path.realpath(requested)
+
+    def test_launch_cwd_does_not_repoint_the_shared_env_cwd(self, registry, env, tmp_path):
+        """The env is shared by every session: a background job's workdir must not become the
+        cwd the next foreground command of any session starts in."""
+        shared_before = env.cwd
+        requested = tmp_path / "requested_workdir"
+        requested.mkdir()
+        session = registry.spawn_via_env(env, "true", cwd=str(requested))
+        assert session.pid is not None
+        assert env.cwd == shared_before
+        assert os.path.realpath(env.execute("pwd")["output"].strip()) == os.path.realpath(shared_before)
+
+    def test_missing_cwd_fails_the_launch_instead_of_running_elsewhere(self, registry, env, tmp_path):
+        session = registry.spawn_via_env(env, "pwd", cwd=str(tmp_path / "does_not_exist"))
+        assert session.completion_reason == "failed_start"
+        assert session.pid is None
+
+    def test_terminal_reports_the_failed_launch_not_an_unpollable_session(self, registry, env, tmp_path, monkeypatch):
+        import tools.process_registry as process_registry_mod
+        from tools.terminal_tool_background import spawn_background_process
+
+        monkeypatch.setattr(process_registry_mod, "process_registry", registry)
+        result = json.loads(spawn_background_process(
+            command="pwd", env=env, env_type="modal", effective_task_id="t", task_id="t", session_key="t",
+            workdir=str(tmp_path / "does_not_exist"), cwd=env.cwd, effective_pty=False,
+            notify_on_complete=False, watch_patterns=None, approval_note=None, pty_disabled_reason=None))
+        assert result["exit_code"] != 0 and result["error"]
+        assert result.get("session_id") is None or registry.get(result["session_id"]) is not None
+
+
+class _ShellEnv:
+    """Runs the poller's commands in a real bash; ``after_first`` fires once,
+    right after the first command (the log read) returned."""
+
+    def __init__(self, after_first=None):
+        self.calls = 0
+        self._after_first = after_first
+
+    def execute(self, command, timeout=None, **kwargs):
+        out = subprocess.run(["bash", "-c", command], capture_output=True, text=True, timeout=30)
+        self.calls += 1
+        if self.calls == 1 and self._after_first:
+            self._after_first()
+        return {"output": out.stdout, "returncode": out.returncode}
+
+
+class TestEnvPollerCompletion:
+    """A sandbox session ends on the exit the wrapper recorded, with all of its output.
+
+    ``kill -0`` succeeds on a zombie, and a PID 1 that does not reap (docker
+    without ``--init``) keeps the wrapper one forever, so the PID answering is
+    not proof the command still runs. And the last lines a job prints land
+    after the poll's log read, so they must be read once the exit is seen.
+    """
+
+    @staticmethod
+    def _poll(registry, session, tmp_path, env, max_polls=5):
+        class _Stuck(Exception):
+            pass
+
+        polls = []
+        real_sleep = time.sleep
+
+        def fake_sleep(seconds):
+            if seconds != 2:  # subprocess's own short waits
+                return real_sleep(seconds)
+            polls.append(seconds)
+            if len(polls) > max_polls:
+                raise _Stuck
+
+        with patch("tools.process_registry.time.sleep", fake_sleep):
+            try:
+                registry._env_poller_loop(
+                    session, env, *(str(tmp_path / f"bg.{ext}") for ext in ("log", "pid", "exit")))
+            except _Stuck:
+                pass
+
+    @pytest.mark.platforms("posix")
+    def test_recorded_exit_ends_the_session_with_the_final_output(self, registry, tmp_path):
+        log = tmp_path / "bg.log"
+        log.write_text("START\n")
+        # A PID that still answers kill -0, as an unreaped zombie does.
+        (tmp_path / "bg.pid").write_text(f"{os.getpid()}\n")
+
+        def job_prints_its_summary_and_exits():
+            with log.open("a") as f:
+                f.write("FINAL: 3 tests failed\n")
+            (tmp_path / "bg.exit").write_text("3\n")
+
+        session = _make_session(sid="proc_final_tail")
+        self._poll(registry, session, tmp_path, _ShellEnv(after_first=job_prints_its_summary_and_exits))
+
+        assert session.exited
+        assert session.exit_code == 3
+        assert session.output_buffer == "START\nFINAL: 3 tests failed\n"
+
+    @pytest.mark.platforms("linux")
+    def test_zombie_without_exit_record_is_not_reported_running(self, registry, tmp_path):
+        zombie = subprocess.Popen(["true"])  # never waited on until the end: stays a zombie
+        try:
+            deadline = time.monotonic() + 10
+            status = f"/proc/{zombie.pid}/status"
+            while time.monotonic() < deadline:
+                with open(status) as f:
+                    if any(ln.startswith("State:") and "Z" in ln for ln in f):
+                        break
+                time.sleep(0.05)
+            (tmp_path / "bg.log").write_text("")
+            (tmp_path / "bg.pid").write_text(f"{zombie.pid}\n")
+
+            session = _make_session(sid="proc_zombie")
+            self._poll(registry, session, tmp_path, _ShellEnv())
+
+            assert session.exited
+            assert session.exit_code == -1
+        finally:
+            zombie.wait()
+
+    @pytest.mark.parametrize("answer", [
+        {"output": "Managed Modal exec failed: 404 sandbox not found", "returncode": 1},
+        {"output": "[Command timed out after 5s]", "returncode": 124},
+        {"output": "Error response from daemon: No such container: abc", "returncode": 1},
+    ])
+    def test_dead_backend_answer_ends_the_session_as_lost_not_running_forever(self, registry, tmp_path, answer):
+        """Backends return a dead sandbox as a result (no exception): an answer that is not
+        running/exit/gone must not keep the session ``running`` forever."""
+        from tools.process_registry import _ENV_POLL_MAX_UNREADABLE
+
+        class _DeadBackend:
+            calls = 0
+
+            def execute(self, command, timeout=None, **kwargs):
+                self.calls += 1
+                return dict(answer)
+
+        session = _make_session(sid="proc_dead_backend")
+        self._poll(registry, session, tmp_path, _DeadBackend(), max_polls=_ENV_POLL_MAX_UNREADABLE + 2)
+
+        assert session.exited
+        assert session.exit_code == -1
+        assert (session.completion_reason, session.termination_source) == ("lost", "backend_lost")
+
+    @pytest.mark.platforms("posix")
+    def test_one_unreadable_probe_is_tolerated(self, registry, tmp_path):
+        """A transient blip (one bad answer) does not end a job that is still running."""
+        (tmp_path / "bg.log").write_text("")
+        (tmp_path / "bg.pid").write_text(f"{os.getpid()}\n")  # alive: "running"
+        shell = _ShellEnv()
+        answers = iter([None, {"output": "ssh: connect to host: Connection reset", "returncode": 255}])
+
+        class _Blip:
+            def execute(self, command, timeout=None, **kwargs):
+                override = next(answers, None) if "State:" in command else None
+                if override is not None:
+                    return override
+                if "State:" in command and shell.calls >= 4:
+                    (tmp_path / "bg.exit").write_text("0\n")
+                return shell.execute(command, timeout=timeout)
+
+        session = _make_session(sid="proc_blip")
+        self._poll(registry, session, tmp_path, _Blip(), max_polls=8)
+
+        assert next(answers, "consumed") == "consumed", "the blip was never served"
+        assert session.exited
+        assert session.exit_code == 0
+        assert session.termination_source != "backend_lost"
 
 
 # =========================================================================

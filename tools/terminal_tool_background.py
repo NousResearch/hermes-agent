@@ -170,6 +170,15 @@ def spawn_background_process(
             effective_task_id=effective_task_id, task_id=task_id, session_key=session_key,
             effective_pty=effective_pty, persist_on_release=persist_on_release,
         )
+        if proc_session.pid is None:
+            # A sandbox launch that produced no PID (missing workdir -> the wrapper's cd
+            # exits 126, syntax error, broken redirect) never started: spawn_via_env marked
+            # it failed_start and did not register it, so its id could not be polled.
+            detail = proc_session.output_buffer.strip() or f"exit {proc_session.exit_code}"
+            return json.dumps({
+                "output": "", "exit_code": proc_session.exit_code,
+                "error": _redact_terminal_error_text(f"Failed to start background process: {detail}"),
+            }, ensure_ascii=False)
         result_data = {"output": "Background process started", "session_id": proc_session.id,
                        "pid": proc_session.pid, "exit_code": 0, "error": None}
         if persist_on_release:

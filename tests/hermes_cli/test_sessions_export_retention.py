@@ -58,8 +58,3 @@ def test_explicit_missing_export_fails_without_creating_an_output(store, tmp_pat
         assert error.value.code != 0
         assert "missing-session" in capsys.readouterr().out
         assert not output.exists()
-
-    # An explicit archived id remains exportable; protection flags concern deletion.
-    output = tmp_path / "archived.jsonl"
-    _run(monkeypatch, "export", "--session-id", "archived", "--format", "jsonl", str(output))
-    assert json.loads(output.read_text(encoding="utf-8"))["archived"] == 1

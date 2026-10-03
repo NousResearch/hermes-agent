@@ -1200,17 +1200,22 @@ def _run_review_fork(
         from tools.skill_manager_guards import _reset_background_review_read_marks
 
         _reset_background_review_read_marks()
+    from agent.delegation_context import non_dispatcher_owned_context
     try:
         if review_run is None or review_run.begin_request(st.review_agent):
-            # Routed -> digest (cache cold anyway); same model -> full snapshot (warm cache reads).
-            st.review_agent.run_conversation(
-                user_message=(
-                    prompt + "\n\nYou can only call " + memory_phrase_prompt +
-                    "management tools. Other tools will be denied "
-                    "at runtime — do not attempt them." + prompt_extra
-                ),
-                conversation_history=_digest_history(messages_snapshot) if _routed else messages_snapshot,
-            )
+            # The fork inherits HERMES_KANBAN_* from a Kanban worker's environment but does not own
+            # the task: exhausting ITS small budget after the worker already called kanban_complete
+            # must not record ``timed_out`` on the card (false "dispatcher will retry" notice).
+            with non_dispatcher_owned_context():
+                # Routed -> digest (cache cold anyway); same model -> full snapshot (warm cache reads).
+                st.review_agent.run_conversation(
+                    user_message=(
+                        prompt + "\n\nYou can only call " + memory_phrase_prompt +
+                        "management tools. Other tools will be denied "
+                        "at runtime — do not attempt them." + prompt_extra
+                    ),
+                    conversation_history=_digest_history(messages_snapshot) if _routed else messages_snapshot,
+                )
     finally:
         clear_thread_tool_whitelist()
         # Attribute usage to the PARENT session. Snapshot BEFORE unregister/close so counters

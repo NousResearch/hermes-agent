@@ -1354,6 +1354,7 @@ def _record_task_failure(
     end_run: bool = False,
     event_payload_extra: Optional[dict] = None,
     infrastructure: bool = False,
+    expected_run_id: Optional[int] = None,
 ) -> bool:
     """Record a non-success outcome and maybe trip the circuit breaker; every
     non-success path funnels through here so ``consecutive_failures`` stays
@@ -1372,6 +1373,14 @@ def _record_task_failure(
     with ``infrastructure: true`` but ``consecutive_failures`` is left alone and
     the breaker never trips; the card stays retryable and
     :func:`check_respawn_guard` spaces the retries.
+
+    ``end_run=True`` reports the failure of a live run, so it is a no-op when
+    the task has no active run (the worker already handed off via
+    ``kanban_complete``/block/review and a later budget exhaustion is just the
+    wrap-up) or when ``expected_run_id`` names a run other than the active one
+    (a stale worker must not fail its successor's run). Recording it anyway
+    emitted a run-less ``timed_out`` on a done card and a false "dispatcher
+    will retry" notification.
     """
     if failure_limit is None:
         failure_limit = DEFAULT_FAILURE_LIMIT
@@ -1382,6 +1391,15 @@ def _record_task_failure(
             "FROM tasks WHERE id = ?", (task_id,),
         ).fetchone()
         if row is None:
+            return False
+        if end_run and (
+            row["current_run_id"] is None
+            or (expected_run_id is not None and int(row["current_run_id"]) != int(expected_run_id))
+        ):
+            _kb._log.info(
+                "kanban: not recording %s for %s: run %s is no longer active (status=%s, current_run_id=%s)",
+                outcome, task_id, expected_run_id, row["status"], row["current_run_id"],
+            )
             return False
         retry_status = (
             _kb._retry_status_for_run(conn, task_id, row["current_run_id"])

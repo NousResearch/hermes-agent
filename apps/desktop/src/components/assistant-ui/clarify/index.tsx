@@ -15,7 +15,9 @@ import { ClarifyToolPending } from './pending'
 import { ClarifyToolSettled } from './settled'
 import { useUndeliveredClarify } from './use-undelivered'
 
-export const ClarifyTool = (props: ToolCallMessagePartProps) => {
+type ClarifyToolProps = ToolCallMessagePartProps & { interrupted?: boolean }
+
+export const ClarifyTool = (props: ClarifyToolProps) => {
   // Answered → settled Q&A (ToolFallback collapsed the answer away).
   if (props.result !== undefined) {
     return <ClarifyToolSettled {...props} />
@@ -24,7 +26,7 @@ export const ClarifyTool = (props: ToolCallMessagePartProps) => {
   return <ClarifyToolLive {...props} />
 }
 
-function ClarifyToolLive(props: ToolCallMessagePartProps) {
+function ClarifyToolLive(props: ClarifyToolProps) {
   // The tool row is in whichever session's transcript rendered it — read THAT
   // session's clarify (primary or tile), not the globally-active one.
   const sessionId = useStore(useSessionView().$runtimeId)
@@ -32,17 +34,16 @@ function ClarifyToolLive(props: ToolCallMessagePartProps) {
   const request = useStore($request)
   const fromArgs = useMemo(() => readClarifyArgs(props.args), [props.args])
   const messageRunning = useAuiState(selectMessageRunning)
-  // Answering clears the request a beat before `tool.complete` swaps in the
-  // settled card. Latch submit so that gap doesn't demote; Stop also clears
-  // the request and must still collapse an unanswered card.
+  // Answering clears the request a beat before tool.complete supplies the result.
   const [answered, setAnswered] = useState(false)
   const undelivered = useUndeliveredClarify(sessionId, messageRunning && !request && !answered)
 
-  // Stopped mid-prompt with no result — don't leave a dead interactive panel.
-  // `session.info` reports running=false while clarify is blocking, so the
-  // running flag alone would remount the question as a tool row. Keep the
-  // card while a request is open or this instance already submitted.
-  if (!messageRunning && !request && !answered) {
+  // The containing message may settle before the request hydrates. Args are
+  // display-only until real request IDs arrive; explicit Stop still demotes.
+  const hasQuestionPreview = Boolean(fromArgs.questions?.some(entry => entry.question.trim()))
+  const endedWithoutRequest = props.interrupted || props.status.type === 'incomplete'
+
+  if (!messageRunning && !request && !answered && (endedWithoutRequest || !hasQuestionPreview)) {
     return <ToolFallback {...props} />
   }
 

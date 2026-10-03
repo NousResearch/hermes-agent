@@ -550,10 +550,6 @@ async def test_run_agent_progress_uses_event_message_id_for_slack_dm(monkeypatch
         encoding="utf-8",
     )
 
-    fake_dotenv = types.ModuleType("dotenv")
-    fake_dotenv.load_dotenv = lambda *args, **kwargs: None
-    monkeypatch.setitem(sys.modules, "dotenv", fake_dotenv)
-
     fake_run_agent = types.ModuleType("run_agent")
     fake_run_agent.AIAgent = FakeAgent
     monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
@@ -642,10 +638,6 @@ async def test_progress_carries_anchor_for_relay_discord_auto_thread(monkeypatch
         encoding="utf-8",
     )
 
-    fake_dotenv = types.ModuleType("dotenv")
-    fake_dotenv.load_dotenv = lambda *args, **kwargs: None
-    monkeypatch.setitem(sys.modules, "dotenv", fake_dotenv)
-
     fake_run_agent = types.ModuleType("run_agent")
     fake_run_agent.AIAgent = FakeAgent
     monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
@@ -700,10 +692,6 @@ async def test_progress_no_anchor_for_native_discord_thread_event(monkeypatch, t
         yaml.safe_dump({"display": {"platforms": {"discord": {"tool_progress": "all"}}}}),
         encoding="utf-8",
     )
-
-    fake_dotenv = types.ModuleType("dotenv")
-    fake_dotenv.load_dotenv = lambda *args, **kwargs: None
-    monkeypatch.setitem(sys.modules, "dotenv", fake_dotenv)
 
     fake_run_agent = types.ModuleType("run_agent")
     fake_run_agent.AIAgent = FakeAgent
@@ -782,10 +770,6 @@ def _run_long_preview_helper(monkeypatch, tmp_path, preview_length=0):
 
     monkeypatch.setenv("HERMES_TOOL_PROGRESS_MODE", "all")
 
-    fake_dotenv = types.ModuleType("dotenv")
-    fake_dotenv.load_dotenv = lambda *args, **kwargs: None
-    monkeypatch.setitem(sys.modules, "dotenv", fake_dotenv)
-
     fake_run_agent = types.ModuleType("run_agent")
     fake_run_agent.AIAgent = LongPreviewAgent
     monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
@@ -840,10 +824,6 @@ def test_discord_truncated_tool_url_links_to_full_destination(monkeypatch, tmp_p
     import hermes_yaml as yaml
 
     monkeypatch.setenv("HERMES_TOOL_PROGRESS_MODE", "all")
-
-    fake_dotenv = types.ModuleType("dotenv")
-    fake_dotenv.load_dotenv = lambda *args, **kwargs: None
-    monkeypatch.setitem(sys.modules, "dotenv", fake_dotenv)
 
     fake_run_agent = types.ModuleType("run_agent")
     fake_run_agent.AIAgent = UrlPreviewAgent
@@ -1090,10 +1070,6 @@ async def _run_with_agent(
         import hermes_yaml as yaml
 
         (tmp_path / "config.yaml").write_text(yaml.safe_dump(config_data), encoding="utf-8")
-
-    fake_dotenv = types.ModuleType("dotenv")
-    fake_dotenv.load_dotenv = lambda *args, **kwargs: None
-    monkeypatch.setitem(sys.modules, "dotenv", fake_dotenv)
 
     fake_run_agent = types.ModuleType("run_agent")
     fake_run_agent.AIAgent = agent_cls
@@ -1820,10 +1796,6 @@ async def test_run_agent_drops_tool_progress_after_generation_invalidation(monke
         encoding="utf-8",
     )
 
-    fake_dotenv = types.ModuleType("dotenv")
-    fake_dotenv.load_dotenv = lambda *args, **kwargs: None
-    monkeypatch.setitem(sys.modules, "dotenv", fake_dotenv)
-
     fake_run_agent = types.ModuleType("run_agent")
     fake_run_agent.AIAgent = DelayedProgressAgent
     monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
@@ -1881,10 +1853,6 @@ async def test_run_agent_drops_interim_commentary_after_generation_invalidation(
         yaml.safe_dump({"display": {"tool_progress": "off", "interim_assistant_messages": True}}),
         encoding="utf-8",
     )
-
-    fake_dotenv = types.ModuleType("dotenv")
-    fake_dotenv.load_dotenv = lambda *args, **kwargs: None
-    monkeypatch.setitem(sys.modules, "dotenv", fake_dotenv)
 
     fake_run_agent = types.ModuleType("run_agent")
     fake_run_agent.AIAgent = DelayedInterimAgent
@@ -2018,10 +1986,6 @@ async def test_terminal_progress_renders_fenced_code_block(monkeypatch, tmp_path
     or multi-line command doesn't render as a huge block (#42634)."""
     monkeypatch.setenv("HERMES_TOOL_PROGRESS_MODE", "all")
 
-    fake_dotenv = types.ModuleType("dotenv")
-    fake_dotenv.load_dotenv = lambda *args, **kwargs: None
-    monkeypatch.setitem(sys.modules, "dotenv", fake_dotenv)
-
     fake_run_agent = types.ModuleType("run_agent")
     fake_run_agent.AIAgent = TerminalCommandAgent
     monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
@@ -2070,10 +2034,6 @@ async def test_terminal_progress_verbose_shows_full_command(monkeypatch, tmp_pat
     command in a bare fenced block (no truncation, no 'bash' tag).  This is the
     parity guarantee for #42634: verbose keeps full detail, non-verbose caps."""
     monkeypatch.setenv("HERMES_TOOL_PROGRESS_MODE", "verbose")
-
-    fake_dotenv = types.ModuleType("dotenv")
-    fake_dotenv.load_dotenv = lambda *args, **kwargs: None
-    monkeypatch.setitem(sys.modules, "dotenv", fake_dotenv)
 
     fake_run_agent = types.ModuleType("run_agent")
     fake_run_agent.AIAgent = TerminalCommandAgent

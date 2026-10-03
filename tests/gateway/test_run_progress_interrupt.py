@@ -156,10 +156,6 @@ def _make_runner(adapter):
 async def _run_once(monkeypatch, tmp_path, agent_cls, session_id):
     monkeypatch.setenv("HERMES_TOOL_PROGRESS_MODE", "all")
 
-    fake_dotenv = types.ModuleType("dotenv")
-    fake_dotenv.load_dotenv = lambda *args, **kwargs: None
-    monkeypatch.setitem(sys.modules, "dotenv", fake_dotenv)
-
     fake_run_agent = types.ModuleType("run_agent")
     fake_run_agent.AIAgent = agent_cls
     monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)

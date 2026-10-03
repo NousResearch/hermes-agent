@@ -103,3 +103,33 @@ def test_reload_restore_keeps_dotenv_precedence(tmp_path, monkeypatch, override_
     assert os.environ["GLM_API_KEY"] == "local", (
         "reload restore re-asserted a source value over the user's .env edit"
     )
+
+
+def test_degraded_startup_keeps_successful_restore_but_private_child_refuses(tmp_path, monkeypatch):
+    from agent.secret_scope import build_profile_secret_scope
+    from agent.secret_sources.base import ErrorKind, FetchResult, SecretSource
+    from agent.secret_sources import registry
+
+    home = _make_home(tmp_path, monkeypatch, "GLM_API_KEY=placeholder\n")
+    (home / "config.yaml").write_text(
+        "secrets:\n  fakebulk:\n    enabled: true\n  fakefailed:\n    enabled: true\n",
+        encoding="utf-8")
+    _register_fake_source({"GLM_API_KEY": "fake-vault"}, override_existing=True)
+    attempts = []
+    class FailedSource(SecretSource):
+        name = "fakefailed"
+        shape = "bulk"
+
+        def fetch(self, cfg, home_path):
+            attempts.append(home_path)
+            return FetchResult().fail("synthetic outage", ErrorKind.AUTH_FAILED)
+
+    registry.register_source(FailedSource())
+    env_loader.load_hermes_dotenv(hermes_home=home)
+    assert env_loader.get_external_secret_snapshot(home).status == "degraded"
+    env_loader.load_hermes_dotenv(hermes_home=home)
+    assert os.environ["GLM_API_KEY"] == "fake-vault"
+    assert len(attempts) == 1  # startup retains its error-suppression lease
+    with pytest.raises(RuntimeError, match="degraded"):
+        build_profile_secret_scope(home, fail_closed_external=True)
+    assert len(attempts) == 2  # private admission retries, then refuses this generation

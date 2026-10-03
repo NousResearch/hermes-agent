@@ -51,8 +51,8 @@ def test_send_keeps_external_source_value_over_raw_dotenv(two_homes, monkeypatch
 
     root, b = two_homes
     # B's secret manager already hydrated for this process (a hydrated home is not re-pulled).
-    monkeypatch.setattr(env_loader, "_SECRET_SOURCE_VALUES_BY_HOME",
-                        {str(b.resolve()): {"SHARED_TOKEN": "b-manager-fresh"}})
+    env_loader._record_external_secret_snapshot(
+        b, data={"SHARED_TOKEN": "b-manager-fresh"}, status="ready")
     monkeypatch.setattr(env_loader, "_APPLIED_HOMES", {str(b.resolve())})
     with server._session_profile_runtime_scope({"profile_home": str(b)}):
         from agent.secret_scope import current_secret_scope, get_secret

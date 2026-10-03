@@ -23,6 +23,7 @@ from hermes_constants import get_hermes_home
 from tools.environments.local import hermes_subprocess_env
 
 logger = logging.getLogger(__name__)
+_Thread = threading.Thread
 
 MUTATOR_ROUTE_TABLE: dict[str, str] = {
     "prompt.submit": "turn-path", "session.interrupt": "turn-path", "reload.mcp": "run-concurrent",
@@ -150,13 +151,23 @@ class HostSupervisor:
             else get_hermes_home() / "state" / _REGISTRY_NAME)
         self.argv = argv or [sys.executable, "-m", "tui_gateway.compute_host"]
         self.cwd = Path(cwd) if cwd is not None else _repo_root()
-        self.env = env
+        self.env = dict(env) if env is not None else None
         self.rpc_sink = rpc_sink or (lambda _obj: None)
         self.respawn_max = max(0, int(respawn_max))
         self.heartbeat_secs = max(1, int(heartbeat_secs))
         self.expected_build_sha = _build_sha() if expected_build_sha is None else expected_build_sha
         self.expected_hermes_home = (
             str(get_hermes_home()) if expected_hermes_home is None else expected_hermes_home)
+        from agent.secret_scope import build_profile_env_boundary
+        from hermes_constants import get_routing_process_hermes_home
+
+        source_home = Path(get_routing_process_hermes_home()).resolve()
+        target_home = Path(self.expected_hermes_home).resolve()
+        self._source_profile_home = source_home
+        self._target_profile_home = target_home
+        self._profile_env_boundary = None
+        if source_home != target_home:
+            self._profile_env_boundary = build_profile_env_boundary(source_home, target_home)
         self._lock = threading.RLock()
         self._proc: subprocess.Popen[str] | None = None
         self._hello_event = threading.Event()
@@ -328,7 +339,7 @@ class HostSupervisor:
             raise RuntimeError("compute host respawn disabled after crash loop")
         self._hello_event.clear()
         self._hello = {}
-        env = {**hermes_subprocess_env(inherit_credentials=True), **os.environ, **(self.env or {})}
+        env = self._host_child_env()
         env["HERMES_COMPUTE_HOST_HEARTBEAT_SECS"] = str(self.heartbeat_secs)
         root = str(_repo_root())
         env.setdefault("PYTHONPATH", root)
@@ -343,13 +354,37 @@ class HostSupervisor:
         for target, name in ((self._drain_stdout, "compute-host-stdout"),
                              (self._drain_stderr, "compute-host-stderr"),
                              (self._wait_for_exit, "compute-host-wait")):
-            threading.Thread(target=target, args=(proc,), name=name, daemon=True).start()
+            _Thread(target=target, args=(proc,), name=name, daemon=True).start()
         if not self._hello_event.wait(timeout=10.0):
             self._terminate_process(proc)
             raise RuntimeError(f"compute host did not send hello; stderr={self._stderr_tail[-5:]}")
         self._validate_hello()
         self._persist_registry()
         logger.info("compute host started pid=%s reason=%s", proc.pid, reason)
+
+    def _host_child_env(self) -> dict[str, str]:
+        """A trusted Hermes host keeps its owner's credentials, not terminal grants."""
+        source, target = self._source_profile_home, self._target_profile_home
+        if source == target:
+            # Preserve operator-injected credentials and HOME policy for Hermes itself.
+            env = {**os.environ, **(self.env or {})}
+            env.setdefault("PYTHONUTF8", "1")
+        else:
+            from agent.secret_scope import build_profile_env_boundary, reset_secret_scope, set_secret_scope
+
+            # A respawn belongs to the captured owner, independently of the caller's
+            # turn scope. Resolve fresh private authority; never republish ambient values.
+            token = set_secret_scope(None)
+            try:
+                boundary = build_profile_env_boundary(source, target)
+                env = hermes_subprocess_env(
+                    base_env={**os.environ, **(self.env or {})}, profile_boundary=boundary)
+                env.update(boundary.compiled_target_values())
+                self._profile_env_boundary = boundary
+            finally:
+                reset_secret_scope(token)
+        env['HERMES_HOME'] = str(target)
+        return env
 
     def _validate_hello(self) -> None:
         hello = self._hello
@@ -479,7 +514,7 @@ class HostSupervisor:
                     self._spawn_locked(reason="crash")
                 except Exception:
                     logger.exception("compute host respawn failed")
-        threading.Thread(target=_respawn, name="compute-host-respawn", daemon=True).start()
+        _Thread(target=_respawn, name="compute-host-respawn", daemon=True).start()
 
     _pid_matches_compute_host = staticmethod(is_compute_host_identity)
 

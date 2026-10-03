@@ -133,6 +133,58 @@ function renderLiveClarify({ multiSelect = false }: { multiSelect?: boolean } = 
   return { request, rerender, respond }
 }
 
+describe('ClarifyTool hydration preview owns no response authority', () => {
+  it.each(['running', 'complete'] as const)(
+    'retains a disabled args preview when the containing message settles before request hydration (%s)',
+    status => {
+      messageRunning = false
+      $activeSessionId.set('session-1')
+      const request = vi.fn().mockResolvedValue({ ok: true, remaining: [] })
+      $gateway.set({ request } as never)
+      const props = { ...liveClarifyProps(), status: { type: status } }
+      const { rerender } = renderClarify(<ClarifyTool {...props} />)
+
+      expect(screen.getByText('Which deployment target?')).toBeTruthy()
+      expect(screen.getByRole('button', { name: /staging/ })).toHaveProperty('disabled', true)
+      expect(screen.getByRole('button', { name: /Confirm and continue/ })).toHaveProperty('disabled', true)
+      fireEvent.keyDown(document.querySelector('form')!, { key: 'Enter', ctrlKey: true })
+      expect(request).not.toHaveBeenCalled()
+
+      liveServerRequest('hydrated-request')
+      act(() =>
+        setClarifyRequest({
+          questions: [
+            {
+              choices: ['staging', 'production'],
+              multiSelect: false,
+              qid: 'hydrated-question',
+              question: 'Which deployment target?'
+            }
+          ],
+          requestId: 'hydrated-request',
+          sessionId: 'session-1'
+        })
+      )
+      rerender(clarifyTree(<ClarifyTool {...props} />))
+      expect(screen.getByRole('button', { name: /staging/ })).toHaveProperty('disabled', false)
+      expect(document.querySelector('[data-clarify-batch-preview]')).toBeNull()
+    }
+  )
+
+  it.each(['interrupted', 'incomplete'] as const)('demotes an explicitly ended args-only preview (%s)', ended => {
+    messageRunning = false
+    $activeSessionId.set('session-1')
+    const props =
+      ended === 'interrupted'
+        ? { ...liveClarifyProps(), interrupted: true }
+        : { ...liveClarifyProps(), status: { type: 'incomplete' as const, reason: 'cancelled' as const } }
+    renderClarify(<ClarifyTool {...props} />)
+
+    expect(screen.queryByText('Which deployment target?')).toBeNull()
+    expect(screen.queryByRole('button', { name: /Confirm and continue/ })).toBeNull()
+  })
+})
+
 describe('ClarifyTool live card stays mounted across settle', () => {
   it('keeps the question card while the gateway request is open and the turn reports not-running', () => {
     messageRunning = false
@@ -147,7 +199,7 @@ describe('ClarifyTool live card stays mounted across settle', () => {
     messageRunning = false
     $activeSessionId.set('session-1')
     $gateway.set({ request: vi.fn() } as never)
-    renderClarify(<ClarifyTool {...liveClarifyProps()} />)
+    renderClarify(<ClarifyTool {...liveClarifyProps()} interrupted />)
 
     expect(document.querySelector('[data-clarify-choices]')).toBeNull()
     expect(screen.queryByRole('button', { name: /Confirm and continue/ })).toBeNull()
@@ -172,12 +224,13 @@ describe('ClarifyTool live card stays mounted across settle', () => {
   })
 
   it('demotes when the turn is stopped after the card was live but never answered', () => {
-    renderLiveClarify()
+    const { rerender } = renderLiveClarify()
 
     expect(document.querySelector('[data-clarify-choices]')).toBeTruthy()
 
     messageRunning = false
     act(() => clearClarifyRequest('request-1', 'session-1'))
+    rerender(clarifyTree(<ClarifyTool {...liveClarifyProps()} interrupted />))
 
     expect(document.querySelector('[data-clarify-choices]')).toBeNull()
     expect(screen.queryByRole('button', { name: /Confirm and continue/ })).toBeNull()

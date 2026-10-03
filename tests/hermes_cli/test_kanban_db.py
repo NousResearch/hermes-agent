@@ -1119,6 +1119,8 @@ class TestSharedBoardPaths:
         # never one inherited from whatever the gateway last routed.
         default_home = tmp_path / ".hermes"
         default_home.mkdir()
+        (default_home / "profiles" / "coder").mkdir(parents=True)
+        (default_home / "profiles" / "coder" / "config.yaml").write_text("{}\n", encoding="utf-8")
         self._set_home(monkeypatch, tmp_path, default_home)
 
         from gateway import session_context as sc
@@ -1639,6 +1641,9 @@ def test_default_spawn_pins_repo_root_on_module_worker_pythonpath(tmp_path, monk
     root = str(Path(kbd.__file__).resolve().parents[1])
     home = tmp_path / ".hermes"
     home.mkdir()
+    coder_home = home / "profiles" / "coder"
+    coder_home.mkdir(parents=True)
+    (coder_home / "config.yaml").write_text("{}\n", encoding="utf-8")
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     monkeypatch.setenv("HERMES_HOME", str(home))
     monkeypatch.delenv("HERMES_KANBAN_HOME", raising=False)

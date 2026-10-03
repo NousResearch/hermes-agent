@@ -4,10 +4,25 @@ names are Hermes-managed credentials. The env *builders* applying it (``_make_ru
 
 import functools
 import os
+from pathlib import Path
 from typing import Optional
 
 # Prefix a caller uses in ``extra_env`` to force a blocklisted var through.
 _HERMES_PROVIDER_ENV_FORCE_PREFIX = "_HERMES_FORCE_"
+_CONTAINER_ENV_FORWARD_PREFIXES = ("APPTAINERENV_", "SINGULARITYENV_", _HERMES_PROVIDER_ENV_FORCE_PREFIX)
+
+
+def _credential_target_env_name(key: str) -> str:
+    """Return the effective credential name after nested forwarding wrappers."""
+    value = str(key)
+    while True:
+        upper = value.upper()
+        for prefix in _CONTAINER_ENV_FORWARD_PREFIXES:
+            if upper.startswith(prefix):
+                value = value[len(prefix):]
+                break
+        else:
+            return value
 
 # Hermes-managed AWS *inference* credentials for ``auth_type="aws_sdk"`` (Bedrock):
 # only the Bedrock bearer token, which no aws/terraform/boto3 toolchain uses. The
@@ -112,6 +127,29 @@ def _build_adapter_secret_env() -> frozenset:
     return frozenset(names)
 
 
+def _build_model_provider_env_names() -> frozenset[str]:
+    """Return exact model-provider credential and endpoint env names."""
+    names = {
+        "CLAUDE_CODE_OAUTH_TOKEN", "COPILOT_GITHUB_TOKEN", "AWS_ACCESS_KEY_ID",
+        "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN", "AWS_PROFILE",
+        "AWS_DEFAULT_PROFILE", "AWS_REGION", "AWS_DEFAULT_REGION",
+        "AWS_CONFIG_FILE", "AWS_SHARED_CREDENTIALS_FILE", "AWS_ROLE_ARN",
+        "AWS_ROLE_SESSION_NAME", "AWS_WEB_IDENTITY_TOKEN_FILE",
+        "AWS_CONTAINER_CREDENTIALS_RELATIVE_URI",
+        "AWS_CONTAINER_CREDENTIALS_FULL_URI", "AWS_EC2_METADATA_DISABLED",
+    }
+    try:
+        from hermes_cli.auth import PROVIDER_REGISTRY
+
+        for provider in PROVIDER_REGISTRY.values():
+            names.update(str(item).upper() for item in provider.api_key_env_vars)
+            if provider.base_url_env_var:
+                names.add(str(provider.base_url_env_var).upper())
+    except ImportError:
+        pass
+    return frozenset(name for name in names if name)
+
+
 # Provider blocklist first: it imports hermes_cli.auth before hermes_cli.config, whose import
 # discovers provider plugins that expect a fully initialized auth registry.
 _PROVIDER_ENV_BLOCKLIST = _build_provider_env_blocklist()
@@ -121,7 +159,7 @@ _HERMES_PROVIDER_ENV_BLOCKLIST = _PROVIDER_ENV_BLOCKLIST | _ADAPTER_SECRET_ENV
 _HOME_ADAPTER_SECRET_CACHE: dict[str, tuple] = {}
 
 
-def _home_adapter_secret_env() -> frozenset:
+def _home_adapter_secret_env(profile_home=None) -> frozenset:
     """Secrets declared by the bound profile's own user-installed platform plugins. Per home, not
     process-wide: under multiplex profile A's plugin must neither strip a same-named value from
     profile B's children nor be missing from A's. Cached per home and keyed on every manifest's
@@ -131,7 +169,7 @@ def _home_adapter_secret_env() -> frozenset:
     cached, so a failed discovery never releases a known denial and recovery is seen at once."""
     from hermes_cli.config import platform_manifest_secret_scan, platform_manifest_stamp
     from hermes_constants import get_hermes_home, hermes_home_key
-    home = get_hermes_home()
+    home = get_hermes_home() if profile_home is None else Path(profile_home)
     key, stamp = hermes_home_key(home), platform_manifest_stamp(home)
     cached = _HOME_ADAPTER_SECRET_CACHE.get(key)
     if cached is None or cached[0] is None or cached[0] != stamp:
@@ -168,11 +206,33 @@ def _is_provider_env_blocklisted(name: str, _registered: "frozenset | None" = No
     block is case-insensitive, so ``openai_api_key`` IS ``OPENAI_API_KEY``; consistent with
     ``_is_hermes_internal_secret``, which already folds (``key.upper()``). Loops pass
     ``_registered`` so the registry is read once per env, not once per key."""
-    upper = name.upper()
-    if name in _HERMES_PROVIDER_ENV_BLOCKLIST or upper in _HERMES_PROVIDER_ENV_BLOCKLIST:
+    upper = _credential_target_env_name(name).upper()
+    if (name in _HERMES_PROVIDER_ENV_BLOCKLIST or upper in _HERMES_PROVIDER_ENV_BLOCKLIST
+            or _is_blocked_provider_env(name)):
         return True
     return upper in (_registered_adapter_secret_env() if _registered is None else _registered)
 
+
+
+_PROVIDER_ENV_BLOCKLIST_FOLDED = frozenset(n.upper() for n in _PROVIDER_ENV_BLOCKLIST)
+
+def _is_blocked_provider_env(key: str) -> bool:
+    upper = _credential_target_env_name(key).upper()
+    if upper in _PROVIDER_ENV_BLOCKLIST_FOLDED:
+        return True
+    # Provider plugins can register after this module imports. Resolve their
+    # declared names live, without rescanning another home's plugin manifests.
+    from hermes_cli.auth import PROVIDER_REGISTRY
+    for provider in PROVIDER_REGISTRY.values():
+        names = set(provider.api_key_env_vars)
+        if provider.base_url_env_var:
+            names.add(provider.base_url_env_var)
+        if provider.auth_type == "aws_sdk":
+            names.update(_AWS_SDK_CREDENTIAL_ENV_VARS)
+        names.discard("CLAUDE_CODE_OAUTH_TOKEN")
+        if upper in {name.upper() for name in names}:
+            return True
+    return False
 
 # First-party platform credentials (``BUZZ_*``, driving the platform-mandated ``buzz``
 # CLI) carved out of the TERMINAL scrub only (``_make_run_env``,
@@ -265,16 +325,43 @@ def _is_terminal_first_party_env(name: str) -> bool:
 _ACTIVE_VENV_MARKER_VARS = ("VIRTUAL_ENV", "CONDA_PREFIX", "PYTHONHOME")
 
 
-def _is_hermes_internal_secret(key: str) -> bool:
+def _is_hermes_internal_secret(key: str, *, profile_home=None) -> bool:
     """True for Hermes-internal secrets injected under *dynamic* names the static
     blocklist cannot enumerate: ``AUXILIARY_<TASK>_API_KEY``/``_BASE_URL`` (per-task
     side-LLM credentials) and ``GATEWAY_RELAY_*_SECRET``/``_KEY``/``_TOKEN`` (relay
     auth; non-secret routing hints stay visible). Stripped on every spawn path
     regardless of env_passthrough registration or ``inherit_credentials``."""
-    upper = key.upper()
+    upper = _credential_target_env_name(key).upper()
     if upper.startswith("AUXILIARY_") and upper.endswith(("_API_KEY", "_BASE_URL")):
         return True
-    return upper.startswith("GATEWAY_RELAY_") and upper.endswith(("_SECRET", "_KEY", "_TOKEN"))
+    if upper.startswith("GATEWAY_RELAY_") and upper.endswith(("_SECRET", "_KEY", "_TOKEN")):
+        return True
+    if upper in {"OP_SERVICE_ACCOUNT_TOKEN", "OP_CONNECT_TOKEN"}:
+        return True
+    if upper.startswith("OP_SESSION_"):
+        return True
+    if "BWS" in upper and upper.endswith("_TOKEN"):
+        return True
+    return upper in {"BWS_ACCESS_TOKEN", _get_configured_bws_token_env(profile_home).upper()}
+
+
+def _get_configured_bws_token_env(profile_home=None) -> str:
+    """Resolve the exact configured Bitwarden bootstrap token name."""
+    try:
+        from pathlib import Path
+        from hermes_cli.config import cfg_get, read_raw_config
+        from hermes_cli.env_loader import _load_secrets_config
+
+        secrets_cfg = (
+            _load_secrets_config(Path(profile_home), strict=True)
+            if profile_home is not None else read_raw_config().get("secrets", {})
+        )
+        configured = cfg_get(secrets_cfg, "bitwarden", "access_token_env")
+    except Exception as exc:
+        raise RuntimeError("Bitwarden token policy unavailable") from exc
+    if isinstance(configured, str) and configured.strip():
+        return configured.strip()
+    return "BWS_ACCESS_TOKEN"
 
 
 # Authorization gates: the env names platform adapters read to decide WHO may talk to the
@@ -356,8 +443,8 @@ def _plugin_terminal_env_strip_keys() -> frozenset:
         from agent.terminal_env_registry import plugin_strip_env_keys
 
         return plugin_strip_env_keys()
-    except Exception:
-        return frozenset()
+    except Exception as exc:
+        raise RuntimeError("plugin terminal environment policy unavailable") from exc
 
 
 # Tier-1 secrets: stripped from EVERY spawned subprocess even under inherit_credentials

@@ -75,7 +75,7 @@ def _profile_runtime_scope_tokens(profile_home, *, hydrate_secrets: bool = True)
             if hydrate_secrets:
                 from hermes_cli.env_loader import hydrate_profile_secret_sources
                 hydrate_profile_secret_sources(home)
-            secrets = build_profile_secret_scope(home)
+            secrets = build_profile_secret_scope(home, hydrate_external=hydrate_secrets)
             overlay = None
             scopes.home = set_hermes_home_override(str(home))
         else:
@@ -87,7 +87,7 @@ def _profile_runtime_scope_tokens(profile_home, *, hydrate_secrets: bool = True)
             # re-homes the process after import must not read the old home's .env.
             from tui_gateway.launch_profile_policy import launch_secret_scope, launch_terminal_env
             home = _launch_home()
-            secrets = launch_secret_scope(home)
+            secrets = launch_secret_scope(home, hydrate_external=hydrate_secrets)
             # No home stamp: this IS the process's own profile, and the stamp exists only to
             # mark a FOREIGN home for serves_routed_profile().
             scopes.secret = set_secret_scope(secrets)

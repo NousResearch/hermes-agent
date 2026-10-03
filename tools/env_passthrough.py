@@ -7,9 +7,11 @@ forwarded values resolve through the profile's secret scope, not the process env
 from __future__ import annotations
 
 import logging
+import os
 from contextvars import ContextVar
+from pathlib import Path
 from typing import Iterable
-from hermes_cli.config import cfg_get, read_raw_config
+from hermes_cli.config import cfg_get
 
 logger = logging.getLogger(__name__)
 
@@ -28,13 +30,13 @@ def _get_allowed() -> set[str]:
         return val
 
 
-# Config-based allowlist, keyed by Hermes home: under gateway.multiplex_profiles one process serves
-# many profiles, and a single slot would let the first profile's operator allowlist decide which env
-# vars tunnel into every other profile's sandbox children.
+# Last observed config projection. Kept for test/debug compatibility only; it
+# is never an authorization cache because the active profile may change on
+# every multiplexed turn.
 _config_passthrough: dict[str, frozenset[str]] = {}
 
 
-def _is_hermes_provider_credential(name: str) -> bool:
+def _is_hermes_provider_credential(name: str, *, profile_home=None) -> bool:
     """True if ``name`` is a Hermes-managed provider credential per
     ``_HERMES_PROVIDER_ENV_BLOCKLIST`` or a dynamic Hermes-internal secret
     (AUXILIARY_*_API_KEY / _BASE_URL, GATEWAY_RELAY_*). Skill-declared
@@ -44,7 +46,12 @@ def _is_hermes_provider_credential(name: str) -> bool:
     registerable. Fails closed when the blocklist cannot be imported."""
     try:
         from tools.environments.local_env_policy import (
-            _is_hermes_internal_secret, _is_provider_env_blocklisted)
+            _is_blocked_provider_env,
+            _is_hermes_internal_secret,
+            _is_provider_env_blocklisted,
+            _home_adapter_secret_env,
+            _registry_adapter_secret_env,
+        )
     except Exception as e:
         logger.warning(
             "env passthrough: provider credential blocklist import failed; "
@@ -53,7 +60,12 @@ def _is_hermes_provider_credential(name: str) -> bool:
     # Case-folded membership too: the remote-exec env builder resolves each
     # registered name via os.getenv(), which is case-insensitive on Windows, so
     # ``openai_api_key`` would tunnel the real OPENAI_API_KEY into children.
-    return _is_hermes_internal_secret(name) or _is_provider_env_blocklisted(name)
+    return (
+        _is_hermes_internal_secret(name, profile_home=profile_home)
+        or _is_blocked_provider_env(name)
+        or _is_provider_env_blocklisted(
+            name, _registry_adapter_secret_env() | _home_adapter_secret_env(profile_home))
+    )
 
 
 def register_env_passthrough(var_names: Iterable[str]) -> None:
@@ -71,35 +83,34 @@ def register_env_passthrough(var_names: Iterable[str]) -> None:
         logger.debug("env passthrough: registered %s", name)
 
 
-def _accepted(names, refusal_msg: str):
+def _accepted(names, refusal_msg: str, *, profile_home=None):
     """Yield non-empty *names* that are not Hermes provider credentials; refused
     names are logged with *refusal_msg* (``%r`` = name)."""
     for name in names:
         if not name:
             continue
-        if _is_hermes_provider_credential(name):
+        if _is_hermes_provider_credential(name, profile_home=profile_home):
             logger.warning(refusal_msg, name)
             continue
         yield name
 
 
-def _load_config_passthrough() -> frozenset[str]:
-    """Load ``tools.env_passthrough`` from config.yaml (cached). Same credential
-    filter as register_env_passthrough: operator config must not tunnel provider
-    credentials into sandbox children either (GHSA-rhgp-j443-p4rf)."""
+def _load_config_passthrough(
+    profile_home: str | os.PathLike[str] | None = None,
+) -> frozenset[str]:
+    """Load the selected profile's terminal.env_passthrough projection now."""
     from hermes_constants import hermes_home_key
-
-    try:
-        home_key = hermes_home_key()
-    except (RuntimeError, OSError):
-        # No resolvable home (stripped environ in a sandbox child): nothing to scope by.
-        home_key = ""
-    cached = _config_passthrough.get(home_key)
-    if cached is not None:
-        return cached
+    home_key = hermes_home_key(Path(profile_home) if profile_home is not None else None)
     result: set[str] = set()
     try:
-        passthrough = cfg_get(read_raw_config(), "terminal", "env_passthrough")
+        from hermes_cli.config import read_raw_config, read_user_config_raw
+
+        cfg = (
+            read_user_config_raw(Path(profile_home) / "config.yaml")
+            if profile_home is not None
+            else read_raw_config()
+        )
+        passthrough = cfg_get(cfg, "terminal", "env_passthrough")
         items = passthrough if isinstance(passthrough, list) else ()
         result.update(_accepted((i.strip() for i in items if isinstance(i, str)), (
             "env passthrough: refusing to register Hermes "
@@ -108,27 +119,30 @@ def _load_config_passthrough() -> frozenset[str]:
             "configuration must not override the execute_code "
             "sandbox's credential scrubbing; see "
             "GHSA-rhgp-j443-p4rf."
-        )))
+        ), profile_home=profile_home))
     except Exception as e:
         logger.debug("Could not read tools.env_passthrough from config: %s", e)
     _config_passthrough[home_key] = frozenset(result)
     return _config_passthrough[home_key]
 
 
-def is_env_passthrough(var_name: str) -> bool:
-    """True if *var_name* was registered by a skill or listed in config and is not a
-    Hermes-managed credential NOW. Ownership changes after acceptance (a platform plugin
-    registered later declares the name in its ``required_env`` or manifest), so the refusal applied at registration
-    is re-applied here, where every child builder consumes the allowlist."""
-    return ((var_name in _get_allowed() or var_name in _load_config_passthrough())
-            and not _is_hermes_provider_credential(var_name))
+def is_env_passthrough(
+    var_name: str,
+    *,
+    profile_home: str | os.PathLike[str] | None = None,
+) -> bool:
+    """True if *var_name* was registered by a skill or listed in config."""
+    return ((var_name in _get_allowed() or var_name in _load_config_passthrough(profile_home))
+            and not _is_hermes_provider_credential(var_name, profile_home=profile_home))
 
 
-def get_all_passthrough() -> frozenset[str]:
-    """Return the union of skill-registered and config-based passthrough vars, minus names
-    that have become Hermes-managed credentials since they were accepted."""
-    return frozenset(name for name in frozenset(_get_allowed()) | _load_config_passthrough()
-                     if not _is_hermes_provider_credential(name))
+def get_all_passthrough(
+    *,
+    profile_home: str | os.PathLike[str] | None = None,
+) -> frozenset[str]:
+    """Return the union of skill-registered and config-based passthrough vars."""
+    return frozenset(name for name in frozenset(_get_allowed()) | _load_config_passthrough(profile_home)
+                     if not _is_hermes_provider_credential(name, profile_home=profile_home))
 
 
 def resolve_passthrough_value(name: str, fallback: str | None = None) -> str | None:
@@ -139,15 +153,17 @@ def resolve_passthrough_value(name: str, fallback: str | None = None) -> str | N
     raises the fail-closed ``UnscopedSecretError``. Outside multiplexing an installed
     scope keeps overlay semantics and an unscoped caller keeps its fallback."""
     from agent.secret_scope import (
-        _is_global_env, current_secret_scope, get_secret, is_multiplex_active)
+        _is_global_env, current_secret_scope, get_secret, is_multiplex_active,
+        serves_routed_profile,
+    )
     # Global terminal/runtime settings are not profile secrets; ``fallback`` is
     # already the caller's effective value (incl. an explicit per-call override).
     if _is_global_env(name) and fallback is not None:
         return fallback
-    multiplex_active = is_multiplex_active()
+    profile_scoped = is_multiplex_active() or serves_routed_profile()
     if current_secret_scope() is None:
-        return get_secret(name) if multiplex_active else fallback
-    return get_secret(name, None if multiplex_active else fallback)
+        return get_secret(name) if profile_scoped else fallback
+    return get_secret(name, None if profile_scoped else fallback)
 
 
 def scoped_passthrough_additions(present: Iterable[str]) -> dict[str, str]:

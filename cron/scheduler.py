@@ -3671,6 +3671,7 @@ def _launch_external_cron_worker(job: dict) -> bool:
 
     from agent.secret_scope import is_multiplex_active
     from cron.scheduler_provider import routed_profile_fire
+    from hermes_constants import get_routing_process_hermes_home
     from tools.environments.local import build_subprocess_env, strip_launch_profile_env
     from tools.process_registry import (
         restart_safe_gateway_child_argv,
@@ -3729,13 +3730,16 @@ def _launch_external_cron_worker(job: dict) -> bool:
     # the env build; the helper's reset order keeps the context from outliving its scope.
     fire_scope_tokens = _install_fire_secret_scope()
     try:
-        # No restore_managed_env here: the worker re-runs load_hermes_dotenv -> _apply_managed_env at
-        # import, and strip_launch_profile_env leaves managed keys in place.
-        worker_env = strip_launch_profile_env(build_subprocess_env(
+        # Remove launch settings before projecting this worker's target values.
+        worker_env = build_subprocess_env(
+            strip_launch_profile_env(dict(os.environ), target_home=profile_home),
             scrub_secrets=multiplex_active,
             inherit_profile_home=True,
+            profile_home=profile_home,
+            source_profile_home=get_routing_process_hermes_home(),
+            enforce_profile_boundary=multiplex_active,
             extra={"HERMES_HOME": str(profile_home)},
-        ))
+        )
     finally:
         _reset_fire_secret_scope(fire_scope_tokens)
     worker_env = systemd_user_bus_env(worker_env)

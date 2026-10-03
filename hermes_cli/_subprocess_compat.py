@@ -13,6 +13,7 @@ import re
 import shutil
 import subprocess
 import sys
+import time
 from pathlib import Path
 from typing import Mapping, NoReturn, Sequence
 
@@ -359,7 +360,10 @@ def _user_safe_directories(base_env: "Mapping[str, str]") -> list[str]:
     return values
 
 
-_git_fallback_env_cache: dict[frozenset[tuple[str, str]], dict[str, str]] = {}
+_GIT_FALLBACK_CACHE_TTL = 10.0
+_git_fallback_env_cache: dict[
+    frozenset[tuple[str, str]], tuple[dict[str, str], float]
+] = {}
 
 
 def selected_git_env(base: Mapping[str, str] | None = None) -> dict[str, str]:
@@ -373,15 +377,21 @@ def selected_git_env(base: Mapping[str, str] | None = None) -> dict[str, str]:
     cache_key = frozenset(env.items())
     cached = _git_fallback_env_cache.get(cache_key)
     if cached is not None:
-        return dict(cached)
+        cached_env, expires_at = cached
+        if time.monotonic() < expires_at:
+            return dict(cached_env)
+        _git_fallback_env_cache.pop(cache_key, None)
     try:
         from pm import ensure
 
         return ensure("git", base_env=env).env
     except Exception:
         # Acquisition can fail transiently (for example while PM is refreshing
-        # its lock state). Do not turn one failed probe into a process-lifetime
-        # verdict that managed Git is unavailable.
+        # its lock state). Reuse the system-Git fallback briefly to amortize
+        # repeated calls in one checkpoint, then retry after the TTL.
+        _git_fallback_env_cache[cache_key] = (
+            dict(env), time.monotonic() + _GIT_FALLBACK_CACHE_TTL
+        )
         return env
 
 

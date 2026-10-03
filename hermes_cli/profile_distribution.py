@@ -23,7 +23,7 @@ import hermes_yaml as yaml
 from hermes_cli._subprocess_compat import noninteractive_git_env
 from hermes_cli.archive_safe import normalize_archive_parts
 from hermes_cli.profiles import DEFAULT_EXPORT_EXCLUDE_ROOT
-from utils import rmtree_readonly
+from utils import copy_file_writable, copytree_writable, make_tree_owner_writable, rmtree_readonly
 
 
 MANIFEST_FILENAME = "distribution.yaml"
@@ -362,7 +362,7 @@ def _owned_entries(staged: Path, manifest: DistributionManifest):
 def _remove_existing(path: Path) -> None:
     """Remove one destination entry without following a destination symlink."""
     if path.is_dir() and not path.is_symlink():
-        shutil.rmtree(path)
+        rmtree_readonly(path)
     elif os.path.lexists(path):
         # Covers files, dangling/any symlinks, fifos and sockets alike.
         path.unlink()
@@ -373,9 +373,9 @@ def _replace_entry(src: Path, dest: Path) -> None:
     file<->directory transitions cannot raise or leave stale content behind."""
     _remove_existing(dest)
     if src.is_dir():
-        shutil.copytree(src, dest)
+        copytree_writable(src, dest)
     else:
-        shutil.copy2(src, dest)
+        copy_file_writable(src, dest)
 
 
 def _shipped_cron_store(entries: List[Tuple[Path, Tuple[str, ...]]]) -> Optional[Path]:
@@ -401,7 +401,7 @@ def _merge_cron_store(src: Path, home: Path) -> None:
         with tempfile.TemporaryDirectory(prefix="hermes_dist_cron_") as tmp:
             staged_store = Path(tmp) / "cron"
             staged_store.mkdir()
-            shutil.copy2(src, staged_store / "jobs.json")
+            copy_file_writable(src, staged_store / "jobs.json")
             with cron_jobs.use_cron_store(tmp):
                 shipped = {
                     job["id"]: job for job in cron_jobs.load_jobs()

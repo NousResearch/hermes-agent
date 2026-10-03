@@ -36,6 +36,38 @@ def env_var_enabled(name: str, default: str = "") -> bool:
     return is_truthy_value(os.getenv(name, default), default=False)
 
 
+def ensure_owner_writable(path: Path) -> None:
+    """Add owner-write without following symlinks; permission repair is best-effort."""
+    if path.is_symlink():
+        return
+    try:
+        os.chmod(path, stat.S_IMODE(os.stat(path).st_mode) | stat.S_IWUSR)
+    except OSError as exc:
+        logger.debug("chmod on %s failed: %s", path, exc)
+
+
+def make_tree_owner_writable(root: Path) -> None:
+    """Add owner-write recursively without chmod-ing symlink targets."""
+    if not root.exists():
+        return
+    ensure_owner_writable(root)
+    for path in root.rglob("*"):
+        ensure_owner_writable(path)
+
+
+def copy_file_writable(src, dst) -> None:
+    """Copy metadata and make the resulting file owner-writable."""
+    shutil.copy2(src, dst)
+    ensure_owner_writable(Path(dst))
+
+
+def copytree_writable(src, dst, **kwargs) -> None:
+    """Copy a tree whose regular-file and directory copies are owner-writable."""
+    kwargs.setdefault("copy_function", copy_file_writable)
+    shutil.copytree(src, dst, **kwargs)
+    make_tree_owner_writable(Path(dst))
+
+
 def file_signature(st: os.stat_result) -> "tuple[int, int, int, int]":
     """Change-detection key for a stat result: ``(st_mtime_ns, st_size, st_ino, st_ctime_ns)``.
 

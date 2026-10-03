@@ -18,6 +18,7 @@ from typing import Dict, List, Optional, Tuple
 
 from hermes_cli.archive_safe import archive_root_dirs, make_targz, normalize_archive_parts, safe_extract_targz
 from hermes_cli.home_data_layout import PM_RUNTIME_ROOT_DIRS
+from utils import copy_file_writable, make_tree_owner_writable
 from hermes_constants import (
     LOCAL_RUNTIME_ROOT_DIRS, PROFILE_ID_RE, clear_named_profile_deleted, mark_named_profile_deleted,
     named_profile_has_identity, named_profile_is_deleted, named_profile_is_live,
@@ -1163,7 +1164,7 @@ def _clone_file(source_dir: Path, profile_dir: Path, relpath: str) -> None:
         return
     dst = profile_dir / relpath
     dst.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(src, dst)
+    copy_file_writable(src, dst)
     if relpath == ".env":
         with contextlib.suppress(OSError):
             os.chmod(str(dst), 0o600)
@@ -1186,7 +1187,7 @@ def _materialize_symlinked_files(profile_dir: Path) -> List[str]:
         target = Path(os.path.realpath(path))
         path.unlink()
         if target.is_file():
-            shutil.copy2(target, path)
+            copy_file_writable(target, path)
         done.append(name)
     return done
 
@@ -1214,17 +1215,28 @@ def _copytree_keep_junctions(src: Path, dst: Path, ignore, dirs_exist_ok: bool =
     physical tree is a second same-named candidate and ``_locate_skill`` refuses to guess (#113471).
     A junction whose target is gone is skipped with a warning, never a crash."""
     junctions: Dict[str, str] = {}
+    symlinks: Dict[str, str] = {}
 
     def _ignore(directory: str, names: List[str]) -> set:
         ignored = set(ignore(directory, names))
         for name in names:
-            target = _junction_target(os.path.join(directory, name))
+            entry = os.path.join(directory, name)
+            if os.path.islink(entry):
+                symlinks[entry] = os.readlink(entry)
+                ignored.add(name)
+                continue
+            target = _junction_target(entry)
             if target is not None:
-                junctions[os.path.join(directory, name)] = target
+                junctions[entry] = target
                 ignored.add(name)
         return ignored
 
-    shutil.copytree(src, dst, symlinks=True, dirs_exist_ok=dirs_exist_ok, ignore=_ignore)
+    shutil.copytree(src, dst, symlinks=True, dirs_exist_ok=dirs_exist_ok, ignore=_ignore,
+                    copy_function=copy_file_writable)
+    make_tree_owner_writable(dst)
+    for link, target in symlinks.items():
+        dest = os.path.join(dst, os.path.relpath(link, src))
+        os.symlink(target, dest, target_is_directory=os.path.isdir(link))
     if junctions:
         import _winapi  # Windows-only stdlib module; only reachable once a junction was seen
     for link, target in junctions.items():

@@ -4402,6 +4402,9 @@ export const en: Translations = {
     noOutput: 'No output yet.',
     cancelling: 'Cancelling...',
     cancelInstall: 'Cancel install',
+    cancelledTitle: 'Installation cancelled',
+    cancelledDesc:
+      'Setup stopped before it finished. Nothing was installed yet — start again whenever you are ready.',
     transcriptSaved: 'Full transcript saved to',
     copiedOutput: 'Copied!',
     copyOutput: 'Copy output',

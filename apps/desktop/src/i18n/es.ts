@@ -4823,6 +4823,9 @@ export const esOverrides = {
     noOutput: 'Aún no hay salida.',
     cancelling: 'Cancelando...',
     cancelInstall: 'Cancelar instalación',
+    cancelledTitle: 'Instalación cancelada',
+    cancelledDesc:
+      'La configuración se detuvo antes de terminar. Aún no se instaló nada; vuelve a empezar cuando quieras.',
     transcriptSaved: 'Transcripción completa guardada en',
     copiedOutput: '¡Copiado!',
     copyOutput: 'Copiar salida',

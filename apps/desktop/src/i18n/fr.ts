@@ -4844,6 +4844,9 @@ export const frOverrides = {
     noOutput: 'Aucune sortie pour le moment.',
     cancelling: 'Annulation...',
     cancelInstall: "Annuler l'installation",
+    cancelledTitle: 'Installation annulée',
+    cancelledDesc:
+      "La configuration s'est arrêtée avant la fin. Rien n'a encore été installé — relancez-la quand vous voulez.",
     transcriptSaved: 'Transcription complète enregistrée dans',
     copiedOutput: 'Copié !',
     copyOutput: 'Copier la sortie',

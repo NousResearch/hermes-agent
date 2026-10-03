@@ -4831,6 +4831,9 @@ export const deOverrides = {
     noOutput: 'Noch keine Ausgabe.',
     cancelling: 'Wird abgebrochen...',
     cancelInstall: 'Installation abbrechen',
+    cancelledTitle: 'Installation abgebrochen',
+    cancelledDesc:
+      'Das Setup wurde beendet, bevor es fertig war. Noch ist nichts installiert – du kannst jederzeit neu starten.',
     transcriptSaved: 'Vollständiges Protokoll gespeichert unter',
     copiedOutput: 'Kopiert!',
     copyOutput: 'Ausgabe kopieren',

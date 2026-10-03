@@ -331,6 +331,8 @@ def _cmd_export(db, args):
         # A backup includes protected rows; prune's keep rules must not omit them.
         filters["archived"] = None
         filters["include_pinned"] = True
+    if args.session_id and not db.resolve_session_id(args.session_id):
+        return _not_found(args.session_id)
 
     def _redact(data):
         if not args.redact or data is None:
@@ -343,14 +345,15 @@ def _cmd_export(db, args):
     shown = args.format in SAVE_TRANSCRIPT_FORMATS or bool(getattr(args, "only", None))
 
     def _collect_sessions():
-        """Return exported sessions, a failure exit code, or None for a dry-run preview."""
+        """--session-id / filters / bare export -> redacted session dicts, or None after printing an error."""
         def _one(session_id):
             return _redact(db.export_session(session_id, include_compacted=shown))
         if args.session_id:
             resolved = db.resolve_session_id(args.session_id)
             data = _one(resolved) if resolved else None
             if not data:
-                return _not_found(args.session_id)
+                _not_found(args.session_id)
+                return None
             return [data]
         if filters:
             candidates = db.list_prune_candidates(**filters)
@@ -407,8 +410,6 @@ def _export_flat(kind, args, collect):
         print(message)
         return
     sessions = collect()
-    if isinstance(sessions, int):
-        return sessions
     if sessions is not None:
         from hermes_cli.session_export import default_save_filename
         name = (default_save_filename(sessions[0].get("id", ""), args.format) if len(sessions) == 1
@@ -427,8 +428,6 @@ def _export_trace(db, args, filters):
         if not session_id:
             print("No session found to export. Pass --session-id.")
             return
-    if session_id and not db.resolve_session_id(session_id):
-        return _not_found(session_id)
     from agent.trace_upload import TraceRedactionError, build_trace_jsonl, upload_session_trace
     redact_trace = not getattr(args, "no_redact", False)
     if getattr(args, "upload", False):
@@ -530,8 +529,6 @@ def _export_markdown_single(db, args, export_one, output_dir, lineage_is_logical
     """--session-id markdown export, optionally + verified delete of it and its delegates."""
     from hermes_cli.session_export_md import verify_export_file
     resolved_session_id = db.resolve_session_id(args.session_id)
-    if not resolved_session_id:
-        return _not_found(args.session_id)
     delete_target_ids = (
         db.get_session_delete_targets(resolved_session_id) if args.delete_after_verified else [resolved_session_id]
     )

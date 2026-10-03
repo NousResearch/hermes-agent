@@ -1827,6 +1827,37 @@ def _load_cursorrules(cwd_path: Path, context_length: Optional[int] = None) -> s
                              read_path=str(cwd_path / ".cursorrules"))
 
 
+def _load_profile_agents_md(
+    home_override: "Path | None" = None,
+    context_length: Optional[int] = None,
+) -> str:
+    """AGENTS.md from the profile home ($HERMES_HOME), install tree never scanned."""
+    # ponytail: AGENTS.md-only fallback; extend to the full priority chain if other types are needed at profile root.
+    from agent.runtime_cwd import _is_install_tree
+
+    try:
+        home = Path(home_override) if home_override is not None else get_hermes_home()
+        home = home.resolve()
+    except Exception as e:
+        logger.debug("Could not resolve HERMES_HOME for AGENTS.md fallback: %s", e)
+        return ""
+    if _is_install_tree(home):
+        return ""
+    for name in ["AGENTS.md", "agents.md"]:
+        candidate = home / name
+        if not candidate.exists():
+            continue
+        try:
+            content = candidate.read_text(encoding="utf-8").strip()
+        except Exception as e:
+            logger.debug("Could not read %s: %s", candidate, e)
+            continue
+        if not content:
+            continue
+        return _context_section(content, name, "AGENTS.md", candidate, context_length)
+    return ""
+
+
 def build_context_files_prompt(
     cwd: Optional[str] = None, skip_soul: bool = False, context_length: Optional[int] = None,
     allow_install_tree_fallback: bool = False, home_override: "Path | None" = None,
@@ -1840,10 +1871,11 @@ def build_context_files_prompt(
     cwd_path = Path(cwd if cwd is not None else os.getcwd()).resolve()
     if _project_context_suppressed(cwd, cwd_path, allow_install_tree_fallback):
         logger.warning(
-            "skipping project-context discovery: working-directory resolution fell back to the Hermes "
-            "install tree (%s) — set terminal.cwd to your project directory", cwd_path,
+            "skipping install-tree project-context discovery: working-directory resolution fell back "
+            "to the Hermes install tree (%s) — using the profile AGENTS.md fallback instead; set "
+            "terminal.cwd to your project directory", cwd_path,
         )
-        sections = []
+        sections = [_load_profile_agents_md(home_override, context_length)]
     else:
         sections = [_load_hermes_md(cwd_path, context_length) or _load_agents_md(cwd_path, context_length)
                     or _load_claude_md(cwd_path, context_length) or _load_cursorrules(cwd_path, context_length)]

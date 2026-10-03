@@ -461,6 +461,26 @@ class TestBuildContextFilesPrompt:
         assert "Never give up" not in result
         assert result == ""
 
+    def test_install_tree_fallback_loads_profile_agents_md(self, monkeypatch, tmp_path):
+        # #119276: Docker messaging gateways with unset terminal.cwd fell back
+        # to the install tree and booted with zero project context. The guard
+        # must stay (install-tree files never load) but the profile
+        # $HERMES_HOME/AGENTS.md loads as fallback.
+        import agent.runtime_cwd as rt
+
+        install_tree = tmp_path / "install"
+        install_tree.mkdir()
+        monkeypatch.setattr(rt, "_PACKAGE_ROOT", install_tree.resolve())
+        (install_tree / "AGENTS.md").write_text("Install-tree contributor rules.")
+        home = tmp_path / "hdata"
+        home.mkdir()
+        (home / "AGENTS.md").write_text("Project instructions from profile.")
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        monkeypatch.chdir(install_tree)
+        result = build_context_files_prompt(cwd=None, skip_soul=True)
+        assert "Project instructions from profile" in result
+        assert "Install-tree contributor rules" not in result
+
 
 
 

@@ -606,7 +606,7 @@ class TestOrphanedPipeReconciliation:
 # EOF-while-alive: capture pipe closes before process exits (issue #86416)
 # =========================================================================
 
-@pytest.mark.skipif(sys.platform == "win32", reason="POSIX-only: pipe EOF semantics")
+@pytest.mark.platforms("posix")
 class TestReaderLoopEofWhileAlive:
     """Regression tests for issue #86416.
 
@@ -617,13 +617,14 @@ class TestReaderLoopEofWhileAlive:
     contract still fires autonomously, without any poll()/wait() reconcile.
     """
 
-    def test_eof_on_closed_capture_pipe_does_not_mark_exited(self, registry):
+    def test_eof_on_closed_capture_pipe_does_not_mark_exited(self, registry, tmp_path):
         """EOF while the direct child is alive: no completion; the reader
         stays parked on the real exit (past the old 5s reader bound)."""
         session = registry.spawn_local(
-            f"{sys.executable} -c 'import os, sys, time; os.close(1); os.close(2); time.sleep(30)'",
-            cwd="/tmp",
+            f"exec {shlex.quote(sys.executable)} -c 'import os, time; os.close(1); os.close(2); time.sleep(30)'",
+            cwd=str(tmp_path),
         )
+        session.notify_on_complete = True
         try:
             assert _wait_until(
                 lambda: session._reader_thread is not None, timeout=10.0
@@ -639,6 +640,15 @@ class TestReaderLoopEofWhileAlive:
             # The reader stays alive — parked on the real child exit — so a
             # later exit still has an observer.
             assert session._reader_thread.is_alive()
+            result = registry.kill_process(session.id)
+            assert result["status"] == "killed"
+            assert session.process.poll() is not None
+            session._reader_thread.join(timeout=5)
+            assert not session._reader_thread.is_alive()
+            notification = registry.completion_queue.get(timeout=5)
+            assert notification["session_id"] == session.id
+            assert notification["exit_code"] is not None
+            assert registry.completion_queue.empty()
         finally:
             registry.kill_process(session.id)
             if session._reader_thread is not None:

@@ -62,9 +62,14 @@ let
 
   # Build the renderer (dist/ + electron/ + package.json).
   renderer = hermesNpmLib.buildNpmPackage {
+    # `tests/fixtures` is imported by desktop unit tests
+    # (use-session-actions.test.tsx reaches the repo-root fixture dir,
+    # which is shared with the Python test suite) — without it the
+    # `tsc -b` typecheck fails with TS2307 in the filtered sandbox.
     dirs = [
       "apps/desktop"
       "apps/shared"
+      "tests/fixtures"
       "scripts/build/desktop.mjs"
       "scripts/build/freshness.mjs"
       "scripts/build/frontend-common.mjs"

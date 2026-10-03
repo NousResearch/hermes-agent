@@ -39,9 +39,10 @@ _ABSOLUTE_PATH_RE = re.compile(
 )
 # Match an ``Authorization: Bearer/Basic <token>`` header anywhere in a line,
 # not just at its start — the token can appear mid-line inside a dumped curl
-# command (``curl -H 'Authorization: Bearer ...'``) or a shell trace.
+# command (``curl -H 'Authorization: Bearer ...'``) or a shell trace. A bare
+# ``Bearer <token>`` (logged without its header name) is redacted too.
 _AUTH_HEADER_RE = re.compile(
-    r"(?i)(authorization\s*:\s*(?:bearer|basic)\s+)[^\s]+"
+    r"(?i)(authorization\s*:\s*(?:bearer|basic)\s+|\bbearer\s+)[^\s]+"
 )
 
 # Known-safe validation messages from ``kanban_db`` that may be echoed to an
@@ -268,7 +269,7 @@ def _idempotency_key(
 
 
 def _sanitize_log(content: str) -> str:
-    redacted = redact_sensitive_text(content, force=True)
+    redacted = redact_sensitive_text(content, force=True, redact_url_credentials=True)
     redacted = _AUTH_HEADER_RE.sub(r"\1[REDACTED]", redacted)
     return _ABSOLUTE_PATH_RE.sub("[PATH]", redacted)
 

@@ -179,7 +179,9 @@ def test_links_actions_and_observability_are_sanitized(client: TestClient) -> No
     log_path = kanban_db.worker_log_path(parent_id, board="default")
     log_path.parent.mkdir(parents=True, exist_ok=True)
     log_path.write_text(
-        "working in /srv/private/worktree\nAuthorization: Bearer secret-value-1234567890\n",
+        "working in /srv/private/worktree\nAuthorization: Bearer secret-value-1234567890\n"
+        "retrying with Bearer bare-opaque-token-42\n"
+        "GET https://example.test?access_token=query-token-42\n",
         encoding="utf-8",
     )
     log_response = client.get(f"/api/plugins/kanban/v1/tasks/{parent_id}/log")
@@ -188,6 +190,8 @@ def test_links_actions_and_observability_are_sanitized(client: TestClient) -> No
     assert "path" not in log_body
     assert "/srv/private" not in log_body["excerpt"]
     assert "secret-value-1234567890" not in log_body["excerpt"]
+    assert "bare-opaque-token-42" not in log_body["excerpt"]
+    assert "query-token-42" not in log_body["excerpt"]
 
     unlinked = client.delete(f"/api/plugins/kanban/v1/tasks/{parent_id}/links/{child_id}")
     assert unlinked.status_code == 200

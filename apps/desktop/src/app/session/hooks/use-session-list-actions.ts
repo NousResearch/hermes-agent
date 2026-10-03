@@ -95,9 +95,20 @@ function dropTombstoned(sessions: SessionInfo[]): SessionInfo[] {
     return sessions
   }
 
+  // Never hide the currently viewed session behind a stale tombstone —
+  // the user is looking at this chat, and the backend still lists it
+  // (delete hasn't committed or the tombstone is stale). Hiding it
+  // makes the active session vanish from the sidebar while its tile
+  // is open.
+  const active = $selectedStoredSessionId.get()
+
   const tombstoned = (session: SessionInfo): boolean => tombstoneRowIds(session).some(id => tombstones.has(id))
 
-  const kept = sessions.filter(session => !tombstoned(session))
+  const kept = sessions.filter(
+    session =>
+      (active && (session.id === active || (session._lineage_root_id && session._lineage_root_id === active))) ||
+      !tombstoned(session)
+  )
 
   return kept.length === sessions.length ? sessions : kept
 }
@@ -153,7 +164,9 @@ function sessionsToKeep(scope?: string): Set<string> {
   if (active) {
     const session = scope ? $sessions.get().find(s => s.id === active) : null
 
-    if (!scope || !session || normalizeProfileKey(session.profile) === scope) {
+    // Scope comparison folds case ('Default' display label vs canonical
+    // 'default'): see store/profile.ts normalizeProfileKey.
+    if (!scope || !session || normalizeProfileKey(session.profile).toLowerCase() === scope.toLowerCase()) {
       keep.add(active)
     }
   }
@@ -248,7 +261,7 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
       loadMoreMessagingRequestRef.current[requestKey] = requestId
 
       const inProfile = (s: SessionInfo) =>
-        sessionProfile === 'all' || normalizeProfileKey(s.profile) === sessionProfile
+        sessionProfile === 'all' || normalizeProfileKey(s.profile).toLowerCase() === sessionProfile.toLowerCase()
 
       const inPlatform = (s: SessionInfo) => normalizeSessionSource(s.source) === platform && inProfile(s)
       const loaded = $messagingSessions.get().filter(inPlatform).length

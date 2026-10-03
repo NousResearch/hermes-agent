@@ -1441,6 +1441,63 @@ class TestKillProcess:
             registry._finished.pop(s.id, None)
 
 
+@pytest.mark.platforms("posix")
+class TestSandboxKillTree:
+    """Killing a sandbox background process must stop the whole command tree,
+    not only the wrapper shell whose PID spawn_via_env records."""
+
+    def test_kill_stops_command_children_and_writes_exit_file(self, registry, tmp_path):
+        import psutil
+
+        class BashEnv:
+            """Runs commands with a real local bash, like a remote backend would."""
+            def get_temp_dir(self):
+                return str(tmp_path)
+
+            def execute(self, command, timeout=10, **_kw):
+                out = tmp_path / "exec.out"
+                with open(out, "w") as fh:
+                    rc = subprocess.run(["bash", "-c", command], stdin=subprocess.DEVNULL, stdout=fh,
+                                        stderr=subprocess.STDOUT, timeout=timeout).returncode
+                return {"output": out.read_text(), "returncode": rc}
+
+        def alive(pid):
+            try:
+                return psutil.Process(pid).status() != psutil.STATUS_ZOMBIE
+            except psutil.NoSuchProcess:
+                return False
+
+        marker = tmp_path / "child.pid"
+        env = BashEnv()
+        with patch("tools.process_registry.threading.Thread", return_value=MagicMock()), \
+                patch.object(registry, "_write_checkpoint"):
+            session = registry.spawn_via_env(env, f"sleep 300 & echo $! > {marker}; wait")
+        child = None
+        try:
+            deadline = time.monotonic() + 5
+            while not (marker.exists() and marker.read_text().strip()) and time.monotonic() < deadline:
+                time.sleep(0.05)
+            child = int(marker.read_text())
+            assert alive(child)
+
+            assert registry.kill_process(session.id)["status"] == "killed"
+
+            deadline = time.monotonic() + 5
+            while alive(child) and time.monotonic() < deadline:
+                time.sleep(0.05)
+            assert not alive(child), "the command's child outlived the kill"
+            exit_file = tmp_path / f"hermes_bg_{session.id}.exit"
+            deadline = time.monotonic() + 5
+            while not exit_file.exists() and time.monotonic() < deadline:
+                time.sleep(0.05)
+            assert exit_file.read_text().strip() == "143"
+        finally:
+            if child and alive(child):
+                env.execute(f"kill -9 {child}")
+            registry._running.pop(session.id, None)
+            registry._finished.pop(session.id, None)
+
+
 # =========================================================================
 # Tool handler
 # =========================================================================

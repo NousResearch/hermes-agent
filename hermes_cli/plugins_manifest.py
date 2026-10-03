@@ -35,7 +35,7 @@ _KNOWN_MANIFEST_FIELDS: Set[str] = {
     "pip_dependencies", "provides_browser_providers", "provides_web_providers",
     "manifest_version", "api_version", "requires_plugins", "python_dependencies", "config_schema",
     "license", "homepage", "tags", "capabilities", "emits", "listens", "hermes", "depends",
-    "requires_hermes", "python_runtime", "provides_locales",
+    "requires_hermes", "python_runtime", "provides_locales", "cli_commands",
 }
 
 # Highest manifest schema version this Hermes understands.
@@ -107,6 +107,24 @@ def _manifest_list(data: Mapping, key: str, field_name: str, what: str, coerce: 
     return out
 
 
+_CLI_COMMAND_NAME_RE = re.compile(r"[a-z0-9][a-z0-9_-]{0,63}")
+
+
+def _cli_command_entry(item: object) -> Optional[Dict[str, str]]:
+    """``{name, help, description, parent}`` from a cli_commands item; None when a name is invalid.
+
+    ``parent`` names a built-in command the verb attaches under (``hermes <parent> <name>``); empty
+    for a top-level ``hermes <name>``.
+    """
+    if not isinstance(item, Mapping):
+        return None
+    name, parent = item.get("name"), item.get("parent") or ""
+    if not all(isinstance(v, str) and _CLI_COMMAND_NAME_RE.fullmatch(v) for v in (name, parent or "x")):
+        return None
+    return {"name": name, "help": str(item.get("help") or ""),
+            "description": str(item.get("description") or ""), "parent": parent}
+
+
 def _dependency_entry(item: object) -> Optional[Dict[str, Any]]:
     """``{id, version_range}`` from a requires_plugins item (str shorthand ok); None when malformed."""
     if isinstance(item, str):
@@ -170,6 +188,11 @@ def _parse_manifest_v2_fields(data: Mapping, key: str) -> Dict[str, Any]:
             )
         schema[str(skey)] = dict(spec)
     tags = [str(t) for t in (_manifest_field_of_type(data, key, "tags", list, "a list") or [])]
+    cli_commands = _manifest_list(
+        data, key, "cli_commands", "a list", _cli_command_entry,
+        "Plugin %s: cli_commands entry %r needs name (and optional parent) matching "
+        "[a-z0-9][a-z0-9_-]{0,63}; skipping",
+    )
     # Forward compat: unknown fields warn (never fail); v1 manifests only at debug.
     unknown = sorted(set(data.keys()) - _KNOWN_MANIFEST_FIELDS)
     if unknown:
@@ -180,7 +203,7 @@ def _parse_manifest_v2_fields(data: Mapping, key: str) -> Dict[str, Any]:
     return {
         "manifest_version": mv, "api_version": api, "requires_plugins": deps, "python_dependencies": pydeps,
         "config_schema": schema, "license": str(data.get("license") or ""),
-        "homepage": str(data.get("homepage") or ""), "tags": tags,
+        "homepage": str(data.get("homepage") or ""), "tags": tags, "cli_commands": cli_commands,
     }
 
 
@@ -392,6 +415,9 @@ class PluginManifest:
     # ``{endonym, rtl}`` from the mapping form of a ``provides_locales`` entry.
     provides_locales: List[str] = field(default_factory=list)
     locale_metadata: Dict[str, Dict[str, Any]] = field(default_factory=dict)
+    # CLI commands the manifest declares, [{"name", "help", "description", "parent"}]: attached
+    # without importing the plugin (see ``plugins.discover_declared_cli_commands``).
+    cli_commands: List[Dict[str, str]] = field(default_factory=list)
 
 
 def parse_provides_locales(raw: Any, key: str = "") -> Tuple[List[str], Dict[str, Dict[str, Any]]]:

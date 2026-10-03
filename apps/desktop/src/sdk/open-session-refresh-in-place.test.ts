@@ -88,7 +88,7 @@ vi.mock('@/store/session-states', async () => {
   }
 })
 vi.mock('@/store/profile', async () => {
-  const { atom } = await import('nanostores')
+  const { atom, computed } = await import('nanostores')
 
   const profiles = atom([
     {
@@ -102,17 +102,27 @@ vi.mock('@/store/profile', async () => {
     }
   ])
 
+  const ALL_PROFILES = '__all__'
+  const normalizeProfileKey = (value: null | string | undefined) => (value ?? '').trim() || 'default'
+  const activeGatewayProfile = atom('ops')
+  const showAllProfiles = atom(false)
+
   return {
-    $activeGatewayProfile: atom('ops'),
+    $activeGatewayProfile: activeGatewayProfile,
     $gatewaySwapTarget: atom(null),
     $hydrationSyncProfile: atom(null),
     $profiles: profiles,
-    $showAllProfiles: atom(false),
+    // Same derivation as the real store: the projects store keys its caches by it.
+    $profileScope: computed([showAllProfiles, activeGatewayProfile], (showAll, gateway) =>
+      showAll ? ALL_PROFILES : normalizeProfileKey(gateway)
+    ),
+    $showAllProfiles: showAllProfiles,
+    ALL_PROFILES,
     ensureGatewayAgent: vi.fn(),
     ensureGatewayProfile: vi.fn(),
     newSessionInAgent: vi.fn(),
     newSessionInProfile: vi.fn(),
-    normalizeProfileKey: (value: null | string | undefined) => (value ?? '').trim() || 'default',
+    normalizeProfileKey,
     refreshProfiles: vi.fn(async () => profiles.get()),
     selectProfile: vi.fn(),
     setActiveProfile: vi.fn(),

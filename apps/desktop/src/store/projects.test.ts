@@ -58,6 +58,7 @@ vi.mock('@/lib/desktop-fs', () => ({
 vi.mock('@/store/gateway', () => ({
   $gateway: atom(null),
   activeGateway: vi.fn(),
+  gatewayActivationEpoch: vi.fn(() => 0),
   ensureActiveGatewayOpen: vi.fn()
 }))
 
@@ -81,6 +82,7 @@ const selectDesktopPaths = vi.mocked(fs.selectDesktopPaths)
 
 const gw = await import('@/store/gateway')
 const activeGateway = vi.mocked(gw.activeGateway)
+const gatewayActivationEpoch = vi.mocked(gw.gatewayActivationEpoch)
 const gatewayAtom = gw.$gateway
 
 const git = await import('@/lib/desktop-git')
@@ -661,6 +663,98 @@ describe('project writes while viewing all profiles', () => {
       expect($projects.get()).toEqual([])
     }
   )
+})
+
+describe('project route generation isolation', () => {
+  const project = (name: string): ProjectInfo => ({
+    archived: false,
+    board_slug: null,
+    color: null,
+    created_at: 0,
+    description: null,
+    folders: [],
+    icon: null,
+    id: 'p_shared',
+    name,
+    primary_path: '/shared',
+    slug: 'shared'
+  })
+
+  const tree = (label: string): SidebarProjectTree => ({
+    id: 'p_shared',
+    label,
+    path: '/shared',
+    repos: [],
+    sessionCount: 0
+  })
+
+  let activationEpoch = 1
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    activationEpoch = 1
+    gatewayActivationEpoch.mockImplementation(() => activationEpoch)
+    $activeGatewayProfile.set('default')
+    setShowAllProfiles(false)
+    $activeProjectId.set(null)
+    $projects.set([project('Connection A')])
+    $projectTree.set([tree('Connection A')])
+  })
+
+  it('keeps same-profile connection A save, load, and delete completions out of connection B', async () => {
+    const saveResponse = deferred<never>()
+    const listResponse = deferred<unknown>()
+    const deleteResponse = deferred<unknown>()
+
+    const request = vi.fn((method: string) => {
+      if (method === 'projects.update') {
+        return saveResponse.promise
+      }
+
+      if (method === 'projects.list') {
+        return listResponse.promise
+      }
+
+      if (method === 'projects.delete') {
+        return deleteResponse.promise
+      }
+
+      return Promise.resolve({ active_id: null, projects: [], scoped_session_ids: [] })
+    })
+
+    const gateway = { connectionState: 'open', request }
+
+    activeGateway.mockReturnValue(gateway as never)
+    gatewayAtom.set(gateway as never)
+
+    const pendingSave = updateProject('p_shared', { name: 'Connection A saved' })
+    const rejectedSave = expect(pendingSave).rejects.toThrow('A save failed')
+    const pendingLoad = refreshProjects()
+    const pendingDelete = deleteProject('p_shared')
+
+    await vi.waitFor(() => {
+      expect(request).toHaveBeenCalledWith('projects.update', expect.anything())
+      expect(request).toHaveBeenCalledWith('projects.list', expect.anything())
+      expect(request).toHaveBeenCalledWith('projects.delete', expect.anything())
+    })
+
+    // A different connection can expose the same profile name and even reuse
+    // the same gateway facade. Its activation generation is the immutable
+    // boundary the old operations must not cross.
+    activationEpoch = 2
+    $activeProjectId.set('p_shared')
+    $projects.set([project('Connection B')])
+    $projectTree.set([tree('Connection B')])
+
+    listResponse.resolve({ active_id: null, projects: [project('Connection A loaded')] })
+    deleteResponse.resolve({ active_id: null, projects: [] })
+    saveResponse.reject(new Error('A save failed'))
+    await Promise.all([pendingLoad, pendingDelete, rejectedSave])
+
+    expect($activeProjectId.get()).toBe('p_shared')
+    expect($projects.get()).toEqual([project('Connection B')])
+    expect($projectTree.get()).toEqual([tree('Connection B')])
+  })
 })
 
 describe('projects RPC capability', () => {

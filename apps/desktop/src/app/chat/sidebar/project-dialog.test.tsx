@@ -1,6 +1,8 @@
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import type * as Nanostores from 'nanostores'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+
+import type { ProjectInfo } from '@/types/hermes'
 
 import { ProjectDialog } from './project-dialog'
 
@@ -39,7 +41,14 @@ vi.mock('@/i18n', () => ({
 // interactions under test.
 // vi.mock factories are hoisted above the rest of the file, so the atom must
 // be created inside vi.hoisted to exist by the time the factory runs.
-const { $newProjectDropPlacement, $projectDialog, createProject, enterProject, pickProjectFolder } = vi.hoisted(() => {
+const {
+  $newProjectDropPlacement,
+  $projectDialog,
+  createProject,
+  enterProject,
+  gatewayActivationEpoch,
+  pickProjectFolder
+} = vi.hoisted(() => {
   const { atom } = require('nanostores') as typeof Nanostores
 
   return {
@@ -50,9 +59,12 @@ const { $newProjectDropPlacement, $projectDialog, createProject, enterProject, p
     }),
     createProject: vi.fn(),
     enterProject: vi.fn(),
+    gatewayActivationEpoch: vi.fn(() => 1),
     pickProjectFolder: vi.fn()
   }
 })
+
+vi.mock('@/store/gateway', () => ({ gatewayActivationEpoch }))
 
 vi.mock('@/store/projects', () => ({
   $newProjectDropPlacement,
@@ -69,6 +81,7 @@ vi.mock('@/store/projects', () => ({
 
 beforeEach(() => {
   vi.clearAllMocks()
+  gatewayActivationEpoch.mockReturnValue(1)
   createProject.mockResolvedValue({ id: 'p_created' })
   pickProjectFolder.mockResolvedValue('/Users/test/my-folder')
 })
@@ -178,5 +191,32 @@ describe('ProjectDialog', () => {
     await waitFor(() => expect(createProject).toHaveBeenCalledOnce())
 
     expect(createProject.mock.calls[0]?.[0]).toMatchObject({ dropPlacement: undefined })
+  })
+
+  it('does not let connection A submit completion enter or close connection B dialog', async () => {
+    const { closeProjectDialog, createProject } = vi.mocked(await import('@/store/projects'))
+    let finishCreate!: (value: ProjectInfo) => void
+
+    const pendingCreate = new Promise<ProjectInfo>(resolve => {
+      finishCreate = resolve
+    })
+
+    vi.mocked(createProject).mockReturnValueOnce(pendingCreate)
+    $projectDialog.set({ mode: 'create' })
+    render(<ProjectDialog />)
+    await fillCreateForm()
+    await waitFor(() => expect(createProject).toHaveBeenCalledOnce())
+
+    gatewayActivationEpoch.mockReturnValue(2)
+    $projectDialog.set({ mode: 'rename', name: 'Connection B project', projectId: 'p_b' })
+
+    await act(async () => {
+      finishCreate({ id: 'p_a' } as ProjectInfo)
+      await pendingCreate
+      await Promise.resolve()
+    })
+
+    expect(enterProject).not.toHaveBeenCalled()
+    expect(closeProjectDialog).not.toHaveBeenCalled()
   })
 })

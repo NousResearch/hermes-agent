@@ -83,7 +83,7 @@ describe('keep-awake mode', () => {
     expect(readKeepAwakeMode({ mode: 'sometimes' })).toBe('off')
   })
 
-  it("holds the blocker only when the mode and the live turn picture agree", () => {
+  it('holds the blocker only when the mode and the live turn picture agree', () => {
     expect(keepAwakeWanted('off', true)).toBe(false)
     expect(keepAwakeWanted('off', false)).toBe(false)
     expect(keepAwakeWanted('always', true)).toBe(true)

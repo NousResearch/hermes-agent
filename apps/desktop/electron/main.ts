@@ -443,7 +443,13 @@ import {
 import { createPoolStopper } from './pool-stop'
 import { poolTouchKeys } from './pool-touch-scope'
 import { createPortalSession } from './portal-session'
-import { createKeepAwake, type KeepAwakeMode, keepAwakeWanted, parseKeepAwakeMode, readKeepAwakeMode } from './power-save'
+import {
+  createKeepAwake,
+  type KeepAwakeMode,
+  keepAwakeWanted,
+  parseKeepAwakeMode,
+  readKeepAwakeMode
+} from './power-save'
 import { readPreUpdateBackupEnabled } from './pre-update-backup-config'
 import { capturePreviewContents } from './preview-capture'
 import { onPreviewWatchOwnerDestroyed, sendPreviewFileChangedToOwner } from './preview-file-watch'

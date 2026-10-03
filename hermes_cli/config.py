@@ -3086,11 +3086,12 @@ def _show_compression_section(config: Dict[str, Any]) -> None:
 
 
 def _show_aux_overrides(config: Dict[str, Any]) -> None:
-    aux_tasks = {"Vision": config.get('auxiliary', {}).get('vision', {})}
+    aux_tasks = config.get('auxiliary', {})
     overrides = {
-        label: (t.get('provider', 'auto'), t.get('model', ''))
-        for label, t in aux_tasks.items()
-        if t.get('provider', 'auto') != 'auto' or t.get('model', '')}
+        task.replace('_', ' ').title(): (task_config.get('provider', 'auto'), task_config.get('model', ''))
+        for task, task_config in aux_tasks.items()
+        if isinstance(task_config, dict)
+        and (task_config.get('provider', 'auto') != 'auto' or task_config.get('model', ''))}
     if not overrides:
         return
     _section("Auxiliary Models (overrides)")

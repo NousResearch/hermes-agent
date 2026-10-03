@@ -1,5 +1,6 @@
 """Tests for Matrix platform adapter (mautrix-python backend)."""
 import asyncio
+import logging
 import sys
 import time
 import types
@@ -1168,6 +1169,79 @@ class TestMatrixSyncLoop:
         await adapter._dispatch_sync({"next_batch": "s1"})
 
         assert called is True
+
+    @staticmethod
+    def _cryptoless_client():
+        """Client with no decryptor attached (E2EE off, or the optional mode degraded)."""
+        fake_client = MagicMock()
+        fake_client.crypto = None
+        fake_client.sync_store = MagicMock()
+        fake_client.sync_store.put_next_batch = AsyncMock()
+        fake_client.handle_sync = MagicMock(return_value=[])
+        return fake_client
+
+    @pytest.mark.asyncio
+    async def test_absorb_sync_warns_once_per_room_for_encrypted_events_without_crypto(
+        self, caplog
+    ):
+        """Encrypted events with no decryptor must fail loud, once per room (#131778)."""
+        adapter = _make_adapter()
+        adapter._closing = False
+        fake_client = self._cryptoless_client()
+        adapter._client = fake_client
+
+        sync_data = {
+            "rooms": {"join": {"!enc:example.org": {
+                "timeline": {"events": [{"type": "m.room.encrypted", "event_id": "$e1"}]}}}},
+            "next_batch": "s1",
+        }
+        with caplog.at_level(logging.WARNING, logger="plugins.platforms.matrix.adapter"):
+            await adapter._absorb_sync(fake_client, sync_data)
+            await adapter._absorb_sync(fake_client, sync_data)  # rate-limited: one warning per room
+
+        warnings = [r for r in caplog.records
+                    if "!enc:example.org" in r.getMessage() and "encrypted" in r.getMessage()]
+        assert len(warnings) == 1
+
+    @pytest.mark.asyncio
+    async def test_absorb_sync_no_encrypted_warning_when_crypto_attached(self, caplog):
+        """With a decryptor attached, mautrix's own machinery reports failures instead."""
+        adapter = _make_adapter()
+        adapter._closing = False
+        fake_client = self._cryptoless_client()
+        # OlmMachine attached: mautrix's DecryptionDispatcher handles encrypted events.
+        fake_client.crypto = MagicMock()
+        adapter._client = fake_client
+
+        sync_data = {
+            "rooms": {"join": {"!enc:example.org": {
+                "timeline": {"events": [{"type": "m.room.encrypted", "event_id": "$e1"}]}}}},
+            "next_batch": "s1",
+        }
+        with caplog.at_level(logging.WARNING, logger="plugins.platforms.matrix.adapter"):
+            await adapter._absorb_sync(fake_client, sync_data)
+
+        assert not [r for r in caplog.records if "encrypted" in r.getMessage()]
+
+    @pytest.mark.asyncio
+    async def test_absorb_sync_no_warning_for_plaintext_events_without_crypto(
+        self, caplog
+    ):
+        """Plain rooms must not trip the encrypted-drop warning."""
+        adapter = _make_adapter()
+        adapter._closing = False
+        fake_client = self._cryptoless_client()
+        adapter._client = fake_client
+
+        sync_data = {
+            "rooms": {"join": {"!plain:example.org": {
+                "timeline": {"events": [{"type": "m.room.message", "event_id": "$m1"}]}}}},
+            "next_batch": "s1",
+        }
+        with caplog.at_level(logging.WARNING, logger="plugins.platforms.matrix.adapter"):
+            await adapter._absorb_sync(fake_client, sync_data)
+
+        assert not [r for r in caplog.records if "encrypted" in r.getMessage()]
 
     @pytest.mark.asyncio
     async def test_sync_loop_dispatches_registered_room_message_handler(self):

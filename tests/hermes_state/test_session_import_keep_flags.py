@@ -12,6 +12,8 @@ from __future__ import annotations
 import json
 import time
 
+import pytest
+
 from hermes_state import SessionDB
 
 SESSION_ID = "20260301_120000_abc123"
@@ -35,8 +37,10 @@ def test_restored_sessions_keep_the_pin_and_the_sweeps_archive_provenance(tmp_pa
         source.set_session_pinned(SESSION_ID, True)
         assert source.archive_stale_sessions(7) == 1
         payload = json.loads(json.dumps(source.export_all(include_inactive=True)))
+        # An export that predates the durable flags still imports as an ordinary, visible session.
+        payload.append({"id": "legacy", "source": "cli", "messages": [{"role": "user", "content": "old"}]})
 
-        assert target.import_sessions(payload)["imported"] == 2
+        assert target.import_sessions(payload)["imported"] == 3
         target.maybe_auto_prune_and_vacuum(retention_days=90, vacuum=False)
 
         restored = target.get_session(SESSION_ID)
@@ -45,6 +49,8 @@ def test_restored_sessions_keep_the_pin_and_the_sweeps_archive_provenance(tmp_pa
         assert target.get_session(swept)["archived"]
         target.reopen_session(swept)
         assert not target.get_session(swept)["archived"], "a restored sweep archive became a manual one"
+        legacy = target.get_session("legacy")
+        assert all(legacy[flag] == 0 for flag in ("archived", "auto_archived", "pinned", "hidden"))
     finally:
         source.close()
         target.close()
@@ -66,6 +72,14 @@ def test_adopted_bot_chat_stays_the_hidden_canonical_chat(tmp_path):
         assert profile.get_session(SESSION_ID)["hidden"]
         assert SESSION_ID not in {s["id"] for s in profile.list_sessions_rich(limit=50)}
         assert profile.archive_stale_sessions(idle_days=0) == 0
+        with pytest.raises(ValueError, match="canonical Bot Chat"):
+            profile.set_session_title(SESSION_ID, "renamed")
+        assert donor.get_messages(SESSION_ID)[0]["content"] == "hi bot"
+
+        # Retrying adoption must not restore the donor's retirement archive over the local copy.
+        again = profile.adopt_session_lineage_from(donor, SESSION_ID)
+        assert again["adopted"] and again["imported"] == 0 and SESSION_ID in again["skipped_ids"], again
+        assert not profile.get_session(SESSION_ID)["archived"]
     finally:
         donor.close()
         profile.close()

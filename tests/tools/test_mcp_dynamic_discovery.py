@@ -39,9 +39,9 @@ class TestRegisterServerTools:
         """An MCP server named after a built-in toolset must not be shadowed.
 
         Regression: an MCP server registered under a built-in toolset's name
-        (originally `browser`; `browser` here) had its tools silently
-        dropped because get_toolset() returned the static definition without
-        consulting the alias registered by _register_server_tools().
+        (`browser` here) had its tools silently dropped because get_toolset()
+        returned the static definition without consulting the alias
+        registered by _register_server_tools().
         """
         from toolsets import TOOLSETS, get_toolset, resolve_toolset
 

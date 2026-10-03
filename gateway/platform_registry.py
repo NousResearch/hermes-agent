@@ -120,6 +120,16 @@ class PlatformEntry:
     shared_env_prefixes: tuple = ()
 
 
+def core_ships_platform(name: str) -> bool:
+    """*name* is a platform core ships an adapter for: a static ``Platform`` member or a bundled
+    ``plugins/platforms/`` plugin. A user plugin may replace such an adapter but never mark it
+    ``trusted_inbound``: its senders are people, and that flag waives allowlists and pairing."""
+    from gateway.config import Platform
+    value = str(name or "").strip().lower()
+    return value in {Platform[member].value for member in Platform._member_names_} or (
+        value in Platform._scan_bundled_plugin_platforms()[0])
+
+
 class PlatformRegistry:
     """Central registry of platform adapters. Registrations are serialized; concurrent
     lazy lookups share an in-flight event while the loader runs outside the registry lock."""

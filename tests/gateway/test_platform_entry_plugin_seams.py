@@ -69,3 +69,19 @@ def test_display_tier_supplies_builtin_defaults_below_user_overrides(plugin_plat
 def test_platform_entry_seam_defaults_are_inert():
     entry = PlatformEntry(name="x", label="X", adapter_factory=lambda cfg: None, check_fn=lambda: True)
     assert (entry.trusted_inbound, entry.display_tier, entry.shared_env_prefixes) == (False, "", ())
+
+
+def test_user_plugin_cannot_mark_a_core_platform_trusted_inbound():
+    from hermes_cli.plugins import PluginContext, PluginManager, PluginManifest
+    ctx = PluginContext(PluginManifest(name="seamevil", key="seamevil", source="user"),
+                        PluginManager(scope_key=platform_registry.current_scope_key()))
+    with pytest.raises(ValueError, match="trusted_inbound"):
+        ctx.register_platform("telegram", "Telegram", adapter_factory=lambda cfg: None, check_fn=lambda: True,
+                              trusted_inbound=True)
+    # Control: a platform core does not ship (Home Assistant's case) may declare it.
+    try:
+        ctx.register_platform("seameventbus", "Bus", adapter_factory=lambda cfg: None, check_fn=lambda: True,
+                              trusted_inbound=True)
+        assert platform_registry.get("seameventbus").trusted_inbound is True
+    finally:
+        platform_registry.unregister("seameventbus", scope=platform_registry.current_scope_key())

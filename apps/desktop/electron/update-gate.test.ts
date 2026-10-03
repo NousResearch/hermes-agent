@@ -27,20 +27,20 @@ function deps(marker: boolean, inFlight: boolean, handoffActive = false) {
 // updateGateReason
 // ---------------------------------------------------------------------------
 
-test('gate open when neither marker nor flag is set', () => {
-  assert.equal(updateGateReason(deps(false, false)), null)
+test('gate open when neither marker nor flag is set', async () => {
+  assert.equal(await updateGateReason(deps(false, false)), null)
 })
 
-test('marker alone closes the gate', () => {
-  assert.equal(updateGateReason(deps(true, false)), 'marker')
+test('marker alone closes the gate', async () => {
+  assert.equal(await updateGateReason(deps(true, false)), 'marker')
 })
 
-test('updateInFlight alone closes the gate (#73822 — the pre-marker window)', () => {
-  assert.equal(updateGateReason(deps(false, true)), 'update-in-flight')
+test('updateInFlight alone closes the gate (#73822 — the pre-marker window)', async () => {
+  assert.equal(await updateGateReason(deps(false, true)), 'update-in-flight')
 })
 
-test('marker wins as the reported reason when both are set', () => {
-  assert.equal(updateGateReason(deps(true, true)), 'marker')
+test('marker wins as the reported reason when both are set', async () => {
+  assert.equal(await updateGateReason(deps(true, true)), 'marker')
 })
 
 test('handoff remains closed after the detached wrapper exits', async () => {
@@ -157,10 +157,10 @@ test('parks across the flag→marker handoff without a gap', async () => {
   assert.deepEqual(reasons, ['update-in-flight', 'update-in-flight', 'marker', 'marker', 'marker'])
 })
 
-test('returns timeout when the gate never opens', async () => {
+test('an in-process signal times out when it never clears', async () => {
   let clock = 0
 
-  const outcome = await waitForUpdateClearance(deps(true, false), {
+  const outcome = await waitForUpdateClearance(deps(false, true), {
     now: () => clock,
     pollMs: 10,
     sleep: async ms => {
@@ -172,98 +172,41 @@ test('returns timeout when the gate never opens', async () => {
   assert.equal(outcome, 'timeout')
 })
 
-// ---------------------------------------------------------------------------
-// failed-receipt signal (#122206)
-// ---------------------------------------------------------------------------
-
-test('a failed receipt outranks a live marker as the reported reason', () => {
-  assert.equal(updateGateReason({ ...deps(true, false), hasFailedReceipt: () => true }), 'failed-receipt')
-})
-
-test('a failed receipt without a live marker keeps the gate open', () => {
-  // The receipt only RECLASSIFIES a closed gate; it must not close an open
-  // one — a failed update from last week must not defer any boot.
-  assert.equal(updateGateReason({ ...deps(false, false), hasFailedReceipt: () => true }), null)
-})
-
-test('a running or partial receipt keeps the marker reason', () => {
-  // Only a TERMINAL failure is actionable: "running" must keep parking.
-  assert.equal(updateGateReason({ ...deps(true, false), hasFailedReceipt: () => false }), 'marker')
-})
-
-test('abandonOn returns abandoned instead of parking on a failed receipt', async () => {
-  let slept = 0
-
-  const outcome = await waitForUpdateClearance(
-    { ...deps(true, false), hasFailedReceipt: () => true },
-    {
-      abandonOn: reason => reason === 'failed-receipt',
-      pollMs: 10,
-      sleep: async () => {
-        slept += 1
-      },
-      timeoutMs: 10_000
-    }
-  )
-
-  assert.equal(outcome, 'abandoned')
-  assert.equal(slept, 0)
-})
-
-test('a mid-wait receipt finalization abandons the park', async () => {
-  // The gate closed on a live marker (update running); the update then fails
-  // and finalizes its receipt while we are parked. The wait must abandon on
-  // the next poll instead of counting down to the 20-minute deadline.
-  let failedReceipt = false
-  let polls = 0
-
-  const outcome = await waitForUpdateClearance(
-    { ...deps(true, false), hasFailedReceipt: () => failedReceipt },
-    {
-      abandonOn: reason => reason === 'failed-receipt',
-      onWaitTick: () => {
-        polls += 1
-
-        if (polls === 3) {
-          failedReceipt = true
-        }
-      },
-      pollMs: 1,
-      sleep: async () => {},
-      timeoutMs: 10_000
-    }
-  )
-
-  assert.equal(outcome, 'abandoned')
-  assert.equal(polls, 3)
-})
-
-test('abandonOn declining keeps the historical parking', async () => {
-  let ticks = 0
+// A live marker owner is waited out, never aged out (C1 rule 3, desktop V3):
+// the old 20-minute deadline booted a backend into a half-replaced runtime.
+test('a live marker keeps parking past the deadline until its owner finishes', async () => {
+  let clock = 0
   let marker = true
+  let ticks = 0
 
   const outcome = await waitForUpdateClearance(
+    { hasLiveMarker: async () => marker, isUpdateInFlight: () => false, isHandoffActive: () => false },
     {
-      hasLiveMarker: () => marker,
-      isUpdateInFlight: () => false,
-      isHandoffActive: () => false,
-      hasFailedReceipt: () => true
-    },
-    {
-      abandonOn: () => false,
+      now: () => clock,
       onWaitTick: () => {
         ticks += 1
 
-        if (ticks === 2) {
+        if (ticks === 50) {
           marker = false
         }
       },
-      pollMs: 1,
-      sleep: async () => {},
-      timeoutMs: 10_000
+      pollMs: 10,
+      sleep: async ms => {
+        clock += ms
+      },
+      timeoutMs: 50
     }
   )
 
   assert.equal(outcome, 'finished')
-  assert.equal(ticks, 2)
+  assert.equal(ticks, 50, 'parked ten times past the deadline')
+})
+
+// A failed receipt never outranks a live marker (desktop V2): latest.json is
+// written only at finalize, so a retry after a failed update still reads
+// "failed" while the new update runs.
+test('a failed receipt does not open the gate while a live marker exists', async () => {
+  const withFailedReceipt = { ...deps(true, false), hasFailedReceipt: () => true }
+
+  assert.equal(await updateGateReason(withFailedReceipt), 'marker')
 })

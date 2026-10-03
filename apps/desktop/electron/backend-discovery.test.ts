@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { type ChildProcess, spawn } from 'node:child_process'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
@@ -6,6 +7,7 @@ import path from 'node:path'
 import { test } from 'vitest'
 
 import { spawnOrAttach } from './backend-discovery'
+import { resolveServedDashboardToken } from './dashboard-token'
 import { attachOrReserveSpawn, attachToHostBackend } from './host-backend-attach'
 import { claimHostSpawnGate } from './host-spawn-gate'
 import { runPrimaryBackendStartup } from './primary-backend-startup'
@@ -446,4 +448,109 @@ test('a live pid still attaches (liveness gate must not break the hot path)', as
   } as Parameters<typeof attachToHostBackend>[1])
 
   assert.equal(attached?.pid, 4711)
+})
+
+// A real `hermes serve` stand-in: serves its session token at GET / and its
+// boot commit on the public GET /api/health (omitted when `commit` is null,
+// i.e. a backend predating the field).
+const FAKE_BACKEND = `
+const http = require('node:http')
+const commit = process.argv[1] === '-' ? undefined : process.argv[1]
+http.createServer((req, res) => {
+  if (req.url === '/api/health') {
+    res.setHeader('content-type', 'application/json')
+    return res.end(JSON.stringify({ ok: true, version: '0.21.5', commit }))
+  }
+  res.end('<script>window.__HERMES_SESSION_TOKEN__ = "tok-' + process.pid + '"</script>')
+}).listen(0, '127.0.0.1', function () { process.stdout.write(this.address().port + '\\n') })
+`
+
+async function startFakeBackend(commit: null | string): Promise<{ child: ChildProcess; pid: number; port: number }> {
+  const child = spawn(process.execPath, ['-e', FAKE_BACKEND, commit ?? '-'], { stdio: ['ignore', 'pipe', 'inherit'] })
+
+  const port = await new Promise<number>((resolve, reject) => {
+    child.once('error', reject)
+    child.stdout!.once('data', chunk => resolve(Number(String(chunk).trim())))
+  })
+
+  return { child, pid: child.pid!, port }
+}
+
+async function attachAmongRealBackends(
+  backends: { commit: null | string; registeredAt: number }[],
+  expectedCommit: null | string
+) {
+  const started = await Promise.all(backends.map(backend => startFakeBackend(backend.commit)))
+  const logs: string[] = []
+
+  try {
+    const ledger = JSON.stringify(
+      started.map(({ pid, port }, index) => ({
+        host: '127.0.0.1',
+        pid,
+        port,
+        purpose: 'serve',
+        registered_at: backends[index].registeredAt
+      }))
+    )
+
+    const attached = await attachToHostBackend(
+      { isolated: false, ledgerPath: '/ledger.json' },
+      {
+        expectedCodeIdentity: async () => expectedCommit,
+        log: message => logs.push(message),
+        probeWebSocket: async () => ({ ok: true }),
+        readLedger: () => ledger,
+        resolveServedToken: baseUrl => resolveServedDashboardToken(baseUrl, ''),
+        waitForReady: async () => undefined
+      }
+    )
+
+    return { attached, logs, started }
+  } finally {
+    started.forEach(({ child }) => child.kill())
+  }
+}
+
+const OLD_COMMIT = 'a'.repeat(40)
+const NEW_COMMIT = 'b'.repeat(40)
+
+/**
+ * V15: a CLI/launchd `hermes serve` that survived an update keeps running the
+ * OLD code and answers 503 "Restart required"; re-attaching it on every
+ * Restart wedges the app. Attach skips it — even as the newest record — and
+ * takes the backend that booted from this Desktop's checkout.
+ */
+test('attach skips a running backend on other code and takes the one matching this checkout', async () => {
+  const { attached, logs, started } = await attachAmongRealBackends(
+    [
+      { commit: OLD_COMMIT, registeredAt: 2_000 },
+      { commit: NEW_COMMIT, registeredAt: 1_000 }
+    ],
+    NEW_COMMIT
+  )
+
+  assert.equal(attached?.pid, started[1].pid)
+  assert.equal(attached?.token, `tok-${started[1].pid}`)
+  assert.ok(
+    logs.some(line => line.includes(`runs code ${OLD_COMMIT}, this Desktop expects ${NEW_COMMIT}; not attaching`)),
+    logs.join('\n')
+  )
+})
+
+test('no backend on this checkout means spawn; unknown own identity keeps token-only attach', async () => {
+  const mismatched = [
+    { commit: OLD_COMMIT, registeredAt: 2_000 },
+    // Predates the `commit` field: older code by construction.
+    { commit: null, registeredAt: 1_000 }
+  ]
+
+  const refused = await attachAmongRealBackends(mismatched, NEW_COMMIT)
+
+  assert.equal(refused.attached, null)
+  assert.ok(refused.logs.some(line => line.includes('runs code of unknown version')), refused.logs.join('\n'))
+
+  const unknownOwn = await attachAmongRealBackends(mismatched, null)
+
+  assert.equal(unknownOwn.attached?.pid, unknownOwn.started[0].pid)
 })

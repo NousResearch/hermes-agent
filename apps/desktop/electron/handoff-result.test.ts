@@ -56,12 +56,29 @@ test('discards stale results but still consumes the file', () => {
   assert.equal(fs.existsSync(handoffResultPath(home)), false)
 })
 
-test('malformed JSON is consumed silently', () => {
+// V19: a torn/malformed result is never dropped silently — it is logged and
+// kept as `.corrupt` (it used to be unlinked before parsing).
+test('malformed JSON is logged and kept as .corrupt, not reported', () => {
   const home = tempHome()
+  const logs: string[] = []
   write(home, '{nope')
 
-  assert.equal(readAndConsumeHandoffResult(home), null)
+  assert.equal(readAndConsumeHandoffResult(home, { log: line => logs.push(line) }), null)
   assert.equal(fs.existsSync(handoffResultPath(home)), false)
+  assert.equal(fs.readFileSync(`${handoffResultPath(home)}.corrupt`, 'utf8'), '{nope')
+  assert.match(logs.join('\n'), /not valid JSON/)
+})
+
+// C2: the result carries marker line 2 as started_at; a result from another
+// run is not reported as the one this boot waited on.
+test('a result whose started_at differs from the parked run is discarded; a match is reported with warnings', () => {
+  const home = tempHome()
+  const finished_at = Math.floor(Date.now() / 1000)
+  write(home, { ok: false, exit_code: 1, message: 'old run', branch: 'main', started_at: 100, finished_at })
+  assert.equal(readAndConsumeHandoffResult(home, { expectedStartedAt: 200 }), null)
+
+  write(home, { ok: true, exit_code: 0, message: '', branch: 'main', started_at: 200, finished_at, warnings: ['gateway restart'] })
+  assert.deepEqual(readAndConsumeHandoffResult(home, { expectedStartedAt: 200 })?.warnings, ['gateway restart'])
 })
 
 test('absent file returns null', () => {

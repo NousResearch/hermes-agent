@@ -1,3 +1,4 @@
+import type { spawn } from 'node:child_process'
 import { EventEmitter } from 'node:events'
 import * as fs from 'node:fs'
 import * as os from 'node:os'
@@ -5,6 +6,7 @@ import * as path from 'node:path'
 
 import { afterEach, expect, it, vi } from 'vitest'
 
+import { markerPath } from '../update-marker'
 import * as updaterProcess from '../updater-process'
 
 import { type CheckoutStrategyDeps, createCheckoutStrategy } from './checkout'
@@ -38,6 +40,7 @@ function handoffFixture(remote: boolean): { root: string; deps: CheckoutStrategy
     isMac: process.platform === 'darwin',
     defaultUpdateBranch: 'main',
     updateHandoffDwellMs: 0,
+    handoffClaimTimeoutMs: 2000,
     resolveUpdateRoot: (): string => root,
     resolveUpdaterBinary: (): null => null,
     remoteGatewayActive: (): boolean => remote,
@@ -53,6 +56,11 @@ function handoffFixture(remote: boolean): { root: string; deps: CheckoutStrategy
   }
 
   return { root, deps }
+}
+
+/** The hand-off script's first act (C2): it takes the Desktop's bridge marker. */
+function scriptTakesMarker(home: string): void {
+  fs.writeFileSync(markerPath(home), `${process.ppid}\n${Math.floor(Date.now() / 1000)}\n`)
 }
 
 // One gateway per host (#117529): a Desktop served by a remote gateway must
@@ -72,6 +80,7 @@ it.each([true, false])(
       ): updaterProcess.UpdaterChild => {
         spawned.push(args)
         spawnOptions.push(options)
+        scriptTakesMarker(deps.hermesHome)
 
         return { unref: (): void => {} }
       }
@@ -111,6 +120,7 @@ it('the Windows hand-off wrapper is spawned non-detached so the script shares it
   vi.spyOn(updaterProcess, 'spawnUpdaterProcess').mockImplementation(
     (command: string, args: string[], options: { detached?: boolean }): updaterProcess.UpdaterChild => {
       spawned.push({ command, args, detached: options.detached })
+      scriptTakesMarker(deps.hermesHome)
 
       return { unref: (): void => {} }
     }
@@ -154,6 +164,92 @@ it('a failed hand-off spawn keeps the app alive and reports the failure in plain
     expect(deps.quit).not.toHaveBeenCalled()
     expect(deps.markQuittingForHandoff).not.toHaveBeenCalled()
   } finally {
+    fs.rmSync(root, { recursive: true, force: true })
+  }
+})
+
+// V7: the wrapper's exit 0 is not a hand-off. Without the script taking the
+// bridge marker the Desktop stays up, restarts its backend, reports the
+// failure, and compare-deletes its own bridge marker.
+it('a hand-off whose script never takes the marker keeps the app alive and clears the bridge', async (): Promise<void> => {
+  const { root, deps } = handoffFixture(false)
+  vi.spyOn(updaterProcess, 'spawnUpdaterProcess').mockImplementation(
+    (): updaterProcess.UpdaterChild => ({ unref: (): void => {} })
+  )
+
+  try {
+    const result = await createCheckoutStrategy({ ...deps, handoffClaimTimeoutMs: 300 }).apply()
+
+    expect(result).toMatchObject({ ok: false, error: 'updater-spawn-failed' })
+    expect(result.message).toMatch(/previous version/)
+    expect(deps.quit).not.toHaveBeenCalled()
+    expect(deps.markQuittingForHandoff).not.toHaveBeenCalled()
+    // Windows stopped its backends before spawning; POSIX never did.
+    expect(vi.mocked(deps.startHermes).mock.calls.length > 0).toBe(IS_WINDOWS)
+    expect(fs.existsSync(markerPath(deps.hermesHome))).toBe(false)
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true })
+  }
+})
+
+function pidAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0)
+
+    return true
+  } catch {
+    return false
+  }
+}
+
+// MINOR-3: after the 20 s claim wait gives up, the UI says "the updater did
+// not start". A script that starts late must not then run an update anyway:
+// the Desktop withdraws its bridge AND kills the launcher tree it spawned.
+it.skipIf(IS_WINDOWS)('a timed-out hand-off kills the real script tree it spawned', async (): Promise<void> => {
+  const { root, deps } = handoffFixture(false)
+  const grandchildPidFile: string = path.join(root, 'late-script.pid')
+  let launcherPid: number | undefined
+  const realSpawn: typeof updaterProcess.spawnUpdaterProcess = updaterProcess.spawnUpdaterProcess
+
+  vi.spyOn(updaterProcess, 'spawnUpdaterProcess').mockImplementation(
+    (_command: string, _args: string[], options: Parameters<typeof updaterProcess.spawnUpdaterProcess>[2]) => {
+      // A real launcher (detached, own process group) whose "script" is slow
+      // to start: it would claim the marker 30 s later.
+      const child = realSpawn(
+        'bash',
+        ['-c', `sleep 30 & echo $! > ${JSON.stringify(grandchildPidFile)}; wait`],
+        options
+      ) as ReturnType<typeof spawn>
+
+      launcherPid = child.pid
+
+      return child
+    }
+  )
+
+  try {
+    const result = await createCheckoutStrategy({ ...deps, handoffClaimTimeoutMs: 600 }).apply()
+
+    expect(result).toMatchObject({ ok: false, error: 'updater-spawn-failed' })
+    expect(fs.existsSync(markerPath(deps.hermesHome))).toBe(false)
+    const latePid: number = Number(fs.readFileSync(grandchildPidFile, 'utf8').trim())
+    const deadline: number = Date.now() + 3000
+
+    while ((pidAlive(launcherPid!) || pidAlive(latePid)) && Date.now() < deadline) {
+      await new Promise(resolve => setTimeout(resolve, 50))
+    }
+
+    expect(pidAlive(latePid)).toBe(false)
+    expect(pidAlive(launcherPid!)).toBe(false)
+  } finally {
+    for (const pid of [launcherPid]) {
+      try {
+        process.kill(-pid!, 'SIGKILL')
+      } catch {
+        // gone
+      }
+    }
+
     fs.rmSync(root, { recursive: true, force: true })
   }
 })

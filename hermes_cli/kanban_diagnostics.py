@@ -695,10 +695,15 @@ def _rule_stranded_in_ready(task, events, runs, now, cfg) -> list[Diagnostic]:
     if not assignee.strip():
         return []
 
-    # Most recent event that put the task into ready; with none (old task /
-    # truncated events) fall back to created_at — over-flagging an ancient
-    # task beats missing a stranded one.
-    last_ready_ts = _latest_event_ts(events, {"created", "promoted", "reclaimed", "unblocked"})
+    # Most recent point the task entered ready: a ready-entry event, or the end
+    # of its latest run (crash/timeout/spawn failure re-queue it). With neither
+    # (old task / truncated events) fall back to created_at — over-flagging an
+    # ancient task beats missing a stranded one.
+    last_ready_ts = max(
+        _latest_event_ts(events, {"created", "promoted", "promoted_manual", "reclaimed", "unblocked"}),
+        *(int(_task_field(r, "ended_at", 0) or 0) for r in runs),
+        0,  # keeps max() valid when there are no runs
+    )
     if last_ready_ts == 0:
         last_ready_ts = int(_task_field(task, "created_at", default=0) or 0)
     if last_ready_ts == 0:

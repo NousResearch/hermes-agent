@@ -221,3 +221,44 @@ def test_severity_at_or_above_uses_threshold_semantics():
     assert kd.severity_at_or_above("error", "critical") is False
     assert kd.severity_at_or_above("mystery", "warning") is False
     assert kd.severity_at_or_above("warning", None) is True
+
+
+def test_stranded_in_ready_age_counts_from_manual_promotion(kanban_home):
+    """A long-blocked task that an operator just promoted back to ready has
+    been ready for seconds, not since it was created."""
+    conn = kbc.connect()
+    try:
+        tid = kb.create_task(conn, title="old", assignee="demo")
+        assert kb.block_task(conn, tid, reason="waiting on input")
+        with kb.write_txn(conn):
+            conn.execute("UPDATE tasks SET created_at = created_at - 7200 WHERE id = ?", (tid,))
+            conn.execute(
+                "UPDATE task_events SET created_at = created_at - 7200 WHERE task_id = ?", (tid,),
+            )
+        ok, why = kb.promote_task(conn, tid, actor="operator")
+        assert ok, why
+        row = conn.execute("SELECT * FROM tasks WHERE id = ?", (tid,)).fetchone()
+        events = conn.execute(
+            "SELECT * FROM task_events WHERE task_id = ? ORDER BY id", (tid,),
+        ).fetchall()
+        runs = conn.execute(
+            "SELECT * FROM task_runs WHERE task_id = ? ORDER BY id", (tid,),
+        ).fetchall()
+        diags = kd.compute_task_diagnostics(row, list(events), list(runs))
+        assert row["status"] == "ready"
+        assert [d for d in diags if d.kind == "stranded_in_ready"] == []
+    finally:
+        conn.close()
+
+
+def test_stranded_in_ready_age_counts_from_last_requeue():
+    """A crashed/timed-out run puts the task back in ready; its age is measured
+    from that run's end, not from the original promotion."""
+    now = 100_000
+    task = _task(status="ready", assignee="demo", claim_lock=None)
+    events = [_event("created", ts=now - 3 * 3600), _event("claimed", ts=now - 3 * 3600 + 5)]
+    runs = [{**_run(outcome="crashed"), "ended_at": now - 45 * 60}]
+    stranded = [d for d in kd.compute_task_diagnostics(task, events, runs, now=now)
+                if d.kind == "stranded_in_ready"]
+    assert len(stranded) == 1
+    assert stranded[0].data["age_seconds"] == 45 * 60

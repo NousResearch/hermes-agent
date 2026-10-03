@@ -908,20 +908,26 @@ def test_machine_lock_is_released_when_owner_process_exits(tmp_path):
 
 
 def test_resolve_capture_mode_auto_and_prefer_client(monkeypatch):
-    monkeypatch.setattr(ww, "_local_input_device_ready", lambda: False)
+    def resolve_with_probe(code, *, timeout=5.0):
+        monkeypatch.setattr(ww, "_LOCAL_INPUT_PROBE_CODE", code)
+        monkeypatch.setattr(ww, "_LOCAL_INPUT_PROBE_TIMEOUT_SECONDS", timeout)
+        monkeypatch.setattr(ww, "_local_input_probe_cache", (0.0, False))
+        return ww.resolve_capture_mode({"capture": "auto"}, prefer_client=True)
+
+    assert resolve_with_probe("import os; os._exit(7)") == "client"
+    assert resolve_with_probe("import time; time.sleep(5)", timeout=0.05) == "client"
+    assert resolve_with_probe("print('1')") == "local"
+
+    monkeypatch.setattr(
+        ww,
+        "_local_input_device_ready_isolated",
+        lambda: pytest.fail("explicit capture must not run the automatic probe"),
+    )
     # auto without prefer_client stays local (CLI/TUI/status semantics)
     assert ww.resolve_capture_mode({"capture": "auto"}) == "local"
-    assert ww.resolve_capture_mode({"capture": "auto"}, prefer_client=True) == "client"
     assert ww.resolve_capture_mode({"capture": "local"}, prefer_client=True) == "local"
     assert ww.resolve_capture_mode({"capture": "client"}) == "client"
     assert ww.resolve_capture_mode({"capture": "auto"}, force_local=True) == "local"
-    monkeypatch.setattr(ww, "_local_input_device_ready", lambda: True)
-    assert ww.resolve_capture_mode({"capture": "auto"}) == "local"
-    # A working backend mic wins under auto even for a preferring surface, so
-    # local desktops keep PortAudio + wake_word.input_device selection.
-    assert ww.resolve_capture_mode({"capture": "auto"}, prefer_client=True) == "local"
-    # Explicit client still forces streaming (backend mic exists but is wrong).
-    assert ww.resolve_capture_mode({"capture": "client"}, prefer_client=True) == "client"
 
 
 def test_requirements_client_capture_without_local_mic(monkeypatch):

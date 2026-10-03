@@ -566,12 +566,6 @@ def _(rid, params: dict) -> dict:
         owned_by_caller = owns_listener(_caller_transport())
         listening = owned_by_caller and is_listening()
         silent = listening and audio_is_silent()
-        input_device = get_input_device_status(cfg)
-        hint = reqs.get("hint", "")
-        if input_device.get("error") and not hint:
-            hint = f"Wake-word input device could not be resolved: {input_device['error']}"
-        if silent and not hint:
-            hint = silent_audio_hint(input_device)
         # Effective capture: prefer the *armed* detector over config/auto, else with capture:auto
         # a bare status probe reports "local" and the desktop never reattaches the PCM feeder.
         frame = detector_frame_info()
@@ -579,6 +573,12 @@ def _(rid, params: dict) -> dict:
             capture = "client" if frame.get("external_audio") else "local"
         else:
             capture = probe_capture or reqs.get("capture") or str(cfg.get("capture") or "auto")
+        input_device = get_input_device_status(cfg, probe_local=capture == "local")
+        hint = reqs.get("hint", "")
+        if input_device.get("error") and not hint:
+            hint = f"Wake-word input device could not be resolved: {input_device['error']}"
+        if silent and not hint:
+            hint = silent_audio_hint(input_device)
         # `enabled` is config truth (clients re-arm after a voice turn from it); `audio_silent` =
         # armed but deaf despite an open stream (see the platform-specific hint).
         return _ok(rid, {

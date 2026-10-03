@@ -1948,6 +1948,87 @@ def test_prompt_submit_typed_stop_passes_through_when_voice_off(monkeypatch):
 
 
 
+@pytest.mark.parametrize("method", ["wake.status", "wake.start"])
+@pytest.mark.parametrize(
+    "capture, isolated_ready, expected_capture, expect_local_probe",
+    [
+        ("client", None, "client", False),
+        ("auto", False, "client", False),
+        ("auto", True, "local", True),
+        ("local", None, "local", True),
+    ],
+)
+def test_client_capture_avoids_backend_audio_probe(
+    monkeypatch, method, capture, isolated_ready, expected_capture, expect_local_probe
+):
+    import pm
+    from tools import wake_word
+
+    calls = []
+
+    class _SoundDevice:
+        @staticmethod
+        def query_devices(selector=None, kind=None):
+            if selector is None and kind is None:
+                return [{"name": "test mic", "max_input_channels": 1}]
+            return {"name": "test mic", "max_input_channels": 1}
+
+    def import_audio():
+        calls.append("audio")
+        return _SoundDevice(), object()
+
+    def isolated_probe():
+        if isolated_ready is None:
+            pytest.fail("explicit capture must not run the auto-capture probe")
+        return isolated_ready
+
+    monkeypatch.setattr(pm, "available", lambda _feature: True)
+    monkeypatch.setattr(wake_word, "_stt_ready", lambda: True)
+    monkeypatch.setattr(wake_word, "_tts_ready", lambda: True)
+    monkeypatch.setattr(wake_word, "_import_audio", import_audio)
+    monkeypatch.setattr(
+        wake_word, "_local_input_device_ready_isolated", isolated_probe
+    )
+    monkeypatch.setattr(wake_word, "_current_detector", lambda: None)
+    monkeypatch.setattr(
+        wake_word,
+        "load_wake_word_config",
+        lambda: {
+            "capture": capture,
+            "enabled": False,
+            "phrase": "hey hermes",
+            "provider": "openwakeword",
+            "surface": "auto",
+        },
+    )
+
+    transport = types.SimpleNamespace(_closed=False)
+    server._wake_owner_transport = None
+    server._wake_owner_surface = ""
+    try:
+        response = _dispatch_sync(
+            {
+                "id": f"{method}-{capture}",
+                "method": method,
+                "params": {"client_capture": True, "surface": "gui"},
+            },
+            transport=transport,
+        )
+    finally:
+        server._wake_owner_transport = None
+        server._wake_owner_surface = ""
+
+    assert "error" not in response
+    assert bool(calls) is expect_local_probe
+    if method == "wake.status":
+        assert response["result"]["capture"] == expected_capture
+        if expected_capture == "client":
+            assert response["result"]["input_device"] == {"selector": None}
+            assert response["result"]["local_input_available"] is False
+    else:
+        assert response["result"] == {"started": False, "reason": "disabled"}
+
+
 def test_wake_owner_is_sticky_and_routes_detection_to_first_transport(monkeypatch):
     from tools import wake_word
 

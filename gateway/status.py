@@ -508,16 +508,24 @@ def _read_process_cmdline(pid: int) -> Optional[str]:
     the process table in-process (a ``sysctl`` on macOS) where ``ps`` costs a fork+exec — measured
     0.02ms against 4.2ms on macOS for the same string. It cannot always answer: on macOS it raises
     ``AccessDenied`` for a process owned by another user, which ``ps`` still reports, so ``ps``
-    stays as the fallback rather than being replaced."""
+    stays as the fallback rather than being replaced.
+
+    NUL-separated argv must remain token-preserving when the returned string is parsed again by
+    the gateway identity matchers. ``list2cmdline`` quotes spaced argv elements, including the
+    interpreter path, and keeps the space-free representation unchanged. Use it for both /proc
+    and psutil so POSIX and Windows take the same path; the inline-source matcher can then recover
+    the source and still evaluate the end-to-end gateway verdict."""
     with contextlib.suppress(OSError):
         raw = Path(f"/proc/{pid}/cmdline").read_bytes()
         if raw:
-            return raw.replace(b"\x00", b" ").decode("utf-8", errors="ignore").strip()
+            parts = [part.decode("utf-8", errors="ignore") for part in raw.split(b"\x00") if part]
+            if parts:
+                return subprocess.list2cmdline(parts)
     with contextlib.suppress(Exception):
         import psutil  # type: ignore
         cmdline_parts = psutil.Process(pid).cmdline()
         if cmdline_parts:
-            return " ".join(cmdline_parts)
+            return subprocess.list2cmdline(cmdline_parts)
     if not _IS_WINDOWS:
         with contextlib.suppress(OSError, subprocess.TimeoutExpired):
             result = subprocess.run(

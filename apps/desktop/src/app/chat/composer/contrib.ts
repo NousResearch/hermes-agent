@@ -3,7 +3,9 @@
  * through the SAME registry schema as every other surface (statusbar, titlebar,
  * panes, layouts):
  *
- *   render areas (`render`):  composer.top       — banner strip above the input
+ *   render areas (`render`):  composer.above     — chrome-free strip above the
+ *                                                  whole composer
+ *                             composer.top       — banner strip above the input
  *                             composer.bottom    — row below the input grid
  *                             composer.underside — floating strip BELOW the
  *                                                  whole composer (no chrome)
@@ -29,6 +31,7 @@ import type { ComposerAttachment } from '@/store/composer'
 import type { ComposerAction } from '@/store/composer-actions'
 
 export const COMPOSER_AREAS = {
+  above: 'composer.above',
   top: 'composer.top',
   bottom: 'composer.bottom',
   underside: 'composer.underside',

@@ -2053,8 +2053,9 @@ def _rederive_repeat_for_schedule_change(
     path must honour the same contract, otherwise a one-shot turned recurring keeps its ``times=1``
     budget and retires after one fire, while a recurring job turned one-shot never completes. An
     explicit ``repeat`` in the same update wins; a same-kind schedule edit leaves ``repeat`` alone.
+    Runs after ``_normalize_job_updates``, so an explicit ``repeat`` is already a dict.
     """
-    if "schedule" not in updates or "repeat" in updates:
+    if "schedule" not in updates:
         return
     new_schedule = updates["schedule"]
     if isinstance(new_schedule, str):
@@ -2064,19 +2065,49 @@ def _rederive_repeat_for_schedule_change(
     new_kind = new_schedule.get("kind")
     if old_kind == new_kind:
         return
-    repeat = dict(job.get("repeat") or {})
-    times = repeat.get("times")
-    if new_kind == "once" and times is None:
-        repeat["times"] = 1
-    elif new_kind != "once" and old_kind == "once" and times == 1:
-        repeat["times"] = None
-    else:
-        return
+    if new_kind == "once":
+        # A run started before the edit would land after the reset below and spend the new
+        # occurrence, retiring the one-shot without firing it. Refuse, as rearm_oneshot does. A
+        # scheduler-dispatched recurring run holds no claim, so it is visible only to the scheduler
+        # in this process.
+        now = _hermes_now()
+        if (
+            _claim_is_live(job.get("run_claim"), now, _oneshot_run_claim_ttl_seconds())
+            or _claim_is_live(job.get("fire_claim"), now, FIRE_CLAIM_TTL_SECONDS)
+            or _job_running_in_this_process(job["id"])
+        ):
+            raise ValueError(
+                "Cannot turn a job into a one-shot while a run is in progress; retry when it finishes."
+            )
+    explicit = "repeat" in updates
+    repeat = dict(updates["repeat"] if explicit else (job.get("repeat") or {}))
+    if not explicit:
+        times = repeat.get("times")
+        if new_kind == "once":
+            # A recurring count (repeat=5) is not the one-shot's budget: kept, the job would fire
+            # again until the old count ran out.
+            repeat["times"] = 1
+        elif new_kind != "once" and old_kind == "once" and times == 1:
+            repeat["times"] = None
+    if new_kind == "once":
+        # ``completed`` counted the recurring schedule's runs, not fires of this new occurrence,
+        # and the due scan deletes a one-shot at completed >= times WITHOUT firing it. Explicit
+        # repeats included: the cronjob tool and ``cron edit --repeat`` copy the stored counter.
+        repeat["completed"] = 0
     repeat.setdefault("completed", 0)
     updates["repeat"] = repeat
 
 
-def _apply_schedule_update(updated: Dict[str, Any], updates: Dict[str, Any], job_id: str) -> None:
+def _schedule_identity(schedule: Any) -> Any:
+    """The fields that decide when a schedule fires (``display`` is presentation only)."""
+    if not isinstance(schedule, dict):
+        return schedule
+    return {k: v for k, v in schedule.items() if k != "display"}
+
+
+def _apply_schedule_update(
+    updated: Dict[str, Any], updates: Dict[str, Any], job_id: str, previous_schedule: Any,
+) -> None:
     """Parse a string schedule, refresh ``schedule_display`` and (unless paused) ``next_run_at``."""
     updated_schedule = updated["schedule"]
     if isinstance(updated_schedule, str):
@@ -2087,6 +2118,11 @@ def _apply_schedule_update(updated: Dict[str, Any], updates: Dict[str, Any], job
     if updated.get("state") != "paused":
         updated["next_run_at"] = _next_run_or_reject_past_oneshot(
             updated_schedule, updated.get("name", job_id), updated_schedule, "update ")
+    elif _schedule_identity(updated_schedule) != _schedule_identity(previous_schedule):
+        # The stored instant is an occurrence of the schedule this edit replaced. resume_job
+        # keeps a past instant due (#113603), so leaving it would fire the old cadence's slot
+        # on resume; with none stored, resume computes the next run from the new schedule.
+        updated["next_run_at"] = None
 
 
 def _fill_missing_next_run(updated: Dict[str, Any]) -> None:
@@ -2115,8 +2151,8 @@ def update_job(job_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]
         raise ValueError(f"Cron job field(s) cannot be updated: {', '.join(sorted(bad_fields))}")
 
     def apply(jobs, i, job):
-        _rederive_repeat_for_schedule_change(job, updates)
         _normalize_job_updates(job, updates)
+        _rederive_repeat_for_schedule_change(job, updates)
         _apply_pin_update(job, updates)
         updated = _apply_skill_fields({**job, **updates})
         _reject_terminal_activation(job, updated, job_id)
@@ -2130,7 +2166,7 @@ def update_job(job_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]
         if any(k in updates for k in _PAYLOAD_FIELDS) and job_payload_is_empty(updated):
             raise ValueError(EMPTY_PAYLOAD_ERROR)
         if "schedule" in updates:
-            _apply_schedule_update(updated, updates, job_id)
+            _apply_schedule_update(updated, updates, job_id, job.get("schedule"))
             # next_run_at now follows the new schedule; a stale quota_hold_until would only shield
             # the record from the stale-error re-arm while no longer describing where it is
             # parked. The next fire re-parks (with a fresh notice) if the window is still closed.

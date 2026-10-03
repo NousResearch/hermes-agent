@@ -374,6 +374,9 @@ def _make_callback(spec: ShellHookSpec) -> Callable[..., Optional[Dict[str, Any]
         return _evaluate_result(spec, _spawn(spec, _serialize_payload(spec.event, kwargs)))
 
     _callback.__name__ = _callback.__qualname__ = f"shell_hook[{spec.event}:{spec.command}]"
+    # The dispatcher reads this to let the hook gate itself: matcher decides applicability, the
+    # spec's own timeout decides the wall clock, and fail_closed decides every timeout outcome.
+    _callback.hermes_shell_hook_spec = spec
     return _callback
 
 

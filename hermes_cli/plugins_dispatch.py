@@ -54,6 +54,10 @@ _HOOK_TIMEOUT_SUPPRESSION_SECONDS = 60.0
 # Live workers a hung callback may accumulate before it is skipped outright (#105223 / #98382).
 _HOOK_MAX_ABANDONED_WORKERS = 3
 _PRE_TOOL_CALL_TIMEOUT_BLOCK_MESSAGE = "pre_tool_call plugin callback timed out or is still running"
+# A shell hook's wrapper cap sits this far above the spec's own subprocess timeout — the kill plus
+# pipe drain that follows a ``communicate`` expiry — so the shell layer's fail-open/fail-closed
+# decision is always the one that counts (#132096).
+_SHELL_HOOK_WRAPPER_MARGIN_SECS = 10.0
 
 
 def _policy_error_block_directive(hook_name: str, cb: Callable, exc: BaseException) -> Dict[str, str]:
@@ -226,10 +230,23 @@ class PluginDispatchMixin:
         fail_closed = hook_name in _HOOK_TIMEOUT_FAIL_CLOSED_HOOKS
         for cb in self._hooks.get(hook_name, []):
             try:
+                cb_timeout, cb_fail_closed = timeout, fail_closed
+                spec = getattr(cb, "hermes_shell_hook_spec", None)
+                if spec is not None:
+                    # A shell hook gates itself (#132096). Its matcher — not the dispatcher —
+                    # decides whether this tool is its business, so an unmatched tool must bypass
+                    # the wrapper entirely; otherwise one timeout's 60 s suppression would block
+                    # tools the hook never matched. The wrapper's cap sits above the spec's own
+                    # subprocess timeout so the shell layer's decision is the one that counts, and
+                    # a skip/timeout honors the hook's fail_closed instead of the dispatcher's.
+                    if spec.matcher and not spec.matches_tool(kwargs.get("tool_name")):
+                        continue
+                    cb_timeout = max(timeout, spec.timeout + _SHELL_HOOK_WRAPPER_MARGIN_SECS)
+                    cb_fail_closed = fail_closed and spec.fail_closed
                 if use_timeout:
-                    ret = self._run_hook_callback_bounded(hook_name, cb, kwargs, timeout)
+                    ret = self._run_hook_callback_bounded(hook_name, cb, kwargs, cb_timeout)
                     if ret is _HOOK_SKIPPED:
-                        if fail_closed:  # policy hook: fail closed with a block directive
+                        if cb_fail_closed:  # policy hook: fail closed with a block directive
                             results.append({"action": "block", "message": _PRE_TOOL_CALL_TIMEOUT_BLOCK_MESSAGE})
                         continue
                 else:
@@ -238,7 +255,7 @@ class PluginDispatchMixin:
                     results.append(ret)
             except (Exception, SystemExit) as exc:
                 self._report_hook_failure(hook_name, cb, kwargs, exc)
-                if fail_closed:  # a guard that raised made no decision: same veto as a timeout
+                if cb_fail_closed:  # a guard that raised made no decision: same veto as a timeout
                     results.append(_policy_error_block_directive(hook_name, cb, exc))
         return results
 

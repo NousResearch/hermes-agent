@@ -268,6 +268,12 @@ def _configure_tool_category(ts_key: str, cat: dict, config: dict, *, force_fres
     print()
     heading = f"({providers[0]['name']})" if single else f"- {title}"
     print(color(f"  --- {cat.get('icon', '')} {name} {heading} ---", Colors.CYAN))
+    if ts_key == "web":
+        web_cfg = config.get("web") or {}
+        for capability in ("search", "extract"):
+            chain = web_cfg.get(f"{capability}_fallbacks") if isinstance(web_cfg, dict) else None
+            if isinstance(chain, list) and chain:
+                _print_info(f"  {capability} keyed fallbacks: {' → '.join(str(v) for v in chain)}")
     if single and not reconfigure and providers[0].get("tag"):
         _print_info(f"  {providers[0]['tag']}")
     if not reconfigure and cat.get("setup_note"):

@@ -132,8 +132,9 @@ def _default_output_dir() -> str:
 def _load_tts_config() -> Dict[str, Any]:
     """Return the ``tts`` config section ({} when unavailable)."""
     try:
-        from hermes_cli.config import load_config
-        return load_config().get("tts") or {}
+        from copy import deepcopy
+        from hermes_cli.config import load_config_readonly
+        return deepcopy(load_config_readonly().get("tts") or {})
     except ImportError:
         logger.debug("hermes_cli.config not available, using default TTS config")
     except Exception as e:

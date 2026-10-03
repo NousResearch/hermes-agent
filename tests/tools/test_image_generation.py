@@ -204,14 +204,14 @@ class TestDefaults:
 class TestModelResolution:
 
     def test_no_config_falls_back_to_default(self, image_tool):
-        with patch("hermes_cli.config.load_config", return_value={}):
+        with patch("hermes_cli.config.load_config_readonly", return_value={}):
             mid, meta = image_tool._resolve_fal_model()
         assert mid == image_tool.DEFAULT_MODEL
 
 
     def test_config_wins_over_env_var(self, image_tool, monkeypatch):
         monkeypatch.setenv("FAL_IMAGE_MODEL", "fal-ai/z-image/turbo")
-        with patch("hermes_cli.config.load_config",
+        with patch("hermes_cli.config.load_config_readonly",
                    return_value={"image_gen": {"model": "fal-ai/nano-banana-pro"}}):
             mid, _ = image_tool._resolve_fal_model()
         assert mid == "fal-ai/nano-banana-pro"

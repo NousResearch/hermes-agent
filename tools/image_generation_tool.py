@@ -157,8 +157,8 @@ def _submit_fal_request(model: str, arguments: Dict[str, Any]):
 def _read_image_gen_key(key: str) -> Optional[str]:
     """Return the stripped ``image_gen.<key>`` string from config.yaml, or None."""
     try:
-        from hermes_cli.config import load_config
-        cfg = load_config()
+        from hermes_cli.config import load_config_readonly
+        cfg = load_config_readonly()
         section = cfg.get("image_gen") if isinstance(cfg, dict) else None
         value = section.get(key) if isinstance(section, dict) else None
         if isinstance(value, str) and value.strip():

@@ -33,14 +33,15 @@ def load_config_section(logger: logging.Logger, tag: str, *path: str) -> dict:
     """The ``config.yaml`` block at ``path`` as a dict, or ``{}`` — robust to load_config()
     raising (fresh install, malformed YAML), absent keys, or a non-dict value."""
     try:
-        from hermes_cli.config import cfg_get, load_config
+        from hermes_cli.config import cfg_get, load_config_readonly
+        from copy import deepcopy
 
-        cfg = load_config()
+        cfg = load_config_readonly()
     except Exception as exc:  # noqa: BLE001 — broad catch is intentional
         logger.debug("%s: load_config() raised %s; falling back to env-only configuration", tag, exc)
         return {}
     section = cfg_get(cfg, *path, default=None)
-    return section if isinstance(section, dict) else {}
+    return deepcopy(section) if isinstance(section, dict) else {}
 
 
 def resolve_env_or_cfg(env_name: str, cfg_value: Any) -> str:

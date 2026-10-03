@@ -7,6 +7,7 @@ prompting live here.
 import functools
 import logging
 import os
+import posixpath
 import re
 import shlex
 import tempfile
@@ -26,7 +27,8 @@ _HERMES_ENV_PATH = (
 _HERMES_CONFIG_PATH = (
     r'(?:~\/\.hermes/|(?:\$home|\$\{home\})/\.hermes/|(?:\$hermes_home|\$\{hermes_home\})/)' r'config\.yaml\b'
 )
-_PROJECT_ENV_PATH = r'(?:(?:/|\.{1,2}/)?(?:[^\s/"\'`]+/)*\.env(?:\.[^/\s"\'`]+)*)'
+# direnv's .envrc is a separate basename, not a dotted .env variant.
+_PROJECT_ENV_PATH = r'(?:(?:/|\.{1,2}/)?(?:[^\s/"\'`]+/)*\.env(?:rc|(?:\.[^/\s"\'`]+)*))'
 _PROJECT_CONFIG_PATH = r'(?:(?:/|\.{1,2}/)?(?:[^\s/"\'`]+/)*config\.yaml)'
 _SHELL_RC_FILES = r'(?:~|\$home|\$\{home\})/\.' r'(?:bashrc|zshrc|profile|bash_profile|zprofile)\b'
 _CREDENTIAL_FILES = r'(?:~|\$home|\$\{home\})/\.' r'(?:netrc|pgpass|npmrc|pypirc)\b'
@@ -393,20 +395,13 @@ DANGEROUS_PATTERNS = [
     # implant), `cp creds ~/.netrc`, and `cp evil ~/.bashrc` (login-time command injection) slipped through
     # with auto-approve. Same unpaired-door rationale as #14639 / the sed-tee-redirect pairing on these
     # targets. `authorized_keys` after the `~/.ssh/` fragment).
-    (rf'\b(cp|mv|install)\b.*\s["\']?{_SENSITIVE_WRITE_TARGET}[^\s"\']*["\']?{_COMMAND_TAIL}', "copy/move file into sensitive credential/SSH/shell-rc path"),
-    # In-place edits mutate the file directly, bypassing redirection/tee/cp coverage; gate the same
-    # startup/credential files.
-    (rf'\bsed\s+-[^\s]*i.*(?:{_USER_SENSITIVE_WRITE_TARGET})[^\s"\']*', "in-place edit of sensitive credential/SSH/shell-rc path"),
-    (rf'\bsed\s+--in-place\b.*(?:{_USER_SENSITIVE_WRITE_TARGET})[^\s"\']*', "in-place edit of sensitive credential/SSH/shell-rc path (long flag)"),
+    # Quoted destinations may contain spaces; unquoted destinations stop at whitespace.
+    (rf'\b(cp|mv|install)\b.*\s(?:"{_SENSITIVE_WRITE_TARGET}[^"\n]*"|'
+     rf'\'{_SENSITIVE_WRITE_TARGET}[^\'\n]*\'|{_SENSITIVE_WRITE_TARGET}[^\s"\']*){_COMMAND_TAIL}',
+     "copy/move file into sensitive credential/SSH/shell-rc path"),
+    # sed options and file operands are classified structurally below. The old
+    # regexes mistook --posix for -i and program/option arguments for write targets.
     (rf'\b(?:perl|ruby)\b.*(?:^|\s)-[^\s]*i\b.*(?:{_USER_SENSITIVE_WRITE_TARGET})[^\s"\']*', "in-place edit of sensitive credential/SSH/shell-rc path (perl/ruby)"),
-    (rf'\bsed\s+-[^\s]*i.*\s{_SYSTEM_CONFIG_PATH}', "in-place edit of system config"),
-    (rf'\bsed\s+--in-place\b.*\s{_SYSTEM_CONFIG_PATH}', "in-place edit of system config (long flag)"),
-    # sed -i on Hermes config/.env bypasses the redirection/tee rules; pairs the file_tools
-    # write_file/patch deny so the terminal side is not an open door.
-    # In-place edit of a Hermes-managed security file (~/.hermes/config.yaml or .env). sed -i bypasses the
-    # redirection/tee patterns above because it mutates the file directly. See #14639.
-    (rf'\bsed\s+-[^\s]*i.*(?:{_HERMES_CONFIG_PATH}|{_HERMES_ENV_PATH})', "in-place edit of Hermes config/env"),
-    (rf'\bsed\s+--in-place\b.*(?:{_HERMES_CONFIG_PATH}|{_HERMES_ENV_PATH})', "in-place edit of Hermes config/env (long flag)"),
     # perl/ruby -i: the flag may be its own token after other flags (`-p -i -e`), combined (`-pi`), or carry a backup
     # suffix (`-i.bak`), so match any flag token containing `i` anywhere; `perl -e '...'` (no -i) does not trip.
     # perl -i and ruby -i perform the same in-place mutation as sed -i but are not caught by the -e/-c
@@ -526,33 +521,111 @@ def _lower_preserving_flags(command: str) -> str:
     return ''.join(t if t.startswith('-') else t.lower() for t in re.split(r'(\s+)', command))
 
 
-# Shell metacharacters, quotes, and whitespace that terminate a path token.
-_PATH_TOKEN_STOP = r"""\s'"`;|&<>()"""
-_PATH_TAIL = r"(?P<tail>(?:[/\\][^/\\" + _PATH_TOKEN_STOP + r"]*)+)"
+# Matched only against a complete, scanner-delimited and decoded shell word.
+_PATH_TAIL = r"(?P<tail>[/\\].+)"
 
 
 @functools.lru_cache(maxsize=64)
 def _home_prefix_fold_regex(path: str):
-    """Compile a regex matching *path* as an absolute directory prefix.
-    Components match with either separator so native Windows, forward-slash, and mixed forms all
-    fold; the caller normalizes the tail's backslashes to ``/``. A non-empty tail is required, so a
-    bare home is never folded. Returns ``None`` for an unset/degenerate path (fewer than two
-    components: ``/``, ``C:\\``, ``""``) so a stray HOME cannot rewrite unrelated prefixes."""
+    """Match a validated absolute HOME as a complete word's directory prefix.
+
+    Single-component POSIX homes (``/root``) are directories, not filesystem roots.
+    Drive roots, bare UNC hosts, empty/relative homes and drive-looking ``/C:`` are
+    refused. Windows/UNC components accept either separator; the word scanner and
+    ``fullmatch`` enforce the left/right boundaries. A descendant is required.
+    """
     components = [c for c in re.split(r"[/\\]+", path) if c] if path else []
-    if len(components) < 2:
+    if len(components) < 2 and not (
+        path.startswith("/") and not path.startswith("//")
+        and components and ":" not in components[0] and "\\" not in path
+    ):
         return None
-    # Optional leading root separator; a Windows drive letter is a component.
-    return re.compile(r"[/\\]*" + r"[/\\]+".join(re.escape(c) for c in components) + _PATH_TAIL)
+    drive = re.match(r"^[A-Za-z]:[/\\]", path)
+    if not drive and not path.startswith(("/", "\\\\")):
+        return None
+    root = "" if drive else r"[/\\]+"
+    return re.compile(root + r"[/\\]+".join(re.escape(c) for c in components) + _PATH_TAIL)
+
+
+def _home_path_word_projection(word: str) -> str:
+    """Use one separator/escape spelling for both decoding and provenance checks.
+
+    Native-rooted drive/UNC words retain native separators. Forward-drive words
+    also accept historical mixed directory separators, but backslashes escaping
+    shell syntax remain escapes; a drive prefix alone does not make them native.
+    POSIX words keep the shared shell scanner's escape semantics unchanged.
+    """
+    unquoted = word.strip("'\"")
+    if re.match(r"^[A-Za-z]:\\", unquoted) or unquoted.startswith("\\\\"):
+        return word.replace("\\", "/")
+    if not re.match(r"^[A-Za-z]:/", unquoted):
+        return word
+    edits = []
+    for kind, i, j, _ in _scan_shell(word):
+        if kind == "esc" and word[i + 1] not in "$`*?[]{}'\";&|<>()" and not word[i + 1].isspace():
+            edits.append((i, j, "/" + word[i + 1:j].replace("\\", "/")))
+        elif kind == "char" and word[i] == "\\":
+            edits.append((i, j, "/"))
+    return _splice(word, edits)
 
 
 def _fold_home_prefixes(command: str, paths, replacement: str) -> str:
-    """Fold each resolved home prefix in *command* to *replacement* (no trailing separator; the tail
-    supplies it). Longest first so a deeper home folds before a shorter overlapping one that would clobber it."""
-    for path in dict.fromkeys(sorted((p for p in paths if p), key=len, reverse=True)):
-        pattern = _home_prefix_fold_regex(path)
-        if pattern is not None:
-            command = pattern.sub(lambda m: replacement + m.group("tail").replace("\\", "/"), command)
-    return command
+    """Fold only a shell word's absolute prefix, never a substring of another path."""
+    patterns = [pattern for path in dict.fromkeys(sorted((p for p in paths if p), key=len, reverse=True))
+                if (pattern := _home_prefix_fold_regex(path)) is not None]
+    edits, start = [], None
+
+    def fold(start: int, end: int) -> None:
+        word = command[start:end]
+        provenance = _home_path_word_projection(word)
+        value = _strip_shell_word_syntax(provenance)
+        if replacement == "~":
+            symbolic = re.match(r"^(?:~|\$HOME|\$\{HOME\})(?=/)", value)
+            if symbolic and paths:
+                value = paths[0].replace("\\", "/") + value[symbolic.end():]
+        # Quote/escape provenance distinguishes literal filename characters from
+        # expansions. The supported leading HOME spelling has already been resolved.
+        home_syntax = (re.match(r"^[\"']?(?:~|\$HOME|\$\{HOME\})(?=/)", word)
+                       if replacement == "~" and paths else None)
+        # The same projection supplies decoded values and lexical provenance.
+        if any(kind == "char" and (home_syntax is None or i >= home_syntax.end())
+               and ((quote != "'" and provenance[i] in "$`")
+                    or (quote is None and provenance[i] in "*?[]{}"))
+               for kind, i, _, quote in _scan_shell(provenance)):
+            return
+        value = posixpath.normpath(value)
+        for pattern in patterns:
+            match = pattern.fullmatch(value)
+            if match:
+                folded = replacement + match.group("tail").replace("\\", "/")
+                # Don't introduce quotes into an ordinary bare operand: legacy rules for
+                # options after operands deliberately stop at quoted prose.
+                rendered = (shlex.quote(folded) if re.search(r"[\s'\";&|<>()`\\]", folded)
+                            or "'" in word or '"' in word else folded)
+                edits.append((start, end, rendered))
+                break
+
+    for kind, i, j, quote in _scan_shell(command, subst="uq", comments=True):
+        if kind == "subst":
+            opener = 2 if command.startswith("$(", i) else 1
+            body = command[i + opener:j - 1]
+            folded_body = _fold_home_prefixes(body, paths, replacement)
+            if folded_body != body:
+                edits.append((i, j, command[i:i + opener] + folded_body + command[j - 1:j]))
+            if start is None:
+                start = i
+            continue
+        boundary = kind == "comment" or (kind == "char" and quote is None
+                                         and (command[i].isspace() or command[i] in ";&|<>()"))
+        if boundary:
+            if start is not None:
+                fold(start, i)
+                start = None
+        elif start is None:
+            start = i
+    if start is not None:
+        fold(start, len(command))
+    return _splice(command, edits)
 
 
 def _rewrite_resolved_user_home(command: str) -> str:
@@ -560,7 +633,10 @@ def _rewrite_resolved_user_home(command: str) -> str:
     try:
         # expanduser, realpath, and an explicit HOME — Windows expanduser uses USERPROFILE, not HOME.
         home = os.path.expanduser("~")
-        paths = [home, os.path.realpath(home), os.environ.get("HOME", "")]
+        paths = ([home, os.path.realpath(home)] if _home_prefix_fold_regex(home) is not None else [])
+        explicit_home = os.environ.get("HOME", "")
+        if _home_prefix_fold_regex(explicit_home) is not None:
+            paths.append(explicit_home)
     except Exception:
         return command
     return _fold_home_prefixes(command, paths, "~")
@@ -1521,12 +1597,164 @@ def _is_shell_token_spliced_gateway_lifecycle(command: str) -> bool:
     return contains_gateway_lifecycle_command(command)
 
 
+_SED_USER_TARGET_RE = re.compile(_USER_SENSITIVE_WRITE_TARGET, re.IGNORECASE)
+_SED_HERMES_TARGET_RE = re.compile(rf'(?:{_HERMES_CONFIG_PATH}|{_HERMES_ENV_PATH})', re.IGNORECASE)
+_SED_SYSTEM_TARGET_RE = re.compile(_SYSTEM_CONFIG_PATH, re.IGNORECASE)
+_SED_SSH_TARGET_RE = re.compile(_SSH_SENSITIVE_PATH, re.IGNORECASE)
+_SED_PROJECT_BASENAME_RE = re.compile(r'\.env(?:\.[^/]+)?|\.envrc', re.IGNORECASE)
+# GNU sed's complete long-option namespace: --f is ambiguous with
+# --follow-symlinks, whereas --fil uniquely owns a program filename.
+_SED_LONG_OPTIONS = (
+    "--binary", "--debug", "--expression", "--file", "--follow-symlinks",
+    "--help", "--in-place", "--line-length", "--null-data", "--posix",
+    "--quiet", "--regexp-extended", "--sandbox", "--separate", "--silent",
+    "--unbuffered", "--version",
+)
+
+
+def _sed_detection_sources(command: str):
+    """Project env -S through its existing non-executing argv parser."""
+    # Unlike full normalization, this projection preserves raw control quotes.
+    # Only unquoted IFS expansion can split a shell word into sed and its flags.
+    if "$IFS" in command or "${IFS" in command:
+        edits = []
+        ifs_re = re.compile(r'\$\{IFS\b[^}]*\}|\$IFS\b')
+        pending_spans = [(0, len(command))]
+        while pending_spans:
+            begin, end = pending_spans.pop()
+            for kind, start, stop, quote in _scan_shell(command, begin, end, subst="uq", brace=True,
+                                                       comments=True):
+                if kind == "subst" and stop is not None and (
+                    command.startswith("$(", start) or command[start] == "`"
+                ):
+                    # Executable bodies have their own quote state; do not carry
+                    # the surrounding argument's quotes into the nested scan.
+                    opener = 2 if command.startswith("$(", start) else 1
+                    pending_spans.append((start + opener, stop - 1))
+                elif quote is None and kind in {"char", "subst"} and (match := ifs_re.match(command, start)):
+                    edits.append((start, match.end(), " "))
+        command = _splice(command, sorted(edits))
+    pending, seen = [command], set()
+    while pending:
+        source = pending.pop()
+        if source in seen:
+            continue
+        seen.add(source)
+        yield source
+        for start, _, word in _iter_shell_command_word_spans(source):
+            if os.path.basename(_deobfuscate_shell_word_for_detection(word)) != "env":
+                continue
+            tokens = _shell_segment_tokens(_shell_command_segment(source, start), 0)
+            if tokens and (payload := _env_split_payload(tokens)):
+                pending.append(payload)
+
+
+def _sed_command_tokens(segment: str) -> list[tuple[str, str]] | None:
+    """Remove redirections and retain each argv word's source provenance."""
+    edits, skip = [], -1
+    for kind, start, _, quote in _scan_shell(segment, subst="uq", brace=True):
+        if start < skip or quote is not None or kind != "char":
+            continue
+        # An IO-number prefix must begin a word. In `.env2>out`, 2 belongs
+        # to the filename; only the `>` is a redirection operator.
+        if segment[start].isdigit() and start and not segment[start - 1].isspace():
+            continue
+        if redirect := _SHELL_REDIRECTION_RE.match(segment, start):
+            _, skip, _ = _read_shell_word(segment, redirect.end())
+            edits.append((start, skip, " "))
+    source = _splice(segment, edits)
+    tokens = _shell_tokens_with_spans(source, 0)
+    if tokens is None:
+        return None
+    return [(value, source[start:end]) for value, start, end, _ in tokens]
+
+
+def _sed_in_place_findings(command: str):
+    """Inspect only actual sed commands, using the existing quote-aware scanner.
+
+    Option flags are case-sensitive. GNU -i owns the remainder of its short
+    bundle as an optional backup suffix (unlike -n); only file operands can
+    identify a protected target. No shell or editor is executed here.
+    """
+    for start, _, word in _iter_shell_command_word_spans(command):
+        if os.path.basename(_deobfuscate_shell_word_for_detection(word)) != "sed":
+            continue
+        # Fold source words before argv decoding dissolves native separators or
+        # removes the quotes that keep spaced HOME prefixes in one operand.
+        segment = _rewrite_resolved_user_home(
+            _rewrite_resolved_hermes_home(_shell_command_segment(command, start))
+        )
+        args = _sed_command_tokens(segment)
+        if not args:
+            continue
+        in_place, options, explicit_program = False, True, False
+        operands = []
+        index = 1
+        while index < len(args):
+            token, raw = args[index]
+            if options and token == "--":
+                options = False
+            elif options and token.startswith("--"):
+                option, equals, _ = token.partition("=")
+                matches = [name for name in _SED_LONG_OPTIONS if name.startswith(option)]
+                if len(matches) != 1:
+                    in_place = False  # GNU sed rejects unknown/ambiguous options.
+                    break
+                option = matches[0]
+                if equals and option not in {"--in-place", "--expression", "--file", "--line-length"}:
+                    in_place = False  # No-argument options cannot own an attached value.
+                    break
+                if option == "--in-place":
+                    in_place = True
+                elif option in {"--expression", "--file", "--line-length"}:
+                    explicit_program = explicit_program or option in {"--expression", "--file"}
+                    if not equals:
+                        index += 1
+            elif options and token.startswith("-") and token != "-":
+                for offset, flag in enumerate(token[1:], 2):
+                    if flag == "i":
+                        in_place = True
+                        break  # the rest is GNU sed's optional backup suffix
+                    if flag in "efl":
+                        explicit_program = explicit_program or flag in "ef"
+                        if offset == len(token):
+                            index += 1
+                        break  # the rest (or next token) is this option's value
+            else:
+                operands.append(raw)
+            index += 1
+        if not in_place:
+            continue
+        # Without -e/-f the first positional is sed's program, not an input file.
+        for operand in operands if explicit_program else operands[1:]:
+            # Normalize the original word, not a re-quoted decoded value: invented
+            # single quotes would turn unknown expansions into literal filenames.
+            target = _strip_shell_word_syntax(_normalize_command_for_detection(operand))
+            user_target = _SED_USER_TARGET_RE.match(target)
+            # A slash-terminated inventory match marks a protected subtree;
+            # bare filename entries must still consume the entire operand.
+            sensitive_user_target = user_target is not None and (
+                user_target.end() == len(target) or user_target.group().endswith("/")
+            )
+            if _SED_SYSTEM_TARGET_RE.match(target):
+                yield "in-place edit of system config"
+            elif _SED_HERMES_TARGET_RE.fullmatch(target):
+                yield "in-place edit of Hermes config/env"
+            elif _SED_SSH_TARGET_RE.match(target) or sensitive_user_target:
+                yield "in-place edit of sensitive credential/SSH/shell-rc path"
+            elif _SED_PROJECT_BASENAME_RE.fullmatch(os.path.basename(target)):
+                yield "in-place edit of project env file"
+
+
 def detect_dangerous_command(command: str) -> tuple:
     """Check dangerous patterns -> (is_dangerous, pattern_key, description)."""
     if _command_parser_limit_exceeded(command):
         return (True, _PARSER_LIMIT_DESCRIPTION, _PARSER_LIMIT_DESCRIPTION)
     if _is_verification_artifact_cleanup(command):
         return (False, None, None)
+    for source in _sed_detection_sources(command):
+        for description in _sed_in_place_findings(source):
+            return (True, description, description)
     for command_variant in _command_detection_variants(command):
         command_lower = _lower_preserving_flags(command_variant)
         masked_lower: str | None = None

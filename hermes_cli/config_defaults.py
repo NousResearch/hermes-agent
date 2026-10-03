@@ -1080,6 +1080,11 @@ DEFAULT_CONFIG = {
         # "edge" (free) | "elevenlabs" (premium) | "openai" | "xai" | "minimax" | "mistral" |
         # "gemini" | "deepinfra" | "neutts" (local) | "kittentts" (local) | "piper" (local)
         "provider": "edge",
+        # Providers tried, in order, when synthesis with the primary provider fails (endpoint
+        # wall, quota, missing key) — the graceful-degradation analog of the STT local fallback.
+        # Each name resolves against the same tts.<provider> config as the primary. Disabled for
+        # a caller-explicit provider= argument. [] = never fall back (previous behavior).
+        "fallback_chain": [],
         # Seconds a local engine (Piper, KittenTTS) stays loaded after the last speech toggle
         # turns off, so a quick re-activation (wake word, voice-chat restart) skips the reload.
         # 0 unloads immediately.

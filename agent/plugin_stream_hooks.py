@@ -1,6 +1,6 @@
 """Asynchronous per-consumer plugin observers for streaming LLM output.
 
-Each registered hook callback gets its own bounded queue + daemon worker thread
+Each profile's registered hook callback gets its own bounded queue + daemon worker thread
 so plugin code never runs inline on the token path. Queues drop the oldest
 pending event when full; dispatchers for callbacks that are no longer
 registered are stopped lazily on the next lookup.
@@ -16,6 +16,7 @@ from dataclasses import dataclass
 from typing import Any, Callable
 
 from hermes_cli.middleware import OBSERVER_SCHEMA_VERSION
+from hermes_constants import hermes_home_key
 
 logger = logging.getLogger(__name__)
 
@@ -32,7 +33,7 @@ class _ConsumerDispatcher:
 
 
 _dispatcher_lock = threading.Lock()
-_dispatchers: dict[tuple[str, int], _ConsumerDispatcher] = {}
+_dispatchers: dict[tuple[str, str, int], _ConsumerDispatcher] = {}
 
 
 def _callback_name(callback: Callable[..., Any]) -> str:
@@ -57,6 +58,19 @@ def _put_drop_oldest(events: "queue.Queue[Any]", item: Any) -> bool:
         return False
 
 
+def _deliver(dispatcher: _ConsumerDispatcher, payload: dict[str, Any]) -> None:
+    payload = dict(payload)
+    payload.setdefault("telemetry_schema_version", OBSERVER_SCHEMA_VERSION)
+    try:
+        dispatcher.callback(**payload)
+    except Exception as exc:
+        # Fires once per streaming delta: a mis-declared callback fails identically every
+        # time, so it goes through the manager's warn-once reporter (#111922).
+        from hermes_cli.plugins import get_plugin_manager
+
+        get_plugin_manager()._report_hook_failure(dispatcher.hook_name, dispatcher.callback, payload, exc)
+
+
 def _worker(dispatcher: _ConsumerDispatcher) -> None:
     while True:
         item = dispatcher.events.get()
@@ -64,21 +78,7 @@ def _worker(dispatcher: _ConsumerDispatcher) -> None:
             if item is _STOP:
                 return
             context, payload = item
-            payload = dict(payload)
-            payload.setdefault("telemetry_schema_version", OBSERVER_SCHEMA_VERSION)
-            try:
-                # The worker outlives every turn and serves every profile; run the callback in the
-                # enqueuing turn's contextvars so it sees that turn's profile scope (home override,
-                # secrets), not an unbound context that fail-closed plugin bindings refuse (#118538).
-                # ``copy()``: one snapshot fans out to N consumer threads and a Context can only be
-                # entered by one thread at a time.
-                context.copy().run(dispatcher.callback, **payload)
-            except Exception as exc:
-                # Fires once per streaming delta: a mis-declared callback fails identically every
-                # time, so it goes through the manager's warn-once reporter (#111922).
-                from hermes_cli.plugins import get_plugin_manager
-
-                get_plugin_manager()._report_hook_failure(dispatcher.hook_name, dispatcher.callback, payload, exc)
+            context.copy().run(_deliver, dispatcher, payload)
         finally:
             dispatcher.events.task_done()
 
@@ -109,17 +109,18 @@ def _start_dispatcher(hook_name: str, callback: Callable[..., Any]) -> _Consumer
 
 def _dispatchers_for(hook_name: str) -> list[_ConsumerDispatcher]:
     """Live dispatcher per registered callback (restarting dead workers); stale
-    ones for unregistered callbacks are stopped outside the lock."""
+    ones for unregistered callbacks in this profile are stopped outside the lock."""
+    scope_key = hermes_home_key()
     callbacks = _registered_callbacks(hook_name)
-    if not callbacks:
-        return []
-
     callback_ids = {id(callback) for callback in callbacks}
     ready: list[_ConsumerDispatcher] = []
     with _dispatcher_lock:
-        stale = [_dispatchers.pop(key) for key in list(_dispatchers) if key[0] == hook_name and key[1] not in callback_ids]
+        stale = [
+            _dispatchers.pop(key) for key in list(_dispatchers)
+            if key[:2] == (scope_key, hook_name) and key[2] not in callback_ids
+        ]
         for callback in callbacks:
-            key = (hook_name, id(callback))
+            key = (scope_key, hook_name, id(callback))
             dispatcher = _dispatchers.get(key)
             if dispatcher is None or dispatcher.thread is None or not dispatcher.thread.is_alive():
                 dispatcher = _dispatchers[key] = _start_dispatcher(hook_name, callback)

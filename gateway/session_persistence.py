@@ -387,7 +387,7 @@ class SessionPersistenceMixin:
             return None
         logger.warning(
             "gateway.session: pruning stale sessions.json entry %r -> %s (end_reason=%r); left by "
-            "a crashed gateway", key, entry.session_id, row["end_reason"])
+            "an earlier gateway process", key, entry.session_id, row["end_reason"])
         return "prune"
 
     def _entries_as_dicts(self) -> Dict[str, Any]:

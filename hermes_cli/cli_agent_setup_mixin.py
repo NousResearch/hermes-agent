@@ -717,6 +717,9 @@ class CLIAgentSetupMixin:
             # patch_stdout's StdoutProxy (#2262), holding lines while a response box streams so a
             # subagent/background completion notice never splits the reply mid-paragraph.
             self.agent._print_fn = self._agent_status_print
+            # Refresh token/context status after every model response, including intermediate
+            # responses in tool loops (throttle-exempt, resize guard preserved).
+            self.agent._usage_updated_callback = self._invalidate_usage_status
             # Hydrate credits notices at session OPEN (parity with the TUI) so a depletion
             # warning shows before the first message. Idempotent + fail-open in the helper.
             try:

@@ -294,6 +294,7 @@ def test_runtime_resolution_failure_is_not_sticky(monkeypatch):
     assert shell._init_agent() is True
     assert calls["count"] == 2
     assert shell.agent is not None
+    assert shell.agent._usage_updated_callback == shell._invalidate_usage_status
 
 
 def test_ensure_runtime_credentials_passes_cli_model_as_target_model(monkeypatch):

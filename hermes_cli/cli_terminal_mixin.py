@@ -121,6 +121,14 @@ class CLITerminalMixin:
             self._last_invalidate = now
             self._app_invalidate(self._app, "invalidate", swallow=False)
 
+    def _invalidate_usage_status(self) -> None:
+        """Repaint once after an API response updates token accounting.
+
+        Model responses are infrequent compared with streaming/spinner frames, so a recent
+        background paint must not swallow this state change; the resize guard still applies.
+        """
+        self._invalidate(min_interval=0.0)
+
     def _paint_now(self) -> None:
         """Unthrottled repaint for user-blocking modal prompts.
 

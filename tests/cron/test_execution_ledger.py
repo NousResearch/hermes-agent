@@ -7,6 +7,7 @@ import os
 import sqlite3
 import subprocess
 import sys
+from contextlib import contextmanager
 from pathlib import Path
 
 
@@ -37,6 +38,37 @@ def test_execution_transitions_are_durable(monkeypatch, tmp_path):
 
     persisted = executions.list_executions(job_id="job-1")
     assert persisted == [completed]
+
+
+def test_external_adoption_retries_transient_database_lock(monkeypatch, tmp_path):
+    executions = _point_ledger(monkeypatch, tmp_path)
+    record = executions.create_execution("locked-handoff", source="external")
+    assert executions.mark_execution_handoff_pending(record["id"]) is not None
+
+    original_transaction = executions._transaction
+    transaction_attempts = []
+
+    @contextmanager
+    def flaky_transaction():
+        transaction_attempts.append(len(transaction_attempts) + 1)
+        if len(transaction_attempts) == 1:
+            raise sqlite3.OperationalError("database is locked")
+        with original_transaction() as conn:
+            yield conn
+
+    sleeps = []
+    monkeypatch.setattr(executions, "_transaction", flaky_transaction)
+    monkeypatch.setattr(executions.time, "sleep", sleeps.append)
+
+    adopted = executions.adopt_claimed_execution(record["id"])
+
+    assert adopted is not None
+    assert adopted["status"] == "running"
+    assert transaction_attempts == [1, 2]
+    assert sleeps == [executions.ADOPTION_LOCK_RETRY_BASE_SECONDS]
+    current = executions.get_execution(record["id"])
+    assert current is not None
+    assert current["status"] == "running"
 
 
 def test_execution_can_be_loaded_by_exact_attempt_id(monkeypatch, tmp_path):

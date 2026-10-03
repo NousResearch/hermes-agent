@@ -412,6 +412,54 @@ def _reap_orphaned_browser_sessions():
         _bt.logger.info("Reaped %d orphaned browser session(s) from previous run(s)", reaped)
 
 
+def _reap_browser_sessions_owned_by_pid(owner_pid: int) -> int:
+    """Immediately reap browser daemons whose recorded owner is a dead ``owner_pid``.
+
+    The periodic orphan reaper is intentionally grace-based. Kanban reclaim has stronger
+    evidence: it just terminated a specific local worker PID, so that worker's browser
+    daemon should be cleaned up now rather than waiting for the next idle/orphan pass.
+    A still-live owner PID is never reaped; this protects manual/operator calls that race
+    with a worker that survived termination.
+    """
+    import glob
+
+    try:
+        target_pid = int(owner_pid)
+    except (TypeError, ValueError):
+        return 0
+    if target_pid <= 0:
+        return 0
+
+    tmpdir = _bt._socket_safe_tmpdir()
+    socket_dirs = []
+    for prefix in ("agent-browser-h_*", "agent-browser-cdp_*", "agent-browser-hermes_*",
+                   f"agent-browser-{_bt._REAL_PROFILE_SESSION}"):
+        socket_dirs += glob.glob(os.path.join(tmpdir, prefix))
+
+    if not socket_dirs:
+        return 0
+
+    with _bt._cleanup_lock:
+        tracked_names = {info.get("session_name") for info in _bt._active_sessions.values() if info.get("session_name")}
+    tracked_names.add(_bt._REAL_PROFILE_SESSION)
+
+    reaped = 0
+    for socket_dir in socket_dirs:
+        session_name = os.path.basename(socket_dir).removeprefix("agent-browser-")
+        if not session_name:
+            continue
+        session_owner, owner_alive = _owner_pid_alive(socket_dir, session_name)
+        if session_owner != target_pid:
+            continue
+        if owner_alive is True:
+            continue
+        if _reap_socket_dir(socket_dir, session_name, tracked_names):
+            reaped += 1
+    if reaped:
+        _bt.logger.info("Reaped %d browser session(s) owned by reclaimed worker PID %d", reaped, target_pid)
+    return reaped
+
+
 def _browser_cleanup_thread_worker():
     """Every 30s: close sessions idle past BROWSER_SESSION_INACTIVITY_TIMEOUT; reap
     orphans on startup AND every BROWSER_ORPHAN_REAP_INTERVAL seconds."""

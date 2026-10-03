@@ -67,9 +67,12 @@ def parse_retry_after_seconds(value_or_headers: Any) -> Optional[float]:
 # Free-text "reset" grammars providers put in error bodies, tried in order. One table so the
 # conversation loop's error context and the credential pool's cooldown agree on the same wait.
 _QUOTA_RESET_DELAY_RE = re.compile(r"quotaResetDelay[:\s\"]+(\d+(?:\.\d+)?)(ms|s)", re.IGNORECASE)
-# "Resets in 4hr 5min" (weekly usage limits), "resets in 2 hours 5 minutes", "resets in 30s".
+# "Resets in 4hr 5min" (weekly usage limits), "resets in 2 hours 5 minutes",
+# "resets in 30s", and the quota-wall wording "Your usage window refills in 46
+# minutes" (Ollama Cloud 429). One verb alternation so every provider phrasing
+# lands on the same table.
 _RESETS_IN_RE = re.compile(
-    r"resets?\s+in\s+"
+    r"(?:resets?|refills?|renews?)\s+in\s+"
     r"(?:(\d+(?:\.\d+)?)\s*(?:h|hr|hrs|hour|hours)\b\s*)?"
     r"(?:(\d+(?:\.\d+)?)\s*(?:m|min|mins|minute|minutes)\b\s*)?"
     r"(?:(\d+(?:\.\d+)?)\s*(?:s|sec|secs|second|seconds)\b)?", re.IGNORECASE,
@@ -115,6 +118,32 @@ def reset_delay_from_message(message: str) -> Optional[float]:
         m = pattern.search(message)
         if m and (seconds := to_seconds(m)) is not None:
             return seconds
+    return None
+
+
+def min_reset_delay_from_message(message: str) -> Optional[float]:
+    """Shortest seconds-until-reset among the windows *message* names, or None.
+
+    ``reset_delay_from_message`` owns the precedence: the table's patterns are tried in
+    order and the first pattern matching ANYWHERE in the body decides, so an explicit
+    "retry after N s" still wins over a "resets in ..." quota window (see
+    ``RETRY_DELAY_PATTERNS``). This variant only widens the search *inside* that winning
+    pattern — a fallback-chain failure can name several models ("DeepSeek V4 Flash ...
+    refills in 46 minutes; GLM 5.3 Flash ... refills in 5 minutes") and the earliest
+    instant any of them can serve again is when a re-run is worth attempting. Taking the
+    minimum across DIFFERENT patterns would instead overrule the provider's own explicit
+    wait, and every other reader of this table (``agent/credential_pool.py``,
+    ``agent/error_classifier.py``, ``gateway/run.py``) would disagree with the caller.
+    """
+    if not message:
+        return None
+    for pattern, to_seconds in RETRY_DELAY_PATTERNS:
+        found = [
+            seconds for m in pattern.finditer(message)
+            if (seconds := to_seconds(m)) is not None
+        ]
+        if found:
+            return min(found)
     return None
 
 

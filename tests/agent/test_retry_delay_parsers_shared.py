@@ -71,6 +71,49 @@ class TestResetDelayOneTable:
         normalized = _normalize_error_context({"message": message})
         assert normalized["reset_at"] - time.time() == pytest.approx(seconds, abs=2)
 
+    @pytest.mark.parametrize("message, seconds", [
+        # The quota-wall wording providers actually emit. The table covered only
+        # "resets? in", so this envelope parsed to None and a caller that schedules a
+        # retry off it never fired (cron/quota_hold.py parked nothing).
+        ("HTTP 429: Your usage window refills in 46 minutes.", 46 * 60),
+        ("Your usage window refills in 33 minutes.", 33 * 60),
+        ("The window renews in 2 hours", 2 * 3600),
+        ("usage window refills in 45s", 45.0),
+    ])
+    def test_quota_wall_wording_lands_on_the_shared_table(self, message, seconds):
+        """Every provider phrasing for a usage window resolves through ONE table."""
+        assert reset_delay_from_message(message) == pytest.approx(seconds)
+
+    def test_min_reset_delay_takes_the_shortest_named_window(self):
+        """A fallback-chain body can name several windows; the earliest-serving model
+        is the one that matters, so the MINIMUM wins over the first match."""
+        from agent.retry_utils import min_reset_delay_from_message
+
+        body = ("HTTP 429: DeepSeek V4 Flash refills in 46 minutes; "
+                "GLM 5.3 Flash refills in 5 minutes.")
+        assert min_reset_delay_from_message(body) == pytest.approx(5 * 60)
+        # the single-window case still agrees with the first-match parser
+        one = "HTTP 429: Your usage window refills in 46 minutes."
+        assert min_reset_delay_from_message(one) == reset_delay_from_message(one)
+        # no window named -> no answer, never a guess
+        assert min_reset_delay_from_message("HTTP 429: quota exceeded") is None
+
+    def test_min_reset_delay_keeps_the_tables_precedence_for_a_two_window_body(self):
+        """The minimum is taken INSIDE the winning pattern, never across patterns: a body
+        carrying both an explicit retry-after and a quota window resolves to the explicit
+        wait — the same value the credential pool, the error context and the gateway read.
+        Answering the shorter quota window instead would overrule the provider's own
+        instruction and re-fire the caller into a window it said was still closed."""
+        from agent.retry_utils import min_reset_delay_from_message
+
+        both = "HTTP 429: retry after 123518s. Your usage window refills in 5 minutes."
+        assert reset_delay_from_message(both) == pytest.approx(123518)
+        assert min_reset_delay_from_message(both) == pytest.approx(123518)
+        # several windows of the SAME grammar still resolve to the earliest one
+        several = "Weekly usage limit reached. Resets in 6hr; the other model resets in 5 minutes."
+        assert min_reset_delay_from_message(several) == pytest.approx(5 * 60)
+        assert reset_delay_from_message(several) == pytest.approx(6 * 3600)
+
     def test_no_grammar_means_no_reset(self):
         from agent.credential_pool import _normalize_error_context
 

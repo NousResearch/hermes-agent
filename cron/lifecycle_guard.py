@@ -57,13 +57,19 @@ _GATEWAY_LIFECYCLE_PATTERN = re.compile(
     r"|(?:launchctl\s+(?:kickstart|unload|load|stop|restart|submit|bootstrap|bootout|remove|disable)\b[^\n]*\bhermes[.\-]?gateway)"
     # Branch C: systemctl ops on a hermes-gateway unit.
     r"|(?:systemctl\s+(?:-\S+\s+)*(?:restart|stop|start)\b[^\n]*\bhermes[.\-]?gateway)"
-    # Branch D: pkill/kill of the gateway process, both token orders. Leading \b keeps "skill" from
-    # matching as "kill".
-    # `taskkill` / `Stop-Process` are the Windows spellings of the same operation; `\bp?kill\b`
+    # Branch D: pkill/taskkill/Stop-Process of the gateway process, both token orders. Leading \b keeps
+    # "skill" from matching as "kill". Bare `kill` is deliberately excluded (#126501): it takes numeric
+    # PIDs/signals, never a process pattern, so `hermes`+`gateway` tokens elsewhere on the line (a pidfile
+    # path plus a script path, e.g. `kill $(cat /run/hermes/gateway.pid) .../.hermes/...`) are unrelated
+    # arguments, not the kill target — matching them blocks benign commands while real PID self-restarts
+    # (`kill -USR1 $PID`) carry no tokens and pass anyway. Numeric-PID kills stay out of scope (Branch E).
+    # ponytail: PID-laundered shapes (`kill $(pgrep -f hermes-gateway)`) slip past text matching; close via
+    # token-aware PID-feed analysis if it matters.
+    # `taskkill` / `Stop-Process` are the Windows spellings of the same operation; `\bpkill\b`
     # cannot reach inside `taskkill`, so they are named outright. Service-control forms (`net stop`,
     # `sc stop`) presuppose a service install this guard has no evidence of and stay uncovered.
-    r"|(?:\b(?:p?kill|taskkill|stop-process)\b[^\n]*\bhermes\b[^\n]*\bgateway)"
-    r"|(?:\b(?:p?kill|taskkill|stop-process)\b[^\n]*\bgateway\b[^\n]*\bhermes)"
+    r"|(?:\b(?:pkill|taskkill|stop-process)\b[^\n]*\bhermes\b[^\n]*\bgateway)"
+    r"|(?:\b(?:pkill|taskkill|stop-process)\b[^\n]*\bgateway\b[^\n]*\bhermes)"
 )
 
 # Branch E: process killers whose TARGET is the interpreter image hosting the gateway. A supervised

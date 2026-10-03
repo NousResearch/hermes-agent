@@ -207,6 +207,10 @@ class TestGatewayLifecyclePattern:
         "launchctl submit -l com.example.backup -- /bin/sh backup.sh",
         "systemctl restart hermes-meta.service",
         "systemctl restart hermes-cron-helper",
+        # #126501 Branch D: bare `kill` takes numeric PIDs, never a pattern —
+        # `hermes`+`gateway` path tokens elsewhere on the line (pidfile plus
+        # script path) are unrelated arguments, not the kill target.
+        "sudo -n kill $(cat /run/hermes/gateway.pid) /bin/bash /home/op/.hermes/scripts/relaunch.sh",
         # Regression (#30728 follow-up): legit prompts that merely mention an
         # unrelated gateway + a restart must NOT be blocked. The cron prompt is
         # fed to an LLM, not a shell, so substring detection on English text is

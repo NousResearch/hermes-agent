@@ -16,6 +16,7 @@ import re
 import subprocess
 import threading
 import time
+import uuid
 from dataclasses import dataclass, field, asdict
 from datetime import datetime, timezone
 from pathlib import Path
@@ -450,6 +451,8 @@ class GoalState:
     contract: GoalContract = field(default_factory=GoalContract)
     # /goal gate add <cmd>: ALL must pass before the judge may declare done.
     gates: List[GoalGate] = field(default_factory=list)
+    # Every durable mutation gets a new token, including pause/resume with equal values.
+    mutation_id: str = ""
 
     def to_json(self) -> str:
         return json.dumps(asdict(self), ensure_ascii=False)
@@ -462,6 +465,7 @@ class GoalState:
         floats = {k: float(data.get(k) or 0.0) for k in ("created_at", "last_turn_at", "waiting_until", "waiting_since")}
         return cls(
             goal=data.get("goal", ""),
+            mutation_id=str(data.get("mutation_id") or ""),
             status=data.get("status", "active"),
             max_turns=int(data.get("max_turns") or DEFAULT_MAX_TURNS),
             last_verdict=data.get("last_verdict"),
@@ -662,6 +666,7 @@ def save_goal(session_id: str, state: GoalState) -> None:
         _warn_dropped_write("GoalManager", "goal", session_id)
         return
     try:
+        state.mutation_id = uuid.uuid4().hex
         db.set_meta(_meta_key(session_id), state.to_json())
     except Exception as exc:
         logger.debug("GoalManager: set_meta failed: %s", exc)
@@ -1142,6 +1147,12 @@ class GoalManager:
     # --- mutation -----------------------------------------------------
 
     def _save(self) -> Optional[GoalState]:
+        snapshot = getattr(self, "_evaluation_snapshot", None)
+        if snapshot is not None:
+            from hermes_cli.goals_evaluation import assert_goal_snapshot
+            db, expected = snapshot
+            assert_goal_snapshot(self.session_id, expected, db)
+            return self._state
         save_goal(self.session_id, self._state)
         return self._state
 
@@ -1477,6 +1488,18 @@ class GoalManager:
         )
 
     def evaluate_after_turn(
+        self, last_response: str, *, user_initiated: bool = True,
+        background_processes: Optional[List[Dict[str, Any]]] = None,
+        active_delegations: int = 0,
+    ) -> Dict[str, Any]:
+        """Evaluate an isolated snapshot and atomically commit against its durable state."""
+        from hermes_cli.goals_evaluation import evaluate_goal_snapshot
+        return evaluate_goal_snapshot(
+            self, last_response, user_initiated=user_initiated,
+            background_processes=background_processes, active_delegations=active_delegations,
+        )
+
+    def _evaluate_after_turn(
         self, last_response: str, *, user_initiated: bool = True,
         background_processes: Optional[List[Dict[str, Any]]] = None,
         active_delegations: int = 0,

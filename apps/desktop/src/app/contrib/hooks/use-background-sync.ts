@@ -125,6 +125,46 @@ function tileRuntimeOwnsLiveState(runtimeId: string): boolean {
   return Boolean(state && (state.busy || state.awaitingResponse || state.needsInput || state.turnLive))
 }
 
+/** Whether any runtime (primary or tile) currently owns a live turn. */
+function anyRuntimeOwnsLiveState(): boolean {
+  return Object.values($sessionStates.get()).some(
+    state => state.busy || state.awaitingResponse || state.needsInput || state.turnLive
+  )
+}
+
+function isAnyLive(): boolean {
+  return $busy.get() || anyRuntimeOwnsLiveState()
+}
+
+/**
+ * Call `handler` once when live authority releases (the combined
+ * $busy-or-tile-live signal drops from true to false). Edge-triggered: the
+ * listeners only compare against the previous snapshot, so unrelated
+ * $sessionStates writes while nothing is live stay free.
+ */
+function subscribeLiveRelease(handler: () => void): () => void {
+  let wasLive = isAnyLive()
+
+  const check = () => {
+    const isLive = isAnyLive()
+    const released = wasLive && !isLive
+
+    wasLive = isLive
+
+    if (released) {
+      handler()
+    }
+  }
+
+  const unsubscribeBusy = $busy.listen(check)
+  const unsubscribeStates = $sessionStates.listen(check)
+
+  return () => {
+    unsubscribeBusy()
+    unsubscribeStates()
+  }
+}
+
 /** Backfill/retention may prepend or release a prefix without changing the tail. */
 function transcriptChangedDuringRead(before: ChatMessage[] | undefined, after: ChatMessage[] | undefined): boolean {
   if (before === after) {
@@ -1101,7 +1141,24 @@ export function useBackgroundSync({
 
     void refreshCurrentModel()
     void refreshActiveProfile()
-    void refreshSessions()
+
+    // On-open / reconnect stored-list refresh. On a first connect nothing is
+    // live, so this lands immediately as before. On a reconnect the renderer's
+    // atoms are freshly seeded while the backend may still be running a turn
+    // (bot chats live in tiles, so $busy alone never sees it) — landing the
+    // heavy list refresh then would remount interactive surfaces mid-turn, the
+    // same race the tick-driven pass guards. Defer until live authority
+    // releases; the tick pass below covers ticks arriving during the wait.
+    let unsubscribeRelease: (() => void) | null = null
+
+    if (isAnyLive()) {
+      unsubscribeRelease = subscribeLiveRelease(() => {
+        unsubscribeRelease = null
+        void refreshSessions()
+      })
+    } else {
+      void refreshSessions()
+    }
 
     // A RELATIVE workspace cwd (config `terminal.cwd: .`) renders as "." in the
     // file tree header — resolve it to the backend's absolute path once.
@@ -1117,6 +1174,10 @@ export function useBackgroundSync({
           }
         })
         .catch(() => undefined)
+    }
+
+    return () => {
+      unsubscribeRelease?.()
     }
   }, [activeConnectionId, activeGatewayProfile, gatewayState, refreshCurrentModel, refreshSessions, requestGateway])
 
@@ -1308,6 +1369,7 @@ export function useBackgroundSync({
     let lastRunAt = 0
     let timer: null | number = null
     let typingDeferTimer: null | number = null
+    let busyDeferPending = false
 
     const run = () => {
       lastRunAt = Date.now()
@@ -1345,6 +1407,20 @@ export function useBackgroundSync({
     // extends lastRendererInputAt, and the firing callback re-arms if still
     // warm. There is no starvation cap: a continuous burst keeps holding.
     const runWhenKeyboardQuiet = () => {
+      // A live turn already owns the active transcript through stream events.
+      // Pulling the full stored-session list underneath it can replace sidebar
+      // rows and remount interactive surfaces (composer / clarify cards). Hold
+      // the heavy pass until the turn settles, then consume all accumulated
+      // sessions.changed ticks with one refresh. Tiles carry the same authority
+      // as the primary chat (bot chats live in tiles), so the gate reads both
+      // live sources — the same pair every other live check here uses.
+      if ($busy.get() || anyRuntimeOwnsLiveState()) {
+        busyDeferPending = true
+
+        return
+      }
+
+      busyDeferPending = false
       const now = Date.now()
 
       if (!isTypingBurstActive(now)) {
@@ -1366,6 +1442,15 @@ export function useBackgroundSync({
       }
     }
 
+    // Fire the deferred pass when live authority releases — one shared
+    // edge-triggered seam, covering both the primary $busy edge and tile
+    // runtimes leaving live state (bot chats never touch $busy).
+    const unsubscribeLiveRelease = subscribeLiveRelease(() => {
+      if (busyDeferPending) {
+        runWhenKeyboardQuiet()
+      }
+    })
+
     const unsubscribe = $sessionsChangeTick.listen(() => {
       const since = Date.now() - lastRunAt
 
@@ -1383,6 +1468,7 @@ export function useBackgroundSync({
 
     return () => {
       unsubscribe()
+      unsubscribeLiveRelease()
 
       if (timer !== null) {
         window.clearTimeout(timer)

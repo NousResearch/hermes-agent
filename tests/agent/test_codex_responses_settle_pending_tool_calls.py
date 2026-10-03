@@ -130,10 +130,8 @@ def test_no_terminal_frame_does_not_settle_pending_function_call():
         _consume_codex_event_stream(events, model="gpt-test")
 
 
-def test_zero_argument_call_settles_with_canonical_empty_object():
-    """A call announced with zero argument deltas settles with ``{}`` instead
-    of ``""`` — the argument parser rejects ``json.loads("")``, which would
-    keep zero-argument tools unexecutable (review P2)."""
+def test_unconfirmed_zero_argument_announcement_is_not_executable():
+    """An announcement with no deltas and no arguments.done is not a call."""
     events = [
         SimpleNamespace(
             type="response.created",
@@ -150,7 +148,7 @@ def test_zero_argument_call_settles_with_canonical_empty_object():
                 arguments="",
             ),
         ),
-        # NOTE: zero argument deltas and no output_item.done for fc_1.
+        # NOTE: no argument deltas, arguments.done, or output_item.done for fc_1.
         SimpleNamespace(
             type="response.completed",
             response=SimpleNamespace(id="resp_1", status="completed", output=None),
@@ -163,8 +161,31 @@ def test_zero_argument_call_settles_with_canonical_empty_object():
         for item in final.output
         if getattr(item, "type", "") == "function_call"
     ]
-    assert calls, "zero-argument pending call was dropped instead of settled"
-    assert calls[0].arguments == "{}"
+    assert calls == []
+
+
+def test_explicit_zero_argument_call_settles_with_canonical_empty_object():
+    events = [
+        SimpleNamespace(type="response.created", response=SimpleNamespace(id="resp_1")),
+        SimpleNamespace(
+            type="response.output_item.added",
+            output_index=0,
+            item=SimpleNamespace(
+                type="function_call", id="fc_1", call_id="call_1", name="list_tools", arguments="",
+            ),
+        ),
+        SimpleNamespace(
+            type="response.function_call_arguments.done", item_id="fc_1", output_index=0, arguments="",
+        ),
+        SimpleNamespace(
+            type="response.completed",
+            response=SimpleNamespace(id="resp_1", status="completed", output=None),
+        ),
+    ]
+
+    final = _consume_codex_event_stream(events, model="gpt-test")
+    calls = [item for item in final.output if getattr(item, "type", "") == "function_call"]
+    assert calls and calls[0].arguments == "{}"
 
 
 def test_mixed_pending_and_done_calls_preserve_output_index_order():
@@ -260,6 +281,12 @@ def test_missing_done_output_index_preserves_observed_order():
                 name="first_tool",
                 arguments="",
             ),
+        ),
+        SimpleNamespace(
+            type="response.function_call_arguments.done",
+            item_id="fc_a",
+            output_index=0,
+            arguments="",
         ),
         SimpleNamespace(
             type="response.output_item.done",

@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -78,13 +79,17 @@ def main(argv=None):
         return 0
 
     with tempfile.TemporaryDirectory() as tmp:
+        env = os.environ.copy()
+        env["HOME"] = tmp
+        env["USERPROFILE"] = tmp
+        env["PATH"] = str(Path(soffice).parent) + os.pathsep + env.get("PATH", "")
+        profile_uri = Path(tmp).resolve().as_uri()
         proc = subprocess.run(
-            [soffice, "--headless", "--calc", "--convert-to", "xlsx:Calc "
+            [soffice, f"-env:UserInstallation={profile_uri}",
+             "--headless", "--calc", "--convert-to", "xlsx:Calc "
              "MS Excel 2007 XML", "--outdir", tmp, str(src)],
             capture_output=True, text=True, encoding="utf-8",
-            timeout=args.timeout,
-            env={"HOME": tmp, "PATH": Path(soffice).parent.as_posix()
-                 + ":/usr/bin:/bin"})
+            timeout=args.timeout, env=env)
         produced = Path(tmp) / (src.stem + ".xlsx")
         if proc.returncode != 0 or not produced.exists():
             print(json.dumps({"ok": False,

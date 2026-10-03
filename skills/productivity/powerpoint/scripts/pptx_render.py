@@ -19,6 +19,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+from pathlib import Path
 
 
 def find_tools():
@@ -46,8 +47,15 @@ def render(pptx_path, out_dir, prefix, dpi):
 
     os.makedirs(out_dir, exist_ok=True)
     with tempfile.TemporaryDirectory() as tmp:
+        # Un profilo LibreOffice isolato evita di condividere (e bloccarsi
+        # su) il profilo utente predefinito quando piu' conversioni girano
+        # in sequenza o in parallelo con un'altra sessione soffice.
+        profile_dir = os.path.join(tmp, "lo-profile")
+        os.makedirs(profile_dir, exist_ok=True)
+        profile_uri = Path(profile_dir).resolve().as_uri()
         proc = subprocess.run(
-            [soffice, "--headless", "--convert-to", "pdf",
+            [soffice, f"-env:UserInstallation={profile_uri}",
+             "--headless", "--convert-to", "pdf",
              "--outdir", tmp, pptx_path],
             capture_output=True, text=True, encoding="utf-8",
             errors="replace", timeout=300)

@@ -673,9 +673,23 @@ if [ ! -f "$HERMES_HOME/auth.json" ] && [ -n "${HERMES_AUTH_JSON_BOOTSTRAP:-}" ]
     if refuse_symlinked_path "seed" "$HERMES_HOME/auth.json"; then
         :
     else
+        # 0600 from the first instant: pre-create under a restrictive
+        # umask so the printf redirect below (which preserves the mode of
+        # the existing file) never exposes the credential under the
+        # ambient umask. Same-shell umask with save/restore — a
+        # `(umask 077 && ...)` subshell would leave the redirect to be
+        # created by the parent, under the ambient umask.
+        # ponytail: no install(1) fallback; if pre-create fails the chmod
+        # below still tightens, and failure now only warns (see below).
+        _auth_umask=$(umask)
+        umask 077
+        : > "$HERMES_HOME/auth.json" 2>/dev/null || true
+        umask "$_auth_umask"
+        unset _auth_umask
         printf '%s' "$HERMES_AUTH_JSON_BOOTSTRAP" > "$HERMES_HOME/auth.json"
         chown hermes:hermes "$HERMES_HOME/auth.json" 2>/dev/null || true
-        chmod 600 "$HERMES_HOME/auth.json"
+        chmod 600 "$HERMES_HOME/auth.json" 2>/dev/null \
+            || echo "[stage2] Warning: could not chmod $HERMES_HOME/auth.json — continuing"
     fi
 fi
 

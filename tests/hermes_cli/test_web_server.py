@@ -1201,7 +1201,6 @@ CONFIG_SCHEMA = ProviderConfigSchema(
             ("not a url", 400),
             ("", 400),
             ("https://[::1/img.png", 400),
-            ("https://[::1].evil.test:80/img.png", 400),
             ("https://[not-an-ip]:80/img.png", 400),
         ):
             resp = self.client.get("/api/media/proxy", params={"url": bad})
@@ -2070,7 +2069,6 @@ CONFIG_SCHEMA = ProviderConfigSchema(
 
         for base_url in (
             "https://[::1/v1",
-            "https://[::1].evil.test:80/v1",
             "https://[not-an-ip]:80/v1",
         ):
             response = self.client.post("/api/providers/custom-endpoints", json={

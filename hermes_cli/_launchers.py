@@ -12,6 +12,7 @@ interpreter before it publishes either command.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import shlex
 import sys
@@ -21,6 +22,8 @@ if __name__ == "__main__":
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from pm.environments import store_root
+
+logger = logging.getLogger(__name__)
 
 
 def _inline_string_literal(value: str) -> str:
@@ -371,11 +374,34 @@ def _publish_conveniences(root: Path, out_dir: Path, names, *, create: bool = Tr
     return published
 
 
+def _scratch_scope(path: Path) -> Path | None:
+    """The ``<home>/cache/scratch`` directory containing *path*, if any.
+
+    Scratch trees are reaped after idle, so a launcher bound to an
+    interpreter under one dies with exit 127 once the tree is pruned.
+    """
+    parts = Path(path).resolve().parts
+    for index in range(1, len(parts) - 1):
+        if parts[index] == "scratch" and parts[index - 1] == "cache":
+            return Path(*parts[:index + 1])
+    return None
+
+
 def stage_launcher(name: str, repo_root: Path, out_dir: Path) -> Path | None:
     """Publish one launcher bound to store Python, or refuse missing tools."""
     repo_root = Path(repo_root)
     store_python = resolve_store_python(repo_root)
     if store_python is not None:
+        # A process pointed at an e2e/fixture home (HERMES_HOME or
+        # HERMES_RUNTIME_DIR) resolves that fixture's store, which idle
+        # reaping later deletes; never let it reach a real install's bin.
+        scratch = _scratch_scope(store_python)
+        if scratch is not None and _scratch_scope(repo_root) != scratch:
+            logger.warning(
+                "refusing to publish launcher %r into %s: store python %s is under the"
+                " scratch root %s, not this install's store",
+                name, Path(out_dir), store_python, scratch)
+            return None
         path = mint_launcher(name, repo_root, out_dir, store_python, None)
         if path is not None and path.suffix == ".cmd":
             # cmd.exe prefers .exe. An older launcher must not shadow the

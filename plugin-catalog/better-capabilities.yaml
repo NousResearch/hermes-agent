@@ -1,0 +1,17 @@
+name: better-capabilities
+repo: https://github.com/apoapostolov/hermes-agent-awesome-plugins
+sha: 37fe9446bed8660fcf6c007a9f80226d6bd9e105
+subdir: plugins/better-capabilities
+description: "Delete plugins and skills, zip a skill folder, and save on/off presets on the Capabilities page."
+maintainer: apoapostolov
+tier: community
+category: desktop
+docs_url: https://github.com/apoapostolov/hermes-agent-awesome-plugins/tree/main/plugins/better-capabilities
+version: "1.0.0"
+image: https://raw.githubusercontent.com/apoapostolov/hermes-agent-awesome-plugins/37fe9446bed8660fcf6c007a9f80226d6bd9e105/plugins/better-capabilities/docs/hero.png
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

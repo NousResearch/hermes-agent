@@ -108,9 +108,12 @@ class SessionTitlesMixin:
                     # A deliberately archived hidden Bot Chat is a retired registry
                     # entry, not a live identity. Retire its name in the same title
                     # transaction so a replacement can become the sole canonical row;
-                    # the old session remains archived and otherwise untouched.
+                    # the old session remains archived and otherwise untouched. A
+                    # canonical row that predates born-hidden chats is archived but
+                    # visible; a hidden claimant is the canonical chat, so it retires
+                    # that row too (#119730).
                     elif (title == self.CANONICAL_BOT_CHAT_TITLE and bool(conflict["archived"])
-                          and bool(conflict["hidden"])):
+                          and (bool(conflict["hidden"]) or bool(current["hidden"]))):
                         conn.execute(
                             "UPDATE sessions SET title = NULL, title_source = NULL WHERE id = ?",
                             (conflict_id,),

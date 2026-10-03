@@ -144,10 +144,13 @@ def _validate_category(category: Optional[str]) -> Optional[str]:
     return _check_identifier(category, "Category", invalid)
 
 
-def _validate_frontmatter(content: str, *, new_skill: bool = False) -> Optional[str]:
+def _validate_frontmatter(content: str, *, new_skill: bool = False,
+                          expected_name: Optional[str] = None) -> Optional[str]:
     """Validate frontmatter (name + description) and a non-empty body. ``new_skill`` (create
     only) also enforces SKILL_PROMPT_DESC_LIMIT so new skills never lose routing signal to
-    index truncation; edit/patch skip it so existing over-limit skills stay maintainable."""
+    index truncation; edit/patch skip it so existing over-limit skills stay maintainable.
+    ``expected_name`` (the skill's directory name) also rejects a frontmatter 'name' that
+    diverges from it — such skills are undiscoverable via skill_view() (#21782)."""
     if not content.strip():
         return "Content cannot be empty."
     content = content.lstrip("\ufeff")  # tolerate a Windows UTF-8 BOM
@@ -165,6 +168,15 @@ def _validate_frontmatter(content: str, *, new_skill: bool = False) -> Optional[
     for field in ("name", "description"):
         if field not in parsed:
             return f"Frontmatter must include '{field}' field."
+    if expected_name is not None:
+        # ``expected_name`` may be a categorized path ("cat/name"); the directory (and the
+        # frontmatter) is keyed on the basename.
+        base = expected_name.rsplit("/", 1)[-1]
+        if str(parsed.get("name")) != base:
+            return (
+                f"Frontmatter 'name' ({parsed['name']!r}) does not match the skill directory "
+                f"name ({base!r}). These must be identical or the skill will be "
+                "undiscoverable via skill_view().")
     desc = str(parsed["description"])
     if len(desc) > MAX_DESCRIPTION_LENGTH:
         return f"Description exceeds {MAX_DESCRIPTION_LENGTH} characters."
@@ -414,7 +426,8 @@ def _clip(text: str, n: int, ellipsis: str) -> str:
 
 def _create_skill(name: str, content: str, category: str = None) -> Dict[str, Any]:
     if err := (_validate_name(name) or _validate_category(category)
-               or _validate_frontmatter(content, new_skill=True) or _validate_content_size(content)):
+               or _validate_frontmatter(content, new_skill=True, expected_name=name)
+               or _validate_content_size(content)):
         return _err(err)
     if existing := _find_skill(name):
         return _err(f"A skill named '{name}' already exists at {existing['path']}.")
@@ -455,7 +468,7 @@ def _create_skill(name: str, content: str, category: str = None) -> Dict[str, An
 
 def _edit_skill(name: str, content: str) -> Dict[str, Any]:
     """Replace the SKILL.md of any existing skill (full rewrite)."""
-    if err := _validate_frontmatter(content) or _validate_content_size(content):
+    if err := _validate_frontmatter(content, expected_name=name) or _validate_content_size(content):
         return _err(err)
     skill_dir, guard = _locate_for_write(name, "edit")
     # SKILL.md always exists here (_find_skill requires it), so a blocked scan restores it.
@@ -503,7 +516,7 @@ def _patch_skill(name: str, old_string: str, new_string: str, file_path: str = N
         return _err(match_error) | {"file_preview": _clip(content, 500, "...")}
     if err := _validate_content_size(new_content, label=target_label):
         return _err(err)
-    if not file_path and (err := _validate_frontmatter(new_content)):
+    if not file_path and (err := _validate_frontmatter(new_content, expected_name=name)):
         return _err(f"Patch would break SKILL.md structure: {err}")
     if guard := _guarded_write(name, skill_dir, target, "patch", target_label, new_content):
         return guard

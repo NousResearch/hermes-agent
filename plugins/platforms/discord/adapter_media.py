@@ -252,9 +252,13 @@ class DiscordMediaMixin:
                     self.name, len(files), chunk_idx + 1, len(chunks),
                 )
                 if self._is_forum_parent(channel):
-                    await self._forum_post_file(
+                    forum_result = await self._forum_post_file(
                         channel, content=(content or "").strip(), files=files,
                     )
+                    if not forum_result.success:
+                        # _forum_post_file reports failure in-band; route it through the
+                        # same per-image fallback an exception would hit.
+                        raise RuntimeError(forum_result.error or "forum post failed")
                 else:
                     await channel.send(content=content, files=files)
                 delivered = True

@@ -270,6 +270,7 @@ def _graceful_restart_via_sigusr1(pid: int, drain_timeout: float, *, on_progress
     """
     if not hasattr(signal, "SIGUSR1") or pid <= 0:
         return False
+    _record_control_initiation("restart", target_pid=pid, detail="sigusr1-drain")
     try:
         os.kill(pid, signal.SIGUSR1)  # windows-footgun: ok — POSIX signal, guarded by hasattr(signal, 'SIGUSR1') above
     except ProcessLookupError:
@@ -1061,6 +1062,7 @@ def _spawn_gateway_restart_watcher(old_pid: int, run_argv: list[str], *, host: b
     (the watcher would die with the CLI console), so ``windows_detach_popen_kwargs()`` supplies flags."""
     if old_pid <= 0 or not run_argv:
         return False
+    _record_control_initiation("restart", target_pid=old_pid, detail="detached-restart-watcher")
     from hermes_cli._subprocess_compat import windows_detach_flags_without_breakaway, windows_detach_popen_kwargs
 
     # Windows: ``run_argv`` leads with the venv's console ``python.exe`` — the interpreter we want:
@@ -4862,9 +4864,23 @@ def _service_backend(*, windows: bool = True) -> str | None:
     return None
 
 
+def _record_control_initiation(
+    action: str, target_pid: int | None = None, detail: str | None = None
+) -> None:
+    """Persist a gateway-exit-diag receipt for a control action BEFORE dispatching/signaling it
+    (who/where/what — user, transport, action, target PID; never argv). Never raises: forensics
+    must not be able to kill the operation it describes."""
+    with contextlib.suppress(Exception):
+        from gateway.lifecycle_ledger import record_gateway_control_initiation
+
+        record_gateway_control_initiation(action, target_pid, detail=detail)
+
+
 def _service_call(backend: str, verb: str, system: bool | None = False) -> None:
     """Run ``verb`` (start/stop/restart/uninstall) on ``backend``. Names resolve at call time so tests
     can monkeypatch them; only systemd takes a scope, and ``system=None`` omits it (wizard restart)."""
+    if verb in ("start", "stop", "restart"):
+        _record_control_initiation(verb, detail=f"backend={backend}")
     if backend == "windows":
         return getattr(_gw_windows(), verb)()
     if backend == "launchd":
@@ -4893,6 +4909,7 @@ def _dispatch_via_service_manager_if_s6(action: str, profile: str | None = None)
     mgr = get_service_manager()
     if action not in ("start", "stop", "restart"):
         return False
+    _record_control_initiation(action, detail=f"s6 gateway-{profile}")
     service = f"gateway-{profile}"
     try:
         try:

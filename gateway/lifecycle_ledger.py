@@ -108,6 +108,56 @@ def _append_exit_diag(record: Dict[str, Any], home: Optional[Path]) -> None:
         logger.debug("Failed to append unclean-exit record", exc_info=True)
 
 
+
+def record_gateway_control_initiation(
+    action: str,
+    target_pid: Optional[int] = None,
+    *,
+    home: Optional[Path] = None,
+    detail: Optional[str] = None,
+) -> None:
+    """Append a ``gateway.<action>_initiated`` receipt to gateway-exit-diag.log BEFORE a control
+    action (start/stop/restart) is dispatched or signaled — so "who restarted the gateway?" is
+    answerable from the log alone instead of reconstructed from shell history after the fact.
+
+    Identity is action + actor + transport only: like ``shutdown_forensics``, argv/cmdline bytes
+    are never persisted (tokens, URIs and ``-e KEY=`` overlays are unsafe to persist). Best-effort
+    like every other ledger writer — a diagnostic that could kill the operation it describes is
+    worse than no diagnostic, so this never raises.
+    """
+    record: Dict[str, Any] = {
+        "ts": time.time(),
+        "tag": f"gateway.{action}_initiated",
+        "action": action,
+        "initiator_pid": os.getpid(),
+    }
+    if target_pid is not None and target_pid > 0:
+        record["target_pid"] = target_pid
+    if detail:
+        record["detail"] = str(detail)[:200]
+    try:
+        import getpass
+
+        record["user"] = getpass.getuser()
+    except Exception:  # noqa: BLE001 — identity is best-effort
+        record["user"] = None
+    if os.environ.get("SSH_CLIENT") or os.environ.get("SSH_TTY"):
+        record["transport"] = "ssh"
+    elif os.environ.get("INVOCATION_ID"):
+        record["transport"] = "systemd"
+    elif os.environ.get("XPC_SERVICE_NAME"):
+        record["transport"] = "launchd"
+    elif os.isatty(0):
+        record["transport"] = "tty"
+    else:
+        record["transport"] = "non-interactive"
+    try:
+        record["hermes_home"] = str(home or _process_hermes_home())
+    except Exception:  # noqa: BLE001
+        pass
+    _append_exit_diag(record, home)
+
+
 def _pid_is_sentinel_owner(pid: Any, start_time: Any, create_time: Any) -> bool:
     """True when ``pid`` is a live process that is the sentinel's incarnation — guards the
     ``--replace`` race: a live matching owner mid-teardown is a handover, not a death.

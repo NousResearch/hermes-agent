@@ -101,6 +101,81 @@ def test_cold_worker_bootstrap_reuses_the_requests_cache(tmp_path, monkeypatch):
     assert dict(os.environ) == before
 
 
+def test_prepare_runtime_regenerates_missing_pm_lock(tmp_path, monkeypatch):
+    """#122941: a tree without pm/uv.lock must heal the lock, not crash repair bootstrap."""
+    import subprocess as _subprocess
+
+    from pm import runtime
+
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "pyproject.toml").write_text(
+        '[project]\nname="hermes-pm-runtime"\nversion="0.0.0"\n'
+        'requires-python=">=3.11"\ndependencies=[]\n[tool.uv]\npackage=false\n',
+        encoding="utf-8",
+    )
+    calls = []
+
+    def fake_run(command, **kwargs):
+        assert Path(command[0]) == tmp_path / "uv"
+        assert command[1] == "lock"
+        calls.append(command)
+        (Path(kwargs["cwd"]) / "uv.lock").write_text("# regenerated\n", encoding="utf-8")
+        return _subprocess.CompletedProcess(command, 0, "", "")
+
+    monkeypatch.setattr(runtime.subprocess, "run", fake_run)
+    monkeypatch.setattr(runtime, "_validate", lambda *args: "")
+    monkeypatch.setattr(runtime, "_hold_for_children", lambda environment: None)
+    monkeypatch.setattr(runtime, "runtime_environment", lambda: {})
+    staged = {}
+
+    def fake_stage(uv, python, environment, **kwargs):
+        Path(environment).mkdir(parents=True)
+        staged["environment"] = environment
+        return environment
+
+    monkeypatch.setattr("pm.runtime_stage.stage_runtime", fake_stage)
+
+    python = runtime.prepare_runtime(
+        tmp_path / "uv", Path(sys.executable), tmp_path / "runtime", project=project,
+    )
+    assert (project / "uv.lock").is_file()
+    assert len(calls) == 1
+    assert Path(python) == staged["environment"]
+
+
+def test_prepare_runtime_missing_pm_manifest_is_actionable(tmp_path):
+    """#122941: neither manifest nor lock present must raise InstallError, not FileNotFoundError."""
+    from pm import runtime
+    from pm.package import InstallError
+
+    with pytest.raises(InstallError, match="manifest is missing"):
+        runtime.prepare_runtime(
+            tmp_path / "uv", Path(sys.executable), tmp_path / "runtime",
+            project=tmp_path / "empty",
+        )
+
+
+def test_prepare_runtime_missing_manifest_with_lock_present_is_actionable(tmp_path):
+    """#122941: the guard must not be short-circuited by a surviving stale lock.
+
+    A tree carrying ``uv.lock`` but no ``pyproject.toml`` (the sibling of the
+    snapshot bug this PR fixes) used to slip past the guard and blow up as a
+    FileNotFoundError in the identity read; it must be the actionable InstallError.
+    """
+    from pm import runtime
+    from pm.package import InstallError
+
+    project = tmp_path / "stale"
+    project.mkdir()
+    (project / "uv.lock").write_text("# stale lock\n", encoding="utf-8")
+
+    with pytest.raises(InstallError, match="manifest is missing"):
+        runtime.prepare_runtime(
+            tmp_path / "uv", Path(sys.executable), tmp_path / "runtime", project=project,
+        )
+
+
 @pytest.mark.platforms("macos", "windows")
 def test_sealed_worker_command_uses_only_its_recorded_site(tmp_path, monkeypatch):
     from pm import paths

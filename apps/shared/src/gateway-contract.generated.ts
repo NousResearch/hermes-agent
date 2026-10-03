@@ -1820,6 +1820,40 @@ export interface I18nCatalogResult {
   surface: LocaleSurface
   messages: Record<string, string>
 }
+export interface MemoryPendingParams {
+  session_id?: string | null
+  profile?: string | null
+}
+export interface MemoryPendingResult {
+  write_approval: boolean
+  batches: MemoryReviewBatch[]
+}
+export interface MemoryReviewBatch {
+  id: string
+  summary: string
+  origin: string
+  created_at: number
+  target: string
+  action: string
+  operation_count: number
+  before: string
+  after: string
+  diff: string
+  revision: string
+  can_approve: boolean
+  error: string
+}
+export interface MemoryDecideParams {
+  session_id?: string | null
+  profile?: string | null
+  id: string
+  decision: 'approve' | 'reject'
+  revision: string
+}
+export interface MemoryDecideResult {
+  success: boolean
+  error?: string
+}
 export type PingParams = Record<string, never>
 export interface PingResult {
   pong: boolean
@@ -5086,6 +5120,8 @@ export interface RpcMethods {
   'mcp.servers.status': { params: ProfileParams; result: McpServersStatusResult }
   /** Connect, list tools, disconnect — an OAuth server with no token on disk is reported as not ok. */
   'mcp.servers.test': { params: McpServerNameParams; result: McpServersTestResult }
+  'memory.decide': { params: MemoryDecideParams; result: MemoryDecideResult }
+  'memory.pending': { params: MemoryPendingParams; result: MemoryPendingResult }
   /** Set/clear one author's emoji reaction on a message; returns the row's full reaction list. */
   'message.react': { params: MessageReactParams; result: MessageReactResult }
   /** Remove every credential (env keys and OAuth state) for a provider. */
@@ -5487,6 +5523,8 @@ export const RPC_METHODS = [
   'mcp.servers.set_api_key',
   'mcp.servers.status',
   'mcp.servers.test',
+  'memory.decide',
+  'memory.pending',
   'message.react',
   'model.disconnect',
   'model.options',

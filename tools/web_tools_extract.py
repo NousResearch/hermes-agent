@@ -152,14 +152,11 @@ async def _dispatch_extract(provider, fetch_urls: List[str], format: Optional[st
     Rescue fires on a raised exception — including a dispatch timeout — or when the WHOLE batch
     failed (backend outage, not per-page problems). Rescued batches are never cached.
     """
-    import inspect
+    from tools.web_routing import _extract_with_jina_escalation, _is_usable_extraction
     from tools.web_result_cache import extract_cache_put
     timeout = _extract_timeout_seconds()
     try:
-        if inspect.iscoroutinefunction(provider.extract):
-            coro = provider.extract(fetch_urls, format=format)
-        else:  # sync extract() runs in a thread so network I/O never blocks the loop
-            coro = asyncio.to_thread(provider.extract, fetch_urls, format=format)
+        coro = _extract_with_jina_escalation(provider, fetch_urls, format=format)
         if timeout > 0:
             results = await asyncio.wait_for(coro, timeout=timeout)
         else:
@@ -191,7 +188,7 @@ async def _dispatch_extract(provider, fetch_urls: List[str], format: Optional[st
         source = meta.get("sourceURL") if isinstance(meta, dict) else None
         url = next((u for u in (fetched.get("url"), source) if u in requested), None)
         _content = fetched.get("raw_content", "") or fetched.get("content", "")
-        if url and _content and not fetched.get("error"):
+        if url and _content and _is_usable_extraction(fetched):
             extract_cache_put(url, _content, fetched.get("title", ""), format=format, provider=provider.name)
     return results
 

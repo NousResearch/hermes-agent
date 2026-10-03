@@ -57,6 +57,7 @@ def test_archived_only_view_includes_hidden_archived_sessions(db):
     there, otherwise it is unreachable from every UI list (#90946)."""
     db.create_session("plain", source="cli")
     db.create_session("both", source="cli")
+    db.set_session_title("both", "Bot Chat")
     assert db.set_session_hidden("both", True) is True
     assert db.set_session_archived("both", True) is True
 

@@ -348,6 +348,13 @@ def _create_overrides(params: dict) -> tuple:
     return model_override, reasoning_override, service_tier_override
 
 
+def _live_hide_authorized(session: dict) -> bool:
+    """``session_hide_authorized`` for a live record whose row (and queued title) may not exist yet."""
+    from hermes_state_sessions import session_hide_authorized
+    return session_hide_authorized(title=session.get("pending_title"), source=session.get("source"),
+                                   room_plumbing=bool(session.get("room_plumbing")))
+
+
 def _create_session(rid, params: dict, *, copy_parent_history: bool = False) -> dict:
     """``session.create``; ``copy_parent_history`` (``session.branch_stored``) reads the parent's
     transcript server-side and omits it from the reply."""
@@ -449,7 +456,11 @@ def _create_session(rid, params: dict, *, copy_parent_history: bool = False) -> 
             "create_reasoning_override": create_reasoning_override,
             "create_service_tier_override": create_service_tier_override,
             "parent_session_id": parent_session_id, "pending_title": _str_param(params, "title") or None,
-            "pending_hidden": _flag(params, "hidden"), "room_plumbing": _flag(params, "room_plumbing"),
+            # A client's ``hidden`` is honoured only for plumbing; an ordinary chat is born listable.
+            "pending_hidden": _flag(params, "hidden") and _live_hide_authorized(
+                {"pending_title": _str_param(params, "title"), "source": source,
+                 "room_plumbing": _flag(params, "room_plumbing")}),
+            "room_plumbing": _flag(params, "room_plumbing"),
             "follow_profile_config": _flag(params, "follow_profile_config"),
             "profile_home": str(profile_home) if profile_home is not None else None,
             "running": False, "session_key": key, "show_reasoning": _load_show_reasoning(), "source": source,
@@ -1291,17 +1302,20 @@ def _(rid, params: dict) -> dict:
         if db is None:
             return _db_unavailable_error(rid, code=5007)
         try:
+            # The store refuses to hide a non-plumbing row; ``hidden`` in the reply is what took effect.
             if session is not None:
                 key = session["session_key"]
-                if not db.set_session_hidden(key, hidden):
-                    session["pending_hidden"] = hidden  # no row yet: _ensure_session_db_row is born hidden
+                applied = db.set_session_hidden(key, hidden)
+                if not applied and db.get_session(key) is None:
+                    # No row yet: _ensure_session_db_row is born hidden — only if the draft is plumbing.
+                    session["pending_hidden"] = applied = hidden and _live_hide_authorized(session)
             else:
                 # ``resolve_session_id`` follows key/title aliases like the REST pin/archive path.
                 target = _str_param(params, "session_id")
                 if not (key := db.resolve_session_id(target) if hasattr(db, "resolve_session_id") else target):
                     return _err(rid, 4001, "session not found")
-                db.set_session_hidden(key, hidden)
-            return _ok(rid, {"hidden": hidden, "session_key": key})
+                applied = db.set_session_hidden(key, hidden)
+            return _ok(rid, {"hidden": bool(hidden and applied), "session_key": key})
         except Exception as e:
             return _err(rid, 5007, str(e))
 

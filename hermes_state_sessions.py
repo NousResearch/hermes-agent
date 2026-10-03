@@ -198,6 +198,19 @@ def _delete_delegate_children(conn, parent_ids: List[str]) -> List[str]:
 # console — excludes them. A deny-list, so new interactive platforms surface automatically.
 INTERNAL_LISTING_SOURCES = ("kanban", "tool", "oneshot")
 
+# ``hidden`` is plumbing-only: the Bot Mode titles its sweep owns, group-room member sessions ("Group: "
+# titles / ``room_plumbing``), and the internal listing sources. An ordinary chat is never hidden, whatever
+# flag a client sends — a hidden user chat vanishes from session.list and search with no way back.
+_PLUMBING_HIDDEN_TITLES = frozenset({"Bot Chat", "Agent Inbox"})
+
+
+def session_hide_authorized(*, title: str | None = None, source: str | None = None,
+                            room_plumbing: bool = False) -> bool:
+    """True only for internal plumbing that may leave the default session list."""
+    title = (title or "").strip()
+    return (room_plumbing or title in _PLUMBING_HIDDEN_TITLES or title.startswith("Group:")
+            or (source or "").strip().lower() in INTERNAL_LISTING_SOURCES)
+
 SESSION_STATUS_COMPLETE = "complete"
 SESSION_STATUS_INTERRUPTED = "interrupted"
 SESSION_STATUS_ERROR = "error"
@@ -1007,7 +1020,16 @@ class SessionSessionsMixin:
         return result
 
     def set_session_hidden(self, session_id: str, hidden: bool) -> bool:
-        """Hide/unhide a session and its compression lineage from the default listing; still resumable."""
+        """Hide/unhide a session and its compression lineage from the default listing; still resumable.
+
+        Hiding is refused (no write, False) unless some row of the lineage it writes is plumbing
+        (``session_hide_authorized``): a compression tip is untitled while its root holds the title."""
+        if hidden and not any(
+                row and session_hide_authorized(
+                    title=row.get("title"), source=row.get("source"),
+                    room_plumbing=bool(_parse_model_config(row.get("model_config")).get("room_plumbing")))
+                for row in map(self.get_session, self.get_compression_lineage(session_id))):
+            return False
         return self._set_lineage_column("hidden", session_id, int(hidden))
 
     def set_session_read(self, session_id: str, read: bool = True) -> bool:

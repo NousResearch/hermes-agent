@@ -451,10 +451,20 @@ def _ensure_session_db_row(session: dict) -> bool:
                 # and deep links can't resolve them (#99222).
                 profile_name=profile_name_for_home(profile_home) or _current_profile_name())
             # Born hidden (session.create hidden=true, or set_hidden before the row existed): apply the deferred intent.
+            # Only the stored row may vouch for hiding, so land the queued title first; a conflicting title (a
+            # second "Bot Chat") is dropped as the post-turn apply would, and the row stays listable. Applied or
+            # refused as not plumbing, the intent is spent — only a raised write retries on the next persist.
             if session.get("pending_hidden"):
                 try:
-                    if db.set_session_hidden(key, True):
-                        session.pop("pending_hidden", None)
+                    if title := session.get("pending_title"):
+                        try:
+                            if db.set_session_title(key, title):
+                                session["pending_title"] = None
+                        except ValueError as exc:
+                            session["pending_title"] = None
+                            logger.info("Dropping pending title for session %s: %s", key, exc)
+                    db.set_session_hidden(key, True)
+                    session.pop("pending_hidden", None)
                 except Exception:
                     logger.debug("failed to apply pending hidden flag", exc_info=True)
             # Same deferral for session.archive before the row existed (mirrors pending_hidden).

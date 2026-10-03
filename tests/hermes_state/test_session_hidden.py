@@ -15,6 +15,7 @@ def db(tmp_path):
 def test_hidden_excluded_by_default_included_on_request(db):
     db.create_session("visible", source="cli")
     db.create_session("secret", source="cli")
+    db.set_session_title("secret", "Agent Inbox")  # only plumbing rows are hideable
     # Give both a message so the default min_message_count filter keeps them.
     for sid in ("visible", "secret"):
         db._conn.execute(

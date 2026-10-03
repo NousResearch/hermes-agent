@@ -32,15 +32,17 @@ def _call(method: str, params: dict) -> dict:
     return srv._methods[method](1, params)
 
 
-def _seed(db, sid: str) -> None:
+def _seed(db, sid: str, title: str | None = None) -> None:
     db.create_session(sid, source="desktop")
+    if title:  # only plumbing titles (the ones Bot Mode's sweep owns) are hideable
+        db.set_session_title(sid, title)
     db._conn.execute("UPDATE sessions SET message_count = 1 WHERE id = ?", (sid,))
     db._conn.commit()
 
 
 def test_set_hidden_resolves_stored_id_without_live_session(db):
     """A stored (non-live) session id must be hideable — the sweep path."""
-    _seed(db, "stored-chat")
+    _seed(db, "stored-chat", "Agent Inbox")
     assert srv._find_live_session_by_key("stored-chat") is None
 
     envelope = _call("session.set_hidden", {"session_id": "stored-chat", "hidden": True})
@@ -71,7 +73,7 @@ def test_set_hidden_without_flag_leaves_visible_session_alone(db):
 
 def test_session_list_include_hidden(db):
     _seed(db, "plain-chat")
-    _seed(db, "bot-chat")
+    _seed(db, "bot-chat", "Bot Chat")
     assert db.set_session_hidden("bot-chat", True) is True
 
     default_rows = _call("session.list", {})["result"]["sessions"]

@@ -5779,6 +5779,8 @@ class TestSessionPatchUnread:
         assert resp.status_code == 422  # pydantic validation
 
     def test_patch_hidden_updates_persisted_session_without_live_runtime(self):
+        # Only plumbing rows are hideable; the Bot Mode sweep hides its "Agent Inbox" this way.
+        self.auth_client.patch("/api/sessions/s1", json={"title": "Agent Inbox"})
         resp = self.auth_client.patch("/api/sessions/s1", json={"hidden": True})
         assert resp.status_code == 200
         assert resp.json()["hidden"] is True

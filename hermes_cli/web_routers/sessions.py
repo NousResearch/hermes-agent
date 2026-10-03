@@ -871,8 +871,9 @@ async def rename_session_endpoint(session_id: str, body: SessionRename):
         for flag, setter in _RENAME_FLAG_SETTERS:
             value = getattr(body, flag)
             if value is not None:
-                setter(db, sid, value)
-                result[flag] = bool(value)
+                applied = setter(db, sid, value)
+                # What took effect: the store refuses to hide a row that is not plumbing.
+                result[flag] = bool(value) and bool(applied)
         result["title"] = db.get_session_title(sid) or ""
         return result
 

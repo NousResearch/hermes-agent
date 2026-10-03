@@ -7,6 +7,7 @@ import logging
 import contextvars
 import json
 import os
+import re
 import threading
 import time
 from concurrent.futures import TimeoutError as FuturesTimeoutError
@@ -468,6 +469,96 @@ def _merge_late_steer(result: Dict[str, Any], subagent_id: Optional[str], child:
         result["pending_steer"] = f"{existing}\n{late}" if isinstance(existing, str) and existing else late
 
 
+
+_QWEN_TEXT_TOOL_CALL_PATTERNS = (
+    re.compile(r"<tool_call\b[^>]*>\s*<function=([A-Za-z_][A-Za-z0-9_.:-]*)>", re.IGNORECASE),
+    re.compile(r'<tool_call\b[^>]*>\s*\{\s*"name"\s*:\s*"([A-Za-z_][A-Za-z0-9_.:-]*)"', re.IGNORECASE),
+)
+
+
+def _qwen_text_tool_call_name(child: Any, text: Any) -> Optional[str]:
+    """Return a known child tool named by Qwen XML that leaked into assistant text.
+
+    Qwen's XML parser permits ordinary content before a tool call, so this scans
+    the whole response rather than only its first token. Requiring the structural
+    <tool_call> -> <function=name> sequence and a tool actually exposed to this
+    child avoids treating prose that merely mentions the markers as execution.
+    """
+    if not isinstance(text, str) or not text:
+        return None
+    tool_names = getattr(child, "valid_tool_names", None)
+    if not isinstance(tool_names, (set, frozenset, list, tuple)):
+        return None
+    known = {name.casefold() for name in tool_names if isinstance(name, str)}
+    if not known:
+        return None
+    for pattern in _QWEN_TEXT_TOOL_CALL_PATTERNS:
+        for match in pattern.finditer(text):
+            if match.group(1).casefold() in known:
+                return match.group(1)
+    return None
+
+
+def _retry_leaked_qwen_tool_call(
+    child: Any, result: Dict[str, Any], task_index: int, child_task_id: str, relay_child_text: Any,
+) -> bool:
+    """Retry once when Qwen XML reached final_response instead of tool_calls.
+
+    The leaked text is not executable work. A successful correction replaces the
+    answer and continues through the normal schema/result path. If the retry
+    fails, is still leaked XML, or returns a provider failure, the existing
+    result-entry error contract carries that terminal state.
+    """
+    if result.get("interrupted", False):
+        return False
+    tool_name = _qwen_text_tool_call_name(child, result.get("final_response"))
+    if tool_name is None:
+        return False
+
+    correction = (
+        f"Your previous reply leaked a Qwen XML call for `{tool_name}` into assistant text, so it was not executed. "
+        "Continue the task by making that tool call through the structured tool-call channel. "
+        "Do not paste <tool_call>/<function=...> markup as text. If no tool is needed, answer in prose."
+    )
+    retry_result = None
+    try:
+        from agent.delegation_context import delegated_child_context
+        with delegated_child_context(str(getattr(child, "session_id", "") or "")):
+            retry_result = child.run_conversation(
+                user_message=correction, task_id=child_task_id, stream_callback=relay_child_text,
+            )
+    except Exception as retry_exc:
+        logger.warning("Subagent %d leaked-tool-call retry failed: %s", task_index, retry_exc)
+
+    if isinstance(retry_result, dict):
+        retry_text = retry_result.get("final_response") or ""
+        if retry_text.strip():
+            result["final_response"] = retry_text
+        for key in ("completed", "failed", "error", "failure_reason", "interrupted"):
+            if key in retry_result:
+                result[key] = retry_result[key]
+        try:
+            result["api_calls"] = int(result.get("api_calls", 0) or 0) + int(retry_result.get("api_calls", 0) or 0)
+        except (TypeError, ValueError):
+            pass
+        retry_messages = retry_result.get("messages")
+        if isinstance(retry_messages, list) and isinstance(result.get("messages"), list):
+            result["messages"] = result["messages"] + retry_messages
+
+    if (
+        not result.get("interrupted", False)
+        and not result.get("failed", False)
+        and not result.get("error")
+        and _qwen_text_tool_call_name(child, result.get("final_response")) is not None
+    ):
+        result["failed"] = True
+        result["failure_reason"] = "unparsed_tool_call"
+        result["error"] = (
+            "Final reply still contained a Qwen XML tool call emitted as assistant text after one correction retry; "
+            "that text was not executed."
+        )
+    return True
+
 @dataclass
 class _SchemaOutcome:
     schema: Optional[Dict[str, Any]]
@@ -482,6 +573,10 @@ def _validate_child_output_schema(
     dict on ``child._delegate_output_schema``) take no branch here so their result entry stays byte-identical."""
     _output_schema = getattr(child, "_delegate_output_schema", None)
     if not isinstance(_output_schema, dict):
+        return _SchemaOutcome(_output_schema, None, [], 0)
+    # A correction turn can itself terminate in a provider/runtime failure.
+    # Never spend a schema retry trying to validate an error payload.
+    if result.get("failed", False) or result.get("error"):
         return _SchemaOutcome(_output_schema, None, [], 0)
     from tools.delegation_output_schema import build_retry_message, validate_output
     _first_text = result.get("final_response") or ""

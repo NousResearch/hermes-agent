@@ -648,6 +648,36 @@ class TestMatrixMarkdownToHtml:
         assert "<th>Item</th>" in result
         assert "<td>Apples</td>" in result
 
+    @pytest.mark.parametrize(
+        ("text", "html"),
+        [
+            (
+                "Use `!help <text>`, !help <text> or /<file path>.",
+                "Use <code>!help &lt;text&gt;</code>, !help &lt;text&gt; or /&lt;file path&gt;.",
+            ),
+            ("<kbd>under</kbd>, <x> a <x> b </x> and <y/> c", "under, &lt;x&gt; a  b  and  c"),
+            (
+                '<plaintext><a href="javascript:alert(1)">x</a> <b onclick="x">still</b>',
+                "&lt;plaintext&gt;<a>x</a> <b>still</b>",
+            ),
+        ],
+        ids=["unclosed-placeholders", "closed-unknown-elements", "markup-after-raw-text-name"],
+    )
+    def test_unknown_tags_stay_visible_unless_closed(self, text, html):
+        assert self.adapter._markdown_to_html(text) == html
+
+    @pytest.mark.parametrize(
+        "name",
+        ["title", "textarea", "script", "style", "xmp", "iframe", "noembed", "noframes", "plaintext"],
+    )
+    def test_raw_text_element_placeholder_keeps_later_markup(self, name):
+        text = f"Use `<{name}>` or <{name}> now.\n\nThen **bold** & done."
+        html = (
+            f"<p>Use <code>&lt;{name}&gt;</code> or &lt;{name}&gt; now.</p>\n"
+            "<p>Then <strong>bold</strong> &amp; done.</p>"
+        )
+        assert self.adapter._markdown_to_html(text) == html
+
 
 # ---------------------------------------------------------------------------
 # Helper: display name extraction

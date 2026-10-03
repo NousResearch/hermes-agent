@@ -269,7 +269,13 @@ class _MatrixHtmlSanitizer(HTMLParser):
     def __init__(self) -> None:
         super().__init__(convert_charrefs=False)
         self._parts: list[str] = []
-        self._skip_depth = 0
+        self._unknown_open: dict[str, list[int]] = {}
+
+    def set_cdata_mode(self, *_args, **_kwargs) -> None:
+        # HTMLParser reads the content after <title>, <script>, <plaintext> and similar start tags as raw
+        # text. A lone placeholder with one of those names would turn the rest of the message into escaped
+        # markup, so the sanitizer parses the content of every element as HTML.
+        return
 
     @staticmethod
     def _safe_url(value: str) -> str:
@@ -295,32 +301,32 @@ class _MatrixHtmlSanitizer(HTMLParser):
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         tag = tag.lower()
-        if tag in {"script", "style"}:
-            self._skip_depth += 1
-        elif not self._skip_depth and tag in self._ALLOWED_TAGS:
+        if tag in self._ALLOWED_TAGS:
             self._parts.append(f"<{tag}>" if tag in self._VOID_TAGS else f"<{tag}{self._safe_attrs(tag, attrs)}>")
+            return
+        # The plain body shows an argument placeholder such as <name> as text, so an unknown start tag
+        # stays visible unless a matching end tag follows.
+        self._unknown_open.setdefault(tag, []).append(len(self._parts))
+        self._parts.append(_html_escape(self.get_starttag_text() or ""))
 
     def handle_endtag(self, tag: str) -> None:
         tag = tag.lower()
-        if tag in {"script", "style"} and self._skip_depth:
-            self._skip_depth -= 1
+        if tag not in self._ALLOWED_TAGS:
+            if opened := self._unknown_open.get(tag):
+                self._parts[opened.pop()] = ""
             return
-        if self._skip_depth or tag not in self._ALLOWED_TAGS or tag in self._VOID_TAGS:
+        if tag in self._VOID_TAGS:
             return
         self._parts.append(f"</{tag}>")
 
-    def _emit(self, text: str) -> None:
-        if not self._skip_depth:
-            self._parts.append(text)
-
     def handle_data(self, data: str) -> None:
-        self._emit(_html_escape(data))
+        self._parts.append(_html_escape(data))
 
     def handle_entityref(self, name: str) -> None:
-        self._emit(f"&{name};")
+        self._parts.append(f"&{name};")
 
     def handle_charref(self, name: str) -> None:
-        self._emit(f"&#{name};")
+        self._parts.append(f"&#{name};")
 
     def get_html(self) -> str:
         return "".join(self._parts)

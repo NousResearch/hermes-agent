@@ -812,6 +812,141 @@ class TestDownloadMedia:
             assert fh.read() == b"\xff\xd8\xff\xe0jpegdata"
 
     @pytest.mark.asyncio
+    async def test_media_redirect_does_not_forward_bearer_cross_origin(self, tmp_path):
+        from gateway.platforms import whatsapp_cloud as wac
+
+        class FakeClient:
+            def __init__(self):
+                self.calls = []
+
+            async def get(self, url, *, headers):
+                self.calls.append((url, dict(headers)))
+                if len(self.calls) == 1:
+                    return MagicMock(status_code=200, json=MagicMock(return_value={
+                        "url": "https://lookaside.fbsbx.com/whatsapp_business/attachments/1",
+                        "mime_type": "image/jpeg",
+                    }))
+                if len(self.calls) == 2:
+                    return MagicMock(
+                        status_code=302,
+                        headers={"location": "https://scontent.example.fbcdn.net/media/1"},
+                    )
+                return MagicMock(status_code=200, content=b"jpeg")
+
+        adapter = _make_adapter(access_token="secret-token")
+        client = FakeClient()
+        adapter._http_client = client  # type: ignore[assignment]
+
+        with _patch.object(wac, "_INBOUND_MEDIA_CACHE", tmp_path):
+            local_path, mime = await adapter._download_media_to_cache("media_xyz")
+
+        assert local_path is not None and mime == "image/jpeg"
+        assert client.calls[1][1]["Authorization"] == "Bearer secret-token"
+        assert "Authorization" not in client.calls[2][1]
+
+    # Review on #129890 (kvnloo, Enough1122): the allowlist must be pinned on REJECT paths too, both
+    # for the signed URL Graph returns and for every redirect hop — deleting or loosening the host
+    # check has to fail the suite, not just dropping the cross-origin Authorization pop.
+    _REJECTED_MEDIA_URLS = [
+        "http://lookaside.fbsbx.com/whatsapp_business/attachments/1",  # downgrade to plain HTTP
+        "https://lookaside.fbsbx.com.evil.com/whatsapp_business/attachments/1",  # allowed host as prefix
+        "https://scontent.fbcdn.net.attacker.example/media/1",  # allowed suffix, not at the end
+        "https://evilfbcdn.net/media/1",  # suffix without the anchoring dot
+        "https://fbcdn.net/media/1",  # bare suffix domain is not a *.fbcdn.net host
+        "https://attacker.example/media/1",
+        "https://user:pass@lookaside.fbsbx.com/whatsapp_business/attachments/1",  # embedded credentials
+        "https://token@lookaside.fbsbx.com/whatsapp_business/attachments/1",  # username only
+        "https://lookaside.fbsbx.com@attacker.example/media/1",  # allowed host as userinfo
+        "https://lookaside.fbsbx.com:8443/whatsapp_business/attachments/1",  # non-443 port
+        "https://[::1]/media/1",
+    ]
+
+    @staticmethod
+    def _media_client(temp_url, hops):
+        """Graph metadata → ``temp_url``, then one scripted response per byte fetch in ``hops``
+        (a str is a 302 Location; anything else is a 200 body)."""
+
+        class FakeClient:
+            def __init__(self):
+                self.calls = []
+
+            async def get(self, url, *, headers):
+                self.calls.append((url, dict(headers)))
+                if len(self.calls) == 1:
+                    return MagicMock(status_code=200, json=MagicMock(return_value={
+                        "url": temp_url, "mime_type": "image/jpeg"}))
+                hop = hops[len(self.calls) - 2]
+                if isinstance(hop, str):
+                    return MagicMock(status_code=302, headers={"location": hop})
+                return MagicMock(status_code=200, content=hop)
+
+        return FakeClient()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("temp_url", _REJECTED_MEDIA_URLS)
+    async def test_untrusted_signed_media_url_is_never_fetched(self, tmp_path, temp_url):
+        from gateway.platforms import whatsapp_cloud as wac
+
+        adapter = _make_adapter(access_token="secret-token")
+        client = self._media_client(temp_url, [b"jpeg"])
+        adapter._http_client = client  # type: ignore[assignment]
+
+        with _patch.object(wac, "_INBOUND_MEDIA_CACHE", tmp_path):
+            assert await adapter._download_media_to_cache("media_xyz") == (None, None)
+
+        assert len(client.calls) == 1  # only the Graph metadata call: no byte fetch, no bearer sent
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("location", _REJECTED_MEDIA_URLS)
+    async def test_untrusted_media_redirect_is_never_followed(self, tmp_path, location):
+        from gateway.platforms import whatsapp_cloud as wac
+
+        adapter = _make_adapter(access_token="secret-token")
+        client = self._media_client(
+            "https://lookaside.fbsbx.com/whatsapp_business/attachments/1", [location, b"jpeg"])
+        adapter._http_client = client  # type: ignore[assignment]
+
+        with _patch.object(wac, "_INBOUND_MEDIA_CACHE", tmp_path):
+            assert await adapter._download_media_to_cache("media_xyz") == (None, None)
+
+        assert len(client.calls) == 2  # metadata + the trusted URL; the redirect target is untouched
+        assert all(url != location for url, _headers in client.calls)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("location", [
+        "/whatsapp_business/attachments/1?retry=1",  # relative Location resolves to the same origin
+        "https://LOOKASIDE.fbsbx.com:443/whatsapp_business/attachments/1",  # case + explicit 443
+    ])
+    async def test_same_origin_media_redirect_keeps_bearer(self, tmp_path, location):
+        from gateway.platforms import whatsapp_cloud as wac
+
+        adapter = _make_adapter(access_token="secret-token")
+        client = self._media_client(
+            "https://lookaside.fbsbx.com/whatsapp_business/attachments/1", [location, b"jpeg"])
+        adapter._http_client = client  # type: ignore[assignment]
+
+        with _patch.object(wac, "_INBOUND_MEDIA_CACHE", tmp_path):
+            local_path, mime = await adapter._download_media_to_cache("media_xyz")
+
+        assert local_path is not None and mime == "image/jpeg"
+        assert len(client.calls) == 3
+        assert client.calls[2][1]["Authorization"] == "Bearer secret-token"
+
+    @pytest.mark.asyncio
+    async def test_media_redirect_chain_is_bounded(self, tmp_path):
+        from gateway.platforms import whatsapp_cloud as wac
+
+        adapter = _make_adapter(access_token="secret-token")
+        loop_url = "https://lookaside.fbsbx.com/whatsapp_business/attachments/1"
+        client = self._media_client(loop_url, [loop_url] * (wac._MEDIA_REDIRECT_LIMIT + 5))
+        adapter._http_client = client  # type: ignore[assignment]
+
+        with _patch.object(wac, "_INBOUND_MEDIA_CACHE", tmp_path):
+            assert await adapter._download_media_to_cache("media_xyz") == (None, None)
+
+        assert len(client.calls) == 1 + wac._MEDIA_REDIRECT_LIMIT + 1
+
+    @pytest.mark.asyncio
     async def test_metadata_failure_returns_none(self):
         adapter = _make_adapter()
         adapter._http_client = MagicMock()

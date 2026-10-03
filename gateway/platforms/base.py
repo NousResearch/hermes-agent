@@ -4109,8 +4109,10 @@ class BasePlatformAdapter(ABC):
         # Otherwise it lands in _pending_messages as a follow-up turn and the answer is
         # discarded.  Same shape as the /approve deadlock fix (PR #4926): agent thread
         # blocked on Event.wait, message must reach the resolver before being a new turn.
-        # See #4926.
-        if not cmd and event.allow_gateway_control:
+        # See #4926.  Internal events never take this bypass (#125781): a completion's
+        # prose is not a human answer — it queues behind the busy turn like any other
+        # internal wake instead of resolving or cancelling the pending clarify.
+        if not cmd and event.allow_gateway_control and not getattr(event, "internal", False):
             try:
                 from tools import clarify_gateway as _clarify_mod
                 _has_text_clarify = _clarify_mod.get_pending_for_session(

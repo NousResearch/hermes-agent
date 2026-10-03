@@ -1258,8 +1258,13 @@ class GatewayInboundMixin:
         self, event: "MessageEvent", source: SessionSource, _quick_key: str
     ) -> Optional[str]:
         """Replies owned by in-flight work: pending /update prompt, clarify, slash-confirm.
-        Only events that may control the gateway (``allow_gateway_control``) can answer them."""
-        if not event.allow_gateway_control:
+        Only events that may control the gateway (``allow_gateway_control``) can answer them —
+        but never internal ones (#125781): a background/delegation completion carries control
+        rights for routing, and its prose would otherwise cancel a pending choice clarify,
+        become an open-ended clarify's answer, or confirm/cancel a pending prompt. Internal
+        events fall through to the internal-safe routing (queued behind a busy turn, a new
+        turn when idle) and the question stays armed for the human."""
+        if not event.allow_gateway_control or getattr(event, "internal", False):
             return None
         _reply = self._hm_update_prompt_reply(event, _quick_key)
         if _reply is None:

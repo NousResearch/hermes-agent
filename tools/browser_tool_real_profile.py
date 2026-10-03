@@ -240,7 +240,7 @@ def _real_profile_cdp() -> tuple:
             cleanup_real_profile_snapshots()
         except Exception as e:
             _bt.logger.debug("real-profile cleanup-on-consent-off failed: %s", e)
-        _bt._real_profile_cdp_cache.pop("cdp", None)
+        _bt._real_profile_cdp_cache.pop(_bt._REAL_PROFILE_CACHE_KEY, None)
         return None, None
 
     # Lightpanda rejects ``--profile``; check BEFORE default-browser detection so a
@@ -253,13 +253,13 @@ def _real_profile_cdp() -> tuple:
                                             real_profile_copy_dir, snapshot_real_profile)
 
     with _bt._real_profile_cdp_lock:
-        cached = _bt._real_profile_cdp_cache.get("cdp")
+        cached = _bt._real_profile_cdp_cache.get(_bt._REAL_PROFILE_CACHE_KEY)
         if cached and _cdp_http_ready(cached):
             # Re-claim the shared daemon's socket dir so the orphan reaper's idle clock sees
             # this process still using it (a cache hit never runs a daemon command).
             _session._prepare_session_socket_dir(_bt._REAL_PROFILE_SESSION)
             return cached, None
-        _bt._real_profile_cdp_cache.pop("cdp", None)
+        _bt._real_profile_cdp_cache.pop(_bt._REAL_PROFILE_CACHE_KEY, None)
 
         browser = detect_default_chromium()
         unsupported = _real_profile_unsupported_reason(browser)
@@ -272,7 +272,7 @@ def _real_profile_cdp() -> tuple:
         copy_dir = real_profile_copy_dir(browser)
         existing = _agent_browser_get_cdp(_bt._REAL_PROFILE_SESSION)
         if existing and _cdp_http_ready(existing) and _cdp_on_data_dir(existing, copy_dir):
-            _bt._real_profile_cdp_cache["cdp"] = existing
+            _bt._real_profile_cdp_cache[_bt._REAL_PROFILE_CACHE_KEY] = existing
             return existing, None
         if existing:  # stale/wrong-dir session: close it so nothing holds the dir open
             _agent_browser_close_session(_bt._REAL_PROFILE_SESSION)
@@ -285,7 +285,7 @@ def _real_profile_cdp() -> tuple:
             cdp, err = _attach_agent_browser_to_real_profile(int(surviving.rsplit(":", 1)[1]), copy_dir)
             if not cdp:
                 return None, err
-            _bt._real_profile_cdp_cache["cdp"] = cdp
+            _bt._real_profile_cdp_cache[_bt._REAL_PROFILE_CACHE_KEY] = cdp
             _bt.logger.info("real-profile: re-attached to surviving Chrome at %s (%s)", cdp, copy_dir)
             return cdp, None
 
@@ -301,6 +301,6 @@ def _real_profile_cdp() -> tuple:
         cdp, err = _attach_agent_browser_to_real_profile(port, copy_dir)
         if not cdp:
             return None, err
-        _bt._real_profile_cdp_cache["cdp"] = cdp
+        _bt._real_profile_cdp_cache[_bt._REAL_PROFILE_CACHE_KEY] = cdp
         _bt.logger.info("real-profile browser ready for %s at %s (%s)", browser, cdp, copy_dir)
         return cdp, None

@@ -288,6 +288,79 @@ class TestMem0Prefetch:
         assert backend.captured == []
 
 
+class TestPrefetchQueryCap:
+    """Prefetch embeds the turn's message as the recall query, so a long message (cron prompt with
+    script output, pasted document) must be capped before it reaches the embedder: Ollama silently
+    keeps only the head of an over-window input and small-context embedders answer HTTP 500."""
+
+    QUESTION = "Which embedding model did we pick for mem0?"
+    PASTE = "".join(f"Line {i} of a pasted log with nothing to recall. " for i in range(400))  # ~20k chars
+
+    def _make_provider(self, backend):
+        provider = Mem0MemoryProvider()
+        provider.initialize("test-session")
+        provider._user_id = "u123"
+        provider._backend = backend
+        return provider
+
+    def _searched(self, backend):
+        return [c[1] for c in backend.captured if c[0] == "search"]
+
+    def test_long_message_keeps_the_question_at_either_end(self):
+        cap = mem0_plugin._PREFETCH_QUERY_MAX_CHARS
+        for message in (f"{self.PASTE}\n\n{self.QUESTION}", f"{self.QUESTION}\n\n{self.PASTE}"):
+            backend = FakeBackend(search_results=[{"id": "m1", "memory": "qwen3-embedding:0.6b"}])
+            provider = self._make_provider(backend)
+            assert "qwen3-embedding:0.6b" in provider.prefetch(message)
+            (query,) = self._searched(backend)
+            assert len(query) <= cap and self.QUESTION in query
+
+    def test_short_message_is_searched_verbatim(self):
+        backend = FakeBackend()
+        self._make_provider(backend).prefetch(self.QUESTION)
+        assert self._searched(backend) == [self.QUESTION]
+
+    def test_small_context_backend_still_recalls_on_a_long_message(self):
+        """Uncapped, every long turn's recall raised HTTP 500 and counted toward the circuit
+        breaker — five in a row paused mem0 entirely, sync included."""
+
+        class SmallContextBackend(FakeBackend):
+            def search(self, query, **kwargs):
+                if len(query) > 512:  # ~bge-small-zh-v1.5's 512-token window (#106235)
+                    raise RuntimeError("HTTP 500: embedding input exceeds model context")
+                return super().search(query, **kwargs)
+
+        backend = SmallContextBackend(search_results=[{"id": "m1", "memory": "prefers dark mode"}])
+        provider = self._make_provider(backend)
+        for _ in range(mem0_plugin._BREAKER_THRESHOLD):
+            assert "prefers dark mode" in provider.prefetch(f"{self.PASTE}\n\n{self.QUESTION}")
+        assert provider._consecutive_failures == 0 and not provider._is_breaker_open()
+
+    def test_turn_start_and_prefetch_share_one_capped_search(self):
+        """The cache key stays the full message, so the turn-start warm is still consumed."""
+        backend = FakeBackend(search_results=[{"id": "m1", "memory": "x"}])
+        provider = self._make_provider(backend)
+        message = f"{self.PASTE}\n\n{self.QUESTION}"
+        provider.on_turn_start(1, message)
+        provider._prefetch_thread.join(timeout=2)
+        assert "x" in provider.prefetch(message)
+        assert len(self._searched(backend)) == 1
+
+    @pytest.mark.parametrize("cfg, expected", [
+        ({}, mem0_plugin._PREFETCH_QUERY_MAX_CHARS),
+        ({"sync_max_chars": 6000}, mem0_plugin._PREFETCH_QUERY_MAX_CHARS),  # a bigger window must not dilute queries
+        ({"prefetch_max_chars": 800}, 800),
+    ])
+    def test_cap_comes_from_mem0_json(self, monkeypatch, tmp_path, cfg, expected):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("MEM0_API_KEY", "test-key")
+        (tmp_path / "mem0.json").write_text(json.dumps(cfg))
+        backend = FakeBackend()
+        self._make_provider(backend).prefetch(self.PASTE)
+        (query,) = self._searched(backend)
+        assert len(query) == expected
+
+
 
 
 class TestMem0ModeSwitch:

@@ -436,6 +436,7 @@ The plugin authenticates with `X-API-Key` and uses the server's `/search` / `/me
 | `agent_id` | `hermes` | Agent identifier |
 | `rerank` | `false` | Rerank search results for relevance (platform mode only) |
 | `sync_max_chars` | `450` | Per-message character cap applied before each turn is sent for fact extraction, cut at the last sentence boundary. The default fits 512-token embedders (Ollama `bge-small-zh-v1.5`, `all-minilm`); raise it (e.g. `6000`) for 8k-token embedders such as `text-embedding-3-small`, `jina-embeddings-v3` or `bge-m3` |
+| `prefetch_max_chars` | `450` | Character cap on the per-turn recall query (the user's message is embedded as the query). Longer messages — a cron prompt with script output, a pasted document — keep their head and tail around an ellipsis, so a question at either end survives. Independent of `sync_max_chars`: a longer query recalls worse even on large-window embedders |
 
 **OSS supported providers:**
 

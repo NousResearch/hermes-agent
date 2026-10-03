@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import os
 import subprocess
+import sys
 from pathlib import Path
 from hermes_cli.doctor_report import (
     Finding, _fail_and_issue, _section, check_bool, check_info, check_ok, check_warn, doctor_check, ensure_dir,
@@ -663,3 +664,69 @@ def _check_profiles(should_fix: bool, f: Finding) -> None:
     for line in duplicate_credential_findings():
         check_warn("Duplicate platform credential across profiles", f"({line})")
         f.manual_issues.append(line)
+
+
+_DISPATCH_FOREIGN_CWD_IMPORT_TIMEOUT = 90
+
+
+@doctor_check()
+def _check_dispatch_runtime_import(should_fix: bool, f: Finding) -> None:
+    """Kanban workers are spawned by the dispatcher as ``python -m hermes_cli.main``
+    from the task workspace with a scrubbed environment — the serving process's
+    in-process ``sys.path`` insert is invisible to the child, so the dispatcher pins
+    the running checkout's root onto the child's ``PYTHONPATH``
+    (``kanban_db_dispatch._propagate_module_import_root``). When that import context
+    cannot actually deliver ``hermes_cli``, every worker dies with
+    ``ModuleNotFoundError`` before doing any work and the board auto-blocks
+    (#122299, #122487, #122500). Probe exactly that condition: run the module CLI's
+    ``--version`` from a FOREIGN cwd (a temp dir) with the environment the
+    dispatcher's own propagation builds.
+    """
+    import tempfile
+
+    try:
+        from hermes_cli import kanban_db_dispatch as _dispatch
+
+        cmd = _dispatch._module_hermes_argv()
+        env = dict(os.environ)
+        _dispatch._propagate_module_import_root(cmd, env)
+    except Exception as exc:
+        return _fail_and_issue(
+            "Kanban dispatch worker import context could not be built",
+            f"({exc})",
+            "The dispatcher's argv/env builder raised while doctor reproduced it — the board's "
+            "spawn path is broken. Run 'hermes update', then rerun 'hermes doctor'.",
+            f.issues,
+        )
+    with tempfile.TemporaryDirectory() as foreign_cwd:
+        try:
+            proc = subprocess.run(
+                [*cmd, "--version"],
+                cwd=foreign_cwd,
+                env=env,
+                capture_output=True,
+                text=True,
+                timeout=_DISPATCH_FOREIGN_CWD_IMPORT_TIMEOUT,
+            )
+        except (OSError, subprocess.SubprocessError) as exc:
+            return _fail_and_issue(
+                "Kanban dispatch runtime probe failed to launch",
+                f"({exc})",
+                f"The dispatcher runtime {sys.executable} cannot launch a foreign-cwd import probe — "
+                "repair the runtime (run 'hermes update'), then rerun 'hermes doctor'.",
+                f.issues,
+            )
+    if proc.returncode == 0:
+        first = (proc.stdout or proc.stderr).strip().splitlines() or [""]
+        check_ok("Kanban dispatch runtime imports hermes_cli via the dispatcher's import pin", f"(rc 0 — {first[0]})")
+        return
+    tail = (proc.stderr or proc.stdout).strip().splitlines()
+    detail = tail[-1] if tail else f"rc {proc.returncode}"
+    _fail_and_issue(
+        "Kanban dispatch runtime cannot import hermes_cli via the dispatcher's import pin",
+        f"(rc {proc.returncode}: {detail})",
+        "A worker spawned with the dispatcher's own argv and PYTHONPATH pin cannot import "
+        "hermes_cli outside the checkout — every worker would die with ModuleNotFoundError. "
+        "Repair the running install (run 'hermes update', or reinstall), then rerun 'hermes doctor'.",
+        f.issues,
+    )

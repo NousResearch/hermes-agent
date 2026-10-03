@@ -52,11 +52,13 @@ from hermes_cli.doctor_tools import (
 from hermes_cli.doctor_state import (
     _check_checkpoint_store,
     _check_directory_structure,
+    _check_dispatch_runtime_import,
     _check_memory_provider,
     _check_profiles,
     _check_skills_hub,
     _check_state_db,
 )
+from hermes_cli.doctor_dispatch import _check_dispatch_freshness
 
 _PROVIDER_ENV_HINTS = (
     "DEEPINFRA_API_KEY", "OPENROUTER_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "ANTHROPIC_TOKEN",
@@ -112,6 +114,7 @@ DOCTOR_CHECKS = (
     ('Security Advisories', _check_security_advisories), ('MCP Server Security', _check_mcp_security),
     ('Python Environment', _check_python_environment), ('SSL / CA Certificates', _check_certificates),
     ('Required Packages', _check_required_packages), (None, _check_web_dashboard_import),
+    (None, _check_dispatch_runtime_import),
     ('Configuration Files', _check_env_file),
     (None, _check_config_file), (None, _check_config_drift),
     ('xAI Model Retirement (May 15, 2026)', _check_xai_retirement),
@@ -124,6 +127,7 @@ DOCTOR_CHECKS = (
     ('Tool Availability', _check_tool_availability), ('Skills Hub', _check_skills_hub),
     ('Memory Provider', _check_memory_provider), ('NeMo Relay Plugins', _check_relay_plugins),
     (None, _check_profiles),
+    ('Kanban Dispatch Plane', _check_dispatch_freshness),
 )
 
 

@@ -1896,6 +1896,10 @@ DEFAULT_CONFIG = {
         "review_dispatch": True,
         # Seconds between dispatcher ticks. Lower = snappier pickup; higher = less SQL pressure.
         "dispatch_interval_seconds": 60,
+        # When the dispatcher notices dispatch-plane code newer than its boot snapshot, ask for a
+        # drain-first restart once no worker is running (one warning per process either way).
+        # False keeps the warning but never bounces the gateway.
+        "dispatch_auto_reload": True,
         # Auto-block after this many consecutive non-success attempts (spawn_failed, timed_out,
         # crashed) for the same task/profile. Reassignment resets the streak.
         "failure_limit": 2,

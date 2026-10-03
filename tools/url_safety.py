@@ -28,7 +28,8 @@ import logging
 import os
 import socket
 import asyncio
-from urllib.parse import quote, urlparse, urlsplit, urlunsplit
+from typing import Any, Optional
+from urllib.parse import quote, urljoin, urlparse, urlsplit, urlunsplit
 
 from utils import is_truthy_value
 
@@ -310,6 +311,19 @@ def _allows_private_ip_resolution(hostname: str, scheme: str) -> bool:
     """Return True when a trusted HTTPS hostname may bypass IP-class blocking."""
     return scheme == "https" and hostname in _TRUSTED_PRIVATE_IP_HOSTS
 
+
+
+def redirect_target_from_response(response: Any) -> Optional[str]:
+    """Redirect target visible from inside an httpx response hook. ``response.next_request`` is
+    frequently ``None`` inside hooks (populated later by the follower), which would make an SSRF
+    redirect guard silently never fire — so resolve from ``Location`` first, then ``next_request``."""
+    if not getattr(response, "is_redirect", False):
+        return None
+    location = (getattr(response, "headers", {}) or {}).get("location")
+    if location:
+        return urljoin(str(getattr(response, "url", "")), str(location))
+    next_request = getattr(response, "next_request", None)
+    return str(next_request.url) if next_request else None
 
 def is_safe_url(url: str) -> bool:
     """Return True if the URL target is not a private/internal address.

@@ -45,16 +45,19 @@ async def _ssrf_redirect_guard(response: "httpx.Response") -> None:
     Without this, an attacker can host a public URL that 30x-redirects to
     http://169.254.169.254/ (cloud metadata) or http://127.0.0.1/ and bypass
     the pre-flight ``is_safe_url`` check on the initial URL.
-    """
-    if response.is_redirect and response.next_request is not None:
-        from tools.url_safety import is_safe_url
 
-        redirect_url = str(response.next_request.url)
-        if not is_safe_url(redirect_url):
-            raise ValueError(
-                "Blocked redirect to private/internal address: "
-                f"{_safe_url_for_log(redirect_url)}"
-            )
+    ``redirect_target_from_response`` resolves the target from the ``Location``
+    header first: ``response.next_request`` is frequently ``None`` while an
+    httpx response hook runs, which would silently skip every redirect.
+    """
+    from tools.url_safety import is_safe_url, redirect_target_from_response
+
+    redirect_url = redirect_target_from_response(response)
+    if redirect_url and not is_safe_url(redirect_url):
+        raise ValueError(
+            "Blocked redirect to private/internal address: "
+            f"{_safe_url_for_log(redirect_url)}"
+        )
 
 # ============ 常量 ============
 

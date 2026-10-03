@@ -1136,6 +1136,11 @@ def _parse_codex_final_response(final: Any) -> Tuple[List[str], List[Any], Any]:
     for item in (getattr(final, "output", None) or []):
         item_type = _field(item, "type")
         if item_type == "message":
+            # Commentary/analysis phases are reasoning, never final text; collecting
+            # them lets a truncated checkpoint pass as a completed summary (fixes #131787).
+            phase = str(_field(item, "phase", "") or "").strip().lower()
+            if phase in {"commentary", "analysis"}:
+                continue
             for part in (_field(item, "content") or []):
                 part_type = _field(part, "type")
                 if part_type in {"output_text", "text"}:
@@ -1630,13 +1635,27 @@ class _CodexCompletionsAdapter:
             raise
         finally:
             guard.finish()
-        # Shape the result like chat.completions.
+        # Shape the result like chat.completions. Preserve the terminal status:
+        # incomplete/queued/in_progress (or commentary-only/empty text) must not
+        # map to stop, or a truncated checkpoint commits as completed (fixes #131787).
+        _final_status = str(getattr(final, "status", "") or "").strip().lower()
+        _detail = getattr(final, "incomplete_details", None)
+        _reason = str(_field(_detail, "reason", "") or "").strip().lower() if _detail is not None else ""
+        _content = "".join(text_parts).strip() or None
+        if tool_calls_raw:
+            _finish = "tool_calls"
+        elif _final_status == "incomplete" and _reason == "content_filter":
+            _finish = "content_filter"
+        elif _final_status in {"incomplete", "queued", "in_progress"} or not _content:
+            _finish = "length"
+        else:
+            _finish = "stop"
         message = SimpleNamespace(
-            role="assistant", content="".join(text_parts).strip() or None,
+            role="assistant", content=_content,
             tool_calls=tool_calls_raw or None,
         )
         choice = SimpleNamespace(
-            index=0, message=message, finish_reason="stop" if not tool_calls_raw else "tool_calls"
+            index=0, message=message, finish_reason=_finish
         )
         return SimpleNamespace(choices=[choice], model=model, usage=usage)
 

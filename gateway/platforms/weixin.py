@@ -719,6 +719,12 @@ class WeixinAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
         self._rate_limit_circuit_window_seconds = float(_extra_or_secret(extra, "rate_limit_circuit_window_seconds", "30.0"))
         self._rate_limit_circuit_open_seconds = float(_extra_or_secret(extra, "rate_limit_circuit_open_seconds", "30.0"))
         self._rate_limit_circuit_until, self._rate_limit_events = 0.0, []  # type: float, List[float]
+        # (chat_id, ret, errcode, errmsg) of the receipt that opened the circuit. errmsg is
+        # server-controlled free text and must never re-enter a raised string: the send-error
+        # classifier is first-match-wins and dead_targets persists forbidden/not_found, so a
+        # "chat not found"-style errmsg spliced into a rate-limit error would mark the peer
+        # permanently dead. It reaches the log only; ret/errcode are safe to surface.
+        self._rate_limit_last_receipt = None  # type: Optional[tuple]
         self._dm_policy = _extra_or_secret(extra, "dm_policy", "pairing").lower()
         self._group_policy = _extra_or_secret(extra, "group_policy", "disabled").lower()
         # ``extra`` wins even when falsy (an explicit empty list disables the env allowlist).
@@ -977,6 +983,23 @@ class WeixinAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
             attempt = 0  # counts real failures only — the tokenless re-send must not eat the retry budget
             while True:
                 if self._rate_limit_cooldown_remaining() > 0:
+                    # No request is made here, so name the receipt that opened the circuit — otherwise every
+                    # short-circuited failure during the cooldown reads as one opaque string and the real
+                    # ret/errcode never reaches the log (#123995). Only ret/errcode go into the raised
+                    # string: errmsg is server-controlled free text that the first-match classifier in
+                    # gateway/platforms/base.py re-reads, so splicing it here could flip this rate-limit
+                    # into not_found/forbidden and dead-target the peer.
+                    receipt = self._rate_limit_last_receipt
+                    if receipt is not None:
+                        rcv_chat_id, rcv_ret, rcv_errcode, rcv_errmsg = receipt
+                        logger.warning(
+                            "[%s] rate-limit cooldown active for %.1fs; circuit opened by receipt from %s: "
+                            "ret=%s errcode=%s errmsg=%r",
+                            self.name, self._rate_limit_cooldown_remaining(), _safe_id(rcv_chat_id),
+                            rcv_ret, rcv_errcode, rcv_errmsg)
+                        raise RuntimeError(
+                            f"iLink sendmessage rate limited (last: ret={rcv_ret} errcode={rcv_errcode}); "
+                            f"cooldown active for {self._rate_limit_cooldown_remaining():.1f}s")
                     raise RuntimeError(f"iLink sendmessage rate limited; cooldown active for {self._rate_limit_cooldown_remaining():.1f}s")
                 try:
                     resp = await _send_message(
@@ -996,6 +1019,9 @@ class WeixinAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
                             break
                         if ret != RATE_LIMIT_ERRCODE and errcode != RATE_LIMIT_ERRCODE:
                             raise RuntimeError(f"iLink sendmessage error: ret={ret} errcode={errcode} errmsg={errmsg or 'unknown error'}")
+                        # The cooldown short-circuit re-surfaces this receipt (ret/errcode only) until a send
+                        # succeeds again; errmsg stays out of any raised string (classifier hazard).
+                        self._rate_limit_last_receipt = (chat_id, ret, errcode, errmsg or "rate limited")
                         # Keep a descriptive error for when the loop exhausts while still limited.
                         last_error = RuntimeError(f"iLink sendmessage rate limited: ret={ret} errcode={errcode} errmsg={errmsg or 'rate limited'}")
                         if self._record_rate_limit_event():
@@ -1012,6 +1038,7 @@ class WeixinAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
                         continue
                     self._rate_limit_events.clear()
                     self._rate_limit_circuit_until = 0.0
+                    self._rate_limit_last_receipt = None
                     return
                 except Exception as exc:
                     last_error = exc

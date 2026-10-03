@@ -47,9 +47,7 @@ export function filterCockpitProjects(projects: SidebarProjectTree[], query: str
     return projects
   }
 
-  return projects.filter(
-    project => normalize(project.label).includes(q) || normalize(project.path ?? '').includes(q)
-  )
+  return projects.filter(project => normalize(project.label).includes(q) || normalize(project.path ?? '').includes(q))
 }
 
 export interface ProjectFolderFact {
@@ -74,10 +72,7 @@ export function projectFolders(project: SidebarProjectTree, info?: ProjectInfo):
 
 export function projectPrimaryPath(project: SidebarProjectTree, info?: ProjectInfo): null | string {
   return (
-    info?.primary_path?.trim() ||
-    project.path?.trim() ||
-    project.repos.find(repo => repo.path)?.path?.trim() ||
-    null
+    info?.primary_path?.trim() || project.path?.trim() || project.repos.find(repo => repo.path)?.path?.trim() || null
   )
 }
 

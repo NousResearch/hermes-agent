@@ -2371,7 +2371,10 @@ export interface Translations {
     mcpServers: string
     archivedChats: string
     sections: Record<'maintenance' | 'sessions' | 'system' | 'usage', string>
-    nav: Record<'newChat' | 'settings' | 'capabilities' | 'messaging' | 'projects' | 'artifacts', { title: string; detail: string }>
+    nav: Record<
+      'newChat' | 'settings' | 'capabilities' | 'messaging' | 'projects' | 'artifacts',
+      { title: string; detail: string }
+    >
     sectionEntries: Record<'sessions' | 'system' | 'usage', { title: string; detail: string }>
     providerNavigate: string
     providerSessions: string

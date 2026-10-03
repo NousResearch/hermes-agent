@@ -2424,7 +2424,8 @@ export const ja = defineLocale({
     newProject: '新しいプロジェクト',
     noMatchesTitle: '一致するプロジェクトはありません',
     unavailableTitle: 'プロジェクトを利用できません',
-    unavailableDesc: '接続中の Hermes バックエンドはまだプロジェクトに対応していません。利用するには Hermes を更新してください。',
+    unavailableDesc:
+      '接続中の Hermes バックエンドはまだプロジェクトに対応していません。利用するには Hermes を更新してください。',
     selectTitle: 'プロジェクトを選択',
     selectDesc: 'プロジェクトを選ぶと、フォルダー、リポジトリ、セッションが表示されます。',
     autoDiscovered: '自動検出されたリポジトリ',

@@ -3930,7 +3930,8 @@ export const deOverrides = {
     newProject: 'Neues Projekt',
     noMatchesTitle: 'Keine passenden Projekte',
     unavailableTitle: 'Projekte sind nicht verfügbar',
-    unavailableDesc: 'Das verbundene Hermes-Backend unterstützt noch keine Projekte. Aktualisieren Sie Hermes, um sie zu nutzen.',
+    unavailableDesc:
+      'Das verbundene Hermes-Backend unterstützt noch keine Projekte. Aktualisieren Sie Hermes, um sie zu nutzen.',
     selectTitle: 'Projekt auswählen',
     selectDesc: 'Wählen Sie ein Projekt, um seine Ordner, Repositorys und Sessions zu sehen.',
     autoDiscovered: 'Automatisch erkanntes Repository',

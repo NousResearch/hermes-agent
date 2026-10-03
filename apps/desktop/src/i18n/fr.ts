@@ -3942,7 +3942,8 @@ export const frOverrides = {
     newProject: 'Nouveau projet',
     noMatchesTitle: 'Aucun projet correspondant',
     unavailableTitle: 'Les projets sont indisponibles',
-    unavailableDesc: 'Le backend Hermes connecté ne prend pas encore en charge les projets. Mettez à jour Hermes pour les utiliser.',
+    unavailableDesc:
+      'Le backend Hermes connecté ne prend pas encore en charge les projets. Mettez à jour Hermes pour les utiliser.',
     selectTitle: 'Sélectionnez un projet',
     selectDesc: 'Choisissez un projet pour voir ses dossiers, dépôts et sessions.',
     autoDiscovered: 'Dépôt détecté automatiquement',

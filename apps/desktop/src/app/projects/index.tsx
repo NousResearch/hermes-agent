@@ -99,8 +99,7 @@ export function ProjectsView({ setStatusbarItemGroup: _setStatusbarItemGroup, ..
   const { failed: sessionsFailed, hydrated } = useProjectSessions(selected)
 
   const { active, recent } = useMemo(
-    () =>
-      selected ? splitActiveSessions(projectSessionList(selected, hydrated, removedIds), dotStates) : EMPTY_SPLIT,
+    () => (selected ? splitActiveSessions(projectSessionList(selected, hydrated, removedIds), dotStates) : EMPTY_SPLIT),
     [dotStates, hydrated, removedIds, selected]
   )
 

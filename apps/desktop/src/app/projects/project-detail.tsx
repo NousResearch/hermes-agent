@@ -142,7 +142,9 @@ export function ProjectDetail({
                     {p.sessionCount(repo.sessionCount)}
                   </span>
                 </div>
-                {repo.path && <div className="truncate pl-5 font-mono text-[0.65rem] text-(--ui-text-tertiary)">{repo.path}</div>}
+                {repo.path && (
+                  <div className="truncate pl-5 font-mono text-[0.65rem] text-(--ui-text-tertiary)">{repo.path}</div>
+                )}
                 <ul className="grid gap-0.5 pl-5">
                   {repo.groups.map(group => (
                     <li className="flex min-w-0 items-center gap-2 text-xs" key={group.id}>

@@ -23,7 +23,9 @@ vi.mock('@/store/projects', async importOriginal => ({
 
 // The live-status map is derived from several session atoms; the cockpit only
 // reads the result, so the test drives that result directly.
-const dotStates = vi.hoisted(() => ({ atom: null as unknown as ReturnType<typeof atom<Record<string, SessionDotState>>> }))
+const dotStates = vi.hoisted(() => ({
+  atom: null as unknown as ReturnType<typeof atom<Record<string, SessionDotState>>>
+}))
 
 vi.mock('@/store/session-dot-state', async importOriginal => {
   const actual = await importOriginal<typeof SessionDotStateStore>()
@@ -51,7 +53,9 @@ const atlas: SidebarProjectTree = {
       label: 'atlas',
       path: '/work/atlas',
       sessionCount: 1,
-      groups: [{ id: '/work/atlas::main', isHome: true, isMain: true, label: 'main', path: '/work/atlas', sessions: [] }]
+      groups: [
+        { id: '/work/atlas::main', isHome: true, isMain: true, label: 'main', path: '/work/atlas', sessions: [] }
+      ]
     }
   ]
 }

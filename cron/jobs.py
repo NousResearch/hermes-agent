@@ -3257,6 +3257,17 @@ def _evaluate_due_job(job: Dict[str, Any], scan: _DueScan, run_claim_ttl: float)
     d = _DueJob(job, scan, next_run, raw_next_run_dt, _ensure_aware(raw_next_run_dt))
     kind = d.kind
     recurring = kind in {"cron", "interval"}
+    # One-shot retirement guards must precede the completed-occurrence fast path below: for a
+    # spent one-shot (repeat.completed >= times) whose slot already has a 'completed' ledger
+    # row, that path returns without persisting or retiring (recurring is False → new_next is
+    # None), leaving a permanent zombie — state stays "scheduled", retention (which only sweeps
+    # state=="completed") never catches it, and every tick repeats the ledger query. Retire or
+    # guard first so a spent one-shot can never be skipped past its own retirement.
+    # Keep their original due-time precondition: a recurring→once edit may inherit
+    # a spent counter, but the future record must remain available for explicit re-arm.
+    if kind == "once" and not _instant_after(d.next_run_dt, now):
+        if _retire_expired_oneshot(d) or _oneshot_dispatch_limit_reached(job, scan):
+            return False
     # Intentionally string-exact on raw stored values: trigger_job stamps the SAME isoformat string
     # into both fields, and any rewrite of next_run_at (edit, re-anchor, fire-claim advance) must
     # invalidate the marker. Do not "fix" this with _ensure_aware normalization.
@@ -3282,9 +3293,8 @@ def _evaluate_due_job(job: Dict[str, Any], scan: _DueScan, run_claim_ttl: float)
     grace = _compute_grace_seconds(d.schedule)
     if not manual_run and recurring and _fast_forward_missed_recurring(d, grace):
         return False
+    claim = None
     if kind == "once":
-        if _retire_expired_oneshot(d) or _oneshot_dispatch_limit_reached(job, scan):
-            return False
         # Durably claim the one-shot for the DURATION of its run: a second scheduler process on the
         # same HERMES_HOME must not re-dispatch it while in flight, and advancing next_run_at by a
         # fixed window is not enough for a run that outlives a tick. The other process sees the

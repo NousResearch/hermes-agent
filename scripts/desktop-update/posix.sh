@@ -842,10 +842,26 @@ if [ "$NO_GATEWAY" -eq 1 ]; then
   GATEWAY_FLAG=""
   log "update requested without --gateway (remote-served Desktop)"
 fi
+stream_update() { # "$@" = update argv; streams combined output live to $LOG, sets CODE/OUT
+  # A $(...) capture buffered the whole update in memory and appended it to
+  # the hand-off log only after the child exited, so the log — and the update
+  # window watching it — stayed silent for the entire run (#130460). tee keeps
+  # a copy for the skip/failure greps below while every line also lands live.
+  local capture
+  capture="$(mktemp "${TMPDIR:-/tmp}/hermes-update-out-XXXXXXXX")" || {
+    CODE=3 OUT=""
+    return 0
+  }
+  "$@" 2>&1 | tee -a "$LOG" > "$capture" 2>/dev/null
+  CODE=${PIPESTATUS[0]:-3}
+  [ -s "$capture" ] && [ "$(tail -c1 "$capture" | wc -l)" -eq 0 ] && printf '\n' >> "$LOG"
+  OUT="$(cat "$capture" 2>/dev/null)"
+  rm -f "$capture" 2>/dev/null || true
+  return 0
+}
 log "running: ${UPDATE_INVOKE[*]} update --yes $GATEWAY_FLAG $KEEP_STASH ${TARGET_ARGS[*]}"
 publish_stage "Updating code and dependencies"
-OUT="$("${UPDATE_INVOKE[@]}" update --yes $GATEWAY_FLAG $KEEP_STASH "${TARGET_ARGS[@]}" 2>&1)"; CODE=$?
-printf '%s\n' "$OUT" >> "$LOG" 2>/dev/null
+stream_update "${UPDATE_INVOKE[@]}" update --yes $GATEWAY_FLAG $KEEP_STASH "${TARGET_ARGS[@]}"
 log "hermes update exit code: $CODE"
 
 if [ "$LEGACY_INSTALL" -eq 1 ] && [ "$CODE" -ne 0 ] && [ "$CODE" -ne 2 ]; then
@@ -867,8 +883,7 @@ if [ "$LEGACY_INSTALL" -eq 1 ] && [ "$CODE" -ne 0 ] && [ "$CODE" -ne 2 ]; then
   log "retrying once (freshly pulled fix loads on the second run)"
   publish_stage "Retrying update"
   select_update_invoke || { FINAL_CODE=3 FINAL_MSG="Updated installation launcher is missing; repair this installation."; exit 3; }
-  OUT="$("${UPDATE_INVOKE[@]}" update --yes $GATEWAY_FLAG $KEEP_STASH "${TARGET_ARGS[@]}" 2>&1)"; CODE=$?
-  printf '%s\n' "$OUT" >> "$LOG" 2>/dev/null
+  stream_update "${UPDATE_INVOKE[@]}" update --yes $GATEWAY_FLAG $KEEP_STASH "${TARGET_ARGS[@]}"
   log "retry exit code: $CODE"
 fi
 trap 'on_signal TERM' TERM

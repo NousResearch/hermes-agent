@@ -73,6 +73,33 @@ class TestUpdateOutputStream:
         assert log.getvalue() == "first line\nsecond line\n"
         assert stream._original_broken is True
 
+    def test_write_flushes_log_without_newline(self):
+        """Progress output must reach update.log immediately (#130460).
+
+        The log handle is line-buffered, which only flushes on newline — so a
+        write() without one would sit in the buffer for the whole update run,
+        leaving update.log empty while the update is actually progressing.
+        write() must flush every write, matching _log_only_write.
+        """
+        terminal = io.StringIO()
+
+        class _FlushTrackingLog(io.StringIO):
+            def __init__(self):
+                super().__init__()
+                self.flushes = 0
+
+            def flush(self):
+                self.flushes += 1
+                return super().flush()
+
+        log = _FlushTrackingLog()
+        stream = _UpdateOutputStream(terminal, log)
+
+        stream.write("partial progress without newline")
+
+        assert log.flushes >= 1
+        assert "partial progress without newline" in log.getvalue()
+
 
 
 

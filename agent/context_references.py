@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import codecs
 import inspect
 import json
 import mimetypes
@@ -96,7 +97,9 @@ _SENSITIVE_HOME_FILES = tuple(Path(p) for p in (
     ".ssh/authorized_keys", ".ssh/id_rsa", ".ssh/id_ed25519", ".ssh/config", ".bashrc", ".zshrc",
     ".profile", ".bash_profile", ".zprofile", ".netrc", ".pgpass", ".npmrc", ".pypirc",
 ))
-_TEXT_EXTENSIONS = (".py", ".md", ".txt", ".json", ".yaml", ".yml", ".toml", ".js", ".ts")
+# Binary by definition, refused without a sniff; every other file is judged by its content.
+_BINARY_MIME_TYPES = frozenset({"application/zip", "application/pdf", "application/octet-stream"})
+_BINARY_SNIFF_BYTES = 4096
 # Bound the work one message can force: each expanded ref reads at most a bounded prefix /
 # window, and at most this many refs are expanded per message.
 _MAX_EXPANDED_REFERENCES = 16
@@ -567,11 +570,25 @@ def _parse_file_reference_value(value: str) -> tuple[str, int | None, int | None
 
 
 def _is_binary_file(path: Path) -> bool:
-    mime = mimetypes.guess_type(path.name)[0]
-    if mime and not mime.startswith("text/") and not path.name.endswith(_TEXT_EXTENSIONS):
+    """A NUL byte or invalid UTF-8 in the first 4 KiB means binary. The extension's MIME guess
+    cannot decide: mimetypes and host mime.types file .rs, .sql, .rb, .php, .xml (and .sh on
+    macOS) under application/*, which would refuse to inline ordinary source code."""
+    if mimetypes.guess_type(path.name)[0] in _BINARY_MIME_TYPES:
         return True
     with path.open("rb") as fh:  # sniff only; read_bytes() materialized the whole file
-        return b"\x00" in fh.read(4096)
+        head = fh.read(_BINARY_SNIFF_BYTES)
+        if b"\x00" in head:
+            return True
+        decoder = codecs.getincrementaldecoder("utf-8")()
+        try:
+            decoder.decode(head)
+            if decoder.getstate()[0]:
+                # A character straddles the sniff boundary: its (at most 3) continuation bytes decide.
+                lookahead = fh.read(3)
+                decoder.decode(lookahead, final=len(lookahead) < 3)
+        except UnicodeDecodeError:
+            return True
+    return False
 
 
 def _build_folder_listing(path: Path, cwd: Path, limit: int = 200, display_base: Path | None = None) -> str:

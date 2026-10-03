@@ -422,6 +422,28 @@ def test_numeric_mcp_server_name_does_not_crash_sorted():
     sorted(enabled)
 
 
+def test_mcp_server_platforms_scopes_server_to_listed_platforms():
+    """https://github.com/NousResearch/hermes-agent/issues/110916: a server with
+    ``mcp_servers.<name>.platforms`` must not leak to other platforms, even when
+    explicitly listed in their ``platform_toolsets``; unscoped servers are unaffected."""
+    config = {
+        "mcp_servers": {
+            "discord_admin": {"command": "x", "platforms": ["discord"]},
+            "open_srv": {"command": "x"},
+        },
+    }
+
+    api = _get_platform_tools(config, "api_server")
+    assert "discord_admin" not in api
+    assert "open_srv" in api
+    discord = _get_platform_tools(config, "discord")
+    assert "discord_admin" in discord
+
+    explicit = dict(config)
+    explicit["platform_toolsets"] = {"api_server": ["discord_admin"]}
+    assert "discord_admin" not in _get_platform_tools(explicit, "api_server")
+
+
 # ─── Imagegen Backend Picker Wiring ────────────────────────────────────────
 
 

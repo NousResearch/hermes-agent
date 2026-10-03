@@ -144,6 +144,21 @@ def mcp_server_enabled(cfg: dict) -> bool:
     return _parse_boolish(cfg.get("enabled", True), default=True)
 
 
+def mcp_server_allowed_for_platform(cfg: dict, platform: str) -> bool:
+    """Whether ``mcp_servers.<name>`` may serve *platform*. Absent/``null`` ``platforms`` = every
+    platform (backward compatible); a list scopes the server to those platforms only (#110916)."""
+    raw = cfg.get("platforms", None)
+    if raw is None:
+        return True
+    if isinstance(raw, str):
+        raw = [raw]
+    if not isinstance(raw, (list, tuple, set)):
+        logger.warning("MCP config expected a list for 'platforms', got %r; ignoring", raw)
+        return True
+    allowed = {str(p).strip().lower() for p in raw if str(p).strip()}
+    return str(platform or "").strip().lower() in allowed
+
+
 def _get_lifecycle_seconds(config: dict, key: str) -> Optional[float]:
     """Optional positive lifecycle timeout from top-level/nested ``lifecycle`` config (``0``
     disables; negatives and non-numbers are warned about and ignored)."""

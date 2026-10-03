@@ -425,16 +425,18 @@ def _parse_enabled_flag(value, default: bool = True) -> bool:
     return default
 
 
-def enabled_mcp_server_names(config: dict) -> Set[str]:
+def enabled_mcp_server_names(config: dict, platform: Optional[str] = None) -> Set[str]:
     """MCP servers globally enabled in config.yaml or by a plugin (shared by platform + cron resolvers). Enabled
     unless ``enabled`` is explicitly falsey; portable-plugin servers (in-memory) count — enabling the plugin is
-    the opt-in."""
-    from tools.mcp_tool_common import mcp_server_enabled
+    the opt-in. With *platform*, servers scoped via ``mcp_servers.<name>.platforms`` to other platforms are
+    excluded (#110916); ``None`` keeps the legacy unfiltered set."""
+    from tools.mcp_tool_common import mcp_server_allowed_for_platform, mcp_server_enabled
 
     mcp_servers = (config or {}).get("mcp_servers") or {}
     names = {
         str(name) for name, server_cfg in mcp_servers.items()
         if isinstance(server_cfg, dict) and mcp_server_enabled(server_cfg)
+        and (platform is None or mcp_server_allowed_for_platform(server_cfg, platform))
     }
     try:
         from hermes_cli.plugins import get_portable_mcp_server_names_nowait
@@ -645,7 +647,7 @@ def _get_platform_tools(config: dict, platform: str, *, include_default_mcp_serv
 
     # Explicit non-configurable entries (custom toolsets, MCP server names) pass through.
     explicit_passthrough = {ts for ts in toolset_names if ts not in explicit_known_keys and ts not in platform_default_keys}
-    enabled_toolsets |= _merge_mcp_servers(config, toolset_names, explicit_passthrough, include_default_mcp_servers)
+    enabled_toolsets |= _merge_mcp_servers(config, toolset_names, explicit_passthrough, include_default_mcp_servers, platform)
 
     # Legacy profile opt-in is a fallback only. A saved platform list (even
     # empty) is authoritative, so a later disable cannot silently re-enable it.
@@ -709,17 +711,21 @@ def _recover_platform_native_toolsets(enabled_toolsets: Set[str], platform: str,
 
 
 def _merge_mcp_servers(
-    config: dict, toolset_names: List[str], explicit_passthrough: Set[str], include_default_mcp_servers: bool
+    config: dict, toolset_names: List[str], explicit_passthrough: Set[str], include_default_mcp_servers: bool,
+    platform: Optional[str] = None,
 ) -> Set[str]:
     """Explicit passthrough entries plus this platform's MCP servers: listed names form an allowlist, else every
-    globally enabled server (when ``include_default_mcp_servers``); the ``no_mcp`` sentinel disables all."""
-    enabled_mcp_servers = enabled_mcp_server_names(config)
-    result = explicit_passthrough - enabled_mcp_servers
+    globally enabled server (when ``include_default_mcp_servers``); the ``no_mcp`` sentinel disables all.
+    A server scoped via ``mcp_servers.<name>.platforms`` to another platform is excluded even when explicitly
+    listed (#110916: server-side scope wins over the per-platform list)."""
+    globally_enabled = enabled_mcp_server_names(config)
+    allowed = enabled_mcp_server_names(config, platform) if platform else globally_enabled
+    result = explicit_passthrough - globally_enabled
     if "no_mcp" in toolset_names:
         return result - {"no_mcp"}
-    explicit_mcp_servers = explicit_passthrough & enabled_mcp_servers
+    explicit_mcp_servers = explicit_passthrough & allowed
     if include_default_mcp_servers and not explicit_mcp_servers:
-        return result | enabled_mcp_servers
+        return result | allowed
     return result | explicit_mcp_servers
 
 

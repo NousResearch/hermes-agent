@@ -119,6 +119,8 @@ test('preserveRollbackBackup ignores missing or invalid input', () => {
 
 test('beforePack on win32 preserves the previous build instead of wiping it', async () => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-before-pack-'))
+  const previousOmit = process.env.HERMES_PACKAGING_OMIT_HUD_HELPER
+  delete process.env.HERMES_PACKAGING_OMIT_HUD_HELPER
   try {
     const appOutDir = path.join(tempRoot, 'win-unpacked')
     fs.mkdirSync(appOutDir, { recursive: true })
@@ -133,7 +135,18 @@ test('beforePack on win32 preserves the previous build instead of wiping it', as
       fs.readFileSync(path.join(`${appOutDir}.bak`, 'Hermes.exe'), 'utf8'),
       'MZ-working'
     )
+    fs.mkdirSync(appOutDir, { recursive: true })
+    fs.writeFileSync(path.join(appOutDir, 'Hermes.exe'), 'MZ-partial', 'utf8')
+    process.env.HERMES_PACKAGING_OMIT_HUD_HELPER = '1'
+    await beforePack({ appOutDir, electronPlatformName: 'win32' })
+    assert.equal(fs.existsSync(appOutDir), false)
+    assert.equal(
+      fs.readFileSync(path.join(`${appOutDir}.bak`, 'Hermes.exe'), 'utf8'),
+      'MZ-working'
+    )
   } finally {
+    if (previousOmit === undefined) delete process.env.HERMES_PACKAGING_OMIT_HUD_HELPER
+    else process.env.HERMES_PACKAGING_OMIT_HUD_HELPER = previousOmit
     fs.rmSync(tempRoot, { recursive: true, force: true })
   }
 })

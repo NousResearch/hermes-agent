@@ -1129,7 +1129,9 @@ def _scoped_key_env(name: str) -> str:
 
 
 # Codex Responses → chat.completions adapter, so aux consumers need no changes.
-def _parse_codex_final_response(final: Any) -> Tuple[List[str], List[Any], Any, str]:
+def _parse_codex_final_response(
+    final: Any, *, issuer_kind: Optional[str] = None, issuer_model: Optional[str] = None,
+) -> Tuple[List[str], List[Any], Any, str]:
     """Normalize Responses output without losing phase or completion state for aux callers."""
     from agent.codex_responses_adapter import _normalize_codex_response
 
@@ -1146,7 +1148,9 @@ def _parse_codex_final_response(final: Any) -> Tuple[List[str], List[Any], Any, 
         incomplete_details=getattr(final, "incomplete_details", None),
         error=getattr(final, "error", None),
     )
-    message, finish_reason = _normalize_codex_response(normalized_final)
+    message, finish_reason = _normalize_codex_response(
+        normalized_final, issuer_kind=issuer_kind, issuer_model=issuer_model,
+    )
     status = str(normalized_final.status or "").strip().lower()
     reason = str(_field(normalized_final.incomplete_details, "reason", "") or "").strip().lower()
     # Aux consumers speak Chat Completions: "length" activates their existing
@@ -1598,6 +1602,14 @@ class _CodexCompletionsAdapter:
         # ``response.completed.response.output``, which Codex returns as ``null`` (SDK crash).
         resp_kwargs, model, timeout = self._build_responses_kwargs(kwargs)
         wire_aliases = resp_kwargs.pop("_wire_aliases", None) or {}
+        # Response normalization is route-sensitive (Codex/xAI/GitHub). Reuse the same
+        # canonical classifier as request replay so reasoning-only and xAI salvage semantics
+        # do not silently fall back to the unknown-issuer behavior.
+        from agent.codex_responses_adapter import _classify_responses_issuer, classify_responses_route
+        host = str(getattr(self._client, "base_url", "") or "")
+        route = classify_responses_route(SimpleNamespace(provider=None, base_url=host))
+        issuer_kind = _classify_responses_issuer(base_url=host, **route._asdict())
+        issuer_model = str(resp_kwargs.get("model") or model)
         total_timeout = timeout if isinstance(timeout, (int, float)) and timeout > 0 else None
         guard = _CodexStreamGuard(self._client, total_timeout, no_progress_timeout=kwargs.get("no_progress_timeout"))
         try:
@@ -1625,7 +1637,9 @@ class _CodexCompletionsAdapter:
                 guard.release_stream(event_stream)
             if final is None:
                 raise RuntimeError("Codex auxiliary Responses stream did not return a final response")
-            text_parts, tool_calls_raw, usage, finish_reason = _parse_codex_final_response(final)
+            text_parts, tool_calls_raw, usage, finish_reason = _parse_codex_final_response(
+                final, issuer_kind=issuer_kind, issuer_model=issuer_model,
+            )
             # Undo only the aliases THIS request emitted, before the call reaches Hermes dispatch.
             for tc in tool_calls_raw or ():
                 if tc.function.name in wire_aliases:

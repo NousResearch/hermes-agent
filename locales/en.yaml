@@ -3525,7 +3525,7 @@ display:
   # Self-improvement review summaries (agent/background_review.py).
   review:
     routing_fallback_warning: "⚠ auxiliary.background_review.provider='{task_provider}' (model '{task_model}') could not be routed ({error}); falling back to {provider}/{model}"
-    reasoning_effort_warning: "⚠ auxiliary.background_review.reasoning_effort='{effort}' has no effect while the review model is not the main model"
+    reasoning_effort_warning: "⚠ auxiliary.background_review.reasoning_effort='{effort}' has no effect while the review model is the main model"
     memory_op_line: "{label} {glyph} {preview}"
     skill_patched_verbose: "📝 Skill '{name}' patched: \"{old}\" → \"{new}\""
     skill_changed_verbose: "📝 Skill '{name}' {verb}: {description}"

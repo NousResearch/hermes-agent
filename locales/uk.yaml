@@ -3417,7 +3417,7 @@ display:
     bounded: "ітерація {n}/{max}"
   review:
     routing_fallback_warning: "⚠ auxiliary.background_review.provider='{task_provider}' (модель '{task_model}') не вдалося маршрутизувати ({error}); використовується резервний варіант {provider}/{model}"
-    reasoning_effort_warning: "⚠ auxiliary.background_review.reasoning_effort='{effort}' не діє, поки модель перевірки не є основною моделлю"
+    reasoning_effort_warning: "⚠ auxiliary.background_review.reasoning_effort='{effort}' не діє, поки модель перевірки є основною моделлю"
     memory_op_line: "{label} {glyph} {preview}"
     skill_patched_verbose: "📝 Навичку '{name}' виправлено: «{old}» → «{new}»"
     skill_changed_verbose: "📝 Навичку '{name}' {verb}: {description}"

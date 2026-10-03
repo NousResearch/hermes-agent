@@ -3417,7 +3417,7 @@ display:
     bounded: "atriall {n}/{max}"
   review:
     routing_fallback_warning: "⚠ níorbh fhéidir auxiliary.background_review.provider='{task_provider}' (samhail '{task_model}') a ródú ({error}); ag titim siar ar {provider}/{model}"
-    reasoning_effort_warning: "⚠ níl aon éifeacht ag auxiliary.background_review.reasoning_effort='{effort}' fad nach í an phríomhshamhail samhail an athbhreithnithe"
+    reasoning_effort_warning: "⚠ níl aon éifeacht ag auxiliary.background_review.reasoning_effort='{effort}' fad is í an phríomhshamhail samhail an athbhreithnithe"
     memory_op_line: "{label} {glyph} {preview}"
     skill_patched_verbose: "📝 Scil '{name}' paisteáilte: \"{old}\" → \"{new}\""
     skill_changed_verbose: "📝 Scil '{name}' {verb}: {description}"

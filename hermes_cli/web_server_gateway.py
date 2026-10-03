@@ -399,9 +399,12 @@ def _profile_action_environment(
             # Process-global names are deliberately retained, including when also registered for
             # passthrough; they are deployment settings, not profile credentials.
             boundary_names = profile_keys | set(get_all_passthrough())
-            for key in boundary_names:
-                if not _is_global_env(key.upper()):
-                    action_env.pop(key, None)
+            boundary_names_upper = {
+                key.upper() for key in boundary_names
+                if not _is_global_env(key.upper())
+            }
+            for key in [key for key in action_env if key.upper() in boundary_names_upper]:
+                action_env.pop(key, None)
         strip_launch_profile_env(action_env, target_home)
 
         # Pin the child before import-time startup runs; the explicit -p flag stays authoritative

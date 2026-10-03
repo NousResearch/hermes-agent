@@ -199,6 +199,46 @@ def test_profile_action_keeps_same_home_registered_passthrough(pooled_served_pro
     assert env[name] == "same-profile-secret"
 
 
+def test_profile_action_removes_case_insensitive_launch_only_passthrough(pooled_served_process, monkeypatch):
+    import contextlib
+
+    import hermes_cli.web_server_gateway as web_server_gateway
+    import hermes_cli.web_server_profiles as profiles
+    import tools.env_passthrough as env_passthrough
+    import tui_gateway.launch_profile_policy as launch_policy
+    from agent import secret_scope
+
+    registered_name = "pr_130671_casefold_token"
+    process_name = registered_name.upper()
+    monkeypatch.setenv(process_name, "launch-profile-secret")
+    env_passthrough.register_env_passthrough([registered_name])
+    # macOS keeps environment keys case-sensitive; emulate the Windows boundary where the
+    # process environment is uppercase while the registered config spelling is lowercase.
+    monkeypatch.setattr(
+        env_passthrough, "get_all_passthrough", lambda: frozenset({registered_name})
+    )
+    monkeypatch.setattr(
+        profiles, "_resolve_profile_dir", lambda profile: pooled_served_process / "profiles" / "solo"
+    )
+
+    @contextlib.contextmanager
+    def _launch_scope():
+        token = secret_scope.set_secret_scope({}, profile_home=str(pooled_served_process))
+        try:
+            yield
+        finally:
+            secret_scope.reset_secret_scope(token)
+
+    monkeypatch.setattr(launch_policy, "launch_profile_scope_if_multiplexed", _launch_scope)
+    active_token = secret_scope.set_multiplex_context(True)
+    try:
+        env = web_server_gateway._profile_action_environment(["-p", "alpha", "doctor"])
+    finally:
+        secret_scope.reset_multiplex_context(active_token)
+
+    assert process_name not in env
+
+
 def test_unscoped_lifecycle_verbs_in_a_served_profile_process_address_the_multiplexer(pooled_served_process):
     from hermes_cli.web_server_gateway import _gateway_subcommand, _profile_action_environment, multiplexed_profile_refusal
     # `stop` on a served profile PARKS it under the host (no refusal); `start` while unparked refuses.

@@ -395,6 +395,9 @@ def test_replay_replaces_surviving_user_row_with_same_message_uid():
     messages[1] = {**messages[1], "message_uid": uid}
     compressed = _compress(messages)
     assert len(holders(compressed)) == 1
+    # Raw role: _template_visible_role skips a leading assistant(tool_calls)
+    # row, which native Gemini rejects as the first turn.
+    assert compressed[1]["role"] == "user", [m["role"] for m in compressed]
     visible = [r for r in map(_template_visible_role, compressed[1:]) if r is not None]
     assert visible[0] == "user", visible
     assert all(a != b for a, b in zip(visible, visible[1:])), visible

@@ -5056,6 +5056,12 @@ Write only the summary body. Do not include any preamble or prefix."""
                     and msg.get(MESSAGE_UID) == replay_uid
                 )
             ]
+            # When the removed row opened the window, the head's tool flow
+            # (assistant tool_calls) would now lead; native Gemini rejects a
+            # leading model functionCall turn. Open the window on the carrier.
+            first = next(i for i, msg in enumerate(compressed) if msg.get("role") != "system")
+            if len(compressed) != before and compressed[first].get("role") != "user":
+                compressed.insert(first, compressed.pop(compressed.index(carrier)))
             # The summary role was picked against a head that ended on the row
             # just removed: an assistant carrier would now open the visible
             # sequence (or follow an assistant). Use the _force_user_leading

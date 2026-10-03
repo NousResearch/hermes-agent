@@ -426,7 +426,10 @@ THREAT_PATTERNS = [
     (r'sk-[A-Za-z0-9]{20,}', "openai_key_leaked", "critical", "credential_exposure", "possible OpenAI API key in skill content"),
     (r'sk-ant-[A-Za-z0-9_-]{90,}',
      "anthropic_key_leaked", "critical", "credential_exposure", "possible Anthropic API key in skill content"),
-    (r'AKIA[0-9A-Z]{16}', "aws_access_key_leaked", "critical", "credential_exposure", "AWS access key ID in skill content"),
+    # AWS access key IDs are all-caps by spec. Scoped case-sensitive — the table compiles with
+    # IGNORECASE, and a case-folded AKIA+16 inside a base64-encoded asset is a byte collision,
+    # not a key (#132155); one such false critical hard-blocks the whole plugin install.
+    (r'(?-i:AKIA[0-9A-Z]{16})', "aws_access_key_leaked", "critical", "credential_exposure", "AWS access key ID in skill content"),
     (r'glpat-[A-Za-z0-9_\-]{20,}',
      "gitlab_token_leaked", "critical", "credential_exposure", "GitLab personal access token in skill content"),
     # ── Additional prompt injection: jailbreak patterns ──

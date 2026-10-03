@@ -111,7 +111,28 @@ def _launchctl_bootstrap(domain: str, plist_path, label: str, *, timeout: int = 
         subprocess.run(
             ["launchctl", "bootout", f"{domain}/{label}"],
             check=False, timeout=timeout, **_gw()._CAPTURE_TEXT)
+        # bootout returns while the old gateway is still draining (SIGTERM → graceful shutdown), and
+        # every bootstrap issued before launchd drops the label fails EIO again — which left the job
+        # unloaded after `hermes gateway install --force` over a live gateway. Wait for the unload.
+        _gw()._wait_for_launchd_label_unloaded(domain, label, timeout=_gw()._launchd_reload_budget())
         subprocess.run(bootstrap, check=True, timeout=timeout)
+
+
+def _wait_for_launchd_label_unloaded(domain: str, label: str, *, timeout: float) -> bool:
+    """Poll ``launchctl print domain/label`` until launchd no longer has the job; True once unloaded.
+    Bounded by ``timeout`` so a wedged drain can't hang the caller (the bootstrap then fails loudly)."""
+    deadline = time.monotonic() + max(timeout, 0.0)
+    while True:
+        try:
+            loaded, _pid = _gw()._launchd_print_service_pid(domain, label)
+        except subprocess.TimeoutExpired:
+            loaded = True
+        if not loaded:
+            return True
+        if time.monotonic() >= deadline:
+            _gw()._append_launchd_reload_log(f"{domain}/{label} still loaded {timeout:.0f}s after bootout")
+            return False
+        time.sleep(0.5)
 
 
 def _launchd_reload_log_path() -> Path:

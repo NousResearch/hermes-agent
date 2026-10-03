@@ -238,3 +238,56 @@ class TestAdapterWireShape:
         v1 = decl("https://generativelanguage.googleapis.com/v1")
         assert "parametersJsonSchema" not in v1
         assert v1["parameters"]["properties"]["g"]["anyOf"]  # legacy translator still applied
+
+
+# ── Vertex OpenAI-compatible endpoint: multi-branch anyOf (#109115) ──────────
+
+def _vertex_openai_compat_violations(node, path="parameters"):
+    """Yield reasons Vertex's OpenAI→FunctionDeclaration translator would 400.
+
+    Mirrors the vendor rule from the #109115 error body: a multi-branch union
+    merges into a single node carrying ``items`` under a non-ARRAY type, so
+    Vertex rejects the whole turn with "For schema with items, schema type
+    should be ARRAY". Only unions with 2+ distinct non-null branch types are
+    flagged; nullable single-type unions pass through.
+    """
+    if isinstance(node, list):
+        for i, item in enumerate(node):
+            yield from _vertex_openai_compat_violations(item, f"{path}[{i}]")
+        return
+    if not isinstance(node, dict):
+        return
+    for key in ("anyOf", "oneOf"):
+        branches = node.get(key)
+        if isinstance(branches, list):
+            kinds = set()
+            for branch in branches:
+                if not isinstance(branch, dict):
+                    kinds.add("?")
+                    continue
+                if branch.get("type") == "null":
+                    continue
+                kinds.add(branch.get("type", "?"))
+            if len(kinds) > 1:
+                yield f"{path}: multi-branch {key} {sorted(kinds)}"
+    for key in ("properties", "$defs", "definitions"):
+        sub = node.get(key)
+        if isinstance(sub, dict):
+            for name, child in sub.items():
+                yield from _vertex_openai_compat_violations(child, f"{path}.{name}")
+    for key in ("items", "additionalProperties", "prefixItems"):
+        if key in node:
+            yield from _vertex_openai_compat_violations(node[key], f"{path}.{key}")
+
+
+class TestVertexOpenAICompatUnions:
+    def test_terminal_schema_has_no_multibranch_union(self):
+        from tools.terminal_tool import TERMINAL_SCHEMA
+
+        assert list(_vertex_openai_compat_violations(TERMINAL_SCHEMA["parameters"])) == []
+
+    def test_terminal_schema_survives_vertex_pipeline_without_multibranch_union(self):
+        from tools.terminal_tool import TERMINAL_SCHEMA
+
+        prepared = prepare_gemini_tool_parameters(TERMINAL_SCHEMA["parameters"])
+        assert list(_vertex_openai_compat_violations(prepared)) == []

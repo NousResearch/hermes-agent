@@ -1531,11 +1531,14 @@ TERMINAL_SCHEMA = {
                 "default": False
             },
             "notify": {
-                "description": "With background=true: notify=true fires exactly one notification when the process exits (the right choice for nearly every bounded task — builds, tests, deploys). notify=['pattern', ...] instead notifies when a line matches a pattern — ONLY for one-shot readiness signals on processes that never exit (e.g. ['Application startup complete']); rate-limited and auto-disabled if it over-fires. Omit for silent daemons.",
-                "anyOf": [
-                    {"type": "boolean"},
-                    {"type": "array", "items": {"type": "string"}}
-                ]
+                "type": "boolean",
+                "description": "With background=true: notify=true fires exactly one notification when the process exits (the right choice for nearly every bounded task — builds, tests, deploys). MUTUALLY EXCLUSIVE with watch_patterns (watch_patterns is dropped when both are set). Omit for silent daemons.",
+                "default": False
+            },
+            "watch_patterns": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "With background=true: notify when a line matches any of these patterns — ONLY for one-shot readiness signals on processes that never exit (e.g. ['Application startup complete']); rate-limited and auto-disabled if it over-fires. Omit for silent daemons. MUTUALLY EXCLUSIVE with notify."
             },
             "heartbeat": {
                 "type": "integer",
@@ -1549,7 +1552,7 @@ TERMINAL_SCHEMA = {
                 "description": "With background=true: keep the process alive across agent lifecycle cleanup (session end, /new, context compression, error recovery, max-iteration stop). Use ONLY for long-running jobs the user explicitly wants to outlive the conversation (overnight batches, watchful daemons); it still dies with the host process, and the user (or a later turn via process kill) can stop it on purpose. Default false."
             }
             # Legacy aliases (unadvertised, still accepted): notify_on_complete
-            # (bool) and watch_patterns (list). notify=true|[...] maps onto
+            # (bool) and a list-valued notify. notify=true|[...] maps onto
             # them in the dispatch wrapper; explicit notify wins on conflict.
         },
         "required": ["command"]
@@ -1568,9 +1571,10 @@ def _handle_terminal(args, **kw):
             "command in 'command'. Use execute_code(code=...) for Python; "
             "for shell, retry as terminal(command=...)."
         )
-    # `notify` is the advertised interface (true → notify_on_complete,
-    # [...] → watch_patterns); the legacy args stay accepted, explicit
-    # `notify` wins. Background-only modifiers on a foreground call fail
+    # `notify` (bool) and `watch_patterns` (list) are the advertised interface
+    # (true → notify_on_complete, [...] → watch_patterns); the legacy
+    # list-valued `notify` and `notify_on_complete` args stay accepted,
+    # explicit `notify` wins. Background-only modifiers on a foreground call fail
     # with the corrected call instead of being silently ignored.
     notify = args.get("notify")
     notify_on_complete = args.get("notify_on_complete", False)

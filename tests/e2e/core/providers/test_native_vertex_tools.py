@@ -25,10 +25,8 @@ import pytest
 
 pytest.importorskip("google.auth", reason="Vertex minting needs google-auth (CI installs it)")
 
-from tests.e2e.core._pending_fixes import known_gate  # noqa: E402
 from tests.e2e.core.providers._native_helpers import (  # noqa: E402
     ChatResult,
-    KnownSymptom,
     NativeHome,
     latest_session,
     make_home,
@@ -46,13 +44,6 @@ from tests.fakes.providers.vertex import (  # noqa: E402
     hermes_setup,
     signatures_on_wire,
 )
-
-# key -> (symptom pattern, "#issue reason"), gated at run time by ``known_gate``.
-KNOWN: dict[str, tuple[str, str]] = {
-    "default_toolset": (r"Vertex rejected the tool declarations: .*schema type should be ARRAY",
-                        "#109115 terminal.notify anyOf[boolean, array] is rejected by Vertex's FunctionDeclaration "
-                        "translator, so every default-toolset turn 400s"),
-}
 
 SECRET_1 = "PINEAPPLE-42"
 SECRET_2 = "MANGO-77"
@@ -243,7 +234,5 @@ def test_default_toolset_schemas_accepted_by_vertex(results: dict[str, Any]) -> 
     fake = res["fake"]
     require(fake.requests and fake.requests[0]["auth"].startswith("Bearer ya29."), "turn never reached Vertex")
     schema_rejects = [r["rejected"] for r in fake.rejected() if "schema type should be ARRAY" in (r["rejected"] or "")]
-    with known_gate(KNOWN, "default_toolset", raises=KnownSymptom):
-        if schema_rejects:
-            raise KnownSymptom(f"Vertex rejected the tool declarations: {schema_rejects[0]}")
+    assert not schema_rejects, f"Vertex rejected the tool declarations: {schema_rejects[0]}"
     assert "Default toolset answer." in res["turn"].stdout, res["turn"].describe()

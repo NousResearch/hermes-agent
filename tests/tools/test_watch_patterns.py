@@ -261,14 +261,17 @@ class TestCheckpointPersistence:
 # =========================================================================
 
 class TestTerminalToolSchema:
-    def test_schema_unified_notify_covers_patterns(self):
-        """Pattern-watching is advertised through `notify` (list form); the
-        legacy watch_patterns arg stays handler-accepted but unadvertised."""
+    def test_schema_split_notify_covers_patterns(self):
+        """Pattern-watching is advertised through `watch_patterns` (array) next
+        to a single-typed boolean `notify`; the legacy list-form notify stays
+        handler-accepted but unadvertised (#109115: the old unified
+        anyOf[boolean, array] 400s Vertex's FunctionDeclaration translator)."""
         from tools.terminal_tool import TERMINAL_SCHEMA
         props = TERMINAL_SCHEMA["parameters"]["properties"]
-        assert "watch_patterns" not in props
-        array_alts = [alt for alt in props["notify"]["anyOf"] if alt["type"] == "array"]
-        assert array_alts and array_alts[0]["items"] == {"type": "string"}
+        assert props["notify"].get("type") == "boolean"
+        assert "anyOf" not in props["notify"] and "oneOf" not in props["notify"]
+        assert props["watch_patterns"].get("type") == "array"
+        assert props["watch_patterns"].get("items") == {"type": "string"}
 
 
     def test_foreground_watch_patterns_rejected_with_teaching_error(self):

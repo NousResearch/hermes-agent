@@ -1279,9 +1279,9 @@ def _cron_delivery_notify_enabled(cfg: Optional[dict]) -> bool:
 
 
 def _record_delivery_verification(job: dict, unverified_targets: list) -> None:
-    """Persist ``last_delivery_unverified``: list of ``platform:chat_id[:thread_id]`` targets acked with no
-    evidence, or None, alongside queued Bot Chat receipts. Never raises (bookkeeping must not fail a
-    delivery)."""
+    """Persist ``last_delivery_unverified``: list of ``platform:chat_id[:thread_id]`` targets not confirmed
+    (acked with no message_id/raw_response, or a started send that outlasted the confirmation wait), or
+    None, alongside queued Bot Chat receipts. Never raises (bookkeeping must not fail a delivery)."""
     new_value = list(unverified_targets) or None
     queued = {target: receipt for target, receipt in
               job.get("_bot_chat_delivery_receipts", {}).items()
@@ -1474,6 +1474,20 @@ def _live_route_metadata(t: _TargetDelivery) -> tuple[Optional[str], dict, dict]
 _LIVE_SEND_CONFIRM_TIMEOUT_SECS = 60
 
 
+def _observe_late_live_send(future: Any, job_id: str, where: str) -> None:
+    try:
+        result = future.result()
+    except Exception as exc:
+        logger.warning(
+            "Job '%s': live adapter send to %s failed after confirmation timeout: %r",
+            job_id, where, exc)
+        return
+    if not _confirm_adapter_delivery(result, job_id):
+        logger.warning(
+            "Job '%s': live adapter send to %s returned an unconfirmed result "
+            "after confirmation timeout", job_id, where)
+
+
 def _live_send_text(
     t: _TargetDelivery, text_to_send: str, route_thread_id: Optional[str], route_metadata: dict, *,
     target_errors: list, delivery_errors: list, unverified_targets: list,
@@ -1522,12 +1536,15 @@ def _live_send_text(
             logger.warning("Job '%s': %s, falling back to standalone", job["id"], msg)
             target_errors.append(msg)
             return False, False, None
+        unverified_targets.append(t.where)
+        future.add_done_callback(
+            lambda done: _observe_late_live_send(done, job["id"], t.where))
         logger.warning(
             "Job '%s': live adapter send to %s:%s timed out "
-            "after 60s; already dispatched (in flight), "
-            "assuming delivered (skipping standalone fallback "
+            "after %ss; already dispatched (in flight), "
+            "delivery unverified (skipping standalone fallback "
             "to avoid duplicate)",
-            job["id"], t.platform_name, t.chat_id)
+            job["id"], t.platform_name, t.chat_id, _LIVE_SEND_CONFIRM_TIMEOUT_SECS)
         return True, True, None
     except PartialDeliveryError as ex:
         # The head of a split send is already on screen: a standalone resend would duplicate it.
@@ -1674,14 +1691,8 @@ def _deliver_via_live_adapter(
                 unverified_targets=unverified_targets,
             )
 
-        # Media rides the same DM-topic-aware routing as text. Skipped after a confirmation
-        # timeout (loop contended, text already assumed delivered) — record the drop instead.
-        # Send extracted media files as native attachments via the live adapter, using the same
-        # DM-topic-aware routing as the text send (#22773 — media previously used a bare thread_id and
-        # landed in the General lane for private DM topics). Skip on an in-flight confirmation timeout: the
-        # gateway loop is contended, so each media send would also block its 30s budget, and the text
-        # payload is already assumed delivered (#38922). Record the skipped attachments so the drop is
-        # visible rather than silently lost.
+        # Skip media on an in-flight confirmation timeout (text delivery unverified, loop contended;
+        # #38922, #22773) and record the dropped attachments.
         if adapter_ok and not timed_out and media_files:
             _live_send_media(t, media_metadata, media_files, delivery_errors)
         elif timed_out and media_files:
@@ -2019,8 +2030,9 @@ def _deliver_result(
         wrap_response = user_cfg.get("cron", {}).get("wrap_response", True)
     # Mark live sends FINAL so the platform pushes them (Telegram "important" mode mutes otherwise).
     notify_delivery = _cron_delivery_notify_enabled(user_cfg)
-    # Targets acked with NO evidence (bare SendResult(success=True) — Slack/Matrix/Mattermost);
-    # persisted as ``last_delivery_unverified`` so `hermes cron list` shows it.
+    # Targets not confirmed: acked with no message_id/raw_response (bare SendResult(success=True) —
+    # Slack/Matrix/Mattermost) or a started send that outlasted the confirmation wait; persisted as
+    # ``last_delivery_unverified`` so `hermes cron list` shows it.
     unverified_targets: list = []
     if wrap_response:
         task_name = job.get("name", job["id"])

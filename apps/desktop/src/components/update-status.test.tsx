@@ -1,12 +1,18 @@
 import { cleanup, fireEvent, render, screen } from '@testing-library/react'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { DesktopUpdateStatus, DesktopVersionInfo } from '@/global'
 import { I18nProvider, type Locale, TRANSLATIONS, type Translations } from '@/i18n'
 import { en } from '@/i18n/en'
-import type { UpdateApplyState } from '@/store/updates'
+import {
+  $updateApply,
+  $updateChecking,
+  $updateStatus,
+  startActiveUpdate,
+  type UpdateApplyState
+} from '@/store/updates'
 
-import { deriveUpdateStatus, VersionHero } from './update-status'
+import { deriveUpdateStatus, UpdateStatusCard, VersionHero } from './update-status'
 
 // VersionHero is the shared About/overlay hero. Its module imports the real
 // updates store graph; mock it shallowly — these tests exercise the hero's
@@ -204,5 +210,50 @@ describe('VersionHero bundle banners', () => {
 
     expect(screen.queryByText(en.updates.bundleOutOfSync)).toBeNull()
     expect(screen.queryByText(en.updates.bundleSwapPending)).toBeNull()
+  })
+})
+
+// The About panel renders the client card — plus a backend card in remote mode —
+// so each card's "Update now" must name its own target: the target-less call
+// falls into hasMultipleUpdateTargets() and fans out to the everything-flow,
+// restarting the fleet behind a local-looking button (#121209). Both the
+// counted gap and the uncountable one (shallow clone: behind 0 plus
+// updateAvailable, which still offers the update) have to take that path.
+describe('UpdateStatusCard client-scoped actions (#121209)', () => {
+  beforeEach(() => {
+    vi.mocked(startActiveUpdate).mockClear()
+    $updateApply.set(IDLE_APPLY)
+    $updateChecking.set(false)
+  })
+
+  afterEach(() => {
+    cleanup()
+    $updateStatus.set(null)
+  })
+
+  const clientStatus = (over: Partial<DesktopUpdateStatus>): DesktopUpdateStatus => ({
+    behind: 3,
+    branch: 'main',
+    currentSha: 'abcdef1234567',
+    fetchedAt: Date.now(),
+    supported: true,
+    targetSha: 'sha-a',
+    ...over
+  })
+
+  const shapes: Array<[string, Partial<DesktopUpdateStatus>]> = [
+    ['a counted gap', { behind: 3 }],
+    ['an uncountable gap', { behind: 0, updateAvailable: true }]
+  ]
+
+  it.each(shapes)('update now targets the client for %s', (_label, over) => {
+    $updateStatus.set(clientStatus(over))
+
+    render(<UpdateStatusCard target="client" />)
+
+    fireEvent.click(screen.getByRole('button', { name: en.updates.updateNow }))
+
+    expect(startActiveUpdate).toHaveBeenCalledTimes(1)
+    expect(startActiveUpdate).toHaveBeenCalledWith('client')
   })
 })

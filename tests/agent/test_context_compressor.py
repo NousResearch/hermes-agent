@@ -3607,7 +3607,26 @@ class TestPreLlmFeasibilityCheck:
         mock_gen.assert_called_once()
         assert compressor._prellm_skip_count == 0
 
+    def test_fallback_streak_benches_summary_model_but_keeps_compacting(self, compressor):
+        """Two fallbacks in a row stop the summary calls (#63008), not the compaction itself:
+        the window is still dropped, and one probe per recovery window can heal the streak."""
+        compressor._fallback_compression_streak = 2
+        msgs = self._make_messages()
 
+        with patch.object(compressor, "_generate_summary", return_value="LLM summary") as mock_gen:
+            benched = compressor.compress(msgs, force=False)
+            mock_gen.assert_not_called()
+            assert len(benched) < len(msgs)
+            assert compressor._last_feasibility_skip is True  # recorded streak-neutral
+
+            compressor._fallback_probe_at = time.monotonic() - 1  # recovery window elapsed
+            compressor.compress(self._make_messages(), force=False)
+            mock_gen.assert_called_once()
+
+    def test_skip_count_resets_on_session_reset(self, compressor):
+        """_prellm_skip_count must reset alongside _ineffective_compression_count."""
+        compressor._prellm_skip_count = 5
+        compressor._ineffective_compression_count = 2
 
     def test_skip_fires_on_fat_tail_small_middle(self, compressor):
         """The target scenario from #60451: a tool-heavy transcript whose
@@ -3647,9 +3666,8 @@ class TestPreLlmFeasibilityCheck:
         skip path sets _last_summary_fallback_used, which the boundary
         wrapper (conversation_compression.py) records via
         record_completed_compaction(used_fallback=True) — incrementing
-        _fallback_compression_streak, whose second occurrence blocks
-        automatic compression. Two deliberate skips must NOT trip that
-        breaker."""
+        _fallback_compression_streak. A deliberate skip must not count as
+        a failed summary-model attempt."""
         compressor._ineffective_compression_count = 1
         msgs = self._make_messages()
 
@@ -3668,10 +3686,7 @@ class TestPreLlmFeasibilityCheck:
 
         assert compressor._prellm_skip_count == 2
         assert compressor._fallback_compression_streak == 0
-        assert not compressor._automatic_compression_blocked_locally(), (
-            "two deliberate feasibility skips must not disable automatic "
-            "compression via the fallback-streak breaker"
-        )
+        assert not compressor._automatic_compression_blocked_locally()
 
     def test_boundary_accounting_skip_does_not_reset_fallback_streak(self, compressor):
         """A skip proves nothing about the summary model's health: an

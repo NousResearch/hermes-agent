@@ -2368,6 +2368,8 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
         self._prellm_skip_count = 0
         # Only a healthy completed summary resets this; ordinary fitting responses do not.
         self._fallback_compression_streak = 0
+        # Monotonic time of the next summary-model probe while the fallback streak benches it; 0.0 = unarmed.
+        self._fallback_probe_at = 0.0
         # Armed at a completed boundary; consumed by the next real prompt count in update_from_response().
         self._verify_compaction_cleared_threshold = False
         # Lets the boundary wrapper tell a completed rewrite from a no-op without inferring from length.
@@ -2584,8 +2586,7 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
         if feasibility_skip:
             # A pre-LLM feasibility skip is not a summary-quality verdict: it must neither extend nor reset the streak.
             # A deliberate pre-LLM feasibility skip (#60451) is not a summary-quality verdict: it must
-            # neither extend a fallback streak (two skips would otherwise latch the >= 2 breaker and disable
-            # compression entirely — including the cheap deterministic dropping the skip exists to reach)
+            # neither extend a fallback streak (the streak decides whether the summary model is called)
             # nor reset one (a skip proves nothing about the summary model's health).
             if not self.quiet_mode:
                 logger.info(
@@ -2782,8 +2783,8 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
     _MIN_CTX_TRIGGER_RATIO = 0.85
 
     # Anti-thrash recovery: after this long blocked, allow ONE probe (counters drop to 1 strike).
-    # Anti-thrash recovery window (#14694): once the ineffective/fallback breaker trips, automatic
-    # compaction stays blocked for this long, then ONE probe attempt is allowed (counters drop to 1 strike,
+    # Anti-thrash recovery window (#14694): once the ineffective breaker trips, automatic
+    # compaction stays blocked for this long, then ONE probe attempt is allowed (the count drops to 1 strike,
     # so another ineffective pass re-trips immediately). Long enough that a genuinely incompressible session
     # isn't compacting in a loop; short enough that a session which has since grown real compressible
     # material recovers well before it rides into the provider's hard context limit.
@@ -3081,14 +3082,18 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
         return "ineffective" if self._tripped() else None
 
     def _tripped(self) -> bool:
-        """Anti-thrash breaker state: two ineffective compactions or two fallback summaries in a row."""
-        return self._ineffective_compression_count >= 2 or self._fallback_compression_streak >= 2
+        """Only provider-confirmed ineffective compactions trip the breaker.
+
+        A static fallback still reclaims the window, so blocking on it lets the prompt run into the
+        provider's hard limit. The fallback streak instead benches the failing summary model
+        (``_fallback_streak_skip``), which is what stops a paid fallback loop (#63008).
+        """
+        return self._ineffective_compression_count >= 2
 
     def _refresh_durable_guards(self) -> None:
         """Re-read durable cooldown + breaker state; called only when a gate is about to block."""
         for label, refresh in (
             ("cooldown", lambda: self.get_active_compression_failure_cooldown(refresh=True)),
-            ("fallback-streak", self._load_fallback_compression_streak),
             ("ineffective-count", self._load_ineffective_compression_count),
         ):
             try:
@@ -3140,7 +3145,7 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
                 # accumulate plenty of compressible material later. Without a recovery path the session
                 # never auto-compacts again and rides into the provider's hard context limit. Recovery is a
                 # probation probe: after _ANTI_THRASH_RECOVERY_SECONDS of continuous block, allow ONE
-                # attempt by dropping the tripped counter(s) to 1 strike (persisted, so sibling agents on
+                # attempt by dropping the ineffective counter to 1 strike (persisted, so sibling agents on
                 # the same session row unblock too). If the probe is ineffective again the very next verdict
                 # re-trips the guard, so the worst case in the truly-incompressible state is one compaction
                 # attempt per recovery window — bounded, not thrash. The clock is armed lazily on the first
@@ -3150,9 +3155,6 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
                 # already-armed deadline resumes that window instead of restarting it.
                 if self._ineffective_compression_count >= 2:
                     self._record_ineffective_compression_verdict(1)
-                if self._fallback_compression_streak >= 2:
-                    self._fallback_compression_streak = 1
-                    self._persist_fallback_compression_streak()
                 if not self.quiet_mode:
                     logger.info(
                         "Anti-thrashing recovery: %.0fs elapsed since the guard tripped — allowing one "
@@ -5324,6 +5326,34 @@ Write only the summary body. Do not include any preamble or prefix."""
             compress_start + 1, compress_end, n_turns, compress_start, tail_msgs,
         )
 
+    def _fallback_streak_skip(self, telemetry: Dict[str, Any]) -> bool:
+        """Pre-LLM skip while two summaries in a row fell back: compact deterministically instead of
+        paying for a summary model that keeps failing (#63008). One probe per recovery window; a
+        healthy summary resets the streak, another fallback benches it again."""
+        if self._fallback_compression_streak < 2:
+            self._fallback_probe_at = 0.0
+            return False
+        now = time.monotonic()
+        if self._fallback_probe_at and now >= self._fallback_probe_at:
+            self._fallback_probe_at = 0.0
+            if not self.quiet_mode:
+                logger.info(
+                    "Compression: probing the summary model again after %d fallback summaries in a row",
+                    self._fallback_compression_streak,
+                )
+            return False
+        if not self._fallback_probe_at:
+            self._fallback_probe_at = now + self._ANTI_THRASH_RECOVERY_SECONDS
+        self._last_feasibility_skip = True
+        telemetry["failure_class"] = "summary_model_benched"
+        if not self.quiet_mode:
+            logger.warning(
+                "Compression: %d fallback summaries in a row — skipping LLM summarization, proceeding with "
+                "deterministic message dropping. Next summary-model probe in %.0fs.",
+                self._fallback_compression_streak, max(0.0, self._fallback_probe_at - now),
+            )
+        return True
+
     def _feasibility_skip(
         self, telemetry: Dict[str, Any], turns_to_summarize: List[Dict[str, Any]],
         compress_start: int, compress_end: int,
@@ -5647,7 +5677,10 @@ Write only the summary body. Do not include any preamble or prefix."""
         from agent.conversation_compression import _raise_if_stale_attempt
 
         _raise_if_stale_attempt(self)
-        feasibility_skip = not force and self._feasibility_skip(telemetry, turns_to_summarize, compress_start, compress_end)
+        feasibility_skip = not force and (
+            self._fallback_streak_skip(telemetry)
+            or self._feasibility_skip(telemetry, turns_to_summarize, compress_start, compress_end)
+        )
         summary = None  # feasibility skip: no LLM call; Phase 4 inserts the deterministic fallback
         if not feasibility_skip:
             summary = self._summarize_window(

@@ -3404,6 +3404,33 @@ class TestNewEndpoints:
         assert top_skill["total_count"] == 1
         assert top_skill["last_used_at"] is not None
 
+    def test_analytics_daily_by_model_sums_to_daily(self):
+        """Regression for #20412: the per-model daily series is a breakdown of the daily bars —
+        every day's model segments (model-less sessions included) sum to that day's totals."""
+        from hermes_state import SessionDB
+
+        db = SessionDB()
+        try:
+            for sid, model, inp, out in (
+                ("dbm-a", "anthropic/claude-sonnet-4", 1000, 40),
+                ("dbm-b", "anthropic/claude-sonnet-4", 500, 10),
+                ("dbm-c", "openai/gpt-5", 300, 90),
+                ("dbm-d", None, 70, 5),
+            ):
+                db.create_session(session_id=sid, source="cli", model=model)
+                db.update_token_counts(sid, input_tokens=inp, output_tokens=out)
+        finally:
+            db.close()
+
+        data = self.client.get("/api/analytics/usage?days=7").json()
+
+        assert data["daily"]
+        for day in data["daily"]:
+            segments = [r for r in data["daily_by_model"] if r["day"] == day["day"]]
+            assert sum(r["input_tokens"] for r in segments) == day["input_tokens"]
+            assert sum(r["output_tokens"] for r in segments) == day["output_tokens"]
+            assert len({r["model"] for r in segments}) == len(segments)
+
     def _daily_for_local_starts(self, tz_name, local_starts):
         """Seed one session per naive local start in ``tz_name``; return the daily buckets."""
         from datetime import datetime

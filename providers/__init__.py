@@ -78,6 +78,11 @@ class _HomeLayer:
     aliases: dict[str, str] = field(default_factory=dict)
     stamps: tuple = ()
     stamp_checked_at: float | None = None
+    # Thread currently inside ``_scan_home_layer`` for this layer. A lookup that thread makes
+    # while a plugin is importing (a plugin module whose body calls ``list_providers()``) must
+    # see the layer as-is: rescanning would import the NEXT plugin while the current one, and
+    # whatever it was importing, is still half-initialized.
+    scanning_thread: int | None = None
 
 
 _HOME_LAYERS: dict[str, _HomeLayer] = {}
@@ -262,6 +267,8 @@ def _refresh_home_layer(layer: _HomeLayer, home: Path | None, key: str, *, force
     check picks it up. Checking on a short cadence keeps a newly installed plugin discoverable
     without making every model lookup perform two filesystem stats.
     """
+    if layer.scanning_thread == threading.get_ident():
+        return False  # re-entered from a plugin import during this thread's scan
     now = time.monotonic()
     if home is None or not (
         force
@@ -271,7 +278,11 @@ def _refresh_home_layer(layer: _HomeLayer, home: Path | None, key: str, *, force
         return False
     stamps = _plugin_dir_stamps(home)
     if stamps != layer.stamps:
-        _scan_home_layer(layer, key)
+        layer.scanning_thread = threading.get_ident()
+        try:
+            _scan_home_layer(layer, key)
+        finally:
+            layer.scanning_thread = None
         layer.stamps = stamps
         # Publish the completed layer -- stamps AND check time -- before auth
         # sync: it calls list_providers(), which re-enters this function. An

@@ -4,6 +4,7 @@ and when a human opened that browser first, the agent attaches to it instead of 
 
 from __future__ import annotations
 
+import time
 import os
 import socket
 from pathlib import Path
@@ -323,6 +324,43 @@ def test_janitor_keeps_the_shared_browser_alive_while_a_human_holds_the_lease(mo
     lifecycle._cleanup_inactive_browser_sessions()
     assert reaped == ["cloud", "bot"]
     assert session.human_holds_shared_browser({"features": {"local": True}}) is False
+
+
+def test_janitor_keeps_the_shared_browser_for_the_screens_idle_window_while_the_human_is_on_the_way(monkeypatch):
+    """The bot asked for a takeover and ended its turn; the lease is still the agent's until the human opens
+    the screen. The page they are asked to log into must still be there after the default 120 s: while the
+    screen is up, the shared browser follows the screen's idle stop. Past it, or with the screen down, it goes."""
+    from tools import browser_tool_lifecycle as lifecycle
+    from tools.bot_desktop import lease
+
+    screen = {"env": {"DISPLAY": ":37"}}
+    monkeypatch.setattr(runtime, "published_env", lambda: screen["env"])
+    monkeypatch.setattr(runtime, "idle_stop_seconds", lambda: 1800.0)
+    monkeypatch.setattr(lease, "human_holds", lambda *a, **k: False)
+    reaped: list = []
+    monkeypatch.setattr(lifecycle, "cleanup_browser", lambda task_id: reaped.append(task_id))
+    monkeypatch.setattr(lifecycle._bt, "BROWSER_SESSION_INACTIVITY_TIMEOUT", 120)
+    monkeypatch.setattr(lifecycle._bt, "_active_sessions", {
+        "bot": {"session_name": "h_bot", "features": {"local": True}},
+        "cloud": {"session_name": "c_1", "bb_session_id": "bb", "features": {}},
+    })
+    now = time.time()
+    monkeypatch.setattr(lifecycle._bt, "_session_last_activity", {"bot": now - 300, "cloud": now - 300})
+    monkeypatch.setattr(lifecycle._bt, "_session_owner_homes", {})
+
+    lifecycle._cleanup_inactive_browser_sessions()
+    assert reaped == ["cloud"], "5 min after the takeover request, the page the human will log into is still open"
+
+    lifecycle._bt._session_last_activity["bot"] = now - 2000
+    lifecycle._cleanup_inactive_browser_sessions()
+    assert reaped == ["cloud", "bot"], "past the screen's idle window it is reaped as before"
+
+    reaped.clear()
+    lifecycle._bt._active_sessions["bot"] = {"session_name": "h_bot", "features": {"local": True}}
+    lifecycle._bt._session_last_activity["bot"] = now - 300
+    screen["env"] = {}
+    lifecycle._cleanup_inactive_browser_sessions()
+    assert reaped == ["bot"], "no screen: the default inactivity timeout applies"
 
 
 def test_daemon_idle_timer_defers_to_the_janitor_only_for_the_shared_headed_browser(monkeypatch):

@@ -23,13 +23,18 @@ def _install_telegram_mock(monkeypatch: pytest.MonkeyPatch, bot_factory: MagicMo
     parse_mode = SimpleNamespace(MARKDOWN_V2="MarkdownV2", HTML="HTML")
     constants_mod = SimpleNamespace(ParseMode=parse_mode)
     _MessageEntity = lambda **_kw: SimpleNamespace(**_kw)
+    # The standalone bot constructor now builds its HTTPXRequest on every path
+    # (read timeout), so the stub must expose telegram.request too.
+    request_mod = SimpleNamespace(HTTPXRequest=MagicMock())
     telegram_mod = SimpleNamespace(
         Bot=bot_factory,
         MessageEntity=_MessageEntity,
         constants=constants_mod,
+        request=request_mod,
     )
     monkeypatch.setitem(sys.modules, "telegram", telegram_mod)
     monkeypatch.setitem(sys.modules, "telegram.constants", constants_mod)
+    monkeypatch.setitem(sys.modules, "telegram.request", request_mod)
 
 
 def _make_bot() -> MagicMock:

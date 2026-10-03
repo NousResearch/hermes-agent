@@ -137,3 +137,28 @@ def test_rejection_memo_is_per_model_and_ignores_schema_validation_errors():
     after = _build_call_kwargs("openai", "gpt-5-mini", messages,
                                extra_body={"response_format": dict(_JSON_SCHEMA)}, base_url="https://api.openai.com/v1")
     assert after["extra_body"]["response_format"] == _JSON_SCHEMA  # ... but never feeds the memo
+
+
+def test_diagnostic_free_rejection_is_memoised_for_that_model_only():
+    """A payload that names no reason is the one signal a silent relay gives that the route refused the
+    FIELD. The ladder memoises only after the retry without the field succeeded, so a silent 400 must
+    feed the memo -- otherwise every later structured call re-sends the field and pays the same 400
+    (opencode.ai/zen/go deepseek-v4.1-flash, probed 2026-10-03)."""
+    messages = [{"role": "user", "content": "hi"}]
+    relay = "https://opencode.ai/zen/go/v1"
+    silent_body = '{"model": "deepseek-v4.1-flash"}'
+    silent_400 = _Rejects400(f"Error code: 400 - {silent_body}")
+    silent_400.response = SimpleNamespace(text=silent_body)  # the SDK exposes the raw body
+
+    assert _is_structured_output_rejection(silent_400)  # drives the one-shot retry ...
+    structured_output.remember_structured_output_rejection(
+        "opencode-go", relay,
+        {"model": "deepseek-v4.1-flash", "extra_body": {"response_format": dict(_JSON_SCHEMA)}},
+        silent_400)
+
+    rejected = _build_call_kwargs("opencode-go", "deepseek-v4.1-flash", messages,
+                                  extra_body={"response_format": dict(_JSON_SCHEMA)}, base_url=relay)
+    sibling = _build_call_kwargs("opencode-go", "glm-5.3-flash", messages,
+                                 extra_body={"response_format": dict(_JSON_SCHEMA)}, base_url=relay)
+    assert "response_format" not in rejected.get("extra_body", {})  # ... and never pays it twice
+    assert sibling["extra_body"]["response_format"] == _JSON_SCHEMA  # one model's refusal is not the host's

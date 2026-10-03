@@ -1,8 +1,8 @@
 """``groups.replicate`` / ``groups.promote`` / ``groups.demote`` stay wired behind one gate.
 
 The exclusive-authority gate (``hosted_room_replicas.require_takeover``) refuses all three with a
-typed reason until exclusive-authority recovery exists; opening it is the only change needed to
-reach the implementations again."""
+typed reason; opening it is the only change needed to reach the implementations again. These RPCs
+carry no proof, so what they promote or demote stays quarantined even through an open gate."""
 
 from __future__ import annotations
 
@@ -48,7 +48,7 @@ def _error(envelope):
     return envelope["error"]
 
 
-def _authority_page(tmp_path, gateway_id="install:" + "a" * 32, n=3):
+def _authority_page(tmp_path, gateway_id="install:" + "a" * 32, n=3, room_id="room-1"):
     """Build a real room + log on a SEPARATE 'remote authority' DB and return
     its replay page, as a replicating client would fetch via groups.log."""
     from gateway import hosted_rooms as rooms
@@ -56,7 +56,7 @@ def _authority_page(tmp_path, gateway_id="install:" + "a" * 32, n=3):
     db = tmp_path / "remote-authority.db"
     rooms.create_room(
         db,
-        room_id="room-1",
+        room_id=room_id,
         name="Field Room",
         members=MEMBERS,
         authority_gateway_id=gateway_id,
@@ -64,7 +64,7 @@ def _authority_page(tmp_path, gateway_id="install:" + "a" * 32, n=3):
     for index in range(n):
         rooms.append_event(
             db,
-            room_id="room-1",
+            room_id=room_id,
             event_id=f"e{index}",
             kind="message.user",
             actor={"kind": "user", "id": "tek"},
@@ -72,11 +72,11 @@ def _authority_page(tmp_path, gateway_id="install:" + "a" * 32, n=3):
             authority_gateway_id=gateway_id,
             authority_epoch=1,
         )
-    return rooms.read_events(db, room_id="room-1", since_seq=0, limit=100)
+    return rooms.read_events(db, room_id=room_id, since_seq=0, limit=100)
 
 
-def _replicate_params(page):
-    return {"room_id": "room-1", "room_name": "Field Room", "members": MEMBERS, "page": page}
+def _replicate_params(page, room_id="room-1"):
+    return {"room_id": room_id, "room_name": "Field Room", "members": MEMBERS, "page": page}
 
 
 def test_capabilities_do_not_advertise_unverified_replication(home):
@@ -157,22 +157,38 @@ def test_open_gate_promote_requires_confirm_and_takes_over(home, tmp_path, gate_
     assert log["authority"]["epoch"] == 2
 
 
-def test_open_gate_promotion_still_ends_quarantined(home, tmp_path, gate_open):
+def test_open_gate_quarantines_an_unmarked_promotion_but_not_a_marked_one(home, tmp_path, gate_open):
     """Opening the gate alone does not make a takeover trusted.
 
-    The store still records the promotion as unproven and quarantines the room. This changes when
-    exclusive-authority recovery adds its verified-takeover mark and the triggers in
-    ``gateway/hosted_room_safety.py`` accept it: a verified promotion should then leave a writable
-    room, and this test should assert that instead.
+    ``groups.promote`` carries no proof, so the store records its promotion as unproven and
+    quarantines the room. A promotion whose caller verified a certificate or an attestation is
+    marked in the same transaction (``promote_replica(transition=...)``), the triggers in
+    ``gateway/hosted_room_safety.py`` accept it, and the room stays writable.
     """
+    from gateway.hosted_room_safety import transition_proof_digest
+    from gateway.hosted_rooms import default_db_path, local_authority_gateway_id
+
     _result(srv._methods["groups.replicate"](1, _replicate_params(_authority_page(tmp_path))))
     assert _result(srv._methods["groups.promote"](2, {"room_id": "room-1", "confirm": True}))["authority_epoch"] == 2
-
-    room, = _result(srv._methods["groups.list"](3, {}))["rooms"]
-    assert (room["safety_status"], room["safety_reason"]) == ("authority_quarantined", "unsafe_replica_promotion")
+    unmarked, = _result(srv._methods["groups.list"](3, {}))["rooms"]
+    assert (unmarked["safety_status"], unmarked["safety_reason"]) == (
+        "authority_quarantined", "unsafe_replica_promotion")
     refused = _error(srv._methods["groups.send"](4, {
         "room_id": "room-1", "event_id": "after-promotion", "payload": {"text": "continue", "thread_id": "thread-1"}}))
     assert refused["data"] == {"reason": "room_authority_quarantined"}
+
+    other = tmp_path / "other-authority"
+    other.mkdir()
+    _result(srv._methods["groups.replicate"](
+        5, _replicate_params(_authority_page(other, room_id="room-2"), room_id="room-2")))
+    proof = {"room_id": "room-2", "from_epoch": 1, "to_epoch": 2, "successor_gateway_id": local_authority_gateway_id()}
+    replicas.promote_replica(default_db_path(), room_id="room-2", transition={
+        "proof_kind": "certified", "proof_digest": transition_proof_digest(proof), "proof": proof})
+    marked = next(room for room in _result(srv._methods["groups.list"](6, {}))["rooms"] if room["room_id"] == "room-2")
+    assert "safety_status" not in marked
+    assert _result(srv._methods["groups.state"](7, {"room_id": "room-2"}))["room"]["authority_epoch"] == 2
+    renamed = _result(srv._methods["groups.rename"](8, {"room_id": "room-2", "event_id": "rename", "name": "Kept"}))
+    assert (renamed["room"]["name"], renamed["room"]["event"]["authority_epoch"]) == ("Kept", 2)
 
 
 def test_open_gate_demote_fences_local_room_against_newer_epoch(home, gate_open):

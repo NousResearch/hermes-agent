@@ -12,6 +12,7 @@ import json
 import re
 import sqlite3
 import time
+import unicodedata
 from pathlib import Path
 from typing import Any, Callable, Iterator, Mapping
 
@@ -83,6 +84,14 @@ def canonical_json(value: Any, *, error: type[Exception], label: str, max_bytes:
     if len(encoded.encode("utf-8")) > max_bytes:
         raise error(f"{label} is too large")
     return encoded
+
+
+def display_label(value: Any, *, max_chars: int) -> str | None:
+    """A printable one-line label for people to read; never an identity or an authorization."""
+    if not isinstance(value, str):
+        return None
+    cleaned = " ".join("".join(char for char in value if unicodedata.category(char)[0] != "C").split())
+    return cleaned[:max_chars].strip() or None
 
 
 def utf8_len(*parts: str) -> int:

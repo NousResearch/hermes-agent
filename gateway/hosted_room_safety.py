@@ -4,7 +4,12 @@ Installed on every room store, the legacy ``shared-state.db`` and each canonical
 
 * ``hosted_room_quarantine`` keeps a room read-only, and out of pruning, once its history records a
   takeover no exclusive authority proved (an ``authority.claimed`` promoted from a replica, or an
-  ``authority.lost``), or once one room id names both a local room and a stored copy.
+  unmarked ``authority.lost`` or ``authority.transition``), or once one room id names both a local
+  room and a stored copy.
+* ``hosted_room_verified_transitions`` marks the authority changes exclusive-authority recovery
+  verified. A mark admits exactly one authority-change event, in its own transaction (see
+  ``mark_verified_transition``); a mark set aside with its event's divergent branch is archived in
+  ``hosted_room_branch_transitions``, never deleted.
 * ``hosted_room_id_reservations`` binds every room id to the kind that first used it, even after its
   payload is pruned, so a copied room is never recreated as a local one.
 * ``hosted_room_event_budget`` counts room and replica events against one byte budget.
@@ -20,10 +25,13 @@ gateway process still sharing the store.
 
 from __future__ import annotations
 
+import hashlib
+import re
 import sqlite3
 import time
+from typing import Any, Mapping
 
-from gateway.hosted_rooms_common import table_columns, table_exists
+from gateway.hosted_rooms_common import compact_json, identifier, table_columns, table_exists
 
 _QUARANTINE_SCHEMA_COLUMNS = frozenset({"room_id", "reason", "detected_at"})
 
@@ -58,6 +66,17 @@ _EVENT_BUDGET_SCHEMA_COLUMNS = frozenset({"singleton", "event_bytes"})
 
 _QUARANTINE_DISBAND_SCHEMA_COLUMNS = frozenset({"room_id", "confirmed_at"})
 
+_VERIFIED_TRANSITION_SCHEMA_COLUMNS = frozenset({
+    "room_id", "from_epoch", "to_epoch", "successor_gateway_id", "proof_kind", "proof_digest", "created_at",
+})
+_TRANSITION_USE_SCHEMA_COLUMNS = frozenset({"room_id", "to_epoch", "seq", "event_id"})
+_BRANCH_TRANSITION_SCHEMA_COLUMNS = frozenset({
+    "room_id", "branch_id", "from_epoch", "to_epoch", "successor_gateway_id", "proof_kind", "proof_digest",
+    "marked_at", "seq", "event_id", "archived_at",
+})
+
+PROOF_KINDS = frozenset({"certified", "attested"})
+
 _ROOM_SAFETY_TRIGGERS = frozenset({
     "trg_hosted_rooms_reject_reserved_insert",
     "trg_hosted_rooms_reserve_insert",
@@ -65,6 +84,7 @@ _ROOM_SAFETY_TRIGGERS = frozenset({
     "trg_hosted_replicas_reserve_insert",
     "trg_hosted_events_reject_quarantined_insert",
     "trg_hosted_events_quarantine_unsafe_lineage",
+    "trg_hosted_replica_events_verified_lineage",
     "trg_hosted_events_shared_budget",
     "trg_hosted_replica_events_shared_budget",
     "trg_hosted_events_budget_account_insert",
@@ -74,11 +94,152 @@ _ROOM_SAFETY_TRIGGERS = frozenset({
     "trg_hosted_rooms_quarantined_tombstone",
     "trg_hosted_rooms_keep_quarantined",
     "trg_hosted_events_keep_quarantined",
+    "trg_branch_transitions_keep",
+    "trg_branch_transitions_unchanged",
 })
+# Triggers whose definition changed with verified transitions; a store holding an older body is migrated.
+_REVISED_TRIGGERS = {
+    "trg_hosted_events_quarantine_unsafe_lineage": "hosted_room_verified_transitions",
+    "trg_hosted_events_shared_budget": "authority.transition",
+}
+
+
+def transition_proof_digest(proof: Mapping[str, Any]) -> str:
+    """The digest a verified-transition mark binds: sha256 of the proof's canonical JSON."""
+    return hashlib.sha256(compact_json(proof).encode("utf-8")).hexdigest()
+
+
+def _transition_match_sql(events: str) -> str:
+    """Whether a mark verifies ``NEW``, an authority-change event being written to ``events``.
+
+    The mark names this room, the event's epoch and successor, proof kind and digest, and the epoch of
+    the event just before it. A mark admits one event identity: unused, or already used by this very
+    event (history moved between this store's room and copy tables keeps its verification).
+    """
+    return f"""EXISTS (
+        SELECT 1 FROM hosted_room_verified_transitions AS mark
+         WHERE mark.room_id=NEW.room_id AND mark.to_epoch=NEW.authority_epoch
+           AND mark.proof_kind IS json_extract(NEW.payload_json, '$.proof_kind')
+           AND mark.proof_digest IS json_extract(NEW.payload_json, '$.proof_digest')
+           AND mark.successor_gateway_id IS json_extract(NEW.payload_json, CASE NEW.kind
+               WHEN 'authority.transition' THEN '$.successor_gateway_id' ELSE '$.authority_gateway_id' END)
+           AND (NEW.kind!='authority.transition' OR (
+               json_extract(NEW.payload_json, '$.from_epoch') IS mark.from_epoch
+               AND json_extract(NEW.payload_json, '$.to_epoch') IS mark.to_epoch))
+           AND (NEW.kind!='authority.lost' OR json_extract(NEW.payload_json, '$.authority_epoch') IS mark.to_epoch)
+           AND mark.from_epoch IS (SELECT prior.authority_epoch FROM {events} AS prior
+                                    WHERE prior.room_id=NEW.room_id AND prior.seq=NEW.seq-1)
+           AND NOT EXISTS (
+               SELECT 1 FROM hosted_room_verified_transition_uses AS used
+                WHERE used.room_id=mark.room_id AND used.to_epoch=mark.to_epoch
+                  AND (used.seq IS NOT NEW.seq OR used.event_id IS NOT NEW.event_id)))"""
+
+
+_USE_TRANSITION_SQL = """INSERT OR IGNORE INTO hosted_room_verified_transition_uses (room_id, to_epoch, seq, event_id)
+               SELECT NEW.room_id, NEW.authority_epoch, NEW.seq, NEW.event_id WHERE {match};"""
+
+
+def mark_verified_transition(
+    conn: sqlite3.Connection, *, room_id: str, from_epoch: int, to_epoch: int, successor_gateway_id: str,
+    proof_kind: str, proof_digest: str,
+) -> None:
+    """Mark one verified authority change, inside the transaction that makes it.
+
+    The caller has verified the proof whose digest this records. ``attested``: the room owner, or the
+    owner of a consented successor the owner designated, explicitly continued the group on this
+    machine. ``certified`` is reserved for exclusivity a lease witness grants; it is never a vote. The
+    mark lets the lineage triggers accept exactly one authority-change event (``authority.transition``,
+    or a verified ``authority.lost``): in this room, at ``to_epoch`` directly after an event at
+    ``from_epoch``, naming this successor, proof kind and digest. Written in any other way, the change
+    is quarantined like any unproven takeover. ``to_epoch`` is any later epoch: an attempt that fenced
+    an epoch and did not finish retries at a higher one, so an epoch may never have had an authority.
+
+    The event must be written in this same transaction. A mark no event used fails the commit (a
+    deferred foreign key to the use row), so a mark can't outlive its transaction, be reused for a
+    later event, or count for another room or epoch. There is one mark per room and epoch.
+    """
+    from gateway.hosted_rooms import VerifiedTransitionError
+
+    def text(value: Any, label: str) -> str:
+        return identifier(value, label=label, error=VerifiedTransitionError, max_chars=128)
+
+    room_id, successor_gateway_id = text(room_id, "room_id"), text(successor_gateway_id, "successor_gateway_id")
+    for value in (from_epoch, to_epoch):
+        if isinstance(value, bool) or not isinstance(value, int) or not 1 <= value < 2**63:
+            raise VerifiedTransitionError("transition epochs must be positive integers")
+    if to_epoch <= from_epoch:
+        raise VerifiedTransitionError("a verified transition moves authority to a later epoch")
+    if proof_kind not in PROOF_KINDS:
+        raise VerifiedTransitionError("proof_kind must be 'certified' or 'attested'")
+    if not isinstance(proof_digest, str) or re.fullmatch(r"[0-9a-f]{64}", proof_digest) is None:
+        raise VerifiedTransitionError("proof_digest must be a lowercase sha256 hex digest")
+    if not conn.in_transaction:
+        raise VerifiedTransitionError("a transition is marked inside the transaction that makes it")
+    if conn.execute("PRAGMA foreign_keys").fetchone()[0] != 1:
+        # The commit-time check that binds a mark to its transaction is a foreign key.
+        raise VerifiedTransitionError("verified transitions need foreign key enforcement")
+    try:
+        conn.execute(
+            """INSERT INTO hosted_room_verified_transitions
+               (room_id, from_epoch, to_epoch, successor_gateway_id, proof_kind, proof_digest, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            (room_id, from_epoch, to_epoch, successor_gateway_id, proof_kind, proof_digest, time.time()))
+    except sqlite3.IntegrityError as exc:
+        raise VerifiedTransitionError("this room already has a verified transition to that epoch") from exc
+
+
+def move_transition_mark_to_branch(
+    conn: sqlite3.Connection, *, room_id: str, to_epoch: int, branch_id: str,
+) -> dict[str, Any]:
+    """Archive the mark of a transition whose event is leaving the log for a quarantined branch.
+
+    When two successors claimed the same epoch and the owner kept the other one, this gateway's own
+    ``authority.transition`` and its tail move into a quarantined divergent branch. The caller moves
+    that event out of the live log first, in this same transaction; then this archives the event's
+    mark and use in ``hosted_room_branch_transitions`` (kept and readable, never deleted) and frees
+    ``(room_id, to_epoch)`` for the transition that was kept. Refused while the marked event is still
+    in the room's log or copy.
+    """
+    from gateway.hosted_rooms import VerifiedTransitionError
+
+    room_id = identifier(room_id, label="room_id", error=VerifiedTransitionError, max_chars=128)
+    branch_id = identifier(branch_id, label="branch_id", error=VerifiedTransitionError, max_chars=128)
+    if isinstance(to_epoch, bool) or not isinstance(to_epoch, int) or not 1 <= to_epoch < 2**63:
+        raise VerifiedTransitionError("to_epoch must be a positive integer")
+    if not conn.in_transaction:
+        raise VerifiedTransitionError("a mark moves inside the transaction that moves its event")
+    mark = conn.execute(
+        """SELECT mark.*, used.seq, used.event_id FROM hosted_room_verified_transitions AS mark
+             JOIN hosted_room_verified_transition_uses AS used
+               ON used.room_id=mark.room_id AND used.to_epoch=mark.to_epoch
+            WHERE mark.room_id=? AND mark.to_epoch=?""", (room_id, to_epoch)).fetchone()
+    if mark is None:
+        raise VerifiedTransitionError("no verified transition is marked for this room and epoch")
+    for table in ("hosted_room_events", "hosted_room_replica_events"):
+        if conn.execute(f"SELECT 1 FROM {table} WHERE room_id=? AND seq=? AND event_id=?",
+                        (room_id, mark["seq"], mark["event_id"])).fetchone():
+            raise VerifiedTransitionError("the marked transition is still in this room's log")
+    archived = {
+        "room_id": room_id, "branch_id": branch_id, "from_epoch": int(mark["from_epoch"]), "to_epoch": to_epoch,
+        "successor_gateway_id": mark["successor_gateway_id"], "proof_kind": mark["proof_kind"],
+        "proof_digest": mark["proof_digest"], "marked_at": float(mark["created_at"]), "seq": int(mark["seq"]),
+        "event_id": mark["event_id"], "archived_at": time.time()}
+    conn.execute(f"INSERT INTO hosted_room_branch_transitions ({', '.join(archived)}) "
+                 f"VALUES ({', '.join('?' for _ in archived)})", tuple(archived.values()))
+    conn.execute("DELETE FROM hosted_room_verified_transitions WHERE room_id=? AND to_epoch=?", (room_id, to_epoch))
+    conn.execute("DELETE FROM hosted_room_verified_transition_uses WHERE room_id=? AND to_epoch=?", (room_id, to_epoch))
+    return archived
 
 
 def _quarantine_unsafe_authorities_locked(conn: sqlite3.Connection) -> None:
-    """Derive missing fences after historical replay; retain original quarantine evidence."""
+    """Derive missing fences after historical replay; retain original quarantine evidence.
+
+    A demotion or transition is verified only where its own mark was used by exactly that event.
+    """
+    unverified = """NOT EXISTS (
+        SELECT 1 FROM hosted_room_verified_transition_uses AS used
+         WHERE used.room_id=event.room_id AND used.to_epoch=event.authority_epoch
+           AND used.seq=event.seq AND used.event_id=event.event_id)"""
     conn.execute(
         """INSERT OR IGNORE INTO hosted_room_quarantine
            (room_id, reason, detected_at)
@@ -88,14 +249,17 @@ def _quarantine_unsafe_authorities_locked(conn: sqlite3.Connection) -> None:
               AND payload_json LIKE '%"promoted_from_replica":true%'
             GROUP BY room_id"""
     )
-    conn.execute(
-        """INSERT OR IGNORE INTO hosted_room_quarantine
-           (room_id, reason, detected_at)
-           SELECT room_id, 'unsafe_authority_demotion', MIN(created_at)
-             FROM hosted_room_events
-            WHERE kind='authority.lost'
-            GROUP BY room_id"""
-    )
+    for kind, reason in (("authority.lost", "unsafe_authority_demotion"),
+                         ("authority.transition", "unverified_authority_transition")):
+        conn.execute(
+            f"""INSERT OR IGNORE INTO hosted_room_quarantine
+               (room_id, reason, detected_at)
+               SELECT room_id, ?, MIN(created_at)
+                 FROM hosted_room_events AS event
+                WHERE kind=? AND {unverified}
+                GROUP BY room_id""",
+            (reason, kind),
+        )
 
 
 def initialize_safety_schema(conn: sqlite3.Connection) -> None:
@@ -106,6 +270,47 @@ def initialize_safety_schema(conn: sqlite3.Connection) -> None:
             room_id TEXT PRIMARY KEY,
             reason TEXT NOT NULL,
             detected_at REAL NOT NULL
+        )"""
+    )
+    # A use binds a mark to the one event it verified. Marks and uses are lineage evidence: never deleted.
+    conn.execute(
+        """CREATE TABLE IF NOT EXISTS hosted_room_verified_transition_uses (
+            room_id TEXT NOT NULL,
+            to_epoch INTEGER NOT NULL,
+            seq INTEGER NOT NULL,
+            event_id TEXT NOT NULL,
+            PRIMARY KEY (room_id, to_epoch)
+        )"""
+    )
+    conn.execute(
+        """CREATE TABLE IF NOT EXISTS hosted_room_verified_transitions (
+            room_id TEXT NOT NULL,
+            from_epoch INTEGER NOT NULL CHECK (from_epoch >= 1),
+            to_epoch INTEGER NOT NULL CHECK (to_epoch > from_epoch),
+            successor_gateway_id TEXT NOT NULL,
+            proof_kind TEXT NOT NULL CHECK (proof_kind IN ('certified', 'attested')),
+            proof_digest TEXT NOT NULL,
+            created_at REAL NOT NULL,
+            PRIMARY KEY (room_id, to_epoch),
+            FOREIGN KEY (room_id, to_epoch)
+                REFERENCES hosted_room_verified_transition_uses (room_id, to_epoch)
+                DEFERRABLE INITIALLY DEFERRED
+        )"""
+    )
+    conn.execute(
+        """CREATE TABLE IF NOT EXISTS hosted_room_branch_transitions (
+            room_id TEXT NOT NULL,
+            branch_id TEXT NOT NULL,
+            from_epoch INTEGER NOT NULL,
+            to_epoch INTEGER NOT NULL,
+            successor_gateway_id TEXT NOT NULL,
+            proof_kind TEXT NOT NULL,
+            proof_digest TEXT NOT NULL,
+            marked_at REAL NOT NULL,
+            seq INTEGER NOT NULL,
+            event_id TEXT NOT NULL,
+            archived_at REAL NOT NULL,
+            PRIMARY KEY (room_id, branch_id, to_epoch)
         )"""
     )
     _initialize_replica_schema(conn)
@@ -192,6 +397,11 @@ def initialize_safety_schema(conn: sqlite3.Connection) -> None:
     control_event_budget = ordinary_event_budget + int(
         limits.CONTROL_EVENT_BYTE_RESERVE
     )
+    for name, marker in _REVISED_TRIGGERS.items():
+        row = conn.execute("SELECT sql FROM sqlite_master WHERE type='trigger' AND name=?", (name,)).fetchone()
+        if row is not None and marker not in str(row[0]):
+            conn.execute(f"DROP TRIGGER {name}")
+    lineage_change = "NEW.kind IN ('authority.lost', 'authority.transition')"
     for trigger in (
         """CREATE TRIGGER IF NOT EXISTS trg_hosted_rooms_reject_reserved_insert
            BEFORE INSERT ON hosted_rooms
@@ -231,9 +441,11 @@ def initialize_safety_schema(conn: sqlite3.Connection) -> None:
            BEGIN
                SELECT RAISE(ABORT, 'room authority is quarantined');
            END""",
-        """CREATE TRIGGER IF NOT EXISTS trg_hosted_events_quarantine_unsafe_lineage
+        # An authority change is accepted only with its own verified-transition mark; any other
+        # promotion, demotion or transition leaves the room read-only.
+        f"""CREATE TRIGGER IF NOT EXISTS trg_hosted_events_quarantine_unsafe_lineage
            AFTER INSERT ON hosted_room_events
-           WHEN NEW.kind='authority.lost'
+           WHEN {lineage_change}
              OR (
                  NEW.kind='authority.claimed'
                  AND NEW.payload_json LIKE '%"promoted_from_replica":true%'
@@ -241,15 +453,26 @@ def initialize_safety_schema(conn: sqlite3.Connection) -> None:
            BEGIN
                INSERT OR IGNORE INTO hosted_room_quarantine
                    (room_id, reason, detected_at)
-               VALUES (
+               SELECT
                    NEW.room_id,
-                   CASE
-                       WHEN NEW.kind='authority.lost'
-                       THEN 'unsafe_authority_demotion'
+                   CASE NEW.kind
+                       WHEN 'authority.lost' THEN 'unsafe_authority_demotion'
+                       WHEN 'authority.transition' THEN 'unverified_authority_transition'
                        ELSE 'unsafe_replica_promotion'
                    END,
                    NEW.created_at
-               );
+                WHERE NOT ({lineage_change} AND {_transition_match_sql("hosted_room_events")});
+               {_USE_TRANSITION_SQL.format(
+                   match=f"{lineage_change} AND {_transition_match_sql('hosted_room_events')}")}
+           END""",
+        # A stored copy refuses an unverified transition outright; it never quarantines a copy half-written.
+        f"""CREATE TRIGGER IF NOT EXISTS trg_hosted_replica_events_verified_lineage
+           AFTER INSERT ON hosted_room_replica_events
+           WHEN NEW.kind='authority.transition'
+           BEGIN
+               SELECT RAISE(ABORT, 'authority transition is not verified')
+                WHERE NOT {_transition_match_sql("hosted_room_replica_events")};
+               {_USE_TRANSITION_SQL.format(match=_transition_match_sql("hosted_room_replica_events"))}
            END""",
         f"""CREATE TRIGGER IF NOT EXISTS trg_hosted_events_shared_budget
            BEFORE INSERT ON hosted_room_events
@@ -266,7 +489,7 @@ def initialize_safety_schema(conn: sqlite3.Connection) -> None:
                  LENGTH(CAST(NEW.payload_json AS BLOB))
              ) > CASE
                  WHEN NEW.kind IN (
-                     'authority.claimed', 'authority.lost',
+                     'authority.claimed', 'authority.lost', 'authority.transition',
                      'room.disbanded', 'room.stop_requested'
                  ) THEN {control_event_budget}
                  ELSE {ordinary_event_budget}
@@ -377,6 +600,17 @@ def initialize_safety_schema(conn: sqlite3.Connection) -> None:
            BEGIN
                SELECT RAISE(ABORT, 'quarantined room history is kept');
            END""",
+        # A set-aside transition's mark is evidence of its divergent branch.
+        """CREATE TRIGGER IF NOT EXISTS trg_branch_transitions_keep
+           BEFORE DELETE ON hosted_room_branch_transitions
+           BEGIN
+               SELECT RAISE(ABORT, 'a divergent branch transition is kept');
+           END""",
+        """CREATE TRIGGER IF NOT EXISTS trg_branch_transitions_unchanged
+           BEFORE UPDATE ON hosted_room_branch_transitions
+           BEGIN
+               SELECT RAISE(ABORT, 'a divergent branch transition is kept');
+           END""",
     ):
         conn.execute(trigger)
     # Audits every stored copy, re-deriving its byte count, before compacting any.
@@ -391,10 +625,15 @@ def safety_schema_is_current(conn: sqlite3.Connection) -> bool:
         "hosted_room_replica_events": _REPLICA_EVENT_SCHEMA_COLUMNS,
         "hosted_room_event_budget": _EVENT_BUDGET_SCHEMA_COLUMNS,
         "hosted_room_quarantine_disbands": _QUARANTINE_DISBAND_SCHEMA_COLUMNS,
+        "hosted_room_verified_transitions": _VERIFIED_TRANSITION_SCHEMA_COLUMNS,
+        "hosted_room_verified_transition_uses": _TRANSITION_USE_SCHEMA_COLUMNS,
+        "hosted_room_branch_transitions": _BRANCH_TRANSITION_SCHEMA_COLUMNS,
     }
-    triggers = {str(row[0]) for row in conn.execute("SELECT name FROM sqlite_master WHERE type='trigger'")}
+    triggers = {str(row[0]): str(row[1]) for row in conn.execute(
+        "SELECT name, sql FROM sqlite_master WHERE type='trigger'")}
     return all(columns.issubset(table_columns(conn, table)) for table, columns in tables.items()) and (
-        _ROOM_SAFETY_TRIGGERS.issubset(triggers))
+        _ROOM_SAFETY_TRIGGERS.issubset(triggers)) and all(
+        marker in triggers[name] for name, marker in _REVISED_TRIGGERS.items())
 
 
 def _compact_over_budget_replicas_locked(conn: sqlite3.Connection) -> int:

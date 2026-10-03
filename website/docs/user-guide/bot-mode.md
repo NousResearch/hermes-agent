@@ -318,6 +318,19 @@ reason `room_authority_quarantined`. A stored copy whose history fails validatio
 reported as `safety_status: "quarantined"` by `groups.replica_state`. Quarantined history is never
 pruned.
 
+An authority change is accepted only together with its proof. When exclusive-authority recovery
+verifies a change of authority, it records a **verified-transition mark** in the same database
+transaction as the change. The proof is `attested` when the room owner (or the owner of a successor
+the room owner designated and that consented) explicitly continued the group on that machine;
+`certified` is reserved for exclusivity granted by a lease witness, a later step. Neither is ever a
+vote among members. The mark names one room, the step from epoch
+`N` to a later epoch, the successor gateway and the digest of the proof, and it is spent by that one change:
+it can't be reused for a later change, applied to another room, or saved without the change it
+verifies. A promotion or demotion without its own mark, including any made through `groups.promote`
+or `groups.demote` once the gate opens, still leaves the room read-only as described above, with
+`safety_reason` `unsafe_replica_promotion`, `unsafe_authority_demotion` or
+`unverified_authority_transition`.
+
 To end such a room on this gateway, call `groups.disband` with `confirm_quarantined: true`; without it
 the call is refused with reason `room_authority_quarantined`. The confirmed Disband only tombstones the
 room here: it leaves the room lists, its id is never reused, and its history stays readable through

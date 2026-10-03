@@ -48,15 +48,16 @@ CONTROL_EVENT_BYTE_RESERVE = 1024 * 1024
 _JOURNAL_MODE_LOCK_RETRIES = 8
 
 _EVENT_KIND_RE = re.compile(r"^[a-z][a-z0-9_.-]*$")
-_CONTROL_EVENT_KINDS = frozenset({"authority.claimed", "authority.lost", "room.disbanded", "room.stop_requested"})
+_CONTROL_EVENT_KINDS = frozenset({
+    "authority.claimed", "authority.lost", "authority.transition", "room.disbanded", "room.stop_requested"})
 _EVENT_KINDS_BY_ACTOR = {
     "user": frozenset({"message.user"}), "member": frozenset({"message.member"}),
     "gateway": frozenset({
         "member.unavailable", "room.activity", "room.stop_requested", "turn.deferred", "turn.reassigned",
         "turn.cancelled", "turn.failed", "turn.settled", "turn.started"}),
     "system": frozenset({
-        "authority.claimed", "authority.lost", "room.created", "room.disbanded", "room.members_changed", "room.renamed"
-    })}
+        "authority.claimed", "authority.lost", "authority.transition", "room.created", "room.disbanded",
+        "room.members_changed", "room.renamed"})}
 _OPTIONAL_ACTOR_FIELDS = (
     ("display_name", MAX_ACTOR_LABEL_CHARS), ("profile", MAX_ACTOR_ID_CHARS), ("connection_id", MAX_ACTOR_ID_CHARS))
 _ACTOR_FIELDS = frozenset({"kind", "id", *(field for field, _ in _OPTIONAL_ACTOR_FIELDS)})
@@ -213,6 +214,12 @@ class RoomQuarantinedError(AuthorityConflictError):
     """Raised when a room's history records an unproven takeover: it stays readable, never writable."""
 
     reason = "room_authority_quarantined"
+
+
+class VerifiedTransitionError(AuthorityConflictError):
+    """Raised when a verified authority transition cannot be marked as asked."""
+
+    reason = "authority_transition_unverified"
 
 
 # --- validation ---------------------------------------------------------------

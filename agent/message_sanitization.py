@@ -226,9 +226,124 @@ def _rebalance_json_closers(raw: str) -> str | None:
     return "".join(out) + "".join(_JSON_CLOSERS[ch] for ch in reversed(stack))
 
 
+def _salvage_truncated_tool_args(raw: str) -> str | None:
+    """Best-effort prefix of a tool-call argument JSON that died mid-stream, keeping
+    the bytes the model actually streamed and inventing none:
+
+    1. ends inside an unterminated string (the case ``_rebalance_json_closers``
+       refuses) → close that string and close the open structures in stack order;
+    2. still unparseable (the cut was inside a *key*) → cut at the last complete
+       top-level member and close the object.
+
+    Returns parseable JSON, or ``None`` when the text is not a truncated
+    top-level object (garbage, an array, nothing streamed). Send path only: the
+    persisted history keeps the raw truncated string, the dispatch/retry paths
+    keep their truncation handling (stub/reject/partial-exit), and no execution
+    path ever treats a salvaged prefix as a complete call — the model just
+    sees what it already wrote, so a retry can continue or chunk it instead of
+    re-streaming it blind after a ``{}`` erasure.
+    """
+    text = raw.strip() if isinstance(raw, str) else ""
+    if not text.startswith("{"):
+        return None
+    if _loads_ok(text):
+        return text  # already complete — salvage is a no-op, never a cut
+
+    def _close_and_parse(candidate: str) -> str | None:
+        if _loads_ok(candidate):
+            return candidate
+        return None
+
+    # Pass 1: close the dangling string then close open structures in stack
+    # order. A lone unescaped trailing backslash is dropped first — an escape
+    # pair must not swallow the closing quote we add.
+    in_string = False
+    stack: list[str] = []
+    i, n = 0, len(text)
+    while i < n:
+        ch = text[i]
+        if in_string:
+            if ch == "\\":
+                i += 1  # skip the escaped char — it cannot close the string
+            elif ch == '"':
+                in_string = False
+        else:
+            if ch == '"':
+                in_string = True
+            elif ch in "{[":
+                stack.append(ch)
+            elif ch in "}]":
+                if stack:
+                    stack.pop()
+        i += 1
+    if in_string:
+        closed = text
+        if closed.endswith("\\") and not closed.endswith("\\\\"):
+            closed = closed[:-1]
+        closed = closed + '"' + "".join(_JSON_CLOSERS[o] for o in reversed(stack))
+        salvaged = _close_and_parse(closed)
+        if salvaged is not None:
+            return salvaged
+        # Local models sometimes emit raw control chars inside the string
+        # (strict JSON rejects them); escape them and retry so a newline-heavy
+        # write_file still survives the drop.
+        closed_escaped = _escape_invalid_chars_in_json_strings(closed)
+        if closed_escaped != closed:
+            salvaged = _close_and_parse(closed_escaped)
+            if salvaged is not None:
+                return salvaged
+
+    # Pass 2: the cut left no open string (or pass 1's close was unparseable,
+    # i.e. the cut was inside a key) → keep the last complete top-level member.
+    depth = 0
+    in_string = False
+    cut = -1  # index of the last depth-1 comma: a complete-member boundary
+    i, n = 0, len(text)
+    while i < n:
+        ch = text[i]
+        if in_string:
+            if ch == "\\":
+                i += 1  # skip the escaped char — it cannot close the string
+            elif ch == '"':
+                in_string = False
+        else:
+            if ch == '"':
+                in_string = True
+            elif ch in "{[":
+                depth += 1
+            elif ch in "}]":
+                depth -= 1
+            elif ch == "," and depth == 1:
+                cut = i
+        i += 1
+    if cut < 0:
+        return None
+    # At a depth-1 comma only the top-level object is still open (nested
+    # containers close before it), so one "}" balances the document. Trim the
+    # trailing comma (and any whitespace after it) — "a": with no value is not
+    # a complete member and the parse rejects it.
+    prefix = text[: cut + 1].rstrip()
+    if prefix.endswith(","):
+        prefix = prefix[:-1]
+    salvaged = _close_and_parse(prefix + "}")
+    if salvaged is not None:
+        return salvaged
+    # Local-model raw control chars inside the surviving strings: escape and
+    # retry (same as pass 1) so newline-heavy content is not lost.
+    closed_escaped = _escape_invalid_chars_in_json_strings(prefix + "}")
+    if closed_escaped != prefix + "}":
+        return _close_and_parse(closed_escaped)
+    return None
+
+
 def _repair_tool_call_arguments(raw_args: str, tool_name: str = "?") -> str:
     """Repair malformed tool_call argument JSON (truncation, trailing commas, Python ``None``,
-    control chars); ``"{}"`` if unrepairable so the request succeeds. Repairs log at WARNING."""
+    control chars); ``"{}"`` if unrepairable so the request succeeds. Repairs log at WARNING.
+
+    The send path separately salvages the streamed prefix of a truncated top-level
+    object (``_salvage_truncated_tool_args``) so the model's already-emitted bytes are
+    not erased from the re-sent history; this function stays the dispatch/trust layer
+    and must keep returning parseable JSON for whatever it is given."""
     raw_stripped = raw_args.strip() if isinstance(raw_args, str) else ""
 
     if not raw_stripped:
@@ -450,6 +565,7 @@ __all__ = [
     "_sanitize_surrogates", "_sanitize_structure_surrogates", "_sanitize_messages_surrogates",
     "coerce_tool_name",
     "_escape_invalid_chars_in_json_strings", "_repair_tool_call_arguments",
+    "_salvage_truncated_tool_args",
     "_strip_non_ascii", "_sanitize_messages_non_ascii", "_sanitize_tools_non_ascii",
     "_strip_images_from_messages", "_sanitize_structure_non_ascii", "sanitize_outbound_kwargs",
     "strip_images_for_rejecting_model",

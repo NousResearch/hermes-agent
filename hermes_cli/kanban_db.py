@@ -2731,7 +2731,9 @@ def _verify_created_cards(
 
 
 # Matches ``kanban_create`` (12 hex) and ``_new_task_id`` (8 hex) ids; 8+ for forward compat.
-_TASK_ID_PROSE_RE = re.compile(r"\bt_[a-f0-9]{8,}\b")
+# The lookbehind skips branch/worktree tokens (``fix/t_66a9d5c0``, ``wt/t_ffd2508c``):
+# a slash-prefixed ``t_<hex>`` names a git ref, not a card (#127641).
+_TASK_ID_PROSE_RE = re.compile(r"(?<![\w/])t_[a-f0-9]{8,}\b")
 
 
 def _scan_prose_for_phantom_ids(conn: sqlite3.Connection, text: str) -> list[str]:
@@ -2739,6 +2741,64 @@ def _scan_prose_for_phantom_ids(conn: sqlite3.Connection, text: str) -> list[str
     if not text:
         return []
     return _missing_task_ids(conn, dict.fromkeys(_TASK_ID_PROSE_RE.findall(text)))
+
+
+def _conn_db_path(conn: sqlite3.Connection) -> Optional[Path]:
+    """Main database file backing ``conn`` (None for in-memory/transient)."""
+    try:
+        for row in conn.execute("PRAGMA database_list").fetchall():
+            if row[1] == "main":
+                return Path(row[2]) if row[2] else None
+    except sqlite3.Error:
+        return None
+    return None
+
+
+def _resolve_task_ids_on_other_boards(ids: list[str], current_db: Optional[Path]) -> dict[str, str]:
+    """Read-only resolution of task ids against every *other* board's database.
+
+    Multi-board prose legitimately cites cards across boards ("unblocked by
+    ``t_<hex>`` on the beta board"), so a same-board miss is not yet a
+    hallucination (#127641). Advisory only: missing, unreadable or locked
+    board databases are skipped, never raised — this runs on the completion
+    path, where a diagnostics lookup must not be able to fail the completion.
+    Returns ``{task_id: board_slug}``.
+    """
+    if not ids:
+        return {}
+    from urllib.parse import quote
+
+    wanted = set(ids)
+    resolved: dict[str, str] = {}
+    placeholders = ",".join("?" * len(ids))
+    try:
+        current = current_db.resolve() if current_db else None
+    except OSError:
+        current = None
+    for meta in list_boards():
+        slug = str(meta.get("slug") or "") or DEFAULT_BOARD
+        db_path = Path(str(meta.get("db_path") or kanban_db_path(slug)))
+        try:
+            if current is not None and db_path.resolve() == current:
+                continue
+        except OSError:
+            pass
+        try:
+            board_conn = sqlite3.connect(f"file:{quote(str(db_path))}?mode=ro", uri=True, timeout=2.0)
+        except sqlite3.Error:
+            continue
+        try:
+            rows = board_conn.execute(f"SELECT id FROM tasks WHERE id IN ({placeholders})", ids).fetchall()
+        except sqlite3.Error:
+            continue
+        finally:
+            with contextlib.suppress(sqlite3.Error):
+                board_conn.close()
+        for row in rows:
+            task_id = row[0]
+            if task_id in wanted and task_id not in resolved:
+                resolved[task_id] = slug
+    return resolved
 
 
 class HallucinatedCardsError(ValueError):
@@ -3029,17 +3089,26 @@ def _flag_phantom_prose_refs(
 ) -> None:
     """Advisory post-commit scan of summary+result for unresolvable ``t_<hex>``
     references; emits ``suspected_hallucinated_references`` in its own txn so
-    the completion is already durable. Never blocks."""
+    the completion is already durable. Never blocks.
+
+    A same-board miss is resolved read-only against the other boards first
+    (#127641): an id that exists anywhere is not a hallucination, and the ids
+    that did resolve cross-board ride along in ``cross_board_refs`` so consumers
+    can render a useful link instead of a warning."""
     scan_text = " ".join(filter(None, [summary, result]))
     if not scan_text:
         return
-    phantom_refs = [p for p in _scan_prose_for_phantom_ids(conn, scan_text) if p not in set(verified_cards)]
+    missing = [p for p in _scan_prose_for_phantom_ids(conn, scan_text) if p not in set(verified_cards)]
+    if not missing:
+        return
+    cross_board = _resolve_task_ids_on_other_boards(missing, _conn_db_path(conn))
+    phantom_refs = [p for p in missing if p not in cross_board]
     if phantom_refs:
+        payload: dict[str, Any] = {"phantom_refs": phantom_refs, "source": "completion_summary"}
+        if cross_board:
+            payload["cross_board_refs"] = cross_board
         with write_txn(conn):
-            _append_event(
-                conn, task_id, "suspected_hallucinated_references",
-                {"phantom_refs": phantom_refs, "source": "completion_summary"}, run_id=run_id,
-            )
+            _append_event(conn, task_id, "suspected_hallucinated_references", payload, run_id=run_id)
 
 
 def _merge_completion_prose_artifacts(

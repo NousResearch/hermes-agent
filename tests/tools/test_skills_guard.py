@@ -197,6 +197,20 @@ class TestScanFile:
         findings = scan_file(f, "leak.md")
         assert any(fi.pattern_id == "gitlab_token_leaked" for fi in findings)
 
+    def test_detect_aws_key_and_skip_base64_case_collision(self, tmp_path):
+        f = tmp_path / "asset.md"
+        # Concatenated so no contiguous key-shaped literal exists in this file
+        # (GitHub push protection blocks AWS-key-shaped literals).
+        real_key = "AKIA" + "IOSFODNN7EXAMPLE"
+        # The base64 byte collision from #132155: case-folded AKIA + 16 chars inside an
+        # encoded-asset stream — one such false critical hard-blocks a plugin install.
+        collision = "d2FpA+swl+" + "AkIa" + "EwwIUrZwcQ2pTabf" + "u3JUxdW5bl60714bP"
+        f.write_text(f"use {real_key} here\nembedded asset: {collision}\n", encoding="utf-8")
+        findings = scan_file(f, "asset.md")
+        keys = [fi for fi in findings if fi.pattern_id == "aws_access_key_leaked"]
+        assert len(keys) == 1
+        assert real_key in keys[0].match
+
     def test_detect_markdown_injection(self, tmp_path):
         f = tmp_path / "bad.md"
         f.write_text(

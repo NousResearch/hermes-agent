@@ -2155,13 +2155,15 @@ def write_platform_config_field(
 
 
 # ``terminal.<key>`` -> env var read by tools.terminal_tool. Every key maps to ``TERMINAL_<KEY>``
-# except ``backend`` (historically ``TERMINAL_ENV``).
+# except ``backend`` (historically ``TERMINAL_ENV``). The single source for every bridge (CLI, gateway,
+# standalone, ``config set``). Container-resource keys apply to docker, singularity, modal, daytona and
+# vercel_sandbox only (ignored for local/ssh).
 TERMINAL_CONFIG_ENV_MAP = {
     "backend": "TERMINAL_ENV",
     **{
         key: f"TERMINAL_{key.upper()}"
         for key in (
-            "modal_mode", "degraded_mode", "cwd", "temp_dir", "timeout", "lifetime_seconds",
+            "modal_mode", "degraded_mode", "cwd", "temp_dir", "timeout", "lifetime_seconds", "home_mode",
             "docker_image", "docker_forward_env", "singularity_image", "modal_image",
             "daytona_image", "vercel_runtime", "vercel_image", "ssh_host", "ssh_user", "ssh_port", "ssh_key",
             "container_cpu", "container_memory", "container_disk", "container_persistent",

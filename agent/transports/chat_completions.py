@@ -335,6 +335,38 @@ def _swap_developer_role(sanitized: list, model_lower: str) -> list:
     return sanitized
 
 
+_injected_user_continuation_marker = "_injected_user_continuation"
+
+
+def _ensure_has_user_message(messages: list) -> list:
+    """Inject a synthetic continuation user turn when the payload carries no ``role:"user"``
+    row (Ollama/Qwen and other strict OpenAI-compat endpoints reject a user-less payload).
+    Hermes's continue-after-tool-call / retry-of-failed-stream paths can drop the last user
+    row under a few known conditions (#120828). Pass-through is identity when a user row is
+    already present.
+
+    The synthetic row is built from an allowlist (``role`` / ``content`` / marker) instead of
+    copying the predecessor — copying would carry ``tool_call_id`` or ``tool_calls`` onto a
+    ``role:"user"`` row, which is itself off-schema for the strict endpoints this fix targets.
+    The marker marks the row for downstream consumers (cache key, replay) that need to tell it
+    apart from a real user turn.
+    """
+    if not isinstance(messages, list) or not messages:
+        return messages
+    for msg in messages:
+        if isinstance(msg, dict) and msg.get("role") == "user":
+            return messages
+    last = messages[-1] if isinstance(messages[-1], dict) else {}
+    injected: dict = {"role": "user", "content": ""}
+    # Copy the predecessor's content only for tool/assistant rows (the continuation
+    # cases this guard targets); a system-only payload injects an empty user turn
+    # rather than echoing the system prompt.
+    if last.get("role") in ("tool", "assistant") and isinstance(last.get("content"), str) and last["content"].strip():
+        injected["content"] = last["content"]
+    injected[_injected_user_continuation_marker] = True
+    return messages + [injected]
+
+
 def _apply_max_tokens(api_kwargs: dict, model: str, reasoning_config: Any, params: dict, profile_max: Any = None) -> None:
     """Preserve internal task/recovery budgets and provider protocol exceptions."""
     max_tokens_fn = params.get("max_tokens_param_fn")
@@ -479,6 +511,7 @@ class ChatCompletionsTransport(ProviderTransport):
         path below (is_kimi, is_openrouter, ...) is only reached for unregistered providers.
         """
         _profile = params.get("provider_profile")
+        messages = _ensure_has_user_message(messages)
         sanitized = self.convert_messages(messages, model=model, base_url=params.get("base_url"), provider_profile=_profile)
         if _profile:
             return self._build_kwargs_from_profile(_profile, model, sanitized, tools, params)

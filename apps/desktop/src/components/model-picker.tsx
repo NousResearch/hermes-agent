@@ -2,7 +2,7 @@ import type { ModelOptionProvider, ModelPricing } from '@hermes/shared'
 import { fuzzyRank, modelSearchText } from '@hermes/shared'
 import { useStore } from '@nanostores/react'
 import { useQuery } from '@tanstack/react-query'
-import { type ReactElement, useMemo, useRef, useState } from 'react'
+import { type ReactElement, useEffect, useMemo, useRef, useState } from 'react'
 
 import { useI18n } from '@/i18n'
 import { catalogProviderMatches, modelOptionsQueryKey, requestModelOptions } from '@/lib/model-options'
@@ -136,6 +136,25 @@ export function ModelPickerDialog({
     modelOptions.data
   )
 
+  // cmdk selects the FIRST row when nothing is selected, so a long list opened
+  // away from the model in use and Enter re-picked the top row. Start the
+  // selection on the current pick (the composer catalog menu already does);
+  // the user's own moves — arrows, hover, cmdk's first-match reselect on
+  // typing — take over from there. `undefined` = untouched since open.
+  const [selected, setSelected] = useState<string | undefined>(undefined)
+
+  useEffect(() => {
+    if (!open) {
+      setSelected(undefined)
+    }
+  }, [open])
+
+  const currentValue = pickerItemValue(
+    selectableProviders(providers),
+    optionsModel || currentModel,
+    optionsProvider || currentProvider
+  )
+
   const loading = modelOptions.isPending && !modelOptions.data
 
   const error = modelOptions.error
@@ -187,7 +206,12 @@ export function ModelPickerDialog({
           </DialogDescription>
         </DialogHeader>
 
-        <Command className="rounded-none bg-card" shouldFilter={false}>
+        <Command
+          className="rounded-none bg-card"
+          onValueChange={setSelected}
+          shouldFilter={false}
+          value={selected ?? currentValue ?? ''}
+        >
           <CommandInput
             autoFocus
             onValueChange={setSearch}
@@ -261,6 +285,18 @@ function ModelResults({
   const { t } = useI18n()
   const copy = t.modelPicker
 
+  // Bring the current model's row into view once per open, when it first
+  // renders (the list arrives async, after cmdk's own mount-time scroll ran).
+  // Centered: group headings are sticky, `nearest` would park it under one.
+  const positioned = useRef(false)
+
+  const scrollCurrentIntoView = (node: HTMLDivElement | null) => {
+    if (node && !positioned.current) {
+      positioned.current = true
+      node.scrollIntoView({ block: 'center' })
+    }
+  }
+
   if (loading) {
     return <LoadingResults />
   }
@@ -292,17 +328,7 @@ function ModelResults({
     return fuzzyRank(models, q, modelSearchText).map(r => r.item)
   }
 
-  // Only configured providers (those with curated models) are selectable
-  // here. Switching to a NOT-yet-configured provider goes through the
-  // "Add provider" footer button, which opens the full onboarding selector.
-  // The local provider sits behind the --local launch flag (strict: staged
-  // models on disk don't show without it). Module-level read — a launch flag
-  // can't change mid-session.
-  const localModelsShown = $localModelsEnabled.get()
-
-  const configured = providers.filter(
-    p => (p.models ?? []).length > 0 && (localModelsShown || p.slug !== LOCAL_PROVIDER_SLUG)
-  )
+  const configured = selectableProviders(providers)
 
   // In-flight local downloads render as disabled progress rows: inside the
   // Local group when it exists, else as their own group (first download —
@@ -374,6 +400,7 @@ function ModelResults({
                       onSelectModel(provider, model)
                     }
                   }}
+                  ref={isCurrent ? scrollCurrentIntoView : undefined}
                   value={`${provider.slug}:${model}`}
                 >
                   <span className="min-w-0 flex-1 truncate">
@@ -437,6 +464,37 @@ function ModelResults({
 // The backend's provider row for staged local models (inventory.py's
 // _local_runtime_row). Downloads-in-flight attach to this group.
 const LOCAL_PROVIDER_SLUG = 'llamacpp'
+
+// Only configured providers (those with curated models) are selectable
+// here. Switching to a NOT-yet-configured provider goes through the
+// "Add provider" footer button, which opens the full onboarding selector.
+// The local provider sits behind the --local launch flag (strict: staged
+// models on disk don't show without it). Module-level read — a launch flag
+// can't change mid-session.
+function selectableProviders(providers: readonly ModelOptionProvider[]): ModelOptionProvider[] {
+  const localModelsShown = $localModelsEnabled.get()
+
+  return providers.filter(p => (p.models ?? []).length > 0 && (localModelsShown || p.slug !== LOCAL_PROVIDER_SLUG))
+}
+
+/** cmdk item value (`slug:model`) of the row showing the current pick, or
+ *  undefined when no selectable row carries it (cmdk then falls back to its
+ *  first-row default). Mirrors the row's own `isCurrent` test. */
+export function pickerItemValue(
+  providers: readonly ModelOptionProvider[],
+  currentModel: string,
+  currentProvider: string
+): string | undefined {
+  if (!currentModel) {
+    return undefined
+  }
+
+  const provider = providers.find(
+    p => catalogProviderMatches(p, currentProvider) && (p.models ?? []).includes(currentModel)
+  )
+
+  return provider ? `${provider.slug}:${currentModel}` : undefined
+}
 
 // A model still downloading: visible so the user knows it's coming (and
 // where it will land), disabled so it can't be selected early, with the

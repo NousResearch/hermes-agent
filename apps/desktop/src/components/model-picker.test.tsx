@@ -219,3 +219,37 @@ describe('ModelPickerDialog search ranking', () => {
     })
   })
 })
+
+describe('ModelPickerDialog opens on the current model', () => {
+  // cmdk's default is "select the first row", so a long catalog opened away
+  // from the model in use and Enter re-picked the top row. The picker must
+  // start with the current row selected AND scrolled into view — the list
+  // arrives async, after cmdk's own mount-time scroll has already run.
+  it('selects the current model row and scrolls it into view once the list renders', async () => {
+    const catalog = Array.from({ length: 40 }, (_, i) => `model-${i}`)
+    const scrollIntoView = vi.spyOn(Element.prototype, 'scrollIntoView')
+
+    vi.mocked(requestModelOptions).mockResolvedValue({
+      providers: [
+        { slug: 'openrouter', name: 'OpenRouter', models: ['first-row'], authenticated: true },
+        { slug: 'nous', name: 'Nous', models: catalog, authenticated: true }
+      ]
+    })
+    renderPicker({ currentModel: 'model-33', currentProvider: 'nous' })
+
+    const current = await screen.findByRole('option', { name: /model-33/ })
+
+    await waitFor(() => {
+      expect(current.getAttribute('aria-selected')).toBe('true')
+    })
+    expect(screen.getByRole('option', { name: /first-row/ }).getAttribute('aria-selected')).toBe('false')
+    expect(scrollIntoView.mock.instances).toContain(current)
+
+    // Typing hands the selection to cmdk's first-match rule, as before.
+    fireEvent.change(screen.getByRole('combobox'), { target: { value: 'model-1' } })
+
+    await waitFor(() => {
+      expect(screen.getAllByRole('option')[0].getAttribute('aria-selected')).toBe('true')
+    })
+  })
+})

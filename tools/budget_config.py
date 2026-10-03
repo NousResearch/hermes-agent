@@ -22,24 +22,39 @@ DEFAULT_MCP_RESULT_SIZE_CHARS: int = 50_000
 MCP_TOOL_PREFIX: str = "mcp_"
 
 
-def _configured_mcp_result_size() -> int:
-    """Read ``tool_budget.mcp_result_size_chars`` via ``load_config_readonly`` (the
-    sanctioned path; raw config.yaml parsing outside owner modules is test-guarded).
-    Any error, missing key or non-positive value returns the built-in default.
+def _configured_budget_values() -> tuple[int, int, int, int]:
+    """Read tool spillover budgets through the sanctioned config loader.
 
-    The ``tool_budget:`` block name is shared with the wider configurable-caps proposal (#80508) so the two
-    can merge without a key rename.
+    A 100K per-result / 200K per-turn default is safe for generic installs but
+    defeats JIT on tool-heavy sessions: dozens of 10-50K results remain inline
+    long enough to create a context haystack.  Operators can now force earlier
+    dump-and-placeholder behavior without changing source defaults.
     """
+    defaults = (
+        DEFAULT_RESULT_SIZE_CHARS,
+        DEFAULT_TURN_BUDGET_CHARS,
+        DEFAULT_PREVIEW_SIZE_CHARS,
+        DEFAULT_MCP_RESULT_SIZE_CHARS,
+    )
     try:
         from hermes_cli.config import load_config_readonly
         data = load_config_readonly()
         block = data.get("tool_budget") if isinstance(data, dict) else None
-        raw = block.get("mcp_result_size_chars") if isinstance(block, dict) else None
-        if raw is not None and int(raw) > 0:
-            return int(raw)
+        if not isinstance(block, dict):
+            return defaults
+
+        def positive_int(key: str, default: int) -> int:
+            raw = block.get(key)
+            return int(raw) if raw is not None and int(raw) > 0 else default
+
+        return (
+            positive_int("result_size_chars", DEFAULT_RESULT_SIZE_CHARS),
+            positive_int("turn_budget_chars", DEFAULT_TURN_BUDGET_CHARS),
+            positive_int("preview_size_chars", DEFAULT_PREVIEW_SIZE_CHARS),
+            positive_int("mcp_result_size_chars", DEFAULT_MCP_RESULT_SIZE_CHARS),
+        )
     except Exception:
-        pass
-    return DEFAULT_MCP_RESULT_SIZE_CHARS
+        return defaults
 
 
 @dataclass(frozen=True)
@@ -100,15 +115,33 @@ def budget_for_context_window(context_length: int | None) -> BudgetConfig:
     200K-char turn budget (~50K tokens), can by itself approach or exceed the whole window and force an
     oversized request (#23767).
     """
-    mcp_result_size = _configured_mcp_result_size()
+    configured_result_size, configured_turn_budget, configured_preview_size, mcp_result_size = (
+        _configured_budget_values()
+    )
     if not context_length or context_length <= 0:
-        if mcp_result_size == DEFAULT_MCP_RESULT_SIZE_CHARS:
+        if (
+            configured_result_size == DEFAULT_RESULT_SIZE_CHARS
+            and configured_turn_budget == DEFAULT_TURN_BUDGET_CHARS
+            and configured_preview_size == DEFAULT_PREVIEW_SIZE_CHARS
+            and mcp_result_size == DEFAULT_MCP_RESULT_SIZE_CHARS
+        ):
             return DEFAULT_BUDGET
-        return BudgetConfig(mcp_result_size=mcp_result_size)
+        return BudgetConfig(
+            default_result_size=configured_result_size,
+            turn_budget=configured_turn_budget,
+            preview_size=configured_preview_size,
+            mcp_result_size=mcp_result_size,
+        )
     window_chars = context_length * _CHARS_PER_TOKEN
     return BudgetConfig(
-        default_result_size=max(_MIN_RESULT_SIZE_CHARS, min(int(window_chars * _PER_RESULT_WINDOW_FRACTION), DEFAULT_RESULT_SIZE_CHARS)),
-        turn_budget=max(_MIN_TURN_BUDGET_CHARS, min(int(window_chars * _PER_TURN_WINDOW_FRACTION), DEFAULT_TURN_BUDGET_CHARS)),
-        preview_size=DEFAULT_PREVIEW_SIZE_CHARS,
+        default_result_size=max(
+            _MIN_RESULT_SIZE_CHARS,
+            min(int(window_chars * _PER_RESULT_WINDOW_FRACTION), configured_result_size),
+        ),
+        turn_budget=max(
+            _MIN_TURN_BUDGET_CHARS,
+            min(int(window_chars * _PER_TURN_WINDOW_FRACTION), configured_turn_budget),
+        ),
+        preview_size=configured_preview_size,
         mcp_result_size=mcp_result_size,
     )

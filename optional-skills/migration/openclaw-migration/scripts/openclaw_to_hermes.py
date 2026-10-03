@@ -1255,6 +1255,27 @@ class Migrator:
         if not source or not source.exists():
             return
 
+        # Same-file short-circuit for the ``shutil.copy2`` branch: ``copy2`` raises
+        # ``SameFileError`` when source and destination are the same file, which happens when
+        # the source workspace contains symlinks pointing back into a workspace we are also
+        # writing to (or when ``--workspace-target`` was pointed at the source workspace
+        # itself).  Treat as a no-op skip rather than aborting the whole migration (#24943).
+        #
+        # Only the copy branch needs this: the ``transform`` branch below reads the source
+        # into memory and rewrites the path, so a same-file source/destination is an in-place
+        # rebrand that must still happen -- skipping it left OpenClaw references in place and
+        # reported success (review on #124423).  ``os.path.samefile`` compares (st_dev, st_ino)
+        # like ``shutil`` does, so hard-linked pairs are covered too; either path missing
+        # raises OSError, which means "not the same file".
+        if not transform:
+            try:
+                same_file = os.path.samefile(source, destination)
+            except OSError:
+                same_file = False
+            if same_file:
+                self.record(kind, source, destination, "skipped", "Source and destination resolve to the same file")
+                return
+
         if destination.exists():
             if not transform and sha256_file(source) == sha256_file(destination):
                 self.record(kind, source, destination, "skipped", "Target already matches source")

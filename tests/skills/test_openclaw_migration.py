@@ -5,6 +5,8 @@ import json
 import sys
 from pathlib import Path
 
+import pytest
+
 
 SCRIPT_PATH = (
     Path(__file__).resolve().parents[2]
@@ -694,6 +696,85 @@ def test_messaging_settings_handles_invalid_utf8_in_telegram_allowlist(tmp_path:
     assert items and items[0]["status"] == "migrated"
     env_text = (target / ".env").read_text(encoding="utf-8")
     assert "123456789" in env_text
+
+
+OPENCLAW_AGENTS_TEXT = "OpenClaw is great. See docs.openclaw.ai and @openclaw-bot\n"
+
+
+def _same_file_workspace(tmp_path: Path, mod):
+    """A source workspace whose ``workspace/AGENTS.md`` symlinks to the file the
+    migration would also write to (``--workspace-target`` pointed at the source
+    workspace itself), so source and destination are the same file."""
+    source = tmp_path / ".openclaw"
+    target = tmp_path / ".hermes"
+    workspace = tmp_path / "workspace"  # also used as workspace_target
+    source.mkdir()
+    target.mkdir()
+    workspace.mkdir()
+
+    # Build a workspace where AGENTS.md is a symlink that ultimately resolves
+    # to the same inode as the file we are about to write.
+    physical_agents = workspace / "AGENTS.md"
+    physical_agents.write_text(OPENCLAW_AGENTS_TEXT, encoding="utf-8")
+
+    # The OpenClaw source layout places instructions under workspace/AGENTS.md;
+    # create a symlink at that location pointing at the same physical file.
+    (source / "workspace").mkdir()
+    linked_agents = source / "workspace" / "AGENTS.md"
+    try:
+        linked_agents.symlink_to(physical_agents)
+    except (OSError, NotImplementedError):
+        pytest.skip("symlinks unsupported on this filesystem")
+
+    migrator = mod.Migrator(
+        source_root=source, target_root=target, execute=True,
+        # workspace_target == the dir that already contains the physical file;
+        # destination = workspace_target / AGENTS.md == source resolved.
+        workspace_target=workspace, overwrite=True, migrate_secrets=False,
+        output_dir=None, selected_options={"workspace-agents"},
+    )
+    return migrator, linked_agents, physical_agents
+
+
+def test_copy_file_skips_same_file_on_the_copy_branch(tmp_path: Path):
+    """#24943: ``shutil.copy2`` raises ``SameFileError`` when source and
+    destination are the same file, which aborted the whole migration after ~32
+    items had already been applied and forced a restore from the
+    pre-migration backup.
+
+    The copy branch records a ``skipped`` result instead of raising, and writes
+    nothing."""
+    mod = load_module()
+    migrator, linked_agents, physical_agents = _same_file_workspace(tmp_path, mod)
+
+    # No transform -> the ``shutil.copy2`` branch, the only one that can raise.
+    migrator.copy_file(linked_agents, physical_agents, kind="workspace-agents")
+
+    item = migrator.items[-1]
+    assert item.status == "skipped"
+    assert "same file" in item.reason.lower()
+    # File must still be there, untouched.
+    assert physical_agents.read_text(encoding="utf-8") == OPENCLAW_AGENTS_TEXT
+
+
+def test_copy_file_same_file_with_transform_rebrands_in_place(tmp_path: Path):
+    """Review on #124423: the same-file guard must not swallow the transform branch.
+
+    ``migrate_workspace_agents`` passes ``transform=rebrand_text`` and rewrites the
+    destination path in place, so source-is-destination is a supported in-place
+    rebrand.  Short-circuiting it reported success while leaving every OpenClaw
+    reference behind -- worse than the crash it prevents."""
+    mod = load_module()
+    migrator, _linked_agents, physical_agents = _same_file_workspace(tmp_path, mod)
+
+    report = migrator.migrate()
+
+    items = [i for i in report["items"] if i["kind"] == "workspace-agents"]
+    assert items, "expected a workspace-agents record"
+    assert items[0]["status"] == "migrated", items[0]
+    rebranded = physical_agents.read_text(encoding="utf-8")
+    assert "OpenClaw" not in rebranded, rebranded
+    assert "Hermes" in rebranded, rebranded
 
 
 

@@ -6,6 +6,7 @@ import {
   buildToolView,
   clampForDisplay,
   countDiffLineStats,
+  diffLineStatsFromResult,
   inlineDiffFromResult,
   isPreviewableTarget,
   MAX_TOOL_RENDER_CHARS,
@@ -541,6 +542,28 @@ describe('prettyJson caps serialized result size', () => {
 describe('countDiffLineStats', () => {
   it('counts added and removed lines', () => {
     expect(countDiffLineStats(`--- a/x\n+++ b/x\n@@\n-old\n+new\n context\n+another`)).toEqual({ added: 2, removed: 1 })
+  })
+})
+
+describe('diffLineStatsFromResult', () => {
+  it('prefers exact backend totals over the capped preview', () => {
+    const preview = `--- a/big.html\n+++ b/big.html\n@@ -1 +1 @@\n${'+line\n'.repeat(78)}`
+
+    expect(diffLineStatsFromResult({ inline_diff: preview, lines_added: 200, lines_removed: 3 })).toEqual({
+      added: 200,
+      removed: 3
+    })
+  })
+
+  it('falls back to counting the preview without totals', () => {
+    expect(diffLineStatsFromResult({ inline_diff: '--- a/x\n+++ b/x\n@@\n-old\n+new\n+another' })).toEqual({
+      added: 2,
+      removed: 1
+    })
+  })
+
+  it('ignores non-numeric totals', () => {
+    expect(diffLineStatsFromResult({ inline_diff: '+new', lines_added: 'many' })).toEqual({ added: 1, removed: 0 })
   })
 })
 

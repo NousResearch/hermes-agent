@@ -314,6 +314,8 @@ function toolResultMetadata(
   return {
     ...previous,
     ...(payload?.inline_diff !== undefined ? { inline_diff: payload.inline_diff } : {}),
+    ...(typeof payload?.lines_added === 'number' ? { lines_added: payload.lines_added } : {}),
+    ...(typeof payload?.lines_removed === 'number' ? { lines_removed: payload.lines_removed } : {}),
     ...(payload?.summary !== undefined ? { summary: payload.summary } : {}),
     ...(payload?.message !== undefined ? { message: payload.message } : {}),
     ...(payload?.preview !== undefined ? { preview: payload.preview } : {}),
@@ -819,7 +821,15 @@ function storedToolResultMetadata(toolMessage: SessionMessage): ToolResultMetada
   const display = parseMaybeJsonObject(toolMessage.display_metadata)
   const metadata = parseMaybeJsonObject(display.tool_result_metadata)
 
-  return typeof metadata.inline_diff === 'string' ? { inline_diff: metadata.inline_diff } : undefined
+  if (typeof metadata.inline_diff !== 'string') {
+    return undefined
+  }
+
+  return {
+    inline_diff: metadata.inline_diff,
+    ...(typeof metadata.lines_added === 'number' ? { lines_added: metadata.lines_added } : {}),
+    ...(typeof metadata.lines_removed === 'number' ? { lines_removed: metadata.lines_removed } : {})
+  }
 }
 
 export function applyStoredToolResult(messages: ChatMessage[], toolMessage: SessionMessage): boolean {

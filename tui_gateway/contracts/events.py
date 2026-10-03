@@ -284,6 +284,11 @@ class ToolCompletePayload(Payload):
     summary: str | None = None
     result_text: str | None = None
     inline_diff: str | None = None
+    # Exact +/- for the FULL edit diff. The inline_diff preview is
+    # budget-capped for display, so clients must prefer these when present
+    # instead of counting the preview's lines.
+    lines_added: int | None = None
+    lines_removed: int | None = None
     todos: list[JsonValue] | None = None
     revision: int | None = None
     labels: list[ToolLabel] | None = None

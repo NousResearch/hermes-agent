@@ -35862,6 +35862,30 @@
             "default": null,
             "title": "Inline Diff"
           },
+          "lines_added": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Lines Added"
+          },
+          "lines_removed": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Lines Removed"
+          },
           "todos": {
             "anyOf": [
               {

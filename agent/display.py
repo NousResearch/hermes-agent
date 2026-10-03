@@ -730,6 +730,23 @@ def extract_edit_diff(
     return _diff_from_snapshot(snapshot)
 
 
+def count_diff_line_stats(diff: str) -> dict[str, int]:
+    """Exact +/- counts for a unified diff, from the FULL text.
+
+    The stored inline preview is budget-capped for display
+    (``_summarize_rendered_diff_sections``), so counting the preview
+    under-reports any edit larger than the budget. Count here, before
+    truncation, and ship the totals alongside the preview.
+    """
+    added = removed = 0
+    for line in diff.splitlines():
+        if line.startswith("+") and not line.startswith("+++"):
+            added += 1
+        elif line.startswith("-") and not line.startswith("---"):
+            removed += 1
+    return {"added": added, "removed": removed}
+
+
 def _emit_inline_diff(diff_text: str, print_fn) -> bool:
     """Emit rendered diff text through the CLI's prompt_toolkit-safe printer."""
     if print_fn is None or not diff_text:

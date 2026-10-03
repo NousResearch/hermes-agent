@@ -112,6 +112,8 @@ export type GatewayEventPayload = {
   // Absent on older gateways; consumers must fall back to string heuristics.
   error_surface?: unknown
   inline_diff?: string
+  lines_added?: number
+  lines_removed?: number
   duration_s?: number
   todos?: unknown
   revision?: number

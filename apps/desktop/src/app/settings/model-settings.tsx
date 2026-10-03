@@ -301,7 +301,7 @@ export function ModelSettings({ onMainModelChanged, scopeProfile, subpage }: Mod
   )
 
   const refresh = useCallback(
-    async ({ replaceSelection = false }: { replaceSelection?: boolean } = {}) => {
+    async ({ replaceSelection = false, forceRefresh = false }: { replaceSelection?: boolean; forceRefresh?: boolean } = {}) => {
       const epoch = profileEpoch.current
       setLoading(true)
       setError('')
@@ -314,7 +314,7 @@ export function ModelSettings({ onMainModelChanged, scopeProfile, subpage }: Mod
         // config-file reads — behind a single all-or-nothing Promise.all.
         const [modelInfoResult, modelOptionsResult, auxiliaryModelsResult, moaModelsResult] = await Promise.allSettled([
           getGlobalModelInfo(scopeProfile),
-          getGlobalModelOptions(undefined, scopeProfile),
+          getGlobalModelOptions(forceRefresh ? { refresh: true } : undefined, scopeProfile),
           getAuxiliaryModels(scopeProfile),
           getMoaModels(scopeProfile)
         ])
@@ -947,7 +947,18 @@ export function ModelSettings({ onMainModelChanged, scopeProfile, subpage }: Mod
       {!showMain && errorNotice}
       {showMain && (
         <section>
-          <p className="mb-3 text-xs text-muted-foreground">{m.appliesDesc}</p>
+          <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+            <p className="text-xs text-muted-foreground">{m.appliesDesc}</p>
+            <Button
+              disabled={loading || applying}
+              onClick={() => void refresh({ forceRefresh: true })}
+              size="sm"
+              variant="secondary"
+            >
+              {loading && <Loader2 className="size-3.5 animate-spin" />}
+              {t.shell.modelMenu.refreshModels}
+            </Button>
+          </div>
           <div className="flex flex-wrap items-center gap-2">
             <Select onValueChange={setSelectedProvider} value={selectedProviderRow?.slug ?? selectedProvider}>
               <SelectTrigger className={cn('min-w-40', CONTROL_TEXT)}>

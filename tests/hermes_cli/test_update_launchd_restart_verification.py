@@ -16,6 +16,16 @@ exit non-zero.  These tests pin the same contract for launchd.
 
 No macOS hardware is involved: every case drives the seam through mocked
 ``launchctl`` outcomes.
+
+Also covers #94540: a restart that completes its own lifecycle inside
+launchd's ThrottleInterval leaves the job "pended nondemand spawn" — a false
+failure the first supervision wait cannot distinguish from a genuinely dead
+gateway. ``_restart_launchd_gateway_after_update`` now gives that wait one
+forced ``kickstart -k`` + re-verify before counting it as failed, mirroring
+the escalation the sibling-profile loop already had. This composes with (does
+not compete with) the open, active #94768 and #121117, which independently
+tune the FIRST wait's timeout and start time; this file's new cases are about
+what happens once that first wait has already timed out.
 """
 
 from __future__ import annotations
@@ -153,12 +163,23 @@ def _patch_launchd_env(
     registered=True,
     restart=None,
     supervised=True,
+    kickstart_error=None,
+    kickstart_wait=True,
+    kickstart_wait_error=None,
 ):
     """Drive ``_restart_macos_launchd_gateways`` through the invoking profile only.
 
     ``launchd_gateway_labels_for_install`` is pinned to the current label so the
     sibling loop is a no-op: this file is about the invoking profile, which is
     the one branch that was never verified.
+
+    ``kickstart_error``/``kickstart_wait`` control the forced-kickstart escalation
+    that only fires when ``supervised=False``: ``kickstart_error`` (an exception)
+    makes the forced ``kickstart -k`` itself fail; ``kickstart_wait`` controls
+    whether the re-verify poll after a successful kickstart finds a fresh pid.
+    ``kickstart_wait_error`` makes that re-verify call raise instead (its own
+    docstring says a wedged ``launchctl`` raises ``TimeoutExpired`` rather than
+    returning, same as ``_launchd_kickstart``).
     """
 
     class _Plist:
@@ -173,8 +194,10 @@ def _patch_launchd_env(
     monkeypatch.setattr(
         gateway_cli, "launchd_gateway_labels_for_install", lambda: [LABEL]
     )
+    # _launchd_domain() reads this cache before it would otherwise shell out.
+    monkeypatch.setattr(gateway_cli, "_resolved_launchd_domain", "gui/501")
 
-    calls = {"restart": 0, "verify": 0, "label": None}
+    calls = {"restart": 0, "verify": 0, "label": None, "kickstart": 0, "kickstart_wait": 0}
 
     def _restart():
         calls["restart"] += 1
@@ -191,6 +214,21 @@ def _patch_launchd_env(
     monkeypatch.setattr(
         gateway_cli, "wait_for_launchd_gateway_supervision", _verify
     )
+
+    def _kickstart(label, domain):
+        calls["kickstart"] += 1
+        if kickstart_error is not None:
+            raise kickstart_error
+
+    monkeypatch.setattr(gateway_cli, "_launchd_kickstart", _kickstart)
+
+    def _kickstart_verify(label, old_pid, timeout, domain):
+        calls["kickstart_wait"] += 1
+        if kickstart_wait_error is not None:
+            raise kickstart_wait_error
+        return kickstart_wait
+
+    monkeypatch.setattr(gateway_cli, "_wait_for_launchd_service_pid", _kickstart_verify)
     return calls
 
 def _run_fleet_restart():
@@ -229,14 +267,100 @@ class TestInvokingProfileIsVerifiedLikeItsSiblings:
         fix this appended the label to ``restarted_services`` and the update
         reported the gateway as restarted, and exited 0, over a job that was
         deregistered from launchd.
+
+        A genuinely dead helper is also not something the #94540 forced
+        kickstart can revive; ``kickstart_wait=False`` keeps that failure mode
+        distinct from the throttle-window false-failure the escalation exists
+        to recover (covered separately, below).
         """
-        _patch_launchd_env(monkeypatch, supervised=False)
+        _patch_launchd_env(monkeypatch, supervised=False, kickstart_wait=False)
 
         restarted, failed_or_stale = _run_fleet_restart()
 
         assert restarted == []
         # Routed into failed_or_stale_units, which sets
         # gateway_fleet_restart_incomplete and makes the update exit 1.
+        assert failed_or_stale == [LABEL]
+        assert LABEL in capsys.readouterr().out
+
+    def test_unverified_restart_is_recovered_by_a_forced_kickstart(
+        self, monkeypatch, capsys
+    ):
+        """#94540: a restart that completes inside launchd's ThrottleInterval
+        (30s default) leaves the job "pended nondemand spawn" — the first
+        supervision wait times out even though nothing is actually broken.
+        A forced ``kickstart -k`` that then finds a fresh supervised pid must
+        count as restarted, not fail the update.
+        """
+        calls = _patch_launchd_env(monkeypatch, supervised=False, kickstart_wait=True)
+
+        restarted, failed_or_stale = _run_fleet_restart()
+
+        assert restarted == [LABEL]
+        assert failed_or_stale == []
+        assert calls["kickstart"] == 1
+        assert calls["kickstart_wait"] == 1
+        assert capsys.readouterr().out == ""
+
+    @pytest.mark.parametrize(
+        "kickstart_error, kickstart_wait, expect_kickstart_wait_calls",
+        [
+            # kickstart itself succeeds, but never produces a fresh supervised pid.
+            (None, False, 1),
+            # kickstart itself raises — not merely fails to produce a fresh pid.
+            (subprocess.CalledProcessError(1, ["launchctl"], stderr="boom"), True, 0),
+        ],
+        ids=["kickstart_recovers_no_pid", "kickstart_itself_raises"],
+    )
+    def test_unverified_restart_stays_failed_when_the_kickstart_cannot_recover_it(
+        self, monkeypatch, capsys, kickstart_error, kickstart_wait, expect_kickstart_wait_calls
+    ):
+        """The forced kickstart is a recovery attempt, not a silent retry: if
+        it cannot produce a fresh supervised pid — whether because the poll
+        never sees one or because ``kickstart -k`` itself raised — the restart
+        must still be reported as failed so the update exits non-zero.
+        """
+        calls = _patch_launchd_env(
+            monkeypatch, supervised=False,
+            kickstart_error=kickstart_error, kickstart_wait=kickstart_wait,
+        )
+
+        restarted, failed_or_stale = _run_fleet_restart()
+
+        assert restarted == []
+        assert failed_or_stale == [LABEL]
+        assert calls["kickstart"] == 1
+        assert calls["kickstart_wait"] == expect_kickstart_wait_calls
+        assert LABEL in capsys.readouterr().out
+
+    @pytest.mark.parametrize(
+        "kickstart_error, kickstart_wait_error",
+        [
+            (subprocess.TimeoutExpired(cmd=["launchctl", "kickstart"], timeout=90), None),
+            (None, subprocess.TimeoutExpired(cmd=["launchctl", "print"], timeout=15)),
+        ],
+        ids=["kickstart_itself_times_out", "reverify_times_out"],
+    )
+    def test_wedged_launchctl_is_caught_not_left_to_escape(
+        self, monkeypatch, capsys, kickstart_error, kickstart_wait_error
+    ):
+        """#124998 follow-up review: both calls in the escalation document that
+        a wedged launchctl raises TimeoutExpired rather than returning
+        (_launchd_kickstart's timeout=90, _wait_for_launchd_service_pid's own
+        docstring says so explicitly) — before this test, only
+        CalledProcessError was caught, so a hang here would escape past the
+        whole macOS restart phase (the suppress() around it does not include
+        TimeoutExpired) uncaught, aborting before the sibling-profile loop
+        ever ran and leaving every other profile silently on old code.
+        """
+        _patch_launchd_env(
+            monkeypatch, supervised=False,
+            kickstart_error=kickstart_error, kickstart_wait_error=kickstart_wait_error,
+        )
+
+        restarted, failed_or_stale = _run_fleet_restart()
+
+        assert restarted == []
         assert failed_or_stale == [LABEL]
         assert LABEL in capsys.readouterr().out
 
@@ -255,8 +379,14 @@ class TestInvokingProfileIsVerifiedLikeItsSiblings:
 
         Driven through a fake ``launchctl`` (not a patched ``sys.platform``):
         the seam is plain Python, so the fake pins the behaviour on any host.
+
+        ``kickstart_wait=False``: this test is about the plain verifier
+        correctly rejecting an unchanged pid, not about the #94540 forced-
+        kickstart escalation (covered separately, above) — pin the escalation
+        stub to "does not recover it" so this test's failure path stays about
+        the thing it names.
         """
-        calls = _patch_launchd_env(monkeypatch, supervised=True)
+        calls = _patch_launchd_env(monkeypatch, supervised=True, kickstart_wait=False)
         # ...but exercise the REAL verifier, not _patch_launchd_env's stub.
         monkeypatch.setattr(
             gateway_cli,

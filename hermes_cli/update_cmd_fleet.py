@@ -888,6 +888,9 @@ def _restart_launchd_gateway_after_update(
     ``launchd_restart()`` always runs; every failure path is loud with a manual recovery
     command. Returns ``(restarted_labels, failed_labels)``; with ``supervision_verify``
     success also requires a fresh supervised PID ("the call returned" is not "supervised").
+    A supervision wait that times out gets one forced ``kickstart -k`` and re-verify before
+    it is counted as failed — a restart that completes inside launchd's ThrottleInterval
+    otherwise reads as a false failure (#94540).
 
     74973 (salvage #75021 by @jeff-mettel): the restart used to be gated on ``launchctl list <label>``
     exiting 0. A *booted-out* job — plist present, definition deregistered from launchd (crashed helper,
@@ -899,6 +902,7 @@ def _restart_launchd_gateway_after_update(
     from hermes_cli.gateway import (
         get_launchd_label, get_launchd_plist_path, launchd_restart, wait_for_launchd_gateway_supervision,
         _is_pid_ancestor_of_current_process, _launchctl_supervised_pid,
+        _launchd_domain, _launchd_kickstart, _wait_for_launchd_service_pid,
     )
     current_label = get_launchd_label()
     old_pid = None
@@ -948,8 +952,42 @@ def _restart_launchd_gateway_after_update(
     # running gateway, a plist reload to a detached helper; both asynchronous. See #88848.
     if wait_for_launchd_gateway_supervision(label=current_label, old_pid=old_pid):
         return [current_label], []
+
+    # The async self-restart-request branch of launchd_restart() hands the work to the
+    # running gateway and returns immediately with no escalation of its own — unlike its
+    # synchronous SIGUSR1-drain branch, which already falls back to a forced kickstart
+    # internally. A restart that completes its own lifecycle inside launchd's
+    # ThrottleInterval (30s default) leaves the job "pended nondemand spawn": launchd will
+    # not fire KeepAlive again until the throttle window clears, so the supervision wait
+    # above can time out even though nothing is actually broken. Force it out of the pended
+    # state the same way the sibling-profile loop (_restart_macos_launchd_gateways) already
+    # does, instead of surfacing a false failure. See #94540.
+    try:
+        _launchd_kickstart(current_label, _launchd_domain())
+        if _wait_for_launchd_service_pid(current_label, old_pid=old_pid, timeout=15.0, domain=_launchd_domain()):
+            return [current_label], []
+    except subprocess.CalledProcessError as e:
+        stderr = (getattr(e, "stderr", "") or "").strip()
+        print(
+            f"  ✗ {current_label} restarted but launchd is not supervising a new process for it, "
+            f"and a forced kickstart failed: {stderr}\n"
+            "    Check logs, then: hermes gateway restart"
+        )
+        return [], [current_label]
+    except subprocess.TimeoutExpired:
+        # Both calls above document that a wedged launchctl raises this rather than
+        # returning — same as the sibling-profile loop's identical guard (below). Without
+        # it, this escapes uncaught past the whole macOS restart phase (the suppress()
+        # around it does not include TimeoutExpired), aborting before the sibling loop
+        # ever runs and leaving every other profile's gateway silently on old code.
+        print(
+            f"  ⚠ launchctl timed out restarting {current_label}.\n"
+            "    Check logs, then: hermes gateway restart"
+        )
+        return [], [current_label]
     print(
-        f"  ✗ {current_label} restarted but launchd is not supervising a new process for it.\n"
+        f"  ✗ {current_label} restarted but launchd is not supervising a new process for it, "
+        "even after a forced kickstart.\n"
         "    Check logs, then: hermes gateway restart"
     )
     return [], [current_label]

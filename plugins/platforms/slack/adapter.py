@@ -1087,6 +1087,10 @@ class SlackAdapter(BasePlatformAdapter):
         # Bot-sent message ts / @mentioned threads: replies there get answered without a mention.
         self._bot_message_ts: set[str] = set()
         self._mentioned_threads: set[str] = set()
+        # Durable mentioned-thread markers (persisted beside the routing index): threads a human
+        # started by @-mentioning the bot keep waking it across gateway restarts, like bot-authored
+        # roots already do via the Slack-API-derived check (#63530 Gap B follow-up).
+        self._load_mentioned_threads()
         # (team_id, channel_id, thread_ts) → Assistant thread metadata; lifecycle
         # events may precede message events and carry session-scoping identity.
         self._assistant_threads: Dict[Tuple[str, str, str], Dict[str, str]] = {}
@@ -4057,6 +4061,54 @@ class SlackAdapter(BasePlatformAdapter):
             return
         self._mentioned_threads.add(self._workspace_message_marker(team_id, thread_ts))
         self._trim_mentioned_threads()
+        self._persist_mentioned_threads()
+
+    def _durable_mentioned_threads_path(self) -> Any:
+        """``<sessions_dir>/slack_mentioned_threads.json`` beside the routing index, so it lives
+        and dies with the profile's session store (never ``os.environ`` or a module constant —
+        profiles are independent islands)."""
+        from hermes_constants import get_hermes_home
+        base = getattr(getattr(self, "_session_store", None), "sessions_dir", None)
+        root = _Path(base) if base else (get_hermes_home() / "sessions")
+        return root / "slack_mentioned_threads.json"
+
+    def _persist_mentioned_threads(self) -> None:
+        """Write the mentioned-thread markers to disk (bounded, oldest-ts eviction already
+        applied by ``_trim_mentioned_threads``). Best-effort: persistence is an optimization
+        over the live set, never a correctness gate."""
+        try:
+            path = self._durable_mentioned_threads_path()
+            path.parent.mkdir(parents=True, exist_ok=True)
+            markers = []
+            for marker in self._mentioned_threads:
+                if isinstance(marker, tuple):
+                    markers.append({"team": marker[0], "ts": marker[1]})
+                else:
+                    markers.append({"team": "", "ts": str(marker)})
+            markers.sort(key=lambda m: m["ts"])
+            tmp = path.with_suffix(".json.tmp")
+            tmp.write_text(json.dumps(markers), encoding="utf-8")
+            tmp.replace(path)
+        except Exception:
+            logger.debug("[Slack] Failed to persist mentioned threads", exc_info=True)
+
+    def _load_mentioned_threads(self) -> None:
+        """Restore mentioned-thread markers written by a previous process. Markers are plain
+        ``ts`` strings or ``{"team", "ts"}`` dicts; tuples from an older writer are tolerated.
+        The live set stays authoritative — loaded entries only ADD wake checks."""
+        try:
+            path = self._durable_mentioned_threads_path()
+            if not path.is_file():
+                return
+            for marker in json.loads(path.read_text(encoding="utf-8")):
+                if isinstance(marker, dict):
+                    self._mentioned_threads.add(
+                        self._workspace_message_marker(str(marker.get("team") or ""), str(marker.get("ts") or "")))
+                elif isinstance(marker, str):
+                    self._mentioned_threads.add(marker)
+            self._trim_mentioned_threads()
+        except Exception:
+            logger.debug("[Slack] Failed to load mentioned threads", exc_info=True)
 
     async def _bot_authored_thread_root(
         self, channel_id: str, thread_ts: str, team_id: str = "") -> bool:

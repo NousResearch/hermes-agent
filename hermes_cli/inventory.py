@@ -516,6 +516,22 @@ def _anthropic_oauth_credentials_present() -> bool:
     return False
 
 
+def _minimax_oauth_credentials_present() -> bool:
+    """True when Hermes has a first-party MiniMax OAuth grant in its auth store.
+
+    MiniMax OAuth persists provider-scoped tokens rather than a source-tagged
+    credential-pool entry. The explicit-only Desktop picker must treat this
+    owned, deliberate login like the other first-party OAuth providers.
+    """
+    try:
+        from hermes_cli.auth import get_provider_auth_state
+
+        state = get_provider_auth_state("minimax-oauth")
+        return bool(isinstance(state, dict) and str(state.get("access_token") or "").strip())
+    except Exception:
+        return False
+
+
 def _filter_explicit_provider_rows(rows: list[dict], ctx: ConfigContext) -> list[dict]:
     """Keep only rows backed by explicit user configuration — ``list_authenticated_providers`` also
     discovers ambient credentials (e.g. GitHub CLI -> Copilot) Desktop chat pickers must not show."""
@@ -535,9 +551,10 @@ def _filter_explicit_provider_rows(rows: list[dict], ctx: ConfigContext) -> list
             # wrote an enabled preset into RAW config (the DEFAULT_CONFIG preset must not show MoA).
             return _raw_config_has_enabled_moa_preset()
         return (
-            # Anthropic OAuth (device flow / Claude Code) and external-process CLIs (copilot-acp) are
-            # deliberate sign-ins that leave no trace in config/env; keep the rows discovery accepted.
+            # First-party OAuth grants (Anthropic and MiniMax) are deliberate sign-ins; external-process
+            # CLIs (copilot-acp) are also explicit. Keep ambient discovery filtered.
             (slug == "anthropic" and _anthropic_oauth_credentials_present())
+            or (slug == "minimax-oauth" and _minimax_oauth_credentials_present())
             or _external_process_signed_in(slug)
             or is_provider_explicitly_configured(slug)
         )

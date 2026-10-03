@@ -756,6 +756,8 @@ export const zhHantSettings = {
       updates: '更新'
     },
     config: {
+      largePasteThresholdTitle: '長文字貼上附件門檻',
+      largePasteThresholdDesc: '貼上的純文字超過此字元數時，會以文字檔附件加入。設為 0 即可一律直接貼入訊息中。',
       minimizeToTrayTitle: '最小化至系統匣',
       minimizeToTrayDesc:
         '最小化視窗或關閉主視窗時，將其隱藏至系統匣（macOS 上為選單列），讓 Hermes 繼續執行。透過系統匣選單中的「結束 Hermes」或 Cmd+Q 結束。預設關閉，僅適用於此裝置。',

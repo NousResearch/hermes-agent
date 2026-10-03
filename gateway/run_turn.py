@@ -38,7 +38,7 @@ from gateway.turn_context import TurnContext
 from gateway.turn_lease import DEFAULT_LEASE_WAIT, TurnLeaseTimeoutError
 from hermes_constants import get_hermes_home_override
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple
 from utils import base_url_hostname
 
 if TYPE_CHECKING:  # string annotations only; never imported at runtime (cycle)
@@ -167,6 +167,8 @@ def hygiene_no_commit_reason(agent) -> str:
 
 class GatewayTurnMixin:
     """Agent-turn execution for GatewayRunner (see module docstring)."""
+
+    _deliver_platform_notice: Callable[[SessionSource, str], Awaitable[None]]
 
     def _resolve_session_agent_runtime(
         self, *, source: Optional[SessionSource] = None, session_key: Optional[str] = None,
@@ -433,12 +435,17 @@ class GatewayTurnMixin:
         strict_session = bool(event_metadata.get("gateway_session_strict"))
         pinned_session_id = str(event_metadata.get("gateway_session_id") or "").strip()
         if strict_session:
+            from gateway.run_pinned_session import pinned_session_continues
             session_entry = await self.async_session_store.lookup_by_session_key(expected_session_key)
-            if session_entry is None or not pinned_session_id or session_entry.session_id != pinned_session_id:
+            if (session_entry is None or not pinned_session_id
+                    or not await pinned_session_continues(self, session_entry, pinned_session_id)):
                 logger.warning(
                     "Dropping internally routed event: expected session id=%s is no longer current for key=%s",
                     pinned_session_id or "missing", expected_session_key or "missing",
                 )
+                stale_notice = str(event_metadata.get("gateway_session_stale_notice") or "")
+                if stale_notice:
+                    await self._deliver_platform_notice(source, stale_notice)
                 return
         else:
             # Internal wakes observe reset policy without counting as user activity, or periodic

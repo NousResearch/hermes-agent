@@ -69,6 +69,9 @@ MOUNT_FLAGS = {
     "--bind": 2, "--ro-bind": 2, "--bind-try": 2, "--ro-bind-try": 2, "--tmpfs": 1, "--dev": 1, "--proc": 1,
     "--symlink": 2, "--remount-ro": 1,
 }
+# What a sandbox lists at the top of HERMES_HOME: the state dir parent, the
+# scratch dir parent and the top-level staged data roots.
+HERMES_VISIBLE = ["attachments", "cache", "composer-pastes", "images", "sandboxes"]
 # Sensitive entries that sit below an entry the default allowlist shows.
 # The top-level entries are hidden by the HOME layout and get no mount.
 BELOW_VISIBLE = (
@@ -501,9 +504,11 @@ class TestHermesHomeIntegration:
             assert state_dir.parent == hermes_home / "sandboxes"
             out = env.execute(f"cat {hermes_home}/config.yaml {hermes_home}/.env; ls -A {hermes_home}")["output"]
             assert MARKER not in out
-            # Besides the state dir only the scratch dir shows through the overlay.
-            assert env.execute(f"ls -A {hermes_home}")["output"].split() == ["cache", "sandboxes"]
-            assert env.execute(f"ls -A {hermes_home}/cache")["output"].split() == ["scratch"]
+            # Besides the state dir only the scratch dir and the staged data
+            # roots show through the overlay.
+            assert env.execute(f"ls -A {hermes_home}")["output"].split() == HERMES_VISIBLE
+            assert "scratch" in env.execute(f"ls -A {hermes_home}/cache")["output"].split()
+            assert "bws_cache.json" not in env.execute(f"ls -A {hermes_home}/cache")["output"].split()
             assert env.execute(f"ls -A {hermes_home}/sandboxes")["output"].split() == [state_dir.name]
         finally:
             env.cleanup()
@@ -524,7 +529,7 @@ class TestHermesHomeIntegration:
             assert MARKER not in out
             # Off the allowlist, so it does not exist in the sandbox at all.
             assert env.execute(f"ls -A {default_home} 2>/dev/null")["output"].split() == []
-            assert env.execute(f"ls -A {hermes_home}")["output"].split() == ["cache", "sandboxes"]
+            assert env.execute(f"ls -A {hermes_home}")["output"].split() == HERMES_VISIBLE
         finally:
             env.cleanup()
         assert (default_home / ".env").read_text() == f"DEFAULT_MARKER={MARKER}\n"
@@ -590,7 +595,7 @@ class TestHomeModeIntegration:
             result = env.execute("touch $HOME/probe")
             assert result["returncode"] == 0, result["output"]
             assert (profile_home / "probe").is_file()
-            assert set(env.execute(f"ls -A {hermes_home}")["output"].split()) == {"cache", "home", "sandboxes"}
+            assert set(env.execute(f"ls -A {hermes_home}")["output"].split()) == {"home", *HERMES_VISIBLE}
             out = env.execute(f"cat {hermes_home}/config.yaml {hermes_home}/.env 2>/dev/null")["output"]
             assert MARKER not in out
         finally:
@@ -602,7 +607,7 @@ class TestHomeModeIntegration:
         env = BubblewrapEnvironment(cwd=str(work_dir), timeout=30)
         try:
             assert str(profile_home) not in env._wrap_popen_args(["bash"])
-            assert env.execute(f"ls -A {hermes_home}")["output"].split() == ["cache", "sandboxes"]
+            assert env.execute(f"ls -A {hermes_home}")["output"].split() == HERMES_VISIBLE
             # The dir is absent inside the HERMES_HOME tmpfs; a write there stays in the tmpfs.
             assert env.execute(f"test -e {profile_home}")["returncode"] != 0
             assert env.execute(f"mkdir -p {profile_home} && touch {profile_home}/probe")["returncode"] == 0
@@ -672,7 +677,7 @@ class TestHomeModeIntegration:
             assert env.execute("cd sub")["returncode"] == 0
             assert env.execute("pwd")["output"].strip() == str(work_dir / "sub")
             assert env.execute(f"ls -A {default_home}")["output"].split() == ["profiles"]
-            assert set(env.execute(f"ls -A {hermes_home}")["output"].split()) == {"cache", "home", "sandboxes"}
+            assert set(env.execute(f"ls -A {hermes_home}")["output"].split()) == {"home", *HERMES_VISIBLE}
             out = env.execute(
                 f"cat {default_home}/.env {default_home}/auth.json {hermes_home}/config.yaml {hermes_home}/.env 2>/dev/null"
             )["output"]
@@ -974,3 +979,42 @@ class TestScratchDirIntegration:
         finally:
             env.cleanup()
         assert (hermes_home / "cache" / "scratch" / "scratch-probe").read_text() == "kept"
+
+
+@needs_bwrap
+class TestStagedDataIntegration:
+    """Hermes hands the model host paths under HERMES_HOME for attachments and
+    cached documents; a command must be able to open them."""
+
+    def test_staged_files_are_readable_at_their_host_path_and_read_only(self, work_dir, hermes_home):
+        (hermes_home / "cache").mkdir(exist_ok=True)
+        (hermes_home / "cache" / "bws_cache.json").write_text(MARKER)
+        (hermes_home / "auth.json").write_text(MARKER)
+        env = BubblewrapEnvironment(cwd=str(work_dir), timeout=30)
+        attachment = _write(hermes_home / "attachments" / "report.pdf", VISIBLE)
+        document = _write(hermes_home / "cache" / "documents" / "notes.txt", VISIBLE)
+        try:
+            for path in (attachment, document):
+                assert env.execute(f"cat {path}")["output"].strip() == VISIBLE, path
+                result = env.execute(f"printf changed > {path}")
+                assert result["returncode"] != 0
+                assert "Read-only file system" in result["output"]
+                assert env.execute(f"printf new > {path.parent}/from-sandbox")["returncode"] != 0
+            out = env.execute(
+                f"cat {hermes_home}/.env {hermes_home}/auth.json {hermes_home}/config.yaml "
+                f"{hermes_home}/cache/bws_cache.json 2>&1"
+            )["output"]
+            assert MARKER not in out
+        finally:
+            env.cleanup()
+        assert attachment.read_text().strip() == VISIBLE
+        assert not (hermes_home / "attachments" / "from-sandbox").exists()
+
+    def test_staged_root_removed_after_construction_does_not_fail_the_spawn(self, work_dir, hermes_home):
+        env = BubblewrapEnvironment(cwd=str(work_dir), timeout=30)
+        try:
+            assert (hermes_home / "attachments").is_dir()
+            (hermes_home / "attachments").rmdir()
+            assert env.execute("echo ok")["output"].strip() == "ok"
+        finally:
+            env.cleanup()

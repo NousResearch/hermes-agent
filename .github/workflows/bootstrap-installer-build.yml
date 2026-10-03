@@ -95,7 +95,7 @@ jobs:
           cp "$exe" "$RUNNER_TEMP/out/Hermes-Setup.exe"
 
       - name: Azure login (OIDC)
-        uses: azure/login@f5d393ae46f8fde4be8b75f32e3fc50e654ad0ca # v3.0.1
+        uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
         with:
           client-id: ${{ vars.AZURE_CLIENT_ID }}
           tenant-id: ${{ vars.AZURE_TENANT_ID }}

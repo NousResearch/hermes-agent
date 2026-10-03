@@ -23,7 +23,8 @@ export interface GatewayEventDeps {
     occurredAt?: number,
     persistedTurn?: PersistedTurn | null,
     responseTransformed?: boolean,
-    status?: string
+    status?: string,
+    reasoning?: string
   ) => void
   failAssistantMessage: (
     sessionId: string,

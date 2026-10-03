@@ -56,3 +56,23 @@ describe('handleMessageStreamEvent session-control integration', () => {
     expect(refreshSupportedSessionControlAfterTurn).toHaveBeenCalledWith('s1')
   })
 })
+
+describe('handleMessageStreamEvent message.complete reasoning', () => {
+  it('forwards the completion reasoning to completeAssistantMessage', () => {
+    const ctx = context('message.complete')
+    ctx.payload = { reasoning: 'summary text', text: 'completed' }
+
+    expect(handleMessageStreamEvent(ctx)).toBe(true)
+    expect(ctx.deps.completeAssistantMessage).toHaveBeenCalledWith(
+      's1',
+      'completed',
+      undefined,
+      undefined,
+      1_700_000_100,
+      undefined,
+      false,
+      undefined,
+      'summary text'
+    )
+  })
+})

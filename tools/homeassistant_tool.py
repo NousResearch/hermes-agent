@@ -165,7 +165,7 @@ def _handle_get_state(args: dict, **kw) -> str:
     entity_id = args.get("entity_id", "")
     if not entity_id:
         return tool_error("Missing required parameter: entity_id")
-    if not _ENTITY_ID_RE.match(entity_id):
+    if not _ENTITY_ID_RE.fullmatch(entity_id):
         return tool_error(f"Invalid entity_id format: {entity_id}")
     return _dispatch(_async_get_state(entity_id), "ha_get_state", f"Failed to get state for {entity_id}")
 
@@ -176,16 +176,16 @@ def _handle_call_service(args: dict, **kw) -> str:
     if not domain or not service:
         return tool_error("Missing required parameters: domain and service")
     # Format check BEFORE the blocklist: rejects "shell_command/../light" style bypasses.
-    if not _SERVICE_NAME_RE.match(domain):
+    if not _SERVICE_NAME_RE.fullmatch(domain):
         return tool_error(f"Invalid domain format: {domain!r}")
-    if not _SERVICE_NAME_RE.match(service):
+    if not _SERVICE_NAME_RE.fullmatch(service):
         return tool_error(f"Invalid service format: {service!r}")
     if domain in _BLOCKED_DOMAINS:
         return tool_error(
             f"Service domain '{domain}' is blocked for security. "
             f"Blocked domains: {', '.join(sorted(_BLOCKED_DOMAINS))}")
     entity_id = args.get("entity_id")
-    if entity_id and not _ENTITY_ID_RE.match(entity_id):
+    if entity_id and not _ENTITY_ID_RE.fullmatch(entity_id):
         return tool_error(f"Invalid entity_id format: {entity_id}")
     data = args.get("data")
     if isinstance(data, str):  # XML tool-calling mode delivers data as a JSON string

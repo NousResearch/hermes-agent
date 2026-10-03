@@ -103,6 +103,37 @@ class TestSignalConnectCleanup:
         assert adapter._platform_lock_identity is None
 
 
+class TestSignalOwnIdentity:
+
+    @pytest.mark.asyncio
+    async def test_uuid_form_own_sender_is_recognized_right_after_connect(self, monkeypatch):
+        """A sender Signal identifies only by ACI (no sourceNumber) must match this adapter's own
+        account from the first envelope after a restart, not only once the number↔UUID cache warms
+        (a sibling profile's bot DMing the owner is otherwise reported as a stranger)."""
+        adapter = _make_signal_adapter(monkeypatch)
+        own_aci, other_aci = "0c1d2e3f-4a5b-4c6d-8e7f-8091a2b3c4d5", "11111111-2222-4333-8444-555555555555"
+        contacts = MagicMock()
+        contacts.json.return_value = {"result": [
+            {"number": "+15557654321", "uuid": other_aci},
+            {"number": "+15551234567", "uuid": own_aci},
+        ]}
+        mock_client = AsyncMock()
+        mock_client.get = AsyncMock(return_value=MagicMock(status_code=200))
+        mock_client.post = AsyncMock(return_value=contacts)
+
+        with patch("gateway.platforms.signal.httpx.AsyncClient", return_value=mock_client), \
+             patch("gateway.status.acquire_scoped_lock", return_value=(True, None)), \
+             patch("gateway.status.release_scoped_lock"), \
+             patch.object(adapter, "_sse_listener", AsyncMock()), \
+             patch.object(adapter, "_health_monitor", AsyncMock()):
+            assert await adapter.connect() is True
+            try:
+                assert adapter.is_own_identity(own_aci) is True
+                assert adapter.is_own_identity(other_aci) is False
+            finally:
+                await adapter.disconnect()
+
+
 class TestSignalHelpers:
 
     def test_redact_phone_short(self):

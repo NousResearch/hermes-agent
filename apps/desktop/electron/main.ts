@@ -17279,6 +17279,7 @@ async function interceptSessionRequestForRemote(request, registryConnectionId = 
     }
 
     const { recents: recentsSp, cron: cronSp, messaging: messagingSp } = buildSidebarSessionSliceParams(searchParams)
+    const recentsCap = Math.max(1, Number(searchParams.get('recents_limit')) || 20)
 
     const [recents, cron, messaging] = await Promise.all([
       fetchProfilesSessionSlice(recentsSp, remoteProfiles, registrySources),
@@ -17286,7 +17287,7 @@ async function interceptSessionRequestForRemote(request, registryConnectionId = 
       fetchProfilesSessionSlice(messagingSp, remoteProfiles, registrySources)
     ])
 
-    return assembleSidebarSessionSlices(recents, cron, messaging)
+    return assembleSidebarSessionSlices(recents, cron, messaging, recentsCap)
   }
 
   // Per-session read/mutation. Owner is in ?profile= (reads) or request.profile

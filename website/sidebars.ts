@@ -18,6 +18,7 @@ const sidebars: SidebarsConfig = {
         'getting-started/platform-support',
         'getting-started/termux',
         'getting-started/nix-setup',
+        'getting-started/guix-setup',
         'getting-started/updating',
         'getting-started/learning-path',
       ],

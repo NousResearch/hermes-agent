@@ -121,7 +121,7 @@ _DEFAULT_PAYLOADS = {
     "pre_verify": {
         "session_id": "test-session", "platform": "cli", "model": "gpt-4", "coding": True,
         "attempt": 0, "final_response": "All done — the change is applied.",
-        "changed_paths": ["src/app.tsx"],
+        "changed_paths": ["src/app.tsx"], "effect_tools": ["terminal"],
     },
     "on_session_start": {"session_id": "test-session"},
     "on_session_end": {

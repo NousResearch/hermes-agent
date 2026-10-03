@@ -28,6 +28,39 @@ def _put(root, name, content):
     return path
 
 
+def _build_error(code, output):
+    """A failed desktop-build error shaped like run_contained's raise: the exit
+    code in str(exc), the captured output tail on .output (#124040)."""
+    return subprocess.CalledProcessError(code, ["npm.CMD", "run", "build"], output=output)
+
+
+def test_completion_failure_detail_carries_the_build_tail():
+    """Regression for #124040: the receipt step must carry the build's output
+    tail, not just the exit code the receipts in the report carried."""
+    from hermes_cli.update_finish import _completion_failure_detail
+
+    detail = _completion_failure_detail(_build_error(4294967295, "building...\nEBUSY: resource busy or locked\n"))
+
+    assert "4294967295" in detail
+    assert "EBUSY: resource busy or locked" in detail
+
+
+def test_completion_failure_detail_bounds_the_tail_and_passes_other_errors_through():
+    """The tail is bounded so the receipt stays small; non-build errors keep
+    their plain message."""
+    from hermes_cli.update_finish import (
+        _COMPLETION_FAILURE_TAIL_CHARS,
+        _completion_failure_detail,
+    )
+
+    big = _build_error(1, "x" * (_COMPLETION_FAILURE_TAIL_CHARS + 500))
+    detail = _completion_failure_detail(big)
+    marker = "\n--- failing command output tail ---\n"
+    assert detail.split(marker, 1)[1].strip() != ""
+    assert len(detail) <= len(str(big)) + len(marker) + _COMPLETION_FAILURE_TAIL_CHARS
+    assert _completion_failure_detail(RuntimeError("boom")) == "boom"
+
+
 @pytest.fixture
 def completion(tmp_path, monkeypatch):
     from hermes_cli.config_defaults import DEFAULT_CONFIG

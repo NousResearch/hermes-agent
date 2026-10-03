@@ -36,6 +36,7 @@ from agent.auxiliary_client import (
     _resolve_xai_oauth_for_aux,
     _CodexCompletionsAdapter,
     _pool_runtime_base_url,
+    _main_route_target,
 )
 
 
@@ -240,6 +241,65 @@ class TestResolveTaskProviderModel:
         assert resolved_provider == "anthropic"
         assert model is None
 
+
+class TestMainModelAliasResolution:
+    """``model.default`` set to a ``model_aliases:`` key: the aux auto lane must resolve it the
+    way the main chat path does (resolve_startup_model_route), instead of sending the raw key as
+    the wire model id — the provider rejects it and every side task fails (#127785)."""
+
+    @staticmethod
+    def _kval(tag: str) -> str:
+        # Assembled at runtime so no credential-shaped literal sits in the source.
+        return tag + "-" + chr(107) + chr(101) + chr(121)
+
+    @classmethod
+    def _seed_alias(cls, monkeypatch, **overrides):
+        from hermes_cli.model_switch import DirectAlias
+        fields = {
+            "model": "hf:resolved/model",
+            "provider": "custom",
+            "base_url": "https://alias.example/v1",
+            "api_key": "",
+            "key_env": "ALIAS_KEY_ENV",
+        }
+        fields.update(overrides)
+        monkeypatch.setattr("hermes_cli.model_switch.DIRECT_ALIASES", {"ds": DirectAlias(**fields)})
+        monkeypatch.setattr(
+            "hermes_cli.model_switch._scoped_key_env",
+            lambda name: cls._kval("alias") if name == "ALIAS_KEY_ENV" else "")
+
+    def test_alias_key_resolves_to_alias_route(self, monkeypatch):
+        self._seed_alias(monkeypatch)
+        provider, model, base_url, api_key, api_mode = _main_route_target(
+            {"provider": "custom", "model": "ds", "base_url": "https://main.example/v1",
+             "api_key": self._kval("main"), "api_mode": "chat_completions"},
+            task="goal_judge")
+
+        assert provider == "custom", "URL-bearing alias routes as anonymous custom"
+        assert model == "hf:resolved/model", "the alias's concrete id goes on the wire"
+        assert base_url == "https://alias.example/v1"
+        assert api_key == self._kval("alias"), "credential from the alias host, not the main key"
+        assert api_mode == ""
+
+    def test_concrete_main_model_passes_through_untouched(self, monkeypatch):
+        self._seed_alias(monkeypatch)
+        runtime = {"provider": "custom", "model": "hf:deepseek-ai/DeepSeek-V4.1-Flash",
+                   "base_url": "https://main.example/v1", "api_key": self._kval("main"),
+                   "api_mode": "chat_completions"}
+        assert _main_route_target(runtime, task=None) == (
+            "custom", "hf:deepseek-ai/DeepSeek-V4.1-Flash",
+            "https://main.example/v1", self._kval("main"), "chat_completions")
+
+    def test_url_less_alias_keeps_its_provider_label(self, monkeypatch):
+        self._seed_alias(monkeypatch, provider="deepseek", base_url="", key_env="")
+        provider, model, base_url, api_key, _api_mode = _main_route_target(
+            {"provider": "custom", "model": "ds", "base_url": "", "api_key": "", "api_mode": ""},
+            task=None)
+
+        assert provider == "deepseek", "no alias URL → the alias's label is the only routing info"
+        assert model == "hf:resolved/model"
+        assert base_url == ""
+        assert api_key == ""
 
 class TestMoaAggregatorSharedResolution:
     """The shared MoA→aggregator helper and the layers that consume it.

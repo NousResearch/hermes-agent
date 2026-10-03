@@ -2407,6 +2407,46 @@ CONFIG_SCHEMA = ProviderConfigSchema(
         model_cfg = load_config()["model"]
         assert model_cfg["api_key"] == "sk-legacy"
 
+    def test_saving_legacy_custom_provider_keeps_key_env(self):
+        """Save on a legacy row must carry key_env onto providers and drop the list row.
+
+        The panel omits api_key (it only shows ${KEY_ENV}). Resolving only inside
+        providers forked a keyless entry and left the legacy row, so the next
+        request 401s (#126589).
+        """
+        from hermes_cli.config import load_config, save_config, save_env_value
+
+        save_env_value("HERMES_CUSTOM_127_0_0_1_8001_API_KEY", "secret-value")
+        cfg = load_config()
+        cfg["custom_providers"] = [{
+            "name": "Qwen Local",
+            "base_url": "http://127.0.0.1:8001/v1",
+            "key_env": "HERMES_CUSTOM_127_0_0_1_8001_API_KEY",
+            "model": "qwen",
+            "api_mode": "chat_completions",
+        }]
+        save_config(cfg)
+
+        listed = {e["id"]: e for e in self.client.get("/api/providers/custom-endpoints").json()["endpoints"]}
+        assert listed["qwen-local"]["source"] == "custom_providers"
+        assert listed["qwen-local"]["has_api_key"] is True
+
+        response = self.client.post("/api/providers/custom-endpoints", json={
+            "id": "qwen-local",
+            "name": "Qwen Local",
+            "base_url": "http://127.0.0.1:8001/v1",
+            "model": "qwen",
+        })
+        assert response.status_code == 200, response.text
+
+        cfg = load_config()
+        assert cfg.get("custom_providers") == []
+        assert cfg["providers"]["qwen-local"]["key_env"] == "HERMES_CUSTOM_127_0_0_1_8001_API_KEY"
+        rows = {e["id"]: e for e in self.client.get("/api/providers/custom-endpoints").json()["endpoints"]}
+        assert rows["qwen-local"]["source"] == "providers"
+        assert rows["qwen-local"]["has_api_key"] is True
+        assert rows["qwen-local"]["api_key_preview"] == "${HERMES_CUSTOM_127_0_0_1_8001_API_KEY}"
+
     def test_legacy_custom_providers_entries_get_a_row_and_can_be_deleted(self):
         """A post-migration ``custom_providers:`` list entry is still routed by the
         runtime (``get_compatible_custom_providers``), so Custom Endpoints must show

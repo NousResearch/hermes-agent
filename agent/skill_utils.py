@@ -469,6 +469,12 @@ def pick_skill_candidate(candidates) -> Tuple[Optional[int], List[int]]:
     return (contenders[0] if len(contenders) == 1 else None), contenders
 
 
+def is_disabled_entry(entry: Dict[str, Any], disabled: Set[str]) -> bool:
+    """``skills.disabled`` matches a resolved catalog entry by its declared name OR its exact relative
+    path — the identifier a same-tier duplicate's list/config/web row shows (``a/one``) and saves."""
+    return bool(disabled) and not disabled.isdisjoint({str(entry["name"]), entry["relative_path"]})
+
+
 def resolve_skill_catalog(entries: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """Copies of scanned skills (each with ``name``, ``tier``, ``root`` and ``path`` = its SKILL.md)
     annotated with what skill_view() resolves, using its aliases (declared name, directory name, path

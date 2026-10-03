@@ -183,7 +183,8 @@ def _skill_catalog(*, skip_disabled: bool = False) -> List[Dict[str, Any]]:
     """Every scanned skill resolved by ``agent.skill_utils.resolve_skill_catalog`` (status /
     load_name / tier / path), visible ones only; cached per session. Resolution runs over ALL
     files first — skill_view ignores platform/disabled gates when collecting candidates."""
-    from agent.skill_utils import TIER_PROJECT, iter_project_skill_files, iter_skill_index_files, resolve_skill_catalog
+    from agent.skill_utils import (
+        TIER_PROJECT, is_disabled_entry, iter_project_skill_files, iter_skill_index_files, resolve_skill_catalog)
     cache_key = "with_disabled" if skip_disabled else "filtered"
     disabled = set() if skip_disabled else _get_disabled_skill_names()
     roots, _ = _skill_search_dirs()
@@ -217,7 +218,7 @@ def _skill_catalog(*, skip_disabled: bool = False) -> List[Dict[str, Any]]:
                 logger.debug("Failed to read skill file %s: %s", skill_md, e)
             except Exception as e:
                 logger.debug("Skipping skill at %s: failed to parse: %s", skill_md, e, exc_info=True)
-    skills = [s for s in resolve_skill_catalog(scanned) if s.pop("visible") and s["name"] not in disabled]
+    skills = [s for s in resolve_skill_catalog(scanned) if s.pop("visible") and not is_disabled_entry(s, disabled)]
     # Keyed by the signature computed BEFORE the scan: a write racing the scan changes the
     # signature, so the next call re-scans instead of serving a torn result.
     _SKILLS_CACHE[cache_key] = (signature, now, skills)
@@ -607,7 +608,8 @@ def skill_view(
         if not skill_matches_platform(frontmatter):
             return _fail(f"Skill '{name}' is not supported on this platform.", readiness_status=SkillReadinessStatus.UNSUPPORTED.value)
         resolved_name = frontmatter.get("name", skill_md.parent.name)
-        if _is_skill_disabled(resolved_name):
+        # Disabled by declared name or by the exact path its list row shows (same-tier duplicates).
+        if _is_skill_disabled(resolved_name) or _is_skill_disabled(_owned_relative(skill_dir, skill_md, all_dirs)):
             return _fail(f"Skill '{resolved_name}' is disabled. Enable it with `hermes skills` or inspect the files directly on disk.")
         if file_path and skill_dir:
             return _serve_skill_file(

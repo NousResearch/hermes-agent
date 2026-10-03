@@ -1558,8 +1558,8 @@ def _build_skills_system_prompt_inner(
     # project > local > create_dir > external_dirs; same-tier duplicates listed by exact path). Hidden and
     # incompatible copies still take part — skill_view sees them too.
     from agent.skill_utils import (
-        TIER_CREATE_DIR, TIER_EXTERNAL, TIER_LOCAL, TIER_PROJECT, get_skill_create_dir, iter_project_skill_files,
-        resolve_skill_catalog)
+        TIER_CREATE_DIR, TIER_EXTERNAL, TIER_LOCAL, TIER_PROJECT, get_skill_create_dir, is_disabled_entry,
+        iter_project_skill_files, resolve_skill_catalog)
     rows: list[tuple[dict, bool]] = []
     for proj_dir in (d for d in project_dirs if d.exists()):
         rows += _scan_extra_root(proj_dir, iter_project_skill_files(proj_dir), TIER_PROJECT, "Error reading project skill %s: %s")
@@ -1574,7 +1574,8 @@ def _build_skills_system_prompt_inner(
         {**entry, "name": _entry_name(entry), "path": entry["root"] / entry["rel"],
          "visible": ok and not hides(_entry_name(entry), entry.get("skill_name") or "", entry.get("conditions") or {})}
         for entry, ok in rows])
-    visible_entries = [e for e in resolved if e["visible"] and e["status"] != "shadowed"]
+    visible_entries = [e for e in resolved
+                       if e["visible"] and e["status"] != "shadowed" and not is_disabled_entry(e, disabled)]
     _label_visible_entries(visible_entries, skills_by_category)
     if snapshot is None:  # persist for fast cold-start reuse (best-effort)
         category_descriptions.update(_read_category_descriptions(skills_dir, "Could not read skill description %s: %s"))

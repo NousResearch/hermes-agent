@@ -587,6 +587,16 @@ class TestDuplicateNamesAgreeAcrossSurfaces:
         parts = _load_cron_skill_parts({"id": "j"}, ["dup-demo", "xdup"])
         assert ambiguous in parts[0] and "LOCAL XDUP" in "\n".join(parts)
 
+        # Disabling a duplicate by the exact path its row shows (what `hermes skills` / the web toggle
+        # save) hides it from list and index and refuses the load.
+        disabled = {"a/one"}
+        monkeypatch.setattr(skill_utils, "get_disabled_skill_names", lambda *a, **k: disabled)
+        monkeypatch.setattr(pb, "get_disabled_skill_names", lambda *a, **k: disabled)
+        monkeypatch.setattr(skills_tool_module, "_is_skill_disabled", lambda n, platform=None: n in disabled)
+        assert sorted(s["name"] for s in json.loads(skills_list())["skills"]) == ["b/two", "xdup"]
+        assert "a/one" not in pb.build_skills_system_prompt()
+        assert "disabled" in json.loads(skill_view("a/one"))["error"]
+
 
 class TestBuildSkillInvocationMessage:
 

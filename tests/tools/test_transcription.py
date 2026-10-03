@@ -137,6 +137,42 @@ class TestTranscribeLocal:
         assert result["transcript"] == "Hello world"
 
 
+    @pytest.mark.parametrize(
+        ("language", "expected"),
+        [
+            ("ZH", "zh"),
+            ("zh-Hant", "zh"),
+            ("zh_TW", "zh"),
+            ("繁體中文", "zh"),
+            ("简体中文", "zh"),
+            ("not-a-language", None),
+        ],
+    )
+    def test_local_language_hint_is_normalized_or_omitted(self, tmp_path, language, expected):
+        audio_file = tmp_path / "test.ogg"
+        audio_file.write_bytes(b"fake audio")
+        segment = SimpleNamespace(text="Hello", no_speech_prob=0.0, avg_logprob=0.0)
+        info = SimpleNamespace(language="zh", duration=1.0)
+        model = MagicMock(supported_languages=["en", "zh", "yue"])
+        model.transcribe.return_value = ([segment], info)
+
+        with patch("tools.transcription_tools._HAS_FASTER_WHISPER", True), \
+             patch("tools.transcription_tools._local_model", model), \
+             patch("tools.transcription_tools._local_model_name", "base"), \
+             patch("tools.transcription_tools._load_stt_config", return_value={
+                 "local": {"language": language},
+             }):
+            from tools.transcription_tools import _transcribe_local
+            result = _transcribe_local(str(audio_file), "base")
+
+        assert result["success"] is True
+        kwargs = model.transcribe.call_args.kwargs
+        if expected is None:
+            assert "language" not in kwargs
+        else:
+            assert kwargs["language"] == expected
+
+
     def test_not_installed(self):
         with patch("tools.transcription_tools._HAS_FASTER_WHISPER", False):
             from tools.transcription_tools import _transcribe_local

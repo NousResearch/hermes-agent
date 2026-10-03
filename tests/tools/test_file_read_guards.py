@@ -645,6 +645,53 @@ class TestDedupResetOnCompression(unittest.TestCase):
         r_again = json.loads(read_file_tool(self._tmpfile, task_id="comp"))
         self.assertTrue(r_again.get("dedup"))
 
+    @patch("tools.file_tools._get_file_ops")
+    def test_boundary_restarts_the_region_streak(self, mock_ops):
+        """Every compaction boundary re-arms full-content reads; the
+        consecutive-region streak must restart at the same boundary, or the
+        >=4 BLOCK fires on reads the boundary re-armed (#90949)."""
+        mock_ops.return_value = _make_fake_ops(
+            content="EXACT_BYTES=7\n", file_size=14,
+        )
+        for round_no in range(1, 6):
+            if round_no > 1:
+                reset_file_dedup("streak")
+            r = json.loads(read_file_tool(self._tmpfile, task_id="streak"))
+            self.assertNotIn(
+                "error", r, f"read {round_no} refused: {r.get('error', '')[:120]}")
+            self.assertNotIn(
+                "_warning", r, f"read {round_no} warned: {r.get('_warning', '')[:120]}")
+            self.assertIn(
+                "EXACT_BYTES=7", r.get("content", ""),
+                f"read {round_no} had no content")
+
+    def test_reset_file_dedup_restarts_consecutive_streak_state(self):
+        """reset_file_dedup clears last_key/consecutive so the loop detector
+        restarts fresh at the boundary, not just the stub-hit counters."""
+        from tools.file_tools_read_tracking import _read_tracker_lock, _task_data
+        with _read_tracker_lock:
+            task_data = _task_data("streak-state")
+            task_data["last_key"] = ("read", "/x/f", 1, 2000)
+            task_data["consecutive"] = 3
+        reset_file_dedup("streak-state")
+        with _read_tracker_lock:
+            self.assertIsNone(_read_tracker["streak-state"]["last_key"])
+            self.assertEqual(_read_tracker["streak-state"]["consecutive"], 0)
+
+    def test_reset_all_tasks_restarts_every_streak(self):
+        """reset_file_dedup(task_id=None) restarts the streak for every task."""
+        from tools.file_tools_read_tracking import _read_tracker_lock, _task_data
+        with _read_tracker_lock:
+            for name in ("t-a", "t-b"):
+                task_data = _task_data(name)
+                task_data["last_key"] = ("read", f"/x/{name}", 1, 2000)
+                task_data["consecutive"] = 3
+        reset_file_dedup(None)
+        with _read_tracker_lock:
+            for name in ("t-a", "t-b"):
+                self.assertIsNone(_read_tracker[name]["last_key"])
+                self.assertEqual(_read_tracker[name]["consecutive"], 0)
+
 
 
 

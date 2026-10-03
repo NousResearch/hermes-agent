@@ -49,6 +49,7 @@ class ConfigGetResult(Result):
     tool_progress: str | None = None
     model: str | None = None
     provider: str | None = None
+    scope: str | None = None
     providers: list[ConfigProviderRef] | None = None
     home: str | None = None
     cwd: str | None = None

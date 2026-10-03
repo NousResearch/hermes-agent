@@ -129,6 +129,18 @@ def _is_cron_approval_context() -> bool:
     return is_truthy_value(_session_env("HERMES_CRON_SESSION"))
 
 
+def _is_kanban_approval_context() -> bool:
+    """True when the current approval decision is running inside a kanban dispatcher worker.
+
+    ``hermes_cli/kanban_db_dispatch.py`` sets ``HERMES_KANBAN_TASK`` on the worker but binds no
+    gateway/session platform marker, so without this predicate the worker is an unrecognized
+    non-interactive context and the gates fall through to silent auto-approve (#129818). Nobody
+    is present to answer a prompt there, so — like cron — the outcome is governed by config
+    (``approvals.kanban_mode``, default deny) instead.
+    """
+    return bool(_session_env("HERMES_KANBAN_TASK").strip())
+
+
 # Programmatic/unattended platforms: no human can answer a prompt and the adapter has no ``send_exec_approval`` /
 # ``/approve`` surface. Governed by ``approvals.unattended_mode`` (default deny), mirroring ``cron_mode`` — never an
 # interactive round-trip that blocks for the full timeout with nobody to answer.
@@ -170,7 +182,7 @@ def _is_gateway_approval_context() -> bool:
     human who can resolve it (#37284, 87509). Their dangerous-command handling is governed by
     ``approvals.unattended_mode`` config (default deny), mirroring cron.
     """
-    if _is_cron_approval_context() or _is_unattended_platform_approval_context():
+    if _is_cron_approval_context() or _is_kanban_approval_context() or _is_unattended_platform_approval_context():
         return False
     return env_var_enabled("HERMES_GATEWAY_SESSION") or bool(_get_session_platform())
 
@@ -297,6 +309,13 @@ def _get_cron_approval_mode() -> str:
 def _get_single_query_approval_mode() -> str:
     """Read the single-query (-q) approval mode from config. Returns 'deny' or 'approve'."""
     return _binary_approval_mode("single_query_mode")
+
+
+def _get_kanban_approval_mode() -> str:
+    """Approval mode for kanban dispatcher workers; default deny — a dispatcher-spawned
+    worker has no user present to answer a prompt, so a flagged command is never silently
+    approved unless the operator explicitly trusts kanban workers (#129818)."""
+    return _binary_approval_mode("kanban_mode")
 
 
 def _get_unattended_approval_mode() -> str:

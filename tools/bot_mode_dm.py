@@ -279,6 +279,14 @@ def message_agent_tool(target: str = "", message: str = "", task_id: Optional[st
     is_local_shape = bool(_LOCAL_TARGET_RE.match(raw_target))
     if resolved is None and not is_local_shape and "@" not in raw_target:
         return _roster_err(f"Invalid target: {raw_target!r}.")
+    if resolved is not None:
+        from tools.bot_relay import delivery_path
+        if resolved in delivery_path():
+            return json.dumps({
+                "error": f"Delivery cycle refused: profile '{resolved}' is already in the active delivery ancestry; "
+                         "the message was NOT delivered.",
+                "reason": "target_busy",
+            })
     if resolved is None or resolved == me:
         # Unknown locally, or same-name target on ANOTHER connection (this gateway's 'default'
         # messaging the cloud 'default'): every Desktop-connected gateway is reachable via the
@@ -649,6 +657,8 @@ def _delivery_command(argv: list[str], dm_file: str, *, stdin_file: bool,
                    "stdin" if stdin_file else "query-file", dm_file]
     if profile_home is not None:
         runner_argv.extend(["--profile-home", str(Path(profile_home).resolve())])
+    if not stdin_file and len(argv) >= 3 and argv[1] == "-p":
+        runner_argv.extend(["--delivery-profile", argv[2]])
     runner_argv.extend(argv)
     if sys.platform == "win32":
         # The tracked local backend uses Git Bash on native Windows: forward slashes keep drive
@@ -846,8 +856,16 @@ def _delivery_main(args: list[str]) -> int:
             return 2
     try:
         profile_home = None
-        if len(argv) >= 2 and argv[0] == "--profile-home":
-            profile_home, argv = Path(argv[1]), argv[2:]
+        delivery_profile = None
+        while len(argv) >= 2 and argv[0] in ("--profile-home", "--delivery-profile"):
+            if argv[0] == "--profile-home":
+                profile_home = Path(argv[1])
+            else:
+                delivery_profile = argv[1]
+            argv = argv[2:]
+        if delivery_profile:
+            from tools.bot_relay import extend_delivery_path
+            extend_delivery_path(os.environ, delivery_profile)
         return _run_delivery(argv, dm_file, stdin_file=mode == "stdin", profile_home=profile_home, author=author)
     except Exception as exc:
         # Every refusal ships a typed reason on stdout so the completion notification carries it

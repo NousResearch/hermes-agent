@@ -606,10 +606,40 @@ def test_rebrand_text_replaces_openclaw_variants():
     assert mod.rebrand_text("I told Open Claw to use dark mode") == "I told Hermes to use dark mode"
     assert mod.rebrand_text("Open-Claw config is great") == "Hermes config is great"
     assert mod.rebrand_text("OPENCLAW uses tools well") == "Hermes uses tools well"
-    # All-lowercase matches → lowercase ``hermes``; this preserves the
-    # real filesystem path ``~/.hermes`` (Hermes home) when rebranding
-    # memory entries that reference ``~/.openclaw`` or ``openclaw`` prose.
+    # All-lowercase prose matches → lowercase ``hermes``. Path/identifier
+    # tokens like ``~/.openclaw`` are no longer rewritten at all — see
+    # test_rebrand_text_leaves_path_and_identifier_tokens_verbatim.
     assert mod.rebrand_text("openclaw should always respond concisely") == "hermes should always respond concisely"
+
+
+def test_rebrand_text_leaves_path_and_identifier_tokens_verbatim():
+    """#131862: a brand token glued into a larger path/identifier token names
+    a real object on the source system (a username, a source db filename, the
+    old install itself) and must survive the migration untouched — rewriting
+    it would make the user's own records point at things that never existed.
+    """
+    mod = load_module()
+    assert mod.rebrand_text("assets owned by trim.openclaw on the source box") == "assets owned by trim.openclaw on the source box"
+    assert mod.rebrand_text("source db lives at state/openclaw.sqlite") == "source db lives at state/openclaw.sqlite"
+    assert mod.rebrand_text("old install was ~/.openclaw/config.yaml") == "old install was ~/.openclaw/config.yaml"
+    assert mod.rebrand_text("log at logs/openclaw.2026-05-01.log") == "log at logs/openclaw.2026-05-01.log"
+    # Each guard side needs standalone coverage: a '/'-preceded token with a
+    # plain-space tail, and a '.'-followed token with a plain-space lead.
+    assert mod.rebrand_text("kept a copy of /opt/openclaw around") == "kept a copy of /opt/openclaw around"
+    assert mod.rebrand_text("rotated store openclaw.jsonl.bak kept growing") == "rotated store openclaw.jsonl.bak kept growing"
+    # The other brand names get the same protection; a lowercase prose
+    # mention ahead of the path still rebrands case-preservingly.
+    assert mod.rebrand_text("user clawdbot ran ~/clawdbot.sqlite") == "user hermes ran ~/clawdbot.sqlite"
+    assert mod.rebrand_text("hostname moltbot.local stayed up") == "hostname moltbot.local stayed up"
+
+
+def test_rebrand_text_still_rewrites_prose_around_sentence_punctuation():
+    """Sentence-final punctuation is not a path context: prose mentions
+    (including trailing periods and lowercase prose) keep rebranding."""
+    mod = load_module()
+    assert mod.rebrand_text("I used OpenClaw. It was fast.") == "I used Hermes. It was fast."
+    assert mod.rebrand_text("we ran openclaw.") == "we ran hermes."
+    assert mod.rebrand_text("OpenClaw's tools were fine.") == "Hermes's tools were fine."
 
 
 

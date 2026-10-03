@@ -19402,6 +19402,14 @@
         "title": "ModelSaveKeyResult",
         "type": "object"
       },
+      "MutationPolicy": {
+        "enum": [
+          "allowed",
+          "forbidden"
+        ],
+        "title": "MutationPolicy",
+        "type": "string"
+      },
       "NoticePayload": {
         "additionalProperties": false,
         "description": "``tui_gateway/model_switch.py`` capability-refresh notice.",
@@ -26184,6 +26192,17 @@
           "text": {
             "default": "",
             "title": "Text"
+          },
+          "mutation_policy": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/MutationPolicy"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
           },
           "display_kind": {
             "anyOf": [

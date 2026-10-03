@@ -2612,6 +2612,7 @@ export interface PromptSubmitParams {
   session_id: string
   profile?: string | null
   text?: unknown
+  mutation_policy?: MutationPolicy | null
   display_kind?: string | null
   interrupted?: boolean | null
   queued?: boolean | null
@@ -2625,6 +2626,7 @@ export interface PromptSubmitParams {
   confirm_empty_truncate?: boolean | null
   rebind_survivor_row_ids?: number[] | null
 }
+export type MutationPolicy = 'allowed' | 'forbidden'
 /** ``status`` is absent only on the typed-stop-phrase reply (``voice_stopped``). After a truncation the survivor row ids let the client rebind its cached ``rowId``s (``None`` map entries: drop the cached id). ``turn_isolation`` marks a compute-host dispatch. */
 export interface PromptSubmitResult {
   status?: PromptSubmitStatus | null

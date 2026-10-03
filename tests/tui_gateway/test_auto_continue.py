@@ -395,6 +395,16 @@ def test_fresh_marker_schedules_continuation(emits, schedule_env, marker_home):
     assert ("message.start", "sid", None) in [(e, s, p) for e, s, p in emits]
 
 
+def test_investigation_policy_survives_crash_continuation(schedule_env, marker_home):
+    session = _session(mutation_policy="forbidden")
+    server._record_turn_marker(session, "investigate")
+    assert read_turn_marker(marker_home, "session-key")["mutation_policy"] == "forbidden"
+
+    server._maybe_schedule_auto_continue("sid", session, "session-key")
+
+    assert schedule_env[0][1]["mutation_policy"] == "forbidden"
+
+
 def test_hosted_room_marker_is_left_to_the_driver(schedule_env, marker_home):
     record_turn_start(marker_home, "session-key", "hosted prompt")
 

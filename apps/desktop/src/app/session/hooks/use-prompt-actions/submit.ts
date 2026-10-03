@@ -23,6 +23,7 @@ import {
 } from '@/store/composer'
 import { noteMessageSent } from '@/store/desktop-metrics'
 import { $hudMode } from '@/store/hud'
+import { selectedMutationPolicy } from '@/store/investigation-only'
 import { clearNotifications, notify, notifyError } from '@/store/notifications'
 import { consumePendingCredentialWarning, requestDesktopOnboarding } from '@/store/onboarding'
 import { isCronRunReadOnly, isStoredTranscriptReadOnly } from '@/store/read-only-transcript'
@@ -888,6 +889,7 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
         attachmentRefs = syncedAttachments.map(optimisticAttachmentRef).filter((r): r is string => Boolean(r))
         rewriteOptimistic(liveSessionId, syncedAttachments)
         const text = buildContextText(syncedAttachments)
+        const mutationPolicy = options?.mutationPolicy ?? selectedMutationPolicy()
 
         // Another Desktop window may own a newer transcript while this one
         // still shows an open-time snapshot. Refuse the send and refresh
@@ -955,6 +957,7 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
         const submitParams = (targetId: string) => ({
           session_id: targetId,
           text,
+          ...(mutationPolicy && { mutation_policy: mutationPolicy }),
           ...(interrupted && { interrupted }),
           // Off-screen widget intent: the gateway types the persisted user
           // row display_kind=hidden so no client renders it as a bubble.

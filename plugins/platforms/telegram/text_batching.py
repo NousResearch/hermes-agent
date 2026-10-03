@@ -45,7 +45,11 @@ class TelegramTextBatchingMixin:
                 "[Telegram] Flushing text batch %s before incompatible reply context",
                 key,
             )
-            self._hold_inbound_event(existing, where="text-reply-context-boundary")
+            task = asyncio.create_task(
+                self._flush_buffered({key: existing}, {}, key, 0, "text-boundary")
+            )
+            self._background_tasks.add(task)
+            task.add_done_callback(self._background_tasks.discard)
             return None
         return existing
 

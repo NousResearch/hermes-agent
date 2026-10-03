@@ -1525,6 +1525,7 @@ class TestBuildSafeEnv:
             "ALPACA_API_KEY": "from-bws-key",
             "NOTION_TOKEN": "from-op",
             "UNTRACKED_SECRET_KEY": "still-filtered",
+            "HERMES_HOME": os.environ["HERMES_HOME"],
         }
         with patch.dict("os.environ", fake_env, clear=True):
             result = _build_safe_env(None)
@@ -1541,11 +1542,12 @@ class TestBuildSafeEnv:
         from hermes_cli import env_loader
         from tools.mcp_tool_config import _build_safe_env
 
-        monkeypatch.setitem(env_loader._SECRET_SOURCES, "GITHUB_TOKEN", "bitwarden")
+        monkeypatch.setitem(env_loader._SECRET_SOURCES, "ALPACA_API_KEY", "bitwarden")
         monkeypatch.setitem(env_loader._SECRET_SOURCES, "NOTION_TOKEN", "onepassword")
-        fake_env = {"PATH": "/usr/bin", "GITHUB_TOKEN": "default-profile", "NOTION_TOKEN": "default-notion"}
+        fake_env = {"PATH": "/usr/bin", "ALPACA_API_KEY": "default-profile", "NOTION_TOKEN": "default-notion",
+                    "HERMES_HOME": os.environ["HERMES_HOME"]}
         set_multiplex_active(True)
-        token = set_secret_scope({"GITHUB_TOKEN": "profile-b"})
+        token = set_secret_scope({"ALPACA_API_KEY": "profile-b"})
         try:
             with patch.dict("os.environ", fake_env, clear=True):
                 result = _build_safe_env(None)
@@ -1554,8 +1556,29 @@ class TestBuildSafeEnv:
             set_multiplex_active(False)
 
         assert result["PATH"] == "/usr/bin"
-        assert result["GITHUB_TOKEN"] == "profile-b"
+        assert result["ALPACA_API_KEY"] == "profile-b"
         assert "NOTION_TOKEN" not in result
+
+    def test_secret_source_never_forwards_hermes_credentials(self, monkeypatch):
+        """Where a Hermes-managed credential is stored (``.env`` or a secret source) must not change
+        whether a stdio child receives it; a server that needs one declares it in its own ``env``."""
+        from hermes_cli import env_loader
+        from tools.mcp_tool_config import _build_safe_env
+
+        hermes_creds = {"OPENAI_API_KEY": "sk-MARKER-provider", "TELEGRAM_BOT_TOKEN": "MARKER-bot"}
+        fake_env = {"PATH": "/usr/bin", "ALPACA_API_KEY": "MARKER-third-party", **hermes_creds,
+                    "HERMES_HOME": os.environ["HERMES_HOME"]}
+        with patch.dict("os.environ", fake_env, clear=True):
+            from_dotenv = _build_safe_env(None)
+            for name in [*hermes_creds, "ALPACA_API_KEY"]:
+                monkeypatch.setitem(env_loader._SECRET_SOURCES, name, "bitwarden")
+            from_source = _build_safe_env(None)
+            declared = _build_safe_env({"OPENAI_API_KEY": "sk-MARKER-provider"})
+
+        assert {k: from_source.get(k) for k in hermes_creds} == {k: from_dotenv.get(k) for k in hermes_creds}
+        assert not set(hermes_creds) & set(from_source)
+        assert from_source["ALPACA_API_KEY"] == "MARKER-third-party"
+        assert declared["OPENAI_API_KEY"] == "sk-MARKER-provider"
 
     def test_windows_location_vars_passed_without_secrets(self):
         """Windows launcher tools need location vars, but secrets stay filtered."""

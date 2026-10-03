@@ -74,6 +74,129 @@ def _has_active_children(conn: sqlite3.Connection, task_id: str) -> bool:
     return conn.execute(_ACTIVE_CHILDREN_SQL, (task_id,)).fetchone() is not None
 
 
+_ACTIVE_WORKSPACE_PATHS_SQL = (
+    "SELECT workspace_path FROM tasks "
+    "WHERE workspace_path IS NOT NULL "
+    "AND status NOT IN ('done', 'archived', 'failed', 'cancelled')"
+)
+
+
+def _resolved_path_key(path: Path | str) -> Optional[str]:
+    """Resolved, Unicode-stable identity for a workspace path."""
+    try:
+        return _path_key(Path(path).expanduser().resolve(strict=False))
+    except (OSError, RuntimeError):
+        return None
+
+
+def _main_db_path_key(conn: sqlite3.Connection) -> Optional[str]:
+    """Resolved identity of the connection's main SQLite file, when file-backed."""
+    try:
+        for _seq, name, filename in conn.execute("PRAGMA database_list"):
+            if name == "main" and filename:
+                return _resolved_path_key(filename)
+    except sqlite3.Error:
+        pass
+    return None
+
+
+def _board_db_files() -> list[Path]:
+    """Physical board DBs under HERMES_HOME, ignoring worker DB env pinning."""
+    home = _kb.kanban_home()
+    paths = [home / "kanban.db"]
+    boards = home / "kanban" / "boards"
+    try:
+        paths.extend(
+            child / "kanban.db"
+            for child in boards.iterdir()
+            if child.is_dir() and (child / "kanban.db").is_file()
+        )
+    except OSError:
+        pass
+    return paths
+
+
+def _workspace_use_snapshot(
+    conn: sqlite3.Connection,
+) -> tuple[frozenset[str], bool]:
+    """Resolved workspace paths held by non-terminal tasks across live boards.
+
+    The current connection is authoritative even when a worker pins
+    HERMES_KANBAN_DB. Sibling board DBs are opened read-only by physical path,
+    so ownership checks never migrate or mutate another board. The complete
+    flag is false when an existing board DB cannot be inspected; cleanup then
+    fails closed rather than deleting a path whose users are unknown.
+    """
+    keys: set[str] = set()
+
+    def collect(source: sqlite3.Connection) -> None:
+        for row in source.execute(_ACTIVE_WORKSPACE_PATHS_SQL):
+            key = _resolved_path_key(row[0])
+            if key:
+                keys.add(key)
+
+    try:
+        collect(conn)
+    except sqlite3.Error as exc:
+        _kb._log.warning("Cannot verify live workspace users in current board: %s", exc)
+        return frozenset(), False
+
+    current_db = _main_db_path_key(conn)
+    seen = {current_db} if current_db else set()
+    complete = True
+    for db_path in _board_db_files():
+        db_key = _resolved_path_key(db_path)
+        if not db_key or db_key in seen or not db_path.is_file():
+            continue
+        seen.add(db_key)
+        try:
+            uri = db_path.resolve(strict=False).as_uri() + "?mode=ro"
+            with contextlib.closing(sqlite3.connect(uri, uri=True)) as other:
+                collect(other)
+        except (OSError, RuntimeError, sqlite3.Error) as exc:
+            complete = False
+            _kb._log.warning(
+                "Cannot verify live workspace users in sibling board DB %s: %s",
+                db_path, exc,
+            )
+    return frozenset(keys), complete
+
+
+def _defer_shared_workspace_cleanup(
+    conn: sqlite3.Connection,
+    task_id: str,
+    path: Path | str,
+    snapshot: Optional[tuple[frozenset[str], bool]] = None,
+) -> bool:
+    """Fail closed when a path is live elsewhere or ownership is uncertain."""
+    paths, complete = snapshot if snapshot is not None else _workspace_use_snapshot(conn)
+    key = _resolved_path_key(path)
+    reason: Optional[str] = None
+    if key is None:
+        reason = "path identity could not be resolved"
+    elif key in paths:
+        reason = "another non-terminal task still uses this path"
+    elif not complete:
+        reason = "workspace users across boards could not be fully checked"
+    if reason is None:
+        return False
+
+    _kb._log.warning(
+        "Deferring workspace cleanup for task %s at %s: %s",
+        task_id, path, reason,
+    )
+    try:
+        _kb._append_event(
+            conn,
+            task_id,
+            "workspace_cleanup_deferred_shared",
+            {"path": str(path), "reason": reason},
+        )
+    except Exception:
+        pass
+    return True
+
+
 def _lexical_path(path: Path | str) -> Path:
     """Absolute, ``..``-collapsed, NFC form of *path* WITHOUT following symlinks."""
     return Path(_path_key(os.path.abspath(path)))
@@ -208,6 +331,10 @@ def _cleanup_workspace(conn: sqlite3.Connection, task_id: str) -> None:
                 kind, task_id, path,
             )
             return
+        if _defer_shared_workspace_cleanup(conn, task_id, path):
+            _cleanup_worker_tmux(conn, task_id)
+            _try_cleanup_parent_workspaces(conn, task_id)
+            return
         # Kill the (dead) tmux worker session BEFORE removing a worktree so a
         # lingering worker never has its cwd deleted from under it.
         if kind == "worktree":
@@ -335,6 +462,8 @@ def _try_cleanup_parent_workspaces(conn: sqlite3.Connection, task_id: str) -> No
                 or not row["workspace_path"]
                 or _has_active_children(conn, parent_id)
             ):
+                continue
+            if _defer_shared_workspace_cleanup(conn, parent_id, row["workspace_path"]):
                 continue
             if row["workspace_kind"] == "worktree":
                 _cleanup_worktree_workspace(parent_id, row["workspace_path"], row["branch_name"])

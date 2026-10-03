@@ -128,3 +128,100 @@ def test_cmd_gc_never_removes_the_workspaces_root_itself(board):
             )
     assert kanban_ops._cmd_gc(_args()) == 0
     assert (sibling / "work.txt").exists()
+
+
+def _shared_scratch_task(conn, title: str, path: Path, status: str) -> str:
+    tid = kb.create_task(conn, title=title)
+    with kb.write_txn(conn):
+        conn.execute(
+            "UPDATE tasks SET status=?, workspace_kind='scratch', workspace_path=? "
+            "WHERE id=?",
+            (status, str(path), tid),
+        )
+    return tid
+
+
+def test_cmd_gc_keeps_workspace_used_by_live_task_same_board(board):
+    shared = kb.workspaces_root() / "shared-live"
+    shared.mkdir(parents=True)
+    (shared / "note.txt").write_text("keep", encoding="utf-8")
+    with kbc.connect_closing() as conn:
+        archived = _shared_scratch_task(conn, "archived", shared, "archived")
+        live = _shared_scratch_task(conn, "live", shared, "ready")
+
+    assert kanban_ops._cmd_gc(_args()) == 0
+    assert (shared / "note.txt").exists()
+    with kbc.connect_closing() as conn:
+        event = conn.execute(
+            "SELECT 1 FROM task_events WHERE task_id=? "
+            "AND kind='workspace_cleanup_deferred_shared'",
+            (archived,),
+        ).fetchone()
+        assert event is not None
+        with kb.write_txn(conn):
+            conn.execute("UPDATE tasks SET status='archived' WHERE id=?", (live,))
+
+    assert kanban_ops._cmd_gc(_args()) == 0
+    assert not shared.exists()
+
+
+def test_cmd_gc_keeps_workspace_used_by_live_task_other_board(board, monkeypatch):
+    kb.create_board("other")
+    default_db = kb.kanban_db_path(board=kb.DEFAULT_BOARD)
+    default_ws = kb.workspaces_root(board=kb.DEFAULT_BOARD)
+    shared = default_ws / "shared-cross-board"
+    shared.mkdir(parents=True)
+    (shared / "note.txt").write_text("keep", encoding="utf-8")
+    with kbc.connect_closing(board=kb.DEFAULT_BOARD) as conn:
+        _shared_scratch_task(conn, "archived default", shared, "archived")
+
+    # Workers pin their own board DB/root in the environment. The cleanup guard
+    # must still inspect physical sibling-board DBs rather than resolving every
+    # board through these process-wide pins.
+    with kbc.connect_closing(board="other") as other_conn:
+        live = _shared_scratch_task(other_conn, "live other", shared, "ready")
+        monkeypatch.setenv("HERMES_KANBAN_DB", str(default_db))
+        monkeypatch.setenv("HERMES_KANBAN_WORKSPACES_ROOT", str(default_ws))
+
+        with kb.scoped_current_board(kb.DEFAULT_BOARD):
+            assert kanban_ops._cmd_gc(_args()) == 0
+        assert (shared / "note.txt").exists()
+
+        with kb.write_txn(other_conn):
+            other_conn.execute("UPDATE tasks SET status='archived' WHERE id=?", (live,))
+        with kb.scoped_current_board(kb.DEFAULT_BOARD):
+            assert kanban_ops._cmd_gc(_args()) == 0
+    assert not shared.exists()
+
+
+def test_cleanup_workspace_keeps_path_used_by_unrelated_live_task(board):
+    from hermes_cli import kanban_db_workspace as kbw
+
+    shared = kb.workspaces_root() / "shared-completion"
+    shared.mkdir(parents=True)
+    (shared / "note.txt").write_text("keep", encoding="utf-8")
+    with kbc.connect_closing() as conn:
+        finished = _shared_scratch_task(conn, "finished", shared, "done")
+        _shared_scratch_task(conn, "unrelated live", shared, "running")
+        kbw._cleanup_workspace(conn, finished)
+    assert (shared / "note.txt").exists()
+
+
+def test_deferred_parent_cleanup_keeps_path_used_by_unrelated_live_task(board):
+    from hermes_cli import kanban_db_workspace as kbw
+
+    shared = kb.workspaces_root() / "shared-parent"
+    shared.mkdir(parents=True)
+    (shared / "note.txt").write_text("keep", encoding="utf-8")
+    with kbc.connect_closing() as conn:
+        parent = _shared_scratch_task(conn, "parent", shared, "done")
+        child = kb.create_task(conn, title="terminal child")
+        with kb.write_txn(conn):
+            conn.execute("UPDATE tasks SET status='done' WHERE id=?", (child,))
+            conn.execute(
+                "INSERT INTO task_links (parent_id, child_id) VALUES (?, ?)",
+                (parent, child),
+            )
+        _shared_scratch_task(conn, "unrelated live", shared, "review")
+        kbw._try_cleanup_parent_workspaces(conn, child)
+    assert (shared / "note.txt").exists()

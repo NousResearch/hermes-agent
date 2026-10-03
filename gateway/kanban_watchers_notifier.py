@@ -525,6 +525,7 @@ class _KanbanNotification:
         self.adapter: Any = None
         self.is_push_adapter = True
         self.wake_kinds: set = set()
+        self.settled = False
 
     # -- cursor / subscription ops (blocking, run in a fresh-context thread) --
 
@@ -535,6 +536,14 @@ class _KanbanNotification:
 
     async def advance(self) -> None:
         await _to_thread_process_service(self.runner._kanban_advance, self.sub, self.d["cursor"], self.board_slug)
+        # The wake is non-idempotent, so persist its watermark together with the
+        # cursor: a later settle failure must not replay this tick's wake.
+        await _to_thread_process_service(
+            self.runner._kanban_record_wake, self.sub, self._wake_watermark(), self.board_slug,
+        )
+
+    def _wake_watermark(self) -> int:
+        return max((ev.id for ev in self.d.get("events", ())), default=0)
 
     async def unsub(self) -> None:
         await _to_thread_process_service(self.runner._kanban_unsub, self.sub, self.board_slug)
@@ -631,6 +640,13 @@ class _KanbanNotification:
 
     async def wake(self) -> None:
         """Wake the creator session (raises on failure): push adapters get a full SessionSource, non-push a raw self-post."""
+        # Mirror the ping path's last_ping_event_id guard: a settle failure after a
+        # successful wake must not re-send it on the next tick. Notifications are
+        # not idempotent — admit_internal_event only checks the current receipt —
+        # so a duplicate wake runs the creator's whole turn a second time.
+        woke_upto = max((ev.id for ev in self.d.get("events", ())), default=0)
+        if self.sub.get("last_wake_event_id", 0) >= woke_upto:
+            return
         from gateway.wake import deliver_wake
         sub = self.sub
         if not self.is_push_adapter:
@@ -746,7 +762,40 @@ class _KanbanNotification:
                 return False
         return True
 
+    async def _deliver_failed(self, exc: Exception) -> None:
+        """Count an unexpected delivery escape like a send failure (MAX_SEND_FAILURES).
+
+        ``delivery_failed`` owns both halves of the policy: rewind the claim so the
+        next tick retries, and drop the subscription once the budget is spent. Without
+        this the rewind catch-all retried a permanently throwing path forever, logging a
+        traceback every 5s tick (~1.7k/day).
+        """
+        drop_fmt = "kanban notifier: dropping subscription %s on %s after %d consecutive delivery failures"
+        await self.delivery_failed(
+            "kanban notifier: delivery for %s on %s failed (attempt %d/%d): %s",
+            (self.task_id, self.platform_str), drop_fmt, exc, True,
+        )
+
     async def deliver(self) -> None:
+        """Deliver the claim; an unexpected error rewinds it so the next tick retries.
+
+        Every subscription is claimed before any delivery runs, so an escaping error
+        would otherwise consume this claim and skip the rest of the tick's claims.
+        The rewind is counted like any other send failure so a permanently broken
+        code path retires the subscription instead of retrying with a traceback
+        on every tick (~1.7k/day at the 5s tick interval).
+        """
+        try:
+            await self._deliver()
+        except Exception as exc:
+            if self.settled:
+                logger.warning("kanban notifier: delivery for %s on %s failed after settling: %s",
+                               self.task_id, self.platform_str, exc, exc_info=True)
+                return
+            # _deliver_failed already rewinds (or drops the sub past the budget).
+            await self._deliver_failed(exc)
+
+    async def _deliver(self) -> None:
         try:
             self.plat = self.platform_cls(self.platform_str)
         except ValueError:

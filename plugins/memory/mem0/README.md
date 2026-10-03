@@ -31,6 +31,7 @@ Behavioral settings live in `$HERMES_HOME/mem0.json` (set them via `hermes memor
 | `agent_id` | `hermes` | Agent identifier |
 | `rerank` | `false` | Rerank search results for relevance (platform mode only) |
 | `sync_max_chars` | `450` | Per-message character cap applied before each turn is sent for fact extraction (cut at the last sentence boundary). Default fits 512-token embedders; raise it (e.g. `6000`) for 8k-token embedders such as `text-embedding-3-small`, `jina-embeddings-v3`, `bge-m3` |
+| `prefetch_max_chars` | `450` | Character cap on the per-turn recall query (the user's message is embedded as the query). Longer messages keep their head and tail around an ellipsis, so a question at either end survives. Independent of `sync_max_chars`: a longer query recalls worse even on large-window embedders |
 
 The plugin has three connection modes:
 

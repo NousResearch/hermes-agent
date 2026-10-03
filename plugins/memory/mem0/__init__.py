@@ -67,6 +67,29 @@ def _truncate_for_sync(text: str, max_len: int = _SYNC_MSG_MAX_CHARS) -> str:
     return text[:max_len]
 
 
+# Prefetch embeds the turn's message as the recall query. A cron prompt carrying script output or a
+# pasted document runs to thousands of tokens: Ollama's /api/embed silently keeps only the head of an
+# input longer than the model window (no warning, ollama/ollama#14259), small-context embedders answer
+# HTTP 500 — which _try counts toward the breaker — and the question is diluted by the rest anyway.
+# A long message carries its question at one end ("look at this: <paste>", "<paste> — thoughts?"),
+# so the cap keeps both ends. Not tied to ``sync_max_chars``: a bigger embedder window does not make a
+# longer query recall better (measured: 450 beat 1000 and 2000 on a 32k-token embedder), so raising
+# the sync cap for an 8k embedder must not dilute queries. ``prefetch_max_chars`` in mem0.json overrides.
+_PREFETCH_QUERY_MAX_CHARS = 450
+_QUERY_ELLIPSIS = "\n…\n"
+
+
+def _cap_recall_query(text: str, max_len: int) -> str:
+    """Cap a recall query at ``max_len`` chars, keeping its head and tail around an ellipsis."""
+    if len(text) <= max_len:
+        return text
+    keep = max_len - len(_QUERY_ELLIPSIS)
+    if keep < 2:
+        return text[:max_len]
+    head = keep // 2
+    return text[:head] + _QUERY_ELLIPSIS + text[len(text) - (keep - head):]
+
+
 def _is_client_error(exc: Exception) -> bool:
     """True for user-caused errors (bad ID, not found) that should NOT trip circuit breaker."""
     err_str = str(exc).lower()
@@ -130,7 +153,7 @@ class Mem0MemoryProvider(MemoryProvider):
         self._config = self._backend = self._sync_thread = self._prefetch_thread = None
         self._mode, self._api_key, self._host, self._user_id, self._agent_id = "platform", "", "", _DEFAULT_USER_ID, "hermes"
         self._rerank_default, self._channel = False, "cli"  # channel = gateway name (cli/telegram/discord/...)
-        self._sync_max_chars = _SYNC_MSG_MAX_CHARS
+        self._sync_max_chars, self._prefetch_max_chars = _SYNC_MSG_MAX_CHARS, _PREFETCH_QUERY_MAX_CHARS
         self._prefetch_query = self._prefetch_result = ""
         self._prefetch_done = self._atexit_registered = False
         self._consecutive_failures, self._breaker_open_until = 0, 0.0  # circuit breaker state
@@ -236,6 +259,7 @@ class Mem0MemoryProvider(MemoryProvider):
         self._rerank_default = _rr.lower() in ("true", "1", "yes") if isinstance(_rr, str) else bool(_rr)
         self._channel = kwargs.get("platform") or "cli"
         self._sync_max_chars = int(cfg.get("sync_max_chars") or _SYNC_MSG_MAX_CHARS)
+        self._prefetch_max_chars = int(cfg.get("prefetch_max_chars") or _PREFETCH_QUERY_MAX_CHARS)
         self._backend = self._create_backend()
         if self._backend and not self._atexit_registered:
             atexit.register(self._shutdown_backend)
@@ -273,7 +297,8 @@ class Mem0MemoryProvider(MemoryProvider):
             return
 
         def _run():
-            results = self._try(lambda: self._search(query, backend=backend), logger.debug, "Mem0 prefetch failed: %s")
+            capped = _cap_recall_query(query, self._prefetch_max_chars)  # cache key stays the full message
+            results = self._try(lambda: self._search(capped, backend=backend), logger.debug, "Mem0 prefetch failed: %s")
             lines = [r.get("memory", "") for r in (results or []) if r.get("memory")]
             body = "## Mem0 Memory\n" + "\n".join(f"- {l}" for l in lines) if lines else ""
             with self._prefetch_lock:

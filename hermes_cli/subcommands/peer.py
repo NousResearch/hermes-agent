@@ -62,6 +62,21 @@ def _peer_secret(name: str) -> str:
         return (os.environ.get(env_name) or "").strip()
 
 
+def _profile_api_server_key(profile: str) -> str:
+    """Return only ``profile``'s API-server credential for a multiplexed peer URL.
+
+    A ``peer/<profile>`` URL is routed by the remote multiplexer, which rejects
+    the registered peer key when it belongs to another profile.  Resolve the
+    local profile's secret scope directly instead of falling back to the peer
+    entry or process environment: either can contain the default profile key.
+    """
+    from agent.secret_scope import build_profile_secret_scope
+    from hermes_cli.profiles import get_profile_dir
+
+    secrets = build_profile_secret_scope(get_profile_dir(profile))
+    return (secrets.get("API_SERVER_KEY") or "").strip()
+
+
 def _request(
     url: str, key: str, *, method: str = "GET", body: dict | None = None,
     timeout: int = LIST_TIMEOUT_S, headers: dict[str, str] | None = None) -> dict:
@@ -172,8 +187,17 @@ def _resolve_peer_target(target: str) -> tuple[str, str | None, dict, str]:
     peer = _load_peers().get(peer_name)
     if not isinstance(peer, dict) or not peer.get("url"):
         raise LookupError(f"No peer named '{peer_name}'. Run: hermes peer list")
-    key = _peer_secret(peer_name)
+    # The bare peer endpoint retains its registered peer credential.  A named
+    # multiplex route must instead authenticate with exactly that named local
+    # profile's API_SERVER_KEY; never fall back to the default peer key.
+    key = _profile_api_server_key(profile) if profile else _peer_secret(peer_name)
     if not key:
+        if profile:
+            raise PermissionError(
+                f"No API_SERVER_KEY for profile '{profile}' required by peer "
+                f"'{peer_name}/{profile}'. Set it in that profile's .env before "
+                f"calling this multiplexed peer target."
+            )
         raise PermissionError(
             f"No API key for peer '{peer_name}'. Set it: hermes peer add {peer_name} "
             f"--url <url> --key <key> (or add {_peer_key_env(peer_name)}=<key> to ~/.hermes/.env)")

@@ -1479,7 +1479,7 @@ def _observe_late_live_send(future: Any, job_id: str, where: str) -> None:
         result = future.result()
     except Exception as exc:
         logger.warning(
-            "Job '%s': live adapter send to %s failed after confirmation timeout: %s",
+            "Job '%s': live adapter send to %s failed after confirmation timeout: %r",
             job_id, where, exc)
         return
     if not _confirm_adapter_delivery(result, job_id):
@@ -1541,10 +1541,10 @@ def _live_send_text(
             lambda done: _observe_late_live_send(done, job["id"], t.where))
         logger.warning(
             "Job '%s': live adapter send to %s:%s timed out "
-            "after 60s; already dispatched (in flight), "
+            "after %ss; already dispatched (in flight), "
             "delivery unverified (skipping standalone fallback "
             "to avoid duplicate)",
-            job["id"], t.platform_name, t.chat_id)
+            job["id"], t.platform_name, t.chat_id, _LIVE_SEND_CONFIRM_TIMEOUT_SECS)
         return True, True, None
     except PartialDeliveryError as ex:
         # The head of a split send is already on screen: a standalone resend would duplicate it.
@@ -1691,11 +1691,8 @@ def _deliver_via_live_adapter(
                 unverified_targets=unverified_targets,
             )
 
-        # Send extracted media files as native attachments via the live adapter, using the same
-        # DM-topic-aware routing as the text send (#22773 — media previously used a bare thread_id and
-        # landed in the General lane for private DM topics). Skip on an in-flight confirmation timeout: the
-        # gateway loop is contended, so each media send would also block its 30s budget, and the text is
-        # in flight, recorded unverified (#38922). Record the skipped attachments so the drop is visible.
+        # Skip media on an in-flight confirmation timeout (text delivery unverified, loop contended;
+        # #38922, #22773) and record the dropped attachments.
         if adapter_ok and not timed_out and media_files:
             _live_send_media(t, media_metadata, media_files, delivery_errors)
         elif timed_out and media_files:

@@ -22,7 +22,21 @@ import { reactRoot } from '@/test/react-root'
 
 import { installWindowStateBridge, setDocumentHidden, type WindowStateBridge } from '../../test/window-state'
 
-import { PetSprite } from './pet-sprite'
+import { PetSprite, roamWalkRow } from './pet-sprite'
+
+describe('roamWalkRow directional sheets', () => {
+  it('mirrors a generic running row only when travelling right', () => {
+    expect(roamWalkRow(1, ['idle', 'running'])).toEqual({ mirror: true })
+    expect(roamWalkRow(-1, ['idle', 'running'])).toEqual({ mirror: false })
+  })
+
+  it('mirrors a one-sided running row when travelling against its facing', () => {
+    expect(roamWalkRow(1, ['idle', 'running-left'])).toEqual({ mirror: true, row: 'running-left' })
+    expect(roamWalkRow(-1, ['idle', 'running-right'])).toEqual({ mirror: true, row: 'running-right' })
+    expect(roamWalkRow(1, ['idle', 'running-right'])).toEqual({ mirror: false, row: 'running-right' })
+    expect(roamWalkRow(0, ['idle', 'running-left'])).toEqual({ mirror: false })
+  })
+})
 
 const INFO = {
   enabled: true,

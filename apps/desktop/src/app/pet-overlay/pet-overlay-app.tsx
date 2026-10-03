@@ -3,11 +3,12 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 
 import { PetHeartField, playVibeHearts } from '@/components/chat/vibe-hearts'
 import { PetBubble } from '@/components/pet/pet-bubble'
-import { PetSprite } from '@/components/pet/pet-sprite'
+import { PetSprite, roamWalkRow } from '@/components/pet/pet-sprite'
+import { usePetRoam } from '@/components/pet/use-pet-roam'
 import { type PetZoomAnchor, usePetZoomGesture } from '@/components/pet/use-pet-zoom-gesture'
 import { Mail } from '@/lib/icons'
 import { isSubmitEnter } from '@/lib/ime'
-import { $petActivity, $petInfo, setPetInfo } from '@/store/pet'
+import { $petActivity, $petAtRest, $petInfo, $petRoam, $petRoamDir, setPetInfo } from '@/store/pet'
 import { overlayWindowSize } from '@/store/pet-overlay'
 import { setAwaitingResponse, setBusy } from '@/store/session'
 
@@ -52,6 +53,7 @@ const CLICK_SLOP_PX = 3
 const DOUBLE_CLICK_MS = 250
 
 interface DragState {
+  lastX: number
   startX: number
   startY: number
   offX: number
@@ -61,12 +63,21 @@ interface DragState {
   moved: boolean
 }
 
+interface Point {
+  x: number
+  y: number
+}
+
 export function PetOverlayApp() {
   const info = useStore($petInfo)
   const [composerOpen, setComposerOpen] = useState(false)
   const [draft, setDraft] = useState('')
   // Mirrored from the main renderer: a finish landed while you were away.
   const [unread, setUnread] = useState(false)
+  // Drag direction for the pop-out overlay — drives the run animation row.
+  const [dragDir, setDragDir] = useState<-1 | 0 | 1>(0)
+  // Last absolute position the roam loop committed.
+  const [roamPos, setRoamPos] = useState<Point | null>(null)
 
   const dragRef = useRef<DragState | null>(null)
   // Last Alt+wheel anchor, consumed by the resize effect to zoom toward the
@@ -207,8 +218,10 @@ export function PetOverlayApp() {
     }
 
     ;(e.target as Element).setPointerCapture?.(e.pointerId)
+    setDragDir(0)
     dragRef.current = {
       height: window.outerHeight,
+      lastX: e.screenX,
       moved: false,
       offX: e.screenX - window.screenX,
       offY: e.screenY - window.screenY,
@@ -229,6 +242,16 @@ export function PetOverlayApp() {
       drag.moved = true
     }
 
+    if (drag.moved) {
+      const dx = e.screenX - drag.lastX
+      drag.lastX = e.screenX
+      const dir = dx > 0 ? 1 : dx < 0 ? -1 : 0
+
+      if (dir !== 0) {
+        setDragDir(dir)
+      }
+    }
+
     window.hermesDesktop?.petOverlay?.setBounds({
       height: drag.height,
       width: drag.width,
@@ -240,6 +263,7 @@ export function PetOverlayApp() {
   const onPetPointerUp = (e: React.PointerEvent) => {
     const drag = dragRef.current
     dragRef.current = null
+    setDragDir(0)
     ;(e.target as Element).releasePointerCapture?.(e.pointerId)
 
     if (!drag) {
@@ -362,6 +386,46 @@ export function PetOverlayApp() {
     window.hermesDesktop?.petOverlay?.control({ bounds, type: 'bounds' })
   }, [info.enabled, info.spritesheetBase64, info.scale, info.frameW, info.frameH])
 
+  // ── roam ──────────────────────────────────────────────────────────────
+
+  const roamEnabled = useStore($petRoam)
+  const atRest = useStore($petAtRest)
+  const petW = (info.frameW ?? DEFAULT_FRAME_W) * (info.scale ?? DEFAULT_SCALE)
+  const petH = (info.frameH ?? DEFAULT_FRAME_H) * (info.scale ?? DEFAULT_SCALE)
+  const active = info.enabled && Boolean(info.spritesheetBase64)
+
+  // Seed a centered-bottom starting position once the pet dimensions are known.
+  useEffect(() => {
+    if (roamPos === null && active) {
+      setRoamPos({
+        x: Math.max(0, (window.innerWidth - petW) / 2),
+        y: Math.max(0, window.innerHeight - petH - PET_PADDING_BOTTOM)
+      })
+    }
+  }, [active, petH, petW, roamPos])
+
+  // Keep callback identity stable so the roam loop does not restart on renders.
+  const isInteracting = useCallback(() => dragRef.current !== null, [])
+  const commitRoam = useCallback((point: Point) => setRoamPos(point), [])
+
+  usePetRoam({
+    commit: commitRoam,
+    containerRef: petRef,
+    enabled: roamEnabled && active && atRest,
+    isInteracting,
+    loopMs: info.loopMs ?? 1100,
+    overlayOpen: false,
+    // The pop-out overlay is a focusable:false panel (main.ts) so it never
+    // receives window focus; roaming must not pause on blur or it never runs.
+    pauseWhenUnfocused: false,
+    petH,
+    petW
+  })
+
+  const roamDir = useStore($petRoamDir)
+  // Drag direction wins over roam, so the sprite faces its actual travel direction.
+  const walk = roamWalkRow(dragDir !== 0 ? dragDir : roamDir, info.stateRows)
+
   if (!info.enabled || !info.spritesheetBase64) {
     return null
   }
@@ -410,7 +474,8 @@ export function PetOverlayApp() {
             marginBottom: 8,
             outline: 'none',
             padding: '4px 8px',
-            width: 184
+            width: 184,
+            zIndex: 1
           }}
           value={draft}
         />
@@ -421,20 +486,41 @@ export function PetOverlayApp() {
         onPointerMove={onPetPointerMove}
         onPointerUp={onPetPointerUp}
         ref={petRef}
-        style={{
-          alignItems: 'center',
-          cursor: 'grab',
-          display: 'flex',
-          flexDirection: 'column',
-          position: 'relative',
-          touchAction: 'none'
-        }}
+        style={
+          roamPos
+            ? {
+                alignItems: 'center',
+                cursor: 'grab',
+                display: 'flex',
+                flexDirection: 'column',
+                left: roamPos.x,
+                position: 'absolute',
+                top: roamPos.y,
+                touchAction: 'none'
+              }
+            : {
+                alignItems: 'center',
+                cursor: 'grab',
+                display: 'flex',
+                flexDirection: 'column',
+                position: 'relative',
+                touchAction: 'none'
+              }
+        }
       >
         <div style={{ marginBottom: 4 }}>
           <PetBubble />
         </div>
         <div style={{ lineHeight: 0, position: 'relative' }}>
-          <PetSprite info={info} pauseWhenUnfocused={false} />
+          {/* Flip only the sprite: the bubble, hearts and mail control stay in place. */}
+          <div data-testid="overlay-pet-sprite" style={{ transform: walk.mirror ? 'scaleX(-1)' : 'none' }}>
+            <PetSprite
+              info={info}
+              pauseWhenUnfocused={false}
+              rowOverride={walk.row}
+              stateOverride={dragDir !== 0 ? 'run' : undefined}
+            />
+          </div>
 
           {/* Hearts on the popped-out pet — identical to in-window. */}
           <PetHeartField
@@ -469,6 +555,7 @@ export function PetOverlayApp() {
                 top: 0,
                 width: 24
               }}
+              title="Open in Hermes"
               type="button"
             >
               <Mail style={{ height: 13, width: 13 }} />

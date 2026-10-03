@@ -50,8 +50,11 @@ def _pid_alive(pid):
 
 def _spawn_with_escapee(registry, tmp_path, escapee_lifetime):
     pidfile = tmp_path / "escapee.pid"
+    # The escapee's pid is read as the PPID of a grandchild, not as ``$$``: on the
+    # scoped path ``systemd-run --scope`` (systemd >= 254) expands the command line
+    # itself and turns ``$$`` into a literal ``$`` before the shell sees it.
     session = registry.spawn_local(
-        f"setsid sh -c 'echo $$ > {pidfile}; exec sleep {escapee_lifetime}' & sleep 120",
+        f"setsid sh -c 'sh -c \"echo \\$PPID\" > {pidfile}; exec sleep {escapee_lifetime}' & sleep 120",
         cwd=str(tmp_path), use_pty=True)
     assert _wait_for(lambda: pidfile.exists() and pidfile.read_text().strip(), 5)
     return session, int(pidfile.read_text())

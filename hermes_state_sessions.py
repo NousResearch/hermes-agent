@@ -895,18 +895,26 @@ class SessionSessionsMixin:
         ) or 0)
 
     def _set_lineage_column(self, column: str, session_id: str, value: Any, *,
-                            extra_set_sql: str = "") -> bool:
+                            extra_set_sql: str = "",
+                            conn: Optional[sqlite3.Connection] = None) -> bool:
         """Set one ``sessions`` column across a whole compression lineage: Desktop projects roots
         forward to their tip, so updating only the tip would let the root resurrect it on refresh.
-        *extra_set_sql* (trusted literal, ``, col = expr``) rides the same UPDATE."""
-        return self._write_rowcount(
-            _LINEAGE_CTE_SQL + f"""
+        *extra_set_sql* (trusted literal, ``, col = expr``) rides the same UPDATE. With ``conn``,
+        run on the caller's open write transaction instead of opening one — a guard check and this
+        flip can then commit atomically."""
+        sql = _LINEAGE_CTE_SQL + f"""
             UPDATE sessions
             SET {column} = ?{extra_set_sql}
             WHERE id IN (SELECT id FROM lineage)
-            """,
-            (session_id, session_id, value),
-        ) > 0
+            """
+        params = (session_id, session_id, value)
+        if conn is not None:
+            cursor = conn.execute(sql, params)
+            rowcount = cursor.rowcount
+            if rowcount is None or rowcount < 0:
+                rowcount = conn.execute("SELECT changes()").fetchone()[0]
+            return rowcount > 0
+        return self._write_rowcount(sql, params) > 0
 
     def set_session_archived(self, session_id: str, archived: bool) -> bool:
         """Soft-hide (or unhide) a session and its compression lineage; messages are kept.
@@ -915,14 +923,17 @@ class SessionSessionsMixin:
         return self._set_lineage_column(
             "archived", session_id, int(archived), extra_set_sql=", auto_archived = 0")
 
-    def _auto_archive_lineage(self, session_id: str) -> bool:
+    def _auto_archive_lineage(self, session_id: str, *,
+                              conn: Optional[sqlite3.Connection] = None) -> bool:
         """The idle sweep's archive: like :meth:`set_session_archived` but stamps
         ``auto_archived`` on the rows IT hides. A row already archived keeps its provenance, so a
         deliberately archived ancestor is never relabelled as sweep-owned (SQLite evaluates every
-        SET expression against the pre-update row)."""
+        SET expression against the pre-update row). With ``conn``, runs on the caller's write
+        transaction so a live-turn guard check and this flip commit atomically (#123583)."""
         return self._set_lineage_column(
             "archived", session_id, 1,
-            extra_set_sql=", auto_archived = CASE WHEN archived = 0 THEN 1 ELSE auto_archived END")
+            extra_set_sql=", auto_archived = CASE WHEN archived = 0 THEN 1 ELSE auto_archived END",
+            conn=conn)
 
     @staticmethod
     def _unarchive_auto_archived_lineage(conn, session_id: str) -> bool:

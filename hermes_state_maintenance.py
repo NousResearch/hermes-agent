@@ -299,7 +299,12 @@ class SessionMaintenanceMixin:
         stale tip archives its chain via :meth:`set_session_archived`, so an old compressed-away
         root with a recent continuation is never matched.  The hidden canonical Bot Chat (same
         predicate as :meth:`set_session_pinned`) is exempt: only a deliberate archive may retire
-        it, since archiving releases its registry title to the next Bot open."""
+        it, since archiving releases its registry title to the next Bot open.
+        Rows under a live turn lease or compression lock are skipped (#123583): the idle
+        predicate reads committed state, so an unended row whose first turn is already leased —
+        messages not yet flushed — looks stale and would be hidden mid-turn. This sweep runs
+        automatically (startup / maintenance tick), so there is no consent step that could
+        refuse; the guard check shares the flip transaction."""
         if idle_days is None or idle_days < 0:
             return 0
         cutoff = time.time() - float(idle_days) * 86400.0
@@ -314,10 +319,20 @@ class SessionMaintenanceMixin:
               AND {_LAST_ACTIVE_SQL} < ?
             ORDER BY s.started_at ASC
             """, (self.CANONICAL_BOT_CHAT_TITLE, cutoff))
+        archived = 0
         for row in rows:
-            # Sweep provenance: a later compression/resume of this lineage un-hides it (#117713).
-            self._auto_archive_lineage(row[0])
-        return len(rows)
+            archived += 1 if self._guarded_archive(row[0]) else 0
+        return archived
+
+    def _guarded_archive(self, session_id: str) -> bool:
+        """Flip ``archived`` for one lineage tip (with the sweep's ``auto_archived`` provenance),
+        or return False when a live turn lease / compression lock protects the row. Check and flip
+        share one write transaction, so a lease acquired after the selector read is still caught."""
+        def _do(conn):
+            if self._write_guards_reject(conn, session_id):
+                return False
+            return self._auto_archive_lineage(session_id, conn=conn) > 0
+        return bool(self._execute_write(_do))
 
     def prune_sessions(self, older_than_days: Optional[float] = 90, source: str = None,
                        sessions_dir: Optional[Path] = None, exclude_active_write_guards: bool = False,

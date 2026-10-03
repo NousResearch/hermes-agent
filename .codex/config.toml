@@ -1,0 +1,3 @@
+# Materialize the project config layer so Codex discovers hooks.json.
+[features]
+hooks = true

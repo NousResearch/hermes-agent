@@ -11,6 +11,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Dict
 
+from gateway import hosted_room_fence as fence
 from gateway.hosted_rooms_common import identifier
 from gateway.platforms.api_server_run_scope import room_run_scope_key, validate_room_run_scope
 from hermes_cli.sqlite_util import add_column_if_missing
@@ -252,6 +253,8 @@ class RunIdempotencyStore:
                 SET retired_terminal=retired_terminal + CASE WHEN {terminal} THEN 1 ELSE 0 END,
                     missing_runs=missing_runs + CASE WHEN {terminal} THEN 0 ELSE 1 END
                 WHERE scope=OLD.scope; END""")
+        # Succession fences share this writer, so a fence and an admission are ordered.
+        fence.initialize_fence_schema(self._conn)
 
     @contextmanager
     def _group_stop_txn(self):
@@ -267,6 +270,19 @@ class RunIdempotencyStore:
     def _scope_frozen_locked(self, scope: str) -> bool:
         return self._conn.execute(f"SELECT 1 FROM {_FREEZES} WHERE scope=?", (scope,)).fetchone() is not None
 
+    def _scope_identity_locked(self, scope: str) -> dict[str, Any] | None:
+        row = self._conn.execute(f"SELECT identity_json FROM {_SCOPES} WHERE scope=?", (scope,)).fetchone()
+        try:
+            identity = validate_room_run_scope(json.loads(row[0])) if row is not None else None
+        except (TypeError, ValueError):
+            return None
+        return identity if identity is not None and room_run_scope_key(identity) == scope else None
+
+    def _scope_fenced_locked(self, scope: str) -> bool:
+        identity = self._scope_identity_locked(scope)
+        return identity is not None and identity["authority_epoch"] <= fence.fenced_epoch_locked(
+            self._conn, identity["room_id"])
+
     def is_scope_frozen(self, scope: str) -> bool:
         """Check an internally derived Runs scope, without reconstructing its identity."""
         scope = _scope_key(scope)
@@ -279,11 +295,18 @@ class RunIdempotencyStore:
             raise GroupStopStorageUnavailable() from None
 
     @contextmanager
-    def group_control_open(self, scope: str):
-        """Serialize only a short in-memory decision with freeze; no store re-entry or I/O."""
+    def group_control_open(self, scope: str, *, freeze: bool = True):
+        """Serialize only a short in-memory decision with freeze; no store re-entry or I/O.
+
+        A room epoch fenced for succession refuses this control outright: it passed to the
+        promised successor. ``freeze=False`` checks only that fence.
+        """
         scope = _scope_key(scope)
         with self._group_stop_txn():
-            yield not self._scope_frozen_locked(scope)
+            frozen = freeze and self._scope_frozen_locked(scope)
+            if not frozen and self._scope_fenced_locked(scope):
+                raise fence.RoomAuthorityFenced()
+            yield not frozen
 
     def freeze_room_scope(self, identity: dict, command_id: str) -> dict[str, Any]:
         """Permanently fence one known participant scope in this durable Runs store."""
@@ -446,6 +469,9 @@ class RunIdempotencyStore:
                 return _outcome(row, fingerprint)
             if self._scope_frozen_locked(scope):
                 raise GroupRunFrozen()
+            if identity is not None and identity["authority_epoch"] <= fence.fenced_epoch_locked(
+                    self._conn, identity["room_id"]):
+                raise fence.RoomAuthorityFenced()
             self._conn.execute(
                 "INSERT INTO run_idempotency("
                 "scope,idempotency_key,fingerprint,run_id,status_json,"
@@ -498,6 +524,30 @@ class RunIdempotencyStore:
             # Without a run record or a freeze, a scope can no longer be stopped or listed.
             self._conn.execute(f"""DELETE FROM {_SCOPES} WHERE scope NOT IN (SELECT scope FROM run_idempotency)
                 AND scope NOT IN (SELECT scope FROM {_FREEZES})""")
+
+    def successor_run_scope(self, run_id: str, *, successor: dict) -> str | None:
+        """The scope of one existing room run whose Status and Stop passed to ``successor``.
+
+        ``successor`` is the caller's verified room scope. It must name the same room, member and
+        local target as the run, and be the live promise here: the promised candidate at the
+        promised epoch, above the fence that covers the run's own epoch. Anything else is ``None``.
+        """
+        successor = validate_room_run_scope(successor)
+        if not self.durable:
+            return None
+        with self._lock:
+            row = self._conn.execute("SELECT scope FROM run_idempotency WHERE run_id=?", (run_id,)).fetchone()
+            identity = self._scope_identity_locked(row[0]) if row is not None else None
+            if identity is None or any(identity[key] != successor[key] for key in (
+                    "room_id", "member_id", "target_install_id", "target_profile")):
+                return None
+            room_id = identity["room_id"]
+            if identity["authority_epoch"] > fence.fenced_epoch_locked(self._conn, room_id):
+                return None
+            controls = fence.successor_controls_locked(
+                self._conn, room_id, candidate_install_id=successor["authority_gateway_id"],
+                epoch=successor["authority_epoch"])
+        return row[0] if controls else None
 
     def status_for_run(self, scope: str, run_id: str, *, retention_until: float = 0) -> dict[str, Any] | None:
         """Load one durable run status inside its authenticated scope."""

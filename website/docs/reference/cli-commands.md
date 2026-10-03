@@ -98,7 +98,7 @@ The install also ships `hermes-agent`, a minimal runner that sends one query and
 | `hermes portal` | Nous Portal status, subscription link, and Tool Gateway routing. See [Tool Gateway](../user-guide/features/tool-gateway.md). |
 | `hermes tools` | Configure enabled tools per platform. |
 | `hermes computer-use` | Install or check the Computer Use (cua-driver) backend (macOS/Windows/Linux). |
-| `hermes pets` | Browse, install, and select [petdex](../user-guide/features/pets.md) animated pets shown across the CLI, TUI, and desktop app. Subcommands: `list`, `install`, `select`, `show`, `off`, `scale`, `remove`, `doctor`. |
+| `hermes pets` | Browse, install, and select [petdex](../user-guide/features/pets.md) animated pets shown across the CLI, TUI, and desktop app. Subcommands: `list`, `install`, `import`, `select`, `show`, `off`, `scale`, `remove`, `doctor`. |
 | `hermes sessions` | Browse, export, prune, rename, and delete sessions. |
 | `hermes insights` | Show token/cost/activity analytics. |
 | `hermes claw` | OpenClaw migration helpers. |
@@ -1729,7 +1729,7 @@ right now without waiting for the next Hermes update.
 ## `hermes pets`
 
 ```bash
-hermes pets <list|install|select|show|off|scale|remove|doctor>
+hermes pets <list|install|import|select|show|off|scale|remove|doctor>
 ```
 
 [Petdex](https://github.com/crafter-station/petdex) is a public gallery of animated sprite pets for coding agents. Install one and Hermes shows it reacting to agent activity across the CLI, TUI, and desktop app.
@@ -1738,6 +1738,7 @@ hermes pets <list|install|select|show|off|scale|remove|doctor>
 |------------|-------------|
 | `list` | Browse the petdex gallery. |
 | `install` | Install a pet from the gallery. |
+| `import` | Install a pet from an exported `.zip` or a pet folder. |
 | `select` | Set the active pet (writes `display.pet.*`). |
 | `show` | Animate the active pet in the terminal. |
 | `off` | Disable the pet display. |

@@ -73,6 +73,26 @@ def _cmd_install(args) -> int:
     return 0
 
 
+def _cmd_import(args) -> int:
+    """Install a pet from an exported zip or a pet folder (the counterpart of the desktop's Export)."""
+    from agent.pet import store
+
+    try:
+        pet = store.import_pet(args.path, slug=args.slug, display_name=args.name, force=args.force)
+    except store.PetStoreError as exc:
+        _err(f"✗ import failed: {exc}")
+        return 1
+
+    print(f"✓ imported {pet.display_name} → {pet.directory}")
+
+    if args.select or not _has_active_pet():
+        _set_active(pet.slug)
+        print(f"✓ {pet.display_name} is now the active pet (display.pet.slug={pet.slug}, enabled)")
+    else:
+        print(f"  Make it active with: hermes pets select {pet.slug}")
+    return 0
+
+
 def _cmd_remove(args) -> int:
     from agent.pet import store
 
@@ -391,6 +411,13 @@ _SUBCOMMANDS = (
     ("install", "Install a pet from the gallery", _cmd_install, (
         (("slug",), dict(help="Pet slug (e.g. boba)")),
         (("--force",), dict(action="store_true", help="Re-download even if present")),
+        (("--select",), dict(action="store_true", help="Make it the active pet")),
+    )),
+    ("import", "Install a pet from an exported .zip or a pet folder", _cmd_import, (
+        (("path",), dict(help="Exported .zip, or a folder holding pet.json + the spritesheet")),
+        (("--slug",), dict(default="", help="Override the installed slug")),
+        (("--name",), dict(default="", help="Override the display name")),
+        (("--force",), dict(action="store_true", help="Replace a pet with the same slug")),
         (("--select",), dict(action="store_true", help="Make it the active pet")),
     )),
     ("select", "Set the active pet (writes display.pet.*)", _cmd_select, (

@@ -179,7 +179,9 @@ class TestRoutedScopeQualification:
 
 
 class TestSessionScopedMountResolution:
-    """_resolve_task_host_cwd: the single owner of the cwd→/workspace mount policy."""
+    """``_resolve_task_host_cwd[0]``: the single owner of the cwd→/workspace mount
+    policy. The tuple's second slot names why a configured bind was refused
+    (``_warn_refused_cwd_mount`` surfaces it, #94454)."""
 
     def _config(self, host_cwd="/Users/prev/dev/oldrepo", mount=True):
         return {
@@ -188,20 +190,21 @@ class TestSessionScopedMountResolution:
             "host_cwd": host_cwd,
         }
 
+    @staticmethod
+    def _resolve(cfg, task_id):
+        return terminal_tool._resolve_task_host_cwd(cfg, task_id)[0]
+
     def test_shared_mode_keeps_legacy_host_cwd(self, monkeypatch):
         _disable_isolation(monkeypatch)
         cfg = self._config()
-        assert (
-            terminal_tool._resolve_task_host_cwd(cfg, "tui:sess-1")
-            == "/Users/prev/dev/oldrepo"
-        )
+        assert self._resolve(cfg, "tui:sess-1") == "/Users/prev/dev/oldrepo"
 
     def test_isolation_refuses_process_global_mount(self, monkeypatch, tmp_path):
         """The reported leak: a fresh session with NO attached workspace must
         not inherit the process-global TERMINAL_CWD-derived mount."""
         _enable_isolation(monkeypatch)
         cfg = self._config(host_cwd=str(tmp_path))
-        assert terminal_tool._resolve_task_host_cwd(cfg, "tui:sess-new") is None
+        assert self._resolve(cfg, "tui:sess-new") is None
 
     def test_isolation_refuses_process_tagged_override(self, monkeypatch, tmp_path):
         """A cwd override tagged cwd_source='process' (gateway env-var fallback)
@@ -211,7 +214,7 @@ class TestSessionScopedMountResolution:
             "tui:sess-new", {"cwd": str(tmp_path), "cwd_source": "process"}
         )
         cfg = self._config(host_cwd=str(tmp_path))
-        assert terminal_tool._resolve_task_host_cwd(cfg, "tui:sess-new") is None
+        assert self._resolve(cfg, "tui:sess-new") is None
 
     def test_isolation_mounts_session_attached_workspace(self, monkeypatch, tmp_path):
         """A workspace the user attached to THIS session does mount."""
@@ -222,7 +225,7 @@ class TestSessionScopedMountResolution:
             "tui:sess-new", {"cwd": str(ws), "cwd_source": "session"}
         )
         cfg = self._config(host_cwd="/Users/prev/dev/oldrepo")
-        assert terminal_tool._resolve_task_host_cwd(cfg, "tui:sess-new") == str(ws)
+        assert self._resolve(cfg, "tui:sess-new") == str(ws)
 
     def test_isolation_rejects_nonexistent_session_dir(self, monkeypatch, tmp_path):
         _enable_isolation(monkeypatch)
@@ -231,7 +234,7 @@ class TestSessionScopedMountResolution:
             {"cwd": str(tmp_path / "gone"), "cwd_source": "session"},
         )
         cfg = self._config()
-        assert terminal_tool._resolve_task_host_cwd(cfg, "tui:sess-new") is None
+        assert self._resolve(cfg, "tui:sess-new") is None
 
     def test_isolation_rejects_in_container_path_as_mount(self, monkeypatch):
         _enable_isolation(monkeypatch)
@@ -239,7 +242,7 @@ class TestSessionScopedMountResolution:
             "tui:sess-new", {"cwd": "/workspace", "cwd_source": "session"}
         )
         cfg = self._config()
-        assert terminal_tool._resolve_task_host_cwd(cfg, "tui:sess-new") is None
+        assert self._resolve(cfg, "tui:sess-new") is None
 
     def test_mount_flag_off_means_no_mount(self, monkeypatch, tmp_path):
         _enable_isolation(monkeypatch)
@@ -249,22 +252,88 @@ class TestSessionScopedMountResolution:
             "tui:sess-new", {"cwd": str(ws), "cwd_source": "session"}
         )
         cfg = self._config(mount=False)
-        assert terminal_tool._resolve_task_host_cwd(cfg, "tui:sess-new") is None
+        assert self._resolve(cfg, "tui:sess-new") is None
 
     def test_default_task_keeps_legacy_behavior_under_isolation(self, monkeypatch):
         """The single-session CLI parent ("default") keeps the legacy mount."""
         _enable_isolation(monkeypatch)
         cfg = self._config()
-        assert (
-            terminal_tool._resolve_task_host_cwd(cfg, None)
-            == "/Users/prev/dev/oldrepo"
-        )
+        assert self._resolve(cfg, None) == "/Users/prev/dev/oldrepo"
 
     def test_non_docker_backend_never_mounts(self, monkeypatch):
         _disable_isolation(monkeypatch)
         cfg = self._config()
         cfg["env_type"] = "modal"
-        assert terminal_tool._resolve_task_host_cwd(cfg, "t") is None
+        assert self._resolve(cfg, "t") is None
+
+
+class TestRefusedCwdMountWarning:
+    """#94454: a configured ``docker_mount_cwd_to_workspace: true`` that produces
+    no bind must say WHY instead of silently falling back to a throwaway overlay."""
+
+    def _config(self, host_cwd="/Users/prev/dev/oldrepo"):
+        return {
+            "env_type": "docker",
+            "docker_mount_cwd_to_workspace": True,
+            "host_cwd": host_cwd,
+        }
+
+    def test_isolation_names_the_process_global_refusal(self, monkeypatch, tmp_path, caplog):
+        """Desktop topology: TERMINAL_CWD set at spawn (cwd_source='process'
+        override) — the refusal names the launch-artifact reason."""
+        _enable_isolation(monkeypatch)
+        terminal_tool.register_task_env_overrides(
+            "tui:sess-new", {"cwd": str(tmp_path), "cwd_source": "process"}
+        )
+        cfg = self._config(host_cwd=str(tmp_path))
+        with caplog.at_level("WARNING", logger="tools.terminal_tool"):
+            terminal_tool._warn_refused_cwd_mount(cfg, "tui:sess-new", None)
+        assert any(
+            "docker_mount_cwd_to_workspace is enabled" in rec.message
+            and "process-global launch artifact" in rec.message
+            for rec in caplog.records
+        ), [rec.message for rec in caplog.records]
+
+    def test_isolation_names_the_missing_workspace_refusal(self, monkeypatch, tmp_path, caplog):
+        """No cwd override at all (a session that never attached a workspace)."""
+        _enable_isolation(monkeypatch)
+        cfg = self._config(host_cwd=str(tmp_path))
+        with caplog.at_level("WARNING", logger="tools.terminal_tool"):
+            terminal_tool._warn_refused_cwd_mount(cfg, "tui:sess-new", None)
+        assert any(
+            "no attached workspace to mount" in rec.message
+            for rec in caplog.records
+        ), [rec.message for rec in caplog.records]
+
+    def test_no_warning_when_the_mount_happens_or_flag_off(self, monkeypatch, tmp_path, caplog):
+        _enable_isolation(monkeypatch)
+        ws = tmp_path / "attached"
+        ws.mkdir()
+        terminal_tool.register_task_env_overrides(
+            "tui:sess-new", {"cwd": str(ws), "cwd_source": "session"}
+        )
+        cfg = self._config(host_cwd=str(tmp_path / "prev"))
+        with caplog.at_level("WARNING", logger="tools.terminal_tool"):
+            # Mount resolved: no warning, even though another profile's host_cwd was refused.
+            host_cwd, reason = terminal_tool._resolve_task_host_cwd(cfg, "tui:sess-new")
+            terminal_tool._warn_refused_cwd_mount(cfg, "tui:sess-new", host_cwd)
+        assert host_cwd == str(ws)
+        assert reason is None
+        cfg_off = {**cfg, "docker_mount_cwd_to_workspace": False}
+        terminal_tool._warn_refused_cwd_mount(cfg_off, "tui:sess-new", None)
+        assert not [rec for rec in caplog.records if "docker_mount_cwd_to_workspace" in rec.message]
+
+    def test_shared_mode_never_warns(self, monkeypatch, tmp_path, caplog):
+        """The reporter's topology (persistent Docker, #94454) mounts the configured
+        cwd; the refusal reason exists only under per-session isolation."""
+        _disable_isolation(monkeypatch)
+        cfg = self._config(host_cwd=str(tmp_path))
+        host_cwd, reason = terminal_tool._resolve_task_host_cwd(cfg, "tui:sess-1")
+        assert host_cwd == str(tmp_path)
+        assert reason is None
+        with caplog.at_level("WARNING", logger="tools.terminal_tool"):
+            terminal_tool._warn_refused_cwd_mount(cfg, "tui:sess-1", host_cwd)
+        assert not caplog.records
 
 
 class TestRecordedHostCwdDiscardedOnContainers:

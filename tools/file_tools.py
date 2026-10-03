@@ -272,7 +272,8 @@ def _create_terminal_env_for_file_ops(raw_task_id: str, task_id: str):
     from tools.terminal_tool_config import _is_container_backend, coerce_ssh_remote_cwd
     from tools.terminal_tool import (
         _create_configured_env, _get_env_config, _is_mounted_host_cwd, _is_unusable_container_cwd,
-        _resolve_task_host_cwd, _select_image, get_session_cwd, resolve_task_overrides)
+        _resolve_task_host_cwd, _select_image, get_session_cwd, resolve_task_overrides,
+        _warn_refused_cwd_mount)
 
     config = _get_env_config()
     env_type = config["env_type"]
@@ -291,7 +292,8 @@ def _create_terminal_env_for_file_ops(raw_task_id: str, task_id: str):
     # reaches ``docker run -w <host-path>`` and the container starts in a directory that doesn't exist
     # inside the sandbox, so search_files and friends silently return empty results (#54447). Sanitize it
     # back to the already-validated config["cwd"] so the override can't bypass the guard.
-    host_cwd = _resolve_task_host_cwd(config, raw_task_id)
+    host_cwd, _refusal = _resolve_task_host_cwd(config, raw_task_id)
+    _warn_refused_cwd_mount(config, raw_task_id, host_cwd)
     if _is_container_backend(env_type) and _is_unusable_container_cwd(cwd, mounted_host=host_cwd):
         fallback = "/workspace" if _is_mounted_host_cwd(cwd, host_cwd) else config["cwd"]
         if cwd != fallback:

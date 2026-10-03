@@ -147,7 +147,7 @@ def _run_streaming(command: list[str], *, cwd: Path, env: dict[str, str],
     pipe = proc.stdout
     assert isinstance(pipe, io.TextIOWrapper)  # Popen was given stdout=PIPE and text=True.
     tail = ""
-    conflict = ""
+    failure_markers: set[str] = set()
     try:
         # A descendant can keep stdout open after proc exits. Nonblocking reads
         # bound that drain without leaving a thread stuck in readline()/close().
@@ -167,11 +167,11 @@ def _run_streaming(command: list[str], *, cwd: Path, env: dict[str, str],
                 continue
             text = decoder.decode(data, final=not data)
             if text:
-                # Preserve an observed resolver marker even after verbose output
-                # evicts it. Scan across read boundaries, never retain the full log.
-                if not conflict:
-                    lowered = (tail + text).lower()
-                    conflict = next((marker for marker in _RESOLVER_MARKERS if marker in lowered), "")
+                # Preserve resolver/build evidence even after verbose output evicts
+                # it. Scan across read boundaries, never retain the full log.
+                lowered = (tail + text).lower()
+                failure_markers.update(marker for marker in (*_RESOLVER_MARKERS, *_BUILD_MARKERS)
+                                       if marker in lowered)
                 tail = (tail + text)[-2000:]
                 output.write(text)
                 output.flush()
@@ -188,8 +188,11 @@ def _run_streaming(command: list[str], *, cwd: Path, env: dict[str, str],
         raise
     finally:
         pipe.close()
-    if conflict and conflict not in tail.lower():
-        tail = conflict + "\n" + tail[-(2000 - len(conflict) - 1):]
+    missing = [marker for marker in (*_RESOLVER_MARKERS, *_BUILD_MARKERS)
+               if marker in failure_markers and marker not in tail.lower()]
+    if missing:
+        evidence = "\n".join(missing)
+        tail = evidence + "\n" + tail[-(2000 - len(evidence) - 1):]
     return subprocess.CompletedProcess(command, code, "", tail)
 
 

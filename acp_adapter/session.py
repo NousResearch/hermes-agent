@@ -153,6 +153,25 @@ class SessionState:
     message_ids: Any = None
 
 
+def _named_custom_identity(requested_provider: str | None, base_url: str | None, model: str | None) -> str | None:
+    """``custom:<name>`` for a requested bare ``custom`` label that failed to resolve on its own.
+
+    Session rows store the agent's resolved provider, which for a named custom provider is the bare
+    label, and that label carries no credentials of its own. A saved endpoint heals only to the single
+    entry registered at it, so the conversation and its credentials never move to another endpoint or
+    to one of several accounts sharing it; without one, fall back to the model or configured provider.
+    """
+    if str(requested_provider or "").strip().lower() != "custom":
+        return None
+    try:
+        from hermes_cli.runtime_provider import canonical_custom_identity, find_custom_provider_identity
+        return (find_custom_provider_identity(base_url, unique=True) if base_url
+                else canonical_custom_identity(model=model))
+    except Exception:
+        logger.debug("custom provider identity recovery failed", exc_info=True)
+        return None
+
+
 class SessionManager:
     """Thread-safe manager for ACP sessions backed by Hermes AIAgent instances.
 
@@ -476,26 +495,11 @@ class SessionManager:
             logger.warning("Failed to load messages for ACP session %s", session_id, exc_info=True)
             history = []
 
-        provider = meta.get("provider") or row.get("billing_provider")
-        base_url = meta.get("base_url") or row.get("billing_base_url")
-        if str(provider or "").strip().lower() == "custom":
-            # A named custom provider resolves to the bare "custom" label, which carries no
-            # credentials of its own; recover ``custom:<name>``. A saved endpoint heals only to the
-            # entry registered at that endpoint, so the resumed conversation and its credentials
-            # never move elsewhere; without one, fall back to the model or configured provider.
-            try:
-                from hermes_cli.runtime_provider import canonical_custom_identity, find_custom_provider_identity
-                healed = (find_custom_provider_identity(base_url) if base_url
-                          else canonical_custom_identity(model=model))
-            except Exception:
-                logger.debug("custom provider identity recovery failed", exc_info=True)
-                healed = None
-            provider = healed or provider
-
         try:
             agent = self._make_agent(
                 session_id=session_id, cwd=cwd, model=model, api_mode=meta.get("api_mode") or None,
-                requested_provider=provider, base_url=base_url)
+                requested_provider=meta.get("provider") or row.get("billing_provider"),
+                base_url=meta.get("base_url") or row.get("billing_base_url"))
         except Exception:
             logger.warning("Failed to recreate agent for ACP session %s", session_id, exc_info=True)
             return None
@@ -550,9 +554,15 @@ class SessionManager:
             "reasoning_config": resolve_reasoning_config(config, model or default_model),
         }
         resolve_error: Exception | None = None
+        target_model = (model or default_model) or None
         try:
-            runtime = resolve_runtime_provider(
-                requested=requested_provider or config_provider, target_model=(model or default_model) or None)
+            try:
+                runtime = resolve_runtime_provider(requested=requested_provider or config_provider, target_model=target_model)
+            except Exception:
+                named = _named_custom_identity(requested_provider, base_url, target_model)
+                if not named:
+                    raise
+                runtime = resolve_runtime_provider(requested=named, target_model=target_model)
             kwargs.update({
                 "provider": runtime.get("provider"), "api_mode": api_mode or runtime.get("api_mode"),
                 "base_url": base_url or runtime.get("base_url"), "api_key": runtime.get("api_key"),

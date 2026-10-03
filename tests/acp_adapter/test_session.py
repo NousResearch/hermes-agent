@@ -428,48 +428,69 @@ class TestPersistence:
 
 
     _CLIPROXY = ("custom", "http://cliproxy.example:8317/v1", "sk-cliproxy-test")
+    _NAMED = (
+        "model:\n"
+        "  default: proxy-model\n"
+        "  provider: custom:cliproxyapi\n"
+        "  base_url: http://cliproxy.example:8317/v1\n"
+        "  api_mode: chat_completions\n"
+        "providers:\n"
+        "  cliproxyapi:\n"
+        "    base_url: http://cliproxy.example:8317/v1\n"
+        "    api_key: sk-cliproxy-test\n"
+        "    api_mode: chat_completions\n"
+        "    models: [proxy-model]\n"
+        "  tenant-a:\n"
+        "    base_url: https://proxy.example/TenantA/v1\n"
+        "    api_key: sk-tenant-a\n"
+        "  tenant-b:\n"
+        "    base_url: https://proxy.example/tenanta/v1\n"
+        "    api_key: sk-tenant-b\n"
+    )
+    # Two named accounts share one endpoint, and bare ``custom`` resolves to neither.
+    _SHARED_ENDPOINT = (
+        "model:\n"
+        "  default: proxy-model\n"
+        "  provider: custom:account-a\n"
+        "providers:\n"
+        "  account-a:\n"
+        "    base_url: https://proxy.example/v1\n"
+        "    api_key: sk-account-a\n"
+        "  account-b:\n"
+        "    base_url: https://proxy.example/v1\n"
+        "    api_key: sk-account-b\n"
+    )
 
-    @pytest.mark.parametrize("model_config, billing, env, expected", [
-        ({"cwd": "/work", "provider": "custom", "base_url": "http://cliproxy.example:8317/v1",
-          "api_mode": "chat_completions"}, {}, {}, _CLIPROXY),
-        ({"cwd": "/work"}, {"billing_provider": "custom", "billing_base_url": "http://cliproxy.example:8317/v1"},
+    @pytest.mark.parametrize("config, model_config, billing, env, expected", [
+        (_NAMED, {"cwd": "/work", "provider": "custom", "base_url": "http://cliproxy.example:8317/v1",
+                  "api_mode": "chat_completions"}, {}, {}, _CLIPROXY),
+        (_NAMED, {"cwd": "/work"}, {"billing_provider": "custom", "billing_base_url": "http://cliproxy.example:8317/v1"},
          {}, _CLIPROXY),
+        # No saved endpoint: the model identifies the entry.
+        (_NAMED, {"cwd": "/work", "provider": "custom"}, {}, {}, _CLIPROXY),
         # Endpoint paths are case-sensitive: tenant-b's session must not pick up tenant-a's key.
-        ({"cwd": "/work", "provider": "custom", "base_url": "https://proxy.example/tenanta/v1"}, {}, {},
+        (_NAMED, {"cwd": "/work", "provider": "custom", "base_url": "https://proxy.example/tenanta/v1"}, {}, {},
          ("custom", "https://proxy.example/tenanta/v1", "sk-tenant-b")),
         # No entry owns the saved endpoint: the model match must not move the conversation (and the
         # cliproxyapi key) to another endpoint. Resolution fails as before and the agent gets nothing.
-        ({"cwd": "/work", "provider": "custom", "base_url": "http://retired.example:9000/v1"}, {}, {},
+        (_NAMED, {"cwd": "/work", "provider": "custom", "base_url": "http://retired.example:9000/v1"}, {}, {},
+         (None, None, None)),
+        # The endpoint names two accounts: neither is picked, so resolution fails as before.
+        (_SHARED_ENDPOINT, {"cwd": "/work", "provider": "custom", "base_url": "https://proxy.example/v1"}, {}, {},
          (None, None, None)),
         # Only the bare label heals; a real provider passes through even when the model is a custom entry's.
-        ({"cwd": "/work", "provider": "openrouter"}, {}, {"OPENROUTER_API_KEY": "sk-or-test"},
+        (_NAMED, {"cwd": "/work", "provider": "openrouter"}, {}, {"OPENROUTER_API_KEY": "sk-or-test"},
          ("openrouter", "https://openrouter.ai/api/v1", "sk-or-test")),
-    ], ids=["model_config", "billing_only", "case_distinct_endpoint", "unmatched_endpoint", "openrouter"])
-    def test_restore_resolves_stored_provider(self, tmp_path, monkeypatch, model_config, billing, env, expected):
+    ], ids=["model_config", "billing_only", "no_saved_endpoint", "case_distinct_endpoint", "unmatched_endpoint",
+            "shared_endpoint", "openrouter"])
+    def test_restore_resolves_stored_provider(self, tmp_path, monkeypatch, config, model_config, billing, env,
+                                              expected):
         """A row whose stored provider is the bare ``custom`` label (what a named custom provider
         resolves to at runtime) must restore through the named entry registered at its saved endpoint,
         not fail credential resolution and fall back to OpenRouter with no key."""
         from hermes_constants import get_hermes_home
 
-        (get_hermes_home() / "config.yaml").write_text(
-            "model:\n"
-            "  default: proxy-model\n"
-            "  provider: custom:cliproxyapi\n"
-            "  base_url: http://cliproxy.example:8317/v1\n"
-            "  api_mode: chat_completions\n"
-            "providers:\n"
-            "  cliproxyapi:\n"
-            "    base_url: http://cliproxy.example:8317/v1\n"
-            "    api_key: sk-cliproxy-test\n"
-            "    api_mode: chat_completions\n"
-            "    models: [proxy-model]\n"
-            "  tenant-a:\n"
-            "    base_url: https://proxy.example/TenantA/v1\n"
-            "    api_key: sk-tenant-a\n"
-            "  tenant-b:\n"
-            "    base_url: https://proxy.example/tenanta/v1\n"
-            "    api_key: sk-tenant-b\n"
-        )
+        (get_hermes_home() / "config.yaml").write_text(config)
         for name, value in env.items():
             monkeypatch.setenv(name, value)
 

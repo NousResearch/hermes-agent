@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import logging
 import os
-from typing import Any, Callable, Dict, Optional, Tuple
+from typing import Any, Callable, Dict, Iterator, Optional, Tuple
 
 from hermes_cli.providers import custom_provider_aliases, custom_provider_slug
 from agent.secret_scope import get_secret_str
@@ -243,19 +243,19 @@ def codex_model_provider_id(requested_provider: str) -> Optional[str]:
 # ── identity recovery (bare "custom" -> durable ``custom:<name>``) ─────────────────────────
 
 
-def _find_custom_identity(matches: Callable[[Dict[str, Any]], bool]) -> Optional[str]:
-    """First entry in ``providers:`` then legacy ``custom_providers:`` where ``matches(entry)``
-    holds, as its canonical ``custom:<name>`` slug."""
+def _custom_identities(matches: Callable[[Dict[str, Any]], bool]) -> Iterator[str]:
+    """Canonical ``custom:<name>`` slugs of entries in ``providers:`` then legacy
+    ``custom_providers:`` where ``matches(entry)`` holds, in config order (may repeat)."""
     rp = _rp()
     try:
         config = rp.load_config()
     except Exception:
-        return None
+        return
     providers = config.get("providers")
     if isinstance(providers, dict):
         for ep_name, entry in providers.items():
             if isinstance(entry, dict) and matches(entry):
-                return custom_provider_slug(str(ep_name), str(ep_name))
+                yield custom_provider_slug(str(ep_name), str(ep_name))
     try:
         custom_providers = rp.get_compatible_custom_providers(config)
     except Exception:
@@ -263,18 +263,28 @@ def _find_custom_identity(matches: Callable[[Dict[str, Any]], bool]) -> Optional
     for entry in custom_providers or []:
         name = entry.get("name") if isinstance(entry, dict) else None
         if isinstance(name, str) and name.strip() and matches(entry):
-            return custom_provider_slug(name, str(entry.get("provider_key", "") or ""))
-    return None
+            yield custom_provider_slug(name, str(entry.get("provider_key", "") or ""))
 
 
-def find_custom_provider_identity(base_url: str) -> Optional[str]:
+def _find_custom_identity(matches: Callable[[Dict[str, Any]], bool]) -> Optional[str]:
+    """First entry where ``matches(entry)`` holds, as its canonical ``custom:<name>`` slug."""
+    return next(_custom_identities(matches), None)
+
+
+def find_custom_provider_identity(base_url: str, *, unique: bool = False) -> Optional[str]:
     """Map an endpoint URL back to its canonical ``custom:<name>`` menu key. Session persistence
     stores the agent's *resolved* provider, which for every named custom endpoint is the literal
-    string ``"custom"`` — the entry name is lost, and the api_key is deliberately never persisted."""
+    string ``"custom"`` — the entry name is lost, and the api_key is deliberately never persisted.
+    ``unique`` returns None when several entries (e.g. accounts with different keys) share the
+    endpoint, instead of the first one."""
     target = _normalize_base_url_for_match(base_url)
     if not target:
         return None
-    return _find_custom_identity(lambda entry: _normalize_base_url_for_match(_entry_url(entry)) == target)
+    identities = _custom_identities(lambda entry: _normalize_base_url_for_match(_entry_url(entry)) == target)
+    if not unique:
+        return next(identities, None)
+    found = set(identities)
+    return found.pop() if len(found) == 1 else None
 
 
 def _model_id_matches(value: Any, target: str) -> bool:

@@ -1124,6 +1124,71 @@ def test_touch_card_tap_opens_instead_of_dragging():
     assert "PASS" in result.stdout
 
 
+def _run_modal_text_probe(payload):
+    """Run the modal's real renderMarkdown/taskSummary from the shipped bundle."""
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("node not available")
+    bundle = Path(__file__).resolve().parents[2] / "plugins" / "kanban" / "dashboard" / "dist" / "index.js"
+    probe = Path(__file__).parent / "fixtures" / "kanban_modal_text_probe.js"
+    result = subprocess.run(
+        [node, str(probe), str(bundle)],
+        input=json.dumps(payload), capture_output=True, text=True, timeout=30,
+    )
+    assert result.returncode == 0, f"stdout={result.stdout!r} stderr={result.stderr!r}"
+    return json.loads(result.stdout)
+
+
+def test_markdown_fence_info_string_is_not_rendered_as_code():
+    """A fence's info string ("```js") names the language; it must not show up
+    as the first line of the code block. A one-line fence has no info string,
+    and fenced contents are never markdown-processed."""
+    out = _run_modal_text_probe({"markdown": [
+        "```js\nconst a = 1;\n```",
+        "```x```",
+        "```\n# not a heading\n```",
+    ]})["markdown"]
+    assert "<code>const a = 1;</code>" in out[0]
+    assert "js" not in out[0].replace("hermes-kanban-md-code", "")
+    assert "<code>x</code>" in out[1]
+    assert "<code># not a heading</code>" in out[2] and "<h1>" not in out[2]
+
+
+def test_modal_hides_the_backend_admin_status_note_as_a_result(client):
+    """Moving a running task from the board ends its run with an administrative
+    summary. The modal's result section filters that note out; this ties the
+    frontend filter to the summary the backend actually writes, so a wording
+    change on either side fails here instead of resurfacing the note as a result."""
+    import secrets
+    conn = kbc.connect()
+    try:
+        t = kb.create_task(conn, title="running", assignee="x")
+        lock = secrets.token_hex(8)
+        future = int(time.time()) + 3600
+        conn.execute(
+            "UPDATE tasks SET status='running', claim_lock=?, claim_expires=? WHERE id=?",
+            (lock, future, t),
+        )
+        conn.execute(
+            "INSERT INTO task_runs (task_id, status, claim_lock, claim_expires, started_at) "
+            "VALUES (?, 'running', ?, ?, ?)",
+            (t, lock, future, int(time.time())),
+        )
+        run_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+        conn.execute("UPDATE tasks SET current_run_id=? WHERE id=?", (run_id, t))
+        conn.commit()
+    finally:
+        conn.close()
+
+    r = client.patch(f"/api/plugins/kanban/tasks/{t}", json={"status": "ready"})
+    assert r.status_code == 200, r.text
+    admin_note = client.get(f"/api/plugins/kanban/tasks/{t}").json()["task"]["latest_summary"]
+    assert admin_note
+
+    real = "Shipped the fix; tests green."
+    assert _run_modal_text_probe({"summaries": [admin_note, real]})["summaries"] == [None, real]
+
+
 # Run clock: current run start, not first-ever start
 # ---------------------------------------------------------------------------
 

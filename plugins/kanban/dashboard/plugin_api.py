@@ -760,6 +760,8 @@ def _set_status_direct(conn: sqlite3.Connection, task_id: str, new_status: str) 
             return False
         run_id = None
         if was_running and effective_status != "running" and prev["current_run_id"]:
+            # dist/index.js ADMIN_SUMMARY_RE hides this admin note from the
+            # task's result; keep the wording in sync with it.
             run_id = kanban_db._end_run(
                 conn, task_id, outcome="reclaimed", status="reclaimed",
                 summary=f"status changed to {effective_status} (dashboard/direct)")

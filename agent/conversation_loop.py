@@ -1737,6 +1737,15 @@ def run_conversation(
             turn_author=turn_author,
             title_user_message=title_user_message,
         )
+    # All terminal envelopes cross this boundary, including early-return failures.
+    # Intermediate persists must retain the active continuation for the next request.
+    from agent.turn_finalizer import _drop_verification_continuation_scaffolding
+
+    histories = [result.get("messages") if isinstance(result, dict) else None,
+                 getattr(agent, "_session_messages", None)]
+    for history in histories:
+        if isinstance(history, list):
+            _drop_verification_continuation_scaffolding(history)
     result = export_current_turn_boundary(agent, result, user_message)
     _close_durable_failed_turn(agent, result)
     return result

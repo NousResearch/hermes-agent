@@ -13,7 +13,7 @@ from __future__ import annotations
 import json
 import logging
 import re
-from typing import Any, Dict, Iterator, List
+from typing import Any, Dict, Iterator, List, Optional, Set
 
 logger = logging.getLogger(__name__)
 
@@ -141,3 +141,49 @@ def _repair_explicit_computer_use_media_paths_inner(response: str, messages: Lis
         if canonical and emitted_path != canonical:
             repaired = repaired.replace(emitted_path, canonical)
     return repaired
+
+
+# Reply-image provenance (#129975): a URL is only provenanced if this exact string
+# occurred in a tool result. Trailing brackets/quotes stop the match, so a URL
+# extracted here never extends past what the tool actually printed.
+_TOOL_RESULT_URL_RE = re.compile(r"""https?://[^\s<>"'`\\)\]}]+""")
+
+
+def _tool_result_content_text(content: Any) -> str:
+    """Flatten a tool-result payload (text / multimodal parts / JSON object) to text."""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, dict):
+        try:
+            return json.dumps(content, ensure_ascii=False)
+        except TypeError:
+            return str(content)
+    if isinstance(content, list):
+        return " ".join(_tool_result_content_text(part) for part in content)
+    return "" if content is None else str(content)
+
+
+def reply_image_provenance_urls(messages: Optional[List[Dict[str, Any]]]) -> Optional[Set[str]]:
+    """URLs that appeared verbatim in the current turn's tool results (#129975).
+
+    ``None`` means "no message list to judge by" — the caller keeps its legacy
+    extraction. An empty set is a verdict: the turn ran no tools, so no reply image
+    URL has tool provenance. Exact-string matching only: injected text that makes the
+    model append ``?d=<data>`` to a URL a tool did print yields a different string and
+    stays unprovenanced. URLs from user messages never count — inbound text is the
+    injection vector this provenance check exists to gate. The current turn is taken
+    from the last user message on, mirroring the transcript slice in
+    ``BasePlatformAdapter._history_media_paths_for_session``.
+    """
+    if messages is None:
+        return None
+    history = list(messages)
+    last_user_idx = next(
+        (i for i in range(len(history) - 1, -1, -1) if history[i].get("role") == "user"), None)
+    turn = history if last_user_idx is None else history[last_user_idx:]
+    urls: Set[str] = set()
+    for msg in turn:
+        if msg.get("role") not in {"tool", "function"}:
+            continue
+        urls.update(_TOOL_RESULT_URL_RE.findall(_tool_result_content_text(msg.get("content"))))
+    return urls

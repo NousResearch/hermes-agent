@@ -22,7 +22,7 @@ from agent.turn_failure_copy import FAILED_TURN_DISPLAY_KIND, FAILED_TURN_NOTICE
 from contextlib import nullcontext, suppress
 from contextvars import copy_context
 from gateway.config import Platform
-from gateway.media_repair import repair_explicit_computer_use_media_paths
+from gateway.media_repair import repair_explicit_computer_use_media_paths, reply_image_provenance_urls
 from gateway.platforms.base import BasePlatformAdapter, ProcessingOutcome
 from gateway.platforms.event import MessageEvent
 from gateway.response_filters import (
@@ -2505,7 +2505,17 @@ class GatewayTurnMixin:
             if response:
                 media_files, response = adapter.extract_media(response)
                 media_files = BasePlatformAdapter.filter_media_delivery_paths(media_files)
-                images, text_content = adapter.extract_images(response)
+                # Reply-image provenance (#129975): fetch only URLs this run's tools
+                # produced. messages missing (e.g. error-only result) keeps legacy
+                # behavior; so does a legacy single-arg extract_images override.
+                provenance = reply_image_provenance_urls(
+                    result.get("messages") if result else None)
+                if provenance is None or not adapter._accepts_kwarg(
+                        adapter.extract_images, "allowed_urls", var_kw=False, unknown=False):
+                    images, text_content = adapter.extract_images(response)
+                else:
+                    images, text_content = adapter.extract_images(
+                        response, allowed_urls=provenance)
             if text_content:
                 await adapter.send(chat_id=source.chat_id, content=header + text_content, metadata=_thread_metadata)
             elif not images and not media_files:

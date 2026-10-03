@@ -117,6 +117,12 @@ _TTS_PROVIDER_CHOICES = [
     ("kittentts", "KittenTTS (local on-device, free, lightweight ~25-80MB ONNX)")]
 # Short label = menu label minus its parenthetical ("Edge TTS", "Mistral Voxtral TTS", ...).
 _TTS_PROVIDER_LABELS = {key: label.split(" (")[0] for key, label in _TTS_PROVIDER_CHOICES}
+_EDGE_VOICE_CHOICES = [
+    ("en-US-AriaNeural", "English (US) — Aria"),
+    ("zh-CN-XiaoxiaoNeural", "Chinese (Simplified) — Xiaoxiao"),
+    ("zh-TW-HsiaoChenNeural", "Chinese (Traditional) — HsiaoChen"),
+    ("zh-HK-HiuMaanNeural", "Chinese (Hong Kong) — HiuMaan"),
+]
 # provider -> (env vars that satisfy it, env var to save, prompt, success line, pre-prompt hint)
 _TTS_API_KEY_PROVIDERS = {
     "elevenlabs": (("ELEVENLABS_API_KEY",), "ELEVENLABS_API_KEY", "ElevenLabs API key",
@@ -260,6 +266,21 @@ def _setup_tts_provider(config: dict):
         selected = _tts_api_key_step(selected)
     elif selected == "xai":
         selected = _tts_xai_step(config)
+    if selected == "edge":
+        edge_config = config.setdefault("tts", {}).setdefault("edge", {})
+        current_voice = edge_config.get("voice", "en-US-AriaNeural")
+        voices = list(_EDGE_VOICE_CHOICES)
+        if current_voice not in {voice for voice, _ in voices}:
+            voices.insert(0, (current_voice, f"Current voice — {current_voice}"))
+        voice_labels = [label for _, label in voices] + ["Other voice (enter voice ID)"]
+        current_idx = next(i for i, (voice, _) in enumerate(voices) if voice == current_voice)
+        _setup.print_info("Choose a voice matching the language you want to speak.")
+        voice_idx = _setup.prompt_choice("Select Edge TTS voice:", voice_labels, current_idx)
+        if voice_idx == len(voices):
+            voice = (_setup.prompt("Edge TTS voice ID", default=current_voice) or "").strip()
+            edge_config["voice"] = voice or current_voice
+        else:
+            edge_config["voice"] = voices[voice_idx][0]
     config.setdefault("tts", {})["provider"] = selected
     _setup.save_config(config)
     _setup.print_success(f"TTS provider set to: {_TTS_PROVIDER_LABELS.get(selected, selected)}")

@@ -113,6 +113,9 @@ function isUpdateToastSnoozed(): boolean {
 // v7: requires JSON-RPC server->client requests for every blocking prompt
 //     (approval/clarify/sudo/secret/vault/MCP setup); a v6 backend's
 //     `<kind>.request` notifications would never render a card.
+// Folder upload (file.attach extract:true) is opportunistic, not required: a
+// pre-v9 backend answers without `extracted` and the chip surfaces an
+// update-backend error instead of a dangling ref.
 export const REQUIRED_BACKEND_CONTRACT = 8
 const SKEW_TOAST_ID = 'backend-contract-skew'
 const GUI_SKEW_TOAST_ID = 'gui-contract-skew'

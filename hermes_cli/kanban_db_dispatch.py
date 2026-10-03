@@ -152,6 +152,10 @@ class DispatchResult:
     """Memory pressure that restricted this tick: ``"critical"`` (no new
     workers), ``"elevated"`` (at most one), ``None`` (no restriction).
     Reclaim/promotion bookkeeping still ran; deferred tasks stay queued."""
+    capped: bool = False
+    """True when the global spawn budget was exhausted this tick
+    (``max_spawn`` / ``max_in_progress`` already satisfied by running
+    workers). No lane was attempted: correctly idle, not stuck (#125239)."""
 
 
 def describe_suppression(results: Iterable[Optional["DispatchResult"]]) -> str:
@@ -175,11 +179,61 @@ def describe_suppression(results: Iterable[Optional["DispatchResult"]]) -> str:
             counts["rate_limited"] = counts.get("rate_limited", 0) + len(res.rate_limited)
         if res.skipped_locked:
             counts["skipped_locked"] = counts.get("skipped_locked", 0) + 1
+        if res.capped:
+            counts["at_cap"] = counts.get("at_cap", 0) + 1
+        if res.skipped_per_profile_capped:
+            counts["per_profile_capped"] = (
+                counts.get("per_profile_capped", 0) + len(res.skipped_per_profile_capped)
+            )
         if res.memory_pressure:
             pressure = res.memory_pressure
     parts = [f"{k}={v}" for k, v in sorted(counts.items())]
     if pressure:
         parts.append(f"memory_pressure={pressure}")
+    return ", ".join(parts)
+
+
+def capacity_hold(results: Iterable[Optional["DispatchResult"]]) -> str:
+    """Non-empty reason when a zero-spawn tick is explained by capacity.
+
+    Shared guard for the "dispatcher stuck" telemetry in the gateway watcher
+    and the standalone daemon (#125239): an at-cap tick (global
+    ``max_spawn``/``max_in_progress`` budget exhausted, per-profile cap, a
+    sibling dispatcher holding the board lock, critical memory pressure) is
+    correctly idle, not stuck. Respawn-guard holds (``recent_success``,
+    ``active_pr``, ...) are deliberately NOT capacity: they stay named by
+    :func:`describe_suppression` but keep counting toward the stuck counter
+    so a genuinely broken task hiding behind a guarded one cannot mask the
+    warning.
+    # ponytail: tick-level signal; a board whose ready work is only partly
+    # cap-held while another task is truly broken still resets the counter.
+    # Per-task attribution would need the probe to join dispatch buckets;
+    # revisit if that ever masks a real incident.
+    """
+    at_cap = locked = per_profile = 0
+    critical = False
+    for res in results or []:
+        if res is None:
+            continue
+        if res.spawned:
+            return ""
+        if res.capped:
+            at_cap += 1
+        if res.skipped_locked:
+            locked += 1
+        if res.skipped_per_profile_capped:
+            per_profile += len(res.skipped_per_profile_capped)
+        if res.memory_pressure == "critical":
+            critical = True
+    parts = []
+    if at_cap:
+        parts.append(f"at_cap={at_cap}")
+    if per_profile:
+        parts.append(f"per_profile_capped={per_profile}")
+    if locked:
+        parts.append(f"skipped_locked={locked}")
+    if critical:
+        parts.append("memory_pressure=critical")
     return ", ".join(parts)
 
 
@@ -2232,12 +2286,14 @@ def _tick_spawn_budget(
     # Both ready and review loops consume from the same budget.
     if max_spawn is not None:
         if running_count >= max_spawn:
+            result.capped = True
             return False, None
         spawn_budget = max_spawn - running_count
 
     if max_in_progress is not None:
         total_running = running_count + count_running_tasks_other_boards(board)
         if total_running >= max_in_progress:
+            result.capped = True
             return False, None
         remaining = max_in_progress - total_running
         if spawn_budget is None or spawn_budget > remaining:

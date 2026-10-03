@@ -216,7 +216,21 @@ def _cmd_daemon(args: argparse.Namespace) -> int:
     def _on_tick(res):
         ready_pending = bool(res.skipped_unassigned) or _ready_queue_nonempty()
         if ready_pending and not res.spawned:
-            health_state["bad_ticks"] += 1
+            cap_hold = kbd.capacity_hold([res])
+            if cap_hold:
+                # At-capacity idle is not stuck (#125239): reset the counter
+                # and say so, at most every 5 minutes.
+                health_state["bad_ticks"] = 0
+                held_at = int(time.time())
+                if held_at - health_state.get("last_hold_at", 0) >= 300:
+                    print(
+                        f"[{_fmt_ts(held_at)}] INFO at capacity ({cap_hold}); "
+                        f"ready work waits for a free slot.",
+                        file=sys.stderr, flush=True,
+                    )
+                    health_state["last_hold_at"] = held_at
+            else:
+                health_state["bad_ticks"] += 1
         else:
             health_state["bad_ticks"] = 0
         # Warn once per HEALTH_WINDOW bad ticks, at most every 5 minutes.

@@ -278,6 +278,7 @@ class GatewayKanbanWatchersMixin:
         # broken PATH, missing venv, or credential loss.
         bad_ticks = 0
         last_warn_at = 0
+        last_hold_at = 0
         results: Optional[list] = None
         dispatcher = _KanbanDispatcher(_kb, settings)
 
@@ -308,7 +309,26 @@ class GatewayKanbanWatchersMixin:
                     results = await _to_thread_process_service(dispatcher.tick_once)
                     any_spawned = _log_spawn_results(results)
                     ready_pending = await _to_thread_process_service(dispatcher.ready_nonempty)
-                    bad_ticks = bad_ticks + 1 if ready_pending and not any_spawned else 0
+                    if ready_pending and not any_spawned:
+                        cap_hold = _kbd.capacity_hold(
+                            res for _slug, res in (results or [])
+                        )
+                        if cap_hold:
+                            # At-capacity idle is not stuck (#125239): reset
+                            # the counter and say so, at most every 5 minutes.
+                            bad_ticks = 0
+                            held_at = int(time.time())
+                            if held_at - last_hold_at >= 300:
+                                logger.info(
+                                    "kanban dispatcher: at capacity (%s); "
+                                    "ready work waits for a free slot.",
+                                    cap_hold,
+                                )
+                                last_hold_at = held_at
+                        else:
+                            bad_ticks = bad_ticks + 1
+                    else:
+                        bad_ticks = 0
                 now = int(time.time())
                 if bad_ticks >= _HEALTH_WINDOW and now - last_warn_at >= 300:
                     held = _kbd.describe_suppression(res for _slug, res in (results or []))

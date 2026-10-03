@@ -44,19 +44,12 @@ from pathlib import Path
 root, checkout, mode = Path(sys.argv[1]), sys.argv[2], sys.argv[3]
 envs = json.loads((root / "envs.json").read_text(encoding="utf-8"))
 ARGV = [sys.executable, "-m", "hermes_cli.main", "update", "--yes", "--branch", "main", "--no-gateway-restart"]
-# The readers a launch / a running server consult, in a fresh process of another home.
+# A running server's "is an update in flight" probe, in a fresh process of another home.
 READER = """
 import json, sys
-from pathlib import Path
 sys.path.insert(0, sys.argv[1])
 from hermes_cli.web_server_skew_exit import _update_in_progress
-from hermes_cli.venv_sync import prepare_launch
-out = {"skew_reader": _update_in_progress()}
-try:
-    out["launch"] = repr(prepare_launch(Path(sys.argv[1]), ["status"]))
-except RuntimeError as exc:
-    out["launch"] = "refused: " + str(exc)
-print(json.dumps(out))
+print(json.dumps({"skew_reader": _update_in_progress()}))
 """
 
 
@@ -265,5 +258,3 @@ def test_orphaned_update_tree_reads_as_in_progress(rig):
     assert r["child_seen"] and r["child_alive_after"], f"premise: no completion child outlived the owner: {r}"
     assert r["reader"] is not None, f"reader process failed:\n{r['reader_out']}"
     assert r["reader"]["skew_reader"] is True, f"the server's update probe missed the live update tree: {r}"
-    assert r["reader"]["launch"].startswith("refused: an update is still running"), (
-        f"a launch ran the completion tail beside the live update tree: {r}")

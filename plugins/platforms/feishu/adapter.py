@@ -4473,9 +4473,15 @@ def _apply_yaml_config(yaml_cfg: dict, feishu_cfg: dict) -> dict | None:
 
 
 def _is_connected(config) -> bool:
-    """Feishu counts as connected once app_id is configured."""
+    """Connected once app_id + app_secret resolve (extra, then env — the wizard's picker hands
+    every plugin platform a synthetic empty config, #120870). Reads through ``extra_or_secret``
+    so the checker sees blanks the way ``connect()`` does: a blank env value or YAML string is
+    unset, not a working credential."""
     extra = getattr(config, "extra", {}) or {}
-    return bool(extra.get("app_id"))
+    return bool(
+        str(_shared_extra_or_secret(extra, "app_id", "FEISHU_APP_ID")).strip()
+        and str(_shared_extra_or_secret(extra, "app_secret", "FEISHU_APP_SECRET")).strip()
+    )
 
 
 

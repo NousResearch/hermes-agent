@@ -161,6 +161,27 @@ def _credential_host_paths() -> set[str]:
         for entry in mounts if isinstance(entry, dict) and entry.get("host_path")}
 
 
+def _refreshable_credential_declarations() -> dict[str, str]:
+    """Declared refreshable credential files (rel -> resolved host) eligible for the
+    sync-back write-back carve-out (#128233). Empty unless opted in — fail-closed, so
+    every undeclared credential stays upload-only."""
+    try:
+        from tools.credential_files import get_refreshable_credential_files
+        return get_refreshable_credential_files()
+    except Exception:
+        return {}
+
+
+def _within_active_home(host_path: str) -> bool:
+    """Whether *host_path* stays inside the ACTIVE profile home — the write-back boundary
+    so one sandbox can never apply another profile's token (#128233). Fails closed."""
+    try:
+        from tools.path_security import validate_within_dir
+        return validate_within_dir(Path(host_path), get_hermes_home()) is None
+    except Exception:
+        return False
+
+
 def quoted_rm_command(remote_paths: list[str]) -> str:
     """Build a shell ``rm -f`` command for a batch of remote paths."""
     return "rm -f " + " ".join(shlex.quote(p) for p in remote_paths)
@@ -414,13 +435,14 @@ class FileSyncManager:
                     tar.extractall(staging, filter="data")
 
                 upload_only = self._upload_only_host_paths | _credential_host_paths()
+                refreshable = _refreshable_credential_declarations()
                 applied = 0
                 for dirpath, _dirnames, filenames in os.walk(staging):
                     for fname in filenames:
                         staged_file = os.path.join(dirpath, fname)
                         # Remote keys are POSIX; relpath uses host separators (backslashes on Windows).
                         remote_path = "/" + Path(os.path.relpath(staged_file, staging)).as_posix()
-                        applied += self._apply_staged_file(staged_file, remote_path, file_mapping, upload_only)
+                        applied += self._apply_staged_file(staged_file, remote_path, file_mapping, upload_only, refreshable)
 
                 if applied:
                     logger.info("sync_back: applied %d changed file(s)", applied)
@@ -433,11 +455,20 @@ class FileSyncManager:
                 pass
 
     def _apply_staged_file(
-        self, staged_file: str, remote_path: str, file_mapping: list[tuple[str, str]], upload_only_host_paths: set[str],
+        self, staged_file: str, remote_path: str, file_mapping: list[tuple[str, str]],
+        upload_only_host_paths: set[str], refreshable_rel_hosts: dict[str, str] | None = None,
     ) -> int:
         """Copy one extracted remote file onto the host if it changed since push. Returns 1 if
         applied, 0 if skipped (unchanged, unmapped, or an upload-only credential). A host file
-        modified since push is overwritten with the remote version (last-write-wins) with a warning."""
+        modified since push is overwritten with the remote version (last-write-wins) with a
+        warning — EXCEPT a refreshable credential, whose host copy wins (refusing write-back).
+
+        The one upload-only carve-out (#128233): a credential file DECLARED refreshable (a
+        rotating token store such as ``google_token.json``) is written back so a token
+        refreshed inside the sandbox survives teardown. The declaration must resolve to the
+        same host path AND stay inside the active profile home; everything else — every
+        undeclared credential, every static store — remains upload-only."""
+        refreshable_rel_hosts = refreshable_rel_hosts or {}
         pushed_hash = self._pushed_hashes.get(remote_path)
         if pushed_hash is not None and _sha256_file(staged_file) == pushed_hash:
             return 0  # unchanged from push
@@ -446,12 +477,31 @@ class FileSyncManager:
         if host_path is None:
             host_path = self._infer_host_path(remote_path, file_mapping, upload_only_host_paths=upload_only_host_paths)
             if host_path is None:
-                logger.debug("sync_back: skipping %s (no host mapping)", remote_path)
-                return 0
+                # A credential first created inside the sandbox has no host file and thus no
+                # mapping entry; a declared refreshable rel path still pins it to its target.
+                host_path = self._declared_refreshable_host_path(remote_path, file_mapping, refreshable_rel_hosts)
+                if host_path is None:
+                    logger.debug("sync_back: skipping %s (no host mapping)", remote_path)
+                    return 0
 
         if self._is_upload_only_host_path(host_path, upload_only_host_paths):
-            logger.debug("sync_back: skipping upload-only credential file %s", remote_path)
-            return 0
+            if not self._is_declared_refreshable(host_path, refreshable_rel_hosts):
+                logger.debug("sync_back: skipping upload-only credential file %s", remote_path)
+                return 0
+            logger.info("sync_back: applying refreshable credential file %s", remote_path)
+            # A refreshable store is a rotating token: if the host copy changed since push
+            # (a second client rotated the same token while this sandbox was running), the
+            # remote copy is STALE — writing it back would silently destroy the newer host
+            # credential. Refuse and keep the host version (#128233).
+            if pushed_hash is not None and os.path.exists(host_path) and _sha256_file(host_path) != pushed_hash:
+                logger.warning(
+                    "sync_back: refusing write-back on %s — host copy changed since push "
+                    "(the token was rotated outside this sandbox); keeping the host version.",
+                    remote_path)
+                return 0
+            os.makedirs(os.path.dirname(host_path), exist_ok=True)
+            self._install_refreshable_file(staged_file, host_path)
+            return 1
 
         if pushed_hash is not None and os.path.exists(host_path) and _sha256_file(host_path) != pushed_hash:
             logger.warning(
@@ -462,6 +512,50 @@ class FileSyncManager:
         os.makedirs(os.path.dirname(host_path), exist_ok=True)
         shutil.copy2(staged_file, host_path)
         return 1
+
+    @staticmethod
+    def _install_refreshable_file(staged_file: str, host_path: str) -> None:
+        """Install refreshable-credential bytes atomically (same-dir temp + ``os.replace``)
+        so a failed copy can never leave a truncated token store on the host: the target is
+        either the complete previous version or the complete new one, never 0 bytes."""
+        temp_path = f"{host_path}.hermes-sync-back.tmp"
+        try:
+            shutil.copy2(staged_file, temp_path)
+            os.replace(temp_path, host_path)
+        finally:
+            try:
+                os.unlink(temp_path)
+            except OSError:
+                pass
+
+    def _is_declared_refreshable(self, host_path: str, refreshable_rel_hosts: dict[str, str]) -> bool:
+        """Write-back gate: *host_path* must be a declared refreshable credential target
+        inside the ACTIVE profile home. Fails closed — an undeclared path, or one that now
+        resolves outside the current profile's home, stays upload-only."""
+        resolved = _resolve_host_path_str(host_path)
+        if not any(_resolve_host_path_str(host) == resolved for host in refreshable_rel_hosts.values()):
+            return False
+        return _within_active_home(resolved)
+
+    def _declared_refreshable_host_path(
+        self, remote_path: str, file_mapping: list[tuple[str, str]], refreshable_rel_hosts: dict[str, str],
+    ) -> str | None:
+        """Host path for a refreshable credential absent from the mapping (first created
+        inside the sandbox): a remote ``<base>/.hermes/<rel>`` whose *rel* was declared
+        refreshable maps to the declaration's host path. Fails closed — undeclared rel,
+        unknown base, or a target outside the active profile home returns None."""
+        if not refreshable_rel_hosts:
+            return None
+        bases = {remote.split("/.hermes/", 1)[0] for _, remote in file_mapping or [] if "/.hermes/" in remote}
+        for base in sorted(bases):
+            prefix = f"{base}/.hermes/"
+            if not remote_path.startswith(prefix):
+                continue
+            rel = remote_path[len(prefix):]
+            host = refreshable_rel_hosts.get(rel)
+            if host is not None and _within_active_home(host):
+                return host
+        return None
 
     def _resolve_host_path(self, remote_path: str, file_mapping: list[tuple[str, str]] | None = None) -> str | None:
         """Find the host path for a known remote path from the file mapping."""

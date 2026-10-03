@@ -74,6 +74,12 @@ Rules:
     and the system will route to the default_assignee.
   - Each child task body is what a fresh worker will read with no other
     context — be specific about goal, approach, and acceptance criteria.
+  - Do NOT create a final "synthesis", "rollup", "aggregate", "combine the
+    results", or "write up the final brief" task. The original task is kept
+    alive as the parent of every leaf child: when they all complete it wakes
+    and its assignee (the orchestrator) synthesises the children's outputs and
+    judges completion. Emit ONLY the worker tasks that produce material — never
+    a terminal task whose sole job is to assemble or summarise the others.
 
 When the task is genuinely a single unit of work (no useful decomposition),
 return:

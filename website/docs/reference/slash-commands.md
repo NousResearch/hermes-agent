@@ -139,7 +139,7 @@ Type `/` in the CLI to open the autocomplete menu. Built-in commands are case-in
 | `/update` | Update Hermes Agent to the latest version. |
 | `/platforms` (alias: `/gateway`) | Show gateway/messaging platform status (CLI-only summary view). |
 | `/paste` | Attach a clipboard image |
-| `/copy [number]` | Copy the last assistant response to clipboard (or the Nth-from-last with a number). CLI-only. |
+| `/copy [number]` | Copy the last assistant response to clipboard, or response N counted from the start of the session with a number (`/copy 1` is the first). CLI-only. |
 | `/image <path>` | Attach a local image file for your next prompt. |
 | `/debug` | Upload debug report (system info + logs) and get shareable links. Also available in messaging. |
 | `/update` | Update Hermes Agent to the latest version. |

@@ -57,7 +57,7 @@ _QUOTED_HEADER_RE = re.compile(
 )
 _BARE_HEADER_RE = re.compile(
     rf"(?P<prefix>\b(?:{_HEADER_NAME_PATTERN})\b\s*[:=]\s*)"
-    r"(?P<value>(?:(?:Bearer|Basic|Digest)\s+)?[^\s,}\]]+)",
+    r"(?P<value>(?>(?:Bearer|Basic|Digest)\s+)?(?!\[REDACTED\])[^\s,}\]]+)",
     re.IGNORECASE,
 )
 
@@ -74,12 +74,12 @@ _QUOTED_ARGV_RE = re.compile(
 )
 _ARG_EQUALS_RE = re.compile(
     rf"(?P<flag>{_SECRET_ARG_FLAG})(?P<sep>\s*=\s*)"
-    r"(?P<quote>['\"]?)(?P<value>[^\s,}\]'\"]+)(?P=quote)",
+    r"(?P<quote>['\"]?)(?!\[REDACTED\])(?P<value>[^\s,}\]'\"]+)(?P=quote)",
     re.IGNORECASE,
 )
 _ARG_OPERAND_RE = re.compile(
     rf"(?P<flag>{_SECRET_ARG_FLAG})(?P<sep>\s+)"
-    r"(?P<quote>['\"]?)(?P<value>[^\s,}\]'\"]+)(?P=quote)",
+    r"(?P<quote>['\"]?)(?!\[REDACTED\])(?P<value>[^\s,}\]'\"]+)(?P=quote)",
     re.IGNORECASE,
 )
 _HEADER_ARGV_RE = re.compile(
@@ -91,7 +91,7 @@ _HEADER_ARGV_RE = re.compile(
 )
 _PLAIN_HEADER_ARG_RE = re.compile(
     rf"(?P<prefix>--header\s+(?:{_HEADER_NAME_PATTERN})\s+)"
-    r"(?:(?:Bearer|Basic|Digest)\s+)?(?P<value>[^\s,}\]]+)",
+    r"(?>(?:Bearer|Basic|Digest)\s+)?(?!\[REDACTED\])(?P<value>[^\s,}\]]+)",
     re.IGNORECASE,
 )
 _SUPPORT_BEARER_RE = re.compile(

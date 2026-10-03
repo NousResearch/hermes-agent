@@ -208,7 +208,7 @@ def upload_to_pastebin(content: str, expiry_days: int = 1) -> str:
         try:
             return upload()
         except Exception as exc:
-            errors.append(f"{service}: {redact_debug_support_error(exc)}")
+            errors.append(f"{service}: {exc}")  # every caller scrubs the RuntimeError
     raise RuntimeError("Failed to upload to any paste service:\n  " + "\n  ".join(errors))
 
 

@@ -164,9 +164,13 @@ def test_redacted_support_egress_scrubs_structured_values_and_errors(
     import hermes_cli.diagnostics_upload as du
 
     def _fail(_blob: bytes) -> dict:
+        # The tail is already scrubbed (a wrapped inner error); re-scrubbing it
+        # must be idempotent, not turn ``[REDACTED]`` into ``[REDACTED]]``.
         raise RuntimeError(
             "PUT https://upload.invalid/?X-Amz-Security-Token="
-            f"{canaries['error']} headers={{'X-API-Key': '{canaries['header']}'}}"
+            f"{canaries['error']} headers={{'X-API-Key': '{canaries['header']}'}} "
+            + real_redact(f"cookie={canaries['error']}; --api-key {canaries['error']} "
+                          f"--header X-API-Key {canaries['error']}")
         )
 
     monkeypatch.setattr(du, "share_to_nous", _fail)
@@ -174,6 +178,7 @@ def test_redacted_support_egress_scrubs_structured_values_and_errors(
     assert failure["ok"] is False
     assert canaries["error"] not in failure["error"]
     assert canaries["header"] not in failure["error"]
+    assert "[REDACTED]]" not in failure["error"]
 
 
 def test_share_nous_linkless_success_is_a_failure(monkeypatch):

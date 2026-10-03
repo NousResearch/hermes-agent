@@ -20,6 +20,12 @@ from agent.message_metadata import append_message
 
 logger = logging.getLogger("agent.conversation_loop")
 
+#: Cap on full-read nudges per turn, like the sibling gates (``max_attempts`` in
+#: verification/kanban): the predicate can be unsatisfiable — a page that always truncates,
+#: or a file rewritten under the read tracker's sha pin — and an uncapped repeat would burn
+#: every remaining iteration and then refuse with no exit (#124875).
+_MAX_FULL_READ_NUDGES = 3
+
 
 @dataclass
 class StopGateVerdict:
@@ -91,6 +97,20 @@ def _kanban_stop_nudge(agent, messages) -> Optional[str]:
         return None
 
 
+def _full_read_nudge(agent) -> Optional[str]:
+    """Block synthesis when the user asked for a whole-folder read but inventoried
+    files were never read in full; names the missing files (#124875)."""
+    if getattr(agent, "_full_read_nudges", 0) >= _MAX_FULL_READ_NUDGES:
+        return None
+    try:
+        from agent.full_read_audit import build_full_read_nudge
+
+        return build_full_read_nudge(agent)
+    except Exception:
+        logger.debug("full-read stop-loop check failed", exc_info=True)
+    return None
+
+
 def _append_interim_answer(agent, final_msg, messages, conversation_history, flush_fail_msg: str) -> None:
     """Real content: persist and emit as interim so the user sees the attempted answer;
     only the nudge is flagged synthetic (#65919)."""
@@ -127,6 +147,21 @@ def apply_stop_gates(
             pending_verification_response_previewed=agent._interim_content_was_streamed(
                 final_response or ""
             ),
+        )
+
+    # Full-read audit first: an unverified synthesis must not reach verification
+    # or the user. The candidate is discarded (never previewed, no fallback) (#124875).
+    _full_read = _full_read_nudge(agent)
+    if _full_read:
+        agent._full_read_nudges = getattr(agent, "_full_read_nudges", 0) + 1
+        final_msg["finish_reason"] = "full_read_required"
+        append_message(messages, {"role": "user", "content": _full_read, "_full_read_synthetic": True})
+        agent._session_messages = messages
+        logger.debug("full-read stop-loop nudge issued (attempt %d)", agent._full_read_nudges)
+        return StopGateVerdict(
+            continue_turn=True, final_response=None,
+            pending_verification_response=None,
+            pending_verification_response_previewed=False,
         )
 
     _verify_nudge = _verify_on_stop_nudge(agent)

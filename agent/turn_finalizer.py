@@ -558,6 +558,22 @@ def finalize_turn(
                 "Send `continue` to let the model summarize."
             )
 
+    # Full-read audit backstop (#124875): the stop gate was bypassed (budget
+    # exhaustion, interruption recovery) but the audit is still armed and files
+    # are unread. Refuse the unverified synthesis instead of delivering it.
+    if final_response and not interrupted and not failed:
+        try:
+            from agent.full_read_audit import finalizer_refusal
+
+            _full_read_refusal = finalizer_refusal(agent)
+        except Exception:
+            logger.debug("full-read finalizer check failed", exc_info=True)
+            _full_read_refusal = None
+        if _full_read_refusal:
+            final_response = _full_read_refusal
+            failed = True
+            _turn_exit_reason = "full_read_incomplete"
+
     # Loop exits that are failures in their own right (outer-loop error cap, shutdown, context
     # that could not be shrunk) carry the verdict the UI descriptor needs; a bare
     # ``turn_exit_reason`` collapsed to code="unknown", retryable=True on every surface.

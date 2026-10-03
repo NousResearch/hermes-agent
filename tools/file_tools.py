@@ -496,6 +496,11 @@ def _read_extracted_document(path: str, _resolved, offset: int, limit: int, task
         _mark_full_write_baseline(str(_resolved), task_id)
         _update_read_timestamp(str(_resolved), task_id)
         file_state.record_read(task_id, str(_resolved))
+        # Whole extracted document shown unredacted: counts as a full read (#124875).
+        _doc_version = _file_version(str(_resolved))
+        if _doc_version is not None:
+            with _read_tracker_lock:
+                _task_data(task_id).setdefault("full_reads", {})[str(_resolved)] = _doc_version
     return json.dumps(result_dict, ensure_ascii=False)
 
 
@@ -575,6 +580,9 @@ def _record_successful_read(task_data: dict, task_id: str, path: str, resolved_s
                 complete = complete and not redacted
             if complete:
                 baselines[resolved_str] = version
+            if not partial and not redacted:
+                # A genuine whole-file READ (writes never land here): the full-read audit query (#124875).
+                task_data.setdefault("full_reads", {})[resolved_str] = version
         if not complete:
             baselines.pop(resolved_str, None)
         if not stable or count >= 4:

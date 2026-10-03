@@ -52,7 +52,8 @@ def _task_data(task_id: str) -> dict:
     (search_tool / tests create partial entries). Lock must be held."""
     task_data = _read_tracker.setdefault(task_id, {
         "last_key": None, "consecutive": 0, "read_history": set()})
-    for key in ("dedup", "dedup_hits", "read_timestamps", "read_coverage", "full_write_baselines"):
+    for key in ("dedup", "dedup_hits", "read_timestamps", "read_coverage", "full_write_baselines",
+                 "full_reads"):
         task_data.setdefault(key, {})
     task_data.setdefault("dedup_generation_reads", set())
     return task_data
@@ -90,6 +91,7 @@ def _cap_read_tracker_data(task_data: dict) -> None:
         ("read_timestamps", _READ_TIMESTAMPS_CAP),
         ("read_coverage", _READ_TIMESTAMPS_CAP),
         ("full_write_baselines", _FULL_WRITE_BASELINES_CAP),
+        ("full_reads", _FULL_WRITE_BASELINES_CAP),
         ("not_found", _NOT_FOUND_CAP)):
         container = task_data.get(key)
         if container is not None and len(container) > cap:
@@ -306,6 +308,7 @@ def _note_read_coverage(task_data: dict, resolved: str, version: tuple, start: i
     entry = coverage.get(resolved)
     if entry is None or entry["version"] != version or len(entry["ranges"]) > _READ_COVERAGE_RANGES_CAP:
         entry = coverage[resolved] = {"version": version, "ranges": [], "redacted": False}
+        _forget_full_read(task_data, resolved)
     entry["redacted"] = entry["redacted"] or redacted
     merged: list[tuple[int, int]] = []
     for s, e in sorted(entry["ranges"] + [(start, end)]):
@@ -316,7 +319,52 @@ def _note_read_coverage(task_data: dict, resolved: str, version: tuple, start: i
     entry["ranges"] = merged
     complete = (isinstance(total_lines, int) and total_lines > 0
                 and merged[0][0] <= 1 and merged[0][1] >= total_lines)
+    if complete and not entry["redacted"]:
+        _remember_full_read(task_data, resolved, version)
     return complete, entry["redacted"]
+
+
+def _remember_full_read(task_data: dict, resolved: str, version: tuple) -> None:
+    """Record that this task saw the whole current content of *resolved* by READING it.
+
+    Lock must be held. Writes never call this (they only touch
+    ``full_write_baselines``), so unlike the baseline this answers "was it read?"
+    - the stop-gate query below routes through here (#124875)."""
+    task_data.setdefault("full_reads", {})[resolved] = version
+
+
+def _forget_full_read(task_data: dict, resolved: str) -> None:
+    """Drop the full-read mark (new file version restarts coverage). Lock must be held."""
+    full_reads = task_data.get("full_reads")
+    if full_reads:
+        full_reads.pop(resolved, None)
+
+
+def has_complete_read(resolved: str, task_id: str) -> bool:
+    """True when *task_id* read the whole CURRENT content of *resolved* (#124875).
+
+    Version-pinned (sha digest): an edit after the read fails the check. A
+    redacted page never marks, and a write never marks — only real reads do.
+    Empty (0-line) files count when the task read them at least once."""
+    key = str(resolved)
+    with _read_tracker_lock:
+        task_data = _read_tracker.get(task_id) or {}
+        read_version = (task_data.get("full_reads") or {}).get(key)
+        read_once = key in (task_data.get("read_timestamps") or {})
+    if read_version is not None:
+        current = _file_version(key)
+        return current is not None and current == read_version
+    # I/O outside the lock (a hung mount must not stall every task).
+    return read_once and total_lines_of(key) == 0
+
+
+def total_lines_of(resolved: str) -> int | None:
+    """Best-effort current line count (None when unreadable); no lock needed."""
+    try:
+        with open(resolved, "r", encoding="utf-8", errors="replace") as stream:
+            return sum(1 for _ in stream)
+    except OSError:
+        return None
 
 
 def _read_mtime_drifted(filepath: str, task_id: str) -> bool:

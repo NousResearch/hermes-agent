@@ -605,7 +605,7 @@ _PER_TURN_RESET_STATE: Tuple[Tuple[str, Any], ...] = (
     ("_harness_metrics_turn", None),
     ("_iteration_budget_warning_injected", False),
     ("_run_budget_wrapup_injected", False), ("_verification_stop_nudges", 0),
-    ("_pre_verify_nudges", 0),
+    ("_pre_verify_nudges", 0), ("_full_read_nudges", 0),
 )
 
 
@@ -1070,6 +1070,17 @@ def build_turn_context(
         persist_user_timestamp, persist_user_platform_id,
     )
     _reset_per_turn_agent_state(agent)
+    # Full-read audit (#124875): snapshot the inventory when the user asked for
+    # a whole-folder read. Fail-open: never break turn start.
+    try:
+        from contextlib import suppress as _suppress
+
+        with _suppress(Exception):
+            from agent.full_read_audit import arm_full_read_audit
+
+            arm_full_read_audit(agent, user_message, effective_task_id)
+    except Exception:
+        agent._full_read_audit = None
 
     _preview_text = summarize_user_message_for_log(user_message)
     _msg_preview = _preview_text[:80] + ("..." if len(_preview_text) > 80 else "")

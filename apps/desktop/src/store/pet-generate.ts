@@ -200,13 +200,16 @@ export function resetPetGen(): void {
 /**
  * Close-time cleanup: if a pet is already hatched but not adopted, discard it so
  * abandoned previews do not accumulate on disk. In-flight generate/hatch runs
- * are intentionally left alone (background-resumable).
+ * are intentionally left alone (background-resumable), and so is an in-flight
+ * adoption: `adoptHatched` is still renaming/selecting this slug, so removing it
+ * here would delete the pet being adopted. A failed adoption drops back to
+ * `preview`, which the next close discards.
  */
 export function cleanupPetGenOnClose(request: GatewayRequest): void {
   const status = $petGenStatus.get()
   const preview = $petGenPreview.get()
 
-  if ((status === 'preview' || status === 'adopting') && preview?.slug) {
+  if (status === 'preview' && preview?.slug) {
     void request('pet.remove', { slug: preview.slug }).catch(() => {})
     resetPetGen()
   }

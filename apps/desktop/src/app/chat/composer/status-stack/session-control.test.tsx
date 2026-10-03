@@ -260,6 +260,31 @@ describe('ComposerStatusStack session-control UI', () => {
     }
   })
 
+  it('edits a heartbeat with its existing message and interval', async () => {
+    $sessionControlBySession.set({
+      [SID]: mockEntry({ snapshot: sampleSnapshot({ goal: null, heartbeat: sampleHeartbeat() }) })
+    })
+
+    renderStack()
+
+    fireEvent.click(screen.getByRole('button', { name: /heartbeat actions/i }))
+    fireEvent.click(await screen.findByRole('menuitem', { name: /edit heartbeat/i }))
+
+    expect(screen.getByRole('textbox', { name: /heartbeat message/i })).toHaveValue('System health check')
+    expect(screen.getByRole('textbox', { name: /heartbeat interval/i })).toHaveValue('30m')
+
+    fireEvent.change(screen.getByRole('textbox', { name: /heartbeat message/i }), { target: { value: 'Check deploy' } })
+    fireEvent.change(screen.getByRole('textbox', { name: /heartbeat interval/i }), { target: { value: 'every 10m' } })
+    fireEvent.click(screen.getByRole('button', { name: /^save$/i }))
+
+    await waitFor(() => {
+      expect(mockRunSessionControlAction).toHaveBeenCalledWith(SID, 'heartbeat.update', {
+        interval: 'every 10m',
+        prompt: 'Check deploy'
+      })
+    })
+  })
+
   // 13. action rejection produces alert/live feedback
   it('displays an alert role when action rejects', async () => {
     mockRunSessionControlAction.mockRejectedValue(new Error('Gateway rejected mutation'))

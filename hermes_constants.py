@@ -9,7 +9,7 @@ import re
 import shutil
 import stat
 import sys
-from collections.abc import MutableMapping
+from collections.abc import Mapping, MutableMapping
 from contextvars import ContextVar, Token
 from pathlib import Path
 
@@ -953,19 +953,59 @@ def scratch_dir_usage_bytes(scratch: Path | None = None) -> int:
     return total
 
 
+def _tmp_env_is_msys_pseudo(value: str, env: Mapping[str, str]) -> bool:
+    """True when *value* is the MSYS/Git-Bash pseudo temp default rather than a user choice.
+
+    Git Bash (``MSYSTEM=MINGW64``/``MSYS``/``MINGW32``) pre-sets ``TMPDIR``/``TMP``/``TEMP``
+    to ``/tmp`` (the virtual path under the MSYS root) before the user ever exports
+    anything, so the value carries no intent. Real Windows temp is ``%TEMP%``
+    (e.g. ``C:\\Users\\<u>\\AppData\\Local\\Temp``) and macOS / Linux pick their own
+    system paths — neither ever equals ``/tmp``, so the exact-match check only fires
+    on the Git-Bash case we want to override.
+
+    Limited intentionally: only ``/tmp`` exact-match (after stripping trailing slashes)
+    under MSYSTEM. Forward-slash absolute paths on Windows can also mean Cygwin-style
+    emulation, but broadening past ``/tmp`` risks false positives on a deliberate
+    ``TMPDIR=/var/log``-style override, so the conservative form stays until we have
+    a real Cygwin signal to gate it on.
+
+    ``MSYSTEM`` is the signal that actually reaches a child process. ``OSTYPE`` is
+    also consulted but is a bash non-exported variable, so it never appears in a
+    real child environment — see the note at the check below.
+    """
+    if not value:
+        return False
+    # MSYSTEM is set by every MSYS2 / Git-Bash flavour (MINGW64, MINGW32, MSYS, UCRT64,
+    # CLANG64, ...). OSTYPE is a SECONDARY signal that is effectively unreachable in
+    # production: OSTYPE is a bash *non-exported* shell variable, so a child process
+    # never sees it — `os.environ` reads it as "" and this disjunct cannot fire.
+    # It is kept as a defensive fallback for any embedding that DOES place OSTYPE in
+    # the real environment (a non-bash shell, a container runtime, an explicit
+    # export), and because removing it would silently narrow the guard. Callers that
+    # construct env dicts directly (tests, tooling) can still exercise it.
+    msystem = env.get("MSYSTEM", "").strip()
+    ostype = env.get("OSTYPE", "").strip()
+    in_msys = bool(msystem) or ostype.startswith("msys")
+    if not in_msys:
+        return False
+    normalised = value.rstrip("/") or "/"
+    return normalised == "/tmp"
+
+
 def apply_scratch_tmp_env(env: MutableMapping[str, str]) -> bool:
     """Point ``TMPDIR``/``TMP``/``TEMP`` in *env* at the scratch dir of ``env["HERMES_HOME"]``.
 
     A temp var the user (or the OS: macOS ``/var/folders``, Windows ``%TEMP%``) set is
     respected and nothing changes. A value Hermes itself exported earlier — recognisable
     because it equals ``HERMES_SCRATCH_DIR`` — is re-derived, so a child running under another
-    profile's home gets that home's scratch dir rather than its parent's. Returns True when
-    the vars were (re)written.
+    profile's home gets that home's scratch dir rather than its parent's. The MSYS/Git-Bash
+    pseudo default of ``/tmp`` is treated as unset (issue #120323) so the scratch dir is
+    actually exported on Windows under Git Bash. Returns True when the vars were (re)written.
     """
     ours = env.get(SCRATCH_DIR_MARKER_ENV, "")
     for key in SCRATCH_TMP_ENV_VARS:
         value = env.get(key, "").strip()
-        if value and value != ours:
+        if value and value != ours and not _tmp_env_is_msys_pseudo(value, env):
             return False
     home = env.get("HERMES_HOME", "").strip()
     try:

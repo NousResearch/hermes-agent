@@ -654,6 +654,13 @@ class CLISessionMixin:
         _db = getattr(self, "_session_db", None)
         _sid = getattr(self, "session_id", None)
         if _db and _sid:
+            if fmt not in SAVE_TRANSCRIPT_FORMATS:
+                from hermes_state import SessionExportTooLargeError
+                try:
+                    _db.assert_export_safe(_sid)  # the JSON backup loads every stored row, like `sessions export`
+                except SessionExportTooLargeError as e:
+                    print(f"(._.) {e}")
+                    return
             try:
                 session_data = _db.export_session(_sid, **export_projection(fmt in SAVE_TRANSCRIPT_FORMATS))
             except Exception:

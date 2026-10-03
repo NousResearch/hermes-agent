@@ -1127,8 +1127,8 @@ sessions:
   max_export_messages: 20000   # one-shot in-memory export of a single session
 ```
 
-`max_export_messages` applies per session to the JSON/JSONL backup (`hermes sessions export`, and
-`sessions export` in `hermes console`). It counts every stored row, archived included, because
+`max_export_messages` applies per session to the JSON/JSONL backup (`hermes sessions export`,
+`sessions export` in `hermes console`, and CLI/messaging `/save json`). It counts every stored row, archived included, because
 the backup holds all of them. A heavily compacted session with a small live tail can still exceed it.
 The dashboard Sessions page's Export action streams the rows instead and is not capped.
 

@@ -915,6 +915,13 @@ def test_run_codex_stream_returns_terminal_response_when_post_terminal_drain_fai
     assert response.id == "resp_post_terminal_1"
 
 
+def _shutdown_waking_response(woken):
+    """Fake ``httpx.Response`` whose socket ``shutdown()`` wakes a blocked reader, as a real one does."""
+    sock = SimpleNamespace(settimeout=lambda _value: None, shutdown=lambda _how: woken.set())
+    network_stream = SimpleNamespace(get_extra_info=lambda key: sock if key == "socket" else None)
+    return SimpleNamespace(extensions={"network_stream": network_stream})
+
+
 def test_run_codex_stream_bounds_post_terminal_drain(monkeypatch):
     """A relay that keeps SSE open after completion cannot discard the billed response."""
     import threading
@@ -930,9 +937,11 @@ def test_run_codex_stream_bounds_post_terminal_drain(monkeypatch):
     )
     usage = SimpleNamespace(input_tokens=10, output_tokens=6, total_tokens=16)
     closed = threading.Event()
+    woken = threading.Event()  # set by the socket shutdown(); close() only runs on the drain thread
 
     class _HeldOpenAfterTerminalStream:
         def __init__(self):
+            self.response = _shutdown_waking_response(woken)
             self._events = iter([
                 SimpleNamespace(type="response.output_item.done", item=message_item),
                 SimpleNamespace(
@@ -950,7 +959,7 @@ def test_run_codex_stream_bounds_post_terminal_drain(monkeypatch):
             try:
                 return next(self._events)
             except StopIteration:
-                closed.wait(3.0)
+                woken.wait(3.0)
                 raise
 
         def close(self):
@@ -990,9 +999,11 @@ def test_run_codex_stream_drain_timeout_closes_raw_stream_when_managed_close_rai
     )
     usage = SimpleNamespace(input_tokens=10, output_tokens=6, total_tokens=16)
     raw_closed = threading.Event()
+    woken = threading.Event()  # set by the socket shutdown(); close() only runs on the drain thread
 
     class _HeldOpenRawStream:
         def __init__(self):
+            self.response = _shutdown_waking_response(woken)
             self._events = iter([
                 SimpleNamespace(type="response.output_item.done", item=message_item),
                 SimpleNamespace(type="response.completed",
@@ -1006,7 +1017,7 @@ def test_run_codex_stream_drain_timeout_closes_raw_stream_when_managed_close_rai
             try:
                 return next(self._events)
             except StopIteration:
-                raw_closed.wait(3.0)
+                woken.wait(3.0)
                 raise
 
         def close(self):

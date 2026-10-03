@@ -7,7 +7,7 @@ import logging
 import threading
 import time
 from contextlib import suppress
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 from agent.lazy_forward import forward as _forward, forward_static as _forward_static, lazy_attr as _lazy_attr
 from hermes_cli.timeouts import get_provider_request_timeout
@@ -198,6 +198,8 @@ class ClientLifecycleMixin:
     def _close_openai_client(self, client: Any, *, reason: str, shared: bool) -> None:
         if client is None:
             return
+        if self._defer_while_held(client, "close", reason, shared):
+            return  # a drain thread still reads on this client (#400): it closes after its stream close
         ctx = self._client_log_context()
         # Force-close TCP sockets first (no CLOSE-WAIT accumulation), then the graceful SDK close.
         force_closed = self._force_close_tcp_sockets(client)
@@ -464,7 +466,61 @@ class ClientLifecycleMixin:
         self._store_request_slot(_OPENAI_SLOT, client, snapshot)
         return client
 
+    def _hold_openai_client(self, client: Any) -> Callable[[], None]:
+        """A worker that hands its stream close to another thread (the Codex post-terminal drain, #400)
+        keeps the client it streamed on alive until that thread has closed the stream: while any hold
+        exists, ``_close_request_openai_client`` (the worker's own release) and ``_close_openai_client``
+        (teardown, eviction, shared-client replacement) only record what was asked. Returns an idempotent
+        release; the last release replays the recorded closes in order on the releasing thread — the
+        holder's own, after it closed what it was reading — so ``client.close()`` never releases an FD
+        under a live reader. A held request client's reuse slot stays ``in_use`` meanwhile, so teardown
+        only aborts (shutdown) and a concurrent checkout builds an untracked client instead of evicting it.
+        """
+        with self._openai_client_lock():
+            holds = self._held_openai_clients()
+            entry = holds.get(id(client))
+            if entry is None or entry["client"] is not client:
+                entry = holds[id(client)] = {"client": client, "count": 0, "pending": []}
+            entry["count"] += 1
+        released = [False]
+
+        def _release() -> None:
+            with self._openai_client_lock():
+                if released[0]:
+                    return
+                released[0] = True
+                entry["count"] -= 1
+                if entry["count"] > 0:
+                    return
+                if holds.get(id(client)) is entry:
+                    del holds[id(client)]
+                pending = list(entry["pending"])
+            for kind, reason, shared in pending:  # entry gone: these closes run for real now
+                if kind == "request":
+                    self._close_request_openai_client(client, reason=reason)
+                else:
+                    self._close_openai_client(client, reason=reason, shared=shared)
+
+        return _release
+
+    def _held_openai_clients(self) -> dict:
+        holds = getattr(self, "_openai_client_holds", None)  # lazy: agents built via __new__ in tests
+        if holds is None:
+            self._openai_client_holds = holds = {}
+        return holds
+
+    def _defer_while_held(self, client: Any, kind: str, reason: str, shared: bool) -> bool:
+        """Record a close asked for a held client; True when it was deferred (caller returns)."""
+        with self._openai_client_lock():
+            entry = self._held_openai_clients().get(id(client))
+            if entry is None or entry["client"] is not client:
+                return False
+            entry["pending"].append((kind, reason, shared))
+            return True
+
     def _close_request_openai_client(self, client: Any, *, reason: str) -> None:
+        if self._defer_while_held(client, "request", reason, False):
+            return  # the holder releases/closes when its reader has exited
         if not self._release_request_slot(_OPENAI_SLOT, client, reason):
             self._close_openai_client(client, reason=reason, shared=False)
 

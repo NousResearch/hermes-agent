@@ -475,3 +475,28 @@ def test_cronjob_tool_update_clears_monitor_script(hermes_env):
     )
     assert result.get("success") is True
     assert get_job(created["job_id"]).get("monitor_script") is None
+
+
+def test_level_monitor_repeats_after_interval(hermes_env, monkeypatch):
+    from cron import monitor
+
+    job = {"id": "level", "monitor_mode": "level", "monitor_repeat_every_s": 300,
+           "monitor_state": {"last_output_hash": monitor.hash_monitor_output("RED"),
+                              "last_notified_at": "2020-01-01T00:00:00+00:00"}}
+    monkeypatch.setattr(monitor, "_run_monitor_source", lambda _job: (True, "RED"))
+    outcome = monitor.check_monitor(job)
+    assert outcome.ok and outcome.changed
+    assert "remains" in outcome.context_block
+
+
+def test_level_monitor_stays_silent_inside_interval(hermes_env, monkeypatch):
+    from cron import monitor
+    from datetime import datetime, timezone
+
+    now = datetime.now(timezone.utc).isoformat()
+    job = {"id": "level", "monitor_mode": "level", "monitor_repeat_every_s": 300,
+           "monitor_state": {"last_output_hash": monitor.hash_monitor_output("RED"),
+                              "last_notified_at": now}}
+    monkeypatch.setattr(monitor, "_run_monitor_source", lambda _job: (True, "RED"))
+    outcome = monitor.check_monitor(job)
+    assert outcome.ok and not outcome.changed

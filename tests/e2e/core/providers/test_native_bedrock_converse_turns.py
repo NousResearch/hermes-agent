@@ -32,8 +32,6 @@ MODEL = "deepseek.v3-v1:0"
 
 # Red on current main for a tracked, open bug: key -> (the bug's own failure-message pattern, reason).
 KNOWN: dict[str, tuple[str, str]] = {
-    "reasoning_shredded": (r"^persisted reasoning has blank lines between streamed deltas: ",
-                           "#98468 streamed reasoning is persisted with '\\n\\n' between every delta"),
     "resume_drops_reasoning": (r"^resumed assistant tool-use turn replayed without signed reasoningContent: ",
                                "#121293 --resume replays Bedrock assistant turns without their signed reasoningContent"),
 }

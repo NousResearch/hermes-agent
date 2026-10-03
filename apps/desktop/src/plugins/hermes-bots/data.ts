@@ -317,7 +317,100 @@ interface BotMetaSaveResult {
 /** `profiles.configure` reply. Older gateways answer without `applied` at all,
  *  which is what makes the field optional rather than the contract. */
 interface ProfilesConfigureResult {
-  applied?: { ui_meta?: boolean }
+  applied?: {
+    ui_meta?: boolean
+    ui_meta_conflicts?: Record<string, unknown>
+  }
+}
+
+/** The bot's `hermes-bots` namespace as its OWN backend holds it right now. */
+interface ServerBotMeta {
+  meta: StoredBotMeta
+  /** Per-key CAS revision; null on gateways that predate `ui_meta_revisions`. */
+  revision: null | number
+}
+
+/** How many times a save re-reads the server after losing a CAS race. */
+const BOT_META_CAS_ATTEMPTS = 3
+
+async function readServerBotMeta(bot: RosterRow, name: string, route: null | ProfileRoute): Promise<null | ServerBotMeta> {
+  const params = { include_sessions: false }
+
+  // The read is the first half of a user's save: it dials foreground like the write.
+  const result = (await (route
+    ? requestForBot(bot, 'profiles.list', params, { spawnPriority: 'foreground' })
+    : host.request('profiles.list', params))) as {
+    profiles?: RosterRow[]
+  }
+
+  const target = route?.targetProfile || name
+  const row = (Array.isArray(result?.profiles) ? result.profiles : []).find(profile => profile?.name === target)
+
+  if (!row) {
+    return null
+  }
+
+  const meta = row.ui_meta?.['hermes-bots']
+  const revisions = row.ui_meta_revisions
+
+  return {
+    meta: meta && typeof meta === 'object' && !Array.isArray(meta) ? (meta as StoredBotMeta) : {},
+    revision: revisions && typeof revisions === 'object' ? Math.max(0, Number(revisions['hermes-bots'] || 0)) : null
+  }
+}
+
+/** Write ONE save's patch onto the server's current namespace. The local cache is never the
+ *  write base: it can hold another bot's fields (a restored or name-keyed record, a window that
+ *  missed a rename) and a whole-cache write publishes them as this bot's identity — to every
+ *  Desktop, every relay roster, and every group prompt. CAS turns a concurrent writer's newer
+ *  value into a re-read instead of a silent overwrite. */
+async function persistBotMetaPatch(
+  bot: RosterRow,
+  name: string,
+  route: null | ProfileRoute,
+  patch: StoredBotMeta
+): Promise<null | ProfilesConfigureResult> {
+  const { image: _image, pet: _pet, ...fields } = patch
+
+  for (let attempt = 0; attempt < BOT_META_CAS_ATTEMPTS; attempt++) {
+    const server = await readServerBotMeta(bot, name, route)
+
+    if (!server) {
+      return null
+    }
+
+    const { chat: _chat, ...base } = server.meta
+
+    const params: Record<string, unknown> = {
+      name,
+      ui_meta: {
+        'hermes-bots': {
+          ...base,
+          ...fields
+        }
+      }
+    }
+
+    if (server.revision !== null) {
+      params.ui_meta_expected_revisions = {
+        'hermes-bots': server.revision
+      }
+    }
+
+    const result = (await (route
+      ? requestForBot(bot, 'profiles.configure', params)
+      : host.request('profiles.configure', params))) as ProfilesConfigureResult
+
+    if (!result?.applied?.ui_meta_conflicts) {
+      return result
+    }
+  }
+
+  return {
+    applied: {
+      ui_meta: false
+    }
+  }
 }
 
 export async function saveBotMeta(owner: RosterRow | string, patch: StoredBotMeta): Promise<BotMetaSaveResult> {
@@ -357,26 +450,10 @@ export async function saveBotMeta(owner: RosterRow | string, patch: StoredBotMet
   // rides every profiles.list); the avatar IMAGE goes to the profile asset
   // store instead (profiles.set_asset), which is server-side and uncapped by
   // the list call — so pfps follow the profile across machines too.
-  let serverRequest: null | Promise<ProfilesConfigureResult> = null
+  let serverRequest: null | Promise<null | ProfilesConfigureResult> = null
 
   try {
-    const { image, pet, ...rest } = next[key] || {}
-
-    const request = route
-      ? requestForBot(bot, 'profiles.configure', {
-          name,
-          ui_meta: {
-            'hermes-bots': rest
-          }
-        })
-      : host.request('profiles.configure', {
-          name,
-          ui_meta: {
-            'hermes-bots': rest
-          }
-        })
-
-    serverRequest = Promise.resolve(request) as Promise<ProfilesConfigureResult>
+    serverRequest = persistBotMetaPatch(bot, name, route, patch)
   } catch {
     /* older/unavailable gateway — the local fallback remains saved */
   }
@@ -1095,13 +1172,17 @@ export function mentionNameForms(value: null | string | undefined): string[] {
 /** Every friendly (renameable) name a roster row carries: the Bot Mode title
  *  (server-synced via ui_meta, locally stored, or persisted on a durable
  *  group descriptor) and the core profile display_name — in displayName's
- *  precedence order. Remote rows never borrow local meta (two `default`s
- *  must not share a title) — EXCEPT the connection-exact alias identity
- *  (#89131): a backend row claimed by a configured alias route carries the
- *  alias's friendly names, so @moxie keeps resolving after handoff. */
+ *  precedence order. Local meta is read under the row's OWN key only: a bare
+ *  name key belongs to whichever single-source gateway wrote it, so reading it
+ *  for a scoped row hands one machine's `default` title to another's — and the
+ *  group prompt then tells that bot it is someone else. The one cross-key read
+ *  is the connection-exact alias identity (#89131): a backend row claimed by a
+ *  configured alias route carries the alias's friendly names, so @moxie keeps
+ *  resolving after handoff. */
 export function botFriendlyNames(bot: Partial<RosterRow> | null | undefined): Array<null | string | undefined> {
   const metaByName: Record<string, BotMeta | undefined> | null = typeof $botMeta !== 'undefined' ? $botMeta.get() : null
-  const localTitle = !bot?.remoteSource ? metaByName?.[bot?.name!]?.title : null
+  const ownKey = bot ? botMetaKey(bot) : undefined
+  const localTitle = ownKey ? metaByName?.[ownKey]?.title : null
   const alias = aliasIdentityFor(bot)
 
   const aliasTitle = alias

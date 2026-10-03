@@ -16550,8 +16550,11 @@ async function enumerateRegistryAgentSources(registry = readDesktopConnectionsRe
                         metadata.display_name = profile.display_name.trim()
                       }
 
-                      if (typeof profile?.title === 'string' && profile.title.trim()) {
-                        metadata.title = profile.title.trim()
+                      // `/api/profiles` names the Bot Mode title `bot_title`. Carried even
+                      // when empty: "this backend has no title" is what lets the renderer
+                      // drop a stale local one instead of painting it on this bot.
+                      if (typeof profile?.bot_title === 'string') {
+                        metadata.title = profile.bot_title.trim()
                       }
 
                       if (profile?.ui_meta && typeof profile.ui_meta === 'object') {

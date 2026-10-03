@@ -35,7 +35,7 @@ import {
 } from './data'
 import { botConnectionRoute, botRouteKey, requestForBot } from './routing'
 import { getPluginCtx } from './shared'
-import type { RosterRow } from './types'
+import type { BotMeta, RosterRow } from './types'
 
 const avatarFetchInflight = new Set<string>()
 const avatarPushInflight = new Set<string>()
@@ -216,6 +216,23 @@ export function pullServerAvatars(roster: RosterRow[]) {
   }
 }
 
+/** The Bot Mode title a row's OWN backend reports: `''` when it reports none,
+ *  undefined when the row cannot say (an older backend, an unenumerated
+ *  source). Rich rows answer from ui_meta (CAS-era rows always carry
+ *  `ui_meta_revisions`); thin rows from another connection carry `title`
+ *  from that backend's `/api/profiles` `bot_title`. */
+function serverReportedTitle(bot: RosterRow, server: BotMeta | null): string | undefined {
+  if (server) {
+    return String(server.title || '').trim()
+  }
+
+  if (Object.prototype.hasOwnProperty.call(bot, 'ui_meta_revisions')) {
+    return ''
+  }
+
+  return typeof bot.title === 'string' ? bot.title.trim() : undefined
+}
+
 /** Server ui_meta (per roster row) beats local storage for the compact
  *  fields it carries; local-only fields (avatar image data URL, extracted
  *  pet icon) are PRESERVED — the server copy never includes them, so a
@@ -239,9 +256,11 @@ export function mergeServerMeta(roster: RosterRow[], fetchedAt = 0) {
   }
 
   for (const bot of roster) {
-    const server = bot.ui_meta?.['hermes-bots']
+    const raw = bot.ui_meta?.['hermes-bots']
+    const server = raw && typeof raw === 'object' ? raw : null
+    const title = serverReportedTitle(bot, server)
 
-    if (server && typeof server === 'object') {
+    if (server || title !== undefined) {
       const key = botMetaKey(bot)
 
       if (fetchedAt && fetchedAt < (botMetaWriteAt.get(key) || 0)) {
@@ -253,6 +272,15 @@ export function mergeServerMeta(roster: RosterRow[], fetchedAt = 0) {
       const merged = {
         ...mine,
         ...server
+      }
+
+      // The name is the backend's: a local title it does not carry is stale or
+      // another bot's (a restored record, a legacy name-keyed one), never this
+      // bot's identity.
+      if (title) {
+        merged.title = title
+      } else {
+        delete merged.title
       }
 
       // Local-only fields survive the server overlay.
@@ -270,7 +298,7 @@ export function mergeServerMeta(roster: RosterRow[], fetchedAt = 0) {
       // so retaining the local scalar would resurrect a membership that another
       // desktop just removed.
       if (
-        Array.isArray(server.groups) &&
+        Array.isArray(server?.groups) &&
         Object.prototype.hasOwnProperty.call(mine, 'group') &&
         !Object.prototype.hasOwnProperty.call(server, 'group')
       ) {

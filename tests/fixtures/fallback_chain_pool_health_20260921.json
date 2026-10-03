@@ -1,0 +1,274 @@
+{
+  "_provenance": "Real measurement from the 2026-09-21 rotted-fallback-chain incident on the Mac Studio: ~/.hermes/cache/claude-apr/usage.json and config/usage-registry.json, captured while ten profiles' fallback chains were simultaneously unusable. Nothing here is synthesised.",
+  "measured_at": "2026-09-21T08:10:57Z",
+  "_measured_at_note": "At this instant the pool was fully dark: seven seats weekly-capped for days, and the four seats that DID have weekly headroom happened to also be inside a five-hour cap.",
+  "evaluate_at": "2026-09-21T11:30:00Z",
+  "_evaluate_at_note": "Just after the last of those four seats' five-hour windows reset (08:20Z, 08:50Z, 09:20Z, 11:20Z). Evaluating the SAME measured data at this later instant separates the durable weekly cap from transient five-hour churn and yields the set the fleet repinned to.",
+  "expected_live_after_resets": [
+    "sub-vps-13",
+    "sub-vps-14",
+    "sub-vps-16",
+    "sub-vps-12"
+  ],
+  "_expected_note": "Ordered by earliest five-hour reset. Requires seven_day.status == 'allowed': sub-vps-7 (96%) and sub-vps-11 (93%) are 'allowed_warning' and are deliberately NOT selected \u2014 a seat that is hours from its weekly cap is not a fallback you want to discover mid-incident.",
+  "chain_as_pinned": [
+    "claude-apx-1",
+    "claude-apx-2",
+    "claude-apx-3",
+    "claude-apx-4",
+    "claude-apx-5",
+    "claude-apx-7",
+    "claude-apx-9",
+    "claude-apx-10",
+    "claude-apx-15"
+  ],
+  "_chain_as_pinned_note": "The literal fallback_providers list live on config.yaml and nine profiles. Seven rungs were 7d-rejected, apx-7 sat at 96% of its weekly limit, and apx-10 has no usage observation at all (a rebuilt seat still in burn-in, present in the registry but absent from the snapshot).",
+  "registry": {
+    "local": {
+      "enabled": true
+    },
+    "sub-vps-1": {
+      "enabled": true
+    },
+    "sub-vps-10": {
+      "enabled": true
+    },
+    "sub-vps-11": {
+      "enabled": true
+    },
+    "sub-vps-12": {
+      "enabled": true
+    },
+    "sub-vps-13": {
+      "enabled": true
+    },
+    "sub-vps-14": {
+      "enabled": true
+    },
+    "sub-vps-15": {
+      "enabled": true
+    },
+    "sub-vps-16": {
+      "enabled": true
+    },
+    "sub-vps-17": {
+      "enabled": true
+    },
+    "sub-vps-18": {
+      "enabled": true
+    },
+    "sub-vps-19": {
+      "enabled": true
+    },
+    "sub-vps-2": {
+      "enabled": true
+    },
+    "sub-vps-20": {
+      "enabled": true
+    },
+    "sub-vps-3": {
+      "enabled": true
+    },
+    "sub-vps-4": {
+      "enabled": true
+    },
+    "sub-vps-5": {
+      "enabled": true
+    },
+    "sub-vps-6": {
+      "enabled": true
+    },
+    "sub-vps-7": {
+      "enabled": true
+    },
+    "sub-vps-8": {
+      "enabled": true
+    },
+    "sub-vps-9": {
+      "enabled": true
+    }
+  },
+  "snapshot": {
+    "sub-vps-1": {
+      "five_hour": {
+        "status": "allowed",
+        "utilization": 0,
+        "resets_at": "2026-09-21T13:00:00.000Z"
+      },
+      "seven_day": {
+        "status": "rejected",
+        "utilization": 100,
+        "resets_at": "2026-09-24T16:00:00.000Z"
+      }
+    },
+    "sub-vps-2": {
+      "five_hour": {
+        "status": "allowed",
+        "utilization": 0,
+        "resets_at": "2026-09-21T13:00:00.000Z"
+      },
+      "seven_day": {
+        "status": "rejected",
+        "utilization": 100,
+        "resets_at": "2026-09-24T06:00:00.000Z"
+      }
+    },
+    "sub-vps-3": {
+      "five_hour": {
+        "status": "allowed",
+        "utilization": 0,
+        "resets_at": "2026-09-21T13:00:00.000Z"
+      },
+      "seven_day": {
+        "status": "rejected",
+        "utilization": 100,
+        "resets_at": "2026-09-22T05:00:00.000Z"
+      }
+    },
+    "sub-vps-4": {
+      "five_hour": {
+        "status": "allowed",
+        "utilization": 0,
+        "resets_at": "2026-09-21T13:00:00.000Z"
+      },
+      "seven_day": {
+        "status": "rejected",
+        "utilization": 100,
+        "resets_at": "2026-09-23T05:00:00.000Z"
+      }
+    },
+    "sub-vps-5": {
+      "five_hour": {
+        "status": "allowed",
+        "utilization": 0,
+        "resets_at": "2026-09-21T13:00:00.000Z"
+      },
+      "seven_day": {
+        "status": "rejected",
+        "utilization": 100,
+        "resets_at": "2026-09-23T19:00:00.000Z"
+      }
+    },
+    "sub-vps-6": {
+      "five_hour": {
+        "status": "allowed",
+        "utilization": 0,
+        "resets_at": "2026-09-21T13:00:00.000Z"
+      },
+      "seven_day": {
+        "status": "rejected",
+        "utilization": 100,
+        "resets_at": "2026-09-25T10:00:00.000Z"
+      }
+    },
+    "sub-vps-7": {
+      "five_hour": {
+        "status": "allowed",
+        "utilization": 11,
+        "resets_at": "2026-09-21T13:00:00.000Z"
+      },
+      "seven_day": {
+        "status": "allowed_warning",
+        "utilization": 97,
+        "resets_at": "2026-09-25T20:00:00.000Z"
+      }
+    },
+    "sub-vps-8": {
+      "five_hour": {
+        "status": "allowed",
+        "utilization": 54,
+        "resets_at": "2026-09-21T09:00:00.000Z"
+      },
+      "seven_day": {
+        "status": "rejected",
+        "utilization": 100,
+        "resets_at": "2026-09-21T13:00:00.000Z"
+      }
+    },
+    "sub-vps-9": {
+      "five_hour": {
+        "status": "allowed",
+        "utilization": 0,
+        "resets_at": "2026-09-21T13:00:00.000Z"
+      },
+      "seven_day": {
+        "status": "rejected",
+        "utilization": 100,
+        "resets_at": "2026-09-22T08:00:00.000Z"
+      }
+    },
+    "sub-vps-11": {
+      "five_hour": {
+        "status": "rejected",
+        "utilization": 101,
+        "resets_at": "2026-09-21T10:00:00.000Z"
+      },
+      "seven_day": {
+        "status": "allowed_warning",
+        "utilization": 93,
+        "resets_at": "2026-09-25T14:00:00.000Z"
+      }
+    },
+    "sub-vps-12": {
+      "five_hour": {
+        "status": "rejected",
+        "utilization": 103,
+        "resets_at": "2026-09-21T11:20:00.000Z"
+      },
+      "seven_day": {
+        "status": "allowed",
+        "utilization": 55,
+        "resets_at": "2026-09-27T17:00:00.000Z"
+      }
+    },
+    "sub-vps-13": {
+      "five_hour": {
+        "status": "rejected",
+        "utilization": 100,
+        "resets_at": "2026-09-21T08:20:00.000Z"
+      },
+      "seven_day": {
+        "status": "allowed",
+        "utilization": 57,
+        "resets_at": "2026-09-26T21:00:00.000Z"
+      }
+    },
+    "sub-vps-14": {
+      "five_hour": {
+        "status": "rejected",
+        "utilization": 101,
+        "resets_at": "2026-09-21T08:50:00.000Z"
+      },
+      "seven_day": {
+        "status": "allowed",
+        "utilization": 60,
+        "resets_at": "2026-09-22T07:00:00.000Z"
+      }
+    },
+    "sub-vps-15": {
+      "five_hour": {
+        "status": "allowed",
+        "utilization": 0,
+        "resets_at": "2026-09-21T13:00:00.000Z"
+      },
+      "seven_day": {
+        "status": "rejected",
+        "utilization": 100,
+        "resets_at": "2026-09-21T13:00:00.000Z"
+      }
+    },
+    "sub-vps-16": {
+      "five_hour": {
+        "status": "rejected",
+        "utilization": 100,
+        "resets_at": "2026-09-21T09:20:00.000Z"
+      },
+      "seven_day": {
+        "status": "allowed",
+        "utilization": 62,
+        "resets_at": "2026-09-23T09:00:00.000Z"
+      }
+    }
+  },
+  "_policy": "A seat is selectable only on POSITIVE evidence: present in the registry AND enabled, present in the usage snapshot, seven_day.status == 'allowed', and five_hour.status != 'rejected' (or its reset has passed). Absence of a rejection is NOT health \u2014 apx-10 is in the registry and enabled but has never been observed, and an 'unobserved is fine' policy would have put an unproven seat into the failure path."
+}

@@ -26,6 +26,9 @@ def _write_chain(config: Dict[str, Any], chain: List[Dict[str, Any]]) -> None:
     """Persist the chain to ``fallback_providers``; drop the legacy key so there is one source of truth."""
     config["fallback_providers"] = chain
     config.pop("fallback_model", None)
+    model_cfg = config.get("model")
+    if isinstance(model_cfg, dict):
+        model_cfg.pop("fallback_model", None)
 
 
 def _format_entry(entry: Dict[str, Any]) -> str:

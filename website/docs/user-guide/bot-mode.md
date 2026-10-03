@@ -352,6 +352,16 @@ or `groups.demote` once the gate opens, still leaves the room read-only as descr
 `safety_reason` `unsafe_replica_promotion`, `unsafe_authority_demotion` or
 `unverified_authority_transition`.
 
+Every member computer keeps a full copy of a group's history unless its operator opts out, and the
+owner can add a backup computer that keeps a copy without a Bot. That includes a Bot you add later
+from someone else's computer: its computer receives the group's full history, including the messages
+from before it joined, and Hermes Desktop warns you when you add one. The host records who keeps a
+copy, who may continue the group and who votes on moving it by itself; `groups.custody.status` shows
+how far each copy reaches and which recent messages a move could still lose. A computer with a
+battery never votes unless its config says `group_chat.always_on: true`. See
+[Group Chat host loss](../developer-guide/group-chat-host-loss.md) for how copies, voters and moves
+fit together.
+
 To end such a room on this gateway, call `groups.disband` with `confirm_quarantined: true`; without it
 the call is refused with reason `room_authority_quarantined`. The confirmed Disband only tombstones the
 room here: it leaves the room lists, its id is never reused, and its history stays readable through

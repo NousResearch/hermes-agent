@@ -3333,6 +3333,11 @@ def _run_one_job_body(
     _fire_scope_tokens = None
     _terminal_scope_token = None
     try:
+        # get_secret() fails closed outside a scope; the ticker thread has none. Delivery adapters
+        # resolve credentials, so the scope must span delivery too (reset in the outer finally) —
+        # including the crash notice in the except below when claim_dispatch or
+        # mark_execution_running raises, so install it before either.
+        _fire_scope_tokens = _install_fire_secret_scope()
         # Commit a finite one-shot's dispatch BEFORE its side effect so a tick dying mid-run cannot
         # re-fire it forever on restart. No-op for recurring/infinite jobs (at-most-times).
         # This lives here in the shared body so BOTH the built-in ticker and the external provider (Chronos
@@ -3354,9 +3359,6 @@ def _run_one_job_body(
             logger.warning("Cron job %s lost execution ownership before start; skipping", job["id"])
             return True
 
-        # get_secret() fails closed outside a scope; the ticker thread has none. Delivery adapters
-        # resolve credentials, so the scope must span delivery too (reset in the outer finally).
-        _fire_scope_tokens = _install_fire_secret_scope()
         # Same for terminal policy (gateway/run.py _profile_runtime_scope): else the ticker reads
         # process-global TERMINAL_* env a concurrent profile pinned. Resolution failure installs a
         # refusal scope — terminal execution raises instead of using the launch process's policy.

@@ -911,13 +911,15 @@ def test_dispatch_failure_opens_incident_and_delivers_failure_notice(
         "suppressed_acked"
 
 
+@pytest.mark.parametrize("failing_stage", ["handoff", "claim_dispatch"])
 def test_dispatch_failure_notice_resolves_the_owning_profiles_home_channel(
-    execution_ledger, monkeypatch, tmp_path
+    execution_ledger, monkeypatch, tmp_path, failing_stage
 ):
     """Under multiplex the failure notice for a failed handoff resolves the job's home channel
     through ``get_secret``. The in-process run path installs the owning profile's secret scope
     before delivery; the dispatch-failure branch must too, or the read fails closed with
-    UnscopedSecretError and the notice never leaves."""
+    UnscopedSecretError and the notice never leaves. Same for a crash in the in-process body
+    before the run starts (``claim_dispatch`` raising)."""
     import cron.incidents as incidents
     import cron.scheduler as scheduler
     import cron.scheduler_delivery as delivery
@@ -932,7 +934,11 @@ def test_dispatch_failure_notice_resolves_the_owning_profiles_home_channel(
     def _handoff_boom(_job):
         raise RuntimeError("worker exited before ownership acknowledgement")
 
-    monkeypatch.setattr(scheduler, "_launch_external_cron_worker", _handoff_boom)
+    if failing_stage == "handoff":
+        monkeypatch.setattr(scheduler, "_launch_external_cron_worker", _handoff_boom)
+    else:
+        monkeypatch.setattr(scheduler, "_launch_external_cron_worker", lambda _job: False)
+        monkeypatch.setattr(scheduler, "claim_dispatch", _handoff_boom)
     monkeypatch.setattr(scheduler, "mark_job_run", lambda *_a, **_k: True)
     resolved = []
 
@@ -947,7 +953,7 @@ def test_dispatch_failure_notice_resolves_the_owning_profiles_home_channel(
     secret_scope.set_multiplex_active(True)
     try:
         assert secret_scope.current_secret_scope() is None
-        assert scheduler.run_one_job(job, adapters=None) is True
+        assert scheduler.run_one_job(job, adapters=None) is (failing_stage == "handoff")
         assert secret_scope.current_secret_scope() is None  # scope does not leak past the fire
     finally:
         secret_scope.set_multiplex_active(False)

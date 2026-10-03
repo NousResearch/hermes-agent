@@ -472,6 +472,49 @@ describe('assistant-ui streaming renderer', () => {
     }
   })
 
+  it('leaves a marker on a completed reasoning-only turn when reasoning is hidden', () => {
+    setShowReasoningFromConfig(false)
+
+    const { container } = render(<ReasoningHarness />)
+
+    // The disclosure and the hidden text stay gone, but the turn must not
+    // vanish: a completed turn with zero visible parts keeps a marker.
+    expect(container.querySelector('[data-slot="aui_thinking-disclosure"]')).toBeNull()
+    expect(container.querySelector('[data-slot="aui_reasoning-text"]')).toBeNull()
+    expect(container.querySelector('[data-slot="aui_reasoning-only-marker"]')).not.toBeNull()
+  })
+
+  it('leaves no reasoning-only marker while the turn is still running', () => {
+    setShowReasoningFromConfig(false)
+
+    const { container } = render(<RunningReasoningHarness />)
+
+    expect(container.querySelector('[data-slot="aui_reasoning-only-marker"]')).toBeNull()
+  })
+
+  it('leaves no reasoning-only marker when the turn keeps other visible parts', () => {
+    setShowReasoningFromConfig(false)
+
+    const { container } = render(
+      <MessageHarness
+        message={
+          {
+            ...assistantReasoningMessage('Hidden thought.'),
+            content: [
+              { type: 'reasoning', text: 'Hidden thought.' },
+              { type: 'text', text: 'Visible answer.' }
+            ],
+            id: 'assistant-mixed-1'
+          } as ThreadMessage
+        }
+      />
+    )
+
+    expect(container.querySelector('[data-slot="aui_reasoning-only-marker"]')).toBeNull()
+    expect(container.querySelector('[data-slot="aui_thinking-disclosure"]')).toBeNull()
+    expect(container.textContent).toContain('Visible answer.')
+  })
+
   it('renders assistant text incrementally before completion', async () => {
     let controls: StreamingControls | undefined
 

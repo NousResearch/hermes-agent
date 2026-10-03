@@ -101,3 +101,41 @@ def test_managed_bare_string_model_flattens_to_default_on_load(homes):
     _write(managed / "config.yaml", "model: managed/bare\n")
     cfg = load_config()
     assert cfg_get(cfg, "model", "default") == "managed/bare"
+
+
+@pytest.mark.parametrize("loader_name", ["full", "effective"])
+def test_managed_refs_use_process_env_across_profile_scopes(homes, monkeypatch, loader_name):
+    from agent import secret_scope
+    from gateway.run import _profile_runtime_scope
+    from hermes_cli.config import load_config
+    from hermes_cli.config_effective import load_user_config_effective
+
+    home, managed = homes
+    loader = load_config if loader_name == "full" else load_user_config_effective
+    variable = "MANAGED_SCOPE_TEST_VALUE"
+    monkeypatch.setenv(variable, "process-value")
+    _write(managed / "config.yaml", f"display:\n  skin: ${{env:{variable}}}\n")
+    profiles = [home / "alpha", home / "beta"]
+    for profile in profiles:
+        profile.mkdir()
+        (profile / ".env").write_text(f"{variable}={profile.name}\n", encoding="utf-8")
+        (profile / "config.yaml").write_text(
+            f"display:\n  personality: ${{{variable}}}\n", encoding="utf-8")
+
+    was_multiplexed = secret_scope.is_multiplex_active()
+    secret_scope.set_multiplex_active(True)
+    try:
+        for profile in [profiles[0], profiles[1], profiles[0]]:
+            with _profile_runtime_scope(profile, hydrate_secrets=False):
+                config = loader()
+                assert config["display"]["personality"] == profile.name
+                assert config["display"]["skin"] == "process-value"
+        # Only the process variable changes: neither YAML nor the bound profile
+        # value changes. A cached expansion must still pick up the managed value.
+        monkeypatch.setenv(variable, "rotated-process-value")
+        with _profile_runtime_scope(profiles[0], hydrate_secrets=False):
+            config = loader()
+            assert config["display"]["personality"] == "alpha"
+            assert config["display"]["skin"] == "rotated-process-value"
+    finally:
+        secret_scope.set_multiplex_active(was_multiplexed)

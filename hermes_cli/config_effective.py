@@ -15,6 +15,7 @@ expands it) and can never be re-resolved through a profile's secret scope
 from __future__ import annotations
 
 import copy
+import os
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
@@ -26,7 +27,7 @@ from utils import fast_safe_load
 # path -> raw user mapping from the last successful parse in this process; served (through the
 # normal pipeline) when the file is later found mid-edit as broken YAML.
 _LAST_GOOD_USER_RAW: Dict[str, Dict[str, Any]] = {}
-# path -> (*user_signature, *managed_signature, effective, env_snapshot); see utils.file_signature.
+# path -> (*user_signature, *managed_signature, effective, user_env, managed_env).
 _EFFECTIVE_CACHE: Dict[str, Tuple[Any, ...]] = {}
 
 
@@ -67,7 +68,8 @@ def load_user_config_effective(config_path: Optional[Path] = None, *, fail_close
         user_sig, cache_sig = _config._load_config_cache_sig(config_path)
         cached = _EFFECTIVE_CACHE.get(path_key)
         if cached is not None and cache_sig is not None and cached[:8] == cache_sig:
-            if all(_config._env_ref_lookup(k) == v for k, v in cached[9].items()):
+            if (all(_config._env_ref_lookup(k) == v for k, v in cached[9].items())
+                    and all(os.environ.get(k) == v for k, v in cached[10].items())):
                 return copy.deepcopy(cached[8])
 
         raw: Dict[str, Any] = {}
@@ -97,13 +99,12 @@ def load_user_config_effective(config_path: Optional[Path] = None, *, fail_close
 
         env_snapshot = _config._env_ref_snapshot(raw)
         managed = managed_scope.load_managed_config()
-        if managed:
-            _config._env_ref_snapshot(managed, env_snapshot)
+        managed_snapshot = _config._env_ref_snapshot(managed, lookup=os.environ.get)
         effective = _effective(raw)
         # A recovered result is never cached under the corrupt file's signature: a later
         # ``fail_closed`` caller must still see the parse error, not a cache hit.
         if cache_sig is not None and not recovered:
-            _EFFECTIVE_CACHE[path_key] = (*cache_sig, copy.deepcopy(effective), env_snapshot)
+            _EFFECTIVE_CACHE[path_key] = (*cache_sig, copy.deepcopy(effective), env_snapshot, managed_snapshot)
         else:
             _EFFECTIVE_CACHE.pop(path_key, None)
         return effective

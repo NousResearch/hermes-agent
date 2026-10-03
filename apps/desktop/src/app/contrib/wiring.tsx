@@ -13,6 +13,7 @@ import { useQueryClient } from '@tanstack/react-query'
 import { type CSSProperties, lazy, type ReactNode, Suspense, useCallback, useEffect, useMemo, useRef } from 'react'
 import { useLocation, useNavigate } from 'react-router'
 
+import { reconcileSubagentsOnConnectionPublish } from '@/app/chat/composer/status-stack/use-subagent-snapshot'
 import { formatRefValue } from '@/components/assistant-ui/directive-text'
 import { BootFailureOverlay } from '@/components/boot-failure-overlay'
 import { ConfirmHost } from '@/components/confirm-host'
@@ -931,6 +932,11 @@ export function ContribWiring({ children }: { children: ReactNode }) {
     handleServerRequest,
     onConnectionReady: c => {
       connectionRef.current = c
+      // A child that finished while its pane was hidden (keep-alive tiles skip
+      // in-tick polls) or across a soft profile swap has no event left to clear
+      // its live row: reconcile every session with non-terminal rows once per
+      // publish — one race-guarded subagent.list each, no timer.
+      void reconcileSubagentsOnConnectionPublish().catch(() => {})
     },
     onGatewayReady: g => {
       gatewayRef.current = g

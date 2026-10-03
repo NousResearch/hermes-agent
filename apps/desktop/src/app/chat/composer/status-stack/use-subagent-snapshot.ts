@@ -4,7 +4,12 @@ import { useEffect } from 'react'
 import { usePaneVisible } from '@/components/pane-shell/pane-visibility'
 import { $gatewayState } from '@/store/session'
 import { knownOwnerForSession, requestForOwnedSession } from '@/store/session-states'
-import { $subagentsBySession, reconcileSubagentSnapshot, type SubagentPayload } from '@/store/subagents'
+import {
+  $subagentsBySession,
+  activeSubagentCount,
+  reconcileSubagentSnapshot,
+  type SubagentPayload
+} from '@/store/subagents'
 
 export const rejectUnownedSubagentRequest = async <T>(): Promise<T> => {
   throw new Error('Subagent owner unavailable')
@@ -86,4 +91,40 @@ export function useSubagentSnapshot(sessionId: string | null, poll = true) {
       window.removeEventListener('focus', retry)
     }
   }, [sessionId, gatewayState, paneVisible, poll])
+}
+
+/**
+ * One-shot reconcile on every connection publish (boot, reconnect, soft
+ * profile swap): each session still holding non-terminal rows gets a single
+ * race-guarded `subagent.list`, so a child that finished while its pane was
+ * hidden (keep-alive tiles skip in-tick polls) stops painting as live without
+ * waiting for a reveal. Shares the hook's owner/race guard; no timer, and a
+ * publish with nothing live issues no request at all.
+ */
+export async function reconcileSubagentsOnConnectionPublish(): Promise<void> {
+  for (const [sessionId, before] of Object.entries($subagentsBySession.get())) {
+    if (activeSubagentCount(before) === 0) {
+      continue
+    }
+
+    const owner = JSON.stringify(knownOwnerForSession(sessionId))
+
+    try {
+      const snapshot = await requestForOwnedSession<{
+        delegations?: SubagentPayload[]
+        subagents: SubagentPayload[]
+      }>(sessionId, rejectUnownedSubagentRequest, 'subagent.list', { session_id: sessionId })
+
+      if (
+        owner === JSON.stringify(knownOwnerForSession(sessionId)) &&
+        before === $subagentsBySession.get()[sessionId] &&
+        Array.isArray(snapshot.subagents)
+      ) {
+        reconcileSubagentSnapshot(sessionId, snapshot.subagents, snapshot.delegations ?? [])
+      }
+    } catch {
+      // Unowned session (or a backend without subagent.list): leave the live
+      // frame alone — the pane's own reveal/focus heal still covers it.
+    }
+  }
 }

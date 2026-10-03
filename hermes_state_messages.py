@@ -1603,8 +1603,10 @@ class SessionMessagesMixin:
                 msg["message_id"] = row["platform_message_id"]
             if row["observed"]:
                 msg["observed"] = True
+            if row["finish_reason"]:
+                msg["finish_reason"] = row["finish_reason"]
             if row["role"] == "assistant":
-                msg.update((col, row[col]) for col in ("finish_reason", "reasoning") if row[col])
+                msg.update((col, row[col]) for col in ("reasoning",) if row[col])
                 if row["reasoning_content"] is not None:
                     msg["reasoning_content"] = row["reasoning_content"]
                 msg.update(

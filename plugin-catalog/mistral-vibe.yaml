@@ -1,0 +1,15 @@
+name: mistral-vibe
+repo: https://github.com/nebneo/hermes-mistral-vibe
+sha: c0d7bc8d11306e18499c84dd94cc3581de550e55
+description: Direct Mistral Vibe subscription access — browser PKCE login, dedicated credential pool, account-visible catalog discovery, relay-verified reasoning_effort for GLM models.
+maintainer: nebneo
+tier: community
+category: models
+docs_url: https://github.com/nebneo/hermes-mistral-vibe#readme
+version: "1.1.0"
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+  - MISTRAL_VIBE_API_KEY

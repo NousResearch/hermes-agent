@@ -62,6 +62,9 @@ class TurnContext:
     # "internal_notification" for async-delegation/background notifications (#82888).
     persist_user_display_kind: Optional[str] = None
     persist_user_display_metadata: Optional[dict] = None
+    # This turn is the one-hop skipped-MEDIA notice (#75065); a delivery lane that rebuilds an event
+    # (the queued-follow-up lane) carries it so the notice cannot chain another.
+    media_delivery_feedback: bool = False
     user_config: Any = None
     mute_notification_reply: bool = False
     enabled_toolsets: Any = None

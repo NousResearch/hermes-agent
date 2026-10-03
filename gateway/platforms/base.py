@@ -1242,6 +1242,41 @@ def _existing_regular_file(raw: str) -> bool:
         return False
 
 
+def format_media_dropped_notice(dropped: Optional[List[dict]]) -> str:
+    """One-line agent-facing notice for MEDIA attachments the gateway skipped before delivery.
+
+    ``_validated_delivery_path`` strips the ``MEDIA:`` directive and the attachment is never
+    uploaded, so without this the agent reports a delivery the user never received (#75065).
+    Each entry is ``{"path", "reason"}``; control chars are neutralized (never the 200-char log
+    bound — the agent needs the exact path to correct it). Empty when nothing was dropped.
+    """
+    entries: List[str] = []
+    seen = set()
+    for item in dropped or []:
+        path = str(item.get("path") or "")
+        if not path or path in seen:
+            continue
+        seen.add(path)
+        reason = str(item.get("reason") or "")
+        safe = _LOG_UNSAFE_CHARS.sub("?", path)
+        entries.append(f"{safe} - {reason}" if reason else safe)
+    if not entries:
+        return ""
+    return f"[IMPORTANT: {len(entries)} MEDIA attachment(s) were skipped: {'; '.join(entries)}]"
+
+
+def append_media_dropped_notice(text_content: str, dropped: Optional[List[dict]]) -> str:
+    """Append the skipped-MEDIA notice to already-delivered text (no turn left to re-enter).
+
+    Used by the detached background-task lane, whose agent turn is over by delivery time: the drop
+    is stated in the message the user receives instead of only in the host log (#75065).
+    """
+    notice = format_media_dropped_notice(dropped)
+    if not notice:
+        return text_content
+    return f"{text_content}\n\n{notice}" if text_content else notice
+
+
 SUPPORTED_DOCUMENT_TYPES = {
     ".pdf": "application/pdf", ".md": "text/markdown", ".txt": "text/plain", ".csv": "text/csv",
     ".log": "text/plain", ".json": "application/json", ".xml": "application/xml",
@@ -1654,6 +1689,7 @@ class _ExtractedResponse:
     local_files: list
     force_document_attachments: bool
     pre_extract: str
+    media_dropped: list
 
 
 _PLAINTEXT_GATEWAY_RESTART_PATTERNS: tuple[re.Pattern[str], ...] = (
@@ -3268,9 +3304,11 @@ class BasePlatformAdapter(ABC):
             if (safe_path := _validated_delivery_path(media_path, session_key, "MEDIA directive path", dropped))]
 
     @staticmethod
-    def filter_local_delivery_paths(file_paths, session_key: str = "") -> List[str]:
-        """Drop unsafe bare local file paths and normalize accepted paths."""
-        safe_paths = (_validated_delivery_path(p, session_key, "local file path") for p in file_paths or [])
+    def filter_local_delivery_paths(file_paths, session_key: str = "",
+                                    dropped: Optional[List[dict]] = None) -> List[str]:
+        """Drop unsafe bare local file paths and normalize accepted paths; ``dropped`` collects the rejects."""
+        safe_paths = (_validated_delivery_path(p, session_key, "local file path", dropped)
+                      for p in file_paths or [])
         return [p for p in safe_paths if p]
 
     @staticmethod
@@ -4474,6 +4512,22 @@ class BasePlatformAdapter(ABC):
             kwargs["stop_event"] = interrupt_event
         return asyncio.create_task(self._keep_typing(event.source.chat_id, **kwargs))
 
+    def _emit_media_dropped_feedback(self, event: MessageEvent, session_key: str, dropped) -> None:
+        """Surface MEDIA paths the gateway skipped into the session so the agent can correct them.
+
+        ``filter_media_delivery_paths`` strips a rejected ``MEDIA:`` directive and never uploads
+        the file, leaving only a host-side log line; the agent then reports a delivery that never
+        happened (#75065). The runner queues one bounded follow-up turn carrying the rejection
+        reasons. No-op without a runner (standalone adapter) or when nothing was dropped.
+        """
+        queue_feedback = getattr(self.gateway_runner, "_queue_media_delivery_feedback", None)
+        if not callable(queue_feedback) or not dropped:
+            return
+        try:
+            queue_feedback(event, session_key, self, dropped)
+        except Exception:
+            logger.debug("[%s] Failed to queue MEDIA delivery feedback", self.name, exc_info=True)
+
     async def _extract_response_content(self, response: str, event: MessageEvent, session_key: str,
                                         *, is_ephemeral_response: bool) -> "_ExtractedResponse":
         """Split a handler response into deliverable text + attachments. Order matters: MEDIA tags →
@@ -4487,7 +4541,9 @@ class BasePlatformAdapter(ABC):
         # bare-path validator infer the sandbox from the ACTIVE profile (#109024).
         with self._media_delivery_scope(event.source):
             media_files, response = self.extract_media(response)
-            media_files = self.filter_media_delivery_paths(media_files, session_key=session_key)
+            media_dropped: List[dict] = []
+            media_files = self.filter_media_delivery_paths(
+                media_files, session_key=session_key, dropped=media_dropped)
             images, text_content = self.extract_images(response)
             # Strip any remaining internal directives from message body (fixes #1561). _strip_media_directives
             # shares MEDIA_TAG_CLEANUP_RE, so a MEDIA: tag with an unknown extension is intentionally left in
@@ -4498,7 +4554,10 @@ class BasePlatformAdapter(ABC):
             local_files = []
             if not is_ephemeral_response:
                 local_files, text_content = self.extract_local_files(text_content)
-                local_files = self.filter_local_delivery_paths(local_files, session_key=session_key)
+                # extract_local_files already removed the path from the text, so a rejected bare
+                # path is as invisible to the agent as a rejected MEDIA: tag (#75065).
+                local_files = self.filter_local_delivery_paths(
+                    local_files, session_key=session_key, dropped=media_dropped)
         history = (await self._bounded_history_media_paths_for_session(session_key)
                    if local_files else None)
         if history:
@@ -4522,7 +4581,8 @@ class BasePlatformAdapter(ABC):
                 text_content = _recovered
         return _ExtractedResponse(
             text_content=text_content, images=images, media_files=media_files,
-            local_files=local_files, force_document_attachments=force_document, pre_extract=pre_extract)
+            local_files=local_files, force_document_attachments=force_document, pre_extract=pre_extract,
+            media_dropped=media_dropped)
 
     async def _fire_post_delivery_callback(self, session_key: str, interrupt_event: asyncio.Event) -> None:
         """Run the one-shot post-delivery callback (bounded, errors swallowed). The generation is
@@ -4636,6 +4696,7 @@ class BasePlatformAdapter(ABC):
                     event, extracted, _final_thread_metadata,
                     anything_sent=delivery_attempted or _tts_caption_delivered,
                     record_delivery=_record_delivery)
+                self._emit_media_dropped_feedback(event, session_key, extracted.media_dropped)
             await self._release_turn_marker(event)
             processing_ok = delivery_succeeded if delivery_attempted else not bool(response)
             # Clean up the per-turn streaming-TTS flag.

@@ -20,7 +20,7 @@ from typing import Any, Dict, Optional, cast
 
 from agent.i18n import t
 from gateway.config import Platform, _BUILTIN_PLATFORM_VALUES
-from gateway.platforms.base import BasePlatformAdapter, _mark_notify_metadata
+from gateway.platforms.base import BasePlatformAdapter, _mark_notify_metadata, format_media_dropped_notice
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.session import SessionEntry, SessionSource
 from gateway.run_shutdown import _delivery_target_key, _log_suppressed, _notice_target_key, _send_error, _send_failed
@@ -364,7 +364,8 @@ class GatewayNotificationsMixin:
             force_document_attachments = "[[as_document]]" in response
             from gateway.platforms.base import BasePlatformAdapter, should_send_media_as_audio
             media_files, cleaned = adapter.extract_media(response)
-            media_files = BasePlatformAdapter.filter_media_delivery_paths(media_files)
+            media_dropped: list[dict] = []
+            media_files = BasePlatformAdapter.filter_media_delivery_paths(media_files, dropped=media_dropped)
             # Strip image URLs (parity with the non-streaming chain); no extract_local_files here.
             # Do NOT deduplicate explicit MEDIA tags against prior turns here (#73771). This rescan is
             # already EXPLICIT-ONLY (see docstring): a MEDIA: directive in the final streamed reply is the
@@ -406,15 +407,55 @@ class GatewayNotificationsMixin:
                         await adapter.send_document(chat_id=chat_id, file_path=media_path, metadata=_thread_meta)
                 except Exception as e:
                     logger.warning("[%s] Post-stream media delivery failed: %s", adapter.name, e)
+            if media_dropped:
+                self._queue_media_delivery_feedback(
+                    event, self._session_key_for_source(event.source), adapter, media_dropped)
 
+    def _queue_media_delivery_feedback(
+        self, event: "MessageEvent", session_key: str, adapter, dropped: "list[dict]",
+    ) -> None:
+        """Queue one bounded same-session follow-up turn naming the MEDIA paths the gateway skipped.
+
+        A rejected ``MEDIA:`` directive is stripped from the response and never uploaded, so the
+        agent reports an attachment the user never received and never learns to correct the path
+        (#75065). The notice re-enters as an internal turn AFTER the current one, so text delivery,
+        attachment delivery and prompt caching are unchanged. Bounded to a single hop by the
+        ``media_delivery_feedback`` flag: a follow-up reply that re-emits a bad path cannot loop.
+        Every delivery lane carries the flag — the queued-follow-up lane via ``event_metadata`` and
+        the outer final of a drained chain via ``queued_terminal_media_delivery_feedback``.
+        """
+        if not dropped:
+            return
+        if (getattr(event, "metadata", None) or {}).get("media_delivery_feedback"):
+            return  # this turn IS the feedback — never chain another
+        notice = format_media_dropped_notice(dropped)
+        if not notice:
+            return
+        # Same anchor-less shape as goal/heartbeat prompts: the notice is not a reply to the
+        # message that produced the bad path (#52694).
+        feedback_event = self._synthetic_prompt_event(
+            event.source, _mark_internal_notification(notice), internal=True)
+        feedback_event.metadata["media_delivery_feedback"] = True
+        if session_key.startswith("agent:"):
+            feedback_event.metadata["gateway_session_key"] = session_key
+        logger.info(
+            "MEDIA delivery feedback — queuing same-session notice for %s chat=%s (%d path(s) skipped)",
+            getattr(adapter, "name", "?"), event.source.chat_id, len(dropped),
+        )
+        self._enqueue_fifo(session_key, feedback_event, adapter)
 
     async def _deliver_queued_first_response(
         self, response: str, source: SessionSource, adapter,
         metadata: Optional[Dict[str, Any]] = None, event_message_id: Optional[str] = None,
         text_already_delivered: bool = False, deliver_media: bool = True, stream_consumer=None,
         session_key: Optional[str] = None, inbound_message_id: Optional[str] = None,
+        event_metadata: Optional[Dict[str, Any]] = None,
     ) -> bool:
         """Deliver a queued response using the normal text+attachment split.
+
+        ``event_metadata`` is the delivering turn's provenance for the rebuilt media event (the
+        ``media_delivery_feedback`` one-hop guard); without it a skipped-MEDIA notice drained through
+        this lane would queue another notice.
 
         ``session_key`` lets the text send record a delivery-ledger obligation like the normal final
         send does, keyed on ``inbound_message_id`` (the raw inbound id, distinct from the
@@ -478,7 +519,9 @@ class GatewayNotificationsMixin:
         if not deliver_media:
             return True
         await self._deliver_media_from_response(
-            response, MessageEvent(text="", source=source, message_id=event_message_id), adapter,
+            response,
+            MessageEvent(text="", source=source, message_id=event_message_id, metadata=dict(event_metadata or {})),
+            adapter,
             thread_metadata=metadata,
         )
         return True

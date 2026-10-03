@@ -85,6 +85,8 @@ _CODEX_REASONING_ONLY = SimpleNamespace(
         pytest.param("", "completed", [_TOOL_CALL], None, None, "tool_calls", id="tool-call"),
         pytest.param("", "completed", [_message(_LEAK_LIKE_ANSWER, phase=None)], None, _LEAK_LIKE_ANSWER, "stop",
                      id="tool-call-like-answer"),
+        pytest.param("", "completed", [_message(_LEAK_LIKE_ANSWER, phase=None, status="incomplete")], None, None,
+                     "length", id="tool-call-like-partial-item"),
         pytest.param("", "incomplete", [_message("PARTIAL")], "max_output_tokens", "PARTIAL", "length", id="token-cap"),
         pytest.param("", "incomplete", [_TOOL_CALL], "max_output_tokens", None, "tool_calls", id="token-cap-after-tool-call"),
         # Route-sensitive normalization: the issuer comes from the request's route classification.

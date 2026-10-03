@@ -700,13 +700,15 @@ if sys.platform == "win32":
 
 # Load .env from ~/.hermes/.env first, then project root as dev fallback.
 # User-managed env files should override stale shell exports on restart.
+from hermes_cli._parser import is_config_validate_command
 from hermes_cli.config import get_hermes_home
 from hermes_cli.env_loader import load_hermes_dotenv
 
 # ``update`` must not resolve external secret sources (Windows self-lock via cryptography, slow
 # helpers inside the import probe) — ``_early_recovery._should_skip_external_secret_sources``
 # owns that argv check for every dotenv load in the process. See #73381.
-load_hermes_dotenv(project_env=PROJECT_ROOT / ".env")
+if not is_config_validate_command(sys.argv[1:]):
+    load_hermes_dotenv(project_env=PROJECT_ROOT / ".env")
 
 # Bridge security.redact_secrets → HERMES_REDACT_SECRETS BEFORE hermes_logging
 # imports agent.redact, which snapshots the flag exactly once at import. A
@@ -720,7 +722,7 @@ try:
     from hermes_cli.config_effective import load_user_config_effective as _load_effective_early
 
     _cfg_path = get_hermes_home() / "config.yaml"
-    if _cfg_path.exists():
+    if not is_config_validate_command(sys.argv[1:]) and _cfg_path.exists():
         _early_cfg_raw = _load_effective_early(_cfg_path)
         if "HERMES_REDACT_SECRETS" not in os.environ:
             _early_sec_cfg = _early_cfg_raw.get("security", {})
@@ -738,19 +740,20 @@ except Exception:
 
 # Centralized file logging for every subcommand (agent.log + errors.log).
 # Dashboard entrypoints use GUI mode so gui.log captures pre-dispatch failures.
-try:
-    from hermes_logging import setup_logging as _setup_logging
+if not is_config_validate_command(sys.argv[1:]):
+    try:
+        from hermes_logging import setup_logging as _setup_logging
 
-    _setup_logging(
-        mode=(
-            "gui"
-            if next((arg for arg in sys.argv[1:] if not arg.startswith("-")), "")
-            in {"dashboard", "serve", "gui", "desktop"}
-            else "cli"
+        _setup_logging(
+            mode=(
+                "gui"
+                if next((arg for arg in sys.argv[1:] if not arg.startswith("-")), "")
+                in {"dashboard", "serve", "gui", "desktop"}
+                else "cli"
+            )
         )
-    )
-except Exception:
-    pass  # best-effort — don't crash the CLI if logging setup fails
+    except Exception:
+        pass  # best-effort — don't crash the CLI if logging setup fails
 
 # Apply IPv4 preference before any HTTP client is created.
 if _FORCE_IPV4_EARLY:
@@ -2312,7 +2315,7 @@ def cmd_config(args):
     from hermes_cli.config import config_command
 
     try:
-        config_command(args)
+        return config_command(args)
     except RuntimeError as exc:
         # Fail-closed config write guard (require_readable_config_before_write);
         # covers migrate and future write subcommands so none end in a traceback.
@@ -3647,7 +3650,8 @@ def main():
         except Exception:
             pass
 
-    if _first_positional_argv() != "update":
+    # Validation must inspect the file as written, before boot maintenance can migrate it.
+    if _first_positional_argv() != "update" and not is_config_validate_command(sys.argv[1:]):
         from hermes_cli.boot_bootstrap import maybe_run_boot_bootstrap
         from pm.paths import install_root
         maybe_run_boot_bootstrap(install_root())

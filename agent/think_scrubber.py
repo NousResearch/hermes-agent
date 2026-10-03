@@ -41,6 +41,7 @@ class StreamingThinkScrubber:
     _CLOSE_TAGS: Tuple[str, ...] = THINK_CLOSE_TAGS
     _ALL_TAGS: Tuple[str, ...] = _OPEN_TAGS + _CLOSE_TAGS
     _MAX_TAG_LEN: int = max(len(tag) for tag in _ALL_TAGS)
+    _MAX_PENDING_MIDLINE_LEN = 8192
     # Orphan close tag plus trailing whitespace (matches _strip_think_blocks case 3).
     _ORPHAN_CLOSE_RE = re.compile(
         "(?:" + "|".join(re.escape(t) for t in _CLOSE_TAGS) + r")[ \t\n\r]*", re.IGNORECASE
@@ -54,6 +55,7 @@ class StreamingThinkScrubber:
         self._in_block: bool = False
         self._buf: str = ""
         self._last_emitted_ended_newline: bool = True
+        self._pending_midline: str = ""
         # Reasoning text the most recent feed() stripped from inside think blocks (tags excluded).
         self.last_hidden: str = ""
 
@@ -75,6 +77,22 @@ class StreamingThinkScrubber:
         hidden: list[str] = []
 
         while buf:
+            if self._pending_midline:
+                pending = self._pending_midline + buf
+                pair = self._find_earliest_closed_pair(pending)
+                if pair is None:
+                    if len(pending) > self._MAX_PENDING_MIDLINE_LEN:
+                        self._pending_midline = ""
+                        self._in_block = True
+                    else:
+                        self._pending_midline = pending
+                        break
+                else:
+                    self._pending_midline = ""
+                    hidden.append(pending[pending.index(">") + 1:pending.rindex("<", pair[0], pair[1])])
+                    buf = pending[pair[1]:]
+                    continue
+
             if self._in_block:
                 close_idx, close_len = self._find_first_tag(buf, self._CLOSE_TAGS)
                 if close_idx == -1:
@@ -103,6 +121,16 @@ class StreamingThinkScrubber:
                 buf = buf[open_idx + open_len:]
                 continue
 
+            any_open_idx, any_open_len = self._find_first_tag(buf, self._OPEN_TAGS)
+            if any_open_idx != -1:
+                self._emit(out, buf[:any_open_idx])
+                pending = buf[any_open_idx:]
+                if len(pending) > self._MAX_PENDING_MIDLINE_LEN:
+                    self._in_block = True
+                else:
+                    self._pending_midline = pending
+                break
+
             # No resolvable tag: hold back any partial-tag prefix at the tail
             # so a tag split across deltas isn't missed, then emit the rest.
             self._emit(out, self._hold_partial(buf, self._ALL_TAGS))
@@ -122,8 +150,9 @@ class StreamingThinkScrubber:
         partial reasoning is worse than a truncated answer), otherwise the tail is emitted verbatim.
         Always resets the boundary flag — intra-turn retries flush then stream again without ``reset()``,
         and a stale False flag made the new stream's opening ``<think>`` look mid-line."""
-        tail = "" if self._in_block else self._buf
+        tail = "" if self._in_block else self._buf + self._pending_midline
         self._buf = ""
+        self._pending_midline = ""
         self._in_block = False
         self._last_emitted_ended_newline = True
         return self._strip_orphan_close_tags(tail) if tail else ""

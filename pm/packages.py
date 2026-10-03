@@ -217,6 +217,18 @@ class Uv(_BionicDebArm, BinaryPackage, DebPackage):
         return github_release_tags("astral-sh/uv")
 
 
+_EXTERNALLY_MANAGED_NOTICE = """\
+This interpreter belongs to a Hermes-managed store entry whose contents
+are hash-verified. Installing packages here makes `hermes pm doctor`
+report a digest mismatch, and the next `hermes pm install` replaces the
+entry and deletes them.
+
+Install packages into a virtual environment instead, e.g.
+`python -m venv .venv && .venv/bin/pip install <pkg>`, or point uv at
+one with `uv pip install --python <path-to-venv>`.
+"""
+
+
 @register
 class Python(_BionicDebArm, BinaryPackage, DebPackage):
     """The pinned interpreter for launchers and every PM-managed uv command.
@@ -244,8 +256,29 @@ class Python(_BionicDebArm, BinaryPackage, DebPackage):
         "python_3.14.6-1_aarch64.deb"
     )
 
+    def _externally_managed_marker(self, staged: Path, target: str) -> Path:
+        """Where pip/uv look for the PEP 668 marker in the staged tree:
+        PBS flattens to the entry root, bionic keeps the termux prefix.
+        main_bin_rel is the minor-line authority (verify reads it for the
+        deb arm), so the stdlib dir derived from it cannot drift."""
+        pydir = Path(self.main_bin_rel).name  # python3.14 (not .stem: it eats .14)
+        if target.startswith("win32"):
+            return staged / "Lib" / "EXTERNALLY-MANAGED"
+        root = staged / self.prefix_rel if target == "linux-arm64-bionic" else staged
+        return root / "lib" / pydir / "EXTERNALLY-MANAGED"
+
     def stage(self, store: Store, staged: Path, version: str, target: str) -> None:
         super().stage(store, staged, version, target)
+        # The entry's bytes are digest-pinned, so a bare `pip install`
+        # against this interpreter (it ships no marker upstream) flags the
+        # entry in doctor and the next install replaces the tree, silently
+        # deleting what was installed. The marker makes pip/uv refuse; PM's
+        # own uv commands all target venvs, which PEP 668 leaves alone.
+        # Written HERE like the dll drop below: the recorded digest covers it.
+        marker = self._externally_managed_marker(staged, target)
+        if not marker.parent.is_dir():
+            raise InstallError(self.name, f"staged tree has no stdlib dir at {marker.parent}")
+        marker.write_text(_EXTERNALLY_MANAGED_NOTICE)
         binary = self.binary(staged, target)
         if binary is not None and sys.platform == "darwin":
             from hermes_cli.macos_signing import sign_managed_python

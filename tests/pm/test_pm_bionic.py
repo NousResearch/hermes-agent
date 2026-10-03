@@ -122,13 +122,16 @@ def test_registered_bionic_stage_preserves_host_facts(tmp_path, monkeypatch, loc
         pytest.fail(f"cross-target staging executed foreign bytes: {args}")
 
     monkeypatch.setattr("pm.packages.subprocess.run", no_exec)
-    archive({relative: b"bionic-payload"})
+    # A real termux python deb carries its stdlib; the stage-time
+    # EXTERNALLY-MANAGED marker lands there.
+    stdlib = {"data/data/com.termux/files/usr/lib/python3.14/os.py": b"stdlib"} if name == "python" else {}
+    archive({relative: b"bionic-payload", **stdlib})
     entry = stage_only(name, target)
     assert (entry / relative).read_bytes() == b"bionic-payload"
     assert package.binary(entry, target) == entry / relative
     assert package.env(entry, target).get("PATH") == ([str((entry / relative).parent)] if on_path else None)
     assert stage_only(name, target) == entry
-    archive({"unrelated": b"not the main executable"})
+    archive({"unrelated": b"not the main executable", **stdlib})
     with pytest.raises(InstallError, match="missing"):
         stage_only(name, target)
     assert (entry / relative).read_bytes() == b"bionic-payload"

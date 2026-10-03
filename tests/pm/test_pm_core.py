@@ -644,7 +644,7 @@ def test_python_package_stably_signs_macos_runtime(tmp_path):
     staged = tmp_path / "staged"
     binary = staged / "python" / "bin" / "python3"
     binary.parent.mkdir(parents=True)
-    (staged / "python" / "lib").mkdir()
+    (staged / "python" / "lib" / "python3.14").mkdir(parents=True)
     shutil.copy2(Path(sys._base_executable).resolve(), binary)
     subprocess.run(
         ["codesign", "--force", "--sign", "-", "--timestamp=none",
@@ -652,7 +652,7 @@ def test_python_package_stably_signs_macos_runtime(tmp_path):
          '=designated => identifier "test.hermes.downloaded"', str(binary)],
         check=True, capture_output=True, timeout=30,
     )
-    python.stage(Store(tmp_path / "store"), staged, "fixture", current_target())
+    python.stage(Store(tmp_path / "store"), staged, "3.14.7", current_target())
     binary = python.binary(staged, current_target())
     subprocess.run(["codesign", "--verify", "--deep", "--strict", str(binary)],
                    check=True, capture_output=True, timeout=30)
@@ -769,6 +769,7 @@ def test_python_stage_drops_unloadable_x64_vc_runtime_on_arm64(monkeypatch, tmp_
 
     staged = tmp_path / "staged"
     staged.mkdir()
+    (staged / "Lib").mkdir()
     (staged / "vcruntime140_1.dll").write_bytes(b"x64")
     (staged / "vcruntime140.dll").write_bytes(b"arm64")
 
@@ -784,12 +785,58 @@ def test_python_stage_keeps_vc_runtimes_on_other_targets(monkeypatch, tmp_path):
 
     staged = tmp_path / "staged"
     staged.mkdir()
+    (staged / "Lib").mkdir()
     (staged / "vcruntime140_1.dll").write_bytes(b"x64")
 
     monkeypatch.setattr("hermes_cli.macos_signing.sign_managed_python", lambda p: False)
     get_package("python").stage(None, staged, "3.14.7", "win32-x64")
 
     assert (staged / "vcruntime140_1.dll").is_file()
+
+
+@pytest.mark.parametrize(
+    ("target", "rel"),
+    [
+        ("darwin-arm64", "lib/python3.14/EXTERNALLY-MANAGED"),
+        ("win32-x64", "Lib/EXTERNALLY-MANAGED"),
+        ("linux-arm64-bionic", "data/data/com.termux/files/usr/lib/python3.14/EXTERNALLY-MANAGED"),
+    ],
+)
+def test_python_stage_marks_the_store_interpreter_externally_managed(
+    monkeypatch, tmp_path, target, rel
+):
+    """A digest-pinned entry must not be pip-installable: the PEP 668
+    marker lands in the stdlib dir for every target layout, so a bare
+    `pip install` inside the store entry is refused instead of silently
+    deleted by the next repair."""
+    from pm.registry import get_package
+
+    staged = tmp_path / "staged"
+    stdlib = staged / rel
+    stdlib.parent.mkdir(parents=True)
+    # A second top-level entry keeps flatten_single_dir from mistaking the
+    # tree for a one-dir archive and hoisting the wrapper away.
+    (staged / "bin").mkdir()
+
+    monkeypatch.setattr("hermes_cli.macos_signing.sign_managed_python", lambda p: False)
+    get_package("python").stage(None, staged, "3.14.7+20260901", target)
+
+    assert stdlib.is_file()
+    assert "hash-verified" in stdlib.read_text()
+
+
+def test_python_stage_refuses_a_tree_without_a_stdlib_dir(monkeypatch, tmp_path):
+    """A layout drift must fail the install, not ship a marker in a
+    directory pip never reads."""
+    from pm.registry import get_package
+
+    staged = tmp_path / "staged"
+    staged.mkdir()
+    (staged / "bin").mkdir()
+
+    monkeypatch.setattr("hermes_cli.macos_signing.sign_managed_python", lambda p: False)
+    with pytest.raises(InstallError):
+        get_package("python").stage(None, staged, "3.14.7", "darwin-arm64")
 
 
 def test_verify_missing_binary_reports_path_and_listing(tmp_path):

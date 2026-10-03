@@ -427,7 +427,8 @@ class GatewaySessionCommandsMixin:
         self._record_model_friction("retry", source, session_entry.session_id)
         return await self._handle_message(MessageEvent(
             text=last_user_msg, message_type=MessageType.TEXT, source=source,
-            raw_message=event.raw_message, channel_prompt=event.channel_prompt))
+            raw_message=event.raw_message, channel_prompt=event.channel_prompt,
+            auto_skill=event.auto_skill))
 
     def _record_model_friction(self, signal: str, source, session_id: str, turns: int = 1) -> None:
         """Slash dispatch does not install the routed profile's scope, so a multiplexed runner

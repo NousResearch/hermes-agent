@@ -528,7 +528,36 @@ class GatewayTurnMixin:
             session_entry.was_auto_reset = False
 
         _is_fresh_reset = getattr(session_entry, "is_fresh_reset", False)
-        _is_new_session = session_entry.created_at == session_entry.updated_at or _was_auto_reset or _is_fresh_reset
+        if session_entry.created_at == session_entry.updated_at:
+            _has_prior_turns = False
+        else:
+            # A non-generating command (/goal, /retry, /goal status) on an unused conversation
+            # touches the session first, moving updated_at before the first agent turn runs (#130316).
+            # Deriving first-turn eligibility from transcript presence ensures such commands do not
+            # falsely spend the session's first agent turn — but presence alone re-arms "new"
+            # after /undo or /retry rewinds the oldest turn away: the truncated transcript is
+            # empty yet the session already ran turns (re-emitting session:start and re-prepending
+            # the bound skill onto history that already carries it). Token counters survive
+            # truncation, so an emptied session still shows prior turns (#130381).
+            try:
+                store = getattr(self, "async_session_store", None)
+                if store is not None and getattr(session_entry, "session_id", None):
+                    history = await store.load_transcript(session_entry.session_id)
+                    _has_transcript_turns = any(
+                        isinstance(m, dict) and m.get("role") in ("user", "assistant")
+                        for m in history
+                    ) if isinstance(history, list) else bool(history)
+                else:
+                    _has_transcript_turns = True
+            except Exception:
+                _has_transcript_turns = True
+            _had_agent_turns = (
+                (getattr(session_entry, "input_tokens", 0) or 0)
+                + (getattr(session_entry, "output_tokens", 0) or 0) > 0
+            )
+            _has_prior_turns = _has_transcript_turns or _had_agent_turns
+
+        _is_new_session = (not _has_prior_turns) or _was_auto_reset or _is_fresh_reset
         # Consume is_fresh_reset so it doesn't leak onto later messages in the same session.
         if _is_fresh_reset:
             # See #6508.

@@ -10,6 +10,8 @@ synchronous variant (``_prompt_slash_confirm`` in ``cli.py``).
 
 from __future__ import annotations
 
+import asyncio
+import contextvars
 import logging
 import threading
 import time
@@ -17,7 +19,7 @@ from typing import Any, Awaitable, Callable, Dict, Optional
 
 logger = logging.getLogger(__name__)
 
-# session_key -> {"confirm_id", "command", "handler", "created_at"}
+# session_key -> {"confirm_id", "command", "handler", "created_at", "context"}
 _pending: Dict[str, Dict[str, Any]] = {}
 _lock = threading.RLock()
 
@@ -28,10 +30,19 @@ DEFAULT_TIMEOUT_SECONDS = 300
 
 def register(session_key: str, confirm_id: str, command: str,
              handler: Callable[[str], Awaitable[Optional[str]]]) -> None:
-    """Register a pending confirm, superseding any prior one for the session."""
+    """Register a pending confirm, superseding any prior one for the session.
+
+    The caller's context is captured alongside the handler: the gate that
+    registers runs inside the owning profile's scope (home override, secret
+    scope), but ``resolve()`` fires later — a button callback or a subsequent
+    turn — where the ambient scope is the process default. Handlers that
+    persist profile-scoped state must still act on the profile that was
+    gated, not whichever profile happens to be ambient at click time.
+    """
     with _lock:
         _pending[session_key] = {"confirm_id": confirm_id, "command": command,
-                                 "handler": handler, "created_at": time.time()}
+                                 "handler": handler, "created_at": time.time(),
+                                 "context": contextvars.copy_context()}
 
 
 def get_pending(session_key: str) -> Optional[Dict[str, Any]]:
@@ -78,11 +89,17 @@ async def resolve(session_key: str, confirm_id: str, choice: str,
             return None
         handler = entry.get("handler")
         command = entry.get("command", "?")
+        context = entry.get("context")
 
     if not handler:
         return None
     try:
-        result = await handler(choice)
+        # Run the handler in the context captured at register() time (see
+        # register's docstring); entries without one (hand-built) run ambient.
+        if context is not None:
+            result = await context.run(asyncio.ensure_future, handler(choice))
+        else:
+            result = await handler(choice)
     except Exception as exc:
         logger.error("Slash-confirm handler for /%s raised: %s", command, exc, exc_info=True)
         return f"❌ Error handling confirmation: {exc}"

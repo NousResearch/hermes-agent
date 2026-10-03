@@ -824,6 +824,27 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
     async def _push_update(self, tick: "_Tick") -> None:
         """Send/edit this tick's visible text (cursor-suffixed unless finalizing)."""
         display_text = self._accumulated
+        # A bare silence marker in the buffer must NEVER be published as a partial
+        # segment preview at a segment break — the user would see "NO_REPLY" / "[SILENT]"
+        # before the got_done path can suppress it (#126581 path 1). Markers are gated
+        # to non-final ticks here; final delivery is owned by ``_suppress_silence_marker``
+        # and the ``is_intentional_silence_agent_result`` machinery turn gate.
+        from gateway.response_filters import (
+            LIVE_GATEWAY_SILENT_MARKERS as _SILENT_MARKERS,
+            is_intentional_silence_response as _is_silence_response,
+        )
+        if (not tick.got_done
+                and display_text.strip()
+                and _is_silence_response(display_text)):
+            self._accumulated = ""
+            self._stream_ledger = self._last_sent_text = ""
+            self._already_sent = False
+            self._clear_turn_final_flags()
+            logger.info(
+                "Suppressed non-final bare silence marker preview (chat=%s)",
+                self.chat_id,
+            )
+            return
         if tick.is_interim:
             if self._use_native_streaming:
                 display_text = self._compose_frame_content()

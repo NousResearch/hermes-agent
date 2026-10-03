@@ -7,18 +7,26 @@ from pathlib import Path
 from typing import Any, Dict, List
 
 
-def hooks_command(args) -> None:
-    """Entry point for ``hermes hooks`` — dispatches to the requested action."""
+def hooks_command(args) -> int | None:
+    """Entry point for ``hermes hooks`` — dispatches to the requested action.
+
+    Returns the handler's own exit code so a caller can branch on it: ``doctor``
+    reports ``1`` when it finds problems. ``2`` is the usage error for a bare
+    ``hermes hooks``, matching what argparse already returns for a mistyped
+    subcommand on this same parser.
+    """
     sub = getattr(args, "hooks_action", None)
     if not sub:
         print("Usage: hermes hooks {list|test|revoke|doctor}")
         print("Run 'hermes hooks --help' for details.")
-        return
+        return 2
     handler = _ACTIONS.get(sub)
     if handler is None:
+        # Dead code: argparse's subparsers reject an unknown token before it reaches
+        # here. Left exactly as-is — removing it is a separate judgement.
         print(f"Unknown hooks subcommand: {sub}")
         return
-    handler(args)
+    return handler(args)
 
 
 # ---------------------------------------------------------------------------
@@ -268,14 +276,14 @@ def _cmd_revoke(args) -> None:
     )
 
 
-def _cmd_doctor(_args) -> None:
+def _cmd_doctor(_args) -> int:
     from hermes_cli.config import load_config
     from agent import shell_hooks
 
     specs = shell_hooks.iter_configured_hooks(load_config())
     if not specs:
         print("No shell hooks configured — nothing to check.")
-        return
+        return 0
     print(f"Checking {len(specs)} configured shell hook(s)...\n")
     problems = 0
     for spec in specs:
@@ -283,6 +291,7 @@ def _cmd_doctor(_args) -> None:
         problems += _doctor_one(spec, shell_hooks)
         print()
     print(f"{problems} issue(s) found.  Fix before relying on these hooks." if problems else "All shell hooks look healthy.")
+    return 1 if problems else 0
 
 
 def _doctor_one(spec, shell_hooks) -> int:

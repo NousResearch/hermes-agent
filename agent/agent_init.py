@@ -899,6 +899,23 @@ def _routed_client_kwargs(agent, fallback_model, _provider_timeout) -> Optional[
             return None
         agent.provider = _fb["provider"]
         agent.model = _fb_model or _fb["model"]
+        # Recompute api_mode for the fallback provider/model — otherwise it stays
+        # whatever ``_resolve_api_mode`` computed above for the (unreachable)
+        # primary, e.g. a Nous primary configured with ``api_mode:
+        # codex_responses`` leaves a Copilot gpt-5-mini fallback stuck on the
+        # Responses API and silently drops reasoning/thinking content. The
+        # per-turn fallback path (``try_activate_fallback``) already recomputes
+        # via ``_fallback_api_mode_resolved``; the init-time path must agree.
+        # ``_primary_runtime`` is snapshotted AFTER this, so the recomputed mode
+        # is what restore_primary_runtime replays. See #46527 / #17929.
+        # Best-effort: a detection failure keeps the primary's mode (the
+        # pre-fix behavior), never blocks the fallback itself.
+        with suppress(Exception):
+            from agent.chat_completion_helpers import _fallback_api_mode_resolved
+            agent.api_mode = _fallback_api_mode_resolved(
+                agent, agent.provider, agent.model, str(getattr(_fb_client, "base_url", "") or ""))
+            if hasattr(agent, "_transport_cache"):
+                agent._transport_cache.clear()
         return _client_kwargs_from_routed(_fb_client, _provider_timeout)
     # A burned credential pool (#119533) is otherwise indistinguishable from missing config,
     # so name it even when no fallback entries are configured.

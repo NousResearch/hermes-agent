@@ -53,7 +53,7 @@ class TestCodexBuildKwargs:
             reasoning_config=reasoning,
             github_reasoning_extra=ReasoningParamsMixin._github_models_reasoning_extra_body(agent),
         )
-        assert kw.get("reasoning") == ({"effort": expected} if expected else None)
+        assert kw.get("reasoning") == ({"effort": expected, "summary": "auto"} if expected else None)
 
     def test_astra_direct_request_applies_model_contract_after_overrides(self, transport):
         kw = transport.build_kwargs(
@@ -222,6 +222,18 @@ class TestCodexBuildKwargs:
             session_id="session_bob_1",
         )
         assert kw1["prompt_cache_key"] != kw2["prompt_cache_key"]
+
+    def test_github_responses_requests_reasoning_summary(self, transport):
+        """#46527: the GitHub Responses branch must request summary="auto" so
+        Copilot returns reasoning text. Without it, reasoning items come back
+        with no summary and Hermes persists no reasoning/thinking content."""
+        messages = [{"role": "user", "content": "Hi"}]
+        kw = transport.build_kwargs(
+            model="gpt-5.4", messages=messages, tools=[],
+            is_github_responses=True,
+            github_reasoning_extra={"effort": "medium"},
+        )
+        assert kw.get("reasoning") == {"effort": "medium", "summary": "auto"}
 
     def test_github_responses_drops_message_item_id_end_to_end(self, transport):
         # #32716: Copilot binds codex_message_items ids to a backend

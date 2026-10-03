@@ -11,8 +11,8 @@ env-override table ``gateway.config_env._ENV_STEPS`` / ``_ENV_ENABLE_CREDENTIALS
 under its canonical ``<PLATFORM>_`` prefix and its historical alias prefixes. Gateway-wide channel
 policy (``GATEWAY_ALLOW_ALL_USERS`` / ``GATEWAY_ALLOWED_USERS``) and relay enrollment identity
 (``GATEWAY_RELAY_*``) are channel settings too. A prefix an adapter SHARES with a non-channel
-capability (``HASS_*`` is also the Home Assistant tool, ``TWILIO_*`` the telephony skill, ``EMAIL_*``
-mail-sending scripts) is stripped only when the source actually runs that adapter — the credential is
+capability (``TWILIO_*`` is also the telephony skill, ``EMAIL_*`` mail-sending scripts, and a plugin
+platform's ``shared_env_prefixes`` its own tools) is stripped only when the source actually runs that adapter — the credential is
 then the bot's identity; otherwise it is a tool key and survives. Model/provider keys, tool keys,
 memory and general config are never touched.
 """
@@ -32,7 +32,6 @@ logger = logging.getLogger(__name__)
 # ``<PLATFORM>_`` prefix (``WECOM_DM_POLICY`` and ``SMS_WEBHOOK_PORT`` are wecom / sms keys too).
 _PLATFORM_ENV_PREFIX_ALIASES: dict[str, tuple[str, ...]] = {
     "email": ("EMAIL_",),
-    "homeassistant": ("HASS_",),
     "qqbot": ("QQ_",),
     "relay": ("GATEWAY_RELAY_",),
     "sms": ("TWILIO_",),
@@ -46,7 +45,6 @@ _GATEWAY_POLICY_KEYS = ("GATEWAY_ALLOW_ALL_USERS", "GATEWAY_ALLOWED_USERS")
 # Prefixes a messaging adapter shares with a NON-channel capability. Their credentials belong to the
 # channel only while the source runs that adapter; the adapter's policy keys are channel-only always.
 _SHARED_WITH_TOOLS: dict[str, tuple[str, ...]] = {
-    "homeassistant": ("HASS_",),   # tools/homeassistant_tool.py reads HASS_TOKEN / HASS_URL
     "sms": ("TWILIO_",),           # telephony skill reads TWILIO_ACCOUNT_SID / TWILIO_AUTH_TOKEN
     "email": ("EMAIL_",),          # mail-sending skills read EMAIL_ADDRESS / EMAIL_PASSWORD / EMAIL_SMTP_*
 }
@@ -87,6 +85,17 @@ def _registry_entries() -> list:
         from gateway.platform_registry import platform_registry
         return list(platform_registry.all_entries())
     return []
+
+
+def _shared_with_tools(source_dir: Optional[Path] = None) -> Dict[str, Tuple[str, ...]]:
+    """``_SHARED_WITH_TOOLS`` plus every plugin platform's ``shared_env_prefixes`` in ``source_dir``'s scope."""
+    shared = dict(_SHARED_WITH_TOOLS)
+    with _plugin_scope(source_dir):
+        for entry in _registry_entries():
+            prefixes = tuple(getattr(entry, "shared_env_prefixes", ()) or ())
+            if prefixes:
+                shared[entry.name] = prefixes
+    return shared
 
 
 def platform_ids(source_dir: Optional[Path] = None) -> List[str]:
@@ -227,12 +236,12 @@ def _explicit_enabled(raw: dict, pid: str) -> Optional[bool]:
     return None
 
 
-def _shared_adapters_active(source_dir: Optional[Path]) -> Set[str]:
+def _shared_adapters_active(source_dir: Optional[Path], shared: Dict[str, Tuple[str, ...]]) -> Set[str]:
     """Shared-prefix platforms the SOURCE runs as a channel: explicitly enabled in its config.yaml, or
     auto-enabled by a complete credential set in its ``.env`` and not explicitly disabled — the same
     gate ``gateway.config_env._Cred`` applies at gateway start."""
     if source_dir is None:
-        return set(_SHARED_WITH_TOOLS)  # no source to consult: the historical (strip) behaviour
+        return set(shared)  # no source to consult: the historical (strip) behaviour
     raw: dict = {}
     if (source_dir / "config.yaml").is_file():
         from hermes_cli.config import read_user_config_raw
@@ -248,7 +257,7 @@ def _shared_adapters_active(source_dir: Optional[Path]) -> Set[str]:
         for entry in _registry_entries():
             creds_by_platform.setdefault(entry.name, set(entry.required_env))
     active: Set[str] = set()
-    for pid in _SHARED_WITH_TOOLS:
+    for pid in shared:
         explicit = _explicit_enabled(raw, pid)
         if explicit is not None:
             if explicit:
@@ -269,9 +278,11 @@ class ChannelKeyIndex:
         self.platforms = platform_ids(source_dir)
         self.declared = declared_channel_env_keys(source_dir)
         self.policy = _policy_env_keys(source_dir)
-        self.shared_active = _shared_adapters_active(source_dir)
+        self.shared = _shared_with_tools(source_dir)
+        self.shared_active = _shared_adapters_active(source_dir, self.shared)
         self._prefixes: List[Tuple[str, str]] = sorted(
-            ((prefix, pid) for pid in self.platforms for prefix in platform_env_prefixes(pid)),
+            ((prefix, pid) for pid in self.platforms
+             for prefix in dict.fromkeys((*platform_env_prefixes(pid), *self.shared.get(pid, ())))),
             key=lambda item: -len(item[0]),  # longest prefix wins: WECOM_CALLBACK_ before WECOM_
         )
 
@@ -279,7 +290,7 @@ class ChannelKeyIndex:
         pid = self.declared.get(key) or next((pid for prefix, pid in self._prefixes if key.startswith(prefix)), None)
         if pid is None:
             return None
-        shared = _SHARED_WITH_TOOLS.get(pid)
+        shared = self.shared.get(pid)
         if shared and key.startswith(shared) and pid not in self.shared_active and not self._is_policy(key):
             return None  # a tool credential the source never used as a bot: keep it
         return pid

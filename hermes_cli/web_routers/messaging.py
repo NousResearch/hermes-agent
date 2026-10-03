@@ -62,7 +62,7 @@ _probe_gateway_health = late("_probe_gateway_health", "hermes_cli.web_server_gat
 get_running_pid_cached = late("get_running_pid_cached", "gateway.status")
 get_runtime_status_running_pid = late("get_runtime_status_running_pid", "gateway.status")
 _GATEWAY_HEALTH_URL = LateState("_GATEWAY_HEALTH_URL")
-# Display labels for env vars not in OPTIONAL_ENV_VARS (bridge toggles, Twilio, HASS, Email, ...)
+# Display labels for env vars not in OPTIONAL_ENV_VARS (bridge toggles, Twilio, Email, ...)
 # so the UI can still render a friendly label. Rows: (key, description, prompt, extra flags).
 _MESSAGING_ENV_FALLBACKS: dict[str, dict[str, Any]] = {
     key: {"description": description, "prompt": prompt, **extra}
@@ -74,8 +74,6 @@ _MESSAGING_ENV_FALLBACKS: dict[str, dict[str, Any]] = {
         ("WHATSAPP_MODE", "WhatsApp bridge mode", "WhatsApp mode", {"advanced": True}),
         ("WHATSAPP_DM_POLICY", "How WhatsApp direct messages are authorized", "WhatsApp DM policy", {"advanced": True}),
         ("WHATSAPP_ALLOWED_USERS", "Comma-separated WhatsApp users allowed to use the bot", "Allowed WhatsApp users", {}),
-        ("HASS_URL", "Home Assistant base URL, e.g. https://homeassistant.local:8123", "Home Assistant URL", {}),
-        ("HASS_TOKEN", "Long-lived access token from Home Assistant (Profile → Security)", "Home Assistant access token", {"password": True}),
         ("EMAIL_ADDRESS", "Email address to send and receive from", "Email address", {}),
         ("EMAIL_PASSWORD", "Email account password or app password", "Email password", {"password": True}),
         ("EMAIL_IMAP_HOST", "IMAP server host (e.g. imap.gmail.com)", "IMAP host", {}),

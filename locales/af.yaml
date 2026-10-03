@@ -1448,8 +1448,6 @@ platform:
   irc:
     quit_message: "Hermes Agent skakel af"
     standalone_quit: "afgelewer"
-  homeassistant:
-    notification_title: "Hermes Agent"
   relay:
     confirm_approve_once: "Eenmalig goedkeur"
     confirm_always_approve: "Altyd goedkeur"

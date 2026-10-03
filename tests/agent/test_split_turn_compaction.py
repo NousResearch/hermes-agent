@@ -445,20 +445,13 @@ def test_assistant_anchor_cannot_retain_a_textless_oversized_turn(
 
     cut = compressor._find_tail_cut_by_tokens(messages, head_end, token_budget=_TOKEN_BUDGET)
 
-    # The whole active turn must not ride the protected tail: its older portion stays
-    # summarizable so compression can make progress.
-    assert cut > active_user_idx + 2
-    tail_tokens = sum(_estimate_msg_budget_tokens(msg) for msg in messages[cut:])
-    active_turn_tokens = sum(
-        _estimate_msg_budget_tokens(msg) for msg in messages[active_user_idx:]
-    )
-    assert tail_tokens < active_turn_tokens
-    # The #10896 anchor keeps the latest user turn ("keep going") in the tail.
     latest_user_idx = next(
         index for index, message in enumerate(messages)
         if message.get("role") == "user" and message.get("content") == "keep going"
     )
-    assert latest_user_idx >= cut
+    # The walk's tool-group-aligned cut: only the active turn's last two groups ride the
+    # tail with the #10896-anchored nudge; the rest of the turn stays summarizable.
+    assert active_user_idx < cut == latest_user_idx - 4
     _assert_tool_pairs_are_complete(messages[head_end:cut])
     _assert_tool_pairs_are_complete(messages[cut:])
 
@@ -478,6 +471,6 @@ def test_assistant_anchor_still_binds_when_splitting_is_disabled(
         index for index, message in enumerate(messages)
         if message.get("content") == "older turn finished"
     )
-    # Without the split allowance the anchor may still pull the cut back to the
-    # older turn's closer; the mid-turn exception must never fire.
-    assert cut <= older_closer_idx + 1
+    # Without the split allowance the anchor pulls the cut back to the older turn's
+    # closer, aligned before its preceding tool group; the mid-turn exception never fires.
+    assert cut == compressor._align_boundary_backward(messages, older_closer_idx)

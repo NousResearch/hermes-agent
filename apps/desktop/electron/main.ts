@@ -329,6 +329,7 @@ import { buildHudWindowUrl } from './hud-url'
 import { linuxOzoneBackend, resolveHudWindowing } from './hud-windowing'
 import { INSTALL_STAMP, installShape } from './install-stamp'
 import type { InstallStamp } from './install-stamp'
+import { awaitPriorDesktopInstance, lifecycleAllowsCreateWindow } from './instance-lifecycle-lock'
 import { applyLaunchProfileOverride } from './launch-profile'
 import { fetchLinkTitle, resolveFaviconCached } from './link-metadata'
 import { CHROMIUM_LOG_FILENAME, enableLinuxCrashDiagnostics, linuxCrashDiagnostics } from './linux-crash-diagnostics'
@@ -19334,6 +19335,11 @@ if (preReadyDockSteps.includes('register-deep-link')) {
 // Single-instance lock: deep links on a running app (Win/Linux) arrive as a
 // second-instance argv. Without the lock a second `hermes://` launch spawns a
 // whole new app instead of routing into the running one.
+// False until awaitPriorDesktopInstance returns 'proceed'. second-instance
+// can fire while whenReady is still parked on a live foreign holder PID;
+// ensureMainWindow must not createWindow in that window (#107671).
+let instanceLifecycleReady = false
+
 if (!isPrimaryInstance) {
   // Hard-exit, not app.quit(): the before-quit teardown coordinator defers a
   // plain quit (event.preventDefault + async backend shutdown), and in that
@@ -19377,7 +19383,7 @@ if (!isPrimaryInstance) {
     // re-create it when it was destroyed.
     rememberLog(`[second-instance] relaunch (deepLink=${url ? 'yes' : 'no'})`)
     ensureMainWindow(mainWindow, {
-      isReady: app.isReady(),
+      isReady: lifecycleAllowsCreateWindow(app.isReady(), instanceLifecycleReady),
       createWindow,
       focusWindow: activateWindow,
       // deep-link delivery focuses a live window after its renderer is ready.
@@ -19393,7 +19399,30 @@ app.on('open-url', (event, url) => {
   handleDeepLink(url)
 })
 
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
+  // #107671: Chromium drops the Electron single-instance lock when quit
+  // starts, while before-quit teardown can keep the old PID alive for
+  // seconds. A relaunch that won the lock must wait for that holder to
+  // exit before createWindow / startHermes (GNOME tracks the windowed
+  // app). Timeout while the holder is still alive → same as a lock-losing
+  // secondary. Lock-losers never wait and never write the pidfile.
+  if (isPrimaryInstance) {
+    const lifecycle = await awaitPriorDesktopInstance({
+      log: rememberLog,
+      selfPid: process.pid,
+      userDataDir: app.getPath('userData')
+    })
+
+    if (lifecycle === 'exit-as-secondary') {
+      rememberLog('[boot] prior desktop instance still tearing down; exiting as secondary')
+      app.exit(0)
+
+      return
+    }
+
+    instanceLifecycleReady = true
+  }
+
   // Post-update relaunch detection (App Installer arm): when the previous
   // version wrote the one-shot pending-relaunch marker before quitting into
   // an OS package swap, consume it here — the renderer toasts "Hermes

@@ -425,6 +425,11 @@
     "kind": "bare_which"
   },
   {
+    "path": "hermes_cli/web_server_gateway.py",
+    "symbol": "_cgroup_escaped_argv_and_env",
+    "kind": "bare_which"
+  },
+  {
     "path": "hermes_constants.py",
     "symbol": "find_node_executable",
     "kind": "bare_which"

@@ -8,7 +8,7 @@ import json
 import logging
 import re
 import time
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
 from agent.context_compressor import (
     _DB_PERSISTED_MARKER as _DB_PERSISTED_MARKER_KEY, MODEL_ONLY_DISPLAY_METADATA_KEY, _is_checkpoint_item,
@@ -119,6 +119,9 @@ def _stale_holder(row, now: float) -> bool:
 
 class SessionMessagesMixin:
     """Message append/replace/rewind, reactions, resume conversations, replay dedupe."""
+
+    _store_system_prompt: Callable[..., Optional[str]]
+    _delete_unreferenced_system_prompts: Callable[..., None]
 
     def _bump_conversation_generation(self, conn, session_id: str, end_reason: str) -> None:
         """Advance the peer's conversation generation past a boundary, in the txn that writes it. Only
@@ -978,7 +981,8 @@ class SessionMessagesMixin:
         lock_holder: Optional[str] = None, tail_count: int = 0,
         carried_messages: Optional[List[Dict[str, Any]]] = None,
         covered_ids: Optional[List[int]] = None,
-        unresolved_held: Optional[List[Dict[str, Any]]] = None) -> int:
+        unresolved_held: Optional[List[Dict[str, Any]]] = None,
+        system_prompt: Optional[str] = None) -> int:
         """Non-destructive in-place compaction under ONE session id: soft-archive the active rows (``active=0,
         compacted=1``: summarized away, still searchable) and insert *compacted_messages* as fresh active
         rows, atomically; returns the new ACTIVE count (= ``message_count``). *watermark* (compression
@@ -995,6 +999,8 @@ class SessionMessagesMixin:
         timestamp. Those originals and the clones' originals are superseded duplicates and get rewind flags
         (``active=0, compacted=0``) so search doesn't return each carried message once per compaction.
         ``model_config_patch`` merges in the same txn (``None`` removes a key).
+        ``system_prompt``, when given, is stored in that same write so an in-place compaction cannot leave
+        transcript and prompt on opposite sides of a crash (#84722).
 
         Concurrent-append safety (#75316): when *watermark* is provided (the value of
         :meth:`get_active_message_watermark` captured at compression START), rows that arrived during the
@@ -1015,6 +1021,12 @@ class SessionMessagesMixin:
             # on_missing="raise": never commit against a vanished session row (caller keeps the original).
             patched_model_config = self._merge_model_config_json(
                 conn, session_id, model_config_patch, on_missing="raise") if patch else None
+            if system_prompt is not None:
+                prompt_hash = self._store_system_prompt(conn, system_prompt)
+                conn.execute(
+                    "UPDATE sessions SET system_prompt_hash = ?, system_prompt = NULL WHERE id = ?",
+                    (prompt_hash, session_id))
+                self._delete_unreferenced_system_prompts(conn)
             proved = self._proved_coverage(conn, session_id, covered_ids, unresolved_held, watermark)
             if proved is not None:
                 return self._archive_named_rows(

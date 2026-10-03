@@ -95,7 +95,10 @@ Cron jobs, webhooks, the API server and `hermes chat -q` have nobody to answer a
 prompt. Saved local logins keep working there; a locked password manager reports
 `unavailable_in_this_session` and a missing login reports `prompt_unavailable`.
 Unlock or save from an interactive session first, or give 1Password a service
-account token (`OP_SERVICE_ACCOUNT_TOKEN`).
+account token (`OP_SERVICE_ACCOUNT_TOKEN`). For a headless Bitwarden **Password
+Manager** login source, a separate credential manager may maintain a `bw`
+session token in a file readable only by the Hermes process. Configure its
+path and the matching Bitwarden CLI app-data directory per profile:
 
 ```yaml
 vault:
@@ -104,8 +107,18 @@ vault:
     account: ""             # `op --account` shorthand; empty = default
     service_account_token_env: OP_SERVICE_ACCOUNT_TOKEN
   bitwarden:
-    enabled: false
+    session_file: /run/user/1000/bw-session  # manager-maintained, mode 0600
+    appdata_dir: /run/user/1000/bw-appdata    # the directory used by `bw login`
 ```
+
+The file contains the `BW_SESSION` token, **not** the master password. Hermes
+reads it only when needed and passes it to the `bw` child process, never to the
+model or Hermes's process environment. On POSIX, group/world-accessible files
+are refused. The manager must rotate or remove the file when its session expires
+or must be revoked. A Hermes Lock clears the in-memory copy but does not revoke
+an externally managed session: remove/revoke the file to keep it locked.
+This setting is for browser Login items (`bw`), not the separate Bitwarden
+Secrets Manager (`bws`) API-secret source.
 
 ## What this does and does not guarantee
 

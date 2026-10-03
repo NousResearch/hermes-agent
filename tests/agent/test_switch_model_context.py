@@ -389,3 +389,160 @@ def test_later_lmstudio_failure_restores_runtime_capabilities(monkeypatch):
     assert agent.provider == "openrouter"
     assert agent.client is original_client
     assert agent.runtime_capabilities == {"native_compaction": True}
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# Level 2: switch_model re-resolves _ollama_num_ctx (#110239)
+# ═══════════════════════════════════════════════════════════════════════
+
+def _make_ollama_agent(
+    model: str = "modelA",
+    base_url: str = "http://127.0.0.1:11434/v1",
+    ollama_num_ctx: int | None = 40000,
+    config_context_length: int | None = 40000,
+) -> AIAgent:
+    """Build a minimal AIAgent with Ollama-like settings, skipping __init__."""
+    agent = AIAgent.__new__(AIAgent)
+    agent.model = model
+    agent.provider = "custom"
+    agent.base_url = base_url
+    agent.api_key = "ollama"
+    agent.api_mode = "chat_completions"
+    agent.client = MagicMock()
+    agent.quiet_mode = True
+    agent._ollama_num_ctx = ollama_num_ctx
+    agent._config_context_length = config_context_length
+    agent._primary_runtime = {}
+    agent.runtime_capabilities = {}
+
+    compressor = ContextCompressor(
+        model=model,
+        threshold_percent=0.50,
+        base_url=base_url,
+        api_key="ollama",
+        provider="custom",
+        quiet_mode=True,
+        config_context_length=config_context_length,
+    )
+    agent.context_compressor = compressor
+    return agent
+
+
+@patch("agent.model_metadata.get_model_context_length", return_value=131072)
+def test_switch_ollama_model_recomputes_num_ctx_from_config(mock_ctx_len):
+    """Switching between two Ollama models must re-resolve _ollama_num_ctx."""
+    agent = _make_ollama_agent(model="modelA", ollama_num_ctx=40000)
+    assert agent._ollama_num_ctx == 40000
+
+    # Simulate config.yaml with per-model context_length overrides
+    new_cfg = {
+        "model": {},
+        "providers": {
+            "ollama-local": {
+                "base_url": "http://127.0.0.1:11434/v1",
+                "models": {
+                    "modelB": {"context_length": 131072},
+                },
+            },
+        },
+    }
+
+    def fake_load_config():
+        return new_cfg
+
+    with (
+        patch("hermes_cli.config.load_config", side_effect=fake_load_config),
+        patch("hermes_cli.config.load_config_readonly", side_effect=fake_load_config),
+        patch("hermes_cli.config.get_compatible_custom_providers", return_value=[]),
+        patch("hermes_cli.config.get_custom_provider_context_length", return_value=131072),
+        patch("agent.agent_init.query_ollama_num_ctx", return_value=131072),
+        patch("agent.agent_init.is_local_endpoint", return_value=True),
+    ):
+        agent.switch_model(
+            "modelB", "custom", api_key="ollama",
+            base_url="http://127.0.0.1:11434/v1",
+        )
+
+    # _ollama_num_ctx should now reflect modelB's configured value
+    assert agent._ollama_num_ctx == 131072
+
+
+@patch("agent.model_metadata.get_model_context_length", return_value=128000)
+def test_switch_to_non_ollama_clears_num_ctx(mock_ctx_len):
+    """Switching from Ollama to a non-local provider must clear _ollama_num_ctx."""
+    agent = _make_ollama_agent(model="modelA", ollama_num_ctx=40000)
+    assert agent._ollama_num_ctx == 40000
+
+    with (
+        patch("hermes_cli.config.load_config", return_value={"model": {}}),
+        patch("hermes_cli.config.load_config_readonly", return_value={"model": {}}),
+        patch("hermes_cli.config.get_compatible_custom_providers", return_value=[]),
+        patch("hermes_cli.config.get_custom_provider_context_length", return_value=None),
+        patch("agent.agent_init.is_local_endpoint", return_value=False),
+    ):
+        agent.switch_model(
+            "gpt-5.6", "openai", api_key="sk-new",
+            base_url="https://api.openai.com/v1",
+        )
+
+    # Non-Ollama endpoint: _ollama_num_ctx must be cleared
+    assert agent._ollama_num_ctx is None
+
+
+@patch("agent.model_metadata.get_model_context_length", return_value=65536)
+def test_switch_ollama_explicit_num_ctx_override_respected(mock_ctx_len):
+    """An explicit model.ollama_num_ctx override must be used after switch."""
+    agent = _make_ollama_agent(model="modelA", ollama_num_ctx=40000)
+    assert agent._ollama_num_ctx == 40000
+
+    # Config with an explicit ollama_num_ctx override on model section
+    new_cfg = {
+        "model": {"ollama_num_ctx": 32768},
+        "providers": {},
+    }
+
+    def fake_load_config():
+        return new_cfg
+
+    with (
+        patch("hermes_cli.config.load_config", side_effect=fake_load_config),
+        patch("hermes_cli.config.load_config_readonly", side_effect=fake_load_config),
+        patch("hermes_cli.config.get_compatible_custom_providers", return_value=[]),
+        patch("hermes_cli.config.get_custom_provider_context_length", return_value=65536),
+        patch("agent.agent_init.is_local_endpoint", return_value=True),
+    ):
+        agent.switch_model(
+            "modelB", "custom", api_key="ollama",
+            base_url="http://127.0.0.1:11434/v1",
+        )
+
+    # Explicit override in model.ollama_num_ctx wins over auto-detection
+    assert agent._ollama_num_ctx == 32768
+
+
+@patch("agent.model_metadata.get_model_context_length", return_value=131072)
+def test_switch_ollama_num_ctx_capped_to_config_context_length(mock_ctx_len):
+    """Auto-detected num_ctx must be capped to the config context_length."""
+    agent = _make_ollama_agent(model="modelA", ollama_num_ctx=40000)
+
+    # Ollama reports 131072 but config caps at 65536
+    new_cfg = {"model": {}, "providers": {}}
+
+    def fake_load_config():
+        return new_cfg
+
+    with (
+        patch("hermes_cli.config.load_config", side_effect=fake_load_config),
+        patch("hermes_cli.config.load_config_readonly", side_effect=fake_load_config),
+        patch("hermes_cli.config.get_compatible_custom_providers", return_value=[]),
+        patch("hermes_cli.config.get_custom_provider_context_length", return_value=65536),
+        patch("agent.agent_init.query_ollama_num_ctx", return_value=131072),
+        patch("agent.agent_init.is_local_endpoint", return_value=True),
+    ):
+        agent.switch_model(
+            "modelB", "custom", api_key="ollama",
+            base_url="http://127.0.0.1:11434/v1",
+        )
+
+    # num_ctx capped to the config context_length (no explicit ollama_num_ctx override)
+    assert agent._ollama_num_ctx == 65536

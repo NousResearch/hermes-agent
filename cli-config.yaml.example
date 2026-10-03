@@ -431,6 +431,10 @@ terminal:
   home_mode: "auto"
   docker_mount_cwd_to_workspace: false  # SECURITY: off by default. Opt in to mount the launch cwd into Docker /workspace.
   lifetime_seconds: 300
+  # Per-worker systemd scope MemoryMax (MiB) for gateway-spawned local executors (kanban workers,
+  # background commands). "auto" = min(gateway cgroup memory.max, RAM/2, 4 GiB). A whole number
+  # may exceed 4 GiB but is still clamped by a finite enclosing memory.max and physical RAM.
+  # worker_memory_max_mb: 8192
   # sudo_password: "hunter2"  # Optional: pipe a sudo password via sudo -S. SECURITY WARNING: plaintext.
   # sudo_password: ""         # Explicit empty password: try empty and never open the interactive sudo prompt.
 

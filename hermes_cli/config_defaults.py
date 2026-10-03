@@ -317,6 +317,11 @@ DEFAULT_CONFIG = {
         # Seconds between SIGTERM and escalated SIGKILL for host process trees (browser daemons). 0
         # = SIGTERM only.
         "daemon_term_grace_seconds": 2.0,
+        # Per-worker systemd scope MemoryMax (MiB) for gateway-spawned local executors. "auto" =
+        # min(enclosing cgroup memory.max, RAM/2, 4 GiB). A whole-number MiB value may exceed 4 GiB
+        # but is still clamped by a finite enclosing memory.max and physical RAM; the
+        # TERMINAL_LOCAL_MEMORY_MAX_MB guard can only tighten it. Read per spawn (no restart).
+        "worker_memory_max_mb": "auto",
         # Max seconds a one-shot CLI run (-q/-Q/-z) lingers for tracked notify_on_complete
         # background processes to finish. The dying parent owns their stdout pipes, so exiting
         # immediately kills the delivery (e.g. Bot Mode handoff replies via message_agent /

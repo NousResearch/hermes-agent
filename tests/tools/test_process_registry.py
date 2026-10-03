@@ -2574,6 +2574,99 @@ class TestSystemdCgroupIsolation:
 
         assert pr._worker_memory_max_bytes() == pr._DEFAULT_WORKER_MEMORY_MAX_BYTES
 
+    _GIB = 1024 * 1024 * 1024
+
+    @staticmethod
+    def _host(monkeypatch, pr, *, ram_gib, cgroup_gib=None):
+        """Pin the host facts: physical RAM and the gateway's enclosing memory.max."""
+        monkeypatch.delenv("TERMINAL_LOCAL_MEMORY_MAX_MB", raising=False)
+        pages = ram_gib * 1024 * 1024 * 1024 // 4096
+        monkeypatch.setattr(
+            pr.os, "sysconf", lambda name: pages if name == "SC_PHYS_PAGES" else 4096
+        )
+        monkeypatch.setattr(
+            pr,
+            "_enclosing_cgroup_memory_max_bytes",
+            lambda: None if cgroup_gib is None else cgroup_gib * 1024 * 1024 * 1024,
+        )
+
+    @staticmethod
+    def _write_config(body: str) -> None:
+        from hermes_cli.config import get_config_path
+
+        path = get_config_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(body, encoding="utf-8")
+
+    def test_worker_memory_limit_auto_keeps_4gib_cap_on_large_host(self, monkeypatch):
+        import tools.process_registry as pr
+
+        self._host(monkeypatch, pr, ram_gib=128)
+        self._write_config("terminal:\n  worker_memory_max_mb: auto\n")
+
+        assert pr._worker_memory_max_bytes() == pr._WORKER_MEMORY_MAX_CAP_BYTES
+
+    @pytest.mark.parametrize("value", ["8192", "'8192'"])
+    def test_worker_memory_limit_explicit_config_raises_auto_cap(self, monkeypatch, value):
+        """A config.yaml value (YAML int or the quoted string `hermes config set`
+        writes) lifts the scope past the 4 GiB auto cap, and reaches the real argv."""
+        import tools.process_registry as pr
+
+        self._host(monkeypatch, pr, ram_gib=128)
+        self._write_config(f"terminal:\n  worker_memory_max_mb: {value}\n")
+        monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/systemd-run")
+
+        argv = pr._build_systemd_scope_argv(["/bin/bash", "-lc", "true"], unit_suffix="t")
+
+        assert f"MemoryMax={8 * self._GIB}" in argv
+
+    def test_worker_memory_limit_explicit_config_is_clamped_by_enclosing_cgroup(
+        self, monkeypatch
+    ):
+        import tools.process_registry as pr
+
+        self._host(monkeypatch, pr, ram_gib=128, cgroup_gib=6)
+        self._write_config("terminal:\n  worker_memory_max_mb: 8192\n")
+
+        assert pr._worker_memory_max_bytes() == 6 * self._GIB
+
+    def test_worker_memory_limit_explicit_config_is_clamped_by_physical_ram(
+        self, monkeypatch
+    ):
+        import tools.process_registry as pr
+
+        self._host(monkeypatch, pr, ram_gib=4)
+        self._write_config("terminal:\n  worker_memory_max_mb: 999999\n")
+
+        assert pr._worker_memory_max_bytes() == 4 * self._GIB
+
+    def test_worker_memory_limit_local_guard_still_only_tightens_explicit_config(
+        self, monkeypatch
+    ):
+        import tools.process_registry as pr
+
+        self._host(monkeypatch, pr, ram_gib=128)
+        self._write_config("terminal:\n  worker_memory_max_mb: 8192\n")
+
+        monkeypatch.setenv("TERMINAL_LOCAL_MEMORY_MAX_MB", "2048")
+        assert pr._worker_memory_max_bytes() == 2 * self._GIB
+        monkeypatch.setenv("TERMINAL_LOCAL_MEMORY_MAX_MB", "16384")
+        assert pr._worker_memory_max_bytes() == 8 * self._GIB
+
+    @pytest.mark.parametrize(
+        "value", ["invalid", "0", "63", "true", "8192.5", "'8192.5'", "[8192]", "-1"]
+    )
+    def test_worker_memory_limit_invalid_config_falls_back_to_auto_bound(
+        self, monkeypatch, value
+    ):
+        """Fractional, boolean, sub-floor or non-scalar values never widen the cap."""
+        import tools.process_registry as pr
+
+        self._host(monkeypatch, pr, ram_gib=128)
+        self._write_config(f"terminal:\n  worker_memory_max_mb: {value}\n")
+
+        assert pr._worker_memory_max_bytes() == pr._WORKER_MEMORY_MAX_CAP_BYTES
+
     def test_kill_recovered_detached_already_exited_stops_persisted_scope(
         self, registry, monkeypatch
     ):

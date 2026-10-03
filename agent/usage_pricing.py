@@ -384,6 +384,15 @@ _SNAPSHOT_PROVIDER_ALIASES = {
 # prefix is stripped with the rest of the path).
 _GOOGLE_PROVIDER_NAMES = {"google", "gemini", "vertex", "google-gemini", "google-ai-studio", "google-vertex", "vertex-ai"}
 
+# Routes whose marginal usage cost is covered by a plan or promotional credits.
+# Keep aliases here because these values come from user configuration, not the
+# provider profile registry (and custom:<provider> routes may have no profile).
+_INCLUDED_PROVIDER_NAMES = frozenset({
+    "openai-codex", "copilot", "github-copilot", "github-models", "github-model",
+    "github", "copilot-acp", "opencode-go", "opencode-zen", "nvidia",
+})
+_INCLUDED_CREDIT_HOSTS = ("api.cloudflare.com",)
+
 
 def resolve_billing_route(
     model_name: str, provider: Optional[str] = None, base_url: Optional[str] = None
@@ -405,8 +414,6 @@ def resolve_billing_route(
     def host(name: str) -> bool:
         return base_url_host_matches(url, name)
 
-    if provider_name == "openai-codex":
-        return BillingRoute(provider="openai-codex", model=model, base_url=url, billing_mode="subscription_included")
     if provider_name == "openrouter" or host("openrouter.ai"):
         return BillingRoute(provider="openrouter", model=model, base_url=url, billing_mode="official_models_api")
     if provider_name == "nous" or host("inference-api.nousresearch.com"):
@@ -422,6 +429,13 @@ def resolve_billing_route(
             snapshot_provider = "fireworks"
     if snapshot_provider:
         return BillingRoute(provider=snapshot_provider, model=bare, base_url=url, billing_mode="official_docs_snapshot")
+    if provider_name in _INCLUDED_PROVIDER_NAMES or any(host(name) for name in _INCLUDED_CREDIT_HOSTS):
+        return BillingRoute(
+            provider=provider_name or "included",
+            model=model,
+            base_url=url,
+            billing_mode="subscription_included",
+        )
     if provider_name in {"custom", "local"} or (base and base_url_hostname(base) in ("localhost", "127.0.0.1")):
         return BillingRoute(provider=provider_name or "custom", model=model, base_url=url, billing_mode="unknown")
     return BillingRoute(provider=provider_name or "unknown", model=bare if model else "", base_url=url, billing_mode="unknown")

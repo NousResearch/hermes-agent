@@ -21,6 +21,9 @@ from agent.context_compressor import (LEGACY_SUMMARY_PREFIX, SUMMARY_PREFIX, _ME
 TITLE_SOURCE_DERIVED = "derived"
 TITLE_SOURCE_LLM = "llm"
 TITLE_SOURCE_USER = "user"
+# A Desktop branch's inherited lineage title, then the claimed stable fallback awaiting its model title.
+TITLE_SOURCE_BRANCH = "branch"
+TITLE_SOURCE_BRANCH_FALLBACK = "branch_fallback"
 
 
 # Session preview = head of the first user message (shown when a session has no title).  A /skill invocation

@@ -368,8 +368,12 @@ def _provider_load_diagnostics(provider_name: str, limit: int = 5) -> list[str]:
     Every failure on the load path (import, ``register()``, subclass
     instantiation) collapses to ``None`` and only ever logs at DEBUG, so a
     status renderer cannot tell *why* a provider is missing. Re-running with
-    ``register_skills=False`` leaves no registry side effects, letting status
-    show the reason instead of claiming the plugin is absent (#130072).
+    ``register_skills=False`` registers no skills, letting status show the
+    reason instead of claiming the plugin is absent (#130072).
+
+    ``load_plugin_module`` execs sibling ``*.py`` modules before the package
+    ``__init__.py``, so sibling failures arrive first and the package-level
+    reason last — the newest ``limit`` records are the informative ones.
     """
     import logging
     from plugins.memory import load_memory_provider
@@ -396,7 +400,7 @@ def _provider_load_diagnostics(provider_name: str, limit: int = 5) -> list[str]:
         root.removeHandler(capture)
         for lg, level in saved_levels:
             lg.setLevel(level)
-    return messages[:limit]
+    return messages[-limit:]
 
 
 def cmd_status(args) -> None:

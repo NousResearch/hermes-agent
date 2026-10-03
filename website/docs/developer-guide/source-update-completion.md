@@ -188,3 +188,27 @@ return. Focused existing tests cover dirty ZIP checks/grafts, snapshots, fleet
 reconciliation, supervisor timing and historical imports. Native service restart
 and Windows/macOS acceptance remain separate required lanes; no live user service
 or user state is touched by this implementation's test runs.
+
+## Crash-cell matrix
+
+Each cell kills a real `hermes update` (or the Desktop hand-off script) at one point
+of the update, then asserts what the user is owed: the next `hermes` launch is
+runnable, the checkout is at the pre-update commit or the target, and nothing the
+dead update left (a git lock, `.hermes-update-in-progress`) blocks the next update.
+A cell that is red on `main` because another lane fixes it carries
+`xfail(strict=False, reason="upd-txn: fixed by <lane>")` until that lane lands.
+
+| Cell | Kill point | Test | Fixing lane |
+|---|---|---|---|
+| Windows `mid_git` | `taskkill /T /F` while the update's git child (fetch / merge / reset) runs | `tests/e2e/core/windows_update/test_crash_cells.py::test_update_killed_mid_git_leaves_a_runnable_install` | LP-COMMIT (stale `.git/index.lock`; launch-time interrupted-pull repair fails on a machine whose only Git is the installer's copy) |
+| Windows `tree_moved` | right after the checkout reached the target, before the update finished | `tests/e2e/core/windows_update/test_crash_cells.py::test_update_killed_after_the_tree_moved_leaves_a_runnable_install` | see the test's marker |
+| Windows `desktop_handoff` | `scripts/desktop-update/windows.ps1` while its `hermes update` child runs | `tests/e2e/core/windows_update/test_crash_cells.py::test_desktop_handoff_killed_mid_run_leaves_a_runnable_install` | see the test's marker |
+| POSIX commit points | per lane | `tests/e2e/core/upgrade/<area>/test_hostile_<lane>.py` | the lane that owns the file |
+
+The Windows cells run in the Windows install + update journey
+(`.github/workflows/windows-install-update-e2e.yml`); push a `wine2e-install/**`
+branch to run them on demand. Both real-update suites are required on a pull
+request whenever the change classifier's `e2e_upgrade` lane fires (any file on
+the update path: `scripts/ci/classify_changes.py`), and the Desktop update suite
+whenever `e2e_desktop_update` fires; they are skipped, and count as passing,
+otherwise. Related: [macOS bundle updates](macos-bundle-updates.md).

@@ -480,6 +480,22 @@ def _configure_quiet_agent(agent) -> None:
     agent.tool_progress_mode = "off"
 
 
+def _looks_like_worker_intent(query: Any) -> bool:
+    """True when ``query`` is the dispatcher's ``work kanban task <id>`` heredoc.
+
+    Matches the same shape ``hermes_cli/kanban_db_dispatch.py::_default_spawn``
+    builds at spawn time, so a hand-launched helper with that prompt but no
+    dispatcher env still surfaces as worker intent at startup (#77825).
+    Native content parts (a vision-capable provider's image_url rows) are
+    never a bare worker prompt and return False.
+    """
+    if not isinstance(query, str):
+        return False
+    import re as _re
+
+    return bool(_re.match(r"^\s*work\s+kanban\s+task\s+\S+\s*$", query.strip()))
+
+
 def _run_single_query_mode(cli, query, image, quiet, oneshot, stream_json: bool = False):
     """``-q``/``--image`` entry: seed an interactive session on a TTY, else run the one-shot turn and exit.
     ``stream_json`` (implies quiet) swaps the plain-text final answer for the JSONL event protocol."""
@@ -507,9 +523,37 @@ def _run_single_query_mode(cli, query, image, quiet, oneshot, stream_json: bool 
     # full timeout. See #86878.
     os.environ["HERMES_SINGLE_QUERY_SESSION"] = "1"
     from hermes_cli.quiet_single_query import exit_single_query
-    if os.environ.get("HERMES_KANBAN_TASK"):
-        from tools.kanban_tools import register_current_worker_from_env
-        if not register_current_worker_from_env():
+    if os.environ.get("HERMES_KANBAN_TASK") or _looks_like_worker_intent(query):
+        # Late-bind the worker-context helpers so a test can monkeypatch
+        # ``tools.kanban_tools.validate_worker_launch_context`` (or
+        # ``register_current_worker_from_env``) to bypass the launch gate or
+        # the dispatcher-reclaim check, respectively, without rewriting the
+        # call site.
+        import tools.kanban_tools as _kanban_tools_mod
+        # Fail closed BEFORE any model/tool execution: the worker-intent check
+        # re-proves the task is live on the resolved board. A helper that
+        # cannot prove its dispatcher-pinned run/claim must NOT enter the
+        # agent loop — that is the untracked-editor race that motivated #77825.
+        # The check is dual-sourced (env + prompt) so a hand-launched
+        # ``hermes chat -q "work kanban task <id>"`` without env is also caught.
+        if not _kanban_tools_mod.validate_worker_launch_context(query=query):
+            # Single actionable diagnostic on stderr; nonzero exit so the
+            # dispatcher's spawn wrapper can book the failure as a refused
+            # worker (not a silent protocol violation). The code is its own
+            # sentinel — reusing KANBAN_TERMINAL_PROVIDER_EXIT_CODE would
+            # sticky-block the card on a launch-context race — and
+            # ``exit_single_query`` leaves the ``[kanban-worker-exit]`` trailer
+            # so a sweep in another process can read the refusal's code.
+            tid = os.environ.get("HERMES_KANBAN_TASK") or ""
+            print(
+                f"kanban worker launch refused for task {tid or '<prompt-only>'}: "
+                f"dispatcher-pinned context is missing or stale on the resolved "
+                f"board; exiting without starting the agent loop.",
+                file=sys.stderr,
+            )
+            from hermes_cli.kanban_db import KANBAN_LAUNCH_CONTEXT_EXIT_CODE
+            exit_single_query(KANBAN_LAUNCH_CONTEXT_EXIT_CODE)
+        if not _kanban_tools_mod.register_current_worker_from_env():
             # No exit trailer: the task log now belongs to the run that replaced this one.
             print(t("cli.single_query.kanban_run_reclaimed"), file=sys.stderr)
             sys.exit(0)

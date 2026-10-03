@@ -13,13 +13,24 @@ from types import SimpleNamespace
 import pytest
 
 import cli
-from hermes_cli.kanban_db import KANBAN_RATE_LIMIT_EXIT_CODE, KANBAN_TERMINAL_PROVIDER_EXIT_CODE
+from hermes_cli.kanban_db import (
+    KANBAN_LAUNCH_CONTEXT_EXIT_CODE,
+    KANBAN_RATE_LIMIT_EXIT_CODE,
+    KANBAN_TERMINAL_PROVIDER_EXIT_CODE,
+)
 
 
 @pytest.fixture(autouse=True)
 def _no_inherited_kanban_env(monkeypatch):
     monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
     monkeypatch.delenv("HERMES_KANBAN_GOAL_MODE", raising=False)
+    # These tests pin the carrier-completeness guarantee above the exit-code
+    # mapping: the fail-closed gate at pre-model launch is its own contract
+    # (pinned by ``tests/tools/test_kanban_worker_launch_context.py``), so
+    # these scenarios do not re-prove it on every parameter row.
+    import tools.kanban_tools as _kanban_tools_mod
+    monkeypatch.setattr(_kanban_tools_mod, "validate_worker_launch_context",
+                        lambda *, query=None: True)
 
 
 def _run_non_quiet(monkeypatch, turn_result):
@@ -107,3 +118,21 @@ def test_quiet_kanban_worker_exits_tempfail_when_credentials_are_rate_limited(mo
     with pytest.raises(SystemExit) as exc:
         cli._run_single_query_mode(stub, "do the thing", None, True, True)
     assert exc.value.code == expected
+
+
+def test_refused_worker_launch_exits_with_its_own_code_and_trailer(monkeypatch, capsys):
+    """#77825: the pre-model launch gate must not reuse ``KANBAN_TERMINAL_PROVIDER_EXIT_CODE``.
+
+    That code parks the card blocked on the FIRST occurrence, so a transient claim race would
+    become a card an operator has to unblock by hand. The refusal also has to leave the
+    ``[kanban-worker-exit]`` trailer behind, or a sweep in another process cannot read its code."""
+    monkeypatch.setenv("HERMES_KANBAN_TASK", "t_abc123")
+    import tools.kanban_tools as _kanban_tools_mod
+    monkeypatch.setattr(_kanban_tools_mod, "validate_worker_launch_context",
+                        lambda *, query=None: False)
+
+    code = _run_non_quiet(monkeypatch, None)
+
+    assert code == KANBAN_LAUNCH_CONTEXT_EXIT_CODE
+    assert code not in (KANBAN_RATE_LIMIT_EXIT_CODE, KANBAN_TERMINAL_PROVIDER_EXIT_CODE)
+    assert f"[kanban-worker-exit] rc={KANBAN_LAUNCH_CONTEXT_EXIT_CODE}" in capsys.readouterr().err

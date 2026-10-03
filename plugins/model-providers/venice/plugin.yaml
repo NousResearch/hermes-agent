@@ -1,0 +1,5 @@
+name: venice
+kind: model-provider
+version: 1.0.0
+description: Venice.ai — private, uncensored multi-model API
+author: bernardokyotoku

@@ -15,6 +15,7 @@ from agent.image_routing import (
     _supports_vision_override,
     build_native_content_parts,
     decide_image_input_mode,
+    next_image_index,
     extract_image_refs,
 )
 
@@ -312,8 +313,31 @@ class TestBuildNativeContentParts:
         assert str(img1) in text_part["text"]
         assert str(img2) in text_part["text"]
 
+    def test_first_index_numbers_handles_the_history_budget_still_parses(self, tmp_path: Path):
+        """``first_index`` numbers every handle in attach order (paths, then URLs) and the
+        numbered form is still a handle for the per-turn image budget (Muse Code ``[Image #N]``)."""
+        from tools.vision_tools_history_budget import _image_key, _native_turn_keys
 
+        img = tmp_path / "a{b}.png"  # braces: the ordinal must never go through str.format on a path
+        img.write_bytes(_png_bytes())
+        parts, _ = build_native_content_parts(
+            "compare", [str(img)], ["https://example.com/d.png"], first_index=3)
+        text = parts[0]["text"]
+        assert f"[Image #3 attached at: {img}]" in text
+        assert "[Image #4 attached: https://example.com/d.png]" in text
+        assert _image_key(str(img)) in _native_turn_keys(parts)
+        # The next turn continues the session-wide numbering from what is already in history.
+        assert next_image_index([{"role": "user", "content": parts}]) == 5
 
+    def test_next_image_index_counts_legacy_handles_and_ignores_tool_rows(self):
+        assert next_image_index([]) == 1
+        history = [
+            {"role": "user", "content": "look\n\n[Image attached at: /x/a.png]\n[Image attached at: /x/b.png]"},
+            {"role": "tool", "content": "[Image attached at: /not/a/user/turn.png]"},
+            {"role": "user", "content": [{"type": "text", "text": "[Image #2 attached: https://e.com/c.png]"}]},
+        ]
+        # Two legacy unnumbered handles + one numbered #2: three images seen, next is #4.
+        assert next_image_index(history) == 4
 
 
 # ─── Oversize handling ───────────────────────────────────────────────────────

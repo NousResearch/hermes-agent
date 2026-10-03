@@ -142,7 +142,7 @@ def release_embed(image_url: str) -> None:
 # ``image_routing.build_native_content_parts``, which writes one ``[Image attached at: <path>]`` /
 # ``[Image attached: <url>]`` handle per image into the text part; ``conversation_loop.run_conversation``
 # scopes those handles here for the turn and the tool inherits them through contextvars.
-_NATIVE_HANDLE_RE = re.compile(r"^\[Image attached(?: at)?: (.+?)\]\s*$", re.MULTILINE)
+_NATIVE_HANDLE_RE = re.compile(r"^\[Image(?: #\d+)? attached(?: at)?: (.+?)\]\s*$", re.MULTILINE)
 _native_turn_images: ContextVar[frozenset[str]] = ContextVar("vision_native_turn_images", default=frozenset())
 
 

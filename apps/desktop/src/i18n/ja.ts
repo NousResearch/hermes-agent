@@ -2408,6 +2408,48 @@ export const ja = defineLocale({
     copyPath: 'パスをコピー'
   },
 
+  projects: {
+    search: 'プロジェクトを検索...',
+    refresh: 'プロジェクトを更新',
+    refreshing: 'プロジェクトを更新中',
+    loading: 'プロジェクトを読み込み中',
+    emptyTitle: 'プロジェクトはまだありません',
+    emptyDesc: 'プロジェクトを作成すると、フォルダー、リポジトリ、セッションをまとめて管理できます。',
+    newProject: '新しいプロジェクト',
+    noMatchesTitle: '一致するプロジェクトはありません',
+    unavailableTitle: 'プロジェクトを利用できません',
+    unavailableDesc: '接続中の Hermes バックエンドはまだプロジェクトに対応していません。利用するには Hermes を更新してください。',
+    selectTitle: 'プロジェクトを選択',
+    selectDesc: 'プロジェクトを選ぶと、フォルダー、リポジトリ、セッションが表示されます。',
+    autoDiscovered: '自動検出されたリポジトリ',
+    sessionCount: count => (count === 1 ? '1 件のセッション' : `${count} 件のセッション`),
+    primaryPath: 'メインフォルダー',
+    noPath: 'フォルダーなし',
+    folders: 'フォルダー',
+    primaryFolder: 'メイン',
+    repositories: 'リポジトリ',
+    noRepositories: 'このプロジェクトにはまだ git リポジトリがありません。',
+    laneMain: 'メインのチェックアウト',
+    laneWorktree: 'ワークツリー',
+    laneKanban: 'Kanban タスクのワークツリー',
+    activeSessions: '実行中',
+    noActiveSessions: '現在このプロジェクトで作業中のエージェントはいません。',
+    sessions: 'セッション',
+    noSessions: 'このプロジェクトにはまだセッションがありません。',
+    sessionsFailed: 'このプロジェクトのセッションをすべて読み込めませんでした。最新のものを表示しています。',
+    untitledSession: '無題のセッション',
+    status: {
+      background: 'バックグラウンドで実行中',
+      'needs-input': '入力待ち',
+      stalled: '停止中',
+      working: '実行中'
+    },
+    openArtifacts: 'アーティファクト',
+    openKanban: 'Kanban',
+    showInSidebar: 'サイドバーに表示',
+    openOverview: 'プロジェクトの概要を開く'
+  },
+
   artifactCard: {
     kind: { code: 'コード', html: 'インタラクティブページ', svg: 'グラフィック' },
     generating: lines => `生成中… ${lines} 行`,
@@ -2478,7 +2520,8 @@ export const ja = defineLocale({
       capabilities: 'スキルとツール',
       messaging: 'メッセージング',
       artifacts: 'アーティファクト',
-      cron: 'スケジュール済みジョブ'
+      cron: 'スケジュール済みジョブ',
+      projects: 'プロジェクト'
     },
     searchAria: 'セッションを検索',
     searchPlaceholder: 'セッションを検索…',

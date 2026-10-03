@@ -2913,6 +2913,43 @@ export interface Translations {
     copyPath: string
   }
 
+  projects: {
+    search: string
+    refresh: string
+    refreshing: string
+    loading: string
+    emptyTitle: string
+    emptyDesc: string
+    newProject: string
+    noMatchesTitle: string
+    unavailableTitle: string
+    unavailableDesc: string
+    selectTitle: string
+    selectDesc: string
+    autoDiscovered: string
+    sessionCount: (count: number) => string
+    primaryPath: string
+    noPath: string
+    folders: string
+    primaryFolder: string
+    repositories: string
+    noRepositories: string
+    laneMain: string
+    laneWorktree: string
+    laneKanban: string
+    activeSessions: string
+    noActiveSessions: string
+    sessions: string
+    noSessions: string
+    sessionsFailed: string
+    untitledSession: string
+    status: Record<'background' | 'needs-input' | 'stalled' | 'working', string>
+    openArtifacts: string
+    openKanban: string
+    showInSidebar: string
+    openOverview: string
+  }
+
   artifactCard: {
     kind: Record<'code' | 'html' | 'svg', string>
     generating: (lines: number) => string

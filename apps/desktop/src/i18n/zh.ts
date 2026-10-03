@@ -3265,6 +3265,48 @@ export const zh = defineLocale({
     copyPath: '复制路径'
   },
 
+  projects: {
+    search: '搜索项目...',
+    refresh: '刷新项目',
+    refreshing: '正在刷新项目',
+    loading: '正在加载项目',
+    emptyTitle: '还没有项目',
+    emptyDesc: '创建项目，把它的文件夹、仓库和会话集中在一起。',
+    newProject: '新建项目',
+    noMatchesTitle: '没有匹配的项目',
+    unavailableTitle: '项目不可用',
+    unavailableDesc: '当前连接的 Hermes 后端尚不支持项目。请更新 Hermes 后使用。',
+    selectTitle: '选择一个项目',
+    selectDesc: '选择项目以查看其文件夹、仓库和会话。',
+    autoDiscovered: '自动发现的仓库',
+    sessionCount: count => (count === 1 ? '1 个会话' : `${count} 个会话`),
+    primaryPath: '主文件夹',
+    noPath: '无文件夹',
+    folders: '文件夹',
+    primaryFolder: '主',
+    repositories: '仓库',
+    noRepositories: '此项目中还没有 git 仓库。',
+    laneMain: '主检出',
+    laneWorktree: '工作树',
+    laneKanban: '看板任务工作树',
+    activeSessions: '正在进行',
+    noActiveSessions: '当前没有智能体在此项目中工作。',
+    sessions: '会话',
+    noSessions: '此项目中还没有会话。',
+    sessionsFailed: '无法加载此项目的全部会话，仅显示最近的会话。',
+    untitledSession: '未命名会话',
+    status: {
+      background: '在后台运行',
+      'needs-input': '需要输入',
+      stalled: '已停滞',
+      working: '运行中'
+    },
+    openArtifacts: '产物',
+    openKanban: '看板',
+    showInSidebar: '在侧边栏中显示',
+    openOverview: '打开项目概览'
+  },
+
   artifactCard: {
     kind: { code: '代码', html: '交互页面', svg: '图形' },
     generating: lines => `生成中… ${lines} 行`,
@@ -3334,7 +3376,8 @@ export const zh = defineLocale({
       capabilities: '技能与工具',
       messaging: '消息平台',
       artifacts: '产物',
-      cron: '定时任务'
+      cron: '定时任务',
+      projects: '项目'
     },
     searchAria: '搜索会话',
     searchPlaceholder: '搜索会话…',

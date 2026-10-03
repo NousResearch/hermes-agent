@@ -3852,6 +3852,48 @@ export const deOverrides = {
     copyUrl: 'URL kopieren',
     copyPath: 'Pfad kopieren'
   },
+
+  projects: {
+    search: 'Projekte durchsuchen...',
+    refresh: 'Projekte aktualisieren',
+    refreshing: 'Projekte werden aktualisiert',
+    loading: 'Projekte werden geladen',
+    emptyTitle: 'Noch keine Projekte',
+    emptyDesc: 'Erstellen Sie ein Projekt, um Ordner, Repositorys und Sessions zusammenzuhalten.',
+    newProject: 'Neues Projekt',
+    noMatchesTitle: 'Keine passenden Projekte',
+    unavailableTitle: 'Projekte sind nicht verfügbar',
+    unavailableDesc: 'Das verbundene Hermes-Backend unterstützt noch keine Projekte. Aktualisieren Sie Hermes, um sie zu nutzen.',
+    selectTitle: 'Projekt auswählen',
+    selectDesc: 'Wählen Sie ein Projekt, um seine Ordner, Repositorys und Sessions zu sehen.',
+    autoDiscovered: 'Automatisch erkanntes Repository',
+    sessionCount: count => (count === 1 ? '1 Session' : `${count} Sessions`),
+    primaryPath: 'Hauptordner',
+    noPath: 'Kein Ordner',
+    folders: 'Ordner',
+    primaryFolder: 'Primär',
+    repositories: 'Repositorys',
+    noRepositories: 'Noch keine Git-Repositorys in diesem Projekt.',
+    laneMain: 'Haupt-Checkout',
+    laneWorktree: 'Worktree',
+    laneKanban: 'Kanban-Aufgaben-Worktrees',
+    activeSessions: 'Gerade aktiv',
+    noActiveSessions: 'Gerade arbeiten keine Agenten in diesem Projekt.',
+    sessions: 'Sessions',
+    noSessions: 'Noch keine Sessions in diesem Projekt.',
+    sessionsFailed: 'Nicht alle Sessions dieses Projekts konnten geladen werden. Die neuesten werden angezeigt.',
+    untitledSession: 'Unbenannte Session',
+    status: {
+      background: 'Läuft im Hintergrund',
+      'needs-input': 'Eingabe nötig',
+      stalled: 'Hängt',
+      working: 'In Arbeit'
+    },
+    openArtifacts: 'Artefakte',
+    openKanban: 'Kanban',
+    showInSidebar: 'In der Seitenleiste zeigen',
+    openOverview: 'Projektübersicht öffnen'
+  },
   artifactCard: {
     kind: {
       code: 'Code',
@@ -3923,7 +3965,8 @@ export const deOverrides = {
       capabilities: 'Fähigkeiten',
       messaging: 'Messaging',
       artifacts: 'Artefakte',
-      cron: 'Geplante Jobs'
+      cron: 'Geplante Jobs',
+      projects: 'Projekte'
     },
     searchAria: 'Sessions durchsuchen',
     searchPlaceholder: 'Sessions durchsuchen…',

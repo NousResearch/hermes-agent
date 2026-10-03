@@ -2601,6 +2601,48 @@ export const ru = defineLocale({
     copyPath: 'Копировать путь'
   },
 
+  projects: {
+    search: 'Поиск проектов...',
+    refresh: 'Обновить проекты',
+    refreshing: 'Обновление проектов',
+    loading: 'Загрузка проектов',
+    emptyTitle: 'Проектов пока нет',
+    emptyDesc: 'Создайте проект, чтобы держать его папки, репозитории и сеансы вместе.',
+    newProject: 'Новый проект',
+    noMatchesTitle: 'Нет подходящих проектов',
+    unavailableTitle: 'Проекты недоступны',
+    unavailableDesc: 'Подключённый бэкенд Hermes пока не поддерживает проекты. Обновите Hermes, чтобы использовать их.',
+    selectTitle: 'Выберите проект',
+    selectDesc: 'Выберите проект, чтобы увидеть его папки, репозитории и сеансы.',
+    autoDiscovered: 'Автоматически найденный репозиторий',
+    sessionCount: count => (count === 1 ? '1 сеанс' : `Сеансов: ${count}`),
+    primaryPath: 'Основная папка',
+    noPath: 'Без папки',
+    folders: 'Папки',
+    primaryFolder: 'Основная',
+    repositories: 'Репозитории',
+    noRepositories: 'В этом проекте пока нет git-репозиториев.',
+    laneMain: 'Основная копия',
+    laneWorktree: 'Рабочее дерево',
+    laneKanban: 'Рабочие деревья задач Kanban',
+    activeSessions: 'Активны сейчас',
+    noActiveSessions: 'Сейчас в этом проекте не работает ни один агент.',
+    sessions: 'Сеансы',
+    noSessions: 'В этом проекте пока нет сеансов.',
+    sessionsFailed: 'Не удалось загрузить все сеансы этого проекта. Показаны самые недавние.',
+    untitledSession: 'Сеанс без названия',
+    status: {
+      background: 'Выполняется в фоне',
+      'needs-input': 'Нужен ввод',
+      stalled: 'Завис',
+      working: 'В работе'
+    },
+    openArtifacts: 'Артефакты',
+    openKanban: 'Kanban',
+    showInSidebar: 'Показать на боковой панели',
+    openOverview: 'Открыть обзор проекта'
+  },
+
   artifactCard: {
     kind: { code: 'Код', html: 'Интерактивная страница', svg: 'Графика' },
     generating: lines => `Генерация… ${lines} ${RU_NOUN(lines, 'строка', 'строки', 'строк')}`,
@@ -2669,7 +2711,8 @@ export const ru = defineLocale({
       capabilities: 'Возможности',
       messaging: 'Сообщения',
       artifacts: 'Артефакты',
-      cron: 'Запланированные задачи'
+      cron: 'Запланированные задачи',
+      projects: 'Проекты'
     },
     searchAria: 'Поиск сеансов',
     searchPlaceholder: 'Поиск сеансов…',

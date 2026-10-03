@@ -3842,6 +3842,48 @@ export const esOverrides = {
     copyUrl: 'Copiar URL',
     copyPath: 'Copiar ruta'
   },
+
+  projects: {
+    search: 'Buscar proyectos...',
+    refresh: 'Actualizar proyectos',
+    refreshing: 'Actualizando proyectos',
+    loading: 'Cargando proyectos',
+    emptyTitle: 'Aún no hay proyectos',
+    emptyDesc: 'Crea un proyecto para mantener juntas sus carpetas, repositorios y sesiones.',
+    newProject: 'Nuevo proyecto',
+    noMatchesTitle: 'No hay proyectos que coincidan',
+    unavailableTitle: 'Los proyectos no están disponibles',
+    unavailableDesc: 'El backend de Hermes conectado aún no admite proyectos. Actualiza Hermes para usarlos.',
+    selectTitle: 'Selecciona un proyecto',
+    selectDesc: 'Elige un proyecto para ver sus carpetas, repositorios y sesiones.',
+    autoDiscovered: 'Repositorio detectado automáticamente',
+    sessionCount: count => (count === 1 ? '1 sesión' : `${count} sesiones`),
+    primaryPath: 'Carpeta principal',
+    noPath: 'Sin carpeta',
+    folders: 'Carpetas',
+    primaryFolder: 'Principal',
+    repositories: 'Repositorios',
+    noRepositories: 'Este proyecto aún no tiene repositorios git.',
+    laneMain: 'Checkout principal',
+    laneWorktree: 'Worktree',
+    laneKanban: 'Worktrees de tareas Kanban',
+    activeSessions: 'Activas ahora',
+    noActiveSessions: 'Ningún agente está trabajando en este proyecto ahora mismo.',
+    sessions: 'Sesiones',
+    noSessions: 'Este proyecto aún no tiene sesiones.',
+    sessionsFailed: 'No se pudieron cargar todas las sesiones de este proyecto. Se muestran las más recientes.',
+    untitledSession: 'Sesión sin título',
+    status: {
+      background: 'En segundo plano',
+      'needs-input': 'Requiere respuesta',
+      stalled: 'Detenida',
+      working: 'Trabajando'
+    },
+    openArtifacts: 'Artefactos',
+    openKanban: 'Kanban',
+    showInSidebar: 'Mostrar en la barra lateral',
+    openOverview: 'Abrir resumen del proyecto'
+  },
   artifactCard: {
     kind: {
       code: 'Código',
@@ -3913,7 +3955,8 @@ export const esOverrides = {
       capabilities: 'Capacidades',
       messaging: 'Mensajería',
       artifacts: 'Artefactos',
-      cron: 'Tareas programadas'
+      cron: 'Tareas programadas',
+      projects: 'Proyectos'
     },
     searchAria: 'Buscar sesiones',
     searchPlaceholder: 'Buscar sesiones…',

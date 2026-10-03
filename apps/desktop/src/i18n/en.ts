@@ -3470,6 +3470,48 @@ export const en: Translations = {
     copyPath: 'Copy path'
   },
 
+  projects: {
+    search: 'Search projects...',
+    refresh: 'Refresh projects',
+    refreshing: 'Refreshing projects',
+    loading: 'Loading projects',
+    emptyTitle: 'No projects yet',
+    emptyDesc: 'Create a project to keep its folders, repositories, and sessions together.',
+    newProject: 'New project',
+    noMatchesTitle: 'No matching projects',
+    unavailableTitle: 'Projects are unavailable',
+    unavailableDesc: 'The connected Hermes backend does not support projects yet. Update Hermes to use them.',
+    selectTitle: 'Select a project',
+    selectDesc: 'Choose a project to see its folders, repositories, and sessions.',
+    autoDiscovered: 'Auto-discovered repository',
+    sessionCount: count => (count === 1 ? '1 session' : `${count} sessions`),
+    primaryPath: 'Primary folder',
+    noPath: 'No folder',
+    folders: 'Folders',
+    primaryFolder: 'Primary',
+    repositories: 'Repositories',
+    noRepositories: 'No git repositories in this project yet.',
+    laneMain: 'Main checkout',
+    laneWorktree: 'Worktree',
+    laneKanban: 'Kanban task worktrees',
+    activeSessions: 'Active now',
+    noActiveSessions: 'No agents are working in this project right now.',
+    sessions: 'Sessions',
+    noSessions: 'No sessions in this project yet.',
+    sessionsFailed: "Couldn't load every session for this project. Showing the most recent ones.",
+    untitledSession: 'Untitled session',
+    status: {
+      background: 'Running in background',
+      'needs-input': 'Needs input',
+      stalled: 'Stalled',
+      working: 'Working'
+    },
+    openArtifacts: 'Artifacts',
+    openKanban: 'Kanban',
+    showInSidebar: 'Show in sidebar',
+    openOverview: 'Open project overview'
+  },
+
   artifactCard: {
     kind: { code: 'Code', html: 'Interactive page', svg: 'Graphic' },
     generating: lines => `Generating… ${lines} lines`,
@@ -3539,7 +3581,8 @@ export const en: Translations = {
       capabilities: 'Capabilities',
       messaging: 'Messaging',
       artifacts: 'Artifacts',
-      cron: 'Scheduled jobs'
+      cron: 'Scheduled jobs',
+      projects: 'Projects'
     },
     searchAria: 'Search sessions',
     searchPlaceholder: 'Search sessions…',

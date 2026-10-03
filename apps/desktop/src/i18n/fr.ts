@@ -3861,6 +3861,48 @@ export const frOverrides = {
     copyUrl: "Copier l'URL",
     copyPath: 'Copier le chemin'
   },
+
+  projects: {
+    search: 'Rechercher des projets...',
+    refresh: 'Actualiser les projets',
+    refreshing: 'Actualisation des projets',
+    loading: 'Chargement des projets',
+    emptyTitle: 'Aucun projet pour le moment',
+    emptyDesc: 'Créez un projet pour regrouper ses dossiers, dépôts et sessions.',
+    newProject: 'Nouveau projet',
+    noMatchesTitle: 'Aucun projet correspondant',
+    unavailableTitle: 'Les projets sont indisponibles',
+    unavailableDesc: 'Le backend Hermes connecté ne prend pas encore en charge les projets. Mettez à jour Hermes pour les utiliser.',
+    selectTitle: 'Sélectionnez un projet',
+    selectDesc: 'Choisissez un projet pour voir ses dossiers, dépôts et sessions.',
+    autoDiscovered: 'Dépôt détecté automatiquement',
+    sessionCount: count => (count === 1 ? '1 session' : `${count} sessions`),
+    primaryPath: 'Dossier principal',
+    noPath: 'Aucun dossier',
+    folders: 'Dossiers',
+    primaryFolder: 'Principal',
+    repositories: 'Dépôts',
+    noRepositories: 'Aucun dépôt git dans ce projet pour le moment.',
+    laneMain: 'Checkout principal',
+    laneWorktree: 'Worktree',
+    laneKanban: 'Worktrees des tâches Kanban',
+    activeSessions: 'Actives maintenant',
+    noActiveSessions: "Aucun agent ne travaille sur ce projet pour l'instant.",
+    sessions: 'Sessions',
+    noSessions: 'Aucune session dans ce projet pour le moment.',
+    sessionsFailed: 'Impossible de charger toutes les sessions de ce projet. Les plus récentes sont affichées.',
+    untitledSession: 'Session sans titre',
+    status: {
+      background: 'En arrière-plan',
+      'needs-input': 'Action requise',
+      stalled: 'Bloquée',
+      working: 'En cours'
+    },
+    openArtifacts: 'Artefacts',
+    openKanban: 'Kanban',
+    showInSidebar: 'Afficher dans la barre latérale',
+    openOverview: "Ouvrir l'aperçu du projet"
+  },
   artifactCard: {
     kind: {
       code: 'Code',
@@ -3932,7 +3974,8 @@ export const frOverrides = {
       capabilities: 'Capacités',
       messaging: 'Messagerie',
       artifacts: 'Artefacts',
-      cron: 'Tâches planifiées'
+      cron: 'Tâches planifiées',
+      projects: 'Projets'
     },
     searchAria: 'Rechercher des sessions',
     searchPlaceholder: 'Rechercher des sessions…',

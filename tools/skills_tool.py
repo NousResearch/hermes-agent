@@ -75,7 +75,7 @@ _secret_capture_callback = None
 _LOOKUP_HINT = "Use a skill name or relative path within the skills directory."
 
 
-def _skill_lookup_path_error(name: str) -> Optional[str]:
+def skill_lookup_path_error(name: str) -> Optional[str]:
     """Error if lookup *name* could escape the search roots it is joined onto. Windows drive
     paths are rejected too: their ``:`` would be misread as a plugin namespace separator."""
     from tools.path_security import has_traversal_component
@@ -87,6 +87,9 @@ def _skill_lookup_path_error(name: str) -> Optional[str]:
     if has_traversal_component(candidate):
         return "Skill name cannot contain '..' path traversal components."
     return None
+
+
+_skill_lookup_path_error = skill_lookup_path_error  # original private spelling, kept as an alias
 
 
 def load_env() -> Dict[str, str]:
@@ -170,7 +173,7 @@ def _is_skill_disabled(name: str, platform: str = None) -> bool:
         return False
 
 
-def _skill_search_dirs() -> Tuple[list, list, Path]:
+def skill_search_dirs() -> Tuple[list, list, Path]:
     """(project_dirs, all_dirs, active_skills_dir); trusted project-local dirs come FIRST so
     first-wins dedup / the collision resolver prefer them."""
     from agent.skill_utils import get_external_skills_dirs, get_project_skills_dirs
@@ -181,7 +184,10 @@ def _skill_search_dirs() -> Tuple[list, list, Path]:
     return project_dirs, all_dirs, active_skills_dir
 
 
-def _find_all_skills(*, skip_disabled: bool = False) -> List[Dict[str, Any]]:
+_skill_search_dirs = skill_search_dirs  # original private spelling, kept as an alias
+
+
+def find_all_skills(*, skip_disabled: bool = False) -> List[Dict[str, Any]]:
     """All skills (name, description, category) across project/local/external dirs, first-wins
     by name; cached per session. ``skip_disabled=True`` ignores disabled state (config UI)."""
     from agent.skill_utils import iter_project_skill_files, iter_skill_index_files
@@ -226,9 +232,15 @@ def _find_all_skills(*, skip_disabled: bool = False) -> List[Dict[str, Any]]:
     return [dict(s) for s in skills]
 
 
-def _sort_skills(skills: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+_find_all_skills = find_all_skills  # original private spelling, kept as an alias
+
+
+def sort_skills(skills: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """Keep every skill listing path ordered the same way."""
     return sorted(skills, key=lambda s: (s.get("category") or "", s["name"]))
+
+
+_sort_skills = sort_skills  # original private spelling, kept as an alias
 
 
 def skills_list(category: str = None, task_id: str = None) -> str:
@@ -500,7 +512,7 @@ def _provably_same_skill(candidates) -> bool:
         return False
 
 
-def _locate_skill(name: str, local_category_name: Optional[str], project_dirs: list, all_dirs):
+def locate_skill(name: str, local_category_name: Optional[str], project_dirs: list, all_dirs):
     """Unique on-disk skill for *name*: collision refusal, project-tier precedence, same-root
     precedence, quarantine gate, not-found listing. ``(error_json, skill_dir, skill_md)``;
     skill_md set iff no error."""
@@ -551,6 +563,9 @@ def _locate_skill(name: str, local_category_name: Optional[str], project_dirs: l
         return _fail(f"Skill '{name}' not found.", available_skills=available,
                      hint="Use skills_list to see all available skills"), None, None
     return None, skill_dir, skill_md
+
+
+_locate_skill = locate_skill  # original private spelling, kept as an alias
 
 
 def _log_security_warnings(name: str, skill_md: Path, content: str, all_dirs, active_skills_dir):

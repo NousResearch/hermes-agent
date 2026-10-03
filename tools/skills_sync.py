@@ -184,7 +184,7 @@ def _compute_relative_dest(skill_dir: Path, bundled_dir: Path) -> Path:
     return _skills_dir() / skill_dir.relative_to(bundled_dir)
 
 
-def _dir_hash(directory: Path, *, include_runtime_cache: bool = False) -> str:
+def dir_hash(directory: Path, *, include_runtime_cache: bool = False) -> str:
     """MD5 of package paths/content, excluding generated runtime state.
 
     The legacy option is only for proving an exact pre-filter origin match.
@@ -197,6 +197,9 @@ def _dir_hash(directory: Path, *, include_runtime_cache: bool = False) -> str:
                 hasher.update(str(fpath.relative_to(directory)).encode("utf-8"))
                 hasher.update(fpath.read_bytes())
     return hasher.hexdigest()
+
+
+_dir_hash = dir_hash  # original private spelling, kept as an alias
 
 
 def _matches_origin_hash(directory: Path, origin_hash: str, user_hash: Optional[str] = None) -> bool:

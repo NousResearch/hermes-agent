@@ -243,7 +243,7 @@ def list_archived_skill_names() -> List[str]:
     return sorted({p.name for p in root.iterdir() if p.is_dir()}) if root.exists() else []
 
 
-def _read_skill_name(skill_md: Path, fallback: str) -> str:
+def read_skill_name(skill_md: Path, fallback: str) -> str:
     """The frontmatter ``name:`` field of a SKILL.md (first 4000 chars), else *fallback*."""
     try:
         lines = [line.strip() for line in skill_md.read_text(encoding="utf-8-sig", errors="replace")[:4000].split("\n")]
@@ -255,6 +255,9 @@ def _read_skill_name(skill_md: Path, fallback: str) -> str:
     block = block[:block.index("---")] if "---" in block else block
     values = (line.split(":", 1)[1].strip().strip("\"'") for line in block if line.startswith("name:"))
     return next((v for v in values if v), fallback)
+
+
+_read_skill_name = read_skill_name  # original private spelling, kept as an alias
 
 
 def is_agent_created(skill_name: str) -> bool:

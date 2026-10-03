@@ -274,7 +274,7 @@ async def test_queued_terminal_turn_owns_the_silence_verdict(monkeypatch, tmp_pa
 ])
 def test_one_turn_answering_several_messages_is_addressed_if_any_was(opener, absorbed, merged):
     """A merged pending message answers both texts, so an addressed one keeps the fallback."""
-    from gateway.platforms.base import merge_pending_message_event
+    from gateway.platforms.base_pending_merge import merge_pending_message_event
 
     pending = {"k": _event(reply_expected=opener)}
     merge_pending_message_event(pending, "k", _event(reply_expected=absorbed), merge_text=True)

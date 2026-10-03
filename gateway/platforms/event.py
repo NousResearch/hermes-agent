@@ -10,7 +10,7 @@ from datetime import datetime
 from enum import Enum
 from typing import Any, Dict, List, Optional
 
-from gateway.session import SessionSource
+from gateway.session import SessionSource, neutralize_untrusted_inline_text
 
 # Desktop attachment reference tags prepended by buildContextText before the
 # user's visible text (e.g. "@image:/tmp/foo.png\n\n/moa ask something").
@@ -86,8 +86,9 @@ class MessageEvent:
     auto_skill: Optional[str | list[str]] = None
     # Per-channel ephemeral system prompt; applied at API call time, never persisted to transcript.
     channel_prompt: Optional[str] = None
-    # History-backfilled channel context (missed under require_mention); kept out of ``text`` so
-    # run.py's sender-prefix logic sees only the trigger message.
+    # Other people's text shown before the sender's message: history backfill (missed under
+    # require_mention), thread history, and forwarded or shared messages. Kept out of ``text`` so
+    # the sender prefix and ``@`` reference expansion apply only to the sender's own words.
     channel_context: Optional[str] = None
     # Set for synthetic events (e.g. background-process notifications) that must bypass user authorization.
     internal: bool = False
@@ -122,6 +123,41 @@ class MessageEvent:
         """
         return _ATTACHMENT_REF_RE.sub("", (self.text or "").lstrip()).lstrip()
 
+    def _replies_to_message(self) -> bool:
+        return bool(self.reply_to_message_id or self.reply_to_text)
+
+    def _reply_context(self) -> tuple:
+        return (self.reply_to_message_id, self.reply_to_text, self.reply_to_author_id,
+                self.reply_to_author_name, bool(self.reply_to_is_own_message))
+
+    def reply_context_conflicts(self, other: "MessageEvent") -> bool:
+        """True when both events reply to a message and their reply contexts differ. A merged
+        event has room for only one reply context."""
+        return (self._replies_to_message() and other._replies_to_message()
+                and self._reply_context() != other._reply_context())
+
+    def absorb_reply_context(self, other: "MessageEvent") -> None:
+        """One turn now answers *other* too: take its reply context if this event has none."""
+        if self._replies_to_message() or not other._replies_to_message():
+            return
+        (self.reply_to_message_id, self.reply_to_text, self.reply_to_author_id,
+         self.reply_to_author_name, self.reply_to_is_own_message) = other._reply_context()
+    def add_channel_context(self, block: str) -> None:
+        """Append *block* to ``channel_context``, after a blank line."""
+        block = block.strip()
+        if not block:
+            return
+        self.channel_context = f"{self.channel_context.rstrip()}\n\n{block}" if self.channel_context else block
+
+    def text_with_channel_context(self, text: str) -> str:
+        """*text* after ``channel_context`` and a ``[New message]`` marker, as the model sees it."""
+        return f"{self.channel_context}\n\n[New message]\n{text}" if self.channel_context else text
+
+    def absorb_channel_context(self, other: "MessageEvent") -> None:
+        """Keep *other*'s ``channel_context`` when *other* is merged into this event."""
+        if other.channel_context and other.channel_context != self.channel_context:
+            self.add_channel_context(other.channel_context)
+
     def is_command(self) -> bool:
         """Check if this is a command message (e.g., /new, /reset)."""
         return self.allow_gateway_control and self._command_text().startswith("/")
@@ -142,3 +178,11 @@ class MessageEvent:
         args = parts[1] if len(parts) > 1 else ""
         # iOS auto-corrects -- to — (em dash) and - to – (en dash)
         return args.replace("\u2014\u2014", "--").replace("\u2014", "--").replace("\u2013", "-")
+
+
+def attributed_context(label: str, text: str, author: Optional[str] = None) -> str:
+    """A ``channel_context`` block for text that someone other than the sender wrote, headed
+    ``[<label>]`` or ``[<label> from <author>]``."""
+    author = neutralize_untrusted_inline_text(author) if author else ""
+    header = f"[{label} from {author}]" if author else f"[{label}]"
+    return f"{header}\n{text.strip()}"

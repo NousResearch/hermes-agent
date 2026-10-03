@@ -67,6 +67,13 @@ def _env_multiplex_profiles_override() -> "bool | None":
 # What the runner does when the last messaging adapter goes down (GatewayConfig.on_all_adapters_down).
 ON_ALL_ADAPTERS_DOWN_POLICIES = ("exit", "stay_alive")
 
+# Discord's ready-wait includes slash-command registration, which walks the skill catalog on disk
+# (#110707); that cost grows with the number of skills and regularly exceeds the 30s global connect
+# default on reconnects (#132033). The reconnect attempt gets this full budget; the cold-start
+# attempt keeps the 30s global cap so an unreachable Discord can't hold `running` hostage (the
+# Telegram-style split: one bounded try, then the reconnect watcher retries with the full budget).
+DISCORD_CONNECT_TIMEOUT_SECS_DEFAULT = 90.0
+
 
 def _env_on_all_adapters_down_override() -> "str | None":
     """GATEWAY_ON_ALL_ADAPTERS_DOWN operator override: 'exit'/'stay_alive' for a recognized token.

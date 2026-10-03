@@ -40,6 +40,7 @@ from tui_gateway import git_probe
 from tui_gateway._env import env_float, env_int
 from tui_gateway.turn_marker import clear_turn_marker, marker_writer_state, read_turn_marker, record_turn_start  # noqa: F401
 from tui_gateway.contracts import registry as _contracts
+from tui_gateway.session_installs_notice import maybe_show as _maybe_show_installs_notice
 # User-facing copy shared with the split method modules (they close over this namespace).
 from tui_gateway.user_messages import (  # noqa: F401
     AGENT_BUILD_ABANDONED, AGENT_MISSING_FOR_TURN, AGENT_STILL_STARTING, agent_init_failed_message, busy_message,
@@ -1198,6 +1199,7 @@ def _start_agent_build(sid: str, session: dict) -> None:
             # MCP fleet, and live-transport sessions are never reaped, so fleets would accumulate.
             notify_registered = _wire_session_agent(sid, key, agent)
             _announce_built_agent(sid, key, current, agent)
+            _maybe_show_installs_notice(sid, current)
         except Exception as e:
             from agent.auxiliary_unavailable import ProviderNotConfiguredError
             current["agent_error"] = str(e)

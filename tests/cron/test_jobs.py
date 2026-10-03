@@ -403,7 +403,7 @@ class TestJobCRUD:
         schema documents repeat as an integer but user-facing forms are
         strings; coerce at create_job so every entry point inherits it.
         """
-        forever = create_job(prompt="Str forever", schedule="every 1h", repeat="forever")
+        forever = create_job(prompt="Str forever", schedule="every 1h", repeat="forever", deliver="discord")
         assert forever["repeat"]["times"] is None  # None = infinite
         once = create_job(prompt="Str once", schedule="every 1h", repeat="once")
         assert once["repeat"]["times"] == 1
@@ -423,7 +423,7 @@ class TestJobCRUD:
         """
         from cron.jobs import mark_job_run, update_job
 
-        job = create_job(prompt="t", schedule="every 1h", repeat=2)
+        job = create_job(prompt="t", schedule="every 1h", repeat=2, deliver="discord")
         mark_job_run(job["id"], success=True)  # completed=1
 
         updated = update_job(job["id"], {"repeat": "forever"})

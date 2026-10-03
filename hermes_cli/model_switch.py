@@ -819,6 +819,37 @@ def _external_process_catalog(provider: str) -> tuple[list[str], dict[str, str]]
     return list(profile.fallback_models), {k.lower(): v for k, v in profile.model_aliases.items()}
 
 
+def _external_process_login_warning(st: "_Switch") -> str:
+    """The profile's own login gate as a WARNING for an external-process switch, or ``""``.
+
+    An ``external_process`` provider keeps no Hermes-side credential: the spawned CLI owns auth
+    (``auth._external_process_auth_evidence`` can only prove the binary resolves). So a switch onto
+    one whose login is dead was accepted, saved to config, and only failed at the first request —
+    as a provider failure with no hint that the fix is a CLI login. ``hermes model`` already
+    gates on ``profile.setup_status()`` before writing anything; the mid-session switch had no
+    equivalent read.
+
+    A warning, not a refusal: ``setup_status`` spawns the CLI (~0.3 s) and its answer can go stale
+    the moment it returns — the login can also die mid-session — so the switch still persists and
+    the user may fix it with ``claude auth login`` and keep going. Only a profile that reports a
+    login state is consulted (``None`` = nothing to report beyond executable presence).
+    """
+    try:
+        from providers import get_provider_profile
+        profile = get_provider_profile(st.target_provider)
+        if profile is None or profile.auth_type != "external_process":
+            return ""
+        status = profile.setup_status()
+    except Exception as exc:
+        logger.debug("external-process login check failed for %s: %s", st.target_provider, exc)
+        return ""
+    if not isinstance(status, dict) or status.get("logged_in") is not False:
+        return ""
+    detail = str(status.get("detail") or "").strip()
+    return detail or (f"{st.provider_label or st.target_provider} reports no usable login; "
+                      f"fix it before the first request or every call falls back.")
+
+
 def _external_process_match(catalog: list[str], aliases: dict[str, str], typed: str, *, provider: str) -> str | None:
     """Provider alias, exact id, else the single declared id that extends it (``claude-opus-5``
     -> ``claude-opus-5[1m]``); several candidates raise so nothing is picked silently."""
@@ -1717,6 +1748,9 @@ def _build_switch_result(st: _Switch) -> ModelSwitchResult:
     model_info = get_model_info(st.target_provider, st.new_model, allow_network=True)
 
     warnings = [w for w in (st.validation.get("message"), _check_hermes_model_warning(st.new_model)) if w]
+    login_warning = _external_process_login_warning(st)
+    if login_warning:
+        warnings.append(login_warning)
 
     # Carry the switched provider's request_overrides (custom_providers ``extra_body`` such as
     # chat_template_kwargs) so the gateway applies them like the default-provider path does.

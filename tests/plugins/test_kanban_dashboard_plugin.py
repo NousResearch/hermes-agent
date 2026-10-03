@@ -58,6 +58,49 @@ def client(kanban_home):
     app.include_router(_load_plugin_router(), prefix="/api/plugins/kanban")
     return TestClient(app)
 
+def test_required_transition_denial_is_atomic_across_dashboard_patches(client, kanban_home):
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="dashboard", assignee="builder")
+        task = kb.claim_task(conn, tid)
+        assert task is not None
+    (kanban_home / "config.yaml").write_text(
+        "kanban:\n  required_transition_admission_plugin: missing\n"
+    )
+    with kbc.connect() as conn:
+        before = (kb.get_task(conn, tid), kb.list_runs(conn, tid), kb.list_events(conn, tid))
+    response = client.patch(
+        f"/api/plugins/kanban/tasks/{tid}",
+        json={"status": "review", "assignee": "reviewer", "summary": "ready", "title": "different"},
+    )
+    assert response.status_code == 409
+    response = client.post(
+        "/api/plugins/kanban/tasks/bulk",
+        json={"ids": [tid], "status": "review", "assignee": "reviewer", "priority": 4},
+    )
+    assert response.json()["results"][0]["ok"] is False
+    with kbc.connect() as conn:
+        assert (kb.get_task(conn, tid), kb.list_runs(conn, tid), kb.list_events(conn, tid)) == before
+
+    # A dashboard completion uses force=True. It must not reassign before the
+    # reviewer-lane authority vetoes the transition.
+    (kanban_home / "config.yaml").write_text("{}\n")
+    with kbc.connect() as conn:
+        assert kb.request_review(conn, tid, expected_run_id=task.current_run_id)
+        reviewer = kb.claim_review_task(conn, tid)
+        assert reviewer is not None
+        prior = (kb.get_task(conn, tid), kb.list_runs(conn, tid), kb.list_events(conn, tid))
+    (kanban_home / "config.yaml").write_text(
+        "kanban:\n  required_transition_admission_plugin: missing\n"
+    )
+    response = client.patch(
+        f"/api/plugins/kanban/tasks/{tid}",
+        json={"status": "done", "assignee": "reviewer", "summary": "approved"},
+    )
+    assert response.status_code == 409
+    with kbc.connect() as conn:
+        assert (kb.get_task(conn, tid), kb.list_runs(conn, tid), kb.list_events(conn, tid)) == prior
+
+
 # ---------------------------------------------------------------------------
 # GET /board on an empty DB
 # ---------------------------------------------------------------------------

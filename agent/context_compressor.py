@@ -5047,6 +5047,7 @@ Write only the summary body. Do not include any preamble or prefix."""
 
         if replay_uid := message_uid_or_none(replay):
             before = len(compressed)
+            kept = list(compressed)
             compressed[:] = [
                 msg
                 for msg in compressed
@@ -5061,7 +5062,13 @@ Write only the summary body. Do not include any preamble or prefix."""
             # leading model functionCall turn. Open the window on the carrier.
             first = next(i for i, msg in enumerate(compressed) if msg.get("role") != "system")
             if len(compressed) != before and compressed[first].get("role") != "user":
-                compressed.insert(first, compressed.pop(compressed.index(carrier)))
+                if _template_visible_role(carrier) is None:
+                    # Carrier merged into a tail assistant(tool_calls) row:
+                    # moving it would split it from its tool results. Keep
+                    # the head row this cycle (pre-dedup layout).
+                    compressed[:] = kept
+                else:
+                    compressed.insert(first, compressed.pop(compressed.index(carrier)))
             # The summary role was picked against a head that ended on the row
             # just removed: an assistant carrier would now open the visible
             # sequence (or follow an assistant). Use the _force_user_leading

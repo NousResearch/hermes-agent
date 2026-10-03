@@ -402,3 +402,13 @@ def test_replay_replaces_surviving_user_row_with_same_message_uid():
     assert visible[0] == "user", visible
     assert all(a != b for a, b in zip(visible, visible[1:])), visible
     assert JOB_SENTINEL in _text(compressed[_handoff_idx(compressed)]).split(_SUMMARY_END_MARKER)[-1]
+
+    # Visible assistant text in the tail makes the summary merge into tail[0],
+    # an assistant(tool_calls) row: it must stay adjacent to its tool results.
+    messages += [{"role": "assistant", "content": "interim note"}, *_tool_pairs(1, 40)]
+    compressed = _compress(messages)
+    assert compressed[1]["role"] == "user", [m["role"] for m in compressed]
+    for i, msg in enumerate(compressed):
+        if msg.get("tool_calls"):
+            ids = [c["id"] for c in msg["tool_calls"]]
+            assert [m.get("tool_call_id") for m in compressed[i + 1 : i + 1 + len(ids)]] == ids, i

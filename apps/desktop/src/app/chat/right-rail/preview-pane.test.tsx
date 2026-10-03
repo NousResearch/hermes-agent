@@ -500,6 +500,33 @@ describe('PreviewPane console state', () => {
     expect(rendered.container.textContent).not.toContain('machine running your agent')
   })
 
+  it('keeps the page visible when a subframe fails to load', async () => {
+    let rendered!: ReturnType<typeof render>
+    await act(async () => {
+      rendered = render(
+        <PreviewPane
+          target={{ kind: 'url', label: 'Preview', source: 'https://example.com', url: 'https://example.com' }}
+        />
+      )
+    })
+
+    const webview = rendered.container.querySelector('webview') as HTMLElement
+
+    await act(async () => {
+      webview.dispatchEvent(
+        Object.assign(new Event('did-fail-load'), {
+          errorCode: -102,
+          errorDescription: 'ERR_CONNECTION_REFUSED',
+          isMainFrame: false,
+          validatedURL: 'https://ads.example.com/frame'
+        })
+      )
+    })
+
+    expect(rendered.container.textContent).not.toContain('ERR_CONNECTION_REFUSED')
+    expect(rendered.container.textContent).not.toContain('ads.example.com')
+  })
+
   it('surfaces a rejected navigation as a load error', async () => {
     let rendered!: ReturnType<typeof render>
     await act(async () => {

@@ -11,8 +11,9 @@ wall-clock one-shot late, contradicting the "will never fire" contract.
 These tests pin the due-scan grace gate:
   - beyond grace  -> not due; record retired with a diagnostic
   - within grace  -> still due (legitimate catch-up)
-  - beyond grace + claim -> not due, but the record is kept (a run may be
-    in flight in another process; its mark_job_run must still land)
+  - beyond grace + stale claim -> exhausted record retired after restart
+  - within grace + stale claim + exhausted -> retired as wedged, never re-fired
+  - beyond grace + live claim -> record kept so mark_job_run can land
   - re-triggered  -> due again (the Run button still works)
 """
 
@@ -80,22 +81,74 @@ class TestOneShotGraceDueScan:
         # Still stored (dispatch proceeds normally).
         assert [j["id"] for j in load_jobs()] == ["recent"]
 
-    def test_stale_with_claim_skipped_but_record_kept(self, cron_store):
-        # A (possibly stale) run_claim means a run may still be in flight in
-        # another process — the due-scan must not fire OR retire the record,
-        # so mark_job_run can still land.
+    @pytest.mark.parametrize("claim_field", ["run_claim", "fire_claim"])
+    def test_stale_claim_after_restart_does_not_block_exhausted_retirement(
+        self, cron_store, monkeypatch, claim_field,
+    ):
+        monkeypatch.setattr("cron.jobs._job_running_in_this_process", lambda _job_id: False)
+        claim = {"at": (FIXED_NOW - timedelta(hours=3)).isoformat(), "by": "other"}
         claimed = _oneshot(
             "claimed",
             FIXED_NOW - timedelta(hours=3),
             completed=1,
-            run_claim={"at": (FIXED_NOW - timedelta(hours=3)).isoformat(), "by": "other"},
+            **{claim_field: claim},
         )
         save_jobs([claimed])
 
-        due = get_due_jobs()
-        assert [d["id"] for d in due] == []
-        # Record preserved (not retired) despite being beyond grace.
-        assert [j["id"] for j in load_jobs()] == ["claimed"]
+        assert get_due_jobs() == []
+        assert load_jobs() == []
+
+    @pytest.mark.parametrize("claim_field", ["run_claim", "fire_claim"])
+    def test_exhausted_oneshot_with_stale_claim_within_grace_retires_instead_of_refiring(
+        self, cron_store, monkeypatch, claim_field,
+    ):
+        """Stale crash residue + completed >= times, still INSIDE the one-shot
+        grace window: the grace gate alone would call this schedule fireable,
+        so the exhausted check must run first and retire it as a wedged run,
+        not dispatch it again and not report it as a missed schedule."""
+        monkeypatch.setattr("cron.jobs._job_running_in_this_process", lambda _job_id: False)
+        missed = []
+        monkeypatch.setattr("cron.jobs.record_cron_missed", lambda job: missed.append(job["id"]))
+        run_at = FIXED_NOW - timedelta(seconds=60)  # inside ONESHOT_GRACE_SECONDS
+        claim = {"at": (FIXED_NOW - timedelta(hours=3)).isoformat(), "by": "dead-tick"}
+        save_jobs([_oneshot("wedged", run_at, completed=1, **{claim_field: claim})])
+
+        assert get_due_jobs() == []
+        assert load_jobs() == []
+        assert missed == []
+        diag = list((cron_store / "cron" / "output" / "wedged").glob("*.md"))
+        assert len(diag) == 1
+        text = diag[0].read_text(encoding="utf-8")
+        assert "outside grace window" not in text
+        assert text.startswith("# Cron job removed without producing output")
+
+    @pytest.mark.parametrize(
+        ("claim_field", "claimed_at", "locally_running"),
+        [
+            pytest.param("run_claim", FIXED_NOW, False, id="run-lease"),
+            pytest.param("fire_claim", FIXED_NOW, False, id="fire-lease"),
+            pytest.param(
+                "run_claim", FIXED_NOW - timedelta(hours=3), True, id="local-running-set"
+            ),
+        ],
+    )
+    def test_live_owner_keeps_exhausted_oneshot_for_its_finishing_run(
+        self, cron_store, monkeypatch, claim_field, claimed_at, locally_running,
+    ):
+        monkeypatch.setattr(
+            "cron.jobs._job_running_in_this_process", lambda _job_id: locally_running
+        )
+        claim = {"at": claimed_at.isoformat(), "by": "other"}
+        claimed = _oneshot(
+            "claimed",
+            FIXED_NOW - timedelta(hours=3),
+            completed=1,
+            **{claim_field: claim},
+        )
+        save_jobs([claimed])
+
+        assert get_due_jobs() == []
+        assert [job["id"] for job in load_jobs()] == ["claimed"]
 
     def test_retriggered_stale_oneshot_is_due(self, cron_store):
         # A user can still explicitly re-run a stale one-shot: trigger_job

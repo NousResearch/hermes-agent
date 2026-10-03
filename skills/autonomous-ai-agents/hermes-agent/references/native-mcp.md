@@ -168,6 +168,17 @@ For stdio servers, Hermes does NOT pass your full shell environment to MCP subpr
 
 All other environment variables (API keys, tokens, secrets) are excluded unless you explicitly add them via the `env` config key. This prevents accidental credential leakage to untrusted MCP servers.
 
+For a Python stdio server, explicitly clear `PYTHONPATH` so the server's interpreter cannot import packages from Hermes or another Python environment:
+
+```yaml
+mcp_servers:
+  python_server:
+    command: "/path/to/server/.venv/bin/python"
+    args: ["server.py"]
+    env:
+      PYTHONPATH: ""
+```
+
 ```yaml
 mcp_servers:
   github:

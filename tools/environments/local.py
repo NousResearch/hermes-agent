@@ -738,6 +738,13 @@ def _make_run_env(env: dict) -> dict:
     if published:
         run_env.update(published)
         run_env.pop("WAYLAND_DISPLAY", None)  # X11 desktop; a leaked Wayland socket flips GTK/Chromium backends
+    # This interpreter may carry a PYTHONPATH for Hermes imports. Passing it to
+    # a terminal command can mix site-packages from another Python version into
+    # the user's venv; terminal.env cannot reintroduce it, while inline shell
+    # assignments still can.
+    for key in tuple(run_env):
+        if key.upper() == "PYTHONPATH":
+            run_env.pop(key, None)
     return run_env
 
 
@@ -969,6 +976,15 @@ class LocalEnvironment(BaseEnvironment):
         return tuple(sorted(
             name for name in merged
             if isinstance(name, str) and _matches_terminal_first_party_prefix(name)))
+
+    def _snapshot_excluded_passthrough_names(self) -> tuple[str, ...]:
+        """Keep PYTHONPATH out of the shell snapshot as well as the spawn env.
+
+        Login startup files or an earlier terminal command can export it after
+        ``_make_run_env`` has scrubbed the backend's value. Persisting that value
+        would reintroduce cross-interpreter site-packages on the next command.
+        """
+        return tuple(sorted({"PYTHONPATH", *super()._snapshot_excluded_passthrough_names()}))
 
     def __init__(self, cwd: str = "", timeout: int = 60, env: dict = None):
         super().__init__(cwd=_resolve_local_initial_cwd(cwd), timeout=timeout, env=env)

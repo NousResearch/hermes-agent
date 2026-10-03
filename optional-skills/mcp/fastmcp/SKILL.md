@@ -175,6 +175,17 @@ When the goal is Hermes integration, either:
 - configure the server in `~/.hermes/config.yaml` using the `native-mcp` skill, or
 - keep using FastMCP CLI commands during development until the interface stabilizes
 
+For a Python stdio server configured in Hermes, set `PYTHONPATH` to an empty string in that server's `env` block. This keeps the server's interpreter from importing site-packages belonging to Hermes or another Python version:
+
+```yaml
+mcp_servers:
+  acme_server:
+    command: "/path/to/acme-server/.venv/bin/python"
+    args: ["server.py"]
+    env:
+      PYTHONPATH: ""
+```
+
 ### 7. Deploy After the Local Contract Is Stable
 
 For managed hosting, Prefect Horizon is the path FastMCP documents most directly. Before deployment:

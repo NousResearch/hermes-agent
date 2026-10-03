@@ -2,6 +2,7 @@
 
 import json
 import os
+import shlex
 import subprocess
 import sys
 import threading
@@ -436,8 +437,23 @@ def test_builders_strip_runtime_markers_and_owned_paths(child_env, monkeypatch, 
     before = dict(os.environ)
     actual = observe_child(factories[builder](), ["VIRTUAL_ENV", "CONDA_PREFIX", "PYTHONHOME", "PYTHONPATH", "HOME"])
     assert actual == {"VIRTUAL_ENV": None, "CONDA_PREFIX": None, "PYTHONHOME": None,
-                      "PYTHONPATH": user_path, "HOME": str(child_env)}
+                      "PYTHONPATH": None if builder == "foreground" else user_path,
+                      "HOME": str(child_env)}
     assert dict(os.environ) == before
+
+
+def test_local_terminal_drops_pythonpath_from_process_and_login_snapshot(child_env, monkeypatch):
+    """Neither backend PYTHONPATH nor one exported by a login profile may cross into commands."""
+    inherited = str(child_env / "foreign-site-packages")
+    monkeypatch.setenv("PYTHONPATH", inherited)
+    (child_env / ".bash_profile").write_text(
+        f"export PYTHONPATH={shlex.quote(inherited)}\n", encoding="utf-8")
+    env = local.LocalEnvironment(cwd=str(child_env), timeout=30,
+                                 env={"PYTHONPATH": inherited + ":terminal-config"})
+    try:
+        assert observe_terminal(env, ["PYTHONPATH"]) == {"PYTHONPATH": None}
+    finally:
+        env.cleanup()
 
 
 @pytest.mark.parametrize("builder,base_force,extra_force", [
@@ -854,8 +870,8 @@ class TestNativeEnvironmentContracts:
         "hermes_subprocess_env",
     ])
     def test_builders_strip_hermes_venv_pythonpath(self, builder):
-        """Every subprocess env builder applies the same sanitation contract:
-        Hermes venv site-packages is stripped, user entries survive.
+        """Nonterminal builders preserve user entries; local terminal commands
+        clear PYTHONPATH entirely to avoid cross-interpreter imports.
         """
         from tools.environments import local as local_mod
 
@@ -875,7 +891,10 @@ class TestNativeEnvironmentContracts:
         pp = result.get("PYTHONPATH", "")
         entries = pp.split(os.pathsep) if pp else []
         assert venv_sp not in entries
-        assert "/home/user/my-lib" in entries
+        if builder == "_make_run_env":
+            assert entries == []
+        else:
+            assert "/home/user/my-lib" in entries
 
     def test_scrub_child_env_strips_hermes_venv_pythonpath(self):
         """execute_code's _scrub_child_env path: after scrubbing, Hermes venv

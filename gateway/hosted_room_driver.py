@@ -853,11 +853,12 @@ def is_proven_nonadmission(task: Mapping[str, Any]) -> bool:
 
 def defer_not_admitted_task(
     db_path: DbPath, attempt: TaskAttempt, *, reason: Any, clock: Clock,
-    retry_binding: Mapping[str, Any] | None = None) -> dict[str, Any]:
+    retry_binding: Mapping[str, Any] | None = None, detail: Mapping[str, Any] | None = None) -> dict[str, Any]:
     """Defer one running attempt the member provably never received, with that proof.
 
     Fenced on the exact running attempt, so later member turns can proceed; only an explicit
-    ``requeue_deferred_task`` gives the turn a new generation.
+    ``requeue_deferred_task`` gives the turn a new generation. ``detail`` names what the turn waits
+    for (``waiting_for_host``: the missing ``resource`` and the ``host_name`` holding it).
     """
     _check_same_room(attempt.lease, attempt.identity)
     reason = _identifier(reason, label="defer_reason")
@@ -868,7 +869,8 @@ def defer_not_admitted_task(
         "authority_epoch": lease.authority_epoch, "run_gateway_id": lease.gateway_id,
         "run_process_generation": lease.process_generation, "run_lease_generation": lease.lease_generation,
         "retry_binding": None if retry_binding is None else dict(retry_binding)}
-    result_json = _canonical_json({"reason": reason, "retryable": True, "nonadmission": proof})
+    waiting = {key: detail[key] for key in ("resource", "host_name") if key in detail} if detail else {}
+    result_json = _canonical_json({"reason": reason, "retryable": True, "nonadmission": proof, **waiting})
     now = _timestamp(clock)
     def replay(row: sqlite3.Row) -> dict[str, Any] | None:
         same = _generations_match(row, "deferred", attempt.execution_generation, attempt.cancel_generation) and (

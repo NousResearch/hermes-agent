@@ -292,6 +292,10 @@ def capture_transition_locked(conn, room_id):
         capture_locked(conn, room_id=room_id, local_gateway_id=owner[0])
     except InvalidStoredWorkRecord:
         logging.getLogger(__name__).warning("Hosted work evidence invalid for room %s", room_id)
+    except WorkRecordPrefixError:
+        # Expected on a later host of a moved group: no evidence, and the driver's transition stands.
+        conn.execute("ROLLBACK TO work_transition_capture")
+        logging.getLogger(__name__).debug("Hosted work evidence has no verified lineage for room %s", room_id)
     except (WorkRecordError, sqlite3.Error):
         conn.execute("ROLLBACK TO work_transition_capture")
         logging.getLogger(__name__).warning("Hosted work evidence unavailable for room %s", room_id, exc_info=True)

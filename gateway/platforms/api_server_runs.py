@@ -528,14 +528,22 @@ def _accepted_response(run_id: str, status: str, gateway_session_key, *, replaye
 
 
 def _replay_or_conflict(self, request, outcome, record, gateway_session_key, _openai_error) -> "web.Response":
-    """409 for a fingerprint conflict, else a 202 replay of the already-admitted run."""
+    """409 for a fingerprint conflict, else a 202 replay of the already-admitted run.
+
+    ``inherited`` (``room_task_inherited``): a later host of the room dispatched a task this
+    gateway already admitted under an earlier epoch; the existing run is the answer, so the
+    host observes it instead of running the task twice.
+    """
     if outcome == "conflict":
         return _json_error(
             _openai_error, "Idempotency-Key was already used with a different request payload",
             code="idempotency_key_conflict", status=409)
     original_id = str(record["run_id"])
-    status = self._durable_run_status(request, original_id) or record["status"]
-    return _accepted_response(original_id, status.get("status", "queued"), gateway_session_key, replayed=True)
+    status = (None if outcome == "inherited" else self._durable_run_status(request, original_id)) or record["status"]
+    response = _accepted_response(original_id, status.get("status", "queued"), gateway_session_key, replayed=True)
+    if outcome == "inherited":
+        response.headers["X-Hermes-Room-Task"] = "inherited"
+    return response
 
 
 @dataclass(slots=True)

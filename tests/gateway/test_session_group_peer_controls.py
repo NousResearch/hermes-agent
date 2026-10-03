@@ -268,7 +268,10 @@ def test_an_unknown_peer_attempt_never_gets_retry_or_a_blind_discard(case, state
                                            reason="member_unavailable", clock=lambda: c.now[0])
             assert current(c)["result"] == {"reason": "member_unavailable", "retryable": True}
     before = current(c)
-    assert not any(a["member_id"] == "peer" for a in actions(c))
+    # Unknown work offers no control; an attempt nobody can act on is shown as unknown, nothing more.
+    assert not any(a["member_id"] == "peer" and a["kind"] != "unknown" for a in actions(c))
+    assert [a["kind"] for a in actions(c) if a["member_id"] == "peer"] == (
+        ["unknown"] if before["status"] == "indeterminate" else [])
     assert rpc(c, "groups.retry", selector(c))["error"]["data"]["reason"] == "unknown_execution"
     forged = rpc(c, "groups.retry", {**selector(c), "nonadmission": True})
     assert forged["error"]["data"]["reason"] == "invalid_params"

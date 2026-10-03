@@ -97,6 +97,10 @@ class HostedControls:
                     continue
                 kind = peer_action(self, task, binding)
                 if kind is None:
+                    if task['status'] == 'indeterminate':
+                        # Unknown peer work offers no control today: say so, and offer none.
+                        actions.append({'kind': 'unknown', 'member_id': member, 'task_id': task['identity'].task_id,
+                                        'execution_generation': task['execution_generation']})
                     continue
             actions.append({'kind': kind, 'member_id': member, 'task_id': task['identity'].task_id,
                             'execution_generation': task['execution_generation']})

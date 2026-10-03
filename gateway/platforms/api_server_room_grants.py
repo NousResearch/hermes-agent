@@ -26,7 +26,11 @@ def _require_unchanged_execution_policy(claims: dict[str, Any], execution_policy
 
 
 def _room_grant_error_response(exc: Optional[Exception] = None, *, _openai_error) -> "web.Response":
-    """401 invalid grant, or 403 reauthorization-required for a revoked/superseded grant."""
+    """401 invalid grant, 403 reauthorization-required for a revoked/superseded grant, or 409 for an
+    authority epoch fenced here for succession."""
+    from gateway.hosted_room_fence import RoomAuthorityFenced
+    if isinstance(exc, RoomAuthorityFenced):
+        return _json_error(_openai_error, exc.message, err_type="gateway_auth_error", code=exc.code, status=exc.status)
     if isinstance(exc, RoomGrantReauthorizationRequired):
         message, code, status = "Room authorization needs to be renewed.", "room_reauthorization_required", 403
     else:
@@ -86,7 +90,12 @@ def _http_routes(self) -> list[tuple[str, str, Any]]:
         ("POST", "/v1/room-members/grants/revoke-exact", self._handle_room_member_grant_revoke_exact),
         ("POST", "/v1/room-members/grants/cleanup-issuance", lambda request: cleanup_issuance(self, request)),
         *api_server_room_replicas.http_routes(self), *api_server_room_work_records.http_routes(self),
-        *api_server_replica_retirement.http_routes(self)]]
+        *api_server_replica_retirement.http_routes(self)]] + _succession_routes(self)
+
+
+def _succession_routes(self):
+    from gateway.platforms import api_server_room_succession
+    return api_server_room_succession.http_routes(self)
 
 
 def _room_grant_token(request: "web.Request") -> str:
@@ -167,7 +176,7 @@ async def _handle_room_member_invitation(
         return error
     required = set(_ROOM_IDENTITY_FIELDS)
     allowed = required | {"grant_id", "ttl_seconds", "status_ttl_seconds", "replication", "work_records",
-                          "passive_only", "successor"}
+                          "passive_only", "successor", "continuation"}
     if set(body) - allowed or not required <= set(body):
         return _json_error(
             _openai_error, "Invitation is missing required room authority fields.",
@@ -186,7 +195,10 @@ def _issue_invitation(self, body: dict[str, Any], profile: str, *, conn=None) ->
     The grant keeps this gateway a custodian of the room's history unless ``replication: false``
     opts out; ``successor: true`` is its operator's consent that the room owner may continue the
     group here (recorded locally too); ``work_records: true`` adds its task evidence, and
-    ``passive_only`` limits the grant to that copy (no dispatch, Stop or approval).
+    ``passive_only`` limits the grant to that copy (no dispatch, Stop or approval). The same grant
+    is re-issued to a verified successor of this room, with this gateway's fence receipt, so its
+    Bots and copy keep serving the group wherever the owner continues it; ``continuation: false``
+    opts out.
     """
     from gateway import hosted_rooms
     from gateway.hosted_room_custody import set_local_consent
@@ -195,6 +207,9 @@ def _issue_invitation(self, body: dict[str, Any], profile: str, *, conn=None) ->
     permissions = invitation_permissions(
         body.get("replication", True), body.get("work_records", False),
         passive_only=body.get("passive_only", False), successor=body.get("successor", False))
+    continuation = body.get("continuation", True)
+    if type(continuation) is not bool:
+        raise ValueError("continuation must be a boolean")
     target_install_id = hosted_rooms.local_authority_gateway_id()
     ttl = float(body.get("ttl_seconds", 3600))
     if not 60 <= ttl <= 24 * 60 * 60:
@@ -216,6 +231,21 @@ def _issue_invitation(self, body: dict[str, Any], profile: str, *, conn=None) ->
     if "replicate" in permissions:
         # Inside a recoverable setup issuance, the consent joins that issuance's own transaction.
         set_local_consent(_grant_db(self), room_id=claims["room_id"], allowed="successor" in permissions, conn=conn)
+    from contextlib import nullcontext
+    from gateway.hosted_room_succession import record_consent_locked, withdraw_consent_locked
+    with (nullcontext(conn) if conn is not None
+          else hosted_rooms._transaction(_grant_db(self), immediate=True)) as consent_conn:
+        if continuation:
+            record_consent_locked(consent_conn, room_id=claims["room_id"], member_id=claims["member_id"],
+                                  target_profile=profile, options={
+                                      "replication": body.get("replication", True),
+                                      "work_records": body.get("work_records", False),
+                                      "passive_only": body.get("passive_only", False),
+                                      "successor": body.get("successor", False),
+                                      "ttl_seconds": ttl, "status_ttl_seconds": status_ttl})
+        else:
+            withdraw_consent_locked(consent_conn, room_id=claims["room_id"], member_id=claims["member_id"],
+                                    target_profile=profile)
     return {"grant": token, "target_profile": profile, "catalog": catalog,
             "expires_at": float(claims["expires_at"]), "status_expires_at": float(claims["status_expires_at"]),
             "passive_replication": passive_capabilities()}
@@ -285,6 +315,8 @@ async def _handle_room_member_grant_refresh(
         # A status-only bearer must never mint dispatch authority: renewal needs live "dispatch".
         claims = self._room_grant_claims(request, permission="dispatch")
         profile, installation_id = _local_target(claims, _api_request_profile)
+        from gateway.platforms.api_server_room_succession import fence_check
+        fence_check(self)(claims["room_id"], int(claims["authority_epoch"]))
         now = request.get("room_proof_issued_at", time.time())
         hard_expiry = _hard_expiry(claims)
         remaining = hard_expiry - now

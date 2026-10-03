@@ -268,3 +268,26 @@ def test_a_member_turn_that_was_never_sent_is_deferred_with_its_proof(tmp_path):
     saved = state.get_task(db, peer)
     assert saved["status"] == "deferred" and state.is_proven_nonadmission(saved)
     assert publications == [(peer, "deferred")]
+
+
+def test_a_turn_for_a_bot_only_the_old_host_runs_waits_for_it_and_later_turns_proceed(tmp_path):
+    from gateway.hosted_room_succession import WaitingForHostError
+    db, binding, now, rpc, runtime, publications, peer, admit = fixture(tmp_path)
+
+    def waiting(**kwargs):
+        rpc.calls.append((kwargs["profile"], kwargs["execution_generation"]))
+        if kwargs["profile"] == "peer":
+            raise WaitingForHostError(resource="bot", host_name="Mac mini")
+        kwargs["on_terminal"]({"status": "settled", "text": "one reply"})
+        return {"accepted": True}
+
+    rpc.submit = waiting
+    local = admit("local", "b-local")
+    runtime._run_cycle()
+    runtime._run_cycle()
+    task = state.get_task(db, peer)
+    assert task["status"] == "deferred" and (peer, "deferred") in publications
+    assert {key: task["result"][key] for key in ("reason", "resource", "host_name")} == {
+        "reason": "waiting_for_host", "resource": "bot", "host_name": "Mac mini"}
+    assert state.is_proven_nonadmission(task)  # it never ran anywhere
+    assert state.get_task(db, local)["status"] == "settled"

@@ -495,6 +495,12 @@ class RunIdempotencyStore:
             if identity is not None and identity["authority_epoch"] <= fence.fenced_epoch_locked(
                     self._conn, identity["room_id"]):
                 raise fence.RoomAuthorityFenced()
+            if identity is not None:
+                self._require_epoch_holder_locked(identity)
+                inherited = self._inherited_run_locked(identity, key)
+                if inherited is not None:
+                    self._conn.commit()
+                    return "inherited", inherited
             self._conn.execute(
                 "INSERT INTO run_idempotency("
                 "scope,idempotency_key,fingerprint,run_id,status_json,"
@@ -509,6 +515,47 @@ class RunIdempotencyStore:
                     (scope, json.dumps(identity, sort_keys=True, separators=(",", ":")), now, now))
             self._conn.commit()
             return "created", _record(run_id, encoded, owner_pid, owner_started, now) | {"status": status}
+
+    def _require_epoch_holder_locked(self, identity: dict) -> None:
+        """Work of a succeeded room's epoch comes only from the computer this store fenced it for."""
+        state = fence.fence_state_locked(self._conn, identity["room_id"])
+        epoch, gateway = identity["authority_epoch"], identity["authority_gateway_id"]
+        authority, promise = state["authority"], state["promise"]
+        if authority is not None and authority["epoch"] == epoch:
+            holder = authority["install_id"]
+        elif promise is not None and promise["epoch"] == epoch:
+            holder = promise["candidate_install_id"]
+        else:
+            return
+        if holder != gateway:
+            raise fence.RoomAuthorityPromised()
+
+    def _inherited_run_locked(self, identity: dict, key: str) -> dict[str, Any] | None:
+        """``room_task_inherited``: the run this store already admitted for the same room task under an
+        earlier epoch of the room, to the same member here. A later host re-dispatching the task
+        re-attaches to it instead of running it twice. A new generation runs only after every
+        earlier attempt ended without success, as a Retry would."""
+        prefix, _, generation = key.rpartition(":")
+        if not prefix.startswith("room:") or not generation.isdigit():
+            return None
+        task_id = prefix[len("room:"):]
+        rows = self._conn.execute(f"""SELECT r.idempotency_key, r.run_id, r.status_json, r.owner_pid, r.owner_started,
+                r.updated_at, {_STATUS_SQL} FROM run_idempotency AS r JOIN {_SCOPES} AS s ON s.scope=r.scope
+            WHERE json_valid(s.identity_json) AND json_extract(s.identity_json,'$.room_id')=?
+              AND json_extract(s.identity_json,'$.member_id')=?
+              AND json_extract(s.identity_json,'$.target_install_id')=?
+              AND json_extract(s.identity_json,'$.target_profile')=?
+              AND json_extract(s.identity_json,'$.authority_epoch')<?
+            ORDER BY r.created_at DESC, r.run_id""", (
+            identity["room_id"], identity["member_id"], identity["target_install_id"], identity["target_profile"],
+            identity["authority_epoch"])).fetchall()
+        for stored_key, run_id, status_json, owner_pid, owner_started, updated_at, status in rows:
+            stored_prefix, _, stored_generation = str(stored_key).rpartition(":")
+            if stored_prefix != prefix:
+                continue
+            if stored_generation == generation or status not in {"failed", "cancelled", "interrupted"}:
+                return {**_record(run_id, status_json, owner_pid, owner_started, updated_at), "inherited": True}
+        return None
 
     def lookup(self, scope: str, key: str, fingerprint: str, *, retention_until: float = 0):
         """Return ``missing``, ``reused`` or ``conflict`` without reserving."""
@@ -571,6 +618,38 @@ class RunIdempotencyStore:
                 self._conn, room_id, candidate_install_id=successor["authority_gateway_id"],
                 epoch=successor["authority_epoch"])
         return row[0] if controls else None
+
+    def room_run_evidence(self, room_id: str, *, through_epoch: int, limit: int = 256) -> dict[str, Any]:
+        """The room runs this store admitted at or below an authority epoch, newest first.
+
+        Succession evidence only: run ids, their exact task attempts and public status, never
+        prompts, outputs or credentials. A run whose scope or key is unreadable is skipped and
+        reported as truncation, so missing evidence is never read as non-admission.
+        """
+        if not self.durable:
+            return {"runs": [], "truncated": True}
+        with self._lock:
+            rows = self._conn.execute(f"""SELECT r.run_id, r.idempotency_key, {_STATUS_SQL}, s.identity_json, r.updated_at
+                FROM run_idempotency AS r JOIN {_SCOPES} AS s ON s.scope=r.scope
+                WHERE json_valid(s.identity_json) AND json_extract(s.identity_json,'$.room_id')=?
+                  AND json_extract(s.identity_json,'$.authority_epoch')<=?
+                ORDER BY r.created_at DESC, r.run_id LIMIT ?""", (room_id, int(through_epoch), limit + 1)).fetchall()
+        runs, truncated = [], len(rows) > limit
+        for run_id, key, status, encoded, updated_at in rows[:limit]:
+            try:
+                identity = validate_room_run_scope(json.loads(encoded))
+                prefix, task_id, generation = str(key).rsplit(":", 2)
+                if prefix != "room" or not task_id or not generation.isdigit():
+                    raise ValueError("not a room dispatch key")
+            except (TypeError, ValueError):
+                truncated = True
+                continue
+            runs.append({"run_id": run_id, "task_id": task_id, "execution_generation": int(generation),
+                         "status": status, "updated_at": float(updated_at or 0),
+                         **{field: identity[field] for field in (
+                             "member_id", "target_install_id", "target_profile", "authority_gateway_id",
+                             "authority_epoch")}})
+        return {"runs": runs, "truncated": truncated}
 
     def status_for_run(self, scope: str, run_id: str, *, retention_until: float = 0) -> dict[str, Any] | None:
         """Load one durable run status inside its authenticated scope."""

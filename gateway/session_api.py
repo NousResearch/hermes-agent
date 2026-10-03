@@ -45,7 +45,11 @@ def bind_api_session(authority, session_id, *, hosted_dispatch=None, declared_ke
     if hosted_dispatch is not None:
         from gateway.hosted_room_peer import HostedMemberDispatch
         dispatch = HostedMemberDispatch.from_mapping(hosted_dispatch)
-        room_identity = [dispatch.home_install_id, dispatch.room_id, dispatch.member_id, dispatch.target_profile]
+        # A verified successor of the room keeps the member session its original home opened.
+        from gateway.hosted_room_succession import member_session_home
+        home = member_session_home(authority.db.db_path, room_id=dispatch.room_id,
+                                   home_install_id=dispatch.home_install_id)
+        room_identity = [home, dispatch.room_id, dispatch.member_id, dispatch.target_profile]
         expected = 'room_' + hashlib.sha256('\0'.join(room_identity).encode()).hexdigest()[:32]
         if expected != session_id:
             raise RuntimeStoreError('admission_conflict')

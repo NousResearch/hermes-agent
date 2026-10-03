@@ -133,7 +133,7 @@ class AuthorityConnection:
             return {'jsonrpc': '2.0', 'id': rid, 'result': result}
         except RuntimeStoreError as exc:
             return {'jsonrpc': '2.0', 'id': rid, 'error': {
-                'code': 4001, 'message': exc.reason, 'data': {'reason': exc.reason}}}
+                'code': 4001, 'message': exc.reason, 'data': {'reason': exc.reason, **exc.detail}}}
         except sqlite3.Error:
             return {'jsonrpc': '2.0', 'id': rid, 'error': {
                 'code': 5001, 'message': 'storage_unavailable', 'data': {'reason': 'storage_unavailable'}}}

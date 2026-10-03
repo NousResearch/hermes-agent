@@ -2574,6 +2574,64 @@ class TestSystemdCgroupIsolation:
 
         assert pr._worker_memory_max_bytes() == pr._DEFAULT_WORKER_MEMORY_MAX_BYTES
 
+    def _host_bound(self, monkeypatch, *, cgroup_max: str = "8589934592"):
+        """Pin the two host inputs: the enclosing cgroup's ``memory.max`` (8 GiB by
+        default) and physical RAM (64 GiB, so half of it is 32 GiB)."""
+        import tools.process_registry as pr
+
+        def fake_read_text(self, *args, **kwargs):
+            if str(self).endswith("/memory.max"):
+                return f"{cgroup_max}\n"
+            if str(self).endswith("/proc/self/cgroup"):
+                return "0::/user.slice/user-1000.slice/session-1.scope\n"
+            raise OSError(f"no such file: {self}")
+
+        def fake_sysconf(name):
+            return 16_777_216 if name == "SC_PHYS_PAGES" else 4096
+
+        monkeypatch.setattr(pr.Path, "read_text", fake_read_text)
+        monkeypatch.setattr(pr.os, "sysconf", fake_sysconf)
+        return pr
+
+    def test_worker_memory_limit_allows_an_override_above_the_default_ceiling(
+        self, monkeypatch
+    ):
+        """A lane that needs more than 4 GiB can ask for it; the ceiling is policy,
+        the host bound is the wall."""
+        pr = self._host_bound(monkeypatch)
+        monkeypatch.setenv("TERMINAL_LOCAL_MEMORY_MAX_MB", "8192")
+
+        assert pr._worker_memory_max_bytes() == 8 * 1024**3
+        assert pr._worker_memory_max_bytes() > pr._WORKER_MEMORY_MAX_CAP_BYTES
+
+    def test_worker_memory_limit_clamps_an_override_to_the_host_bound(
+        self, monkeypatch
+    ):
+        """The documented invariant holds: no override can widen host risk."""
+        pr = self._host_bound(monkeypatch)
+        monkeypatch.setenv("TERMINAL_LOCAL_MEMORY_MAX_MB", "999999")
+
+        assert pr._worker_memory_max_bytes() == 8 * 1024**3
+
+    def test_worker_memory_limit_defaults_to_the_ceiling_without_an_override(
+        self, monkeypatch
+    ):
+        """Raising the knob does not raise the default: the ceiling still applies."""
+        pr = self._host_bound(monkeypatch)
+        monkeypatch.delenv("TERMINAL_LOCAL_MEMORY_MAX_MB", raising=False)
+
+        assert pr._worker_memory_max_bytes() == pr._WORKER_MEMORY_MAX_CAP_BYTES
+        assert pr._worker_memory_max_bytes() == 4 * 1024**3
+
+    def test_worker_memory_limit_follows_a_host_bound_below_the_ceiling(
+        self, monkeypatch
+    ):
+        """A tighter enclosing slice still wins over the default ceiling."""
+        pr = self._host_bound(monkeypatch, cgroup_max="2147483648")
+        monkeypatch.delenv("TERMINAL_LOCAL_MEMORY_MAX_MB", raising=False)
+
+        assert pr._worker_memory_max_bytes() == 2 * 1024**3
+
     def test_kill_recovered_detached_already_exited_stops_persisted_scope(
         self, registry, monkeypatch
     ):

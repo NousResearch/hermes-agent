@@ -112,12 +112,17 @@ _WORKER_MEMORY_MAX_CAP_BYTES = 4 * 1024 * 1024 * 1024
 
 def _worker_memory_max_bytes() -> int:
     """Finite per-worker cgroup limit that can never widen host risk.
-    ``TERMINAL_LOCAL_MEMORY_MAX_MB`` is honored only when it *tightens* the safe
-    bound (min of the gateway's cgroup-v2 ``memory.max`` and half of physical RAM,
-    capped at 4 GiB), so an oversized override cannot exceed the enclosing slice.
 
-    The proposed local-memory-guard environment override is honored when it tightens the safe bound, so this
-    isolation composes with PR #57121 instead of inventing a second knob.
+    The host bound is the minimum of the gateway's cgroup-v2 ``memory.max`` and
+    half of physical RAM; it is the hard wall, and no override can exceed it.
+    On top of that wall sits ``_WORKER_MEMORY_MAX_CAP_BYTES``, the default
+    ceiling. ``TERMINAL_LOCAL_MEMORY_MAX_MB`` can tighten the limit or raise it
+    up to the host bound, so a lane that legitimately needs more than the default
+    has a supported way to ask, while an oversized override still cannot exceed
+    the enclosing slice.
+
+    The proposed local-memory-guard environment override composes with this the
+    same way (it is the same knob), so this does not invent a second one.
     """
     override_bound: Optional[int] = None
     override = os.getenv("TERMINAL_LOCAL_MEMORY_MAX_MB", "").strip()
@@ -153,15 +158,13 @@ def _worker_memory_max_bytes() -> int:
         physical_bytes = int(os.sysconf("SC_PHYS_PAGES")) * int(
             os.sysconf("SC_PAGE_SIZE")
         )
-        physical_bound = min(
-            _WORKER_MEMORY_MAX_CAP_BYTES,
-            max(_MIN_WORKER_MEMORY_MAX_BYTES, physical_bytes // 2),
-        )
-        candidates.append(physical_bound)
+        candidates.append(max(_MIN_WORKER_MEMORY_MAX_BYTES, physical_bytes // 2))
     except (OSError, ValueError, TypeError):
         pass
-    safe_bound = min(candidates) if candidates else _DEFAULT_WORKER_MEMORY_MAX_BYTES
-    return min(override_bound, safe_bound) if override_bound else safe_bound
+    host_bound = min(candidates) if candidates else _DEFAULT_WORKER_MEMORY_MAX_BYTES
+    if override_bound:
+        return min(override_bound, host_bound)
+    return min(_WORKER_MEMORY_MAX_CAP_BYTES, host_bound)
 
 
 def _systemd_scope_argv(binary: str, unit_name: str, *argv: str) -> List[str]:

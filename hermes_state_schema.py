@@ -1171,10 +1171,11 @@ class SessionSchemaMixin:
 
     def _ensure_unique_title_index(self, cursor: sqlite3.Cursor) -> None:
         """Unique title index. Older DBs may hold duplicate titles from before the constraint.
-        Per title the highest-ranked row (``_title_rank``: user/NULL > llm > derived), newest
-        ``started_at`` first, keeps it; a lower-ranked auto title is cleared and a user-owned one is
-        renamed ``Title #k`` so a typed name is never dropped (#126764). Each change is logged.
-        Must never abort opening the DB, so the repair is guarded."""
+        Per title a user-owned (user/NULL) row beats llm > derived (``_title_rank``). User rows are
+        never dropped: the oldest keeps the title and newer ones become ``Title #k`` in started_at
+        order, so the "#N"-preferring lookup still opens the newest (#126764). Among auto titles
+        only, the newest highest-ranked keeps it; lower-ranked auto titles are cleared. Each change
+        is logged. Must never abort opening the DB, so the repair is guarded."""
         try:
             cursor.execute(_TITLE_UNIQUE_INDEX_SQL)
         except sqlite3.IntegrityError:
@@ -1187,13 +1188,18 @@ class SessionSchemaMixin:
                 for row in sorted(rows, key=lambda r: (self._title_rank(r[2]), r[3] or 0, r[0]), reverse=True):
                     groups.setdefault(row[1], []).append(row)
                 user_rank = self._title_rank(self.TITLE_SOURCE_USER)
-                for title, (_keep, *losers) in groups.items():
-                    for rowid, _title, source, _started in losers:
-                        if self._title_rank(source) == user_rank:
-                            renamed = next_title_in_lineage(cursor.connection, title)
-                            cursor.execute("UPDATE sessions SET title = ? WHERE rowid = ?", (renamed, rowid))
-                            logger.warning("Renamed duplicate user session title %r to %r", title, renamed)
-                        else:
+                for title, group in groups.items():
+                    # User titles: the OLDEST keeps the base and newer ones get "#k" in
+                    # chronological order, so resolve_session_by_title (which prefers the
+                    # latest "#N") still lands on the newest session.
+                    users = [r for r in reversed(group) if self._title_rank(r[2]) == user_rank]
+                    keep = users[0] if users else group[0]
+                    for rowid, *_ in users[1:]:
+                        renamed = next_title_in_lineage(cursor.connection, title)
+                        cursor.execute("UPDATE sessions SET title = ? WHERE rowid = ?", (renamed, rowid))
+                        logger.warning("Renamed duplicate user session title %r to %r", title, renamed)
+                    for rowid, _title, source, _started in group:
+                        if rowid != keep[0] and self._title_rank(source) != user_rank:
                             cursor.execute("UPDATE sessions SET title = NULL WHERE rowid = ?", (rowid,))
                             logger.warning("Cleared duplicate %s session title %r", source, title)
                 cursor.execute(_TITLE_UNIQUE_INDEX_SQL)

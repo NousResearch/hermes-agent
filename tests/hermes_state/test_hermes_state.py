@@ -1749,9 +1749,11 @@ class TestSessionTitleIndexRepair:
                 ).fetchall()
             }
             assert set(rows) == {"older", "newer", "unique"}
-            # NULL title_source ranks as user: the older row is renamed, never dropped.
-            assert rows["older"]["title"] == "shared-title #2"
-            assert rows["newer"]["title"] == "shared-title"
+            # NULL title_source ranks as user: neither is dropped; the newer gets "#2" so the
+            # "#N"-preferring title lookup still opens the newest session.
+            assert rows["older"]["title"] == "shared-title"
+            assert rows["newer"]["title"] == "shared-title #2"
+            assert reopened.resolve_session_by_title("shared-title") == "newer"
             assert rows["unique"]["title"] == "unique-title"
             assert reopened.get_messages("older")[0]["content"] == "keep older message"
             assert reopened.get_messages("newer")[0]["content"] == "keep newer message"

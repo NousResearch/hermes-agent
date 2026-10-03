@@ -4,12 +4,84 @@ Ruamel's native schema includes bare y/n booleans and rejects duplicate keys.
 Every operation owns its parser/emitter; instances must not be shared by threads.
 """
 
+from __future__ import annotations
+
+import re
 from io import StringIO
 from typing import Any, IO, overload
 
 from ruamel.yaml import YAML
+from ruamel.yaml.constructor import RoundTripConstructor, SafeConstructor
 from ruamel.yaml.error import YAMLError as YAMLError
+from ruamel.yaml.representer import RoundTripRepresenter, SafeRepresenter
 from ruamel.yaml.resolver import VersionedResolver
+from ruamel.yaml.tag import Tag
+
+_FLOAT_TAG = "tag:yaml.org,2002:float"
+_STR_TAG = "tag:yaml.org,2002:str"
+
+# YAML 1.1 floats must carry a dot in the mantissa. PyYAML enforced that on both sides — its
+# resolver kept dot-less ``123e45`` scalars strings, and its dumper inserted ``.0`` before any
+# exponent — so a file PyYAML wrote parsed back cleanly under PyYAML. ruamel's YAML 1.1 resolver
+# accepts the dot-less form (warn-and-continue), which silently re-typed legacy session-ID-shaped
+# scalars (``20260820_093237_089e44``) into floats on load (#124901). Constructors and
+# representers are dispatched by tag through class-level tables, overriding a method in a
+# subclass alone does nothing; registering on the base class would rewire ruamel for the whole
+# process, so each subclass registers on itself.
+_UNSIGNED_DOTLESS_FLOAT = re.compile(r"^[-+]?[0-9][0-9_]*[eE][0-9]+$")
+
+
+def _legacy_id_scalar(node: Any) -> bool:
+    value = node.value
+    return isinstance(value, str) and _UNSIGNED_DOTLESS_FLOAT.match(value) is not None
+
+
+class _SafeConstructor(SafeConstructor):
+    def construct_yaml_float(self, node: Any) -> Any:
+        if _legacy_id_scalar(node):
+            return node.value
+        return super().construct_yaml_float(node)
+
+
+_SafeConstructor.add_constructor(_FLOAT_TAG, _SafeConstructor.construct_yaml_float)
+
+
+class _RoundTripConstructor(RoundTripConstructor):
+    def construct_yaml_float(self, node: Any) -> Any:
+        if _legacy_id_scalar(node):
+            return node.value
+        return super().construct_yaml_float(node)
+
+
+_RoundTripConstructor.add_constructor(
+    _FLOAT_TAG, _RoundTripConstructor.construct_yaml_float
+)
+
+
+def _dotted_mantissa(base: Any) -> Any:
+    def _represent_float(representer: Any, data: Any) -> Any:
+        node = base.represent_float(representer, data)
+        if "e" in node.value:
+            mantissa, _, exponent = node.value.partition("e")
+            if "." not in mantissa:
+                node.value = f"{mantissa}.0e{exponent}"
+        return node
+
+    return _represent_float
+
+
+class _SafeRepresenter(SafeRepresenter):
+    pass
+
+
+_SafeRepresenter.add_representer(float, _dotted_mantissa(SafeRepresenter))
+
+
+class _RoundTripRepresenter(RoundTripRepresenter):
+    pass
+
+
+_RoundTripRepresenter.add_representer(float, _dotted_mantissa(RoundTripRepresenter))
 
 
 class _Yaml11Resolver(VersionedResolver):
@@ -22,6 +94,7 @@ class _Yaml11Resolver(VersionedResolver):
 def _load(document: str | bytes, *, pure: bool) -> Any:
     yaml = YAML(typ="safe", pure=pure)
     yaml.version = (1, 1)
+    yaml.Constructor = _SafeConstructor
     return yaml.load(document)
 
 
@@ -65,6 +138,7 @@ def safe_dump(
     # The C emitter ignores sequence offsets and escapes astral Unicode.
     yaml = YAML(typ="safe", pure=True)
     yaml.Resolver = _Yaml11Resolver
+    yaml.Representer = _SafeRepresenter
     yaml.default_flow_style = default_flow_style
     yaml.allow_unicode = allow_unicode
     yaml.width = width
@@ -91,6 +165,8 @@ def roundtrip_yaml() -> YAML:
     yaml = YAML(typ="rt")
     yaml.width = ROUNDTRIP_YAML_WIDTH
     yaml.Resolver = _Yaml11Resolver
+    yaml.Representer = _RoundTripRepresenter
+    yaml.Constructor = _RoundTripConstructor
     yaml.preserve_quotes = True
     yaml.allow_unicode = True
     yaml.default_flow_style = False

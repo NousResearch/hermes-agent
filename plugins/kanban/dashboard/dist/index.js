@@ -276,6 +276,12 @@
   // from under a terminal they left open.
   const LS_BOARD_KEY = "hermes.kanban.selectedBoard";
 
+  // Sentinel board value for the "All boards" view (#121549). Not a backend
+  // slug: withBoard() never sends it to the API, the cross-board view fetches
+  // /board/all directly, and every write path is gated off while it is
+  // selected (read-only first step; card actions act on the card's own board).
+  const ALL_BOARDS = "__all__";
+
   function readSelectedBoard() {
     try {
       const v = window.localStorage.getItem(LS_BOARD_KEY);
@@ -308,7 +314,8 @@
     // means the dashboard's tab selection gets silently overridden by
     // whatever board the CLI or "switch" checkbox last activated.
     // Regression: #20879.
-    if (!board) return url;
+    // "All boards" is a dashboard-only view mode, never a backend slug.
+    if (!board || board === ALL_BOARDS) return url;
     const sep = url.indexOf("?") >= 0 ? "&" : "?";
     return `${url}${sep}board=${encodeURIComponent(board)}`;
   }
@@ -645,12 +652,18 @@
 
     const [tenantFilter, setTenantFilter] = useState("");
     const [assigneeFilter, setAssigneeFilter] = useState("");
+    // All-boards view: restrict cards to one board's slug (set from a card's
+    // board tag or the toolbar select).
+    const [boardFilter, setBoardFilter] = useState("");
     const [includeArchived, setIncludeArchived] = useState(false);
     const [search, setSearch] = useState("");
     const [laneByProfile, setLaneByProfile] = useState(true);
     const [configApplied, setConfigApplied] = useState(false);
 
     const [selectedTaskId, setSelectedTaskId] = useState(null);
+    // Board slug of the open card — set alongside selectedTaskId so the drawer
+    // acts on that card's own board even in the "All boards" view.
+    const [selectedTaskBoard, setSelectedTaskBoard] = useState(null);
     const [selectedIds, setSelectedIds] = useState(() => new Set());
     const [lastSelectedId, setLastSelectedId] = useState(null);
     const [failedIds, setFailedIds] = useState(() => new Set());
@@ -689,8 +702,12 @@
       const qs = new URLSearchParams();
       if (tenantFilter) qs.set("tenant", tenantFilter);
       if (includeArchived) qs.set("include_archived", "true");
-      const url = qs.toString() ? `${API}/board?${qs}` : `${API}/board`;
-      return SDK.fetchJSON(withBoard(url, board))
+      // The cross-board view is its own endpoint — same columns, cards tagged
+      // with their board slug — and never carries a ?board= pin.
+      const isAll = board === ALL_BOARDS;
+      const path = isAll ? "/board/all" : "/board";
+      const url = qs.toString() ? `${API}${path}?${qs}` : `${API}${path}`;
+      return SDK.fetchJSON(isAll ? url : withBoard(url, board))
         .then(function (data) {
           setBoardData(data);
           cursorRef.current = data.latest_event_id || 0;
@@ -716,7 +733,8 @@
           // If the stored slug isn't in the list any longer (board was
           // deleted in the CLI while dashboard was open), fall back to
           // default so the UI doesn't hang on a 404.
-          if (board && board !== "default" && !boards.find(function (b) { return b.slug === board; })) {
+          if (board && board !== "default" && board !== ALL_BOARDS &&
+              !boards.find(function (b) { return b.slug === board; })) {
             setBoard("default");
             writeSelectedBoard("default");
           }
@@ -747,6 +765,13 @@
     // --- WebSocket ---------------------------------------------------------
     useEffect(function () {
       if (!boardData) return undefined;
+      if (board === ALL_BOARDS) {
+        // The events socket pins to ONE board, so the cross-board view polls
+        // instead of streaming — every board's events arrive within one tick.
+        // (# ponytail: 15s interval - per-board sockets if this feels stale.)
+        const poll = setInterval(function () { loadBoard(); }, 15000);
+        return function () { clearInterval(poll); };
+      }
       wsClosedRef.current = false;
       function openWs() {
         if (wsClosedRef.current) return;
@@ -821,6 +846,7 @@
       const filterTask = function (t) {
         if (tenantFilter && t.tenant !== tenantFilter) return false;
         if (assigneeFilter && t.assignee !== assigneeFilter) return false;
+        if (boardFilter && t.board !== boardFilter) return false;
         if (q) {
           const hay = `${t.id} ${t.title || ""} ${t.body || ""} ${t.result || ""} ${t.latest_summary || ""} ${t.assignee || ""} ${t.tenant || ""}`.toLowerCase();
           if (hay.indexOf(q) === -1) return false;
@@ -832,7 +858,23 @@
           return Object.assign({}, col, { tasks: col.tasks.filter(filterTask) });
         }),
       });
-    }, [boardData, tenantFilter, assigneeFilter, search]);
+    }, [boardData, tenantFilter, assigneeFilter, boardFilter, search]);
+
+    // Opening a card: remember which board it came from so the drawer acts on
+    // that board even in the "All boards" view (cards carry their `board` tag).
+    const findTaskBoard = useCallback(function (taskId) {
+      if (!boardData || !boardData.columns) return null;
+      for (const col of boardData.columns) {
+        for (const tk of col.tasks) {
+          if (tk.id === taskId) return tk.board || null;
+        }
+      }
+      return null;
+    }, [boardData]);
+    const openTask = useCallback(function (taskId) {
+      setSelectedTaskBoard(findTaskBoard(taskId));
+      setSelectedTaskId(taskId);
+    }, [findTaskBoard]);
 
     // --- actions ------------------------------------------------------------
     // Performs the actual move (optimistic UI + PATCH) once any required
@@ -1174,6 +1216,7 @@
       setSearch("");
       setTenantFilter("");
       setAssigneeFilter("");
+      setBoardFilter("");
       setIncludeArchived(false);
       clearSelected();
     }, [board, clearSelected]);
@@ -1276,6 +1319,9 @@
     if (!filteredBoard) return null;
 
     const renderMd = !config || config.render_markdown !== false;
+    // "All boards" is a read-only cross-board view: card actions open the
+    // card's own board instead of writing through this selection.
+    const isAll = board === ALL_BOARDS;
 
     return h(ErrorBoundary, null,
       h("div", { className: "hermes-kanban flex flex-col gap-4" },
@@ -1309,12 +1355,16 @@
         h(OrchestrationPanel, null),
         h(AttentionStrip, {
           boardData,
-          onOpen: setSelectedTaskId,
+          onOpen: openTask,
         }),
         h(BoardToolbar, {
           board: boardData,
           tenantFilter, setTenantFilter,
           assigneeFilter, setAssigneeFilter,
+          boardFilter, setBoardFilter,
+          showBoardFilter: isAll,
+          boardList,
+          readOnly: isAll,
           includeArchived, setIncludeArchived,
           laneByProfile, setLaneByProfile,
           search, setSearch,
@@ -1325,7 +1375,7 @@
           },
           onRefresh: loadBoard,
         }),
-       selectedIds.size > 0 ? h(BulkActionBar, {
+       selectedIds.size > 0 && !isAll ? h(BulkActionBar, {
          count: selectedIds.size,
          assignees: (boardData && boardData.assignees) || [],
          onApply: applyBulk,
@@ -1354,15 +1404,17 @@
           onMoveSelected: moveSelected,
           onDelete: deleteTask,
           onDeleteSelected: deleteSelected,
-          onOpen: setSelectedTaskId,
+          onOpen: openTask,
           onCreate: createTask,
+          readOnly: isAll,
+          onFilterBoard: setBoardFilter,
           allTasks: boardData.columns.reduce(function (acc, c) { return acc.concat(c.tasks); }, []),
         }),
         selectedTaskId ? h(TaskDrawer, {
           taskId: selectedTaskId,
-          boardSlug: board,
-          onClose: function () { setSelectedTaskId(null); },
-          onOpenTask: setSelectedTaskId,
+          boardSlug: selectedTaskBoard || board,
+          onClose: function () { setSelectedTaskId(null); setSelectedTaskBoard(null); },
+          onOpenTask: openTask,
           onRefresh: loadBoard,
           renderMarkdown: renderMd,
           allTasks: boardData.columns.reduce(function (acc, c) { return acc.concat(c.tasks); }, []),
@@ -1474,6 +1526,7 @@
                 h("span", { className: "hermes-kanban-attention-row-title" },
                   task.title || tx(t, "untitled", "(untitled)")),
                 h("span", { className: "hermes-kanban-attention-row-meta" },
+                  task.board ? task.board + " \u00b7 " : "",
                   task.assignee ? "@" + task.assignee : tx(t, "unassigned", "unassigned"),
                   " \u00b7 ",
                   kinds.length > 0 ? kinds.join(", ") : tx(t, "diagnostic", "diagnostic"),
@@ -2118,9 +2171,12 @@
   function BoardSwitcher(props) {
     const { t } = useI18n();
     const list = props.boardList || [];
+    const isAll = props.board === ALL_BOARDS;
     const current = list.find(function (b) { return b.slug === props.board; });
-    const currentName = current && current.name ? current.name : props.board;
-    const currentTotal = current ? current.total : 0;
+    const allBoardsLabel = tx(t, "allBoards", "All boards");
+    const currentName = isAll ? allBoardsLabel : (current && current.name ? current.name : props.board);
+    const totalAcrossAllBoards = list.reduce(function (n, b) { return n + (b.total || 0); }, 0);
+    const currentTotal = isAll ? totalAcrossAllBoards : (current ? current.total : 0);
     const hasMultipleBoards = list.length > 1;
 
     // Hide entirely when only the default board exists AND it's empty —
@@ -2128,7 +2184,6 @@
     // We show the [+ New board] affordance as soon as any board has a
     // task (so the user can discover multi-project before they need it)
     // OR when any non-default board exists.
-    const totalAcrossAllBoards = list.reduce(function (n, b) { return n + (b.total || 0); }, 0);
     const shouldShow = hasMultipleBoards || totalAcrossAllBoards > 0;
     if (!shouldShow) {
       return h("div", {
@@ -2164,6 +2219,10 @@
               "aria-label": "Switch kanban board",
               title: "Boards are independent work streams. Each board has its own tasks, tenants, and assignees.",
             }, selectChangeHandler(function (v) { if (v) props.onSwitch(v); })),
+              h(SelectOption, { key: ALL_BOARDS, value: ALL_BOARDS },
+                totalAcrossAllBoards > 0
+                  ? `${allBoardsLabel} · ${totalAcrossAllBoards}`
+                  : allBoardsLabel),
               list.map(function (b) {
                 const label = b.total > 0
                   ? `${b.name || b.slug} · ${b.total}`
@@ -2178,20 +2237,21 @@
         ),
         h("div", { className: "flex-1" }),
         h(DocsLink, null),
-        h(Button, {
+        // Settings edit ONE board — no target in the "All boards" view.
+        !isAll ? h(Button, {
           onClick: props.onSettingsClick,
           size: "sm",
           className: "h-8",
           title: tx(t, "boardSettingsTitle",
             "Board settings — name, description, and the default project directory new tasks inherit"),
-        }, tx(t, "boardSettings", "Settings")),
+        }, tx(t, "boardSettings", "Settings")) : null,
         h(Button, {
           onClick: props.onNewClick,
           size: "sm",
           className: "h-8",
           title: "Create a new board. Useful when you want an unrelated work stream (different project, different team, isolated scratch area).",
         }, tx(t, "newBoard", "+ New board")),
-        props.board !== "default"
+        props.board !== "default" && !isAll
           ? h(Button, {
             onClick: function () {
               const msg = tx(t, "archiveBoardConfirm",
@@ -2581,6 +2641,21 @@
           }),
         ),
       ),
+      props.showBoardFilter
+        ? h("div", { className: "flex flex-col gap-1",
+                     title: "Show cards from a single board (All boards view)." },
+            h(Label, { className: "text-xs text-muted-foreground" }, tx(t, "board", "Board")),
+            h(Select, Object.assign({
+              value: props.boardFilter,
+              className: "h-8",
+            }, selectChangeHandler(props.setBoardFilter)),
+              h(SelectOption, { value: "" }, tx(t, "allBoardsFilter", "All boards")),
+              (props.boardList || []).map(function (b) {
+                return h(SelectOption, { key: b.slug, value: b.slug }, b.name || b.slug);
+              }),
+            ),
+          )
+        : null,
       h("label", { className: "flex items-center gap-2 text-xs",
                    title: "Include archived tasks in the board view. Archived tasks are hidden by default." },
         h(Checkbox, {
@@ -2598,7 +2673,8 @@
         tx(t, "lanesByProfile", "Lanes by profile"),
       ),
       h("div", { className: "flex-1" }),
-      h(Button, {
+      // Nudging the dispatcher writes to ONE board — hidden in All boards.
+      props.readOnly ? null : h(Button, {
         onClick: props.onNudgeDispatch,
         size: "sm",
         title: "Wake the dispatcher to claim ready tasks now instead of waiting for the next tick. Use this after adding tasks if you want them picked up immediately.",
@@ -2613,6 +2689,7 @@
           props.setSearch("");
           props.setTenantFilter("");
           props.setAssigneeFilter("");
+          props.setBoardFilter("");
           props.setIncludeArchived(false);
         },
         size: "sm",
@@ -2937,6 +3014,8 @@
           onOpen: props.onOpen,
           onCreate: props.onCreate,
           allTasks: props.allTasks,
+          readOnly: props.readOnly,
+          onFilterBoard: props.onFilterBoard,
         });
       }),
       h(TrashDropZone, {
@@ -2956,6 +3035,7 @@
 
     // Listen for our synthetic touch-drop events from attachTouchDrag().
     useEffect(function () {
+      if (props.readOnly) return undefined;
       if (!colRef.current) return undefined;
       const el = colRef.current;
       function onTouchDrop(e) {
@@ -2970,9 +3050,10 @@
       }
       el.addEventListener("hermes-kanban:drop", onTouchDrop);
       return function () { el.removeEventListener("hermes-kanban:drop", onTouchDrop); };
-    }, [props.column.name, props.onMove, props.selectedIds, props.onMoveSelected]);
+    }, [props.column.name, props.onMove, props.selectedIds, props.onMoveSelected, props.readOnly]);
 
     const handleDragOver = function (e) {
+      if (props.readOnly) return;
       e.preventDefault();
       e.dataTransfer.dropEffect = "move";
       if (!dragOver) setDragOver(true);
@@ -2981,6 +3062,7 @@
     const handleDrop = function (e) {
       e.preventDefault();
       setDragOver(false);
+      if (props.readOnly) return;
       const taskId = e.dataTransfer.getData(MIME_TASK);
       if (!taskId) return;
       if (props.selectedIds && props.selectedIds.has(taskId) && props.selectedIds.size > 1) {
@@ -3018,7 +3100,7 @@
     },
       h("div", { className: "hermes-kanban-column-header",
                  title: colHelp || "" },
-        h(Checkbox, {
+        props.readOnly ? null : h(Checkbox, {
           className: "hermes-kanban-col-check",
           title: "Select all tasks in this column",
           "aria-label": `Select all tasks in ${colLabel || props.column.name}`,
@@ -3034,7 +3116,7 @@
         h("span", { className: "hermes-kanban-column-count",
                     title: `${props.column.tasks.length} task${props.column.tasks.length === 1 ? "" : "s"} in this column` },
           props.column.tasks.length),
-        h("button", {
+        props.readOnly ? null : h("button", {
           type: "button",
           className: "hermes-kanban-column-add",
           title: tx(t, "createTask", "Create task in this column"),
@@ -3043,7 +3125,7 @@
       ),
       h("div", { className: "hermes-kanban-column-sub" },
         colHelp || ""),
-      showCreate ? h(InlineCreate, {
+      showCreate && !props.readOnly ? h(InlineCreate, {
         columnName: props.column.name,
         allTasks: props.allTasks,
         defaultWorkspaceKind: (props.boardMeta && props.boardMeta.default_workspace_kind) || "scratch",
@@ -3073,6 +3155,8 @@
                       toggleSelected: props.toggleSelected,
                       toggleRange: props.toggleRange,
                       onOpen: props.onOpen,
+                      readOnly: props.readOnly,
+                      onFilterBoard: props.onFilterBoard,
                     });
                   }),
                 );
@@ -3087,6 +3171,8 @@
                   toggleSelected: props.toggleSelected,
                   toggleRange: props.toggleRange,
                   onOpen: props.onOpen,
+                  readOnly: props.readOnly,
+                  onFilterBoard: props.onFilterBoard,
                 });
               }),
       ),
@@ -3124,8 +3210,9 @@
     const cardRef = useRef(null);
 
     useEffect(function () {
+      if (props.readOnly) return undefined;
       return attachTouchDrag(cardRef.current, t.id);
-    }, [t.id]);
+    }, [t.id, props.readOnly]);
 
     const handleDragStart = function (e) {
       e.dataTransfer.setData(MIME_TASK, t.id);
@@ -3143,6 +3230,9 @@
       }
     };
     const handleClick = function (e) {
+      // All boards is read-only: open the card (in its own board), no
+      // bulk-selection modifiers.
+      if (props.readOnly) { props.onOpen(t.id); return; }
       if (e.shiftKey) {
         e.preventDefault();
         e.stopPropagation();
@@ -3183,7 +3273,7 @@
         props.draggingSource ? "hermes-kanban-card--dragging-source" : "",
         stalenessClass(t),
       ),
-      draggable: true,
+      draggable: !props.readOnly,
       tabIndex: 0,
       role: "button",
       "aria-label": `${t.title || "untitled"} — ${t.id} — ${t.status}`,
@@ -3194,7 +3284,7 @@
       h(Card, null,
         h(CardContent, { className: "hermes-kanban-card-content" },
           h("div", { className: "hermes-kanban-card-row" },
-            h("label", {
+            props.readOnly ? null : h("label", {
               className: "hermes-kanban-card-check-wrap",
               title: tx(i18n, "selectForBulk", "Select for bulk actions"),
               onClick: function (e) { e.stopPropagation(); },
@@ -3209,6 +3299,14 @@
             ),
             h("span", { className: "hermes-kanban-card-id",
                         title: `Task id: ${t.id}. Use this id with kanban_show, /kanban show, or hermes kanban show.` }, t.id),
+            t.board
+              ? h(Badge, {
+                  variant: "outline",
+                  className: "hermes-kanban-board-tag",
+                  title: `Board: ${t.board}. Click to show only this board's cards.`,
+                  onClick: function (e) { e.stopPropagation(); if (props.onFilterBoard) props.onFilterBoard(t.board); },
+                }, t.board)
+              : null,
             t.warnings && t.warnings.count > 0
               ? h("span", {
                   className: cn(

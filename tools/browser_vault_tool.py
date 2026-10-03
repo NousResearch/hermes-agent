@@ -381,12 +381,18 @@ def browser_vault_enter_code(handle: str = "", task_id: Optional[str] = None) ->
             return json.dumps({"success": False, "error_type": "code_declined",
                                "error": "The user did not enter a code. Do not ask again this turn."})
 
-    register_vault_redaction_value(code)
+    from agent.vault_store import scrub_secret_from_text
+
+    register_vault_redaction_value(code, kind="otp")
     fills = build_otp_fills(otp_controls, code)
-    result = _eval_js_secret(effective_task_id, build_fill_js(fills, expected_origin=origin, nonce=nonce))
-    del code
+    try:
+        result = _eval_js_secret(effective_task_id, build_fill_js(fills, expected_origin=origin, nonce=nonce))
+    except Exception as exc:
+        return json.dumps({"success": False, "error": scrub_secret_from_text(str(exc), {"otp": code})[:200]})
     if not result.get("success"):
-        return json.dumps({"success": False, "error": str(result.get("error") or "fill failed")[:200]})
+        error = scrub_secret_from_text(str(result.get("error") or "fill failed"), {"otp": code})[:200]
+        return json.dumps({"success": False, "error": error})
+    del code
     parsed = _parse_json_result(result.get("result"))
     if isinstance(parsed, str):
         parsed = _parse_json_result(parsed)
@@ -518,12 +524,13 @@ def browser_vault_fill(handle: str, task_id: Optional[str] = None) -> str:
             {"success": False, "error": f"No fillable {meta.kind} field matched the saved item on this page."}
         )
 
-    # Register the secret bytes with the model-egress redaction boundary
-    # BEFORE they touch the page: any later browser_* result (including
-    # browser_cdp Runtime.evaluate reads) that echoes them is scrubbed.
-    # Address values are not secrets but the card fields are: register every payment value.
-    for value in (secret.values() if meta.kind == "payment" else [secret.get("password", "")]):
-        register_vault_redaction_value(value)
+    # Password/PAN retain global protection. Short codes use explicit context;
+    # expiry, names and postal codes are metadata, never global scrub keys.
+    if meta.kind == "payment":
+        register_vault_redaction_value(secret.get("card_number", ""))
+        register_vault_redaction_value(secret.get("cvc", ""), kind="cvc")
+    elif meta.kind == "login":
+        register_vault_redaction_value(secret.get("password", ""))
 
     try:
         fill_result = _eval_js_secret(

@@ -1,8 +1,8 @@
 """Oneshot (-z) mode: send a prompt, get the final content block, exit.
 
 Toolsets = explicit --toolsets, else the user's "cli" toolsets from `hermes tools`. Rules /
-memory / AGENTS.md / preloaded skills = same as a normal chat turn. Approvals are auto-bypassed
-(HERMES_YOLO_MODE=1). Model/provider mirror `hermes chat`: both optional; only --model → auto-detect
+memory / AGENTS.md / preloaded skills = same as a normal chat turn. Approvals follow the single-query
+policy unless the caller explicitly enables YOLO mode. Model/provider mirror `hermes chat`: both optional; only --model → auto-detect
 the provider; only --provider → error (ambiguous).
 """
 
@@ -274,8 +274,8 @@ def run_oneshot(
         return 2
     use_config_toolsets = _normalize_toolsets(toolsets) is None
 
-    # Non-interactive by definition — an approval prompt would hang forever.
-    os.environ["HERMES_YOLO_MODE"] = "1"
+    # Non-interactive by definition — the single-query marker makes dangerous commands follow
+    # the configured non-interactive approval policy instead of waiting for a prompt.
     os.environ["HERMES_ACCEPT_HOOKS"] = "1"
     # Same finite-chat marker as `hermes chat -q` (cli.py): the session-source resolver uses it to drop an
     # inherited tui/desktop transport label, and delegate dispatch to route detached results inline.

@@ -184,6 +184,74 @@ async def test_reply_carries_target_text_and_author(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_modern_reply_fetches_target_metadata_without_plaintext_fallback(monkeypatch):
+    """Modern Matrix replies may omit the legacy inline quote fallback."""
+    adapter = _make_adapter(monkeypatch=monkeypatch)
+    adapter._startup_ts = time.time() - 10
+    adapter._client = SimpleNamespace(
+        get_event=AsyncMock(return_value=SimpleNamespace(
+            sender="@carol:example.org",
+            content={"body": "original question", "msgtype": "m.text"},
+        )),
+    )
+
+    event = _make_event(
+        "because reasons",
+        sender="@dave:example.org",
+        in_reply_to_event_id="$target1",
+    )
+    await adapter._on_room_message(event)
+
+    adapter._client.get_event.assert_awaited_once_with("!room1:example.org", "$target1")
+    msg = adapter.handle_message.await_args.args[0]
+    assert msg.text == "because reasons"
+    assert msg.reply_to_message_id == "$target1"
+    assert msg.reply_to_text == "original question"
+    assert msg.reply_to_author_id == "@carol:example.org"
+    assert msg.reply_to_author_name == "carol"
+
+
+@pytest.mark.asyncio
+async def test_modern_reply_fetch_failure_preserves_legacy_context(monkeypatch):
+    """A homeserver fetch failure must not drop or mutate the incoming reply."""
+    adapter = _make_adapter(monkeypatch=monkeypatch)
+    adapter._startup_ts = time.time() - 10
+    adapter._client = SimpleNamespace(get_event=AsyncMock(side_effect=RuntimeError("homeserver unavailable")))
+
+    event = _make_event("because reasons", in_reply_to_event_id="$target1")
+    await adapter._on_room_message(event)
+
+    msg = adapter.handle_message.await_args.args[0]
+    assert msg.text == "because reasons"
+    assert msg.reply_to_message_id == "$target1"
+    assert msg.reply_to_text is None
+    assert msg.reply_to_author_id is None
+    assert msg.reply_to_author_name is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "related_event",
+    [None, SimpleNamespace(sender="@carol:example.org", content={"msgtype": "m.text"})],
+)
+async def test_modern_reply_unusable_fetch_preserves_legacy_context(monkeypatch, related_event):
+    """Missing events and related content without a body must fail open."""
+    adapter = _make_adapter(monkeypatch=monkeypatch)
+    adapter._startup_ts = time.time() - 10
+    adapter._client = SimpleNamespace(get_event=AsyncMock(return_value=related_event))
+
+    event = _make_event("because reasons", in_reply_to_event_id="$target1")
+    await adapter._on_room_message(event)
+
+    msg = adapter.handle_message.await_args.args[0]
+    assert msg.text == "because reasons"
+    assert msg.reply_to_message_id == "$target1"
+    assert msg.reply_to_text is None
+    assert msg.reply_to_author_id is None
+    assert msg.reply_to_author_name is None
+
+
+@pytest.mark.asyncio
 async def test_non_reply_message_has_no_reply_context(monkeypatch):
     """A non-reply message must not spuriously set reply_to_* fields."""
     adapter = _make_adapter(monkeypatch=monkeypatch)

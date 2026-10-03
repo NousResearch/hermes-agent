@@ -490,13 +490,23 @@ def waiter_command(root: Path | str, envelope: dict) -> str:
     """
     reply_path = str(relay_root(root) / REPLIES_DIR / f"{envelope['id']}.json")
     label = f"@{envelope.get('target_handle', '')} on {envelope.get('target_connection', '')}"
-    runner = str(Path(__file__).resolve().with_name("bot_mode_dm.py"))
-    argv = [sys.executable or "python3", runner, "--wait-reply", reply_path, label, str(REPLY_WAIT_SECONDS)]
+    argv = [*runner_argv(), "--wait-reply", reply_path, label, str(REPLY_WAIT_SECONDS)]
     if sys.platform == "win32":
         # Same rewrite as the delivery runner: the tracked local backend uses Git Bash on native
         # Windows, where forward-slash drive paths run and backslash paths parse as command names.
         argv = [part.replace("\\", "/") for part in argv]
     return shlex.join(argv)
+
+
+def _published_launcher() -> Path | None:
+    """This install's published CLI launcher, or None on source/external installs.
+
+    Do not select batch shims: cmd.exe reinterprets otherwise literal argv
+    (for example an ampersand in a query-file path), even with shell=False.
+    """
+    name = "hermes.exe" if sys.platform == "win32" else "hermes"
+    published = Path(__file__).resolve().parents[1] / ".hermes" / "bin" / name
+    return published if published.is_file() else None
 
 
 def _hermes_cli() -> str:
@@ -507,14 +517,32 @@ def _hermes_cli() -> str:
     selects current dependencies at child start. Keep the historical fallbacks
     for external/developer installs that have no published launcher (#93590).
     """
-    # Do not select batch shims: cmd.exe reinterprets otherwise literal argv
-    # (for example an ampersand in a query-file path), even with shell=False.
-    name = "hermes.exe" if sys.platform == "win32" else "hermes"
-    published = Path(__file__).resolve().parents[1] / ".hermes" / "bin" / name
-    if published.is_file():
+    published = _published_launcher()
+    if published is not None:
         return str(published)
+    name = "hermes.exe" if sys.platform == "win32" else "hermes"
     sibling = Path(sys.executable or "").parent / name
     return str(sibling) if sibling.is_file() else shutil.which("hermes") or "hermes"
+
+
+def runner_argv() -> list[str]:
+    """argv prefix that runs ``tools/bot_mode_dm.py`` as a background runner (``--run-delivery``,
+    ``--wait-reply``) with Hermes's dependencies importable.
+
+    ``sys.executable`` is not that interpreter on a published install: the launcher runs the bare
+    store Python (``python -I``) and selects the dependency generation at process start, so a
+    runner spawned on ``sys.executable`` has none of those packages and dies on its first import
+    (``No module named 'ruamel'``) — the DM file was written, the target never ran its turn, and
+    the sender saw "Live admission outcome unknown". The launcher's ``--run-module`` switch performs
+    the same selection for the runner. Installs without a published launcher keep the script path
+    on this interpreter, which does carry the dependencies there (venv console scripts, source
+    checkouts). Both forms stay argv-only entrypoints — no ``-c`` — so the approval gate's inline-
+    code pattern never fires on them.
+    """
+    launcher = _published_launcher()
+    if launcher is not None:
+        return [str(launcher), "--run-module", "tools.bot_mode_dm"]
+    return [sys.executable or "python3", str(Path(__file__).resolve().with_name("bot_mode_dm.py"))]
 
 
 def local_delivery_command(profile: str, query_file: str) -> list[str]:

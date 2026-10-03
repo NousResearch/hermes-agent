@@ -779,6 +779,28 @@ def _commit_selection(package, facts: Facts, change, *, enabled: list[str], stam
         raise
 
 
+def _with_configured_memory_extras(
+    extras: Optional[list[str]], *, frozen: Optional[list[str]]
+) -> Optional[list[str]]:
+    """Union the configured memory provider's PM extra where it can be carried.
+
+    A provider enabled via config (clone, dashboard, ``config set``) without a
+    recorded setup sync would otherwise rebuild a venv without its runtime dep
+    (#123784). ``frozen`` is the bundle's sealed feature set when the lazy
+    policy is off: that bundle's install names exactly the extras it has, so a
+    config-derived extra is no addition there - and letting it reach
+    ``_feature_policy`` would turn a working ``pm update``/``pm install`` into
+    the frozen-set refusal. Never raises: an unreadable config reads as none.
+
+    ponytail: config read per explicit sync; cache if measurable."""
+    if frozen is not None:
+        return extras
+    from pm.extras import configured_memory_extras
+    if memory_extras := configured_memory_extras():
+        return sorted(set(extras or []) | set(memory_extras))
+    return extras
+
+
 def sync_venv(extras: Optional[list[str]] = None, *, explicit: bool = False,
               plugins: PluginInput | None = None, repair: bool = False,
               evict_incompatible_plugins: bool = False) -> None:
@@ -816,6 +838,8 @@ def sync_venv(extras: Optional[list[str]] = None, *, explicit: bool = False,
         if evict_incompatible_plugins and (repair or plugins is not None or not explicit):
             raise ValueError("only an explicit sync of the discovered plugin selection may disable plugins")
         shipped, frozen = _feature_policy(extras, repair=repair)
+        if explicit and not repair:
+            extras = _with_configured_memory_extras(extras, frozen=frozen)
         package = get_package("venv")
         from hermes_cli.runtime_state import recover_publication
         from pm.publication import StagedPlugin

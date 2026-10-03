@@ -93,3 +93,38 @@ def test_from_owner_does_not_double_prefix_when_already_tagged():
     assert event.text == "[owner reply] already tagged"
 
 
+def test_from_owner_does_not_prefix_slash_command():
+    adapter = _make_adapter()
+    payload = _dm_payload(fromOwner=True, body="/new")
+
+    event = asyncio.run(adapter._build_message_event(payload))
+
+    assert event is not None
+    assert event.metadata.get("whatsapp_from_owner") is True
+    assert event.text == "/new"
+    assert event.is_command() is True
+
+
+def test_from_owner_does_not_prefix_whitespace_leading_command():
+    adapter = _make_adapter()
+    payload = _dm_payload(fromOwner=True, body="  /model")
+
+    event = asyncio.run(adapter._build_message_event(payload))
+
+    assert event is not None
+    assert event.metadata.get("whatsapp_from_owner") is True
+    assert event.text == "  /model"
+    assert event.is_command() is True
+
+
+def test_from_owner_keeps_prefix_on_slash_path():
+    adapter = _make_adapter()
+    payload = _dm_payload(fromOwner=True, body="/tmp/file")
+
+    event = asyncio.run(adapter._build_message_event(payload))
+
+    assert event is not None
+    assert event.metadata.get("whatsapp_from_owner") is True
+    assert event.text == "[owner reply] /tmp/file"
+
+

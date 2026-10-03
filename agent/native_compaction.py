@@ -206,7 +206,7 @@ def _truncate_input_text_parts(content: List[Dict[str, Any]], budget: int) -> Li
             if lo:
                 head.append({**part, "text": text[:lo]})
             break
-        head.append({**part})
+        head.append(part)
         budget -= cost
     return head
 

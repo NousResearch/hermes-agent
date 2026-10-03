@@ -327,13 +327,15 @@ def _discord_platform_notes(context: SessionContext) -> List[str]:
             lines.append(f"  - Thread: `{src.thread_id}` (use as `channel_id` for fetch_messages etc.)")
         else:
             lines.append(f"  - Channel: `{src.chat_id}`")
-        if src.message_id:
-            # The volatile per-turn message id must stay OUT of this cached block (it would bust the
-            # agent-cache signature every message); run.py injects it into the user message instead.
-            lines.append(
-                "  - Triggering message: provided per-turn in the incoming user message (use it as "
-                "`message_id` for reply/react/pin)"
-            )
+        # The volatile per-turn message id must stay OUT of this cached block (it would bust the
+        # agent-cache signature every message); run.py injects it into the user message instead.
+        # Rendered whether or not this turn has one: gating it on presence made voice-channel and
+        # slash-command turns (no message id) render a different block from text turns, so every
+        # switch between talking and typing re-prefilled the whole conversation.
+        lines.append(
+            "  - Triggering message: when the turn comes from a Discord message, its id is provided "
+            "per-turn in the incoming user message (use it as `message_id` for reply/react/pin)"
+        )
     else:
         lines = ["", (
             "**Platform notes:** You are running inside Discord. You do NOT have access to "

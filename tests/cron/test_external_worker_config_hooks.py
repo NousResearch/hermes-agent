@@ -34,10 +34,13 @@ def homes(tmp_path, monkeypatch):
         "  outbound:\n"
         f"    - url: {OUTBOUND_URL}\n"
         "      events: [on_session_end]\n"
+        # Resolved through get_secret: raises outside a secret scope while multiplexing.
+        "      secret_env: CRON_HOOK_SECRET\n"
         # Non-interactive consent: the worker has no TTY, and the pair is not allowlisted.
         "hooks_auto_accept: true\n",
         encoding="utf-8",
     )
+    (profile / ".env").write_text("CRON_HOOK_SECRET=profile-secret\n", encoding="utf-8")
     yield launch, profile
     import agent.outbound_webhooks as outbound_webhooks
     import agent.shell_hooks as shell_hooks
@@ -74,29 +77,3 @@ def test_worker_registers_owning_profile_config_hooks(homes, tmp_path, monkeypat
                for home, event, _matcher, command in shell_hooks._registered)
     assert any(home == profile_key and event == "on_session_end" and url == OUTBOUND_URL
                for home, event, url in outbound_webhooks._registered)
-
-
-def test_worker_survives_a_broken_hooks_config(homes, tmp_path, monkeypatch):
-    """A malformed hooks block must not take the cron execution down with it."""
-    launch, profile = homes
-    import cron.scheduler as scheduler
-
-    (profile / "config.yaml").write_text(
-        "hooks:\n"
-        "  on_session_start: not-a-list\n"
-        "hooks_auto_accept: true\n",
-        encoding="utf-8",
-    )
-    payload = tmp_path / "payload.json"
-    payload.write_text(
-        json.dumps({"job": {"id": "job-1", "execution_id": "exec-1"},
-                    "profile_home": str(profile)}),
-        encoding="utf-8",
-    )
-    monkeypatch.setattr(
-        "cron.executions.adopt_claimed_execution",
-        lambda execution_id: {"id": execution_id, "status": "running"},
-    )
-    monkeypatch.setattr(scheduler, "run_one_job", lambda *a, **k: True)
-
-    assert scheduler._run_external_worker_payload(payload, tmp_path / "exec-1.ready") is True

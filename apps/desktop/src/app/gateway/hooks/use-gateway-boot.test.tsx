@@ -2808,6 +2808,56 @@ describe('useGatewayBoot remote reconnect loop (real hook, fake socket)', () => 
       expect(FakeWebSocket.instances.at(-1)?.url).toBe(secondary.wsUrl)
     }
   )
+
+  it('a reconnect lookup that resolves after a connection apply cannot re-own the primary', async () => {
+    const oldPrimary = { ...remotePrimaryConn, registryScoped: true }
+    const newPrimary = { ...coderConn, mode: 'remote' as const, profile: 'default', registryScoped: true }
+    const heldOldLookup = deferred<typeof oldPrimary>()
+    let applied = false
+
+    const desktop = {
+      ...fakeDesktop(),
+      // Main resolves a profile-less request from the applied window route.
+      getConnection: vi.fn(async () => (applied ? newPrimary : oldPrimary)),
+      getConnectionFor: vi.fn(({ connectionId }: { connectionId: string; profile: string }) =>
+        connectionId === newPrimary.connectionId ? Promise.resolve(newPrimary) : heldOldLookup.promise
+      ),
+      getGatewayWsUrlFor: vi.fn(async ({ connectionId }: { connectionId: string; profile: string }) =>
+        connectionId === newPrimary.connectionId ? newPrimary.wsUrl : oldPrimary.wsUrl
+      )
+    }
+
+    ;(window as { hermesDesktop?: unknown }).hermesDesktop = desktop
+    render(<Harness />)
+    await flushAsync()
+    expect(FakeWebSocket.instances[0].url).toBe(oldPrimary.wsUrl)
+
+    // The old primary drops and its reconnect parks on the route lookup.
+    act(() => FakeWebSocket.instances[0].drop())
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1_000)
+    })
+    expect(desktop.getConnectionFor).toHaveBeenCalledWith(
+      expect.objectContaining({ connectionId: oldPrimary.connectionId })
+    )
+
+    applied = true
+    act(() => connectionApplied?.())
+    await flushAsync()
+    expect(FakeWebSocket.instances.at(-1)?.url).toBe(newPrimary.wsUrl)
+    expect($gatewayState.get()).toBe('open')
+
+    await act(async () => {
+      heldOldLookup.resolve(oldPrimary)
+      await vi.advanceTimersByTimeAsync(0)
+    })
+    expect($connection.get()?.connectionId).toBe(newPrimary.connectionId)
+
+    act(() => FakeWebSocket.instances.at(-1)!.drop())
+    await advanceBackoff()
+    expect(FakeWebSocket.instances.at(-1)?.url).toBe(newPrimary.wsUrl)
+    expect($connection.get()?.connectionId).toBe(newPrimary.connectionId)
+  })
 })
 
 describe('window-state IPC before the first connection publishes (#108641)', () => {

@@ -256,12 +256,16 @@ def _wire_callbacks(sid: str):
     from agent.vault_backends.unlock import (set_code_prompt_callback, set_current_session_id,
                                              set_save_login_prompt_callback, set_unlock_prompt_callback)
     set_current_session_id(sid)  # an unlock made on this turn belongs to this session (released with it)
+    # 120s was far too short to notice a masked card and type a master password, and an expired
+    # prompt was indistinguishable from a refusal at the call site. Vault prompts get a real window.
+    vault_prompt_timeout = 600
     set_unlock_prompt_callback(lambda backend, display_name: _ask(
-        "vault.unlock_prompt", sid, {"backend": backend, "display_name": display_name}, timeout=120))
+        "vault.unlock_prompt", sid, {"backend": backend, "display_name": display_name},
+        timeout=vault_prompt_timeout))
 
     def save_login_cb(origin, site):
         # The renderer shows identifier + masked password; the JSON answer goes straight to the vault store.
-        raw = _ask("vault.save_login", sid, {"origin": origin, "site": site}, timeout=180)
+        raw = _ask("vault.save_login", sid, {"origin": origin, "site": site}, timeout=vault_prompt_timeout)
         try:
             data = json.loads(raw) if raw else None
         except ValueError:
@@ -270,7 +274,7 @@ def _wire_callbacks(sid: str):
 
     set_save_login_prompt_callback(save_login_cb)
     set_code_prompt_callback(lambda site, hint: _ask(
-        "vault.code", sid, {"site": site, "hint": hint}, timeout=180))
+        "vault.code", sid, {"site": site, "hint": hint}, timeout=vault_prompt_timeout))
 
 
 def _available_personalities(cfg: dict | None = None) -> dict:

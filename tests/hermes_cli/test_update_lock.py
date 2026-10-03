@@ -360,7 +360,35 @@ def test_checkout_lock_outlives_its_owner_while_an_inheriting_child_runs(tmp_pat
         child.kill()
         child.wait()
     assert not update_in_progress(install)
-    assert checkout_lock_path(install).name == ".hermes-update.lock"
+    assert checkout_lock_path(install).name == ".hermes-update.lock"  # no .git: a ZIP install
+
+
+def test_git_checkout_lock_lives_in_the_common_git_dir_and_never_dirties_the_tree(tmp_path):
+    """A held lock must never show in `git status`: the updater's autostash would stash its own
+    lock file in any tree whose .gitignore lacks it (fixtures, forks, a branch switch)."""
+    install = tmp_path / "checkout"
+    env = {**os.environ, "GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_NOSYSTEM": "1"}
+
+    def git(*args, cwd=install):
+        return subprocess.run(["git", *args], cwd=cwd, env=env, check=True, capture_output=True,
+                              text=True, encoding="utf-8").stdout
+
+    install.mkdir()
+    git("init", "-q")
+    git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "one")
+    linked = tmp_path / "linked"
+    git("worktree", "add", "-q", "--detach", str(linked))
+    common = Path(os.path.normpath(install / ".git"))
+    assert checkout_lock_path(install) == common / "hermes-update.lock"
+    assert checkout_lock_path(linked) == common / "hermes-update.lock"
+
+    lock = UpdateLock(path=tmp_path / "marker", install_root=install)
+    assert lock.acquire() is True
+    try:
+        assert git("status", "--porcelain", "--untracked-files=all") == ""
+        assert update_in_progress(linked), "a linked worktree shares the repository's lock"
+    finally:
+        lock.release()
 
 
 def test_unwritable_install_root_refuses(tmp_path):

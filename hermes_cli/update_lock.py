@@ -11,10 +11,12 @@ Two artifacts, one authority each:
 
   An owner is live while its pid is alive and its creation time still matches: never by age
   (the 20-minute ceiling only ages out v1 markers, which carry no creation time).
-* The checkout lock ``<install root>/.hermes-update.lock`` — a kernel lock (flock / msvcrt)
-  that ``hermes update`` holds for its whole process tree, so two updates of one checkout
-  started from different homes exclude each other and a killed updater whose completion
-  child still runs keeps the checkout locked until that child exits.
+* The checkout lock ``<git common dir>/hermes-update.lock`` (``<install root>/.hermes-update.lock``
+  for a ZIP install with no ``.git``) — a kernel lock (flock / msvcrt) that ``hermes update``
+  holds for its whole process tree, so two updates of one checkout started from different
+  homes exclude each other and a killed updater whose completion child still runs keeps the
+  checkout locked until that child exits. In the git dir it is never a worktree file: no
+  ``git status``/autostash sees it, whatever the checked-out tree's ``.gitignore`` says.
 """
 
 from __future__ import annotations
@@ -39,6 +41,7 @@ CREATE_TIME_TOLERANCE_SECONDS = 2.0
 
 MARKER_NAME = ".hermes-update-in-progress"
 CHECKOUT_LOCK_NAME = ".hermes-update.lock"
+GIT_CHECKOUT_LOCK_NAME = "hermes-update.lock"
 
 # Set by an orchestrating updater (Tauri `hermes-setup --update`) to its own pid before
 # spawning `hermes update` as a child stage; the parent holds the marker for its whole run,
@@ -83,8 +86,35 @@ def _default_install_root() -> Path:
     return Path(__file__).resolve().parents[1]
 
 
+def _git_common_dir(root: Path) -> Path | None:
+    """The repository's common git dir, read from disk (no git process: -I -S children).
+
+    ``.git`` is the dir itself, or a ``gitdir: <path>`` file (linked worktree, submodule) whose
+    target may name the shared dir in ``commondir``. ``None`` when ``root`` is no checkout.
+    """
+    dot = root / ".git"
+    try:
+        if dot.is_dir():
+            gitdir = dot
+        elif dot.is_file():
+            text = dot.read_text(encoding="utf-8-sig").strip()
+            if not text.startswith("gitdir:"):
+                return None
+            gitdir = root / text[len("gitdir:"):].strip()  # an absolute target replaces root
+        else:
+            return None
+        common = gitdir / "commondir"
+        if common.is_file():
+            gitdir = gitdir / common.read_text(encoding="utf-8-sig").strip()
+    except OSError:
+        return None
+    return Path(os.path.normpath(gitdir))
+
+
 def checkout_lock_path(install_root: Path | str | None = None) -> Path:
-    return Path(install_root or _default_install_root()) / CHECKOUT_LOCK_NAME
+    root = Path(install_root or _default_install_root())
+    common = _git_common_dir(root)
+    return root / CHECKOUT_LOCK_NAME if common is None else common / GIT_CHECKOUT_LOCK_NAME
 
 
 def _pid_alive(pid: int) -> bool:

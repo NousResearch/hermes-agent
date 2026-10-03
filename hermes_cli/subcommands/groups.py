@@ -18,4 +18,5 @@ def build_groups_parser(subparsers, *, cmd_groups: Callable) -> None:
     sub.add_parser("chats", help="List the chats that can control your Group Chats")
     revoke = sub.add_parser("revoke", help="Stop a chat from controlling your Group Chats")
     revoke.add_argument("chat", help="The chat ID that 'hermes groups chats' shows")
-    parser.set_defaults(func=cmd_groups)
+    # A bare ``hermes groups`` prints this parser's help: every subcommand the family has.
+    parser.set_defaults(func=cmd_groups, groups_parser=parser)

@@ -3,7 +3,10 @@ from types import SimpleNamespace
 
 import pytest
 
-from hermes_cli import groups_cmd
+# The CLI's main module is imported when the tests load, like in the other CLI tests: its start-up
+# resolves every sys.path entry, and an interpreter's entries can sit under ~/.hermes (the uv cache),
+# which a test must not touch.
+from hermes_cli import groups_cmd, main
 
 SHARED = {'code': 'ABCD-EFGH', 'expires_in': 500, 'profile': 'default', 'bot': 'default',
           'platform': 'telegram', 'kind': 'shared', 'chat': 'Team', 'chat_id': '-100',
@@ -87,7 +90,7 @@ def test_a_second_gateway_is_asked_when_the_first_does_not_hold_the_code(monkeyp
     monkeypatch.setattr('gateway.control_socket.query_gateway_control', query)
     assert run('allow', code='ABCDEFGH', yes=True) == 0
     assert run(None) == 1
-    assert 'Usage: hermes groups' in capsys.readouterr().out
+    assert "hermes groups --help" in capsys.readouterr().out
 
 
 def test_parser_registers_the_subcommands():
@@ -98,5 +101,24 @@ def test_parser_registers_the_subcommands():
     args = parser.parse_args(['groups', 'allow', 'ABCD-EFGH', '--yes'])
     assert (args.groups_action, args.code, args.yes) == ('allow', 'ABCD-EFGH', True)
     assert parser.parse_args(['groups', 'revoke', 'abcd']).chat == 'abcd'
-    from hermes_cli import main
     assert 'groups' in main._BUILTIN_SUBCOMMANDS
+
+
+def test_the_whole_hermes_cli_builds_with_the_groups_commands(capsys, monkeypatch, tmp_path):
+    """Every ``hermes`` command parses through one tree. Two changes that each add ``groups``
+    commands can merge without a conflict and still break that tree, and with it every command.
+    The tree is built against an empty home, so no installed plugin or profile changes it."""
+    (tmp_path / '.hermes').mkdir()
+    monkeypatch.setenv('HERMES_HOME', str(tmp_path / '.hermes'))
+    monkeypatch.setattr('pathlib.Path.home', classmethod(lambda cls: tmp_path))
+    parser, _subparsers = main._build_cli_parser()
+    with pytest.raises(SystemExit) as shown:
+        parser.parse_args(['groups', '--help'])
+    assert shown.value.code == 0
+    out = capsys.readouterr().out
+    assert 'usage: hermes groups' in out and all(verb in out for verb in ('allow', 'chats', 'revoke'))
+    bare = parser.parse_args(['groups'])  # the same help: every subcommand, whichever change added it
+    assert bare.func(bare) == 1 and capsys.readouterr().out == out
+    args = parser.parse_args(['groups', 'allow', 'ABCD-EFGH', '--yes'])
+    assert args.func is main.cmd_groups and (args.groups_action, args.code, args.yes) == ('allow', 'ABCD-EFGH', True)
+    assert parser.parse_args(['sessions', 'list']).func is not None

@@ -322,17 +322,38 @@ def _handle_stdio_child_exited_and_retry(server_name: str, exc: Exception, retry
             f"{type(retry_exc).__name__}: {_exc_str(retry_exc)}"))
 
 
-def _dispatch(server_name: str, server: Any, op: str, call, tool_timeout: float, recoverers,
+@asynccontextmanager
+async def _rpc_turn(server: Any, tool_timeout: Optional[float]):
+    """Take *server*'s turn (``_rpc_lock``: one RPC per server at a time), then start this call's clock.
+
+    The timeout bounds the call's own round-trip, never the wait for its turn: a call queued behind
+    another session's slow RPCs on the same server has not started, and charging that wait to it
+    failed a routine's 31-second query as "timed out after 300s" because a concurrent routine held the
+    server for five minutes. The wait is still bounded — every holder runs under this same clock."""
+    async with server._rpc_lock:
+        deadline = asyncio.timeout(tool_timeout)
+        try:
+            async with deadline:
+                yield
+        except TimeoutError:
+            if not deadline.expired():
+                raise
+            raise TimeoutError(f"MCP call timed out after {float(tool_timeout):.1f}s "
+                               f"(configured timeout: {float(tool_timeout):.1f}s)") from None
+
+
+def _dispatch(server_name: str, server: Any, op: str, call, recoverers,
               on_final_failure: Callable[[BaseException], None], record_outcome: bool = False) -> str:
     """Mark the call started on *server* (doubles may lack ``mark_tool_call``), run coroutine function *call*
     on the MCP loop and, on failure, walk ``recoverers`` (``(server_name, exc, retry_call, op) -> Optional[str]``,
     None = not its kind; order matters). Unrecovered exceptions go through ``on_final_failure`` and become the
-    generic call-failed error. ``record_outcome`` applies breaker bookkeeping to the FIRST attempt only."""
+    generic call-failed error. ``record_outcome`` applies breaker bookkeeping to the FIRST attempt only.
+    *call* bounds itself with ``_rpc_turn``; waiting here only honors user interrupts."""
     if callable(getattr(server, "mark_tool_call", None)):
         server.mark_tool_call()
 
     def call_once():
-        return _loop._run_on_mcp_loop(call, timeout=tool_timeout)
+        return _loop._run_on_mcp_loop(call, timeout=None)
 
     try:
         result = call_once()
@@ -569,7 +590,8 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
         read_only = _tool_is_read_only(server_name, tool_name)
 
         async def _call():
-            async with server._rpc_lock, _track_inflight_rpc(server, server_name, op, retry_safe=read_only):
+            async with _rpc_turn(server, tool_timeout), _track_inflight_rpc(server, server_name, op,
+                                                                             retry_safe=read_only):
                 server._pending_call_context = contextvars.copy_context()  # for the elicitation callback
                 try:
                     result = await _call_tool_racing_stdio_death(server, server_name, tool_name, args)
@@ -584,7 +606,7 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
             logger.error("MCP tool %s/%s call failed: %s", server_name, tool_name, exc)
         session_expired = partial(_handle_session_expired_and_retry, call_may_have_side_effects=not read_only)
         return _dispatch(
-            server_name, server, op, _call, tool_timeout,
+            server_name, server, op, _call,
             (_handle_stdio_child_exited_and_retry, _handle_auth_error_and_retry, session_expired),
             _on_failure, record_outcome=True)
     return _handler
@@ -592,7 +614,7 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
 
 def _make_utility_handler(op: str, log_label: str, rpc, render, required: Optional[str] = None):
     """``(server_name, tool_timeout) -> sync handler`` for one utility tool: ``rpc(session, args,
-    server_name)`` awaited under ``_rpc_lock``, ``render(result, server_name)`` -> JSON-able
+    server_name)`` awaited in the server's ``_rpc_turn``, ``render(result, server_name)`` -> JSON-able
     payload, ``required`` validated before any transport work."""
     def _factory(server_name: str, tool_timeout: float):
         def _handler(args: dict, **kwargs) -> str:
@@ -604,11 +626,11 @@ def _make_utility_handler(op: str, log_label: str, rpc, render, required: Option
                 return tool_error(f"Missing required parameter '{required}'")
 
             async def _call():
-                async with server._rpc_lock:
+                async with _rpc_turn(server, tool_timeout):
                     result = await rpc(server.session, args, server_name)
                 return json.dumps(render(result, server_name), ensure_ascii=False)
             return _dispatch(
-                server_name, server, op, _call, tool_timeout,
+                server_name, server, op, _call,
                 (_handle_auth_error_and_retry, _handle_session_expired_and_retry),
                 lambda exc: logger.error("MCP %s/%s failed: %s", server_name, log_label, exc))
         return _handler

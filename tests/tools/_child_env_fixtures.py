@@ -69,6 +69,21 @@ def run_code(code, mode="project", enabled_tools=("read_file",), reset=True):
 
 
 def observe_terminal(env, names):
+    names = list(names)
+    if len(names) <= 50:
+        return _observe_terminal_once(env, names)
+    # MSYS bash (Git for Windows) truncates ``bash -c`` arguments around 8 KiB
+    # (#-measured: 8175 chars ok, 8213 truncated mid-token) — a ~300-name list
+    # blown into one shlex-quoted python -c overshoots it and the child sees a
+    # half command. Observe in <=50-name chunks and merge; chunking is invisible
+    # to the assertion because each chunk observes a disjoint name subset.
+    observed: dict = {}
+    for i in range(0, len(names), 50):
+        observed.update(_observe_terminal_once(env, names[i:i + 50]))
+    return observed
+
+
+def _observe_terminal_once(env, names):
     code = "import json,os; print(json.dumps({k:os.environ.get(k) for k in " + repr(list(names)) + "}))"
     command = shlex.join([Path(sys.executable).as_posix(), "-c", code])
     result = env.execute(command)

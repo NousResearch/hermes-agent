@@ -209,6 +209,41 @@ PM activation's `PYTHONPATH` does not survive the test runner's environment scru
 `scripts/run_tests.sh` probes `.venv`, then `venv`, then `$HOME/.hermes/hermes-agent/venv`
 (worktrees sharing the main checkout's venv).
 
+On Windows, bare `python` resolves by PATH order, not by "the installed
+Python": a conda base (e.g. `D:\jiaxin`, Python 3.10 — below
+`requires-python >=3.11`) or the system Python 3.12 (which has pytest but none
+of the project's deps) can win, and `python -m pytest` then dies at collection
+with `ModuleNotFoundError` for first-party deps (`ruamel`, ...). Always invoke
+the project venv explicitly — `./venv/Scripts/python.exe -m pytest tests/...` —
+and check which interpreter you got with `python -c "import sys;
+print(sys.executable)"`. The `py` launcher is immune to the shadowing
+(`py -0p` lists registered interpreters; `py -3.12` for ad-hoc needs), but the
+conda base is not registered there. If `C:` runs short of space, point
+`TMP`/`TEMP` at a roomier drive for test runs (subprocess-heavy tests fail on
+`WinError 112` otherwise).
+
+On GBK-locale Windows (`chcp` shows 936; `locale.getpreferredencoding(False)`
+→ `cp936`), a child that reads `sys.stdin` as text decodes with the LOCALE
+codec unless a UTF-8 pin reached it — so a test that pipes non-ASCII through
+stdin fails with mojibake (`λ` arrives as garbage) and the same test passes
+under `python -X utf8` or `PYTHONUTF8=1`. That -X-passes signature means the
+data is right and an encoding CONTRACT is missing — diagnose in minutes, do
+not "fix" the assertion. The parent side is safe by convention (pipe bytes:
+`input=stream.read().encode("utf-8")`); the pin normally travels by
+INHERITANCE: `hermes_bootstrap.apply_windows_utf8_bootstrap()` setdefaults
+`PYTHONUTF8=1`/`PYTHONIOENCODING=utf-8` into `os.environ` at every entry
+point, and a child gets it only when its env inherits that environ. Env
+factories `build_subprocess_env()`/`served_profile_child_env()` do NOT add
+the pin themselves (`hermes_subprocess_env()` and the code-kernel env builder
+do), so a spawn that pipes RAW non-ASCII into a text-reading child must
+setdefault both vars on the child env at the spawn site — precedent:
+`_run_delivery`'s stdin branch in `tools/bot_mode_dm.py` (commit 55eb05ba8e).
+Two locale-immune alternatives: `json.dumps` defaults to `ensure_ascii=True`
+(ASCII-escaped payloads survive any codec), and children that read
+`sys.stdin.buffer` (bytes) are immune by construction. Note `PYTHONIOENCODING`
+alone fixes only the stdio streams, not bare `open()` — `PYTHONUTF8` covers
+both.
+
 ## Project Structure
 
 Counts shift constantly; the filesystem is canonical. Load-bearing entry points:

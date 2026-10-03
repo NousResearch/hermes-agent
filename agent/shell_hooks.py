@@ -297,17 +297,35 @@ _NOT_DIRECTLY_EXECUTABLE = "cannot be run directly on Windows (there is no sheba
 
 def _windows_script_argv(argv: list[str]) -> list[str]:
     """``argv`` with the interpreter prepended when element 0 is an existing script we can name an
-    interpreter for; unchanged otherwise, including on POSIX, where the shebang already works."""
-    suffix = os.path.splitext(argv[0])[1].lower()
-    kind = _WINDOWS_SCRIPT_INTERPRETERS.get(suffix)
-    if kind is None or not os.path.isfile(argv[0]):
+    interpreter for; unchanged otherwise, including on POSIX, where the shebang already works.
+
+    An unquoted spaced script path splits at its first space (``C:\\Users\\First
+    Last\\run.sh`` → ``['C:\\Users\\First', 'Last\\run.sh']``), leaving no file at element
+    0; when successive tokens rejoin to a mapped-suffix script, route it with its interpreter
+    — the same greedy prefix scan CreateProcess itself would attempt, one level smarter. The
+    rejoin is only tried when element 0 is not an existing file, so a real program followed by
+    spaced-path arguments (``tool.exe C:\\Users\\First Last\\x.sh``) still runs the program.
+    A rejoin that never lands on a mapped file falls through unchanged: Popen then reports the
+    honest FileNotFoundError → "command not found"."""
+    if os.path.isfile(argv[0]):
+        kind = _WINDOWS_SCRIPT_INTERPRETERS.get(os.path.splitext(argv[0])[1].lower())
+        if kind == "python":
+            return [sys.executable, *argv]
+        if kind is not None:
+            # Resolved inside the caller's try: no Git for Windows raises RuntimeError carrying the
+            # installer's own actionable guidance, which is a better diagnostic than any we could add.
+            from tools.environments.local import _find_bash
+            return [_find_bash(), *argv]
         return argv
-    if kind == "python":
-        return [sys.executable, *argv]
-    # Resolved inside the caller's try: no Git for Windows raises RuntimeError carrying the
-    # installer's own actionable guidance, which is a better diagnostic than any we could add.
-    from tools.environments.local import _find_bash
-    return [_find_bash(), *argv]
+    for i in range(1, len(argv)):
+        candidate = " ".join(argv[: i + 1])
+        kind = _WINDOWS_SCRIPT_INTERPRETERS.get(os.path.splitext(candidate)[1].lower())
+        if kind is not None and os.path.isfile(candidate):
+            if kind == "python":
+                return [sys.executable, candidate, *argv[i + 1 :]]
+            from tools.environments.local import _find_bash
+            return [_find_bash(), candidate, *argv[i + 1 :]]
+    return argv
 
 
 def _spawn(spec: ShellHookSpec, stdin_json: str) -> Dict[str, Any]:

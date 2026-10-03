@@ -47,6 +47,44 @@ _terminal_temp_pruned_once = False
 # GROUP (newest mtime sharing a stem) to keep pid/exit files of live sessions.
 _BG_GROUP_RE = re.compile(r"^(hermes_bg_[A-Za-z0-9_-]+)\.(log|pid|exit)$")
 
+# Git for Windows' bash silently truncates a ``-c`` argument around 8 KiB
+# (measured: 8,175 bytes survives, 8,213 is cut mid-token), corrupting the
+# program text. Commands above this floor are staged as a temp script and
+# invoked as ``bash <script>`` instead; POSIX bash has no such wall but shares
+# the path for identical behavior. The floor is conservative: Win32 argv plus
+# environment block share one 32 KiB region, so huge environments shrink the
+# per-argument budget further.
+_BASH_ARGV_MAX_SAFE_BYTES = 7000
+# Staged oversized-command scripts: ``bash <script>`` invocation targets,
+# unlinked right after the command finishes; the terminal-temp sweep reclaims
+# anything a hard kill left behind (after a grace window so a concurrent
+# session's just-staged, not-yet-spawned script is never swept mid-flight).
+_TERMINAL_SCRIPT_PREFIX = "hermes_tc_"
+_TERMINAL_SCRIPT_SUFFIX = ".sh"
+_TERMINAL_SCRIPT_GRACE_S = 300
+
+
+def _stage_terminal_script(cmd_string: str, temp_dir: "Path") -> Path:
+    """Write *cmd_string* to a throwaway bash script and return its path.
+
+    Only called for commands too long for a Git Bash ``-c`` argument (see
+    ``_BASH_ARGV_MAX_SAFE_BYTES``). Staged in the terminal temp cache so the
+    idle sweep reclaims anything a hard kill leaves behind.
+    """
+    temp_dir.mkdir(parents=True, exist_ok=True)
+    fd, staged = tempfile.mkstemp(
+        prefix=_TERMINAL_SCRIPT_PREFIX, suffix=_TERMINAL_SCRIPT_SUFFIX, dir=str(temp_dir), text=True)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as fh:
+            fh.write(cmd_string)
+            if not cmd_string.endswith("\n"):
+                fh.write("\n")
+    except Exception:
+        with contextlib.suppress(OSError):
+            os.unlink(staged)
+        raise
+    return Path(staged)
+
 
 def _default_terminal_temp_dir() -> "Path | None":
     """Return HERMES_HOME/cache/terminal, or None if unresolvable."""
@@ -84,9 +122,15 @@ def cleanup_terminal_temp_cache(max_age_hours: float = TERMINAL_TEMP_MAX_IDLE_HO
             group_newest[m.group(1)] = max(group_newest.get(m.group(1), 0.0), mt)
 
     removed = 0
+    script_cutoff = time.time() - _TERMINAL_SCRIPT_GRACE_S
     for f, mt in mtimes.items():
-        m = _BG_GROUP_RE.match(f.name)
-        if m:
+        if f.name.startswith(_TERMINAL_SCRIPT_PREFIX) and f.name.endswith(_TERMINAL_SCRIPT_SUFFIX):
+            # Oversized-command scripts: normally unlinked by _run_bash as soon
+            # as the command finishes. Keep fresh ones — a concurrent session
+            # may have just staged and not yet spawned its bash.
+            if mt >= script_cutoff:
+                continue
+        elif (m := _BG_GROUP_RE.match(f.name)):
             if group_newest[m.group(1)] >= cutoff:
                 continue
         elif subtree_touched_since(f, cutoff):
@@ -277,6 +321,15 @@ def _finalize_child_env(env: dict) -> dict:
     """Guards shared by every spawn surface: profile-home propagation, session-context
     bridging, Hermes-owned PYTHONPATH + venv-marker strip, MSYS defaults, delegate_task
     Kanban scrub. Returns the (possibly new) dict."""
+    # Windows UTF-8 pipe contract, structural instead of inherited: every child env built
+    # here gets the same setdefault hermes_bootstrap.apply_windows_utf8_bootstrap() puts in
+    # os.environ at entry points, so a spawn that pipes raw non-ASCII into a text-reading
+    # child survives a GBK-locale parent (cron/CI/service-manager) whose environ never
+    # carried the pin. setdefault keeps an explicit user opt-out (PYTHONUTF8=0,
+    # PYTHONIOENCODING=...) authoritative; POSIX is unaffected because the vars are inert
+    # there. Precedent: _run_delivery's stdin branch (tools/bot_mode_dm.py).
+    env.setdefault("PYTHONUTF8", "1")
+    env.setdefault("PYTHONIOENCODING", "utf-8")
     _apply_profile_home(env)
     _inject_session_context_env(env)
     _strip_hermes_owned_pythonpath_and_runtime_markers(env)
@@ -406,6 +459,12 @@ def served_profile_child_env(
         UnscopedSecretError, build_profile_secret_scope, current_secret_scope, is_multiplex_active)
     from hermes_constants import apply_scratch_tmp_env, get_hermes_home_override
     env = dict(base) if base is not None else hermes_subprocess_env(inherit_credentials=inherit_credentials)
+    # Same setdefault as _finalize_child_env: callers pass base=os.environ
+    # (delivery_env) and never enter the finalize funnel, so without this the
+    # Windows UTF-8 pipe contract rides on the parent's inherited environ —
+    # absent for a cron/CI/service-manager parent (GBK-locale mojibake class).
+    env.setdefault("PYTHONUTF8", "1")
+    env.setdefault("PYTHONIOENCODING", "utf-8")
     target = str(target_home or get_hermes_home_override() or "")
     if target:
         env["HERMES_HOME"] = target
@@ -1040,6 +1099,35 @@ class LocalEnvironment(BaseEnvironment):
                 self.cwd, safe_cwd)
         self.cwd = safe_cwd
 
+    def _terminal_script_dir(self) -> Path:
+        """Directory for oversized-command scripts: the managed terminal temp
+        cache first (the idle sweep reclaims anything a hard kill leaves
+        behind), then the session temp env vars, then the process temp dir."""
+        cache_dir = _default_terminal_temp_dir()
+        if cache_dir is not None:
+            return cache_dir
+        for env_var in ("TERMINAL_TEMP_DIR", "TMPDIR", "TMP", "TEMP"):
+            candidate = self.env.get(env_var) or os.environ.get(env_var)
+            if candidate and os.path.isdir(candidate):
+                return Path(candidate)
+        return Path(tempfile.gettempdir())
+
+    def _bash_argv(self, bash: str, cmd_string: str, *, login: bool) -> tuple[list[str], "Path | None"]:
+        """Build the bash invocation for *cmd_string*; return ``(args, staged_script)``.
+
+        Short commands keep the direct ``bash [-l] -c <cmd>`` form. Commands
+        over ``_BASH_ARGV_MAX_SAFE_BYTES`` are staged as a temp script and run
+        as ``bash [-l] <script>`` — Git for Windows truncates a ``-c``
+        argument at ~8 KiB mid-token, silently corrupting the program, and a
+        login snapshot scales with the operator's environment size, so the
+        login form stages too (``-l`` before a script path is equivalent).
+        """
+        prefix = [bash, *(["-l"] if login else [])]
+        if len(cmd_string.encode("utf-8", "surrogatepass")) <= _BASH_ARGV_MAX_SAFE_BYTES:
+            return [*prefix, "-c", cmd_string], None
+        staged = _stage_terminal_script(cmd_string, self._terminal_script_dir())
+        return [*prefix, _bash_safe_path(str(staged))], staged
+
     def _run_bash(self, cmd_string: str, *, login: bool = False, timeout: int = 120,
                   stdin_data: str | None = None) -> subprocess.Popen:
         bash = _find_bash()
@@ -1047,7 +1135,7 @@ class LocalEnvironment(BaseEnvironment):
         # custom init files so nvm/asdf/pyenv land on PATH in the snapshot.
         if login:
             cmd_string = _prepend_shell_init(cmd_string, _resolve_shell_init_files())
-        args = [bash, *(["-l"] if login else []), "-c", cmd_string]
+        args, staged_script = self._bash_argv(bash, cmd_string, login=login)
         self._recover_cwd()
         proc = subprocess.Popen(
             args, text=True, env=_make_run_env(self.env), encoding="utf-8", errors="replace",
@@ -1055,6 +1143,8 @@ class LocalEnvironment(BaseEnvironment):
             stdin=subprocess.PIPE if stdin_data is not None else subprocess.DEVNULL,
             start_new_session=True, cwd=self.cwd,
             **({"creationflags": windows_hide_flags()} if _IS_WINDOWS else {}))
+        if staged_script is not None:
+            proc._hermes_staged_script = str(staged_script)
         if not _IS_WINDOWS:
             with contextlib.suppress(ProcessLookupError):
                 proc._hermes_pgid = os.getpgid(proc.pid)
@@ -1067,6 +1157,20 @@ class LocalEnvironment(BaseEnvironment):
         if stdin_data is not None:
             _pipe_stdin(proc, stdin_data)
         return proc
+
+    def _wait_for_process(self, proc, timeout: int = 120, **kwargs) -> dict:
+        result = super()._wait_for_process(proc, timeout=timeout, **kwargs)
+        # The staged script is dead weight once bash has read it; unlink it on
+        # the exit/timeout/interrupt return paths (bash has exited, so the file
+        # is no longer being read). On the yield-to-background return the
+        # process is still running and may not have opened the script yet —
+        # unlinking there could kill the backgrounded command mid-read — so
+        # the terminal-temp sweep (grace window) reclaims it instead.
+        script = getattr(proc, "_hermes_staged_script", None)
+        if script and proc.poll() is not None:
+            with contextlib.suppress(OSError):
+                os.unlink(script)
+        return result
 
     def _kill_process(self, proc):
         """Kill the entire process group (all children)."""

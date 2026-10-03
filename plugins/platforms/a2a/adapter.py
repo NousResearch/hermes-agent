@@ -158,6 +158,17 @@ class A2ARequestHandler(BaseHTTPRequestHandler):
     def adapter(self) -> "A2AAdapter":
         return self.server.adapter  # type: ignore[attr-defined]
 
+    def parse_request(self) -> bool:
+        """Without a token, refuse any request whose ``Host`` is not a loopback name, before a route
+        runs: a page on a hostname re-resolved to 127.0.0.1 (DNS rebinding) is same-origin to this
+        listener and could otherwise read its served-agent list and Agent Card."""
+        if not super().parse_request():
+            return False
+        if self.adapter._security_context.localhost_only() and not security.is_loopback_host_header(self.headers.get("Host")):
+            self._error(403, None, protocol.ERR_UNAUTHORIZED, "Host must be localhost, 127.0.0.1 or [::1] (no A2A token configured)")
+            return False
+        return True
+
     def log_message(self, format, *args):  # noqa: A002,N802
         logger.debug("A2A http: " + format, *args)  # silence the default stderr access log
 

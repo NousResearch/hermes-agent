@@ -1238,6 +1238,43 @@ class TestInboundRoundTrip:
             set_multiplex_active(False)
 
 
+@pytest.mark.parametrize("host,served", [
+    (None, True),                  # urllib's own Host: 127.0.0.1:<port>
+    ("localhost", True),
+    ("[::1]", True),
+    ("localhost.", True),          # absolute form of localhost
+    ("rebound.example", False),
+    ("rebound.example.", False),    # a page's hostname re-resolved to 127.0.0.1
+])
+def test_no_token_listener_serves_only_loopback_host_names(monkeypatch, host, served):
+    """Without a token the listener trusts the loopback socket; a page on a hostname re-resolved to
+    127.0.0.1 is same-origin to it, so every route refuses a non-loopback Host before it runs."""
+    monkeypatch.delenv("A2A_BEARER_TOKEN", raising=False)
+    monkeypatch.delenv("A2A_PEER_TOKENS", raising=False)
+    seen: list = []
+    adapter, base = _make_live_adapter(monkeypatch, reply_fn=lambda event: seen.append(event) or "ok")
+    headers = {"Host": f"{host}:{base.rsplit(':', 1)[1]}"} if host else {}
+
+    def status(fn, *args):
+        try:
+            fn(*args)
+            return 200
+        except urllib.error.HTTPError as exc:
+            return exc.code
+
+    async def run():
+        assert await adapter.connect() is True
+        try:
+            return [await asyncio.to_thread(status, _get_json, base + "/health", headers),
+                    await asyncio.to_thread(status, _get_json, base + "/.well-known/agent-card.json", headers),
+                    await asyncio.to_thread(status, _post_json, base + "/", _send_body("hi"), headers)]
+        finally:
+            await adapter.disconnect()
+
+    assert asyncio.run(run()) == [200 if served else 403] * 3
+    assert bool(seen) is served
+
+
 # --------------------------------------------------------------------------
 # Push notifications end-to-end (inline config in message/send)
 # --------------------------------------------------------------------------

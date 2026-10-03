@@ -17,7 +17,10 @@ from typing import Dict, Optional, Any
 from gateway.platforms._shared import (
     apply_yaml_bridge as _apply_yaml_bridge, extra_or_secret as _extra_or_secret, get_scoped_secret, send_error
 )
-from hermes_cli._subprocess_compat import windows_detach_popen_kwargs
+from hermes_cli._subprocess_compat import (
+    windows_detach_flags_without_breakaway,
+    windows_detach_popen_kwargs,
+)
 from hermes_constants import (find_node_executable, get_hermes_dir, with_hermes_node_path)
 
 _IS_WINDOWS = platform.system() == "Windows"
@@ -534,9 +537,22 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             node = find_node_executable("node")
             if node is None:
                 raise RuntimeError("Node.js is no longer available; run `hermes pm install`")
-            self._bridge_process = subprocess.Popen(
-                [node, str(bridge_path), "--port", str(self._bridge_port), "--session", str(self._session_path),
-                 "--mode", _wenv("WHATSAPP_MODE", "self-chat")], stdout=bridge_log_fh, stderr=bridge_log_fh, env=self._bridge_env(), **windows_detach_popen_kwargs())
+            bridge_argv = [node, str(bridge_path), "--port", str(self._bridge_port), "--session", str(self._session_path),
+                           "--mode", _wenv("WHATSAPP_MODE", "self-chat")]
+            try:
+                self._bridge_process = subprocess.Popen(
+                    bridge_argv, stdout=bridge_log_fh, stderr=bridge_log_fh, env=self._bridge_env(), **windows_detach_popen_kwargs())
+            except PermissionError:
+                # CREATE_BREAKAWAY_FROM_JOB is rejected with ERROR_ACCESS_DENIED unless the parent's job
+                # sets JOB_OBJECT_LIMIT_BREAKAWAY_OK. Electron (Hermes Desktop) and Task Scheduler both
+                # wrap children in jobs that forbid it, so the default detach flags can never spawn the
+                # bridge there and WhatsApp stays permanently "Disconnected". Retry inside the parent's
+                # job — the documented fallback in windows_detach_flags_without_breakaway. Tradeoff: the
+                # bridge then dies with the gateway instead of outliving it.
+                logger.warning("[%s] Bridge spawn denied by parent job (breakaway forbidden); retrying without CREATE_BREAKAWAY_FROM_JOB", self.name)
+                self._bridge_process = subprocess.Popen(
+                    bridge_argv, stdout=bridge_log_fh, stderr=bridge_log_fh, env=self._bridge_env(),
+                    creationflags=windows_detach_flags_without_breakaway())
             _write_bridge_pidfile(self._session_path, self._bridge_process.pid)
             if not await self._wait_for_bridge():
                 return False

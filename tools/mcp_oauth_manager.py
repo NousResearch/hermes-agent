@@ -53,7 +53,8 @@ class HermesMCPOAuthProvider(HermesProviderMixin, *_SDK_BASES):
 
     _hermes_logger = logger
 
-    def __init__(self, *args: Any, server_name: str = "", preregistered: bool = False, **kwargs: Any):
+    def __init__(self, *args: Any, server_name: str = "", preregistered: bool = False,
+                 force_oauth: bool = False, **kwargs: Any):
         super().__init__(*args, **kwargs)
         # mcp 2.0 uses a task-owned anyio.Lock held across the yielded resource request (a session-long GET blocks
         # every POST; HTTPX may close the generator from another task). A binary semaphore drops task ownership.
@@ -63,6 +64,10 @@ class HermesMCPOAuthProvider(HermesProviderMixin, *_SDK_BASES):
         self._hermes_home = ""
         # A config-supplied client_id rejected as invalid_client means the *config* is wrong — only DCR clients auto-heal.
         self._hermes_preregistered = preregistered
+        # When True, the next response forces a full OAuth flow even when the server returns 200
+        # (not 401) for an unauthenticated ``initialize``. Set one-shot by the re-auth entry
+        # points (``hermes mcp login``, dashboard, TUI) via ``MCPOAuthManager.set_force_oauth()``.
+        self._force_oauth = force_oauth
 
     def _hermes_storage(self):
         """The context storage when it is a ``HermesTokenStorage``, else None."""
@@ -238,6 +243,24 @@ class HermesMCPOAuthProvider(HermesProviderMixin, *_SDK_BASES):
                 if resource_lock_released:
                     await self.context.lock.acquire()
                     resource_lock_released = False
+                # Force-OAuth (one-shot): a re-auth entry point asked for a full OAuth flow even
+                # though this server (e.g. gmailmcp.googleapis.com, Blynk) answers ``initialize``
+                # with 200 and no challenge — the SDK's reactive 401 branch would never fire.
+                # Hand it a synthetic 401 so its authorization-server discovery takes over.
+                if self._force_oauth:
+                    try:
+                        no_valid_token = not self.context.is_token_valid()
+                    except Exception:  # pragma: no cover — defensive: context not ready
+                        no_valid_token = True
+                    if no_valid_token and getattr(incoming, "status_code", None) != 401:
+                        import httpx as _httpx
+                        incoming = _httpx.Response(401)
+                        if isinstance(request, _httpx.Request):
+                            # Bind the request so downstream sniffers that read
+                            # ``response.request`` (e.g. _asm_discovery_failure) work;
+                            # an unbound httpx Response raises on that property.
+                            incoming.request = request
+                    self._force_oauth = False
                 # Another request may have refreshed/authorized while this one was in flight:
                 # retry with that token instead of a duplicate OAuth transition from a stale 401/403.
                 tokens = self.context.current_tokens
@@ -278,6 +301,22 @@ class MCPOAuthManager:
         self._entries_lock = threading.Lock()
         # Strong refs to in-flight 401 tasks so the loop's weak bookkeeping cannot GC them mid-run.
         self._inflight_tasks: set[asyncio.Task] = set()
+        # Server names whose next built provider starts with ``_force_oauth = True``.
+        # Populated by ``set_force_oauth()``, consumed and cleared one-shot by
+        # ``_build_provider()`` — re-auth entry points use it to force the OAuth flow
+        # for servers that answer ``initialize`` with 200 and never send a 401 challenge.
+        self._force_oauth_names: set[str] = set()
+
+    def set_force_oauth(self, server_name: str) -> None:
+        """Mark *server_name* so the next provider built for it forces the OAuth flow.
+
+        Called by the re-auth entry points (``hermes mcp login``, the dashboard
+        authenticate button, the TUI OAuth RPC) right after they evict the cached
+        provider, so the fresh probe starts OAuth even when the server allows
+        unauthenticated ``initialize`` (#53870, #89412).
+        """
+        with self._entries_lock:
+            self._force_oauth_names.add(server_name)
 
     def get_or_build_provider(self, server_name: str, server_url: str, oauth_config: Optional[dict]) -> Optional[Any]:
         """Cached OAuth provider for ``server_name``, built on first use (rebuilt when ``server_url`` changes);
@@ -317,8 +356,13 @@ class MCPOAuthManager:
             raise OAuthNonInteractiveError(
                 f"MCP OAuth for '{server_name}': non-interactive environment and no cached tokens found. "
                 f"Run `hermes mcp login {server_name}` interactively first to complete initial authorization.")
+        # One-shot consumption: ``_build_provider`` runs under ``_entries_lock`` (from
+        # ``get_or_build_provider``), so the read-discard pair cannot race another build.
+        force = server_name in self._force_oauth_names
+        self._force_oauth_names.discard(server_name)
         return _HERMES_PROVIDER_CLS(
-            server_name=server_name, preregistered=bool(cfg.get("client_id")), server_url=entry.server_url,
+            server_name=server_name, preregistered=bool(cfg.get("client_id")), force_oauth=force,
+            server_url=entry.server_url,
             **build_provider_kwargs(cfg, storage, ssh_proxy_hint=False))
 
     def remove(self, server_name: str, *, hermes_home: str | Path | None = None) -> _ProviderEntry | None:

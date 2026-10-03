@@ -86,7 +86,7 @@ def _op_shape_error(action: str, args: dict):
 def _validate_batch_ops(operations, default_name, tool_error):
     """Shape checks with no side effects. Returns (names, None) or (None, error_json)."""
     from tools.skill_manager_guards import _background_review_preflight
-    from tools.skill_manager_tool import _validate_category
+    from tools.skill_manager_tool import _validate_category, _validate_file_path
     def fail(i, msg):
         return None, tool_error(f"operations[{i}]{msg}", success=False)
     names = []
@@ -108,6 +108,11 @@ def _validate_batch_ops(operations, default_name, tool_error):
         # so it returns a JSON error (not a TypeError) and never leaks the snapshot tempdir.
         if act == "create" and (cat_err := _validate_category(op.get("category"))) is not None:
             return fail(i, f" ({act} on '{nm}'): {cat_err}")
+        # Same for a file_path the write could never honour, and BEFORE the approval gate: the
+        # gate stages the batch and answers success:true, so the refusal would only surface at
+        # apply time, out of band.
+        if act in {"write_file", "remove_file"} and (path_err := _validate_file_path(op["file_path"])):
+            return fail(i, f" ({act} on '{nm}'): {path_err}")
         names.append(nm)
         if act == "create" and nm in names[:-1]:
             return fail(i, f": create for '{nm}' must precede that skill's other ops.")

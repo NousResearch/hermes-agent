@@ -1,4 +1,3 @@
-import { atom } from 'nanostores'
 /**
  * Runtime plugin loader — plugins as CODE, not registry edits, loaded after
  * build time. The pipeline every non-bundled plugin takes:
@@ -33,7 +32,10 @@ import { atom } from 'nanostores'
  * (iframe/worker + CSP + capability gating) before it can land.
  */
 
+import { atom } from 'nanostores'
+
 import { translateNow } from '@/i18n'
+import { isReadFileErrorResult } from '@/lib/desktop-fs'
 import { installPluginSdk, sdkImportMap } from '@/sdk/runtime'
 import { notifyError } from '@/store/notifications'
 
@@ -599,7 +601,13 @@ async function readPackageMarker(desktop: Window['hermesDesktop'], folder: strin
       return null
     }
 
-    const parsed = JSON.parse((await desktop.readFileText(marker.path)).text) as {
+    const read = await desktop.readFileText(marker.path)
+
+    if (isReadFileErrorResult(read)) {
+      return null
+    }
+
+    const parsed = JSON.parse(read.text) as {
       catalogName?: string
       package?: string
       repo?: string
@@ -684,6 +692,10 @@ async function readPluginSourceText(file: string): Promise<string> {
   }
 
   const result = await desktop.readFileText(file)
+
+  if (isReadFileErrorResult(result)) {
+    throw new Error(result.message || `Plugin read failed: ${result.error}`)
+  }
 
   if (result.truncated) {
     throw new PluginSourceOversizeError(translateNow('settings.plugins.sourcePreviewTruncated'))
@@ -794,7 +806,11 @@ async function watchDiskPluginFile(desktop: NonNullable<Window['hermesDesktop']>
   }
 
   try {
-    record.watchId = (await desktop.watchPreviewFile(record.file)).id
+    const watch = await desktop.watchPreviewFile(record.file)
+
+    // Structured "folder gone" answer — nothing to watch; the poll still
+    // reconciles new folders and edits need a manual reload.
+    record.watchId = isReadFileErrorResult(watch) ? null : watch.id
   } catch {
     // Unwatchable — the poll still reconciles new folders; edits need a
     // manual "Reload desktop plugins".

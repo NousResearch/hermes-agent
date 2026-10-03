@@ -282,6 +282,7 @@ describe('shared WebGL atlas refresh fan-out', () => {
       refresh: () => ops.push('refresh-A'),
       rows: 24
     }
+
     const termB = {
       refresh: () => ops.push('refresh-B'),
       rows: 24
@@ -297,8 +298,8 @@ describe('shared WebGL atlas refresh fan-out', () => {
 
     // Both clears must precede both refreshes. If a clear ran after a refresh,
     // that terminal's rebuilt model would reference freed atlas rows.
-    const clearIndices = ops.map((op, i) => op === 'clear' ? i : -1).filter(i => i >= 0)
-    const refreshIndices = ops.map((op, i) => op.startsWith('refresh-') ? i : -1).filter(i => i >= 0)
+    const clearIndices = ops.map((op, i) => (op === 'clear' ? i : -1)).filter(i => i >= 0)
+    const refreshIndices = ops.map((op, i) => (op.startsWith('refresh-') ? i : -1)).filter(i => i >= 0)
 
     expect(clearIndices).toHaveLength(2)
     expect(refreshIndices).toHaveLength(2)
@@ -311,8 +312,13 @@ describe('shared WebGL atlas refresh fan-out', () => {
     const broken = { refresh: vi.fn(), rows: 24 }
     const healthy = { refresh: vi.fn(), rows: 24 }
     const getWebgl = () => ({ clearTextureAtlas: vi.fn() }) as never
+
     const getDeadWebgl = () =>
-      ({ clearTextureAtlas: () => { throw new Error('webgl context lost') } }) as never
+      ({
+        clearTextureAtlas: () => {
+          throw new Error('webgl context lost')
+        }
+      }) as never
 
     registerWebglRefresh(broken as never, getDeadWebgl)
     registerWebglRefresh(healthy as never, getWebgl)
@@ -367,4 +373,3 @@ describe('shared WebGL atlas refresh fan-out', () => {
     }
   })
 })
-

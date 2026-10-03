@@ -124,6 +124,7 @@ The kanban tools are gated by `HERMES_KANBAN_TASK` env var the dispatcher sets �
 | Codex `view_image` (load image into conversation) | — | yes (Codex built-in) |
 | Codex sandbox (seatbelt/landlock, profiles) | — | yes (Codex built-in) |
 | ChatGPT subscription auth | — | yes (via `openai-codex` provider) |
+| Model selection (`model.default`, `/model`) | yes | yes — sent on `thread/start` and every `turn/start`, so a mid-session `/model` applies to the next turn; a `-900k` variant goes out as its base slug (codex applies the extended window itself), and on codex's own provider an `openai/` prefix is dropped |
 | Native Codex plugins (Linear, GitHub, etc.) | — | yes (auto-migrated) |
 | User MCP servers | yes | yes (auto-migrated to codex) |
 | Memory + skill review (background) | yes | yes (via item projection) |

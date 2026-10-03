@@ -35,6 +35,7 @@ import {
 import type { Session } from 'electron'
 
 import { type ActiveRuntimeState, classifyActiveRuntime } from './active-runtime-state'
+import { HERMES_API_EXPECTED_404 } from './api-expected-404'
 import {
   destroyKeepaliveAgents,
   htmlResponseError,
@@ -212,6 +213,7 @@ import {
   isAttachedBackendTokenDrifted,
   resolveServedDashboardToken
 } from './dashboard-token'
+import { resolveDashboardWebDist } from './dashboard-web-dist'
 import { resolveDesktopHermesHome, resolveDesktopUserData } from './data-paths'
 import { loadOrCreateInstallationId, sshOwnershipId } from './desktop-installation'
 import { formatDesktopLogLine, formatLogStamp } from './desktop-log-line'
@@ -238,6 +240,7 @@ import {
 } from './desktop-uninstall'
 import { describeDevCdpDecision, resolveDevCdpPort } from './dev-cdp'
 import { preReadyDockLaunchSteps } from './dock-launch-order'
+import { embedHostOrigin } from './embed-host'
 import { installEmbedReferer } from './embed-referer'
 import { createAmbientClaimArbiter } from './event-dedupe'
 import { openExternalUrl as externalOpen, type ExternalOpenDeps, reportPreOpenStatFailure } from './external-open'
@@ -249,7 +252,6 @@ import {
   tuiResumeArgs
 } from './external-terminal'
 import { f12ShortcutDecision, toF12KeyboardEventPayload } from './f12-shortcut'
-import { type FaviconIo, resolveFavicon } from './favicon'
 import { resolveFeatureFlags } from './feature-flags'
 import {
   installFindShortcut,
@@ -290,6 +292,8 @@ import {
   enableBasicPasswordStoreEncryption,
   encryptDesktopSecret as encryptDesktopSecretStrict,
   homeRelativeAttachmentCandidates,
+  isMissingFileError,
+  missingFileResult,
   readFileDataUrlForIpc,
   resolvePersistedRemoteToken,
   resolveReadableFileForIpc,
@@ -311,6 +315,7 @@ import {
 import { assertNoSecondLocalBackend, assertNotPassiveSpawn } from './host-backend-singleton'
 import { lookupPublishedSessionToken } from './host-published-token'
 import { claimHostSpawnGate } from './host-spawn-gate'
+import { HERMES_HUB_FALLBACK_ORIGIN, HERMES_HUB_ORIGIN, isHermesHubClipboardWrite } from './hub-iframe-policy'
 import { requestHudClose } from './hud-close'
 import { cursorPointInWindow } from './hud-cursor'
 import { startHudGameOverlayWatch } from './hud-game-overlay'
@@ -325,11 +330,19 @@ import { linuxOzoneBackend, resolveHudWindowing } from './hud-windowing'
 import { INSTALL_STAMP, installShape } from './install-stamp'
 import type { InstallStamp } from './install-stamp'
 import { applyLaunchProfileOverride } from './launch-profile'
-import { CURL_TITLE_WRITE_OUT, parseCurlTitleResponse } from './link-title-curl'
-import { canonicalTitleCacheKey, isFetchableHttpUrl } from './link-title-url'
-import { isAuthWall, resolveLinkTitle } from './link-title-wall'
-import { createLinkTitleWindow, guardLinkTitleSession, readLinkTitleWindowTitle } from './link-title-window'
+import { fetchLinkTitle, resolveFaviconCached } from './link-metadata'
 import { CHROMIUM_LOG_FILENAME, enableLinuxCrashDiagnostics, linuxCrashDiagnostics } from './linux-crash-diagnostics'
+import {
+  decideLinuxGpuLaunch,
+  disableGpuSwitchNeededForReason,
+  LINUX_GPU_SILENT_RETRY_GRACE_S,
+  linuxGpuChildDeathPath,
+  linuxGpuFallbackMarker,
+  linuxGpuMarkerAfterSuccessfulBoot,
+  readLinuxGpuMarker,
+  shouldEngageSilentGpuRetryFallback,
+  writeLinuxGpuMarker
+} from './linux-gpu-fallback'
 import { notifyLauncherWindowRevealed } from './linux-launcher-ready'
 import {
   decideNvidiaEglFallback,
@@ -403,8 +416,8 @@ import {
 import { wireOauthSessionResponse } from './oauth-session-response'
 import { listWindowsProcesses, reapPackageRootedProcesses } from './package-process-reap'
 import { createParentStartMarkerResolver, parentWatchdogEnv } from './parent-process-identity'
-import { bundledPayload, installIdForRoot, type PayloadInfo } from './payload-backend'
-import { petOverlayClickThrough } from './pet-overlay'
+import { bundledPayload, installIdForRoot, type PayloadInfo, payloadPythonPath } from './payload-backend'
+import { petOverlayClickThrough, shouldPopInOnOverlayClosed } from './pet-overlay'
 import { placePetOverlay, registerPetOverlayIpc } from './pet-overlay-ipc'
 import {
   buildRegistryProfileRoutes,
@@ -435,7 +448,9 @@ import { readPreUpdateBackupEnabled } from './pre-update-backup-config'
 import { capturePreviewContents } from './preview-capture'
 import { onPreviewWatchOwnerDestroyed, sendPreviewFileChangedToOwner } from './preview-file-watch'
 import { hasClosePreviewFlag, previewGuestInputAction } from './preview-guest-escape'
+import { commandFocusedGuest, notePreviewGuestHidden } from './preview-guest-offscreen'
 import { PreviewReachRegistry } from './preview-reach'
+import { previewHttpUrlTarget } from './preview-url-target'
 import {
   createPrimaryRemoteConnection,
   FirstRunSetupResetError,
@@ -474,7 +489,12 @@ import {
   tagRegistrySessionResponse,
   tagRemoteSessionRows
 } from './profile-session-routing'
-import { createQuickEntryShortcut, quickEntryWindowBounds, sanitizeQuickEntrySettings } from './quick-entry'
+import {
+  createQuickEntryShortcut,
+  createQuickEntrySubmitRelay,
+  quickEntryWindowBounds,
+  sanitizeQuickEntrySettings
+} from './quick-entry'
 import { createQuitFinalization } from './quit-finalization'
 import {
   type ActiveWork,
@@ -560,6 +580,7 @@ import {
   opacityNeedsSetting,
   translucencySupportedOn,
   vibrancyFor as vibrancyForTranslucency,
+  windowBackgroundMaterialOptions,
   windowBackingOptions,
   windowOpacityFor,
   windowOpacityOptions
@@ -600,13 +621,13 @@ import {
   registerUpdateRelaunch,
   type RelaunchRegistration
 } from './updater/relaunch'
-import { startRelaunchWaiter } from './updater/relaunch-waiter'
+import { relaunchWaiterScript, startRelaunchWaiter } from './updater/relaunch-waiter'
 import { preflightStateDb } from './updater/state-db-preflight'
 import { createStoreStrategy } from './updater/store-client'
 import { isExternalVenvHolder, isHermesOwnedVenvDaemon } from './venv-holder-select'
 import { fetchMarketplaceThemes, searchMarketplaceThemes } from './vscode-marketplace'
 import { createWakeIndicatorWindowController } from './wake-indicator-window'
-import { decodeWebText } from './web-text-decoder'
+import { guardedWatch } from './watch-storm-breaker'
 import { windowAcceleratorAction } from './window-accelerator'
 import { enumerateWindowsFrontToBack, enumerationFailed, readWindowBelow } from './window-below'
 import { bindWindowChromeEvents } from './window-chrome-events'
@@ -618,6 +639,7 @@ import {
 } from './window-connection-route'
 import { registerWindowControlIpc, windowControlState } from './window-controls'
 import { revealAction, shouldFocusToTakeKeyboard } from './window-focus-policy'
+import { windowMenuTemplate } from './window-menu'
 import { createWindowOpenHandler } from './window-open-policy'
 import { installWindowRendererLifecycle } from './window-renderer-lifecycle'
 import { wireWindowReveal } from './window-reveal'
@@ -721,6 +743,15 @@ if (REMOTE_DISPLAY_REASON) {
   // Belt-and-suspenders for X11/VNC, where the Viz compositor can still glitch
   // with only --disable-gpu: force compositing onto the CPU too.
   app.commandLine.appendSwitch('disable-gpu-compositing')
+
+  // #97616: disableHardwareAcceleration() alone does NOT stop a GPU child
+  // from spawning (it then dies error_code=1002 on AMD/Mesa). For the explicit
+  // HERMES_DESKTOP_DISABLE_GPU override, fully spawn-block it. Remote-display
+  // detections keep their long-standing compositing-only behavior.
+  if (disableGpuSwitchNeededForReason(REMOTE_DISPLAY_REASON)) {
+    app.commandLine.appendSwitch('disable-gpu')
+  }
+
   console.log(
     `[hermes] remote display detected (${REMOTE_DISPLAY_REASON}); disabling GPU hardware acceleration to prevent flicker`
   )
@@ -788,8 +819,14 @@ if (DEV_CDP.port) {
 
 // WSLg: Chromium blocklists the Mesa vGPU → software compositing → typing lag.
 // /dev/dxg means a real GPU is available; un-blocklist it. Skipped when a remote
-// display already forced software (SSH'd-into-WSL).
-if (IS_WSL && !REMOTE_DISPLAY_REASON && fs.existsSync('/dev/dxg')) {
+// display already forced software (SSH'd-into-WSL), and on Wayland ozone: WSL has
+// no DRM render node, so forced GPU compositing segfaults the GPU process there.
+if (
+  IS_WSL &&
+  !REMOTE_DISPLAY_REASON &&
+  fs.existsSync('/dev/dxg') &&
+  linuxOzoneBackend(process.env, process.argv) !== 'wayland'
+) {
   app.commandLine.appendSwitch('ignore-gpu-blocklist')
   app.commandLine.appendSwitch('enable-gpu-rasterization')
   app.commandLine.appendSwitch('enable-zero-copy')
@@ -900,6 +937,51 @@ if (NVIDIA_DRIVER_MAJOR !== null && process.platform === 'linux') {
   })
 }
 
+// #124843: on Mesa/Wayland the Chromium GPU child can fail init
+// (error_code=1002) and retry inside a sub-zygote forever — ~350% CPU, no
+// gpu-process, no crash. Bound it: one relaunch into software rendering,
+// then a sticky per-version marker so the next boot goes straight there.
+// Reactive only — healthy Mesa/Wayland stacks keep full acceleration. Must
+// run before app `ready`. Override with HERMES_DESKTOP_DISABLE_GPU
+// (1/true → always software, 0/false → keep GPU on).
+let linuxGpuFallbackActive = false
+let linuxGpuFallbackSticky = false
+let linuxGpuRelaunchAttempted = false
+
+const LINUX_GPU_SOFTWARE_ACTIVE =
+  Boolean(REMOTE_DISPLAY_REASON) || NVIDIA_EGL_FALLBACK.enable || alreadyHasDisableGpu(process.argv, process.env)
+
+if (process.platform === 'linux') {
+  const linuxGpuUserData = app.getPath('userData')
+
+  const linuxGpuDecision = decideLinuxGpuLaunch({
+    argv: process.argv,
+    env: process.env,
+    marker: readLinuxGpuMarker(linuxGpuUserData),
+    appVersion: app.getVersion(),
+    remoteDisplayReason: REMOTE_DISPLAY_REASON,
+    nvidiaFallbackActive: NVIDIA_EGL_FALLBACK.enable
+  })
+
+  linuxGpuFallbackActive = linuxGpuDecision.enable
+  linuxGpuFallbackSticky = linuxGpuDecision.nextMarker.state === 'fallback'
+
+  try {
+    writeLinuxGpuMarker(linuxGpuUserData, linuxGpuDecision.nextMarker)
+  } catch {
+    void 0
+  }
+
+  if (linuxGpuDecision.enable && linuxGpuDecision.reason !== 'already-enabled' && !LINUX_GPU_SOFTWARE_ACTIVE) {
+    app.disableHardwareAcceleration()
+    app.commandLine.appendSwitch('disable-gpu-compositing')
+    console.log(
+      `[hermes] Linux GPU software fallback enabled (${linuxGpuDecision.reason}); disabling GPU ` +
+        'hardware acceleration after a GPU-child init failure (#124843). HERMES_DESKTOP_DISABLE_GPU=0 to opt out.'
+    )
+  }
+}
+
 // Linux: point Chromium at the session's keychain backend so safeStorage can
 // encrypt remote gateway tokens (hardening.ts refuses to persist them without
 // it). The value arrives via HERMES_DESKTOP_PASSWORD_STORE, bridged by the
@@ -936,7 +1018,15 @@ let windowsSandboxFallbackSticky = false
 let windowsSandboxFallbackReason: SandboxFallbackReason = 'boot-loop'
 let windowsNoSandboxRelaunchAttempted = false
 
-if (IS_WINDOWS) {
+// #121954: the two-strike boot-abort ladder now also covers Linux. On Linux
+// hosts where the sandboxed GPU child cannot start (dies pre-main on an
+// FD-ownership violation), Chromium prints "GPU process isn't usable.
+// Goodbye." and aborts — a 100% crash loop; the host isolation matrix in
+// #121954 shows only `--no-sandbox` reaches the UI. Same sticky per-version
+// recovery as #38216: two consecutive mid-boot aborts engage `--no-sandbox`,
+// an app update re-probes the sandbox once. Windows-only extras (ACL repair,
+// renderer crash-loop relaunch) stay inside the IS_WINDOWS branch.
+if (IS_WINDOWS || process.platform === 'linux') {
   const windowsUserData = app.getPath('userData')
   const priorMarker = readSandboxMarker(windowsUserData)
 
@@ -974,50 +1064,121 @@ if (IS_WINDOWS) {
     app.commandLine.appendSwitch('no-sandbox')
     process.env.ELECTRON_DISABLE_SANDBOX = '1'
     console.log(
-      `[hermes] Windows sandbox fallback enabled (${sandboxDecision.reason}); launching with --no-sandbox (#38216)`
+      `[hermes] sandbox fallback enabled (${sandboxDecision.reason}); launching with --no-sandbox (#38216, #121954)`
     )
   }
 
   writeSandboxMarker(windowsUserData, sandboxDecision.nextMarker)
 
-  // Catch the first GPU breakpoint death and relaunch before Chromium's
-  // "GPU process isn't usable" FATAL abort ends the process with no recovery.
+  // One coalesced Linux GPU-child recovery (#86073, #124843, #121954): the
+  // sandbox signature is tried first (that host's matrix shows --disable-gpu
+  // still crashes), then the software ladder — including the relapse after a
+  // --no-sandbox boot died again. One death, one bounded relaunch; Windows
+  // keeps its breakpoint-signature fast path unchanged.
   app.on('child-process-gone', (_event, details) => {
-    if (
-      !shouldRelaunchForGpuSandboxCrash({
-        details,
-        alreadyNoSandbox: windowsSandboxFallbackActive || alreadyHasNoSandbox(process.argv, process.env),
-        relaunchAttempted: windowsNoSandboxRelaunchAttempted
-      })
-    ) {
+    if (IS_WINDOWS) {
+      if (
+        !shouldRelaunchForGpuSandboxCrash({
+          details,
+          alreadyNoSandbox: windowsSandboxFallbackActive || alreadyHasNoSandbox(process.argv, process.env),
+          relaunchAttempted: windowsNoSandboxRelaunchAttempted
+        })
+      ) {
+        return
+      }
+
+      windowsNoSandboxRelaunchAttempted = true
+      windowsSandboxFallbackActive = true
+      windowsSandboxFallbackSticky = true
+      windowsSandboxFallbackReason = 'gpu-breakpoint'
+
+      try {
+        writeSandboxMarker(app.getPath('userData'), fallbackMarker('gpu-breakpoint', app.getVersion()))
+      } catch {
+        void 0
+      }
+
+      console.warn(
+        `[hermes] GPU child died with the sandbox signature (exit=${details?.exitCode}); relaunching once with --no-sandbox (#38216)`
+      )
+
+      try {
+        app.relaunch({ args: buildNoSandboxRelaunchArgs(process.argv.slice(1)) })
+        void exitAfterBackendShutdown(0)
+      } catch (error) {
+        console.error(`[hermes] --no-sandbox relaunch failed: ${error?.message || error}`)
+      }
+
       return
     }
 
-    windowsNoSandboxRelaunchAttempted = true
-    windowsSandboxFallbackActive = true
-    windowsSandboxFallbackSticky = true
-    windowsSandboxFallbackReason = 'gpu-breakpoint'
+    const alreadySoftware =
+      LINUX_GPU_SOFTWARE_ACTIVE || linuxGpuFallbackActive || alreadyHasDisableGpu(process.argv, process.env)
 
-    try {
-      writeSandboxMarker(app.getPath('userData'), fallbackMarker('gpu-breakpoint', app.getVersion()))
-    } catch {
-      void 0
+    const path = linuxGpuChildDeathPath({
+      details,
+      alreadyNoSandbox: windowsSandboxFallbackActive || alreadyHasNoSandbox(process.argv, process.env),
+      alreadySoftware,
+      sandboxRelaunchAttempted: windowsNoSandboxRelaunchAttempted,
+      softwareRelaunchAttempted: linuxGpuRelaunchAttempted
+    })
+
+    if (path === 'no-sandbox') {
+      windowsNoSandboxRelaunchAttempted = true
+      windowsSandboxFallbackActive = true
+      windowsSandboxFallbackSticky = true
+      windowsSandboxFallbackReason = 'gpu-breakpoint'
+
+      try {
+        writeSandboxMarker(app.getPath('userData'), fallbackMarker('gpu-breakpoint', app.getVersion()))
+      } catch {
+        void 0
+      }
+
+      console.warn(
+        `[hermes] Linux GPU child died with the sandbox signature (exit=${details?.exitCode}); relaunching once with --no-sandbox (#121954)`
+      )
+
+      try {
+        app.relaunch({ args: buildNoSandboxRelaunchArgs(process.argv.slice(1)) })
+        void exitAfterBackendShutdown(0)
+      } catch (error) {
+        console.error(`[hermes] --no-sandbox relaunch failed: ${error?.message || error}`)
+      }
+
+      return
     }
 
-    console.warn(
-      `[hermes] Windows GPU sandbox crashed (exit=${details?.exitCode}); relaunching once with --no-sandbox (#38216)`
-    )
+    if (path === 'disable-gpu') {
+      linuxGpuRelaunchAttempted = true
+      linuxGpuFallbackActive = true
+      linuxGpuFallbackSticky = true
 
-    try {
-      app.relaunch({ args: buildNoSandboxRelaunchArgs(process.argv.slice(1)) })
-      void exitAfterBackendShutdown(0)
-    } catch (error) {
-      console.error(`[hermes] --no-sandbox relaunch failed: ${error?.message || error}`)
+      const reason =
+        String(details?.reason || '').toLowerCase() === 'launch-failure' ? 'gpu-launch-failure' : 'gpu-crash'
+
+      try {
+        writeLinuxGpuMarker(app.getPath('userData'), linuxGpuFallbackMarker(reason, app.getVersion()))
+      } catch {
+        void 0
+      }
+
+      console.warn(
+        `[hermes] Linux GPU child gone (reason=${details?.reason}); relaunching once with --disable-gpu (#124843)`
+      )
+
+      try {
+        app.relaunch({ args: buildDisableGpuRelaunchArgs(process.argv.slice(1)) })
+        void exitAfterBackendShutdown(0)
+      } catch (error) {
+        console.error(`[hermes] --disable-gpu relaunch failed: ${error?.message || error}`)
+      }
     }
   })
 }
 
 ipcMain.handle('hermes:get-remote-display-reason', () => REMOTE_DISPLAY_REASON)
+ipcMain.handle('hermes:embed-host:origin', () => embedHostOrigin())
 
 // Keep the renderer's PROCESS priority normal while its windows are hidden —
 // a deprioritized renderer streams a live answer visibly slower once the
@@ -1456,7 +1617,7 @@ function chatWindowSurfaceOptions() {
     // opts into the documented transparent-window limits — including that a
     // RESIZABLE transparent window is unsupported and breaks (electron#48421).
     // Every chat window is resizable.
-    backgroundMaterial: IS_WINDOWS && GLASS_SUPPORTED ? backgroundMaterialFor(translucencyState) : undefined,
+    ...windowBackgroundMaterialOptions(translucencyState, IS_WINDOWS, GLASS_SUPPORTED),
     ...windowOpacityOptions(translucencyState),
     ...windowBackingOptions(translucencyState, getWindowBackgroundColor())
   }
@@ -1544,7 +1705,6 @@ const MEDIA_MIME_TYPES = {
 const PREVIEW_HTML_EXTENSIONS = new Set(['.html', '.htm'])
 const PREVIEW_PDF_EXTENSIONS = new Set(['.pdf'])
 const PREVIEW_WATCH_DEBOUNCE_MS = 120
-const LOCAL_PREVIEW_HOSTS = new Set(['0.0.0.0', '127.0.0.1', '::1', '[::1]', 'localhost'])
 const TEXT_PREVIEW_MAX_BYTES = 512 * 1024
 
 const PREVIEW_LANGUAGE_BY_EXT = {
@@ -1762,11 +1922,13 @@ function spawnOwnedBackend(...args: Parameters<typeof spawn>): ChildProcess {
 }
 
 const remoteLiveness = new RemoteLivenessTracker()
+
 // Pooled remotes are probed on the renderer reconnect cadence (minutes apart),
 // not the primary's sub-minute retry loop, so they need a failure window wider
 // than that cadence or a dead pooled descriptor's streak resets on every tick
 // and it is never dropped (#94381).
 const pooledRemoteLiveness = new RemoteLivenessTracker(undefined, REMOTE_POOLED_LIVENESS_FAILURE_WINDOW_MS)
+
 const remoteRevalidation = new RemoteRevalidationCoordinator()
 const registryDispatchRevalidation = new RemoteRevalidationCoordinator()
 // Single-owner reconnect/dial claim (#90812): reconnectGateway()'s in-flight
@@ -3494,7 +3656,10 @@ function readWindowState() {
 
 // Persist the window's restored (non-maximized) bounds plus its maximized flag.
 // getNormalBounds() keeps the pre-maximize size, so un-maximizing next session
-// lands back where the user actually sized the window.
+// lands back where the user actually sized the window. While fullscreen,
+// getNormalBounds() reports the fullscreen bounds with isMaximized=false — the
+// broken transition behind #94319 — so record that provenance and let recovery
+// on the next launch recognize the snapshot instead of guessing from geometry.
 function persistWindowState() {
   if (!mainWindow || mainWindow.isDestroyed() || mainWindow.isMinimized()) {
     return
@@ -3505,7 +3670,18 @@ function persistWindowState() {
     fs.mkdirSync(path.dirname(DESKTOP_WINDOW_STATE_PATH), { recursive: true })
     writeFileAtomic(
       DESKTOP_WINDOW_STATE_PATH,
-      JSON.stringify({ x, y, width, height, isMaximized: mainWindow.isMaximized() }, null, 2)
+      JSON.stringify(
+        {
+          x,
+          y,
+          width,
+          height,
+          isMaximized: mainWindow.isMaximized(),
+          boundsCapturedFullScreen: mainWindow.isFullScreen()
+        },
+        null,
+        2
+      )
     )
   } catch (err) {
     rememberLog(`[window-state] persist failed: ${err?.message || err}`)
@@ -3673,12 +3849,11 @@ function createNativePackagedStrategy(
 
     const deps: ConstructorParameters<typeof AppInstallerStrategy>[0] = {
       python: payload.storePython,
-      // The checker ships inside the payload's repo snapshot (git archive of
-      // the committed tree): <payload>/<repo>/apps/desktop/scripts/.
-      script: path.join(payload.repoDir, 'apps', 'desktop', 'scripts', 'check-appinstaller-update.py'),
-      run: (python, script) =>
-        runAppInstallerChecker(python, script, {
-          env: { ...process.env, PYTHONPATH: payload.sitePackages },
+      // The checker is bundled core code, run with the payload python.
+      module: 'hermes_cli.windows_appinstaller_update',
+      run: (python, module) =>
+        runAppInstallerChecker(python, module, {
+          env: { ...process.env, PYTHONPATH: payloadPythonPath(payload) },
           onStderr: stderr => console.error(`[app-installer] checker stderr: ${stderr.slice(0, 400)}`)
         }),
       channel: resolveUpdaterChannelFromStamp(),
@@ -3708,7 +3883,7 @@ function createNativePackagedStrategy(
               processId: process.pid,
               processStartTimeMs: Math.round(Date.now() - process.uptime() * 1000),
               identityName: PRODUCT_IDENTITY.msixAppIdWithOrg,
-              scriptPath: path.join(payload.repoDir, 'apps', 'desktop', 'scripts', 'update-relaunch-waiter.ps1')
+              scriptPath: relaunchWaiterScript(process.resourcesPath)
             })
         })
     }
@@ -3723,8 +3898,8 @@ function createNativePackagedStrategy(
 
     return createStoreStrategy({
       python: payload.storePython,
-      script: path.join(payload.repoDir, 'apps', 'desktop', 'scripts', 'check-store-update.py'),
-      sitePackages: payload.sitePackages,
+      module: 'hermes_cli.windows_store_update',
+      pythonPath: payloadPythonPath(payload),
       env: process.env,
       windowHandle: () => (BrowserWindow.getFocusedWindow() ?? mainWindow)?.getNativeWindowHandle() ?? null,
       appVersion: app.getVersion(),
@@ -3739,7 +3914,7 @@ function createNativePackagedStrategy(
               processId: process.pid,
               processStartTimeMs: Math.round(Date.now() - process.uptime() * 1000),
               identityName: PRODUCT_IDENTITY.storeMsix!.identityName,
-              scriptPath: path.join(payload.repoDir, 'apps', 'desktop', 'scripts', 'update-relaunch-waiter.ps1'),
+              scriptPath: relaunchWaiterScript(process.resourcesPath),
               timeoutSeconds: 1860
             })
         })
@@ -5756,462 +5931,6 @@ function filenameFromUrl(rawUrl, fallback = 'image') {
   }
 }
 
-// Link title resolution — curl (tier 1) → hidden BrowserWindow (tier 2).
-const titleCache = new Map()
-const titleInflight = new Map()
-const TITLE_CACHE_LIMIT = 500
-const TITLE_BYTE_BUDGET = 96 * 1024
-const TITLE_TIMEOUT_MS = 5000
-const TITLE_MAX_REDIRECTS = 3
-
-// Browser-shaped UA — many bot-walled sites (GetYourGuide, Cloudflare-protected
-// pages) refuse anything that doesn't look like a real Chrome.
-const TITLE_USER_AGENT =
-  'Mozilla/5.0 (Macintosh; Intel Mac OS X 14_6_0) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36'
-
-const HTML_ENTITIES = { amp: '&', lt: '<', gt: '>', quot: '"', apos: "'", nbsp: ' ', '#39': "'" }
-
-// Tier-2 renderer fallback config. Only invoked when curl came back with no
-// usable title and no sign-in wall (electron/link-title-wall.ts) — keeps
-// cold/CDN-cached pages on the cheap path.
-const RENDER_TITLE_MAX_CONCURRENT = 2
-const RENDER_TITLE_TIMEOUT_MS = 8000
-const RENDER_TITLE_GRACE_MS = 700
-
-// Resource types we cancel before the network even fires — keeps the hidden
-// renderer fast and cuts third-party tracking noise.
-const RENDER_TITLE_BLOCKED_RESOURCES = new Set([
-  'cspReport',
-  'font',
-  'imageset',
-  'media',
-  'object',
-  'ping',
-  'stylesheet'
-])
-
-let linkTitleSession = null
-let oauthSession = null
-let renderTitleInFlight = 0
-const renderTitleQueue = []
-
-function cacheTitle(key, title) {
-  if (titleCache.size >= TITLE_CACHE_LIMIT) {
-    titleCache.delete(titleCache.keys().next().value)
-  }
-
-  titleCache.set(key, title)
-}
-
-function decodeHtmlEntities(value) {
-  return value
-    .replace(/&(amp|lt|gt|quot|apos|nbsp|#39);/gi, (_, k) => HTML_ENTITIES[k.toLowerCase()] ?? '')
-    .replace(/&#x([0-9a-f]+);/gi, (_, hex) => String.fromCodePoint(parseInt(hex, 16) || 32))
-    .replace(/&#(\d+);/g, (_, dec) => String.fromCodePoint(parseInt(dec, 10) || 32))
-}
-
-function parseHtmlTitle(html) {
-  const raw = html.match(/<title[^>]*>([\s\S]*?)<\/title>/i)?.[1]
-
-  return raw ? decodeHtmlEntities(raw).replace(/\s+/g, ' ').trim() : ''
-}
-
-const URL_EFFECTIVE_TAIL_BYTES = 4096
-
-function fetchHtmlTitleWithCurl(rawUrl: string): Promise<{ authWall: boolean; title: string }> {
-  return new Promise(resolve => {
-    const url = String(rawUrl || '').trim()
-
-    if (!url) {
-      return resolve({ authWall: false, title: '' })
-    }
-
-    const args = [
-      '--silent',
-      '--show-error',
-      '--location',
-      '--max-redirs',
-      String(TITLE_MAX_REDIRECTS),
-      '--max-time',
-      String(Math.max(2, Math.ceil(TITLE_TIMEOUT_MS / 1000))),
-      '--connect-timeout',
-      '4',
-      '--user-agent',
-      TITLE_USER_AGENT,
-      '--header',
-      'Accept: text/html,application/xhtml+xml;q=0.9,*/*;q=0.5',
-      '--header',
-      'Accept-Language: en-US,en;q=0.7',
-      '--header',
-      'Accept-Encoding: identity',
-      '--raw',
-      // Arrival URL after redirects, on its own line after the body: a sign-in
-      // wall is proven from where curl landed even when the page has no markup id.
-      '--write-out',
-      CURL_TITLE_WRITE_OUT,
-      url
-    ]
-
-    const child = spawn('curl', args, hiddenWindowsChildOptions({ stdio: ['ignore', 'pipe', 'ignore'] }))
-    const chunks: Buffer[] = []
-    // The last bytes of stdout, kept past the body budget so the `--write-out`
-    // arrival URL survives a body larger than TITLE_BYTE_BUDGET.
-    let tail = Buffer.alloc(0)
-    let bytes = 0
-
-    child.stdout.on('data', chunk => {
-      const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)
-      tail = Buffer.concat([tail, buffer]).subarray(-URL_EFFECTIVE_TAIL_BYTES)
-
-      if (bytes >= TITLE_BYTE_BUDGET) {
-        return
-      }
-
-      const remaining = TITLE_BYTE_BUDGET - bytes
-      const next = buffer.length > remaining ? buffer.subarray(0, remaining) : buffer
-      chunks.push(next)
-      bytes += next.length
-    })
-
-    child.on('error', () => resolve({ authWall: false, title: '' }))
-    child.on('close', () => {
-      if (!chunks.length) {
-        return resolve({ authWall: false, title: '' })
-      }
-
-      // The trailer is inside `bodyWithTrailer` unless the budget cut it off;
-      // then it is still present in the separately retained tail.
-      const bodyWithTrailer = Buffer.concat(chunks)
-      const { effectiveUrl, html } = parseCurlTitleResponse(bodyWithTrailer, tail)
-
-      const title = parseHtmlTitle(html)
-
-      // A sign-in wall answers the cookieless title partition, and tier 2 must
-      // never load it: the wall asks the OS for a passkey.
-      resolve({ authWall: isAuthWall({ body: html, effectiveUrl, title }), title })
-    })
-  })
-}
-
-function getLinkTitleSession() {
-  if (linkTitleSession || !app.isReady()) {
-    return linkTitleSession
-  }
-
-  linkTitleSession = session.fromPartition('hermes:link-titles', { cache: false })
-  linkTitleSession.webRequest.onBeforeRequest((details, callback) => {
-    callback({ cancel: RENDER_TITLE_BLOCKED_RESOURCES.has(details.resourceType) })
-  })
-  guardLinkTitleSession(linkTitleSession)
-
-  return linkTitleSession
-}
-
-function dequeueRenderTitle() {
-  while (renderTitleInFlight < RENDER_TITLE_MAX_CONCURRENT && renderTitleQueue.length) {
-    const item = renderTitleQueue.shift()
-    renderTitleInFlight += 1
-    runRenderTitleJob(item.url).then(title => {
-      renderTitleInFlight -= 1
-      item.resolve(title)
-      dequeueRenderTitle()
-    })
-  }
-}
-
-function runRenderTitleJob(rawUrl) {
-  return new Promise(resolve => {
-    if (!app.isReady()) {
-      return resolve('')
-    }
-
-    const partitionSession = getLinkTitleSession()
-
-    if (!partitionSession) {
-      return resolve('')
-    }
-
-    let settled = false
-    let window = null
-    let hardTimer = null
-    let graceTimer = null
-
-    const finish = title => {
-      if (settled) {
-        return
-      }
-
-      settled = true
-
-      if (hardTimer) {
-        clearTimeout(hardTimer)
-      }
-
-      if (graceTimer) {
-        clearTimeout(graceTimer)
-      }
-
-      const value = (title || '').replace(/\s+/g, ' ').trim()
-
-      try {
-        if (window && !window.isDestroyed()) {
-          window.destroy()
-        }
-      } catch {
-        // BrowserWindow may already be torn down; ignore.
-      }
-
-      resolve(value)
-    }
-
-    try {
-      window = createLinkTitleWindow(BrowserWindow, partitionSession)
-    } catch {
-      return finish('')
-    }
-
-    const finishWithTitle = () => finish(readLinkTitleWindowTitle(window))
-
-    const scheduleGrace = () => {
-      if (graceTimer) {
-        clearTimeout(graceTimer)
-      }
-
-      graceTimer = setTimeout(finishWithTitle, RENDER_TITLE_GRACE_MS)
-    }
-
-    hardTimer = setTimeout(finishWithTitle, RENDER_TITLE_TIMEOUT_MS)
-
-    window.webContents.setUserAgent(TITLE_USER_AGENT)
-    window.webContents.on('page-title-updated', scheduleGrace)
-    window.webContents.on('did-finish-load', scheduleGrace)
-    window.webContents.on('did-fail-load', (_event, _code, _desc, _validatedURL, isMainFrame) => {
-      if (isMainFrame) {
-        finish('')
-      }
-    })
-
-    window
-      .loadURL(rawUrl, {
-        httpReferrer: 'https://www.google.com/',
-        userAgent: TITLE_USER_AGENT
-      })
-      .catch(() => finish(''))
-  })
-}
-
-function fetchHtmlTitleWithRenderer(rawUrl: string): Promise<string> {
-  return new Promise(resolve => {
-    renderTitleQueue.push({ resolve, url: rawUrl })
-    dequeueRenderTitle()
-  })
-}
-
-// Tier ladder (curl → hidden renderer) and its sign-in-wall rule live in
-// electron/link-title-wall.ts; main.ts only supplies the two tiers' I/O.
-function fetchLinkTitle(rawUrl) {
-  const url = String(rawUrl || '').trim()
-
-  // Scheme gate (#93893): only absolute http(s) URLs enter the title
-  // pipeline. Anything else — leaked `@url:` markup, placeholders, garbage —
-  // must never reach curl or the hidden title window's loadURL(), where it
-  // surfaces as a repeating `Failed to load URL: … ERR_NAME_NOT_RESOLVED`
-  // loop. canonicalTitleCacheKey's '' return is the second layer of the same
-  // guard; this check keeps non-URLs out even when a parseable-but-wrong
-  // scheme (file:, mailto:) would still build a cache key.
-  if (!isFetchableHttpUrl(url)) {
-    return Promise.resolve('')
-  }
-
-  const key = canonicalTitleCacheKey(url)
-
-  if (!key) {
-    return Promise.resolve('')
-  }
-
-  if (titleCache.has(key)) {
-    return Promise.resolve(titleCache.get(key))
-  }
-
-  if (titleInflight.has(key)) {
-    return Promise.resolve(titleInflight.get(key))
-  }
-
-  const pending = resolveLinkTitle({
-    curl: () => fetchHtmlTitleWithCurl(url),
-    renderer: () => fetchHtmlTitleWithRenderer(url),
-    url
-  }).then(clean => {
-    cacheTitle(key, clean)
-    titleInflight.delete(key)
-
-    return clean
-  })
-
-  titleInflight.set(key, pending)
-
-  return pending
-}
-
-// ─── Favicon resolution ──────────────────────────────────────────────────────
-// The ladder itself is electron/favicon.ts; this is its I/O, its cache, and
-// the one rule that belongs to the app rather than the algorithm: one icon
-// per host. A connector's mark doesn't vary by path, and hosting the cache on
-// the host key means Linear's docs page and Linear's MCP endpoint cost one
-// lookup between them.
-
-const FAVICON_CACHE_PATH = path.join(app.getPath('userData'), 'favicon-cache.json')
-const FAVICON_CACHE_LIMIT = 400
-const FAVICON_TTL_MS = 30 * 24 * 60 * 60 * 1000
-// A miss is cheap to re-check and expensive to be wrong about (a site that
-// was behind a captcha yesterday has a logo today), so it expires fast.
-const FAVICON_MISS_TTL_MS = 12 * 60 * 60 * 1000
-const FAVICON_TIMEOUT_MS = 6000
-const FAVICON_MAX_BYTES = 256 * 1024
-const FAVICON_WRITE_DEBOUNCE_MS = 3000
-
-let faviconCache: Map<string, { at: number; icon: string }> | null = null
-let faviconWriteTimer: null | ReturnType<typeof setTimeout> = null
-const faviconInflight = new Map<string, Promise<string>>()
-
-function faviconCacheKey(rawUrl: string): string {
-  try {
-    return new URL(rawUrl).hostname.replace(/^www\./i, '').toLowerCase()
-  } catch {
-    return ''
-  }
-}
-
-function loadFaviconCache(): Map<string, { at: number; icon: string }> {
-  if (faviconCache) {
-    return faviconCache
-  }
-
-  faviconCache = new Map()
-
-  try {
-    const raw = JSON.parse(fs.readFileSync(FAVICON_CACHE_PATH, 'utf8'))
-
-    for (const [host, entry] of Object.entries(raw?.icons ?? {})) {
-      const at = Number((entry as { at?: number })?.at)
-      const icon = String((entry as { icon?: string })?.icon ?? '')
-
-      if (Number.isFinite(at) && Date.now() - at < (icon ? FAVICON_TTL_MS : FAVICON_MISS_TTL_MS)) {
-        faviconCache.set(host, { at, icon })
-      }
-    }
-  } catch {
-    // No cache yet, or it's unreadable — resolving again is the whole cost.
-  }
-
-  return faviconCache
-}
-
-function saveFaviconCacheSoon() {
-  if (faviconWriteTimer) {
-    return
-  }
-
-  faviconWriteTimer = setTimeout(() => {
-    faviconWriteTimer = null
-
-    try {
-      const icons = Object.fromEntries(loadFaviconCache())
-
-      fs.writeFileSync(FAVICON_CACHE_PATH, JSON.stringify({ icons }), 'utf8')
-    } catch {
-      // Cache is an optimization; failing to persist it costs one refetch.
-    }
-  }, FAVICON_WRITE_DEBOUNCE_MS)
-
-  faviconWriteTimer.unref?.()
-}
-
-async function faviconFetch(url: string, accept: string) {
-  const controller = new AbortController()
-  const timer = setTimeout(() => controller.abort(), FAVICON_TIMEOUT_MS)
-
-  try {
-    return await electronNet.fetch(url, {
-      // Same browser-shaped identity the title fetcher uses: a plain Electron
-      // UA gets a challenge page from anything behind a bot wall.
-      headers: { Accept: accept, 'Accept-Language': 'en-US,en;q=0.7', 'User-Agent': TITLE_USER_AGENT },
-      redirect: 'follow',
-      signal: controller.signal
-    })
-  } finally {
-    clearTimeout(timer)
-  }
-}
-
-const faviconIo: FaviconIo = {
-  fetchImage: async url => {
-    const response = await faviconFetch(url, 'image/avif,image/webp,image/svg+xml,image/*;q=0.8,*/*;q=0.5')
-
-    if (!response.ok) {
-      return null
-    }
-
-    const buffer = await response.arrayBuffer()
-
-    if (buffer.byteLength === 0 || buffer.byteLength > FAVICON_MAX_BYTES) {
-      return null
-    }
-
-    return { bytes: new Uint8Array(buffer), mime: response.headers.get('content-type') ?? '' }
-  },
-  fetchText: async url => {
-    const response = await faviconFetch(url, 'text/html,application/xhtml+xml,application/json;q=0.9,*/*;q=0.5')
-
-    if (!response.ok) {
-      return ''
-    }
-
-    const bytes = new Uint8Array(await response.arrayBuffer()).subarray(0, TITLE_BYTE_BUDGET * 2)
-
-    return decodeWebText(bytes, response.headers.get('content-type') ?? '')
-  }
-}
-
-function resolveFaviconCached(rawUrl: string): Promise<string> {
-  const key = faviconCacheKey(String(rawUrl || '').trim())
-
-  if (!key) {
-    return Promise.resolve('')
-  }
-
-  const cache = loadFaviconCache()
-  const hit = cache.get(key)
-
-  if (hit && Date.now() - hit.at < (hit.icon ? FAVICON_TTL_MS : FAVICON_MISS_TTL_MS)) {
-    return Promise.resolve(hit.icon)
-  }
-
-  const inflight = faviconInflight.get(key)
-
-  if (inflight) {
-    return inflight
-  }
-
-  const pending = resolveFavicon(rawUrl, faviconIo)
-    .catch(() => '')
-    .then(icon => {
-      if (cache.size >= FAVICON_CACHE_LIMIT) {
-        cache.delete(cache.keys().next().value)
-      }
-
-      cache.set(key, { at: Date.now(), icon })
-      saveFaviconCacheSoon()
-      faviconInflight.delete(key)
-
-      return icon
-    })
-
-  faviconInflight.set(key, pending)
-
-  return pending
-}
-
 async function resourceBufferFromUrl(rawUrl) {
   if (!rawUrl) {
     throw new Error('Missing URL')
@@ -6330,10 +6049,6 @@ async function writeComposerImage(buffer, ext = '.png', name = '') {
   return filePath
 }
 
-function previewLabelForUrl(url) {
-  return `${url.host}${url.pathname === '/' ? '' : url.pathname}`
-}
-
 function expandUserPath(filePath) {
   const value = String(filePath || '').trim()
 
@@ -6346,6 +6061,25 @@ function expandUserPath(filePath) {
   }
 
   return value
+}
+
+/** Markdown hrefs must percent-encode spaces (`/my%20notes/x.md`), but the
+ *  on-disk path is the decoded form. When the raw path misses, retry decoded
+ *  so chat links to paths with spaces still open in the preview rail. */
+function decodedPathIfMissing(resolvedPath) {
+  if (!/%[0-9a-fA-F]{2}/.test(resolvedPath)) {
+    return null
+  }
+
+  let decoded
+
+  try {
+    decoded = decodeURIComponent(resolvedPath)
+  } catch {
+    return null
+  }
+
+  return decoded !== resolvedPath ? decoded : null
 }
 
 async function previewFileTarget(rawTarget, baseDir) {
@@ -6373,6 +6107,19 @@ async function previewFileTarget(rawTarget, baseDir) {
 
         break
       }
+    }
+  }
+
+  // Markdown hrefs must percent-encode spaces (`/my%20notes/x.md`), but the
+  // on-disk path is the decoded form. When the encoded path misses, retry the
+  // decoded form so chat links to paths with spaces still open in the preview
+  // rail (#102782) — before the directory/missing classification below, so a
+  // decoded target is typed by what it actually is.
+  if (!fileExists(resolved) && !directoryExists(resolved)) {
+    const decoded = decodedPathIfMissing(resolved)
+
+    if (decoded && (fileExists(decoded) || directoryExists(decoded))) {
+      resolved = decoded
     }
   }
 
@@ -6430,30 +6177,6 @@ async function previewFileTarget(rawTarget, baseDir) {
   }
 }
 
-function previewUrlTarget(rawTarget) {
-  const raw = String(rawTarget || '').trim()
-  const url = new URL(raw)
-
-  if (!['http:', 'https:'].includes(url.protocol)) {
-    return null
-  }
-
-  if (!LOCAL_PREVIEW_HOSTS.has(url.hostname.toLowerCase())) {
-    return null
-  }
-
-  if (url.hostname === '0.0.0.0') {
-    url.hostname = '127.0.0.1'
-  }
-
-  return {
-    kind: 'url',
-    label: previewLabelForUrl(url),
-    source: raw,
-    url: url.toString()
-  }
-}
-
 async function normalizePreviewTarget(rawTarget, baseDir) {
   const raw = String(rawTarget || '').trim()
 
@@ -6463,7 +6186,7 @@ async function normalizePreviewTarget(rawTarget, baseDir) {
 
   try {
     if (/^https?:\/\//i.test(raw)) {
-      return previewUrlTarget(raw)
+      return previewHttpUrlTarget(raw)
     }
 
     return await previewFileTarget(raw, baseDir)
@@ -6479,7 +6202,21 @@ async function filePathFromPreviewUrl(rawUrl) {
 }
 
 async function watchPreviewFile(owner, rawUrl) {
-  const filePath = await filePathFromPreviewUrl(rawUrl)
+  let filePath
+
+  try {
+    filePath = await filePathFromPreviewUrl(rawUrl)
+  } catch (error) {
+    // A restored tab probing a file that is gone is an expected outcome —
+    // answer it like the read handlers do instead of rejecting (Electron logs
+    // every rejected handler as a stack trace at startup).
+    if (isMissingFileError(error)) {
+      return missingFileResult(rawUrl, error)
+    }
+
+    throw error
+  }
+
   const watchDir = path.dirname(filePath)
   const targetName = path.basename(filePath)
   const id = crypto.randomBytes(12).toString('base64url')
@@ -6489,28 +6226,45 @@ async function watchPreviewFile(owner, rawUrl) {
   // it by whole quit-cycles waiting on a change event that never comes.
   const offOwnerDestroyed = onPreviewWatchOwnerDestroyed(owner, () => stopPreviewFileWatch(id))
 
-  const watcher = fs.watch(watchDir, (_eventType, filename) => {
-    const changedName = filename ? path.basename(String(filename)) : ''
-
-    if (changedName && changedName !== targetName) {
+  const emit = () => {
+    if (!fileExists(filePath)) {
       return
     }
 
-    if (timer) {
-      clearTimeout(timer)
-    }
+    sendPreviewFileChangedToOwner(owner, { id, path: filePath, url: pathToFileURL(filePath).toString() }, () =>
+      stopPreviewFileWatch(id)
+    )
+  }
 
-    timer = setTimeout(() => {
-      timer = null
+  // guardedWatch: a win32 event storm closes the raw fs.watch and falls back
+  // to a slow stat poll instead of pinning the main thread (#118974).
+  const watcher = guardedWatch({
+    platform: process.platform,
+    watch: listener => fs.watch(watchDir, listener),
+    onEvent: (_eventType, filename) => {
+      const changedName = filename ? path.basename(String(filename)) : ''
 
-      if (!fileExists(filePath)) {
+      if (changedName && changedName !== targetName) {
         return
       }
 
-      sendPreviewFileChangedToOwner(owner, { id, path: filePath, url: pathToFileURL(filePath).toString() }, () =>
-        stopPreviewFileWatch(id)
-      )
-    }, PREVIEW_WATCH_DEBOUNCE_MS)
+      if (timer) {
+        clearTimeout(timer)
+      }
+
+      timer = setTimeout(() => {
+        timer = null
+        emit()
+      }, PREVIEW_WATCH_DEBOUNCE_MS)
+    },
+    snapshot: () => {
+      const stat = fs.statSync(filePath)
+
+      return `${stat.mtimeMs}:${stat.size}`
+    },
+    onPollChange: emit,
+    onTrip: ({ events, windowMs }) =>
+      console.warn(`[hermes] fs.watch storm on ${watchDir} (${events} events within ${windowMs}ms); polling instead`)
   })
 
   previewWatchers.set(id, {
@@ -6577,17 +6331,31 @@ function watchDirectory(owner, rawDir) {
   // watch must not keep polling the disk-plugin door until quit.
   const offOwnerDestroyed = onPreviewWatchOwnerDestroyed(owner, () => stopPreviewFileWatch(id))
 
-  const watcher = fs.watch(watchDir, () => {
-    if (timer) {
-      clearTimeout(timer)
-    }
+  const emit = () => {
+    sendPreviewFileChangedToOwner(owner, { id, path: watchDir, url: pathToFileURL(watchDir).toString() }, () =>
+      stopPreviewFileWatch(id)
+    )
+  }
 
-    timer = setTimeout(() => {
-      timer = null
-      sendPreviewFileChangedToOwner(owner, { id, path: watchDir, url: pathToFileURL(watchDir).toString() }, () =>
-        stopPreviewFileWatch(id)
-      )
-    }, PREVIEW_WATCH_DEBOUNCE_MS)
+  // A win32 event storm here pinned a core at 100% (#118974): the breaker
+  // closes the raw watch and falls back to the readdir poll it replaced.
+  const watcher = guardedWatch({
+    platform: process.platform,
+    watch: listener => fs.watch(watchDir, listener),
+    onEvent: () => {
+      if (timer) {
+        clearTimeout(timer)
+      }
+
+      timer = setTimeout(() => {
+        timer = null
+        emit()
+      }, PREVIEW_WATCH_DEBOUNCE_MS)
+    },
+    snapshot: () => fs.readdirSync(watchDir).sort().join('\0'),
+    onPollChange: emit,
+    onTrip: ({ events, windowMs }) =>
+      console.warn(`[hermes] fs.watch storm on ${watchDir} (${events} events within ${windowMs}ms); polling instead`)
   })
 
   previewWatchers.set(id, {
@@ -6798,47 +6566,6 @@ function sendClosePreviewRequested() {
 }
 
 /**
- * Run a browser gesture on the guest page the user is actually in, if any.
- *
- * A `<webview>` guest is its own out-of-process webContents: pointer and focus
- * events inside the page never reach the host document, so NOTHING in the
- * renderer — not `document.activeElement`, not the layout tree's hover/focus
- * ladder — can see that the user is in there. Main can: Electron tracks the
- * focused webContents across processes, which is the definition of a runtime
- * fact it owns.
- *
- * Returns false when focus is in the app's own chrome, where the renderer is
- * the one that knows which pane is active.
- */
-function commandFocusedGuest(command: 'back' | 'forward' | 'reload'): boolean {
-  const focused = electronWebContents.getFocusedWebContents()
-
-  if (!focused || focused.isDestroyed() || focused.getType() !== 'webview') {
-    return false
-  }
-
-  const history = focused.navigationHistory
-
-  if (command === 'reload') {
-    focused.reload()
-  } else if (command === 'back') {
-    if (!history.canGoBack()) {
-      return true
-    }
-
-    history.goBack()
-  } else {
-    if (!history.canGoForward()) {
-      return true
-    }
-
-    history.goForward()
-  }
-
-  return true
-}
-
-/**
  * Ask the renderer to run a browser-navigation gesture on its focused preview
  * pane. `reload` also has an app-level fallback (reload the window); `back` and
  * `forward` mean nothing outside the browser, so the renderer just ignores them.
@@ -6846,7 +6573,7 @@ function commandFocusedGuest(command: 'back' | 'forward' | 'reload'): boolean {
 function sendPreviewNavCommand(command: 'back' | 'forward' | 'reload') {
   // The user is inside the page itself — main is the only party that can see
   // that, so act here and never round-trip.
-  if (commandFocusedGuest(command)) {
+  if (commandFocusedGuest(command, electronWebContents.getFocusedWebContents())) {
     return
   }
 
@@ -7173,12 +6900,7 @@ function buildApplicationMenu() {
       { role: 'togglefullscreen' }
     ]
   })
-  template.push({
-    label: 'Window',
-    submenu: IS_MAC
-      ? [{ role: 'minimize' }, { role: 'zoom' }, { role: 'front' }]
-      : [{ role: 'minimize' }, { role: 'close' }]
-  })
+  template.push(windowMenuTemplate(IS_MAC))
   template.push({
     label: 'Help',
     role: 'help',
@@ -7497,7 +7219,16 @@ function installDownloadHandling() {
 
 function installMediaPermissions() {
   // Async request handler: the prompt-style path (most platforms).
-  session.defaultSession.setPermissionRequestHandler((_webContents, permission, callback, details) => {
+  // clipboard-sanitized-write is granted ONLY to the exact Skills Hub origins
+  // (hub-iframe-policy.ts): the picker's Copy controls write to the clipboard,
+  // and every other frame — artifact previews included — stays denied.
+  session.defaultSession.setPermissionRequestHandler((webContents, permission, callback, details) => {
+    if ((permission as string) === 'clipboard-sanitized-write') {
+      callback(isHermesHubClipboardWrite(focusedFrameOrigin(webContents)))
+
+      return
+    }
+
     callback(isMediaCapturePermission(permission, details))
   })
 
@@ -7508,9 +7239,83 @@ function installMediaPermissions() {
   // the shared predicate runs with `undefined` details and allows the capture
   // permissions — identical policy to the request handler below, just without
   // the metadata refinement (absent metadata is allowed there too).
-  session.defaultSession.setPermissionCheckHandler((_webContents, permission) => {
+  session.defaultSession.setPermissionCheckHandler((webContents, permission) => {
+    if ((permission as string) === 'clipboard-sanitized-write') {
+      return isHermesHubClipboardWrite(focusedFrameOrigin(webContents))
+    }
+
     return isMediaCapturePermission(permission, undefined)
   })
+}
+
+// Origin of the frame a permission request came from. The request handler is
+// given the webContents of the TOP document (Chromium routes subframe
+// permission requests through it in Electron 40 without exposing the frame
+// directly), so when the top document is NOT on a hub origin we fall back to
+// the request's own `requestingUrl` — the URL the frame actually asked for —
+// whose origin is exact for both hub deployments and `null` for anything
+// sandboxed or opaque.
+function focusedFrameOrigin(
+  webContents: { getURL?: () => string } | null | undefined,
+  details?: { requestingUrl?: string }
+): string | null {
+  try {
+    if (details?.requestingUrl) {
+      return new URL(details.requestingUrl).origin
+    }
+
+    if (webContents?.getURL) {
+      return new URL(webContents.getURL()).origin
+    }
+  } catch {
+    // Unparseable URL — report no origin; callers deny.
+  }
+
+  return null
+}
+
+/** The picker embed URL the hub iframe starts on (both deployments). */
+function isHermesHubPickerUrl(url: string): boolean {
+  try {
+    const parsed = new URL(url)
+    const isHubOrigin = parsed.origin === HERMES_HUB_ORIGIN || parsed.origin === HERMES_HUB_FALLBACK_ORIGIN
+    const isPickerPath = parsed.pathname === '/hermes-agent/docs/skills' || parsed.pathname === '/docs/skills'
+
+    return isHubOrigin && isPickerPath
+  } catch {
+    return false
+  }
+}
+
+/** Look up a subframe by its process/routing id; never throws. */
+function findFrameByIdentifier(
+  webContents: { frames?: readonly unknown[]; framesInSubtree?: readonly unknown[] } | null | undefined,
+  frameProcessId: number,
+  frameRoutingId: number
+): { origin?: string; reload?: () => void } | null {
+  const candidates = [...(webContents?.frames ?? []), ...(webContents?.framesInSubtree ?? [])] as Array<{
+    processId?: number
+    routingId?: number
+    frameProcessId?: number
+    frameRoutingId?: number
+    origin?: string
+    reload?: () => void
+  }>
+
+  return (
+    candidates.find(
+      f => (f.frameProcessId ?? f.processId) === frameProcessId && (f.frameRoutingId ?? f.routingId) === frameRoutingId
+    ) ?? null
+  )
+}
+
+/** `frame.origin` as a safe string; destroyed frames report opaque/'null'. */
+function safeFrameOrigin(frame: { origin?: string } | null | undefined): string | null {
+  if (!frame?.origin || frame.origin === 'null') {
+    return null
+  }
+
+  return frame.origin
 }
 
 // ---------------------------------------------------------------------------
@@ -7543,6 +7348,8 @@ function installMediaPermissions() {
 // ---------------------------------------------------------------------------
 
 const OAUTH_SESSION_PARTITION = LEGACY_OAUTH_PARTITION
+
+let oauthSession = null
 
 function getOauthSession() {
   if (oauthSession || !app.isReady()) {
@@ -12497,7 +12304,13 @@ async function runPoolBackendStart(
   backend.args = await getBackendArgsForRuntime(backend)
   assertPoolEntryStillOwned(poolKey, entry, backendPool, localBackendLifecycle.signal)
   const hermesCwd = resolveHermesCwd()
-  const webDist = resolveWebDist()
+
+  const webDist = resolveDashboardWebDist({
+    activeHermesRoot: ACTIVE_HERMES_ROOT,
+    appRoot: APP_ROOT,
+    env: process.env
+  })
+
   const readyFile = backend.readyFile ? makeDashboardReadyFile() : null
 
   // Guard BEFORE the "Starting" line: a profile that only exists on a remote
@@ -12981,6 +12794,9 @@ function attachToRunningHostBackend(): Promise<AttachedBackend | null> {
 
 function hostBackendAttachDeps() {
   return {
+    // Skip ledger records whose backend is already gone before dialling
+    // anything: the ledger survives the process it describes (#123586).
+    isPidAlive: isPidAliveWindows,
     log: rememberLog,
     readLedger: (target: string) => {
       try {
@@ -13408,7 +13224,13 @@ async function runHermesStart({ supervisorRecovery = false }: { supervisorRecove
     backend.args = await getBackendArgsForRuntime(backend)
     backendConnectionState.assertCurrentAttempt(connectionAttempt)
     const hermesCwd = resolveHermesCwd()
-    const webDist = resolveWebDist()
+
+    const webDist = resolveDashboardWebDist({
+      activeHermesRoot: ACTIVE_HERMES_ROOT,
+      appRoot: APP_ROOT,
+      env: process.env
+    })
+
     const readyFile = backend.readyFile ? makeDashboardReadyFile() : null
 
     await advanceBootProgress('backend.spawn', `Starting Hermes backend via ${backend.label}`, 84)
@@ -13816,9 +13638,46 @@ function wireCommonWindowHandlers(win, { zoom = true }: { zoom?: boolean } = {})
   installContextMenuBridge(win)
   // Always deny, never open as a side effect: GHSA-9f4c-93c8-jc8g. Trusted
   // links arrive via `hermes:openExternal`, not here. See window-open-policy.ts.
+  // The trusted-hub delegation (window-open-policy.ts, #91612) also never
+  // creates a window: it hands http/https/mailto opens from the EXACT hub
+  // origin to the audited `openExternalUrl` as a deny side effect.
   win.webContents.setWindowOpenHandler(
-    createWindowOpenHandler(origin => rememberLog(`[window-open] denied: ${origin}`))
+    createWindowOpenHandler(origin => rememberLog(`[window-open] denied: ${origin}`), {
+      getOpenerOrigin: () => win.webContents.getFocusedFrame?.()?.origin ?? null,
+      openExternalUrl: (url: string) => void openExternalUrl(url)
+    })
   )
+  // The embedded Skills Hub picker must stay pinned to its picker URL
+  // (#91612): the frame is free to navigate itself within the picker (search,
+  // pagination), but the moment it tries to escape to the full docs site —
+  // whose layout is not embeddable and whose links are then dead — the
+  // navigation is denied and the frame is reloaded onto the picker URL.
+  win.webContents.on('will-frame-navigate', (event, url, isMainFrame, frameProcessId, frameRoutingId) => {
+    if (isMainFrame) {
+      return
+    }
+
+    const frame = findFrameByIdentifier(win.webContents, frameProcessId, frameRoutingId)
+    const frameOrigin = safeFrameOrigin(frame)
+
+    if (frameOrigin !== HERMES_HUB_ORIGIN && frameOrigin !== HERMES_HUB_FALLBACK_ORIGIN) {
+      return
+    }
+
+    if (isHermesHubPickerUrl(url)) {
+      return
+    }
+
+    event.preventDefault()
+
+    // Reload the frame back onto the picker instead of leaving it on a
+    // half-navigated document.
+    try {
+      frame?.reload()
+    } catch {
+      // A destroyed frame is gone; nothing to restore.
+    }
+  })
   win.webContents.on('will-navigate', (event, url) => {
     if ((DEV_SERVER && url.startsWith(DEV_SERVER)) || (!DEV_SERVER && url.startsWith('file:'))) {
       return
@@ -14263,6 +14122,14 @@ registerMachineProfile()
 // pushes pet state over IPC (hermes:pet-overlay:state); the overlay just renders
 // it. Control flows back (pop-in, composer submit) via hermes:pet-overlay:control.
 let petOverlayWindow = null
+// Set once the app is really exiting (before-quit, or the primary window's
+// close on Windows/Linux where closing it IS quitting). Distinct from
+// isQuittingForHandoff, which is specific to the update/swap hand-off and is
+// reset when a hand-off is aborted: a quit latch must never reset. The pet
+// overlay's 'closed' handler reads it to suppress its pop-in echo so the
+// persisted popped-out flag survives for the next boot's restorePetOverlay
+// (#55920).
+let appQuitting = false
 // Set while a close is in flight: Electron's close() is async and can be
 // aborted on macOS, so the window may still be alive after closePetOverlay().
 // openPetOverlay must never reuse (or leave) a closing window — otherwise two
@@ -14379,9 +14246,12 @@ function spawnPetOverlayWindow(bounds) {
     petOverlayClosing = false
 
     // If the overlay went away on its own (e.g. ⌘W), tell the main renderer to
-    // pop the pet back in so it doesn't stay hidden. Harmless echo when we're
-    // the ones who closed it (popInPet already cleared the active flag).
-    if (mainWindow && !mainWindow.isDestroyed()) {
+    // pop the pet back in so it doesn't stay hidden. Never during a quit:
+    // popInPet() persists $petOverlayActive=false, which would wipe the
+    // popped-out state the next boot's restorePetOverlay() needs (#55920).
+    if (
+      shouldPopInOnOverlayClosed({ appQuitting, mainWindowAlive: Boolean(mainWindow && !mainWindow.isDestroyed()) })
+    ) {
       mainWindow.webContents.send('hermes:pet-overlay:control', { type: 'pop-in' })
     }
   })
@@ -15340,11 +15210,12 @@ function createWindow() {
         }
       }
 
-      // #38216: clear the mid-boot marker only after a window is actually usable.
-      // Keep sticky `fallback` when we launched with --no-sandbox so the next
-      // Start Menu click does not re-enter the GPU FATAL crash loop. The marker
-      // records the app version so the next update re-probes the sandbox.
-      if (IS_WINDOWS) {
+      // #38216/#121954: clear the mid-boot marker only after a window is
+      // actually usable. Keep sticky `fallback` when we launched with
+      // --no-sandbox so the next launcher click does not re-enter the GPU
+      // FATAL crash loop. The marker records the app version so the next
+      // update re-probes the sandbox.
+      if (IS_WINDOWS || process.platform === 'linux') {
         try {
           writeSandboxMarker(
             app.getPath('userData'),
@@ -15370,6 +15241,70 @@ function createWindow() {
           rememberLog(`[gpu] stack-cookie marker update after main-window reveal failed: ${error?.message || error}`)
         }
       }
+
+      // #124843: clear the mid-boot marker only after a window is actually
+      // usable. Keep sticky `fallback` when we launched with software
+      // rendering so the next launch skips the GPU-child retry loop.
+      if (process.platform === 'linux') {
+        try {
+          writeLinuxGpuMarker(
+            app.getPath('userData'),
+            linuxGpuMarkerAfterSuccessfulBoot({
+              fallbackActive: linuxGpuFallbackSticky,
+              appVersion: app.getVersion()
+            })
+          )
+        } catch (error) {
+          rememberLog(`[gpu] linux marker update after main-window reveal failed: ${error?.message || error}`)
+        }
+
+        // #124843 silent-retry manifestation: the boot "succeeded" (window
+        // revealed, marker ok) while a sub-zygote retries GPU init forever —
+        // no child-process-gone event ever fires, so the reactive ladder
+        // above never engages. After a grace window, a boot that should have
+        // a GPU child but has none is that retry loop: engage the sticky
+        // software fallback so the NEXT launch skips it (this boot's switches
+        // already applied pre-ready and cannot change now).
+        if (!linuxGpuFallbackSticky) {
+          const checkSilentGpuRetry = (): void => {
+            const alreadySoftware =
+              LINUX_GPU_SOFTWARE_ACTIVE ||
+              linuxGpuFallbackActive ||
+              alreadyHasDisableGpu(process.argv, process.env) ||
+              isHermesDesktopGpuOverrideOff(process.env)
+
+            const gpuChildPresent = app
+              .getAppMetrics()
+              .some(metric => String(metric?.type || '').toLowerCase() === 'gpu')
+
+            if (
+              shouldEngageSilentGpuRetryFallback({
+                gpuChildPresent,
+                graceElapsed: true,
+                alreadySoftware
+              })
+            ) {
+              linuxGpuFallbackActive = true
+              linuxGpuFallbackSticky = true
+
+              try {
+                writeLinuxGpuMarker(
+                  app.getPath('userData'),
+                  linuxGpuFallbackMarker('gpu-launch-failure', app.getVersion())
+                )
+              } catch {
+                void 0
+              }
+
+              console.warn(
+                '[hermes] Linux: no GPU child after window reveal — GPU init is retrying silently; software fallback engaged for the next launch (#124843)'
+              )
+            }
+          }
+
+          setTimeout(checkSilentGpuRetry, LINUX_GPU_SILENT_RETRY_GRACE_S).unref()
+        }
+      }
     }
   })
 
@@ -15387,7 +15322,18 @@ function createWindow() {
   bindGeometryPersistence(mainWindow, schedulePersistWindowState)
   mainWindow.on('maximize', schedulePersistWindowState)
   mainWindow.on('unmaximize', schedulePersistWindowState)
-  mainWindow.on('close', () => schedulePersistWindowState.flush())
+  mainWindow.on('close', () => {
+    schedulePersistWindowState.flush()
+
+    // On Windows/Linux, closing the primary window IS quitting (the
+    // window-all-closed handler calls app.quit()). Latch the quit flag here,
+    // before 'closed' fires closePetOverlay() — otherwise the overlay's
+    // 'closed' handler echoes pop-in and wipes the persisted popped-out state
+    // the next boot needs (#55920).
+    if (!IS_MAC) {
+      appQuitting = true
+    }
+  })
 
   // the closed wrapper remains truthy, so clear only the window this callback owns.
   mainWindow.on('closed', () => {
@@ -15877,6 +15823,20 @@ ipcMain.handle('hermes:window:openBrowser', async (_event, tabId) => {
   return { ok: true }
 })
 
+// Cross-window renderer relay. The Browser pop-out, the primary window, and
+// session tiles are separate renderers; packaged `file://` windows must not
+// depend on BroadcastChannel origin semantics, so main relays opaque payloads
+// between them over IPC. Destination validation and reply correlation stay
+// renderer-side, so every feature riding this relay still fails closed instead
+// of falling through to whatever window happens to be active later.
+ipcMain.on('hermes:window:relay', (event, payload) => {
+  for (const other of BrowserWindow.getAllWindows()) {
+    if (!other.isDestroyed() && other.webContents.id !== event.sender.id) {
+      other.webContents.send('hermes:window:relay', payload)
+    }
+  }
+})
+
 // Hand a session to the user's OWN terminal emulator, running the TUI against
 // it (`hermes --tui --resume <id>`). Not the in-app terminal pane: the point is
 // to continue the chat in the terminal they already live in.
@@ -16178,7 +16138,11 @@ ipcMain.handle('hermes:plugin-profile-routes', async (_event, rawProfileNames) =
     ]
   }
 
-  return buildRegistryProfileRoutes({ agents, sources: registry.connections })
+  return buildRegistryProfileRoutes({
+    agents,
+    primaryConnectionId: registry.primary,
+    sources: registry.connections
+  })
 })
 ipcMain.handle('hermes:ssh-config:hosts', async () => ({ hosts: collectSshConfigHosts() }))
 ipcMain.handle('hermes:ssh-config:resolve', async (_event, host) => {
@@ -17167,6 +17131,16 @@ ipcMain.on('hermes:previewShortcutActive', (_event, active) => {
   previewShortcutActive = Boolean(active)
 })
 
+// The host renderer reports which of its Browser guests are off screen (a
+// hidden session's kept-alive page), so focused-guest gestures skip them.
+ipcMain.on('hermes:preview-guest-hidden', (event, payload) => {
+  notePreviewGuestHidden(
+    event.sender,
+    electronWebContents.fromId(Number(payload?.webContentsId)),
+    Boolean(payload?.hidden)
+  )
+})
+
 ipcMain.on('hermes:f12ShortcutActive', (event, active) => {
   if (active) {
     f12ShortcutActiveWindows.add(event.sender.id)
@@ -17625,6 +17599,13 @@ async function teardownConnectionScopedProfileBackend(connectionId, profile) {
   ])
 }
 
+// A 404 raised by `fetchJson` — the shape is `404: <body>` (see fetchJson).
+// Session lookups are a probe ladder: "not on this profile" is a normal rung
+// outcome, not a failure.
+function isNotFoundApiError(error) {
+  return /(?:^|\s)404\b/.test(String((error as any)?.message ?? error))
+}
+
 async function handleHermesApiRequest(request) {
   // Registry-pinned request (request.connectionId): the renderer is working
   // against a REGISTERED gateway connection, so the data — cron jobs and their
@@ -17767,10 +17748,29 @@ ipcMain.handle('hermes:api', async (_event, request) => {
 
     return await handleHermesApiRequest(request).finally(releaseProfileDeletion)
   } catch (error) {
+    // Electron logs "Error occurred in handler for 'hermes:api'" with a full
+    // stack for EVERY rejected invoke, and there is no opt-out on the handler.
+    // Session resolution is a deliberate probe ladder (`resolveStoredSession`:
+    // cache → active backend → each other profile) and the renderer already
+    // handles a miss by falling to the next rung — so an expected 404 is not an
+    // error condition. Left rejecting, it printed a multi-line stack per probe
+    // on every startup and session switch: pure noise that buries genuine
+    // handler failures.
+    //
+    // So don't reject for that one case — RESOLVE with a sentinel and let
+    // preload (our own code, the other side of the same seam) turn it back into
+    // a rejection with the identical `404: <body>` message. The renderer
+    // contract is unchanged; only Electron's logging is bypassed. Every other
+    // failure still rejects and still logs in full.
+    if (isNotFoundApiError(error)) {
+      return { [HERMES_API_EXPECTED_404]: String((error as any)?.message ?? error) }
+    }
+
     // Persist the failure (full stack) before the rejection crosses to the
     // renderer, where the invoke wrapper strips it to a one-line message.
     rememberLog(formatApiRequestFailure(request, error))
     flushDesktopLogBufferSync()
+
     throw error
   }
 })
@@ -17838,11 +17838,19 @@ ipcMain.handle('hermes:readFileDataUrl', async (_event, filePath) => {
   // Windows host bridge them to a UNC/drive form, same as directory reads.
   const bridgedPath = resolveIpcFileReadPath(filePath)
 
-  return readFileDataUrlForIpc(bridgedPath, {
-    maxBytes: dataUrlReadMaxBytesFromMb(dataUrlReadMaxMb),
-    mimeType: mimeTypeForPath(resolveRequestedPathForIpc(bridgedPath, { purpose: 'File preview' })),
-    purpose: 'File preview'
-  })
+  try {
+    return await readFileDataUrlForIpc(bridgedPath, {
+      maxBytes: dataUrlReadMaxBytesFromMb(dataUrlReadMaxMb),
+      mimeType: mimeTypeForPath(resolveRequestedPathForIpc(bridgedPath, { purpose: 'File preview' })),
+      purpose: 'File preview'
+    })
+  } catch (error) {
+    if (isMissingFileError(error)) {
+      return missingFileResult(filePath, error)
+    }
+
+    throw error
+  }
 })
 
 // Remote attachment transfer is independent of the preview / Settings path.
@@ -17852,38 +17860,59 @@ ipcMain.handle('hermes:readFileDataUrl', async (_event, filePath) => {
 ipcMain.handle('hermes:readFileDataUrlForAttach', async (_event, filePath) => {
   const bridgedPath = resolveIpcFileReadPath(filePath)
 
-  return readFileDataUrlForIpc(bridgedPath, {
-    maxBytes: ATTACHMENT_UPLOAD_DEFAULT_MAX_BYTES,
-    mimeType: mimeTypeForPath(resolveRequestedPathForIpc(bridgedPath, { purpose: 'Attachment upload' })),
-    purpose: 'Attachment upload'
-  })
+  try {
+    return await readFileDataUrlForIpc(bridgedPath, {
+      maxBytes: ATTACHMENT_UPLOAD_DEFAULT_MAX_BYTES,
+      mimeType: mimeTypeForPath(resolveRequestedPathForIpc(bridgedPath, { purpose: 'Attachment upload' })),
+      purpose: 'Attachment upload'
+    })
+  } catch (error) {
+    if (isMissingFileError(error)) {
+      return missingFileResult(filePath, error)
+    }
+
+    throw error
+  }
 })
 
 ipcMain.handle('hermes:readFileText', async (_event, filePath) => {
-  const { resolvedPath, stat } = await resolveReadableFileForIpc(resolveIpcFileReadPath(filePath), {
-    maxBytes: TEXT_PREVIEW_SOURCE_MAX_BYTES,
-    purpose: 'Text preview'
-  })
-
-  const ext = path.extname(resolvedPath).toLowerCase()
-  const handle = await fs.promises.open(resolvedPath, 'r')
-  const bytesToRead = Math.min(stat.size, TEXT_PREVIEW_MAX_BYTES)
-
   try {
-    const buffer = Buffer.alloc(bytesToRead)
-    const { bytesRead } = await handle.read(buffer, 0, bytesToRead, 0)
+    const { resolvedPath, stat } = await resolveReadableFileForIpc(resolveIpcFileReadPath(filePath), {
+      maxBytes: TEXT_PREVIEW_SOURCE_MAX_BYTES,
+      purpose: 'Text preview'
+    })
 
-    return {
-      binary: looksBinary(buffer.subarray(0, Math.min(bytesRead, 4096))),
-      byteSize: stat.size,
-      language: PREVIEW_LANGUAGE_BY_EXT[ext] || 'text',
-      mimeType: mimeTypeForPath(resolvedPath),
-      path: resolvedPath,
-      text: buffer.subarray(0, bytesRead).toString('utf8'),
-      truncated: stat.size > TEXT_PREVIEW_MAX_BYTES
+    const ext = path.extname(resolvedPath).toLowerCase()
+    const handle = await fs.promises.open(resolvedPath, 'r')
+    const bytesToRead = Math.min(stat.size, TEXT_PREVIEW_MAX_BYTES)
+
+    try {
+      const buffer = Buffer.alloc(bytesToRead)
+      const { bytesRead } = await handle.read(buffer, 0, bytesToRead, 0)
+
+      return {
+        binary: looksBinary(buffer.subarray(0, Math.min(bytesRead, 4096))),
+        byteSize: stat.size,
+        language: PREVIEW_LANGUAGE_BY_EXT[ext] || 'text',
+        mimeType: mimeTypeForPath(resolvedPath),
+        path: resolvedPath,
+        text: buffer.subarray(0, bytesRead).toString('utf8'),
+        truncated: stat.size > TEXT_PREVIEW_MAX_BYTES
+      }
+    } finally {
+      await handle.close()
     }
-  } finally {
-    await handle.close()
+  } catch (error) {
+    // A preview probing a file that is gone (deleted, moved, or cleared from
+    // /tmp since the tab/transcript reference was written) is an expected
+    // outcome. Return a structured error instead of rejecting — Electron logs
+    // every rejected handler with a stack trace even though the renderer shows
+    // "preview unavailable" either way.
+    if (isMissingFileError(error)) {
+      return missingFileResult(filePath, error)
+    }
+
+    throw error
   }
 })
 
@@ -18339,27 +18368,63 @@ ipcMain.handle('hermes:quick-entry:settings:set', async (_event, patch) => {
 // owns the one prompt-submit path, and forwarding keeps it that way. The
 // payload is `{ target, text }` — target routing (current chat / a picked
 // session / new) is the renderer's job too.
-ipcMain.on('hermes:quick-entry:submit', (_event, payload) => {
-  hideQuickEntryWindow()
+const quickEntrySubmitRelay = createQuickEntrySubmitRelay({
+  // A late ack for a timed-out submit proves the outcome. Forward it to the
+  // capture window so it can reconcile the unknown state instead of the user
+  // resending a prompt that may already be delivered.
+  onLateResult: (correlationId, result) => {
+    if (quickEntryWindow && !quickEntryWindow.isDestroyed()) {
+      quickEntryWindow.webContents.send('hermes:quick-entry:late-result', { correlationId, result })
+    }
+  },
+  onSuccess: () => {
+    hideQuickEntryWindow()
 
-  const text = typeof payload?.text === 'string' ? payload.text.trim() : ''
+    if (process.platform === 'darwin') {
+      app.dock?.show()
+    }
+
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.show()
+      mainWindow.focus()
+    }
+  }
+})
+
+// Main owns the request lifecycle so the capture window can keep text until
+// the primary renderer confirms delivery (#85590).
+ipcMain.handle('hermes:quick-entry:submit', (event, payload) => {
+  if (!quickEntryWindow || event.sender !== quickEntryWindow.webContents) {
+    return { code: 'forbidden', message: 'Quick Entry sender is not authorized.', ok: false, retryable: false }
+  }
+
+  const text =
+    typeof payload === 'string' ? payload.trim() : typeof payload?.text === 'string' ? payload.text.trim() : ''
 
   if (!text) {
-    return
+    return { code: 'empty', message: 'Enter a prompt before submitting.', ok: false, retryable: false }
   }
 
   if (!mainWindow || mainWindow.isDestroyed()) {
-    rememberLog('[quick-entry] dropped a submit: no primary window to route it to')
+    return { code: 'no-primary', message: 'The primary Hermes window is unavailable.', ok: false, retryable: true }
+  }
 
+  const target =
+    typeof payload === 'object' && typeof payload?.target === 'string' && payload.target ? payload.target : 'current'
+
+  return quickEntrySubmitRelay.begin(correlationId => {
+    mainWindow.webContents.send('hermes:quick-entry:submit', { correlationId, target, text })
+  })
+})
+
+// Main cannot invoke the primary renderer, so the primary returns by id. Stale
+// or duplicate acknowledgements are intentionally ignored (#85590).
+ipcMain.on('hermes:quick-entry:ack', (event, payload) => {
+  if (!mainWindow || event.sender !== mainWindow.webContents) {
     return
   }
 
-  // Deliberately does NOT raise/focus the main window — the user asked to fire
-  // a prompt from wherever they were, not to be yanked into the app.
-  mainWindow.webContents.send('hermes:quick-entry:submit', {
-    target: typeof payload?.target === 'string' && payload.target ? payload.target : 'current',
-    text
-  })
+  quickEntrySubmitRelay.acknowledge(payload?.correlationId, payload?.result)
 })
 
 // Primary renderer → main → quick window: gateway connection state + the
@@ -19562,6 +19627,11 @@ function registerChatWindow(window: BrowserWindow) {
 }
 
 app.on('before-quit', event => {
+  // Latch first, before ANY teardown below closes the pet overlay: its
+  // 'closed' handler must not echo pop-in during quit, or the persisted
+  // popped-out state is wiped and the overlay never restores (#55920).
+  appQuitting = true
+
   // Runs ahead of every teardown below, so "Keep Running" leaves the app
   // exactly as it was.
   if (heldQuitForActiveWork(event)) {
@@ -19629,9 +19699,19 @@ app.on('before-quit', event => {
   // FATAL GPU aborts skip before-quit, leaving the `booting` marker in place.
   // Keyed on sticky (not active): a manual --no-sandbox run still records a
   // clean quit, while an engaged fallback keeps its sticky marker.
-  if (IS_WINDOWS && !windowsSandboxFallbackSticky) {
+  if ((IS_WINDOWS || process.platform === 'linux') && !windowsSandboxFallbackSticky) {
     try {
       writeSandboxMarker(app.getPath('userData'), markerAfterSuccessfulBoot({ fallbackActive: false }))
+    } catch {
+      void 0
+    }
+  }
+
+  // #124843: a clean quit mid-boot must not trip next-launch --disable-gpu.
+  // Keyed on sticky (not active) so an engaged fallback keeps its marker.
+  if (process.platform === 'linux' && !linuxGpuFallbackSticky) {
+    try {
+      writeLinuxGpuMarker(app.getPath('userData'), linuxGpuMarkerAfterSuccessfulBoot({ fallbackActive: false }))
     } catch {
       void 0
     }

@@ -1237,6 +1237,8 @@ agent:
   # begins. /restart and SIGUSR1 refuse new work, then wait up to this cap for
   # in-flight agent, cron and API runs to complete so the requesting turn is
   # not cut off by restart_drain_timeout. 0 = enter stop()/drain immediately.
+  # Excluded from the wait: wedged runs, and cron runs already handed to a
+  # worker in its own restart-safe systemd scope (they outlive the restart).
   # The default (30 min) is a safety valve for wedged agents, not a target
   # latency; raise it for long unattended turns. Env: HERMES_RESTART_AFTER_TURN_TIMEOUT.
   # restart_after_turn_timeout: 1800
@@ -1823,7 +1825,7 @@ delegation:
 # Builds a deeper understanding of the user across sessions and tools.
 # Runs alongside USER.md — additive, not a replacement.
 #
-# Requires: pip install honcho-ai
+# Requires: hermes plugins install honcho (Plastic Labs' plugin from the catalog)
 # Config: ~/.honcho/config.json (shared with Claude Code, Cursor, etc.)
 # API key: HONCHO_API_KEY in ~/.hermes/.env or ~/.honcho/config.json
 #

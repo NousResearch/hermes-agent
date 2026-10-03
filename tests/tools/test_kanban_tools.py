@@ -82,6 +82,65 @@ def test_show_defaults_to_env_task_id(worker_env):
     assert "runs" in d
 
 
+def test_show_bare_call_outside_worker_returns_orientation_not_error(monkeypatch, worker_env):
+    """#91431: chat profiles with the kanban toolset call kanban_show bare to orient
+    themselves; with no dispatcher task in scope there is nothing to show, so the
+    answer must be a pointer to kanban_list — not an error naming an env var no
+    chat caller can set."""
+    monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+    from tools import kanban_tools as kt
+    out = json.loads(kt._handle_show({}))
+    assert "error" not in out, out
+    assert out.get("current_task") is None
+    assert "kanban_list" in out["hint"]
+
+
+def test_comment_bare_call_outside_worker_names_kanban_list(monkeypatch, worker_env):
+    """#91431 sibling: a comment cannot post without a target task, so a bare call
+    stays an error — but the error must point at kanban_list instead of the env."""
+    monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+    from tools import kanban_tools as kt
+    out = json.loads(kt._handle_comment({"body": "hello"}))
+    assert out.get("error"), out
+    assert "kanban_list" in out["error"]
+    assert "set HERMES_KANBAN_TASK" not in out["error"]
+
+
+def test_worker_tool_bare_call_outside_worker_error_is_actionable(monkeypatch, worker_env):
+    """#91431 sibling: the mutation/lifecycle tools still require a target, but the
+    rejection a non-worker receives must name what it can do (kanban_list), not the
+    env var it cannot set."""
+    monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+    from tools import kanban_tools as kt
+    for handler, name in ((kt._handle_heartbeat, "kanban_heartbeat"),
+                           (kt._handle_attachments, "kanban_attachments")):
+        out = json.loads(handler({}))
+        assert out.get("error"), (name, out)
+        assert "kanban_list" in out["error"], (name, out)
+        assert "set HERMES_KANBAN_TASK" not in out["error"], (name, out)
+
+
+def test_kanban_task_id_descriptions_state_the_non_worker_case():
+    """#91431 contract: any task_id description that promises the HERMES_KANBAN_TASK
+    default must also say the default only exists for dispatcher-spawned workers —
+    an unqualified invite to omit the argument is what made chat profiles call bare."""
+    from tools import kanban_tools_schemas as kts
+
+    seen = []
+    for attr, schema in vars(kts).items():
+        if not (attr.startswith("KANBAN_") and attr.endswith("_SCHEMA")):
+            continue
+        desc = (schema["parameters"]["properties"].get("task_id") or {}).get("description") or ""
+        if "HERMES_KANBAN_TASK" not in desc:
+            continue
+        assert "worker" in desc, (
+            schema["name"], "env default promised without the non-worker case (#91431)")
+        assert "no default" in desc or "orientation" in desc, (
+            schema["name"], "must state what a non-worker bare call does (#91431)")
+        seen.append(schema["name"])
+    assert "kanban_show" in seen
+
+
 def test_list_filters_tasks(monkeypatch, worker_env):
     """kanban_list gives orchestrators filtered board discovery."""
     monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
@@ -254,6 +313,7 @@ def test_unbound_worker_cannot_mutate_card(monkeypatch, worker_env):
     for handler, args in [
         (kt._handle_complete, {"summary": "stale worker says done"}),
         (kt._handle_block, {"reason": "stale worker blocks"}),
+        (kt._handle_schedule, {"reason": "stale worker parks"}),
         (kt._handle_request_review, {"summary": "stale worker hands off"}),
         (kt._handle_request_changes, {"reason": "stale worker requests changes"}),
     ]:
@@ -289,6 +349,8 @@ def test_malformed_run_id_refused_but_nonlifecycle_allowed(monkeypatch, worker_e
 
     # Run-lifecycle mutations are refused on a malformed run id.
     out = json.loads(kt._handle_complete({"summary": "stale worker says done"}))
+    assert "refused" in out.get("error", "")
+    out = json.loads(kt._handle_schedule({"reason": "stale worker parks"}))
     assert "refused" in out.get("error", "")
 
     # Non-lifecycle tools are NOT gated: heartbeat still extends the claim.
@@ -370,6 +432,55 @@ def test_block_happy_path(worker_env):
         conn.close()
 
 
+def test_schedule_parks_current_worker_with_reason(worker_env):
+    from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_connect as kbc
+    from tools import kanban_tools  # noqa: F401 — ensure registration
+    from tools.registry import registry
+
+    reason = "SCHEDULED_UNTIL=2026-09-13T00:00:00Z waiting for reconnect"
+    entry = registry.get_entry("kanban_schedule")
+    assert entry is not None and entry.toolset == "kanban"
+    out = json.loads(entry.handler({"reason": reason}))
+
+    assert out == {
+        "ok": True, "task_id": worker_env, "run_id": out["run_id"],
+        "status": "scheduled", "reason": reason,
+    }
+    with kbc.connect() as conn:
+        assert kb.get_task(conn, worker_env).status == "scheduled"
+        run = kb.latest_run(conn, worker_env)
+        assert (run.outcome, run.summary) == ("scheduled", reason)
+        assert any(
+            event.kind == "scheduled" and event.payload == {"reason": reason}
+            for event in kb.list_events(conn, worker_env)
+        )
+
+
+def test_schedule_rejects_invalid_reason_and_unowned_contexts(monkeypatch, worker_env):
+    from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_connect as kbc
+    from tools import kanban_tools as kt
+
+    with kbc.connect() as conn:
+        other = kb.create_task(conn, title="sibling", assignee="peer")
+
+    invalid = json.loads(kt._handle_schedule({"reason": {"until": "tomorrow"}}))
+    foreign = json.loads(kt._handle_schedule({"task_id": other, "reason": "wait"}))
+    monkeypatch.setattr(
+        kt, "_delegation_ctx",
+        lambda predicate, default: predicate == "is_delegated_child_process_context",
+    )
+    delegated = json.loads(kt._handle_schedule({"task_id": worker_env, "reason": "wait"}))
+
+    assert "reason must be a string" in invalid["error"]
+    assert "refusing to mutate" in foreign["error"]
+    assert "delegate_task child agents are not Kanban run owners" in delegated["error"]
+    with kbc.connect() as conn:
+        assert kb.get_task(conn, worker_env).status == "running"
+        assert kb.get_task(conn, other).status == "ready"
+
+
 def _make_goal_mode_worker_env(monkeypatch, tmp_path):
     """Set up an isolated HERMES_HOME with one claimed goal_mode task,
     matching the pattern used by the kanban_complete judge gate tests."""
@@ -440,6 +551,31 @@ def test_block_goal_mode_rejects_disallowed_kind(monkeypatch, tmp_path):
         assert kb.get_task(conn, tid).status == "running"
     finally:
         conn.close()
+
+
+def test_schedule_goal_mode_refused(monkeypatch, tmp_path):
+    """``scheduled`` ends the goal loop like ``blocked``, so a goal_mode worker
+    must not use kanban_schedule to exit without the completion judge."""
+    from tools import kanban_tools as kt
+    from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_connect as kbc
+
+    tid = _make_goal_mode_worker_env(monkeypatch, tmp_path)
+    d = json.loads(kt._handle_schedule({"reason": "waiting for CI"}))
+    assert "goal_mode" in d.get("error", "")
+
+    conn = kbc.connect()
+    try:
+        assert kb.get_task(conn, tid).status == "running"
+    finally:
+        conn.close()
+
+
+def test_schedule_exposed_to_codex_runtime_workers():
+    """Codex app-server workers only reach Hermes tools named in EXPOSED_TOOLS."""
+    from agent.transports.hermes_tools_mcp_server import EXPOSED_TOOLS
+
+    assert "kanban_schedule" in EXPOSED_TOOLS
 
 
 def test_block_dependency_without_open_parent_is_rekinded(worker_env):
@@ -1250,3 +1386,23 @@ def test_attach_url_happy_path_public_host(worker_env, default_url_guard, monkey
         assert Path(atts[0].stored_path).read_bytes() == payload
     finally:
         conn.close()
+
+
+class TestDefaultTaskId:
+    def test_numeric_task_id_is_coerced(self, monkeypatch):
+        from tools import kanban_tools as kt
+        monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+        assert kt._default_task_id(12345) == "12345"
+        assert kt._default_task_id(0) == "0"
+
+    def test_whitespace_task_id_is_stripped(self, monkeypatch):
+        from tools import kanban_tools as kt
+        monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+        assert kt._default_task_id("  task-99  ") == "task-99"
+
+    def test_blank_task_id_falls_back(self, monkeypatch, worker_env):
+        from tools import kanban_tools as kt
+        monkeypatch.setattr(kt, "_is_dispatcher_owned_worker", lambda: True)
+        assert kt._default_task_id("") == worker_env
+        assert kt._default_task_id("   ") == worker_env
+        assert kt._default_task_id(None) == worker_env

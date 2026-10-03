@@ -13,6 +13,8 @@ vi.mock('./runtime-loader', () => ({ watchRuntimePlugins: vi.fn() }))
 interface RadioPlayer {
   play: () => Promise<void>
   status: { get: () => string }
+  stop: () => void
+  toggle: () => void | Promise<void>
 }
 
 function player(): RadioPlayer {
@@ -94,5 +96,106 @@ describe('bundled Radio plugin', () => {
     expect(player()).not.toBe(first)
     expect(player().status.get()).toBe('paused')
     expect(document.querySelector('audio')).toBeNull()
+  })
+
+  it('survives external pause without destroying the stream or blocking resume', async () => {
+    $pluginDecisions.set({ accent: false, kanban: false, 'hermes-bots': false })
+    discoverBundledPlugins()
+    vi.spyOn(HTMLMediaElement.prototype, 'play').mockResolvedValue()
+    vi.spyOn(HTMLMediaElement.prototype, 'pause').mockImplementation(() => {})
+    vi.spyOn(HTMLMediaElement.prototype, 'load').mockImplementation(() => {})
+    vi.stubGlobal('AudioContext', undefined)
+    await setPluginEnabled('radio', true)
+    const radio = player()
+    await radio.play()
+    const media = document.querySelector('audio')!
+    media.dispatchEvent(new Event('playing'))
+    expect(radio.status.get()).toBe('live')
+    const originalSrc = media.getAttribute('src')
+
+    // External controller (Fluid Voice, Whisper Flow, media keys) pauses the element.
+    Object.defineProperty(media, 'paused', { value: true, configurable: true })
+    Object.defineProperty(media, 'ended', { value: false, configurable: true })
+    media.dispatchEvent(new Event('pause'))
+
+    // Status should reflect pause, but the element and its src must survive.
+    expect(radio.status.get()).toBe('paused')
+    expect(document.querySelector('audio')).toBe(media)
+    expect(media.getAttribute('src')).toBe(originalSrc)
+
+    // Resume is then possible.
+    Object.defineProperty(media, 'paused', { value: false })
+    media.dispatchEvent(new Event('playing'))
+    expect(radio.status.get()).toBe('live')
+  })
+
+  it('resumes the preserved stream when dictation text lands in an editable field (#108113)', async () => {
+    $pluginDecisions.set({ accent: false, kanban: false, 'hermes-bots': false })
+    discoverBundledPlugins()
+    const playMock = vi.spyOn(HTMLMediaElement.prototype, 'play').mockResolvedValue()
+    vi.spyOn(HTMLMediaElement.prototype, 'pause').mockImplementation(() => {})
+    vi.spyOn(HTMLMediaElement.prototype, 'load').mockImplementation(() => {})
+    vi.stubGlobal('AudioContext', undefined)
+    await setPluginEnabled('radio', true)
+    const radio = player()
+    await radio.play()
+    const media = document.querySelector('audio')!
+    media.dispatchEvent(new Event('playing'))
+    expect(radio.status.get()).toBe('live')
+    playMock.mockClear()
+
+    // Fluid Voice pauses the stream, then inserts the transcript as a paste
+    // into the focused field — no media resume event ever follows.
+    Object.defineProperty(media, 'paused', { value: true, configurable: true })
+    Object.defineProperty(media, 'ended', { value: false, configurable: true })
+    media.dispatchEvent(new Event('pause'))
+    expect(radio.status.get()).toBe('paused')
+
+    const composer = document.createElement('textarea')
+    document.body.append(composer)
+    composer.dispatchEvent(new Event('paste', { bubbles: true }))
+
+    await vi.waitFor(() => expect(radio.status.get()).toBe('live'))
+    // Same element, same stream — no teardown and reconnect.
+    expect(document.querySelector('audio')).toBe(media)
+    expect(playMock).toHaveBeenCalled()
+    composer.remove()
+  })
+
+  it('keeps the plugin Pause destructive: no paste resume, and Play reconnects (#108113)', async () => {
+    $pluginDecisions.set({ accent: false, kanban: false, 'hermes-bots': false })
+    discoverBundledPlugins()
+    const playMock = vi.spyOn(HTMLMediaElement.prototype, 'play').mockResolvedValue()
+    vi.spyOn(HTMLMediaElement.prototype, 'pause').mockImplementation(() => {})
+    vi.spyOn(HTMLMediaElement.prototype, 'load').mockImplementation(() => {})
+    vi.stubGlobal('AudioContext', undefined)
+    await setPluginEnabled('radio', true)
+    const radio = player()
+    await radio.play()
+    const first = document.querySelector('audio')!
+    first.dispatchEvent(new Event('playing'))
+    expect(radio.status.get()).toBe('live')
+
+    // The plugin's own Pause releases the stream by design.
+    radio.toggle()
+    expect(radio.status.get()).toBe('paused')
+    expect(document.querySelector('audio')).toBeNull()
+    expect(first.hasAttribute('src')).toBe(false)
+
+    // A dictation paste must NOT resurrect a stream the user paused.
+    const composer = document.createElement('textarea')
+    document.body.append(composer)
+    composer.dispatchEvent(new Event('paste', { bubbles: true }))
+    expect(radio.status.get()).toBe('paused')
+    expect(document.querySelector('audio')).toBeNull()
+    composer.remove()
+
+    // Play after an intentional pause is a full reconnect: a fresh element.
+    playMock.mockClear()
+    await radio.toggle()
+    const second = document.querySelector('audio')!
+    expect(second).not.toBe(first)
+    second.dispatchEvent(new Event('playing'))
+    expect(radio.status.get()).toBe('live')
   })
 })

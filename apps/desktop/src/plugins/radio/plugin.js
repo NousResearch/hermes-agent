@@ -187,6 +187,7 @@ function createPlayer(ctx) {
   let output = null
   const waveformData = new Float32Array(2048)
   let generation = 0
+  let playGeneration = -1
   let timeout = null
   let disposed = false
   let lastVolume = volume.get() || 25
@@ -242,12 +243,17 @@ function createPlayer(ctx) {
       } else stop('error')
     }
     element.addEventListener('playing', () => {
-      if (current()) { clearTimeout(timeout); status.set('live') }
+      if (current()) { clearTimeout(timeout); playGeneration = token; status.set('live') }
     })
     // Browser/media controls can pause the element outside our buttons.
     // Reflect that state instead of showing a frozen trace as live playback.
+    // Non-destructive: an external controller (macOS media keys, a dictation
+    // tool pausing audio to listen) may resume the same element afterwards,
+    // so the stream must survive. The plugin's own Pause control stays
+    // destructive — toggle() advances the generation first, so the pause
+    // event it triggers fails the current() guard and still runs stop().
     element.addEventListener('pause', () => {
-      if (current() && element.paused && !element.ended) stop()
+      if (current() && element.paused && !element.ended) status.set('paused')
     })
     element.addEventListener('waiting', () => {
       if (current()) { status.set('connecting'); clearTimeout(timeout); timeout = setTimeout(fail, 15000) }
@@ -276,7 +282,31 @@ function createPlayer(ctx) {
 
   function toggle() {
     if (status.get() === 'live' || status.get() === 'connecting') stop()
-    else void play()
+    else if (!resume()) void play()
+  }
+
+  // Dictation tools (Fluid Voice) pause the stream to hear the microphone,
+  // then deliver the transcript as a paste-like insertion into the focused
+  // field. No media-session resume event ever follows, so the only
+  // renderer-visible "dictation is done" signal is the text itself arriving
+  // in the composer. On that signal the plugin resumes the preserved stream.
+  // Never resumed on window focus — that would override an intentional pause.
+  // Returns false when the stream is not intact (fresh start, the plugin's
+  // own destructive Pause, a stop from another window), so callers can fall
+  // back to a full reconnect.
+  function resume() {
+    if (disposed || !audio || generation !== playGeneration || status.get() !== 'paused') return false
+    const token = generation
+    status.set('connecting')
+    void audio
+      .play()
+      .then(() => {
+        if (!disposed && token === generation) { clearTimeout(timeout); status.set('live') }
+      })
+      .catch(() => {
+        if (!disposed && token === generation) stop('error')
+      })
+    return true
   }
 
   function next() {
@@ -308,6 +338,20 @@ function createPlayer(ctx) {
   bus.onmessage = event => {
     if (event.data?.type === 'play' && event.data.sender !== windowId) stop('elsewhere')
   }
+
+  // Dictation completion: Fluid Voice delivers the transcript as a paste into
+  // the focused editable field (its Electron delivery path is a guarded ⌘V,
+  // a real DOM paste event). resume() no-ops unless the stream was paused
+  // externally and is still intact, so ordinary pastes while stopped, errored
+  // or intentionally paused (the plugin's own Pause is destructive) do nothing.
+  const onTextInserted = event => {
+    const target = event.target
+    const editable = target instanceof HTMLTextAreaElement
+      || target instanceof HTMLInputElement
+      || (target instanceof HTMLElement && target.isContentEditable)
+    if (editable) void resume()
+  }
+  document.addEventListener('paste', onTextInserted)
   function waveform(columns) {
     if (!analyser || status.get() !== 'live') return Array(columns).fill(0)
     analyser.getFloatTimeDomainData(waveformData)
@@ -329,6 +373,7 @@ function createPlayer(ctx) {
 
   ctx.onDispose(() => {
     disposed = true
+    document.removeEventListener('paste', onTextInserted)
     stop()
     bus.close()
     if (audioContext) void audioContext.close()

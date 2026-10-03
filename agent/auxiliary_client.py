@@ -1417,6 +1417,7 @@ class _CodexCompletionsAdapter:
             _chat_messages_to_responses_input,
             _classify_responses_issuer,
             _responses_tools,
+            _role_message_item,
             _wire_model_identity,
             classify_responses_route,
         )
@@ -1489,7 +1490,7 @@ class _CodexCompletionsAdapter:
         resp_kwargs: Dict[str, Any] = {
             # Codex only knows the base slug; strip the Hermes ``-900k`` picker suffix.
             "model": wire_model, "instructions": instructions,
-            "input": input_items or [{"role": "user", "content": ""}], "store": False,
+            "input": input_items or [_role_message_item("user", "")], "store": False,
         }
         # Forward the chat.completions timeout; otherwise a Codex stream can sit behind a
         # dead-looking CLI until the user force-interrupts.
@@ -5436,6 +5437,13 @@ def resolve_provider_client(
             if explicit_base_url and str(explicit_base_url).lower().startswith("moa://"):
                 explicit_base_url = None
                 explicit_api_key = None
+    from agent.auxiliary_local_runtime import bare_llamacpp_endpoint
+    local = bare_llamacpp_endpoint(original_provider, explicit_base_url, explicit_api_key)
+    if local is not None:
+        if not local[0]:
+            logger.warning("resolve_provider_client: %s requested but no local llama.cpp server is running", original_provider)
+            return None, None
+        explicit_base_url, explicit_api_key = local
     # Model for concrete providers: caller ``model`` → catalog default (empty for OAuth-gated providers whose
     # lists drift) → configured main model (MoA → aggregator), keeping OAuth aux tasks off the Step-2 fallback.
     # Excluded: ``auto`` (a stale main slug could pair with any picked provider) and Nous + vision (the
@@ -5678,7 +5686,8 @@ def resolve_vision_provider_client(
     requested, resolved_model, resolved_base_url, resolved_api_key, resolved_api_mode = _resolve_task_provider_model(
         "vision", provider, model, base_url, api_key
     )
-    requested = _normalize_vision_provider(requested)
+    # The raw name keeps a llama.cpp alias distinguishable from bare ``custom`` for the last resolve.
+    raw_requested, requested = requested, _normalize_vision_provider(requested)
     if resolved_base_url:
         provider_for_base_override = requested if requested and requested not in {"", "auto"} else "custom"
         client, final_model = resolve_provider_client(
@@ -5703,7 +5712,7 @@ def resolve_vision_provider_client(
                 return _finalize_vision_client(requested, client, final_model, resolved_model, async_mode)
         # Fallback: try without explicit base_url (old behavior)
     client, final_model = _get_cached_client(
-        requested, resolved_model, async_mode, api_mode=resolved_api_mode, main_runtime=runtime, is_vision=True,
+        raw_requested, resolved_model, async_mode, api_mode=resolved_api_mode, main_runtime=runtime, is_vision=True,
     )
     return requested, client, (final_model if client is not None else None)
 
@@ -5985,6 +5994,14 @@ def _get_cached_client(
     previously occurred in long-running gateways where recycled worker threads created unbounded entries
     (#10200).
     """
+    # A bare llama.cpp alias keys on the live local endpoint: a restarted server (new port/key)
+    # must not be served the old client, and a stopped one resolves to nothing, not a cloud client.
+    from agent.auxiliary_local_runtime import bare_llamacpp_endpoint
+    local = bare_llamacpp_endpoint(provider, base_url, api_key)
+    if local is not None:
+        if not local[0]:
+            return None, None
+        base_url, api_key = local
     current_loop = _current_event_loop() if async_mode else None
     runtime = _normalize_main_runtime(main_runtime)
     cache_key = _client_cache_key(

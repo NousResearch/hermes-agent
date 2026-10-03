@@ -145,8 +145,50 @@ test('Korean Bot and Group drafts survive collapse at every zoom, and settings h
           }
         }
 
-        await page.keyboard.press('Escape')
-        await expect(dialog).toHaveCount(0)
+        // Preserve the first failure without refocusing, retrying Escape or clicking
+        // Close: those would hide whether the key reached the topmost dialog.
+        const escape = await page.evaluateHandle(() => {
+          const active = document.activeElement
+          const evidence = {
+            documentFocused: document.hasFocus(),
+            activeTag: active?.tagName ?? null,
+            activeRole: active?.getAttribute('role') ?? null,
+            focusInDialog: Boolean(active?.closest('[role="dialog"]')),
+            key: null as null | { key: string; composing: boolean; trusted: boolean; prevented: boolean }
+          }
+          document.addEventListener(
+            'keydown',
+            event => {
+              evidence.key = {
+                key: event.key,
+                composing: event.isComposing,
+                trusted: event.isTrusted,
+                prevented: event.defaultPrevented
+              }
+              queueMicrotask(() => {
+                if (evidence.key) evidence.key.prevented = event.defaultPrevented
+              })
+            },
+            { capture: true, once: true }
+          )
+          return evidence
+        })
+        const native = await win.evaluate(w => ({ focused: w.isFocused(), zoom: w.webContents.getZoomFactor() }))
+        try {
+          await page.keyboard.press('Escape')
+          await expect(dialog).toHaveCount(0)
+        } finally {
+          observations.push({
+            kind: 'escape',
+            dialog: kind,
+            zoom,
+            native,
+            ...(await escape.jsonValue()),
+            remainingDialogs: await dialog.count()
+          })
+          save()
+          await escape.dispose()
+        }
       }
     }
 

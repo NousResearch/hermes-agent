@@ -5128,18 +5128,6 @@ export const ko = defineLocale({
   },
   externalOpenFailed: { copyUrl: '링크 복사', close: '닫기' },
   sharedMetrics: { stripDetails: '세부정보' },
-  catalog: {
-    add: '추가',
-    alphabetical: '이름',
-    installing: '설치 중…',
-    installed: '설치됨',
-    about: '정보',
-    commands: '명령',
-    updatedDate: '업데이트됨',
-    repository: '저장소',
-    noResults: '일치 항목 없음',
-    retry: '다시 시도'
-  },
   connectorsPage: {
     segment: { all: '전체', connected: '연결됨' },
     group: { connected: '연결됨' },

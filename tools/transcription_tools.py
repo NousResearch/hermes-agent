@@ -112,6 +112,34 @@ def _resolve_stt_language(
     return next((c.strip() for c in candidates if isinstance(c, str) and c.strip()), None)
 
 
+_LOCAL_LANGUAGE_ALIASES = {
+    "繁體中文": "zh",
+    "繁体中文": "zh",
+    "简体中文": "zh",
+    "簡體中文": "zh",
+}
+
+
+def _normalize_local_stt_language(language: Optional[str], model: object) -> Optional[str]:
+    """Return a faster-whisper language code, or None to preserve auto-detection."""
+    if not isinstance(language, str) or not language.strip():
+        return None
+    raw = language.strip()
+    folded = raw.casefold().replace("_", "-")
+    candidate = _LOCAL_LANGUAGE_ALIASES.get(raw, folded.split("-", 1)[0])
+    if not (candidate.isascii() and candidate.isalpha() and 2 <= len(candidate) <= 3):
+        logger.warning("Local STT language %r is not a language code; using auto-detection", raw)
+        return None
+
+    supported = getattr(model, "supported_languages", None)
+    if isinstance(supported, (list, tuple, set, frozenset)):
+        supported_codes = {str(code).casefold() for code in supported}
+        if candidate not in supported_codes:
+            logger.warning("Local STT language %r is unsupported; using auto-detection", raw)
+            return None
+    return candidate
+
+
 def _openai_audio_unavailable_reason() -> Optional[str]:
     """None when OpenAI audio has usable credentials (config, env, or managed gateway); else the reason."""
     try:
@@ -379,8 +407,14 @@ def _transcribe_local(
             return _error_result("Local whisper model failed to load")
         # pre_transcription hook overrides win over config-resolved values.
         transcribe_kwargs = build_local_transcribe_kwargs(stt_config)
-        transcribe_kwargs.update({k: v for k, v in (("language", language), ("initial_prompt", prompt))
-                                  if v})
+        effective_language = language if language is not None else transcribe_kwargs.get("language")
+        normalized_language = _normalize_local_stt_language(effective_language, model)
+        if normalized_language:
+            transcribe_kwargs["language"] = normalized_language
+        else:
+            transcribe_kwargs.pop("language", None)
+        if prompt:
+            transcribe_kwargs["initial_prompt"] = prompt
         try:
             segments, info = model.transcribe(file_path, **transcribe_kwargs)
             # faster-whisper's transcribe() is lazy: the decode (and with it the

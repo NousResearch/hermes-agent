@@ -451,8 +451,13 @@ def restore_interrupted_pull(project_root: Path | None = None) -> bool:
     """
     try:
         root = _project_root() if project_root is None else project_root
+        # Pytest owns the live checkout in this process; check that before
+        # deriving the marker path, because even that metadata probe is guarded
+        # when the checkout lives inside the real Hermes home.
+        if _pytest_owns_live_checkout(root):
+            return False
         marker = interrupted_pull_marker(root)
-        if not marker.is_file() or _pytest_owns_live_checkout(root):
+        if not marker.is_file():
             return False
         with _restore_claim(marker.parent) as claimed:
             if not claimed:

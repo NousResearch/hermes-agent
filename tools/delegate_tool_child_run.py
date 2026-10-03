@@ -566,7 +566,9 @@ def _build_result_entry(
         # assistant row); the completion must carry what the child actually had so far — its last real assistant
         # text — and keep the placeholder as the error.
         from agent.message_content import flatten_message_text
-        placeholders = {"", summary.strip(), "Operation interrupted."}
+        from agent import i18n
+
+        placeholders = {"", summary.strip(), "Operation interrupted.", i18n.t("turn_failure.interrupt.operation")}
         partial = next((t for m in reversed(result.get("messages") or []) if m.get("role") == "assistant"
                         and (t := flatten_message_text(m.get("content")).strip()) not in placeholders), "")
         if partial:

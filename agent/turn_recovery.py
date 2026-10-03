@@ -19,6 +19,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from agent.conversation_compression import COMPRESSION_RETRY_CONTEXT_REDUCED_STATUS_TEMPLATE
 from agent.fast_mode import fast_mode_unprovisioned, mark_fast_mode_unavailable
+from agent.i18n import t
 from agent.model_metadata import is_output_cap_error, parse_available_output_tokens_from_error
 from agent.retry_utils import is_zai_coding_overload_error, zai_coding_overload_retry_ceiling
 from agent.error_classifier import FailoverReason, classify_api_error
@@ -31,7 +32,7 @@ from agent.message_sanitization import (
 from agent.thinking_timeout_guidance import build_thinking_timeout_guidance, is_thinking_timeout
 from agent.vision_message_prep import _provider_model_key
 from agent.turn_failure_copy import (
-    CONTENT_POLICY_NEXT_STEPS, content_policy_copy, exhausted_copy, limit_reset_copy, nonretryable_copy,
+    content_policy_copy, exhausted_copy, limit_reset_copy, nonretryable_copy,
     provider_label_for, site_copy, stamp_failure,
 )
 from agent.turn_retry_state import TurnRetryState
@@ -1056,7 +1057,7 @@ def nonretryable_client_error_result(
     if classified.reason == FailoverReason.content_policy_blocked:
         _vlines(
             agent,
-            f"   💡 {CONTENT_POLICY_NEXT_STEPS}",
+            f"   💡 {t('turn_failure.content_policy.next_steps')}",
             "      To route future blocks to another provider automatically: hermes fallback add",
         )
     # TLS certificate failures are environment problems — name the knobs for each cause.
@@ -1845,7 +1846,8 @@ def route_classified_error(
         _final_response = site_copy("compression_disabled", model=agent.model)
         return _verdict("return", stamp_failure({
             "final_response": _final_response, "messages": messages, "completed": False,
-            "api_calls": api_call_count, "error": _final_response, "partial": True, "failed": True,
+            "api_calls": api_call_count, "error": site_copy("compression_disabled", lang="en", model=agent.model),
+            "partial": True, "failed": True,
             "compaction_disabled": True,
         }, "context_overflow", False))
 

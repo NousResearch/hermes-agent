@@ -15,6 +15,7 @@ import ssl
 import time
 from typing import Any, Dict, Optional
 
+from agent.i18n import t
 from agent.api_error_summary import is_provider_stream_parse_error
 from agent.error_classifier import RETRYABLE_CLIENT_REASONS, FailoverReason, classify_api_error
 from agent.turn_overflow import recover_from_overflow
@@ -157,7 +158,7 @@ def handle_api_error(
         return _verdict("return", abort_turn_on_interrupt(
             agent, messages, conversation_history, api_call_count,
             abort_message="Interrupt detected during error handling, aborting retries.",
-            interrupt_text=f"Operation interrupted: handling API error ({error_type}: {agent._clean_error_message(str(api_error))}).",
+            interrupt_text=t("turn_failure.interrupt.api_error", error_type=error_type, detail=agent._clean_error_message(str(api_error))),
         ))
 
     _ce = route_classified_error(
@@ -407,7 +408,7 @@ def settle_unrecovered_error(
         agent, wait_time, _retry, messages=messages, conversation_history=conversation_history,
         api_call_count=api_call_count,
         abort_message="Interrupt detected during retry wait, aborting.",
-        interrupt_text=f"Operation interrupted: retrying API call after error (retry {retry_count}/{max_retries}).",
+        interrupt_text=t("turn_failure.interrupt.api_retry", attempt=retry_count, limit=max_retries),
         activity_label=f"error retry backoff ({retry_count}/{max_retries})",
     )
     if _interrupted is not None:

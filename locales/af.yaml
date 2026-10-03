@@ -3474,6 +3474,67 @@ explainer:
   shared:
     and_more: "  • … en nog {count}"
     the_model: "Die model"
+turn_failure:
+  # Failed-turn, truncation and cancellation copy, resolved for the active profile at render time.
+  failed_turn_notice: "Jou versoek is nie verwerk nie. Stuur dit weer as jy steeds wil hê ek moet dit uitvoer."
+  partial_failed_turn_notice: "Hierdie beurt is nie voltooi nie. Sommige aksies is dalk reeds uitgevoer; kontroleer die uitwerking voordat jy dit weer stuur."
+  next_steps:
+    retry: "Wag ’n minuut en stuur /retry, of verander modelle met /model."
+    loop: "Jou boodskap is gestoor. Stuur `continue` om weer te probeer, of begin ’n nuwe sessie met /new. As dit weer gebeur, voer `hermes doctor` uit en deel die foutbesonderhede."
+  site:
+    context_overflow: "Hierdie gesprek het te lank geword vir {model} om te lees, en Hermes kon dit nie outomaties genoeg verkort nie. Begin ’n nuwe sessie met /new (jou geskiedenis bly behoue), of probeer /compress weer. Jy kan ook ’n model met ’n groter konteksvenster kies."
+    truncated: "Die model se antwoord is afgesny voordat dit klaar was omdat dit die uitvoerlengtelimiet bereik het. Hermes het dus nie die onvolledige aksie uitgevoer nie. Niks is verander nie. Stuur `continue`, vra dat die werk in kleiner stappe gedoen word, of verhoog max_tokens vir hierdie model."
+    invalid_response: "{label} het {attempts} keer ’n leë of ongeldige antwoord teruggestuur — dit is waarskynlik oorlaai of beperk jou versoeke. {next_steps}\n\nBesonderhede: {detail}"
+    loop_error: "Hermes het herhaaldelik foute teëgekom en hierdie beurt gestop om nie aanhoudend weer te probeer nie. {next_steps}\n\nBesonderhede: {detail}"
+    interpreter_shutdown: "Hermes was besig om af te sluit en het hierdie beurt gestop. Jou gesprek is gestoor — maak dit weer oop{resume} en stuur jou boodskap weer."
+    payload_too_large: "Hierdie gesprek, insluitend aanhegsels, het te groot geword om na {model} te stuur, en Hermes kon dit nie outomaties genoeg verklein nie. Begin ’n nuwe sessie met /new (jou geskiedenis bly behoue), of probeer /compress weer."
+    compression_disabled: "Hierdie gesprek is te lank vir {model} en outomatiese verkorting is in jou instellings afgeskakel (compression.enabled). Voer /compress uit om dit nou te verkort, /new om oor te begin, of kies ’n model met ’n groter konteksvenster."
+    server_context_rejection: "Die modelbediener het hierdie versoek as te groot verwerp, maar die gesprek bevat net sowat {tokens} tokens — ver onder die venster van {window} tokens wat Hermes vir {model} ken. Verkorting sal dus nie help nie. ’n Ander versoek op dieselfde bediener, soos ’n geheuehersiening in die agtergrond uit ’n vorige sessie, het waarskynlik die kapasiteit beset, of die bediener gebruik ’n kleiner venster vir {model} as wat Hermes verwag. Wag ’n oomblik en stuur /retry; as dit aanhou gebeur, kontroleer die bediener se konteksinstelling."
+    truncated_unreported: "Die model se aksie het onvolledig aangekom, dus het Hermes dit nie uitgevoer nie. Niks is verander nie. Die model het nie gemeld dat dit die uitvoerlimiet bereik het nie; die verbinding het waarskynlik weggeval of die verskaffer of roeteerder het die antwoord afgesny. Stuur /retry; as dit aanhou gebeur, vra dat die werk in kleiner stappe gedoen word."
+    stream_dropped_tool_call: "Die verbinding met {label} het herhaaldelik weggeval terwyl die model ’n groot aksie geskryf het, dus is niks uitgevoer nie. Kontroleer jou netwerk en stuur /retry; dit help ook om die lêer in kleiner dele aan te vra."
+    stream_closed_tool_call: "{label} het die stroom herhaaldelik toegemaak voordat die model sy aksie klaar geskryf het, sonder om ’n fout te meld, dus is niks uitgevoer nie. Gewoonlik sny die verskaffer of ’n instaanbediener voor hom lang antwoorde af. Stuur /retry; kleiner werkstappe kan ook help."
+    local_processing_error: "Hermes het ’n interne fout teëgekom terwyl dit die model se antwoord verwerk het en hierdie beurt gestop. {next_steps}\n\nBesonderhede: {detail}"
+    reasoning_only: "⚠️ {model} het sy hele uitvoerbegroting aan dink bestee en geen antwoord geskryf nie. Verlaag die redeneerinspanning met `/reasoning low`, of kies ’n ander model met /model. Die laaste gedagtes, wat dalk die antwoord bevat:\n\n{preview}"
+    max_iterations_no_summary: "Ek het die stappe vir hierdie beurt ({limit} hulpmiddeloproepe) opgebruik voordat ek klaar was en kon nie ’n opsomming lewer nie. Stuur `continue` om voort te gaan, of verhoog `max_iterations` in jou konfigurasie."
+    nous_rate_limit: "Wag totdat die limiet teruggestel word en stuur /retry, of verander modelle met /model. Voeg ’n rugsteunverskaffer met `hermes fallback add` by om wagtye te vermy."
+  nonretryable:
+    model_not_found: "Model '{model}' is nie by {label} beskikbaar nie. Kies 'n ander model met /model (of `hermes model` in 'n terminaal).{prefix_hint}"
+    format_error: "{label} het hierdie versoek weens 'n verkeerde formaat verwerp, dus het die model nie geantwoord nie. Begin 'n nuwe sessie met /new of wissel modelle met /model; as dit aanhou gebeur, voer `hermes doctor` uit."
+    role_alternation: "{label} vereis dat die gebruiker en die assistent se beurte streng afwissel en het hierdie gesprek se struktuur verwerp. Begin 'n nuwe sessie met /new of wissel modelle met /model."
+    ssl_cert_verification: "Hermes kon nie {label} se sekuriteitsertifikaat verifieer nie, dus is die verbinding geweier. Dit is gewoonlik weens 'n korporatiewe instaanbediener of 'n verouderde sertifikaatstoor op hierdie rekenaar. Kyk in die terminaal of `{home}/logs/agent.log` vir die presiese oplossing, of probeer 'n ander verskaffer met /model."
+    provider_policy_blocked: "{label} het hierdie versoek geweier weens 'n beleid op jou rekening (data-/privaatheidinstellings of 'n blokkering deur die model se stroomopverskaffer). Die model het dus nie geantwoord nie en weer probeer sal nie help nie. Kontroleer die rekening by die verskaffer of wissel modelle met /model."
+    upstream_blocked: "'n Brandmuur/CDN voor {label} het die versoek geblokkeer voordat dit die model bereik het, dus is jou sleutel waarskynlik reg. Stel 'n pasgemaakte User-Agent via die verskaffer se extra_headers in, kontroleer die instaanbediener-/WAF-reëls of wissel verskaffers met /model."
+    default: "{label} het die versoek verwerp en weer probeer sal nie help nie. Kies 'n ander model met /model of kyk na die besonderhede in `{home}/logs/agent.log`."
+    prefix_hint: " As jy die naam self ingetik het, ontbreek die verskaffer se voorvoegsel dalk. Het jy '{suggestion}' bedoel?"
+    tail: "{body}\n\nDie verskaffer sê: {summary}"
+  auth:
+    oauth: "{label} het jou aanmelding verwerp, dus is die model nie bereikbaar nie. Meld weer aan: `{relogin}`."
+    api_key: "{label} het jou API-sleutel verwerp, dus is die model nie bereikbaar nie. Werk dit by onder Instellings → Verskaffers, of voer `hermes setup` in 'n terminaal uit."
+  content_policy:
+    next_steps: "Probeer jou boodskap herbewoord of verwyder sensitiewe aanhegsels, of wissel na 'n ander model met /model."
+    body: "{label} se veiligheidsfilter het hierdie versoek geweier, dus het die model nie geantwoord nie. {next_steps}\n\nDie verskaffer sê: {summary}"
+  limit_reset: "Die limiet word om {time} teruggestel (oor {wait})."
+  exhausted:
+    lead:
+      rate_limit: "{label} het versoeke in al {attempts} pogings beperk"
+      upstream_rate_limit: "{label} het versoeke in al {attempts} pogings beperk"
+      overloaded: "{label} het in al {attempts} pogings gemeld dat dit oorlaai is"
+      server_error: "{label} het in al {attempts} pogings ’n bedienerfout teruggestuur"
+      timeout: "{label} het in geen van die {attempts} pogings betyds geantwoord nie"
+      default: "{label} het ná {attempts} pogings nie geantwoord nie"
+    reset: "die gebruikslimiet word oor {reset} teruggestel. Stuur daarna /retry, of verander modelle met /model."
+    unavailable: "die diens is blykbaar tydelik onbeskikbaar. {next_steps}"
+    tail: "{lead} — {situation} Voeg ’n rugsteunverskaffer met `hermes fallback add` by om dit in die toekoms te vermy.\n\nDie verskaffer sê: {summary}"
+  interrupt:
+    waiting_for_model_prefix: "Bewerking onderbreek: wag vir die model se antwoord ("
+    waiting_for_model: "{prefix}{elapsed} s verloop)."
+    operation: "Bewerking onderbreek."
+    retry: "Bewerking tydens herprobeer onderbreek ({detail}, poging {attempt}/{limit})."
+    empty_response: "Bewerking onderbreek: probeer weer ná ’n leë modelantwoord (poging {attempt}/{limit})."
+    provider_recovery: "Bewerking onderbreek: wag vir die verskaffer om te herstel (siklus {cycle}/{total})."
+    api_error: "Bewerking onderbreek: verwerk API-fout ({error_type}: {detail})."
+    api_retry: "Bewerking onderbreek: probeer API-oproep weer ná ’n fout (poging {attempt}/{limit})."
+
 tips:
   t001: "/bg <prompt> voer 'n taak in 'n aparte sessie uit terwyl jou huidige een vry bly; /btw <question> beantwoord 'n newevraag oor hierdie gesprek sonder om dit te onderbreek."
   t002: "/branch vertak die huidige sessie sodat jy 'n ander rigting kan verken sonder om vordering te verloor."

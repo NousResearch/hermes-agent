@@ -3474,6 +3474,67 @@ explainer:
   shared:
     and_more: "  • … 외 {count}개 더"
     the_model: "모델"
+turn_failure:
+  # Failed-turn, truncation and cancellation copy, resolved for the active profile at render time.
+  failed_turn_notice: "요청이 처리되지 않았습니다. 여전히 실행을 원하시면 다시 보내 주세요."
+  partial_failed_turn_notice: "이번 턴이 완료되지 않았습니다. 일부 작업은 이미 실행되었을 수 있으니 결과를 확인한 뒤 다시 보내 주세요."
+  next_steps:
+    retry: "1분 정도 기다린 뒤 /retry를 보내거나 /model로 모델을 바꾸세요."
+    loop: "메시지가 저장되었습니다. `continue`를 보내 다시 시도하거나 /new로 새 세션을 시작하세요. 다시 발생하면 `hermes doctor`를 실행하고 오류 상세 내용을 공유해 주세요."
+  site:
+    context_overflow: "이 대화가 {model}이 읽을 수 있는 길이를 넘었고 Hermes가 자동으로 충분히 줄이지 못했습니다. /new로 새 세션을 시작하거나(기록은 보존됩니다) /compress를 다시 시도하세요. 컨텍스트 창이 더 큰 모델로 바꿔도 됩니다."
+    truncated: "모델의 응답이 출력 길이 제한에 도달해 중간에 끊겼으므로 Hermes는 불완전한 작업을 실행하지 않았습니다. 변경된 내용은 없습니다. `continue`를 보내거나 작업을 작은 단계로 나눠 요청하거나 이 모델의 max_tokens를 늘리세요."
+    invalid_response: "{label}이 비어 있거나 잘못된 응답을 {attempts}번 반환했습니다. 과부하 상태이거나 요청 빈도를 제한하고 있을 수 있습니다. {next_steps}\n\n상세 내용: {detail}"
+    loop_error: "Hermes에서 오류가 반복되어 계속 재시도하지 않도록 이번 턴을 중지했습니다. {next_steps}\n\n상세 내용: {detail}"
+    interpreter_shutdown: "Hermes가 종료 중이어서 이번 턴을 중지했습니다. 대화는 저장되어 있습니다. 다시 열고{resume} 메시지를 다시 보내 주세요."
+    payload_too_large: "첨부 파일을 포함한 이 대화가 {model}에 보내기에는 너무 커졌고 Hermes가 자동으로 충분히 줄이지 못했습니다. /new로 새 세션을 시작하거나(기록은 보존됩니다) /compress를 다시 시도하세요."
+    compression_disabled: "이 대화는 {model}이 처리하기에는 너무 길지만 설정에서 자동 압축이 꺼져 있습니다(compression.enabled). /compress로 지금 압축하거나 /new로 새로 시작하거나 컨텍스트 창이 더 큰 모델을 선택하세요."
+    server_context_rejection: "모델 서버가 요청이 너무 크다며 거부했지만 이 대화는 약 {tokens} 토큰으로, Hermes가 알고 있는 {model}의 {window} 토큰 창보다 훨씬 작아 압축해도 해결되지 않습니다. 같은 서버의 다른 요청(예: 이전 세션의 백그라운드 메모리 검토)이 용량을 차지했거나 서버가 {model}을 예상보다 작은 창으로 실행하고 있을 수 있습니다. 잠시 기다린 뒤 /retry를 보내세요. 계속 발생하면 서버의 컨텍스트 설정을 확인하세요."
+    truncated_unreported: "모델의 작업 내용이 중간에 잘린 채 도착해 Hermes가 실행하지 않았습니다. 변경된 내용은 없습니다. 모델이 출력 한도에 도달했다고 알리지 않았으므로 연결이 끊겼거나 제공업체 또는 라우터가 응답을 잘랐을 가능성이 큽니다. /retry를 보내세요. 계속 발생하면 작업을 작은 단계로 나눠 요청하세요."
+    stream_dropped_tool_call: "모델이 큰 작업 내용을 작성하는 동안 {label} 연결이 반복해서 끊겨 아무것도 실행되지 않았습니다. 네트워크를 확인하고 /retry를 보내세요. 파일을 작은 부분으로 나눠 요청하는 것도 도움이 됩니다."
+    stream_closed_tool_call: "{label}이 오류를 알리지 않은 채 모델이 작업 내용을 완성하기 전에 스트림을 반복해서 닫아 아무것도 실행되지 않았습니다. 보통 제공업체나 앞단 프록시가 긴 응답을 자를 때 발생합니다. /retry를 보내세요. 작업을 작은 단계로 나눠 요청하는 것도 도움이 됩니다."
+    local_processing_error: "Hermes가 모델 응답을 처리하는 중 내부 오류가 발생해 이번 턴을 중지했습니다. {next_steps}\n\n상세 내용: {detail}"
+    reasoning_only: "⚠️ {model}이 출력 예산을 모두 추론에 사용해 답변을 작성하지 못했습니다. `/reasoning low`로 추론 강도를 낮추거나 /model로 다른 모델을 선택하세요. 답이 포함되어 있을 수 있는 마지막 추론 내용:\n\n{preview}"
+    max_iterations_no_summary: "완료하기 전에 이번 턴의 단계 한도(도구 호출 {limit}회)에 도달했고 요약도 만들지 못했습니다. `continue`를 보내 계속하거나 설정의 `max_iterations`를 늘리세요."
+    nous_rate_limit: "한도가 초기화될 때까지 기다린 뒤 /retry를 보내거나 /model로 모델을 바꾸세요. 대기 시간을 줄이려면 `hermes fallback add`로 예비 제공업체를 추가하세요."
+  nonretryable:
+    model_not_found: "{label}에서 '{model}' 모델을 사용할 수 없습니다. /model로 다른 모델을 선택하세요(터미널에서는 `hermes model`).{prefix_hint}"
+    format_error: "{label}에서 잘못된 형식의 요청을 거부하여 모델이 응답하지 않았습니다. /new로 새 세션을 시작하거나 /model로 모델을 바꾸세요. 계속 발생하면 `hermes doctor`를 실행하세요."
+    role_alternation: "{label}에서는 사용자와 어시스턴트의 턴이 엄격하게 번갈아 나와야 하므로 이 대화의 구조를 거부했습니다. /new로 새 세션을 시작하거나 /model로 모델을 바꾸세요."
+    ssl_cert_verification: "Hermes가 {label}의 보안 인증서를 확인하지 못해 연결이 거부되었습니다. 보통 회사 프록시나 이 컴퓨터의 오래된 인증서 저장소가 원인입니다. 정확한 해결 방법은 터미널이나 `{home}/logs/agent.log`를 확인하거나 /model로 다른 제공업체를 시도하세요."
+    provider_policy_blocked: "{label}에서 계정 정책(데이터/개인정보 설정 또는 상위 모델 제공업체의 계정 차단) 때문에 요청을 거부하여 모델이 응답하지 않았습니다. 재시도해도 해결되지 않습니다. 제공업체에 계정을 확인하거나 /model로 모델을 바꾸세요."
+    upstream_blocked: "{label} 앞의 방화벽/CDN이 모델에 도달하기 전에 요청을 차단했으므로 키에는 아마 문제가 없습니다. 제공업체의 extra_headers로 사용자 지정 User-Agent를 설정하거나 프록시/WAF 규칙을 확인하거나 /model로 제공업체를 바꾸세요."
+    default: "{label}에서 요청을 거부했으며 재시도해도 해결되지 않습니다. /model로 다른 모델을 선택하거나 `{home}/logs/agent.log`에서 상세 내용을 확인하세요."
+    prefix_hint: " 이름을 직접 입력했다면 제공업체 접두사가 빠졌을 수 있습니다. '{suggestion}'을 뜻하셨나요?"
+    tail: "{body}\n\n제공업체 응답: {summary}"
+  auth:
+    oauth: "{label}에서 로그인을 거부하여 모델에 연결할 수 없습니다. 다시 로그인하세요: `{relogin}`."
+    api_key: "{label}에서 API 키를 거부하여 모델에 연결할 수 없습니다. 설정 → 제공업체에서 키를 업데이트하거나 터미널에서 `hermes setup`을 실행하세요."
+  content_policy:
+    next_steps: "메시지를 바꾸어 쓰거나 민감한 첨부 파일을 제거하거나 /model로 다른 모델을 선택하세요."
+    body: "{label}의 안전 필터가 요청을 거부하여 모델이 응답하지 않았습니다. {next_steps}\n\n제공업체 응답: {summary}"
+  limit_reset: "사용량 제한이 {time}에 초기화됩니다({wait} 후)."
+  exhausted:
+    lead:
+      rate_limit: "{label}이 {attempts}번의 시도에서 모두 요청 빈도를 제한했습니다"
+      upstream_rate_limit: "{label}이 {attempts}번의 시도에서 모두 요청 빈도를 제한했습니다"
+      overloaded: "{label}이 {attempts}번의 시도에서 모두 과부하를 알렸습니다"
+      server_error: "{label}이 {attempts}번의 시도에서 모두 서버 오류를 반환했습니다"
+      timeout: "{label}이 {attempts}번의 시도에서 한 번도 제시간에 응답하지 않았습니다"
+      default: "{label}이 {attempts}번 시도 후에도 응답하지 않았습니다"
+    reset: "사용 한도는 {reset} 후에 초기화됩니다. 그 뒤 /retry를 보내거나 /model로 모델을 바꾸세요."
+    unavailable: "일시적으로 사용할 수 없는 것 같습니다. {next_steps}"
+    tail: "{lead}. {situation} 앞으로 이런 상황을 줄이려면 `hermes fallback add`로 예비 제공업체를 추가하세요.\n\n제공업체 응답: {summary}"
+  interrupt:
+    waiting_for_model_prefix: "작업이 중단되었습니다: 모델 응답 대기 중 ("
+    waiting_for_model: "{prefix}{elapsed}초 경과)."
+    operation: "작업이 중단되었습니다."
+    retry: "재시도 중 작업이 중단되었습니다({detail}, 시도 {attempt}/{limit})."
+    empty_response: "작업이 중단되었습니다: 모델의 빈 응답 재시도 중 (재시도 {attempt}/{limit})."
+    provider_recovery: "작업이 중단되었습니다: 제공업체 복구 대기 중 (주기 {cycle}/{total})."
+    api_error: "작업이 중단되었습니다: API 오류 처리 중 ({error_type}: {detail})."
+    api_retry: "작업이 중단되었습니다: 오류 후 API 호출 재시도 중 (재시도 {attempt}/{limit})."
+
 tips:
   t001: "/bg <prompt>는 현재 세션을 그대로 두고 별도 세션에서 작업을 실행해요. /btw <question>은 대화를 끊지 않고 이 대화에 관한 부수적인 질문에 답해요."
   t002: "/branch는 현재 세션을 분기해서 진행 상황을 잃지 않고 다른 방향을 탐색할 수 있게 해요."

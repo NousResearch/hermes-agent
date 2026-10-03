@@ -133,6 +133,7 @@ class _Recovery(OverflowVerdict):
         if payload_too_large:
             return self.fail_turn(
                 site_copy("payload_too_large", model=self.agent.model),
+                error=site_copy("payload_too_large", lang="en", model=self.agent.model),
                 notices=(
                     f"❌ Max compression attempts ({cap}) reached for payload-too-large error.",
                     _RETRY_HINT,
@@ -141,6 +142,7 @@ class _Recovery(OverflowVerdict):
             )
         return self.fail_turn(
             site_copy("context_overflow", model=self.agent.model),
+            error=site_copy("context_overflow", lang="en", model=self.agent.model),
             notices=(f"❌ Max compression attempts ({cap}) reached.", _RETRY_HINT),
             log=("%sContext compression failed after %d attempts.", self.agent.log_prefix, cap),
         )
@@ -277,6 +279,7 @@ def _recover_payload_too_large(st: _Recovery, _retry: TurnRetryState) -> Overflo
 
     return st.fail_turn(
         site_copy("payload_too_large", model=agent.model),
+        error=site_copy("payload_too_large", lang="en", model=agent.model),
         notices=("❌ Payload too large and cannot compress further.", _RETRY_HINT),
         log=("%s413 payload too large. Cannot compress further.", agent.log_prefix),
     )
@@ -415,6 +418,7 @@ def _recover_context_length(st: _Recovery, _retry: TurnRetryState, error_msg: st
     ):
         return st.fail_turn(
             site_copy("server_context_rejection", model=agent.model, tokens=request_tokens, window=window),
+            error=site_copy("server_context_rejection", lang="en", model=agent.model, tokens=request_tokens, window=window),
             notices=(
                 f"❌ The server rejected the request as too large, but it is only ~{request_tokens:,} "
                 f"tokens against a {window:,}-token window — not compressing.",
@@ -450,6 +454,7 @@ def _recover_context_length(st: _Recovery, _retry: TurnRetryState, error_msg: st
     # Can't compress further and already at minimum tier.
     return st.fail_turn(
         site_copy("context_overflow", model=agent.model),
+        error=site_copy("context_overflow", lang="en", model=agent.model),
         notices=(
             f"❌ The conversation is too long for the model ({new_tokens:,} tokens) and cannot be shrunk further.",
             _RETRY_HINT,

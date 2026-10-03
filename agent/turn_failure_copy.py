@@ -13,6 +13,7 @@ import time
 from typing import Any, Dict, NamedTuple, Optional, Tuple
 
 from agent.error_classifier import FailoverReason
+from agent.i18n import t
 from hermes_constants import display_hermes_home
 
 # Failure codes minted by loop sites that are not provider verdicts (see module docstring).
@@ -53,6 +54,7 @@ def untyped_failed_turn_display_kind(role: Any, content: Any) -> Optional[str]:
     (exact notice text, so a real reply quoting it stays a reply); read-side only."""
     if role == "assistant" and isinstance(content, str) and content.strip() in (
         FAILED_TURN_NOTICE, PARTIAL_FAILED_TURN_NOTICE,
+        t("turn_failure.failed_turn_notice"), t("turn_failure.partial_failed_turn_notice"),
     ):
         return FAILED_TURN_DISPLAY_KIND
     return None
@@ -64,8 +66,8 @@ def failed_turn_notice(turn_messages: Any) -> str:
         if isinstance(row, dict) and (
             row.get("role") == "tool" or (row.get("role") == "assistant" and row.get("tool_calls"))
         ):
-            return PARTIAL_FAILED_TURN_NOTICE
-    return FAILED_TURN_NOTICE
+            return t("turn_failure.partial_failed_turn_notice")
+    return t("turn_failure.failed_turn_notice")
 
 
 def provider_label_for(provider: Any) -> str:
@@ -354,26 +356,31 @@ _ONE_OFF_COPY: Dict[str, str] = {
 _SITE_COPY: Dict[str, str] = {**_FAILURE_CODE_COPY, **_ONE_OFF_COPY}
 
 
-def site_copy(code: str, **fields: Any) -> str:
+def site_copy(code: str, *, lang: Optional[str] = None, **fields: Any) -> str:
     """Chat copy for a failure code or one-off loop outcome; unknown fields default to empty strings."""
     fields.setdefault("home", display_hermes_home())
-    return _SITE_COPY[code].format_map(_Defaults(fields))
+    if code not in _SITE_COPY:
+        raise KeyError(code)
+    next_steps = {"invalid_response": "retry", "loop_error": "loop", "local_processing_error": "loop"}
+    if code in next_steps:
+        fields.setdefault("next_steps", t(f"turn_failure.next_steps.{next_steps[code]}", lang=lang))
+    for name in ("tokens", "window"):
+        if name in fields and isinstance(fields[name], (int, float)):
+            fields[name] = format(fields[name], ",")
+    return t(f"turn_failure.site.{code}", lang=lang).format_map(_Defaults(fields))
 
 
 def exhausted_copy(reason: str, *, label: str, attempts: int, summary: str, reset_seconds: Optional[float] = None) -> str:
     """Chat copy once retries + fallback are exhausted (``max_retries_exhausted_result``). A rate
     limit whose reset window is known names it: an 8.6h plan quota is not "wait a minute" (#89401)."""
-    lead = _EXHAUSTED_LEADS.get(reason, _EXHAUSTED_DEFAULT_LEAD).format(label=label, attempts=attempts)
+    lead_key = reason if reason in _EXHAUSTED_LEADS else "default"
+    lead = t(f"turn_failure.exhausted.lead.{lead_key}", label=label, attempts=attempts)
     if reset_seconds is not None and reset_seconds >= 120:
         from agent.retry_utils import format_reset_window
-        situation = (f"its usage limit resets in {format_reset_window(reset_seconds)}. "
-                     "Send /retry after that, or switch models with /model.")
+        situation = t("turn_failure.exhausted.reset", reset=format_reset_window(reset_seconds))
     else:
-        situation = f"it looks temporarily unavailable. {_NEXT_STEPS_RETRY}"
-    return (
-        f"{lead} — {situation} To avoid this in future, "
-        f"add a backup provider with `hermes fallback add`.\n\nProvider said: {summary}"
-    )
+        situation = t("turn_failure.exhausted.unavailable", next_steps=t("turn_failure.next_steps.retry"))
+    return t("turn_failure.exhausted.tail", lead=lead, situation=situation, summary=summary)
 
 
 def limit_reset_copy(resets_at: float, now: Optional[float] = None) -> str:
@@ -386,7 +393,7 @@ def limit_reset_copy(resets_at: float, now: Optional[float] = None) -> str:
         return ""
     hours, minutes = divmod((remaining + 59) // 60, 60)
     wait = f"{hours}h {minutes:02d}m" if hours else f"{minutes}m"
-    return f"Limit resets at {time.strftime('%H:%M', time.localtime(resets_at))} (in {wait})."
+    return t("turn_failure.limit_reset", time=time.strftime('%H:%M', time.localtime(resets_at)), wait=wait)
 
 
 def oauth_relogin_command(provider: Any) -> str:
@@ -427,24 +434,22 @@ def nonretryable_copy(
     if getattr(classified, "is_auth", False):
         from agent.error_surface import auth_kind
 
-        template = _AUTH_COPY[auth_kind(str(provider or ""))]
+        key = f"turn_failure.auth.{auth_kind(str(provider or ''))}"
     else:
-        template = _NONRETRYABLE_COPY.get(classified.reason.value, _NONRETRYABLE_DEFAULT_COPY)
+        reason = classified.reason.value
+        key = f"turn_failure.nonretryable.{reason if reason in _NONRETRYABLE_COPY else 'default'}"
     prefix_hint = (
-        f" If you typed the name yourself it may be missing its vendor prefix — did you mean "
-        f"'{prefix_suggestion}'?"
+        t("turn_failure.nonretryable.prefix_hint", suggestion=prefix_suggestion)
         if prefix_suggestion else ""
     )
-    body = template.format(label=label, model=model, home=display_hermes_home(), prefix_hint=prefix_hint,
-                           relogin=oauth_relogin_command(provider))
-    return f"{body}\n\nProvider said: {summary}"
+    body = t(key, label=label, model=model, home=display_hermes_home(), prefix_hint=prefix_hint,
+             relogin=oauth_relogin_command(provider))
+    return t("turn_failure.nonretryable.tail", body=body, summary=summary)
 
 
 def content_policy_copy(*, label: str, summary: str) -> str:
-    return (
-        f"{label}'s safety filter refused this request, so the model didn't answer. "
-        f"{CONTENT_POLICY_NEXT_STEPS}\n\nProvider said: {summary}"
-    )
+    return t("turn_failure.content_policy.body", label=label, summary=summary,
+             next_steps=t("turn_failure.content_policy.next_steps"))
 
 
 def short_detail(exc: Any, limit: int = 200) -> str:

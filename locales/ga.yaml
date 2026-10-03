@@ -3474,6 +3474,67 @@ explainer:
   shared:
     and_more: "  • … agus {count} eile"
     the_model: "An tsamhail"
+turn_failure:
+  # Failed-turn, truncation and cancellation copy, resolved for the active profile at render time.
+  failed_turn_notice: "Níor próiseáladh d’iarratas. Seol arís é más mian leat fós go ndéanfainn é."
+  partial_failed_turn_notice: "Níor críochnaíodh an seal seo. Seans gur cuireadh roinnt gníomhartha i gcrích cheana; seiceáil a n-éifeachtaí sula seolfaidh tú arís é."
+  next_steps:
+    retry: "Fan nóiméad agus seol /retry, nó athraigh an tsamhail le /model."
+    loop: "Tá do theachtaireacht sábháilte. Seol `continue` chun triail eile a bhaint as, nó tosaigh seisiún nua le /new. Má tharlaíonn sé arís, rith `hermes doctor` agus roinn sonraí na hearráide."
+  site:
+    context_overflow: "Tá an comhrá seo rófhada anois le léamh ag {model}, agus níor éirigh le Hermes é a ghiorrú go leor go huathoibríoch. Tosaigh seisiún nua le /new (coimeádtar do stair), nó bain triail eile as /compress. Is féidir samhail le fuinneog chomhthéacs níos mó a roghnú freisin."
+    truncated: "Gearradh freagra na samhla sular críochnaíodh é mar shroich sé teorainn fhad an aschuir, mar sin níor chuir Hermes an gníomh neamhiomlán i gcrích. Níor athraíodh aon rud. Seol `continue`, iarr go ndéanfaí an obair i gcéimeanna níos lú, nó méadaigh max_tokens don tsamhail seo."
+    invalid_response: "Sheol {label} freagra folamh nó neamhbhailí ar ais {attempts} uair — is dócha go bhfuil sé ró-ualaithe nó ag teorannú d’iarratas. {next_steps}\n\nSonraí: {detail}"
+    loop_error: "Tháinig Hermes ar earráidí arís agus arís eile agus stop sé an seal seo chun nach leanfadh sé ag atriail. {next_steps}\n\nSonraí: {detail}"
+    interpreter_shutdown: "Bhí Hermes ag dúnadh agus stop sé an seal seo. Tá do chomhrá sábháilte — oscail arís é{resume} agus seol do theachtaireacht arís."
+    payload_too_large: "Tá an comhrá seo, ceangaltáin san áireamh, rómhór anois le seoladh chuig {model}, agus níor éirigh le Hermes é a laghdú go leor go huathoibríoch. Tosaigh seisiún nua le /new (coimeádtar do stair), nó bain triail eile as /compress."
+    compression_disabled: "Tá an comhrá seo rófhada do {model} agus tá giorrú uathoibríoch múchta i do shocruithe (compression.enabled). Rith /compress chun é a ghiorrú anois, /new chun tosú as an nua, nó roghnaigh samhail le fuinneog chomhthéacs níos mó."
+    server_context_rejection: "Dhiúltaigh freastalaí na samhla don iarratas mar go raibh sé rómhór, ach níl ach thart ar {tokens} comhartha sa chomhrá — i bhfad faoi bhun na fuinneoige {window} comhartha atá ar eolas ag Hermes do {model}. Ní chuideodh giorrú mar sin. Is dócha go raibh iarratas eile ar an bhfreastalaí céanna, mar athbhreithniú cuimhne sa chúlra ó sheisiún roimhe seo, ag úsáid a acmhainne, nó go bhfuil {model} ag rith le fuinneog níos lú ná mar a cheapann Hermes. Fan tamall agus seol /retry; má leanann sé ar aghaidh, seiceáil socrú comhthéacs an fhreastalaí."
+    truncated_unreported: "Tháinig gníomh na samhla isteach gearrtha, mar sin níor chuir Hermes i gcrích é. Níor athraíodh aon rud. Níor thuairiscigh an tsamhail gur shroich sí a teorainn aschuir; is dócha gur briseadh an nasc nó gur ghearr an soláthraí nó an ródaire an freagra. Seol /retry; má leanann sé ar aghaidh, iarr go ndéanfaí an obair i gcéimeanna níos lú."
+    stream_dropped_tool_call: "Briseadh an nasc le {label} arís agus arís eile agus an tsamhail ag scríobh gníomh mór, mar sin níor cuireadh aon rud i gcrích. Seiceáil do líonra agus seol /retry; cabhraíonn sé freisin an comhad a iarraidh i gcodanna níos lú."
+    stream_closed_tool_call: "Dhún {label} an sruth arís agus arís eile sular chríochnaigh an tsamhail a gníomh a scríobh, gan earráid a thuairisciú, mar sin níor cuireadh aon rud i gcrích. Is gnách gurb é an soláthraí nó seachfhreastalaí os a chomhair a ghearrann freagraí fada. Seol /retry; cabhraíonn sé freisin an obair a iarraidh i gcéimeanna níos lú."
+    local_processing_error: "Tháinig Hermes ar earráid inmheánach agus freagra na samhla á phróiseáil agus stop sé an seal seo. {next_steps}\n\nSonraí: {detail}"
+    reasoning_only: "⚠️ Chaith {model} a bhuiséad aschuir ar fad ag réasúnú agus níor scríobh sé freagra. Laghdaigh an iarracht réasúnaithe le `/reasoning low`, nó roghnaigh samhail eile le /model. Seo a chuid smaointe deiridh, a bhféadfadh an freagra a bheith iontu:\n\n{preview}"
+    max_iterations_no_summary: "D’ídigh mé céimeanna an tseala seo ({limit} glao uirlise) sular chríochnaigh mé agus níor éirigh liom achoimre a chruthú. Seol `continue` chun leanúint ar aghaidh, nó méadaigh `max_iterations` i do chumraíocht."
+    nous_rate_limit: "Fan go n-athshocrófar an teorainn agus seol /retry, nó athraigh an tsamhail le /model. Chun fanacht a sheachaint, cuir soláthraí cúltaca leis trí `hermes fallback add`."
+  nonretryable:
+    model_not_found: "Níl an tsamhail '{model}' ar fáil ar {label}. Roghnaigh samhail eile le /model (nó `hermes model` i dteirminéal).{prefix_hint}"
+    format_error: "Dhiúltaigh {label} don iarratas seo mar gheall ar fhormáid mhícheart, mar sin níor fhreagair an tsamhail. Tosaigh seisiún nua le /new nó athraigh an tsamhail le /model; má leanann sé seo ar aghaidh, rith `hermes doctor`."
+    role_alternation: "Éilíonn {label} go mbeadh sealanna an úsáideora agus an chúntóra ag malartú go docht, agus dhiúltaigh sé do struchtúr an chomhrá seo. Tosaigh seisiún nua le /new nó athraigh an tsamhail le /model."
+    ssl_cert_verification: "Níorbh fhéidir le Hermes teastas slándála {label} a fhíorú, mar sin diúltaíodh don nasc. De ghnáth is seachfhreastalaí corparáideach nó stór teastas as dáta ar an ríomhaire seo is cúis leis. Féach sa teirminéal nó in `{home}/logs/agent.log` don réiteach beacht, nó bain triail as soláthraí eile le /model."
+    provider_policy_blocked: "Dhiúltaigh {label} don iarratas seo mar gheall ar bheartas ar do chuntas (socruithe sonraí/príobháideachais nó bac a chuir soláthraí réamhtheachtach na samhla ar an gcuntas). Níor fhreagair an tsamhail agus ní chabhróidh atriail. Seiceáil an cuntas leis an soláthraí nó athraigh an tsamhail le /model."
+    upstream_blocked: "Chuir balla dóiteáin/CDN os comhair {label} bac ar an iarratas sular shroich sé an tsamhail, mar sin is dócha go bhfuil d'eochair ceart. Socraigh User-Agent saincheaptha trí extra_headers an tsoláthraí, seiceáil rialacha an tseachfhreastalaí/WAF nó athraigh soláthraí le /model."
+    default: "Dhiúltaigh {label} don iarratas agus ní chabhróidh atriail. Roghnaigh samhail eile le /model nó féach ar na sonraí in `{home}/logs/agent.log`."
+    prefix_hint: " Má chlóscríobh tú an t-ainm tú féin, seans go bhfuil réimír an tsoláthraí ar iarraidh. An raibh '{suggestion}' i gceist agat?"
+    tail: "{body}\n\nDúirt an soláthraí: {summary}"
+  auth:
+    oauth: "Dhiúltaigh {label} do do shíniú isteach, mar sin ní féidir teacht ar an tsamhail. Sínigh isteach arís: `{relogin}`."
+    api_key: "Dhiúltaigh {label} do d'eochair API, mar sin ní féidir teacht ar an tsamhail. Nuashonraigh í in Socruithe → Soláthraithe, nó rith `hermes setup` i dteirminéal."
+  content_policy:
+    next_steps: "Bain triail as athfhoclaíocht a dhéanamh ar do theachtaireacht nó ceangaltáin íogaire a bhaint, nó athraigh go samhail eile le /model."
+    body: "Dhiúltaigh scagaire sábháilteachta {label} don iarratas seo, mar sin níor fhreagair an tsamhail. {next_steps}\n\nDúirt an soláthraí: {summary}"
+  limit_reset: "Athshocrófar an teorainn ag {time} (i gceann {wait})."
+  exhausted:
+    lead:
+      rate_limit: "Chuir {label} teorainn le ráta na n-iarratas i ngach ceann de na {attempts} iarracht"
+      upstream_rate_limit: "Chuir {label} teorainn le ráta na n-iarratas i ngach ceann de na {attempts} iarracht"
+      overloaded: "Thuairiscigh {label} go raibh sé ró-ualaithe i ngach ceann de na {attempts} iarracht"
+      server_error: "Sheol {label} earráid freastalaí ar ais i ngach ceann de na {attempts} iarracht"
+      timeout: "Níor fhreagair {label} in am in aon cheann de na {attempts} iarracht"
+      default: "Níor fhreagair {label} tar éis {attempts} iarracht"
+    reset: "athshocrófar a theorainn úsáide i gceann {reset}. Seol /retry ina dhiaidh sin, nó athraigh an tsamhail le /model."
+    unavailable: "is cosúil nach bhfuil an tseirbhís ar fáil go sealadach. {next_steps}"
+    tail: "{lead} — {situation} Chun é seo a sheachaint amach anseo, cuir soláthraí cúltaca leis trí `hermes fallback add`.\n\nDúirt an soláthraí: {summary}"
+  interrupt:
+    waiting_for_model_prefix: "Cuireadh isteach ar an oibríocht: ag fanacht le freagra na samhla ("
+    waiting_for_model: "{prefix}{elapsed} s caite)."
+    operation: "Cuireadh isteach ar an oibríocht."
+    retry: "Cuireadh isteach ar an oibríocht le linn atriail ({detail}, iarracht {attempt}/{limit})."
+    empty_response: "Cuireadh isteach ar an oibríocht: ag atriail tar éis freagra folamh ón tsamhail (atriail {attempt}/{limit})."
+    provider_recovery: "Cuireadh isteach ar an oibríocht: ag fanacht leis an soláthraí teacht chuige féin (timthriall {cycle}/{total})."
+    api_error: "Cuireadh isteach ar an oibríocht: earráid API á láimhseáil ({error_type}: {detail})."
+    api_retry: "Cuireadh isteach ar an oibríocht: ag atriail an ghlao API tar éis earráide (atriail {attempt}/{limit})."
+
 tips:
   t001: "Ritheann /bg <leid> tasc i seisiún ar leith fad a fhanann do sheisiún reatha saor; freagraíonn /btw <ceist> ceist thaobhach faoin gcomhrá seo gan cur isteach air."
   t002: "Déanann /branch forc den seisiún reatha ionas gur féidir leat treo eile a fhiosrú gan dul chun cinn a chailleadh."

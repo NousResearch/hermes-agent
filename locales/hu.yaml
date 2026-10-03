@@ -3491,6 +3491,67 @@ explainer:
   shared:
     and_more: "  • … és még {count}"
     the_model: "A modell"
+turn_failure:
+  # Failed-turn, truncation and cancellation copy, resolved for the active profile at render time.
+  failed_turn_notice: "A kérésed nem lett feldolgozva. Küldd el újra, ha továbbra is szeretnéd, hogy végrehajtsam."
+  partial_failed_turn_notice: "Ez a kör nem fejeződött be. Néhány művelet már lefuthatott; az újraküldés előtt ellenőrizd a hatásukat."
+  next_steps:
+    retry: "Várj egy percet, és küldd el a /retry parancsot, vagy válts modellt a /model paranccsal."
+    loop: "Az üzeneted el van mentve. Küldd el a `continue` üzenetet az újrapróbálkozáshoz, vagy indíts új munkamenetet a /new paranccsal. Ha ismét megtörténik, futtasd a `hermes doctor` parancsot, és oszd meg a hiba részleteit."
+  site:
+    context_overflow: "Ez a beszélgetés túl hosszú lett ahhoz, hogy a {model} feldolgozza, és a Hermes nem tudta automatikusan eléggé lerövidíteni. Indíts új munkamenetet a /new paranccsal (az előzmények megmaradnak), vagy próbáld újra a /compress parancsot. Nagyobb kontextusablakú modellre is válthatsz."
+    truncated: "A modell válasza a kimeneti hosszkorlát elérése miatt félbeszakadt, ezért a Hermes nem hajtotta végre a hiányos műveletet. Semmi nem változott. Küldd el a `continue` üzenetet, kérd a munkát kisebb lépésekben, vagy növeld a modell max_tokens értékét."
+    invalid_response: "A {label} {attempts} alkalommal üres vagy hibás választ küldött — valószínűleg túlterhelt, vagy korlátozza a kéréseid gyakoriságát. {next_steps}\n\nRészletek: {detail}"
+    loop_error: "A Hermes ismétlődő hibákba ütközött, és leállította ezt a kört, hogy ne próbálkozzon tovább a végtelenségig. {next_steps}\n\nRészletek: {detail}"
+    interpreter_shutdown: "A Hermes leállás közben megszakította ezt a kört. A beszélgetésed el van mentve — nyisd meg újra{resume}, és küldd el ismét az üzenetedet."
+    payload_too_large: "Ez a beszélgetés a mellékletekkel együtt túl nagy lett ahhoz, hogy elküldjük a {model} modellnek, és a Hermes nem tudta automatikusan eléggé csökkenteni. Indíts új munkamenetet a /new paranccsal (az előzmények megmaradnak), vagy próbáld újra a /compress parancsot."
+    compression_disabled: "Ez a beszélgetés túl hosszú a {model} számára, és az automatikus rövidítés ki van kapcsolva a beállításokban (compression.enabled). A /compress paranccsal rövidítheted, a /new paranccsal újrakezdheted, vagy választhatsz nagyobb kontextusablakú modellt."
+    server_context_rejection: "A modell szervere túl nagynak ítélte és elutasította a kérést, de a beszélgetés csak körülbelül {tokens} token — jóval kevesebb, mint a Hermes által a {model} modellhez ismert {window} tokenes ablak. A rövidítés ezért nem segítene. Valószínűleg egy másik kérés ugyanazon a szerveren, például egy korábbi munkamenet háttérben futó memória-ellenőrzése, foglalta le a kapacitást, vagy a szerver a vártnál kisebb ablakkal futtatja a {model} modellt. Várj egy kicsit, és küldd el a /retry parancsot; ha továbbra is előfordul, ellenőrizd a szerver kontextusbeállítását."
+    truncated_unreported: "A modell művelete csonkán érkezett meg, ezért a Hermes nem hajtotta végre. Semmi nem változott. A modell nem jelezte a kimeneti korlát elérését; valószínűleg megszakadt a kapcsolat, vagy a szolgáltató vagy az útválasztó vágta le a választ. Küldd el a /retry parancsot; ha továbbra is előfordul, kérd a munkát kisebb lépésekben."
+    stream_dropped_tool_call: "A {label} kapcsolata többször megszakadt, miközben a modell egy nagy műveletet írt, ezért semmi nem futott le. Ellenőrizd a hálózatot, és küldd el a /retry parancsot; az is segíthet, ha a fájlt kisebb részekben kéred."
+    stream_closed_tool_call: "A {label} többször lezárta az adatfolyamot, mielőtt a modell befejezte volna a műveletet, hiba jelzése nélkül, ezért semmi nem futott le. Ezt általában a szolgáltató vagy az előtte lévő proxy okozza, amikor levágja a hosszú válaszokat. Küldd el a /retry parancsot; a kisebb lépésekben kért munka is segíthet."
+    local_processing_error: "A Hermes belső hibába ütközött a modell válaszának feldolgozásakor, és leállította ezt a kört. {next_steps}\n\nRészletek: {detail}"
+    reasoning_only: "⚠️ A {model} a teljes kimeneti keretét gondolkodásra használta, és nem írt választ. Csökkentsd a gondolkodás intenzitását a `/reasoning low` paranccsal, vagy válts másik modellre a /model paranccsal. Az utolsó gondolatok, amelyek tartalmazhatják a választ:\n\n{preview}"
+    max_iterations_no_summary: "A befejezés előtt elfogytak a kör lépései ({limit} eszközhívás), és összefoglalót sem tudtam készíteni. Küldd el a `continue` üzenetet a folytatáshoz, vagy növeld a `max_iterations` értékét a beállításokban."
+    nous_rate_limit: "Várd meg a keret megújulását, és küldd el a /retry parancsot, vagy válts modellt a /model paranccsal. A várakozás elkerüléséhez adj hozzá tartalék szolgáltatót a `hermes fallback add` paranccsal."
+  nonretryable:
+    model_not_found: "A(z) '{model}' modell nem érhető el itt: {label}. Válassz másik modellt a /model paranccsal (vagy a terminálban a `hermes model` paranccsal).{prefix_hint}"
+    format_error: "A(z) {label} hibás formátum miatt elutasította a kérést, ezért a modell nem válaszolt. Indíts új munkamenetet a /new paranccsal, vagy válts modellt a /model paranccsal; ha továbbra is előfordul, futtasd a `hermes doctor` parancsot."
+    role_alternation: "A(z) {label} megköveteli a felhasználó és az asszisztens köreinek szigorú váltakozását, és elutasította a beszélgetés szerkezetét. Indíts új munkamenetet a /new paranccsal, vagy válts modellt a /model paranccsal."
+    ssl_cert_verification: "A Hermes nem tudta ellenőrizni a(z) {label} biztonsági tanúsítványát, ezért a kapcsolatot elutasították. Ezt általában vállalati proxy vagy a számítógép elavult tanúsítványtára okozza. A pontos megoldásért nézd meg a terminált vagy a `{home}/logs/agent.log` fájlt, vagy próbálj másik szolgáltatót a /model paranccsal."
+    provider_policy_blocked: "A(z) {label} a fiókod egyik szabályzata miatt elutasította a kérést (adat-/adatvédelmi beállítások vagy a modell mögötti szolgáltató által a fiókra helyezett tiltás), ezért a modell nem válaszolt, és az újrapróbálkozás nem segít. Ellenőrizd a fiókot a szolgáltatónál, vagy válts modellt a /model paranccsal."
+    upstream_blocked: "A(z) {label} előtti tűzfal/CDN blokkolta a kérést, mielőtt elérte volna a modellt, így a kulcsod valószínűleg rendben van. Állíts be egyéni User-Agent értéket a szolgáltató extra_headers beállításával, ellenőrizd a proxy/WAF szabályait, vagy válts szolgáltatót a /model paranccsal."
+    default: "A(z) {label} elutasította a kérést, és az újrapróbálkozás nem segít. Válassz másik modellt a /model paranccsal, vagy nézd meg a részleteket a `{home}/logs/agent.log` fájlban."
+    prefix_hint: " Ha kézzel írtad be a nevet, lehet, hogy hiányzik a szolgáltató előtagja. Erre gondoltál: '{suggestion}'?"
+    tail: "{body}\n\nA szolgáltató válasza: {summary}"
+  auth:
+    oauth: "A(z) {label} elutasította a bejelentkezésedet, ezért a modell nem érhető el. Jelentkezz be újra: `{relogin}`."
+    api_key: "A(z) {label} elutasította az API-kulcsodat, ezért a modell nem érhető el. Frissítsd a Beállítások → Szolgáltatók alatt, vagy futtasd a `hermes setup` parancsot a terminálban."
+  content_policy:
+    next_steps: "Próbáld átfogalmazni az üzenetedet, eltávolítani az érzékeny mellékleteket, vagy válts másik modellre a /model paranccsal."
+    body: "A(z) {label} biztonsági szűrője elutasította a kérést, ezért a modell nem válaszolt. {next_steps}\n\nA szolgáltató válasza: {summary}"
+  limit_reset: "A korlát ekkor áll vissza: {time} (ennyi idő múlva: {wait})."
+  exhausted:
+    lead:
+      rate_limit: "A {label} mind a {attempts} próbálkozásnál korlátozta a kérések gyakoriságát"
+      upstream_rate_limit: "A {label} mind a {attempts} próbálkozásnál korlátozta a kérések gyakoriságát"
+      overloaded: "A {label} mind a {attempts} próbálkozásnál túlterheltséget jelzett"
+      server_error: "A {label} mind a {attempts} próbálkozásnál szerverhibát adott vissza"
+      timeout: "A {label} a {attempts} próbálkozás egyikénél sem válaszolt időben"
+      default: "A {label} {attempts} próbálkozás után sem válaszolt"
+    reset: "a használati keret {reset} múlva megújul. Utána küldd el a /retry parancsot, vagy válts modellt a /model paranccsal."
+    unavailable: "a szolgáltatás átmenetileg nem elérhetőnek tűnik. {next_steps}"
+    tail: "{lead} — {situation} Ennek későbbi elkerüléséhez adj hozzá tartalék szolgáltatót a `hermes fallback add` paranccsal.\n\nA szolgáltató válasza: {summary}"
+  interrupt:
+    waiting_for_model_prefix: "Művelet megszakítva: várakozás a modell válaszára ("
+    waiting_for_model: "{prefix}{elapsed} mp telt el)."
+    operation: "Művelet megszakítva."
+    retry: "Művelet megszakítva újrapróbálkozás közben ({detail}, próbálkozás {attempt}/{limit})."
+    empty_response: "Művelet megszakítva: újrapróbálkozás a modell üres válasza után (próbálkozás {attempt}/{limit})."
+    provider_recovery: "Művelet megszakítva: várakozás a szolgáltató helyreállására (ciklus {cycle}/{total})."
+    api_error: "Művelet megszakítva: API-hiba kezelése ({error_type}: {detail})."
+    api_retry: "Művelet megszakítva: API-hívás újrapróbálása hiba után (próbálkozás {attempt}/{limit})."
+
 tips:
   t001: "A /bg <prompt> külön munkamenetben futtat egy feladatot, miközben a jelenlegi szabad marad; a /btw <question> mellékes kérdésre válaszol erről a beszélgetésről, anélkül hogy megszakítaná."
   t002: "A /branch elágaztatja a jelenlegi munkamenetet, így más irányt is kipróbálhatsz a haladás elvesztése nélkül."

@@ -3474,6 +3474,67 @@ explainer:
   shared:
     and_more: "  • … e {count} mais"
     the_model: "O modelo"
+turn_failure:
+  # Failed-turn, truncation and cancellation copy, resolved for the active profile at render time.
+  failed_turn_notice: "Seu pedido não foi processado. Envie-o novamente se ainda quiser que eu o execute."
+  partial_failed_turn_notice: "Este turno não foi concluído. Algumas ações podem já ter sido executadas; verifique os efeitos antes de reenviar o pedido."
+  next_steps:
+    retry: "Aguarde um minuto e envie /retry, ou troque de modelo com /model."
+    loop: "Sua mensagem está salva. Envie `continue` para tentar novamente ou inicie uma nova sessão com /new. Se acontecer de novo, execute `hermes doctor` e compartilhe os detalhes do erro."
+  site:
+    context_overflow: "Esta conversa ficou longa demais para {model} ler, e o Hermes não conseguiu reduzi-la o suficiente automaticamente. Inicie uma nova sessão com /new (o histórico é mantido) ou tente /compress mais uma vez. Também pode trocar para um modelo com uma janela de contexto maior."
+    truncated: "A resposta do modelo foi cortada antes de terminar porque atingiu o limite de comprimento da saída. Por isso, o Hermes não executou a ação incompleta. Nada foi alterado. Envie `continue`, peça que o trabalho seja feito em etapas menores ou aumente max_tokens para este modelo."
+    invalid_response: "{label} retornou uma resposta vazia ou inválida {attempts} vezes; provavelmente está sobrecarregado ou limitando suas solicitações. {next_steps}\n\nDetalhes: {detail}"
+    loop_error: "O Hermes encontrou erros repetidos e parou este turno para evitar tentativas contínuas. {next_steps}\n\nDetalhes: {detail}"
+    interpreter_shutdown: "O Hermes estava encerrando e parou este turno. Sua conversa está salva — abra-a novamente{resume} e reenvie sua mensagem."
+    payload_too_large: "Esta conversa, incluindo anexos, ficou grande demais para enviar a {model}, e o Hermes não conseguiu reduzi-la o suficiente automaticamente. Inicie uma nova sessão com /new (o histórico é mantido) ou tente /compress mais uma vez."
+    compression_disabled: "Esta conversa é longa demais para {model}, e a redução automática está desativada nas configurações (compression.enabled). Execute /compress para reduzi-la agora, /new para começar de novo ou escolha um modelo com uma janela de contexto maior."
+    server_context_rejection: "O servidor do modelo rejeitou esta solicitação por ser grande demais, mas a conversa tem apenas cerca de {tokens} tokens, bem abaixo da janela de {window} tokens que o Hermes conhece para {model}; reduzi-la não ajudaria. Provavelmente outra solicitação no mesmo servidor, como uma revisão de memória em segundo plano de uma sessão anterior, estava ocupando sua capacidade, ou o servidor executa {model} com uma janela menor do que o Hermes espera. Aguarde um momento e envie /retry; se persistir, confira a configuração de contexto do servidor."
+    truncated_unreported: "A ação do modelo chegou cortada, então o Hermes não a executou. Nada foi alterado. O modelo não informou ter atingido o limite de saída; provavelmente houve uma queda de conexão ou o provedor ou roteador cortou a resposta. Envie /retry; se persistir, peça que o trabalho seja feito em etapas menores."
+    stream_dropped_tool_call: "A conexão com {label} caiu repetidamente enquanto o modelo escrevia uma ação extensa, então nada foi executado. Verifique sua rede e envie /retry; pedir o arquivo em partes menores também pode ajudar."
+    stream_closed_tool_call: "{label} fechou o fluxo repetidamente antes de o modelo terminar de escrever a ação, sem informar um erro, então nada foi executado. Geralmente isso ocorre quando o provedor ou um proxy corta respostas longas. Envie /retry; pedir o trabalho em etapas menores também ajuda."
+    local_processing_error: "O Hermes encontrou um erro interno ao processar a resposta do modelo e parou este turno. {next_steps}\n\nDetalhes: {detail}"
+    reasoning_only: "⚠️ {model} gastou todo o orçamento de saída raciocinando e não escreveu uma resposta. Reduza o esforço de raciocínio com `/reasoning low` ou troque de modelo com /model. Seus últimos raciocínios, que podem conter a resposta:\n\n{preview}"
+    max_iterations_no_summary: "Esgotei as etapas deste turno ({limit} chamadas de ferramentas) antes de terminar e não consegui gerar um resumo. Envie `continue` para prosseguir ou aumente `max_iterations` na configuração."
+    nous_rate_limit: "Aguarde a renovação do limite e envie /retry, ou troque de modelo com /model. Para evitar esperas, adicione um provedor de reserva com `hermes fallback add`."
+  nonretryable:
+    model_not_found: "O modelo '{model}' não está disponível em {label}. Escolha outro com /model (ou `hermes model` no terminal).{prefix_hint}"
+    format_error: "{label} rejeitou esta solicitação por estar malformada, então o modelo não respondeu. Inicie uma nova sessão com /new ou troque de modelo com /model; se continuar acontecendo, execute `hermes doctor`."
+    role_alternation: "{label} exige que os turnos do usuário e do assistente se alternem rigorosamente e rejeitou a estrutura desta conversa. Inicie uma nova sessão com /new ou troque de modelo com /model."
+    ssl_cert_verification: "O Hermes não conseguiu verificar o certificado de segurança de {label}, então a conexão foi recusada. Isso costuma ser causado por um proxy corporativo ou um repositório de certificados desatualizado neste computador. Consulte o terminal ou `{home}/logs/agent.log` para ver a solução exata, ou tente outro provedor com /model."
+    provider_policy_blocked: "{label} recusou esta solicitação devido a uma política da sua conta (configurações de dados/privacidade ou um bloqueio imposto pelo provedor a montante do modelo), então o modelo não respondeu e tentar novamente não ajudará. Verifique a conta com o provedor ou troque de modelo com /model."
+    upstream_blocked: "Um firewall/CDN à frente de {label} bloqueou a solicitação antes de ela chegar ao modelo, então sua chave provavelmente está correta. Defina um User-Agent personalizado por meio de extra_headers do provedor, verifique as regras do proxy/WAF ou troque de provedor com /model."
+    default: "{label} rejeitou a solicitação e tentar novamente não ajudará. Escolha outro modelo com /model ou consulte os detalhes em `{home}/logs/agent.log`."
+    prefix_hint: " Se você digitou o nome manualmente, pode estar faltando o prefixo do provedor. Você quis dizer '{suggestion}'?"
+    tail: "{body}\n\nO provedor informou: {summary}"
+  auth:
+    oauth: "{label} rejeitou seu login, então não é possível acessar o modelo. Entre novamente: `{relogin}`."
+    api_key: "{label} rejeitou sua chave API, então não é possível acessar o modelo. Atualize-a em Configurações → Provedores ou execute `hermes setup` no terminal."
+  content_policy:
+    next_steps: "Tente reformular a mensagem ou remover anexos sensíveis, ou troque para outro modelo com /model."
+    body: "O filtro de segurança de {label} recusou esta solicitação, então o modelo não respondeu. {next_steps}\n\nO provedor informou: {summary}"
+  limit_reset: "O limite será redefinido às {time} (em {wait})."
+  exhausted:
+    lead:
+      rate_limit: "{label} limitou as solicitações em todas as {attempts} tentativas"
+      upstream_rate_limit: "{label} limitou as solicitações em todas as {attempts} tentativas"
+      overloaded: "{label} informou estar sobrecarregado em todas as {attempts} tentativas"
+      server_error: "{label} retornou um erro de servidor em todas as {attempts} tentativas"
+      timeout: "{label} não respondeu a tempo em nenhuma das {attempts} tentativas"
+      default: "{label} não respondeu após {attempts} tentativas"
+    reset: "seu limite de uso será renovado em {reset}. Envie /retry depois disso ou troque de modelo com /model."
+    unavailable: "o serviço parece estar temporariamente indisponível. {next_steps}"
+    tail: "{lead} — {situation} Para evitar isso no futuro, adicione um provedor de reserva com `hermes fallback add`.\n\nO provedor informou: {summary}"
+  interrupt:
+    waiting_for_model_prefix: "Operação interrompida: aguardando a resposta do modelo ("
+    waiting_for_model: "{prefix}{elapsed} s decorridos)."
+    operation: "Operação interrompida."
+    retry: "Operação interrompida durante a nova tentativa ({detail}, tentativa {attempt}/{limit})."
+    empty_response: "Operação interrompida: tentando novamente após uma resposta vazia do modelo (tentativa {attempt}/{limit})."
+    provider_recovery: "Operação interrompida: aguardando a recuperação do provedor (ciclo {cycle}/{total})."
+    api_error: "Operação interrompida: tratando um erro de API ({error_type}: {detail})."
+    api_retry: "Operação interrompida: repetindo a chamada de API após um erro (tentativa {attempt}/{limit})."
+
 tips:
   t001: "/bg <prompt> executa uma tarefa em uma sessão separada enquanto a atual fica livre; /btw <question> responde a uma pergunta paralela sobre esta conversa sem interrompê-la."
   t002: "/branch ramifica a sessão atual para que você explore outra direção sem perder o progresso."

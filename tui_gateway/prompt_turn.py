@@ -329,8 +329,9 @@ def _turn_outcome(result: Any, error_surface: dict | None = None) -> tuple[Any, 
     # "Operation interrupted: waiting for model response (…)" is cancellation metadata, not assistant prose.
     # gateway/run.py and the ACP adapter already suppress this sentinel; without this the desktop paints it
     # as the agent's reply whenever a stop/steer lands mid-request (#7921).
-    if status == "interrupted" and isinstance(raw, str) and raw.strip().startswith(
-            INTERRUPT_WAITING_FOR_MODEL_PREFIX):
+    from agent.conversation_loop import is_waiting_for_model_interrupt
+
+    if status == "interrupted" and isinstance(raw, str) and is_waiting_for_model_interrupt(raw.strip()):
         raw = ""
     lr = result.get("last_reasoning")
     last_reasoning = lr.strip() if isinstance(lr, str) and lr.strip() else None

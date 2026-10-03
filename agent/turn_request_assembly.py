@@ -13,7 +13,10 @@ from dataclasses import dataclass
 import logging
 from typing import Any
 
-from agent.message_sanitization import _sanitize_messages_surrogates
+from agent.message_sanitization import (
+    _sanitize_messages_surrogates,
+    strip_non_assistant_reasoning_replay_fields,
+)
 from agent.usage_anchor import anchored_context_tokens
 from agent.prompt_caching import build_prompt_cache_plan, effective_cache_ttl
 from agent.turn_context import build_api_messages
@@ -146,8 +149,24 @@ def assemble_api_request(
         agent, api_messages, messages, _sel_incoming, logger=request_logger
     )
 
+    # Context selection may return canonical/history messages rather than
+    # the already-shaped request copies above. Revalidate reasoning at this
+    # final selection boundary so unknown or foreign hidden traces cannot
+    # bypass route provenance checks. This also strips the internal marker
+    # before any provider transport sees the request.
+    for api_msg in api_messages:
+        if not isinstance(api_msg, dict):
+            continue
+        if api_msg.get("role") == "assistant":
+            agent._copy_reasoning_content_for_api(api_msg, api_msg)
+            continue
+        # A context engine must not be able to put assistant-only replay state
+        # on another role and bypass the assistant provenance validation path.
+        strip_non_assistant_reasoning_replay_fields(api_msg)
+
     # Context selection may replace the request with a fresh clone of canonical history.
-    # Re-apply durable rejection suppression after that final replacement hook.
+    # Re-apply durable rejection suppression after replay validation so a rejected
+    # signed carrier cannot re-enter native conversion through a readable mirror.
     from agent.anthropic_thinking_replay import apply_rejected_thinking_suppression
 
     apply_rejected_thinking_suppression(agent, api_messages)
@@ -279,6 +298,16 @@ def assemble_api_request(
         request_pressure_tokens = _pressure_with_real_floor(
             agent.context_compressor, request_pressure_tokens
         )
+    # This freshly rebuilt list was shaped for the route active above.
+    # Reset the in-place retry marker so restoration or a same-fallback
+    # rebuild is not mistaken for a cross-provider transition.
+    from agent.agent_runtime_helpers import reasoning_api_route_identity
+
+    agent._reasoning_replay_api_route = (
+        *reasoning_api_route_identity(agent),
+        agent._needs_thinking_reasoning_pad(),
+        agent._reasoning_replay_field_for_api(),
+    )
     return AssembledRequest(
         "fallthrough", api_messages, tools_for_api, _moa_prepared_request,
         pending_moa_prepared_request, approx_tokens, request_pressure_tokens, approx_tokens * 4,

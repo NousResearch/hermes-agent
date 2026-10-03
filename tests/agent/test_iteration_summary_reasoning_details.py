@@ -34,7 +34,13 @@ def make_agent(tmp_path, monkeypatch):
 def test_anthropic_summary_messages_keep_reasoning_details(make_agent):
     agent = make_agent("https://api.anthropic.com", "anthropic")
     assert agent.api_mode == "anthropic_messages"
-    out = _iteration_summary_api_messages(agent, [dict(m) for m in _HISTORY])
+    from agent.agent_runtime_helpers import reasoning_route_fingerprint
+
+    history = copy.deepcopy(_HISTORY)
+    history[1]["_reasoning_route"] = reasoning_route_fingerprint(
+        agent.provider, agent.model, agent.base_url, agent.api_mode
+    )
+    out = _iteration_summary_api_messages(agent, history)
     assistant = next(m for m in out if m.get("role") == "assistant")
     assert assistant["reasoning_details"] == _HISTORY[1]["reasoning_details"]
 

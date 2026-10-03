@@ -235,6 +235,7 @@ const _chatMessageFieldsExhaustive: {
 } = {}
 
 const COMPARED_FIELDS = [
+  'nativeReplayUnsafe',
   'rowId',
   'persistedTurn',
   'durableComplete',
@@ -260,7 +261,20 @@ const COMPARED_FIELDS = [
   'durationS'
 ] as const
 
-const IGNORED_FIELDS = ['attachmentRefs', 'parts', 'serverRowSpan', 'systemNotice'] as const
+const IGNORED_FIELDS = [
+  '_reasoning_route',
+  'anthropic_content_blocks',
+  'attachmentRefs',
+  'bedrock_content_blocks',
+  'codex_message_items',
+  'codex_reasoning_items',
+  'parts',
+  'reasoning',
+  'reasoning_content',
+  'reasoning_details',
+  'serverRowSpan',
+  'systemNotice'
+] as const
 
 // Compile-time check: every ChatMessagePart discriminant must be handled by
 // chatPartsEquivalent. If @assistant-ui adds a new part type, this fails tsc.
@@ -360,6 +374,7 @@ export function chatReactionsEquivalent(a: ChatMessage['reactions'], b: ChatMess
 
 export function chatMessagesEquivalent(a: ChatMessage, b: ChatMessage): boolean {
   if (
+    a.nativeReplayUnsafe !== b.nativeReplayUnsafe ||
     a.id !== b.id ||
     a.rowId !== b.rowId ||
     !persistedTurnsEquivalent(a.persistedTurn, b.persistedTurn) ||
@@ -1781,6 +1796,43 @@ export const toBranchMessages = (messages: ChatMessage[]): BranchMessage[] =>
   messages
     .map(message => ({ content: chatMessageText(message), role: message.role, source: message }))
     .filter(({ content, role }) => content.trim() && (role === 'assistant' || role === 'user'))
+
+export const toBranchSeedMessages = (messages: BranchMessage[]) =>
+  messages.map(({ content, role, source }) => {
+    // Native message payloads override content on replay. A merged/tool/display
+    // bubble is only a text fallback, never a complete native assistant row.
+    const nativeReplaySafe =
+      !source.nativeReplayUnsafe &&
+      (source.serverRowSpan ?? 1) === 1 &&
+      !source.parts.some(part => part.type === 'tool-call')
+
+    return {
+      content,
+      role,
+      ...(role === 'assistant' && source.reasoning !== undefined ? { reasoning: source.reasoning } : {}),
+      ...(role === 'assistant' && source.reasoning_content !== undefined
+        ? { reasoning_content: source.reasoning_content }
+        : {}),
+      ...(role === 'assistant' && source.reasoning_details !== undefined
+        ? { reasoning_details: source.reasoning_details }
+        : {}),
+      ...(role === 'assistant' && source._reasoning_route !== undefined
+        ? { _reasoning_route: source._reasoning_route }
+        : {}),
+      ...(role === 'assistant' && nativeReplaySafe && source.anthropic_content_blocks !== undefined
+        ? { anthropic_content_blocks: source.anthropic_content_blocks }
+        : {}),
+      ...(role === 'assistant' && nativeReplaySafe && source.bedrock_content_blocks !== undefined
+        ? { bedrock_content_blocks: source.bedrock_content_blocks }
+        : {}),
+      ...(role === 'assistant' && source.codex_reasoning_items !== undefined
+        ? { codex_reasoning_items: source.codex_reasoning_items }
+        : {}),
+      ...(role === 'assistant' && nativeReplaySafe && source.codex_message_items !== undefined
+        ? { codex_message_items: source.codex_message_items }
+        : {})
+    }
+  })
 
 /**
  * Choose the transcript used to seed an open-chat branch.

@@ -72,6 +72,49 @@ class TestWireTruthPredicate:
             "", "mistral", "mistral-large", "https://api.mistral.ai"
         ) is False
 
+    def test_effective_soft_replay_carrier_ships_it(self):
+        assert stale_thinking_reaches_wire(
+            "chat_completions",
+            "custom:vllm",
+            "Qwen/Qwen3.8-27B",
+            "http://inference.internal:8000/v1",
+            reasoning_replay_field="reasoning",
+        ) is True
+
+    def test_disabled_soft_replay_does_not_ship_it(self):
+        assert stale_thinking_reaches_wire(
+            "chat_completions",
+            "custom:local",
+            "model",
+            "http://localhost:8080/v1",
+            reasoning_replay_field=None,
+        ) is False
+
+    def test_codex_ignores_soft_replay_carrier(self):
+        assert stale_thinking_reaches_wire(
+            "codex_responses",
+            "custom:vllm",
+            "model",
+            "http://localhost:8000/v1",
+            reasoning_replay_field="reasoning",
+        ) is False
+
+    def test_turn_context_uses_effective_soft_replay_carrier(self):
+        from types import SimpleNamespace
+
+        from agent.turn_context import _agent_stale_thinking_on_wire
+
+        agent = SimpleNamespace(
+            api_mode="chat_completions",
+            provider="custom:vllm",
+            model="model",
+            base_url="http://inference.internal:8000/v1",
+            api_key="",
+            _reasoning_replay_field="reasoning",
+        )
+        assert _agent_stale_thinking_on_wire(agent) is True
+
+
 class TestEstimatorParity:
     """Trigger-fires must imply the walk finds a compactable middle."""
 
@@ -192,6 +235,24 @@ class TestEstimatorParity:
         assert walk_codex <= trigger_codex * 2 and trigger_codex <= walk_codex * 2
         # And the echo route genuinely charges the stale thinking bulk.
         assert walk_echo > 3 * walk_codex
+
+    def test_walk_charges_native_replay_sidecars(self):
+        """Anthropic and Bedrock native replay blocks survive matching-route
+        sanitization, so the protected-tail walk must charge their wire size
+        just as the preflight estimator does."""
+        base = {"role": "assistant", "content": "x"}
+        base_walk = _estimate_msg_budget_tokens(base)
+        for key in ("anthropic_content_blocks", "bedrock_content_blocks"):
+            msg = {
+                **base,
+                key: [{"type": "thinking", "thinking": "y" * 4000}],
+            }
+            trigger_increment = estimate_messages_tokens_rough([msg]) - estimate_messages_tokens_rough([base])
+            walk_increment = _estimate_msg_budget_tokens(msg) - base_walk
+
+            assert walk_increment > 500
+            assert walk_increment <= trigger_increment * 2
+            assert trigger_increment <= walk_increment * 2
 
 class TestReasoningDoubleCount:
     """``reasoning`` and ``reasoning_content`` carrying the same text must be

@@ -27,21 +27,23 @@ from urllib.parse import quote, unquote, urlencode, urlparse, urlunparse
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from pydantic import BaseModel
+from starlette.concurrency import run_in_threadpool
 
 from hermes_cli.dashboard_auth import (
     get_provider, list_providers, list_session_providers, native_flow)
 from hermes_cli.dashboard_auth import prefix as _prefix_mod
 from hermes_cli.dashboard_auth.audit import AuditEvent, audit_log
 from hermes_cli.dashboard_auth.base import (
-    InvalidCodeError, InvalidCredentialsError, ProviderError, RefreshExpiredError, Session)
+    InvalidCodeError, InvalidCredentialsError, ProviderError, Session)
 from hermes_cli.dashboard_auth.cookies import (
     clear_pkce_cookie, clear_session_cookies, clear_sso_attempt_cookie, detect_https,
     parse_pkce_payload, read_pkce_cookie, read_session_cookies, set_pkce_cookie,
     set_session_cookies)
 from hermes_cli.dashboard_auth.login_page import (
     render_login_html, render_native_provider_choice_html)
+from hermes_cli.dashboard_auth.refresh_singleflight import refresh_session_coalesced
 from hermes_cli.dashboard_auth.request_utils import (
-    access_token_max_age, client_ip as _client_ip, is_safe_next_path, scan_session_providers)
+    access_token_max_age, client_ip as _client_ip, is_safe_next_path)
 
 _log = logging.getLogger(__name__)
 
@@ -213,18 +215,45 @@ async def auth_login(request: Request, provider: str, next: str = ""):
 
 # --- Public: RFC 8252 native-app authorization (system browser + loopback + PKCE)
 
+# RFC 8252 loopback IP literals -> their canonical URL authority spelling.
+_LOOPBACK_NETLOC_HOSTS = {"127.0.0.1": "127.0.0.1", "::1": "[::1]"}
+
+
 def _validate_loopback_redirect_uri(raw: str) -> str:
-    """Accept only ``http://127.0.0.1[:port]/…`` / ``http://[::1][:port]/…``. Security boundary:
-    the route is public, so a non-loopback host would make the callback an open redirect leaking
-    a live code. ``localhost`` is rejected (RFC 8252 §8.3)."""
+    """Return a canonical RFC 8252 loopback URI or reject it.
+
+    Both the server parser and the system browser must see the same authority: URL userinfo,
+    backslashes, fragments, controls, and non-canonical host/port spellings are rejected before
+    the URI is persisted. ``localhost`` is rejected in favour of IP literals (RFC 8252 §8.3).
+    """
     if not raw:
         raise _http(400, "redirect_uri required")
-    parsed = urlparse(raw)
+    if (
+        not raw.isascii()
+        or "\\" in raw
+        or any(ord(ch) <= 0x20 or ord(ch) == 0x7F for ch in raw)
+    ):
+        raise _http(400, "native redirect_uri must use a canonical loopback URL")
+    try:
+        parsed = urlparse(raw)
+        hostname = parsed.hostname
+        port = parsed.port
+    except ValueError:
+        raise _http(400, "native redirect_uri must use a canonical loopback URL")
     if parsed.scheme != "http":
         raise _http(400, "native redirect_uri must be http:// on the loopback interface")
-    if (parsed.hostname or "").lower() not in ("127.0.0.1", "::1"):
+    if "#" in raw:
+        raise _http(400, "native redirect_uri must not contain a fragment")
+    if parsed.username is not None or parsed.password is not None:
+        raise _http(400, "native redirect_uri must not contain userinfo")
+    canonical_host = _LOOPBACK_NETLOC_HOSTS.get(hostname)
+    if canonical_host is None:
         raise _http(400, "native redirect_uri host must be a loopback IP literal (127.0.0.1 / ::1)")
-    return raw
+    canonical_netloc = canonical_host + (f":{port}" if port is not None else "")
+    if parsed.netloc != canonical_netloc:
+        raise _http(400, "native redirect_uri must use a canonical loopback authority")
+    # scheme/netloc are already canonical and fragments rejected; only an empty path needs "/".
+    return urlunparse(parsed._replace(path=parsed.path or "/"))
 
 
 def _select_native_provider(provider: str):
@@ -249,7 +278,7 @@ async def auth_native_authorize(
         raise _http(400, "code_challenge_method must be S256")
     if not code_challenge:
         raise _http(400, "code_challenge required")
-    _validate_loopback_redirect_uri(redirect_uri)
+    redirect_uri = _validate_loopback_redirect_uri(redirect_uri)
     p = _select_native_provider(provider)
     if p is None and not provider:
         candidates = list_session_providers()
@@ -499,12 +528,15 @@ async def auth_native_refresh(request: Request, body: _NativeRefreshBody):
     if not body.refresh_token:
         raise _http(400, "refresh_token required")
     try:
-        session = scan_session_providers(
-            body.provider, lambda p: p.refresh_session(refresh_token=body.refresh_token),
-            phase="native refresh", log=_log, swallow=(RefreshExpiredError,))
+        # Off the event loop: the provider call is synchronous network I/O and a slow IdP
+        # otherwise wedges every public endpoint (/api/status) behind it.
+        refreshed = await run_in_threadpool(
+            refresh_session_coalesced, body.refresh_token, body.provider,
+            phase="native refresh", log=_log)
     except ProviderError as e:
         raise _http(503, f"Auth provider {str(e)!r} unreachable")
-    if session is not None:
+    if refreshed is not None:
+        session = refreshed[0]
         _audit(request, AuditEvent.REFRESH_SUCCESS, provider=session.provider,
                user_id=session.user_id)
         return _bearer_payload(session)

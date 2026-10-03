@@ -203,7 +203,7 @@ class TestOneTurnNeverPersisted:
 
     @staticmethod
     def _runner_with_store(tmp_path, monkeypatch):
-        import yaml as _yaml
+        import hermes_yaml as _yaml
 
         import gateway.run as gateway_run
         from gateway.run import GatewayRunner
@@ -281,4 +281,20 @@ class TestOneTurnNeverPersisted:
         assert sk in runner._pending_one_turn_model_restores
         # ...but NEVER written through to the persistent session store.
         runner.async_session_store.set_model_override.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_repeated_once_keeps_the_earliest_restore_target(self, tmp_path, monkeypatch):
+        """`/model X --once` then `/model Y --once` before any turn: the pending snapshot must still
+        be the user's standing override (none here), not X — otherwise slot cleanup would make the
+        first temporary model permanent."""
+        runner = self._runner_with_store(tmp_path, monkeypatch)
+        sk = build_session_key(_make_source())
+
+        await runner._handle_model_command(self._event("/model gpt-5.5 --once"))
+        assert runner._session_model_overrides[sk]["model"] == "gpt-5.5"
+        await runner._handle_model_command(self._event("/model gpt-5.5 --once"))
+
+        # The second producer call snapshotted the live gpt-5.5 override; the pending restore
+        # must still be the ORIGINAL "no override" state.
+        assert runner._pending_one_turn_model_restores[sk]["had_override"] is False
 

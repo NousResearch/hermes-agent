@@ -2,17 +2,27 @@ import { ActionBarPrimitive, BranchPickerPrimitive, MessagePrimitive, useAuiStat
 import { type FC, type ReactNode, useCallback, useEffect, useRef, useState } from 'react'
 
 import { DirectiveContent } from '@/components/assistant-ui/directive-text'
-import { messageAttachmentRefs, messageContentText } from '@/components/assistant-ui/thread/content'
+import { isAttachmentRef } from '@/components/assistant-ui/reference-kinds'
+import {
+  messageAttachmentRefs,
+  messageContentText,
+  PROCESS_NOTIFICATION_RE
+} from '@/components/assistant-ui/thread/content'
+import { MessageHoverTime } from '@/components/assistant-ui/thread/message-hover-time'
 import { ReactionBadge, ReactionPicker } from '@/components/assistant-ui/thread/message-reactions'
+import { BackgroundResult } from '@/components/assistant-ui/thread/system-message'
+import { threadUserOrdinal } from '@/components/assistant-ui/thread/thread-message-index'
 import { MessageTimelineTimestamp } from '@/components/assistant-ui/thread/timeline-timestamp'
 import { type RestoreMessageTarget } from '@/components/assistant-ui/thread/types'
 import { useMessageReactions } from '@/components/assistant-ui/thread/use-message-reactions'
 import { UserMessageText } from '@/components/assistant-ui/thread/user-message-text'
 import { Codicon } from '@/components/ui/codicon'
+import { Tip } from '@/components/ui/tooltip'
 import { useResizeObserver } from '@/hooks/use-resize-observer'
 import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
 import { StopFilled } from '@/lib/icons'
+import { LruCache } from '@/lib/lru-cache'
 import { cn } from '@/lib/utils'
 import { $gateway } from '@/store/gateway'
 import { notifyThreadEditOpen } from '@/store/thread-scroll'
@@ -41,8 +51,7 @@ export function StickyHumanMessageContainer({
     // while attachments below it scroll away.
     <>
       <div
-        className="group/user-message sticky z-40 -mx-4 flex w-[calc(100%+2rem)] min-w-0 max-w-none flex-col items-stretch gap-0 self-end overflow-visible bg-(--ui-chat-surface-background) px-4 pb-(--conversation-turn-gap) pt-1"
-        data-glass-opaque=""
+        className="group/user-message sticky z-40 -mx-4 flex w-[calc(100%+2rem)] min-w-0 max-w-none flex-col items-stretch gap-0 self-end overflow-visible px-4 pb-(--conversation-turn-gap) pt-1"
         data-message-id={messageId}
         data-role="user"
         data-slot="aui_user-message-root"
@@ -73,29 +82,27 @@ export const USER_ACTION_ICON_BUTTON_CLASS =
 export const USER_ACTION_ICON_SIZE = '0.6875rem'
 export const StopGlyph = <StopFilled aria-hidden className="size-3.5 -translate-y-px" />
 
-// Background-process notifications are injected into the conversation as user
-// messages (the agent must react to them, and message-role alternation forbids
-// a synthetic system row mid-loop). They are NOT something the human typed, so
-// render them as a compact system-style notice instead of a user bubble.
-// Shape: see tools/process_registry.py format_process_notification().
-const PROCESS_NOTIFICATION_RE = /^\[IMPORTANT: Background process [\s\S]*\]$/
-
 // Agent-to-agent deliveries ("Message from 🤖 <sender>: …", the Bot Mode /
 // multi-profile convention; optional "(@<handle>)" carries the sender's
-// profile name for avatar resolution; legacy "[Message from agent
-// '<sender>'] …" too). They arrive on the user role because the recipient's
-// turn runs on it, but they are NOT the human speaking — render them as a
-// compact attributed timeline notice instead of a user bubble.
+// profile name for avatar resolution — a relayed sender is re-stamped
+// "(@<handle>@<connection>)" so a reply reaches the right machine (#103731);
+// legacy "[Message from agent '<sender>'] …" too). They arrive on the user
+// role because the recipient's turn runs on it, but they are NOT the human
+// speaking — render them as a compact attributed timeline notice instead of
+// a user bubble.
 export const AGENT_MESSAGE_RE =
-  /^(?:Message from (?:🤖\s*)?([^:\n(]{1,64}?)(?:\s*\(@([a-z0-9][a-z0-9_-]{0,63})\))?:\s*|\[Message from agent '([^']{1,64})'\]\s*)([\s\S]*)$/u
+  /^(?:Message from (?:🤖\s*)?([^:\n(]{1,64}?)(?:\s*\(@([a-z0-9][a-z0-9_-]{0,63})(?:@[a-zA-Z0-9][a-zA-Z0-9_-]{0,63})?\))?:\s*|\[Message from agent '([^']{1,64})'\]\s*)([\s\S]*)$/u
 
 // sender handle -> avatar data URL. Module-level so a chat full of notices
-// from one bot resolves once. Hits are cached for the window's lifetime;
-// misses only briefly (30s) — an avatar can appear at any moment (bot just
+// from one bot resolves once. Bounded LRU: handles are parsed out of message
+// text (unbounded distinct senders over a long session list) and hits hold
+// base64 avatar data URLs, so an unbounded map pins image bytes for the
+// window's lifetime. Eviction only costs a refetch.
+// Misses expire after 30s — an avatar can appear at any moment (bot just
 // created, art backfill still running), and a permanent negative cache
 // froze the 🤖 glyph until an app restart.
-export const agentAvatarCache = new Map<string, null | string>()
-const agentAvatarMissAt = new Map<string, number>()
+const AGENT_AVATAR_CACHE_MAX = 128
+export const agentAvatarCache = new LruCache<string, { at: number; url: null | string }>(AGENT_AVATAR_CACHE_MAX)
 const AVATAR_MISS_TTL_MS = 30_000
 const agentAvatarInflight = new Map<string, Promise<null | string>>()
 
@@ -106,19 +113,17 @@ export async function resolveAgentAvatar(handle: string): Promise<null | string>
     return null
   }
 
-  if (agentAvatarCache.has(key)) {
-    const hit = agentAvatarCache.get(key) ?? null
+  const hit = agentAvatarCache.get(key)
 
-    if (hit !== null) {
-      return hit
+  if (hit) {
+    if (hit.url !== null) {
+      return hit.url
     }
 
     // Negative entry: honor it only within the TTL, then re-probe.
-    if (Date.now() - (agentAvatarMissAt.get(key) ?? 0) < AVATAR_MISS_TTL_MS) {
+    if (Date.now() - hit.at < AVATAR_MISS_TTL_MS) {
       return null
     }
-
-    agentAvatarCache.delete(key)
   }
 
   const inflight = agentAvatarInflight.get(key)
@@ -168,11 +173,7 @@ export async function resolveAgentAvatar(handle: string): Promise<null | string>
 
   agentAvatarInflight.set(key, run)
   const out = await run
-  agentAvatarCache.set(key, out)
-
-  if (out === null) {
-    agentAvatarMissAt.set(key, Date.now())
-  }
+  agentAvatarCache.set(key, { at: Date.now(), url: out })
 
   return out
 }
@@ -182,7 +183,7 @@ const AgentMessageNote: FC<{ text: string }> = ({ text }) => {
   const sender = (match?.[1] || match?.[3] || 'agent').trim()
   const handle = (match?.[2] || match?.[3] || sender).trim()
   const body = (match?.[4] || '').trim()
-  const [avatar, setAvatar] = useState<null | string>(() => agentAvatarCache.get(handle.toLowerCase()) ?? null)
+  const [avatar, setAvatar] = useState<null | string>(() => agentAvatarCache.get(handle.toLowerCase())?.url ?? null)
 
   useEffect(() => {
     let live = true
@@ -238,27 +239,7 @@ const ProcessNotificationNote: FC<{ text: string }> = ({ text }) => {
   const headline = (newline === -1 ? body : body.slice(0, newline)).trim()
   const detail = newline === -1 ? '' : body.slice(newline + 1).trim()
 
-  return (
-    <div className="flex max-w-[min(86%,44rem)] flex-col gap-0.5 self-center px-2 py-0.5 text-[0.6875rem] leading-5 text-muted-foreground/60">
-      <span className="flex items-center gap-1.5">
-        <Codicon className="shrink-0 text-muted-foreground/55" name="terminal" size="0.75rem" />
-        <span className="wrap-anywhere">{headline}</span>
-      </span>
-      {detail && (
-        <details className="pl-[1.3125rem]">
-          <summary className="cursor-pointer select-none text-muted-foreground/45 hover:text-muted-foreground/70">
-            output
-          </summary>
-          <pre
-            className="mt-0.5 max-h-48 overflow-auto whitespace-pre-wrap font-mono text-[0.625rem] leading-4 text-muted-foreground/55"
-            data-selectable-text="true"
-          >
-            {detail}
-          </pre>
-        </details>
-      )}
-    </div>
-  )
+  return <BackgroundResult process report={detail} text={headline} />
 }
 
 export const UserMessage: FC<{
@@ -284,23 +265,7 @@ export const UserMessage: FC<{
     return null
   })
 
-  const runtimeUserOrdinal = useAuiState(s => {
-    let ordinal = 0
-
-    for (const message of s.thread.messages) {
-      if (message.role !== 'user') {
-        continue
-      }
-
-      if (message.id === s.message.id) {
-        return ordinal
-      }
-
-      ordinal += 1
-    }
-
-    return null
-  })
+  const runtimeUserOrdinal = useAuiState(s => threadUserOrdinal(s.thread.messages, s.message.id))
 
   const attachmentRefs = useAuiState(s => {
     const custom = (s.message.metadata?.custom ?? {}) as { attachmentRefs?: unknown }
@@ -380,7 +345,6 @@ export const UserMessage: FC<{
         data-slot="aui_user-message-root"
       >
         <ProcessNotificationNote text={messageText.trim()} />
-        <MessageTimelineTimestamp className="self-center" />
       </MessagePrimitive.Root>
     )
   }
@@ -399,6 +363,7 @@ export const UserMessage: FC<{
   }
 
   const hasBody = messageText.trim().length > 0
+  const chipOnlyTurn = !hasBody && attachmentRefs.length > 0 && attachmentRefs.every(isAttachmentRef)
   const isLatestUser = messageId === latestUserId
   const showStop = !readOnly && isLatestUser && threadRunning && Boolean(onCancel)
   // Restore (re-run this exact prompt) is available everywhere the Stop button
@@ -412,7 +377,7 @@ export const UserMessage: FC<{
     'border-(--ui-stroke-tertiary) hover:border-(--ui-stroke-secondary)'
   )
 
-  const bubbleContent = hasBody && (
+  const bubbleContent = hasBody ? (
     // Render the user's text through a minimal markdown pipeline:
     // backtick `code` and ``` fenced ``` blocks, with directive chips
     // (`@file:` etc.) still resolved inside the plain-text spans.
@@ -427,6 +392,15 @@ export const UserMessage: FC<{
         <UserMessageText className="wrap-anywhere" text={messageText} />
       </div>
     </div>
+  ) : (
+    // A file-only turn (a bare large paste, a dropped file) has no prose, so
+    // its chips ARE the prompt: they fill the bubble rather than leaving it
+    // empty above a detached row. Images keep their thumbnail row below.
+    chipOnlyTurn && (
+      <div className="flex min-h-[1.25rem] flex-wrap gap-1">
+        <DirectiveContent text={attachmentRefs.join(' ')} />
+      </div>
+    )
   )
 
   return (
@@ -435,9 +409,11 @@ export const UserMessage: FC<{
         attachments={
           // Attachments live BELOW the sticky bubble in normal flow, so they
           // scroll away behind the pinned bubble instead of riding along with
-          // it. Image refs render as thumbnails, file refs as chips; no border.
-          attachmentRefs.length > 0 ? (
-            <div className="flex flex-wrap gap-1 -mt-3 mb-2">
+          // it. No negative margin: -mt-* pulls the row up into the sticky box,
+          // where the sticky-prompt clip hides its top even at rest. Image refs
+          // render as thumbnails, file refs as chips; no border.
+          attachmentRefs.length > 0 && !chipOnlyTurn ? (
+            <div className="mb-2 flex flex-wrap gap-1">
               <DirectiveContent text={attachmentRefs.join(' ')} />
             </div>
           ) : null
@@ -491,7 +467,6 @@ export const UserMessage: FC<{
                       triggerHaptic('selection')
                       setExpanded(value => !value)
                     }}
-                    title={bodyClamped ? (expanded ? t.common.collapse : copy.expandMessage) : undefined}
                     type="button"
                   >
                     {bubbleContent}
@@ -528,23 +503,25 @@ export const UserMessage: FC<{
                     </button>
                   </ActionBarPrimitive.Edit>
                 )}
-                {(showStop || showRestore) && (
-                  <div className="pointer-events-none absolute right-2 bottom-2 z-10 flex items-center justify-center opacity-0 transition-opacity group-hover/user-message:opacity-100 group-focus-within/user-message:opacity-100">
-                    {showStop ? (
-                      <button
-                        aria-label={copy.stop}
-                        className={cn('pointer-events-auto size-5', USER_ACTION_ICON_BUTTON_CLASS)}
-                        onClick={event => {
-                          event.preventDefault()
-                          event.stopPropagation()
-                          void onCancel?.()
-                        }}
-                        title={copy.stop}
-                        type="button"
-                      >
-                        {StopGlyph}
-                      </button>
-                    ) : (
+                {/* Hover cluster, bottom-right: when it was sent, then Stop or
+                    Restore. Its fill masks the last line's tail while shown. */}
+                <div className="pointer-events-none absolute right-2 bottom-2 z-10 flex items-center gap-1 rounded-md bg-(--dt-user-bubble) pl-1 opacity-0 transition-opacity group-hover/user-message:opacity-100 group-hover/user-message:transition-none group-focus-within/user-message:opacity-100">
+                  <MessageHoverTime className={cn(!showStop && !showRestore && 'pr-0.5')} />
+                  {showStop ? (
+                    <button
+                      aria-label={copy.stop}
+                      className={cn('pointer-events-auto size-5', USER_ACTION_ICON_BUTTON_CLASS)}
+                      onClick={event => {
+                        event.preventDefault()
+                        event.stopPropagation()
+                        void onCancel?.()
+                      }}
+                      type="button"
+                    >
+                      {StopGlyph}
+                    </button>
+                  ) : showRestore ? (
+                    <Tip label={copy.restoreFromHere}>
                       <button
                         aria-label={copy.restoreCheckpoint}
                         className={cn('pointer-events-auto size-6', USER_ACTION_ICON_BUTTON_CLASS)}
@@ -561,14 +538,13 @@ export const UserMessage: FC<{
                           event.preventDefault()
                           event.stopPropagation()
                         }}
-                        title={copy.restoreFromHere}
                         type="button"
                       >
                         <Codicon name="discard" size="0.875rem" />
                       </button>
-                    )}
-                  </div>
-                )}
+                    </Tip>
+                  ) : null}
+                </div>
               </div>
             </ReactionPicker>
             {/* Below the bubble, same register as the assistant action row:

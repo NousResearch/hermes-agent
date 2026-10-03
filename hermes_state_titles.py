@@ -20,6 +20,21 @@ _TITLE_INVISIBLE_RE = re.compile(r'[\u200b-\u200f\u2028-\u202e\u2060-\u2069\ufef
 _NUMBERED_TITLE_RE = re.compile(r'^(.*?) #(\d+)$')
 
 
+def next_title_in_lineage(conn, base_title: str) -> str:
+    """Next title in a lineage ("my session" -> "my session #2") as seen by *conn*: strip any
+    " #N" suffix, then increment the highest existing number."""
+    match = _NUMBERED_TITLE_RE.match(base_title)
+    base = match.group(1) if match else base_title
+    rows = conn.execute(
+        "SELECT title FROM sessions WHERE title = ? OR title LIKE ? ESCAPE '\\'",
+        (base, f"{_escape_like(base)} #%")).fetchall()
+    if not rows:
+        return base
+    # The unnumbered original counts as #1.
+    numbers = [int(m.group(2)) for m in (_NUMBERED_TITLE_RE.match(row[0]) for row in rows) if m]
+    return f"{base} #{max([1, *numbers]) + 1}"
+
+
 class SessionTitlesMixin:
     """Sanitizing, ranking auto/user titles, lineage-aware lookups."""
 
@@ -96,17 +111,7 @@ class SessionTitlesMixin:
             if not is_user and current["title"] is not None and self._title_rank(current["title_source"]) >= new_rank:
                 return 0
             if title:
-                conflict = conn.execute(
-                    "SELECT id FROM sessions WHERE title = ? AND id != ?", (title, session_id),
-                ).fetchone()
-                if conflict:
-                    conflict_id = conflict["id"]
-                    # A hidden compressed ancestor holding the title cannot be freed by the
-                    # user, so transfer it onto the tip (uniqueness + lineage kept).
-                    if self._is_compression_ancestor(conn, ancestor_id=conflict_id, descendant_id=session_id):
-                        conn.execute("UPDATE sessions SET title = NULL WHERE id = ?", (conflict_id,))
-                    else:
-                        raise ValueError(f"Title '{title}' is already in use by session {conflict_id}")
+                self._resolve_title_conflict(conn, session_id, title)
             # CAS on the values just read (``IS`` is NULL-safe): a concurrent write between
             # the SELECT and here loses instead of being overwritten.
             return conn.execute(
@@ -115,6 +120,38 @@ class SessionTitlesMixin:
             ).rowcount
 
         return self._execute_write(_do) > 0
+
+    def _resolve_title_conflict(self, conn, session_id: str, title: str) -> None:
+        """Free ``title`` for ``session_id`` inside the caller's write transaction, or raise
+        ValueError when another session legitimately holds it. The one place the uniqueness
+        rule lives, shared by renames and the API server's create-with-title."""
+        conflict = conn.execute(
+            f"SELECT id, archived, hidden, {self._EMPTY_SESSION_WHERE} AS ghost "
+            "FROM sessions WHERE title = ? AND id != ?", (title, session_id),
+        ).fetchone()
+        if not conflict:
+            return
+        conflict_id = conflict["id"]
+        # A hidden compressed ancestor holding the title cannot be freed by the
+        # user, so transfer it onto the tip (uniqueness + lineage kept).
+        if self._is_compression_ancestor(conn, ancestor_id=conflict_id, descendant_id=session_id):
+            conn.execute("UPDATE sessions SET title = NULL WHERE id = ?", (conflict_id,))
+        # A deliberately archived hidden Bot Chat is a retired registry
+        # entry, not a live identity. Retire its name in the same title
+        # transaction so a replacement can become the sole canonical row;
+        # the old session remains archived and otherwise untouched.
+        # An ended, empty, visible ghost (abandoned new chat that listings filter
+        # out, so the user cannot find it to free the name) yields too (#81888).
+        # The full index stays: a ``message_count > 0`` partial index would make
+        # the ghost's first append_message fail with IntegrityError.
+        elif (title == self.CANONICAL_BOT_CHAT_TITLE and bool(conflict["archived"])
+              and bool(conflict["hidden"])) or (conflict["ghost"] and not conflict["hidden"]):
+            conn.execute(
+                "UPDATE sessions SET title = NULL, title_source = NULL WHERE id = ?",
+                (conflict_id,),
+            )
+        else:
+            raise ValueError(f"Title '{title}' is already in use by session {conflict_id}")
 
     def set_session_title(self, session_id: str, title: str) -> bool:
         """Set a title on the user's behalf (``user`` provenance). Empty clears it. Raises
@@ -157,6 +194,15 @@ class SessionTitlesMixin:
     def resolve_session_by_title(self, title: str) -> Optional[str]:
         """Resolve a title to a session ID, preferring the latest "title #N" continuation."""
         exact = self.get_session_by_title(title)
+        # Exception to the "#N continuation" preference: the canonical Bot Chat's identity
+        # IS its exact title (Bot Mode re-resolves it by name on every open, no id pointer).
+        # A "<title> #N" sibling — a Desktop branch or a client-minted numbered row — is NOT
+        # a Bot Mode session: it is visible, unmanaged, and the message_agent gate is off in
+        # it. Every DM transport (``hermes -p <bot> chat --in ~ -c "Bot Chat"``: message_agent,
+        # bot_relay, cron delivery) resolves through here, so letting the numbered row win
+        # silently routes teammates' messages into a chat whose bot cannot answer back.
+        if exact is not None and title == self.CANONICAL_BOT_CHAT_TITLE:
+            return exact["id"]
         # Escape LIKE wildcards so "%"/"_" in titles cannot false-match.
         numbered = self._read_all(
             "SELECT id, title, started_at FROM sessions "
@@ -165,15 +211,5 @@ class SessionTitlesMixin:
         return numbered[0]["id"] if numbered else (exact["id"] if exact else None)
 
     def get_next_title_in_lineage(self, base_title: str) -> str:
-        """Next title in a lineage ("my session" -> "my session #2"): strip any " #N" suffix,
-        then increment the highest existing number."""
-        match = _NUMBERED_TITLE_RE.match(base_title)
-        base = match.group(1) if match else base_title
-        rows = self._read_all(
-            "SELECT title FROM sessions WHERE title = ? OR title LIKE ? ESCAPE '\\'",
-            (base, f"{_escape_like(base)} #%"))
-        if not rows:
-            return base
-        # The unnumbered original counts as #1.
-        numbers = [int(m.group(2)) for m in (_NUMBERED_TITLE_RE.match(row["title"]) for row in rows) if m]
-        return f"{base} #{max([1, *numbers]) + 1}"
+        """Next title in a lineage ("my session" -> "my session #2")."""
+        return self._read_retrying_ioerr(lambda conn: next_title_in_lineage(conn, base_title))

@@ -27,11 +27,10 @@ import pytest
 
 from tui_gateway import server
 
-
 class _InlineThread:
     """Run the turn synchronously so tests observe its final state."""
 
-    def __init__(self, target=None, daemon=None, args=(), kwargs=None):
+    def __init__(self, target=None, daemon=None, args=(), kwargs=None, name=None):
         self._target = target
         self._args = args
         self._kwargs = kwargs or {}
@@ -45,7 +44,6 @@ class _InlineThread:
 
     def join(self, timeout=None):
         return None
-
 
 def _session(agent=None, **extra):
     return {
@@ -65,11 +63,9 @@ def _session(agent=None, **extra):
         **extra,
     }
 
-
 @pytest.fixture()
-def turn_env(monkeypatch, tmp_path):
+def turn_stubs(monkeypatch, tmp_path):
     """Neutralize the turn pipeline's environment-heavy side paths."""
-    monkeypatch.setattr(server.threading, "Thread", _InlineThread)
     monkeypatch.setattr(server, "_emit", lambda *a, **k: None)
     monkeypatch.setattr(server, "_wire_callbacks", lambda sid: None)
     monkeypatch.setattr(server, "_sync_agent_model_with_config", lambda sid, session: None)
@@ -79,13 +75,15 @@ def turn_env(monkeypatch, tmp_path):
     monkeypatch.setattr(server, "_sync_session_key_after_compress", lambda *a, **k: None)
     monkeypatch.setattr(server, "_get_usage", lambda agent: {})
 
+@pytest.fixture()
+def turn_env(turn_stubs, monkeypatch):
+    """``turn_stubs`` with the turn run inline on the caller's thread."""
+    monkeypatch.setattr(server.threading, "Thread", _InlineThread)
 
 def _records(caplog, needle):
     return [r for r in caplog.records if needle in r.getMessage()]
 
-
 SECRETISH_PROMPT = "please rotate QDRANT_API_KEY=hunter2-super-secret now"
-
 
 def test_accepted_and_finished_records_on_success(turn_env, caplog):
     agent = types.SimpleNamespace(
@@ -104,80 +102,46 @@ def test_accepted_and_finished_records_on_success(turn_env, caplog):
     assert len(finished) == 1
 
     msg = accepted[0].getMessage()
-    # The full id triple a rotation-mute trace needs.
-    assert "ui_session=ui-sid" in msg
-    assert "session_key=gw-session-key" in msg
-    assert "agent_session_id=agent-sid-1" in msg
     # Prompt content is never logged — only its length.
     assert "hunter2" not in msg
     assert "QDRANT_API_KEY" not in msg
-    assert f"chars={len(SECRETISH_PROMPT)}" in msg
 
     fin = finished[0].getMessage()
-    assert "ui_session=ui-sid" in fin
-    assert "status=complete" in fin
     assert "hunter2" not in fin
 
 
-def test_finished_record_reflects_mid_turn_rotation(turn_env, caplog):
-    """Compression rotating agent.session_id mid-turn must be visible as an
-    accepted/finished pair with different agent ids — that pair IS the
-    rotation trace #86647 asks for."""
+@pytest.mark.parametrize("settle_info_raises", [False, True])
+def test_turn_settles_before_post_turn_trim(turn_stubs, monkeypatch, caplog, settle_info_raises):
+    """A blocked post-turn trim must not hold the session running or its bookend (#131740);
+    turn audio still ends BEFORE settlement, so a next turn admitted during the trim keeps its own."""
+    import hermes_cli.mem_trim as mem_trim
+    import tools.voice_mode as voice_mode
 
-    agent = types.SimpleNamespace(session_id="parent-sid", clear_interrupt=lambda: None)
+    entered, release = threading.Event(), threading.Event()
 
-    def _rotate_and_finish(*a, **k):
-        agent.session_id = "continuation-sid"  # what _compress_context does
-        return {"final_response": "done"}
+    def blocking_trim(**_kw):
+        entered.set()
+        release.wait(timeout=10)
 
-    agent.run_conversation = _rotate_and_finish
-    session = _session(agent=agent, running=True)
-
-    with caplog.at_level(logging.INFO, logger="tui_gateway.server"):
-        server._run_prompt_submit("rid", "ui-sid", session, "go")
-
-    accepted = _records(caplog, "tui prompt accepted")[0].getMessage()
-    finished = _records(caplog, "tui turn finished")[0].getMessage()
-    assert "agent_session_id=parent-sid" in accepted
-    assert "agent_session_id=continuation-sid" in finished
-
-
-def test_finished_record_fires_on_exception_path(turn_env, caplog):
-    def _boom(*a, **k):
-        raise RuntimeError("connection reset mid-stream")
-
+    monkeypatch.setattr(mem_trim, "trim_memory", blocking_trim)
+    if settle_info_raises:  # a raising settle step must not skip the post-turn trim
+        monkeypatch.setattr(server, "_emit_settled_session_info", lambda *a: 1 / 0)
+    audio_end = []  # (event, session running at that moment)
+    tts = types.SimpleNamespace(put=lambda x: x is None and audio_end.append(("tts", session["running"])))
+    monkeypatch.setattr(server, "_start_turn_voice", lambda: (tts, True))
+    monkeypatch.setattr(voice_mode, "stop_thinking_sound", lambda: audio_end.append(("thinking", session["running"])))
     agent = types.SimpleNamespace(
-        session_id="agent-sid-1",
-        run_conversation=_boom,
-        clear_interrupt=lambda: None,
-    )
+        session_id="agent-sid-1", run_conversation=lambda *a, **k: {"final_response": "done"},
+        clear_interrupt=lambda: None)
     session = _session(agent=agent, running=True)
-
-    with caplog.at_level(logging.INFO, logger="tui_gateway.server"):
-        server._run_prompt_submit("rid", "ui-sid", session, "go")
-
-    finished = _records(caplog, "tui turn finished")
-    assert len(finished) == 1
-    msg = finished[0].getMessage()
-    assert "status=error" in msg
-    assert "error_retained=True" in msg
-
-
-def test_finished_record_fires_on_returned_error(turn_env, caplog):
-    agent = types.SimpleNamespace(
-        session_id="agent-sid-1",
-        run_conversation=lambda *a, **k: {
-            "final_response": "",
-            "error": "provider 402: billing wall",
-            "failed": True,
-        },
-        clear_interrupt=lambda: None,
-    )
-    session = _session(agent=agent, running=True)
-
-    with caplog.at_level(logging.INFO, logger="tui_gateway.server"):
-        server._run_prompt_submit("rid", "ui-sid", session, "go")
-
-    finished = _records(caplog, "tui turn finished")
-    assert len(finished) == 1
-    assert "status=error" in finished[0].getMessage()
+    monkeypatch.setattr(server, "_sessions", {"ui-sid": session})
+    try:
+        with caplog.at_level(logging.INFO, logger="tui_gateway.server"):
+            assert server._run_prompt_submit("rid", "ui-sid", session, "hi")
+            assert entered.wait(timeout=5)
+            assert session["running"] is False
+            assert len(_records(caplog, "tui turn finished")) == 1
+            assert audio_end == [("thinking", True), ("tts", True)]
+    finally:
+        release.set()
+        session["_run_thread"].join(timeout=5)

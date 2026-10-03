@@ -18,12 +18,27 @@ def _jwt(**claims) -> str:
     def seg(obj):
         return base64.urlsafe_b64encode(json.dumps(obj).encode()).rstrip(b"=").decode()
     payload = {"sub": "nas_user:1", "client_id": "nas-anonymous", "account_tier": "anonymous",
-               "scope": "inference:invoke tool:invoke", "exp": int(time.time()) + 900, **claims}
+               "scope": "inference:invoke", "exp": int(time.time()) + 900, **claims}
     return f"{seg({'alg': 'RS256'})}.{seg(payload)}.sig"
 
 
 def _call(method: str, params: dict | None = None) -> dict:
     return srv._methods[method](1, params or {})["result"]
+
+
+@pytest.fixture(autouse=True)
+def _fresh_process_memos():
+    """``free_tier.provision`` routes through the boot record when one exists; a record another
+    test file left behind (has_identity) would make it skip the mint. Per-process state, per test,
+    both ways so this file leaves nothing behind either."""
+    from hermes_cli import free_tier_bootstrap
+
+    def _reset():
+        free_tier_bootstrap.reset_for_tests()
+        anon_auth.reset_mint_memo_for_tests()
+    _reset()
+    yield
+    _reset()
 
 
 @pytest.fixture
@@ -67,13 +82,13 @@ def test_billing_state_answers_the_free_tier_locally(guest, monkeypatch):
     monkeypatch.setattr(bv, "build_billing_state", lambda *a, **kw: pytest.fail("free tier must not call the portal"))
     res = _call("billing.state")
     assert res["ok"] is True and res["logged_in"] is False
-    assert res["free_tier"] is True and res["free_tier_model"] == "nous/welcome"
+    assert res["free_tier_account"] is True and res["free_tier_model"] == "nous/welcome"
     assert res["usage"] == {"available": False}
 
     _set_guest_off(monkeypatch)
     monkeypatch.setattr(bv, "build_billing_state", lambda *a, **kw: bv.BillingState(logged_in=False))
     res = _call("billing.state")
-    assert res["free_tier"] is False and res["free_tier_model"] is None
+    assert res["free_tier_account"] is False and res["free_tier_model"] is None
 
 
 def test_status_without_an_identity_is_a_pure_read(tmp_path, monkeypatch):
@@ -93,6 +108,7 @@ def test_provision_sets_the_free_tier_up_through_the_lifecycle_primitive(tmp_pat
     monkeypatch.setenv("HERMES_SHARED_AUTH_DIR", str(tmp_path / "shared-store"))
     monkeypatch.setenv("HERMES_GUEST_ONBOARDING", "1")
     calls = []
+    real_ensure = anon_auth.ensure_portal_identity
 
     def fake_provision(**kw):
         calls.append(kw)
@@ -105,7 +121,7 @@ def test_provision_sets_the_free_tier_up_through_the_lifecycle_primitive(tmp_pat
 
     monkeypatch.setattr(anon_auth, "ensure_portal_identity", fake_provision)
     assert _call("free_tier.provision") == {"has_guest": True, "enabled": True}
-    assert calls == [{"explicit": True}]
+    assert calls == [{"explicit": True, "force": True}]
     assert _call("free_tier.provision") == {"has_guest": True, "enabled": True}
     assert len(calls) == 1                       # idempotent: an identity exists, nothing is minted
 
@@ -114,9 +130,13 @@ def test_provision_sets_the_free_tier_up_through_the_lifecycle_primitive(tmp_pat
 
     with _auth_store_lock():
         store = _load_auth_store(); store["providers"].pop("nous"); _save_auth_store(store)
-    monkeypatch.setattr(anon_auth, "ensure_portal_identity", refused)
+    # The real primitive memoises the refusal; the RPC reports that memo.
+    monkeypatch.setattr(anon_auth, "ensure_portal_identity", real_ensure)
+    monkeypatch.setattr(anon_auth, "_reconcile_and_provision", refused)
+    anon_auth.reset_mint_memo_for_tests()
     result = _call("free_tier.provision")
     assert result["has_guest"] is False and "not open" in result["error"]
+    assert result["error_code"] == "anon_gate_closed" and result["retryable"] is False
 
     _set_guest_off(monkeypatch)
     monkeypatch.setattr(anon_auth, "ensure_portal_identity", lambda **kw: (_ for _ in ()).throw(AssertionError("must not run")))

@@ -663,4 +663,32 @@ describe('ProfileRail fleet mode', () => {
     const gatewayBHome = screen.getByRole('menuitem', { name: 'default · Gateway B' })
     expect(gatewayBHome.querySelector('.codicon-home')).toBeTruthy()
   })
+
+  it('lists the local default in the condensed menu, like every remote group does', async () => {
+    armFleet()
+    profiles.set([
+      { is_default: true, name: 'default' },
+      ...Array.from({ length: 11 }, (_, index) => ({ is_default: false, name: `p${index + 1}` }))
+    ])
+    await renderFleet()
+
+    fireEvent.pointerDown(screen.getByRole('button', { name: 'Profiles' }), { button: 0, ctrlKey: false })
+
+    // Control: the menu is open and named local profiles are listed. Without this the
+    // negative assertion below would also pass on a menu that never rendered.
+    expect(await screen.findByRole('menuitemradio', { name: 'p1' })).toBeTruthy()
+
+    // The local default is a real, selectable profile: it heads the non-fleet rail
+    // (:558) and the non-condensed fleet registry slot (:616). Condensing must not
+    // drop it — `profiles.filter(profile => !profile.is_default)` (:386) hands
+    // ProfileDropdown only `named`, and nothing re-adds the default.
+    expect(screen.getByRole('menuitemradio', { name: 'default' })).toBeTruthy()
+
+    // Symmetry with the remote groups, which render [defaultAgent, ...named]: a
+    // remote default is listed under its gateway header, so the local one being
+    // absent from the radio group above was the asymmetry.
+    // `armFleet` leaves gateway-a ACTIVE, so gateway-b is the at-rest group here
+    // (an active source is skipped by buildRestGroups).
+    expect(screen.getByRole('menuitem', { name: 'default · Gateway B' })).toBeTruthy()
+  })
 })

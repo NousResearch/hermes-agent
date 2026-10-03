@@ -387,6 +387,16 @@ export function ProfileRail() {
     order
   )
 
+  // The default is a real, selectable profile, so every surface that lists profiles owes it a
+  // row. The rail heads it with a home pill (single-profile below, and the fleet registry slot
+  // in the non-condensed strip); the CONDENSED dropdown has no such pill — `fleet` also
+  // suppresses the default↔all toggle (:540) — so the filtered `named` list would drop the local
+  // default entirely, leaving it unreachable once the rail condenses. Prepend it here, the same
+  // compensation profile-dropdown-switcher.tsx:115 makes with `ordered`. Remote groups already
+  // list their default (fleet-gateway-menu-group.tsx:45 renders [defaultAgent, ...named]); this
+  // is the asymmetry. Regression for #131632.
+  const dropdownProfiles = defaultProfile ? [defaultProfile, ...named] : named
+
   const multiProfile = profiles.length > 1
 
   // distance constraint: a small drag reorders, a tap still selects the profile.
@@ -579,7 +589,7 @@ export function ProfileRail() {
             onImport={() => void runImportProfileFlow()}
             onSelect={selectProfile}
             onSelectRest={switchToRest}
-            profiles={named}
+            profiles={dropdownProfiles}
             restGroups={restGroups}
           />
         </div>

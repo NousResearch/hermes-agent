@@ -565,7 +565,11 @@ def _usage_and_cost(response: Any, *, provider: str, model: str, base_url: str, 
 def _start_root_trace(task_key: str, *, task_id: str, session_id: str, platform: str, provider: str, model: str,
                       api_mode: str, messages: Any, client: Langfuse,
                       turn_id: str = "", api_request_id: str = "") -> TraceState:
-    trace_id = client.create_trace_id(seed=f"{session_id or 'sessionless'}::{task_id or task_key}")
+    scope_id = turn_id or api_request_id or ""
+    seed = f"{session_id or 'sessionless'}::{task_id or task_key}"
+    if scope_id:
+        seed = f"{seed}::{scope_id}"
+    trace_id = client.create_trace_id(seed=seed)
     last_user = next((m for m in reversed(messages) if isinstance(m, dict) and m.get("role") == "user"), None) \
         if isinstance(messages, list) else None
     trace_input = None if last_user is None else {"role": "user", "content": _capture_content(last_user.get("content"))}

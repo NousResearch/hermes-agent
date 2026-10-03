@@ -55,7 +55,7 @@ def test_installer_and_update_autostashes_are_surfaced_together(tmp_path, capsys
     assert update_cmd._warn_orphaned_update_autostashes(["git"], tmp_path) == 2
 
     out = capsys.readouterr().out
-    assert "leftover update autostash" in out
+    assert "leftover Hermes autostash" in out
     # Each entry is named by the prefix it was actually created with.
     assert installed in out
     assert updated in out
@@ -68,7 +68,7 @@ def test_fresh_installer_autostash_is_not_flagged(tmp_path, capsys):
     _repo_with_stashes(tmp_path, _stamped("hermes-install-autostash-", 1))
 
     assert update_cmd._warn_orphaned_update_autostashes(["git"], tmp_path) == 0
-    assert "leftover update autostash" not in capsys.readouterr().out
+    assert "leftover Hermes autostash" not in capsys.readouterr().out
 
 
 @pytest.mark.parametrize(
@@ -83,4 +83,18 @@ def test_entries_without_a_readable_age_are_left_alone(tmp_path, capsys, name):
     _repo_with_stashes(tmp_path, name)
 
     assert update_cmd._warn_orphaned_update_autostashes(["git"], tmp_path) == 0
-    assert "leftover update autostash" not in capsys.readouterr().out
+    assert "leftover Hermes autostash" not in capsys.readouterr().out
+
+
+def test_an_installer_only_autostash_is_not_attributed_to_an_update(tmp_path, capsys):
+    installed = _stamped("hermes-install-autostash-", 9)
+    _repo_with_stashes(tmp_path, installed)
+
+    assert update_cmd._warn_orphaned_update_autostashes(["git"], tmp_path) == 1
+
+    out = capsys.readouterr().out
+    # Surfacing this entry is the point; telling the user it came from `hermes update`
+    # is not, since a re-run of the installer is what parked it.
+    assert installed in out
+    assert "stashed by an earlier Hermes run" in out
+    assert "stashed by earlier updates" not in out

@@ -212,13 +212,16 @@ def _warn_orphaned_update_autostashes(git_cmd: list[str], cwd: Path) -> int:
             return 0
         print()
         print(
-            f"⚠ {len(stale)} leftover update autostash entr"
+            f"⚠ {len(stale)} leftover Hermes autostash entr"
             f"{'y is' if len(stale) == 1 else 'ies are'} more than "
             f"{_AUTOSTASH_WARN_AGE_DAYS} days old:"
         )
         for selector, prefix, stamp in stale:
             print(f"    {selector}  ({prefix}{stamp})")
-        print("  These hold local changes stashed by earlier updates and never")
+        # An installer writes the same park under its own prefix, so the notice cannot
+        # credit every entry to an update: some were stashed by a re-run of the installer
+        # for a user who never ran `hermes update` at all.
+        print("  These hold local changes stashed by an earlier Hermes run and never")
         print("  restored. Review with: git stash show -p <entry>")
         print("  Restore with: git stash apply <entry>   Discard with: git stash drop <entry>")
         return len(stale)

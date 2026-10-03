@@ -49,7 +49,7 @@ def test_old_autostash_is_surfaced(tmp_path, capsys):
     count = update_cmd._warn_orphaned_update_autostashes(["git"], tmp_path)
     out = capsys.readouterr().out
     assert count == 1
-    assert "leftover update autostash" in out
+    assert "leftover Hermes autostash" in out
     assert name in out
     assert "git stash apply" in out
     # Never a GC: the entry must still exist.
@@ -61,7 +61,7 @@ def test_fresh_autostash_is_not_flagged(tmp_path, capsys):
     _make_repo_with_autostash(tmp_path, age_days=1)
     count = update_cmd._warn_orphaned_update_autostashes(["git"], tmp_path)
     assert count == 0
-    assert "leftover update autostash" not in capsys.readouterr().out
+    assert "leftover Hermes autostash" not in capsys.readouterr().out
 
 
 def test_non_hermes_stash_is_ignored(tmp_path, capsys):
@@ -79,7 +79,7 @@ def test_non_hermes_stash_is_ignored(tmp_path, capsys):
     _git(tmp_path, "stash", "push", "-m", "my own stash from 20200101-000000")
     count = update_cmd._warn_orphaned_update_autostashes(["git"], tmp_path)
     assert count == 0
-    assert "leftover update autostash" not in capsys.readouterr().out
+    assert "leftover Hermes autostash" not in capsys.readouterr().out
 
 
 def test_unparseable_autostash_timestamp_left_alone(tmp_path, capsys):

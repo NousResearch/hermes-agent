@@ -83,13 +83,12 @@ def test_terminal_output_transform_still_runs_strip_and_redact(monkeypatch, tmp_
     )
 
     assert "\x1b" not in result["output"]
-    # Terminal output now passes code_file=True: ENV-assignment redaction is
-    # skipped (so code constants like MAX_TOKENS=100 aren't corrupted), but a
-    # real sk-/ghp_/JWT-shaped value is STILL masked by _PREFIX_RE. The full
-    # secret never survives; only the leading prefix marker remains. (#33801)
+    # The command is NOT classified: `echo hello` is neither an env dump nor a .env read, and
+    # the ENV-assignment pass runs anyway under the value-opacity bar, so an opaque
+    # credential-shaped value under a credential-named key masks outright. The code_file
+    # carve-out that used to keep a `sk-pro` prefix marker here is gone (#43025).
+    assert result["output"] == "OPENAI_API_KEY=***"
     assert secret not in result["output"]
-    assert "OPENAI_API_KEY=" in result["output"]
-    assert "sk-pro" in result["output"]  # prefix marker from _mask_token
     assert "abc123def456" not in result["output"]  # secret body is gone
 
 

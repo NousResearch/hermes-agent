@@ -1912,8 +1912,9 @@ class TestHandleProcessRedaction:
     model / session.db / CLI display — issue #43025.
 
     Mirrors the foreground `terminal` redaction so the two surfaces can't
-    diverge. Env-dump commands (`printenv`/`env`) get the ENV-assignment pass
-    so opaque tokens are masked; other commands stay on the code_file path.
+    diverge. Neither surface classifies the command: the ENV/JSON/YAML/config
+    assignment passes run under the value-opacity bar, so an opaque prefix-less
+    token masks whatever command produced it while a short scalar stays readable.
     """
 
     def _setup(self, monkeypatch, command, output):

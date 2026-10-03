@@ -268,6 +268,8 @@ export const zhHantSettings = {
       sessionDensityCompact: '緊湊',
       sessionDensityComfortable: '舒適',
       sessionDensityDetailed: '詳細',
+      sidebarHoverRevealTitle: '滑鼠懸停邊緣時顯示側邊欄',
+      sidebarHoverRevealDesc: '指標移到視窗邊緣時顯示隱藏的側邊欄。關閉後，僅透過鍵盤快捷鍵或側邊欄控制項開啟。',
       tabStripTitle: '分頁列',
       tabStripDesc: '在分區上方顯示分頁。自動模式會在分區只有一個面板時隱藏分頁，除非還開著其他聊天或磚塊分區。',
       tabStripAuto: '自動',

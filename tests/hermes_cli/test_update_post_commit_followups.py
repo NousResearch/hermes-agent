@@ -142,6 +142,7 @@ def test_owed_restart_names_its_gateways_so_a_dead_fleet_cannot_discharge_it(tmp
     # A gateway that died at boot leaves no live row. An inventory-less obligation would be settled
     # by the gateway-less discharge, silencing the warning that replaces exit 1 under C3.
     from hermes_cli import update_cmd_fleet as fleet
+    from hermes_cli import update_cmd_fleet_verify as fleet_verify
     from hermes_cli.update_inventory import RuntimeRecord, UpdatePlan
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
@@ -149,7 +150,7 @@ def test_owed_restart_names_its_gateways_so_a_dead_fleet_cannot_discharge_it(tmp
     fleet._write_fleet_restart_pending_marker(expected_sha="a" * 40)
     plan = UpdatePlan(runtimes=[RuntimeRecord(kind="gateway", profile="default", pid=4242),
                                 RuntimeRecord(kind="dashboard", profile="default", pid=4343)])
-    fleet._record_owed_gateway_inventory(plan)
+    fleet_verify._record_owed_gateway_inventory(plan)
 
     inventory = json.loads(fleet._obligation_fields()["inventory"])
     assert [(r["kind"], r["profile"]) for r in inventory["runtimes"]] == [("gateway", "default")]
@@ -164,6 +165,7 @@ def test_owed_restart_rearms_a_settled_obligation_and_a_later_run_keeps_owing_it
     # A pre-restart probe can settle an inventory-less record; the owed restart must re-arm it, and
     # a later verify that finds nothing to restart must keep owing the named gateway.
     from hermes_cli import update_cmd_fleet as fleet
+    from hermes_cli import update_cmd_fleet_verify as fleet_verify
     from hermes_cli.update_inventory import RuntimeRecord, UpdatePlan
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
@@ -171,8 +173,8 @@ def test_owed_restart_rearms_a_settled_obligation_and_a_later_run_keeps_owing_it
     monkeypatch.setattr(fleet, "_current_checkout_sha", lambda: "b" * 40)
     monkeypatch.setattr("hermes_cli.update_receipt.collect_fleet_versions", lambda: [])
     assert not fleet._fleet_restart_obligation_armed()
-    fleet._record_owed_gateway_inventory(UpdatePlan(runtimes=[RuntimeRecord(kind="gateway", profile="default")]))
+    fleet_verify._record_owed_gateway_inventory(UpdatePlan(runtimes=[RuntimeRecord(kind="gateway", profile="default")]))
     assert fleet._obligation_fields()["expected_sha"] == "b" * 40
     # A later verify with nothing live to restart still owes the named gateway (and keeps it armed).
-    assert fleet._named_gateways_still_owed()
+    assert fleet_verify._named_gateways_still_owed()
     assert fleet._fleet_restart_obligation_armed()

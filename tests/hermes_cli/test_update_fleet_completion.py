@@ -4,7 +4,7 @@ import json
 
 import pytest
 
-from hermes_cli import update_cmd, update_cmd_fleet, update_cmd_maint, update_receipt
+from hermes_cli import update_cmd, update_cmd_fleet, update_cmd_fleet_verify as fleet_verify, update_cmd_maint, update_receipt
 from hermes_constants import get_hermes_home
 
 
@@ -22,7 +22,7 @@ def test_fleet_completion_preserves_runtime_verdict_and_restart_obligation(
         restarted_services=["hermes-gateway"], failed_or_stale_units=[],
         relaunched_profiles=[], externally_supervised_profiles=[], killed_pids=set(),
     )
-    monkeypatch.setattr(update_cmd_fleet, "_print_legacy_units_warning", lambda: None)
+    monkeypatch.setattr(fleet_verify, "_print_legacy_units_warning", lambda: None)
     monkeypatch.setattr(update_cmd, "_surviving_pre_update_serve_runtimes", lambda plan: [])
     monkeypatch.setattr(
         update_cmd_maint, "_refresh_dashboard_after_update",
@@ -38,14 +38,14 @@ def test_fleet_completion_preserves_runtime_verdict_and_restart_obligation(
         assert rows_expected is True
         return snapshot
 
-    monkeypatch.setattr(update_cmd_fleet, "_collect_fleet_snapshot", collect)
+    monkeypatch.setattr(fleet_verify, "_collect_fleet_snapshot", collect)
     update_cmd_fleet._write_fleet_restart_pending_marker()
     assert update_cmd_fleet._fleet_restart_obligation_armed()
     healthy = update_complete and state == "current"
     with update_receipt.update_receipt_scope():
         update_receipt.begin_update_receipt()
         # Contract C3: neither verdict fails the committed update any more (was SystemExit(1)).
-        update_cmd_fleet._verify_fleet_after_update(
+        fleet_verify._verify_fleet_after_update(
             restart, _pre_update_plan=None, _windows_gateway_resume=None,
             update_complete=update_complete,
         )

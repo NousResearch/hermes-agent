@@ -11,7 +11,7 @@ import zipfile
 import pytest
 
 from hermes_cli import main, update_cmd, update_cmd_fleet as fleet, update_cmd_maint as maint
-from hermes_cli import update_cmd_zip, update_receipt
+from hermes_cli import update_cmd_fleet_verify as fleet_verify, update_cmd_zip, update_receipt
 from hermes_cli.config_defaults import DEFAULT_CONFIG
 from hermes_cli.update_inventory import RuntimeRecord, UpdatePlan
 import hermes_yaml
@@ -84,10 +84,10 @@ def zip_update(tmp_path, monkeypatch, isolated_source_completion):
     monkeypatch.setattr("hermes_cli.profiles.seed_profile_skills", lambda *a, **kw: {})
     monkeypatch.setattr(update_cmd, "_reload_config_modules", lambda: None)
     monkeypatch.setattr(update_cmd, "_post_update_sqlite_runtime_status", lambda: (True, None))
-    monkeypatch.setattr(fleet, "_print_legacy_units_warning", lambda: None)
+    monkeypatch.setattr(fleet_verify, "_print_legacy_units_warning", lambda: None)
     monkeypatch.setattr(maint, "_refresh_dashboard_after_update", lambda **kwargs: None)
     monkeypatch.setattr(update_cmd, "_surviving_pre_update_serve_runtimes", lambda plan: [])
-    monkeypatch.setattr(fleet, "_collect_fleet_snapshot", lambda *args: [])
+    monkeypatch.setattr(fleet_verify, "_collect_fleet_snapshot", lambda *args: [])
     monkeypatch.setattr("hermes_cli.gateway_migrate.maybe_auto_migrate_after_update", lambda: None)
 
     def resume(received):

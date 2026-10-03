@@ -154,6 +154,7 @@ def completion(tmp_path, monkeypatch):
                     from hermes_cli import update_cmd as update
                     from hermes_cli import update_cmd_maint as maint
                     from hermes_cli import update_cmd_fleet as fleet
+                    from hermes_cli import update_cmd_fleet_verify as fleet_verify
                     from hermes_cli import gateway_migrate
                     from hermes_cli import macos_tcc_anchor
                     from hermes_cli import source_build
@@ -196,11 +197,11 @@ def completion(tmp_path, monkeypatch):
                     maint._print_post_update_notices_and_self_heals = lambda: None
                     maint._sync_profiles_after_update = lambda: None
                     maint._print_bundled_skills_sync_report = lambda: None
-                    fleet._print_legacy_units_warning = lambda: None
+                    fleet_verify._print_legacy_units_warning = lambda: None
                     maint._refresh_dashboard_after_update = lambda **kwargs: None
                     gateway_migrate.maybe_auto_migrate_after_update = lambda: None
                     update._surviving_pre_update_serve_runtimes = lambda plan: []
-                    fleet._collect_fleet_snapshot = lambda *args: []
+                    fleet_verify._collect_fleet_snapshot = lambda *args: []
                     def restart(plan, gateway_mode):
                         assert isinstance(plan, UpdatePlan)
                         assert isinstance(plan.runtimes[0], RuntimeRecord)

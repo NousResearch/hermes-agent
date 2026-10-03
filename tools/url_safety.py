@@ -16,6 +16,7 @@ import os
 import socket
 import asyncio
 import re
+import unicodedata
 from contextlib import contextmanager
 from typing import Any, Optional
 from urllib.parse import parse_qsl, quote, unquote, urljoin, urlparse, urlsplit, urlunsplit
@@ -67,14 +68,22 @@ def normalize_url_for_request(url: str) -> str:
                        quote(parsed.query, safe=safe + "?"), quote(parsed.fragment, safe=safe + "?")))
 
 
-# Unambiguously credential-bearing query param names. Deliberately narrow: bare
+# Unambiguously credential-bearing URL parameter names. Deliberately narrow: bare
 # English words that double as page facets (``code``, ``key``, ``auth``,
 # ``session``, ``sig``) are EXCLUDED so ordinary browsing is not blocked.
-_SENSITIVE_QUERY_PARAM_NAMES = frozenset({
+_SENSITIVE_URL_PARAM_NAMES = frozenset({
     "access_token", "api_key", "apikey", "auth_token", "authorization", "awsaccesskeyid",
     "client_secret", "credential", "credentials", "jwt", "password", "passwd", "secret",
     "session_id", "signature", "token", "x_amz_security_token", "x_amz_signature",
     "x-amz-security-token", "x-amz-signature"})
+
+
+def _sensitive_param_name(component: str) -> Optional[str]:
+    for key, value in parse_qsl(component, keep_blank_values=True):
+        canonical_key = unicodedata.normalize("NFKC", unquote(key)).casefold()
+        if value and canonical_key in _SENSITIVE_URL_PARAM_NAMES:
+            return key
+    return None
 
 
 def sensitive_query_param_name(url: str) -> Optional[str]:
@@ -89,8 +98,44 @@ def sensitive_query_param_name(url: str) -> Optional[str]:
         return None
     if parsed.scheme.lower() not in _HTTP_SCHEMES or not parsed.query:
         return None
-    return next((key for key, value in parse_qsl(parsed.query, keep_blank_values=True)
-                 if value and unquote(key).lower() in _SENSITIVE_QUERY_PARAM_NAMES), None)
+    return _sensitive_param_name(parsed.query)
+
+
+def sensitive_fragment_param_name(url: str) -> Optional[str]:
+    """First credential-named fragment parameter in an HTTP(S) URL, if any.
+
+    Fragments are not sent to the origin server, but extraction vendors receive the
+    complete URL in their request payload, so opaque OAuth-style fragment values
+    require the same pre-dispatch treatment as query credentials.
+    """
+    if not isinstance(url, str) or "#" not in url:
+        return None
+    try:
+        parsed = urlsplit(url.strip())
+    except ValueError:
+        return None
+    if parsed.scheme.lower() not in _HTTP_SCHEMES or not parsed.fragment:
+        return None
+    direct = _sensitive_param_name(parsed.fragment)
+    route_query = parsed.fragment.partition("?")[2]
+    return direct or (_sensitive_param_name(route_query) if route_query else None)
+
+
+def has_url_userinfo(url: str) -> bool:
+    """Return True when an HTTP(S) URL embeds credentials in its authority.
+
+    URL userinfo (``user:password@host`` or ``token@host``) is sent verbatim
+    to third-party extract/browser providers when they receive the full URL.
+    Treat any userinfo as credential-bearing rather than trying to recognize
+    particular password or token formats.
+    """
+    if not isinstance(url, str):
+        return False
+    try:
+        parsed = urlsplit(url.strip())
+    except ValueError:
+        return False
+    return parsed.scheme.lower() in _HTTP_SCHEMES and parsed.username is not None
 
 
 # Cloud metadata hostnames — always blocked regardless of DNS or config toggle.

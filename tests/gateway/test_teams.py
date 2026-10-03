@@ -1140,3 +1140,185 @@ class TestTeamsRequireMention:
         adapter = self._make_adapter(**extra)
         assert adapter._require_mention is expected
         assert adapter._extra.get("require_mention") == yaml_value  # extras stay readable on the instance
+
+
+# ---------------------------------------------------------------------------
+# Tests: observed channel context (observe_unmentioned_channel_messages)
+# ---------------------------------------------------------------------------
+
+class _FakeObserveStore:
+    def __init__(self):
+        self.sources = []
+        self.messages = []
+
+    def get_or_create_session(self, source):
+        self.sources.append(source)
+        return SimpleNamespace(session_id="teams-thread-session")
+
+    def append_to_transcript(self, session_id, message, skip_db=False):
+        self.messages.append((session_id, message))
+
+
+class TestTeamsObserveUnmentioned:
+    """With RSC + require_mention, posts that don't @mention the bot in an allowlisted channel are kept as
+    ``observed`` rows in the thread's session (never dispatched, never downloaded) so a later @mention in
+    that thread sees them, the same contract as Telegram's observe_unmentioned_group_messages."""
+
+    APP_ID = "bot-id"
+    CHANNEL = "19:chan@thread.tacv2"
+    THREAD = f"{CHANNEL};messageid=1700"
+    ALLOWED = {"aad-alice", "aad-bob"}
+
+    def _make_adapter(self, *, auth=True, **overrides):
+        extra = dict(
+            client_id=self.APP_ID, client_secret="secret", tenant_id="tenant", require_mention=True,
+            observe_unmentioned_channel_messages=True, observe_allowed_channels=[self.CHANNEL])
+        extra.update(overrides)
+        adapter = TeamsAdapter(_make_config(**extra))
+        adapter._app = MagicMock()
+        adapter._app.id = self.APP_ID
+        adapter.handle_message = AsyncMock()
+        adapter._fetch_attachment_bytes = AsyncMock(return_value=b"\x89PNG" + b"\0" * 32)
+        adapter._session_store = _FakeObserveStore()
+        if auth:
+            adapter.set_authorization_check(lambda user_id, chat_type=None, chat_id=None, **_kw: user_id in self.ALLOWED)
+        return adapter
+
+    def _activity(self, *, text="hello", conversation_id=None, conversation_type="channel", from_aad_id="aad-alice",
+                  from_name="Alice Example", activity_id="1701", mentioned_id=None, attachments=()):
+        activity = MagicMock()
+        activity.text = text
+        activity.id = activity_id
+        activity.from_ = MagicMock(aad_object_id=from_aad_id)
+        activity.from_.id = f"29:{from_aad_id}"
+        activity.from_.name = from_name
+        activity.recipient = MagicMock()
+        activity.recipient.id = f"28:{self.APP_ID}"
+        activity.recipient.name = "Mailory"
+        activity.conversation = MagicMock(conversation_type=conversation_type, tenant_id="t")
+        activity.conversation.id = conversation_id or self.THREAD
+        activity.conversation.name = "Requests"
+        activity.attachments = list(attachments)
+        activity.reply_to_id = None
+        activity.entities = []
+        if mentioned_id:
+            entity = MagicMock(type="mention")
+            entity.mentioned = MagicMock()
+            entity.mentioned.id = mentioned_id
+            activity.entities = [entity]
+        return activity
+
+    async def _deliver(self, adapter, activity):
+        ctx = MagicMock()
+        ctx.activity = activity
+        await adapter._on_message(ctx)
+
+    @staticmethod
+    def _image():
+        att = MagicMock(content_type="image/png")
+        att.name = "shot.png"
+        att.content_url = "https://smba.trafficmanager.net/emea/v3/attachments/1/views/original"
+        return att
+
+    @pytest.mark.anyio
+    async def test_unmentioned_channel_post_is_observed_not_dispatched(self):
+        adapter = self._make_adapter()
+        body = MagicMock(content_type="text/html", content_url=None)  # Teams' mirror of the message body
+        await self._deliver(adapter, self._activity(
+            text="<at>Bob</at> is the Fall Sale email final?", mentioned_id="29:aad-bob", attachments=[body, self._image()]))
+
+        adapter.handle_message.assert_not_awaited()
+        adapter._fetch_attachment_bytes.assert_not_awaited()  # observed posts never put files on the host
+        store = adapter._session_store
+        assert len(store.messages) == 1
+        session_id, row = store.messages[0]
+        assert session_id == "teams-thread-session"
+        assert row["role"] == "user" and row["observed"] is True
+        assert row["content"] == (
+            "[Alice Example|aad-alice]\n@Bob is the Fall Sale email final?\n\n"
+            "[1 attachment(s) not shown: observed posts are not downloaded.]")
+        assert row["message_id"] == "1701"
+        shared = store.sources[0]
+        assert (shared.chat_id, shared.chat_type, shared.thread_id) == (self.THREAD, "channel", "1700")
+        assert shared.user_id is None and shared.user_name is None
+
+    @pytest.mark.anyio
+    async def test_later_mention_shares_the_observed_thread_session(self):
+        from gateway.session import build_session_key
+
+        adapter = self._make_adapter()
+        await self._deliver(adapter, self._activity(text="the hero image is still the old one"))
+        await self._deliver(adapter, self._activity(
+            text="<at>Mailory</at> can you check that?", from_aad_id="aad-bob", from_name="Bob Example",
+            activity_id="1702", mentioned_id=f"28:{self.APP_ID}"))
+
+        adapter.handle_message.assert_awaited_once()
+        event = adapter.handle_message.await_args.args[0]
+        assert event.text == "can you check that?"
+        # The sender keeps its identity (TEAMS_ALLOWED_USERS authorizes people), and the thread id...
+        assert (event.source.user_id, event.source.user_name, event.source.thread_id) == ("aad-bob", "Bob Example", "1700")
+        # ...puts both on ONE key even with the multiplex default group_sessions_per_user=True.
+        observed_key = build_session_key(adapter._session_store.sources[0], group_sessions_per_user=True)
+        assert build_session_key(event.source, group_sessions_per_user=True) == observed_key
+        assert "aad-bob" not in observed_key
+        assert "observed Teams channel context" in event.channel_prompt
+        assert "@Mailory" in event.channel_prompt
+
+    @pytest.mark.anyio
+    @pytest.mark.parametrize("case", [
+        "channel_not_allowlisted", "group_chat", "unauthorized_sender", "no_auth_check", "observe_off",
+        "thread_sessions_per_user", "no_thread_root", "bot_own_post",
+    ])
+    async def test_not_observed(self, case):
+        overrides, kwargs, auth = {}, {}, True
+        if case == "channel_not_allowlisted":
+            kwargs["conversation_id"] = "19:other@thread.tacv2;messageid=1700"
+        elif case == "group_chat":
+            kwargs.update(conversation_type="groupChat", conversation_id="19:chat@thread.v2")
+        elif case == "unauthorized_sender":
+            kwargs["from_aad_id"] = "aad-stranger"
+        elif case == "no_auth_check":
+            auth = False
+        elif case == "observe_off":
+            overrides["observe_unmentioned_channel_messages"] = False
+        elif case == "thread_sessions_per_user":
+            overrides["thread_sessions_per_user"] = True
+        elif case == "no_thread_root":
+            kwargs["conversation_id"] = self.CHANNEL
+        adapter = self._make_adapter(auth=auth, **overrides)
+        activity = self._activity(**kwargs)
+        if case == "bot_own_post":
+            activity.from_.id = f"28:{self.APP_ID}"
+        await self._deliver(adapter, activity)
+        adapter.handle_message.assert_not_awaited()
+        assert adapter._session_store.messages == []
+
+    @pytest.mark.anyio
+    async def test_personal_chat_is_dispatched_not_observed(self):
+        adapter = self._make_adapter()
+        await self._deliver(adapter, self._activity(conversation_type="personal", conversation_id="a:dm"))
+        adapter.handle_message.assert_awaited_once()
+        event = adapter.handle_message.await_args.args[0]
+        assert event.source.thread_id is None and event.channel_prompt is None
+        assert adapter._session_store.messages == []
+
+    @pytest.mark.anyio
+    async def test_mentions_outside_observed_channels_are_unchanged(self):
+        adapter = self._make_adapter(observe_unmentioned_channel_messages=False)
+        await self._deliver(adapter, self._activity(text="<at>Mailory</at> hi", mentioned_id=f"28:{self.APP_ID}"))
+        event = adapter.handle_message.await_args.args[0]
+        assert event.source.thread_id is None and event.channel_prompt is None
+        assert event.source.user_id == "aad-alice"
+
+    @pytest.mark.parametrize("yaml_value, env_value, expected", [
+        (None, None, frozenset()),
+        (["19:a@thread.tacv2", "19:b@thread.tacv2;messageid=9"], None, {"19:a@thread.tacv2", "19:b@thread.tacv2"}),
+        ("19:a@thread.tacv2, 19:b@thread.tacv2", None, {"19:a@thread.tacv2", "19:b@thread.tacv2"}),
+        (["19:a@thread.tacv2"], "19:env@thread.tacv2", {"19:env@thread.tacv2"}),  # explicit env beats YAML
+    ])
+    def test_observe_allowed_channels_parsing(self, monkeypatch, yaml_value, env_value, expected):
+        monkeypatch.delenv("TEAMS_OBSERVE_ALLOWED_CHANNELS", raising=False)
+        if env_value is not None:
+            monkeypatch.setenv("TEAMS_OBSERVE_ALLOWED_CHANNELS", env_value)
+        adapter = self._make_adapter(observe_allowed_channels=yaml_value)
+        assert adapter._observe_allowed_channels == expected

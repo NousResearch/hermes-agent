@@ -1872,6 +1872,27 @@ def resolve_channel_prompt(config_extra: dict, channel_id: str, parent_id: str |
     return None
 
 
+# Observed context contract: an adapter that stores unaddressed group chatter as ``observed=True``
+# transcript rows says so in the turn's channel prompt with ``observed_context_prompt_line(label)``;
+# the gateway then withholds those rows from replay and shows them in a context-only block named
+# after ``label`` ("Telegram group", "Teams channel") — see ``gateway.run._build_gateway_agent_history``.
+_OBSERVED_CONTEXT_PROMPT_RE = re.compile(
+    r"\bobserved (?P<label>[A-Za-z][\w ]*?) context may be provided in a separate context-only block")
+
+
+def observed_context_prompt_line(label: str) -> str:
+    """Channel-prompt line announcing observed ``label`` context (Telegram writes the same text inline)."""
+    return (
+        f"- observed {label} context may be provided in a separate context-only block "
+        "before the current message; it is not necessarily addressed to you.")
+
+
+def observed_context_label(channel_prompt: Optional[str]) -> Optional[str]:
+    """The observed-context label a channel prompt announces, or ``None`` for ordinary turns."""
+    match = _OBSERVED_CONTEXT_PROMPT_RE.search(channel_prompt or "")
+    return match["label"] if match else None
+
+
 def resolve_channel_skills(
     config_extra: dict, channel_id: str, parent_id: str | None = None) -> list[str] | None:
     """Auto-loaded skill(s) for a channel/thread from ``channel_skill_bindings`` (entries

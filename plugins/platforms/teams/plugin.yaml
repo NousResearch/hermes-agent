@@ -46,6 +46,14 @@ optional_env:
     description: "Only answer channel/group-chat messages that @mention the bot or reply to it (default false; needed once the app has RSC message-read consent)"
     prompt: "Require @mention in channels and group chats? (true/false)"
     password: false
+  - name: TEAMS_OBSERVE_UNMENTIONED_CHANNEL_MESSAGES
+    description: "Keep un-mentioned posts in TEAMS_OBSERVE_ALLOWED_CHANNELS as thread context without replying (default false; needs require_mention + RSC)"
+    prompt: "Observe un-mentioned channel posts? (true/false)"
+    password: false
+  - name: TEAMS_OBSERVE_ALLOWED_CHANNELS
+    description: "Comma-separated channel ids whose un-mentioned posts are observed"
+    prompt: "Observed channel ids (comma-separated)"
+    password: false
   - name: TEAMS_HOME_CHANNEL
     description: "Default chat/channel ID for cron / notification delivery"
     prompt: "Home channel (or empty)"

@@ -28,6 +28,24 @@ Teams delivers @mentions as regular messages with `<at>BotName</at>` tags, which
 
 Without resource-specific consent (RSC) Teams only delivers messages that @mention the bot, so no filtering is needed. Once the app manifest grants `ChannelMessage.Read.Group` or `ChatMessage.Read.Chat`, Teams delivers **every** message in the conversation — set `require_mention: true` (or `TEAMS_REQUIRE_MENTION=true`) so the bot only answers channel/group-chat messages that @mention it or reply to one of its own messages. Personal chats are never gated, and a gated message is dropped before its attachments are downloaded.
 
+#### Observed channel context
+
+To let the bot see a channel thread's conversation while still speaking only when mentioned, keep `require_mention: true` and opt the channels in:
+
+```yaml
+platforms:
+  teams:
+    extra:
+      require_mention: true
+      observe_unmentioned_channel_messages: true
+      observe_allowed_channels:
+        - "19:abc123@thread.tacv2"   # the channel id, without ;messageid=
+```
+
+Posts the mention gate skips in those channels are appended to the thread's session as observed context (`[display name|AAD object id]` plus the text) and never start a turn. Attachments on observed posts are noted, not downloaded. A later @mention in the same thread gets them as a separate context-only block before the addressed message. Each observed channel thread keeps one session shared by everyone in it (the thread becomes the session's `thread_id`), and senders keep their identity, so `TEAMS_ALLOWED_USERS` still decides who can trigger the bot. Posts from senders the allowlist rejects are not observed. Group chats and personal chats are never observed, and nothing is observed while `thread_sessions_per_user` is on.
+
+Equivalent environment variables: `TEAMS_OBSERVE_UNMENTIONED_CHANNEL_MESSAGES=true`, `TEAMS_OBSERVE_ALLOWED_CHANNELS=19:abc123@thread.tacv2,19:def456@thread.tacv2`.
+
 ---
 
 For source or local installs, include the Teams extra so the bundled adapter can
@@ -175,6 +193,8 @@ Open the printed link in your browser — it opens directly in the Teams client.
 | `TEAMS_HOME_CHANNEL_NAME` | Display name for the home channel |
 | `TEAMS_PORT` | Webhook port (default: `3978`) |
 | `TEAMS_REQUIRE_MENTION` | Set `true` to answer only @mentions / replies to the bot in channels and group chats (default: `false`; for apps with RSC message-read consent) |
+| `TEAMS_OBSERVE_UNMENTIONED_CHANNEL_MESSAGES` | Set `true` to keep un-mentioned posts in `TEAMS_OBSERVE_ALLOWED_CHANNELS` as thread context (default: `false`) |
+| `TEAMS_OBSERVE_ALLOWED_CHANNELS` | Comma-separated channel ids whose un-mentioned posts are observed |
 
 ### config.yaml
 

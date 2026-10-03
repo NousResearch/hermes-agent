@@ -2,13 +2,7 @@ import assert from 'node:assert/strict'
 
 import { test } from 'vitest'
 
-import {
-  activateWindow,
-  decideSecondInstanceAction,
-  ensureMainWindow,
-  shouldQuitOnAllClosed,
-  shouldQuitOnLastChatClosed
-} from './main-window-lifecycle'
+import { activateWindow, ensureMainWindow, shouldQuitOnLastChatClosed } from './main-window-lifecycle'
 
 test('recreates a destroyed primary window without focusing it', () => {
   const destroyedWindow = {
@@ -75,29 +69,6 @@ test('leaves live-window focus to deep-link delivery', () => {
     focusWindow: () => assert.fail('deep-link delivery owns focus'),
     focusExisting: false
   })
-})
-
-// Regression for #130810: closing the last window must quit on
-// Windows/Linux (never strand a windowless single-instance lock holder),
-// while macOS stays in the Dock unless handing off to a detached script.
-test('window-all-closed quits off macOS and only on handoff for darwin', () => {
-  assert.equal(shouldQuitOnAllClosed('win32', false), true)
-  assert.equal(shouldQuitOnAllClosed('linux', false), true)
-  assert.equal(shouldQuitOnAllClosed('darwin', false), false)
-  assert.equal(shouldQuitOnAllClosed('darwin', true), true)
-})
-
-// Regression for #130810: a second launch re-creates a destroyed primary,
-// defers pre-ready (whenReady boot owns the first window), and activates a
-// live one instead of silently exiting.
-test('second-instance routes destroyed/missing/live primaries', () => {
-  assert.equal(decideSecondInstanceAction({ isDestroyed: () => true }, true), 'create')
-  assert.equal(decideSecondInstanceAction(null, true), 'create')
-  assert.equal(decideSecondInstanceAction(undefined, true), 'create')
-  assert.equal(decideSecondInstanceAction({ isDestroyed: () => true }, false), 'defer')
-  assert.equal(decideSecondInstanceAction(null, false), 'defer')
-  assert.equal(decideSecondInstanceAction({ isDestroyed: () => false }, true), 'activate')
-  assert.equal(decideSecondInstanceAction({ isDestroyed: () => false }, false), 'activate')
 })
 
 // Regression for #130810: an explicit relaunch restores + shows + focuses

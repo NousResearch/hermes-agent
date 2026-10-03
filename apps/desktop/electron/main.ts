@@ -362,9 +362,7 @@ import { registerMachineProfile } from './machine-profile'
 import { createMainProcessLagWatchdog } from './main-process-lag-watchdog'
 import {
   activateWindow as activateRestoredWindow,
-  decideSecondInstanceAction,
   ensureMainWindow,
-  shouldQuitOnAllClosed,
   shouldQuitOnLastChatClosed
 } from './main-window-lifecycle'
 import {
@@ -15338,7 +15336,7 @@ function createWindow() {
 
     // A prevented close (tray absorb, active-work "Keep Running") leaves the
     // window alive, so the app is not quitting: keep the latch clear so a
-    // later close still quites cleanly (#130810).
+    // later close still quits cleanly (#130810).
     if (event.defaultPrevented) {
       return
     }
@@ -19353,39 +19351,17 @@ if (!isPrimaryInstance) {
     }
 
     // #130810: a second Start-menu / shortcut / Hermes.exe launch must never
-    // silently exit. Restore a live (minimized or tray-hidden) primary with
-    // activation, or re-create it when it was destroyed — and log the
-    // decision so a future silent exit stays diagnosable in desktop.log.
-    const decision = decideSecondInstanceAction(mainWindow, app.isReady())
-    const destroyed = !mainWindow || mainWindow.isDestroyed()
-
-    rememberLog(
-      `[second-instance] relaunch (deepLink=${url ? 'yes' : 'no'} decision=${decision} ` +
-        `mainWindow=${destroyed ? 'destroyed' : 'live'} ` +
-        `minimized=${!destroyed && typeof mainWindow.isMinimized === 'function' ? mainWindow.isMinimized() : 'n/a'} ` +
-        `visible=${!destroyed && typeof mainWindow.isVisible === 'function' ? mainWindow.isVisible() : 'n/a'})`
-    )
-
-    if (decision === 'create') {
-      createWindow()
-
-      return
-    }
-
-    if (decision === 'defer') {
-      // Pre-ready: the pending whenReady boot creates the first window.
-      return
-    }
-
-    // A live primary: deep-link delivery already restored/shown/focused it
-    // above; a plain relaunch must activate it (restore + show + focus) so a
-    // tray-hidden or minimized window comes back instead of flashing the
-    // taskbar. Unlike the ambient focusWindow (showInactive per #83998), an
-    // explicit relaunch owns the foreground. Re-asserting activation after a
-    // deep link is idempotent (a visible + focused window is a no-op) and
-    // covers the queued-delivery case, where handleDeepLink stored the payload
-    // without showing the window yet.
-    activateRestoredWindow(mainWindow)
+    // silently exit. Log it so a future silent exit stays diagnosable, then
+    // restore a live primary with activation (restore + show + focus), or
+    // re-create it when it was destroyed.
+    rememberLog(`[second-instance] relaunch (deepLink=${url ? 'yes' : 'no'})`)
+    ensureMainWindow(mainWindow, {
+      isReady: app.isReady(),
+      createWindow,
+      focusWindow: activateRestoredWindow,
+      // deep-link delivery focuses a live window after its renderer is ready.
+      focusExisting: !url
+    })
   })
 }
 
@@ -19862,9 +19838,7 @@ app.on('window-all-closed', () => {
   // the bundle and relaunch — without this the script's PID-wait spins to its
   // full timeout and the user is left with an invisible app (or an uninstall
   // that appears to do nothing).
-  // #130810: on Windows/Linux closing the last window IS quitting — the app
-  // must not linger windowless holding the single-instance lock.
-  if (shouldQuitOnAllClosed(process.platform, isQuittingForHandoff)) {
+  if (process.platform !== 'darwin' || isQuittingForHandoff) {
     app.quit()
   }
 })

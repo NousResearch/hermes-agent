@@ -70,9 +70,11 @@ def daemon(tmp_path, monkeypatch):
         def __init__(self, pid):
             self.pid = pid
         def cmdline(self):
+            if self.pid == 4202:
+                return ["hermes", "--run-module", "hermes_cli.stderr_timestamp", "--", "hermes", "gateway", "run", "--external-supervisor"]
             return ["hermes", "gateway", "run", "--external-supervisor"] if self.pid == 4201 else ["osascript"]
         def children(self, recursive=False):
-            return [Process(4201)] if self.pid == 4200 else []
+            return [Process(4202), Process(4201)] if self.pid == 4200 else []
     monkeypatch.setattr("psutil.Process", Process)
     return system, user, plist, original, calls, state, home
 
@@ -117,7 +119,7 @@ def test_system_daemon_detection(daemon, monkeypatch, capsys, behavior):
     assert not user.exists()
 
 
-@pytest.mark.parametrize("action", ["install", "refresh", "start", "restart", "foreign-restart", "foreign-stop", "update", "ancestor-update", "delayed-self-restart", "denied", "unchanged-pid", "fleet-list-denied", "fleet-sibling", "fleet-wrapper-drain", "graceful-restart", "denied-eio", "uninstall", "denied-stop"])
+@pytest.mark.parametrize("action", ["install", "refresh", "start", "restart", "wrapper-recipient", "foreign-restart", "foreign-stop", "update", "ancestor-update", "delayed-self-restart", "denied", "unchanged-pid", "fleet-list-denied", "fleet-sibling", "fleet-wrapper-drain", "graceful-restart", "denied-eio", "uninstall", "denied-stop"])
 def test_system_daemon_lifecycle_never_creates_user_agent(daemon, monkeypatch, action):
     system, user, plist, original, calls, state, home = daemon
     if action == "install":
@@ -128,6 +130,8 @@ def test_system_daemon_lifecycle_never_creates_user_agent(daemon, monkeypatch, a
         gw.launchd_start()
     elif action == "restart":
         gw.launchd_restart()
+    elif action == "wrapper-recipient":
+        assert ld.gateway_pid_for_launchd_service(4200) == 4201, "stderr wrapper argv contains the child command but must not receive gateway signals"
     elif action in {"foreign-restart", "foreign-stop"}:
         data = plistlib.loads(original)
         data["EnvironmentVariables"]["HERMES_HOME"] = str(home.parent / "foreign")

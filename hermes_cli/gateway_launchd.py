@@ -218,7 +218,11 @@ def gateway_pid_for_launchd_service(service_pid: int | None) -> int | None:
     try:
         leader = psutil.Process(service_pid)
         for process in [leader, *leader.children(recursive=True)]:
-            if _gw()._capture_gateway_argv(process.pid) is not None:
+            argv = _gw()._capture_gateway_argv(process.pid)
+            # The timestamping wrapper embeds the child gateway command after '--';
+            # the loose command-line detector also recognizes it, but it has no
+            # gateway control server or SIGUSR1 drain handler of its own.
+            if argv and "hermes_cli.stderr_timestamp" not in argv:
                 return process.pid
     except psutil.Error:
         return None

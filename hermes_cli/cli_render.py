@@ -289,8 +289,14 @@ def _maybe_remap_for_light_mode(hex_color: str) -> str:
 
 
 def _install_skin_light_mode_hook() -> None:
-    """Wrap SkinConfig.get_color so EVERY skin color read goes through the light-mode remap. Idempotent."""
-    from cli import _maybe_remap_for_light_mode
+    """Wrap SkinConfig.get_color so EVERY skin color read adapts to the terminal polarity. Idempotent.
+
+    A key the skin authors in its paired palette for the detected polarity (``light_colors`` on
+    a light terminal, ``dark_colors`` on a dark one) is returned as authored — those values are
+    already tuned for that background, matching the TUI/desktop. Anything else falls back to
+    ``colors`` through the fixed light-mode remap.
+    """
+    from cli import _detect_light_mode, _maybe_remap_for_light_mode
     try:
         from hermes_cli.skin_engine import SkinConfig  # type: ignore[import]
     except Exception:
@@ -300,6 +306,13 @@ def _install_skin_light_mode_hook() -> None:
     _orig_get_color = SkinConfig.get_color
 
     def _wrapped_get_color(self, key, fallback=""):
+        try:
+            light = _detect_light_mode()
+            overlay = (self.light_colors if light else self.dark_colors) or {}
+            if key in overlay:
+                return overlay[key]
+        except Exception:
+            pass
         value = _orig_get_color(self, key, fallback)
         try:
             return _maybe_remap_for_light_mode(value)

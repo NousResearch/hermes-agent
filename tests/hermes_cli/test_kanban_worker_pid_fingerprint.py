@@ -110,6 +110,35 @@ def test_same_pid_and_start_tick_on_another_boot_is_foreign(board, monkeypatch):
     assert kbd._process_fingerprint(os.getpid()) == live_fingerprint
 
 
+def test_reboot_invalidates_the_epoch_witness_for_a_drift_ceiling_pid_reuser(board, monkeypatch):
+    """PR #118353 review (ottotheoperator): with the Darwin ``kern.boottime`` epoch witness the
+    "epoch half must still match" condition is no longer ``"" == ""`` there. After a reboot a
+    different process reusing the PID with a create time inside the 12 h sleep-drift ceiling is
+    NOT rescued — its claim is released beside it, never signalled, exactly as on Linux."""
+    from gateway import drain_control
+
+    live = kbd._process_fingerprint(os.getpid())
+    assert live is not None
+    _, _, start = live.partition("|")
+    # Spawn-time reading below the current one by 6 s (the drift rescue's forward half).
+    recorded = f"1727384428|{int(start) - 600}"
+
+    # Same instantiation epoch (same boot): the drift rescue keeps the live worker's claim.
+    monkeypatch.setattr(drain_control, "current_instantiation_epoch", lambda: "1727384428")
+    tid = _claimed_running(board, pid=os.getpid(), started_at=recorded, max_runtime=1)
+    assert kbd._worker_alive(os.getpid(), recorded) is True
+
+    # Reboot: the epoch witness changed; the PID now belongs to a post-reboot process whose start
+    # still reads inside the drift ceiling. Foreign: claim released, zero signals.
+    monkeypatch.setattr(drain_control, "current_instantiation_epoch", lambda: "1727470528")
+    killed = []
+    assert kbd._worker_alive(os.getpid(), recorded) is False
+    assert tid in kbd.enforce_max_runtime(board, signal_fn=lambda pid, sig: killed.append((pid, sig)))
+    assert killed == []
+    task = kb.get_task(board, tid)
+    assert task.status == "ready" and task.worker_pid is None
+
+
 def test_unverified_fingerprint_capture_never_authorizes_a_signal(board, monkeypatch):
     """Fingerprint capture fails for a new spawn: the row is NOT a legacy NULL row. A live PID under
     it is never SIGTERM/SIGKILLed by any reclaim/timeout path, and the claim is held (not released
@@ -149,3 +178,140 @@ def test_unverified_fingerprint_capture_never_authorizes_a_signal(board, monkeyp
     monkeypatch.setattr(kb, "_pid_alive", lambda pid: False)
     assert kb.release_stale_claims(conn, signal_fn=sig) == 1
     assert killed == [] and kb.get_task(conn, tid2).status == "ready"
+
+
+def _drifted_live_fingerprint(forward_cs: int) -> str:
+    """The value a spawn would have recorded before a macOS sleep/wake drifted psutil's reading of
+    the (still live) process forward: the epoch half kept, the start half earlier by ``forward_cs``
+    centiseconds than today's reading — exactly the stale row the reaper misread in #118326. A
+    negative ``forward_cs`` yields the reaper-reads-lower half of the bidirectional read
+    disagreement (recorded newer than today's reading)."""
+    live = kbd._process_fingerprint(os.getpid())
+    assert live is not None and "|" in live
+    epoch, _, start = live.partition("|")
+    return f"{epoch}|{int(start) - forward_cs}"
+
+
+def test_sleep_drifted_fingerprint_keeps_the_live_worker(board):
+    """A start-time reading that drifted forward across a sleep/wake belongs to the same live
+    worker (#118326): the expired claim is extended, not reclaimed — no duplicate spawn, no
+    breaker booking."""
+    conn = board
+    killed = []
+    drifted = _drifted_live_fingerprint(27 * 60 * 100)  # 27 min of accumulated sleep
+    tid = _claimed_running(conn, pid=os.getpid(), started_at=drifted)
+
+    assert kbd._worker_alive(os.getpid(), drifted) is True
+    assert kb.release_stale_claims(conn, signal_fn=lambda pid, sig: killed.append((pid, sig))) == 0
+    assert killed == []
+    task = kb.get_task(conn, tid)
+    assert task.status == "running" and task.worker_pid == os.getpid()
+    assert "claim_extended" in [e.kind for e in kb.list_events(conn, tid)]
+
+
+def test_sleep_drifted_fingerprint_is_never_signalled_nor_released(board):
+    """The drift rescue is claim-liveness only: on a stale heartbeat the same drifted worker is
+    never signalled — and the claim is not released beside the live worker either (that release
+    re-creates the duplicate-spawn loop #118326 is about): the reclaim defers."""
+    conn = board
+    killed = []
+    drifted = _drifted_live_fingerprint(27 * 60 * 100)
+    tid = _claimed_running(conn, pid=os.getpid(), started_at=drifted)
+    with kb.write_txn(conn):
+        conn.execute("UPDATE tasks SET last_heartbeat_at = ? WHERE id = ?",
+                     (int(time.time()) - 2 * 3600, tid))
+
+    assert kb.release_stale_claims(conn, signal_fn=lambda pid, sig: killed.append((pid, sig))) == 0
+    assert killed == []
+    task = kb.get_task(conn, tid)
+    assert task.status == "running" and task.worker_pid == os.getpid()
+    assert "reclaim_deferred" in [e.kind for e in kb.list_events(conn, tid)]
+
+
+def test_gross_start_drift_is_still_a_recycle(board):
+    """Beyond the drift ceiling a start-time gap keeps its old meaning: a recycled PID (#118326
+    rescues near-matches only, so the gross-mismatch recycle proof survives)."""
+    conn = board
+    gross = _drifted_live_fingerprint(13 * 3600 * 100)  # 13h > the 12h ceiling
+    tid = _claimed_running(conn, pid=os.getpid(), started_at=gross)
+
+    assert kbd._worker_alive(os.getpid(), gross) is False
+    assert kb.release_stale_claims(conn) == 1
+    assert kb.get_task(conn, tid).status == "ready"
+
+
+def test_read_disagreement_below_recorded_start_keeps_the_live_worker(board):
+    """The cross-process read disagreement is bidirectional (#118326): a long-lived reaper can read
+    the same live worker's start time ~1 s BELOW the spawn-time record. The negative half must not
+    conclude recycled — the exact release-beside-a-live-worker loop reported on the PR — so the
+    expired claim is extended, never released."""
+    conn = board
+    killed = []
+    disagreed = _drifted_live_fingerprint(-100)  # 100 cs below today's reading
+    tid = _claimed_running(conn, pid=os.getpid(), started_at=disagreed)
+
+    assert kbd._worker_alive(os.getpid(), disagreed) is True
+    assert kb.release_stale_claims(conn, signal_fn=lambda pid, sig: killed.append((pid, sig))) == 0
+    assert killed == []
+    task = kb.get_task(conn, tid)
+    assert task.status == "running" and task.worker_pid == os.getpid()
+    assert "claim_extended" in [e.kind for e in kb.list_events(conn, tid)]
+
+
+def test_backward_start_gap_beyond_the_read_tolerance_is_still_a_recycle(board):
+    """The negative widening is bounded by the shared comparator's tolerance (2 s), not the 12 h
+    sleep-drift ceiling: a 3 s backward gap keeps its recycle meaning."""
+    conn = board
+    beyond = _drifted_live_fingerprint(-300)  # 3 s below today's reading
+    tid = _claimed_running(conn, pid=os.getpid(), started_at=beyond)
+
+    assert kbd._worker_alive(os.getpid(), beyond) is False
+    assert kb.release_stale_claims(conn) == 1
+    assert kb.get_task(conn, tid).status == "ready"
+
+
+def _exact_then_recycled(monkeypatch):
+    """Probe sequence of a post-SIGTERM recycle: the first fingerprint check (the pre-signal gate)
+    still matches exactly, every later one sees the recycled stranger — whose reading near-matches
+    the recorded fingerprint inside the drift ceiling."""
+    calls = {"recycled": False}
+    monkeypatch.setattr(kbd, "_pid_recycled", lambda pid, started_at: calls.pop("recycled", True))
+    monkeypatch.setattr(kbd, "_poll_worker_exit", lambda pid, started_at=None: False)
+    monkeypatch.setattr(kbd, "_worker_alive", lambda pid, started_at: True)
+
+
+def test_recycled_near_match_after_sigterm_never_takes_the_sigkill(board, monkeypatch):
+    """Drift tolerance must not become signal permission: SIGTERM was cleared to fire on an exact
+    match, but the pid is recycled before the SIGKILL escalation and the new reading only
+    near-matches the recorded fingerprint. The escalation is refused and the worker is reported
+    as surviving, so the claim is held rather than escalated or released."""
+    conn = board
+    killed = []
+    _exact_then_recycled(monkeypatch)
+    tid = _claimed_running(conn, pid=os.getpid(), started_at=kbd._process_fingerprint(os.getpid()))
+    lock = conn.execute("SELECT claim_lock FROM tasks WHERE id = ?", (tid,)).fetchone()["claim_lock"]
+
+    info = kbd._terminate_reclaimed_worker(
+        os.getpid(), lock, signal_fn=lambda pid, sig: killed.append((pid, sig)),
+        started_at=kbd._process_fingerprint(os.getpid()))
+
+    assert killed == [(os.getpid(), signal.SIGTERM)]
+    assert info["signal_refused"] is True
+    assert not info.get("sigkill") and info["terminated"] is False
+    assert kbd._worker_survived_termination(info) is True
+
+
+def test_max_runtime_never_sigkills_a_recycled_near_match(board, monkeypatch):
+    """Same guard on the timeout path: after SIGTERM landed on an exact match, the poll sees a
+    drift-rescued near-match on the recycled number. The SIGKILL is refused; the task keeps its
+    claim for the moment and settles on a later tick instead."""
+    conn = board
+    killed = []
+    _exact_then_recycled(monkeypatch)
+    tid = _claimed_running(conn, pid=os.getpid(), started_at=kbd._process_fingerprint(os.getpid()),
+                           max_runtime=1)
+
+    assert kbd.enforce_max_runtime(conn, signal_fn=lambda pid, sig: killed.append((pid, sig))) == []
+    assert killed == [(os.getpid(), signal.SIGTERM)]
+    task = kb.get_task(conn, tid)
+    assert task.status == "running" and task.worker_pid == os.getpid()

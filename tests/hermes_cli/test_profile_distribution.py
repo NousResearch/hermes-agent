@@ -977,3 +977,118 @@ class TestManifestCrashDurability:
 
         mode = stat.S_IMODE(mf.stat().st_mode)
         assert mode == 0o644, f"new manifest created as {oct(mode)}"
+
+
+def test_imported_and_installed_profiles_never_inherit_the_default_env_on_update(profile_env, tmp_path):
+    """``hermes update`` backfills a ``.env`` into profiles that have none by copying the DEFAULT
+    profile's (legacy pre-#44792 profiles). Import and distribution install are fresh profiles:
+    they must own a ``.env`` from day one, or that backfill hands them the default's bot tokens,
+    allow-all policy and API keys."""
+    from hermes_cli.profiles import backfill_profile_envs, create_profile, export_profile, import_profile
+
+    (profile_env / ".hermes" / ".env").write_text("TELEGRAM_BOT_TOKEN=123:default-bot\n", encoding="utf-8")
+    install_distribution(str(_make_staging_dir(profile_env, "src")), name="installed")
+    create_profile("source")
+    archive = export_profile("source", str(tmp_path / "source.tar.gz"))
+    import_profile(str(archive), name="imported")
+
+    backfill_profile_envs(quiet=True)
+
+    for name in ("installed", "imported"):
+        env = profile_env / ".hermes" / "profiles" / name / ".env"
+        assert env.is_file() and "default-bot" not in env.read_text(encoding="utf-8"), name
+
+
+def test_a_fresh_install_is_not_served_until_it_is_complete(profile_env, monkeypatch):
+    """A running multiplexer's hot-serve rescan serves every dir under profiles/ that carries an
+    identity marker (``.env``, ``config.yaml``, ``SOUL.md``, ...). A fresh install must stay out of
+    that set until its payload and ``.env`` are all in place, then appear whole."""
+    from hermes_cli import profile_distribution as pd
+    from hermes_cli.profiles import profiles_to_serve
+
+    served_mid_install = []
+    real_write_manifest = pd.write_manifest
+
+    def spy(target, manifest):  # the payload copy's last step
+        served_mid_install.append([name for name, _home in profiles_to_serve(multiplex=True)])
+        return real_write_manifest(target, manifest)
+
+    monkeypatch.setattr(pd, "write_manifest", spy)
+    install_distribution(str(_make_staging_dir(profile_env, "src")), name="installed")
+
+    assert served_mid_install and "installed" not in served_mid_install[0]
+    assert "installed" in [name for name, _home in profiles_to_serve(multiplex=True)]
+    assert (profile_env / ".hermes" / "profiles" / "installed" / ".env").is_file()
+
+
+@pytest.mark.parametrize("path", ["install", "import"])
+def test_a_profile_whose_env_seed_fails_is_never_published(profile_env, tmp_path, monkeypatch, path):
+    """Without its own ``.env`` a profile is taken for a pre-#44792 one, and the next ``hermes
+    update`` backfill copies the DEFAULT's secrets in. So when the seed cannot be written (a full
+    disk), import and install must fail loudly and leave no profile behind."""
+    import builtins
+    import errno
+    import io
+    import os
+
+    from hermes_cli.profiles import create_profile, export_profile, import_profile
+
+    if path == "import":
+        create_profile("source")
+        archive = export_profile("source", str(tmp_path / "source.tar.gz"))
+        run = lambda: import_profile(str(archive), name="newcomer")  # noqa: E731
+    else:
+        staged = _make_staging_dir(profile_env, "src")
+        run = lambda: install_distribution(str(staged), name="newcomer")  # noqa: E731
+
+    def creates_env(file, writing):
+        return isinstance(file, (str, os.PathLike)) and Path(file).name == ".env" and writing
+
+    def no_space(file):
+        raise OSError(errno.ENOSPC, "No space left on device", str(file))
+
+    real_io_open, real_os_open = io.open, os.open
+
+    def full_disk_io_open(file, mode="r", *args, **kwargs):
+        if creates_env(file, bool(set(mode) & set("wxa+"))):
+            no_space(file)
+        return real_io_open(file, mode, *args, **kwargs)
+
+    def full_disk_os_open(file, flags, *args, **kwargs):
+        if creates_env(file, bool(flags & (os.O_WRONLY | os.O_RDWR | os.O_CREAT))):
+            no_space(file)
+        return real_os_open(file, flags, *args, **kwargs)
+
+    monkeypatch.setattr(io, "open", full_disk_io_open)
+    monkeypatch.setattr(builtins, "open", full_disk_io_open)
+    monkeypatch.setattr(os, "open", full_disk_os_open)
+
+    with pytest.raises(OSError):
+        run()
+
+    profiles_root = profile_env / ".hermes" / "profiles"
+    assert not (profiles_root / "newcomer").exists()
+    assert not [p for p in profiles_root.iterdir() if "newcomer" in p.name]
+
+
+@pytest.mark.platforms("posix")  # creating a symlink needs no privilege here
+def test_a_dangling_env_symlink_is_never_written_through(profile_env, tmp_path):
+    """``install --force`` over a profile whose ``.env`` is a dangling symlink must not create the
+    link's target outside the profile — neither with the placeholder seed nor, on the next ``hermes
+    update``, with the DEFAULT's secrets."""
+    from hermes_cli.profiles import backfill_profile_envs
+
+    (profile_env / ".hermes" / ".env").write_text("TELEGRAM_BOT_TOKEN=123:default-bot\n", encoding="utf-8")
+    staged = _make_staging_dir(profile_env, "src")
+    install_distribution(str(staged), name="installed")
+    env = profile_env / ".hermes" / "profiles" / "installed" / ".env"
+    outside = tmp_path / "elsewhere" / "secrets.env"
+    outside.parent.mkdir()
+    env.unlink()
+    env.symlink_to(outside)
+
+    install_distribution(str(staged), name="installed", force=True)
+    backfill_profile_envs(quiet=True)
+
+    assert not outside.exists()
+    assert env.is_symlink()

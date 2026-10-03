@@ -634,8 +634,7 @@ def _check_memory_provider(should_fix: bool, f: Finding) -> None:
 
 @doctor_check("")  # best-effort: profile enumeration must never break doctor
 def _check_profiles(should_fix: bool, f: Finding) -> None:
-    from hermes_cli.profiles import list_profiles, _get_wrapper_dir, profile_exists
-    import re as _re
+    from hermes_cli.profiles import list_profiles, _get_wrapper_dir, _wrapper_profile, profile_exists
     named_profiles = [p for p in list_profiles() if not p.is_default]
     if not named_profiles:
         return
@@ -654,9 +653,9 @@ def _check_profiles(should_fix: bool, f: Finding) -> None:
             if not wrapper.is_file():
                 continue
             with warn_on_error(""):
-                _m = _re.search(r"hermes -p (\S+)", wrapper.read_text(encoding="utf-8-sig"))
-                if _m and not profile_exists(_m.group(1)):
-                    check_warn(f"Orphan alias: {wrapper.name} → profile '{_m.group(1)}' no longer exists")
+                target = _wrapper_profile(wrapper.read_text(encoding="utf-8-sig"))
+                if target and not profile_exists(target):
+                    check_warn(f"Orphan alias: {wrapper.name} → profile '{target}' no longer exists")
     # Same helper as the multiplex migration preflight, so doctor names the duplicates that make
     # `hermes gateway migrate --multiplex` refuse (and made pre-multiplex standalone gateways race).
     from hermes_cli.gateway_migrate import duplicate_credential_findings

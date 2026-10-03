@@ -1059,6 +1059,29 @@ class TestWrapperScript:
         assert content.startswith("#!/bin/sh")
         assert "exec /opt/hermes/bin/hermes -p mybot" in content
 
+    @pytest.mark.platforms("posix")
+    @pytest.mark.parametrize("bin_dir", ["/opt/my tools/bin", "/home/o'brien/.local/bin"])
+    def test_wrapper_for_a_quoted_hermes_path_is_still_ours(self, profile_env, monkeypatch, bin_dir):
+        """An install path that shlex must quote still yields a wrapper Hermes recognizes as its own:
+        listed as the profile's alias and removed on delete/rename."""
+        monkeypatch.setattr("hermes_cli.profiles.shutil.which", lambda name: f"{bin_dir}/hermes")
+        wrapper = create_wrapper_script("qiaobusi", target="steve")
+
+        assert profiles.build_alias_map() == {"steve": "qiaobusi"}
+        assert remove_wrapper_script("qiaobusi") is True
+        assert not wrapper.exists()
+
+    @pytest.mark.platforms("posix")
+    def test_doctor_reports_an_orphan_wrapper_with_a_quoted_hermes_path(self, profile_env, monkeypatch, capsys):
+        from hermes_cli.doctor_state import _check_profiles
+        monkeypatch.setattr("hermes_cli.profiles.shutil.which", lambda name: "/opt/my tools/bin/hermes")
+        create_profile("steve", no_alias=True)
+        create_wrapper_script("gone")  # its profile does not exist
+
+        _check_profiles(False)
+
+        assert "Orphan alias: gone → profile 'gone' no longer exists" in capsys.readouterr().out
+
 
     @pytest.mark.platforms("windows")
     def test_remove_finds_bat_on_windows(self, profile_env):
@@ -1368,6 +1391,62 @@ class TestRenameProfile:
 
         assert new_dir.is_dir()
 
+
+@pytest.mark.parametrize("publish", ["rename", "import", "install"])
+def test_profile_published_under_a_deleted_name_is_live(profile_env, publish):
+    """Every path that publishes a profile under a name must leave it live, even when a profile of
+    that name was deleted earlier: ``delete_profile`` keeps its tombstone so stale writers cannot
+    resurrect the old home, and ``create_profile`` clears it on reuse. A rename, archive import or
+    distribution install that kept it produced a profile missing from ``profile list``, refused by
+    ``-p`` and the multiplexer, with every write into its home refused."""
+    from hermes_constants import mkdir_under_hermes_home
+    create_profile("work", no_alias=True)
+    archive = export_profile("work", str(profile_env / "work-export")) if publish == "import" else None
+    delete_profile("work", yes=True)
+
+    if publish == "rename":
+        create_profile("scratch", no_alias=True)
+        with patch("hermes_cli.profiles.check_alias_collision", return_value="skip"):
+            published = rename_profile("scratch", "work")
+    elif publish == "import":
+        published = profiles.import_profile(str(archive))
+    else:
+        from hermes_cli.profile_distribution import install_distribution
+        dist = profile_env / "dist"
+        dist.mkdir()
+        (dist / "distribution.yaml").write_text("name: work\nversion: 1.0.0\n", encoding="utf-8")
+        (dist / "SOUL.md").write_text("Work persona.\n", encoding="utf-8")
+        published = install_distribution(str(dist)).target_dir
+
+    assert "work" in profiles.list_profile_names()
+    assert Path(resolve_profile_env("work")) == published
+    mkdir_under_hermes_home(published / "sessions")  # the profile's own writers are not refused
+
+
+def test_failed_install_under_a_deleted_name_leaves_it_deleted(profile_env, monkeypatch):
+    """The tombstone goes only once the installed profile is published whole: a multiplexer rescan
+    mid-install must not serve the half-copied profile, and an install that fails part-way must not
+    resurrect the deleted name at all."""
+    from hermes_cli import profile_distribution as pd
+    create_profile("work", no_alias=True)
+    delete_profile("work", yes=True)
+    dist = profile_env / "dist"
+    dist.mkdir()
+    (dist / "distribution.yaml").write_text("name: work\nversion: 1.0.0\n", encoding="utf-8")
+    (dist / "SOUL.md").write_text("Work persona.\n", encoding="utf-8")
+    served_mid_install = []
+
+    def _failing_manifest_write(target, manifest):  # the payload copy's last step
+        served_mid_install.append([name for name, _home in profiles_to_serve(multiplex=True)])
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(pd, "write_manifest", _failing_manifest_write)
+    with pytest.raises(OSError):
+        pd.install_distribution(str(dist))
+
+    work_dir = profile_env / ".hermes" / "profiles" / "work"
+    assert served_mid_install == [["default"]]
+    assert not work_dir.exists() and profiles.named_profile_is_deleted(work_dir)
 
 
 class TestExportImport:

@@ -6,7 +6,7 @@ a multiplexing gateway/dashboard, since neither calls the pin itself. Two contra
 
 * ``get_process_hermes_home()`` / ``get_hermes_home()`` keep following ``HERMES_HOME`` while the
   pin holds — a host's env mirror exists so override-less readers see the served profile, and an
-  env-only home switch (``profiles._cleanup_gateway_service``) must not resolve to the launch home.
+  env-only home switch must not resolve to the launch home.
 * Deactivation releases only the pin activation itself created: an embedding host's explicit pin
   survives the transient toggles in ``gateway_migrate._multiplex_read_mode`` and cron workers.
 """

@@ -305,10 +305,21 @@ def _wrapper_path(alias: str) -> Path:
     return _get_wrapper_dir() / (f"{alias}.bat" if sys.platform == "win32" else alias)
 
 
+# ``hermes -p <profile>`` in a wrapper we wrote. The POSIX wrapper execs the shlex-quoted hermes
+# path, so an install path with a space or apostrophe ends the executable with a closing quote.
+_WRAPPER_PROFILE_RE = re.compile(r"hermes'? -p\s+(\S+)")
+
+
+def _wrapper_profile(content: str) -> Optional[str]:
+    """Profile a Hermes-generated wrapper activates, or None when *content* is not one."""
+    m = _WRAPPER_PROFILE_RE.search(content)
+    return m.group(1) if m else None
+
+
 def _is_our_wrapper(path: Path) -> bool:
-    """True when *path* reads as a Hermes-generated wrapper (contains ``hermes -p``)."""
+    """True when *path* reads as a Hermes-generated wrapper (``hermes -p <profile>``)."""
     try:
-        return "hermes -p" in path.read_text(encoding="utf-8-sig")
+        return _wrapper_profile(path.read_text(encoding="utf-8-sig")) is not None
     except Exception:
         return False
 
@@ -620,7 +631,6 @@ def build_alias_map() -> dict[str, str]:
     if not wrapper_dir.is_dir():
         return result
     is_windows = sys.platform == "win32"
-    prefix = "hermes -p "
     for entry in sorted(wrapper_dir.iterdir()):
         if not entry.is_file():
             continue
@@ -634,12 +644,7 @@ def build_alias_map() -> dict[str, str]:
                 content = f.read(_WRAPPER_READ_LIMIT)
         except (OSError, UnicodeDecodeError):
             continue  # UnicodeDecodeError = a binary on PATH, not a wrapper
-        idx = content.find(prefix)
-        if idx == -1:
-            continue
-        rest = content[idx + len(prefix):]
-        # Profile id is the first whitespace-delimited token after the flag.
-        canon = rest.split(None, 1)[0].strip() if rest.strip() else ""
+        canon = _wrapper_profile(content)
         if not canon:
             continue
         canon = normalize_profile_name(canon)
@@ -1217,6 +1222,21 @@ def _seed_file_if_missing(path: Path, text: str, mode: Optional[int] = None) -> 
             os.chmod(str(path), mode)
 
 
+def _seed_placeholder_env(profile_dir: Path) -> None:
+    """Give a new profile its own owner-only placeholder ``.env`` unless it has one. A profile
+    without one is taken for a pre-#44792 profile by ``backfill_profile_envs``, which copies the
+    DEFAULT's secrets in — so a failed seed RAISES (the caller must not publish the profile), and an
+    existing entry is never written through: exclusive create refuses any symlink, dangling or not."""
+    env_path = profile_dir / ".env"
+    try:
+        fh = open(env_path, "x", encoding="utf-8", opener=lambda p, flags: os.open(p, flags, 0o600))
+    except FileExistsError:
+        return
+    with fh:
+        fh.write(_PLACEHOLDER_ENV)
+    os.chmod(env_path, 0o600)
+
+
 def _clone_file(source_dir: Path, profile_dir: Path, relpath: str) -> None:
     """Copy one profile-relative file if it exists. ``.env`` is tightened to owner-only:
     ``copy2`` preserves source mode bits, so a loose source (umask 0o644) would leak."""
@@ -1496,7 +1516,7 @@ def _finish_profile_layout(profile_dir: Path, *, no_skills: bool, clone_all: boo
     # profile-scoped env writes (dashboard Channels/Keys pages, `hermes -p <name> auth add`)
     # had no file until first write and the profile silently inherited shell API keys —
     # read by users as "the new profile reads the root .env". Skipped when a clone copied one.
-    _seed_file_if_missing(profile_dir / ".env", _PLACEHOLDER_ENV, 0o600)
+    _seed_placeholder_env(profile_dir)
 
     # Default SOUL.md to customize immediately (skipped when a clone already provided one).
     with contextlib.suppress(Exception):  # best-effort — don't fail profile creation over this
@@ -1594,7 +1614,7 @@ def backfill_profile_envs(quiet: bool = False) -> List[str]:
     default_env = _get_default_hermes_home() / ".env"
     for entry in _iter_named_profile_dirs():
         env_path = entry / ".env"
-        if env_path.exists():
+        if env_path.exists() or env_path.is_symlink():  # never copy the default's secrets through a dangling link
             continue
         try:
             if default_env.is_file():
@@ -1989,14 +2009,13 @@ def _cleanup_gateway_service(name: str, profile_dir: Path) -> bool:
     """Disable and remove systemd/launchd service for a profile; True when a unit was removed."""
     import platform as _platform
 
-    # The service name follows get_hermes_home(): bind the override (the seam a multiplexed
-    # dashboard/tui-gateway process reads) and mirror the env for identity-file readers, so a
-    # DELETE from a multi-profile dashboard names THIS profile's unit, never the host's bare one.
+    # The service name follows get_hermes_home(): bind the context-local override so a DELETE
+    # from a multi-profile dashboard names THIS profile's unit, never the host's bare one. Never
+    # mirror it into os.environ: the dashboard serves other requests on other threads meanwhile,
+    # and a process-wide HERMES_HOME would hand them this profile's home, .env and state.db.
     from hermes_constants import reset_hermes_home_override, set_hermes_home_override
-    old_home = os.environ.get("HERMES_HOME")
     home_token = set_hermes_home_override(str(profile_dir))
     try:
-        os.environ["HERMES_HOME"] = str(profile_dir)
         from hermes_cli.gateway import get_service_name, get_launchd_plist_path, user_systemd_unit_dir
 
         def _run(*cmd: str) -> None:
@@ -2033,9 +2052,6 @@ def _cleanup_gateway_service(name: str, profile_dir: Path) -> bool:
         print(f"⚠ Service cleanup: {e}")
     finally:
         reset_hermes_home_override(home_token)
-        os.environ.pop("HERMES_HOME", None)
-        if old_home is not None:
-            os.environ["HERMES_HOME"] = old_home
     return False
 
 
@@ -2368,7 +2384,12 @@ def import_profile(archive_path: str, name: Optional[str] = None) -> Path:
                 else:
                     child.unlink()
         drop_profile_role(final_source)
+        # Exports strip .env; own one from day one (as create_profile does), or the next `hermes
+        # update` backfill takes this for a pre-#44792 profile and copies the DEFAULT's .env in.
+        _seed_placeholder_env(final_source)
         shutil.move(str(final_source), str(profile_dir))
+    # A profile deleted earlier under this name left its tombstone (same as create_profile).
+    clear_named_profile_deleted(profile_dir)
     return profile_dir
 
 
@@ -2504,6 +2525,9 @@ def rename_profile(old_name: str, new_name: str) -> Path:
     # resurrect it, and a future profile reusing the old name must not read as deleted.
     if live_mux:
         clear_named_profile_deleted(old_dir)
+    # Likewise a profile deleted earlier under the NEW name left its tombstone: the renamed
+    # profile would inherit it (unlisted, unserved, every home mkdir refused).
+    clear_named_profile_deleted(new_dir)
 
     # 2b. Record the rename so Bot Mode group chats can re-link persisted
     # member descriptors to the new slug (#110200). Best-effort: a metadata

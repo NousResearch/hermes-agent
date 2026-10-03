@@ -108,8 +108,79 @@ def test_live_marker_is_never_reclaimed_and_refuses_the_handoff(tmp_path, sleepe
     assert result.returncode == 2, result.stdout + result.stderr
     assert marker.read_text(encoding="utf-8-sig") == body
     assert _calls(tmp_path) == []
-    receipt = json.loads((home / ".hermes-update-result.json").read_text(encoding="utf-8-sig"))
-    assert receipt["ok"] is False and receipt["exit_code"] == 2
+    # A refused run changed nothing and owns no result (contract A4): the other update reports.
+    assert not (home / ".hermes-update-result.json").exists()
+
+
+def _now() -> int:
+    return int(time.time())
+
+
+# Contract A1/A2/A3 marker bodies, judged by the real posix.sh against a real live process; every
+# other reader (Python, Electron, PowerShell, Rust) must give the same verdict.
+_MATRIX = {
+    "crlf-v2-matching-ct": (lambda pid, ct: f"{pid}\r\n{_now()}\r\nct:{ct}\r\n", "live"),
+    "bom-v2-matching-ct": (lambda pid, ct: f"\ufeff{pid}\n{_now()}\nct:{ct}\n", "live"),
+    "fractional-started-at": (lambda pid, ct: f"{pid}\n{_now()}.5\nct:{ct}\n", "dead"),
+    "missing-line-2": (lambda pid, ct: f"{pid}\n", "dead"),
+    "garbled-ct-is-v1-fresh": (lambda pid, ct: f"{pid}\n{_now()}\nct:garbage\n", "live"),
+    "garbled-ct-is-v1-past-20min": (lambda pid, ct: f"{pid}\n{_now() - 1300}\nct:garbage\n", "dead"),
+    "delegate-without-ct-is-ignored": (lambda pid, ct: f"999999\n{_now()}\nct:1.000\ndelegate:{pid}\n", "dead"),
+    "delegate-with-ct": (lambda pid, ct: f"999999\n{_now()}\nct:1.000\ndelegate:{pid} ct:{ct}\n", "live"),
+}
+
+
+@pytest.mark.parametrize("case", sorted(_MATRIX))
+def test_marker_bodies_are_parsed_positionally_like_every_other_reader(tmp_path, sleeper, case):
+    home, install = _install(tmp_path)
+    live = sleeper()
+    make, verdict = _MATRIX[case]
+    marker = home / ".hermes-update-in-progress"
+    body = make(live.pid, _ct(live.pid)).encode("utf-8")
+    marker.write_bytes(body)
+
+    result = _run(tmp_path, home, install, "--self-test-marker", "--no-marker-cleanup")
+
+    if verdict == "live":
+        assert result.returncode == 2, result.stdout + result.stderr
+        assert marker.read_bytes() == body
+    else:
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert marker.read_text(encoding="utf-8-sig").split("\n")[0] != str(live.pid)
+
+
+@pytest.mark.parametrize("age", [0, 60], ids=["young-claim-in-flight", "stale"])
+def test_empty_marker_is_live_only_while_young(tmp_path, age):
+    home, install = _install(tmp_path)
+    marker = home / ".hermes-update-in-progress"
+    marker.write_bytes(b"")
+    os.utime(marker, (time.time() - age, time.time() - age))
+
+    result = _run(tmp_path, home, install, "--self-test-marker", "--no-marker-cleanup")
+
+    assert result.returncode == (2 if age == 0 else 0), result.stdout + result.stderr
+
+
+@pytest.mark.parametrize("bridge", ["absent", "someone-else"])
+def test_desktop_started_handoff_only_adopts_its_bridge(tmp_path, sleeper, bridge):
+    """A4: the Desktop gave up on a late script (no bridge left, or another update took the marker):
+    the script must not claim fresh, run, or write a result the next boot would show."""
+    home, install = _install(tmp_path)
+    desktop, other = sleeper(), sleeper()
+    marker = home / ".hermes-update-in-progress"
+    body = f"{other.pid}\n{_now()}\nct:{_ct(other.pid)}\n"
+    if bridge == "someone-else":
+        marker.write_text(body, encoding="utf-8")
+
+    result = _run(tmp_path, home, install, "--desktop-pid", str(desktop.pid))
+
+    assert result.returncode == 2, result.stdout + result.stderr
+    assert _calls(tmp_path) == []
+    assert not (home / ".hermes-update-result.json").exists()
+    if bridge == "absent":
+        assert not marker.exists()
+    else:
+        assert marker.read_text(encoding="utf-8-sig") == body
 
 
 def test_desktop_bridge_marker_is_adopted_with_its_started_at(tmp_path, sleeper):

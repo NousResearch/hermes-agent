@@ -87,6 +87,25 @@ def test_declared_extra_gates_match_dependency_selection():
                 )
 
 
+def test_matrix_extra_gated_off_python_314():
+    """python-olm's published wheels top out at cp312, so on Linux + Python 3.14
+    the matrix extra resolves to a sdist whose vendored (archived 2023) libolm
+    cannot build — `hermes update` hard-fails mid-takeover instead of refusing
+    the extra up front (#129677). The gate must mirror neutts's version
+    condition; Linux 3.13 keeps the linux-only support.
+    """
+    base = {"sys_platform": "linux", "platform_system": "Linux",
+            "platform_machine": "x86_64", "os_name": "posix"}
+    supported = {
+        python: extras.extra_supported(
+            "matrix", environment={**base, "python_version": python,
+                                   "python_full_version": python + ".0"},
+            importable=lambda _: False)
+        for python in ("3.13", "3.14")
+    }
+    assert supported == {"3.13": True, "3.14": False}
+
+
 def test_faster_whisper_targets_are_gated(monkeypatch):
     """The local-STT extra's anchor is faster-whisper, which has no win_arm64 or darwin-x64 build.
 

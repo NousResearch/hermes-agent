@@ -445,16 +445,21 @@ def _refusals():
 
     gate = approval._COMMAND_GATE
     return [
-        ("terminal", {"command": "rm -rf build"},
-         _error_json(gate.cli_denied.format(description="", breaker=""), status="blocked")),
-        ("terminal", {"command": "rm -rf build"},
-         _error_json(gate.transport_denied.format(breaker=""), status="blocked")),
-        ("terminal", {"command": "rm -rf build"},
-         _error_json(gate.cli_timeout.format(breaker=""), status="blocked")),
-        ("write_file", {"path": "AGENTS.md", "content": "a\nb"},
-         tool_error("BLOCKED: write to protected agent-instruction file(s) (AGENTS.md) was denied by "
-                    "the user. The user has NOT consented to this write. Do NOT retry it or attempt "
-                    "the same edit via another path (terminal, execute_code, etc.).")),
+        pytest.param("terminal", {"command": "rm -rf build"},
+                     _error_json(gate.cli_denied.format(description="", breaker=""), status="blocked"),
+                     id="cli_denied"),
+        pytest.param("terminal", {"command": "rm -rf build"},
+                     _error_json(gate.transport_denied.format(breaker=""), status="blocked"),
+                     id="transport_denied"),
+        pytest.param("terminal", {"command": "rm -rf build"},
+                     _error_json(gate.cli_timeout.format(breaker=""), status="blocked"),
+                     id="cli_timeout"),
+        pytest.param("write_file", {"path": "AGENTS.md", "content": "a\nb"},
+                     tool_error("BLOCKED: write to protected agent-instruction file(s) (AGENTS.md) was "
+                                "denied by the user. The user has NOT consented to this write. Do NOT "
+                                "retry it or attempt the same edit via another path (terminal, "
+                                "execute_code, etc.)."),
+                     id="write_guard"),
     ]
 
 
@@ -462,8 +467,7 @@ class TestSummarizeToolResultRefusals:
     """A refused call must not be summarized as done ("ran ...", "wrote to ..."): that turns the
     user's denial into a record of the action and drops the do-not-retry instruction."""
 
-    @pytest.mark.parametrize("tool_name,args,content", _refusals(),
-                             ids=["cli_denied", "transport_denied", "cli_timeout", "write_guard"])
+    @pytest.mark.parametrize("tool_name,args,content", _refusals())
     def test_denial_summary_keeps_not_run_and_no_consent(self, tool_name, args, content):
         summary = _summarize_tool_result(tool_name, json.dumps(args), content)
 
@@ -472,7 +476,7 @@ class TestSummarizeToolResultRefusals:
         assert len(summary) <= _PRUNE_MIN_CHARS - 1
 
     def test_prune_keeps_denial_across_passes(self, compressor):
-        tool_name, args, content = _refusals()[0]
+        tool_name, args, content = _refusals()[0].values
         assert len(content) > _PRUNE_MIN_CHARS
         messages = [
             {"role": "assistant", "tool_calls": [{"id": "t1", "type": "function",

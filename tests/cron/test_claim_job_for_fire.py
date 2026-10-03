@@ -144,7 +144,7 @@ def test_reclaimed_fire_uses_new_owner_token(temp_home, monkeypatch):
     monkeypatch.setattr(
         jobs,
         "_hermes_now",
-        lambda: original_at + timedelta(seconds=301),
+        lambda: original_at + timedelta(seconds=jobs.FIRE_CLAIM_TTL_SECONDS + 1),
     )
 
     assert jobs.claim_job_for_fire(job["id"]) is True
@@ -155,6 +155,31 @@ def test_reclaimed_fire_uses_new_owner_token(temp_home, monkeypatch):
         expected_owner=original["by"],
     ) is False
     assert jobs.get_job(job["id"])["fire_claim"] == replacement
+
+
+def test_five_minute_heartbeat_stall_keeps_claim(temp_home, monkeypatch):
+    """#116136: a run whose claim went unrefreshed for just over the old 300 s TTL still
+    owns the fire — the heartbeat refreshes through the shared jobs store, so cross-process
+    write contention can stall it for minutes while the job is actively working. A reclaim
+    at 5 minutes interrupted live runs; re-claim still lands once the claim truly expires."""
+    from datetime import datetime, timedelta
+
+    import cron.jobs as jobs
+
+    job = jobs.create_job(prompt="x", schedule="every 5m", name="stall")
+    jid = job["id"]
+    assert jobs.claim_job_for_fire(jid) is True
+    at = datetime.fromisoformat(jobs.get_job(jid)["fire_claim"]["at"])
+
+    monkeypatch.setattr(jobs, "_hermes_now", lambda: at + timedelta(seconds=301))
+    assert jobs.claim_job_for_fire(jid) is False
+
+    monkeypatch.setattr(
+        jobs,
+        "_hermes_now",
+        lambda: at + timedelta(seconds=jobs.FIRE_CLAIM_TTL_SECONDS + 1),
+    )
+    assert jobs.claim_job_for_fire(jid) is True
 
 
 def test_stale_fire_owner_cannot_mark_replacement_run(temp_home):

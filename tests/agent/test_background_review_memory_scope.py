@@ -55,7 +55,7 @@ class TestSpawnForwardsScope:
         captured = {}
 
         def fake_worker(agent, messages_snapshot, prompt, task_cfg=None, review_run=None,
-                        review_memory=False, explicit=False):
+                        review_memory=False, explicit=False, context=None):
             captured["review_memory"] = review_memory
 
         agent = SimpleNamespace()
@@ -80,7 +80,7 @@ class TestExplicitRefineOrigin:
         captured = {}
 
         def fake_worker(agent, messages_snapshot, prompt, task_cfg=None, review_run=None,
-                        review_memory=False, explicit=False):
+                        review_memory=False, explicit=False, context=None):
             captured["explicit"] = explicit
 
         with patch.object(bg, "_run_review_in_thread", fake_worker):

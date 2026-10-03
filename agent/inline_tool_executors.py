@@ -10,6 +10,7 @@ lazily at call time so ``patch("tools.x.y")`` in tests keeps working.
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import dataclass
 from importlib import import_module
 from typing import Any, Callable, Dict, Optional, Tuple
@@ -18,9 +19,15 @@ from tools.arg_coercion import coerce_tool_args
 
 
 def tool_hook_ids(agent, effective_task_id: str, tool_call_id: Optional[str]) -> Dict[str, str]:
-    """Identity kwargs every tool hook/middleware call carries (all coerced to ``""``)."""
+    """Identity kwargs every tool hook/middleware call carries (all coerced to ``""``).
+
+    ``kanban_task_id`` is deliberately payload-only: descendant subprocesses must not
+    inherit the worker identity, but policy hooks running in those subprocesses still
+    need to identify the worker they are guarding.
+    """
     return {
         "task_id": effective_task_id or "",
+        "kanban_task_id": os.environ.get("HERMES_KANBAN_TASK", "").strip(),
         "session_id": getattr(agent, "session_id", "") or "",
         "tool_call_id": tool_call_id or "",
         "turn_id": getattr(agent, "_current_turn_id", "") or "",

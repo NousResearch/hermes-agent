@@ -13,8 +13,10 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import shutil
 import subprocess  # noqa: F401 — tests monkeypatch ``op.subprocess.run``
+import tempfile
 import time
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -137,6 +139,80 @@ def _op_child_env(token_value: str) -> Dict[str, str]:
     return env
 
 
+# One `op` invocation costs ~2 rate-limit requests regardless of how many references it
+# carries, so N sequential `op read` calls cost 2N while one `op inject` over a template of
+# all N costs 2 flat (measured 1→24 refs on CLI 2.39.0). On personal tiers the daily cap is
+# 1000 requests ACROSS the whole 1Password account, so a 24-ref map on a short TTL exhausts
+# it in ~20 cold starts. Batch first; fall back to the per-reference path on any failure.
+#
+# Sentinel-delimited rather than KEY=value: a secret may legitimately contain '=', '#',
+# quotes or newlines, any of which would corrupt a line-oriented parse.
+_INJECT_RECORD = re.compile(
+    r"\x01OPK:(?P<name>[A-Za-z_][A-Za-z0-9_]*):OPV\x01(?P<value>.*?)\x01OPEND\x01", re.S)
+_OP_INJECT_TIMEOUT = 60
+
+
+def _build_inject_template(references: Dict[str, str]) -> str:
+    return "".join(f"\x01OPK:{n}:OPV\x01{{{{ {references[n]} }}}}\x01OPEND\x01\n"
+                   for n in sorted(references))
+
+
+def _parse_inject_output(text: str) -> Dict[str, str]:
+    return {m.group("name"): m.group("value") for m in _INJECT_RECORD.finditer(text)}
+
+
+def _run_op_inject(op: Path, references: Dict[str, str], *, account: str = "",
+                   token_value: str = "") -> Tuple[Dict[str, str], Optional[str]]:
+    """Resolve every reference in ONE `op inject` call → ``(secrets, error)``.
+
+    ``error`` is non-None when the batch did not fully resolve; `op inject` is
+    all-or-nothing (one bad reference fails the run and writes no output), so the
+    caller must fall back to per-reference reads rather than treat a partial
+    result as authoritative. Never raises.
+    """
+    if not references:
+        return {}, None
+
+    tmpdir = tempfile.mkdtemp(prefix="op_inject_")  # 0700 on POSIX; holds plaintext briefly
+    tpl, out = Path(tmpdir, "in.tpl"), Path(tmpdir, "out.txt")
+    try:
+        tpl.write_text(_build_inject_template(references), encoding="utf-8")
+        cmd: List[str] = [str(op), "inject", "-i", str(tpl), "-o", str(out), "-f"]
+        if account:
+            cmd += ["--account", account]
+
+        proc = run_cli(cmd, env=_op_child_env(token_value), timeout=_OP_INJECT_TIMEOUT,
+                       label="op", timeout_message=f"op inject timed out after {_OP_INJECT_TIMEOUT}s",
+                       stdin=None)
+        if proc.returncode != 0:
+            return {}, _scrub(proc.stderr or "")[:200] or f"op inject exited {proc.returncode}"
+
+        resolved = _parse_inject_output(out.read_text(encoding="utf-8"))
+        # Blank is unresolved, mirroring _run_op_read's `not value.strip()`. Both paths must
+        # agree: if the batch accepted a value `op read` refuses, the same credential would
+        # resolve differently depending only on how many references happened to be mapped
+        # beside it. Relaxing this to `v != ""` here alone would introduce that divergence.
+        resolved = {n: v for n, v in resolved.items() if v.strip()}
+        missing = sorted(set(references) - set(resolved))
+        if missing:
+            return {}, f"op inject did not resolve: {', '.join(missing[:5])}"
+        return resolved, None
+    except (RuntimeError, OSError) as exc:
+        # run_cli turns timeouts and spawn failures into RuntimeError; either way the
+        # caller falls back to per-reference reads rather than losing every credential.
+        return {}, f"op inject failed: {exc}"
+    finally:
+        for path in (tpl, out):
+            try:
+                path.unlink()
+            except OSError:
+                pass
+        try:
+            os.rmdir(tmpdir)
+        except OSError:
+            pass
+
+
 def _run_op_read(op: Path, reference: str, *, account: str = "", token_value: str = "") -> str:
     """Resolve one ``op://`` reference; raises ``RuntimeError`` on any failure, including
     an exit-0 empty value (applying it would clobber a good credential with ``""``)."""
@@ -193,12 +269,26 @@ def fetch_onepassword_secrets(
 
     secrets: Dict[str, str] = {}
     read_errors = 0
-    for name in sorted(valid):
-        try:
-            secrets[name] = _run_op_read(op, valid[name], account=account, token_value=token_value)
-        except RuntimeError as exc:
-            warnings.append(str(exc))
-            read_errors += 1
+
+    # Batch when it pays: one `op` invocation costs the same as any other, so a single
+    # reference gains nothing from a template (and a template writes plaintext to disk).
+    inject_error: Optional[str] = None
+    if len(valid) > 1:
+        secrets, inject_error = _run_op_inject(op, valid, account=account, token_value=token_value)
+    if len(valid) == 1 or inject_error:
+        # All-or-nothing: a single bad reference fails the batch, so fall back to the
+        # per-reference path, which isolates failures into warnings and still returns
+        # every reference that does resolve.
+        if inject_error:
+            logger.debug("op inject batch failed (%s); falling back to per-reference reads",
+                         inject_error)
+        secrets = {}
+        for name in sorted(valid):
+            try:
+                secrets[name] = _run_op_read(op, valid[name], account=account, token_value=token_value)
+            except RuntimeError as exc:
+                warnings.append(str(exc))
+                read_errors += 1
 
     if use_cache and not read_errors and secrets:
         _STORE.store(cache_key, CachedFetch(secrets=dict(secrets), fetched_at=time.time()),

@@ -656,6 +656,30 @@ def test_gc_keeps_entries_pinned_in_the_keep_list(pm_env):
     assert not orphan.exists()
 
 
+def test_gc_dry_run_reports_set_asides_without_deleting(pm_env, capsys):
+    """A set-aside (`.reclaim-*`) is an install leftover whose hold was still
+    alive at replace time; a real gc reclaims it. A dry run must report it in
+    the removal list yet leave it on disk — `--dry-run` deletes nothing."""
+    from types import SimpleNamespace
+
+    from pm.cli import cmd_gc
+    from pm.install import ensure
+
+    _, runtime, *_ = pm_env
+    ensure("faketool", base_env={})
+    set_aside = runtime / ".reclaim-deadbeef"
+    set_aside.mkdir()
+    (set_aside / "held.dll").write_bytes(b"mapped")
+    cmd_gc(SimpleNamespace(dry_run=True))
+    out = capsys.readouterr().out
+    assert "would remove .reclaim-deadbeef" in out
+    assert set_aside.is_dir(), "dry run must not reclaim a set-aside"
+    assert (set_aside / "held.dll").is_file()
+
+    cmd_gc(None)
+    assert not set_aside.exists(), "a real gc still reclaims the set-aside"
+
+
 def test_env_for_never_installs(pm_env):
     from pm import env_for
 

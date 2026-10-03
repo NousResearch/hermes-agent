@@ -1179,6 +1179,7 @@ platform:
       action_deny: "❌ Отклонить"
       toast_invalid_data: "Недопустимые данные одобрения."
       toast_already_resolved: "Решение по этому одобрению уже принято."
+      toast_admin_only: "⛔ Здесь одобрять команды может только администратор."
       resolved_once: "✅ Одобрено один раз"
       resolved_session: "✅ Одобрено на сеанс"
       resolved_always: "✅ Одобрено навсегда"

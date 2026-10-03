@@ -1179,6 +1179,7 @@ platform:
       action_deny: "❌ Weier"
       toast_invalid_data: "Ongeldige goedkeuringsdata."
       toast_already_resolved: "Hierdie goedkeuring is reeds afgehandel."
+      toast_admin_only: "⛔ Slegs 'n admin kan opdragte hier goedkeur."
       resolved_once: "✅ Eenmalig goedgekeur"
       resolved_session: "✅ Vir sessie goedgekeur"
       resolved_always: "✅ Permanent goedgekeur"

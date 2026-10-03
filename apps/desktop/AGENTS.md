@@ -274,6 +274,12 @@ before `npm run dev`. Stop Electron and its dev server after the run.
 
 If any answer is "not sure," that's the part to go verify.
 
+## Desktop Web
+
+The `web/` folder contains the browser host for this native Desktop renderer, reusing the authoritative renderer while replacing the Electron host boundary.
+It exists so Hermes can provide the Desktop experience through a browser without copying or modifying the native renderer or Electron source.
+Its implementation and browser-specific rules are documented in `web/AGENTS.md` and `web/README.md`.
+
 ## Nous free tier: state is pulled, never latched in the renderer
 
 The free tier (a Nous identity with no account, `hermes_cli/anon_auth.py`) reaches the renderer

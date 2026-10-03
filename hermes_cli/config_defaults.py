@@ -1069,6 +1069,20 @@ DEFAULT_CONFIG = {
         "public_url": "",
     },
 
+    # Standalone browser counterpart of the native Desktop app. This is kept
+    # independent from dashboard authentication and process state.
+    "desktop_web": {
+        "public_url": "",
+        "basic_auth": {
+            "username": "",
+            "password_hash": "",
+            "password": "",
+            "secret": "",
+            "session_ttl_seconds": 0,
+        },
+    },
+
+    # Privacy settings
     "privacy": {
         "redact_pii": False,  # hash user IDs and strip phone numbers from LLM context
     },

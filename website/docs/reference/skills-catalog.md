@@ -52,6 +52,12 @@ If a skill is missing from this list but present in the repo, the catalog is reg
 |-------|-------------|------|
 | [`sdlc-review`](../user-guide/skills/bundled/devops/devops-sdlc-review.md) | Review Kanban handoffs and route verified outcomes. | `devops/sdlc-review` |
 
+## devops
+
+| Skill | Description | Path |
+|-------|-------------|------|
+| [`termux-chromium-browser`](/docs/user-guide/skills/bundled/devops/devops-termux-chromium-browser) | Native headless Chromium browser over CDP for Termux. | `devops/termux-chromium-browser` |
+
 ## email
 
 | Skill | Description | Path |

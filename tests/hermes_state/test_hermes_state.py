@@ -1749,7 +1749,8 @@ class TestSessionTitleIndexRepair:
                 ).fetchall()
             }
             assert set(rows) == {"older", "newer", "unique"}
-            assert rows["older"]["title"] is None
+            # NULL title_source ranks as user: the older row is renamed, never dropped.
+            assert rows["older"]["title"] == "shared-title #2"
             assert rows["newer"]["title"] == "shared-title"
             assert rows["unique"]["title"] == "unique-title"
             assert reopened.get_messages("older")[0]["content"] == "keep older message"
@@ -1759,6 +1760,31 @@ class TestSessionTitleIndexRepair:
                 "WHERE type = 'index' AND name = 'idx_sessions_title_unique'"
             ).fetchone()
             assert index is not None
+        finally:
+            reopened.close()
+
+    def test_repair_keeps_highest_ranked_newest_title(self, tmp_path):
+        # #126764: rank (user > llm > derived) beats recency; within a rank the newest
+        # started_at wins even when it has the lower rowid.
+        db_path = tmp_path / "ranked_titles.db"
+        db = SessionDB(db_path=db_path)
+        for sid in "abcd":
+            db.create_session(sid, "cli")
+        db.close()
+        with sqlite3.connect(db_path) as conn:
+            conn.execute("DROP INDEX idx_sessions_title_unique")
+            conn.executemany(
+                "UPDATE sessions SET title = ?, title_source = ?, started_at = ? WHERE id = ?",
+                [("Trip", "user", 100, "a"), ("Trip", "llm", 300, "b"),
+                 ("Note", "derived", 200, "c"), ("Note", "derived", 100, "d")],
+            )
+        reopened = SessionDB(db_path=db_path)
+        try:
+            titles = dict(reopened._conn.execute("SELECT id, title FROM sessions").fetchall())
+            assert titles == {"a": "Trip", "b": None, "c": "Note", "d": None}
+            assert reopened._conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE name = 'idx_sessions_title_unique'"
+            ).fetchone()
         finally:
             reopened.close()
 

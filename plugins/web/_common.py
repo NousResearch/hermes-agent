@@ -7,6 +7,9 @@ slots) lazily at call time so monkeypatching the source module keeps working.
 
 from __future__ import annotations
 
+import importlib.util
+import sys
+
 import logging
 from typing import Any, Awaitable, Callable, Dict, List, Optional
 
@@ -167,15 +170,70 @@ def titled_rows(raw_results: List[Dict[str, Any]], description_key: str) -> List
     ]
 
 
-def lazy_ensure(extra: str) -> None:
-    """Best-effort ``pm.ensure_import``: a missing-but-unavailable extra raises
-    ``pm.InstallError``, re-raised as ImportError for the caller's own handling."""
-    import pm
+def _sdk_importable(module_name: str) -> bool:
+    """True when ``import <module_name>`` would succeed.
 
+    ``sys.modules`` is checked first: an already-imported module is importable
+    by definition, and ``find_spec`` raises ``ValueError`` on entries with no
+    ``__spec__`` (which is how tests inject a stub SDK).
+    """
+    if module_name in sys.modules:
+        return True
     try:
-        pm.ensure_import(extra)
-    except Exception as exc:  # noqa: BLE001
-        raise ImportError(str(exc))
+        return importlib.util.find_spec(module_name) is not None
+    except (ImportError, ValueError):
+        return False
+
+
+# Feature -> top-level import the factory actually needs (usually the feature id
+# with its namespace stripped, per the "search.<vendor>" convention).
+_FEATURE_MODULE_PREFIXES = ("search.", "extract.", "export.")
+# Features whose package name is NOT the vendor slug (``exa-py`` ships ``exa_py``).
+_IMPORT_NAME_OVERRIDES = {"search.exa": "exa_py"}
+
+
+def _feature_module(feature: str) -> str:
+    """The importable package a feature's factory needs, from the feature id.
+
+    The override table is consulted first (``search.exa`` -> ``exa_py``) so a
+    vendor whose package name is not its slug is never probed as the wrong
+    module; everything else strips the namespace prefix (``search.parallel`` ->
+    ``parallel``, ``search.firecrawl`` -> ``firecrawl``).
+    """
+    override = _IMPORT_NAME_OVERRIDES.get(feature)
+    if override is not None:
+        return override
+    return feature.split(".", 1)[-1] if feature.startswith(_FEATURE_MODULE_PREFIXES) else feature
+
+
+def lazy_ensure(feature: str) -> None:
+    """Try to install ``feature``'s packages; refuse only when the import would fail.
+
+    The import at the call site is the real gate: whether the SDK can be
+    installed is only interesting when it is not already importable.
+    ``pm.ensure_import`` signals an unusable feature with ``pm.InstallError``
+    (a ``RuntimeError``), so an install that cannot happen must not disable a
+    provider whose SDK is present. On a host with lazy installs off that made
+    the provider unusable whether or not the package was importable.
+
+    So: try to install, and if that is impossible, check whether we needed it.
+    Only a genuinely missing package raises, and it carries the install hint.
+    Unrelated faults still surface as ``ImportError`` for the caller.
+    """
+    try:
+        import pm
+    except ImportError:
+        return  # pm unavailable — let the call-site import decide
+    try:
+        pm.ensure_import(feature)
+    except Exception as exc:  # noqa: BLE001 — availability faults are judged below
+        if isinstance(exc, getattr(pm, "InstallError", ())):
+            if not _sdk_importable(_feature_module(feature)):
+                raise ImportError(f"{exc} ({pm.install_hint(feature)})") from exc
+            return  # Already importable; nothing needed installing.
+        raise ImportError(str(exc)) from exc
+
+
 
 
 def cached_sdk_client(slot: str, env_var: str, missing_key_error: str, feature: str, factory: Callable[[str], Any]) -> Any:

@@ -19,11 +19,13 @@ import subprocess
 import sys
 import time
 import uuid
+from collections.abc import Mapping
 from datetime import datetime, timezone
 from pathlib import Path
 from xml.etree import ElementTree
 from xml.sax.saxutils import escape
 
+from agent.delegation_context import DELEGATED_CHILD_ENV_MARKER, KANBAN_ENV_KEYS
 from hermes_cli._subprocess_compat import (
     _WINDOWS_GATEWAY_BREAKAWAY_ENV,
     windows_detach_flags,
@@ -59,6 +61,31 @@ _TASK_RESTART_INTERVAL = "PT1M"
 _TASK_RESTART_COUNT = 999
 
 _GATEWAY_ENV = (("PYTHONIOENCODING", "utf-8"), ("HERMES_GATEWAY_DETACHED", "1"), ("HERMES_SUPERVISED_CHILD", "1"))
+
+_ROOT_GATEWAY_CHILD_SCOPE_ENV_KEYS = (
+    DELEGATED_CHILD_ENV_MARKER,
+    *KANBAN_ENV_KEYS,
+    # Persisted launchers can outlive versions that used these legacy keys.
+    "HERMES_KANBAN_BRANCH",
+    "HERMES_KANBAN_WORKTREE",
+    "HERMES_KANBAN_WORKSPACE",
+    "HERMES_KANBAN_BOARD",
+    "HERMES_KANBAN_DB",
+    "HERMES_KANBAN_WORKSPACES_ROOT",
+)
+
+
+def root_gateway_subprocess_env(
+    base: Mapping[str, str],
+    overlay: Mapping[str, str] | None = None,
+) -> dict[str, str]:
+    """Build a root-gateway environment without delegated-worker ownership."""
+    env = dict(base)
+    if overlay:
+        env.update(overlay)
+    for key in _ROOT_GATEWAY_CHILD_SCOPE_ENV_KEYS:
+        env.pop(key, None)
+    return env
 
 
 def _schtasks_encoding() -> str:
@@ -391,6 +418,7 @@ def _build_gateway_cmd_script(python_path: str, working_dir: str, hermes_home: s
         # VIRTUAL_ENV lets the gateway's own python detection find the venv.
         f'set "VIRTUAL_ENV={_preserve_hermes_home_path(venv_dir)}"',
         f'set "PYTHONPATH={pythonpath}"',
+        *[f'set "{key}="' for key in _ROOT_GATEWAY_CHILD_SCOPE_ENV_KEYS],
         " ".join(_quote_cmd_script_arg(a) for a in _gateway_run_argv(python_exe_path, profile_arg)),
         "exit /b 0",
     ]
@@ -435,6 +463,12 @@ def _build_gateway_vbs_script(python_path: str, working_dir: str, hermes_home: s
         "Else",
         f"  env.Item({q('PYTHONPATH')}) = {q(static_pythonpath)}",
         "End If",
+        # WshEnvironment.Remove raises on a key that is absent (a normal root launch has none of
+        # these), which would abort the script before sh.Run. Guard only the removals,
+        # with error handling restored before the launch.
+        "On Error Resume Next",
+        *[f"env.Remove {q(key)}" for key in _ROOT_GATEWAY_CHILD_SCOPE_ENV_KEYS],
+        "On Error GoTo 0",
         f"sh.CurrentDirectory = {q(working_dir)}",
         # Window style 0 = hidden; bWaitOnReturn False = detached/async.
         f"sh.Run {q(command_line)}, 0, False",
@@ -769,7 +803,9 @@ def _spawn_detached(script_path: Path | None = None, home: Path | None = None) -
     # home=None is this process's own gateway, not a forced jump to the default root.
     # served_profile_child_env overlays that home's secrets instead of os.environ.copy().
     target = home if home is not None else _hermes_home()
-    env = {**served_profile_child_env(target_home=target, inherit_credentials=True), **env_overlay}
+    env = root_gateway_subprocess_env(
+        served_profile_child_env(target_home=target, inherit_credentials=True), env_overlay,
+    )
 
     # Stray print()/native stderr goes to a sidecar log; real gateway logs still land in gateway.log
     # via the logging FileHandler.

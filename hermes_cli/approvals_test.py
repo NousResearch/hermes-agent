@@ -7,7 +7,8 @@ order the runtime guard (``check_all_command_guards``) applies them:
 1. container-skip gate (isolated backends bypass all guards), 2. hardline blocklist (never
 bypassable, fires before yolo/off), 3. sudo-stdin guard (unconditional), 4. user ``approvals.deny``
 rules (fire before yolo/off), 5. yolo / ``approvals.mode: off`` bypass, 6. permanent
-``command_allowlist``, 7. dangerous-pattern detection (would prompt).
+``command_allowlist``, 7. Tirith security scan (block/warn → would prompt), 8. dangerous-pattern
+detection (would prompt).
 """
 
 from __future__ import annotations
@@ -103,7 +104,20 @@ def evaluate_command(command: str, env_type: str = "local") -> dict:
     if approval_floors._command_matches_permanent_allowlist(command):
         return result("allow", detail="matches command_allowlist in config.yaml (permanently approved)")
 
-    # 7. Dangerous-pattern detection → would prompt.
+    # 7. Tirith security scan — at runtime Tirith block/warn findings join the dangerous-pattern
+    #    findings in ONE approval request, so a Tirith flag means the runtime would prompt even
+    #    when no dangerous pattern matches. Reuse _tirith_scan so an un-importable scanner
+    #    honours security.tirith_fail_open exactly like the runtime.
+    tirith_result = approval._tirith_scan(command)
+    if tirith_result["action"] in {"block", "warn"}:
+        return result(
+            "ask-approval", rule=approval._format_tirith_description(tirith_result),
+            detail=f"Tirith security scanner flagged this command (action: "
+                   f"{tirith_result['action']}); the runtime would raise an "
+                   "interactive approval prompt",
+        )
+
+    # 8. Dangerous-pattern detection → would prompt.
     is_dangerous, pattern_key, description = approval_detection.detect_dangerous_command(command)
     if is_dangerous:
         return result(

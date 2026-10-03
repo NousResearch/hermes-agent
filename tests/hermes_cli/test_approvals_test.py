@@ -36,6 +36,10 @@ def isolated_approvals(monkeypatch):
     monkeypatch.setattr(A, "_YOLO_MODE_FROZEN", False)
     monkeypatch.setattr(A, "is_current_session_yolo_enabled", lambda: False)
     monkeypatch.setattr(A, "load_permanent_allowlist", lambda: set())
+    # Tirith scan would spawn the real scanner binary; default to allow so only
+    # tests that target the Tirith gate stub it explicitly.
+    _tirith_allow = {"action": "allow", "findings": [], "summary": ""}
+    monkeypatch.setattr(A, "_tirith_scan", lambda _cmd: _tirith_allow)
     saved = set(A._permanent_approved)
     A._permanent_approved.clear()
     # The tester must NEVER prompt or persist — make any attempt explode.
@@ -101,6 +105,64 @@ class TestVerdicts:
         assert "off" in out
         rc = at.approvals_test_command(_args(["sudo", "re" + "boot"]))
         assert rc == 3
+
+
+class TestTirithGate:
+    """The Tirith scan is part of the runtime guard, so the dry run must run it too —
+    otherwise an ``allow`` does not predict the runtime verdict (#132121)."""
+
+    WARN = {"action": "warn", "summary": "1 finding", "findings": [{
+        "rule_id": "analysis_incomplete", "severity": "HIGH",
+        "title": "Analysis incomplete",
+        "description": "The command could not be fully analyzed.",
+    }]}
+
+    def test_tirith_warn_asks_with_exit_2(self, isolated_approvals, capsys, monkeypatch):
+        monkeypatch.setattr(A, "_tirith_scan", lambda _cmd: self.WARN)
+        rc = at.approvals_test_command(_args(["~/bin/tool.sh", "--action", "status"]))
+        out = capsys.readouterr().out
+        assert rc == 2
+        assert "ask-approval" in out
+        assert "Tirith" in out
+        # The finding summary must surface so the user sees WHAT Tirith flagged.
+        assert "Analysis incomplete" in out
+
+    def test_tirith_block_also_asks_not_denies(self, isolated_approvals, capsys, monkeypatch):
+        # Runtime parity: a Tirith block used to be a hard stop but now joins the
+        # approval flow, so the dry run must report ask-approval (exit 2), not deny.
+        monkeypatch.setattr(A, "_tirith_scan",
+                            lambda _cmd: {**self.WARN, "action": "block"})
+        rc = at.approvals_test_command(_args(["~/bin/tool.sh"]))
+        out = capsys.readouterr().out
+        assert rc == 2
+        assert "ask-approval" in out
+        assert "block" in out
+
+    def test_tirith_allow_falls_through_to_dangerous_pattern(self, isolated_approvals,
+                                                             capsys):
+        rc = at.approvals_test_command(_args(["rm", "-rf", "~/project/build"]))
+        out = capsys.readouterr().out
+        assert rc == 2
+        assert "dangerous-command pattern" in out
+        assert "Tirith" not in out
+
+    def test_allowlisted_command_skips_tirith_like_runtime(self, isolated_approvals,
+                                                           capsys, monkeypatch):
+        # Runtime order: the permanent allowlist approves BEFORE the Tirith scan,
+        # so an allowlisted command stays allow even when Tirith would flag it.
+        monkeypatch.setattr(A, "_tirith_scan", lambda _cmd: self.WARN)
+        A._permanent_approved.add("mytool *")
+        rc = at.approvals_test_command(_args(["mytool", "--flag"]))
+        out = capsys.readouterr().out
+        assert rc == 0
+        assert "command_allowlist" in out
+
+    def test_container_env_skips_tirith(self, isolated_approvals, capsys, monkeypatch):
+        monkeypatch.setattr(A, "_tirith_scan", lambda _cmd: self.WARN)
+        rc = at.approvals_test_command(_args(["~/bin/tool.sh"], env_type="docker"))
+        out = capsys.readouterr().out
+        assert rc == 0
+        assert "allow" in out
 
 
 class TestNormalizationParity:

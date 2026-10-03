@@ -149,6 +149,21 @@ fn download_path(kind: ScriptKind, commit_or_ref: &str) -> PathBuf {
     paths::bootstrap_cache_dir().join(filename)
 }
 
+/// A cache filename must stay a single flat component inside the bootstrap
+/// cache directory — the guard keeps every
+/// cache filename a single flat component. `sanitize_ref` maps non-allowed chars to
+/// `_`, so ref-embedded dots end up as literal filename characters
+/// (`install-..ps1` is a harmless flat name) — the guard's job is to keep it
+/// that way: no separators, no NUL, and no `..` path segment.
+fn cache_filename_allowed(safe_name: &str) -> bool {
+    !safe_name.is_empty()
+        && !safe_name.contains(['/', '\\'])
+        && !safe_name.contains('\0')
+        && !safe_name
+            .split(['/', '\\', '.'])
+            .any(|seg| seg == "..")
+}
+
 /// Replace anything that's not [A-Za-z0-9._-] with `_`. Branch refs can
 /// contain `/`, dots, etc.; we want a flat filename.
 fn sanitize_ref(s: &str) -> String {
@@ -210,6 +225,53 @@ async fn download(kind: ScriptKind, commit_or_ref: &str, dest_path: &Path) -> Re
         commit_or_ref,
         kind.filename()
     );
+
+    // Security: the destination must stay inside the bootstrap
+    // cache directory. `commit_or_ref` may be attacker-influenced, so a
+    // crafted ref (`..`, `../x`) could otherwise make the download write
+    // outside the cache. Defense in depth:
+    //   1. lexical traversal rejection on the full path (before any mkdir),
+    //   2. filename-level `..` rejection (post-sanitize loophole),
+    //   3. canonicalize containment check on the resolved parent directory.
+    if paths::contains_traversal(&dest_path.to_string_lossy()) {
+        return Err(anyhow!(
+            "download destination {} contains a path traversal sequence",
+            dest_path.display()
+        ));
+    }
+    let filename = dest_path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .ok_or_else(|| anyhow!("download destination {} has no file name", dest_path.display()))?;
+    if !cache_filename_allowed(&filename) {
+        return Err(anyhow!(
+            "download destination {} contains a path traversal sequence",
+            dest_path.display()
+        ));
+    }
+
+    if let Some(parent) = dest_path.parent() {
+        std::fs::create_dir_all(parent).with_context(|| {
+            format!("creating bootstrap-cache parent dir {}", parent.display())
+        })?;
+        let parent = parent
+            .canonicalize()
+            .with_context(|| format!("canonicalizing {}", parent.display()))?;
+        let cache_dir = paths::bootstrap_cache_dir();
+        std::fs::create_dir_all(&cache_dir).with_context(|| {
+            format!("creating bootstrap-cache dir {}", cache_dir.display())
+        })?;
+        let canonical_cache = cache_dir
+            .canonicalize()
+            .with_context(|| format!("canonicalizing {}", cache_dir.display()))?;
+        if !parent.starts_with(&canonical_cache) {
+            return Err(anyhow!(
+                "download destination {} resolves outside the bootstrap cache directory {}",
+                dest_path.display(),
+                canonical_cache.display()
+            ));
+        }
+    }
 
     if let Some(parent) = dest_path.parent() {
         std::fs::create_dir_all(parent).with_context(|| {
@@ -321,5 +383,71 @@ mod tests {
         assert!(is_valid_commit("02d26981d3d4ad50e142399b8476f59ad5953ff0"));
         assert!(!is_valid_commit("main"));
         assert!(!is_valid_commit("release/1.2.3"));
+    }
+
+    // -- Path traversal hardening -----------------------------------------
+
+    #[test]
+    fn cache_filename_allowed_rejects_parent_dir_stems() {
+        // `sanitize_ref` maps ref-embedded dots to literal filename chars, so
+        // these stay flat, harmless names — but any name that WOULD carry a
+        // `..` segment or separator must be rejected.
+        assert!(!cache_filename_allowed("install-main/../evil.ps1"));
+        assert!(!cache_filename_allowed("install-main\\..\\evil.ps1"));
+        assert!(!cache_filename_allowed("a\0b.ps1"));
+        // Ordinary refs remain allowed.
+        assert!(cache_filename_allowed("install-main.ps1"));
+        assert!(cache_filename_allowed("install-02d26981d3d4.ps1"));
+        assert!(cache_filename_allowed("install-feature_x-1.2.sh"));
+        // Refs that sanitize to dot-heavy flat names stay allowed.
+        assert!(cache_filename_allowed("install-...ps1"));
+        assert!(cache_filename_allowed("install-.._evil.ps1"));
+    }
+
+    #[test]
+    fn download_rejects_traversal_destination() {
+        // The lexical guard must fire before any network I/O or mkdir.
+        let err = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+            .block_on(async {
+                download(
+                    ScriptKind::Ps1,
+                    "main",
+                    &PathBuf::from("/tmp/hermes-cache-escape/../../evil/install.ps1"),
+                )
+                .await
+            })
+            .expect_err("traversal destination must be rejected");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("path traversal sequence"),
+            "expected traversal rejection, got: {msg}"
+        );
+    }
+
+    #[tokio::test]
+    async fn download_rejects_destination_outside_cache_dir() {
+        // A destination whose parent exists but is not inside
+        // bootstrap_cache_dir() must be rejected by the canonical containment
+        // check (this is the flagged write site).
+        let outside = std::env::temp_dir().join(format!(
+            "hermes-download-outside-test-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&outside).unwrap();
+        let dest = outside.join("install-main.ps1");
+
+        let err = download(ScriptKind::Ps1, "main", &dest)
+            .await
+            .expect_err("destination outside the cache dir must be rejected");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("outside the bootstrap cache directory"),
+            "expected containment rejection, got: {msg}"
+        );
+
+        std::fs::remove_dir_all(&outside).unwrap();
     }
 }

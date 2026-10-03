@@ -944,7 +944,10 @@ _PERSISTENT_FAULTS = {
 }
 
 
-@pytest.mark.parametrize("fault", sorted(_PERSISTENT_FAULTS))
+@pytest.mark.parametrize("fault", [
+    pytest.param(fault, marks=pytest.mark.platforms("posix")) if fault == "unreadable" else fault
+    for fault in sorted(_PERSISTENT_FAULTS)
+])
 @pytest.mark.parametrize("op_name", list(_P3_OPS))
 def test_p3_unreadable_or_partial_file_is_never_rewritten(op_name, fault, web_app, home, monkeypatch):
     if fault == "unreadable" and os.geteuid() == 0:

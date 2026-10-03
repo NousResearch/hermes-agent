@@ -233,6 +233,7 @@ def test_bootstrap_marker_not_autostashed_by_update(tmp_path):
 
 
 
+@pytest.mark.platforms("posix")
 def test_update_autostash_survives_undeletable_untracked_dir(tmp_path):
     """Behavioral E2E of the whole permission-denied class with real git:
     root-owned-style undeletable untracked dir → stash succeeds, update-style
@@ -244,8 +245,6 @@ def test_update_autostash_survives_undeletable_untracked_dir(tmp_path):
 
     if shutil.which("git") is None:
         pytest.skip("git not available")
-    if os.name == "nt":
-        pytest.skip("POSIX permission semantics")
     if os.geteuid() == 0:
         pytest.skip("root ignores directory write bits")
 

@@ -216,6 +216,7 @@ def _descendant_running(marker: str):
     return None
 
 
+@pytest.mark.platforms("posix")
 def test_exit_cleanup_kills_foreground_command_still_running(monkeypatch):
     """The host-exit funnel (CLI, one-shot, messaging gateway, serve atexit) must take an
     in-flight foreground command's process group with it: it runs in its own session, so

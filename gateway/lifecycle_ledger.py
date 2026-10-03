@@ -61,9 +61,60 @@ def _proc_fields(path: str, wanted: Dict[str, str]) -> Dict[str, int]:
     return found
 
 
+def _read_int_file(path: str) -> Optional[int]:
+    """``int`` content of a ``key`` file, or None when missing/unparseable.
+    cgroup "no limit" sentinels (``max``, v1's near-2^63) read as None."""
+    try:
+        raw = open(path, encoding="utf-8").read().strip()
+    except OSError:
+        return None
+    if not raw.isdigit():
+        return None
+    value = int(raw)
+    if value >= (1 << 62):  # v1 unlimited sentinel (PAGE_COUNTER_MAX-scale)
+        return None
+    return value
+
+
+def _cgroup_memory_fields() -> Dict[str, int]:
+    """Own-cgroup memory usage/limit in BYTES — what THIS container may use,
+    not the node's. ``/proc/meminfo`` inside a pod reports the whole (shared)
+    node; #1012: throttling dispatch on it starved a well-fed gateway on a
+    neighbour's usage. Namespaced-container view: ``/sys/fs/cgroup`` root *is*
+    the container's cgroup; a systemd unit's cap lives under ``_own_cgroup_path``.
+    Empty dict when cgroupfs is unreadable (non-Linux, v1-only, errors)."""
+    import sys
+    if sys.platform != "linux":
+        return {}
+    fields: Dict[str, int] = {}
+    try:
+        from gateway.cgroup_cleanup import _own_cgroup_path
+        own = _own_cgroup_path()
+    except Exception:
+        own = None
+    roots = ([f"/sys/fs/cgroup{own}"] if own and own != "/" else []) + ["/sys/fs/cgroup"]
+    for root in roots:
+        usage = _read_int_file(f"{root}/memory.current")
+        if usage is None:  # cgroup v1 layout
+            usage = _read_int_file(f"{root}/memory/memory.usage_in_bytes")
+        if usage is not None:
+            fields["cgroup_usage_bytes"] = usage
+            break
+    for root in roots:
+        for fname in ("/memory.high", "/memory.max", "/memory/memory.limit_in_bytes"):
+            limit = _read_int_file(root + fname)
+            if limit is not None and limit > 0:
+                fields["cgroup_limit_bytes"] = limit
+                break
+        if "cgroup_limit_bytes" in fields:
+            break
+    return fields
+
+
 def sample_memory() -> Dict[str, Any]:
-    """Cheap /proc snapshot (KiB): own RSS + MemTotal/MemAvailable + swap used.  Linux-only
-    (``{}`` elsewhere), never raises; the 30s heartbeat embeds it so OOM cycles are classifiable."""
+    """Cheap /proc + cgroupfs snapshot (KiB/BYTES): own RSS + MemTotal/MemAvailable +
+    swap used + own-cgroup usage/limit. Linux-only (``{}`` elsewhere), never raises;
+    the 30s heartbeat embeds it so OOM cycles are classifiable."""
     sample = _proc_fields("/proc/self/status", {"VmRSS": "rss_kib"})
     mem = _proc_fields("/proc/meminfo", {"MemTotal": "mem_total_kib", "MemAvailable": "mem_available_kib",
                                          "SwapTotal": "SwapTotal", "SwapFree": "SwapFree"})
@@ -71,6 +122,10 @@ def sample_memory() -> Dict[str, Any]:
     sample.update(mem)
     if swap_total is not None and swap_free is not None:
         sample["swap_used_kib"] = swap_total - swap_free
+    try:
+        sample.update(_cgroup_memory_fields())
+    except Exception:
+        pass
     return sample
 
 

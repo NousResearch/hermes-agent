@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import copy
 import logging
 import os
+import re
 from typing import Any, Dict, List, Optional
-from utils import base_url_hostname, is_truthy_value
+from utils import base_url_hostname, base_url_origin, is_truthy_value
 from hermes_cli.fallback_config import scoped_fallback_chain
 
 logger = logging.getLogger("tools.delegate_tool")  # log-record parity with the origin module
@@ -25,6 +27,55 @@ _LEGACY_MAX_ASYNC_WARNED = False
 # models) was being killed mid-task. Stuck-child detection is the heartbeat staleness monitor;
 # delegation.child_timeout_seconds opts back in.
 DEFAULT_CHILD_TIMEOUT: Optional[float] = None
+
+# A named route owns its complete model/transport/recovery identity.  Clear
+# these keys from the general delegation defaults before applying the route so
+# a cloud provider can never inherit a local base URL (or vice versa).
+_NAMED_ROUTE_OWNED_KEYS = frozenset({
+    "model", "provider", "base_url", "api_key", "api_mode",
+    "request_overrides", "fallback_providers", "reasoning_effort",
+})
+
+
+_ROUTE_NAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}\Z")
+
+
+def _configured_delegation_routes(cfg: dict) -> dict:
+    """Validated operator presets, restricted to transport and runtime fields."""
+    routes = cfg.get("routes")
+    if not isinstance(routes, dict):
+        return {}
+    return {
+        name: copy.deepcopy({k: v for k, v in value.items() if k in _NAMED_ROUTE_OWNED_KEYS or k == "description"})
+        for name, value in sorted(routes.items(), key=lambda item: str(item[0]))
+        if isinstance(name, str) and _ROUTE_NAME_RE.fullmatch(name) and isinstance(value, dict)
+    }
+
+
+def _resolve_delegation_route_config(delegation_cfg: dict, route: Optional[str]) -> dict:
+    """Select an operator route without inheriting another route's credentials."""
+    if route is None or (isinstance(route, str) and not route.strip()):
+        return delegation_cfg
+    routes = _configured_delegation_routes(delegation_cfg)
+    route_cfg = routes.get(route) if isinstance(route, str) else None
+    if route_cfg is None:
+        available = ", ".join(routes) or "none"
+        raise ValueError(f"Unknown delegation route {route!r}. Available routes: {available}.")
+    snapshot = copy.deepcopy({key: value for key, value in delegation_cfg.items() if key != "routes"})
+    for key in _NAMED_ROUTE_OWNED_KEYS | {"command", "args", "acp_command", "acp_args"}:
+        snapshot.pop(key, None)
+    snapshot.update({key: value for key, value in route_cfg.items() if key != "description"})
+    if not str(snapshot.get("model") or "").strip():
+        raise ValueError(f"Delegation route '{route}' must configure an exact model.")
+    return snapshot
+
+
+def _resolve_named_delegation_route(route: Optional[str], delegation_cfg: dict) -> dict:
+    snapshot = _resolve_delegation_route_config(delegation_cfg, route)
+    if route is not None and not str(snapshot.get("model") or "").strip():
+        raise ValueError(f"Delegation route '{route}' must configure an exact model.")
+    return snapshot
+
 
 def _cfg() -> dict:
     """The ``delegation`` section, read through the origin so tests can patch it."""
@@ -179,6 +230,86 @@ def _get_inherit_mcp_toolsets() -> bool:
 def _normalized_runtime_url(value: Any) -> str:
     return str(value or "").strip().rstrip("/")
 
+def _normalize_endpoint_authority(url: Optional[str]) -> Optional[tuple[str, str, int]]:
+    """Normalized scheme, host and effective port for a credential boundary."""
+    if not url:
+        return None
+    origin = base_url_origin(str(url))
+    return origin if origin[1] else None
+
+def _named_custom_provider(provider: Any) -> Optional[str]:
+    normalized = str(provider or "").strip().lower()
+    return normalized if normalized.startswith("custom:") and normalized != "custom:" else None
+
+def _check_credential_identity(
+    parent_agent, configured_provider: Optional[str], configured_api_key: Optional[str],
+) -> Optional[str]:
+    """Reject parent-key inheritance across distinct named custom-provider identities."""
+    if configured_api_key:
+        return None
+    child_identity = _named_custom_provider(configured_provider)
+    if not child_identity:
+        return None
+    parent_identity = _named_custom_provider(
+        getattr(parent_agent, "requested_provider", None) or getattr(parent_agent, "provider", None)
+    )
+    if child_identity == parent_identity:
+        return None
+    return (
+        "Delegation route uses a different named custom provider (credential identity mismatch). "
+        "Provide an explicit 'api_key' for this route."
+    )
+
+def _check_provider_credential_bundle(
+    parent_agent, override_provider: Optional[str], override_base_url: Optional[str],
+    override_api_key: Optional[str], override_acp_command: Optional[str],
+) -> Optional[str]:
+    """Reject a bearer-provider override that has neither its own endpoint nor credential."""
+    child_provider = str(override_provider or "").strip().lower()
+    if (
+        not child_provider
+        or override_base_url
+        or override_api_key
+        or override_acp_command
+        or child_provider in _NATIVE_SDK_PROVIDERS
+    ):
+        return None
+    parent_provider = str(getattr(parent_agent, "provider", None) or "").strip().lower()
+    if child_provider == parent_provider:
+        return None
+    child_identity = _named_custom_provider(child_provider)
+    parent_identity = _named_custom_provider(
+        getattr(parent_agent, "requested_provider", None) or parent_provider
+    )
+    if child_identity and child_identity == parent_identity:
+        return None
+    return (
+        "Delegation provider differs from the parent without its own endpoint or API key "
+        "(provider credential mismatch). Resolve the provider's credential bundle before constructing the child."
+    )
+
+def _check_credential_authority(
+    parent_agent, configured_base_url: Optional[str], configured_api_key: Optional[str],
+    configured_provider: Optional[str] = None,
+) -> Optional[str]:
+    """Reject implicit parent-key forwarding outside its endpoint or named custom-provider identity."""
+    identity_error = _check_credential_identity(parent_agent, configured_provider, configured_api_key)
+    if identity_error:
+        return identity_error
+    if not configured_base_url or configured_api_key:
+        return None
+    parent_url, _parent_key = _inherit_parent_endpoint(
+        parent_agent, getattr(parent_agent, "base_url", None), getattr(parent_agent, "api_key", None),
+    )
+    child_authority = _normalize_endpoint_authority(configured_base_url)
+    parent_authority = _normalize_endpoint_authority(parent_url)
+    if not child_authority or not parent_authority or child_authority != parent_authority:
+        return (
+            "Delegation route endpoint differs from the parent endpoint (authority mismatch). "
+            "Provide an explicit 'api_key' for this route or use the same scheme, host, and port."
+        )
+    return None
+
 def _inherit_parent_capabilities(parent_agent, override_provider, override_base_url) -> Optional[dict]:
     """Parent's endpoint-trust capability map for a child, or None. ``agent.capabilities`` is a trust decision scoped
     to one provider+endpoint: inherited ONLY when the child runs the parent's exact route; any provider or base_url
@@ -210,7 +341,7 @@ def _inherit_parent_endpoint(parent_agent, surface_base_url: Optional[str], surf
     for raw_url, live_key in live_candidates:
         url = _normalized_runtime_url(raw_url)
         if url and url.startswith(("http://", "https://")):
-            return url, (live_key or surface_api_key)
+            return url, live_key
     return (surface_base_url or None), surface_api_key
 
 def _loaded_pool(key: Any):
@@ -330,8 +461,13 @@ def _credential_bundle(model, provider, base_url, api_key, api_mode, request_ove
         "request_overrides": request_overrides, **extra,
     }
 
-def _direct_endpoint_credentials(v: dict, explicit_request_overrides) -> dict:
+def _direct_endpoint_credentials(v: dict, explicit_request_overrides, parent_agent) -> dict:
     """``delegation.base_url`` branch: provider/api_mode from URL heuristics."""
+    authority_error = _check_credential_authority(
+        parent_agent, v["base_url"], v["api_key"], v["provider"],
+    )
+    if authority_error:
+        raise ValueError(authority_error)
     # Shared URL-based api_mode detector so Anthropic-compatible direct endpoints (/anthropic suffix: Azure AI
     # Foundry, MiniMax, Zhipu, LiteLLM) get the Messages transport instead of 404ing on chat_completions.
     # Without this, subagents would default to chat_completions and hit 404s on endpoints that only speak
@@ -366,7 +502,7 @@ def _direct_endpoint_credentials(v: dict, explicit_request_overrides) -> dict:
                 "delegation.base_url: runtime resolution for provider '%s' failed; proceeding without request_overrides: %s",
                 v["provider"], exc,
             )
-    # api_key None → inherited from parent in _build_child_agent
+    # api_key None → authority-checked live-parent inheritance in _resolve_child_runtime
     return _credential_bundle(
         v["model"], provider, v["base_url"], v["api_key"], api_mode,
         _merge_request_overrides(request_overrides, explicit_request_overrides),
@@ -420,7 +556,8 @@ def _runtime_provider_credentials(v: dict, explicit_request_overrides) -> dict:
 
 def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
     """Child credential bundle from the ``delegation`` config section. Three branches: ``base_url`` set → direct
-    endpoint (``api_key`` None means inherit the parent's key, so providers keyed outside OPENAI_API_KEY work);
+    endpoint (``api_key`` None inherits the parent's live key only at the same endpoint authority and, for named
+    custom providers, the same provider identity);
     ``provider`` set → full bundle via the runtime provider system (same path as CLI/gateway startup); neither →
     None values, child inherits everything. ``request_overrides`` is honored on every branch. Raises ValueError
     with a user-facing message."""
@@ -430,7 +567,7 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
     is_native_sdk_provider = (values["provider"] or "").strip().lower() in _NATIVE_SDK_PROVIDERS
 
     if values["base_url"] and not is_native_sdk_provider:
-        return _direct_endpoint_credentials(values, explicit_request_overrides)
+        return _direct_endpoint_credentials(values, explicit_request_overrides, parent_agent)
     if not values["provider"]:
         # Pure inherit; explicit request_overrides still merge OVER the parent's.
         return _credential_bundle(
@@ -496,6 +633,10 @@ def _resolve_child_runtime(
     ``override_provider`` clears the parent's ACP transport, fallback chain and OpenRouter routing filters so the
     pinned provider is actually honoured."""
     effective_model = model or parent_agent.model
+    parent_base_url, live_parent_api_key = _inherit_parent_endpoint(
+        parent_agent, getattr(parent_agent, "base_url", None), parent_api_key,
+    )
+    configured_provider = delegation_cfg.get("provider") if isinstance(delegation_cfg, dict) else None
     # provider/base_url are one bundle: all from the override, or all from the parent. Per-field fallback built
     # children like an override provider pointed at the PARENT's endpoint (e.g. copilot credentials on the
     # parent's Codex URL), which 404s on every request and can't be rescued by the fallback chain, whose dedup
@@ -509,7 +650,30 @@ def _resolve_child_runtime(
         effective_base_url = override_base_url
     else:
         effective_provider = getattr(parent_agent, "provider", None)
-        effective_base_url, parent_api_key = _inherit_parent_endpoint(parent_agent, parent_agent.base_url, parent_api_key)
+        effective_base_url, parent_api_key = parent_base_url, live_parent_api_key
+    if (override_provider or override_base_url) and not override_api_key:
+        credential_provider = (
+            override_provider
+            if _named_custom_provider(override_provider)
+            else configured_provider or override_provider
+        )
+        credential_base_url = override_base_url
+        if override_acp_command or (override_provider or "").strip().lower() in _NATIVE_SDK_PROVIDERS:
+            credential_base_url = None
+        authority_error = _check_credential_authority(
+            parent_agent, credential_base_url, None, credential_provider,
+        )
+        if authority_error:
+            raise ValueError(authority_error)
+    provider_bundle_error = _check_provider_credential_bundle(
+        parent_agent, override_provider, override_base_url, override_api_key, override_acp_command,
+    )
+    if provider_bundle_error:
+        raise ValueError(provider_bundle_error)
+    if override_base_url and not override_api_key:
+        effective_api_key = live_parent_api_key
+    else:
+        effective_api_key = override_api_key or live_parent_api_key
     # api_mode: each provider has its own wire, so a different provider re-derives (None) instead of inheriting (404s
     # otherwise). Nous Portal is dual-wire within one provider (anthropic/* → Messages, else chat_completions), so
     # same-provider inheritance would pin the child on the wrong wire — re-derive.
@@ -559,6 +723,8 @@ def _resolve_child_runtime(
     # A named provider identity is endpoint-scoped. Preserve it only when the
     # child inherits the exact parent route; an override owns its final identity.
     effective_requested_provider = effective_provider
+    if effective_provider == _RUNTIME_PROVIDER_CUSTOM and _named_custom_provider(configured_provider):
+        effective_requested_provider = configured_provider
     if not override_provider and not override_base_url and not override_acp_command:
         effective_requested_provider = (
             getattr(parent_agent, "requested_provider", None) or effective_provider
@@ -579,8 +745,15 @@ def _resolve_child_runtime(
     except Exception as exc:
         logger.debug("Could not load delegation reasoning_effort: %s", exc)
 
+    # AIAgent treats a falsy key as an unresolved route and invokes the provider
+    # router. Pin an explicitly keyless HTTP bundle using the SDK placeholder,
+    # so it cannot select a different endpoint or recover stale credentials.
+    if (effective_base_url and not effective_api_key and not effective_acp_command
+            and effective_provider not in _NATIVE_SDK_PROVIDERS):
+        effective_api_key = "no-key-required"
+
     kwargs: Dict[str, Any] = {
-        "base_url": effective_base_url, "api_key": override_api_key or parent_api_key, "model": effective_model,
+        "base_url": effective_base_url, "api_key": effective_api_key, "model": effective_model,
         "provider": effective_provider, "requested_provider": effective_requested_provider,
         "capabilities": _inherit_parent_capabilities(parent_agent, override_provider, override_base_url),
         "api_mode": effective_api_mode, "acp_command": effective_acp_command, "acp_args": effective_acp_args,

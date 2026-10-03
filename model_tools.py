@@ -23,7 +23,7 @@ from tools.registry import _MAX_TOOL_ERROR_CHARS as _TOOL_ERROR_MAX_LEN
 from toolsets import resolve_toolset, validate_toolset
 from tools.arg_coercion import coerce_tool_args
 from tools.todo_tool import TODO_LEGACY_ALIASES, TODO_SCHEMA
-from utils import file_signature
+from utils import file_content_signature
 
 logger = logging.getLogger(__name__)
 
@@ -211,72 +211,156 @@ def _clear_tool_defs_cache() -> None:
         _tool_defs_cache.clear()
 
 
-def get_tool_definitions(enabled_toolsets: Optional[List[str]] = None, disabled_toolsets: Optional[List[str]] = None,
-                         quiet_mode: bool = False, skip_tool_search_assembly: bool = False) -> List[Dict[str, Any]]:
-    """Tool definitions for model API calls, filtered by toolset.
+def _tool_defs_config_fingerprints() -> tuple[Any, Any]:
+    """Return content identities for config files that affect tool schemas."""
+    try:
+        from hermes_cli.config import get_config_path
 
-    enabled_toolsets None = all; disabled_toolsets are subtracted after enabling.
-    quiet_mode suppresses status prints and enables memoization.
-    skip_tool_search_assembly returns raw schemas for every enabled tool — only
-    the tool_search bridge should use it (it reads the real, uncollapsed catalog).
-    """
-    def compute():
-        return _compute_tool_definitions(enabled_toolsets, disabled_toolsets, quiet_mode,
-                                         skip_tool_search_assembly=skip_tool_search_assembly)
-    if not quiet_mode:
-        return compute()
-    cache_key = _tool_defs_cache_key(enabled_toolsets, disabled_toolsets, skip_tool_search_assembly)
-    # Cache the freshly-computed list, but hand callers a shallow copy so downstream mutations (e.g.
-    # run_agent appending memory/LCM tool schemas to self.tools) don't poison the cache. Without this, a
-    # long-lived Gateway process accumulates duplicate tool names across agent inits and providers that
-    # enforce unique tool names (DeepSeek, Xiaomi MiMo, Moonshot Kimi) reject the request with HTTP 400.
-    # Mirrors the cache-hit path above. (issue #17335) Bound the cache with LRU eviction so a long-lived
-    # Gateway process doesn't accumulate entries unboundedly across the many distinct toolset/config
-    # fingerprints it sees over its lifetime (#19251).
-    with _tool_defs_cache_lock:
-        cached = _tool_defs_cache.get(cache_key) if cache_key is not None else None
-    if cached is None:
-        result = compute()
-        if cache_key is None:
-            return list(result)
-        with _tool_defs_cache_lock:
-            cached = _tool_defs_cache.get(cache_key)  # another thread may have filled it meanwhile
-            if cached is None:
-                if len(_tool_defs_cache) >= _TOOL_DEFS_CACHE_MAX:
-                    _tool_defs_cache.pop(next(iter(_tool_defs_cache)))
-                _tool_defs_cache[cache_key] = cached = result
-    else:
-        global _last_resolved_tool_names
-        _last_resolved_tool_names = [t["function"]["name"] for t in cached]
-    # Always a shallow copy: run_agent appends memory/LCM schemas to its list; a
-    # shared list would accumulate duplicate names (HTTP 400 from DeepSeek/Kimi/MiMo).
-    return list(cached)
+        cfg_fp = file_content_signature(get_config_path())
+    except ImportError:
+        cfg_fp = None
+    try:
+        from hermes_cli import managed_scope as _managed_scope
+
+        managed_dir = _managed_scope.get_managed_dir()
+        managed_fp = (
+            file_content_signature(managed_dir / "config.yaml")
+            if managed_dir is not None
+            else None
+        )
+    except Exception:
+        managed_fp = None
+    return cfg_fp, managed_fp
 
 
 def _tool_defs_cache_key(
-    enabled_toolsets: Optional[List[str]], disabled_toolsets: Optional[List[str]], skip_tool_search_assembly: bool,
-) -> Optional[tuple]:
-    """Memo key for get_tool_definitions, or None when caching must be bypassed.
-
-    Covers every argument plus everything that changes the result without one:
-    registry generation, config.yaml stat signature (dynamic schemas), kanban
-    context, profile scope. check_fn results are TTL-cached in the registry.
-    """
-    profile_scope = check_fn_cache_scope()
-    if profile_scope == CHECK_FN_CACHE_BYPASS:
-        return None
-    try:
-        from hermes_cli.config import get_config_path
-        cfg_stat = get_config_path().stat()
-        cfg_fp = file_signature(cfg_stat)
-    except (FileNotFoundError, OSError, ImportError):
-        cfg_fp = None
+    enabled_toolsets: Optional[List[str]],
+    disabled_toolsets: Optional[List[str]],
+    skip_tool_search_assembly: bool,
+    profile_scope: Any,
+    config_fingerprints: tuple[Any, Any],
+) -> tuple:
+    cfg_fp, managed_fp = config_fingerprints
     return (
-        registry.current_scope_key(), frozenset(enabled_toolsets) if enabled_toolsets is not None else None,
-        frozenset(disabled_toolsets) if disabled_toolsets else None, registry._generation, cfg_fp,
-        bool(os.environ.get("HERMES_KANBAN_TASK")), bool(skip_tool_search_assembly),
-        _is_delegated_child_context(), _is_dispatcher_owned_worker(), profile_scope,
+        registry.current_scope_key(),
+        frozenset(enabled_toolsets) if enabled_toolsets is not None else None,
+        frozenset(disabled_toolsets) if disabled_toolsets else None,
+        registry._generation,
+        cfg_fp,
+        managed_fp,
+        bool(os.environ.get("HERMES_KANBAN_TASK")),
+        bool(skip_tool_search_assembly),
+        _is_delegated_child_context(),
+        _is_dispatcher_owned_worker(),
+        profile_scope,
     )
+
+
+def get_tool_definitions(
+    enabled_toolsets: Optional[List[str]] = None,
+    disabled_toolsets: Optional[List[str]] = None,
+    quiet_mode: bool = False,
+    skip_tool_search_assembly: bool = False,
+) -> List[Dict[str, Any]]:
+    """
+    Get tool definitions for model API calls with toolset-based filtering.
+
+    All tools must be part of a toolset to be accessible.
+
+    Args:
+        enabled_toolsets: Only include tools from these toolsets.
+        disabled_toolsets: Exclude tools from these toolsets (if enabled_toolsets is None).
+        quiet_mode: Suppress status prints.
+        skip_tool_search_assembly: When True, return the pre-assembly tool list
+            (raw schemas for every enabled tool). Used internally by the
+            tool_search / tool_describe bridge handlers so they can read the
+            real catalog, not the already-collapsed one. Public callers should
+            leave this False.
+
+    Returns:
+        Filtered list of OpenAI-format tool definitions.
+    """
+    if not quiet_mode:
+        return _compute_tool_definitions(
+            enabled_toolsets,
+            disabled_toolsets,
+            quiet_mode,
+            skip_tool_search_assembly=skip_tool_search_assembly,
+        )
+
+    # Dynamic tool schemas read config during computation. Bind any cached
+    # result to fingerprints observed both before and after that computation;
+    # otherwise a concurrent rewrite can cache schema B under snapshot A's key.
+    profile_scope = check_fn_cache_scope()
+    cache_enabled = profile_scope != CHECK_FN_CACHE_BYPASS
+    from hermes_cli.config import _CONFIG_LOCK
+
+    for attempt in range(2):
+        # Serialize fingerprinting and dynamic config parsing with config
+        # writers. Atomic external replacements can still occur, so retain
+        # the post-compute identity check and retry below.
+        with _CONFIG_LOCK:
+            before = _tool_defs_config_fingerprints()
+            cache_key = (
+                _tool_defs_cache_key(
+                    enabled_toolsets,
+                    disabled_toolsets,
+                    skip_tool_search_assembly,
+                    profile_scope,
+                    before,
+                )
+                if cache_enabled
+                else None
+            )
+            with _tool_defs_cache_lock:
+                cached = (
+                    _tool_defs_cache.get(cache_key) if cache_key is not None else None
+                )
+            if cached is not None:
+                if _tool_defs_config_fingerprints() == before:
+                    global _last_resolved_tool_names
+                    _last_resolved_tool_names = [
+                        t["function"]["name"] for t in cached
+                    ]
+                    return list(cached)
+                if attempt == 0:
+                    continue
+                # A continuously changing config cannot safely populate a cache.
+                # The cached entry still matches the latest complete `before`
+                # snapshot, so prefer it to crashing or returning a torn schema.
+                _last_resolved_tool_names = [
+                    t["function"]["name"] for t in cached
+                ]
+                return list(cached)
+
+            result = _compute_tool_definitions(
+                enabled_toolsets,
+                disabled_toolsets,
+                quiet_mode,
+                skip_tool_search_assembly=skip_tool_search_assembly,
+            )
+            after = _tool_defs_config_fingerprints()
+            if before != after:
+                if attempt == 0:
+                    continue
+                # A continuously changing config cannot safely populate a cache.
+                return list(result)
+        if cache_key is None:
+            return list(result)
+
+        # Cache the freshly-computed list, but hand callers a shallow copy so
+        # downstream mutations cannot poison later agent initialization.
+        with _tool_defs_cache_lock:
+            cached = _tool_defs_cache.get(cache_key)
+            if cached is None:
+                if len(_tool_defs_cache) >= _TOOL_DEFS_CACHE_MAX:
+                    _tool_defs_cache.pop(next(iter(_tool_defs_cache)))
+                _tool_defs_cache[cache_key] = result
+                cached = result
+        return list(cached)
+
+    raise AssertionError("unreachable")
+
 
 
 def _apply_toolset_selection(tools: set, names: List[str], quiet_mode: bool, *, disable: bool) -> None:

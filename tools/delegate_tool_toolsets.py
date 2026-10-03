@@ -107,16 +107,30 @@ def _resolve_child_toolsets(
         child_toolsets = parent_enabled
     else:
         child_toolsets = sorted(parent_toolsets) or DEFAULT_TOOLSETS
+    from tools.delegate_tool_config import _cfg
+    ceiling = _cfg().get("default_toolsets")
+    if isinstance(ceiling, list):
+        allowed = _expand_parent_toolsets(parent_toolsets)
+        ceiling = [name for name in ceiling if isinstance(name, str) and name in allowed]
+        ceiling_expanded = _expand_parent_toolsets(set(ceiling))
+        # Start with the operator's narrower names so a composite parent can
+        # grant file without accidentally preserving its larger bundle.
+        requested = _expand_parent_toolsets(set(child_toolsets))
+        child_toolsets = [name for name in ceiling if name in requested]
+    else:
+        ceiling_expanded = None
     child_toolsets = _strip_blocked_tools(child_toolsets)
 
     raw_parent_disabled = getattr(parent_agent, "disabled_toolsets", None)
     inherited_disabled = (
         [str(name) for name in raw_parent_disabled] if isinstance(raw_parent_disabled, (list, tuple, set)) else []
     )
-    if effective_role == "orchestrator":
+    if effective_role == "orchestrator" and (ceiling_expanded is None or "delegation" in ceiling_expanded):
         inherited_disabled = [name for name in inherited_disabled if name != "delegation"]
         if "delegation" not in child_toolsets:
             child_toolsets.append("delegation")
+    if ceiling_expanded is not None and "delegation" not in ceiling_expanded:
+        inherited_disabled.append("delegation")
     child_disabled_toolsets = list(
         dict.fromkeys(inherited_disabled + _blocked_toolsets_for_role(effective_role) + ["kanban"])
     )

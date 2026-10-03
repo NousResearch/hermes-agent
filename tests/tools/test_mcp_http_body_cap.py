@@ -185,3 +185,35 @@ async def test_sse_crlf_split_across_chunks_inside_event_is_not_a_boundary():
             async with client.stream("GET", "http://mcp.test/sse") as resp:
                 async for _ in resp.aiter_bytes():
                     pass
+
+
+@pytest.mark.asyncio
+async def test_too_large_answer_sizes_the_refused_message_not_the_whole_stream():
+    """A request waiting on the stream gets a JSON-RPC error for the event that crossed the cap, sized
+    as that event alone: the 123-byte event before it fitted, was delivered, and is not part of what
+    was refused — a running total would tell the model its result was smaller than it was."""
+    import json
+
+    first = b"data: " + b"a" * 115 + b"\n\n"   # 123 bytes, fits
+    second = b"data: " + b"b" * 2015 + b"\n\n"  # 2,023 bytes, over a 1,000-byte cap
+    body = first + second
+
+    class _Pieces(httpx.AsyncByteStream):
+        async def __aiter__(self):
+            for start in range(0, len(body), 64):
+                yield body[start:start + 64]
+
+    async def handler(request):
+        return httpx.Response(200, headers={"content-type": "text/event-stream"}, stream=_Pieces())
+
+    async with _client_for(handler, limit=1000) as client:
+        resp = await client.post("http://mcp.test/rpc", json={"jsonrpc": "2.0", "id": 7, "method": "tools/call"})
+        events = (await resp.aread()).split(b"\n\n")
+    assert events[0] == first[:-2]  # the event that fitted reached the reader untouched
+    answer = json.loads(events[1].split(b"data: ", 1)[1])
+    assert answer["id"] == 7
+    data = answer["error"]["data"]
+    assert data["measured"] == "partial"
+    # Reading stopped in the 64-byte piece that crossed 1,000 bytes of the second event.
+    assert 1000 < data["message_bytes"] <= 1000 + 64
+    assert f"it had reached {data['message_bytes']:,} bytes" in answer["error"]["message"]

@@ -108,7 +108,7 @@ def test_a_result_over_the_wire_cap_is_answered_as_too_large_and_the_session_sur
     refused, after = _call_tools(monkeypatch, {"thread": too_large, "list": small}, ["thread", "list"],
                                  framing=framing)
     assert "MCP result too large" in str(refused) and "tools/call" in str(refused)
-    received = refused.error.data["received_bytes"]
-    assert received > _MCP_HTTP_MAX_BODY_BYTES
-    assert f"{received:,} bytes" in str(refused)
+    size = refused.error.data["message_bytes"]
+    assert size > _MCP_HTTP_MAX_BODY_BYTES
+    assert f"{size:,} bytes" in str(refused)
     assert after == small

@@ -369,6 +369,7 @@ discord:
   no_thread_channels: []          # Channel IDs where bot responds without threading
   history_backfill: true          # Prepend recent channel scrollback on mention (default: true)
   history_backfill_limit: 50      # Max messages to scan backwards (default: 50)
+  auto_thread_backfill: false     # Seed new auto-threads with parent-channel context (default: false)
   missed_message_backfill:        # Replay messages missed while disconnected (opt-in)
     enabled: false
     channels: []                  # Empty uses free_response_channels
@@ -565,6 +566,20 @@ Maximum number of messages to scan backwards when recovering channel context. In
 discord:
   history_backfill: true
   history_backfill_limit: 50
+```
+
+#### `discord.auto_thread_backfill`
+
+**Type:** boolean — **Default:** `false`
+
+When `auto_thread` creates a new thread for an `@mention`, the thread is empty, so history backfill is normally skipped and the new session never sees the channel discussion that led to the mention. With `auto_thread_backfill: true`, the bot scans the **parent channel** (where the mention was posted) with the same rules as `history_backfill` — back to the bot's own last message in that channel, capped by `history_backfill_limit` — and includes it as context for the first turn in the thread.
+
+Requires `history_backfill: true`. Env: `DISCORD_AUTO_THREAD_BACKFILL`.
+
+```yaml
+discord:
+  auto_thread: true
+  auto_thread_backfill: true
 ```
 
 #### `discord.missed_message_backfill`

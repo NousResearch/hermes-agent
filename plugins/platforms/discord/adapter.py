@@ -5108,6 +5108,14 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         """Return whether history backfill is enabled for shared sessions."""
         return self._extra_or_env_flag("history_backfill", "DISCORD_HISTORY_BACKFILL", "true", truthy=True)
 
+    def _discord_auto_thread_backfill(self) -> bool:
+        """Whether a freshly auto-created thread is seeded with the parent channel's recent
+        messages (default False). The thread itself is empty, so without this the discussion
+        that led to the @mention is lost to the new session."""
+        return self._extra_or_env_flag(
+            "auto_thread_backfill", "DISCORD_AUTO_THREAD_BACKFILL", "false", truthy=True,
+        )
+
     def _discord_history_backfill_limit(self) -> int:
         """Max messages scanned backwards; a safety cap since scans usually stop at the bot's last message."""
         configured = self.config.extra.get("history_backfill_limit")
@@ -6171,10 +6179,14 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         _is_dm = isinstance(message.channel, discord.DMChannel)
         if not _is_dm and self._discord_history_backfill():
             # Backfill on a gap: mention-gated channels, any thread (processing/restart gaps), any
-            # reply (hydrate context around the referenced message). DMs/fresh auto-threads: nothing.
+            # reply (hydrate context around the referenced message). DMs: nothing. Fresh auto-threads:
+            # nothing, unless auto_thread_backfill — then the parent channel (message.channel, where
+            # the @mention was posted) is scanned so the new thread starts with that discussion.
             _has_mention_gap = require_mention and not is_free_channel and not in_bot_thread
             _is_reply = message.reference is not None
-            if (_has_mention_gap or is_thread or _is_reply) and auto_threaded_channel is None:
+            if (_has_mention_gap or is_thread or _is_reply) and (
+                auto_threaded_channel is None or self._discord_auto_thread_backfill()
+            ):
                 _backfill_text = await self._fetch_channel_context(
                     message.channel, before=message,
                     reply_target=self._reply_target(message.reference) if _is_reply else None,
@@ -7407,6 +7419,7 @@ def _apply_yaml_config(yaml_cfg: dict, discord_cfg: dict) -> dict | None:
     _gate("free_response_channels", "DISCORD_FREE_RESPONSE_CHANNELS", from_platform_extra=False)
     for key, env_key in (
         ("auto_thread", "DISCORD_AUTO_THREAD"),
+        ("auto_thread_backfill", "DISCORD_AUTO_THREAD_BACKFILL"),
         ("free_response_auto_thread", "DISCORD_FREE_RESPONSE_AUTO_THREAD"),
         ("reactions", "DISCORD_REACTIONS"),
     ):

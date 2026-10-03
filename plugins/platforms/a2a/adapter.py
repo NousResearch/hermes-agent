@@ -10,6 +10,7 @@ import contextlib
 import json
 import logging
 import os
+import socket
 import re
 import sqlite3
 import subprocess
@@ -33,6 +34,10 @@ from . import protocol, security
 logger = logging.getLogger(__name__)
 
 _DEFAULT_PORT = 9900
+# Outcomes that end the request thread's wait but not the task (see A2AAdapter._detach).
+_TIMED_OUT = (protocol.STATE_FAILED, "[agent did not reply in time]")
+_CLIENT_GONE = (protocol.STATE_FAILED, "[client disconnected]")
+_STILL_WORKING = "[still working: poll tasks/get for the reply]"
 # seconds: orphan grace floor / ceiling / watchdog period. The ceiling keeps the sweep
 # meaningful when A2A_REPLY_TIMEOUT is absurd (1e18 would never fail an orphan).
 _MIN_ORPHAN_TIMEOUT, _MAX_ORPHAN_TIMEOUT, _WATCHDOG_INTERVAL = 300, 86400, 60
@@ -119,6 +124,19 @@ def _profile_home(profile: str) -> Optional[str]:
         from hermes_cli.config import get_hermes_home
         return str(get_hermes_home())
     return None
+
+
+class _ExclusiveHTTPServer(ThreadingHTTPServer):
+    """A port belongs to one gateway. stdlib sets SO_REUSEADDR, which on Windows lets a second profile bind the
+    same listening port, and requests then split between them; there the second bind must fail instead
+    (SO_EXCLUSIVEADDRUSE). Elsewhere SO_REUSEADDR only lets a restart reuse a TIME_WAIT port, so it stays."""
+
+    allow_reuse_address = os.name != "nt"
+
+    def server_bind(self):
+        if os.name == "nt" and hasattr(socket, "SO_EXCLUSIVEADDRUSE"):
+            self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+        super().server_bind()
 
 
 def _daemon_thread(target, name: str) -> threading.Thread:
@@ -317,7 +335,7 @@ class A2AAdapter(BasePlatformAdapter):
         # Capture the gateway loop so the HTTP thread can marshal events via run_coroutine_threadsafe.
         self._loop = asyncio.get_running_loop()
         try:
-            self._httpd = ThreadingHTTPServer((self.host, self.port), A2ARequestHandler)
+            self._httpd = _ExclusiveHTTPServer((self.host, self.port), A2ARequestHandler)
         except OSError as e:
             logger.error("A2A: could not bind %s:%s — %s", self.host, self.port, e)
             self._set_fatal_error("bind_failed", f"A2A bind failed: {e}", retryable=True)
@@ -656,18 +674,33 @@ class A2AAdapter(BasePlatformAdapter):
                     try:
                         keepalive()
                     except Exception:
-                        return (protocol.STATE_FAILED, "[client disconnected]")
+                        return _CLIENT_GONE
             except Exception:
                 return on_timeout
 
     def _await_reply(self, pending: dict, keepalive=None) -> tuple[str, str]:
-        return self._await_future(pending["future"], pending["started"] + _reply_timeout(), keepalive,
-                                  (protocol.STATE_FAILED, "[agent did not reply in time]"))
+        return self._await_future(pending["future"], pending["started"] + _reply_timeout(), keepalive, _TIMED_OUT)
+
+    def _detach(self, pending: dict) -> tuple[str, str]:
+        """Stop waiting in the request thread but keep the task: it stays WORKING and a daemon thread records the
+        reply whenever the agent sends it (bounded by the orphan ceiling), so tasks/get, tasks/list and push see
+        it. A reply past A2A_REPLY_TIMEOUT, or after a stream client left, used to be dropped with the task FAILED."""
+        deadline = pending["started"] + _MAX_ORPHAN_TIMEOUT
+        _daemon_thread(lambda: self._finalize_task(pending, *self._await_future(pending["future"], deadline, None, _TIMED_OUT)),
+                       "a2a-task-" + pending["task_id"])
+        return protocol.STATE_WORKING, _STILL_WORKING
+
+    def _finish(self, pending: dict, keepalive=None) -> tuple[str, str]:
+        """Wait up to A2A_REPLY_TIMEOUT; past it, or once the stream client is gone, detach instead of failing."""
+        out = self._await_reply(pending, keepalive)
+        if out is _TIMED_OUT or out is _CLIENT_GONE:
+            return self._detach(pending)
+        return self._finalize_task(pending, *out)
 
     def _rpc_message_send(self, req_id: Any, params: dict, peer: str, agent: Optional[dict] = None, v1_response: bool = False) -> dict:
         task, pending = self._prepare_task(params, peer, agent=agent)
         if task is None:
-            state, reply = self._finalize_task(pending, *self._await_reply(pending))
+            state, reply = self._finish(pending)
             task = protocol.build_task(pending["task_id"], pending["context_id"], state, reply, created_at=pending["created_iso"])
         return _ok(req_id, protocol.send_message_response(task) if v1_response else task)
 
@@ -712,12 +745,12 @@ class A2AAdapter(BasePlatformAdapter):
             submitted = protocol.build_task(task_id, context_id, protocol.STATE_SUBMITTED, created_at=pending["created_iso"])
             self._sse_write(handler, protocol.sse_data(protocol.stream_task(submitted), req_id))
             self._sse_write(handler, protocol.sse_data(protocol.status_update(task_id, context_id, protocol.STATE_WORKING), req_id))
-            state, reply = self._finalize_task(pending, *self._await_reply(pending, keepalive=self._keepalive(handler)))
-            pending = None
+            state, reply = self._finish(pending, keepalive=self._keepalive(handler))
+            pending = None  # a detached task ends the stream on WORKING; the client follows it via tasks/get
             self._emit_terminal(handler, task_id, context_id, state, reply, req_id=req_id)
         except (BrokenPipeError, ConnectionResetError):
             if pending is not None:
-                self._finalize_task(pending, protocol.STATE_FAILED, "[client disconnected]")
+                self._detach(pending)
             logger.debug("A2A: stream client disconnected")
 
     def _rpc_tasks_subscribe(self, handler, req_id: Any, params: dict, agent: Optional[dict] = None) -> None:

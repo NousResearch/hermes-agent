@@ -419,14 +419,18 @@ def image_generate_tool(
     num_inference_steps: Optional[int] = None, guidance_scale: Optional[float] = None,
     num_images: Optional[int] = None, output_format: Optional[str] = None,
     seed: Optional[int] = None, image_url: Optional[str] = None,
-    reference_image_urls: Optional[list] = None, upscale: Optional[bool] = None) -> str:
+    reference_image_urls: Optional[list] = None, upscale: Optional[bool] = None,
+    fal_model: Optional[str] = None) -> str:
     """Generate (or, with source images + an ``edit_endpoint`` model, edit) an image via FAL.
 
     Extra kwargs are overrides filtered per-model via ``supports`` / ``edit_supports`` (dropped
     silently so callers survive model switches). Returns JSON ``{"success", "image", "modality",
     "error", "error_type"}``.
     """
-    model_id, meta = _resolve_fal_model()
+    if fal_model in FAL_MODELS:
+        model_id, meta = fal_model, FAL_MODELS[fal_model]
+    else:
+        model_id, meta = _resolve_fal_model()
     refs = reference_image_urls if isinstance(reference_image_urls, (list, tuple)) else []
     source_images = [c.strip() for c in (image_url, *refs) if isinstance(c, str) and c.strip()]
     use_edit = bool(source_images) and bool(meta.get("edit_endpoint"))
@@ -780,14 +784,39 @@ def _handle_image_generate(args, **kw):
     sources = dict(image_url=image_url, reference_image_urls=reference_image_urls,
                    upscale=upscale if isinstance(upscale, bool) else None)
     controls = {name: args[name] for name in _CREATIVE_CONTROL_PARAMS if name in args}
-    raw = None
-    for route in (_dispatch_to_plugin_provider, _maybe_route_managed_model):
-        raw = route(prompt, aspect_ratio, controls=controls or None, **sources)
+    raw = _dispatch_to_plugin_provider(prompt, aspect_ratio, controls=controls or None, **sources)
+    if raw is None:
+        raw = _maybe_route_managed_model(prompt, aspect_ratio, controls=controls or None, **sources)
         if raw is not None:
-            break
+            raw = _fall_back_to_fal(raw, prompt, aspect_ratio, sources)
     if raw is None:
         raw = image_generate_tool(prompt, aspect_ratio, **sources)
     return _postprocess_image_generate_result(raw, task_id=task_id)
+
+
+def _fall_back_to_fal(raw: str, prompt: str, aspect_ratio: str, sources: Dict[str, Any]) -> str:
+    """Rerun a managed Krea request on FAL's default model when Krea refused it before creating a job.
+
+    Only the Krea plugin marks a failure ``fallback_eligible``, and only when the submit provably never
+    created a job: a job that exists has already been authorized for billing and may still complete.
+    Source images never fall back; FAL would route them to an edit endpoint with different semantics."""
+    try:
+        result = json.loads(raw)
+    except Exception:  # noqa: BLE001
+        return raw
+    if not isinstance(result, dict) or result.get("success") or not result.get("fallback_eligible"):
+        return raw
+    if sources.get("image_url") or sources.get("reference_image_urls"):
+        return raw
+    from plugins.image_gen.krea import fallback_to_fal_enabled
+    if not fallback_to_fal_enabled():
+        return raw
+    logger.warning("Managed Krea refused the request before starting a job; falling back to FAL: %s", result.get("error"))
+    fal_result = json.loads(image_generate_tool(prompt, aspect_ratio, upscale=sources.get("upscale"), fal_model=DEFAULT_MODEL))
+    fal_result.update(
+        provider="fal", model=DEFAULT_MODEL, fallback_from="krea", fallback_reason=result.get("error"),
+        note=f"Krea was unavailable, so this image was generated on FAL ({DEFAULT_MODEL}) instead.")
+    return json.dumps(fal_result)
 
 
 # --- Dynamic schema — reflect the active backend's image-to-image capability ---
@@ -830,6 +859,8 @@ def _active_image_capabilities() -> Dict[str, Any]:
                 info["supports_upscale"] = bool(caps.get("supports_upscale"))
                 if caps.get("creative_controls"):
                     info["creative_controls"] = list(caps["creative_controls"])
+                if caps.get("source_image_role") == "style":
+                    info["source_image_role"] = "style"
                 return info
         except Exception:  # noqa: BLE001
             pass
@@ -876,6 +907,15 @@ _CREATIVE_CONTROL_PARAMS = {
     },
 }
 
+_STYLE_IMAGE_URL_PARAM = {
+    "type": "string",
+    "description": (
+        "Style reference: its look is copied, the image itself is not edited. "
+        "A public URL or an absolute local file path. Describe the subject in "
+        "the prompt. Omit for text-to-image."
+    ),
+}
+
 _UPSCALE_PARAM = {
     "type": "boolean",
     "description": (
@@ -902,19 +942,26 @@ def _build_dynamic_image_schema() -> Dict[str, Any]:
     static_props = IMAGE_GENERATE_SCHEMA["parameters"]["properties"]
     properties: Dict[str, Any] = {
         "prompt": static_props["prompt"], "aspect_ratio": static_props["aspect_ratio"]}
+    style_refs = info.get("source_image_role") == "style"
     if can_edit:
-        edit_clause = ", or edit / transform an existing image by passing image_url"
-        properties["image_url"] = _IMAGE_URL_PARAM
+        if style_refs:
+            edit_clause = ", or copy the look of reference images passed in image_url"
+            properties["image_url"] = _STYLE_IMAGE_URL_PARAM
+            refs_desc = f"Up to {max_refs} more style references. URLs or absolute local paths."
+        else:
+            edit_clause = ", or edit / transform an existing image by passing image_url"
+            properties["image_url"] = _IMAGE_URL_PARAM
+            refs_desc = (
+                f"Up to {max_refs} additional reference images (style, "
+                "character, or composition) guiding an edit. URLs or "
+                "absolute local paths."
+            )
         if max_refs > 1:
             properties["reference_image_urls"] = {
                 "type": "array",
                 "items": {"type": "string"},
                 "maxItems": max_refs,
-                "description": (
-                    f"Up to {max_refs} additional reference images (style, "
-                    "character, or composition) guiding an edit. URLs or "
-                    "absolute local paths."
-                ),
+                "description": refs_desc,
             }
     else:
         edit_clause = " (text-to-image only — the active model cannot edit existing images)"

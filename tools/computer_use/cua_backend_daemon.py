@@ -4,6 +4,8 @@ checks its launch path depends on. Config/policy helpers are looked up lazily th
 from __future__ import annotations
 
 import contextlib
+import glob
+import json
 import logging
 import os
 import shutil
@@ -91,6 +93,153 @@ def _wait_or_kill(process: Any) -> None:
             process.wait(timeout=2.0)
 
 
+def _owner_marker_path(socket_path: str) -> str:
+    """Sidecar recording the Hermes owner of an embedded daemon socket."""
+    return f"{socket_path}.owner"
+
+
+def _current_owner_record() -> Dict[str, Any]:
+    """PID + start-time fingerprint identifying this Hermes process."""
+    try:
+        from gateway.status import get_process_start_time
+    except Exception:
+        return {"pid": os.getpid(), "start_time": None}
+    try:
+        start_time = get_process_start_time(os.getpid())
+    except Exception:
+        start_time = None
+    return {"pid": os.getpid(), "start_time": start_time}
+
+
+def _write_owner_marker(socket_path: str) -> None:
+    """Record this process as the socket owner; best-effort, never raises."""
+    if sys.platform == "win32":
+        return
+    try:
+        with open(_owner_marker_path(socket_path), "w", encoding="utf-8") as handle:
+            json.dump(_current_owner_record(), handle)
+    except OSError as exc:
+        logger.debug("embedded cua-driver: could not write owner marker: %s", exc)
+
+
+def _remove_owner_marker(socket_path: str) -> None:
+    if sys.platform == "win32":
+        return
+    with contextlib.suppress(OSError):
+        os.remove(_owner_marker_path(socket_path))
+
+
+def _is_owner_dead(pid: Any, recorded_start: Any) -> bool:
+    """True only when the recorded owner is proven dead: PID gone (ProcessLookupError)
+    or PID recycled (start-time fingerprint mismatch). Anything unreadable is alive
+    (fail-closed) so a live Hermes never loses its daemon."""
+    try:
+        pid_int = int(pid)
+    except (TypeError, ValueError):
+        return False
+    try:
+        os.kill(pid_int, 0)
+    except ProcessLookupError:
+        return True
+    except PermissionError:
+        pass
+    except OSError:
+        return False
+    except Exception:
+        return False
+    try:
+        from gateway.status import get_process_start_time, start_time_fingerprints_match
+    except Exception:
+        return False
+    try:
+        current_start = get_process_start_time(pid_int)
+    except Exception:
+        return False
+    if recorded_start is None or current_start is None:
+        return False
+    try:
+        return not start_time_fingerprints_match(recorded_start, current_start)
+    except Exception:
+        return False
+
+
+def _reap_orphaned_embedded_daemons(
+    driver_cmd: str, current_socket: str, env: Optional[Dict[str, str]] = None
+) -> None:
+    """Stop embedded daemons whose Hermes owner died without running atexit.
+
+    On macOS the daemon is launched via ``open -n -g -a`` so LaunchServices reparents
+    it to launchd: killing Hermes (Desktop updates/restarts) leaves the daemon and its
+    socket behind. Each daemon records ``<socket>.owner`` at startup; a stale
+    ``hc-*.sock`` whose owner PID is dead (or recycled) is stopped and unlinked.
+    Fail-closed: any unreadable state is skipped, per-socket failures are suppressed.
+    """
+    if sys.platform == "win32" or not driver_cmd:
+        return
+    try:
+        candidates = glob.glob(os.path.join(tempfile.gettempdir(), "hc-*.sock"))
+    except Exception as exc:
+        logger.debug("embedded cua-driver: orphan scan failed: %s", exc)
+        return
+    for sock_path in candidates:
+        try:
+            if sock_path == current_socket or not os.path.exists(sock_path):
+                continue
+            marker_path = _owner_marker_path(sock_path)
+            if not os.path.exists(marker_path):
+                continue
+            try:
+                with open(marker_path, encoding="utf-8") as handle:
+                    record = json.load(handle)
+            except (OSError, ValueError):
+                continue
+            if not isinstance(record, dict):
+                continue
+            if not _is_owner_dead(record.get("pid"), record.get("start_time")):
+                continue
+            stopped = False
+            try:
+                stop_proc = _cb()._run_quiet(
+                    [driver_cmd, "stop", "--socket", sock_path],
+                    timeout=3.0,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    env=env,
+                    swallow=_QUIET_ERRORS,
+                )
+                stopped = stop_proc is not None and stop_proc.returncode == 0
+            except Exception as exc:
+                logger.debug("embedded cua-driver: stop failed for %s: %s", sock_path, exc)
+                stopped = False
+            if not stopped:
+                # A failed stop must not retire the only retry handle: confirm death
+                # with an independent status probe, retaining on live/unknown.
+                try:
+                    status_proc = _cb()._run_quiet(
+                        [driver_cmd, "status", "--socket", sock_path],
+                        timeout=3.0,
+                        env=env,
+                        swallow=_QUIET_ERRORS,
+                    )
+                except Exception as exc:
+                    logger.debug("embedded cua-driver: status probe failed for %s: %s", sock_path, exc)
+                    continue
+                if status_proc is None or getattr(status_proc, "returncode", None) == 0:
+                    logger.debug(
+                        "embedded cua-driver: retaining %s (stop failed, daemon live or probe inconclusive)",
+                        sock_path,
+                    )
+                    continue
+            with contextlib.suppress(OSError):
+                os.remove(sock_path)
+            with contextlib.suppress(OSError):
+                os.remove(marker_path)
+            logger.debug("embedded cua-driver: reaped orphaned daemon for %s", sock_path)
+        except Exception as exc:
+            logger.debug("embedded cua-driver: could not reap %s: %s", sock_path, exc)
+            continue
+
+
 class _EmbeddedCuaDaemon:
     """Private daemon for a non-standard permission mode. cua-driver's permission mode is immutable after daemon
     startup, so reusing the machine-wide daemon would let one Hermes session's YOLO choice affect another. A
@@ -167,10 +316,24 @@ class _EmbeddedCuaDaemon:
             raise RuntimeError(_driver.cua_driver_install_hint())
         self._command, self._mcp_args = _driver._resolve_mcp_invocation(driver_cmd)
         env = self._sanitized_env()
+        # LaunchServices reparents the macOS daemon to launchd (PID 1), so a killed
+        # Hermes never runs atexit: reap daemons orphaned by a dead owner first.
+        # Fail-closed and suppressed — a broken scan must not block startup.
+        with contextlib.suppress(Exception):
+            self._reap_orphans(env)
         command = _embedded_daemon_spawn_command(self._command, self._serve_args(), platform=sys.platform)
-        self._process = subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                                         stderr=subprocess.PIPE, text=True, encoding="utf-8", errors="replace",
-                                         env=env)
+        # Prepublish provenance before the detached daemon can become live: on macOS
+        # `open -n -g -a` reparents to launchd, so the daemon may outlive this process
+        # before the socket is ready. Best-effort, never raises.
+        with contextlib.suppress(Exception):
+            _write_owner_marker(self.socket_path)
+        try:
+            self._process = subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                                             stderr=subprocess.PIPE, text=True, encoding="utf-8", errors="replace",
+                                             env=env)
+        except Exception:
+            _remove_owner_marker(self.socket_path)
+            raise
         self._owns_runtime = True
         threading.Thread(target=self._drain_stderr, args=(self._process,), name="hermes-cua-daemon-stderr", daemon=True).start()
         deadline = time.monotonic() + self._START_TIMEOUT_SECONDS
@@ -178,6 +341,7 @@ class _EmbeddedCuaDaemon:
             return_code = self._process.poll()
             # `open` exits 0 once LaunchServices took the request: on macOS only a non-zero exit means the daemon died.
             if return_code is not None and (sys.platform != "darwin" or return_code != 0):
+                self.stop()
                 self._startup_failure("embedded cua-driver exited during startup", "no diagnostic output")
             if self._socket_ready(env):
                 self._running = True
@@ -193,6 +357,13 @@ class _EmbeddedCuaDaemon:
         """``cua-driver status --socket`` exits 0 once the private daemon accepts connections."""
         probe = _cb()._run_quiet([self._command, "status", "--socket", self.socket_path], timeout=2.0, env=env, swallow=_QUIET_ERRORS)
         return probe is not None and probe.returncode == 0
+
+    @property
+    def owner_marker_path(self) -> str:
+        return _owner_marker_path(self.socket_path)
+
+    def _reap_orphans(self, env: Optional[Dict[str, str]] = None) -> None:
+        _reap_orphaned_embedded_daemons(self._command, self.socket_path, env)
 
     def proxy_invocation(self) -> Tuple[str, List[str]]:
         if not self._running:
@@ -210,3 +381,4 @@ class _EmbeddedCuaDaemon:
         if sys.platform != "win32" and os.path.exists(self.socket_path):
             with contextlib.suppress(OSError):
                 os.remove(self.socket_path)
+        _remove_owner_marker(self.socket_path)

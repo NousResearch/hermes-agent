@@ -211,13 +211,15 @@ class GatewayVoiceMixin:
                               profile=getattr(adapter, "_owner_profile", None))
         self._apply_voice_mode(adapter, key, chat_id, "off")
 
-    def _is_duplicate_voice_transcript(self, guild_id: int, user_id: int, transcript: str) -> bool:
+    def _is_duplicate_voice_transcript(self, binding: tuple, user_id: int, transcript: str) -> bool:
         """Suppress repeated STT outputs for one recent utterance (voice capture can emit it twice a
-        few seconds apart -> a second queued run and overlapping spoken replies)."""
+        few seconds apart -> a second queued run and overlapping spoken replies). ``binding`` is
+        (receiving bot's profile, guild, bound text channel): the store is runner-wide, and another
+        bot's copy of the utterance, or a new binding, is a separate turn."""
         normalized = re.sub(r"[^\w\s]", "", re.sub(r"\s+", " ", transcript).strip().lower())
         if not normalized:
             return False
-        now, key = time.monotonic(), (guild_id, user_id)
+        now, key = time.monotonic(), (*binding, user_id)
         if not isinstance(recent_store := getattr(self, "_recent_voice_transcripts", None), dict):
             recent_store = self._recent_voice_transcripts = {}
         recent = [(ts, txt) for ts, txt in recent_store.get(key, []) if now - ts <= 12.0]
@@ -270,7 +272,8 @@ class GatewayVoiceMixin:
         if not self._is_user_authorized_for_source(source):
             logger.debug("Unauthorized voice input from user %d, ignoring", user_id)
             return
-        if self._is_duplicate_voice_transcript(guild_id, user_id, transcript):
+        binding = (getattr(adapter, "_owner_profile", None), guild_id, text_ch_id)
+        if self._is_duplicate_voice_transcript(binding, user_id, transcript):
             logger.info("Suppressing duplicate voice transcript for guild=%s user=%s: %s",
                         guild_id, user_id, transcript[:100])
             return

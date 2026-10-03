@@ -288,3 +288,77 @@ class TestSendWithRetryFailureTypeTransitions:
         assert result.success  # fallback succeeded
         # No delivery-failure notice was sent (this is a formatting fallback, not network exhaustion)
         assert "delivery failed" not in adapter._send_calls[-1][1].lower()
+
+
+# ---------------------------------------------------------------------------
+# _send_with_retry — cumulative inline budget (#126213 review blocker)
+# ---------------------------------------------------------------------------
+# The per-value cap check (`backoff > _SEND_RETRY_INLINE_WAIT_CAP_SECS`) can
+# never fire for a locally measured breaker cooldown that stays below the cap
+# (weixin default 30s < cap 60s), yet max_retries=2 refills `retry_after` from
+# every failed attempt — so the inline hold chains to ~2x the breaker width
+# (61.3s measured), past the #91969 invariant. The budget must be cumulative:
+# once the total inline sleep for this send would exceed the cap, stop sleeping
+# and return the typed failure for ledger redelivery.
+
+class TestSendWithRetryCumulativeInlineBudget:
+
+    @pytest.mark.asyncio
+    async def test_cumulative_inline_sleep_over_cap_returns_typed_failure(self):
+        """Two back-to-back sub-cap retry_after waits must not chain past the cap:
+        when the second sleep would push the total inline wait past
+        _SEND_RETRY_INLINE_WAIT_CAP_SECS, return the typed failure (ledger
+        redelivers) instead of sleeping again."""
+        adapter = _StubAdapter()
+        cooldown = SendResult(success=False, error="rate limited, retry in 45 seconds",
+                              retryable=True, retry_after=45.0)
+        adapter._send_results = [cooldown, cooldown, cooldown]
+        with patch("asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
+            result = await adapter._send_with_retry("chat1", "hello", max_retries=2, base_delay=2.0)
+        assert result.success is False
+        assert result.retry_after == 45.0
+        # Exactly one inline sleep happened (the first, ~45s + jitter); the second
+        # would take the cumulative total past the 60s cap, so it never slept.
+        assert mock_sleep.call_count == 1
+        assert mock_sleep.call_args_list[0][0][0] >= 44.0  # 45 - 1 (max jitter)
+        # Initial send + the one sub-cap retry whose wait fit the budget; the
+        # typed failure came before attempt 2's sleep (total hold ~45.8s ≤ cap).
+        assert len(adapter._send_calls) == 2
+
+    @pytest.mark.asyncio
+    async def test_cumulative_budget_still_allows_sub_cap_total(self):
+        """Retries whose total inline wait stays within the cap keep working:
+        retry_after honored per attempt, no typed failure, success on retry."""
+        adapter = _StubAdapter()
+        adapter._send_results = [
+            SendResult(success=False, error="Flood control exceeded. Retry in 20 seconds",
+                       retryable=True, retry_after=20.0),
+            SendResult(success=False, error="Flood control exceeded. Retry in 20 seconds",
+                       retryable=True, retry_after=20.0),
+            SendResult(success=True, message_id="ok"),
+        ]
+        with patch("asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
+            result = await adapter._send_with_retry("chat1", "hello", max_retries=2, base_delay=2.0)
+        assert result.success
+        assert mock_sleep.call_count == 2
+        assert len(adapter._send_calls) == 3  # initial + 2 retries
+
+    @pytest.mark.asyncio
+    async def test_cumulative_budget_counts_backoff_delays_too(self):
+        """Plain exponential-backoff waits count against the same budget: the first
+        wait lands (25s), the second (2x backoff = 50s, sub-cap on its own) would
+        push the total past the cap, so the typed-failure path fires before it
+        sleeps again."""
+        adapter = _StubAdapter()
+        adapter._send_results = [
+            SendResult(success=False, error="httpx.ConnectError: connection refused", retryable=True),
+            SendResult(success=False, error="httpx.ConnectError: connection refused", retryable=True),
+            SendResult(success=False, error="httpx.ConnectError: connection refused", retryable=True),
+        ]
+        with patch("asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
+            result = await adapter._send_with_retry("chat1", "hello", max_retries=2, base_delay=25.0)
+        assert result.success is False
+        # Attempt 1 sleeps 25s (total ~25s); attempt 2's 50s backoff is sub-cap alone
+        # but pushes the cumulative total past 60s → typed failure, no second sleep.
+        assert mock_sleep.call_count == 1
+        assert len(adapter._send_calls) == 2  # initial + the one budgeted retry

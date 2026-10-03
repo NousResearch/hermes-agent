@@ -672,6 +672,7 @@ def _action_create(a: Dict[str, Any]) -> str:
     if a["continuity"] is not None:
         context_from = _apply_continuity(context_from, a["continuity"])
 
+    from cron.jobs_store import CronStoreError, CronStoreUncertainError
     from cron.scheduler import CronSchedulerRegistrationError, create_job_with_scheduler_registration
     try:
         job = create_job_with_scheduler_registration(
@@ -695,9 +696,23 @@ def _action_create(a: Dict[str, Any]) -> str:
     except CronSchedulerRegistrationError as exc:
         _partial = exc.to_dict()
         return tool_error(_partial.pop("error"), success=False, **_partial)
+    except CronStoreUncertainError as exc:
+        # The job may be stored but was never registered with the scheduler: a blind retry would
+        # duplicate a watcher, and a stored-but-unregistered one never fires on an external
+        # provider. Read back first; a listed job is registered by pause + resume.
+        return tool_error(
+            f"{exc} Run cronjob(action='list') and look for job_id before creating it again. If "
+            "it is listed, it was saved but NOT registered with the scheduler: run "
+            "cronjob(action='pause') and then cronjob(action='resume') on that job_id so it "
+            "fires. Create it again only if it is not listed.",
+            success=False, job_id=getattr(exc, "job_id", None), job_saved=None,
+            scheduler_registered=getattr(exc, "scheduler_registered", False), retry_create=False)
+    except CronStoreError as exc:
+        return tool_error(str(exc), success=False, job_saved=False, retry_create=True)
     _create_message = " ".join(filter(None, (f"Cron job '{job['name']}' created.",
         "Created PAUSED — resume to schedule, or explicitly run now." if not job.get("enabled", True) else None,
-        _local_delivery_notice(job, deliver))))
+        _local_delivery_notice(job, deliver),
+        f"Storage warning: {job['storage_warning']}" if job.get("storage_warning") else None)))
     # The builtin ticker lives in the gateway process: with no gateway running the job is stored
     # but never fires — tell the model (the CLI already warns).
     _result = {
@@ -706,6 +721,8 @@ def _action_create(a: Dict[str, Any]) -> str:
         "deliver": job.get("deliver", "local"), "next_run_at": job["next_run_at"], "job": _format_job(job),
         "message": _create_message, **_gateway_liveness_notice(),
     }
+    if job.get("storage_warning"):
+        _result["storage_warning"] = job["storage_warning"]
     return _dumps(_with_guidance(_result, job, deliver))
 
 

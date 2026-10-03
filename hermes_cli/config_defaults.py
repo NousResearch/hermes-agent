@@ -1876,6 +1876,15 @@ DEFAULT_CONFIG = {
         # silences a signature for good. 0 = re-alert on every failing run. Keep in sync with
         # cron.scheduler.DEFAULT_FAILURE_REPEAT_ALERT_HOURS.
         "failure_repeat_alert_hours": 6,
+        # jobs.json publication policy (per profile; POSIX). strict_durability: true latches the
+        # store (jobs.json.strict-durability) before its first mutation; it then requires the
+        # logical and physical cross-process locks for every read and write, refuses a
+        # corrupt/noncanonical store (strict JSON) or a vanished published one, and publishes with
+        # file + directory fsync, owner/mode verified before the rename, then refreshes
+        # jobs.json.last-good. Must be a real boolean. Once latched, removing, nulling or setting
+        # it false (or an unreadable config) stops cron for that store until the documented
+        # manual recovery. false/unset on a never-latched store = historical behavior.
+        "store": {"strict_durability": False},
     },
     # Kanban multi-agent coordination. The dispatcher ticks every N seconds, reclaims stale claims,
     # promotes dependency-satisfied todos to ready, and fires `hermes -p <assignee> chat -q ...` per

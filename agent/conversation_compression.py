@@ -3381,11 +3381,24 @@ def _publish_rotated_compaction(
         _profile_for_child = None
     old_title = agent._session_db.get_session_title(agent.session_id)
     new_session_id = mint_session_id()
+    child_model_config = agent._session_init_model_config
+    with contextlib.suppress(Exception):
+        child_model_config = agent._session_row_model_config()
+    with contextlib.suppress(Exception):
+        from tools.bot_mode_probe import _SESSION_AUTH_CONFIG_KEY
+
+        parent_authorization = agent._session_db.get_session_model_config_value(
+            old_session_id,
+            _SESSION_AUTH_CONFIG_KEY,
+        )
+        if parent_authorization is not None:
+            child_model_config = dict(child_model_config or {})
+            child_model_config[_SESSION_AUTH_CONFIG_KEY] = parent_authorization
     from agent.context_compressor import _DB_PERSISTED_MARKER
     agent._session_db.publish_compression_child(
         parent_session_id=old_session_id, child_session_id=new_session_id,
         source=_compression_child_source(agent, old_session_id), model=agent.model,
-        model_config=agent._session_init_model_config, system_prompt=new_system_prompt, messages=compressed,
+        model_config=child_model_config, system_prompt=new_system_prompt, messages=compressed,
         cwd=getattr(agent, "working_directory", None), profile_name=_profile_for_child,
         compression_lock_holder=lease.holder, require_compression_lease=lease.holder is not None,
         require_lease_refresh=lease.holder is not None, lease_ttl_seconds=lease.ttl,

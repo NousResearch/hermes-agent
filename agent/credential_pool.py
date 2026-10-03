@@ -1037,15 +1037,23 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
         with self._lock:
             return bool(self._entries)
 
-    def has_available(self, *, model: Optional[str] = None) -> bool:
+    def has_available(self, *, model: Optional[str] = None, any_model: bool = False) -> bool:
         """True if at least one entry is not currently in exhaustion cooldown.
+
+        ``any_model`` answers the provider-level question — "can this
+        credential serve anything" — where a model-scoped cooldown must not
+        count: it benches one model, not the credential (#127682).
+        Credential-wide exhaustion still does. Callers routing a real request
+        keep the default, whose conservative unscoped answer is what keeps a
+        benched model out of unnamed-model rotation.
 
         ``_available_entries`` is not read-only (it prunes aged-out DEAD
         manual entries and persists), so it must run under ``self._lock``
         like every other caller or a probe can race a concurrent rotation.
         """
         with self._lock:
-            available, _pending = self._available_entries(model=model)
+            available, _pending = self._available_entries(
+                model=None if any_model else model, ignore_model_cooldowns=any_model)
             return bool(available)
 
     def lift_reopened_cooldowns(self, *, model: Optional[str] = None) -> bool:
@@ -2071,6 +2079,7 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
 
     def _available_entries(
         self, *, clear_expired: bool = False, refresh: bool = False, model: Optional[str] = None,
+        ignore_model_cooldowns: bool = False,
     ) -> Tuple[List[PooledCredential], List[PooledCredential]]:
         """Return (available, pending_refresh) for entries not in cooldown.
 
@@ -2080,6 +2089,9 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
         xai-oauth), which are returned as *pending_refresh* so the caller
         refreshes them outside the lock instead of stalling every pool
         consumer during cross-process flock acquisition + OAuth network I/O.
+        *ignore_model_cooldowns* skips the per-model bench — for
+        provider-level "can this credential serve anything" probes (#127682),
+        never for routing a request.
         """
         now = time.time()
         cleared_any = False
@@ -2116,7 +2128,7 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
                         entries_to_prune.append(entry.id)  # can't mutate while iterating
                         cleared_any = True
                 continue
-            if model_cooldown_until(entry, model) is not None:
+            if not ignore_model_cooldowns and model_cooldown_until(entry, model) is not None:
                 continue
             if entry.last_status == STATUS_EXHAUSTED:
                 exhausted_until = _exhausted_until(entry, sole_credential=sole_credential)

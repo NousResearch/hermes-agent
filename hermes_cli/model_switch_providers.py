@@ -170,12 +170,13 @@ def _credential_pool_is_usable(provider: str, *, raw_pool_present: bool = False)
 
     Legacy opaque ``auth.json`` pool values that do not deserialize into ``PooledCredential``
     stay visible (``raw_pool_present``); a real pool's availability is authoritative — an
-    all-exhausted/dead pool is not authenticated."""
+    all-exhausted/dead pool is not authenticated. A model-scoped cooldown benches one
+    model, not the credential, so it must not demote the provider (#127682)."""
     try:
         from agent.credential_pool import load_pool
         pool = load_pool(provider)
         if pool.has_credentials():
-            return pool.has_available()
+            return pool.has_available(any_model=True)
     except Exception:
         pass
     return raw_pool_present

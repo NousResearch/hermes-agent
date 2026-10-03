@@ -480,6 +480,7 @@ up any new commands.
 
 ```bash
 hermes send --to <target> "message text"
+hermes send --to telegram:<chat_id>[:<thread_id>] --reply-to <message_id> "reply text"
 hermes send --to <target> --file <path>
 echo "message" | hermes send --to <target>
 hermes send --list [platform]
@@ -494,6 +495,7 @@ For bot-token platforms (Telegram, Discord, Slack, Signal, SMS, WhatsApp-CloudAP
 | `-t`, `--to <TARGET>` | Delivery target. Formats: `platform` (uses home channel), `platform:chat_id`, `platform:chat_id:thread_id`, or `platform:#channel-name`. Examples: `telegram`, `telegram:-1001234567890`, `discord:#ops`, `slack:C0123ABCD`, `signal:+15551234567`. |
 | `-f`, `--file <PATH>` | Read the message body from `PATH` (text files only — logs, reports, markdown). Pass `-` to force reading from stdin. To send an image or other binary file, use `MEDIA:<path>` (see below). |
 | `-s`, `--subject <LINE>` | Prepend a subject/header line before the message body. |
+| `--reply-to <MESSAGE_ID>` | Telegram only: send as a reply to that message. Needs an explicit `telegram:chat_id[:thread_id]` target. Fails instead of posting unanchored when the message is gone. In the `--json` result, `reply_message_id` is the reply that was sent and `reply_to_message_id` the anchor Telegram confirmed; if Telegram does not confirm it, the result is `partial_success` and the exit code `1`. |
 | `-l`, `--list [platform]` | List configured targets across all platforms (or only the given platform). |
 | `-q`, `--quiet` | Suppress stdout on success — useful in scripts (rely on exit code only). |
 | `--json` | Emit raw JSON result instead of human-readable output. |
@@ -521,6 +523,7 @@ Examples:
 ```bash
 hermes send --to telegram "deploy finished"
 echo "RAM 92%" | hermes send --to telegram:-1001234567890
+hermes send --to telegram:-1001234567890:17585 --reply-to 4567 "answer"
 hermes send --to discord:#ops --file ~/.hermes/cache/scratch/report.md
 hermes send --to slack:#eng --subject "[CI]" --file build.log
 hermes send --list                  # all platforms

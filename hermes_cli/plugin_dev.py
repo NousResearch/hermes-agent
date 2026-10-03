@@ -63,7 +63,8 @@ def _doctor_runtime(plugin_path: Path):
     from tools.registry import registry
     entries_before = {entry.name: entry for entry in registry._snapshot_entries()}
     policy_before = dict(registry._plugin_override_policy)
-    modules_before = {name for name in sys.modules if _is_plugin_module(name)}
+    # list(sys.modules) is an atomic snapshot; the live dict races concurrent imports (#123926)
+    modules_before = {name for name in list(sys.modules) if _is_plugin_module(name)}
     manager = PluginManager()
     try:
         manifests = manager._scan_directory(plugins_root, source="user")

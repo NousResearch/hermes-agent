@@ -119,9 +119,25 @@ def _generate_pyproject(plugin_dirs: list[Path] | Mapping[Path, Path], root: Pat
     core_pyproject = source / "pyproject.toml"
     core_text = core_pyproject.read_text(encoding="utf-8-sig")
 
-    members = [_workspace_member(source, root, identity=identity).relative_to(root).as_posix()
-               for identity, source in member_sources(plugin_dirs).items()
-               if _is_member_candidate(source)]
+    members = []
+    buildable = {}  # [project].name -> identity of the member already snapshotted for it
+    for identity, entry in member_sources(plugin_dirs).items():
+        if not _is_member_candidate(entry):
+            continue
+        # A buildable member keeps its declared [project].name (uv verifies it
+        # against the metadata its backend produces), so the same buildable
+        # plugin enabled in two profiles sharing a gateway would declare one
+        # name twice and fail `uv lock` with "Two workspace members are both
+        # named …". One copy resolves that name; an identical source is the
+        # same package either way, so identical duplicates fold into the
+        # first copy (config order, via a stable `sorted` below).
+        name = _buildable_member_name(entry)
+        if name is not None:
+            seen = buildable.get(name)
+            if seen is not None and _same_member_source(seen, entry):
+                continue
+            buildable[name] = entry
+        members.append(_workspace_member(entry, root, identity=identity).relative_to(root).as_posix())
 
     if members:
         import tomllib
@@ -243,6 +259,51 @@ def _member_key(identity: Path) -> str:
     digest = hashlib.sha256(str(identity.resolve()).encode()).hexdigest()[:16]
     name = re.sub(r"[^a-z0-9._-]+", "-", identity.name.lower()).strip("-.") or "plugin"
     return f"{name}-{digest}"
+
+
+def _buildable_member_name(plugin_dir: Path) -> str | None:
+    """The declared ``[project].name`` when this member is buildable, else ``None``.
+
+    Mirrors the virtual/buildable split in :func:`_workspace_member`: a member
+    with a build backend (or opted into uv package mode) keeps its declared
+    name, so only those can collide in the uv workspace.
+    """
+    import tomllib
+
+    pyproject = read_python_declaration(plugin_dir).pyproject
+    if pyproject is None:
+        return None
+    document = tomllib.loads(pyproject.read_text(encoding="utf-8-sig"))
+    if "build-system" not in document and document.get("tool", {}).get("uv", {}).get("package") is not True:
+        return None  # virtual: renamed to a unique key, cannot collide
+    name = document.get("project", {}).get("name")
+    return str(name) if name else None
+
+
+def _same_member_source(a: Path, b: Path) -> bool:
+    """True when two installed plugins carry an identical build-relevant source tree.
+
+    Compares the declaration files plus every file under the tree except the
+    directories a workspace snapshot ignores. Byte-level, path-order-stable.
+    """
+    if a == b:
+        return True
+
+    def snapshot_entries(path: Path):
+        from pm.plugin_declarations import read_python_declaration as read
+
+        declaration = read(path)
+        for source in declaration.files:
+            yield source.name, source.read_bytes()
+        if (path / "pyproject.toml").is_file():
+            for directory, dirs, files in os.walk(path):
+                dirs[:] = sorted(set(dirs) - set(_member_ignored(directory, dirs)))
+                for name in sorted(set(files) - set(_member_ignored(directory, files))):
+                    entry = Path(directory) / name
+                    yield entry.relative_to(path).as_posix(), (
+                        os.readlink(entry) if entry.is_symlink() else entry.read_bytes())
+
+    return list(snapshot_entries(a)) == list(snapshot_entries(b))
 
 
 def _workspace_member(plugin_dir: Path, root: Path, *, identity: Path) -> Path:

@@ -7,6 +7,8 @@ its own work. None of that has a consumer in a finite run. The marker is the sam
 session — the control in every test here — keeps the full surface.
 """
 
+from unittest.mock import MagicMock
+
 import pytest
 
 from agent import oneshot_footprint
@@ -63,3 +65,12 @@ def test_oneshot_delegation_budget_charges_total_children_then_refuses(oneshot, 
     # Interactive sessions are never charged, whatever the count.
     monkeypatch.delenv("HERMES_SINGLE_QUERY_SESSION")
     assert delegate_tool._oneshot_spawn_budget(parent, 50) is None
+
+
+def test_oneshot_delegation_budget_treats_mock_counter_as_unspent(oneshot, monkeypatch):
+    from tools import delegate_tool
+
+    monkeypatch.setattr(delegate_tool, "_get_oneshot_max_children", lambda: 2)
+    parent = MagicMock()
+    assert delegate_tool._oneshot_spawn_budget(parent, 1) is None
+    assert parent._oneshot_children_spawned == 1

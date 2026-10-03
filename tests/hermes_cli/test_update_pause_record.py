@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import signal
 import subprocess
@@ -23,6 +24,18 @@ def _child(code: str, *argv: str, env: dict | None = None) -> subprocess.Popen:
                             stdout=subprocess.PIPE, text=True, env={**os.environ, "PYTHONPATH": str(REPO), **(env or {})})
 
 
+def _orphaned_profiles(home: Path) -> dict | None:
+    """``orphaned_record()`` read by a fresh process (the liveness probe reads the checkout's git dir)."""
+    probe = _child("""
+        import json
+        from hermes_cli import update_pause_record as r
+        body = r.orphaned_record()
+        print(json.dumps(None if body is None else body["token"]["profiles"]))
+    """, env={"HERMES_HOME": str(home)})
+    out, _ = probe.communicate(timeout=60)
+    return json.loads(out.strip().splitlines()[-1])
+
+
 def test_record_written_by_a_killed_updater_is_orphaned_only_after_its_death(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     owner = _child("""
@@ -37,12 +50,11 @@ def test_record_written_by_a_killed_updater_is_orphaned_only_after_its_death(tmp
         body = pause_record.read()
         assert body["owner"]["pid"] == owner.pid and body["owner"]["ct"].startswith("ct:")
         assert body["token"]["profiles"] == {"default": 4242}
-        assert pause_record.orphaned_record() is None  # live owner: its own resume owns the set
+        assert _orphaned_profiles(tmp_path) is None  # live owner: its own resume owns the set
     finally:
         owner.send_signal(signal.SIGKILL)  # windows-footgun: ok — module skips on Windows
         owner.wait(timeout=10)
-    orphan = pause_record.orphaned_record()
-    assert orphan is not None and orphan["token"]["profiles"] == {"default": 4242}
+    assert _orphaned_profiles(tmp_path) == {"default": 4242}
 
 
 def _git(root: Path, *args: str) -> str:

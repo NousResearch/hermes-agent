@@ -389,17 +389,28 @@ def _get_json(url: str, headers: dict[str, str], *, timeout: float) -> dict:
 def _usage_windows(
     source: dict, mapping: tuple[tuple[str, str], ...], used_key: str, reset_key: str, *, fraction: bool = False
 ) -> list[AccountUsageWindow]:
-    """Build windows from ``source[key][used_key]``; ``fraction`` scales values <= 1 to percent."""
+    """Build windows from ``source[key][used_key]``; ``fraction`` scales values <= 1 to percent.
+
+    Non-numeric ``used`` values (e.g. Anthropic's ``"unavailable"`` / ``"N/A"`` sentinels)
+    are skipped with a DEBUG log so a single bad window cannot blank the whole account
+    snapshot; the outer fetcher still returns whatever parsed. Numeric values are parsed
+    once and scaled to percent when ``fraction`` is set and the parsed number is <= 1.
+    """
     windows: list[AccountUsageWindow] = []
     for key, label in mapping:
         window = source.get(key) or {}
         used = window.get(used_key)
         if used is None:
             continue
-        used = float(used)
-        if fraction and used <= 1:
-            used *= 100
-        windows.append(AccountUsageWindow(label=label, used_percent=used, reset_at=_parse_dt(window.get(reset_key))))
+        try:
+            used_float = float(used)
+        except (TypeError, ValueError):
+            logger.debug("Skipping non-numeric %s.%s value %r", key, used_key, used)
+            continue
+        if fraction and used_float <= 1:
+            used_float *= 100
+        windows.append(AccountUsageWindow(label=label, used_percent=used_float,
+                                          reset_at=_parse_dt(window.get(reset_key))))
     return windows
 
 

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
-// Patch spectrum-ts' iMessage inbound mapper until upstream preserves mixed
-// text + attachment Apple events. The mapper returns only
+// Apply narrow compatibility fixes to spectrum-ts' bundled iMessage mapper.
+// Older releases return only
 // buildAttachmentMessage(...) whenever attachments are present, which drops
 // `message.content.text` before Hermes can see it. We rewrite the two inbound
 // mappers — `rebuildFromAppleMessage` (used by `space.getMessage`) and
@@ -13,12 +13,14 @@
 // lives in `@spectrum-ts/imessage/dist/index.js` (it used to be a chunk under
 // `spectrum-ts/dist`). The published output is tab-indented and uses
 // `const ... = async` declarations; the anchors below match that exactly and
-// fail loudly if a future spectrum-ts reshapes the mapper.
+// fail loudly if a future spectrum-ts reshapes a path that still needs repair.
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 const MARKER = "Hermes patch: Preserve mixed text + attachment iMessage payloads";
+const POLL_TITLE_MARKER = "Hermes patch: Accept empty inbound iMessage poll titles";
+const POLL_CACHE_MARKER = "Hermes patch: Preserve outbound iMessage poll metadata";
 
 function scriptDir() {
   return path.dirname(fileURLToPath(import.meta.url));
@@ -115,6 +117,70 @@ function patchChildIndices(source) {
   );
 }
 
+function patchEmptyPollTitles(source) {
+  if (source.includes(POLL_TITLE_MARKER)) {
+    return source;
+  }
+  // Photon currently returns an empty poll title in both the live `created`
+  // delta and `client.polls.get()`, even when the outbound poll had a title.
+  // spectrum-ts validates the reconstructed Poll before it can map a vote's
+  // option identifier, so the empty title drops every selection. The title is
+  // internal metadata on this inbound path; Hermes only consumes the selected
+  // option title. Supply a non-empty placeholder and preserve the option map.
+  const anchor = `\tconst poll = asPoll({\n\t\ttitle: input.title,`;
+  return replaceOnce(
+    source,
+    anchor,
+    `\t// ${POLL_TITLE_MARKER}\n\tconst poll = asPoll({\n\t\ttitle: input.title || "Poll",`,
+    "empty inbound poll title"
+  );
+}
+
+function patchPollMetadataCache(source) {
+  if (source.includes(POLL_CACHE_MARKER)) {
+    return source;
+  }
+  if (!source.includes("const toCachedPoll =")) {
+    return source;
+  }
+
+  // Spectrum 12.7 only populates its poll cache from inbound events and
+  // polls.get(). Photon can omit option identifiers from both, while the
+  // polls.create() response still has the identifiers needed to turn a later
+  // vote id into its choice title. Seed the same per-client cache on send and
+  // do not let a less-complete created/refresh payload overwrite it.
+  source = replaceOnce(
+    source,
+    `const cachePollInfo = (cache, info) => {\n\tconst cached = toCachedPoll(info);\n\tcache.set(info.pollMessageGuid, cached);\n\treturn cached;\n};`,
+    `// ${POLL_CACHE_MARKER}\nconst cachePoll = (cache, id, info) => {\n\tconst cached = toCachedPoll(info);\n\tconst existing = cache.get(id);\n\tif (existing && existing.optionsByIdentifier.size > cached.optionsByIdentifier.size) return existing;\n\tcache.set(id, cached);\n\treturn cached;\n};\nconst cachePollInfo = (cache, info) => cachePoll(cache, info.pollMessageGuid, info);`,
+    "poll metadata cache helper"
+  );
+  source = replaceOnce(
+    source,
+    `\t\tconst cached = toCachedPoll({\n\t\t\ttitle: event.delta.title,\n\t\t\toptions: event.delta.options\n\t\t});\n\t\tcache.set(event.pollMessageGuid, cached);\n\t\treturn cached;`,
+    `\t\treturn cachePoll(cache, event.pollMessageGuid, {\n\t\t\ttitle: event.delta.title,\n\t\t\toptions: event.delta.options\n\t\t});`,
+    "inbound poll metadata cache"
+  );
+  source = replaceOnce(
+    source,
+    `\t\tcase "poll":\n\t\t\tif (replyTo) throw unsupportedRemoteContent("poll", "polls cannot be sent as replies");\n\t\t\treturn outboundPoll(spaceId, await remote.polls.create(chat, content.title, content.options.map((option) => option.title)), content);`,
+    `\t\tcase "poll": {\n\t\t\tif (replyTo) throw unsupportedRemoteContent("poll", "polls cannot be sent as replies");\n\t\t\tconst created = await remote.polls.create(chat, content.title, content.options.map((option) => option.title));\n\t\t\tcachePollInfo(getPollCache(remote), { ...created, title: created.title || content.title });\n\t\t\treturn outboundPoll(spaceId, created, content);\n\t\t}`,
+    "outbound poll metadata cache"
+  );
+  source = replaceOnce(
+    source,
+    `\tconst pollCache = getPollCache(clients);`,
+    `\t// ${POLL_CACHE_MARKER}: share outbound metadata with this line's stream.`,
+    "shared poll cache declaration"
+  );
+  return replaceOnce(
+    source,
+    `\t\treturn clientStream(entry.client, pollCache, entry.phone, includeGroupEvents, tracker ? contactShareHandler(tracker, profileSyncGate) : void 0, recover);`,
+    `\t\treturn clientStream(entry.client, getPollCache(entry.client), entry.phone, includeGroupEvents, tracker ? contactShareHandler(tracker, profileSyncGate) : void 0, recover);`,
+    "per-client poll stream cache"
+  );
+}
+
 export function patchSpectrumTs(root = scriptDir()) {
   const dist = path.join(
     root,
@@ -128,13 +194,14 @@ export function patchSpectrumTs(root = scriptDir()) {
   }
   const files = fs.readdirSync(dist)
     .filter((name) => name.endsWith(".js"))
+    .sort()
     .map((name) => path.join(dist, name));
 
+  const writes = [];
+  let firstCandidate;
+  let alreadyPatched = false;
   for (const file of files) {
     const raw = fs.readFileSync(file, "utf8");
-    if (raw.includes(MARKER)) {
-      return { patched: false, file, reason: "already patched" };
-    }
     // Normalize to LF for matching so the patch works regardless of the
     // checkout's line-ending style (Windows git autocrlf produces CRLF,
     // which would otherwise defeat the \n-based search strings). The
@@ -144,32 +211,54 @@ export function patchSpectrumTs(root = scriptDir()) {
     const CRLF = CR + "\n";
     const usedCRLF = raw.includes(CRLF);
     const original = usedCRLF ? raw.split(CRLF).join("\n") : raw;
-    if (!original.includes("const toInboundMessages = async") ||
-        !original.includes("const rebuildFromAppleMessage = async")) {
+    const hasMixedMapper =
+      original.includes("const toInboundMessages = async") &&
+      original.includes("const rebuildFromAppleMessage = async");
+    const hasPollMapper = original.includes("const toCachedPoll =");
+    if (!hasMixedMapper && !hasPollMapper) {
       continue;
     }
+    firstCandidate ??= file;
+
+    let patched = hasPollMapper ? patchEmptyPollTitles(original) : original;
+    patched = hasPollMapper ? patchPollMetadataCache(patched) : patched;
     // spectrum-ts 12.x replaced the attachment-only branches with
     // `buildUnwrappedContentMessage` + `toOrderedParts`, which already emits a
     // group containing both text and attachments. There is nothing left for
     // Hermes to patch; keep the legacy v8 path below for older pinned installs.
-    if (
+    const upstreamPreservesMixed =
       original.includes("const buildUnwrappedContentMessage = async") &&
-      original.includes("const parts = toOrderedParts(message.content.text, attachments);")
-    ) {
-      return { patched: false, file, reason: "upstream preserves mixed payloads" };
+      original.includes("const parts = toOrderedParts(message.content.text, attachments);");
+    if (hasMixedMapper && !original.includes(MARKER) && !upstreamPreservesMixed) {
+      patched = patchRebuild(patched);
+      patched = patchInbound(patched);
+      patched = patchChildIndices(patched);
+      patched = `// ${MARKER}\n${patched}`;
     }
-    let patched = original;
-    patched = patchRebuild(patched);
-    patched = patchInbound(patched);
-    patched = patchChildIndices(patched);
-    patched = `// ${MARKER}\n${patched}`;
+    if (patched === original) {
+      alreadyPatched ||= original.includes(POLL_TITLE_MARKER) ||
+        original.includes(POLL_CACHE_MARKER) || original.includes(MARKER);
+      continue;
+    }
     if (usedCRLF) {
       patched = patched.split("\n").join(CRLF);
     }
-    fs.writeFileSync(file, patched, "utf8");
-    return { patched: true, file };
+    writes.push({ file, patched });
   }
-  throw new Error("could not find @spectrum-ts/imessage iMessage inbound chunk to patch");
+  if (!firstCandidate) {
+    throw new Error("could not find @spectrum-ts/imessage iMessage inbound chunk to patch");
+  }
+  for (const { file, patched } of writes) {
+    fs.writeFileSync(file, patched, "utf8");
+  }
+  if (writes.length > 0) {
+    return { patched: true, file: writes[0].file };
+  }
+  return {
+    patched: false,
+    file: firstCandidate,
+    reason: alreadyPatched ? "already patched" : "upstream preserves mixed payloads",
+  };
 }
 
 const _invokedDirectly =

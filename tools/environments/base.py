@@ -29,7 +29,7 @@ from tools.environments.base_session_env import (
     _wrap_command_script,
 )
 from tools.environments.base_wait import _WaitTrace
-from utils import env_var_enabled
+from utils import env_var_enabled, file_signature
 
 logger = logging.getLogger(__name__)
 
@@ -208,11 +208,15 @@ def _save_json_store(path: Path, data: dict) -> None:
     path.write_text(json.dumps(data, indent=2), encoding="utf-8")
 
 
-def _file_mtime_key(host_path: str) -> tuple[float, int] | None:
-    """Return ``(mtime, size)`` for cache comparison, or ``None`` if unreadable."""
+def _file_mtime_key(host_path: str) -> tuple[int, int, int, int] | None:
+    """Stat signature for sync caching, or ``None`` if unreadable.
+
+    Restores and package copies can preserve mtime and size while replacing
+    content; use the shared inode/ctime-aware signature to detect those writes.
+    """
     try:
         st = Path(host_path).stat()
-        return (st.st_mtime, st.st_size)
+        return file_signature(st)
     except OSError:
         return None
 

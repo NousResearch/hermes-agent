@@ -518,11 +518,14 @@ def _probe_single_server(
     return tools_found
 
 
-def _oauth_tokens_present(name: str) -> bool:
-    """True if an OAuth token file exists for ``name`` (a clean probe alone is not proof of auth)."""
+def _oauth_tokens_present(name: str, url: str | None = None) -> bool:
+    """True if an OAuth token file exists for ``name`` (a clean probe alone is not proof of auth);
+    with the configured ``url``, only one granted for that server URL counts (a re-pointed name
+    keeps the old file). ``${VAR}`` placeholders resolve as they do for the connection."""
     try:
         from tools.mcp_oauth import HermesTokenStorage
-        return HermesTokenStorage(name).has_cached_tokens()
+        server_url = _resolve_mcp_server_config({"url": url})["url"] if url else None
+        return HermesTokenStorage(name, server_url=server_url).has_cached_tokens()
     except Exception as exc:  # pragma: no cover — defensive
         logger.debug("Could not check OAuth tokens for '%s': %s", name, exc)
         return True  # permissive: don't block a real success
@@ -903,7 +906,7 @@ def _reauth_oauth_server(name: str, server_config: dict, *, flow: str | None = N
         # A clean probe is NOT proof of authentication: some servers (e.g. Google Drive) serve
         # initialize + tools/list without auth, so the flow may have failed (e.g. DCR 400 for
         # providers without RFC 7591) while the probe still lists tools. Verify a token landed.
-        if not _oauth_tokens_present(name):
+        if not _oauth_tokens_present(name, url):
             _warning("Server responded, but no OAuth token was obtained — authentication did not complete.")
             print()
             _info(

@@ -1672,9 +1672,10 @@ def _(rid, params: dict) -> dict:
                          "oauth_tokens_present": tokens_present})
     try:
         tools = mc._probe_single_server(name, cfg, details=details)
-        token_present = mc._oauth_tokens_present(name) if needs_oauth_token else True
+        token_present = mc._oauth_tokens_present(name, cfg.get("url")) if needs_oauth_token else True
     except Exception as exc:
-        return failure(str(exc), needs_oauth_token, mc._oauth_tokens_present(name) if needs_oauth_token else None)
+        return failure(str(exc), needs_oauth_token,
+                       mc._oauth_tokens_present(name, cfg.get("url")) if needs_oauth_token else None)
     if not token_present:
         return failure("OAuth authentication required — no token found.", True, False)
     return _ok(rid, {

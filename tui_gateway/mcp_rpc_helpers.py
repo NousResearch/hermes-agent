@@ -47,7 +47,7 @@ def summarize_server(name: str, cfg: dict, plugin: str | None = None) -> Dict[st
         "args": list(cfg.get("args") or []),
         "env": sorted(str(k) for k in (cfg.get("env") or {})),
         "auth": auth,
-        "oauth_tokens_present": _oauth_tokens_present(name) if auth == "oauth" else None,
+        "oauth_tokens_present": _oauth_tokens_present(name, cfg.get("url")) if auth == "oauth" else None,
         "enabled": mcp_server_enabled(cfg),
         "tools": cfg.get("tools"),
         "source": "plugin" if plugin is not None else "config",

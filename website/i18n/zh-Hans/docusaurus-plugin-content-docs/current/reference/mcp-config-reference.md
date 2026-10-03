@@ -246,5 +246,6 @@ mcp_servers:
 - Hermes 使用 MCP SDK 的 OAuth 2.1 PKCE 流程（元数据发现、动态客户端注册、token 交换及刷新）
 - 首次连接时，浏览器窗口将打开以完成授权
 - Token 持久化至 `~/.hermes/mcp-tokens/<server>.json`，跨会话复用
+- 已保存的 OAuth 状态绑定到授权时的服务器 URL：将已有服务器名称指向不同的 `url` 时，会重新授权，而不会复用前一个服务器的 token 或客户端注册
 - Token 刷新自动进行；仅在刷新失败时才需重新授权
 - 仅适用于 HTTP/StreamableHTTP 传输（基于 `url` 的服务器）

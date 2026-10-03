@@ -59,12 +59,9 @@ import { refreshCronJobs as refreshCronJobsStore } from '../../cron/cron-actions
 // (telegram, discord, …) is fetched separately into its own self-managed
 // sidebar section (refreshMessagingSessions). Excluding them here keeps
 // "Load more" paging through interactive local chats instead of
-// interleaving gateway threads that bury them. ACP rows are editor-driven
-// conversations: every editor wake mints an auto-titled row, so they would
-// bury local chats — and they were never ended before #118216, which also
-// kept prune/archive away from them.
+// interleaving gateway threads that bury them. ACP sessions are intentionally
+// retained: ACP can create normal user conversations that must remain visible.
 const SIDEBAR_EXCLUDED_SOURCES = [
-  'acp',
   'cron',
   'kanban',
   'oneshot',

@@ -164,6 +164,36 @@ def test_minimax_start_route_honors_poller_mock_on_owning_module(tmp_path, monke
     _web_server_oauth._oauth_sessions.pop(resp.json()["session_id"], None)
 
 
+def test_anthropic_status_reads_pool_only_oauth(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    (tmp_path / "auth.json").write_text(json.dumps({
+        "credential_pool": {
+            "anthropic": [{
+                "id": "oauth-1",
+                "label": "anthropic-oauth-1",
+                "auth_type": "oauth",
+                "priority": 0,
+                "source": "manual:hermes_pkce",
+                "access_token": "pool-token",
+                "refresh_token": "pool-refresh",
+                "expires_at_ms": int(time.time() * 1000) + 60_000,
+                "expires_at": "2026-10-01T22:00:00+00:00",
+            }]
+        }
+    }), encoding="utf-8")
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.delenv("ANTHROPIC_TOKEN", raising=False)
+    monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
+
+    status = _web_server_oauth._anthropic_oauth_status()
+
+    assert status["logged_in"] is True
+    assert status["source"] == "credential_pool"
+    assert status["source_label"] == "anthropic-oauth-1 (pooled, 1 credentials)"
+    assert status["has_refresh_token"] is True
+    assert status["token_preview"].endswith("token")
+
+
 def test_oauth_provider_status_uses_profile_query(tmp_path, monkeypatch):
     from hermes_constants import get_hermes_home
 

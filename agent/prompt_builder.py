@@ -684,7 +684,11 @@ PLATFORM_HINTS = {
         "You are on WhatsApp. Standard markdown auto-converts to WhatsApp syntax (*bold*, _italic_, ~strike~, "
         "monospace) \u2014 write markdown freely, bullets included. No tables \u2014 use bullets or labeled lines. "
         f"{_MEDIA_NATIVE}Images (.jpg, .png, .webp) send as photos, videos (.mp4, .mov) play "
-        "inline, other files arrive as documents; image URLs via ![alt](url) send as photos."
+        "inline, other files arrive as documents; image URLs via ![alt](url) send as photos. "
+        "In groups, messages start with a [Group members: ...] line and mentions read as @Name. To tag "
+        "someone like a person would, write @ plus their name from that list (e.g. @John) \u2014 it becomes "
+        "a real WhatsApp mention that notifies them. Tag only to get someone's attention; the person you "
+        "are replying to is already notified."
     ),
     "whatsapp_cloud": (
         "You are on WhatsApp (Meta Business Cloud API). Standard markdown auto-converts to WhatsApp syntax "

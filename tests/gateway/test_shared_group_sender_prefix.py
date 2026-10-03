@@ -47,3 +47,28 @@ async def test_preprocess_includes_slack_author_mention_for_shared_thread():
     assert result == "[Alice | Slack user <@U123>] mention me again"
 
 
+@pytest.mark.asyncio
+async def test_sender_prefix_leads_media_notes_in_shared_group():
+    """In a shared group session the sender tag must come before the image note, so the
+    model knows who sent the image and not only who wrote the caption."""
+    runner = _make_runner(GatewayConfig(group_sessions_per_user=False))
+
+    async def fake_enrich(source, session_key, text, paths):
+        return f"[The user sent an image]\n\n{text}"
+
+    runner._enrich_inbound_images = fake_enrich
+    source = SessionSource(
+        platform=Platform.WHATSAPP,
+        chat_id="120363000000000000@g.us",
+        chat_type="group",
+        user_id="15550001111@s.whatsapp.net",
+        user_name="Bob",
+    )
+    event = MessageEvent(
+        text="look at this", source=source,
+        media_urls=["/tmp/photo.jpg"], media_types=["image/jpeg"],
+    )
+
+    result = await runner._prepare_inbound_message_text(event=event, source=source, history=[])
+
+    assert result == "[Bob] [The user sent an image]\n\nlook at this"

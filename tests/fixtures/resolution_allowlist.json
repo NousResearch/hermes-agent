@@ -356,7 +356,7 @@
   },
   {
     "path": "hermes_cli/source_build.py",
-    "symbol": "build_update_products",
+    "symbol": "_build_desktop_product",
     "kind": "bare_which"
   },
   {

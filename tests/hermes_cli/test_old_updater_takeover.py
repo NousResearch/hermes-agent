@@ -54,10 +54,12 @@ def test_historical_payload_maps_to_takeover_request_schema(tmp_path, desktop, r
     # checkout is the whole tree the child sees (CI has no editable finder for the source).
     shutil.copy2(source / "hermes_cli/update_handoff.py", package / "update_handoff.py")
     # write_handoff resolves the home through hermes_constants; the child tree is the whole
-    # sys.path (CI has no editable finder), so give it the one name the hand-off reads.
+    # sys.path (CI has no editable finder), so give it the names the hand-off reads (the
+    # payload lands beside the receipts in the ROOT home, which is HERMES_HOME here).
     (root / "hermes_constants.py").write_text(
         "import os\nfrom pathlib import Path\n"
-        "def get_hermes_home():\n    return Path(os.environ['HERMES_HOME'])\n", encoding="utf-8",
+        "def get_hermes_home():\n    return Path(os.environ['HERMES_HOME'])\n"
+        "get_default_hermes_root = get_hermes_home\n", encoding="utf-8",
     )
     program = root / "historical.py"
     program.write_text(

@@ -326,6 +326,11 @@ def _run_claimed_job(job: Dict[str, Any], extra_prompt: Optional[str] = None) ->
     job_id = job["id"]
     _registered = False
     fire_owner = None
+    from concurrent.futures import Future
+
+    registration_owner = object()
+    running_future = Future()
+    running_future.set_running_or_notify_cancel()
     try:
         from cron.scheduler import release_running_job, run_one_job, try_register_running_job
 
@@ -335,7 +340,9 @@ def _run_claimed_job(job: Dict[str, Any], extra_prompt: Optional[str] = None) ->
         # In-flight dedupe (idea from #53395 by @izumi0uu): the fire claim's TTL (300s) is routinely
         # outlived by real jobs, so it alone cannot stop a manual run from double-firing a job the ticker
         # (or another manual run) is still executing.
-        if not try_register_running_job(job_id):
+        if not try_register_running_job(
+            job_id, owner=registration_owner, future=running_future,
+        ):
             return {"claimed": True, "success": False, "error": _ALREADY_RUNNING_ERROR}
         _registered = True
 
@@ -375,7 +382,7 @@ def _run_claimed_job(job: Dict[str, Any], extra_prompt: Optional[str] = None) ->
                 processed = run_one_job(job, adapters=adapters, loop=gateway_loop, extra_prompt=extra_prompt)
         finally:
             _registered = False
-            release_running_job(job_id)
+            release_running_job(job_id, owner=registration_owner)
         refreshed = get_job(job_id) or {}
         execution = None
         execution_id = job.get("execution_id")
@@ -399,15 +406,14 @@ def _run_claimed_job(job: Dict[str, Any], extra_prompt: Optional[str] = None) ->
         return {"claimed": True, "success": bool(processed and ok), "error": run_error}
     except Exception as e:
         logger.error("Failed to execute cron job %s immediately: %s", job_id, e)
-        if _registered:
-            # Raised before the run's own release (e.g. heartbeat setup): don't leave the
-            # job marked in-flight. Only release registrations WE took — a bare discard
-            # could erase a ticker-owned entry.
-            with contextlib.suppress(Exception):
-                release_running_job(job_id)
         with contextlib.suppress(Exception):
             mark_job_run(job_id, False, str(e), expected_fire_owner=fire_owner)
         return {"claimed": True, "success": False, "error": str(e)}
+    finally:
+        # Setup failures and BaseException must release only our registration.
+        if _registered:
+            release_running_job(job_id, owner=registration_owner)
+        running_future.set_result(None)
 
 
 def execute_job_for_event(

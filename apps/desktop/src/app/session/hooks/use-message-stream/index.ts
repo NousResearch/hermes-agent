@@ -47,7 +47,7 @@ import {
 import { useGatewayEventHandler } from './gateway-event'
 import { handleServerRequest as dispatchServerRequest } from './gateway-event/server-requests'
 import { extendInterruptedReply } from './interrupted-reply'
-import { currentResponseParts, mergeCurrentResponseText } from './response-parts'
+import { currentResponseParts, mergeCurrentResponseText, persistedFinalBubbleIndex } from './response-parts'
 import { completionErrorText, delegateTaskPayloads, MAX_STREAM_FLUSH_GAP_MS, STREAM_DELTA_FLUSH_MS } from './utils'
 
 interface MessageStreamOptions {
@@ -888,6 +888,9 @@ export function useMessageStream({
           interimBoundaryPending
         })
 
+        const persistedFinalIndex =
+          streamIndex >= 0 ? -1 : persistedFinalBubbleIndex(prev, lastUserIndex, persistedTurn?.final_assistant_row_id)
+
         if (streamIndex >= 0) {
           collapsed =
             collapseDuplicateFinalAfterToolInterim(prev, streamIndex, {
@@ -901,6 +904,8 @@ export function useMessageStream({
               finalText
             })
           nextMessages = collapsed?.messages ?? settleAt(streamIndex)
+        } else if (persistedFinalIndex >= 0) {
+          nextMessages = settleAt(persistedFinalIndex)
         } else {
           const fallbackIndex = prev.findLastIndex(
             (message, index) => index > lastUserIndex && message.role === 'assistant' && !message.hidden
@@ -1041,7 +1046,8 @@ export function useMessageStream({
         const lastVisible = [...nextMessages].reverse().find(m => !m.hidden)
         const unresolvedUserTail = lastVisible?.role === 'user'
 
-        const sameTurnId = collapsed?.keptId ?? (streamIndex >= 0 ? streamId : null)
+        const sameTurnIndex = streamIndex >= 0 ? streamIndex : persistedFinalIndex
+        const sameTurnId = collapsed?.keptId ?? (sameTurnIndex >= 0 ? prev[sameTurnIndex].id : null)
 
         const sameTurnAssistant = sameTurnId
           ? nextMessages.find(m => m.id === sameTurnId)

@@ -6729,9 +6729,9 @@ def _merge_aux_extra_body(
     extra_body: Optional[dict], projection: _ProfileProjection, reasoning_config: Optional[dict], provider_norm: str,
 ) -> Dict[str, Any]:
     """Caller extra_body + profile body/reasoning + generic reasoning fallback + Nous tags."""
-    merged_extra = dict(extra_body or {})
+    caller = dict(extra_body or {})
     caller_reasoning_fields = {
-        key: value for key, value in merged_extra.items()
+        key: value for key, value in caller.items()
         if str(key).strip().lower() in _PROFILE_REASONING_KEYS and str(key).strip().lower() != "reasoning"
     }
     caller_disabled = isinstance(reasoning_config, dict) and reasoning_config.get("enabled") is False
@@ -6742,7 +6742,8 @@ def _merge_aux_extra_body(
         # ``reasoning_effort=none``) never ships beside a task-level ``reasoning.effort`` — strict
         # gateways 400 on the contradiction (#114020) — while a profile whose disabled shape IS
         # ``extra_body.reasoning`` (OpenRouter) still lands it below.
-        merged_extra.pop("reasoning", None)
+        caller.pop("reasoning", None)
+    merged_extra: Dict[str, Any] = {}
     merged_extra.update(projection.body)
     merged_extra.update(projection.reasoning_extra)
     # Profiles supply route defaults, but an explicit vendor wire control in the task/call config
@@ -6754,6 +6755,9 @@ def _merge_aux_extra_body(
         else:
             # ``reasoning_config`` is already clamped to the OpenAI-compat wire by _build_call_kwargs.
             merged_extra["reasoning"] = {"enabled": True, "effort": reasoning_config.get("effort") or "medium"}
+    # Profile payloads supply defaults only. Task/caller values (notably
+    # DeepSeek's ``thinking``) are explicit and must win on the final wire.
+    merged_extra.update(caller)
     # Caller/task ``extra_body.reasoning`` (``auxiliary.<task>.reasoning_effort`` folds in here via
     # _get_task_extra_body) takes the same wire clamp: Hermes-only ``ultra`` never reaches the
     # OpenAI-compat wire from any aux task (#112010).

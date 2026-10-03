@@ -39,12 +39,18 @@ through to the normal error path — no separate one-shot flag required.
 
 from __future__ import annotations
 
+import base64
 import copy
+import struct
+import zlib
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 from agent.error_classifier import FailoverReason, classify_api_error
-from agent.message_sanitization import _strip_images_from_messages
+from agent.message_sanitization import (
+    _strip_images_from_messages,
+    _strip_undersized_images_from_messages,
+)
 
 class _FakeApiError(Exception):
     """Stand-in for an openai.BadRequestError with status_code + body."""
@@ -153,6 +159,30 @@ class TestImageCorruptClassification:
         assert result.reason == FailoverReason.format_error
         assert result.retryable is False
 
+    def test_xai_dimensions_too_small_is_not_a_format_error(self):
+        """A 1x1 spacer 400s the whole request. It must not abort as format_error
+        (that bricks the turn) and must not be shrunk or treated as corrupt bytes."""
+        err = _FakeApiError(
+            status_code=400,
+            message=(
+                "HTTP 400: {\"code\":\"invalid_image\",\"error\":\"code: "
+                "'Client specified an invalid argument', message: "
+                "\\\"Image dimensions 1x1 are too small. Both width and height "
+                "must be at least 8 pixels.\\\"\"}"
+            ),
+        )
+        result = classify_api_error(err, provider="xai-oauth", model="grok-4.7")
+        assert result.reason == FailoverReason.image_too_small
+        assert result.retryable is False
+        assert result.reason != FailoverReason.format_error
+        assert result.reason != FailoverReason.image_corrupt
+        assert result.reason != FailoverReason.image_too_large
+
+    def test_unrelated_too_small_wording_stays_format_error(self):
+        err = _FakeApiError(status_code=400, message="the log font is too small")
+        result = classify_api_error(err, provider="xai-oauth", model="grok-4.7")
+        assert result.reason == FailoverReason.format_error
+
     def test_compound_message_prefers_corrupt_over_too_large(self):
         """P3 (Sol xhigh): a body matching BOTH corruption and too-large
         wording must classify as image_corrupt, not image_too_large — the
@@ -196,6 +226,53 @@ class TestStripHelperBehaviorBackingTheBranch:
     def test_no_image_parts_present_nothing_to_strip(self):
         msgs = [{"role": "user", "content": "just text, no images"}]
         assert _strip_images_from_messages(msgs) is False
+
+def _png(width: int, height: int) -> str:
+    raw = b"".join(b"\x00" + b"\x01\x02\x03" * width for _ in range(height))
+
+    def chunk(tag: bytes, data: bytes) -> bytes:
+        return struct.pack(">I", len(data)) + tag + data + struct.pack(">I", zlib.crc32(tag + data) & 0xFFFFFFFF)
+
+    ihdr = struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0)
+    png = b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", ihdr) + chunk(b"IDAT", zlib.compress(raw)) + chunk(b"IEND", b"")
+    return "data:image/png;base64," + base64.b64encode(png).decode()
+
+
+class TestUndersizedImageStrip:
+    def test_drops_only_the_spacer(self):
+        msgs = [{
+            "role": "tool",
+            "tool_call_id": "call-1",
+            "content": [
+                {"type": "text", "text": "look at both"},
+                {"type": "image_url", "image_url": {"url": _png(1, 1)}},
+                {"type": "image_url", "image_url": {"url": _png(8, 8)}},
+            ],
+        }]
+        assert _strip_undersized_images_from_messages(msgs) is True
+        images = [part for part in msgs[0]["content"] if part.get("type") == "image_url"]
+        assert len(images) == 1
+        assert images[0]["image_url"]["url"] == _png(8, 8)
+
+    def test_responses_output_part_is_dropped_too(self):
+        msgs = [{
+            "type": "function_call_output",
+            "output": [
+                {"type": "input_text", "text": "spacer"},
+                {"type": "input_image", "image_url": _png(1, 1)},
+                {"type": "input_image", "image_url": _png(32, 32)},
+            ],
+        }]
+        assert _strip_undersized_images_from_messages(msgs) is True
+        kinds = [part["type"] for part in msgs[0]["output"]]
+        assert kinds == ["input_text", "input_image"]
+
+    def test_a_legal_image_is_not_progress(self):
+        msgs = [{"role": "user", "content": [
+            {"type": "image_url", "image_url": {"url": _png(8, 8)}},
+        ]}]
+        assert _strip_undersized_images_from_messages(msgs) is False
+
 
 # ─── Integration: run_conversation recovers from a corrupt-image 400 ─────────
 

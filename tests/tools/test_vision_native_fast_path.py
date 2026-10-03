@@ -11,6 +11,8 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+import struct
+import zlib
 from io import BytesIO
 from unittest.mock import patch
 
@@ -23,10 +25,25 @@ from tools.vision_tools import (
 )
 
 
-# Minimal valid 1x1 PNG bytes.
+# Minimal valid 1x1 PNG bytes. Providers such as xAI reject this as too small.
 _TINY_PNG = base64.b64decode(
     b"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII="
 )
+
+
+def _png(width: int, height: int, color: tuple = (10, 20, 30)) -> bytes:
+    """Uncompressed-enough RGB PNG. 8x8 is the smallest size xAI will accept."""
+    raw = b"".join(b"\x00" + bytes(color) * width for _ in range(height))
+
+    def chunk(tag: bytes, data: bytes) -> bytes:
+        return struct.pack(">I", len(data)) + tag + data + struct.pack(">I", zlib.crc32(tag + data) & 0xFFFFFFFF)
+
+    ihdr = struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0)
+    return b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", ihdr) + chunk(b"IDAT", zlib.compress(raw)) + chunk(b"IEND", b"")
+
+
+# Smallest raster the native path is allowed to embed.
+_OK_PNG = _png(8, 8)
 
 # PNG-shaped but undecodable; resolver/native fast path must reject it.
 _CORRUPT_PNG = base64.b64decode(
@@ -159,7 +176,7 @@ class TestBuildNativeVisionToolResult:
 class TestVisionAnalyzeNative:
     def test_local_file_returns_multimodal_envelope(self, tmp_path):
         img = tmp_path / "test.png"
-        img.write_bytes(_TINY_PNG)
+        img.write_bytes(_OK_PNG)
         result = asyncio.get_event_loop().run_until_complete(
             _vision_analyze_native(str(img), "what is this?")
         )
@@ -292,9 +309,27 @@ class TestVisionAnalyzeNative:
         assert "maximum 31" in payload["error"].lower()
         assert loaded_frames == [1]
 
+    def test_one_pixel_image_is_not_embedded(self, tmp_path):
+        """xAI 400s the whole request when any image is under 8x8. A Word spacer
+        must come back as a tool error, not as an input_image."""
+        pytest = __import__("pytest")
+        pytest.importorskip("PIL.Image", reason="Pillow is required to measure the raster")
+
+        img = tmp_path / "spacer.png"
+        img.write_bytes(_TINY_PNG)
+        result = asyncio.get_event_loop().run_until_complete(
+            _vision_analyze_native(str(img), "what is this?")
+        )
+        assert isinstance(result, str)
+        payload = json.loads(result)
+        assert payload["success"] is False
+        assert "1x1" in payload["error"]
+        assert "8" in payload["error"]
+        assert "_multimodal" not in payload
+
     def test_file_url_scheme_resolves(self, tmp_path):
         img = tmp_path / "t.png"
-        img.write_bytes(_TINY_PNG)
+        img.write_bytes(_OK_PNG)
         result = asyncio.get_event_loop().run_until_complete(
             _vision_analyze_native(f"file://{img}", "?")
         )
@@ -369,7 +404,7 @@ class TestHandleVisionAnalyzeFastPath:
     def test_vision_capable_main_model_uses_fast_path(self, tmp_path, monkeypatch):
         """Main model supports native vision → fast path returns multimodal."""
         img = tmp_path / "x.png"
-        img.write_bytes(_TINY_PNG)
+        img.write_bytes(_OK_PNG)
 
         # Set runtime override so the handler thinks we're on opus@openrouter
         from agent.auxiliary_client import set_runtime_main, clear_runtime_main
@@ -414,7 +449,7 @@ class TestHandleVisionAnalyzeFastPath:
     def test_supports_vision_override_bypasses_provider_allowlist(self, tmp_path):
         """supports_vision=true enables the fast path on an unlisted provider."""
         img = tmp_path / "x.png"
-        img.write_bytes(_TINY_PNG)
+        img.write_bytes(_OK_PNG)
 
         async def _aux_sentinel(*args, **kwargs):
             return '{"sentinel": "aux-path"}'

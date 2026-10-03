@@ -198,7 +198,7 @@ def test_iter_skill_index_files_skips_git_checkouts_and_duplicate_symlinks(tmp_p
     assert list(iter_skill_index_files(tmp_path, "SKILL.md")) == [tmp_path / "alias" / "SKILL.md"]
 
 
-def test_iter_skill_index_files_warns_and_keeps_first_conflicting_skill(tmp_path, caplog):
+def test_iter_skill_index_files_preserves_same_leaf_across_roots(tmp_path):
     first = tmp_path / "first" / "same"
     second = tmp_path / "second" / "same"
     first.mkdir(parents=True)
@@ -206,11 +206,18 @@ def test_iter_skill_index_files_warns_and_keeps_first_conflicting_skill(tmp_path
     (first / "SKILL.md").write_text("first", encoding="utf-8")
     (second / "SKILL.md").write_text("second", encoding="utf-8")
 
-    with caplog.at_level("WARNING"):
-        found = list(iter_skill_index_files(tmp_path, "SKILL.md"))
+    assert list(iter_skill_index_files(tmp_path, "SKILL.md")) == [
+        first / "SKILL.md",
+        second / "SKILL.md",
+    ]
 
-    assert found == [first / "SKILL.md"]
-    assert "conflicting skill" in caplog.text
+
+def test_iter_skill_index_files_keeps_root_skill_in_git_checkout(tmp_path):
+    (tmp_path / ".git").mkdir()
+    skill = tmp_path / "SKILL.md"
+    skill.write_text("---\nname: checkout-root\n---\n", encoding="utf-8")
+
+    assert list(iter_skill_index_files(tmp_path, "SKILL.md")) == [skill]
 
 
 def test_iter_skill_index_files_keeps_support_named_categories(tmp_path):

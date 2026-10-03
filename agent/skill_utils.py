@@ -797,7 +797,10 @@ def iter_skill_index_files(skills_dir: Path, filename: str):
             dirs[:] = []
             continue
         visited_roots.add(real_root)
-        if os.path.isfile(os.path.join(real_root, ".git")) or os.path.isdir(os.path.join(real_root, ".git")):
+        if real_root != os.path.realpath(skills_dir_str) and (
+            os.path.isfile(os.path.join(real_root, ".git"))
+            or os.path.isdir(os.path.join(real_root, ".git"))
+        ):
             dirs[:] = []
             continue
         has_skill_md = "SKILL.md" in files
@@ -808,15 +811,11 @@ def iter_skill_index_files(skills_dir: Path, filename: str):
         dirs[:] = sorted(d for d in dirs if d not in EXCLUDED_SKILL_DIRS and not (has_skill_md and d in SKILL_SUPPORT_DIRS))
         if filename in files:
             matches.append(os.path.join(root, filename))
-    selected: dict[str, Path] = {}
-    for path in map(Path, sorted(matches)):
-        key = path.parent.name
-        previous = selected.get(key)
-        if previous is None:
-            selected[key] = path
-        elif previous.read_bytes() != path.read_bytes():
-            logger.warning("Ignoring conflicting skill %r at %s; using %s", key, path, previous)
-    yield from selected.values()
+    # Distinct roots may legitimately share a leaf name: personal/org namespaces and
+    # category paths must both reach the resolver so it can report ambiguity instead of
+    # silently choosing one entry. Symlinked duplicate roots were already removed by
+    # ``visited_roots`` above.
+    yield from map(Path, sorted(matches))
 
 
 # Namespace helpers for plugin-provided skills.

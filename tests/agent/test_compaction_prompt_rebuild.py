@@ -12,6 +12,9 @@ forever-chats, gateway channels). New contract:
    back to its last good bytes (fail-open), never silently vanishes
 """
 import unittest
+
+import pytest
+
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -252,6 +255,74 @@ class TestWorkspaceSnapshotPinnedAcrossCompaction(unittest.TestCase):
             os.chdir(old_cwd)
             shutil.rmtree(tmp, ignore_errors=True)
 
+    def test_symlink_spelling_of_the_launch_dir_replays_the_pin(self):
+        """The macOS shape on any POSIX host: os.getcwd() reports the physical dir while the bound
+        cwd arrives through a symlink (/var -> /private/var). Same workspace, so the pin must hit."""
+        import os, sys, tempfile, shutil
+        from pathlib import Path
+        from agent.system_prompt import build_system_prompt, invalidate_system_prompt
+
+        if sys.platform == "win32":
+            self.skipTest("directory symlinks need privileges on Windows")
+        tmp = Path(tempfile.mkdtemp(prefix="test-pinned-symlink-"))
+        old_cwd = os.getcwd()
+        try:
+            repo = _init_repo(tmp / "proj", "init commit")
+            link = tmp / "link"
+            link.symlink_to(repo, target_is_directory=True)
+            os.chdir(repo)  # os.getcwd() is the physical spelling
+            agent = self._pin_agent()
+            with patch("agent.prompt_builder.load_soul_md", return_value=""), \
+                 patch("agent.prompt_builder.build_environment_hints", return_value="ENV HINTS"):
+                with patch("agent.system_prompt.resolve_context_cwd", return_value=None):
+                    p1 = build_system_prompt(agent)
+                self.assertIn("Status: clean", p1)
+                (repo / "untracked.txt").write_text("wip\n")
+                invalidate_system_prompt(agent)
+                with patch("agent.system_prompt.resolve_context_cwd", return_value=link):
+                    self.assertEqual(build_system_prompt(agent), p1)
+        finally:
+            os.chdir(old_cwd)
+            shutil.rmtree(tmp, ignore_errors=True)
+
+    @pytest.mark.platforms("macos")
+    def test_case_alias_spelling_of_the_launch_dir_replays_the_pin(self):
+        """macOS default APFS is case-insensitive and case-preserving: resolve() follows the
+        symlink yet keeps the caller's casing, so a directory bound under a differently cased
+        spelling is the same workspace and the pin must hit. The platforms marker brings the
+        file into the macOS lane (an unmarked file runs on no OS lane at all); the samefile
+        self-guard below still skips on a case-sensitive volume, where the alias genuinely
+        is a second directory."""
+        import os, tempfile, shutil
+        from pathlib import Path
+        from agent.system_prompt import build_system_prompt, invalidate_system_prompt
+
+        tmp = Path(tempfile.mkdtemp(prefix="test-pinned-case-alias-"))
+        old_cwd = os.getcwd()
+        try:
+            repo = _init_repo(tmp / "Repo", "init commit")
+            alias = repo.with_name(repo.name.lower())
+            try:
+                alias_same = alias.samefile(repo)
+            except OSError:
+                alias_same = False  # case-sensitive filesystem: the alias does not exist
+            if not alias_same:
+                self.skipTest("case-sensitive filesystem: the alias is a different directory")
+            os.chdir(repo)  # os.getcwd() reports the on-disk casing
+            agent = self._pin_agent()
+            with patch("agent.prompt_builder.load_soul_md", return_value=""), \
+                 patch("agent.prompt_builder.build_environment_hints", return_value="ENV HINTS"):
+                with patch("agent.system_prompt.resolve_context_cwd", return_value=None):
+                    p1 = build_system_prompt(agent)
+                self.assertIn("Status: clean", p1)
+                (repo / "untracked.txt").write_text("wip\n")
+                invalidate_system_prompt(agent)
+                with patch("agent.system_prompt.resolve_context_cwd", return_value=alias):
+                    self.assertEqual(build_system_prompt(agent), p1)
+        finally:
+            os.chdir(old_cwd)
+            shutil.rmtree(tmp, ignore_errors=True)
+
     def test_agent_that_did_not_build_the_prompt_replays_the_persisted_snapshot(self):
         """Resume / gateway / TUI shape: a fresh agent rebuilds (compaction, a first /compress) after
         the repo moved and replays the snapshot its session row already holds — unless that prompt
@@ -279,7 +350,45 @@ class TestWorkspaceSnapshotPinnedAcrossCompaction(unittest.TestCase):
             with patch("agent.prompt_builder.load_soul_md", return_value=""), env(other), \
                  patch("agent.system_prompt.resolve_context_cwd", return_value=other):
                 moved = self._pin_agent(_cached_system_prompt=None, _session_db=db)
-                self.assertIn(f"- Root: {other}", build_system_prompt(moved))
+                self.assertIn(f"- Root: {other.resolve()}", build_system_prompt(moved))
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+    def test_loop_cwd_spelling_in_persisted_bytes_cannot_drop_the_coding_block(self):
+        """A symlink loop in persisted session bytes (the Current working directory hint or a
+        ``- Root:`` line) makes Path.resolve raise RuntimeError on Python <= 3.12; the pin
+        seams must contain it instead of letting it reach the blanket handler that would
+        silently drop the whole coding block for that build."""
+        import tempfile, shutil
+        from pathlib import Path
+        from agent.system_prompt import _same_live_dir, build_system_prompt
+
+        tmp = Path(tempfile.mkdtemp(prefix="test-pinned-loop-"))
+        try:
+            loop = tmp / "loop"
+            loop.symlink_to(loop)  # symlink pointing at itself
+            # Contained at the comparison seam on every supported interpreter.
+            self.assertIs(_same_live_dir(str(loop), str(tmp)), False)
+
+            repo, other = _init_repo(tmp / "proj", "init commit"), _init_repo(tmp / "other", "init other")
+
+            def env(cwd):
+                return patch("agent.prompt_builder.build_environment_hints",
+                             return_value=f"Host: x\nUser home directory: /h\nCurrent working directory: {cwd}")
+
+            with patch("agent.prompt_builder.load_soul_md", return_value=""), env(repo), \
+                 patch("agent.system_prompt.resolve_context_cwd", return_value=repo):
+                stored = build_system_prompt(self._pin_agent())
+                self.assertIn("Status: clean", stored)
+            # A persisted prompt whose cwd hint spells a symlink loop: seeding must neither
+            # adopt nor raise — the rebuilt prompt keeps its coding block.
+            poisoned = stored.replace(f"Current working directory: {repo}",
+                                      f"Current working directory: {loop}")
+            db = SimpleNamespace(get_session=lambda sid: {"system_prompt": poisoned})
+            with patch("agent.prompt_builder.load_soul_md", return_value=""), env(other), \
+                 patch("agent.system_prompt.resolve_context_cwd", return_value=other):
+                self.assertIn("- Root: ", build_system_prompt(
+                    self._pin_agent(_cached_system_prompt=None, _session_db=db)))
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
 
@@ -300,7 +409,108 @@ class TestWorkspaceSnapshotPinnedAcrossCompaction(unittest.TestCase):
                        return_value=f"Host: x\nUser home directory: /h\nCurrent working directory: {repo}"), \
                  patch("agent.system_prompt.resolve_context_cwd", return_value=repo):
                 resumed = self._pin_agent(_cached_system_prompt=None, _session_db=db)
-                self.assertIn(f"- Root: {repo}", build_system_prompt(resumed))
+                self.assertIn(f"- Root: {repo.resolve()}", build_system_prompt(resumed))
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+    def _rebind(self, captured, other):
+        """Rename the captured directory and reuse its pathname as a symlink to `other`."""
+        import sys
+        if sys.platform == "win32":
+            self.skipTest("directory symlinks need privileges on Windows")
+        saved = captured.with_name(captured.name + "-saved")
+        captured.rename(saved)
+        captured.symlink_to(other, target_is_directory=True)
+        return saved
+
+    def test_rebound_path_cannot_replay_the_captured_snapshot(self):
+        """Capturing in physical A, renaming it and reusing the pathname A as a symlink to
+        independent repo B, then binding B: today's resolution of the captured key lands on
+        B, but the snapshot was taken in A-saved — the build must probe B instead of
+        replaying A's frozen bytes under B's name."""
+        import tempfile, shutil
+        from pathlib import Path
+        from agent.system_prompt import build_system_prompt, invalidate_system_prompt
+
+        tmp = Path(tempfile.mkdtemp(prefix="test-pinned-rebind-"))
+        try:
+            captured = _init_repo(tmp / "captured", "init captured")
+            other = _init_repo(tmp / "other", "init other")
+            captured_key = captured.resolve()
+            agent = self._pin_agent()
+            with patch("agent.prompt_builder.load_soul_md", return_value=""), \
+                 patch("agent.prompt_builder.build_environment_hints", return_value="ENV HINTS"), \
+                 patch("agent.system_prompt.resolve_context_cwd", return_value=captured):
+                self.assertIn("Status: clean", build_system_prompt(agent))
+            self._rebind(captured, other)
+            invalidate_system_prompt(agent)
+            with patch("agent.prompt_builder.load_soul_md", return_value=""), \
+                 patch("agent.prompt_builder.build_environment_hints", return_value="ENV HINTS"), \
+                 patch("agent.system_prompt.resolve_context_cwd", return_value=other):
+                rebuilt = build_system_prompt(agent)
+            self.assertIn(f"- Root: {other.resolve()}", rebuilt)
+            self.assertNotIn(f"- Root: {captured_key}", rebuilt)
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+    def test_rebound_path_cannot_adopt_the_persisted_snapshot(self):
+        """Fresh agent, session row built in physical A, A rebound to B, agent bound to B:
+        the persisted ``- Root:`` line was git's physical spelling at capture — a resolve()
+        that now traverses a symlink proves the directory was rebound, so the bytes must
+        not be adopted for B."""
+        import tempfile, shutil
+        from pathlib import Path
+        from agent.system_prompt import build_system_prompt
+
+        tmp = Path(tempfile.mkdtemp(prefix="test-pinned-adopt-rebind-"))
+        try:
+            captured = _init_repo(tmp / "captured", "init captured")
+            other = _init_repo(tmp / "other", "init other")
+            captured_key = captured.resolve()
+
+            def env(cwd):
+                return patch("agent.prompt_builder.build_environment_hints",
+                             return_value=f"Host: x\nUser home directory: /h\nCurrent working directory: {cwd}")
+
+            with patch("agent.prompt_builder.load_soul_md", return_value=""), env(captured), \
+                 patch("agent.system_prompt.resolve_context_cwd", return_value=captured):
+                stored = build_system_prompt(self._pin_agent())
+                self.assertIn("Status: clean", stored)
+            self._rebind(captured, other)
+            db = SimpleNamespace(get_session=lambda sid: {"system_prompt": stored})
+            with patch("agent.prompt_builder.load_soul_md", return_value=""), env(other), \
+                 patch("agent.system_prompt.resolve_context_cwd", return_value=other):
+                rebuilt = build_system_prompt(self._pin_agent(_cached_system_prompt=None, _session_db=db))
+            self.assertIn(f"- Root: {other.resolve()}", rebuilt)
+            self.assertNotIn(f"- Root: {captured_key}", rebuilt)
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+    def test_rebound_nonworkspace_path_must_not_pin_its_emptiness_onto_the_new_repo(self):
+        """Capturing "no workspace" in a plain directory, then reusing its pathname as a
+        symlink to a git repository: an empty pin must not suppress the new directory's
+        snapshot — the build emits B's workspace block."""
+        import tempfile, shutil
+        from pathlib import Path
+        from agent.system_prompt import build_system_prompt, invalidate_system_prompt
+
+        tmp = Path(tempfile.mkdtemp(prefix="test-pinned-empty-rebind-"))
+        try:
+            plain = tmp / "plain"
+            plain.mkdir()
+            other = _init_repo(tmp / "other", "init other")
+            agent = self._pin_agent()
+            with patch("agent.prompt_builder.load_soul_md", return_value=""), \
+                 patch("agent.prompt_builder.build_environment_hints", return_value="ENV HINTS"), \
+                 patch("agent.system_prompt.resolve_context_cwd", return_value=plain):
+                build_system_prompt(agent)
+                self.assertEqual(agent._frozen_workspace_snapshot[1], "")
+            self._rebind(plain, other)
+            invalidate_system_prompt(agent)
+            with patch("agent.prompt_builder.load_soul_md", return_value=""), \
+                 patch("agent.prompt_builder.build_environment_hints", return_value="ENV HINTS"), \
+                 patch("agent.system_prompt.resolve_context_cwd", return_value=other):
+                self.assertIn(f"- Root: {other.resolve()}", build_system_prompt(agent))
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
 

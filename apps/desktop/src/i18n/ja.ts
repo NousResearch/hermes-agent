@@ -2545,6 +2545,8 @@ export const ja = defineLocale({
       removeFromSidebar: 'サイドバーから削除',
       createdInPreviousContext:
         'プロジェクトは以前の接続またはプロファイルで作成されました。そこに戻ってください。IDEA.md は書き込まれていません。',
+      hiddenFromSidebar: 'サイドバーから非表示にしました',
+      undoHide: '元に戻す',
       createFailed: 'プロジェクトを作成できませんでした',
       staleBackend:
         'プロジェクトを作成するには Hermes バックエンドを更新してください。バックエンドがこのデスクトップアプリより古いです（設定 → 更新 → バックエンド）。',

@@ -43,7 +43,6 @@ MAX_SUMMARIES = 256
 UNAVAILABLE = 'Continuing groups on another computer isn’t available on this gateway.'
 OWNER_ONLY = 'Only the group’s owner can do that.'
 PRIVATE_ONLY = 'Only the group’s owner can do that, in a private chat with this Bot.'
-CANCELLED = 'Cancelled. Nothing changed.'
 _STEPS = {'fencing': 'Stopping work from {host}', 'catching_up': 'Catching up history',
           'reconciling': 'Checking work in progress', 'finishing': 'Finishing'}
 _GENERIC = frozenset({'this computer', 'the host', 'another computer', 'the group’s owner'})
@@ -502,13 +501,9 @@ def remember(runner, key, shown: Summary) -> None:
     store[key] = shown
 
 
-def take(runner, key, preview_id: str | None = None) -> Summary | None:
-    """The chat's current summary for a room, once; a button only takes the summary it came with."""
-    store = _summaries(runner, time.monotonic())
-    shown = store.get(key)
-    if shown is None or (preview_id is not None and shown.preview_id != preview_id):
-        return None
-    return store.pop(key)
+def take(runner, key) -> Summary | None:
+    """The chat's current summary for a room, once."""
+    return _summaries(runner, time.monotonic()).pop(key, None)
 
 
 # ---- the commands ----------------------------------------------------------------------------
@@ -574,11 +569,17 @@ async def continue_command(cmd, command):
         shown = take(cmd.runner, (cmd.chat.key, room_id))
         if shown is not None:
             return await _promote(cmd, command.ref, room_id, shown)
+        # A summary shown with buttons: typing confirm is the same as its Continue button.
+        from gateway.group_chat_actions import confirm_typed
+        typed = await confirm_typed(cmd.runner, cmd.authority, cmd.chat, room_id, 'continue')
+        if typed is not None:
+            return typed
     # Nothing confirmed yet, or the summary is gone: show what continuing involves now.
     return await _offer(cmd, command.ref, room_id)
 
 
-async def _offer(cmd, ref, room_id):
+async def prepare_summary(cmd, ref, room_id) -> tuple[Summary, str]:
+    """What continuing on this computer involves (``prepare``), as the summary to confirm."""
     g = f'{cmd.prefix}group {ref}'
     current = await _status(cmd, ref, room_id)
     group, labels, _ = await _room(cmd, ref, room_id)
@@ -596,35 +597,26 @@ async def _offer(cmd, ref, room_id):
         raise Refused(f'Couldn’t continue on {target}. Reply {g} continue to try again.')
     shown = Summary(preview_id, _this(current), computer(preview.get('target'), current, target), host, group,
                     time.monotonic() + SUMMARY_SECONDS)
-    remember(cmd.runner, (cmd.chat.key, room_id), shown)
-    text = summary_text(preview, current, g=g, labels=labels)
-    return None if await _buttons(cmd, ref, room_id, shown, text) else text
+    return shown, summary_text(preview, current, g=g, labels=labels)
 
 
-async def _buttons(cmd, ref, room_id, shown: Summary, text: str) -> bool:
-    """Continue and Cancel buttons where the chat's adapter has them; the typed reply always works."""
-    picker = getattr(cmd.runner, '_try_send_choice_picker', None)
-    session_key = getattr(cmd.runner, '_session_key_for_source', None)
-    if picker is None or session_key is None:
-        return False
-
-    async def chosen(_chat_id, value):
-        current = take(cmd.runner, (cmd.chat.key, room_id), shown.preview_id)
-        if value != 'confirm':
-            return CANCELLED
-        if current is None:
-            return f'That summary has expired. Reply {cmd.prefix}group {ref} continue to see a new one.'
-        try:
-            return await _promote(cmd, ref, room_id, current)
-        except Refused as exc:
-            return str(exc)
-    try:
-        return await picker(cmd.event, session_key(cmd.event.source), title=text, choices=[
-            {'value': 'confirm', 'label': f'Continue on {shown.target}', 'is_current': False},
-            {'value': 'cancel', 'label': 'Cancel', 'is_current': False}], on_choice_selected=chosen)
-    except Exception:
-        logger.debug('Group Chat continue buttons unavailable; the typed reply stays', exc_info=True)
-        return False
+async def _offer(cmd, ref, room_id):
+    shown, text = await prepare_summary(cmd, ref, room_id)
+    # Where the chat has buttons: Continue and Cancel that still work later; typing works everywhere.
+    from gateway.group_chat_access import chat_target
+    target = chat_target(cmd.runner, cmd.grant)
+    if target is None or getattr(type(target[0]), 'send_group_actions', None) is None:
+        remember(cmd.runner, (cmd.chat.key, room_id), shown)
+    else:
+        from gateway.group_chat_actions import offer
+        preview = {'preview_id': shown.preview_id, 'target_id': shown.target_id, 'target': shown.target,
+                   'host': shown.host, 'group': shown.group}
+        if await offer(cmd.runner, cmd.authority, cmd.grant, room_id=room_id, group=shown.group, kind='continue',
+                       data={'here': shown.target, 'preview': preview, 'command': True}, text=text.rsplit('\n\n', 1)[0],
+                       view='cont', confirm=text.rsplit('\n\n', 1)[0]):
+            return None
+        remember(cmd.runner, (cmd.chat.key, room_id), shown)
+    return text
 
 
 async def _promote(cmd, ref, room_id, shown: Summary):

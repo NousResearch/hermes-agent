@@ -4293,6 +4293,22 @@ class TelegramAdapter(BasePlatformAdapter):
         return await self._send_prompt(
             "send_slash_confirm", chat_id, metadata, build, thread_id=self._metadata_thread_id(metadata), reply_to_mode=self._reply_to_mode)
 
+    async def send_group_actions(
+        self, chat_id: str, text: str, buttons: list, metadata: Optional[Dict[str, Any]] = None) -> SendResult:
+        """A Group Chat notice with its choices as inline buttons. Each button carries its own
+        ``hg:<action>:<token>`` (at most 21 bytes), resolved by the gateway when tapped, so it
+        keeps working after a restart or another prompt in the chat (``gateway.group_chat_actions``)."""
+        def build():
+            return _html.escape(text), self._group_action_keyboard(buttons), None
+        return await self._send_prompt(
+            "send_group_actions", chat_id, metadata, build, parse_mode=ParseMode.HTML,
+            thread_id=self._metadata_thread_id(metadata))
+
+    @staticmethod
+    def _group_action_keyboard(buttons: list):
+        return InlineKeyboardMarkup([[InlineKeyboardButton(label, callback_data=data)] for label, data in buttons]) \
+            if buttons else None
+
     async def send_clarify(
         self, chat_id: str, question: str, choices: Optional[list], clarify_id: str, session_key: str,
         metadata: Optional[Dict[str, Any]] = None) -> SendResult:
@@ -4719,6 +4735,7 @@ class TelegramAdapter(BasePlatformAdapter):
                     await handler(query, data, chat_id)
                 return
         for prefix, handler in (
+            ("hg:", self._handle_group_action_callback),
             ("gt:", self._handle_gmail_triage_callback), ("ea:", self._handle_exec_approval_callback),
             ("sc:", self._handle_slash_confirm_callback), ("cl:", self._handle_clarify_callback),
             ("update_prompt:", self._handle_update_prompt_callback)):
@@ -4734,6 +4751,30 @@ class TelegramAdapter(BasePlatformAdapter):
         if not session_key:
             await query.answer(text=resolved)
         return session_key
+
+    async def _handle_group_action_callback(self, query, data: str, cb: Dict[str, Any]) -> None:
+        """``hg:<action>:<token>`` — a choice under a Group Chat notice. Nothing is kept here: the
+        gateway finds the notice by its token, rechecks who may choose, and the message is edited
+        in place into what comes next."""
+        if not await self._callback_authorized(query, cb, _UNAUTHORIZED):
+            return
+        act = getattr(self.gateway_runner, "_group_chat_action", None)
+        result = None
+        if act is not None and cb["chat_id"] is not None:
+            try:
+                result = await act(
+                    self.platform.value, str(cb["chat_id"]), str(getattr(query.from_user, "id", "")), data)
+            except Exception:
+                logger.warning("[%s] Group Chat notice choice failed", self.name, exc_info=True)
+        if result is None:
+            with contextlib.suppress(Exception):
+                await query.answer(text=_UNAUTHORIZED)
+            return
+        with contextlib.suppress(Exception):
+            await query.edit_message_text(text=_html.escape(result["text"]), parse_mode=ParseMode.HTML,
+                                          reply_markup=self._group_action_keyboard(result["buttons"]))
+        with contextlib.suppress(Exception):  # a slow choice may outlive the tap's answer window
+            await query.answer()
 
     async def _handle_exec_approval_callback(self, query, data: str, cb: Dict[str, Any]) -> None:
         """``ea:<choice>:<approval_id>`` — resolve a pending exec approval."""

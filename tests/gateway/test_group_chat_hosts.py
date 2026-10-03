@@ -21,7 +21,7 @@ from gateway import session_group_controls as controls
 from gateway.config import Platform
 from hermes_state import SessionDB
 from hermes_state_runtime import RuntimeStoreError
-from tests.gateway.group_chat_fixtures import OWNER, Bot, authority_for, message, runner_for
+from tests.gateway.group_chat_fixtures import OWNER, Bot, Buttons, authority_for, message, runner_for
 
 MEMBERS = [{'member_id': 'ada', 'profile': 'default', 'handle': 'ada', 'display_name': 'Ada'},
            {'member_id': 'bob', 'profile': 'helper', 'handle': 'bob'}]
@@ -453,36 +453,39 @@ def test_continue_and_keep_recheck_access_right_before_the_change(advertised, mo
     assert hosts.PROMOTE not in advertised.gateway.methods()
 
 
-def test_buttons_where_the_chat_has_them_confirm_the_summary_they_came_with(advertised):
-    connect(advertised)
-    sent = []
+def tap(state, data, *, user='alice', chat='chat-1'):
+    return asyncio.run(slash.GroupChatSlashCommandsMixin._group_chat_action(state.runner, 'telegram', chat, user, data))
 
-    async def picker(event, session_key, *, title, choices, on_choice_selected):
-        sent.append(SimpleNamespace(title=title, choices=choices, choose=on_choice_selected))
-        return True
-    advertised.runner._try_send_choice_picker = picker
-    advertised.runner._session_key_for_source = lambda source: 'session'
+
+def test_continue_offers_buttons_that_still_work_later(advertised):
+    connect(advertised)
+    buttons = Buttons()
+    advertised.runner._adapters_for_profile = lambda profile: {Platform.TELEGRAM: buttons}
     assert run(advertised, '/group 1 continue') is None
-    assert sent[0].title.startswith('Continue this group on Home VPS?\n')
-    assert sent[0].title.endswith('Reply /group 1 continue confirm to proceed.')
-    assert [c['label'] for c in sent[0].choices] == ['Continue on Home VPS', 'Cancel']
-    assert asyncio.run(sent[0].choose('chat-1', 'confirm')) == (
-        'Done. “Research” now continues on Home VPS. 1 task unknown, 2 waiting for Mac mini.')
-    assert asyncio.run(sent[0].choose('chat-1', 'confirm')) == (
-        'That summary has expired. Reply /group 1 continue to see a new one.')
-    assert run(advertised, '/group 1 continue', message_id='m-2') is None
-    assert asyncio.run(sent[1].choose('chat-1', 'cancel')) == hosts.CANCELLED
-    # Cancelled means nothing is left to confirm: the typed reply shows a new summary.
-    assert run(advertised, '/group 1 continue confirm', message_id='m-3') is None
-    assert len(sent) == 3 and advertised.gateway.methods(hosts.PROMOTE) == [hosts.PROMOTE]
-    # A button only confirms its own summary, never a newer one shown since.
+    offer, = buttons.offers
+    assert offer.chat_id == 'chat-1' and offer.text.startswith('Continue this group on Home VPS?\n')
+    assert 'Reply' not in offer.text
+    assert [name for name, _ in offer.buttons] == ['Continue on Home VPS', 'Cancel']
+    assert tap(advertised, offer.buttons[0][1], user='mallory') is None  # only the grant's person
+    assert tap(advertised, offer.buttons[0][1], chat='chat-9') is None  # only in the chat it went to
+    done = tap(advertised, offer.buttons[0][1])
+    assert done == {'text': '“Research” now continues on Home VPS. 1 task unknown, 2 waiting for Mac mini.',
+                    'buttons': [], 'record': done['record']}
+    assert tap(advertised, offer.buttons[0][1])['text'] == ('Already resolved: “Research” now continues on '
+                                                            'Home VPS. 1 task unknown, 2 waiting for Mac mini.')
+    assert [params['preview_id'] for method, params, _ in advertised.gateway.calls if method == hosts.PROMOTE] == [
+        'pv-1']
+    # Typing confirm answers the summary shown with buttons, as its Continue button would.
     advertised.gateway.prepare = preview(preview_id='pv-2')
+    assert run(advertised, '/group 1 continue', message_id='m-2') is None
+    assert run(advertised, '/group 1 continue confirm', message_id='m-3').startswith('“Research” now continues')
+    assert tap(advertised, buttons.offers[1].buttons[0][1])['text'].startswith('Already resolved:')
     assert run(advertised, '/group 1 continue', message_id='m-4') is None
-    assert asyncio.run(sent[2].choose('chat-1', 'confirm')).startswith('That summary has expired.')
-    advertised.gateway.promote = refused('preview_stale')
-    assert asyncio.run(sent[3].choose('chat-1', 'confirm')).startswith('Couldn’t continue on Home VPS: the group')
-    promoted = [params['preview_id'] for method, params, _ in advertised.gateway.calls if method == hosts.PROMOTE]
-    assert promoted == ['pv-1', 'pv-2']
+    assert tap(advertised, buttons.offers[2].buttons[1][1])['text'] == 'Cancelled. Nothing changed.'
+    assert run(advertised, '/group 1 continue confirm', message_id='m-5') is None  # nothing left: a new summary
+    assert len(buttons.offers) == 4
+    assert [params['preview_id'] for method, params, _ in advertised.gateway.calls if method == hosts.PROMOTE] == [
+        'pv-1', 'pv-2']
 
 
 def test_a_summary_expires(advertised):

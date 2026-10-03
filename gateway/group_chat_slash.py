@@ -195,6 +195,18 @@ class GroupChatSlashCommandsMixin:
         from gateway.group_chat_notices import WATCH_SECONDS, watch
         await watch(self, WATCH_SECONDS if interval is None else interval)
 
+    async def _group_chat_notify(self, room_id, kind, data) -> int:
+        """The gateway's own incident for a room, told in its owner's main channel with the choices
+        it offers (``kind`` ``host_offline``, ``data`` ``{host, minutes}``); returns chats told."""
+        from gateway.group_chat_notices import notify
+        return await notify(self, room_id, kind, data)
+
+    async def _group_chat_action(self, platform, chat_id, user_id, data):
+        """An adapter's tap on a group notice button (``hg:…``): ``{'text', 'buttons'}`` to show
+        in place of the message, or None when this tapper may not act on it."""
+        from gateway.group_chat_actions import act
+        return await act(self, platform, chat_id, user_id, data)
+
 
 class _GroupCommand:
     def __init__(self, runner, event, authority, chat, grant, prefix):

@@ -150,11 +150,20 @@ says which one is still running the group and asks you to choose one with
 `/group N keep <computer>`; keeping the one still running is keep going, and the other's
 messages are kept separately.
 
+When a group is paused because its host went offline, a computer that can continue it tells
+you too: `“Research” is paused: Mac mini has been offline for 12 min.`, with **Continue on
+Home VPS**.
+
 These messages go to your main channel: your home channel (`/sethome`) when it is your
-private chat with the Bot, otherwise each of your private chats with it. Where your chat app
-has buttons, the choices are buttons too. Without any private chat, a home channel that is a
-one-to-one chat gets the message without the choices ("Choose in Hermes Desktop."), and a
-shared home channel gets nothing.
+private chat with the Bot, otherwise each of your private chats with it. Their choices are
+buttons on Telegram, Discord, Slack and WhatsApp, and they keep working hours later, after a
+restart or other prompts in the chat. Each tap edits the message in place: **Keep going** and
+**Ask me first** take one tap; **Go back**, **Keep** the computer that stopped and
+**Continue on** ask you to confirm with a second tap. On other platforms each choice comes
+with the `/group` command to type. A bare number such as `2` is never taken as a choice, since
+your Bot may have asked a numbered question of its own. Without any private chat, a home
+channel that is a one-to-one chat gets the message without the choices ("Choose in Hermes
+Desktop."), and a shared home channel gets nothing.
 
 On Matrix every direct room counts as shared, so host-loss notices aren't sent there and
 continuing, keeping or asking first isn't possible from Matrix: use Hermes Desktop or

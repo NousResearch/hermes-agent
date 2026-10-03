@@ -5,35 +5,23 @@ The watcher reads like any client, so these tests script only the room log and t
 buttons and typed commands are the real ones.
 """
 import asyncio
+import json
 import time
 from types import SimpleNamespace
 
 import pytest
 
 from gateway import group_chat_access as access
+from gateway import group_chat_actions as actions
 from gateway import group_chat_hosts as hosts
 from gateway import group_chat_notices as notices
 from gateway import group_chat_slash as slash
 from gateway import session_group_controls as controls
 from gateway.config import HomeChannel, Platform
 from hermes_state_runtime import RuntimeStoreError
-from tests.gateway.group_chat_fixtures import OWNER
+from tests.gateway.group_chat_fixtures import OWNER, Buttons
 from tests.gateway.test_group_chat_hosts import (  # noqa: F401 - fixtures
-    BOOK, MAC, SHARED, VPS, advertised, connect, hosting, refused, run, setup)
-
-
-class Picker:
-    """A Bot whose adapter has a choice picker (Telegram, Discord): notices come with buttons."""
-
-    def __init__(self, bot):
-        self.bot, self.pickers = bot, []
-
-    def __getattr__(self, name):
-        return getattr(self.bot, name)
-
-    async def send_choice_picker(self, chat_id, title, choices, session_key, on_choice_selected, metadata=None):
-        self.pickers.append(SimpleNamespace(chat_id=chat_id, title=title, choices=choices, choose=on_choice_selected))
-        return SimpleNamespace(success=True)
+    BOOK, MAC, MEMBERS, SHARED, VPS, advertised, connect, hosting, refused, run, setup)
 
 
 @pytest.fixture
@@ -144,39 +132,71 @@ def test_the_owner_hears_once_per_pause_to_stay_safe(watched):
         assert watched.notify() == [('chat-1', told)]
 
 
-def test_a_careful_move_warns_with_typed_choices(watched):
+def tap(watched, data, *, user='alice', chat='chat-1'):
+    result = asyncio.run(slash.GroupChatSlashCommandsMixin._group_chat_action(
+        watched.runner, 'telegram', chat, user, data))
+    return None if result is None else (result['text'], [name for name, _ in result['buttons']], result['buttons'])
+
+
+def careful_status(**fields):
+    return hosting('ok', host=VPS, actions=[{'action': 'keep', 'targets': ['inst-mac']}],
+                   moved_in={'from': MAC, 'at': time.time() - 200, 'proof_kind': 'evidence'}, **fields)
+
+
+def test_without_buttons_a_careful_move_offers_typed_commands(watched):
+    gateway = watched.state.gateway
     watched.notify()
     moved_here(watched, proof_kind='evidence')
     assert watched.notify() == [('chat-1', '\n'.join([
         CAREFUL, '',
-        'Keep going on Home VPS: no reply needed.',
+        'Keep going: no reply needed.',
         'Go back to Mac mini: /group 1 keep Mac mini',
-        'Ask me first next time: /group 1 ask first']))]
+        'Ask me first: /group 1 ask first']))]
     assert watched.notify() == []
+    gateway.status = careful_status()
+    assert run(watched.state, '/group 1 keep Mac mini').startswith('Go back to Mac mini? Home VPS pauses now')
+    assert hosts.KEEP not in gateway.methods()
+    assert run(watched.state, '/group 1 keep Mac mini confirm', message_id='m-2') == (
+        'Done. Home VPS paused “Research”; it continues on Mac mini as soon as it’s reachable.')
+    assert [params for method, params, _ in gateway.calls if method == hosts.KEEP] == [
+        {'room_id': 'mine', 'install_id': 'inst-mac'}]
 
 
-def test_a_careful_move_offers_buttons_that_act_only_for_the_owner(watched, monkeypatch):
-    picker = Picker(watched.bot)
-    watched.adapters['default'] = {Platform.TELEGRAM: picker}
+def test_a_bare_number_is_never_taken_as_a_choice(watched):
+    """A Bot may ask a numbered question of its own, so a reply such as "3" is its, never a choice:
+    nothing but the gateway's own pending prompts may claim a plain message."""
+    from gateway.run_inbound import GatewayInboundMixin
+    watched.notify()
+    moved_here(watched, proof_kind='evidence')
+    assert watched.notify()  # a notice with choices is waiting
+
+    async def nothing(*_args):
+        return None
+    runner = SimpleNamespace(_hm_update_prompt_reply=lambda *_: None, _hm_clarify_reply=nothing,
+                             _hm_slash_confirm_reply=nothing)
+    event = SimpleNamespace(allow_gateway_control=True, text='3')
+    assert asyncio.run(GatewayInboundMixin._hm_pending_reply_intercepts(runner, event, None, 'key')) is None
+
+
+def test_a_careful_move_offers_buttons_that_keep_working(watched, monkeypatch):
+    buttons = Buttons()
+    watched.adapters['default'] = {Platform.TELEGRAM: buttons}
     gateway = watched.state.gateway
     watched.notify()
     moved_here(watched, proof_kind='evidence')
     assert watched.notify() == []
-    offer, = picker.pickers
-    assert offer.chat_id == 'chat-1' and offer.title.startswith(CAREFUL + '\n\nKeep going on Home VPS:')
-    assert [c['label'] for c in offer.choices] == ['Keep going on Home VPS', 'Go back to Mac mini',
-                                                   'Ask me first next time']
-
-    def choose(value):
-        return asyncio.run(offer.choose('chat-1', value))
-    assert choose('ack') == 'OK. “Research” keeps going on Home VPS.'
-    gateway.status = hosting('ok', host=VPS, actions=[{'action': 'keep', 'targets': ['inst-mac']}],
-                             moved_in={'from': MAC, 'at': time.time() - 200, 'proof_kind': 'evidence'})
-    assert choose('back').startswith('Go back to Mac mini? Home VPS pauses now')
-    assert choose('back').endswith('Reply /group 1 keep Mac mini confirm to go back.')
-    assert hosts.KEEP not in gateway.methods()  # going back is confirmed by typing
-    gateway.status = hosting('ok', host=VPS, actions=[])
-    assert choose('back') == '“Research” can’t go back now. Send /group 1 to see where things stand.'
+    offer, = buttons.offers
+    assert offer.chat_id == 'chat-1' and offer.text == CAREFUL
+    assert [name for name, _ in offer.buttons] == ['Keep going', 'Go back to Mac mini', 'Ask me first']
+    assert all(len(data.encode()) <= 64 and data.startswith('hg:') for _, data in offer.buttons)  # Telegram's cap
+    go, back, ask = (data for _, data in offer.buttons)
+    gateway.status = careful_status()
+    text, names, confirm = tap(watched, back)
+    assert text.startswith('Go back to Mac mini? Home VPS pauses now') and names == ['Go back to Mac mini', 'Cancel']
+    assert tap(watched, confirm[1][1])[:2] == (CAREFUL, ['Keep going', 'Go back to Mac mini', 'Ask me first'])
+    # A restart, or another prompt opened in the chat meanwhile, changes nothing: the tap finds its notice.
+    monkeypatch.setattr(actions, '_LOCKS', {})
+    watched.adapters['default'] = {Platform.TELEGRAM: Buttons()}
     real, calls = controls.dispatch_group_control, []
 
     async def automatic(connection, method, params, **kwargs):
@@ -185,22 +205,40 @@ def test_a_careful_move_offers_buttons_that_act_only_for_the_owner(watched, monk
             return {'room_id': params['room_id'], 'automatic': False, 'configuration_seq': 3}
         return await real(connection, method, params, **kwargs)
     monkeypatch.setattr(controls, 'dispatch_group_control', automatic)
-    assert choose('ask') == 'Done. “Research” will ask you before moving.'
+    assert tap(watched, ask)[:2] == ('“Research” will ask you before moving.', [])
     assert calls == [{'room_id': 'mine', 'enabled': False}]
-    # The button names no sender: the chat must still hold the owner's grant, its person still a DM admin.
-    watched.bot.config.extra['allow_admin_from'].remove('alice')
-    assert choose('ask') == 'This chat’s access to Group Chats changed. Nothing was done.'
-    watched.bot.config.extra['allow_admin_from'].append('alice')
-    granted = access.control_verb(watched.runner)({'action': 'list'}, OWNER)['chats']
-    access.control_verb(watched.runner)({'action': 'revoke', 'grant': next(
-        c['grant'] for c in granted if c['kind'] == 'private')}, OWNER)
-    assert choose('ask') == 'This chat’s access to Group Chats changed. Nothing was done.'
+    assert tap(watched, go)[:2] == ('Already resolved: “Research” will ask you before moving.', [])
     assert len(calls) == 1
 
 
+def test_only_the_owners_private_chat_and_person_may_choose(watched):
+    buttons = Buttons()
+    watched.adapters['default'] = {Platform.TELEGRAM: buttons}
+    watched.notify()
+    moved_here(watched, proof_kind='evidence')
+    watched.notify()
+    go = buttons.offers[0].buttons[0][1]
+    # A choice from another kind of notice changes nothing.
+    assert tap(watched, 'hg:k0:' + go.rsplit(':', 1)[1])[:2] == (CAREFUL, ['Keep going', 'Go back to Mac mini',
+                                                                            'Ask me first'])
+    assert hosts.KEEP not in watched.state.gateway.methods()
+    assert tap(watched, go, user='mallory') is None
+    assert tap(watched, go, chat='team') is None
+    assert tap(watched, 'hg:go:' + 'x' * 12)[:2] == ('This choice is no longer available.', [])
+    assert tap(watched, 'hg:go:../etc') is None and tap(watched, 'ea:once:1') is None
+    watched.bot.config.extra['allow_admin_from'].remove('alice')
+    buttons.config.extra['allow_admin_from'].remove('alice')
+    assert tap(watched, go) is None  # off the Bot's DM admin list
+    buttons.config.extra['allow_admin_from'].append('alice')
+    granted = access.control_verb(watched.runner)({'action': 'list'}, OWNER)['chats']
+    access.control_verb(watched.runner)({'action': 'revoke', 'grant': next(
+        c['grant'] for c in granted if c['kind'] == 'private')}, OWNER)
+    assert tap(watched, go) is None  # the chat lost its grant
+
+
 def test_the_computer_the_careful_move_went_to_asks_which_one_keeps_the_group(watched):
-    picker = Picker(watched.bot)
-    watched.adapters['default'] = {Platform.TELEGRAM: picker}
+    buttons = Buttons()
+    watched.adapters['default'] = {Platform.TELEGRAM: buttons}
     gateway = watched.state.gateway
     watched.notify()
     start = time.time() - 900
@@ -209,28 +247,66 @@ def test_the_computer_the_careful_move_went_to_asks_which_one_keeps_the_group(wa
     gateway.status = hosting('continued_on_two', host=VPS, conflict=conflict,
                              actions=[{'action': 'keep', 'targets': ['inst-vps', 'inst-mac']}])
     watched.notify()
-    offer, = picker.pickers
-    # The computer still running the group comes first: keeping it is keep going.
-    assert offer.title == '\n'.join([
-        f'“Research” ran on both Home VPS and Mac mini while they couldn’t reach each other '
-        f'({hosts.span(start, start + 900)}). Home VPS is running the group; Mac mini stopped. Choose which one '
-        'to keep. The other’s messages are kept separately.',
-        '', 'Keep going on Home VPS: /group 1 keep Home VPS', 'Keep Mac mini: /group 1 keep Mac mini'])
+    offer, = buttons.offers
+    assert offer.text == (f'“Research” ran on both Home VPS and Mac mini while they couldn’t reach each other '
+                          f'({hosts.span(start, start + 900)}). Home VPS is running the group; Mac mini stopped. '
+                          'Choose which one to keep. The other’s messages are kept separately.')
+    # Keeping the computer still running it is keep going: one tap. Switching takes a second one.
+    assert [name for name, _ in offer.buttons] == ['Keep going on Home VPS', 'Keep Mac mini']
     watched.notify()
-    assert len(picker.pickers) == 1  # once per incident
-    assert asyncio.run(offer.choose('chat-1', 'keep:inst-vps')) == (
-        'Done. “Research” keeps going on Home VPS. Messages from Mac mini are kept and shown separately.')
-    assert asyncio.run(offer.choose('chat-1', 'keep:inst-mac')) == (
-        'Done. “Research” now continues on Mac mini. Messages from Home VPS are kept and shown separately.')
-    assert [params['install_id'] for method, params, _ in gateway.calls if method == hosts.KEEP] == [
-        'inst-vps', 'inst-mac']
-    gateway.status = hosting('ok', host=MAC, actions=[])
-    assert asyncio.run(offer.choose('chat-1', 'keep:inst-vps')).startswith('“Research” isn’t waiting for that')
+    assert len(buttons.offers) == 1  # once per incident
+    keep_going, keep_other = (data for _, data in offer.buttons)
+    text, names, confirm = tap(watched, keep_other)
+    assert text == ('Keep Mac mini? “Research” continues on Mac mini. Messages from Home VPS are kept and shown '
+                    'separately.')
+    assert names == ['Keep Mac mini', 'Cancel'] and hosts.KEEP not in gateway.methods()
+    assert tap(watched, confirm[1][1])[1] == ['Keep going on Home VPS', 'Keep Mac mini']
+    assert tap(watched, keep_going)[:2] == (
+        '“Research” keeps going on Home VPS. Messages from Mac mini are kept and shown separately.', [])
+    assert [params for method, params, _ in gateway.calls if method == hosts.KEEP] == [
+        {'room_id': 'mine', 'install_id': 'inst-vps'}]
+    # From a gateway that doesn't say which one is running, both Keeps take two taps.
+    record = {'outcome': None, 'kind': 'conflict', 'view': 'main', 'data': {'hosts': [['a', 'Mac mini'], ['b', 'VPS']]}}
+    assert [(label + name, action) for label, name, action, _ in actions.choices(record)] == [
+        ('Keep Mac mini', 'k0'), ('Keep VPS', 'k1')]
     # The computer that hosted the group first stays quiet: one notice per incident, not one per computer.
     gateway.status = hosting('continued_on_two', this=MAC, host=MAC, conflict=conflict)
     watched.notify()
-    gateway.status = hosting('continued_on_two', this=MAC, host=MAC, conflict=conflict)
-    assert watched.notify() == [] and len(picker.pickers) == 1
+    assert len(buttons.offers) == 1
+
+
+def test_the_gateways_paused_group_incident_offers_to_continue_here(watched):
+    buttons = Buttons()
+    watched.adapters['default'] = {Platform.TELEGRAM: buttons}
+    gateway = watched.state.gateway
+    gateway.status = hosting()
+
+    def tell(**data):
+        return asyncio.run(slash.GroupChatSlashCommandsMixin._group_chat_notify(
+            watched.runner, 'mine', 'host_offline', data))
+    assert tell(host='Mac mini', minutes=12) == 1
+    offer, = buttons.offers
+    assert offer.text == '“Research” is paused: Mac mini has been offline for 12 min.'
+    assert [name for name, _ in offer.buttons] == ['Continue on Home VPS']
+    text, names, confirm = tap(watched, offer.buttons[0][1])
+    assert text.startswith('Continue this group on Home VPS?\n') and 'Reply' not in text
+    assert names == ['Continue on Home VPS', 'Cancel']
+    assert tap(watched, confirm[1][1])[:2] == ('“Research” is paused: Mac mini has been offline for 12 min.',
+                                               ['Continue on Home VPS'])
+    text, _, confirm = tap(watched, offer.buttons[0][1])
+    assert tap(watched, confirm[0][1])[:2] == (
+        '“Research” now continues on Home VPS. 1 task unknown, 2 waiting for Mac mini.', [])
+    gateway.status = hosting(actions=[{'action': 'continue', 'targets': ['inst-book']}])  # not this computer
+    assert tell() == 1 and len(buttons.offers) == 1
+    assert buttons.sent[-1][1] == '“Research” is paused: Mac mini has been offline.'  # told, nothing offered
+    watched.adapters['default'] = {Platform.TELEGRAM: watched.bot}
+    gateway.status = hosting()
+    assert tell(minutes=3) == 1
+    assert watched.bot.sent[-1][1] == '\n'.join([
+        '“Research” is paused: Mac mini has been offline for 3 min.', '',
+        'Continue on Home VPS: /group 1 continue'])
+    with pytest.raises(ValueError):
+        asyncio.run(slash.GroupChatSlashCommandsMixin._group_chat_notify(watched.runner, 'mine', 'other', {}))
 
 
 def test_notices_go_to_the_owners_main_channel(watched):
@@ -325,3 +401,41 @@ def test_the_notice_watcher_runs_while_the_gateway_does(monkeypatch):
     monkeypatch.setattr(notices, 'notify_all', one_pass)
     asyncio.run(slash.GroupChatSlashCommandsMixin._group_chat_notice_watcher(runner, interval=0))
     assert passes == [runner, runner]
+
+
+def test_a_backup_computer_reaches_the_group_it_keeps_a_copy_of(watched, monkeypatch):
+    """On a backup computer a group is a copy plus its owner's row, written when this computer's
+    operator agreed to keep it, and no hosted room. The owner's chats still list it, continue it
+    and hear the gateway's paused incident for it."""
+    state, gateway = watched.state, watched.state.gateway
+    state.service.authorize_room(OWNER, 'copy-1', create=True)  # the owner's row alone, no hosted room
+    copy = {'room_id': 'copy-1', 'name': 'Field notes', 'members': MEMBERS, 'authority_gateway_id': 'inst-mac',
+            'authority_epoch': 1, 'revision': 0, 'created_at': 0.0, 'updated_at': 0.0, 'latest_seq': 0,
+            'copy': True}
+    real = controls.dispatch_group_control
+
+    async def with_copy(connection, method, params, **kwargs):
+        # The copy reads a backup computer gives the room's owner: listed and readable, never driven here.
+        if method == 'groups.list':
+            result = await real(connection, method, params, **kwargs)
+            return {**result, 'rooms': [*result['rooms'], copy]}
+        if params.get('room_id') == 'copy-1' and method == 'groups.state':
+            return {'room': copy, 'driver_status': None}
+        if params.get('room_id') == 'copy-1' and method == 'groups.log':
+            return {'events': [], 'cursor': 0, 'latest_seq': 0, 'has_more': False}
+        return await real(connection, method, params, **kwargs)
+    monkeypatch.setattr(controls, 'dispatch_group_control', with_copy)
+    assert '2. Field notes · 2 Bots · backup copy' in run(state, '/group list')
+    gateway.status = hosting()  # its host, Mac mini, is offline, and this computer may continue it
+    assert run(state, '/group 2').startswith('Group 2 · Field notes\nHost: Mac mini, offline since ')
+    assert run(state, '/group 2 continue').startswith('Continue this group on Home VPS?')
+    assert [params['room_id'] for method, params, _ in gateway.calls if method == hosts.PREPARE] == ['copy-1']
+    told = asyncio.run(slash.GroupChatSlashCommandsMixin._group_chat_notify(
+        state.runner, 'copy-1', 'host_offline', {'host': 'Mac mini', 'minutes': 6}))
+    assert told == 1 and watched.bot.sent[-1][1] == '\n'.join([
+        '“Field notes” is paused: Mac mini has been offline for 6 min.', '',
+        'Continue on Home VPS: /group 2 continue'])
+    watched.notify()  # the watcher keeps a cursor for the copy too
+    with state.db._read_ctx() as conn:
+        row = conn.execute('SELECT value FROM state_meta WHERE key=?', (notices._key(OWNER),)).fetchone()
+    assert set(json.loads(row[0])) == {'mine', 'copy-1'}

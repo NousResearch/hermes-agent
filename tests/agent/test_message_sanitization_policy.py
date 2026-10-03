@@ -151,6 +151,10 @@ class TestReasoningEchoFamily:
         ("xiaomi", None, "https://x", "mimo"),
         ("custom", "MiMo-7B", "https://x", "mimo"),
         ("custom", None, "https://api.xiaomimimo.com/v1", "mimo"),
+        ("custom", "IFM/K2-Horizon-375B-A23B", "https://api.ifm.ai/v1", "ifm"),
+        ("custom", "IFM/K2-Think-v2", "https://api-staging.ifm.ai/v1", "ifm"),
+        # Host-driven on purpose: the same weights served from a non-IFM gateway are not padded.
+        ("custom", "IFM/K2-Horizon-375B-A23B", "https://api.k2think.ai/v1", None),
         ("openai", "gpt-5", "https://api.openai.com/v1", None),
         ("mistral", "mistral-large", "https://api.mistral.ai/v1", None),
         (None, None, None, None),
@@ -297,9 +301,6 @@ class TestPerProviderReasoningEcho:
         agent._base_url_lower = base_url.lower()
         agent._thinking_pad_cache = None
         agent._reasoning_echo_flag = reasoning_echo_flag
-        agent._needs_deepseek_tool_reasoning = lambda: False
-        agent._needs_kimi_tool_reasoning = lambda: False
-        agent._needs_mimo_tool_reasoning = lambda: False
         return agent
 
     def test_default_false_strips_for_custom_provider(self):

@@ -1,0 +1,35 @@
+# Nous Hermes plugin catalog entry — prompt-queue
+#
+# OWNER-SUBMITTED (rule 5): the PR author (vectorforge22) owns the repo.
+# Exact-SHA pin (40-hex) at a commit that passed `hermes plugins validate`
+# locally (manifest, loadable desktop/plugin.js, security scan SAFE,
+# desktop surface inside the SDK). No self-updating code: the plugin is a
+# single static ESM file that never fetches, downloads, or replaces itself
+# (rule 3).
+#
+# To submit: fork NousResearch/hermes-agent, add this file as
+# `plugin-catalog/prompt-queue.yaml`, and open a PR with the description in
+# `PR-description.md`.
+name: prompt-queue
+repo: https://github.com/vectorforge22/prompt-queue
+sha: "4851cd1f9e41d1d7be30c82ae641b7d3fdec055c"   # main, 2026-10-02 (v1.1.0)
+description: >-
+  Kanban-style prompt queue for the desktop: Play drains cards one at a
+  time, each into a new (or targeted, existing) sidebar session, gated on
+  the global model slot and background-review completion. Queue/Done/
+  Skipped/Failed tabs, resizable composer, per-card target picker, and a
+  trust-aware ::enqueue directive (ask-first by default).
+maintainer: vectorforge22
+tier: community
+category: desktop
+requires_hermes: ">=0.21.5"
+version: "1.1.0"
+docs_url: https://github.com/vectorforge22/prompt-queue
+platforms: []
+screenshots:
+  - https://raw.githubusercontent.com/vectorforge22/prompt-queue/4851cd1f9e41d1d7be30c82ae641b7d3fdec055c/docs/screenshots/prompt-queue.png
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

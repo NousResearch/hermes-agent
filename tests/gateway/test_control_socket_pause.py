@@ -107,3 +107,125 @@ def test_pause_client_none_when_gateway_lacks_verb(tmp_path):
 
 def test_pause_client_none_when_no_socket(tmp_path):
     assert pause_gateway_for_update(tmp_path, timeout=0.5) is None
+
+def test_windows_update_socket_pause_owns_shutdown_before_marker(monkeypatch, tmp_path):
+    """A current gateway's socket ACK must suppress the legacy marker watcher race."""
+    from gateway import control_socket
+    from hermes_cli import update_cmd_windows
+
+    events = []
+    timeouts = []
+    proc = SimpleNamespace(profile="default", path=tmp_path)
+
+    def pause(_home, *, timeout):
+        events.append("socket")
+        timeouts.append(timeout)
+        return {
+            "pausing": True, "already_stopping": False, "pid": 42, "drain_timeout": 2025.0,
+        }
+
+    monkeypatch.setattr(control_socket, "pause_gateway_for_update", pause)
+    monkeypatch.setattr(
+        update_cmd_windows,
+        "_write_update_planned_stop_marker",
+        lambda *_args: events.append("marker") or True,
+    )
+
+    profiles, pids, acks = update_cmd_windows._request_socket_pauses(
+        [42], {42: proc}, set()
+    )
+
+    assert events == ["socket"]
+    assert timeouts == [6.0]
+    assert profiles == {"default": 42}
+    assert pids == [42]
+    assert acks[0]["drain_timeout"] == 2025.0
+
+
+def test_windows_update_marker_is_only_socket_fallback(monkeypatch, tmp_path):
+    """Old/no-socket gateways retain the planned-stop fallback, after the socket probe."""
+    from gateway import control_socket
+    from hermes_cli import update_cmd_windows
+
+    events = []
+    timeouts = []
+    proc = SimpleNamespace(profile="default", path=tmp_path)
+
+    def no_pause(_home, *, timeout):
+        events.append("socket")
+        timeouts.append(timeout)
+        return None
+
+    monkeypatch.setattr(control_socket, "pause_gateway_for_update", no_pause)
+    monkeypatch.setattr(
+        update_cmd_windows,
+        "_write_update_planned_stop_marker",
+        lambda *_args: events.append("marker") or True,
+    )
+
+    _profiles, _pids, acks = update_cmd_windows._request_socket_pauses(
+        [42], {42: proc}, set()
+    )
+
+    assert events == ["socket", "marker"]
+    assert timeouts == [6.0]
+    assert acks == []
+
+
+def test_pause_handler_declares_complete_restart_wait_budget(monkeypatch):
+    """The ACK covers after-turn + stop, not only restart_drain_timeout (#129947)."""
+    import atexit
+
+    from gateway import control_socket
+    from gateway import run as gateway_run
+    from gateway import run_plugin_rewire
+    from gateway import run_profile_reconcile
+    from hermes_cli import gateway as gateway_cli
+
+    captured = {}
+
+    class FakeControlServer:
+        def __init__(self, *args, verb_handlers=None, **kwargs):
+            captured.update(verb_handlers or {})
+
+        async def start(self):
+            return True
+
+        def cleanup_files(self):
+            pass
+
+    monkeypatch.setattr(control_socket, "GatewayControlServer", FakeControlServer)
+    monkeypatch.setattr(atexit, "register", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(gateway_cli, "_get_restart_drain_timeout", lambda: 180.0)
+    monkeypatch.setattr(gateway_cli, "_get_restart_exit_wait_budget", lambda: 2025.0)
+
+    for name in (
+        "migrate_profile_identity_verb",
+        "purge_profile_identity_verb",
+        "unserve_profile_verb",
+        "serve_profile_verb",
+    ):
+        monkeypatch.setattr(
+            run_profile_reconcile, name, lambda _runner: (lambda *_args, **_kwargs: {})
+        )
+    monkeypatch.setattr(
+        run_plugin_rewire,
+        "reload_plugins_verb",
+        lambda _runner, _loop: (lambda *_args, **_kwargs: {}),
+    )
+
+    restart_calls = []
+    runner = SimpleNamespace(
+        request_restart=lambda **kwargs: restart_calls.append(kwargs) or True
+    )
+
+    async def scenario():
+        await gateway_run._start_gateway_start_control_socket(runner)
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(None, captured["pause-for-update"])
+
+    ack = asyncio.run(scenario())
+
+    assert ack["pausing"] is True
+    assert ack["drain_timeout"] == 2025.0
+    assert restart_calls == [{"detached": False, "via_service": True}]

@@ -5643,8 +5643,10 @@ async def _start_gateway_start_control_socket(runner):
 
         def _pause_for_update_handler() -> dict:
             try:
-                from hermes_cli.gateway import _get_restart_drain_timeout
-                _drain = float(_get_restart_drain_timeout())
+                # request_restart() has two bounded phases: the pre-stop after-turn wait and stop()'s
+                # drain. The updater must wait for the complete lifecycle, not just the latter.
+                from hermes_cli.gateway import _get_restart_exit_wait_budget
+                _drain = float(_get_restart_exit_wait_budget())
             except Exception:
                 _drain = 30.0
             accepted_box: list[bool] = []

@@ -864,10 +864,11 @@ def _discover_windows_gateways():
 
 
 def _request_socket_pauses(running_pids, profile_processes, service_gateway_pids):
-    """Marker + socket-first pause for every profile-mapped gateway; ``(profiles, mapped_pids, socket_acks)``.
+    """Socket-first pause for every profile-mapped gateway; ``(profiles, mapped_pids, socket_acks)``.
 
-    Socket ACK = the gateway drains and exits by its own graceful path. No answer (older
-    gateway) -> the marker poll / force-kill ladder in the caller."""
+    A positive ACK means the gateway owns its graceful restart. Only arm the planned-stop marker
+    when the socket cannot take ownership; otherwise the Windows marker watcher can race the socket
+    request and enter stop() before request_restart() gets its after-turn window."""
     profiles: dict[str, int] = {}
     mapped_pids = []
     socket_acks: list[dict] = []
@@ -877,25 +878,26 @@ def _request_socket_pauses(running_pids, profile_processes, service_gateway_pids
             continue
         profiles[str(proc.profile)] = int(pid)
         mapped_pids.append(int(pid))
-        _write_update_planned_stop_marker(Path(proc.path), int(pid))
+        ack = None
         try:
-            # Socket-first pause (#92091 step 2): ask the gateway to drain and exit itself instead of
-            # relying on the marker poll + force-kill ladder. A positive ACK means the gateway is running
-            # its own graceful restart path (same drain as SIGUSR1/service restarts) and will release its
-            # venv handles on the way out. No answer (older gateway, no socket) → the marker watcher /
-            # force-kill fallback below behaves exactly as before this verb existed.
+            # Current gateways own the pause over the control socket. Old/no-socket gateways still
+            # get the legacy marker watcher + force-kill fallback below.
             from gateway.control_socket import pause_gateway_for_update
-            ack = pause_gateway_for_update(Path(proc.path))
-            if ack and (ack.get("pausing") or ack.get("already_stopping")):
-                socket_acks.append(ack)
+            # The server-side pause handler may wait up to 5s for the main loop to accept the restart.
+            # Do not arm the legacy marker while that request can still be in flight.
+            ack = pause_gateway_for_update(Path(proc.path), timeout=6.0)
         except Exception as exc:
             logger.debug("Socket pause unavailable for gateway %s: %s", pid, exc)
+        if ack and (ack.get("pausing") or ack.get("already_stopping")):
+            socket_acks.append(ack)
+            continue
+        _write_update_planned_stop_marker(Path(proc.path), int(pid))
     return profiles, mapped_pids, socket_acks
 
 
 def _gateway_drain_timeout(socket_acks: list[dict]) -> float:
-    """Drain budget: configured restart drain (>= 1s), raised to a socket-paused gateway's declared
-    ACTIVE-TURN budget + teardown grace so it isn't force-killed mid-turn."""
+    """Exit-wait budget: configured restart drain (>= 1s), raised to a socket-paused gateway's
+    declared full restart budget + teardown grace so it isn't force-killed mid-turn."""
     from hermes_cli.gateway import _get_restart_drain_timeout
     try:
         drain_timeout = max(float(_get_restart_drain_timeout()), 1.0)

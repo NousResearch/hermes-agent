@@ -1,6 +1,7 @@
-import { act, cleanup, render, screen } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, expect, it, vi } from 'vitest'
 
+import { runDebugShare } from '@/hermes'
 import { I18nProvider } from '@/i18n/context'
 import { en } from '@/i18n/en'
 import {
@@ -15,13 +16,67 @@ import {
 
 import { UpdatesOverlay } from './updates-overlay'
 
+vi.mock('@/hermes', async () => {
+  const actual = await vi.importActual<typeof import('@/hermes')>('@/hermes')
+
+  return { ...actual, runDebugShare: vi.fn() }
+})
+
 afterEach((): void => {
   cleanup()
   $updateOverlayOpen.set(false)
   $updateStatus.set(null)
   resetUpdateApplyState()
   Reflect.deleteProperty(window, 'hermesDesktop')
+  vi.mocked(runDebugShare).mockReset()
   vi.restoreAllMocks()
+})
+
+it('runs Debug Share from an update error and makes each returned link copyable', async (): Promise<void> => {
+  const reportUrl = 'https://paste.rs/report-id'
+  const agentLogUrl = 'https://paste.rs/agent-log-id'
+  const writeClipboard = vi.fn().mockResolvedValue(undefined)
+  window.hermesDesktop = { writeClipboard } as unknown as Window['hermesDesktop']
+  vi.mocked(runDebugShare).mockResolvedValue({
+    auto_delete_seconds: 21600,
+    failures: {},
+    ok: true,
+    redacted: true,
+    urls: { Report: reportUrl, 'agent.log': agentLogUrl }
+  })
+  $updateOverlayTarget.set('client')
+  $updateOverlayOpen.set(true)
+  $updateStatus.set({ supported: false, reason: 'source-probe-unavailable', message: 'Update failed' })
+  $updateApply.set({
+    applying: false,
+    stage: 'error',
+    message: 'The update could not be installed.',
+    percent: null,
+    error: 'Update failed',
+    command: null,
+    log: []
+  })
+
+  await act(async (): Promise<void> => {
+    render(
+      <I18nProvider configClient={null} initialLocale="en">
+        <UpdatesOverlay />
+      </I18nProvider>
+    )
+  })
+
+  fireEvent.click(screen.getByRole('button', { name: en.commandCenter.maintenance.debugShare }))
+
+  expect(await screen.findByText(reportUrl)).toBeTruthy()
+  expect(await screen.findByText(agentLogUrl)).toBeTruthy()
+  expect(runDebugShare).toHaveBeenCalledOnce()
+
+  const copyButtons = screen.getAllByRole('button', { name: en.commandCenter.maintenance.copyLink })
+  expect(copyButtons).toHaveLength(2)
+  fireEvent.click(copyButtons[0])
+  await waitFor(() => expect(writeClipboard).toHaveBeenNthCalledWith(1, reportUrl))
+  fireEvent.click(copyButtons[1])
+  await waitFor(() => expect(writeClipboard).toHaveBeenNthCalledWith(2, agentLogUrl))
 })
 
 it('shows manual recovery guidance without claiming the help command installs an update', async (): Promise<void> => {

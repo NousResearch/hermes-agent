@@ -66,6 +66,23 @@ class TestMiniMaxModelValidation:
         assert "MiniMax-M2.7" in result["message"]
 
     # -------------------------------------------------------------------------
+    # Test 2b: M3.1 Flash Preview is a first-class catalog entry on both API-key
+    # rows (served at api.minimax.io/anthropic for M-Plan keys; absent from the
+    # live /models list as of 2026-09-30, so the static entry is the only
+    # surface that offers it).
+    # -------------------------------------------------------------------------
+    @pytest.mark.parametrize("provider", ["minimax", "minimax-cn"])
+    def test_m3_1_flash_preview_accepted_on_api_key_rows(self, provider):
+        from hermes_cli.models import _PROVIDER_MODELS
+
+        assert "MiniMax-M3.1-Flash-Preview" in _PROVIDER_MODELS[provider]
+        result = validate_requested_model("MiniMax-M3.1-Flash-Preview", provider)
+        assert result["accepted"] is True
+        assert result["persist"] is True
+        assert result["recognized"] is True
+        assert result["message"] is None
+
+    # -------------------------------------------------------------------------
     # Test 3: A completely unknown model is accepted (not rejected) with a warning
     # -------------------------------------------------------------------------
 

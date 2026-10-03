@@ -124,8 +124,8 @@ def test_update_installs_the_extras_configured_features_need(monkeypatch, tmp_pa
         '[project]\nname = "x"\nversion = "0"\n'
         "[project.optional-dependencies]\ndiscord = []\ngoogle-chat = []\nmcp = []\n", encoding="utf-8")
     monkeypatch.setattr(repair, "_configured_features_missing_deps", lambda: [
-        ("Discord", "discord hint", "discord"), ("Google Chat", "chat hint", "google_chat"),
-        ("IRC", "irc hint", "irc"), ("MCP servers", "mcp hint", "mcp")])
+        ("Discord", "discord hint", ("discord",)), ("Google Chat", "chat hint", ("google_chat",)),
+        ("IRC", "irc hint", ("irc",)), ("MCP servers", "mcp hint", ("mcp",))])
     calls = []
     monkeypatch.setattr(pm, "sync_venv", lambda extras, **kwargs: calls.append((extras, kwargs)))
     repair._install_configured_features_missing_deps(tmp_path)
@@ -134,3 +134,25 @@ def test_update_installs_the_extras_configured_features_need(monkeypatch, tmp_pa
     out = capsys.readouterr().out
     assert "IRC: irc hint" in out
     assert "Discord" not in out and "MCP servers" not in out
+
+
+def test_update_installs_every_extra_a_feature_declares(monkeypatch, tmp_path, capsys):
+    """A configured feature may need MORE than one extra (Matrix: ``[matrix]`` plus
+    ``[matrix-e2ee]`` when E2EE is on — ``PlatformEntry.extra_names_fn``).
+
+    Every name in the row must be installed before the row counts as resolved;
+    resolving only part of it would leave the feature still broken on restart.
+    """
+    from hermes_cli import main_install_repair as repair
+
+    (tmp_path / "pyproject.toml").write_text(
+        '[project]\nname = "x"\nversion = "0"\n'
+        "[project.optional-dependencies]\nfeishu = []\ndingtalk = []\nirc = []\n", encoding="utf-8")
+    monkeypatch.setattr(repair, "_configured_features_missing_deps", lambda: [
+        ("Feishu / Lark", "feishu hint", ("feishu", "dingtalk")), ("IRC", "irc hint", ("irc",))])
+    calls = []
+    monkeypatch.setattr(pm, "sync_venv", lambda extras, **kwargs: calls.append(extras))
+    repair._install_configured_features_missing_deps(tmp_path)
+    assert calls == [["dingtalk", "feishu", "irc"]]
+    out = capsys.readouterr().out
+    assert "Feishu" not in out and "IRC" not in out

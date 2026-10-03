@@ -227,14 +227,16 @@ def _cleanup_quarantined_exes(scripts_dir: Path | None = None) -> None:
             pass  # still locked or in use — try again next run
 
 
-def _configured_features_missing_deps() -> list[tuple[str, str, str]]:
+def _configured_features_missing_deps() -> list[tuple[str, str, tuple[str, ...]]]:
     """Check configured platforms/MCP in the fresh, selected update-build child.
 
     PM preserves recorded extras atomically, but configuration can reference an
     unselected SDK. Never call this in the updater's stale import graph (#10651).
-    Rows are ``(label, hint, candidate extra)``: a platform's SDK is the extra named after it.
+    Rows are ``(label, hint, candidate extra names)``: a platform's SDK is the extra named
+    after it, plus any config-dependent extras it declares via ``extra_names_fn`` (Matrix
+    adds ``matrix-e2ee`` only when E2EE is configured on).
     """
-    missing: list[tuple[str, str, str]] = []
+    missing: list[tuple[str, str, tuple[str, ...]]] = []
     try:
         from gateway.config import load_gateway_config
         from gateway.platform_registry import platform_registry
@@ -242,8 +244,9 @@ def _configured_features_missing_deps() -> list[tuple[str, str, str]]:
         for platform in load_gateway_config().get_connected_platforms():
             entry = platform_registry.get(platform.value)
             if entry is not None and not entry.check_fn():
+                names = tuple(entry.extra_names_fn()) if entry.extra_names_fn else (entry.name,)
                 missing.append((entry.label, entry.install_hint or "Run `hermes setup` to install support.",
-                                entry.name))
+                                names))
     except Exception as exc:
         logger.debug("configured-platform dependency check skipped: %s", exc)
     try:
@@ -251,10 +254,14 @@ def _configured_features_missing_deps() -> list[tuple[str, str, str]]:
         from hermes_cli.config import load_config_readonly
 
         if (load_config_readonly().get("mcp_servers") or {}) and importlib.util.find_spec("mcp") is None:
-            missing.append(("MCP servers", "Run `hermes pm install` to install MCP support.", "mcp"))
+            missing.append(("MCP servers", "Run `hermes pm install` to install MCP support.", ("mcp",)))
     except Exception as exc:
         logger.debug("configured-MCP dependency check skipped: %s", exc)
     return missing
+
+
+def _normalized_extra(name: str) -> str:
+    return name.replace("_", "-")
 
 
 def _install_configured_features_missing_deps(project_root: Path) -> None:
@@ -271,18 +278,21 @@ def _install_configured_features_missing_deps(project_root: Path) -> None:
     if not missing:
         return
     declared = set(declared_extras(project_root))
-    extras = sorted({extra for *_, name in missing
-                     if (extra := name.replace("_", "-")) in declared and extra_supported(extra)})
+    extras = sorted({extra for *_, names in missing
+                     for name in names
+                     if (extra := _normalized_extra(name)) in declared and extra_supported(extra)})
     if extras:
         try:
             pm.sync_venv(extras, explicit=True, project_root=project_root, evict_incompatible_plugins=True)
         except Exception as exc:  # noqa: BLE001 — a feature install never fails the update; warn below
             print(f"  ⚠ Could not install {', '.join(extras)} for configured features: {exc}")
         else:
-            missing = [row for row in missing if row[2].replace("_", "-") not in extras]
+            installed = set(extras)
+            missing = [row for row in missing
+                       if not {_normalized_extra(name) for name in row[2]} <= installed]
     if missing:
         print("  ⚠ Configured features whose dependencies are still missing — the gateway will fail to load them on restart:")
-        for feature, hint, _extra in missing:
+        for feature, hint, _names in missing:
             print(f"    - {feature}: {hint}")
 
 

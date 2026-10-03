@@ -259,12 +259,13 @@ FROM runtime_base AS python_deps
 # Health export is enabled. Collector and observability-backend dependencies
 # remain external and are not part of the Hermes production image.
 #
-# The Matrix gateway's deps ([matrix] extra) are baked in because
-# python-olm (transitive via mautrix[encryption]) builds from source on
-# Python/image combinations without usable wheels.  The Docker image is
-# Linux-only, so keeping the native libolm/build-toolchain packages here
-# avoids the cross-platform failures that kept [matrix] out of [all]
-# while still making Matrix work in the published container. Fixes #30399.
+# The Matrix gateway's deps are baked in: the [matrix] extra for the plain
+# adapter, plus [matrix-e2ee] because python-olm (transitive via
+# mautrix[encryption]) builds from source on Python/image combinations without
+# usable wheels.  The Docker image is Linux-only, so keeping the native
+# libolm/build-toolchain packages here avoids the cross-platform failures that
+# kept [matrix] out of [all] while still making encrypted Matrix rooms work in
+# the published container. Fixes #30399.
 #
 # Google Chat's [google-chat] extra (google-cloud-pubsub + Chat API clients)
 # is baked so hosted/immutable images can enable the adapter without writing
@@ -276,7 +277,7 @@ RUN touch ./README.md
 RUN python3 -m pm.build_env --source /opt/hermes --python /usr/local/bin/python3 \
     --out /opt/hermes/.venv --no-install-project --sealed \
     --extra all --extra messaging --extra otlp --extra anthropic --extra bedrock \
-    --extra azure-identity --extra matrix --extra google-chat
+    --extra azure-identity --extra matrix --extra matrix-e2ee --extra google-chat
 
 # Icons render on the runtime environment: Pillow and resvg-py are core
 # dependencies. A stage of its own so the frontend stage keeps building its

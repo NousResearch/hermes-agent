@@ -46,6 +46,9 @@ ANCHORS: dict[str, str | tuple[str, ...]] = {
     "discord": "discord",
     "slack": "slack_bolt",
     "matrix": ("mautrix", "asyncpg", "aiosqlite", "markdown", "aiohttp_socks"),
+    # Encryption closure, installed only when MATRIX_E2EE_MODE is on. The
+    # anchor is the crypto lib itself: `matrix` already proves mautrix.
+    "matrix-e2ee": "olm",
     "dingtalk": "dingtalk_stream",
     "feishu": "lark_oapi",
     "wecom": "defusedxml",

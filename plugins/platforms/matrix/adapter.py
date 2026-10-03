@@ -893,6 +893,9 @@ class MatrixAdapter(BasePlatformAdapter):
         from collections import deque
         self._processed_events: deque = deque(maxlen=1000)  # event dedup, newest kept
         self._processed_events_set: set = set()
+        self._sync_success_ids: Set[str] = set()
+        self._sync_success_ledger_loaded_from: Optional[Path] = None
+        self._sync_events_in_flight: Set[str] = set()
         self._threads = ThreadParticipationTracker("matrix")  # require_mention bypass
         self._parked_voices = ParkedVoices()  # unmentioned voice awaiting a bare @mention
         self._require_mention: bool = self._parse_require_mention(config)
@@ -954,6 +957,59 @@ class MatrixAdapter(BasePlatformAdapter):
         self._processed_events.append(event_id)
         self._processed_events_set.add(event_id)
         return False
+
+    @property
+    def _sync_success_ledger_path(self) -> Path:
+        store_dir = self._store_dir or _get_hermes_dir("platforms/matrix/store", "matrix/store")
+        return store_dir / "sync_successes.jsonl"
+
+    def _load_sync_success_ledger(self) -> None:
+        """Load IDs whose handlers durably completed before a sync cursor could advance."""
+        path = self._sync_success_ledger_path
+        if self._sync_success_ledger_loaded_from == path:
+            return
+        event_ids: Set[str] = set()
+        try:
+            with path.open("r", encoding="utf-8-sig") as ledger:
+                for line in ledger:
+                    event_id = json.loads(line)
+                    if isinstance(event_id, str) and event_id:
+                        event_ids.add(event_id)
+        except FileNotFoundError:
+            pass
+        self._sync_success_ids = event_ids
+        self._sync_success_ledger_loaded_from = path
+
+    def _claim_sync_event(self, event_id: str) -> bool:
+        """Claim an uncommitted event for this process without marking it successful yet."""
+        if not event_id:
+            return True
+        self._load_sync_success_ledger()
+        if event_id in self._sync_success_ids or event_id in self._sync_events_in_flight:
+            return False
+        self._sync_events_in_flight.add(event_id)
+        return True
+
+    def _commit_sync_event(self, event_id: str) -> None:
+        """Append one successfully handled event ID and fsync it before its task completes."""
+        if not event_id:
+            return
+        self._load_sync_success_ledger()
+        if event_id in self._sync_success_ids:
+            return
+        path = self._sync_success_ledger_path
+        path.parent.mkdir(parents=True, exist_ok=True)
+        payload = (json.dumps(event_id, ensure_ascii=False) + "\n").encode("utf-8")
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+        try:
+            remaining = memoryview(payload)
+            while remaining:
+                written = os.write(fd, remaining)
+                remaining = remaining[written:]
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+        self._sync_success_ids.add(event_id)
 
     @staticmethod
     def _extra_truthy(config, key: str, env_name: str, default: str) -> bool:
@@ -1924,8 +1980,6 @@ class MatrixAdapter(BasePlatformAdapter):
             self._joined_rooms.update(rooms_join.keys())
             self._invalidate_room_identities()
         nb = sync_data.get("next_batch")  # incremental syncs resume from here
-        if nb:
-            await client.sync_store.put_next_batch(nb)
         if initial:
             logger.info("Matrix: initial sync complete, joined %d rooms", len(self._joined_rooms))
             await self._refresh_dm_cache()
@@ -1933,7 +1987,10 @@ class MatrixAdapter(BasePlatformAdapter):
             await self._dispatch_sync(sync_data)
         except Exception as exc:
             logger.warning("Matrix: %s: %s", "initial sync event dispatch error" if initial else "sync event dispatch error", exc)
+            raise
         self._schedule_pending_invite_joins(sync_data)
+        if nb:
+            await client.sync_store.put_next_batch(nb)
         return nb
 
     async def _dispatch_sync(self, sync_data: Dict[str, Any]) -> None:
@@ -1947,9 +2004,14 @@ class MatrixAdapter(BasePlatformAdapter):
         if tasks:
             # return_exceptions=True: one failing handler must not drop its SIBLING events.
             results = await asyncio.gather(*tasks, return_exceptions=True)
+            first_error = None
             for result in results:
-                if isinstance(result, Exception):
+                if isinstance(result, BaseException):
                     logger.warning("Matrix: event handler failed during sync dispatch: %s", result)
+                    if first_error is None:
+                        first_error = result
+            if first_error is not None:
+                raise first_error
 
     def _is_self_sender(self, sender: str) -> bool:
         """True if *sender* is the bot itself (case-insensitive: homeservers vary localpart case). With
@@ -2045,8 +2107,18 @@ class MatrixAdapter(BasePlatformAdapter):
             logger.info("Matrix: ignoring message from unauthorized room %s", room_id)
             return
         event_id = str(getattr(event, "event_id", ""))
-        if self._is_duplicate_event(event_id):
+        if not self._claim_sync_event(event_id):
             return
+        try:
+            await self._handle_claimed_room_message(event, room_id, sender, event_id)
+            self._commit_sync_event(event_id)
+        finally:
+            self._sync_events_in_flight.discard(event_id)
+
+    async def _handle_claimed_room_message(
+        self, event: Any, room_id: str, sender: str, event_id: str,
+    ) -> None:
+        """Handle one claimed room event; the caller records success only after this returns."""
         # Startup grace: ignore old messages replayed by the initial sync.
         event_ts = _matrix_event_timestamp_seconds(event)
         if event_ts and event_ts < self._startup_ts - _STARTUP_GRACE_SECONDS:

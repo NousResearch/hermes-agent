@@ -1170,6 +1170,106 @@ class TestMatrixSyncLoop:
         assert called is True
 
     @pytest.mark.asyncio
+    async def test_failed_sync_retries_only_uncommitted_event_after_restart(self, tmp_path):
+        """A failed sibling withholds the cursor while successful events remain deduplicated."""
+        handled = []
+
+        def event(event_id):
+            return types.SimpleNamespace(
+                sender="@alice:example.org",
+                event_id=event_id,
+                room_id="!room:example.org",
+                timestamp=0,
+                content={"msgtype": "m.text", "body": event_id},
+            )
+
+        async def configure(adapter, client):
+            adapter._store_dir = tmp_path / "matrix-store"
+            adapter._client = client
+            adapter._user_id = "@bot:example.org"
+            adapter._is_allowed_matrix_room_event = AsyncMock(return_value=True)
+
+            async def handle_text(_room_id, _sender, event_id, *_args):
+                handled.append(event_id)
+
+            adapter._handle_text_message = handle_text
+
+        first = _make_adapter()
+        first_store = MagicMock()
+        first_store.put_next_batch = AsyncMock()
+        first_client = types.SimpleNamespace(sync_store=first_store)
+        await configure(first, first_client)
+
+        async def transient_decrypt_failure():
+            raise RuntimeError("temporary decrypt failure")
+
+        first_client.handle_sync = lambda _data: [
+            asyncio.create_task(first._on_room_message(event("$handled"))),
+            asyncio.create_task(transient_decrypt_failure()),
+        ]
+
+        with pytest.raises(RuntimeError, match="temporary decrypt failure"):
+            await first._absorb_sync(first_client, {"next_batch": "s1"})
+
+        first_store.put_next_batch.assert_not_awaited()
+        assert handled == ["$handled"]
+
+        restarted = _make_adapter()
+        restarted_store = MagicMock()
+        restarted_store.put_next_batch = AsyncMock()
+        restarted_client = types.SimpleNamespace(sync_store=restarted_store)
+        await configure(restarted, restarted_client)
+        restarted_client.handle_sync = lambda _data: [
+            asyncio.create_task(restarted._on_room_message(event("$handled"))),
+            asyncio.create_task(restarted._on_room_message(event("$retry"))),
+        ]
+
+        assert await restarted._absorb_sync(restarted_client, {"next_batch": "s1"}) == "s1"
+
+        assert handled == ["$handled", "$retry"]
+        restarted_store.put_next_batch.assert_awaited_once_with("s1")
+
+    @pytest.mark.asyncio
+    async def test_replay_dedup_survives_restart_beyond_memory_window(self, tmp_path):
+        """The durable success window covers a replay larger than the former 1,000 IDs."""
+        handled = []
+        events = [
+            types.SimpleNamespace(
+                sender="@alice:example.org",
+                event_id=f"$event-{index}",
+                room_id="!room:example.org",
+                timestamp=0,
+                content={"msgtype": "m.text", "body": str(index)},
+            )
+            for index in range(1001)
+        ]
+
+        def configure(adapter):
+            client = types.SimpleNamespace(sync_store=types.SimpleNamespace(put_next_batch=AsyncMock()))
+            adapter._store_dir = tmp_path / "matrix-store"
+            adapter._client = client
+            adapter._user_id = "@bot:example.org"
+            adapter._is_allowed_matrix_room_event = AsyncMock(return_value=True)
+
+            async def handle_text(_room_id, _sender, event_id, *_args):
+                handled.append(event_id)
+
+            adapter._handle_text_message = handle_text
+            client.handle_sync = lambda _data: [
+                asyncio.create_task(adapter._on_room_message(item)) for item in events
+            ]
+            return client
+
+        first = _make_adapter()
+        await first._absorb_sync(configure(first), {"next_batch": "s1"})
+        assert len(handled) == 1001
+
+        restarted = _make_adapter()
+        await restarted._absorb_sync(configure(restarted), {"next_batch": "s2"})
+
+        assert len(handled) == 1001
+
+    @pytest.mark.asyncio
     async def test_sync_loop_dispatches_registered_room_message_handler(self):
         """Inbound sync data should flow through handle_sync into message handling."""
         adapter = _make_adapter()
@@ -2834,8 +2934,8 @@ class TestMatrixDispatchSyncIsolation:
         client.handle_sync = MagicMock(return_value=[_boom(), _ok()])
         adapter._client = client
 
-        with caplog.at_level(logging.WARNING):
-            # Must not raise despite the failing handler.
+        # The failure surfaces after every sibling settles, so the caller keeps the sync cursor.
+        with caplog.at_level(logging.WARNING), pytest.raises(RuntimeError, match="handler boom"):
             await adapter._dispatch_sync({"next_batch": "s1"})
 
         assert ran["ok"] is True  # the sibling handler still ran

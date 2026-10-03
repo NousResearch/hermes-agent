@@ -2333,7 +2333,16 @@ def _prepare_job_prompt(
     if prompt is None:
         logger.info("Job '%s': script produced no output, skipping AI call.", job_name)
         note_cron_skipped(job)
-        return (True, "", SILENT_MARKER, None), None
+        quiet_doc = (
+            f"# Cron Job: {job_name}\n\n"
+            f"**Job ID:** {job_id}\n"
+            f"**Run Time:** {_hermes_now().strftime('%Y-%m-%d %H:%M:%S')}\n"
+            f"**Status:** ran, nothing new\n\n"
+            "The pre-run script completed successfully and "
+            "produced no output, so there was nothing to report and the agent was not called. "
+            "This is the normal quiet outcome, not a failure.\n"
+        )
+        return (True, quiet_doc, SILENT_MARKER, None), None
     return None, prompt
 
 

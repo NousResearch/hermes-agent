@@ -3,8 +3,9 @@
 Failure class: Windows pause durability. ``hermes update`` stops every running gateway before it
 touches the checkout. Cell (a): the updater is killed (``taskkill /F /T`` — console closed, Desktop
 kill) right after the pause; the next plain ``hermes`` command must bring the gateway back.
-Cell (b): the pull fails half-way (a held file makes git's fast-forward die after writing part of
-the tree); the gateway must NOT be started onto that torn tree.
+Cell (c): a successful update brings the paused gateway back and it outlives the updater (the
+record is discharged). Cell (b): the pull fails half-way (a held file makes git's fast-forward die
+after writing part of the tree); the gateway must NOT be started onto that torn tree.
 """
 
 from __future__ import annotations
@@ -115,6 +116,19 @@ def journey(tmp_path_factory):
                 out["a_after"] = _running_gateway(machine, old, 120)
                 machine.kill_owned()
 
+                # (c) a successful update: the gateway is back and still alive after the updater exits
+                machine.spawn_gateway()
+                old = int(machine.wait_gateway_running().get("pid") or 0)
+                out["c_pre"] = machine.installed_head()
+                out["c_update"] = machine.hermes("update", "--yes", label="update-ok", timeout=900)
+                out["c_head"] = machine.installed_head()
+                after = _running_gateway(machine, old, 120)
+                time.sleep(30)
+                out["c_after"] = after
+                out["c_alive_30s"] = bool(after) and _alive(int(after.get("pid") or 0))
+                out["c_record"] = (machine.hermes_home / _RECORD).is_file()
+                machine.kill_owned()
+
                 # (b) the pull fails with a torn tree
                 machine.spawn_gateway()
                 old = int(machine.wait_gateway_running().get("pid") or 0)
@@ -139,6 +153,16 @@ def test_killed_updater_gateway_resumed_by_next_launch(journey) -> None:
     assert journey["a_after"] is not None, fail_with(
         m, "after `taskkill /F` of an updater that paused the gateway, the next `hermes` launch left it "
            f"stopped (pause record present after kill: {journey['a_record']})", journey["a_launch"])
+
+
+def test_successful_update_gateway_outlives_the_updater(journey) -> None:
+    m, run = journey["machine"], journey["c_update"]
+    assert run.returncode == 0 and journey["c_head"] != journey["c_pre"], fail_with(
+        m, f"premise: the update did not complete (rc={run.returncode}, HEAD {journey['c_pre']} -> {journey['c_head']})", run)
+    assert journey["c_after"] is not None, fail_with(m, "the paused gateway was not restarted by a successful update", run)
+    assert journey["c_alive_30s"], fail_with(
+        m, f"the restarted gateway (pid {journey['c_after'].get('pid')}) died after `hermes update` exited", run)
+    assert not journey["c_record"], fail_with(m, "a fully resumed pause left its record behind", run)
 
 
 def test_failed_pull_does_not_start_gateway_on_torn_tree(journey) -> None:

@@ -41,7 +41,7 @@ INSTALL_ROOT="" BRANCH="main" CHANNEL="" DESKTOP_PID=0 RELAUNCH_TARGET=""
 BRANCH_EXPLICIT=0
 RELAUNCH_CWD="" SANDBOX_FALLBACK=0 RELAUNCH_ARGS=()
 NO_GATEWAY=0
-NO_UI=0 NO_MARKER_CLEANUP=0 SELF_TEST_UI=0 SELF_TEST_GATE=0 SELF_TEST_MARKER=0
+NO_UI=0 NO_MARKER_CLEANUP=0 NO_NOTIFY=0 SELF_TEST_UI=0 SELF_TEST_GATE=0 SELF_TEST_MARKER=0
 SELF_TEST_TCC_HEAL=0
 HANDOFF_DAEMONIZED=0
 while [ $# -gt 0 ]; do
@@ -60,6 +60,7 @@ while [ $# -gt 0 ]; do
     --sandbox-fallback) SANDBOX_FALLBACK=1; shift ;;
     --no-gateway) NO_GATEWAY=1; shift ;;
     --no-ui) NO_UI=1; shift ;;
+    --no-notify) NO_NOTIFY=1; shift ;;
     --no-marker-cleanup) NO_MARKER_CLEANUP=1; shift ;;
     --self-test-ui) SELF_TEST_UI=1; shift ;;
     --self-test-gate) SELF_TEST_GATE=1; shift ;;
@@ -142,6 +143,10 @@ notify_fallback() { # status message — renderer-free recovery surface.
   # and must not eat the message). The GUARANTEED channel is the result
   # file: a manual/error outcome is durably marked and the next Desktop
   # boot surfaces it in a dialog (handoff-result.ts + main.ts).
+  # --no-notify (#108150): repro/fake-home harness runs must not fire real
+  # desktop notifications from a staged fixture — same suppression shape as
+  # NO_UI skipping the shim window; the result file stays the channel.
+  [ "$NO_NOTIFY" -eq 1 ] && return 0
   case "$1" in manual|error) ;; *) return 0 ;; esac
   if [ "$(uname)" = "Darwin" ]; then
     /usr/bin/osascript -e "display notification \"$(printf '%s' "$2" | sed 's/"/\\"/g')\" with title \"Hermes update\"" 2>/dev/null && return 0

@@ -849,34 +849,26 @@ def _prune_candidates(worktrees_dir: Path, max_age_hours: int, now: float) -> li
     return candidates
 
 
-def _remote_heads_getter(repo_root: str):
-    """Lazy once-per-sweep ls-remote: only paid when a tree reaches the pushed tier (TUI runs this sync)."""
-    memo: dict = {}
-    lock = threading.Lock()
-
-    def get():
-        with lock:
-            if "heads" not in memo:
-                memo["heads"] = _fetch_remote_branch_heads(repo_root, timeout=10)
-            return memo["heads"]
-    return get
-
-
-def _classify_prune_candidates(repo_root: str, candidates: list, *, merge_cache=None,
-                               get_remote_heads=None) -> list:
+def _classify_prune_candidates(repo_root: str, candidates: list) -> list:
     """Phase 2, parallel read-only classification -> ``[(entry, mtime, force, verdict, lock_state)]``.
 
     verdict in ``dirty`` / ``unpushed`` / ``locked-live`` / ``reap`` / ``reap-keep-branch``. Each
     check is a read-only query on a distinct worktree (no repo-wide lock), so a bounded pool is
-    safe; mutation stays serial. ``git cherry`` verdicts are memoized on disk; a caller-supplied
-    *merge_cache* / *get_remote_heads* is shared across calls and the caller saves the cache.
+    safe; mutation stays serial. ``git cherry`` verdicts are memoized on disk.
     """
-    owns_cache = merge_cache is None
-    if owns_cache:
-        merge_cache = _load_worktree_merge_cache()
+    merge_cache = _load_worktree_merge_cache()
     cache_size_before = len(merge_cache)
     cache_lock = threading.Lock()
-    _get_remote_heads = get_remote_heads or _remote_heads_getter(repo_root)
+
+    # Lazy once-per-sweep ls-remote: only paid when a tree reaches the pushed tier (TUI runs this sync).
+    _remote_heads_memo: dict = {}
+    _remote_heads_lock = threading.Lock()
+
+    def _get_remote_heads():
+        with _remote_heads_lock:
+            if "heads" not in _remote_heads_memo:
+                _remote_heads_memo["heads"] = _fetch_remote_branch_heads(repo_root, timeout=10)
+            return _remote_heads_memo["heads"]
 
     def _classify(item):
         entry, mtime, force = item
@@ -920,7 +912,7 @@ def _classify_prune_candidates(repo_root: str, candidates: list, *, merge_cache=
         logger.debug("Parallel worktree classification failed (%s); serial", e)
         verdicts = [_classify(c) for c in candidates]
 
-    if owns_cache and len(merge_cache) != cache_size_before:
+    if len(merge_cache) != cache_size_before:
         _save_worktree_merge_cache(merge_cache)
     return verdicts
 
@@ -929,27 +921,15 @@ def _classify_prune_candidates(repo_root: str, candidates: list, *, merge_cache=
 _PRESERVE_REASONS = {"dirty": "uncommitted changes", "unpushed": "unpushed commits"}
 
 
-def _reap_prune_verdicts(repo_root: str, verdicts: list, stale_work_cutoff: float, *,
-                         merge_cache=None, get_remote_heads=None) -> tuple[list, set]:
+def _reap_prune_verdicts(repo_root: str, verdicts: list, stale_work_cutoff: float) -> tuple[list, set]:
     """Phase 3, serial unlock / remove / branch -D -> ``(preserved_stale, kept_branches)``.
 
     *kept_branches* must survive the orphaned-branch pass. Branch deletion is gated on
     ``worktree remove`` succeeding so a failed removal never orphans reachable commits.
     """
-    from hermes_cli._subprocess_compat import noninteractive_repo_git_env
     preserved_stale: list = []
     kept_branches: set = set()
     for entry, mtime, force, verdict, lock_state in verdicts:
-        # Keep the original candidate set, but refresh its destructive safety gates:
-        # classification can precede removal by a long parallel sweep.
-        if verdict in {"reap", "reap-keep-branch"}:
-            try:
-                (_, _, _, verdict, lock_state), = _classify_prune_candidates(
-                    repo_root, [(entry, mtime, force)], merge_cache=merge_cache,
-                    get_remote_heads=get_remote_heads)
-            except Exception as exc:
-                logger.debug("Could not revalidate worktree %s: %s", entry.name, exc)
-                continue
         reason = _PRESERVE_REASONS.get(verdict)
         if reason:
             if mtime <= stale_work_cutoff:
@@ -965,21 +945,7 @@ def _reap_prune_verdicts(repo_root: str, verdicts: list, stale_work_cutoff: floa
 
         try:
             branch = _git(["branch", "--show-current"], str(entry), timeout=5).stdout.strip()
-            # Our own .worktreeinclude symlinks are the only untracked state a reap verdict
-            # allows; drop them so the plain (non --force) remove still succeeds.
-            for rel in _include_symlink_paths(str(entry), repo_root):
-                (entry / rel).unlink()
-            # Without --force, remove reads the tree's index, which runs core.fsmonitor.
-            remove_env = noninteractive_repo_git_env(str(entry))
-            if remove_env is None:
-                continue
-            remove_result = _git(["worktree", "remove", str(entry)], repo_root, timeout=15,
-                                 stdin=subprocess.DEVNULL, env=remove_env)
-            # Plain remove always refuses trees with submodules; --force only after a fresh clean check.
-            if (remove_result.returncode != 0 and "submodules" in remove_result.stderr
-                    and not _worktree_is_dirty(str(entry), repo_root)):
-                remove_result = _git(["worktree", "remove", "--force", str(entry)], repo_root,
-                                     timeout=15, stdin=subprocess.DEVNULL, env=remove_env)
+            remove_result = _git(["worktree", "remove", str(entry), "--force"], repo_root, timeout=15)
             if remove_result.returncode != 0:
                 logger.debug("Failed to remove worktree %s: %s", entry.name, remove_result.stderr.strip())
                 continue
@@ -1020,17 +986,8 @@ def _prune_stale_worktrees(repo_root: str, max_age_hours: int = 24) -> None:
         _prune_orphaned_branches(repo_root)
         return
 
-    # One disk cache + one ls-remote shared by classification and the per-tree revalidation.
-    merge_cache = _load_worktree_merge_cache()
-    cache_size_before = len(merge_cache)
-    get_remote_heads = _remote_heads_getter(repo_root)
-    verdicts = _classify_prune_candidates(repo_root, candidates, merge_cache=merge_cache,
-                                          get_remote_heads=get_remote_heads)
-    preserved_stale, kept_branches = _reap_prune_verdicts(
-        repo_root, verdicts, now - (7 * 24 * 3600), merge_cache=merge_cache,
-        get_remote_heads=get_remote_heads)
-    if len(merge_cache) != cache_size_before:
-        _save_worktree_merge_cache(merge_cache)
+    verdicts = _classify_prune_candidates(repo_root, candidates)
+    preserved_stale, kept_branches = _reap_prune_verdicts(repo_root, verdicts, now - (7 * 24 * 3600))
 
     if preserved_stale:
         logger.warning("Preserving %d worktree(s) older than 7 days with unmerged work "

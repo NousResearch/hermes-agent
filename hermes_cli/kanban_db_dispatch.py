@@ -2490,9 +2490,16 @@ def _rotate_worker_log(
 
 
 def _module_hermes_argv() -> list[str]:
-    """Interpreter-bound Hermes CLI invocation (``hermes_cli.main`` is the
-    console-script target — there is no top-level ``hermes`` package)."""
-    return [sys.executable, "-m", "hermes_cli.main"]
+    """Run the CLI through the current checkout, independent of the cwd/env."""
+    repo = str(Path(__file__).resolve().parents[1])
+    bootstrap = (
+        "import os, sys, runpy; "
+        "os.environ.pop('PYTHONHOME', None); "
+        "os.environ.pop('PYTHONPATH', None); "
+        f"sys.path.insert(0, {repo!r}); "
+        "runpy.run_module('hermes_cli.main', run_name='__main__', alter_sys=True)"
+    )
+    return [sys.executable, "-I", "-c", bootstrap]
 
 
 def _propagate_module_import_root(cmd: list[str], env: dict[str, str]) -> None:

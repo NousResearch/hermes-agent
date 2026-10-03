@@ -5437,6 +5437,13 @@ def resolve_provider_client(
             if explicit_base_url and str(explicit_base_url).lower().startswith("moa://"):
                 explicit_base_url = None
                 explicit_api_key = None
+    from agent.auxiliary_local_runtime import bare_llamacpp_endpoint
+    local = bare_llamacpp_endpoint(original_provider, explicit_base_url, explicit_api_key)
+    if local is not None:
+        if not local[0]:
+            logger.warning("resolve_provider_client: %s requested but no local llama.cpp server is running", original_provider)
+            return None, None
+        explicit_base_url, explicit_api_key = local
     # Model for concrete providers: caller ``model`` → catalog default (empty for OAuth-gated providers whose
     # lists drift) → configured main model (MoA → aggregator), keeping OAuth aux tasks off the Step-2 fallback.
     # Excluded: ``auto`` (a stale main slug could pair with any picked provider) and Nous + vision (the
@@ -5679,7 +5686,8 @@ def resolve_vision_provider_client(
     requested, resolved_model, resolved_base_url, resolved_api_key, resolved_api_mode = _resolve_task_provider_model(
         "vision", provider, model, base_url, api_key
     )
-    requested = _normalize_vision_provider(requested)
+    # The raw name keeps a llama.cpp alias distinguishable from bare ``custom`` for the last resolve.
+    raw_requested, requested = requested, _normalize_vision_provider(requested)
     if resolved_base_url:
         provider_for_base_override = requested if requested and requested not in {"", "auto"} else "custom"
         client, final_model = resolve_provider_client(
@@ -5704,7 +5712,7 @@ def resolve_vision_provider_client(
                 return _finalize_vision_client(requested, client, final_model, resolved_model, async_mode)
         # Fallback: try without explicit base_url (old behavior)
     client, final_model = _get_cached_client(
-        requested, resolved_model, async_mode, api_mode=resolved_api_mode, main_runtime=runtime, is_vision=True,
+        raw_requested, resolved_model, async_mode, api_mode=resolved_api_mode, main_runtime=runtime, is_vision=True,
     )
     return requested, client, (final_model if client is not None else None)
 
@@ -5986,6 +5994,14 @@ def _get_cached_client(
     previously occurred in long-running gateways where recycled worker threads created unbounded entries
     (#10200).
     """
+    # A bare llama.cpp alias keys on the live local endpoint: a restarted server (new port/key)
+    # must not be served the old client, and a stopped one resolves to nothing, not a cloud client.
+    from agent.auxiliary_local_runtime import bare_llamacpp_endpoint
+    local = bare_llamacpp_endpoint(provider, base_url, api_key)
+    if local is not None:
+        if not local[0]:
+            return None, None
+        base_url, api_key = local
     current_loop = _current_event_loop() if async_mode else None
     runtime = _normalize_main_runtime(main_runtime)
     cache_key = _client_cache_key(
@@ -6065,13 +6081,62 @@ def _preserve_provider_with_base_url(prov: Optional[str]) -> bool:
         return False
     if normalized in _LOCAL_SERVER_ALIASES:
         return True  # the custom branch applies the /v1 tail only when it still sees the alias
+    # #76602 — two independent lookups, each guarded by its own try/except so a partial
+    # catalog-load failure in either path doesn't suppress the other. A user-defined
+    # ``providers:`` entry keeps its name alongside an explicit base_url so the named-custom
+    # branch resolves the entry's key/transport instead of the anonymous ``custom`` downgrade
+    # (which sends ``no-key-required`` and 401s on auth-required endpoints).
+    if _builtin_provider_present(normalized):
+        return True
+    if _named_custom_provider_present(normalized):
+        return True
+    return False
+
+
+def _builtin_provider_present(name: str) -> bool:
+    """Look up *name* in the built-in provider registry, returning False
+    (not raising) when the catalog fails to load.
+
+    Used by ``_preserve_provider_with_base_url`` so a built-in lookup
+    exception cannot suppress the parallel user-defined provider lookup
+    (#76602).
+    """
     try:
         from hermes_cli.providers import get_provider
-        return get_provider(normalized) is not None
-    except Exception:  # keep provider-backed routes safe when the catalog can't load
-        return normalized in {
-            "anthropic", "copilot", "copilot-acp", "minimax-oauth", "nous", "openai-codex", "qwen-oauth", "xai-oauth",
+
+        return get_provider(name) is not None
+    except Exception:
+        # Keep the high-risk provider-backed routes safe even if provider
+        # catalog loading is unavailable during early import/test paths.
+        return name in {
+            "anthropic",
+            "copilot",
+            "copilot-acp",
+            "minimax-oauth",
+            "nous",
+            "openai-codex",
+            "qwen-oauth",
+            "xai-oauth",
         }
+
+
+def _named_custom_provider_present(name: str) -> bool:
+    """Look up *name* in the user-defined ``providers:`` section of
+    config.yaml, returning False when the config is unavailable or
+    fails to load.
+
+    Used by ``_preserve_provider_with_base_url`` so a user-defined
+    provider remains preserved even when the built-in registry raises
+    (parallel lookup; each side fails independently — #76602).
+    """
+    try:
+        from hermes_cli.runtime_provider import _get_named_custom_provider
+
+        return _get_named_custom_provider(name) is not None
+    except Exception:
+        # Config not loaded yet (early import paths, tests) — fail closed:
+        # never widen True just because the import / load failed.
+        return False
 
 
 def _resolve_task_provider_model(

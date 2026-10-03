@@ -753,7 +753,9 @@ def _cmd_comment(args: argparse.Namespace) -> int:
             return _err("kanban: --max-len must be positive", 2)
         if len(body) > args.max_len:
             suffix = f"\n\n[trimmed to {args.max_len} chars by --max-len]"
-            body = body[: max(0, args.max_len - len(suffix))].rstrip() + suffix
+            # A limit shorter than the marker gets a plain cut so the cap still holds.
+            body = (body[: args.max_len - len(suffix)].rstrip() + suffix
+                    if args.max_len > len(suffix) else body[: args.max_len])
     author = args.author or _profile_author()
     with kbc.connect_closing() as conn:
         kb.add_comment(conn, args.task_id, author, body)

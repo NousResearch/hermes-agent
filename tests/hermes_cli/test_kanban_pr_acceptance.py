@@ -239,6 +239,11 @@ def test_assigned_card_with_unresolvable_profile_is_auth_not_ambient(tmp_path, m
     ("repository", None, "NOT_FOUND", 0, "auth"),
     ("repository", None, "FORBIDDEN", 0, "auth"),
     ("repository", None, "INTERNAL", 1, "infra"),
+    ("repository", None, "INTERNAL", 0, "infra"),
+    ("repository", None, "RATE_LIMITED", 1, "retry"),
+    ("repository", None, "RATE_LIMITED", 0, "retry"),
+    ("repository", None, "message-only", 1, "retry"),
+    ("repository", None, "message-only", 0, "retry"),
     ("repository", "401", None, 1, "auth"),
     ("repository", "500", None, 1, "infra"),
     ("policy", "401", None, 1, "policy"),
@@ -268,8 +273,13 @@ failing = ((phase == "repository" and endpoint == "graphql") or
 if failing:
     sys.stderr.write("PRIVATE_DIAGNOSTIC " + ("HTTP " + status if status else "GraphQL refusal"))
     if error_type:
-        print(json.dumps({{"data": {{"repository": None}}, "errors": [
-            {{"type": error_type, "path": ["repository"], "message": "PRIVATE_DIAGNOSTIC"}}]}}))
+        error = {{"path": ["repository"], "message": "PRIVATE_DIAGNOSTIC"}}
+        if error_type == "message-only":
+            error["message"] = "API rate limit exceeded PRIVATE_DIAGNOSTIC"
+        else:
+            error["type"] = error_type
+        data = None if error_type in ("RATE_LIMITED", "message-only") else {{"repository": None}}
+        print(json.dumps({{"data": data, "errors": [error]}}))
     sys.exit(exit_code)
 if endpoint == "graphql":
     print(json.dumps({{"data": {{"repository": {{"pullRequest": {pr!r}}}}}}}))
@@ -298,4 +308,8 @@ else:
     if expected == "auth":
         assert "acme/repo" in receipt["detail"]
     if expected == "retry":
-        assert "wait" in receipt["detail"]
+        for detail in (receipt["detail"], task.last_failure_error):
+            assert "wait" in detail and "reset" in detail
+        if phase == "repository":
+            assert receipt["head_sha"] is None
+            assert "graphql acme/repo" in receipt["detail"]

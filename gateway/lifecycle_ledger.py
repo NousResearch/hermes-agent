@@ -11,6 +11,7 @@ clean exit path.  Best-effort: forensics must never affect the lifecycle.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
@@ -293,6 +294,23 @@ def record_startup(home: Optional[Path] = None) -> Optional[Dict[str, Any]]:
     except Exception:
         logger.debug("Failed to claim lifecycle sentinel", exc_info=True)
     return evidence
+
+
+async def record_startup_async(home: Optional[Path] = None) -> Optional[Dict[str, Any]]:
+    """Event-loop-safe :func:`record_startup`.  Never raises.
+
+    Every step of the boot record blocks: ``detect_unclean_exit`` reads the sentinel and heartbeat
+    files and reaches psutil for the prior pid; after an unclean death ``_report_unclean_exit`` runs
+    ``PRAGMA quick_check`` over ``state.db`` (seconds on a healthy store, far longer on a huge one)
+    and appends to ``gateway-exit-diag.log``; ``_write_sentinel`` ends in ``atomic_json_write``
+    (mkstemp + fsync + os.replace, unbounded under filesystem pressure).  The whole body runs in one
+    worker thread; :func:`record_startup` is that body verbatim, so the two paths cannot drift.
+    """
+    try:
+        return await asyncio.to_thread(record_startup, home)
+    except Exception:
+        logger.debug("Lifecycle startup record offload failed", exc_info=True)
+        return None
 
 
 def mark_exited(exit_code: Optional[int] = None, reason: str = "graceful_shutdown", home: Optional[Path] = None) -> None:

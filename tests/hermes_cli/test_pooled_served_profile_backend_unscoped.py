@@ -150,6 +150,55 @@ def test_profile_action_does_not_forward_launch_only_registered_passthrough(pool
     assert name not in env
 
 
+def test_profile_action_keeps_global_passthrough_name(pooled_served_process, monkeypatch):
+    import contextlib
+
+    import hermes_cli.web_server_gateway as web_server_gateway
+    import tools.env_passthrough as env_passthrough
+    import tui_gateway.launch_profile_policy as launch_policy
+    from agent import secret_scope
+
+    name = "SSL_CERT_FILE"
+    monkeypatch.setenv(name, "/launch/cert.pem")
+    env_passthrough.register_env_passthrough([name])
+
+    @contextlib.contextmanager
+    def _launch_scope():
+        token = secret_scope.set_secret_scope({}, profile_home=str(pooled_served_process))
+        try:
+            yield
+        finally:
+            secret_scope.reset_secret_scope(token)
+
+    monkeypatch.setattr(launch_policy, "launch_profile_scope_if_multiplexed", _launch_scope)
+    active_token = secret_scope.set_multiplex_context(True)
+    try:
+        env = web_server_gateway._profile_action_environment(["-p", "default", "doctor"])
+    finally:
+        secret_scope.reset_multiplex_context(active_token)
+
+    assert env[name] == "/launch/cert.pem"
+
+
+def test_profile_action_keeps_same_home_registered_passthrough(pooled_served_process, monkeypatch):
+    import hermes_cli.web_server_gateway as web_server_gateway
+    import tools.env_passthrough as env_passthrough
+    import hermes_cli.web_server_profiles as profiles
+
+    name = "PR_130671_SAME_HOME_TOKEN"
+    monkeypatch.setenv(name, "same-profile-secret")
+    env_passthrough.register_env_passthrough([name])
+    monkeypatch.setattr(
+        profiles, "_resolve_profile_dir",
+        lambda profile: pooled_served_process / "profiles" / "alpha",
+    )
+    monkeypatch.setattr(web_server_gateway, "_named_profile_from_action", lambda _: "alpha")
+
+    env = web_server_gateway._profile_action_environment(["-p", "alpha", "doctor"])
+
+    assert env[name] == "same-profile-secret"
+
+
 def test_unscoped_lifecycle_verbs_in_a_served_profile_process_address_the_multiplexer(pooled_served_process):
     from hermes_cli.web_server_gateway import _gateway_subcommand, _profile_action_environment, multiplexed_profile_refusal
     # `stop` on a served profile PARKS it under the host (no refusal); `start` while unparked refuses.

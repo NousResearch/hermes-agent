@@ -366,6 +366,7 @@ def _profile_action_environment(
         from hermes_cli.env_loader import (
             _PROFILE_MANAGED_ENV_KEYS, _env_keys_defined_in_dotenv, get_secret_source_values,
         )
+        from agent.secret_scope import _is_global_env
         from tools.env_passthrough import get_all_passthrough
         from hermes_cli.web_server_profiles import _resolve_profile_dir
         from hermes_constants import apply_subprocess_home_env, get_default_hermes_root
@@ -386,15 +387,21 @@ def _profile_action_environment(
             # Secret managers contribute locally named credentials that never appear in .env;
             # the dashboard already hydrated its own sources, so their key names are a boundary too.
             profile_keys.update(get_secret_source_values(source_home).keys())
-        for key in profile_keys:
-            action_env.pop(key, None)
-        # A registered passthrough name may have been injected into the launch process by a
-        # service manager, shell, or another profile's startup. It is not represented by the
-        # dotenv/source key sets above, so remove it explicitly before a named child starts;
-        # otherwise the child's own startup cannot replace the inherited value (#130671).
-        passthrough_names = {name.upper() for name in get_all_passthrough()}
-        for key in [key for key in action_env if key.upper() in passthrough_names]:
-            action_env.pop(key, None)
+        try:
+            launch_home = get_hermes_home().resolve()
+            same_profile = target_home.resolve() == launch_home
+        except OSError:
+            same_profile = False
+        if not same_profile:
+            # A registered name may have arrived solely from the launch process environment
+            # (systemd/Compose/op run/operator export), so it is absent from dotenv/source
+            # registries. It is still launch-profile state and must not cross into a named child.
+            # Process-global names are deliberately retained, including when also registered for
+            # passthrough; they are deployment settings, not profile credentials.
+            boundary_names = profile_keys | set(get_all_passthrough())
+            for key in boundary_names:
+                if not _is_global_env(key.upper()):
+                    action_env.pop(key, None)
         strip_launch_profile_env(action_env, target_home)
 
         # Pin the child before import-time startup runs; the explicit -p flag stays authoritative

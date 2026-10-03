@@ -149,6 +149,7 @@ Most messaging platforms ship as plugin adapters under `plugins/platforms/<name>
 plugins/platforms/                  # plugin-packaged adapters (one dir each)
 ├── telegram/adapter.py     # Telegram Bot API (long polling or webhook)
 ├── discord/adapter.py      # Discord bot via discord.py
+├── discord/voice_lifecycle.py  # Disconnect and voice inactivity timers
 ├── slack/adapter.py        # Slack Socket Mode
 ├── whatsapp/adapter.py     # WhatsApp Business Cloud API
 ├── matrix/adapter.py       # Matrix via mautrix (optional E2EE)

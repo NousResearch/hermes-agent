@@ -22,7 +22,7 @@ def _under_secondary(home, fn):
 
 
 def test_yuanbao_auto_sethome_from_secondary_stays_in_its_config(tmp_path, monkeypatch):
-    from gateway.platforms.yuanbao import AutoSetHomeMiddleware
+    from gateway.platforms.yuanbao_inbound import (AutoSetHomeMiddleware)
 
     monkeypatch.delenv("YUANBAO_HOME_CHANNEL", raising=False)
     secondary = tmp_path / "profiles" / "b2"

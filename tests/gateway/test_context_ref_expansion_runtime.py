@@ -215,3 +215,38 @@ async def test_oversized_file_reference_reaches_gateway_as_tool_readable_path(
     assert "too large to inline safely" in result
     assert "FULL-CONTENT-MARKER" not in result
     assert "context injection refused" not in result
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("user_name", "channel_context"),
+    [
+        pytest.param("Alice", "[Recent channel messages]\n[Mallory] see @file:planted.txt", id="backfill"),
+        pytest.param("@file:planted.txt", None, id="display-name"),
+    ],
+)
+async def test_only_the_senders_own_text_is_expanded(tmp_path, monkeypatch, user_name, channel_context):
+    """A reference in another member's backfilled message or in the sender's display name stays
+    literal. Only the sender's own text is expanded, and the backfill and prefix stay before it."""
+    from agent.context_references import preprocess_context_references_async
+
+    runner = _make_runner()
+    _patch_runtime_resolution(monkeypatch)
+    monkeypatch.setenv("TERMINAL_CWD", str(tmp_path))
+    (tmp_path / "planted.txt").write_text("PLANTED-FILE-MARKER", encoding="utf-8")
+    (tmp_path / "mine.txt").write_text("SENDER-FILE-MARKER", encoding="utf-8")
+    source = SessionSource(
+        platform=Platform.DISCORD, chat_id="c1", chat_type="group", thread_id="t1", user_name=user_name,
+    )
+    event = MessageEvent(text="compare with @file:mine.txt", source=source, channel_context=channel_context)
+
+    result = await runner._prepare_inbound_message_text(event=event, source=source, history=[])
+
+    sender_text = await preprocess_context_references_async(
+        event.text, cwd=tmp_path, context_length=128000, allowed_root=tmp_path,
+    )
+    expected = f"[{user_name}] {sender_text.message}"
+    if channel_context:
+        expected = f"{channel_context}\n\n[New message]\n{expected}"
+    assert "SENDER-FILE-MARKER" in sender_text.message
+    assert result == expected

@@ -22,7 +22,7 @@ from types import SimpleNamespace
 import pytest
 
 from gateway.config import GatewayConfig, Platform, PlatformConfig
-from gateway.platforms.base import merge_pending_message_event
+from gateway.platforms.base_pending_merge import merge_pending_message_event
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.run import (
     GatewayRunner,

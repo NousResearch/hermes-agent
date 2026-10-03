@@ -431,6 +431,7 @@ When the bot is in a voice channel:
 - Transcripts appear in the text channel: `[Voice] @user: what you said`
 - Agent responses are sent as text in the channel AND spoken in the VC
 - The text channel is the one where `/voice join` was issued
+- When the call ends, the text channel's voice mode returns to `off`. A call ends on `/voice leave`, after the inactivity timeout, and when the gateway stops, restarts or crashes
 
 ### Echo Prevention
 

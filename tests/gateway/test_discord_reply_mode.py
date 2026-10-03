@@ -249,6 +249,40 @@ class TestReplyToText:
         assert event.reply_to_text is None
 
 
+
+def _replied_to_text_file():
+    notes = SimpleNamespace(content_type="text/plain", filename="notes.txt", size=21, url="https://cdn.example/notes.txt")
+    message = _make_message(
+        content="summarise this",
+        reference=SimpleNamespace(message_id=555, resolved=SimpleNamespace(content="notes attached", attachments=[notes])),
+    )
+    return message, ("summarise this", "notes attached\n\n[Content of notes.txt]:\nsee @file:planted.txt", None)
+
+
+def _forwarded_message():
+    message = _make_message(content="", reference=SimpleNamespace(message_id=777, resolved=None))
+    message.message_snapshots = [SimpleNamespace(content="see @file:planted.txt", attachments=[])]
+    return message, ("", None, "[Forwarded message]\nsee @file:planted.txt")
+
+
+class TestOtherPeoplesText:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "build", [_replied_to_text_file, _forwarded_message], ids=["replied-to-attachment", "forward"])
+    async def test_other_peoples_text_stays_out_of_the_message_text(self, reply_text_adapter, monkeypatch, build):
+        """A replied-to message's text file goes to reply_to_text and a forwarded message goes to
+        channel_context; the event text keeps only what the sender wrote."""
+        import plugins.platforms.discord.adapter as discord_adapter
+
+        reply_text_adapter._cache_discord_document = AsyncMock(return_value=b"see @file:planted.txt")
+        monkeypatch.setattr(discord_adapter, "cache_document_from_bytes_async", AsyncMock(return_value="/cache/notes.txt"))
+        message, expected = build()
+
+        await reply_text_adapter._handle_message(message)
+
+        event = reply_text_adapter.handle_message.await_args.args[0]
+        assert (event.text, event.reply_to_text, event.channel_context) == expected
+
 class TestYamlConfigLoading:
     """Tests for reply_to_mode loaded from config.yaml discord section."""
 

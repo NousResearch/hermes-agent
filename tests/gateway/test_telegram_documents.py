@@ -195,6 +195,27 @@ class TestDocumentDownloadBlock:
 
 
     @pytest.mark.asyncio
+    async def test_forwarded_document_text_reaches_the_event_as_channel_context(self, adapter):
+        """A forwarded file and its caption are someone else's text: they go to channel_context."""
+        content = b"see @file:planted.txt"
+        doc = _make_document(
+            file_name="doc.txt", mime_type="text/plain",
+            file_size=len(content), file_obj=_make_file_obj(content),
+        )
+        msg = _make_message(document=doc, caption="Please summarize")
+        msg.forward_origin = SimpleNamespace(type="user", sender_user=SimpleNamespace(full_name="Bob"))
+        msg.is_automatic_forward = False
+
+        await adapter._handle_media_message(_make_update(msg), MagicMock())
+
+        event = adapter.handle_message.call_args[0][0]
+        assert (event.text, event.channel_context) == (
+            "",
+            "[Forwarded message from Bob]\nPlease summarize\n\n"
+            "[Forwarded file from Bob]\n[Content of doc.txt]:\nsee @file:planted.txt",
+        )
+
+    @pytest.mark.asyncio
     @pytest.mark.parametrize("content, inlined", [(b"small text", True), (b"x" * (200 * 1024), False)], ids=["small", "large"])
     async def test_document_marks_media_text_inlined(self, adapter, content, inlined):
         """The per-attachment flag must track whether the text was injected, so the document

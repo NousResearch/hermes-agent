@@ -10,6 +10,8 @@ actionable-looking text the user did not quote (#22619).
 
 from types import SimpleNamespace
 
+import pytest
+
 from gateway.config import PlatformConfig
 from plugins.platforms.telegram.adapter import TelegramAdapter  # noqa: E402
 
@@ -72,3 +74,25 @@ def test_native_partial_quote_used_as_reply_to_text():
     assert event.reply_to_message_id == "42"
 
 
+
+
+@pytest.mark.parametrize(
+    ("origin", "header"),
+    [
+        (SimpleNamespace(type="user", sender_user=SimpleNamespace(full_name="Bob")), "[Forwarded message from Bob]"),
+        (SimpleNamespace(type="hidden_user", sender_user_name="Carol"), "[Forwarded message from Carol]"),
+        (SimpleNamespace(type="channel", chat=SimpleNamespace(title="News"), author_signature=None),
+         "[Forwarded message from News]"),
+    ],
+    ids=["user", "hidden-user", "channel"],
+)
+def test_forwarded_text_reaches_the_event_as_channel_context(origin, header):
+    """A forwarded message is someone else's text: it goes to channel_context, not text."""
+    from gateway.platforms.event import MessageType
+
+    msg = _make_message(text="see @file:planted.txt")
+    msg.forward_origin = origin
+
+    event = _make_adapter()._build_message_event(msg, MessageType.TEXT)
+
+    assert (event.text, event.channel_context) == ("", f"{header}\nsee @file:planted.txt")

@@ -387,10 +387,12 @@ def _navigate_tab(task_id: Optional[str], browser_url: str) -> tuple[Dict[str, A
             data = _post(_tab_path(session, "navigate"), {"userId": session["user_id"], "url": browser_url}, timeout=60)
             return session, data
         except requests.HTTPError as e:
-            if e.response is None or e.response.status_code != 404:
+            # 404: server garbage-collected the tab. 410: tab is gone for good (Camofox >= 1.17 after a server
+            # restart). Either way the cached tab_id is dead: recreate instead of failing every call from now on.
+            if e.response is None or e.response.status_code not in (404, 410):
                 raise
-            logger.warning("Camofox tab %s returned 404 — tab was garbage collected. Creating a fresh tab.",
-                           session["tab_id"])
+            logger.warning("Camofox tab %s returned %s — tab is gone. Creating a fresh tab.",
+                           session["tab_id"], e.response.status_code)
             session["tab_id"] = None
     return _ensure_tab(task_id, browser_url), {"ok": True, "url": browser_url}
 

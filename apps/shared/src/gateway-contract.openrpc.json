@@ -1232,7 +1232,7 @@
     },
     {
       "name": "groups.peer.invite",
-      "summary": "Mint one target-issued room/profile grant for a prospective room home.",
+      "summary": "Mint one target-issued room/profile grant for a prospective room home; the installation keeps the room's history unless replication is false.",
       "params": [
         {
           "name": "params",

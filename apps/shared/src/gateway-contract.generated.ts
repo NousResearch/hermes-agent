@@ -4950,7 +4950,7 @@ export interface RpcMethods {
   'groups.list': { params: GroupsListParams; result: GroupsListResult }
   /** A monotonic room-log delta after since_seq, bounded by count and page bytes. */
   'groups.log': { params: GroupsLogParams; result: GroupsLogResult }
-  /** Mint one target-issued room/profile grant for a prospective room home. */
+  /** Mint one target-issued room/profile grant for a prospective room home; the installation keeps the room's history unless replication is false. */
   'groups.peer.invite': { params: GroupsPeerInviteParams; result: GroupsPeerInviteResult }
   /** Register and probe one scoped peer route on the room home. */
   'groups.peer.register': { params: GroupsPeerRegisterParams; result: GroupsPeerRegisterResult }

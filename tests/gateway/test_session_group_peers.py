@@ -167,7 +167,8 @@ async def test_register_binds_only_the_pinned_peer_after_a_live_scoped_probe(gat
         assert invitation['catalog'] == catalog and invitation['endpoint'] == catalog['endpoint']
         contract.GroupsPeerInviteResult.model_validate(invitation)
         claims = decode_room_grant(gateway_room_grant_secret(), invitation['grant'], permission='status')
-        assert claims['permissions'] == ['approve', 'dispatch', 'status', 'stop']
+        # A member installation keeps the room's history unless its operator opts out.
+        assert claims['permissions'] == ['approve', 'dispatch', 'replicate', 'status', 'stop']
         assert claims['status_expires_at'] == claims['expires_at']  # nothing renews unless asked
         renewable = dict(room_id='linked', member_id='reviewer', home_install_id=room['authority_gateway_id'],
                          authority_gateway_id=room['authority_gateway_id'], authority_epoch=room['authority_epoch'],

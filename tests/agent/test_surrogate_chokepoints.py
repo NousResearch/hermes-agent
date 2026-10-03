@@ -179,3 +179,9 @@ def test_sanitize_surrogates_preserves_valid_astral_pairs():
     """Valid non-BMP text (proper emoji, CJK extension chars) is untouched."""
     text = "ok 😀 你好 𝕏"
     assert _sanitize_surrogates(text) == text
+
+
+def test_sanitize_surrogates_combines_windows_utf16_code_units():
+    """Win32 console input can deliver one emoji as two surrogate code units."""
+    assert _sanitize_surrogates("laugh \ud83d\ude02") == "laugh 😂"
+    assert _sanitize_surrogates("broken \ud83d") == "broken �"

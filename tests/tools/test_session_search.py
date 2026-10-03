@@ -279,6 +279,48 @@ class TestDiscoverySort:
         first = result["results"][0]
         assert first["session_id"] == "s_oldest"
 
+    def test_sort_replaces_relevance_ranking(self, db):
+        """``sort`` is pure timestamp order, not a bias on relevance: a weak
+        newer match outranks a strong older one (the schema text says so)."""
+        now = int(time.time())
+        db.create_session("s_strong", source="cli")
+        db.append_message("s_strong", role="user", timestamp=now - 3600,
+                          content="zephyr zephyr zephyr zephyr zephyr")
+        db.create_session("s_weak", source="cli")
+        db.append_message("s_weak", role="user", timestamp=now,
+                          content="zephyr " + "unrelated filler words " * 60)
+
+        by_rank = [r["session_id"] for r in db.search_messages("zephyr")]
+        by_time = [r["session_id"] for r in db.search_messages("zephyr", sort="newest")]
+        assert by_rank == ["s_strong", "s_weak"]
+        assert by_time == ["s_weak", "s_strong"]
+
+    def test_cron_sessions_follow_interactive_under_sort(self, db):
+        """The schema says cron sessions still follow interactive ones when ``sort`` is
+        given (#19434 demotion): an older cron match does not lead ``sort=oldest``."""
+        now = int(time.time())
+        db.create_session("s_cron_old", source="cron")
+        db.append_message("s_cron_old", role="user", timestamp=now - 7200, content="zephyr report")
+        db.create_session("s_cli_new", source="cli")
+        db.append_message("s_cli_new", role="user", timestamp=now, content="zephyr question")
+
+        result = json.loads(session_search(query="zephyr", sort="oldest", limit=2, db=db))
+        assert [r["session_id"] for r in result["results"]] == ["s_cli_new", "s_cron_old"]
+
+    def test_cjk_like_route_honours_sort(self, db):
+        """Cron-filtered CJK queries scan LIKE (cron rows are outside the substring indexes);
+        that scan must apply ``sort`` like the FTS routes instead of always newest-first."""
+        now = int(time.time())
+        for sid, ts in (("c_old", now - 7200), ("c_new", now)):
+            db.create_session(sid, source="cron")
+            db.append_message(sid, role="user", timestamp=ts, content="部署 完成")
+
+        def order(sort):
+            return [r["session_id"] for r in db.search_messages("部署", source_filter=["cron"], sort=sort)]
+
+        assert order("oldest") == ["c_old", "c_new"]
+        assert order("newest") == ["c_new", "c_old"]
+
 
 # =========================================================================
 # Scroll shape (session_id + around_message_id)

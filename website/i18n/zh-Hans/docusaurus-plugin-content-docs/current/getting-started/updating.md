@@ -58,6 +58,8 @@ updates:
 
 旧版布尔值仍然有效：`true` 等同于 `full`，`false` 等同于 `off`。
 
+完整备份会排除默认和命名 profile 根目录下的本地 CDP `chrome-debug/` 和 Browser Use CLI `browser_profiles/` 目录。这些目录包含 Chromium 正在使用的套接字、锁定的数据库以及与本机绑定的浏览器凭据；更深层的同名用户目录仍会保留。如需单独复制浏览器状态，请先停止 Chromium，并将副本作为敏感数据保管；已登录的会话不一定能在另一台机器上使用。
+
 ### Windows：另一个 `hermes.exe` 正在运行
 
 在 Windows 上，如果 `hermes update` 检测到另一个 `hermes.exe` 进程持有 venv 入口点可执行文件的句柄，它将拒绝运行 — 最常见的情况是 Hermes Desktop 应用启动的后端进程、另一个终端中打开的 `hermes` REPL，或正在运行的 gateway：

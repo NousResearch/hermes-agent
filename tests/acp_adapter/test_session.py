@@ -427,6 +427,50 @@ class TestPersistence:
 
 
 
+    @pytest.mark.parametrize("model_config, billing", [
+        ({"cwd": "/work", "provider": "custom", "base_url": "http://cliproxy.example:8317/v1",
+          "api_mode": "chat_completions"}, {}),
+        ({"cwd": "/work"}, {"billing_provider": "custom", "billing_base_url": "http://cliproxy.example:8317/v1"}),
+    ], ids=["model_config", "billing_only"])
+    def test_restore_heals_bare_custom_to_named_provider(self, tmp_path, monkeypatch, model_config, billing):
+        """A row whose stored provider is the bare ``custom`` label (what a named custom provider
+        resolves to at runtime) must restore through that named entry, not fail credential
+        resolution and fall back to OpenRouter with no key."""
+        from hermes_constants import get_hermes_home
+
+        (get_hermes_home() / "config.yaml").write_text(
+            "model:\n"
+            "  default: proxy-model\n"
+            "  provider: custom:cliproxyapi\n"
+            "  base_url: http://cliproxy.example:8317/v1\n"
+            "  api_mode: chat_completions\n"
+            "providers:\n"
+            "  cliproxyapi:\n"
+            "    base_url: http://cliproxy.example:8317/v1\n"
+            "    api_key: sk-cliproxy-test\n"
+            "    api_mode: chat_completions\n"
+            "    models: [proxy-model]\n"
+        )
+
+        class FakeAgent:
+            def __init__(self, **kwargs):
+                self.kwargs = kwargs
+                self.model = kwargs.get("model")
+
+        monkeypatch.setattr("run_agent.AIAgent", FakeAgent)
+        db = SessionDB(tmp_path / "state.db")
+        db.create_session(session_id="resumed", source="acp", model="proxy-model", model_config=model_config)
+        if billing:
+            db.update_token_counts("resumed", source="acp", input_tokens=1, api_call_count=1, **billing)
+            assert db.get_session("resumed")["billing_provider"] == "custom"
+
+        restored = SessionManager(db=db).get_session("resumed")
+
+        assert restored is not None
+        kwargs = restored.agent.kwargs
+        assert (kwargs.get("provider"), kwargs.get("base_url"), kwargs.get("api_key")) == (
+            "custom", "http://cliproxy.example:8317/v1", "sk-cliproxy-test")
+
     def test_only_restores_acp_sessions(self, manager):
         """get_session should not restore non-ACP sessions from DB."""
         db = manager._get_db()

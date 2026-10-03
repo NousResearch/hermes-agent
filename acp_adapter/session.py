@@ -476,11 +476,25 @@ class SessionManager:
             logger.warning("Failed to load messages for ACP session %s", session_id, exc_info=True)
             history = []
 
+        provider = meta.get("provider") or row.get("billing_provider")
+        base_url = meta.get("base_url") or row.get("billing_base_url")
+        if str(provider or "").strip().lower() == "custom":
+            # A named custom provider resolves to the bare "custom" label, which carries no
+            # credentials of its own; recover ``custom:<name>`` from the endpoint or model.
+            try:
+                from hermes_cli.runtime_provider import canonical_custom_identity
+                healed = canonical_custom_identity(base_url=base_url or None, model=model)
+            except Exception:
+                logger.debug("custom provider identity recovery failed", exc_info=True)
+                healed = None
+            if healed:
+                # The healed identity owns a registered endpoint; the snapshot URL must not override it.
+                provider, base_url = healed, None
+
         try:
             agent = self._make_agent(
                 session_id=session_id, cwd=cwd, model=model, api_mode=meta.get("api_mode") or None,
-                requested_provider=meta.get("provider") or row.get("billing_provider"),
-                base_url=meta.get("base_url") or row.get("billing_base_url"))
+                requested_provider=provider, base_url=base_url)
         except Exception:
             logger.warning("Failed to recreate agent for ACP session %s", session_id, exc_info=True)
             return None

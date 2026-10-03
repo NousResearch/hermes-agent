@@ -823,6 +823,7 @@ const sidebars: SidebarsConfig = {
                 'developer-guide/plugin-llm-access',
                 'developer-guide/observer-hooks',
                 'developer-guide/middleware',
+                'developer-guide/hook-taxonomy',
                 'developer-guide/subagent-lifecycle-api',
                 'developer-guide/desktop-plugin-sdk',
                 'developer-guide/memory-provider-plugin',

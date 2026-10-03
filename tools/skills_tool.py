@@ -504,9 +504,6 @@ def _locate_skill(name: str, local_category_name: Optional[str], project_dirs: l
     """Unique on-disk skill for *name*: collision refusal, project-tier precedence, same-root
     precedence, quarantine gate, not-found listing. ``(error_json, skill_dir, skill_md)``;
     skill_md set iff no error."""
-    if not all_dirs:
-        return _fail(
-            "Skills directory does not exist yet. It will be created on first install."), None, None
     candidates = _collect_skill_candidates(name, local_category_name, all_dirs)
     if len(candidates) > 1 and project_dirs:
         # A project skill intentionally overrides a same-named local/external skill;
@@ -548,8 +545,20 @@ def _locate_skill(name: str, local_category_name: Optional[str], project_dirs: l
                 "`hermes skills untrust`."), None, None
     if not skill_md or not skill_md.exists():
         available = [s["name"] for s in _sort_skills(_find_all_skills())[:20]]
+        # Keep the local suggestions, but reserve a separate bounded window for
+        # plugin names: generated namespaces cannot be guessed from a bare name.
+        # Reuse the listing path's discovery and availability filters.
+        plugin_rows = json.loads(skills_list(category="plugin")).get("skills", [])
+        bare = name.rsplit(":", 1)[-1]
+        plugin_names = sorted(
+            {s["name"] for s in plugin_rows if ":" in s["name"]},
+            key=lambda qualified: (qualified.rsplit(":", 1)[-1] != bare, qualified))
+        available.extend(qualified for qualified in plugin_names[:20] if qualified not in available)
+        if not all_dirs and not available:
+            return _fail(
+                "Skills directory does not exist yet. It will be created on first install."), None, None
         return _fail(f"Skill '{name}' not found.", available_skills=available,
-                     hint="Use skills_list to see all available skills"), None, None
+                     hint="Use the exact qualified plugin:skill name shown above, or skills_list to see all available skills"), None, None
     return None, skill_dir, skill_md
 
 

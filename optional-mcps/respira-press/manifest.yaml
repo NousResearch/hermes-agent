@@ -1,0 +1,167 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: respira-press
+description: >-
+  Read and edit live WordPress sites: posts, pages, media, menus, and
+  page-builder layouts, with snapshots and undo.
+source: https://www.respira.press/integrations/hermes
+
+# Respira's hosted endpoint is per-site, not per-account: it lives on the
+# customer's own WordPress at https://<site>/wp-json/respira/v1/mcp behind
+# OAuth 2.1. There is no fixed account-wide URL, so a `transport: http`
+# entry with a static `url:` cannot exist for this server. The stdio path
+# below is the one that generalises: RESPIRA_CONFIG_B64 carries the whole
+# account, so one entry covers every connected site and the agent moves
+# between them with respira_list_sites / respira_switch_site.
+#
+# Anyone who prefers no key on disk can still add a per-site remote entry
+# by hand and run `hermes mcp login <name>`; that is documented on the
+# source page above. It is one entry per site, which is why it is not the
+# catalog shape.
+transport:
+  type: stdio
+  command: npx
+  args:
+    - "-y"
+    - "@respira/wordpress-mcp-server@8.3.7"
+
+# No `install:` block. Per the catalog convention for npm/uvx servers,
+# transport.command IS the install: `npx -y` resolves and caches the
+# package on first launch.
+#
+# Pinned to an exact version, per the catalog's supply-chain contract
+# (tests/hermes_cli/test_mcp_catalog.py::test_all_shipped_manifests_are_version_locked
+# rejects a bare package name and any dist-tag such as @latest).
+#
+# 8.3.7 is the current published version and matches the serverInfo the
+# package reports over stdio. The MCP server negotiates a protocol version
+# with the Respira WordPress plugin on the site, and that plugin auto-updates
+# from the vendor's update server, so the pin will need a bump PR whenever
+# the two halves need to move together. i will send those bumps.
+
+# Authentication. One prompt, one secret.
+auth:
+  type: api_key
+  env:
+    - name: RESPIRA_CONFIG_B64
+      prompt: "Respira config value (dashboard at https://www.respira.press/mcp, pick Hermes Agent, copy the value of RESPIRA_CONFIG_B64)"
+      required: true
+      secret: true
+
+# Composer-suggestion triggers (desktop brand pills). Matching is
+# case-insensitive whole-word, and multi-word phrases are supported (the
+# hugging_face entry ships "hugging face"), so intent phrases work here too.
+# Bare "mcp" is deliberately not a keyword: inside an MCP client that word
+# appears in almost every draft, so it would fire constantly and mean nothing.
+suggest:
+  keywords:
+    - respira
+    - wordpress
+    - woocommerce
+    - wordpress mcp
+    - woocommerce mcp
+    - wordpress ai agent
+    - manage wordpress
+    - elementor
+    - divi
+    - bricks
+    - gutenberg
+  hosts:
+    - respira.press
+
+# Tool selection at install time:
+# A fully connected Respira account answers `tools/list` with roughly 250
+# tools (247 on a probe against a stub site; the exact number varies because
+# the server context-filters the catalog per site and hides builder tools
+# that the active site cannot run). At the ~600 tokens/tool schema average
+# used for the comfy-cloud entry, the full surface would add ~150k tokens to
+# every API call. That is not a viable default, so the curated set below is
+# the only responsible choice for this server.
+#
+# The 25 tools below are the builder-agnostic core: orient, read, edit,
+# handle media, and undo. Every one of them works on any WordPress site
+# regardless of which page builder is installed, so nothing in this default
+# can be context-filtered away and leave a gap.
+#
+# Deliberately excluded from the default (opt back in any time with
+# `hermes mcp configure respira-press`):
+#   - respira_add_* (about 30 element primitives: heading, button, slider,
+#     gallery, pricing table and so on). Needed only once an agent is
+#     composing a layout element by element
+#   - respira_bricks_*, respira_elementor_*, respira_update_module,
+#     respira_get_divi_migration_readiness. Builder-specific surfaces that
+#     only load on a site running that builder
+#   - respira_*_user, respira_*_plugin, respira_write_theme_file,
+#     respira_append_theme_file, respira_update_core_security. Destructive
+#     site administration; opt in per threat model
+#   - respira_analyze_*, respira_check_*, respira_scan_*, respira_run_*:
+#     the SEO, performance, accessibility and security audit surface
+#   - respira_*_taxonomy, respira_*_post_type, respira_*_acf_field_group,
+#     respira_*_translation. Schema and multilingual administration
+#   - respira_*_design_direction, respira_*_design_token,
+#     respira_*_playbook, respira_*_site_pattern, respira_*_site_template:
+#     design-system and reusable-template management
+tools:
+  default_enabled:
+    # Orientation
+    - respira_get_site_context
+    - respira_list_sites
+    - respira_switch_site
+    - respira_get_builder_info
+    - respira_diagnose_connection
+    # Read
+    - respira_list_pages
+    - respira_list_posts
+    - respira_read_page
+    - respira_read_post
+    - respira_get_page_outline
+    # Write
+    - respira_update_page
+    - respira_update_post
+    - respira_build_page
+    - respira_create_page_duplicate
+    - respira_find_element
+    - respira_update_element
+    # Media
+    - respira_list_media
+    - respira_upload_media
+    - respira_sideload_image
+    # Undo and audit
+    - respira_list_snapshots
+    - respira_get_snapshot
+    - respira_diff_snapshots
+    - respira_restore_snapshot
+    - respira_list_activity
+    # Help
+    - respira_search_docs
+
+post_install: |
+  Three things before the tools do anything useful.
+
+  1. Sign in at https://www.respira.press and install the Respira plugin on
+     the WordPress site, then connect the site from wp-admin.
+  2. Open https://www.respira.press/mcp, choose Hermes Agent, and copy the
+     value of RESPIRA_CONFIG_B64 from the config block. That one value
+     carries every site on the account, so a fleet needs one install, not
+     one per site.
+  3. Start a new Hermes session so the Respira tools load.
+
+  Access level is decided in the Respira dashboard, not here. Read-only is a
+  real read-only, so an agent holding a read-only value cannot write no
+  matter what it is asked to do. Pick the level that matches the job before
+  copying the value.
+
+  Page and element writes take a snapshot first, and structural page work is
+  built on a duplicate rather than the live page. Snapshots restore from
+  chat with respira_restore_snapshot, or from the Approvals and Undo screen
+  in wp-admin.
+
+  A curated 25-tool subset is enabled by default. The full catalog is closer
+  to 250 tools, including per-builder element and design-system surfaces.
+  Enable more any time with:
+    hermes mcp configure respira-press
+
+  Setup notes and the per-site OAuth alternative are at
+  https://www.respira.press/integrations/hermes

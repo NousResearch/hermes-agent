@@ -5,11 +5,19 @@ import subprocess
 from hermes_cli.version_info import (
     VersionInfo,
     _derived_version,
+    _packaging_base_version,
     _reset_version_info_cache,
     _resolve_stamp_file,
     _stamp_version_info,
+    _version_file_base_version,
     get_version_info,
 )
+
+
+def _isolate_version_sources(monkeypatch) -> None:
+    """Silence the non-git fallbacks so a test exercises only what it sets."""
+    monkeypatch.setattr("hermes_cli.version_info._version_file_base_version", lambda: None)
+    monkeypatch.setattr("hermes_cli.version_info._packaging_base_version", lambda: None)
 
 
 def setup_function():
@@ -43,6 +51,8 @@ def test_display_version_keeps_tagless_stamp_identity(tmp_path, monkeypatch):
     stamp_file = tmp_path / "install-stamp.json"
     stamp_file.write_text(json.dumps(stamp), encoding="utf-8")
     monkeypatch.setattr("hermes_cli.version_info._resolve_stamp_file", lambda: stamp_file)
+    monkeypatch.setattr("hermes_cli.version_info._resolve_repo_dir", lambda: None)
+    _isolate_version_sources(monkeypatch)
 
     info = get_version_info()
 
@@ -124,6 +134,7 @@ def test_stamp_version_info_ignores_fallback_commit(tmp_path, monkeypatch):
     stamp_file.write_text(json.dumps(stamp))
     monkeypatch.setattr("hermes_cli.version_info._resolve_stamp_file", lambda: stamp_file)
     monkeypatch.setattr("hermes_cli.version_info._resolve_repo_dir", lambda: None)
+    _isolate_version_sources(monkeypatch)
 
     info = get_version_info()
 
@@ -139,6 +150,7 @@ def test_stamp_version_info_returns_none_when_file_missing(tmp_path, monkeypatch
 def test_get_version_info_unknown_when_no_stamp_and_no_git(monkeypatch):
     monkeypatch.setattr("hermes_cli.version_info._resolve_stamp_file", lambda: None)
     monkeypatch.setattr("hermes_cli.version_info._resolve_repo_dir", lambda: None)
+    _isolate_version_sources(monkeypatch)
 
     info = get_version_info()
 
@@ -147,6 +159,20 @@ def test_get_version_info_unknown_when_no_stamp_and_no_git(monkeypatch):
     assert info.distance is None
     assert info.commit is None
     assert info.source == "unknown"
+
+
+def test_get_version_info_uses_installed_metadata_without_stamp_or_git(monkeypatch):
+    """No stamp and no git at all: an installed distribution still names itself."""
+    monkeypatch.setattr("hermes_cli.version_info._resolve_stamp_file", lambda: None)
+    monkeypatch.setattr("hermes_cli.version_info._resolve_repo_dir", lambda: None)
+    monkeypatch.setattr("hermes_cli.version_info._version_file_base_version", lambda: None)
+    monkeypatch.setattr("hermes_cli.version_info._packaging_base_version", lambda: "0.21.4")
+
+    info = get_version_info()
+
+    assert info.base_version == "0.21.4"
+    assert info.derived_version == "0.21.4"
+    assert info.source == "local"
 
 
 def test_get_version_info_derives_identity_from_reachable_release_tag(tmp_path, monkeypatch):
@@ -173,6 +199,9 @@ def test_get_version_info_derives_identity_from_reachable_release_tag(tmp_path, 
 
     monkeypatch.setattr("hermes_cli.version_info._resolve_stamp_file", lambda: None)
     monkeypatch.setattr("hermes_cli.version_info._resolve_repo_dir", lambda: repo)
+    monkeypatch.setattr("hermes_cli.version_info._version_file_base_version", lambda: None)
+    # A declared base must not shadow a real git release.
+    monkeypatch.setattr("hermes_cli.version_info._packaging_base_version", lambda: "9.9.9")
 
     info = get_version_info()
 
@@ -207,12 +236,104 @@ def test_get_version_info_takes_the_version_a_calver_only_release_shipped(tmp_pa
 
     monkeypatch.setattr("hermes_cli.version_info._resolve_stamp_file", lambda: None)
     monkeypatch.setattr("hermes_cli.version_info._resolve_repo_dir", lambda: repo)
+    monkeypatch.setattr("hermes_cli.version_info._version_file_base_version", lambda: None)
+    # A declared base must not shadow a real git release.
+    monkeypatch.setattr("hermes_cli.version_info._packaging_base_version", lambda: "9.9.9")
 
     info = get_version_info()
 
     assert info.base_version == "0.21.4"
     assert info.distance == 1
     assert info.derived_version == f"0.21.4+1.g{git('rev-parse', '--short=7', 'HEAD')}"
+
+
+def test_get_version_info_resolves_installed_metadata_when_git_is_tagless(tmp_path, monkeypatch):
+    """The deployed-checkout case: a stamp and a checkout exist, but the checkout
+    reaches no release tag (rsynced tree, stale HEAD). The installed distribution
+    metadata is the deterministic release base — not ``git.<sha>.dirty``, and not
+    ``unknown``. The checkout's commit provenance is still reported."""
+    stamp = {
+        "commit": "a" * 40,
+        "branch": "main",
+        "baseVersion": "unknown",
+        "displayVersion": "git.aaaaaaa.dirty",
+        "source": "git",
+        "dirty": True,
+        "payload": "bootstrap",
+        "updateMechanism": "self",
+    }
+    stamp_file = tmp_path / "install-stamp.json"
+    stamp_file.write_text(json.dumps(stamp), encoding="utf-8")
+    monkeypatch.setattr("hermes_cli.version_info._resolve_stamp_file", lambda: stamp_file)
+    monkeypatch.setattr("hermes_cli.version_info._resolve_repo_dir", lambda: None)
+    monkeypatch.setattr("hermes_cli.version_info._version_file_base_version", lambda: None)
+    monkeypatch.setattr("hermes_cli.version_info._packaging_base_version", lambda: "0.21.4")
+
+    info = get_version_info()
+
+    assert info.base_version == "0.21.4"
+    assert info.derived_version == "0.21.4"
+    assert info.display_version == "0.21.4"
+    assert info.commit == "a" * 40
+    assert info.source == "git"
+
+
+def test_get_version_info_reads_explicit_version_file(tmp_path, monkeypatch):
+    """A VERSION file at the install root (refreshed by the deploy) sets the base
+    even when there is no stamp, no git, and different installed metadata."""
+    (tmp_path / "VERSION").write_text("0.21.5\n", encoding="utf-8")
+    monkeypatch.setenv("HERMES_INSTALL_ROOT", str(tmp_path))
+    monkeypatch.setattr("hermes_cli.version_info._resolve_stamp_file", lambda: None)
+    monkeypatch.setattr("hermes_cli.version_info._resolve_repo_dir", lambda: None)
+    monkeypatch.setattr("hermes_cli.version_info._packaging_base_version", lambda: "9.9.9")
+
+    info = get_version_info()
+
+    assert info.base_version == "0.21.5"
+    assert info.derived_version == "0.21.5"
+    assert info.distance is None
+
+
+def test_version_file_rejects_the_committed_placeholder(tmp_path, monkeypatch):
+    (tmp_path / "VERSION").write_text("0.0.0\n", encoding="utf-8")
+    monkeypatch.setenv("HERMES_INSTALL_ROOT", str(tmp_path))
+    assert _version_file_base_version() is None
+
+    (tmp_path / "VERSION").write_text("v0.21.5\n", encoding="utf-8")
+    assert _version_file_base_version() == "0.21.5"
+
+
+def test_installed_metadata_rejects_the_committed_placeholder(monkeypatch):
+    """Upstream main carries 0.0.0 as a build placeholder, not an identity."""
+    import importlib.metadata as metadata
+
+    monkeypatch.setattr(metadata, "version", lambda _name: "0.0.0")
+    assert _packaging_base_version() is None
+
+    monkeypatch.setattr(metadata, "version", lambda _name: "0.21.4")
+    assert _packaging_base_version() == "0.21.4"
+
+
+def test_real_stamp_outranks_declared_sources(tmp_path, monkeypatch):
+    """A packaged build's stamp keeps its base; the new fallbacks never shadow it."""
+    stamp = {
+        "commit": "b" * 40,
+        "baseVersion": "0.19.0",
+        "displayVersion": "0.19.0+3",
+        "distance": 3,
+        "source": "nix",
+        "distribution": "nix",
+        "updateMechanism": "external",
+    }
+    stamp_file = tmp_path / "install-stamp.json"
+    stamp_file.write_text(json.dumps(stamp), encoding="utf-8")
+    monkeypatch.setattr("hermes_cli.version_info._resolve_stamp_file", lambda: stamp_file)
+    monkeypatch.setattr("hermes_cli.version_info._version_file_base_version", lambda: "9.9.9")
+    monkeypatch.setattr("hermes_cli.version_info._packaging_base_version", lambda: "9.9.9")
+
+    info = get_version_info()
+
+    assert info == VersionInfo("0.19.0", "0.19.0+3", 3, "b" * 40, None, "nix", distribution="nix")
 
 
 def test_resolve_stamp_file_honors_install_root(tmp_path, monkeypatch):

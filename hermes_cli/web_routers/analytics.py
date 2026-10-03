@@ -222,6 +222,12 @@ def _model_capabilities(provider: str, model_name: str) -> dict:
 _AUX_SUMMED_KEYS = (
     "input_tokens", "output_tokens", "cache_read_tokens", "reasoning_tokens", "estimated_cost", "sessions", "api_calls",
 )
+# Card keys aux folds INTO when it lands on a sessions-derived card: ``sessions`` is left alone
+# (the aux figure is a distinct-session count; adding it to the sessions GROUP BY count would
+# inflate the card), and recomputed from ``sessions`` only for aux-only cards.
+_AUX_CARD_SUM_KEYS = (
+    "input_tokens", "output_tokens", "cache_read_tokens", "reasoning_tokens", "estimated_cost", "api_calls",
+)
 _MODEL_CARD_KEYS = (
     "input_tokens", "output_tokens", "cache_read_tokens", "reasoning_tokens",
     "estimated_cost", "actual_cost", "sessions", "api_calls", "tool_calls",
@@ -254,20 +260,43 @@ def _get_models_analytics(days: int = 30, profile: Optional[str] = None):
             ORDER BY SUM(input_tokens) + SUM(output_tokens) DESC
         """, cutoff)
 
-        # Aux-only models (dedicated vision/compression) as (model, provider) rows,
-        # keyed like the GROUP BY above, so they appear on the Models page.
-        # See #23270.
-        for aux in _aux_usage_rows(db, cutoff):
-            raw_rows.append({
-                "model": aux.get("model") or "unknown",
-                "billing_provider": aux.get("billing_provider") or "",
-                **{key: aux.get(key) or 0 for key in _AUX_SUMMED_KEYS},
-                "actual_cost": 0,
-                "tool_calls": 0,
-                "last_used_at": aux.get("last_used_at"),
-                "avg_tokens_per_session": 0,
-                "aux_task": aux.get("task") or "",
-            })
+        # Aux usage folds INTO the (model, billing_provider) card the sessions aggregate
+        # produced — appending it as extra raw rows minted a duplicate card for every model
+        # that serves both main-loop and aux traffic (a background-review fork on the chat
+        # model, a vision call on the chat model), and the sessions-only "0 tokens" row then
+        # never folded because two provider rows shared the model name. Aux usage lives only
+        # in session_model_usage, so folding it into the sessions-derived card adds no
+        # double-count. See #23270.
+        aux_rows = _aux_usage_rows(db, cutoff)
+        cards_by_route: Dict[tuple, Dict[str, Any]] = {
+            (row["model"], row.get("billing_provider") or ""): row for row in raw_rows}
+        for aux in aux_rows:
+            model = aux.get("model") or "unknown"
+            provider = aux.get("billing_provider") or ""
+            card = cards_by_route.get((model, provider))
+            if card is None:
+                # A model that ONLY spent aux tokens (dedicated vision/compression) still gets
+                # its own card, keyed like the GROUP BY above.
+                card = {
+                    "model": model,
+                    "billing_provider": provider,
+                    **{key: 0 for key in _AUX_SUMMED_KEYS},
+                    "sessions": aux.get("sessions") or 0,
+                    "actual_cost": 0,
+                    "tool_calls": 0,
+                    "last_used_at": aux.get("last_used_at"),
+                    "avg_tokens_per_session": 0,
+                    "aux_task": aux.get("task") or "",
+                }
+                raw_rows.append(card)
+                cards_by_route[(model, provider)] = card
+            for key in _AUX_CARD_SUM_KEYS:
+                card[key] = (card.get(key) or 0) + (aux.get(key) or 0)
+            if aux.get("last_used_at"):
+                card["last_used_at"] = max(card.get("last_used_at") or 0, aux["last_used_at"])
+            if card.get("sessions"):
+                card["avg_tokens_per_session"] = (
+                    (card.get("input_tokens") or 0) + (card.get("output_tokens") or 0)) / card["sessions"]
 
         rows = _fold_session_only_rows(raw_rows)
         rows.sort(
@@ -297,6 +326,19 @@ def _get_models_analytics(days: int = 30, profile: Optional[str] = None):
                    SUM(COALESCE(api_call_count, 0)) as total_api_calls
             FROM sessions WHERE started_at > ? AND model IS NOT NULL AND model != ''
         """, cutoff)[0]
+
+        # The headline describes the same set the cards show: fold aux in exactly as the cards
+        # did (the CLI's own ``hermes insights`` overview already counts it, #9979/#58592) and
+        # report the card count, so a model that only ever spent aux tokens is not missing from
+        # "Models" and the token total is not smaller than the sum of the cards.
+        for aux in aux_rows:
+            totals["total_input"] = (totals.get("total_input") or 0) + (aux.get("input_tokens") or 0)
+            totals["total_output"] = (totals.get("total_output") or 0) + (aux.get("output_tokens") or 0)
+            totals["total_cache_read"] = (totals.get("total_cache_read") or 0) + (aux.get("cache_read_tokens") or 0)
+            totals["total_reasoning"] = (totals.get("total_reasoning") or 0) + (aux.get("reasoning_tokens") or 0)
+            totals["total_estimated_cost"] = (totals.get("total_estimated_cost") or 0) + (aux.get("estimated_cost") or 0)
+            totals["total_api_calls"] = (totals.get("total_api_calls") or 0) + (aux.get("api_calls") or 0)
+        totals["distinct_models"] = len(models)
 
         return {"models": models, "totals": totals, "period_days": days}
     finally:

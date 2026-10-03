@@ -292,3 +292,74 @@ class TestInsightsAuxTotals:
         models = {m["model"] for m in report["models"]}
         assert {"main-model", "glm-5"} <= models
 
+
+class TestModelsPageAuxCards:
+    """``/api/analytics/models`` folds aux usage INTO the sessions-derived (model, provider)
+    card.  Appending it as extra rows minted a duplicate card for every model that serves both
+    main-loop and aux traffic (a background-review fork on the chat model), and left the
+    sessions-only "0 tokens" card unfolded because two provider rows shared the model name.
+    See #23270.
+    """
+
+    @staticmethod
+    def _report(db, monkeypatch, days=30):
+        from hermes_cli.web_routers import analytics
+        import hermes_cli.web_server_sessions as web_sessions
+
+        monkeypatch.setattr(web_sessions, "_open_session_db_for_profile", lambda *a, **k: db)
+        monkeypatch.setattr(analytics, "_model_capabilities", lambda *a, **k: {})
+        return analytics._get_models_analytics(days=days)
+
+    def test_aux_usage_folds_into_the_chat_models_card(self, db, monkeypatch):
+        db.create_session("s1", source="qqbot")
+        db.update_token_counts(
+            "s1", input_tokens=1000, output_tokens=100,
+            model="chat-model", billing_provider="xiaomi", api_call_count=1,
+        )
+        # A background-review fork runs on the SAME (model, provider) as the chat itself.
+        db.record_auxiliary_usage(
+            "s1", "background_review", model="chat-model",
+            billing_provider="xiaomi", input_tokens=300, output_tokens=30, api_call_count=2,
+        )
+        # A dedicated aux model keeps its own card.
+        db.record_auxiliary_usage(
+            "s1", "vision", model="vision-model",
+            billing_provider="gemini", input_tokens=50, output_tokens=5,
+        )
+
+        report = self._report(db, monkeypatch)
+        names = [card["model"] for card in report["models"]]
+        assert len(names) == len(set(names)), f"one card per model, got {names}"
+        cards = {card["model"]: card for card in report["models"]}
+        assert cards["chat-model"]["input_tokens"] == 1300
+        assert cards["chat-model"]["output_tokens"] == 130
+        assert cards["chat-model"]["api_calls"] == 3
+        assert cards["vision-model"]["input_tokens"] == 50
+
+        # The headline totals describe the same set the cards show.
+        assert report["totals"]["total_input"] == 1350
+        assert report["totals"]["total_output"] == 135
+        assert report["totals"]["total_api_calls"] == 4
+        assert report["totals"]["distinct_models"] == len(report["models"]) == 2
+
+    def test_zero_token_session_only_card_still_folds(self, db, monkeypatch):
+        """A session row created before its first billable call has no provider and no usage;
+        folding it must not be blocked by an aux row sharing the same model name."""
+        db.create_session("s1", source="cli", model="chat-model")
+        db.create_session("s2", source="cli")
+        db.update_token_counts(
+            "s2", input_tokens=1000, output_tokens=100,
+            model="chat-model", billing_provider="xiaomi", api_call_count=1,
+        )
+        db.record_auxiliary_usage(
+            "s2", "compression", model="chat-model",
+            billing_provider="xiaomi", input_tokens=200, output_tokens=20,
+        )
+
+        report = self._report(db, monkeypatch)
+        names = [card["model"] for card in report["models"]]
+        assert names.count("chat-model") == 1, f"expected one chat-model card, got {names}"
+        cards = {card["model"]: card for card in report["models"]}
+        assert cards["chat-model"]["input_tokens"] == 1200
+        assert cards["chat-model"]["sessions"] == 2
+

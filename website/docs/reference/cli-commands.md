@@ -53,6 +53,7 @@ The install also ships `hermes-agent`, a minimal runner that sends one query and
 | `hermes gateway` | Run or manage the messaging gateway service. |
 | `hermes proxy` | Local OpenAI-compatible proxy that attaches OAuth provider credentials. See [Subscription Proxy](../user-guide/features/subscription-proxy.md). |
 | `hermes egress` | Outbound credential-injection firewall for remote terminal sandboxes (iron-proxy). Disabled by default. See [Egress proxy](../user-guide/egress/iron-proxy.md). |
+| `hermes sandbox` | Run code from a repo or PR you do not trust (its tests, builds, installs) in a throwaway container with no network, no credentials and no access to your files. See [Untrusted code](../user-guide/security.md#untrusted-code). |
 | `hermes lsp` | Manage Language Server Protocol integration (semantic diagnostics for write_file/patch). |
 | `hermes setup` | Interactive setup wizard for all or part of the configuration. |
 | `hermes whatsapp` | Configure and pair the WhatsApp bridge. |
@@ -912,6 +913,36 @@ tail -f ~/.hermes/proxy/iron-proxy.log | jq  # daemon + per-request log (line-de
 ```
 
 Common failure modes + recovery are covered in [Egress proxy → Troubleshooting](../user-guide/egress/iron-proxy.md#troubleshooting).
+
+## `hermes sandbox`
+
+Run another author's code in a throwaway Docker or Podman container: a pull request's tests, a downloaded repo's build, an install script. The code is copied into a scratch directory without executing anything it carries (no checkout, no hooks, no repo-configured git filters, symlinks kept as links), then the command runs with:
+
+- no network (`--network none`), all capabilities dropped, `no-new-privileges`;
+- a read-only root, a tmpfs `/tmp`, and an unprivileged user (`65534`);
+- no environment from the host and no host mount except the scratch copy, which is deleted afterwards;
+- the CPU and memory limits of `terminal.container_cpu` / `terminal.container_memory`.
+
+```bash
+hermes sandbox run --pr 123 -- python -m pytest -q            # fetch pull/123/head (never checked out)
+hermes sandbox run --ref origin/feature -- npm test             # a ref of the current repo, via git archive
+hermes sandbox run --path ./downloaded-repo -- make test        # copy a tree (.git and special files skipped)
+hermes sandbox run --pr 123 --setup 'pip install --user -e .' --setup-network open -- python -m pytest -q
+```
+
+| Option | Meaning |
+|--------|---------|
+| `--pr N` / `--ref REF` / `--path DIR` | What to run (exactly one). `--pr` and `--ref` read from `--repo` (default: current directory); `--pr` fetches from `--remote` (default `origin`). `--path` refuses your home, the filesystem root and `HERMES_HOME`. |
+| `--setup CMD` | Shell command run first, in its own container under the same lock (no credentials, host environment or host mounts). Installs land in the scratch copy (`pip install --user` goes to the sandbox's own HOME), which the main command then sees. |
+| `--setup-network none\|open` | Network for `--setup`. `none` (default): no network, like the run. `open`: the container runtime's ordinary network, needed to download packages. With `open`, the code's install scripts (`setup.py`, npm lifecycle scripts) can reach the internet, your local network and services on this machine (on Docker Desktop, `host.docker.internal`); a warning is printed. The run step never has a network. |
+| `--image IMAGE` | Container image (default: `terminal.docker_image`). Its entrypoint is bypassed; the image needs `env` and, for `--setup`, `sh`. |
+| `--timeout SECONDS` | Per-step timeout (default 900); a timed-out step is removed and exits 124. |
+
+The exit status is the command's (124 = a step timed out, 69 = no container runtime). None of the docker backend's `docker_volumes`, `docker_forward_env`, `docker_env`, `docker_extra_args`, `env_passthrough` or `credential_files` settings apply, and no option can loosen the lock.
+
+`hermes sandbox run` is a tool the agent is guided to use (the bundled `github` skill's PR review runs tests through it), not a security boundary: an agent on the local backend can still run code directly. See [Untrusted code](../user-guide/security.md#untrusted-code) for how it fits with the terminal backends.
+
+**No container runtime.** `hermes sandbox run` needs Docker or Podman. Without one it exits 69 with install pointers and runs nothing; the bundled skills then review the code by reading it only and say the tests were not run. It never falls back to running the code on the host.
 
 ## `hermes project`
 

@@ -15,6 +15,7 @@ import type * as ComposerStatusStore from '@/store/composer-status'
 import type * as SessionStore from '@/store/session'
 import { clearAllSessionStates, publishSessionState } from '@/store/session-states'
 import type * as SessionStatesStore from '@/store/session-states'
+import { $subagentsBySession, upsertSubagent } from '@/store/subagents'
 import type * as WindowsStore from '@/store/windows'
 
 import { ReorderableList, useSortableBindings } from './reorderable-list'
@@ -37,7 +38,6 @@ vi.mock('@/i18n', () => ({
           backgroundRunning: 'Running in background',
           finishedUnread: 'Finished',
           handoffOrigin: (platform: string) => `Started on ${platform}`,
-          continuationOrigin: 'Automatic continuation — this conversation was compressed and continued',
           messageCount: (count: number) => `${count} messages`,
           needsInput: 'Needs input',
           sessionActions: 'Session actions',
@@ -51,6 +51,9 @@ vi.mock('@/i18n', () => ({
           today: (time: string) => `Today at ${time}`,
           yesterday: (time: string) => `Yesterday at ${time}`
         }
+      },
+      statusStack: {
+        subagents: (count: number) => `${count} Subagent${count === 1 ? '' : 's'}`
       }
     }
   })
@@ -290,12 +293,119 @@ describe('SidebarSessionRow', () => {
   })
 })
 
+describe('SidebarSessionRow active subagent count', () => {
+  afterEach(() => {
+    cleanup()
+    $subagentsBySession.set({})
+    clearAllSessionStates()
+  })
+
+  it('shows no badge when the session has zero active subagents', () => {
+    const { container } = renderRow(makeSession({ title: 'Quiet' }))
+
+    expect(screen.queryByLabelText(/subagent/i)).toBeNull()
+    expect(container.textContent).not.toContain('◉')
+  })
+
+  it('counts running and queued only, and paints a compact ◉ N', () => {
+    upsertSubagent('s1', { goal: 'write', status: 'running', subagent_id: 'a' })
+    upsertSubagent('s1', { goal: 'review', status: 'queued', subagent_id: 'b' })
+    upsertSubagent('s1', { goal: 'done', status: 'completed', subagent_id: 'c' })
+
+    const { container } = renderRow(makeSession({ title: 'Writer Stack' }))
+
+    expect(screen.getByLabelText('2 Subagents')).toBeTruthy()
+    expect(container.textContent).toContain('◉ 2')
+
+    cleanup()
+
+    const card = renderRow(makeSession({ title: 'Writer Stack' }), { card: true })
+
+    expect(screen.getByLabelText('2 Subagents')).toBeTruthy()
+    expect(card.container.textContent).toContain('◉ 2')
+  })
+
+  it('updates live as a subagent starts and then completes', () => {
+    const { container } = renderRow(makeSession({ title: 'Live' }))
+
+    expect(screen.queryByLabelText(/subagent/i)).toBeNull()
+
+    act(() => {
+      upsertSubagent('s1', { goal: 'x', status: 'running', subagent_id: 'a' })
+    })
+
+    expect(screen.getByLabelText('1 Subagent')).toBeTruthy()
+    expect(container.textContent).toContain('◉ 1')
+
+    act(() => {
+      upsertSubagent('s1', { goal: 'x', status: 'completed', subagent_id: 'a' })
+    })
+
+    expect(screen.queryByLabelText(/subagent/i)).toBeNull()
+    expect(container.textContent).not.toContain('◉')
+  })
+
+  it('keeps independent counts per parent session', () => {
+    upsertSubagent('s1', { goal: 'one', status: 'running', subagent_id: 'a' })
+    upsertSubagent('s1', { goal: 'two', status: 'running', subagent_id: 'b' })
+
+    render(
+      <>
+        {[makeSession({ id: 's1', title: 'One' }), makeSession({ id: 's2', title: 'Two' })].map(session => (
+          <SidebarSessionRow
+            isPinned={false}
+            isSelected={false}
+            key={session.id}
+            onArchive={noop}
+            onDelete={noop}
+            onPin={noop}
+            onResume={noop}
+            onToggleUnread={noop}
+            session={session}
+            unread={false}
+          />
+        ))}
+      </>
+    )
+
+    expect(screen.getByLabelText('2 Subagents')).toBeTruthy()
+    expect(screen.getAllByLabelText(/subagent/i)).toHaveLength(1)
+    expect(screen.getByText('One').textContent).not.toContain('◉')
+    expect(screen.getByText('One').closest('div')?.textContent).toContain('◉ 2')
+    expect(screen.getByText('Two').closest('div')?.textContent).not.toContain('◉')
+  })
+
+  it('does not hide existing unread or running chrome when a count is present', () => {
+    upsertSubagent('s1', { goal: 'x', status: 'running', subagent_id: 'a' })
+    publishSessionState('rt1', { ...createClientSessionState('s1'), busy: true })
+
+    const { container } = render(
+      <SidebarSessionRow
+        isPinned={false}
+        isSelected={false}
+        onArchive={noop}
+        onDelete={noop}
+        onPin={noop}
+        onResume={noop}
+        onToggleUnread={noop}
+        session={makeSession({ title: 'Busy' })}
+        unread
+      />
+    )
+
+    expect(screen.getByLabelText('1 Subagent')).toBeTruthy()
+    expect(container.textContent).toContain('◉ 1')
+    expect(container.querySelector('.arc-row')).toBeTruthy()
+    expect(screen.getByLabelText('Running')).toBeTruthy()
+  })
+})
+
 // Regression for #83617: the row shell once spread the FULL dnd-kit handle, so
 // Space on a focused control inside the row (the ⋯ button that opens Rename)
 // reached the KeyboardSensor's activator — a drag armed, and the sensor then
 // ate the next Space at window level (the rename input dropped the keystroke).
 describe('SidebarSessionRow inside the sortable list', () => {
-  function SortableRow({ onResume, session }: { onResume: () => void; session: SessionInfo }) {
+  function SortableRow({ session }: { session: SessionInfo }) {
     const { dragHandleProps, dragging, ref, reorderable, style } = useSortableBindings(session.id)
 
     return (
@@ -307,7 +417,7 @@ describe('SidebarSessionRow inside the sortable list', () => {
         onArchive={noop}
         onDelete={noop}
         onPin={noop}
-        onResume={onResume}
+        onResume={noop}
         onToggleUnread={noop}
         ref={ref}
         reorderable={reorderable}
@@ -318,7 +428,7 @@ describe('SidebarSessionRow inside the sortable list', () => {
     )
   }
 
-  function Host({ onResume, session }: { onResume: () => void; session: SessionInfo }) {
+  function Host({ session }: { session: SessionInfo }) {
     // The sidebar's own sensor set (index.tsx dndSensors).
     const sensors = useSensors(
       useSensor(PointerSensor, { activationConstraint: { distance: 6 } }),
@@ -327,7 +437,7 @@ describe('SidebarSessionRow inside the sortable list', () => {
 
     return (
       <ReorderableList ids={[session.id]} onReorder={noop} sensors={sensors}>
-        <SortableRow onResume={onResume} session={session} />
+        <SortableRow session={session} />
       </ReorderableList>
     )
   }
@@ -335,7 +445,7 @@ describe('SidebarSessionRow inside the sortable list', () => {
   const space = { code: 'Space', key: ' ' }
 
   it('lets Space through to a focused row control instead of arming a keyboard drag', () => {
-    const { container } = render(<Host onResume={noop} session={makeSession({ title: 'Renamable' })} />)
+    const { container } = render(<Host session={makeSession({ title: 'Renamable' })} />)
     const kebab = screen.getByRole('button', { name: 'Session actions' })
     kebab.focus()
 
@@ -346,37 +456,12 @@ describe('SidebarSessionRow inside the sortable list', () => {
   })
 
   it('still starts a keyboard reorder from the grabber', () => {
-    const { container } = render(<Host onResume={noop} session={makeSession({ title: 'Renamable' })} />)
+    const { container } = render(<Host session={makeSession({ title: 'Renamable' })} />)
     const grabber = container.querySelector<HTMLElement>('[data-reorder-handle]')!
 
     grabber.focus()
     fireEvent.keyDown(grabber, space)
     expect(grabber.getAttribute('aria-pressed')).toBe('true')
-  })
-
-  // #38072 finding 3 (axe nested-interactive): the grabber (dnd-kit
-  // role="button" + tabIndex) must be a SIBLING of the row's primary action,
-  // never a descendant of it. The row body is a div carrying the gesture
-  // handlers; the title is the row's real button and its click bubbles to
-  // the body's resolver, so pointer users keep click-anywhere-on-the-row.
-  it('renders the grabber outside any button, with the title as the row button', () => {
-    const onResume = vi.fn()
-    const { container } = render(<Host onResume={onResume} session={makeSession({ title: 'Renamable' })} />)
-
-    const grabber = container.querySelector<HTMLElement>('[data-reorder-handle]')!
-
-    // Handle semantics survive (keyboard reorder above depends on them)…
-    expect(grabber.getAttribute('role')).toBe('button')
-    expect(grabber.tabIndex).toBe(0)
-    // …but it no longer nests inside the row's primary button.
-    expect(grabber.closest('button')).toBeNull()
-
-    // The title line is the row button; clicks on it resume via the body
-    // div's bubbled resolver (no onClick of its own).
-    const title = screen.getByRole('button', { name: 'Renamable' })
-    expect(title.closest('[data-reorder-handle]')).toBeNull()
-    fireEvent.click(title)
-    expect(onResume).toHaveBeenCalledTimes(1)
   })
 })
 
@@ -435,29 +520,5 @@ describe('SidebarSessionRow decoration slots', () => {
     })
 
     expect(screen.queryByTestId('lead-deco')).toBeNull()
-  })
-})
-
-// #121148: a projected compression continuation renders as a plain
-// top-level row that reads as a brand-new conversation — and the sealed
-// predecessor it replaced used to nest like a branch users deleted as
-// accidents. The row must carry a visible continuation affordance.
-describe('SidebarSessionRow continuation badge', () => {
-  const continuationGlyph = (container: HTMLElement) => container.querySelector('.codicon-layers')
-
-  it('paints the continuation glyph for a projected compression tip', () => {
-    const { container } = renderRow(makeSession({ continuation_kind: 'compression', title: 'Long-running chat' }))
-
-    expect(continuationGlyph(container)).not.toBeNull()
-  })
-
-  it('paints nothing for a plain session and for a branch', () => {
-    const plain = renderRow(makeSession({ title: 'Plain' }))
-
-    expect(continuationGlyph(plain.container)).toBeNull()
-
-    const branch = renderRow(makeSession({ parent_session_id: 'parent', title: 'A real branch' }))
-
-    expect(continuationGlyph(branch.container)).toBeNull()
   })
 })

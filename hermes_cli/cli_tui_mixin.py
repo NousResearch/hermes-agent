@@ -2173,19 +2173,26 @@ class CLITuiMixin:
 
     def _tui_background_key_sequence(self) -> tuple:
         """prompt_toolkit sequence for ``display.background_key`` (default ``ctrl+]``), or ``()``
-        when it is disabled or collides with ``voice.record_key`` (voice wins: it shipped first).
-        Parsed with the voice-key normalizer so both keys accept the same spellings."""
+        when it is disabled, malformed, or collides with ``voice.record_key`` (voice wins: it shipped
+        first). Parsed with the voice-key grammar so both keys accept the same spellings, but strictly:
+        a typo must not fall back to the voice default ``ctrl+b`` and pose as a collision."""
         from cli import logger
         try:
             from hermes_cli.config import load_config
             from hermes_cli.voice import (
-                normalize_voice_record_key_for_prompt_toolkit, pt_key_to_sequence, voice_record_key_from_config)
+                normalize_voice_record_key_for_prompt_toolkit, parse_pt_key_binding, pt_key_to_sequence,
+                voice_record_key_from_config)
             cfg = load_config()
             display = cfg.get("display") if isinstance(cfg, dict) else None
             raw = display.get("background_key", "ctrl+]") if isinstance(display, dict) else "ctrl+]"
             if raw in (None, False, "", "none", "off"):
                 return ()
-            key = normalize_voice_record_key_for_prompt_toolkit(raw)
+            key = parse_pt_key_binding(raw)
+            if key is None:
+                logger.warning(
+                    "display.background_key %r is not a valid ctrl+<key>/alt+<key> binding; detach key "
+                    "disabled (use /detach or fix the value).", raw)
+                return ()
             voice_key = normalize_voice_record_key_for_prompt_toolkit(voice_record_key_from_config(cfg))
             if key == voice_key:
                 logger.warning(

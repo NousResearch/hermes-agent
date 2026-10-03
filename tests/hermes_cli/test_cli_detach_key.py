@@ -67,6 +67,26 @@ def test_background_key_collision_with_voice_disables_detach_key(monkeypatch, ca
     assert 'collides with voice.record_key' in caplog.text
 
 
+@pytest.mark.parametrize('raw', ['ctrl+spcae', 'ctrl+ctrl+b', 'garbage', 'super+]', 'ctrl+c', ']'])
+def test_malformed_background_key_is_rejected_not_reported_as_voice_collision(monkeypatch, caplog, raw):
+    """A typo must not fall back to ctrl+b (the voice default) and masquerade as a collision with a
+    voice.record_key the user never set: the warning names the bad value instead."""
+    cli = _cli(monkeypatch)
+    _config(monkeypatch, display={'background_key': raw})
+    with caplog.at_level('WARNING'):
+        assert cli._tui_background_key_sequence() == ()
+    assert 'not a valid ctrl+<key>/alt+<key> binding' in caplog.text
+    assert 'collides with voice.record_key' not in caplog.text
+
+
+def test_background_key_survives_voice_fallback_for_a_typod_voice_key(monkeypatch):
+    """The other direction: a typo'd voice.record_key falls back to ctrl+b, which does not touch a
+    valid detach key."""
+    cli = _cli(monkeypatch)
+    _config(monkeypatch, display={'background_key': 'ctrl+]'}, voice={'record_key': 'ctrl+spcae'})
+    assert cli._tui_background_key_sequence() == ('c-]',)
+
+
 def test_detach_key_fires_only_while_a_turn_runs(monkeypatch):
     from prompt_toolkit.application import Application
     from prompt_toolkit.document import Document
@@ -133,3 +153,16 @@ def test_detach_is_dispatched_inline_while_busy():
     assert cli._should_handle_background_command_inline('/detach') is True
     cli._agent_running = False
     assert cli._should_handle_background_command_inline('/detach') is False
+
+
+def test_detach_slash_command_detaches_the_running_command(monkeypatch, capsys):
+    """``/detach`` through the real slash dispatcher reaches ``agent.detach_foreground()``."""
+    cli = _cli(monkeypatch)
+    agent = _FakeAgent(n=1)
+    cli.agent = agent
+    cli._agent_running = True
+    try:
+        cli.process_command('/detach')
+    finally:
+        cli._agent_running = False
+    assert agent.calls == 1

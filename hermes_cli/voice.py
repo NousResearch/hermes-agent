@@ -54,6 +54,32 @@ def voice_record_key_from_config(cfg: Any) -> Any:
     return voice.get("record_key") if isinstance(voice, dict) else None
 
 
+def parse_pt_key_binding(raw: Any) -> Optional[str]:
+    """Strict form of :func:`normalize_voice_record_key_for_prompt_toolkit`: the prompt_toolkit key for a
+    valid single-modifier binding, or ``None`` when ``raw`` is unparseable / reserved. Callers that must
+    tell a typo apart from a real ``ctrl+b`` (the voice default) use this instead of the normalizer."""
+    if not isinstance(raw, str):
+        return None
+    parts = [p.strip() for p in raw.strip().lower().split("+") if p.strip()]
+    if len(parts) != 2:
+        return None
+    modifier_token, key_token = parts
+    # ``super`` / ``win`` / ``windows`` are TUI-only (prompt_toolkit has no super modifier, so
+    # ``@kb.add(super+b)`` crashes the CLI at startup), so they are rejected here; the voice normalizer maps
+    # the rejection to the documented default and the CLI binding site warns so users see the TUI+CLI split
+    # on that shortcut (Copilot round-11 on #19835).
+    normalized_mod = _VOICE_MOD_ALIASES.get(modifier_token)
+    if not normalized_mod:
+        return None
+    if len(key_token) == 1:
+        reserved = (normalized_mod == "c-" or sys.platform == "darwin") and key_token in _VOICE_RESERVED_CHARS
+        return None if reserved else f"{normalized_mod}{key_token}"
+    # Multi-char token must be a known named key; ``ctrl+spcae`` must not pass through as
+    # ``c-spcae`` (prompt_toolkit would reject it).
+    named = _VOICE_NAMED_KEYS.get(key_token)
+    return f"{normalized_mod}{named}" if named else None
+
+
 def normalize_voice_record_key_for_prompt_toolkit(raw: Any) -> str:
     """Coerce ``voice.record_key`` into prompt_toolkit's ``c-x`` / ``a-x`` format.
 
@@ -67,26 +93,8 @@ def normalize_voice_record_key_for_prompt_toolkit(raw: Any) -> str:
     CLI binding site is expected to warn when this fallback fires so users see the cross-runtime split,
     Copilot round-11 on #19835)
     """
-    if not isinstance(raw, str):
-        return _DEFAULT_PT_KEY
-    parts = [p.strip() for p in raw.strip().lower().split("+") if p.strip()]
-    if len(parts) != 2:
-        return _DEFAULT_PT_KEY
-    modifier_token, key_token = parts
-    # ``super`` / ``win`` / ``windows`` are TUI-only (prompt_toolkit has no super modifier, so
-    # ``@kb.add(super+b)`` crashes the CLI at startup). Fall back to the documented default here; the CLI
-    # binding site is expected to log a warning when the configured value is one of these spellings so users
-    # know the TUI+CLI runtimes diverge on that shortcut (Copilot round-11 on #19835).
-    normalized_mod = _VOICE_MOD_ALIASES.get(modifier_token)
-    if not normalized_mod:
-        return _DEFAULT_PT_KEY
-    if len(key_token) == 1:
-        reserved = (normalized_mod == "c-" or sys.platform == "darwin") and key_token in _VOICE_RESERVED_CHARS
-        return _DEFAULT_PT_KEY if reserved else f"{normalized_mod}{key_token}"
-    # Multi-char token must be a known named key; ``ctrl+spcae`` must not pass through as
-    # ``c-spcae`` (prompt_toolkit would reject it).
-    named = _VOICE_NAMED_KEYS.get(key_token)
-    return f"{normalized_mod}{named}" if named else _DEFAULT_PT_KEY
+    parsed = parse_pt_key_binding(raw)
+    return parsed if parsed else _DEFAULT_PT_KEY
 
 
 def pt_key_to_sequence(pt_key: str) -> tuple[str, ...]:

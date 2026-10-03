@@ -124,10 +124,11 @@ def _dispatch(mgr, arg):
     return dispatch_goal_command(mgr, arg, authorize_gate=lambda: None)
 
 
-@pytest.mark.parametrize('command, paused', [
-    ('resume last goal', False), ('continue', True), ('pause for now', False), ('status please', False),
+@pytest.mark.parametrize('command, paused, status', [
+    ('resume last goal', False, 'active'), ('continue the work', True, 'active'),
+    ('pause for now', False, 'paused'), ('status please', False, 'active'),
 ])
-def test_control_verb_with_trailing_words_never_replaces_the_goal(command, paused):
+def test_control_verb_with_trailing_words_never_replaces_the_goal(command, paused, status):
     goals._DB_CACHE.clear()
     mgr = goals.GoalManager(session_id='verb-wins-' + command.replace(' ', '-'))
     mgr.set('original objective')
@@ -136,8 +137,10 @@ def test_control_verb_with_trailing_words_never_replaces_the_goal(command, pause
     from hermes_cli.goal_command import is_goal_control
     assert is_goal_control(command)  # gateway busy path dispatches instead of rejecting
     result = _dispatch(mgr, command)
-    assert goals.load_goal(mgr.session_id).goal == 'original objective'
-    assert ('(ignored ' in result.output) == (' ' in command)
+    state = goals.load_goal(mgr.session_id)
+    assert (state.goal, state.status) == ('original objective', status)
+    assert f"(ignored {command.split(' ', 1)[1]!r}" in result.output
+
 
 
 def test_double_dash_sets_control_word_goal_and_announces_the_replace():

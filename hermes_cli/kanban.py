@@ -399,11 +399,15 @@ def _cmd_swarm(args: argparse.Namespace) -> int:
     if not workers:
         return _err("kanban swarm: at least one --worker is required", 2)
     with kbc.connect_closing() as conn:
+        vskills = getattr(args, "verifier_skills", None)
+        sskills = getattr(args, "synthesizer_skills", None)
         created = ks.create_swarm(
             conn, goal=args.goal, workers=workers, verifier_assignee=args.verifier,
             synthesizer_assignee=args.synthesizer, tenant=args.tenant,
             created_by=args.created_by or _profile_author(), priority=args.priority,
             idempotency_key=getattr(args, "idempotency_key", None),
+            verifier_skills=vskills,
+            synthesizer_skills=sskills,
         )
     if getattr(args, "json", False):
         _print_json(created.as_dict())

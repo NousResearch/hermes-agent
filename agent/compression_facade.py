@@ -282,8 +282,7 @@ class CompressionFacadeMixin:
                     approx_tokens=approx_tokens, task_id=task_id, focus_topic=focus_topic, force=force,
                     bypass_cooldown=bypass_cooldown or same_turn_fallback_recovery,
                     defer_context_engine_notification=(defer_context_engine_notification), commit_fence=fence,
-                    verbatim_tail=verbatim_tail, trigger=trigger,
-                    **({"snapshot_is_current": snapshot_is_current} if snapshot_is_current is not None else {}),
+                    verbatim_tail=verbatim_tail, trigger=trigger, snapshot_is_current=snapshot_is_current,
                 )
 
             # Callers that already own a progress-aware wait (gateway session

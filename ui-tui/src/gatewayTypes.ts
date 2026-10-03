@@ -91,6 +91,9 @@ export interface ConfigDisplayConfig {
    *  CLI bar — see display.status_bar.fields in configuration docs).
    *  Raw YAML: callers must runtime-validate entries. */
   status_bar?: { fields?: unknown }
+  /** TUI widget dock/rail ordering (`display.tui_widgets.order`). Raw YAML:
+   *  callers must runtime-validate entries. */
+  tui_widgets?: { order?: unknown }
   streaming?: boolean
   thinking_mode?: string
   /** Show [HH:MM] timestamps on transcript rows — same key the classic CLI

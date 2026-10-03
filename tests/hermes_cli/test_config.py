@@ -1962,6 +1962,21 @@ def test_gateway_multiplex_keys_are_recognized_config_keys():
     assert suggestion == "gateway.auto_multiplex_migration"
 
 
+def test_tui_widgets_order_is_a_recognized_empty_default_config_key():
+    """``hermes config set display.tui_widgets.order [a, b]`` (#69269) must be a recognized
+    key with an empty-list default, like display.status_bar.fields: user-chosen entries must
+    not be refused as typos while a sibling miss still gets a suggestion."""
+    from hermes_cli.config import _validate_config_key
+    from hermes_cli.config_defaults import DEFAULT_CONFIG
+    assert DEFAULT_CONFIG["display"]["tui_widgets"] == {"order": []}
+    assert _validate_config_key("display.tui_widgets.order") == (True, None)
+    known, suggestion = _validate_config_key("display.tui_widget.order")
+    assert known is False
+    # The fuzzy match may land on the section or the full key — both point
+    # the user at the right namespace.
+    assert suggestion in ("display.tui_widgets", "display.tui_widgets.order")
+
+
 def test_empty_dict_default_sections_are_open_containers():
     """``compression.model_thresholds.<model>`` / ``terminal.docker_env.<VAR>`` are free-form
     mappings declared as ``{}`` in DEFAULT_CONFIG: their user-chosen keys must not be refused as

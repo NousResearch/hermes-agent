@@ -16,6 +16,7 @@ import {
   SPAWN_LEDGER_FILENAME,
   spawnOrAttach
 } from './backend-discovery'
+import { isTransientWsProbeReason } from './attached-backend-liveness'
 
 /** A gate held longer than this belongs to a spawner that never finished. */
 export const HOST_SPAWN_GATE_STALE_MS = 60_000
@@ -102,7 +103,28 @@ async function validate(record: HostBackendRecord, deps: HostBackendAttachDeps):
   }
 
   const wsUrl = wsUrlFor(baseUrl, token)
-  const probe = await deps.probeWebSocket(wsUrl).catch(error => ({ ok: false, reason: error.message }))
+  const probeOnce = () => deps.probeWebSocket(wsUrl).catch(error => ({ ok: false, reason: error.message }))
+  let probe = await probeOnce()
+
+  // A live backend under load (heavy SQLite reads, Windows cold-start stall)
+  // can time out one WS upgrade while still serving HTTP. Spawning a second
+  // backend for that transient is the reconnect-storm churn: retry once while
+  // the PID is still alive before refusing the record. Auth rejections are
+  // not transient and never retry.
+  if (!probe.ok && deps.isPidAlive && isTransientWsProbeReason(probe.reason)) {
+    let pidAlive = false
+
+    try {
+      pidAlive = deps.isPidAlive(record.pid)
+    } catch {
+      pidAlive = false
+    }
+
+    if (pidAlive) {
+      deps.log(`[attach] ${baseUrl} (pid ${record.pid}) WS probe transient (${probe.reason}); retrying once`)
+      probe = await probeOnce()
+    }
+  }
 
   if (!probe.ok) {
     deps.log(`[attach] ${baseUrl} (pid ${record.pid}) rejected the session token on /api/ws: ${probe.reason}`)

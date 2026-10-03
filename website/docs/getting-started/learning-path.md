@@ -66,6 +66,19 @@ For full project examples, see:
 - [Daily Briefing Bot](../guides/daily-briefing-bot.md)
 - [Team Telegram Assistant](../guides/team-telegram-assistant.md)
 
+### "I want to run it on local models"
+
+Run Hermes Agent against a model on your own hardware instead of a cloud API.
+
+1. [Installation](./installation.md)
+2. [Local Models](../user-guide/local-models.md): the desktop app installs and manages a local llama.cpp server for you
+3. [Run Hermes Locally with Ollama](../guides/local-ollama-setup.md): manual setup with Ollama, CLI-first
+4. [Run Local LLMs on Mac](../guides/local-llm-on-mac.md): llama.cpp and MLX on Apple Silicon
+
+:::tip
+A GPU with 8 GB+ of memory runs the small catalog models comfortably; 16 GB+ runs the 27-35B models at high quality (see [Requirements and limits](../user-guide/local-models.md#requirements-and-limits)). On CPU-only or low-VRAM setups, the first turn can sit silent for minutes while the model processes the prompt. That is [prefill](../guides/local-ollama-setup.md#slow-first-response-prefill), not a hang.
+:::
+
 ### "I want to automate tasks"
 
 Schedule recurring tasks, run batch jobs, or chain agent actions together.

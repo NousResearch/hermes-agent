@@ -161,6 +161,10 @@ def _print_summary(should_fix: bool, total: Finding) -> None:
         print(numbered)
         if not should_fix:
             print(color("  Tip: run 'hermes doctor --fix' to auto-fix what's possible.", Colors.DIM))
+    elif total.crashed:
+        print(color("─" * 60, Colors.YELLOW))
+        print(color(f"  All checks ran, but {total.crashed} check(s) crashed — see ⚠ notes above.",
+                    Colors.YELLOW, Colors.BOLD))
     else:
         print(color("─" * 60, Colors.GREEN))
         print(color("  All checks passed! 🎉", Colors.GREEN, Colors.BOLD))
@@ -189,4 +193,4 @@ def run_doctor(args):
         from hermes_cli.doctor_live import maybe_run_live_checks
         maybe_run_live_checks(args, total.manual_issues)
     _print_summary(should_fix, total)
-    return int(bool(total.issues or total.manual_issues))
+    return int(bool(total.issues or total.manual_issues or total.crashed))

@@ -23,7 +23,7 @@ from agent.model_metadata import CHARS_PER_TOKEN
 from agent.runtime_cwd import resolve_agent_cwd
 from agent.skill_utils import (
     EXCLUDED_SKILL_DIRS, ORG_ACTIVE_MARKER, ORG_MIRROR_DIR_NAME, ORG_PROVENANCE_FILE, SKILL_SUPPORT_DIRS,
-    extract_skill_conditions, extract_skill_description, get_all_skills_dirs, get_disabled_skill_names,
+    TIER_LOCAL, extract_skill_conditions, extract_skill_description, get_disabled_skill_names, get_skill_search_roots,
     iter_skill_index_files, parse_frontmatter, read_active_org_id, skill_matches_apps, skill_matches_environment,
     skill_matches_platform, skill_matches_platform_list,
 )
@@ -1377,14 +1377,13 @@ def build_skills_system_prompt(
     else:
         skills_dir = get_skills_dir()
     try:
-        external_dirs = get_all_skills_dirs()[1:]  # skip local (index 0)
-        # Trusted project-local dirs — highest-precedence tier; cwd/trust are session-stable, so byte-stable.
-        from agent.skill_utils import get_project_skills_dirs
-        project_dirs = get_project_skills_dirs()
-        if not skills_dir.exists() and not external_dirs and not project_dirs:
+        # Every non-local root as (tier, dir) in the shared precedence order: trusted project dirs (cwd/trust
+        # are session-stable, so byte-stable), skills.create_dir, skills.external_dirs.
+        extra_roots = [(t, d) for t, d in get_skill_search_roots(skills_dir) if t != TIER_LOCAL]
+        if not skills_dir.exists() and not extra_roots:
             return ""
         return _build_skills_system_prompt_inner(
-            skills_dir, external_dirs, available_tools, available_toolsets, compact_categories, project_dirs)
+            skills_dir, extra_roots, available_tools, available_toolsets, compact_categories)
     finally:
         if _home_token is not None:
             reset_hermes_home_override(_home_token)
@@ -1511,16 +1510,14 @@ def _oneshot_prompt_variant() -> bool:
 
 
 def _build_skills_system_prompt_inner(
-    skills_dir: "Path", external_dirs: "list[Path]", available_tools: "set[str] | None",
+    skills_dir: "Path", extra_roots: "list[tuple[int, Path]]", available_tools: "set[str] | None",
     available_toolsets: "set[str] | None", compact_categories: "frozenset[str] | None",
-    project_dirs: "list[Path] | None" = None,
 ) -> str:
     # The resolved platform is part of the key: per-platform disabled-skill lists need distinct cache entries.
     _platform_hint = _current_session_platform_hint()
     disabled = get_disabled_skill_names(_platform_hint or None)
-    project_dirs = project_dirs or []
     cache_key = (
-        str(skills_dir), tuple(str(d) for d in external_dirs), tuple(str(d) for d in project_dirs),
+        str(skills_dir), tuple((t, str(d)) for t, d in extra_roots),
         tuple(sorted(str(t) for t in (available_tools or set()))),
         tuple(sorted(str(ts) for ts in (available_toolsets or set()))),
         _platform_hint, tuple(sorted(disabled)), tuple(sorted(compact_categories or ())),
@@ -1558,18 +1555,15 @@ def _build_skills_system_prompt_inner(
     # Every tier is resolved together, exactly as skill_view resolves names (agent.skill_utils precedence:
     # project > local > create_dir > external_dirs; same-tier duplicates listed by exact path). Hidden and
     # incompatible copies still take part — skill_view sees them too.
-    from agent.skill_utils import (
-        TIER_CREATE_DIR, TIER_EXTERNAL, TIER_LOCAL, TIER_PROJECT, get_skill_create_dir, is_disabled_entry,
-        iter_project_skill_files, resolve_skill_catalog)
+    from agent.skill_utils import TIER_PROJECT, is_disabled_entry, iter_project_skill_files, resolve_skill_catalog
+    project_roots = [d for t, d in extra_roots if t == TIER_PROJECT and d.exists()]
     rows: list[tuple[dict, bool]] = []
-    for proj_dir in (d for d in project_dirs if d.exists()):
-        rows += _scan_extra_root(proj_dir, iter_project_skill_files(proj_dir), TIER_PROJECT, "Error reading project skill %s: %s")
+    for root in project_roots:
+        rows += _scan_extra_root(root, iter_project_skill_files(root), TIER_PROJECT, "Error reading project skill %s: %s")
     rows += [({**entry, "tier": TIER_LOCAL, "root": skills_dir}, ok) for entry, ok in candidates]
-    create_dir = get_skill_create_dir()
-    for ext_dir in (d for d in external_dirs if d.exists()):
-        tier = TIER_CREATE_DIR if ext_dir == create_dir else TIER_EXTERNAL
-        rows += _scan_extra_root(ext_dir, iter_skill_index_files(ext_dir, "SKILL.md"), tier, "Error reading external skill %s: %s")
-        for cat, cat_desc in _read_category_descriptions(ext_dir, "Could not read external skill description %s: %s").items():
+    for tier, root in ((t, d) for t, d in extra_roots if t != TIER_PROJECT and d.exists()):
+        rows += _scan_extra_root(root, iter_skill_index_files(root, "SKILL.md"), tier, "Error reading external skill %s: %s")
+        for cat, cat_desc in _read_category_descriptions(root, "Could not read external skill description %s: %s").items():
             category_descriptions.setdefault(cat, cat_desc)
     resolved = resolve_skill_catalog([
         {**entry, "name": _entry_name(entry), "path": entry["root"] / entry["rel"],

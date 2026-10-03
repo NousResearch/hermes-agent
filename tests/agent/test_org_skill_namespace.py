@@ -106,9 +106,7 @@ class TestListingCollisionsAndLabels:
         skills = tmp_path / "skills"
         skills.mkdir(parents=True, exist_ok=True)
         monkeypatch.setattr(pb, "get_skills_dir", lambda: skills, raising=True)
-        monkeypatch.setattr(
-            pb, "get_all_skills_dirs", lambda: [skills], raising=True
-        )
+        monkeypatch.setattr(pb, "get_skill_search_roots", lambda *a, **k: [], raising=True)
         monkeypatch.setattr(pb, "get_disabled_skill_names", lambda *a, **k: set())
         monkeypatch.setattr(
             pb, "_skills_prompt_snapshot_path", lambda: tmp_path / "snap.json"

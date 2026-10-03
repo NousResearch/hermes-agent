@@ -37,6 +37,17 @@ def _sanitize_surrogates(text: str) -> str:
     return _SURROGATE_RE.sub('\ufffd', text)
 
 
+# Harmony/gpt-oss channel-control tokens. These are valid UTF-8 and pass every other sanitizer,
+# so a model that emits one into ``content`` persists it with the conversation and replays it on
+# every later turn — a conversation that can never be recovered. A vLLM-based server renders the
+# transcript through a harmony/jinja2 chat template, and a stray token makes that render fail
+# with a non-retryable 400 ("unexpected tokens remaining in message header") that the client
+# cannot distinguish from a bad request. Matched from an explicit token list rather than a
+# generic ``<|\w+|>`` so legitimate text that merely looks like a placeholder survives.
+_HARMONY_TOKEN_RE = re.compile(
+    r"<\|(?:start|end|message|channel|constrain|return|call|tool|refusal)\|>"
+)
+
 # OpenAI / Anthropic / Responses all bound ``function.name`` to this; one poisoned stored name
 # (``multi_tool_use.parallel``, a shell command a weak model put in ``name``) 400s every later
 # request on a strict endpoint (#51944).
@@ -61,6 +72,14 @@ def _strip_non_ascii(text: str) -> str:
     if text.isascii():
         return text
     return text.encode('ascii', errors='ignore').decode('ascii')
+
+
+def _strip_harmony_tokens(text: str) -> str:
+    """Drop harmony channel-control tokens from a string; no-op when none present."""
+    # Every token starts with "<|", so the substring test is a cheap reject before the scan.
+    if "<|" not in text:
+        return text
+    return _HARMONY_TOKEN_RE.sub("", text)
 
 
 def _fix_str_field(container: Any, key: Any, fix: Callable[[str], str]) -> bool:
@@ -130,6 +149,10 @@ _sanitize_messages_surrogates = partial(_sanitize_messages, fix=_sanitize_surrog
 _sanitize_structure_non_ascii = partial(_sanitize_structure, fix=_strip_non_ascii)
 _sanitize_messages_non_ascii = partial(_sanitize_messages, fix=_strip_non_ascii, deep=False)
 _sanitize_tools_non_ascii = _sanitize_structure_non_ascii
+# Deep, like the surrogate repair: a leaked token is stored with the conversation, so it has to
+# come out of tool-call ids, function names and nested reasoning_details too, not just content.
+_sanitize_structure_harmony = partial(_sanitize_structure, fix=_strip_harmony_tokens)
+_sanitize_messages_harmony = partial(_sanitize_messages, fix=_strip_harmony_tokens, deep=True)
 
 
 def sanitize_outbound_kwargs(agent: Any, api_kwargs: dict) -> None:
@@ -141,6 +164,7 @@ def sanitize_outbound_kwargs(agent: Any, api_kwargs: dict) -> None:
     ASCII-codec rejection.
     """
     _sanitize_structure_surrogates(api_kwargs)
+    _sanitize_structure_harmony(api_kwargs)
     if agent._force_ascii_payload:
         # ``tools`` is built from ``agent.tools`` per attempt and usually aliases it; detach
         # before the in-place strip so the retry never rewrites the canonical tool schemas.
@@ -448,6 +472,8 @@ def _looks_like_corrupt_image_rejection(error_body: str) -> bool:
 __all__ = [
     "_SURROGATE_RE", "close_interrupted_tool_sequence",
     "_sanitize_surrogates", "_sanitize_structure_surrogates", "_sanitize_messages_surrogates",
+    "_HARMONY_TOKEN_RE", "_strip_harmony_tokens",
+    "_sanitize_structure_harmony", "_sanitize_messages_harmony",
     "coerce_tool_name",
     "_escape_invalid_chars_in_json_strings", "_repair_tool_call_arguments",
     "_strip_non_ascii", "_sanitize_messages_non_ascii", "_sanitize_tools_non_ascii",

@@ -938,6 +938,52 @@ class TestClassifyApiError:
         assert result.should_fallback is False
         assert result.should_compress is False
 
+    # ── Harmony chat-template render failure reported as 400 ──
+
+    def test_harmony_header_render_400_is_retryable_not_format_error(self):
+        """A jinja2/harmony template that left control tokens in the message header arrives as a
+        400 but is not a property of the request: measured on integrate.api.nvidia.com
+        (openai/gpt-oss-20b), four such rejections carried no harmony token in any field of the
+        payload and the byte-identical payload was accepted on replay. It must take the
+        retry-identical rung, not the terminal format_error default that kills the turn on the
+        first attempt with no recovery."""
+        for msg in (
+            'Error code: 400 - unexpected tokens remaining in message header: Some("to=functions.read")',
+            'unexpected tokens remaining in message header: Some("analysis<|end|><|start|>assistant<|channel|>commentary")',
+        ):
+            result = classify_api_error(
+                MockAPIError(msg, status_code=400,
+                             body={"message": msg, "type": "BadRequestError", "code": 400}),
+                provider="nvidia", model="openai/gpt-oss-20b",
+            )
+            assert result.reason == FailoverReason.server_error, msg
+            assert result.retryable is True, msg
+            # No provider rotation and no compression: the request was already correct, so the
+            # only thing that can help is asking the same server again.
+            assert result.should_fallback is False, msg
+            assert result.should_compress is False, msg
+
+    def test_harmony_header_rule_does_not_widen_other_400s(self):
+        """The new marker is matched on its own text only. Sibling 400s must keep their existing
+        reason, or the rule silently reclassifies unrelated failures — a deterministic
+        format_error into a slow retry, or an overflow into a blind resend of the same
+        over-long request."""
+        for msg, expected in (
+            ("Unsupported parameter: 'max_tokens' is not supported with this model.",
+             FailoverReason.format_error),
+            ("Invalid tool call arguments: unexpected character",
+             FailoverReason.format_error),
+            # Overflow is legitimately retryable (compress, then resend), which is exactly why
+            # asserting retryable=False everywhere would be the wrong contract to pin.
+            ("This model's maximum context length is 8192 tokens",
+             FailoverReason.context_overflow),
+        ):
+            result = classify_api_error(
+                MockAPIError(msg, status_code=400), provider="nvidia", model="openai/gpt-oss-20b",
+            )
+            assert result.reason == expected, msg
+            assert result.reason != FailoverReason.server_error, msg
+
     def test_reasoning_field_rejection_is_reasoning_mandatory(self):
         """A 400 rejecting a reasoning wire control by name — reversed ("reasoning_effort 'none'
         unsupported; use ...", #114460), forward ("Unrecognized request argument supplied:

@@ -91,6 +91,51 @@ class TestDeletedProfileTombstone:
 
         assert not profile_dir.exists()
 
+    def test_auth_store_lock_does_not_recreate_deleted_home(self, profile_env):
+        """A daemon retaining a deleted profile context must not recreate its home via the
+        cross-process auth-store lock — a routine background token-refresh path."""
+        from hermes_cli import auth
+
+        profile_dir = create_profile("worker", no_alias=True, no_skills=True)
+        _delete("worker")
+
+        token = set_hermes_home_override(profile_dir)
+        try:
+            with pytest.raises(FileNotFoundError, match="Named profile home does not exist"):
+                with auth._auth_store_lock():
+                    pass
+        finally:
+            reset_hermes_home_override(token)
+
+        assert not profile_dir.exists()
+
+    def test_update_config_for_provider_does_not_recreate_deleted_home(self, profile_env, monkeypatch):
+        """A daemon retaining a deleted profile context must not recreate its home via the
+        provider-switch config write, independent of the auth-store lock's own guard."""
+        from contextlib import contextmanager
+
+        from hermes_cli import auth
+
+        profile_dir = create_profile("worker", no_alias=True, no_skills=True)
+        _delete("worker")
+
+        @contextmanager
+        def _noop_lock(*args, **kwargs):
+            yield
+
+        monkeypatch.setattr(auth, "_auth_store_lock", _noop_lock)
+        monkeypatch.setattr(auth, "_load_auth_store", lambda *a, **k: {"version": 1, "providers": {}})
+        monkeypatch.setattr(auth, "_save_auth_store", lambda *a, **k: None)
+
+        token = set_hermes_home_override(profile_dir)
+        try:
+            with pytest.raises(FileNotFoundError, match="Named profile home does not exist"):
+                auth._update_config_for_provider("openai", "https://api.openai.com/v1")
+        finally:
+            reset_hermes_home_override(token)
+
+        assert not profile_dir.exists()
+
     def test_atomic_cache_write_allows_live_profile_home(self, profile_env):
         from hermes_cli.models import _write_json_cache
 

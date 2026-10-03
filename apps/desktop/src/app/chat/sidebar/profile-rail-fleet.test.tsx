@@ -94,6 +94,7 @@ vi.mock('@/store/profile', () => ({
   $showAllProfiles: atom(false),
   ALL_PROFILES: '*',
   normalizeProfileKey: (name: string) => name,
+  prewarmProfilePick: vi.fn(),
   profileLabel: (profile: { display_name?: string; name: string }) =>
     (profile.display_name ?? '').trim() || profile.name,
   refreshActiveProfile: vi.fn().mockResolvedValue(undefined),
@@ -663,4 +664,32 @@ describe('ProfileRail fleet mode', () => {
     const gatewayBHome = screen.getByRole('menuitem', { name: 'default · Gateway B' })
     expect(gatewayBHome.querySelector('.codicon-home')).toBeTruthy()
   })
+
+  // Regression for #106017 / #131632: the condensed menu listed every at-rest gateway's
+  // default but dropped the ACTIVE gateway's own — This device's, in the usual
+  // case — leaving it reachable only by hotkey.
+  it.each(['local', 'gateway-a'])(
+    'lists the active gateway default in the condensed menu (%s active)',
+    async active => {
+      armFleet()
+      activeConnectionId.set(active)
+      profiles.set([
+        { display_name: 'Arya', is_default: true, name: 'default' } as { is_default: boolean; name: string },
+        ...Array.from({ length: 11 }, (_, index) => ({ is_default: false, name: `p${index + 1}` }))
+      ])
+      await renderFleet()
+
+      const trigger = screen.getByRole('button', { name: 'Profiles' })
+      expect(trigger.textContent).toContain('Arya')
+
+      fireEvent.pointerDown(trigger, { button: 0, ctrlKey: false })
+
+      const home = await screen.findByRole('menuitemradio', { name: 'Arya' })
+      expect(home.querySelector('.codicon-home')).toBeTruthy()
+      expect(home.getAttribute('aria-checked')).toBe('true')
+
+      fireEvent.click(home)
+      expect(selectProfile).toHaveBeenCalledWith('default')
+    }
+  )
 })

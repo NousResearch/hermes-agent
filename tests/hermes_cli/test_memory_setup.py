@@ -151,3 +151,39 @@ def test_cmd_status_distinguishes_installed_provider_load_failure(capsys, monkey
     assert "Plugin:    installed — LOAD FAILED" in output
     assert "Load error: provider returned no instance" in output
     assert "Install the 'broken' memory plugin" not in output
+
+
+def test_cmd_status_keeps_actionable_loader_diagnostic(capsys, monkeypatch):
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config",
+        lambda: {"memory": {"provider": "broken"}},
+    )
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config_readonly",
+        lambda: {"memory": {"provider": "broken"}},
+        raising=False,
+    )
+    monkeypatch.setattr(
+        "hermes_cli.tools_config._get_platform_tools",
+        lambda *args, **kwargs: {"memory"},
+    )
+    monkeypatch.setattr("tools.memory_tool.check_memory_requirements", lambda: True)
+    monkeypatch.setattr(
+        "plugins.memory.discover_memory_providers",
+        lambda: [("broken", "local", False)],
+    )
+
+    logger = memory_setup.logging.getLogger("plugins.memory")
+
+    def load_broken(name):
+        logger.debug("Failed to exec_module %s: Python 3.14 is unsupported", name)
+        logger.warning("Memory provider '%s' loaded but no provider instance found", name)
+        return None
+
+    monkeypatch.setattr("plugins.memory.load_memory_provider", load_broken)
+
+    memory_setup.cmd_status(SimpleNamespace())
+    output = capsys.readouterr().out
+
+    assert "Load error: Failed to exec_module broken: Python 3.14 is unsupported" in output
+    assert "loaded but no provider instance found" not in output

@@ -141,6 +141,10 @@ def _get_available_providers() -> list:
                 records.append(record)
 
         capture = _Capture()
+        previous_level = logger.level
+        previous_propagate = logger.propagate
+        logger.setLevel(logging.DEBUG)
+        logger.propagate = False
         logger.addHandler(capture)
         try:
             provider = load_memory_provider(name)
@@ -149,10 +153,15 @@ def _get_available_providers() -> list:
             _PROVIDER_LOAD_ERRORS[name] = str(exc)
         finally:
             logger.removeHandler(capture)
+            logger.setLevel(previous_level)
+            logger.propagate = previous_propagate
         if not provider:
             if name not in _PROVIDER_LOAD_ERRORS:
                 if records:
-                    _PROVIDER_LOAD_ERRORS[name] = records[-1].getMessage()
+                    # The loader emits the actionable diagnostic before its
+                    # generic "no provider instance" warning. Keep that first
+                    # record instead of replacing it with the summary warning.
+                    _PROVIDER_LOAD_ERRORS[name] = records[0].getMessage()
                 else:
                     _PROVIDER_LOAD_ERRORS[name] = "provider returned no instance"
             continue

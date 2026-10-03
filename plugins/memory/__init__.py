@@ -288,8 +288,8 @@ def _instantiate_subclass(namespace) -> Optional["MemoryProvider"]:
         if isinstance(attr, type) and issubclass(attr, MemoryProvider) and attr is not MemoryProvider:
             try:
                 return attr()
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("Failed to instantiate memory provider %s: %s", attr_name, exc)
     return None
 
 

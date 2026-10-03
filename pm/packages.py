@@ -28,6 +28,7 @@ from pm.update import (
     github_release_tags,
     llama_app_bucket_versions,
     llama_app_latest,
+    legacy_macos_node_version,
     martin_riedl_index,
     martin_riedl_versions,
     node_latest_versions,
@@ -481,6 +482,9 @@ class Nodejs(_BionicDebArm, BinaryPackage, DebPackage):
         # lags nodejs.org, the later artifact pin/download fails before the
         # lockfile is written rather than selecting glibc bytes on musl.
         return node_latest_versions()
+
+    def preferred_version(self, target: str, versions: list[str], *, locked=None) -> str | None:
+        return legacy_macos_node_version(versions, target, host_target=current_target())
 
 
 @register

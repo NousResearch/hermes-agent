@@ -138,7 +138,7 @@ _PLATFORM_ENV_VARS = {
     "telegram": "TELEGRAM_BOT_TOKEN", "discord": "DISCORD_BOT_TOKEN", "slack": "SLACK_BOT_TOKEN",
     "whatsapp": "WHATSAPP_ENABLED", "signal": "SIGNAL_HTTP_URL", "email": "EMAIL_ADDRESS",
     "sms": "TWILIO_ACCOUNT_SID", "matrix": "MATRIX_HOMESERVER_URL", "mattermost": "MATTERMOST_URL",
-    "homeassistant": "HASS_TOKEN", "dingtalk": "DINGTALK_CLIENT_ID", "feishu": "FEISHU_APP_ID",
+    "dingtalk": "DINGTALK_CLIENT_ID", "feishu": "FEISHU_APP_ID",
     "wecom": "WECOM_BOT_ID", "wecom_callback": "WECOM_CALLBACK_CORP_ID", "weixin": "WEIXIN_ACCOUNT_ID",
     "qqbot": "QQ_APP_ID",
 }

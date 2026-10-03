@@ -1700,8 +1700,6 @@ platform:
   irc:
     quit_message: "Hermes Agent s'arrête"
     standalone_quit: "livré"
-  homeassistant:
-    notification_title: "Hermes Agent"
   relay:
     confirm_approve_once: "Approuver une fois"
     confirm_always_approve: "Toujours approuver"

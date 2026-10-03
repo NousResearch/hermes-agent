@@ -294,6 +294,34 @@ def _request_protected_instruction_approval(reasons: list[str], task_id: str = "
     except Exception:
         notify_cb = None
 
+    # Operator-selected transport first (parity with _human_decision): a
+    # selected transport replaces every built-in surface (#120859).
+    # One-operation only — no scope buttons, nothing is persisted.
+    # A selected transport that cannot be consulted fails CLOSED: falling back
+    # to a built-in prompt the operator may not be watching would reintroduce
+    # #120859 in another form. The built-in surface stays reachable only when no
+    # transport is selected (or ``transport_fallback: builtin`` is opted in),
+    # which _transport_choice reports as (None, None).
+    attempt: dict = {}
+    try:
+        from tools.approval_prompt import _present_with_selected_transport, _transport_choice
+        attempt = _present_with_selected_transport(
+            command=display, description=description, pattern_key="protected_instruction_file",
+            pattern_keys=["protected_instruction_file"], session_key=session_key,
+            surface="gateway" if notify_cb is not None else "cli",
+            allow_session=False, allow_permanent=False)
+        transport_choice, transport_denied = _transport_choice(
+            attempt, pattern_key="protected_instruction_file", description=description)
+    except Exception:
+        return blocked.format(why="the approval transport could not be consulted.")
+    if transport_denied is not None:
+        return blocked.format(why=(
+            f"selected approval transport failed ({attempt.get('failure')});"))
+    if transport_choice is not None:
+        if transport_choice in {"once", "session", "always"}:
+            return None
+        return denied
+
     if notify_cb is not None:
         approval_data = {
             "command": display,

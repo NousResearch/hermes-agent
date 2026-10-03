@@ -59,14 +59,14 @@ class GatewayClient:
                 self.events.get_nowait()
             self.events.put_nowait(error)
 
-    async def rpc(self, method, **params):
+    async def rpc(self, method, _timeout: float = 30, **params):
         self.sequence += 1
         rid = self.sequence
         future = asyncio.get_running_loop().create_future()
         self.pending[rid] = future
         try:
             await self.websocket.send(json.dumps({"jsonrpc": "2.0", "id": rid, "method": method, "params": params}))
-            return await asyncio.wait_for(future, 30)
+            return await asyncio.wait_for(future, _timeout)
         finally:
             self.pending.pop(rid, None)
 

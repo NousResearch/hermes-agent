@@ -1526,6 +1526,83 @@ class SessionMessagesMixin:
                 rows.reverse()
         return [self._row_to_message_dict(row, warn_context="get_messages", summary_flag=True) for row in rows]
 
+    def find_goal_citation_results(self, session_id: str, needle: str, *, since: float,
+                                   excluded_tools: tuple[str, ...], limit: int = 2) -> List[Dict[str, Any]]:
+        """Find actual tool results, not assistant prose, for a goal's exact citation.
+
+        Also resolve a quoted command through its recorded assistant call ID to the
+        resulting tool row. Archived results remain eligible after compression.
+        """
+        if not session_id or not needle:
+            return []
+        excluded = set(excluded_tools)
+        placeholders = _placeholders(excluded_tools)
+        rows = self._read_all(
+            f"""SELECT id, tool_name, content, timestamp, tool_call_id FROM messages
+               WHERE session_id = ? AND role = 'tool' AND timestamp >= ?
+                 AND instr(content, ?) > 0 AND COALESCE(tool_name, '') NOT IN ({placeholders})
+                 AND substr(COALESCE(tool_name, ''), 1, 10) != 'hindsight_'
+               ORDER BY id DESC LIMIT ?""",
+            (session_id, since, needle, *excluded_tools, limit),
+        )
+        found = [{"id": row[0], "tool": row[1], "content": row[2],
+                  "timestamp": row[3], "call_id": row[4], "via_call": False}
+                 for row in rows if row[1] not in excluded and not (row[1] or "").startswith("hindsight_")]
+        if len(found) >= limit or len(needle) < 8:
+            return found[:limit]
+
+        # Search persisted assistant calls by a literal run that survives JSON escaping.
+        probe = max(re.split(r'["\\\\\x00-\x1f]', needle), key=len)
+        if len(probe) < 4:
+            return found[:limit]
+        calls = self._read_all(
+            """SELECT tool_calls FROM messages WHERE session_id = ? AND role = 'assistant'
+               AND timestamp >= ? AND instr(tool_calls, ?) > 0 ORDER BY id DESC LIMIT 200""",
+            (session_id, since, probe),
+        )
+        call_ids = set()
+        for (raw,) in calls:
+            try:
+                parsed = json.loads(raw) if isinstance(raw, str) else raw
+            except (TypeError, ValueError):
+                continue
+            for call in parsed if isinstance(parsed, list) else []:
+                fn = (call or {}).get("function") or {}
+                name = fn.get("name") or ""
+                args = fn.get("arguments") or ""
+                if name in excluded or name.startswith("hindsight_"):
+                    continue
+                try:
+                    decoded = json.loads(args) if isinstance(args, str) else args
+                except (TypeError, ValueError):
+                    decoded = args
+                def contains(value):
+                    if isinstance(value, str):
+                        return needle in value
+                    if isinstance(value, dict):
+                        return any(contains(item) for item in value.values())
+                    if isinstance(value, list):
+                        return any(contains(item) for item in value)
+                    return False
+                if contains(decoded) and len(call_ids) < limit:
+                    if call.get("id"):
+                        call_ids.add(call["id"])
+        if call_ids:
+            # A command is evidence only when its matching result was persisted.
+            results = self._read_all(
+                f"""SELECT id, tool_name, content, timestamp, tool_call_id FROM messages
+                    WHERE session_id = ? AND role = 'tool' AND timestamp >= ?
+                    AND tool_call_id IN ({_placeholders(list(call_ids))}) ORDER BY id DESC""",
+                (session_id, since, *call_ids),
+            )
+            for row in results:
+                if row[1] in excluded or (row[1] or "").startswith("hindsight_"):
+                    continue
+                if row[0] not in {item["id"] for item in found}:
+                    found.append({"id": row[0], "tool": row[1], "content": row[2],
+                                  "timestamp": row[3], "call_id": row[4], "via_call": True})
+        return found[:limit]
+
     def find_pr_url_messages(self, session_ids: List[str]) -> List[Dict[str, Any]]:
         """Tool results containing ``/pull/``: a deliberately loose scan, oldest-first so the caller takes the last."""
         ids = [s for s in session_ids if s]

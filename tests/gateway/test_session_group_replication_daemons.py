@@ -78,6 +78,7 @@ def test_a_participant_copy_keeps_history_and_evidence_across_a_home_restart_the
             assert enrolled == {**enrollment, 'state': 'active'}
             seen['enrollment'] = enrollment
             seen['grant'] = invited['grant']
+            seen['target'] = catalog['installation_id']
 
             await _send(home_ws, 'ask', '@reviewer FIRST')
             assert (await _events(home_ws, 'message.member'))[0]['payload']['text'] == 'PEER_REPLY'
@@ -112,6 +113,18 @@ def test_a_participant_copy_keeps_history_and_evidence_across_a_home_restart_the
             assert copy['work_records']['availability'] == 'available'
             assert copy['name'] == 'Linked'
             latest = copy['last_seq']
+
+            async def prefixes():
+                home_custody = (await rpc(home_ws, 'groups.custody.status', room_id='linked'))['result']
+                copy_custody = (await rpc(target_ws, 'groups.custody.status', room_id='linked'))['result']
+                held = {c['install_id']: c['watermark'] for c in home_custody['custodians']}.get(seen['target'])
+                return held, copy_custody['watermark']
+
+            # The participant holds the exact full prefix: the home verified the very watermark the
+            # copy computes over its own stored history.
+            held, own = await _until(prefixes, lambda pair: pair is not None and pair[0] is not None
+                                     and pair[0] == pair[1] and pair[0]['seq'] >= latest)
+            assert own['seq'] >= latest and len(own['event_hash']) == 64
 
             seen['last_seq'] = latest
             # The retirement authorization is independent of this now-revoked member grant.

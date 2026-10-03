@@ -27,6 +27,7 @@ from hermes_cli.update_channel import (  # noqa: E402
     is_canary_tag,
 )
 from scripts.releases.authors import resolve_author  # noqa: E402
+from scripts.releases.release_body import GITHUB_BODY_LIMIT  # noqa: E402
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
@@ -533,6 +534,17 @@ def cmd_canary(args) -> None:
         print(changelog)
         print("\nDry run complete. To publish, add --publish")
         return
+
+    # Checked before the tag: GitHub's refusal is not atomic. A body over the
+    # limit was observed to write the release row anyway, so the tag ends up
+    # pushed with a stub draft behind it for every later run to resume
+    # (2026-09-28 canary run: the changelog covered the whole 12686-commit
+    # history because the repository had no earlier canary tag and no published
+    # stable release to bound the range, and the notes were what GitHub refused).
+    if len(changelog) > GITHUB_BODY_LIMIT:
+        raise ValueError(
+            f"the canary draft body is {len(changelog)} characters; GitHub accepts at most "
+            f"{GITHUB_BODY_LIMIT}. Nothing was tagged. Re-run with --no-changelog.")
 
     tag_result = git_result(
         "tag", "-a", tag_name, "-m", f"Hermes Agent canary {date_utc}"

@@ -29,7 +29,11 @@ jobs:
     name: Tag, draft, and start the canary build
     runs-on: ubuntu-24.04
     # A dispatch from a feature branch would tag unmerged code as the canary.
-    if: github.ref_name == github.event.repository.default_branch
+    # The daily schedule runs upstream only: a fork inherits this workflow and
+    # cannot finish a canary (it has no release-signing credentials), so every
+    # scheduled run there fails for reasons the fork cannot fix. A manual
+    # dispatch still works anywhere.
+    if: github.ref_name == github.event.repository.default_branch && (github.event_name != 'schedule' || github.repository == 'NousResearch/hermes-agent')
     steps:
       - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
         with:

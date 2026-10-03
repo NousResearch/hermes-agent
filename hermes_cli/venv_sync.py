@@ -552,6 +552,42 @@ def relaunch_command(
     return [str(python), *options, "-I", "-c", prefix + body]
 
 
+def relaunch_if_needed(root: Path, *, exit_type: type[SystemExit]) -> None:
+    """The launch's relaunch step, run by ``hermes_bootstrap`` before dependency activation.
+
+    Finishes a pending source update and re-enters the managed interpreter when this one is
+    not it (``prepare_launch``). On Windows the relaunched child's status is raised as
+    ``exit_type``; elsewhere the process is replaced. A failure to prepare the launch degrades
+    to the previous dependencies with a warning, except an install state this user cannot
+    write, which exits with its remedy.
+    """
+    import sys
+
+    from pm.environments import install_state_permission_message
+
+    try:
+        launch_python = prepare_launch(root, sys.argv[1:])
+        if launch_python is not None:
+            main_spec = getattr(sys.modules.get("__main__"), "__spec__", None)
+            command = relaunch_command(
+                launch_python, root, sys.argv, sys.orig_argv, getattr(main_spec, "name", None),
+            )
+            if os.name == "nt":
+                raise exit_type(subprocess.call(command))
+            os.execv(str(launch_python), command)
+    except Exception as exc:
+        if isinstance(exc, PermissionError) and (message := install_state_permission_message(root, exc)):
+            print(f"hermes: {message}", file=sys.stderr)
+            raise SystemExit(1) from None
+        # Degrade, never brick the CLI: the previous dependency generation is still selected
+        # (a failed sync commits nothing), so an offline or half-finished update leaves a
+        # usable Hermes plus a warning. Activation after this is the real gate — a tree whose
+        # dependencies cannot load still exits with the repair remedy.
+        print(f"hermes: source-update completion failed: {exc}; "
+              "running with the previous dependencies — run `hermes update` to finish it",
+              file=sys.stderr)
+
+
 def main(argv: list | None = None) -> int:
     parser = argparse.ArgumentParser(prog="hermes_cli.venv_sync")
     parser.add_argument("--project-root", default=None)

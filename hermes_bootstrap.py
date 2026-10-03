@@ -532,32 +532,11 @@ from hermes_cli._parser import command_argv
 # Repair needs only stdlib. Do not activate the damaged tree to reach it.
 _pm_repair = command_argv(sys.argv[1:])[:2] == ["pm", "repair"]
 if not _pm_repair:
-    from hermes_cli.venv_sync import prepare_launch, relaunch_command
+    # The relaunch lives in venv_sync, so this module — which every entry point and embedder
+    # imports — carries no process-starting code of its own.
+    from hermes_cli.venv_sync import relaunch_if_needed
 
-    try:
-        _launch_python = prepare_launch(_root, sys.argv[1:])
-        if _launch_python is not None:
-            _main_spec = getattr(sys.modules.get("__main__"), "__spec__", None)
-            _command = relaunch_command(
-                _launch_python, _root, sys.argv, sys.orig_argv,
-                getattr(_main_spec, "name", None),
-            )
-            if os.name == "nt":
-                import subprocess
-
-                raise RelaunchExit(subprocess.call(_command))
-            os.execv(str(_launch_python), _command)
-    except Exception as exc:
-        if isinstance(exc, PermissionError) and (message := install_state_permission_message(_root, exc)):
-            print(f"hermes: {message}", file=sys.stderr)
-            raise SystemExit(1) from None
-        # Degrade, never brick the CLI: the previous dependency generation is still selected
-        # (a failed sync commits nothing), so an offline or half-finished update leaves a
-        # usable Hermes plus a warning. Activation below is the real gate — a tree whose
-        # dependencies cannot load still exits with the repair remedy.
-        print(f"hermes: source-update completion failed: {exc}; "
-              "running with the previous dependencies — run `hermes update` to finish it",
-              file=sys.stderr)
+    relaunch_if_needed(_root, exit_type=RelaunchExit)
     try:
         recover_if_needed(_root)
         activate_dependencies(_root)

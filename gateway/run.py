@@ -5305,8 +5305,11 @@ def _start_gateway_make_shutdown_signal_handler(runner, _signal_initiated_shutdo
 
         # Fast (<10ms) sync snapshot: stdlib + /proc, no subprocesses (`ps aux` here once blocked ~3s).
         def _snapshot():
-            from gateway.shutdown_forensics import snapshot_shutdown_context
-            return snapshot_shutdown_context(received_signal)
+            from gateway.shutdown_forensics import label_marker_driven_shutdown, snapshot_shutdown_context
+            ctx = snapshot_shutdown_context(received_signal)
+            label_marker_driven_shutdown(
+                ctx, planned_takeover=planned_takeover, planned_stop=planned_stop, received_signal=received_signal)
+            return ctx
 
         planned_takeover = bool(_best_effort(_takeover, "Takeover marker check failed: %s"))
         planned_stop = received_signal == signal.SIGINT or (

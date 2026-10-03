@@ -209,6 +209,34 @@ def test_historical_retention_failure_warns_and_survives_rotation(monkeypatch, c
     assert "900" not in capsys.readouterr().err
 
 
+def test_unsaved_manual_restart_warning_survives_a_running_and_a_killed_update(monkeypatch, capsys):
+    """The durable running latest.json holds the prior rows as ``carried_manual_serves`` (no plan
+    yet): the startup warning must read them while an update runs, after one is killed before its
+    ``plan`` stage, and the next run must carry them forward again."""
+    manual = asdict(RuntimeRecord(kind="serve", profile="work", pid=900, supervisor="manual-serve", restart_via="respawn-argv", detail={"create_time": 1000.0}))
+    root = get_hermes_home() / "logs" / "update_receipts"
+    root.mkdir(parents=True, exist_ok=True)
+    (root / "latest.json").write_text(json.dumps({"outcome": "partial", "plan": {"runtimes": [manual]}}))
+    (get_hermes_home() / "serve_restart_pending").write_text("not a directory")  # the reminder can't be filed
+    monkeypatch.setattr(process_identity, "_pid_alive_matches", lambda *a: True)
+
+    update_receipt.begin_update_receipt()  # running record replaces latest.json
+    running = json.loads((root / "latest.json").read_text())
+    assert running["outcome"] == "running" and "plan" not in running
+    fleet._warn_pending_fleet_restart_on_startup()
+    assert "serve [work] pid 900" in capsys.readouterr().err
+
+    # Killed before the plan stage: the in-memory receipt is gone, latest.json stays the running record.
+    update_receipt._current.set(None)
+    fleet._warn_pending_fleet_restart_on_startup()
+    assert "serve [work] pid 900" in capsys.readouterr().err
+
+    update_receipt.begin_update_receipt()  # the next run reconciles the killed one and carries again
+    update_receipt.finalize_update_receipt("success", fleet=[])
+    fleet._warn_pending_fleet_restart_on_startup()
+    assert "serve [work] pid 900" in capsys.readouterr().err
+
+
 @pytest.mark.parametrize("kind", ["serve", "dashboard"])
 @pytest.mark.parametrize("alive", [True, None, False])
 def test_unreadable_create_time_discharges_only_a_proven_dead_pid(monkeypatch, kind, alive):

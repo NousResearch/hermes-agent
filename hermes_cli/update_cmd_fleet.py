@@ -259,6 +259,7 @@ def _receipt_owed_gateways(receipt: dict, pending_manual: list[dict]) -> set[tup
     plan = receipt.get("plan") or {}
     entries: list[tuple[object, str | None]] = [(entry, None) for entry in plan.get("runtimes") or []]
     entries.extend((entry, None) for entry in receipt.get("pending_manual_serves") or [])
+    entries.extend((entry, None) for entry in receipt.get("carried_manual_serves") or [])
     entries.extend((entry, "gateway") for entry in receipt.get("fleet") or [])
     owed: set[tuple[str, str]] = set()
     unverified = False

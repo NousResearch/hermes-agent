@@ -290,7 +290,9 @@ def reclaim_worktrees(
 
     if records is None:
         records = audit_worktrees(repo_root, with_sizes=False)
-    merge_cache = _ops._load_worktree_merge_cache()
+    # The cache only memoizes revalidation's `git cherry`; dry runs never revalidate.
+    merge_cache = {} if dry_run else _ops._load_worktree_merge_cache()
+    cache_size_before = len(merge_cache)
     remote_heads = (
         _ops._fetch_remote_branch_heads(repo_root)
         if not dry_run and any(r.verdict == "reap-keep-branch" for r in records) else None)
@@ -358,6 +360,8 @@ def reclaim_worktrees(
     if not dry_run:
         with contextlib.suppress(Exception):
             _git(["worktree", "prune"], cwd=repo_root, timeout=15)
+        if len(merge_cache) != cache_size_before:
+            _ops._save_worktree_merge_cache(merge_cache)
     return actions
 
 

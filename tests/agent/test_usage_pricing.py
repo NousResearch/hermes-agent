@@ -931,31 +931,26 @@ def test_seat_subscription_routes_classify_as_included():
     assert cost.source == "none"
 
 
-def test_free_credit_routes_classify_as_included():
-    """NVIDIA NIM trial credits and the Cloudflare Workers AI free daily
-    allowance have no per-token invoice either. Workers AI is reached through a
-    ``custom:<key>`` route with no registered profile, so the free-credit host
-    carries it; other custom endpoints keep their ``unknown`` classification.
+def test_free_allowance_endpoints_stay_unknown():
+    """Promotional-credit endpoints (NVIDIA NIM trial credits, the Cloudflare
+    Workers AI free daily allowance) are metered once the allowance runs out,
+    so classifying them ``included`` would record genuinely billed traffic as
+    $0 — the exact ambiguity this issue is about. They must stay ``unknown``.
     """
     nim = resolve_billing_route("z-ai/glm-5.3-flash", provider="nvidia")
-    assert (nim.billing_mode, nim.provider) == ("subscription_included", "nvidia")
+    assert nim.billing_mode == "unknown"
 
     workers = resolve_billing_route(
         "@cf/nvidia/nemotron-3-120b-a12b",
         provider="custom:cloudflare",
         base_url="https://api.cloudflare.com/client/v4/accounts/self/ai/run",
     )
-    assert workers.billing_mode == "subscription_included"
+    assert workers.billing_mode == "unknown"
 
     other_custom = resolve_billing_route(
         "some/model", provider="custom:lan-gateway", base_url="http://gateway.internal/v1"
     )
     assert other_custom.billing_mode == "unknown"
-
-    usage = CanonicalUsage(input_tokens=1000, output_tokens=1000, cache_read_tokens=0, cache_write_tokens=0)
-    cost = estimate_usage_cost("z-ai/glm-5.3-flash", usage, provider="nvidia")
-    assert cost.status == "included"
-    assert cost.amount_usd == 0
 
 
 def test_token_priced_route_without_a_priced_model_stays_unknown():

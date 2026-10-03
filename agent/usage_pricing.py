@@ -383,14 +383,11 @@ _SNAPSHOT_PROVIDER_ALIASES = {
 # AI Studio and Vertex host the same Gemini models (the Vertex "google/" vendor
 # prefix is stripped with the rest of the path).
 _GOOGLE_PROVIDER_NAMES = {"google", "gemini", "vertex", "google-gemini", "google-ai-studio", "google-vertex", "vertex-ai"}
-# Fixed-price routes: a seat subscription or a free-credit allowance has no
-# per-token invoice, so the marginal cost per token is genuinely zero ("included"),
-# not "unknown". Keyed on the canonical profile name — the registry resolves
-# config-level slugs/aliases (github-copilot → copilot) — and, for endpoints with
-# no registered profile (e.g. Workers AI custom routes), on the base-URL host.
+# Fixed-price routes: a seat subscription has no per-token invoice, so the
+# marginal cost per token is genuinely zero ("included"), not "unknown".
+# Keyed on the canonical profile name — the registry resolves config-level
+# slugs/aliases (github-copilot → copilot).
 _SUBSCRIPTION_ROUTES = frozenset({"openai-codex", "copilot", "copilot-acp", "opencode-go"})
-_FREE_CREDIT_ROUTES = frozenset({"nvidia"})           # NVIDIA NIM trial credits
-_FREE_CREDIT_HOSTS = ("api.cloudflare.com",)          # Workers AI free daily allowance
 
 
 def resolve_billing_route(
@@ -424,8 +421,6 @@ def resolve_billing_route(
         except Exception:
             pass
     if canonical in _SUBSCRIPTION_ROUTES:
-        return BillingRoute(provider=canonical, model=model, base_url=url, billing_mode="subscription_included")
-    if canonical in _FREE_CREDIT_ROUTES or any(host(h) for h in _FREE_CREDIT_HOSTS):
         return BillingRoute(provider=canonical, model=model, base_url=url, billing_mode="subscription_included")
     if provider_name == "openrouter" or host("openrouter.ai"):
         return BillingRoute(provider="openrouter", model=model, base_url=url, billing_mode="official_models_api")

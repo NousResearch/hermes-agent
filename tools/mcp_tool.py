@@ -88,6 +88,14 @@ except Exception:
 if not _MCP_AVAILABLE:
     logger.debug("mcp package not installed -- MCP tool support disabled")
 
+
+def mcp_sdk_available() -> bool:
+    """Whether the optional ``mcp`` package is installed — the flag every MCP gate reads.
+    Decided once at import (a later install needs a restart); read at call time, so a
+    patched ``_MCP_AVAILABLE`` is honoured."""
+    return bool(_MCP_AVAILABLE)
+
+
 ClientSession: Any = None
 _MCP_SDK_IMPORT_ATTEMPTED = False
 _MCP_SDK_IMPORT_LOCK = threading.Lock()

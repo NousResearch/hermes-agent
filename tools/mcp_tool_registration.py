@@ -392,7 +392,7 @@ def _write_schema_cache(name: str, server: "MCPServerTask", config: dict, should
         logger.debug("MCP schema cache write failed for '%s': %s", name, exc)
 
 
-def _register_server_tools(name: str, server: "MCPServerTask", config: dict) -> List[str]:
+def register_server_tools(name: str, server: "MCPServerTask", config: dict) -> List[str]:
     """Register a connected server's tools plus utilities (initial discovery and list_changed
     refresh); returns the names. Toolset aliases derive from the live registry, not
     ``toolsets.TOOLSETS``; lossy normalization collisions (``read-file``/``read_file``) fail closed."""
@@ -407,6 +407,9 @@ def _register_server_tools(name: str, server: "MCPServerTask", config: dict) -> 
     if registered:
         _write_schema_cache(name, server, config, should_register)
     return registered
+
+
+_register_server_tools = register_server_tools  # original private spelling, kept as an alias
 
 
 def _connection_identity(config: dict) -> tuple:

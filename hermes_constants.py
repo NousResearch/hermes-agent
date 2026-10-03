@@ -86,6 +86,12 @@ def _warn_profile_fallback_once() -> None:
     # was only set on the warning branch, so with no active_profile (or "default") the stat +
     # read re-ran on every get_hermes_home() call (#90065).
     _profile_fallback_warned = True
+    # An explicit -p/--profile on argv wins: main.py's _apply_profile_override() consumes it
+    # and sets HERMES_HOME right after bootstrap, so the transient "unset" seen here at
+    # import time resolves to the named profile — warning about it is a false positive.
+    if any(arg in ("--profile", "-p") or arg.startswith("--profile=")
+           for arg in sys.argv[1:]):
+        return
     try:
         fallback_home = _get_platform_default_hermes_home()
         active_path = fallback_home / "active_profile"

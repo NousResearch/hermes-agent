@@ -114,6 +114,12 @@ class CDPSupervisor(DialogSupervisionMixin, FrameTrackingMixin):
         self._recent_dialogs: List[DialogRecord] = []
         self._frames: Dict[str, FrameInfo] = {}
         self._active = False
+
+        # Owned page target tracking for reconnect reuse and idle cleanup.
+        self._owned_target_id: Optional[str] = None
+        self._last_activity: float = time.time()
+        self._idle_watcher_task: Optional[asyncio.Task] = None
+
         # Supervisor loop machinery — populated in start().
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._thread: Optional[threading.Thread] = None
@@ -152,12 +158,29 @@ class CDPSupervisor(DialogSupervisionMixin, FrameTrackingMixin):
     def stop(self, timeout: float = 5.0) -> None:
         """Cancel the supervisor task and join the thread."""
         self._stop_requested = True
+        # Cancel the idle watcher so it does not race with our cleanup.
+        watcher = self._idle_watcher_task
+        self._idle_watcher_task = None
+        if watcher is not None:
+            watcher.cancel()
+        # Close the owned tab from inside the loop.
+        owned_id = self._owned_target_id
+        self._owned_target_id = None
         loop = self._loop
         if loop is not None and loop.is_running():
-            # Close the WebSocket from inside the loop so ``async for raw in self._ws``
-            # returns cleanly, ``_run`` hits its ``finally``, THEN the thread exits.
+            # Close the owned tab and the WebSocket from inside the loop — this
+            # makes ``async for raw in self._ws`` return cleanly, ``_run`` hits
+            # its ``finally``, pending tasks get cancelled in order, THEN the
+            # thread exits.
+            async def _shutdown() -> None:
+                # Close the owned tab first, while the WebSocket is still usable.
+                if owned_id is not None:
+                    with contextlib.suppress(Exception):
+                        await self._cdp("Target.closeTarget", {"targetId": owned_id})
+                await self._close_ws()
+
             with contextlib.suppress(Exception):  # loop already shutting down / close timed out
-                _schedule(self._close_ws(), loop, timeout=2.0)
+                _schedule(_shutdown(), loop, timeout=2.0)
         if self._thread is not None:
             self._thread.join(timeout=timeout)
         self._set_active(False)
@@ -398,6 +421,11 @@ class CDPSupervisor(DialogSupervisionMixin, FrameTrackingMixin):
                 self._page_session_id = None
                 await self._attach_initial_page()
                 self._set_active(True)
+                # Fire up the idle watcher on first successful attach.
+                if self._idle_watcher_task is None:
+                    self._idle_watcher_task = asyncio.create_task(
+                        self._idle_watcher(), name="cdp-idle-watcher"
+                    )
                 last_success_at = time.time()
                 reconnect_failures = 0
                 backoff = 0.5  # reset after a successful attach
@@ -430,15 +458,103 @@ class CDPSupervisor(DialogSupervisionMixin, FrameTrackingMixin):
             backoff = min(backoff * 2, 10.0)
 
     async def _attach_initial_page(self) -> None:
-        """Find (or create) a page target, attach flattened, enable domains, install dialog bridge."""
-        targets = (await self._cdp("Target.getTargets")).get("result", {}).get("targetInfos", [])
-        page_target = next((t for t in targets if t.get("type") == "page"), None)
-        if page_target is None:
-            page_target = (await self._cdp("Target.createTarget", {"url": "about:blank"}))["result"]
-        attach = await self._cdp("Target.attachToTarget", {"targetId": page_target["targetId"], "flatten": True})
-        self._page_session_id = sid = attach["result"]["sessionId"]
-        await self._enable_page_domains(sid, timeout=10.0)
-        await self._install_dialog_bridge(sid)
+        """Attach to the supervisor-owned about:blank page, with reconnect reuse.
+
+        On first call creates a new about:blank page and caches its target id.
+        On reconnect, tries to reuse the cached target.  If the target has been
+        closed or its URL changed (e.g. the user navigated it away from
+        about:blank), the old target is closed and a fresh one created.
+        """
+        target_id: Optional[str] = None
+
+        # ── Try to reuse the cached owned target ────────────────────
+        if self._owned_target_id is not None:
+            try:
+                attach = await self._cdp(
+                    "Target.attachToTarget",
+                    {"targetId": self._owned_target_id, "flatten": True},
+                )
+                self._page_session_id = attach["result"]["sessionId"]
+                await self._cdp("Page.enable",
+                                session_id=self._page_session_id)
+                target_id = self._owned_target_id
+            except Exception:
+                logger.debug(
+                    "CDP supervisor %s: cached owning target %s is not "
+                    "accessible — closing and creating a fresh one",
+                    self.task_id, self._owned_target_id[:16],
+                )
+                try:
+                    await self._cdp("Target.closeTarget",
+                                    {"targetId": self._owned_target_id})
+                except Exception:
+                    pass
+                self._owned_target_id = None
+
+        # ── Create a fresh about:blank when no cached target works ──
+        if target_id is None:
+            created = await self._cdp("Target.createTarget",
+                                      {"url": "about:blank"})
+            target_id = created["result"]["targetId"]
+            self._owned_target_id = target_id
+
+            attach = await self._cdp(
+                "Target.attachToTarget",
+                {"targetId": target_id, "flatten": True},
+            )
+            self._page_session_id = attach["result"]["sessionId"]
+            await self._cdp("Page.enable",
+                            session_id=self._page_session_id)
+
+        # ── Common setup — both paths converge here ─────────────────
+        await self._cdp("Runtime.enable",
+                        session_id=self._page_session_id)
+        try:
+            await self._cdp(
+                "Target.setAutoAttach",
+                {"autoAttach": True, "waitForDebuggerOnStart": False,
+                 "flatten": True},
+                session_id=self._page_session_id,
+            )
+        except Exception:
+            logger.debug(
+                "Target.setAutoAttach rejected on initial page "
+                "(Chrome 150+) — continuing with flatten session only"
+            )
+        # Install the dialog bridge — overrides native alert/confirm/prompt with
+        # a synchronous XHR we intercept via Fetch domain. This is how we make
+        # dialog response work on Browserbase (whose CDP proxy auto-dismisses
+        # real native dialogs before we can call handleJavaScriptDialog).
+        await self._install_dialog_bridge(self._page_session_id)
+
+    async def _idle_watcher(self) -> None:
+        """Close the owned about:blank tab after 15 minutes of inactivity.
+
+        Runs as a background task for the lifetime of the supervisor.
+        Any CDP event resets the idle timer; only when no events have been
+        received for ``IDLE_TIMEOUT`` seconds is the cached target closed.
+        This prevents orphan-tab accumulation without affecting tabs the
+        user opened independently.
+        """
+        IDLE_TIMEOUT = 900   # 15 minutes
+        CHECK_INTERVAL = 60
+
+        while not self._stop_requested:
+            await asyncio.sleep(CHECK_INTERVAL)
+            if (self._owned_target_id is not None
+                    and time.time() - self._last_activity > IDLE_TIMEOUT):
+                logger.debug(
+                    "CDP supervisor %s: idle for %.0fs, closing owned tab %s",
+                    self.task_id,
+                    time.time() - self._last_activity,
+                    (self._owned_target_id or "")[:16],
+                )
+                try:
+                    await self._cdp("Target.closeTarget",
+                                    {"targetId": self._owned_target_id})
+                except Exception:
+                    pass
+                self._owned_target_id = None
 
     async def _cdp(self, method: str, params: Optional[Dict[str, Any]] = None, *,
                    session_id: Optional[str] = None, timeout: float = 10.0) -> Dict[str, Any]:
@@ -477,6 +593,8 @@ class CDPSupervisor(DialogSupervisionMixin, FrameTrackingMixin):
                     else:
                         fut.set_result(msg)
                 elif handler := self._EVENT_HANDLERS.get(msg.get("method")):
+                    # Any CDP event counts as activity — keeps the idle watcher quiet.
+                    self._last_activity = time.time()
                     result = handler(self, msg.get("params", {}), msg.get("sessionId"))
                     if result is not None:
                         await result

@@ -5052,6 +5052,95 @@ class TestSessionIdSearch:
         assert [s["id"] for s in db.search_sessions_by_id("ABCD12")] == ["20260603_090200_abcd12"]
 
 
+class TestSessionTitleSearch:
+    """Title / channel / platform lane of the session search endpoint."""
+
+    def _seed(self, db, sid, *, title=None, display_name=None, source="cli", started_at=None):
+        db.create_session(session_id=sid, source=source, model="test-model")
+        db.append_message(session_id=sid, role="user", content=f"first message of {sid}")
+        if title is not None:
+            db.set_session_title(sid, title)
+        if display_name is not None or started_at is not None:
+            db._conn.execute(
+                "UPDATE sessions SET display_name = COALESCE(?, display_name),"
+                " started_at = COALESCE(?, started_at) WHERE id = ?",
+                (display_name, started_at, sid),
+            )
+            db._conn.commit()
+
+    def test_ranks_exact_then_prefix_then_substring_case_insensitively(self, db):
+        self._seed(db, "sub", title="About deploy stuff", started_at=300)
+        self._seed(db, "pre", title="Deploy pipeline", started_at=200)
+        self._seed(db, "exact", title="Deploy", started_at=100)
+        self._seed(db, "other", title="Unrelated", started_at=400)
+
+        hits = db.search_sessions_by_title("DEPLOY")
+        assert [h["id"] for h in hits] == ["exact", "pre", "sub"]
+        assert hits[0]["title"] == "Deploy"
+        assert hits[0]["preview"] == "first message of exact"
+
+    def test_matches_channel_path_and_platform_per_token(self, db):
+        self._seed(db, "thread", title="Pin-Sync Bug Recovery", source="discord",
+                   display_name="Daemonarchy / #voice-assitant / Desktop App", started_at=100)
+        self._seed(db, "titled", title="Voice pipeline design", source="cli", started_at=200)
+        self._seed(db, "platform_only", title="Groceries", source="discord", started_at=300)
+        self._seed(db, "miss", title="Errands", source="telegram", started_at=400)
+
+        ids = [h["id"] for h in db.search_sessions_by_title("voice discord")]
+        # Both tokens (channel + platform) beat one token; a platform token alone never
+        # admits a row (platform_only, miss), it only ranks rows a text token matched.
+        assert ids == ["thread", "titled"]
+        assert db.search_sessions_by_title("tg") == []
+        assert db.search_sessions_by_title("discord") == []
+
+    def test_platform_token_alone_does_not_flood(self, db):
+        for i in range(30):
+            self._seed(db, f"cli{i}", title=f"Groceries {i}", source="cli", started_at=100 + i)
+        self._seed(db, "named", title="cli wrapper notes", source="cli", started_at=1)
+        # Only a row whose text contains the token qualifies; the 30 unrelated titled CLI
+        # sessions stay out, so they cannot displace content hits in the endpoint.
+        assert [h["id"] for h in db.search_sessions_by_title("cli")] == ["named"]
+
+    def test_excludes_archived_like_the_sidebar(self, db):
+        self._seed(db, "live", title="needle live", started_at=300)
+        self._seed(db, "arch", title="needle archived", started_at=900)
+        db._conn.execute("UPDATE sessions SET archived = 1 WHERE id = 'arch'")
+        db._conn.commit()
+        assert [h["id"] for h in db.search_sessions_by_title("needle")] == ["live"]
+        assert [h["id"] for h in db.search_sessions_by_title(
+            "needle", include_archived=True)] == ["arch", "live"]
+
+    def test_excludes_untitled_hidden_subagent_and_filtered_rows(self, db):
+        self._seed(db, "untitled")  # no title, no display path
+        self._seed(db, "parent", title="Visible needle session")
+        db.create_session(session_id="child", source="cli", parent_session_id="parent",
+                          model_config={"_delegate_from": "parent"})
+        db.set_session_title("child", "Hidden needle child")
+        self._seed(db, "hidden", title="Hidden needle row")
+        db._conn.execute("UPDATE sessions SET hidden = 1 WHERE id = 'hidden'")
+        db._conn.commit()
+        self._seed(db, "cron_run", title="Cron needle", source="cron")
+
+        assert [h["id"] for h in db.search_sessions_by_title("needle", exclude_sources=["cron"])] == [
+            "parent"]
+        assert [h["id"] for h in db.search_sessions_by_title("needle", source="cron")] == ["cron_run"]
+        # A platform token only ranks; it never admits a row without a text hit.
+        assert db.search_sessions_by_title("cli") == []
+        assert [h["id"] for h in db.search_sessions_by_title("visible cli")] == ["parent"]
+
+    def test_like_wildcards_are_literal_and_empty_query_is_empty(self, db):
+        self._seed(db, "pct", title="100% coverage plan")
+        self._seed(db, "digits", title="1000 things")
+        self._seed(db, "under", title="a_b notes")
+        self._seed(db, "plain", title="axb notes")
+
+        assert [h["id"] for h in db.search_sessions_by_title("100%")] == ["pct"]
+        assert [h["id"] for h in db.search_sessions_by_title("a_b")] == ["under"]
+        assert db.search_sessions_by_title("") == []
+        assert db.search_sessions_by_title("   ") == []
+        assert db.search_sessions_by_title("plan", limit=0) == []
+
+
 
 
 

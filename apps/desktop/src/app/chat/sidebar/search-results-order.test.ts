@@ -116,4 +116,22 @@ describe('mergeSearchResults', () => {
 
     expect(merged[0].last_active).toBe(900)
   })
+
+  it('keeps the title of an unloaded server hit and ranks title hits above content hits', () => {
+    // A title-lane hit on a conversation outside the loaded sidebar window
+    // renders under its title, at the server's rank above content hits.
+    const titleHit: SessionSearchResult = {
+      ...idHit,
+      session_id: 'titled_unloaded',
+      snippet: 'first user message',
+      title: '  DNS Portal Investigation  '
+    }
+    const contentHit: SessionSearchResult = { ...idHit, role: 'user', session_id: 'content_hit', snippet: 'portal' }
+
+    const merged = mergeSearchResults([], 'portal', [titleHit, contentHit], new Map(), false)
+
+    expect(merged.map(session => session.id)).toEqual(['titled_unloaded', 'content_hit'])
+    expect(merged[0].title).toBe('DNS Portal Investigation')
+    expect(merged[1].title).toBeNull()
+  })
 })

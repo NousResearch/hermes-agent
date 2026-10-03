@@ -1377,6 +1377,8 @@ export interface SessionSearchResult {
    *  for untitled sessions. The sidebar maps it onto the synthesized row so
    *  search hits show the actual name, not the matched-message snippet. */
   title?: string | null
+  /** Messaging server/channel/thread path when the title/channel lane matched it. */
+  display_name?: string | null
 }
 
 export interface SessionSearchResponse {

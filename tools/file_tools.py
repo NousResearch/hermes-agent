@@ -15,7 +15,7 @@ import re
 import stat
 import threading
 import time
-from contextlib import ExitStack
+from contextlib import ExitStack, nullcontext
 from pathlib import Path
 
 from agent.file_safety import get_nt_namespace_error, get_read_block_error
@@ -29,7 +29,7 @@ from tools import file_state
 from agent.redact import _is_secret_file_arg, redact_sensitive_text
 from tools.file_tools_paths import (
     _expand_tilde, _path_resolution_warning, _resolve_base_dir, _resolve_entry_for_task,
-    _resolve_path_for_task)
+    _resolve_path_for_task, _terminal_env_type_for_task)
 from tools.file_tools_write_guards import (
     _READ_DEDUP_STATUS_MESSAGE, _check_approval_required_write, _check_binary_document_write,
     _check_cross_profile_path, _check_protected_instruction_write, _check_sensitive_path,
@@ -142,6 +142,30 @@ def _file_ops_uses_host_paths(file_ops) -> bool:
     except ImportError:
         return True
     return isinstance(env, LocalEnvironment)
+
+
+def _task_cwd_scope(file_ops, task_id: str):
+    """Bind remote relative I/O to the same task cwd used by path guards/reporting.
+
+    Local operations keep their existing resolved-path behavior. Remote backends
+    must retain their own filesystem transport, so bind the shell execution cwd
+    rather than opening the task-resolved path on the Hermes host.
+    """
+    if _file_ops_uses_host_paths(file_ops) or not isinstance(file_ops, ShellFileOperations):
+        return nullcontext(file_ops)
+    from tools.terminal_tool import _resolve_command_cwd
+
+    env = file_ops.env
+    task_cwd = str(_resolve_base_dir(task_id))
+    backend_cwd = _resolve_command_cwd(
+        workdir=task_cwd,
+        default_cwd=getattr(env, "cwd", None) or file_ops.cwd,
+        session_key=task_id,
+        env_type=_terminal_env_type_for_task(task_id),
+        mounted_host=getattr(env, "host_cwd", None),
+        env=env,
+    )
+    return file_ops.scoped_cwd(backend_cwd)
 
 
 # V4A file headers: group 1 = header prefix, 2 = op, 3 = path. ``\s*`` after
@@ -682,7 +706,10 @@ def read_file_tool(path: str, offset: int = 1, limit: int = DEFAULT_READ_LIMIT, 
                 and version_before == cached_version and content_served_in_generation):
             return _dedup_stub_or_block(task_data, dedup_key, path)
 
-        result = file_ops.read_file(resolved_str if _file_ops_uses_host_paths(file_ops) else path, offset, limit)
+        with _task_cwd_scope(file_ops, task_id):
+            result = file_ops.read_file(
+                resolved_str if _file_ops_uses_host_paths(file_ops) else path,
+                offset, limit)
         result_dict = result.to_dict()
 
         # Failed reads cannot establish whole-file knowledge.
@@ -1000,8 +1027,10 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
             elif mode == "patch":
                 if not patch:
                     return tool_error("patch content required")
-                result = file_ops.patch_v4a(
-                    _rewrite_v4a_patch_paths_for_host(patch, _path_to_resolved, _path_to_entry, file_ops))
+                with _task_cwd_scope(file_ops, task_id):
+                    result = file_ops.patch_v4a(
+                        _rewrite_v4a_patch_paths_for_host(
+                            patch, _path_to_resolved, _path_to_entry, file_ops))
             else:
                 return tool_error(f"Unknown mode: {mode}")
 
@@ -1093,9 +1122,12 @@ def search_tool(pattern: str, target: str = "content", path: str = ".",
         if cached_search_nf is not None:
             return cached_search_nf
 
-        result = _get_file_ops(task_id).search(
-            pattern=pattern, path=path, target=target, file_glob=file_glob,
-            limit=limit, offset=offset, output_mode=output_mode, context=context, order=order)
+        file_ops = _get_file_ops(task_id)
+        with _task_cwd_scope(file_ops, task_id):
+            result = file_ops.search(
+                pattern=pattern, path=path, target=target, file_glob=file_glob,
+                limit=limit, offset=offset, output_mode=output_mode,
+                context=context, order=order)
         omitted = _filter_read_blocked_search_results(result, task_id)
         for m in getattr(result, "matches", None) or ():
             if getattr(m, "content", None):

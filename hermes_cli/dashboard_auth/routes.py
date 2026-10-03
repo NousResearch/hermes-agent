@@ -173,11 +173,20 @@ def _start_upstream_login(request: Request, p, *, audit_failure: bool, extra_pkc
 
 # --- Public: login page + provider list ------------------------------------
 
+# Server-authored login-page notices, keyed by the ``notice=`` query param the
+# auth routes redirect with. Whitelist-mapped only: an unmapped (attacker-
+# controlled) value renders no notice rather than echoing user input.
+_LOGIN_NOTICES = {
+    "signin_expired": "Your sign-in session expired — please sign in again.",
+}
+
+
 @router.get("/login", name="login_page")
 async def login_page(request: Request) -> HTMLResponse:
     # ``next=`` is set by the gate's redirect but /login is reachable directly.
     next_path = _validate_post_login_target(request.query_params.get("next", ""))
-    return HTMLResponse(render_login_html(next_path=next_path), headers=_NO_STORE)
+    notice = _LOGIN_NOTICES.get(request.query_params.get("notice", ""), "")
+    return HTMLResponse(render_login_html(next_path=next_path, notice=notice), headers=_NO_STORE)
 
 
 @router.get("/api/auth/providers", name="auth_providers")
@@ -320,8 +329,13 @@ async def auth_callback(
     error_description: str = ""):
     pkce_raw = read_pkce_cookie(request)
     if not pkce_raw:
+        # The PKCE cookie expired mid-round-trip (e.g. an emailed verification
+        # code outlived its Max-Age) or was dropped. A 400 JSON here reads as a
+        # crash and parks the browser on a URL that can never succeed on
+        # reload; send the user back to a readable login page instead (#126061).
         _audit(request, AuditEvent.LOGIN_FAILURE, reason="missing_pkce_cookie")
-        raise _http(400, "Missing PKCE state cookie")
+        return RedirectResponse(
+            url=f"{_prefix(request)}/login?notice=signin_expired", status_code=302)
     # ``next`` and ``broker`` come from the server-set cookie ONLY: the IDP
     # echoes back just code+state, so any such query param is attacker controlled.
     parts = parse_pkce_payload(pkce_raw)

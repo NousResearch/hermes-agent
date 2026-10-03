@@ -38,7 +38,7 @@ def test_pre_lifecycle_exceptions_end_owner_once(admitted, monkeypatch, stage):
     def fail(*a, **kw):
         raise error
 
-    monkeypatch.setattr(sched, "_prepare_job_prompt", fail if stage == "gate" else lambda *a: (None, "hello"))
+    monkeypatch.setattr(sched, "_prepare_job_prompt", fail if stage == "gate" else lambda *a: (None, "hello", None))
     if stage == "scope":
         monkeypatch.setattr(sched, "_CronRunScope", fail)
     if stage == "import":
@@ -76,7 +76,7 @@ def test_suppression_ends_before_cosmetics_and_bounds_stalls(admitted, monkeypat
     for name in ("end", "set_title", "update_cwd"):
         getattr(db.sessions, name).side_effect = call(name)
     result = (True, "gate", sched.SILENT_MARKER, None)
-    monkeypatch.setattr(sched, "_prepare_job_prompt", lambda *a: (result, None))
+    monkeypatch.setattr(sched, "_prepare_job_prompt", lambda *a: (result, None, None))
     try:
         with _owner_execution(db, job):
             start = time.monotonic()
@@ -96,7 +96,7 @@ def test_suppression_ends_before_cosmetics_and_bounds_stalls(admitted, monkeypat
 @pytest.mark.parametrize("stage", ["blocked", "provider", "store"])
 def test_setup_failure_ends_only_lent_owner(admitted, monkeypatch, stage):
     db, job = admitted
-    monkeypatch.setattr(sched, "_prepare_job_prompt", lambda *a: (None, "hello"))
+    monkeypatch.setattr(sched, "_prepare_job_prompt", lambda *a: (None, "hello", None))
     if stage == "blocked":
         monkeypatch.setattr(sched, "_resolve_cron_agent_setup", lambda *a: sched._CronAgentSetup(blocked=(False, "blocked", "", "blocked")))
     elif stage == "provider":
@@ -115,7 +115,7 @@ def test_live_worker_defers_end_until_stopped(admitted, monkeypatch):
     db, job = admitted
     future = Future()
     agent = MagicMock()
-    monkeypatch.setattr(sched, "_prepare_job_prompt", lambda *a: (None, "hello"))
+    monkeypatch.setattr(sched, "_prepare_job_prompt", lambda *a: (None, "hello", None))
     monkeypatch.setattr(sched, "_open_cron_session_db", lambda job: db)
     monkeypatch.setattr(sched, "_construct_cron_agent", lambda *a, **kw: agent)
 

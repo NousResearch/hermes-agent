@@ -659,10 +659,14 @@ def _run_backup_locked(args, hermes_root: Path) -> bool:
             except (PermissionError, OSError, ValueError) as exc:
                 errors.append(f"{arcname}: {exc}")
     elapsed = time.monotonic() - t0
+    # ``vanished`` members left the tree mid-run: skipped, not failed. But when every scanned
+    # file vanished, the archive is empty — that run must not report success or rotate the
+    # last good backups out in favour of it.
+    archived = file_count - len(errors) - len(vanished)
     zip_size = out_path.stat().st_size
     logger.info("backup phase=archive status=complete duration_ms=%.1f files=%d errors=%d bytes=%d",
                 elapsed * 1000, file_count, len(errors), zip_size)
-    print(f"\nBackup {'incomplete' if errors else 'complete'}: {out_path}\n"
+    print(f"\nBackup {'incomplete' if errors or archived == 0 else 'complete'}: {out_path}\n"
           f"  Files:       {file_count}\n"
           f"  Original:    {_format_size(total_bytes)}\n"
           f"  Compressed:  {_format_size(zip_size)}\n"
@@ -679,16 +683,19 @@ def _run_backup_locked(args, hermes_root: Path) -> bool:
                       vanished, "  ")
     if errors:
         _print_capped(f"\n  Archive kept, but {len(errors)} file(s) could not be added:", errors, "  ")
+    elif archived == 0:
+        print("\n  Every scanned file was deleted mid-run — the archive holds no members; "
+              "nothing to restore.")
     else:
         print(f"\nRestore with: hermes import {out_path.name}")
     # Prune only after a complete archive: a timer hitting the same unreadable file every run must
     # not rotate the last good backups out in favour of incomplete ones.
     keep = getattr(args, "keep", 0)  # 0 / absent: never prune (non-CLI callers)
-    if keep and not errors and out_path.name.startswith(_RUN_BACKUP_PREFIX):
+    if keep and not errors and archived > 0 and out_path.name.startswith(_RUN_BACKUP_PREFIX):
         pruned = _prune_prefixed_zips(out_path.parent, _RUN_BACKUP_PREFIX, keep, "backup")
         if pruned:
             print(f"  Pruned {pruned} older {_RUN_BACKUP_PREFIX}*.zip (keeping {keep}).")
-    return not errors
+    return not errors and archived > 0
 
 
 # --- Import ---
@@ -2040,7 +2047,12 @@ def _write_full_zip_backup_locked(out_path: Path, hermes_root: Path) -> Optional
 
     def _publish_path() -> Optional[Path]:
         # Decide clean/salvage/discard once; the post-publish stat and return reuse it.
+        # ``vanished`` members left the tree mid-run: neither errors nor archived. If they
+        # absorbed every scanned file, nothing was written — publishing the empty archive
+        # would hand retention a "newest" zip to prune the last good backup with.
         nonlocal published
+        if len(errors) + len(vanished) >= len(files_to_add):
+            return None
         if not errors:
             published = out_path
         elif len(errors) < len(files_to_add):
@@ -2063,7 +2075,8 @@ def _write_full_zip_backup_locked(out_path: Path, hermes_root: Path) -> Optional
         return None
 
     if published is None:
-        logger.warning("Full-zip backup: every entry failed, nothing salvaged: %s", _capped(errors))
+        logger.warning("Full-zip backup: nothing archived (%d failed, %d deleted mid-run), nothing salvaged",
+                       len(errors), len(vanished))
         return None
     zip_size = published.stat().st_size
     if published != out_path:

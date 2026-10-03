@@ -119,12 +119,29 @@ def _clear_skills_cache() -> None:
         pass
 
 
+def _clear_local_skills_cache() -> None:
+    """Drop only the in-process skills prompt cache; the disk snapshot (other processes'
+    self-heal anchor) stays."""
+    try:
+        from agent.prompt_builder import clear_skills_system_prompt_cache
+        clear_skills_system_prompt_cache(clear_snapshot=False)
+    except Exception:
+        pass
+
+
 def _finish_change(c: Console, invalidate_cache: bool, what: str = "Change will take effect",
                    verb: str = "apply", notice: bool = True) -> None:
     """Apply-now (cache clear) or, when `notice`, tell the user the change lands next session."""
     if invalidate_cache:
         _clear_skills_cache()
         return
+    # Deferred still drops the in-process cache: the running conversation's prompt is restored
+    # byte-stable from the session DB and never consults it (prompt-cache invariant intact),
+    # but the NEXT session built in this process must reflect the change — the printed advice
+    # says "/reset to start a new session now", and a stale LRU entry served that promise
+    # falsely until a process restart. The disk snapshot stays for other processes, whose
+    # snapshot loader re-validates against the skills manifest on every read.
+    _clear_local_skills_cache()
     if not notice:
         return
     c.print(f"[dim]{what} in your next session.[/]")

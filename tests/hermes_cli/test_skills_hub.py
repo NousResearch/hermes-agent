@@ -8,6 +8,39 @@ from cli import ChatConsole
 from hermes_cli.skills_hub import do_check, do_install, do_list, do_update, handle_skills_slash
 
 
+def test_deferred_hub_change_drops_in_process_prompt_cache(tmp_path):
+    """/skills <action> (deferred, the default) prints "Change will take effect in your
+    next session. Use /reset to start a new session now" — but the in-process prompt
+    cache served that advice falsely: a /reset session rebuilt the prompt from the stale
+    LRU entry and still listed the uninstalled skill until a process restart.
+
+    Dropping the LRU is invisible to the running conversation (its prompt is restored
+    byte-stable from the session DB and never consults this cache), so deferred keeps the
+    prompt-caching invariant while finally honoring the printed next-session promise."""
+    import shutil
+
+    from agent.prompt_builder import _SKILLS_PROMPT_CACHE, build_skills_system_prompt
+    from hermes_cli.skills_hub import _finish_change
+
+    skill_dir = tmp_path / "skills" / "general" / "alpha"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(
+        "---\nname: alpha\ndescription: deferred-change probe\n---\nbody\n", encoding="utf-8")
+
+    try:
+        _SKILLS_PROMPT_CACHE.clear()
+        assert "alpha" in build_skills_system_prompt(skills_dir_override=tmp_path / "skills")
+        assert _SKILLS_PROMPT_CACHE, "probe skill must warm the in-process cache"
+
+        shutil.rmtree(skill_dir)  # the uninstall itself
+        _finish_change(Console(), invalidate_cache=False, notice=False)  # deferred path
+
+        rebuilt = build_skills_system_prompt(skills_dir_override=tmp_path / "skills")
+        assert "alpha" not in rebuilt, "next session still lists the uninstalled skill"
+    finally:
+        _SKILLS_PROMPT_CACHE.clear()
+
+
 class _DummyLockFile:
     def __init__(self, installed):
         self._installed = installed

@@ -105,7 +105,8 @@ class FileOperations(ABC):
         """Whole file as a plain string: no pagination, line numbers or clamping."""
 
     @abstractmethod
-    def write_file(self, path: str, content: str, pre_content: Optional[str] = None) -> WriteResult:
+    def write_file(self, path: str, content: str, pre_content: Optional[str] = None,
+                   keep_line_endings: bool = False) -> WriteResult:
         """Write content to a file, creating directories as needed."""
 
     @abstractmethod
@@ -1491,7 +1492,8 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
             pass
         return None, None
 
-    def write_file(self, path: str, content: str, pre_content: Optional[str] = None) -> WriteResult:
+    def write_file(self, path: str, content: str, pre_content: Optional[str] = None,
+                   keep_line_endings: bool = False) -> WriteResult:
         """Write content atomically, creating parent directories as needed.
 
         Order: deny list → lone-surrogate refusal → fail-closed syntax gate on the
@@ -1525,7 +1527,9 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
                 return refused
         # read_file strips the BOM and models send bare-LF text, so a round-trip would
         # otherwise normalize CRLF files and drop the BOM (prepend only when absent).
-        if original_ending == "\r\n":
+        # ``keep_line_endings``: an edit that already gave the text it inserted the file's ending
+        # (patch) — converting the whole buffer would rewrite untouched bytes.
+        if original_ending == "\r\n" and not keep_line_endings:
             content = _normalize_line_endings(content, "\r\n")
         if has_bom and not _has_bom(content):
             content = _UTF8_BOM + content
@@ -1619,16 +1623,13 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
         content, _ = _strip_bom(raw_content)
 
         from tools.fuzzy_match import fuzzy_find_and_replace
+        # Models send bare-LF old/new strings: the line breaks new_string inserts take the file's
+        # ending so CRLF files stay consistent, and bytes outside it keep theirs.
         new_content, match_count, _strategy, error = fuzzy_find_and_replace(
-            content, old_string, new_string, replace_all)
+            content, old_string, new_string, replace_all, line_ending=_detect_line_ending(content))
         if error or match_count == 0:
             return self._no_match_result(path, content, old_string, new_string, match_count, error)
-        # Models send bare-LF old/new strings; normalize the substituted region to
-        # the file's ending so CRLF files stay consistent.
-        file_ending = _detect_line_ending(content)
-        if file_ending:
-            new_content = _normalize_line_endings(new_content, file_ending)
-        write_result = self.write_file(path, new_content, pre_content=raw_content)
+        write_result = self.write_file(path, new_content, pre_content=raw_content, keep_line_endings=True)
         if write_result.error:
             return PatchResult(error=f"Failed to write changes: {write_result.error}")
         verify_error = self._verify_patch_persisted(path, new_content)

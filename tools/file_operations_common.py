@@ -7,7 +7,7 @@ the model.
 
 import re
 from dataclasses import dataclass, field
-from typing import Any, ClassVar, Dict, List, Optional
+from typing import Any, ClassVar, Dict, List, Optional, Sequence
 
 
 @dataclass
@@ -246,6 +246,47 @@ def _normalize_line_endings(text: str, target: str) -> str:
     if target == "\r\n":
         return lf_normalized.replace("\n", "\r\n")
     return text
+
+
+_BARE_LF_RE = re.compile(r"(?<!\r)\n")
+
+
+def _with_line_ending(text: str, ending: str) -> str:
+    """``text`` an edit inserts, with its bare-LF line breaks as the file's ``ending`` (models send
+    bare LF). A CRLF or lone CR the text already carries stays."""
+    return _BARE_LF_RE.sub(ending, text)
+
+
+def _splice_line_endings(region: str, replacement: str, *, pattern: str, ending: str,
+                         kept_lines: Optional[Sequence[Optional[int]]] = None) -> str:
+    """``replacement``, about to be spliced over the matched ``region``, with line endings by
+    provenance, so an edit never rewrites bytes it did not write (a CRLF past the 4 KB detection
+    window of an LF file, an LF-only line in a CRLF file, a lone-CR progress line):
+
+    - a line break the replacement inserts takes the file's ``ending``;
+    - a kept line (``kept_lines[j]`` is the index of the ``pattern`` line that replacement line
+      ``j`` repeats unchanged, a V4A context line) keeps its region line's ending;
+    - the last line ends in the file's own terminator after the region, so a CR the match took
+      from that terminator (a line-window match stops before the ``\\n``) goes back, unless
+      ``pattern`` named it.
+
+    A CR the replacement itself puts at a line end stays. Linear: no diff is inferred."""
+    region_lines = region.split("\n")
+    if kept_lines is None or len(region_lines) != pattern.count("\n") + 1:
+        kept_lines = ()  # the region's lines do not line up with the pattern's
+    lines = replacement.split("\n")
+    last = len(lines) - 1
+    out = []
+    for j, line in enumerate(lines):
+        source = kept_lines[j] if j < len(kept_lines) else None
+        if source is not None:
+            cr = region_lines[source].endswith("\r")
+        elif j < last:
+            cr = line.endswith("\r") or ending == "\r\n"
+        else:
+            cr = line.endswith("\r") or (region_lines[-1].endswith("\r") and not pattern.endswith("\r"))
+        out.append(line.removesuffix("\r") + ("\r" if cr else ""))
+    return "\n".join(out)
 
 
 # UTF-8 BOM (EF BB BF == U+FEFF), prepended by some Windows editors. Stripped on

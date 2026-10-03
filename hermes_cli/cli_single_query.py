@@ -190,6 +190,12 @@ def _single_query_exit_code(result, *, credentials_rate_limited: bool = False,
     return 1
 
 
+def _result_reset_at(result) -> "float | None":
+    """The provider's quota reset epoch a failed turn stamped (``failure_resets_at``), else None."""
+    value = result.get("failure_resets_at") if isinstance(result, dict) else None
+    return float(value) if isinstance(value, (int, float)) and value > 0 else None
+
+
 def _run_quiet_single_query(cli, effective_query, emitter=None):
     """Quiet (-Q) one-shot turn: run, print the response (stderr for errors/session_id), then sys.exit with the automation exit code.
     With a ``StreamJsonEmitter`` the final answer and the exit line become the terminal ``result`` JSONL record instead.
@@ -336,7 +342,7 @@ def _run_quiet_single_query(cli, effective_query, emitter=None):
 
     if emitter is not None:
         _exit_code = emitter.emit_result(result, session_id=cli.session_id or "", exit_code=_exit_code)
-    exit_single_query(_exit_code)
+    exit_single_query(_exit_code, reset_at=_result_reset_at(result))
 
 
 def _route_single_query_images(cli, query, effective_query, single_query_images, single_query_image_urls):
@@ -596,6 +602,7 @@ def _run_single_query_mode(cli, query, image, quiet, oneshot, stream_json: bool 
         exit_single_query(_single_query_exit_code(
             cli._last_turn_result,
             credentials_rate_limited=getattr(cli, "_credentials_rate_limited", False),
-            credentials_terminal=getattr(cli, "_credentials_terminal", False)))
+            credentials_terminal=getattr(cli, "_credentials_terminal", False)),
+            reset_at=_result_reset_at(cli._last_turn_result))
     finally:
         _finalize_single_query(cli)

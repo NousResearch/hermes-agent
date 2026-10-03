@@ -2095,6 +2095,9 @@ DEFAULT_CONFIG = {
         "export": {"otlp": {"enabled": False, "endpoint": "", "headers_env": {}}},
     },
     "gateway": {  # Gateway settings (messaging platforms: Telegram, Discord, Slack, ...).
+        # Set false for operator-managed Windows Scheduled Tasks. Automatic start/update
+        # reconciliation and its status repair hint are skipped; explicit install is unchanged.
+        "windows_task_reconcile": True,
 
         # Seconds to let a SIGTERM-interrupted gateway agent unwind before adapter/database
         # teardown. Keep short so service-manager shutdowns don't exhaust their stop budget.

@@ -8,6 +8,8 @@ No ``registry.register`` here on purpose: tool discovery must not import this mo
 import json
 import threading
 
+from tools.feishu_client import build_client_from_env
+
 # The lark client is injected per-thread by the feishu_comment event handler right
 # before it runs the agent, so concurrent comment events never see each other's client.
 _local = threading.local()
@@ -19,8 +21,20 @@ def set_client(client):
 
 
 def get_client():
-    """Return the lark client for the current thread, or None."""
-    return getattr(_local, "client", None)
+    """Return the lark client for the current thread, or build one from env creds.
+
+    When a comment-context client has been injected, that wins. Otherwise fall back to
+    the gateway app credentials (``FEISHU_APP_ID``/``FEISHU_APP_SECRET`` or
+    ``LARK_APP_ID``/``LARK_APP_SECRET``) so the doc/drive tools still work in ordinary
+    chat sessions where no comment client exists.
+    """
+    client = getattr(_local, "client", None)
+    if client is not None:
+        return client
+    client = build_client_from_env()
+    if client is not None:
+        _local.client = client
+    return client
 
 
 def _check_feishu():

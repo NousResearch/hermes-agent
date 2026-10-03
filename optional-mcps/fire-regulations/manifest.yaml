@@ -1,0 +1,55 @@
+# Nous-approved MCP catalog entry proposal.
+# Inclusion requires maintainer review and PR merge into NousResearch/hermes-agent.
+manifest_version: 1
+
+name: fire-regulations
+description: Search versioned Korean fire-safety laws and administrative rules from official-source local snapshots.
+source: https://github.com/119gpt333-sys/fire-regulations-mcp
+
+transport:
+  type: stdio
+  command: uv
+  args:
+    - run
+    - --project
+    - "${INSTALL_DIR}"
+    - --no-sync
+    - fire-mcp
+  version: "0.1.0"
+
+install:
+  type: git
+  url: https://github.com/119gpt333-sys/fire-regulations-mcp.git
+  # Full commit SHA: catalog installs must not float with a branch head.
+  ref: 245a916fc5b793caccec4040e46088123a87fdf7
+  bootstrap:
+    - "uv sync --locked --no-dev"
+
+auth:
+  type: none
+
+tools:
+  # All tools are read-only. Sync and review operations remain separate local CLIs.
+  default_enabled:
+    - search_current_rules
+    - get_rule_as_of
+    - trace_exception_path
+    - get_source_status
+    - list_pending_changes
+
+post_install: |
+  This MCP keeps official-source snapshots and its SQLite index on the user's machine.
+  The catalog install intentionally contains no pre-synced legal text or credentials.
+
+  Populate a small sample with the National Law Information Center's public test credential:
+    uv run --project "${HERMES_HOME:-$HOME/.hermes}/mcp-installs/fire-regulations" fire-mcp-sync --max-per-entry 3
+
+  For operational synchronization, obtain an OC credential through the official
+  National Law Information Center data-sharing process and pass it only at runtime:
+    LAW_API_OC='<issued value>' uv run --project "${HERMES_HOME:-$HOME/.hermes}/mcp-installs/fire-regulations" fire-mcp-sync
+
+  Newly collected or hash-changed versions remain pending until a responsible reviewer
+  compares them with the official source and approves them through fire-mcp-review.
+  The MCP does not automatically determine legal compliance for an individual facility.
+
+  Start a new Hermes session after synchronization to use the tools.

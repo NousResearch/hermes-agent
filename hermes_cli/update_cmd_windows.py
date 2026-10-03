@@ -1070,6 +1070,11 @@ def _cold_start_windows_gateway_after_update(token: dict | None = None) -> bool:
         raise RuntimeError("Windows gateway cold-start did not return a process ID")
     ready_pids = gateway_windows._wait_for_gateway_ready()
     if not ready_pids:
+        # ponytail: one final synchronous probe, no extra wait — a slow starter
+        # can appear just past the poll deadline; only a still-absent gateway
+        # earns the hard failure, or a live gateway reports update FAILED (#102974).
+        ready_pids = gateway_windows._live_gateway_pids()
+    if not ready_pids:
         raise RuntimeError(f"Windows gateway cold-start PID {pid} did not become ready")
     # The dead attestation has done its job (it authorized this spawn under Desktop ownership). Consume
     # it only now: a spawn that never became ready leaves it in place, so the registered retry still

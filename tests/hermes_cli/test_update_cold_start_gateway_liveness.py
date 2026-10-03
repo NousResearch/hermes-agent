@@ -69,3 +69,30 @@ def test_cold_start_reports_success_when_process_survives(monkeypatch, capsys):
     out = _run_cold_start(monkeypatch, capsys, surviving_pids=[4242])
 
     assert "✓ Gateway started via cold-start after update" in out
+
+
+def test_cold_start_succeeds_when_gateway_appears_just_after_poll_window(monkeypatch, capsys):
+    """#102974: a slow starter the timed poll missed must not fail the update.
+
+    The poll window can close just before the gateway becomes visible (slow
+    first start after update, discovery lag) while the gateway is in fact
+    alive seconds later. The cold-start must re-check liveness once before
+    raising, instead of failing a successful update.
+    """
+    monkeypatch.setattr(cli_main, "_is_windows", lambda: True)
+    monkeypatch.setattr(main_install_repair, "_is_windows", lambda: True)
+    # Pre-spawn fleet check sees nothing so cold-start proceeds; the
+    # post-poll re-check sees the slow starter the window missed.
+    monkeypatch.setattr(
+        hermes_gateway,
+        "find_gateway_pids",
+        lambda all_profiles=False: [] if all_profiles else [4242],
+    )
+    monkeypatch.setattr(update_cmd, "_desktop_owns_gateway_lifecycle", lambda: False)
+    monkeypatch.setattr(gateway_windows, "_spawn_detached", lambda: 4242)
+    # The timed poll window missed it (the #102974 race).
+    monkeypatch.setattr(gateway_windows, "_wait_for_gateway_ready", lambda *a, **k: [])
+
+    update_cmd._cold_start_windows_gateway_after_update()
+
+    assert "✓ Gateway started via cold-start after update" in capsys.readouterr().out

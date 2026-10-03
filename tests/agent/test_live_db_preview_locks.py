@@ -58,13 +58,13 @@ def test_preview_preserves_live_database_locks(tmp_path, route, target_kind):
         if route == "desktop":
             # FileResponse opens/closes in-process too, so a download must be refused as well,
             # with the same (sidecar-aware) refusal text as the read.
-            for route_fn in (fs_read_text, fs_download):
+            for route_fn in (fs_read_text, lambda p: asyncio.run(fs_download(p))):
                 with pytest.raises(HTTPException) as refused:
-                    asyncio.run(route_fn(str(target)))
+                    route_fn(str(target))
                 assert refused.value.status_code == 409
                 if target_kind == "shm":
                     assert "main database" in refused.value.detail
-            assert asyncio.run(fs_read_text(str(text)))["text"] == "ordinary readable text"
+            assert fs_read_text(str(text))["text"] == "ordinary readable text"
         else:
             ref = parse_context_references(f"@{route}:{target}")[0]
             warning, block = _expand_path_reference(ref, tmp_path.parent)
@@ -107,6 +107,6 @@ def test_closed_database_can_still_be_previewed(tmp_path):
     ref = parse_context_references(f"@file:{path}")[0]
     warning, block = _expand_path_reference(ref, tmp_path.parent)
     assert warning is None and block is not None and "binary file" in block
-    preview = asyncio.run(fs_read_text(str(path)))
+    preview = fs_read_text(str(path))
     assert preview["binary"] is True and preview["byteSize"] == path.stat().st_size
     assert asyncio.run(fs_download(str(path))).path == str(path)

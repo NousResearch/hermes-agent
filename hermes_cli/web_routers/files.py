@@ -23,7 +23,7 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 
 from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 
 from hermes_cli._subprocess_compat import windows_hide_flags
 from hermes_cli.sqlite_safe_read import LiveConnectionError, offline_file_access
@@ -505,7 +505,7 @@ async def upload_chat_image(payload: ChatImageUpload, profile: Optional[str] = N
 
 
 @router.get("/api/files")
-async def list_managed_files(request: Request, path: Optional[str] = None):
+def list_managed_files(request: Request, path: Optional[str] = None):
     policy, target, display_path = _resolve_managed_path(path, request)
     if not target.exists():
         raise HTTPException(status_code=404, detail="Path not found")
@@ -555,19 +555,20 @@ def _managed_file_size(target: Path, max_bytes: int) -> int:
 
 
 @router.get("/api/files/read")
-async def read_managed_file(request: Request, path: str):
+def read_managed_file(request: Request, path: str):
     policy, target, display_path, max_bytes, mime_type = _managed_readable_file(request, path)
     size = _managed_file_size(target, max_bytes)
     with _io_errors("File is not readable", "Could not read file"):
-        encoded = await asyncio.to_thread(_read_base64_file, target)
-    return {
+        encoded = _read_base64_file(target)
+    # Rendered here, on the worker: returned as a dict, the multi-MB data URL would be serialized on the event loop.
+    return JSONResponse({
         "name": target.name,
         "path": display_path,
         "size": size,
         "mime_type": mime_type,
         "data_url": f"data:{mime_type};base64,{encoded}",
         **_managed_response_meta(policy),
-    }
+    })
 
 
 async def _managed_file_response(
@@ -641,7 +642,7 @@ def _managed_write_result(policy, target: Path, display_path: str) -> dict:
 
 
 @router.post("/api/files/upload")
-async def upload_managed_file(payload: ManagedFileUpload, request: Request):
+def upload_managed_file(payload: ManagedFileUpload, request: Request):
     policy, target, display_path = _managed_write_target(payload.path, request, payload.overwrite)
     data, _mime_type = _decode_data_url(payload.data_url)
     with _io_errors("File is not writable", "Could not write file"):
@@ -680,8 +681,9 @@ async def stream_upload_to_path(
                 total += len(chunk)
                 if total > _MANAGED_FILE_MAX_BYTES:
                     raise HTTPException(status_code=413, detail=too_large)
-                out.write(chunk)
-        os.replace(tmp_path, target)
+                # Only the read stays on the event loop, so an abort still reaches the cleanup below.
+                await asyncio.to_thread(out.write, chunk)
+        await asyncio.to_thread(os.replace, tmp_path, target)
         renamed = True
     except PermissionError:
         raise HTTPException(status_code=403, detail=not_writable)
@@ -716,7 +718,7 @@ async def upload_managed_file_stream(
 
 
 @router.post("/api/files/mkdir")
-async def create_managed_directory(payload: ManagedDirectoryCreate, request: Request):
+def create_managed_directory(payload: ManagedDirectoryCreate, request: Request):
     policy, target, display_path = _resolve_managed_path(payload.path, request, for_write=True)
     if target.exists() and not target.is_dir():
         raise HTTPException(status_code=409, detail="A file already exists at that path")
@@ -726,7 +728,7 @@ async def create_managed_directory(payload: ManagedDirectoryCreate, request: Req
 
 
 @router.delete("/api/files")
-async def delete_managed_file(payload: ManagedFileDelete, request: Request):
+def delete_managed_file(payload: ManagedFileDelete, request: Request):
     policy, target, display_path = _resolve_managed_path(payload.path, request)
     if policy.locked_root is not None and target == policy.locked_root:
         raise HTTPException(status_code=400, detail="Cannot delete the managed files root")
@@ -757,11 +759,11 @@ _FS_LIST_ERRNO = (
 
 
 @router.get("/api/fs/list")
-async def fs_list(path: str, profile: Optional[str] = None):
-    backend = await asyncio.to_thread(_fs_backend, profile)
+def fs_list(path: str, profile: Optional[str] = None):
+    backend = _fs_backend(profile)
     if backend is not None:
         try:
-            return await asyncio.to_thread(backend.list_dir, path, _FS_READDIR_HIDDEN)
+            return backend.list_dir(path, _FS_READDIR_HIDDEN)
         except Exception as exc:
             _raise_fs_backend_error(exc)
     target = _fs_path(path)
@@ -786,12 +788,11 @@ async def fs_list(path: str, profile: Optional[str] = None):
 
 
 @router.get("/api/fs/read-text")
-async def fs_read_text(path: str, profile: Optional[str] = None):
-    backend = await asyncio.to_thread(_fs_backend, profile)
+def fs_read_text(path: str, profile: Optional[str] = None):
+    backend = _fs_backend(profile)
     if backend is not None:
         try:
-            data, size, target = await asyncio.to_thread(
-                backend.read_bytes,
+            data, size, target = backend.read_bytes(
                 path,
                 max_bytes=_FS_TEXT_SOURCE_MAX_BYTES,
                 read_limit=_FS_TEXT_PREVIEW_MAX_BYTES,
@@ -811,9 +812,7 @@ async def fs_read_text(path: str, profile: Optional[str] = None):
     target, st = _fs_regular_file(_fs_path(path))
     if st.st_size > _FS_TEXT_SOURCE_MAX_BYTES:
         raise HTTPException(status_code=413, detail="File too large")
-    data = await asyncio.to_thread(
-        _fs_read_bytes, target, min(st.st_size, _FS_TEXT_PREVIEW_MAX_BYTES),
-    )
+    data = _fs_read_bytes(target, min(st.st_size, _FS_TEXT_PREVIEW_MAX_BYTES))
     return {
         "binary": _fs_looks_binary(data[:4096]),
         "byteSize": st.st_size,
@@ -826,7 +825,7 @@ async def fs_read_text(path: str, profile: Optional[str] = None):
 
 
 @router.post("/api/fs/write-text")
-async def fs_write_text(payload: FsWriteText, profile: Optional[str] = None):
+def fs_write_text(payload: FsWriteText, profile: Optional[str] = None):
     """Overwrite (or create) a UTF-8 text file for the in-app spot editor.
 
     Mirrors the Electron ``hermes:fs:writeText`` hardening: path validated by
@@ -836,11 +835,10 @@ async def fs_write_text(payload: FsWriteText, profile: Optional[str] = None):
     Stale-on-disk detection is the client's job (re-read before save).
     """
     text = payload.content or ""
-    backend = await asyncio.to_thread(_fs_backend, profile)
+    backend = _fs_backend(profile)
     if backend is not None:
         try:
-            target, byte_size = await asyncio.to_thread(
-                backend.write_text,
+            target, byte_size = backend.write_text(
                 payload.path,
                 text,
                 max_bytes=_FS_TEXT_WRITE_MAX_BYTES,
@@ -916,10 +914,13 @@ async def fs_read_data_url(
     target, st = _fs_regular_file(await _fs_download_path(path, profile, session_id))
     if st.st_size > _FS_DATA_URL_MAX_BYTES:
         raise HTTPException(status_code=413, detail="File too large")
-    encoded = await asyncio.to_thread(
-        lambda: base64.b64encode(_fs_read_bytes(target)).decode("ascii"),
-    )
-    return {"dataUrl": f"data:{_fs_mime_type(target)};base64,{encoded}"}
+
+    def _render() -> JSONResponse:
+        encoded = base64.b64encode(_fs_read_bytes(target)).decode("ascii")
+        return JSONResponse({"dataUrl": f"data:{_fs_mime_type(target)};base64,{encoded}"})
+
+    # Read, encode and render off the event loop: up to 16 MB inline stalls every other request (and /api/ws).
+    return await asyncio.to_thread(_render)
 
 
 @router.get("/api/fs/download")
@@ -952,11 +953,11 @@ async def fs_download(
 
 
 @router.get("/api/fs/git-root")
-async def fs_git_root(path: str, profile: Optional[str] = None):
-    backend = await asyncio.to_thread(_fs_backend, profile)
+def fs_git_root(path: str, profile: Optional[str] = None):
+    backend = _fs_backend(profile)
     if backend is not None:
         try:
-            return {"root": await asyncio.to_thread(backend.git_root, path)}
+            return {"root": backend.git_root(path)}
         except Exception as exc:
             _raise_fs_backend_error(exc)
     target = _fs_path(path)
@@ -969,12 +970,12 @@ async def fs_git_root(path: str, profile: Optional[str] = None):
 
 
 @router.get("/api/fs/default-cwd")
-async def fs_default_cwd(profile: Optional[str] = None):
-    backend = await asyncio.to_thread(_fs_backend, profile)
+def fs_default_cwd(profile: Optional[str] = None):
+    backend = _fs_backend(profile)
     if backend is not None:
         cwd = backend.cwd
         try:
-            branch = await asyncio.to_thread(backend.git_branch, cwd)
+            branch = backend.git_branch(cwd)
         except Exception as exc:
             _raise_fs_backend_error(exc)
         return {"cwd": cwd, "branch": branch}

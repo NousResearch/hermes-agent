@@ -128,6 +128,30 @@ def _navigate_private_target(bt: Any, params: Dict[str, Any]) -> Optional[str]:
     return target_url if target_url and _url_blocked(bt, target_url) else None
 
 
+def _navigate_policy_block(params: Dict[str, Any]) -> Optional[str]:
+    """Website blocklist + secret-in-URL checks on a ``Page.navigate`` target, mirroring
+    ``browser_navigate``; blocked ``tool_error`` JSON, else ``None``.
+
+    Unlike the private-address backstop above, these floors are backend-independent: the
+    website blocklist is an explicit user denial and a secret in a URL leaks on every
+    backend, so raw CDP must not become their bypass. Best-effort like the other probes —
+    a probe failure never breaks local/custom CDP workflows.
+    """
+    try:
+        from tools.browser_tool import _secret_url_error_normalized, _url_policy_error
+        target_url = str(params.get("url") or "").strip()
+        if not target_url:
+            return None
+        normalized_url, err = _secret_url_error_normalized(target_url)
+        if err is not None:
+            return _blocked(err["error"], "Page.navigate")
+        if (err := _url_policy_error(normalized_url)) is not None:
+            return _blocked(err["error"], "Page.navigate")
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("browser_cdp: navigate policy guard probe failed: %s", exc)
+    return None
+
+
 # method → (probe(bt, params) -> blocked literal | None, error template)
 _METHOD_PARAM_GUARDS = {
     "Page.navigate": (_navigate_private_target,
@@ -270,6 +294,10 @@ def browser_cdp(method: str, params: Optional[Dict[str, Any]] = None, target_id:
         blocked = _browser_cdp_private_guard(task_id=effective_task_id, method=method, params=params or {})
         if blocked:
             return blocked
+        if method == "Page.navigate":
+            policy_block = _navigate_policy_block(params or {})
+            if policy_block:
+                return policy_block
         return _browser_cdp_via_supervisor(task_id=effective_task_id, frame_id=frame_id, method=method,
                                            params=params, timeout=timeout)
 
@@ -294,6 +322,10 @@ def browser_cdp(method: str, params: Optional[Dict[str, Any]] = None, target_id:
     blocked = _browser_cdp_private_guard(task_id=effective_task_id, method=method, params=call_params)
     if blocked:
         return blocked
+    if method == "Page.navigate":
+        policy_block = _navigate_policy_block(call_params)
+        if policy_block:
+            return policy_block
 
     try:
         safe_timeout = float(timeout) if timeout else 30.0

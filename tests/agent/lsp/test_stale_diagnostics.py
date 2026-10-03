@@ -55,7 +55,7 @@ async def test_slow_push_is_waited_for(tmp_path: Path):
     """A server that re-checks slowly (but within budget) gets waited on,
     and the fresh (clean) result replaces the old error."""
     f = tmp_path / "x.py"
-    f.write_text("bad code\n")
+    f.write_text("bad code\n", encoding="utf-8")
 
     client = _client(tmp_path, "slow_push", MOCK_LSP_PUSH_DELAY="0.8")
     await client.start()
@@ -64,7 +64,7 @@ async def test_slow_push_is_waited_for(tmp_path: Path):
         assert await client.wait_for_diagnostics(str(f), v0, mode="document", timeout=2.0)
         assert len(client.diagnostics_for(str(f), fresh_only=True)) == 1
 
-        f.write_text("good code\n")
+        f.write_text("good code\n", encoding="utf-8")
         v1 = await client.open_file(str(f), language_id="python")
         fresh = await client.wait_for_diagnostics(str(f), v1, mode="document", timeout=5.0)
         assert fresh is True, "slow push within budget must satisfy the wait"
@@ -118,7 +118,7 @@ def stale_repo(monkeypatch, tmp_path):
     repo = tmp_path / "repo"
     repo.mkdir()
     (repo / ".git").mkdir()
-    (repo / "pyproject.toml").write_text("")
+    (repo / "pyproject.toml").write_text("", encoding="utf-8")
     monkeypatch.chdir(str(repo))
     idx, original = _install_mock_server("stale")
     yield repo
@@ -133,7 +133,7 @@ def test_service_reports_no_data_not_stale_errors(stale_repo):
     from agent.lsp.manager import LSPService
 
     f = stale_repo / "x.py"
-    f.write_text("bad code\n")
+    f.write_text("bad code\n", encoding="utf-8")
 
     svc = LSPService(
         enabled=True,
@@ -147,7 +147,7 @@ def test_service_reports_no_data_not_stale_errors(stale_repo):
         assert len(first) == 1
 
         # Edit the file — mock never re-publishes (slow tsserver model).
-        f.write_text("good code\n")
+        f.write_text("good code\n", encoding="utf-8")
         ghost = svc.get_diagnostics_sync(str(f), delta=False)
         assert ghost == [], "stale pre-edit error must not be reported as current"
 
@@ -156,4 +156,4 @@ def test_service_reports_no_data_not_stale_errors(stale_repo):
         status = svc.get_status()
         assert status["broken"] == []
     finally:
-        svc.shutdown()
+        assert svc.shutdown() is True

@@ -7,6 +7,7 @@ pyright/gopls/etc. are still alive on the host.
 from __future__ import annotations
 
 import atexit
+import threading
 from unittest.mock import MagicMock
 
 import pytest
@@ -23,9 +24,11 @@ def _reset_singleton():
     after every test so order doesn't matter.
     """
     lsp_module._service = None
+    lsp_module._services_by_home.clear()
     lsp_module._atexit_registered = False
     yield
     lsp_module._service = None
+    lsp_module._services_by_home.clear()
     lsp_module._atexit_registered = False
 
 
@@ -75,7 +78,7 @@ def test_shutdown_service_idempotent(monkeypatch):
     second call no-ops (nothing to shut down)."""
     fake_svc = MagicMock()
     fake_svc.is_active.return_value = True
-    fake_svc.shutdown = MagicMock()
+    fake_svc.shutdown = MagicMock(return_value=True)
     monkeypatch.setattr(
         lsp_module.LSPService, "create_from_config", classmethod(lambda cls: fake_svc)
     )
@@ -88,9 +91,181 @@ def test_shutdown_service_idempotent(monkeypatch):
     assert fake_svc.shutdown.call_count == 1
 
 
+def test_shutdown_fences_concurrent_get_service_until_teardown_finishes(
+    monkeypatch,
+):
+    shutdown_started = threading.Event()
+    cleanup_complete = threading.Event()
+    replacement_created = threading.Event()
+
+    class TrackingLock:
+        def __init__(self):
+            self._lock = threading.Lock()
+            self.waiter_attempted = threading.Event()
+
+        def __enter__(self):
+            if self._lock.locked():
+                self.waiter_attempted.set()
+            self._lock.acquire()
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            self._lock.release()
+
+    service_lock = TrackingLock()
+    monkeypatch.setattr(lsp_module, "_service_lock", service_lock)
+
+    old_service = MagicMock()
+    old_service.is_active.return_value = True
+
+    def shutdown():
+        shutdown_started.set()
+        assert service_lock.waiter_attempted.wait(timeout=2.0)
+        assert not replacement_created.is_set()
+        cleanup_complete.set()
+        return True
+
+    old_service.shutdown.side_effect = shutdown
+    replacement = MagicMock()
+    replacement.is_active.return_value = True
+
+    def create_replacement(cls):
+        assert cleanup_complete.is_set()
+        replacement_created.set()
+        return replacement
+
+    monkeypatch.setattr(
+        lsp_module.LSPService,
+        "create_from_config",
+        classmethod(create_replacement),
+    )
+    monkeypatch.setattr(atexit, "register", lambda fn: None)
+    lsp_module._service = old_service
+
+    shutdown_result = []
+    get_result = []
+    shutdown_thread = threading.Thread(
+        target=lambda: shutdown_result.append(lsp_module.shutdown_service())
+    )
+
+    def get_concurrently():
+        get_result.append(lsp_module.get_service())
+
+    get_thread = threading.Thread(target=get_concurrently)
+    shutdown_thread.start()
+    assert shutdown_started.wait(timeout=2.0)
+    get_thread.start()
+    shutdown_thread.join(timeout=2.0)
+    get_thread.join(timeout=2.0)
+
+    assert not shutdown_thread.is_alive()
+    assert not get_thread.is_alive()
+    assert shutdown_result == [True]
+    assert get_result == [replacement]
+    assert replacement_created.is_set()
+
+
+def test_failed_shutdown_leaves_tombstone_and_refuses_replacement(monkeypatch):
+    failed_service = MagicMock()
+    failed_service.is_active.return_value = True
+    failed_service.shutdown.return_value = False
+    failed_service._get_shutdown_error.return_value = "cleanup blocked"
+    lsp_module._service = failed_service
+
+    replacement = MagicMock()
+    replacement.is_active.return_value = True
+    create = MagicMock(return_value=replacement)
+    monkeypatch.setattr(
+        lsp_module.LSPService,
+        "create_from_config",
+        classmethod(lambda cls: create()),
+    )
+
+    assert lsp_module.shutdown_service() is False
+    assert isinstance(lsp_module._service, lsp_module._ServiceTombstone)
+    assert lsp_module.get_service() is None
+    assert create.call_count == 0
+
+    failed_service.shutdown.return_value = True
+    assert lsp_module.shutdown_service() is True
+    assert lsp_module._service is None
+    assert lsp_module.get_service() is replacement
+    assert create.call_count == 1
+
+
+def test_singleton_tombstone_survives_loop_stop_failure():
+    svc = lsp_module.LSPService(
+        enabled=True,
+        wait_mode="document",
+        wait_timeout=1.0,
+        install_strategy="manual",
+        idle_timeout=0,
+    )
+    real_stop = svc._loop.stop
+    stop_calls = 0
+
+    def flaky_stop():
+        nonlocal stop_calls
+        stop_calls += 1
+        if stop_calls == 1:
+            return False
+        return real_stop()
+
+    svc._loop.stop = flaky_stop  # type: ignore[method-assign]
+    lsp_module._service = svc
+    try:
+        assert lsp_module.shutdown_service() is False
+        assert isinstance(lsp_module._service, lsp_module._ServiceTombstone)
+        assert svc._loop._thread is not None
+        assert svc._loop._thread.is_alive()
+        assert lsp_module.get_service() is None
+
+        assert lsp_module.shutdown_service() is True
+        assert lsp_module._service is None
+        assert stop_calls == 2
+        assert svc._loop_stopped is True
+    finally:
+        real_stop()
 
 
 
 
 
+def test_routed_profile_tombstone_retains_config_owner(tmp_path, monkeypatch):
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
 
+    homes = [tmp_path / name for name in ("a", "b")]
+    for home, timeout in zip(homes, (1, 2)):
+        home.mkdir()
+        (home / "config.yaml").write_text(
+            f"lsp:\n  enabled: true\n  install_strategy: manual\n  idle_timeout: {timeout * 60}\n  wait_timeout: {timeout}\n",
+            encoding="utf-8",
+        )
+    monkeypatch.setattr(atexit, "register", lambda fn: None)
+
+    def under(home):
+        token = set_hermes_home_override(str(home))
+        try:
+            return lsp_module.get_service()
+        finally:
+            reset_hermes_home_override(token)
+
+    a, b = (under(home) for home in homes)
+    assert a is not None and b is not None and a is not b
+    assert under(homes[0]) is a
+    assert a.get_status()["wait_timeout"] == 1
+    assert b.get_status()["wait_timeout"] == 2
+    assert (a._idle_timeout, b._idle_timeout) == (60, 120)
+    real_stop = a._loop.stop
+    monkeypatch.setattr(a._loop, "stop", lambda: False)
+    try:
+        assert lsp_module.shutdown_service() is False
+        assert under(homes[0]) is None
+        # The other profile completed teardown and can start its own service.
+        replacement_b = under(homes[1])
+        assert replacement_b is not None and replacement_b is not b
+        assert replacement_b.get_status()["wait_timeout"] == 2
+        assert replacement_b._idle_timeout == 120
+    finally:
+        monkeypatch.setattr(a._loop, "stop", real_stop)
+        assert lsp_module.shutdown_service() is True

@@ -11,13 +11,22 @@ from __future__ import annotations
 import atexit
 import logging
 import threading
-from typing import Optional
+from dataclasses import dataclass
+from typing import Optional, Union
 
 from agent.lsp.manager import LSPService
 
 logger = logging.getLogger("agent.lsp")
 
-_service: Optional[LSPService] = None
+@dataclass(frozen=True)
+class _ServiceTombstone:
+    """A service whose teardown was not confirmed successful."""
+
+    service: LSPService
+    error: str
+
+
+_service: Optional[Union[LSPService, _ServiceTombstone]] = None
 # Routed multiplex profiles (HERMES_HOME override) each get their own service: ``lsp.*`` config
 # (enabled, servers, idle timeout) is per profile, so one process-wide singleton would let the first
 # profile's settings decide whether every other profile gets diagnostics.
@@ -27,7 +36,7 @@ _service_lock = threading.Lock()
 
 
 def _active(svc: Optional[LSPService]) -> Optional[LSPService]:
-    return svc if (svc is not None and svc.is_active()) else None
+    return svc if (svc is not None and not isinstance(svc, _ServiceTombstone) and svc.is_active()) else None
 
 
 def _register_atexit_once() -> None:
@@ -38,29 +47,20 @@ def _register_atexit_once() -> None:
 
 
 def get_service() -> Optional[LSPService]:
-    """Return the lazily created LSP service for the active profile (process-wide singleton when no
-    profile override is bound), or None when disabled.
-
-    Also registers an :mod:`atexit` hook so a clean exit tears down spawned servers:
-    without it every ``hermes chat`` exit leaks pyright processes for a few seconds
-    while their stdout buffers drain.  (SIGKILL/os._exit skip atexit — fine, the
-    kernel reaps the stateless servers with their parent.)
-    """
+    """Return the active profile's service; failed teardown blocks its replacement."""
     global _service
     from hermes_constants import get_hermes_home_override, hermes_home_key
-    if get_hermes_home_override() is not None:
-        home_key = hermes_home_key()
-        with _service_lock:
+    with _service_lock:
+        if get_hermes_home_override() is not None:
+            home_key = hermes_home_key()
             if home_key not in _services_by_home:
                 _services_by_home[home_key] = LSPService.create_from_config()
                 _register_atexit_once()
             return _active(_services_by_home[home_key])
-    if _service is None:
-        with _service_lock:
-            if _service is None:
-                _service = LSPService.create_from_config()
-                _register_atexit_once()
-    return _active(_service)
+        if _service is None:
+            _service = LSPService.create_from_config()
+            _register_atexit_once()
+        return _active(_service)
 
 
 def release_workspace(path: str) -> int:
@@ -71,25 +71,39 @@ def release_workspace(path: str) -> int:
     released = 0
     for svc in services:
         try:
-            released += svc.release_workspace(path)
+            owner = svc.service if isinstance(svc, _ServiceTombstone) else svc
+            released += owner.release_workspace(path)
         except Exception as e:  # noqa: BLE001
             logger.debug("LSP workspace release failed for %s: %s", path, e)
     return released
 
 
-def shutdown_service() -> None:
-    """Tear down every LSP service that was started.  Idempotent."""
+def _shutdown_owner(current):
+    if current is None:
+        return None
+    svc = current.service if isinstance(current, _ServiceTombstone) else current
+    try:
+        if svc.shutdown() is True:
+            return None
+        error = svc._get_shutdown_error() or "teardown incomplete"
+    except Exception as e:  # noqa: BLE001
+        error = f"{type(e).__name__}: {e}"
+        logger.debug("LSP shutdown error: %s", error)
+    return _ServiceTombstone(service=svc, error=error)
+
+
+def shutdown_service() -> bool:
+    """Serialize teardown with admission, retaining failed owners for a later retry."""
     global _service
     with _service_lock:
-        services = [_service, *_services_by_home.values()]
-        _service = None
-        _services_by_home.clear()
-    for svc in services:
-        if svc is not None:
-            try:
-                svc.shutdown()
-            except Exception as e:  # noqa: BLE001
-                logger.debug("LSP shutdown error: %s", e)
+        _service = _shutdown_owner(_service)
+        for home, current in list(_services_by_home.items()):
+            retained = _shutdown_owner(current)
+            if retained is None:
+                del _services_by_home[home]
+            else:
+                _services_by_home[home] = retained
+        return _service is None and not _services_by_home
 
 
 def _atexit_shutdown() -> None:

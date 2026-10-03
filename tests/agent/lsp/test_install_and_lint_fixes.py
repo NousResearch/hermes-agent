@@ -12,6 +12,8 @@ Covers:
 """
 from __future__ import annotations
 
+from agent.lsp.install import INSTALL_RECIPES
+import json
 import io
 from contextlib import redirect_stdout
 from unittest.mock import MagicMock, patch
@@ -119,3 +121,138 @@ def test_lsp_package_manager_config_selects_installer_argv_and_never_falls_back_
 
 if __name__ == "__main__":  # pragma: no cover
     pytest.main([__file__, "-v"])
+
+
+def test_install_npm_works_without_extras(tmp_path, monkeypatch):
+    """Backwards compat: pyright-style recipes (no extras) still install."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    captured = {}
+
+    def fake_run(cmd, **kwargs):
+        captured["cmd"] = cmd
+        return MagicMock(returncode=0, stderr="")
+
+    from agent.lsp import install as install_mod
+
+    monkeypatch.setattr(install_mod.subprocess, "run", fake_run)
+    monkeypatch.setattr(install_mod, "find_node_executable", lambda c: "/usr/bin/npm" if c == "npm" else None)
+
+    install_mod._install_npm("pyright", "pyright-langserver")
+
+    cmd = captured["cmd"]
+    assert "pyright" in cmd
+    # Should not blow up when extra_pkgs is omitted/None
+    install_targets = [c for c in cmd if not c.startswith("-") and c not in {
+        "install", "--prefix", str(install_mod.hermes_lsp_bin_dir().parent),
+        "/usr/bin/npm",
+    }]
+    assert install_targets == ["pyright"]
+
+
+@pytest.mark.platforms("windows")
+def test_install_pip_finds_windows_scripts_launcher(tmp_path, monkeypatch):
+    """The LSP installer keeps PM's native Windows launcher as its executable."""
+    import pm
+    from agent.lsp import install as install_mod
+
+    launcher = tmp_path / "managed" / "Scripts" / "fake-language-server.exe"
+    launcher.parent.mkdir(parents=True)
+    launcher.write_text("launcher\n", encoding="utf-8")
+    calls = []
+    def ensure(name, requirements, executable, **kwargs):
+        calls.append((name, requirements, executable))
+        return launcher
+    monkeypatch.setattr(pm, "ensure_python_tool", ensure)
+    resolved = install_mod._install_pip("fake-lsp", "fake-language-server")
+    assert resolved == str(launcher)
+    assert calls == [("lsp-fake-language-server", ["fake-lsp"], "fake-language-server")]
+
+
+def test_backend_warnings_fires_when_bash_installed_but_shellcheck_missing(tmp_path, monkeypatch):
+    """The exact scenario from the bug report."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    from agent.lsp import cli as lsp_cli
+
+    def which(name):
+        if name == "bash-language-server":
+            return "/fake/bin/bash-language-server"
+        return None  # shellcheck missing
+
+    with patch("shutil.which", side_effect=which):
+        notes = lsp_cli._backend_warnings()
+    assert len(notes) == 1
+    assert "shellcheck" in notes[0].lower()
+    assert "bash-language-server" in notes[0].lower()
+
+
+def test_status_output_includes_backend_warnings_section(tmp_path, monkeypatch):
+    """End-to-end: status command output includes the warning section."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    # Pretend bash-language-server is installed but shellcheck is missing
+    def which(name):
+        if name == "bash-language-server":
+            return "/fake/bin/bash-language-server"
+        return None
+
+    from agent.lsp import cli as lsp_cli
+
+    buf = io.StringIO()
+    with patch("shutil.which", side_effect=which), redirect_stdout(buf):
+        lsp_cli._cmd_status(emit_json=False)
+
+    output = buf.getvalue()
+    assert "Backend warnings" in output
+    assert "shellcheck" in output
+
+
+def test_status_json_keeps_current_main_service_contract(monkeypatch):
+    from agent import lsp as lsp_module
+    from agent.lsp import cli as lsp_cli
+    from agent.lsp.manager import LSPService, _ClientEntry
+
+    svc = LSPService(
+        enabled=False,
+        wait_mode="document",
+        wait_timeout=5.0,
+        install_strategy="manual",
+        idle_timeout=0,
+    )
+    client = MagicMock()
+    client.server_id = "pyright"
+    client.workspace_root = "/owner-process"
+    client.state = "running"
+    client.is_running = True
+    client.workspace_folders = ["/owner-process"]
+    svc._clients[("pyright", "/owner-process")] = _ClientEntry(
+        client=client,
+        generation=7,
+        leases=3,
+        retiring=True,
+        retire_reason="idle timeout",
+        retirement_error="cleanup blocked",
+    )
+
+    monkeypatch.setattr(lsp_module, "get_service", lambda: svc)
+    monkeypatch.setattr("agent.lsp.install.detect_status", lambda _pkg: "missing")
+
+    buf = io.StringIO()
+    with redirect_stdout(buf):
+        assert lsp_cli._cmd_status(emit_json=True) == 0
+
+    service = json.loads(buf.getvalue())["service"]
+    assert service["enabled"] is False
+    assert service["broken_retry_seconds"] == 0
+    assert service["warmup_timeout"] == 0
+    assert service["trusted_workspaces"] == []
+    assert service["untrusted_skipped"] == []
+    assert service["clients"] == [
+        {
+            "server_id": "pyright",
+            "workspace_root": "/owner-process",
+            "workspace_folders": ["/owner-process"],
+            "state": "running",
+            "running": True,
+        }
+    ]

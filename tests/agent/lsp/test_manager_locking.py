@@ -4,7 +4,7 @@ from __future__ import annotations
 import asyncio
 
 import agent.lsp.manager as manager
-from agent.lsp.manager import LSPService
+from agent.lsp.manager import LSPService, _ClientEntry
 from agent.lsp.servers import ServerDef
 
 
@@ -32,6 +32,7 @@ def test_reused_multiroot_client_attaches_outside_state_lock(monkeypatch):
 
     class StubClient:
         is_running = True
+        workspace_folders = ["/repo/worktree-a"]
 
         async def add_workspace_folder(self, attached_root: str) -> None:
             assert attached_root == root
@@ -44,7 +45,7 @@ def test_reused_multiroot_client_attaches_outside_state_lock(monkeypatch):
 
     client = StubClient()
     monkeypatch.setattr(service, "_trusted", lambda _root: True)  # trusted roots share the process
-    service._clients[(server.server_id, "")] = client  # multi-root client key
+    service._clients[(server.server_id, "")] = _ClientEntry(client, generation=1)  # multi-root client key
     service._last_used[(server.server_id, "")] = 0.0
 
     monkeypatch.setattr(manager, "find_server_for_file", lambda _path: server)
@@ -55,9 +56,12 @@ def test_reused_multiroot_client_attaches_outside_state_lock(monkeypatch):
     )
     monkeypatch.setattr(manager.eventlog, "log_active", lambda *_args, **_kwargs: None)
 
-    result = asyncio.run(service._get_or_spawn("/repo/worktree-b/example.py"))
-
-    assert result is client
+    service._enabled = service._admitting = True
+    async def acquire():
+        lease = await service._acquire_client("/repo/worktree-b/example.py")
+        assert lease is not None and lease.client is client
+        lease.release()
+    asyncio.run(acquire())
 
 
 def test_delta_baseline_is_capped_by_write_recency(monkeypatch):

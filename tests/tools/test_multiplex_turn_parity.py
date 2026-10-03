@@ -147,7 +147,10 @@ def test_profile_scoped_process_caches_follow_routed_home(two_homes, monkeypatch
     lsp.shutdown_service()
     try:
         assert _under(a, lsp.get_service) is None
-        assert _under(b, lsp.get_service) is not None
+        routed_service = _under(b, lsp.get_service)
+        assert routed_service is not None
+        assert _under(a, lsp.get_service) is None
+        assert _under(b, lsp.get_service) is routed_service
     finally:
         lsp.shutdown_service()
 

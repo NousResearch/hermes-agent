@@ -14,6 +14,7 @@ This module verifies:
 """
 from __future__ import annotations
 
+from agent.lsp.servers import SpawnSpec
 import time
 from pathlib import Path
 from unittest.mock import patch
@@ -175,3 +176,77 @@ def test_broken_root_is_retried_after_broken_retry_seconds(tmp_path, monkeypatch
         assert svc.get_status()["broken"] == []
     finally:
         svc.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_spawn_failure_keeps_default_lifetime_broken(monkeypatch, tmp_path):
+    """Lifecycle retirement preserves the default lifetime broken policy."""
+    from agent.lsp import manager as manager_module
+
+    repo = _make_git_workspace(tmp_path)
+    source = repo / "x.py"
+    source.write_text("", encoding="utf-8")
+    starts = {"count": 0}
+
+    class FakeServer:
+        server_id = "pyright"
+        seed_first_push = False
+
+        @staticmethod
+        def resolve_root(file_path, workspace_root):
+            return workspace_root
+
+        @staticmethod
+        def build_spawn(root, ctx):
+            return SpawnSpec(
+                command=["fake-lsp"],
+                workspace_root=root,
+                cwd=root,
+                env={},
+                initialization_options={},
+            )
+
+    class FailingClient:
+        def __init__(self, **kwargs):
+            self.state = "stopped"
+
+        @property
+        def is_running(self):
+            return False
+
+        async def start(self):
+            starts["count"] += 1
+            self.state = "error"
+            raise RuntimeError("wedged forever")
+
+        async def shutdown(self):
+            self.state = "stopped"
+
+    monkeypatch.setattr(manager_module, "find_server_for_file", lambda path: FakeServer())
+    monkeypatch.setattr(
+        manager_module,
+        "resolve_workspace_for_file",
+        lambda path: (str(repo), True),
+    )
+    monkeypatch.setattr(manager_module, "LSPClient", FailingClient)
+
+    svc = LSPService(
+        enabled=False,
+        wait_mode="document",
+        wait_timeout=2.0,
+        install_strategy="manual",
+        idle_timeout=0,
+    )
+    svc._enabled = True
+    svc._admitting = True
+    svc._shutdown_state = "running"
+    try:
+        assert await svc._acquire_client(str(source)) is None
+        assert ("pyright", str(repo)) in svc._broken
+
+        # No elapsed-time or reap transition can make this key retry.
+        await svc._reap_idle_once()
+        assert await svc._acquire_client(str(source)) is None
+        assert starts["count"] == 1
+    finally:
+        assert await svc._shutdown_async() is True

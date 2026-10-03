@@ -33,6 +33,9 @@ from gateway.shutdown_watchdog import arm_shutdown_watchdog, resolve_shutdown_wa
 # Log-record parity with the origin module.
 logger = logging.getLogger("gateway.run")
 
+# How long adapter teardown waits for shutdown notices that are still sending after the drain.
+_SHUTDOWN_NOTICE_TIMEOUT_SECS = 2.0
+
 
 def _exit_with_failure_verdict(runner) -> bool:
     """True (after logging the reason) when the runner asked for a failure exit."""
@@ -180,6 +183,7 @@ class GatewayShutdownMixin:
         active_agents: dict = dataclasses.field(default_factory=dict)
         timed_out: bool = False
         drain_elapsed: float = 0.0
+        notification_task: Optional[asyncio.Task] = None
         # API-server runs still live when the adapters were released; the adapter map is empty by the
         # time the SessionDB close gate runs, so the count has to be taken before ``adapters.clear()``.
         api_live: int = 0
@@ -1008,9 +1012,10 @@ class GatewayShutdownMixin:
     ) -> bool:
         """``adapter.send`` whose failure is debug-logged as ``fmt % (platform, chat, error)`` — ``fail_fmt``
         for success=False, ``raise_fmt`` (default ``fail_fmt``) for a raise; True only on a delivered send.
-        Every shutdown notice races live turns, so it always carries the interim marker (#98432)."""
-        from gateway.run import _interim_metadata
-        kw["metadata"] = _interim_metadata(kw.get("metadata"))
+        Every shutdown notice races live turns, so it always carries the interim marker (#98432). It is a
+        status notice, not an answer to a turn, so it is also marked as non-conversational."""
+        from gateway.run import _interim_metadata, _non_conversational_metadata
+        kw["metadata"] = _interim_metadata(_non_conversational_metadata(kw.get("metadata"), platform=platform_str))
         try:
             result = await adapter.send(chat_id, msg, **kw)
         except Exception as e:
@@ -1868,6 +1873,9 @@ class GatewayShutdownMixin:
         self._clear_plugin_message_injector()
         self._draining = True
         self._mark_api_runs_shutdown_requested()
+        cancel_startup = getattr(self, "_cancel_startup_connect_task", None)
+        if callable(cancel_startup):
+            await cancel_startup()
         # getattr-guards: shutdown-path test doubles may lack the room worker / systemd watchdog.
         stop_room_worker = getattr(self, "_stop_hosted_room_worker", None)
         if callable(stop_room_worker):
@@ -1885,9 +1893,13 @@ class GatewayShutdownMixin:
         if callable(stop_watchdog):
             await stop_watchdog()
         await self._cancel_secondary_profile_reconnect_tasks()
-        # Notify all chats with active agents BEFORE draining — adapters are still connected here.
-        await self._notify_active_sessions_of_shutdown()
-        logger.info("Shutdown phase: notify_active_sessions done at +%.2fs", ctx.elapsed())
+        # A notice can wait on a crypto transaction that adapter teardown must cancel.
+        ctx.notification_task = asyncio.create_task(
+            self._notify_active_sessions_of_shutdown()
+        )
+        logger.info(
+            "Shutdown phase: notify_active_sessions started at +%.2fs", ctx.elapsed()
+        )
 
     async def _stop_drain_active_work(self, timeout: float, ctx: "GatewayShutdownMixin._StopContext") -> None:
         """Pre-mark resume_pending, drain agents/cron/API work into ``ctx``."""
@@ -2003,6 +2015,21 @@ class GatewayShutdownMixin:
         cancel_completion_batches = getattr(self, "_cancel_process_completion_batch_tasks", None)
         if cancel_completion_batches is not None:
             await cancel_completion_batches()
+        notices = ctx.notification_task
+        if notices is not None:
+            # Bounded: an encrypted notice can wait on a key import that only adapter teardown cancels.
+            await asyncio.wait({notices}, timeout=_SHUTDOWN_NOTICE_TIMEOUT_SECS)
+            if not notices.done():
+                logger.warning(
+                    "Shutdown notifications did not finish within %.1fs; cancelling them before adapter teardown",
+                    _SHUTDOWN_NOTICE_TIMEOUT_SECS,
+                )
+                notices.cancel()
+            with (
+                suppress(asyncio.CancelledError),
+                _log_suppressed(logging.DEBUG, "Shutdown notification failed: %s"),
+            ):
+                await notices
         for platform, adapter in list(self.adapters.items()):
             await self._bounded_adapter_teardown(adapter, platform)
         # Disconnect secondary-profile adapters (multiplex mode).

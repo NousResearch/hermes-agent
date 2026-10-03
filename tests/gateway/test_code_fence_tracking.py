@@ -283,3 +283,73 @@ class TestSplitTextChunksFenceBalanced:
         chunks = GatewayStreamConsumer._split_text_chunks(text, 70)
         assert len(chunks) >= 2
         _assert_balanced(chunks, "fallback chunk")
+
+
+# ---------------------------------------------------------------------------
+# Markdown link spans survive a split (#125885)
+# ---------------------------------------------------------------------------
+
+_LINK = "[Mission Control issue 7](https://example.invalid/projects/synthetic/issues/7)"
+
+
+def _link_split_chunks():
+    """The issue's repro: ordinary prose followed by a Markdown link on the same line,
+    split with Telegram's utf16 budget."""
+    from gateway.platforms.base import BasePlatformAdapter, utf16_len
+
+    prose = "This synthetic statement is supported by a retained source. " * 90
+    content = prose + _LINK
+    return BasePlatformAdapter.truncate_message(content, 4096, len_fn=utf16_len)
+
+
+def test_markdown_link_not_split_across_chunks():
+    """#125885: a Markdown link shorter than one message stays intact when long prose
+    must be split — the split backs off to before the link starts."""
+    chunks = _link_split_chunks()
+    assert len(chunks) >= 2
+    # The link is whole in exactly one chunk (the formatter's escaping may differ, so
+    # compare on the destination text which the split never rewrites).
+    whole = [c for c in chunks if "projects/synthetic/issues/7)" in c]
+    partial = [c for c in chunks if "](https://example.invalid" in c and c not in whole]
+    assert len(whole) == 1, f"link not delivered whole: {[c[-80:] for c in chunks]}"
+    assert partial == []
+
+
+def test_markdown_link_split_backs_off_before_the_bracket():
+    """The issue's class, reproduced: a long link label whose spaces are the only split
+    candidates near the budget edge — on unfixed code the split lands mid-label and the
+    label+URL break across chunks; the fix backs the split off to before the bracket."""
+    from plugins.platforms.telegram.adapter import TelegramAdapter
+    from gateway.config import PlatformConfig
+    from gateway.platforms.base import BasePlatformAdapter, utf16_len
+
+    adapter = TelegramAdapter(PlatformConfig(enabled=True, token="x"))
+    label = "word " * 100
+    content = ("x " * 1950) + f"[{label.strip()}](https://example.invalid/target)"
+    formatted = adapter.format_message(content)
+    assert utf16_len(formatted) > 4096  # a real split is required for the invariant
+
+    chunks = BasePlatformAdapter.truncate_message(formatted, 4096, len_fn=utf16_len)
+    assert len(chunks) >= 2
+    # The WHOLE link — label and URL — must land in one chunk. On unfixed code the
+    # split lands mid-label: the label text spans chunks and no chunk holds it whole.
+    label_text = label.strip()
+    assert any(label_text in c for c in chunks), (
+        f"label split across chunks: {[c[-60:] for c in chunks]}")
+    whole = [c for c in chunks if "](https://example.invalid" in c]
+    assert len(whole) == 1
+    # The first chunk backed off to prose, not to a dangling label.
+    assert not whole[0].rstrip(" (0123456789/)").endswith("word"), chunks[0][-60:]
+
+
+def test_bracket_text_without_url_still_splits_normally():
+    """A plain bracketed span (no link target) is not treated as a link: the split
+    stays where the budget puts it."""
+    from gateway.platforms.base import BasePlatformAdapter, utf16_len
+
+    prose = "plain prose sentence repeated here. " * 150
+    content = prose + "[see the appendix]"
+    chunks = BasePlatformAdapter.truncate_message(content, 1200, len_fn=utf16_len)
+    assert len(chunks) >= 2
+    whole = [c for c in chunks if "[see the appendix]" in c]
+    assert len(whole) == 1

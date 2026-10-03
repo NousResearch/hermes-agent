@@ -367,7 +367,7 @@ hermes status [--all] [--deep]
 ## `hermes cron`
 
 ```bash
-hermes cron <list|create|edit|pause|resume|run|remove|status|tick>
+hermes cron <list|create|edit|pause|resume|run|remove|status|runs|incidents|doctor|tick>
 ```
 
 | 子命令 | 说明 |
@@ -380,6 +380,9 @@ hermes cron <list|create|edit|pause|resume|run|remove|status|tick>
 | `run` | 在下次调度器 tick 时触发任务。 |
 | `remove` | 删除调度任务。 |
 | `status` | 检查 cron 调度器是否正在运行。 |
+| `runs` / `history` | 显示持久化的执行记录，可通过 `[job_id]` 过滤到单个任务。`--limit` 限制显示的行数（默认 20）。 |
+| `incidents` | 列出或确认持久化的 cron 失败事件。`list`（默认）或 `ack <incident_id>`；`--state` 按生命周期状态过滤（`detected`、`alerted`、`resolved`、`closed`）。 |
+| `doctor` | 只读的健康检查：失败的运行、失败的投递、超期/缺失的 `next_run_at`、缺失的脚本或工作目录。发现问题时以非零状态退出。 |
 | `tick` | 运行到期任务一次后退出。 |
 
 ## `hermes kanban`

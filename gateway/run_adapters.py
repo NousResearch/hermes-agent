@@ -195,6 +195,8 @@ class GatewayAdapterLifecycleMixin:
             record_platform_connect(adapter, platform, is_reconnect=is_reconnect, ok=False, exc=exc)
             raise
         record_platform_connect(adapter, platform, is_reconnect=is_reconnect, ok=bool(ok))
+        if ok:
+            self._emit_platform_event("platform:connected", platform.value, reconnect=is_reconnect)
         return ok
 
     async def _connect_adapter_bounded(self, adapter, platform, *, is_reconnect: bool, initial: bool) -> bool:
@@ -220,6 +222,16 @@ class GatewayAdapterLifecycleMixin:
         event_name = str(ctx.get("event_name") or "reaction:added")
         with _log_suppressed(logging.DEBUG, "[Gateway] reaction hook emit failed", exc_info=True):
             await self.hooks.emit(event_name, ctx)
+
+    def _emit_platform_event(self, event_name: str, platform: str, **ctx: Any) -> None:
+        """Fan a ``platform:*`` lifecycle event out to the HookRegistry in the background, so a slow
+        hook (an alert posted to another chat, say) never holds up a connect, a fatal teardown or the
+        reconnect watcher. Bare runners built without ``hooks`` (tests) emit nothing."""
+        hooks = getattr(self, "hooks", None)
+        if hooks is None:
+            return
+        task = self._retain_background_task(asyncio.create_task(hooks.emit(event_name, {"platform": platform, **ctx})))
+        task.add_done_callback(consume_detached_task_result)
 
     async def _handle_adapter_fatal_error(self, adapter: BasePlatformAdapter) -> None:
         """React to an adapter failure after startup (retryable → background reconnect queue). Runs
@@ -382,6 +394,10 @@ class GatewayAdapterLifecycleMixin:
             ),
             error_code=adapter.fatal_error_code,
             error_message=adapter.fatal_error_message,
+        )
+        self._emit_platform_event(
+            "platform:fatal", adapter.platform.value, error_code=adapter.fatal_error_code,
+            error_message=adapter.fatal_error_message, retryable=bool(adapter.fatal_error_retryable),
         )
         if existing is adapter:
             record_platform_disconnect(adapter)
@@ -752,6 +768,10 @@ class GatewayAdapterLifecycleMixin:
         self._update_platform_runtime_status(
             status_key or platform.value, platform_state="retrying", needs_attention=True,
             retrying_since=(datetime.now(timezone.utc) - timedelta(seconds=queued_for)).isoformat(),
+        )
+        self._emit_platform_event(
+            "platform:needs_attention", platform.value, status_key=status_key or platform.value,
+            attempts=info.get("attempts", 0), down_for_seconds=round(queued_for),
         )
 
     def _mark_platform_fatal(self, status_key: str, adapter) -> None:
@@ -1593,6 +1613,10 @@ class GatewayAdapterLifecycleMixin:
         logger.error(
             "Fatal %s adapter error for multiplexed profile %s (%s)", platform.value, profile_name,
             adapter.fatal_error_code or "unknown",
+        )
+        self._emit_platform_event(
+            "platform:fatal", platform.value, profile=profile_name, error_code=adapter.fatal_error_code,
+            error_message=adapter.fatal_error_message, retryable=bool(adapter.fatal_error_retryable),
         )
 
     @staticmethod

@@ -525,6 +525,16 @@ Behavior:
 - Exact thread/channel ID matches win.
 - If a message arrives inside a thread or forum post and that thread has no explicit entry, Hermes falls back to the parent channel/forum ID.
 - Prompts are applied ephemerally at runtime, so changing them affects future turns immediately without rewriting past session history.
+- YAML anchors and aliases are supported for sharing one prompt across channels without duplicating its text. The aliases resolve to the same prompt, and the normal round-trip config writers preserve them; exact channel/thread matching and fallback precedence are unchanged. For example:
+
+```yaml
+discord:
+  channel_prompts:
+    "1234567890": &research |
+      This channel is for research tasks. Prefer deep comparisons,
+      citations, and concise synthesis.
+    "9876543210": *research
+```
 
 #### `discord.history_backfill`
 

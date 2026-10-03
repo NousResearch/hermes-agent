@@ -288,6 +288,15 @@ DEFAULT_CONFIG = {
         # on a `model:` entry or a `fallback_providers:` entry to opt in per provider. Default
         # false: strict providers (Mistral, Groq, Cerebras) reject the field.
         "reasoning_echo": False,
+
+        # User-owned manual system-prompt overlay. Personality selection is
+        # stored separately under ``display.personality`` and never writes
+        # this field. An empty string means no manual overlay.
+        "system_prompt": "",
+
+        # User-defined personality presets. Entries may be prompt strings or
+        # mappings with metadata such as description and system_prompt.
+        "personalities": {},
         # Turn liveness watchdog: a turn with no observable progress for `timeout_s` seconds is
         # logged, force-interrupted so the UI can retry, and its lease stops renewing so stale-turn
         # cleanup can reclaim the session even if the interrupt can't unwind a wedged frame.

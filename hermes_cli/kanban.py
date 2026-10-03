@@ -224,6 +224,8 @@ def _is_delegated_child_cli_mutation(args: argparse.Namespace) -> bool:
     if action == "boards":
         if (getattr(args, "boards_action", None) or "list") not in _DELEGATED_CHILD_DENIED_BOARD_ACTIONS:
             return False
+    elif action == "dispatch" and getattr(args, "dry_run", False):
+        return False
     elif action not in _DELEGATED_CHILD_DENIED_ACTIONS:
         return False
     from agent.delegation_context import kanban_path_is_fenced
@@ -419,9 +421,13 @@ def _cmd_list(args: argparse.Namespace) -> int:
     assignee = args.assignee
     if args.mine and not assignee:
         assignee = _profile_author()
+    db_path = kb.kanban_db_path()
     with kbc.connect_closing() as conn:
         # Cheap mini-dispatch so list reflects dependencies cleared since the last tick.
-        kb.recompute_ready(conn)
+        from agent.delegation_context import kanban_path_is_fenced
+
+        if not kanban_path_is_fenced(db_path):
+            kb.recompute_ready(conn)
         tasks = kb.list_tasks(
             conn, assignee=assignee, status=args.status, tenant=args.tenant, session_id=args.session,
             include_archived=args.archived, order_by=getattr(args, "sort", None),

@@ -669,7 +669,7 @@ def _model_flow_stepfun(config, current_model=""):
     from hermes_cli.main_provider_setup import _infer_stepfun_region, _prompt_provider_choice, _stepfun_base_url_for_region
     from hermes_cli.auth import PROVIDER_REGISTRY
     from hermes_cli.config import save_env_value
-    from hermes_cli.models import _PROVIDER_MODELS, fetch_api_models
+    from hermes_cli.models import _PROVIDER_MODELS, fetch_api_models, provider_model_ids
     provider_id = "stepfun"
     pconfig = PROVIDER_REGISTRY[provider_id]
     base_url_env = pconfig.base_url_env_var or ""
@@ -699,7 +699,9 @@ def _model_flow_stepfun(config, current_model=""):
     if base_url_env:
         save_env_value(base_url_env, effective_base)
 
-    model_list = fetch_api_models(existing_key, effective_base)
+    # Same live+curated merge as the picker (``_stepfun_catalog``): Step Plan /models omits
+    # Standard-API-only models, so the wizard must offer the same list /model shows (#41147).
+    model_list = provider_model_ids(provider_id) or fetch_api_models(existing_key, effective_base)
     if model_list:
         print(f"  Found {len(model_list)} model(s) from {pconfig.name} API")
     else:

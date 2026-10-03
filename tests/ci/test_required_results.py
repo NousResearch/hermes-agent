@@ -37,7 +37,7 @@ def test_status_policy(job, result, ordinary, excluded, release):
 
 def test_release_exclusion_policy():
     assert required_results.EXCLUDED_JOBS == {
-        "history-check", "lockfile-diff", "supply-chain", "review-labels", "e2e-desktop",
+        "history-check", "lockfile-diff", "supply-chain", "e2e-desktop",
     }
 
 

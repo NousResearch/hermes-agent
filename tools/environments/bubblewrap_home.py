@@ -110,20 +110,20 @@ def denied_home_names(home: str) -> tuple[str, ...]:
 
 
 def denied_home_paths(home: str) -> tuple[str, ...]:
-    """Real host paths under *home* that must stay hidden in a sandbox.
+    """Real host paths that hold the denied entries of *home*.
 
     Each name goes through os.path.realpath, so the result names the
     directory or file that holds the secret, which is also the only path
-    bwrap can mount over. A path that leaves HOME through a symlink is
-    dropped here (the backend hides nothing outside HOME through this
-    set), and a path under another entry is dropped as covered.
+    bwrap can mount over. An entry that is a symlink out of HOME resolves
+    to a path outside it; the backend hides that path where it lies. A
+    path under another entry is dropped as covered.
     """
     home = os.path.abspath(os.path.expanduser(home))
     real_home = os.path.realpath(home)
     resolved: list[str] = []
     for name in denied_home_names(home):
         real = os.path.realpath(name)
-        if real != real_home and _is_within(real, real_home) and real not in resolved:
+        if real not in (real_home, os.sep) and not _is_within(real_home, real) and real not in resolved:
             resolved.append(real)
     return tuple(p for p in resolved if not any(p != other and _is_within(p, other) for other in resolved))
 

@@ -355,22 +355,40 @@ class TestAncestorPins:
         (home / ".ssh").mkdir()
         return home
 
-    def test_cwd_at_home_pins_the_config_dir_only(self, paths, home):
+    def test_cwd_at_home_pins_nothing_at_the_top_of_a_sealed_home(self, paths, home):
+        # The top of HOME is a read-only tmpfs and .config is one too, so
+        # neither can be renamed and neither needs a pin.
         argv = build(BubblewrapConfig(profile="workspace"), paths=paths, initial_cwd=str(home), tracked_cwd=str(home))
-        pins = triples(argv, "--bind")
-        assert (str(home / ".config"), str(home / ".config")) in pins
-        # The bind root and the hidden entries are mount points already.
-        assert (str(home), str(home)) not in pins
-        assert (str(home / ".ssh"), str(home / ".ssh")) not in pins
-        assert (str(home / ".config" / "gcloud"), str(home / ".config" / "gcloud")) not in pins
+        assert self._pins(argv, paths) == []
+        assert str(home) in singles(argv, "--tmpfs")
+        assert str(home / ".config") in singles(argv, "--tmpfs")
+        assert str(home) in singles(argv, "--remount-ro")
+        assert str(home / ".ssh") not in argv
 
-    def test_cwd_above_home_pins_home_and_the_config_dir(self, paths, home):
+    def test_cwd_at_home_pins_the_parent_of_a_hidden_path_inside_a_writable_entry(self, paths, home):
+        keys = home / "docs" / "deep" / "keys"
+        keys.mkdir(parents=True)
+        hidden = (*sensitive_paths(paths["home"], paths["hermes_home"]), str(keys))
+        argv = build(paths=paths, initial_cwd=str(home), tracked_cwd=str(home), hidden_paths=hidden)
+        pins = triples(argv, "--bind")
+        assert (str(home / "docs" / "deep"), str(home / "docs" / "deep")) in pins
+        # The entry itself is a mount point already.
+        assert (str(home / "docs"), str(home / "docs")) not in pins
+        assert (str(home / "docs"), str(home / "docs")) in triples(argv, "--bind-try")
+        assert str(keys) in singles(argv, "--tmpfs")
+
+
+    def test_cwd_above_home_needs_no_pin_for_home(self, paths, home):
+        # HOME is a tmpfs mount point on top of the writable parent: it
+        # cannot be renamed, and its dot entries are not reachable below it.
         parent = str(home.parent)
         argv = build(BubblewrapConfig(profile="workspace"), paths=paths, initial_cwd=parent, tracked_cwd=parent)
-        pins = triples(argv, "--bind")
-        assert (str(home), str(home)) in pins
-        assert (str(home / ".config"), str(home / ".config")) in pins
-        assert (parent, parent) not in pins
+        assert self._pins(argv, paths) == []
+        assert argv.index(parent) < argv.index("--tmpfs", argv.index(parent))
+        assert str(home) in singles(argv, "--tmpfs")
+        argv = build(paths=paths)
+        assert self._pins(argv, paths) == []
+
 
     def test_restricted_profile_adds_no_pins(self, paths, home):
         argv = build(BubblewrapConfig(profile="restricted"), paths=paths, initial_cwd=str(home), tracked_cwd=str(home))
@@ -388,13 +406,16 @@ class TestAncestorPins:
         assert (str(tmp_path / "state"), str(tmp_path / "state")) in pins
         assert (str(hermes_home), str(hermes_home)) not in pins
 
-    def test_rw_operator_bind_above_home_pins_and_ro_does_not(self, paths, home):
+    def test_operator_bind_above_home_keeps_the_home_layout_on_top(self, paths, home):
         parent = str(home.parent)
-        rw = build(BubblewrapConfig(binds=(BindMount(src=parent, dest=parent, readonly=False),)), paths=paths)
-        ro = build(BubblewrapConfig(binds=(BindMount(src=parent, dest=parent, readonly=True),)), paths=paths)
-        assert (str(home), str(home)) in triples(rw, "--bind")
-        assert (str(home / ".config"), str(home / ".config")) in triples(rw, "--bind")
-        assert self._pins(ro, paths) == []
+        for readonly in (False, True):
+            argv = build(BubblewrapConfig(binds=(BindMount(src=parent, dest=parent, readonly=readonly),)), paths=paths)
+            assert [pin for pin in self._pins(argv, paths) if pin != (parent, parent)] == []
+            flag = "--ro-bind" if readonly else "--bind"
+            i_bind = next(i for i, a in enumerate(argv) if a == flag and argv[i + 1:i + 3] == [parent, parent])
+            i_home = next(i for i, a in enumerate(argv) if a == "--tmpfs" and argv[i + 1] == str(home))
+            assert i_bind < i_home
+
 
     def test_pin_follows_a_bind_whose_dest_differs_from_its_src(self, paths, home, tmp_path):
         # The pin's source is the host path the sandbox path maps to.
@@ -434,20 +455,30 @@ class TestAncestorPins:
     def test_pins_sit_after_the_operator_binds_and_before_the_overlays(self, paths, home, tmp_path):
         shared = tmp_path / "shared"
         shared.mkdir()
+        keys = home / "docs" / "deep" / "keys"
+        keys.mkdir(parents=True)
+        hidden = (*sensitive_paths(paths["home"], paths["hermes_home"]), str(keys))
         config = BubblewrapConfig(binds=(BindMount(src=str(shared), dest=str(shared)),))
-        argv = build(config, paths=paths, initial_cwd=str(home), tracked_cwd=str(home))
+        argv = build(config, paths=paths, initial_cwd=str(home), tracked_cwd=str(home), hidden_paths=hidden)
         i_cwd = argv.index("--bind-try")
         i_shared = argv.index(str(shared))
-        i_pin = argv.index(str(home / ".config"))
-        i_overlay = argv.index(str(home / ".ssh"))
-        assert i_cwd < i_shared < i_pin < i_overlay
+        i_home = next(i for i, a in enumerate(argv) if a == "--tmpfs" and argv[i + 1] == str(home))
+        i_pin = next(i for i, a in enumerate(argv) if a == "--bind" and argv[i + 1] == str(home / "docs" / "deep"))
+        i_overlay = next(i for i, a in enumerate(argv) if a == "--tmpfs" and argv[i + 1] == str(keys))
+        i_seal = next(i for i, a in enumerate(argv) if a == "--remount-ro" and argv[i + 1] == str(home))
+        assert i_cwd < i_shared < i_home < i_pin < i_overlay < i_seal
+
 
     def test_pins_are_deduplicated_across_binds(self, paths, home):
         parent = str(home.parent)
+        keys = home / "docs" / "deep" / "keys"
+        keys.mkdir(parents=True)
+        hidden = (*sensitive_paths(paths["home"], paths["hermes_home"]), str(keys))
         config = BubblewrapConfig(binds=(BindMount(src=parent, dest=parent, readonly=False),))
-        argv = build(config, paths=paths, initial_cwd=parent, tracked_cwd=parent)
+        argv = build(config, paths=paths, initial_cwd=parent, tracked_cwd=parent, hidden_paths=hidden)
         pins = triples(argv, "--bind")
-        assert pins.count((str(home / ".config"), str(home / ".config"))) == 1
+        assert pins.count((str(home / "docs" / "deep"), str(home / "docs" / "deep"))) == 1
+
 
 
 class TestResolvedHiddenSet:
@@ -465,7 +496,8 @@ class TestResolvedHiddenSet:
         argv = build(paths=paths, initial_cwd=str(home), tracked_cwd=str(home))
         assert str(home / "dotfiles" / "ssh") in singles(argv, "--tmpfs")
         assert str(home / ".ssh") not in argv
-        assert (str(home / "dotfiles"), str(home / "dotfiles")) in triples(argv, "--bind")
+        # The parent of the target is a visible entry, so a mount point: no pin.
+        assert (str(home / "dotfiles"), str(home / "dotfiles")) in triples(argv, "--bind-try")
 
     def test_absolute_symlinked_file_entry_binds_the_empty_file_over_its_target(self, paths, tmp_path):
         home = Path(paths["home"])
@@ -485,8 +517,12 @@ class TestResolvedHiddenSet:
         hidden = sensitive_paths(paths["home"], paths["hermes_home"])
         assert all(h.startswith(str(real_home) + os.sep) for h in hidden), hidden
         argv = build(paths=paths)
-        assert str(real_home / ".ssh") in singles(argv, "--tmpfs")
-        assert str(Path(paths["home"]) / ".ssh") not in argv
+        # The layout is built over the real HOME, where .ssh is not visible
+        # at all; the symlinked spelling is never a mount destination.
+        assert str(real_home) in singles(argv, "--tmpfs")
+        assert str(real_home / ".ssh") not in argv
+        layout = singles(argv, "--tmpfs") + singles(argv, "--remount-ro")
+        assert not any(a == paths["home"] or a.startswith(paths["home"] + os.sep) for a in layout)
 
     def test_dangling_entry_emits_nothing(self, paths, tmp_path):
         home = Path(paths["home"])
@@ -515,7 +551,7 @@ class TestResolvedHiddenSet:
         (home / "elsewhere").mkdir()
         (home / ".ssh").symlink_to("elsewhere")
         argv = build(paths=paths, hidden_paths=hidden)
-        assert str(home / "elsewhere") not in argv
+        assert str(home / "elsewhere") not in singles(argv, "--tmpfs")
         assert str(home / ".ssh") not in argv
 
     def test_default_hermes_home_is_hidden_when_hermes_home_is_relocated(self, paths, tmp_path):
@@ -530,7 +566,9 @@ class TestResolvedHiddenSet:
         assert str(relocated) in hidden
         assert str(home / ".hermes") in hidden
         argv = build(paths=paths, hermes_home=str(relocated), hidden_paths=hidden)
-        assert str(home / ".hermes") in singles(argv, "--tmpfs")
+        # HOME/.hermes is a dot entry off the allowlist: nothing shows there.
+        assert str(home / ".hermes") not in argv
+        assert str(home) in singles(argv, "--tmpfs")
         assert str(relocated) in singles(argv, "--tmpfs")
 
     def test_absent_default_hermes_home_stays_in_the_set_and_emits_nothing(self, paths, tmp_path):

@@ -344,7 +344,12 @@ class TestConstructionTimeMounts:
         params = list(inspect.signature(build_bwrap_args).parameters)
         # hidden_paths is the sensitive set the environment resolved at
         # construction; it never comes from inside a sandbox.
-        assert params == ["config", "initial_cwd", "state_dir", "home", "hermes_home", "tracked_cwd", "bwrap_path", "hidden_paths"]
+        # home_root and home_allow are the HOME layout inputs, resolved at
+        # construction as well.
+        assert params == [
+            "config", "initial_cwd", "state_dir", "home", "hermes_home", "tracked_cwd", "bwrap_path", "hidden_paths",
+            "home_root", "home_allow",
+        ]
 
     def test_chdir_follows_tracked_cwd_with_fixed_mounts(self, sandbox_root, work_dir):
         home = os.path.expanduser("~")
@@ -361,7 +366,9 @@ class TestConstructionTimeMounts:
         assert _chdir(second) == home
         assert _mounts(second) == _mounts(first)
         assert (str(work_dir), str(work_dir)) in [m[1:] for m in _mounts(second) if m[0] == "--bind-try"]
-        assert home not in {p for m in _mounts(second) for p in m[1:]}
+        # HOME is never bound as a whole: the first directive on it is the
+        # tmpfs of the default-deny layout.
+        assert [m for m in _mounts(second) if m[-1] == home][0] == ("--tmpfs", home)
 
     def test_builder_reads_nothing_from_state_dir(self, sandbox_root, work_dir, monkeypatch):
         with _no_session():
@@ -1041,10 +1048,11 @@ class TestMaskedInside:
         env, p = layout
         argv = env._wrap_popen_args(["bash"])
         state = Path(env.get_temp_dir())
-        visible = [p["work"] / "sub", p["home"] / ".ssh", p["hermes_home"], state / "inner", p["dest"] / "present", Path("/usr/share"), Path("/tmp")]
+        visible = [p["work"] / "sub", p["hermes_home"], state / "inner", p["dest"] / "present", Path("/usr/share"), Path("/tmp")]
         # A literal path under the tmpfs, not tmp_path: Hermes points TMPDIR at its own
         # scratch dir, so tmp_path is only under /tmp on hosts that leave TMPDIR alone.
-        masked = [p["home"] / ".ssh" / "deep", p["hermes_home"] / "logs", p["dest"] / "absent", Path("/tmp/other")]
+        # HOME/.ssh is off the allowlist, so it does not exist in the sandbox.
+        masked = [p["home"] / ".ssh", p["home"] / ".ssh" / "deep", p["hermes_home"] / "logs", p["dest"] / "absent", Path("/tmp/other")]
         assert [str(x) for x in visible if masked_inside(argv, str(x))] == []
         assert [str(x) for x in masked if not masked_inside(argv, str(x))] == []
 

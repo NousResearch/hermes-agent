@@ -118,12 +118,15 @@ def _launch_env() -> Dict[str, str]:
 
 
 def launch_terminal_env() -> Dict[str, str]:
-    """The frozen launch ``TERMINAL_*`` overlay for a launch-profile turn's terminal scope.
+    """The launch ``TERMINAL_*`` overlay for a launch-profile terminal scope, from the same source
+    as :func:`launch_secret_scope`: frozen once multiplexing is active, live before.
 
-    Production always captured at activation; a first capture here only happens when the
-    multiplexer flag was set by another owner (the messaging gateway) or a harness.
+    Capturing here before activation froze the snapshot at the first launch-profile kanban
+    dispatch or connector install on a single-profile host, so activation later reused it and
+    missed every key the process gained in between. Under multiplexing, a first capture here only
+    happens when the flag was set by another owner (the messaging gateway) or a harness.
     """
-    return {k: v for k, v in capture_launch_env().items() if k.startswith("TERMINAL_")}
+    return {k: v for k, v in _launch_env().items() if k.startswith("TERMINAL_")}
 
 
 def launch_secret_scope(launch_home: "str | Path") -> Dict[str, str]:
@@ -192,12 +195,16 @@ def launch_profile_scope_if_multiplexed():
     on a perfectly legitimate launch-profile read. Before activation the process env IS the launch
     profile's, so binding nothing is still correct (and keeps single-profile hosts byte-identical —
     callers assert the returned object is literally a ``nullcontext``).
+
+    The launch home is the routing home pinned at activation, never the live ``HERMES_HOME``: a
+    host that mirrors the served profile into the env var would otherwise bind the frozen launch
+    env to that profile's home.
     """
     from agent.secret_scope import is_multiplex_active
     if not is_multiplex_active():
         return contextlib.nullcontext()
-    from hermes_constants import get_process_hermes_home
-    return launch_profile_runtime_scope(get_process_hermes_home())
+    from hermes_constants import get_routing_process_hermes_home
+    return launch_profile_runtime_scope(get_routing_process_hermes_home())
 
 
 @contextlib.asynccontextmanager

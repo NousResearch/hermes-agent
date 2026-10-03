@@ -2657,15 +2657,18 @@ def _worker_profile_scope(hermes_home: str, *, bind_home: bool = True):
     The secret mapping is never widened: a profile that is not this process's own home gets its own
     ``.env`` + external sources ONLY, while the launch home keeps its established
     env-over-``.env`` precedence (``launch_secret_scope``) so systemd / ``op run`` injection still
-    resolves for a standalone dispatcher.
+    resolves for a standalone dispatcher. "Own home" is the routing home, the same identity
+    ``_default_spawn``'s scrub and strip use: a host that mirrors the served profile into
+    ``HERMES_HOME`` must not hand that profile the launch env, nor strip it from the launch profile.
     """
     from agent.secret_scope import build_profile_secret_scope, reset_secret_scope, set_secret_scope
-    from hermes_constants import get_process_hermes_home, reset_hermes_home_override, set_hermes_home_override
+    from hermes_constants import (
+        get_routing_process_hermes_home, reset_hermes_home_override, set_hermes_home_override)
     from tools.terminal_scope import install_profile_terminal_scope, reset_terminal_scope
     from tui_gateway.launch_profile_policy import launch_secret_scope, launch_terminal_env
 
     home = Path(hermes_home)
-    is_launch_home = str(home.resolve()) == str(Path(get_process_hermes_home()).resolve())
+    is_launch_home = home.resolve() == get_routing_process_hermes_home().resolve()
     home_token = secret_token = terminal_token = None
     try:
         home_token = set_hermes_home_override(str(home)) if bind_home else None

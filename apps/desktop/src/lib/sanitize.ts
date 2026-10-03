@@ -13,9 +13,9 @@ export const gitRef = (raw: string): string =>
     .replace(/\.{2,}/g, '.')
     .replace(/^[-./]+/, '')
 
-/** A kebab slug: lowercase, runs of non-alphanumerics → a single "-". */
+/** A profile identifier: lowercase, preserve underscores, normalize other separators to "-". */
 export const slug = (raw: string): string =>
   raw
     .toLowerCase()
-    .replace(/[^a-z0-9]+/g, '-')
-    .replace(/^-+/, '')
+    .replace(/[^a-z0-9_]+/g, '-')
+    .replace(/^[-_]+/, '')

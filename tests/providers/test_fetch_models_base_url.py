@@ -145,6 +145,73 @@ class _RedirectingHandler(BaseHTTPRequestHandler):
         pass
 
 
+class _NativeGeminiHandler(BaseHTTPRequestHandler):
+    """Mimics paginated native ListModels with header authentication."""
+
+    paths: list[str] = []
+    repeat_page_token = False
+
+    def do_GET(self):
+        from urllib.parse import parse_qs, urlparse
+
+        parsed = urlparse(self.path)
+        type(self).paths.append(self.path)
+        if (
+            self.headers.get("Authorization")
+            or self.headers.get("x-goog-api-key") != "test-key"
+            or parse_qs(parsed.query).get("key")
+        ):
+            self.send_response(401)
+            self.end_headers()
+            return
+        if parsed.path.rstrip("/") == "/models":
+            page_token = parse_qs(parsed.query).get("pageToken", [""])[0]
+            if not page_token:
+                payload = {
+                    "models": [
+                        {
+                            "name": "models/gemini-fixture-chat",
+                            "supportedGenerationMethods": ["generateContent"],
+                        },
+                        {
+                            "name": "models/gemini-fixture-preview-tts",
+                            "supportedGenerationMethods": ["generateContent"],
+                        },
+                        {
+                            "name": "models/gemini-embedding-fixture",
+                            "supportedGenerationMethods": ["embedContent"],
+                        },
+                    ],
+                    "nextPageToken": "page-2",
+                }
+            else:
+                payload = {
+                    "models": [
+                        {
+                            "name": "models/gemini-fixture-chat-next",
+                            "supportedGenerationMethods": ["generateContent"],
+                        },
+                        {
+                            "name": "models/lyria-fixture",
+                            "supportedGenerationMethods": ["generateContent"],
+                        },
+                    ]
+                }
+                if type(self).repeat_page_token:
+                    payload["nextPageToken"] = "page-2"
+            body = json.dumps(payload).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(body)
+        else:
+            self.send_response(401)
+            self.end_headers()
+
+    def log_message(self, format, *args):
+        pass
+
+
 class TestFetchModelsRedirectCredentialStripping:
     """Credential headers must not follow a redirect outside the original origin."""
 
@@ -187,6 +254,54 @@ class TestFetchModelsRedirectCredentialStripping:
         assert result == ["redirected-model"]
         assert headers.get("authorization") == "Bearer bearer-secret"
         assert headers.get("x-api-key") == "default-header-secret"
+
+
+class TestGeminiNativeFetchModels:
+    """GeminiProfile.fetch_models uses the native ListModels contract (#62259)."""
+
+    def test_native_catalog_uses_key_header_paginates_and_filters(self):
+        _NativeGeminiHandler.paths = []
+        _NativeGeminiHandler.repeat_page_token = False
+        server = HTTPServer(("127.0.0.1", 0), _NativeGeminiHandler)
+        port = server.server_address[1]
+        Thread(target=server.serve_forever, daemon=True).start()
+        try:
+            from plugins.model_providers.gemini import GeminiProfile
+            profile = GeminiProfile(name="gemini", base_url=f"http://127.0.0.1:{port}")
+            with patch(
+                "agent.gemini_native_adapter.is_native_gemini_base_url",
+                return_value=True,
+            ):
+                result = profile.fetch_models(api_key="test-key")
+                assert result == ["gemini-fixture-chat", "gemini-fixture-chat-next"]
+                assert len(_NativeGeminiHandler.paths) == 2
+                assert "pageToken=page-2" in _NativeGeminiHandler.paths[1]
+
+                _NativeGeminiHandler.paths = []
+                _NativeGeminiHandler.repeat_page_token = True
+                assert profile.fetch_models(api_key="test-key") is None
+                assert len(_NativeGeminiHandler.paths) == 2
+        finally:
+            server.shutdown()
+
+    def test_absent_key_skips_and_non_native_endpoints_delegate(self):
+        from plugins.model_providers.gemini import GeminiProfile
+        profile = GeminiProfile(
+            name="gemini",
+            base_url="https://generativelanguage.googleapis.com/v1beta",
+        )
+        assert profile.fetch_models(api_key="") is None
+        with patch(
+            "providers.base.ProviderProfile.fetch_models",
+            return_value=["gemini-compat-model"],
+        ) as base_fetch:
+            for base_url in (
+                "https://generativelanguage.googleapis.com/v1beta/openai",
+                "https://relay.example/v1",
+            ):
+                profile = GeminiProfile(name="gemini", base_url=base_url)
+                assert profile.fetch_models(api_key="test-key") == ["gemini-compat-model"]
+        assert base_fetch.call_count == 2
 
 
 class TestModelPickerBaseUrlIntegration:

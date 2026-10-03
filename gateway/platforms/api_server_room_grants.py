@@ -166,7 +166,7 @@ async def _handle_room_member_invitation(
         return error
     required = set(_ROOM_IDENTITY_FIELDS)
     allowed = required | {"grant_id", "ttl_seconds", "status_ttl_seconds", "replication", "work_records",
-                          "passive_only"}
+                          "passive_only", "successor"}
     if set(body) - allowed or not required <= set(body):
         return _json_error(
             _openai_error, "Invitation is missing required room authority fields.",
@@ -183,15 +183,17 @@ def _issue_invitation(self, body: dict[str, Any], profile: str, *, conn=None) ->
     """Mint and reserve one room grant for *profile*: the API-key route and ``groups.peer.invite``.
 
     The grant keeps this gateway a custodian of the room's history unless ``replication: false``
-    opts out; ``work_records: true`` adds its task evidence, and ``passive_only`` limits the grant
-    to that copy (no dispatch, Stop or approval).
+    opts out; ``successor: true`` is its operator's consent that the room owner may continue the
+    group here (recorded locally too); ``work_records: true`` adds its task evidence, and
+    ``passive_only`` limits the grant to that copy (no dispatch, Stop or approval).
     """
     from gateway import hosted_rooms
+    from gateway.hosted_room_custody import set_local_consent
     from gateway.hosted_room_passive_protocol import passive_capabilities
     from gateway.hosted_room_peer import decode_room_grant, invitation_permissions, issue_room_grant
     permissions = invitation_permissions(
         body.get("replication", True), body.get("work_records", False),
-        passive_only=body.get("passive_only", False))
+        passive_only=body.get("passive_only", False), successor=body.get("successor", False))
     target_install_id = hosted_rooms.local_authority_gateway_id()
     ttl = float(body.get("ttl_seconds", 3600))
     if not 60 <= ttl <= 24 * 60 * 60:
@@ -210,6 +212,9 @@ def _issue_invitation(self, body: dict[str, Any], profile: str, *, conn=None) ->
     claims = decode_room_grant(self._room_grant_secret(), token, permission="status")
     hosted_rooms.reserve_peer_room(
         _grant_db(self), claims=claims, expires_at=_hard_expiry(claims), conn=conn)
+    if "replicate" in permissions:
+        # Inside a recoverable setup issuance, the consent joins that issuance's own transaction.
+        set_local_consent(_grant_db(self), room_id=claims["room_id"], allowed="successor" in permissions, conn=conn)
     return {"grant": token, "target_profile": profile, "catalog": catalog,
             "expires_at": float(claims["expires_at"]), "status_expires_at": float(claims["status_expires_at"]),
             "passive_replication": passive_capabilities()}
@@ -238,12 +243,28 @@ async def _handle_room_member_capabilities(
     from gateway.session_peer_output import output_available
     output = output_available(self) if (request.headers.get("Hermes-Room-Features") == "document-output-v1"
                                       and {"status", "stop", "dispatch"} <= set(claims["permissions"])) else None
+    from gateway.hosted_room_custody import local_consent, local_names
+    from gateway.hosted_room_identity import local_public_key
+    # The home pins this key at custody enrollment; the reply is authenticated by the pinned grant.
+    name, operator_name = local_names()
+    room_identity = {"install_id": installation_id, "public_key": local_public_key(), "name": name,
+                     "operator_name": operator_name, "allowed": local_consent(_grant_db(self), claims["room_id"])}
     return web.json_response({
         **({"document_output": output} if output is not None else {}),
         **({"document_inputs": documents} if documents is not None else {}),
         "object": "hermes.room_member.capabilities", **{k: claims[k] for k in _ROOM_IDENTITY_FIELDS},
         "target_profile": profile, "catalog": catalog, "passive_replication": passive_capabilities(),
+        "room_identity": room_identity, "permissions": list(claims.get("permissions", ())),
         **({"retirement_enrollment": enrollment} if enrollment is not None else {})})
+
+
+def _consented_permissions(self, claims: dict[str, Any]) -> list[str]:
+    """A renewal carries the operator's current consent to continue the group, and nothing more."""
+    from gateway.hosted_room_custody import local_consent
+    permissions = [permission for permission in claims["permissions"] if permission != "successor"]
+    if "replicate" in permissions and local_consent(_grant_db(self), claims["room_id"]):
+        permissions.append("successor")
+    return permissions
 
 
 async def _handle_room_member_grant_refresh(
@@ -276,7 +297,7 @@ async def _handle_room_member_grant_refresh(
             self._room_grant_secret(), grant_id="grant-refresh-" + request.get("room_proof_request_id", uuid.uuid4().hex),
             **_room_identity(claims), target_install_id=installation_id, target_profile=profile,
             execution_policy_digest=execution_policy["policy_digest"],
-            permissions=claims["permissions"], issued_at=now, ttl_seconds=dispatch_ttl,
+            permissions=_consented_permissions(self, claims), issued_at=now, ttl_seconds=dispatch_ttl,
             status_expires_at=hard_expiry)
         # A revocation that landed after the first check must not let this renewal out; one that
         # lands after this check covers it, since it was issued before.

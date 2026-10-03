@@ -95,7 +95,9 @@ def test_a_participant_copy_keeps_history_and_evidence_across_a_home_restart_the
             assert copy['safety_status'] == 'passive' and evidence['source_loss_safe'] is False
             assert [r['member_id'] for r in evidence['receipts']] == ['reviewer'], evidence
             assert 'HOLD_ACCEPTED' not in str(evidence)
-            assert (await rpc(target_ws, 'groups.list'))['result']['rooms'] == []  # a copy is never a local room
+            # The participant shows the room only as a read-only copy, never as a room of its own.
+            listed = (await rpc(target_ws, 'groups.list'))['result']['rooms']
+            assert [(room['room_id'], room['copy'], room['revision']) for room in listed] == [('linked', True, 0)]
             home_proc.kill()
             await asyncio.to_thread(home_proc.wait, 10)
 

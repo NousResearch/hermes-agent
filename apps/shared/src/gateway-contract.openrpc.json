@@ -1159,6 +1159,96 @@
       }
     },
     {
+      "name": "groups.custody.add",
+      "summary": "Add an installation that keeps the room's history without a Bot, after a live scoped probe.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/GroupsCustodyAddParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/GroupsCustodyChangeResult"
+        }
+      }
+    },
+    {
+      "name": "groups.custody.allow",
+      "summary": "On a member installation: allow (or not) the room owner to continue the group here.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/GroupsCustodyAllowParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/GroupsCustodyAllowResult"
+        }
+      }
+    },
+    {
+      "name": "groups.custody.designate",
+      "summary": "The room owner designates (or not) one custodian to continue the group; its operator must allow it.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/GroupsCustodyDesignateParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/GroupsCustodyDesignateResult"
+        }
+      }
+    },
+    {
+      "name": "groups.custody.remove",
+      "summary": "Stop keeping a copy on one custodian-only installation.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/GroupsCustodyRemoveParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/GroupsCustodyChangeResult"
+        }
+      }
+    },
+    {
+      "name": "groups.custody.status",
+      "summary": "Who keeps this Group Chat's history, how far each copy reaches, and the tail at risk.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/GroupsCustodyStatusParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/GroupsCustodyStatusResult"
+        }
+      }
+    },
+    {
       "name": "groups.demote",
       "summary": "Fence this gateway's stale room authority against a proven newer epoch. Refused (4119, reason authority_takeover_disabled) until exclusive-authority recovery exists.",
       "params": [
@@ -11995,6 +12085,247 @@
         "title": "CurrentSubscription",
         "type": "object"
       },
+      "CustodyConfiguration": {
+        "additionalProperties": false,
+        "properties": {
+          "configuration_seq": {
+            "title": "Configuration Seq",
+            "type": "integer"
+          },
+          "custodians": {
+            "items": {
+              "$ref": "#/components/schemas/CustodyCustodian"
+            },
+            "title": "Custodians",
+            "type": "array"
+          },
+          "owner_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Owner Name"
+          }
+        },
+        "required": [
+          "configuration_seq",
+          "custodians"
+        ],
+        "title": "CustodyConfiguration",
+        "type": "object"
+      },
+      "CustodyCustodian": {
+        "additionalProperties": false,
+        "description": "One entry of a ``custody.configured`` event.",
+        "properties": {
+          "install_id": {
+            "title": "Install Id",
+            "type": "string"
+          },
+          "public_key": {
+            "title": "Public Key",
+            "type": "string"
+          },
+          "endpoint": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Endpoint"
+          },
+          "role": {
+            "title": "Role",
+            "type": "string"
+          },
+          "successor": {
+            "title": "Successor",
+            "type": "boolean"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Name"
+          },
+          "operator_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Operator Name"
+          }
+        },
+        "required": [
+          "install_id",
+          "public_key",
+          "role",
+          "successor"
+        ],
+        "title": "CustodyCustodian",
+        "type": "object"
+      },
+      "CustodyCustodianStatus": {
+        "additionalProperties": false,
+        "properties": {
+          "install_id": {
+            "title": "Install Id",
+            "type": "string"
+          },
+          "role": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Role"
+          },
+          "state": {
+            "title": "State",
+            "type": "string"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Name"
+          },
+          "operator_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Operator Name"
+          },
+          "successor": {
+            "title": "Successor",
+            "type": "boolean"
+          },
+          "allowed": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Allowed"
+          },
+          "designated": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Designated"
+          },
+          "opted_out": {
+            "title": "Opted Out",
+            "type": "boolean"
+          },
+          "watermark": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CustodyWatermark"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "acknowledged_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Acknowledged At"
+          },
+          "divergent": {
+            "title": "Divergent",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "install_id",
+          "state",
+          "successor",
+          "opted_out",
+          "divergent"
+        ],
+        "title": "CustodyCustodianStatus",
+        "type": "object"
+      },
+      "CustodyWatermark": {
+        "additionalProperties": false,
+        "properties": {
+          "epoch": {
+            "title": "Epoch",
+            "type": "integer"
+          },
+          "seq": {
+            "title": "Seq",
+            "type": "integer"
+          },
+          "event_hash": {
+            "title": "Event Hash",
+            "type": "string"
+          }
+        },
+        "required": [
+          "epoch",
+          "seq",
+          "event_hash"
+        ],
+        "title": "CustodyWatermark",
+        "type": "object"
+      },
       "DelegationPauseParams": {
         "additionalProperties": false,
         "properties": {
@@ -14423,6 +14754,318 @@
         "title": "GroupsCreateResult",
         "type": "object"
       },
+      "GroupsCustodyAddParams": {
+        "additionalProperties": false,
+        "properties": {
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "room_id": {
+            "title": "Room Id",
+            "type": "string"
+          },
+          "target_url": {
+            "title": "Target Url",
+            "type": "string"
+          },
+          "catalog": {
+            "additionalProperties": true,
+            "title": "Catalog",
+            "type": "object"
+          },
+          "grant": {
+            "title": "Grant",
+            "type": "string"
+          },
+          "successor": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Successor"
+          }
+        },
+        "required": [
+          "room_id",
+          "target_url",
+          "catalog",
+          "grant"
+        ],
+        "title": "GroupsCustodyAddParams",
+        "type": "object"
+      },
+      "GroupsCustodyAllowParams": {
+        "additionalProperties": false,
+        "properties": {
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "room_id": {
+            "title": "Room Id",
+            "type": "string"
+          },
+          "successor": {
+            "title": "Successor",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "room_id",
+          "successor"
+        ],
+        "title": "GroupsCustodyAllowParams",
+        "type": "object"
+      },
+      "GroupsCustodyAllowResult": {
+        "additionalProperties": false,
+        "properties": {
+          "room_id": {
+            "title": "Room Id",
+            "type": "string"
+          },
+          "install_id": {
+            "title": "Install Id",
+            "type": "string"
+          },
+          "allowed": {
+            "title": "Allowed",
+            "type": "boolean"
+          },
+          "confirmed": {
+            "title": "Confirmed",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "room_id",
+          "install_id",
+          "allowed",
+          "confirmed"
+        ],
+        "title": "GroupsCustodyAllowResult",
+        "type": "object"
+      },
+      "GroupsCustodyChangeResult": {
+        "additionalProperties": false,
+        "properties": {
+          "room_id": {
+            "title": "Room Id",
+            "type": "string"
+          },
+          "install_id": {
+            "title": "Install Id",
+            "type": "string"
+          },
+          "configuration_seq": {
+            "title": "Configuration Seq",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "room_id",
+          "install_id",
+          "configuration_seq"
+        ],
+        "title": "GroupsCustodyChangeResult",
+        "type": "object"
+      },
+      "GroupsCustodyDesignateParams": {
+        "additionalProperties": false,
+        "properties": {
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "room_id": {
+            "title": "Room Id",
+            "type": "string"
+          },
+          "install_id": {
+            "title": "Install Id",
+            "type": "string"
+          },
+          "successor": {
+            "title": "Successor",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "room_id",
+          "install_id",
+          "successor"
+        ],
+        "title": "GroupsCustodyDesignateParams",
+        "type": "object"
+      },
+      "GroupsCustodyDesignateResult": {
+        "additionalProperties": false,
+        "properties": {
+          "room_id": {
+            "title": "Room Id",
+            "type": "string"
+          },
+          "install_id": {
+            "title": "Install Id",
+            "type": "string"
+          },
+          "successor": {
+            "title": "Successor",
+            "type": "boolean"
+          },
+          "configuration_seq": {
+            "title": "Configuration Seq",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "room_id",
+          "install_id",
+          "successor",
+          "configuration_seq"
+        ],
+        "title": "GroupsCustodyDesignateResult",
+        "type": "object"
+      },
+      "GroupsCustodyRemoveParams": {
+        "additionalProperties": false,
+        "properties": {
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "room_id": {
+            "title": "Room Id",
+            "type": "string"
+          },
+          "install_id": {
+            "title": "Install Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "room_id",
+          "install_id"
+        ],
+        "title": "GroupsCustodyRemoveParams",
+        "type": "object"
+      },
+      "GroupsCustodyStatusParams": {
+        "additionalProperties": false,
+        "properties": {
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "room_id": {
+            "title": "Room Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "room_id"
+        ],
+        "title": "GroupsCustodyStatusParams",
+        "type": "object"
+      },
+      "GroupsCustodyStatusResult": {
+        "additionalProperties": false,
+        "properties": {
+          "room_id": {
+            "title": "Room Id",
+            "type": "string"
+          },
+          "role": {
+            "title": "Role",
+            "type": "string"
+          },
+          "custodians": {
+            "items": {
+              "$ref": "#/components/schemas/CustodyCustodianStatus"
+            },
+            "title": "Custodians",
+            "type": "array"
+          },
+          "at_risk_after_seq": {
+            "title": "At Risk After Seq",
+            "type": "integer"
+          },
+          "configuration_seq": {
+            "title": "Configuration Seq",
+            "type": "integer"
+          },
+          "configuration": {
+            "$ref": "#/components/schemas/CustodyConfiguration"
+          },
+          "watermark": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CustodyWatermark"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          }
+        },
+        "required": [
+          "room_id",
+          "role",
+          "custodians",
+          "at_risk_after_seq",
+          "configuration_seq",
+          "configuration"
+        ],
+        "title": "GroupsCustodyStatusResult",
+        "type": "object"
+      },
       "GroupsDemoteParams": {
         "additionalProperties": false,
         "properties": {
@@ -14963,6 +15606,30 @@
             ],
             "default": null,
             "title": "Passive Only"
+          },
+          "successor": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Successor"
+          },
+          "custody_only": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Custody Only"
           }
         },
         "title": "GroupsPeerInviteParams",
@@ -27758,6 +28425,31 @@
             ],
             "default": null,
             "title": "Safety Reason"
+          },
+          "copy": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Copy"
+          },
+          "custody": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Custody"
           }
         },
         "required": [

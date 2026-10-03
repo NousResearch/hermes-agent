@@ -412,34 +412,35 @@ _GRANT_SCOPE = (
 _GRANT_FIELDS = frozenset({
     "version", *_GRANT_SCOPE, "execution_policy_digest", "permissions", "issued_at", "expires_at"})
 _GRANT_REFRESH_FIELDS = _GRANT_FIELDS | {"status_expires_at"}
-_GRANT_PERMISSIONS = {"approve", "dispatch", "status", "stop", "replicate", "work_records"}
+_GRANT_PERMISSIONS = {"approve", "dispatch", "status", "stop", "replicate", "work_records", "successor"}
 # Observation and passive copies last until the status horizon; dispatch needs a fresh grant.
-_STATUS_HORIZON_PERMISSIONS = frozenset({"approve", "status", "stop", "replicate", "work_records"})
+_STATUS_HORIZON_PERMISSIONS = frozenset({"approve", "status", "stop", "replicate", "work_records", "successor"})
 MAX_DISPATCH_GRANT_TTL_SECONDS = 24 * 60 * 60
 MAX_STATUS_GRANT_TTL_SECONDS = 30 * 24 * 60 * 60
 _MEMBER_PERMISSIONS = ("approve", "dispatch", "status", "stop")
 
 
 def invitation_permissions(
-    replication: Any = True, work_records: Any = False, *, passive_only: Any = False,
+    replication: Any = True, work_records: Any = False, *, passive_only: Any = False, successor: Any = False,
 ) -> tuple[str, ...]:
     """Permissions for one invitation; the same rules on JSON-RPC and HTTP.
 
     Joining a Group Chat makes this installation one of its custodians: it keeps the room's whole
-    history (``replicate``) unless its operator opts out with ``replication: false``, which also
-    gives up its vote in succession. Task evidence (``work_records``) is an explicit addition on
-    top of that copy. A ``passive_only`` grant can be observed and copied to, but never runs,
-    stops or approves work.
+    history (``replicate``) unless its operator opts out with ``replication: false``. ``successor``
+    is the operator's consent that the room owner may continue the group here; it needs the copy.
+    Task evidence (``work_records``) is an explicit addition on top of that copy. A
+    ``passive_only`` grant can be observed and copied to, but never runs, stops or approves work.
     """
     if type(replication) is not bool:
         raise HostedRoomGrantError("replication must be a boolean")
-    if type(passive_only) is not bool:
-        raise HostedRoomGrantError("passive_only must be a boolean")
+    if type(passive_only) is not bool or type(successor) is not bool:
+        raise HostedRoomGrantError("passive_only and successor must be booleans")
     if type(work_records) is not bool or (work_records and not replication):
         raise HostedRoomGrantError("work_records requires the history copy")
-    if passive_only and not replication:
-        raise HostedRoomGrantError("passive_only requires the history copy")
-    passive = ("replicate", *(("work_records",) if work_records else ())) if replication else ()
+    if (passive_only or successor) and not replication:
+        raise HostedRoomGrantError("passive_only and successor require the history copy")
+    passive = (("replicate", *(("successor",) if successor else ()), *(("work_records",) if work_records else ()))
+               if replication else ())
     return ("status", *passive) if passive_only else (*_MEMBER_PERMISSIONS, *passive)
 
 

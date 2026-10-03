@@ -57,6 +57,14 @@ def dispatch_target(authority, method, params, *, actor_subject=None):
 
 def _invite(authority, params, *, actor_subject=None):
     from gateway.platforms.api_server_room_grants import _issue_invitation
+    from gateway.hosted_room_custody import CUSTODY_MEMBER_ID
+    if 'custody_only' in params:
+        # A custodian-only installation keeps the room's history without a Bot: a copy-only grant.
+        if (params['custody_only'] is not True or 'member_id' in params
+                or not {'work_records', 'replication', 'passive_only'}.isdisjoint(params)):
+            raise RuntimeStoreError('invalid_params')
+        params = {**{k: v for k, v in params.items() if k != 'custody_only'},
+                  'member_id': CUSTODY_MEMBER_ID, 'passive_only': True}
     identity = ('room_id', 'home_install_id', 'authority_gateway_id', 'member_id')
     if (not all(isinstance(params.get(k), str) and params[k] for k in identity)
             or type(params.get('authority_epoch')) is not int or not 1 <= params['authority_epoch'] < 2**63
@@ -109,6 +117,36 @@ def probe_route(client, grant, catalog, scope):
         raise RuntimeStoreError('peer_target_mismatch') from exc
     if live != catalog or any(probe.get(k) != v for k, v in scope.items()):
         raise RuntimeStoreError('peer_target_mismatch')
+    return probe
+
+
+def enroll_custody(service, room_id, install_id, probe, endpoint):
+    """Custody enrollment: pin the member installation's identity key from its authenticated probe.
+
+    It keeps the room's history while any of its member grants in the room carries ``replicate``,
+    and has consented to continue the group while one carries ``successor``; a later grant without
+    them takes them back. Whether it may continue the group is still the room owner's choice
+    (``groups.custody.designate``). An installation that offers no key runs an older Hermes.
+    """
+    from gateway import hosted_room_custody as custody
+    from gateway import hosted_room_links as links
+    from gateway.hosted_room_peer import HostedRoomGrantError, unverified_room_grant_claims
+    identity = probe.get('room_identity')
+    identity = identity if isinstance(identity, dict) and identity.get('install_id') == install_id else {}
+    permissions = set()
+    for member in service._room(room_id)['members']:
+        target = member.get('target') or {}
+        if target.get('kind') == 'peer' and target.get('installation_id') == install_id:
+            link = links.load_room_link(service.db_path, room_id=room_id, member_id=member['member_id'])
+            try:
+                permissions.update(unverified_room_grant_claims(link.grant).get('permissions', ()) if link else ())
+            except HostedRoomGrantError:
+                continue
+    allowed = identity.get('allowed') if isinstance(identity.get('allowed'), bool) else 'successor' in permissions
+    custody.enroll_custodian(service.db_path, room_id=room_id, install_id=install_id,
+                             public_key=identity.get('public_key'), endpoint=endpoint, name=identity.get('name'),
+                             operator_name=identity.get('operator_name'), role='custodian',
+                             active='replicate' in permissions, allowed=allowed)
 
 
 def register(service, params):
@@ -159,7 +197,7 @@ def register(service, params):
             service._peer_cleanup_inflight.add(cleanup_key)
     try:
         # The network probe holds neither publication nor policy lock: Stop/Disband can proceed.
-        probe_route(client, grant, catalog, {
+        probe = probe_route(client, grant, catalog, {
             'room_id': room_id, 'home_install_id': gateway_id, 'authority_gateway_id': gateway_id,
             'authority_epoch': epoch, 'member_id': member_id, 'target_profile': profile})
         with service.peer_route_lock:
@@ -167,6 +205,8 @@ def register(service, params):
                 raise RuntimeStoreError('peer_target_mismatch')
             service.register_peer_route(room_id=room_id, member_id=member_id, route=route, client=client,
                                         target_url=target_url, catalog=catalog)
+            enroll_custody(service, room_id, catalog.installation_id, probe, target_url)
+        service.replication.wakeup()
     finally:
         with service.peer_route_lock:
             service._peer_cleanup_inflight.discard(cleanup_key)

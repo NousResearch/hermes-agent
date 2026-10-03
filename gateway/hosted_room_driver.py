@@ -506,7 +506,10 @@ def _transition(
         if guard is not None:
             guard(row)
         fenced_update(conn, sql, params, StaleTaskError(stale))
+        from gateway.hosted_room_custody import announce_queued_task_locked
         from gateway.hosted_room_work_records import capture_transition_locked
+        # A requeue announces the generation the next dispatch will use, in this transaction.
+        announce_queued_task_locked(conn, _load_task(conn, identity), now=now)
         capture_transition_locked(conn, identity.room_id)
         return _task_from_row(_load_task(conn, identity))
 
@@ -651,7 +654,9 @@ def admit_task(db_path: DbPath, identity: TaskIdentity, *, payload: Any, clock: 
             (
                 *dataclasses.astuple(identity), normalized_payload["source_event_seq"], payload_json, payload_digest,
                 now, now))
+        from gateway.hosted_room_custody import announce_queued_task_locked
         from gateway.hosted_room_work_records import capture_transition_locked
+        announce_queued_task_locked(conn, _load_task(conn, identity), now=now)
         capture_transition_locked(conn, identity.room_id)
         return _task_from_row(_load_task(conn, identity))
 

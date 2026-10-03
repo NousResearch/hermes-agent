@@ -29,7 +29,7 @@ class CanonicalHostedRoomService(CanonicalHostedOutput, HostedControls, HostedRo
         super().__init__(None, db_path=authority.db.db_path)
         self.runtime.retire_stale_output = self.retire_stale_output
         from gateway.hosted_room_replication import HostedRoomReplicationPublisher
-        # Copies history to opted-in participant gateways; idle until such a route exists.
+        # Copies history to the room's custodians; idle until such a route exists.
         self.replication = HostedRoomReplicationPublisher(self.db_path)
 
     def start(self):

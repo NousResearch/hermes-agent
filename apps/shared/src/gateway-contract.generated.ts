@@ -1310,6 +1310,8 @@ export interface Room {
   event?: RoomEvent | null
   safety_status?: string | null
   safety_reason?: string | null
+  copy?: boolean | null
+  custody?: Record<string, unknown> | null
 }
 /** One roster row (``hosted_room_discussion.validate_roster``); legacy rooms may carry pre-normalisation rows, so the set stays open. */
 export interface RoomMember {
@@ -1640,6 +1642,8 @@ export interface GroupsPeerInviteParams {
   replication?: boolean | null
   work_records?: boolean | null
   passive_only?: boolean | null
+  successor?: boolean | null
+  custody_only?: boolean | null
 }
 export interface GroupsPeerInviteResult {
   expires_at?: number | null
@@ -1719,6 +1723,94 @@ export interface GroupsReplicationRevokeResult {
   room_id: string
   enrollment_id: string
   state: string
+}
+export interface GroupsCustodyStatusParams {
+  profile?: string | null
+  room_id: string
+}
+export interface GroupsCustodyStatusResult {
+  room_id: string
+  role: string
+  custodians: CustodyCustodianStatus[]
+  at_risk_after_seq: number
+  configuration_seq: number
+  configuration: CustodyConfiguration
+  watermark?: CustodyWatermark | null
+}
+export interface CustodyCustodianStatus {
+  install_id: string
+  role?: string | null
+  state: string
+  name?: string | null
+  operator_name?: string | null
+  successor: boolean
+  allowed?: boolean | null
+  designated?: boolean | null
+  opted_out: boolean
+  watermark?: CustodyWatermark | null
+  acknowledged_at?: number | null
+  divergent: boolean
+}
+export interface CustodyWatermark {
+  epoch: number
+  seq: number
+  event_hash: string
+}
+export interface CustodyConfiguration {
+  configuration_seq: number
+  custodians: CustodyCustodian[]
+  owner_name?: string | null
+}
+/** One entry of a ``custody.configured`` event. */
+export interface CustodyCustodian {
+  install_id: string
+  public_key: string
+  endpoint?: string | null
+  role: string
+  successor: boolean
+  name?: string | null
+  operator_name?: string | null
+}
+export interface GroupsCustodyDesignateParams {
+  profile?: string | null
+  room_id: string
+  install_id: string
+  successor: boolean
+}
+export interface GroupsCustodyDesignateResult {
+  room_id: string
+  install_id: string
+  successor: boolean
+  configuration_seq: number
+}
+export interface GroupsCustodyAddParams {
+  profile?: string | null
+  room_id: string
+  target_url: string
+  catalog: Record<string, unknown>
+  grant: string
+  successor?: boolean | null
+}
+export interface GroupsCustodyChangeResult {
+  room_id: string
+  install_id: string
+  configuration_seq: number
+}
+export interface GroupsCustodyRemoveParams {
+  profile?: string | null
+  room_id: string
+  install_id: string
+}
+export interface GroupsCustodyAllowParams {
+  profile?: string | null
+  room_id: string
+  successor: boolean
+}
+export interface GroupsCustodyAllowResult {
+  room_id: string
+  install_id: string
+  allowed: boolean
+  confirmed: boolean
 }
 export interface BotRelayRosterSyncParams {
   profile?: string | null
@@ -4980,6 +5072,16 @@ export interface RpcMethods {
   'groups.capabilities': { params: GroupsCapabilitiesParams; result: GroupsCapabilitiesResult }
   /** Create a hosted room idempotently; authority is this gateway's stable install identity. */
   'groups.create': { params: GroupsCreateParams; result: GroupsCreateResult }
+  /** Add an installation that keeps the room's history without a Bot, after a live scoped probe. */
+  'groups.custody.add': { params: GroupsCustodyAddParams; result: GroupsCustodyChangeResult }
+  /** On a member installation: allow (or not) the room owner to continue the group here. */
+  'groups.custody.allow': { params: GroupsCustodyAllowParams; result: GroupsCustodyAllowResult }
+  /** The room owner designates (or not) one custodian to continue the group; its operator must allow it. */
+  'groups.custody.designate': { params: GroupsCustodyDesignateParams; result: GroupsCustodyDesignateResult }
+  /** Stop keeping a copy on one custodian-only installation. */
+  'groups.custody.remove': { params: GroupsCustodyRemoveParams; result: GroupsCustodyChangeResult }
+  /** Who keeps this Group Chat's history, how far each copy reaches, and the tail at risk. */
+  'groups.custody.status': { params: GroupsCustodyStatusParams; result: GroupsCustodyStatusResult }
   /** Fence this gateway's stale room authority against a proven newer epoch. Refused (4119, reason authority_takeover_disabled) until exclusive-authority recovery exists. */
   'groups.demote': { params: GroupsDemoteParams; result: GroupsDemoteResult }
   /** Permanently tombstone a hosted room id after stopping its work and revoking peer routes. A quarantined room needs confirm_quarantined=true and only ends on this gateway, history kept. */
@@ -5409,6 +5511,11 @@ export const RPC_METHODS = [
   'groups.attachment.upload',
   'groups.capabilities',
   'groups.create',
+  'groups.custody.add',
+  'groups.custody.allow',
+  'groups.custody.designate',
+  'groups.custody.remove',
+  'groups.custody.status',
   'groups.demote',
   'groups.disband',
   'groups.discard',

@@ -50,3 +50,39 @@ def test_unknown_level_is_rejected_and_reset_clears_overrides(saved):
     cfg["auxiliary"]["vision"]["reasoning_effort"] = "high"
     _apply_aux_assignment_sync(cfg, "", "", "__reset__", "", "", reasoning_effort=_UNSET)
     assert all("reasoning_effort" not in slot for slot in cfg["auxiliary"].values())
+
+
+def test_bulk_reset_and_bulk_assign_skip_moa_slots(saved):
+    """``__reset__`` and assign-all (task="") must never touch the MoA slots (#125435 review).
+
+    Before the exclusion, the widened ``_AUX_TASK_SLOTS`` swept ``auxiliary.moa_reference``:
+    a pinned reference provider (e.g. ollama on ``http://box:11434``) was silently rewritten
+    to ``provider="auto"`` with ``base_url`` popped and its endpoint credentials cleared —
+    collapsing MoA back into N copies of the main model and rerouting the local pin.
+    """
+    cfg = {"auxiliary": {
+        "vision": {"provider": "openrouter", "model": "m1"},
+        "moa_reference": {"provider": "ollama", "model": "ref-model",
+                          "base_url": "http://box:11434", "api_key": "sk-local"},
+        "moa_aggregator": {"provider": "openrouter", "model": "agg-model"},
+    }}
+
+    out = _apply_aux_assignment_sync(cfg, "", "", "__reset__", "", "", reasoning_effort=_UNSET)
+    assert out["reset"] is True
+    assert cfg["auxiliary"]["vision"] == {"provider": "auto", "model": ""}
+    # MoA pins survive the bulk reset untouched — provider, model, base_url AND credentials.
+    assert cfg["auxiliary"]["moa_reference"] == {
+        "provider": "ollama", "model": "ref-model",
+        "base_url": "http://box:11434", "api_key": "sk-local",
+    }
+    assert cfg["auxiliary"]["moa_aggregator"] == {"provider": "openrouter", "model": "agg-model"}
+
+    # Bulk assign-all (task="") sweeps the same non-excluded range: vision moves, MoA stays.
+    _apply_aux_assignment_sync(cfg, "nous", "Hermes-4.5", "", "", "")
+    assert cfg["auxiliary"]["vision"]["provider"] == "nous"
+    assert cfg["auxiliary"]["moa_reference"]["provider"] == "ollama"
+    assert cfg["auxiliary"]["moa_aggregator"]["provider"] == "openrouter"
+
+    # Single-slot assignment to a MoA slot is still allowed (exclusion is bulk-only).
+    _apply_aux_assignment_sync(cfg, "ollama", "other-ref", "moa_reference", "", "")
+    assert cfg["auxiliary"]["moa_reference"]["model"] == "other-ref"

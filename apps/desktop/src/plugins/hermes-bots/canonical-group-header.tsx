@@ -24,7 +24,9 @@ export function CanonicalGroupHeader({ name, members, status, working, attention
   return <header className="flex shrink-0 items-center gap-3 px-4 py-3">
     {onBack && <Tip label={labels.back}><Button aria-label={labels.back} onClick={onBack} size="icon-xs" variant="ghost"><Codicon name="arrow-left" /></Button></Tip>}
     <div aria-label={labels.members} className="hidden shrink-0 items-center -space-x-1.5 sm:flex">
-      {members.slice(0, 3).map(member => <div className="rounded-full bg-(--ui-bg-primary) p-0.5" key={member.member_id}>
+      {/* Opaque discs: the tint layered over the surface, plus a surface ring, so stacked faces never darken where they overlap. */}
+      {members.slice(0, 3).map(member => <div className="rounded-full p-0.5 ring-2 ring-(--ui-bg-chrome) [background:linear-gradient(var(--ui-bg-primary),var(--ui-bg-primary)),var(--ui-bg-chrome)]"
+        data-slot="group-member-face" key={member.member_id}>
         <CanonicalMemberFace member={member} name={canonicalMemberName(member, labels.unknownBot)} size={28} />
       </div>)}
     </div>

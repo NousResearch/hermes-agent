@@ -61,6 +61,7 @@ platforms:
     enabled: true
     extra:
       imap_host: 127.0.0.1
+      imap_folder: Folders/Hermes # optional; defaults to INBOX
       imap_security: starttls     # tls (default) | starttls | plain
       imap_tls_verify: false      # Bridge uses a self-signed cert
       smtp_host: 127.0.0.1
@@ -71,7 +72,9 @@ platforms:
 and set `EMAIL_IMAP_PORT=1143` / `EMAIL_SMTP_PORT=1025` alongside your Bridge
 credentials in `~/.hermes/.env`. Unknown `*_security` values log a warning and
 fall back to the secure default. Only disable `*_tls_verify` for loopback hosts —
-Hermes logs a warning when verification is off for any other host.
+Hermes logs a warning when verification is off for any other host. Set
+`imap_folder` when a relay routes agent mail into a dedicated IMAP folder;
+Hermes polls only that folder and leaves the rest of the mailbox unread.
 
 ---
 
@@ -118,7 +121,7 @@ sudo hermes gateway install --system   # Linux only: boot-time system service
 
 On startup, the adapter:
 1. Tests IMAP and SMTP connections
-2. Marks all existing inbox messages as "seen" (only processes new emails)
+2. Marks all existing messages in the configured IMAP folder as "seen" (only processes new emails)
 3. Starts polling for new messages
 
 ---
@@ -127,7 +130,7 @@ On startup, the adapter:
 
 ### Receiving Messages
 
-The adapter polls the IMAP inbox for UNSEEN messages at a configurable interval (default: 15 seconds). For each new email:
+The adapter polls the configured IMAP folder (`INBOX` by default) for UNSEEN messages at a configurable interval (default: 15 seconds). For each new email:
 
 - **Subject line** is included as context (e.g., `[Subject: Deploy to production]`)
 - **Reply emails** (subject starting with `Re:`) skip the subject prefix — the thread context is already established

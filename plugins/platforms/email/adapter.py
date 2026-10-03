@@ -446,8 +446,8 @@ class EmailAdapter(BasePlatformAdapter):
 
     # Per-account seen-UID snapshot surviving adapter recreation: the reconnect watcher builds a FRESH
     # adapter per retry; without this connect(is_reconnect=True) would re-mark the mailbox seen and skip
-    # mail that arrived during the outage. Keyed by address (multiplex runs several accounts); same-process only.
-    _seen_uids_snapshot: Dict[str, set] = {}
+    # mail that arrived during the outage. Keyed by address + folder because UID spaces are mailbox-local; same-process only.
+    _seen_uids_snapshot: Dict[Tuple[str, str], set] = {}
 
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.EMAIL)
@@ -460,6 +460,7 @@ class EmailAdapter(BasePlatformAdapter):
         self._password = _get_secret("EMAIL_PASSWORD", "")
         self._imap_host = setting("EMAIL_IMAP_HOST", "imap_host").strip()
         self._imap_port = _esecret_int("EMAIL_IMAP_PORT", 993)
+        self._imap_folder = str(extra.get("imap_folder", "") or "INBOX").strip() or "INBOX"
         self._imap_security = _normalize_security(setting("EMAIL_IMAP_SECURITY", "imap_security"))
         self._imap_tls_verify = tls_verify("EMAIL_IMAP_TLS_VERIFY", "imap_tls_verify")
         self._smtp_host = setting("EMAIL_SMTP_HOST", "smtp_host").strip()
@@ -512,7 +513,7 @@ class EmailAdapter(BasePlatformAdapter):
 
     @contextmanager
     def _inbox(self):
-        """Logged-in IMAP handle on INBOX; always ``_close_imap``-ed on exit (a login/select failure used to leak one fd per reconnect)."""
+        """Logged-in IMAP handle on the configured folder; always ``_close_imap``-ed on exit."""
         # Test IMAP connection. The handle is closed in ``finally`` — before this, a failure in
         # login/select/search left the TCP socket open with no owner, leaking one fd per connect attempt.
         # Under the gateway's reconnect watcher (fresh adapter instance per retry) against an
@@ -522,7 +523,9 @@ class EmailAdapter(BasePlatformAdapter):
         try:
             imap.login(self._address, self._password)
             _send_imap_id(imap)
-            imap.select("INBOX")
+            selection = imap.select(self._imap_folder)
+            if isinstance(selection, tuple) and selection and selection[0] != "OK":
+                raise imaplib.IMAP4.error(f"Cannot select IMAP folder {self._imap_folder!r}")
             yield imap
         finally:
             _close_imap(imap)
@@ -549,7 +552,8 @@ class EmailAdapter(BasePlatformAdapter):
         """Connection test + seen-UID baseline. Sets a fatal error and returns False on failure."""
         try:
             with self._inbox() as imap:
-                snapshot = self._seen_uids_snapshot.get(self._address)
+                snapshot_key = (self._address, self._imap_folder)
+                snapshot = self._seen_uids_snapshot.get(snapshot_key)
                 if is_reconnect and snapshot is not None:
                     # Same-process reconnect: restore the previous adapter's baseline so mail that
                     # arrived during the outage stays eligible for the next poll.
@@ -561,7 +565,7 @@ class EmailAdapter(BasePlatformAdapter):
                     passed = "[Email] IMAP connection test passed. %d existing messages skipped."
                 self._trim_seen_uids()
                 logger.info(passed, len(self._seen_uids))
-            self._seen_uids_snapshot[self._address] = set(self._seen_uids)
+            self._seen_uids_snapshot[snapshot_key] = set(self._seen_uids)
             return True
         except Exception as e:
             # Always set an explicit fatal code, else the gateway treats every failure as transient with zero
@@ -710,7 +714,7 @@ class EmailAdapter(BasePlatformAdapter):
             logger.error("[Email] IMAP fetch error: %s", e)
             self._last_fetch_failed, self._last_fetch_error = True, str(e)
         # Keep the reconnect snapshot current so a mid-outage adapter recreation does not re-dispatch messages already processed.
-        self._seen_uids_snapshot[self._address] = set(self._seen_uids)
+        self._seen_uids_snapshot[(self._address, self._imap_folder)] = set(self._seen_uids)
         return results
 
     def _message_metadata(self, uid: bytes, msg: email_lib.message.Message) -> Optional[Dict[str, Any]]:

@@ -1365,13 +1365,13 @@ def _desktop_linux_sandbox_fixup(packaged_executable: Path) -> bool:
     # answered — without -n the launch hangs indefinitely instead of failing (#123927). Terminal
     # launches keep the interactive prompt.
     # ponytail: fail-fast only, no GUI askpass fallback; add one if TTY-less hosts need password sudo.
-    # ``sys.stdin`` is None when the process has no stdin at all (detached launch, GUI spawn that
-    # closed it) and a closed stream raises on ``isatty()``; both are no-TTY cases and neither may
-    # escape as a traceback that skips the ``--no-sandbox`` fallback (#123927 review).
-    try:
-        non_interactive = sys.stdin is None or not sys.stdin.isatty()
-    except ValueError:  # stdin closed under us
-        non_interactive = True
+    # Every unusable-stdin shape is a no-TTY case and none may escape as a traceback that skips the
+    # ``--no-sandbox`` fallback (#123927 review): ``sys.stdin is None`` (detached launch, GUI spawn
+    # that closed it), a stream whose ``isatty()`` raises (closed: ValueError, bad fd: OSError), or
+    # a stdin replacement with no ``isatty`` at all. ``hermes_cli.setup.is_interactive_stdin``
+    # already fails closed on all of those, so reuse it instead of growing a parallel guard here.
+    from hermes_cli.setup import is_interactive_stdin
+    non_interactive = not is_interactive_stdin()
     for command in ([sudo, "chown", "root:root", str(sandbox)], [sudo, "chmod", "4755", str(sandbox)]):
         if non_interactive:
             command.insert(1, "-n")

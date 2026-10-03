@@ -340,6 +340,7 @@ class TurnRunner:
         # dynamically so the state is visible where it lives.
         publication_suppressed: bool = False
         anonymous_seq: int = 0
+        quota_failure: Any = None
 
         @staticmethod
         def _compact(value: Any, limit: int = 120) -> str:
@@ -387,12 +388,15 @@ class TurnRunner:
         text = st.fallback_text()
         from gateway.relay.egress import declined_send
 
-        if st.publication_suppressed:
+        if st.publication_suppressed or st.quota_failure is not None:
             return
         if st.fallback_msg_id:
             result = await st.adapter.edit_message(
                 chat_id=ctx.source.chat_id, message_id=st.fallback_msg_id, content=text, metadata=ctx._progress_metadata,
             )
+            self._observe_progress_quota(st, result)
+            if st.quota_failure is not None:
+                return
             if getattr(result, "success", False):
                 return
             # P5(b): R5-4 made a declined native CARD terminal but left this
@@ -415,7 +419,7 @@ class TurnRunner:
         ctx = self._ctx
         if not st.tasks:
             return
-        if st.publication_suppressed:
+        if st.publication_suppressed or st.quota_failure is not None:
             # Publication was suppressed earlier in the turn (egress refusal or a chat
             # that cannot host a card); every later publication would re-deliver the
             # same task text there.
@@ -435,6 +439,9 @@ class TurnRunner:
                 chat_id=ctx.source.chat_id, tasks=st.visible_tasks(), title=t("gateway.progress.task_card_title"),
                 reply_to=ctx._progress_reply_to, metadata=ctx._progress_metadata, fallback_text=st.fallback_text(),
             )
+            self._observe_progress_quota(st, result)
+            if st.quota_failure is not None:
+                return
             if getattr(result, "success", False):
                 return
             # P5(b): an AUTHORIZATION decline is not a broken card lane. The
@@ -545,6 +552,7 @@ class TurnRunner:
         _progress_len_fn: Any
         _PROGRESS_TEXT_LIMIT: int
         _edit_accepts_metadata: bool
+        quota_failure: Any = None
 
     def _progress_edit_state(self, adapter) -> "TurnRunner._ProgressEditState":
         ctx = self._ctx
@@ -571,13 +579,26 @@ class TurnRunner:
         )
 
     async def _edit_progress_message(self, st, message_id: str, content: str):
+        if st.quota_failure is not None:
+            return st.quota_failure
         ctx = self._ctx
         kwargs = {"chat_id": ctx.source.chat_id, "message_id": message_id, "content": content}
         if getattr(st.adapter, "REQUIRES_EDIT_FINALIZE", False):
             kwargs["finalize"] = True
         if st._edit_accepts_metadata:
             kwargs["metadata"] = ctx._progress_metadata
-        return await st.adapter.edit_message(**kwargs)
+        result = await st.adapter.edit_message(**kwargs)
+        self._observe_progress_quota(st, result)
+        return result
+
+    def _observe_progress_quota(self, st, result) -> None:
+        # Slack's workspace posting quota is not a transient per-method 429.
+        # Stop optional chatter for this turn, without blocking the final answer
+        # or making a workspace/profile-wide policy decision for later turns.
+        if (not result.success and self._ctx.source.platform == Platform.SLACK
+                and re.search(r"\bmessage_limit_exceeded\b", str(result.error or ""))):
+            st.quota_failure = result
+            logger.warning("Slack posting quota exhausted; suppressing tool progress for this turn")
 
     @staticmethod
     def _progress_text(lines: list) -> str:
@@ -596,11 +617,14 @@ class TurnRunner:
         return groups + ([current] if current else [])
 
     async def _send_progress_text(self, st, text: str):
+        if st.quota_failure is not None:
+            return st.quota_failure
         ctx = self._ctx
         result = await st.adapter.send(
             chat_id=ctx.source.chat_id, content=text, reply_to=ctx._progress_reply_to, metadata=ctx._progress_metadata,
         )
         self._track_progress_result(result)
+        self._observe_progress_quota(st, result)
         return result
 
     async def _roll_progress_overflow_if_needed(self, st) -> bool:
@@ -609,6 +633,8 @@ class TurnRunner:
         Returns True when it delivered/split the buffer or a transient edit failure left it
         intact for retry — either way the caller skips the normal send/edit path this tick.
         """
+        if st.quota_failure is not None:
+            return True
         if not st.progress_lines or not st.can_edit:
             return False
         groups = self._split_progress_groups(st, st.progress_lines)
@@ -616,6 +642,8 @@ class TurnRunner:
             return False
         if st.progress_msg_id is not None:
             result = await self._edit_progress_message(st, st.progress_msg_id, self._progress_text(groups[0]))
+            if st.quota_failure is not None:
+                return True
             if not result.success:
                 if getattr(result, "retryable", False):
                     logger.debug("[%s] Transient overflow edit failure — keeping can_edit=True", st.adapter.name)
@@ -626,6 +654,8 @@ class TurnRunner:
             groups = groups[1:]
         for group in groups:
             result = await self._send_progress_text(st, self._progress_text(group))
+            if st.quota_failure is not None:
+                return True
             if result.success and result.message_id:
                 st.progress_msg_id = result.message_id
         # The newest continuation is the only mutable bubble: keep just its lines so later
@@ -661,6 +691,9 @@ class TurnRunner:
 
     async def _drain_progress_on_cancel(self, st) -> None:
         ctx = self._ctx
+        if st.quota_failure is not None:
+            self._drain_progress_queue()
+            return
         with suppress(Exception):
             while not ctx.progress_queue.empty():
                 raw = ctx.progress_queue.get_nowait()
@@ -690,8 +723,12 @@ class TurnRunner:
         Transient network errors (ConnectError, timeouts) must not disable editing; only permanent
         failures (not found, permissions) set can_edit=False. Flood control backs off but keeps editing.
         """
+        if st.quota_failure is not None:
+            return False
         if st.can_edit and st.progress_msg_id is not None:
             result = await self._edit_progress_message(st, st.progress_msg_id, "\n".join(st.progress_lines))
+            if st.quota_failure is not None:
+                return False
             if result.success:
                 return True
             if getattr(result, "retryable", False):
@@ -733,9 +770,9 @@ class TurnRunner:
                     self._drain_progress_queue()
                     return
                 raw = ctx.progress_queue.get_nowait()
-                # Drain silently when interrupted: events queued in the window between tool parse
-                # and interrupt processing should not render as bubbles.
-                if self._agent_interrupted():
+                # Drain silently after a quota refusal or interruption. Keep consuming until
+                # turn cleanup so the still-running agent cannot build an unbounded backlog.
+                if st.quota_failure is not None or self._agent_interrupted():
                     await asyncio.sleep(0)
                     continue
                 if self._is_reset_marker(raw):
@@ -755,7 +792,8 @@ class TurnRunner:
                     if not await self._progress_send_or_edit(st, msg):
                         continue
                 last_edit_ts = time.monotonic()
-                await self._progress_restore_typing(st)
+                if st.quota_failure is None:
+                    await self._progress_restore_typing(st)
             except queue.Empty:
                 await asyncio.sleep(0.3)
             except asyncio.CancelledError:

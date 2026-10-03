@@ -285,6 +285,102 @@ def test_resolve_keeps_catalog_meta_when_later_sources_do_not_fetch():
     assert matched.__class__ is CatalogSource
 
 
+def test_inspect_reviews_every_installable_file_without_truncation(monkeypatch):
+    """Review includes the complete deterministic bundle, not just a SKILL.md excerpt."""
+    import hashlib
+    import hermes_cli.skills_hub as cli_hub
+    from tools.skills_hub_models import SkillBundle, SkillMeta
+
+    skill_md = "\n".join(["---", "name: review-demo", "description: Benign instructions.", "---"]
+                           + [f"instruction line {i}" for i in range(60)])
+    script = b"#!/usr/bin/env python3\nprint('material support behavior')\n"
+    bundle = SkillBundle(
+        name="review-demo",
+        files={"scripts/run.py": script, "SKILL.md": skill_md},
+        source="github",
+        identifier="owner/repo/review-demo",
+        trust_level="community",
+    )
+    meta = SkillMeta(
+        name="review-demo",
+        description="Benign instructions.",
+        source="github",
+        identifier="owner/repo/review-demo",
+        trust_level="community",
+    )
+    monkeypatch.setattr(
+        cli_hub, "_resolve_identifier",
+        lambda identifier, sources, console: (identifier, meta, bundle, object()),
+    )
+    sink = StringIO()
+
+    cli_hub.do_inspect(
+        bundle.identifier,
+        console=Console(file=sink, force_terminal=False, color_system=None, width=120),
+    )
+
+    rendered = sink.getvalue()
+    assert "instruction line 59" in rendered
+    assert rendered.index("SKILL.md") < rendered.index("scripts/run.py")
+    assert "material support behavior" in rendered
+    assert hashlib.sha256(script).hexdigest() in rendered
+
+
+def test_install_refuses_bundle_bytes_changed_after_review(hub_env, monkeypatch):
+    """The manifest approved at the prompt must identify the bytes moved into skills/."""
+    import hashlib
+    import hermes_cli.skills_hub as cli_hub
+    from tools.skills_hub_models import SkillBundle, SkillMeta
+
+    skill_md = "---\nname: review-demo\ndescription: Benign instructions.\n---\n# Review demo\n"
+    script = b"#!/usr/bin/env python3\nprint('original support behavior')\n"
+    bundle = SkillBundle(
+        name="review-demo",
+        files={"SKILL.md": skill_md, "scripts/run.py": script},
+        source="github",
+        identifier="owner/repo/review-demo",
+        trust_level="community",
+    )
+    meta = SkillMeta(
+        name=bundle.name,
+        description="Benign instructions.",
+        source=bundle.source,
+        identifier=bundle.identifier,
+        trust_level=bundle.trust_level,
+    )
+
+    class Source:
+        def inspect(self, _identifier):
+            return meta
+
+        def fetch(self, _identifier):
+            return bundle
+
+    monkeypatch.setattr(cli_hub, "_sources", lambda: [Source()])
+    monkeypatch.setattr(cli_hub, "_print_tier1_advisory", lambda *_args: None)
+    quarantine = hub_env / "quarantine" / bundle.name
+
+    def approve_then_change_bytes():
+        (quarantine / "scripts" / "run.py").write_bytes(
+            b"#!/usr/bin/env python3\nprint('different unreviewed behavior')\n"
+        )
+        return True
+
+    monkeypatch.setattr(cli_hub, "_confirm", approve_then_change_bytes)
+    sink = StringIO()
+    console = Console(file=sink, force_terminal=False, color_system=None, width=120)
+
+    cli_hub._install_skill(
+        bundle.identifier, "", False, console, False, True, "", None,
+    )
+
+    rendered = sink.getvalue()
+    assert "original support behavior" in rendered
+    assert hashlib.sha256(script).hexdigest() in rendered
+    assert "changed after review" in rendered
+    assert not (hub_env.parent / bundle.name).exists()
+
+
 def test_inspect_reuses_one_ssrf_safe_client_for_metadata_and_bundle(monkeypatch, tmp_path):
     """A preview's (and an install's) sequential resolver calls must share one guarded connection pool."""
     import hermes_cli.skills_hub as cli_hub

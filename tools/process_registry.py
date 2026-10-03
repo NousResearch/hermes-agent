@@ -1072,7 +1072,7 @@ class ProcessRegistry(ProcessCheckpointMixin):
         return ProcessRegistry._config_seconds("daemon_term_grace_seconds", 2.0)
 
     @classmethod
-    def _terminate_host_pid(cls, pid: int, expected_start: Optional[int] = None) -> None:
+    def terminate_host_pid(cls, pid: int, expected_start: Optional[int] = None) -> None:
         """Terminate a host-visible PID and its descendants.
         ``expected_start`` (kernel start time at spawn) is re-validated first: a mismatch
         or dead PID means the number was recycled onto a stranger and we refuse to touch
@@ -1168,6 +1168,8 @@ class ProcessRegistry(ProcessCheckpointMixin):
                 if cls._proc_alive(proc):
                     proc.kill()  # SIGKILL on POSIX
                     logger.info("Escalated to SIGKILL for pid %d (ignored SIGTERM within %.1fs grace)", proc.pid, grace)
+
+    _terminate_host_pid = terminate_host_pid  # original private spelling, kept as an alias
 
     @staticmethod
     def _live_descendants(pid: int) -> List[int]:

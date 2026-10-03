@@ -125,3 +125,25 @@ class TestSkillViewDedup:
         repeat = _view("demo-dedup-skill")
         assert repeat.get("dedup") is True
         assert repeat.get("content_returned") is False
+
+    def test_plugin_skill_repeat_view_returns_stub(self, skills_home, tmp_path, monkeypatch):
+        from hermes_cli import plugins as plugins_mod
+        from hermes_cli.plugins import PluginContext, PluginManager, PluginManifest
+
+        manager = PluginManager()
+        manager._discovered = True
+        monkeypatch.setattr(plugins_mod, "_plugin_manager", manager)
+        md = tmp_path / "dedup-plugin" / "SKILL.md"
+        md.parent.mkdir()
+        md.write_text("---\nname: guide\ndescription: Plugin skill.\n---\n\nPlugin body.\n", encoding="utf-8")
+        manifest = PluginManifest(name="dedup-plugin", version="1.0.0", description="test", source="user")
+        PluginContext(manifest, manager).register_skill("guide", md)
+
+        assert "Plugin body." in _view("dedup-plugin:guide").get("content", "")
+        repeat = _view("dedup-plugin:guide")
+        assert repeat.get("dedup") is True
+        assert "content" not in repeat
+
+        time.sleep(0.01)
+        md.write_text(md.read_text(encoding="utf-8") + "\nChanged.\n", encoding="utf-8")
+        assert "Changed." in _view("dedup-plugin:guide").get("content", "")

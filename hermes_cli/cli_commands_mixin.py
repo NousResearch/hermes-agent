@@ -2371,7 +2371,10 @@ class CLICommandsMixin:
                        f"  {_t('skin.available', names=', '.join(sorted(available)))}")
         set_active_skin(new_skin)
         _ACCENT.reset()  # re-resolve ANSI color for the new skin (_DIM is a fixed escape)
-        saved = _t("skin.saved_suffix") if _save("display.skin", new_skin) else ""
+        if _save("display.skin", new_skin):
+            saved = _t("skin.saved_suffix")
+        else:
+            saved = " " + _t("shared.scope_save_failed")
         _pr(f"  {_t('skin.set_to', name=new_skin, saved=saved)}", f"  {_t('skin.banner_note')}")
         if self._apply_tui_skin_style():
             print(f"  {_t('skin.colors_updated')}")

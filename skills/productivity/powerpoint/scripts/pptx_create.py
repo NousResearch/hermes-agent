@@ -32,6 +32,18 @@ Spec format (all positions/sizes in inches, colors as RRGGBB hex):
 Layouts: title, title_content, section, two_content, title_only, blank
 Chart types: bar, bar_h, line, pie   Shape types: rectangle,
 rounded_rectangle, oval, diamond, right_arrow, chevron
+
+The tool also emits an "overflow" estimate: for each title/content slide it
+estimates how much vertical space the bullets need (from their effective
+font size) vs. the body placeholder's height, and reports slides where the
+content is estimated to overflow and would be silently clipped in
+PowerPoint. Dense bullet content should be trimmed or the body font reduced
+until no slide appears in the "overflow" array.
+
+Each "overflow" entry's "slide" is a **0-based index** into the spec's
+"slides" array (the first slide in the spec is 0). A slide whose body
+placeholder has no explicit height (custom templates) is skipped — it does
+not report an overflow entry.
 """
 import argparse
 import copy
@@ -56,6 +68,47 @@ SHAPE_TYPES = {"rectangle": MSO_SHAPE.RECTANGLE,
                "oval": MSO_SHAPE.OVAL, "diamond": MSO_SHAPE.DIAMOND,
                "right_arrow": MSO_SHAPE.RIGHT_ARROW,
                "chevron": MSO_SHAPE.CHEVRON}
+
+# Overflow-estimate constants. The default body placeholder is 16:9 and
+# inherits an 18pt font from the theme, so its ~4.95" height fits roughly
+# 6 lines. These are heuristics, not a renderer: they flag content that is
+# *likely* clipped so dense decks don't silently pass.
+DEFAULT_FONT_PT = 18.0
+LINE_HEIGHT_MULT = 1.2
+PARA_SPACING_IN = 0.05
+OVERFLOW_TOLERANCE = 0.98  # 2% slack so rounding doesn't false-positive
+EMU_PER_IN = 914400.0
+
+
+def estimate_text_height(text_frame, default_font_pt=DEFAULT_FONT_PT):
+    """Estimate vertical height (inches) the paragraphs need.
+
+    Offline-only heuristic using python-pptx geometry: for each paragraph,
+    line height = effective font size (first run that sets a size, else the
+    theme default) * LINE_HEIGHT_MULT, plus a per-paragraph spacing. A cheap
+    word-wrap term accounts for long lines that render across multiple visual
+    lines: characters-per-line is approximated from a rough glyph width
+    (0.55 * point size), so a 200-char bullet is counted as several lines
+    rather than one. No text metrics / rendering involved.
+    """
+    total = 0.0
+    for para in text_frame.paragraphs:
+        size_pt = default_font_pt
+        for run in para.runs:
+            if run.font.size is not None:
+                size_pt = run.font.size.pt
+                break
+        line_h = (size_pt * LINE_HEIGHT_MULT / 72.0)
+        # Word-wrap term: roughly how many 0.55*size glyphs fit on a line,
+        # then how many visual lines that produces for the paragraph text.
+        text = para.text or ""
+        if text:
+            chars_per_line = max(1, int(8.5 * 72.0 / (0.55 * size_pt)))
+            lines = max(1, -(-len(text) // chars_per_line))
+        else:
+            lines = 1
+        total += (line_h * lines) + PARA_SPACING_IN
+    return total
 
 
 def style_run(run, spec):
@@ -100,7 +153,7 @@ def copy_layout_placeholder(slide, ph_idx):
     return None
 
 
-def build_slide(prs, spec):
+def build_slide(prs, spec, index):
     layout_idx = LAYOUTS.get(spec.get("layout", "title_content"), 1)
     slide = prs.slides.add_slide(prs.slide_layouts[layout_idx])
 
@@ -122,6 +175,7 @@ def build_slide(prs, spec):
             if ph.placeholder_format.idx == 1:
                 ph.text = spec["subtitle"]
                 break
+    overflow = None
     if spec.get("bullets"):
         body = next((ph for ph in slide.placeholders
                      if ph.placeholder_format.idx != 0), None)
@@ -129,6 +183,13 @@ def build_slide(prs, spec):
             body = slide.shapes.add_textbox(Inches(0.5), Inches(1.5),
                                             Inches(9), Inches(5))
         add_bullets(body.text_frame, spec["bullets"])
+        available_in = (body.height / EMU_PER_IN) if body.height else None
+        if available_in is not None:
+            estimated_in = estimate_text_height(body.text_frame)
+            if estimated_in > available_in * OVERFLOW_TOLERANCE:
+                overflow = {"slide": index,
+                            "estimated_inches": round(estimated_in, 2),
+                            "available_inches": round(available_in, 2)}
 
     for img in spec.get("images", []):
         kwargs = {}
@@ -179,7 +240,7 @@ def build_slide(prs, spec):
 
     if spec.get("notes"):
         slide.notes_slide.notes_text_frame.text = spec["notes"]
-    return slide
+    return slide, overflow
 
 
 def main(argv=None):
@@ -201,12 +262,16 @@ def main(argv=None):
     else:
         prs.slide_width, prs.slide_height = Inches(10), Inches(7.5)
 
-    for slide_spec in spec.get("slides", []):
-        build_slide(prs, slide_spec)
+    overflow = []
+    for index, slide_spec in enumerate(spec.get("slides", [])):
+        _, slide_overflow = build_slide(prs, slide_spec, index)
+        if slide_overflow:
+            overflow.append(slide_overflow)
 
     prs.save(args.output)
     print(json.dumps({"ok": True, "output": args.output,
-                      "slides": len(prs.slides._sldIdLst)}))
+                      "slides": len(prs.slides._sldIdLst),
+                      "overflow": overflow}))
     return 0
 
 

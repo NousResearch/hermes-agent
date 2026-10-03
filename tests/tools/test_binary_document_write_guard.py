@@ -14,11 +14,13 @@ from pathlib import Path
 
 import pytest
 
+from tools import file_tools, file_tools_write_guards
 from tools.binary_extensions import (
     has_opaque_document_extension,
     is_pdf_path,
 )
 from tools.file_tools import patch_tool, write_file_tool
+from tools.file_tools_write_guards import _check_binary_document_write
 
 
 def _make_minimal_docx(path: Path) -> None:
@@ -76,6 +78,41 @@ class TestExtensionHelpers:
         assert is_pdf_path("report.txt") is False
 
 
+
+    @pytest.mark.parametrize(
+        ("status", "expected"),
+        [("ok", "overwrite"), ("missing", None), ("unreachable", "could not establish")],
+    )
+    def test_remote_pdf_checks_captured_identity_without_resolving_again(
+        self, monkeypatch, status, expected
+    ):
+        class ProbeOperations:
+            def __init__(self):
+                self.paths = []
+
+            def _expand_path(self, path):
+                return path
+
+            def _probe_regular_file(self, path):
+                self.paths.append(path)
+                return 0, status
+
+        operations = ProbeOperations()
+        monkeypatch.setattr(file_tools, "_file_ops_uses_host_paths", lambda _ops: False)
+        monkeypatch.setattr(file_tools, "_get_file_ops", lambda _task: operations)
+
+        def resolve_again(*args):
+            pytest.fail("the binary guard must use the captured mutation identity")
+
+        monkeypatch.setattr(file_tools_write_guards, "_resolve_path_for_task", resolve_again)
+        error = _check_binary_document_write(
+            "report.pdf", task_id="remote-task", resolved_path="/remote/work/report.pdf"
+        )
+        assert operations.paths == ["/remote/work/report.pdf"]
+        if expected is None:
+            assert error is None
+        else:
+            assert error is not None and expected in error.lower()
 
 
 class TestWriteFileToolGuard:
@@ -160,7 +197,7 @@ class TestWriteFileToolGuard:
         target = tmp_path / "notes.txt"
         result = json.loads(write_file_tool(str(target), "hello world"))
         assert not result.get("error")
-        assert target.read_text() == "hello world"
+        assert target.read_text(encoding="utf-8") == "hello world"
 
 
 class TestPatchToolGuard:
@@ -223,10 +260,10 @@ class TestPatchToolGuard:
 
     def test_patch_replace_plain_text_unaffected(self, tmp_path: Path):
         target = tmp_path / "notes.txt"
-        target.write_text("hello world")
+        target.write_text("hello world", encoding="utf-8")
         result = json.loads(
             patch_tool(mode="replace", path=str(target),
                        old_string="world", new_string="there")
         )
         assert not result.get("error")
-        assert target.read_text() == "hello there"
+        assert target.read_text(encoding="utf-8") == "hello there"

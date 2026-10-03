@@ -514,6 +514,19 @@ class TestWhisperHallucinationFilter:
         assert is_whisper_hallucination("Thank you for your help with the project.") is False
         assert is_whisper_hallucination("Can you explain this code?") is False
 
+    @pytest.mark.parametrize("junk", ["-", "...", " — ", "?!", "♪", "- -", "…"])
+    def test_no_letters_or_digits_is_a_hallucination(self, junk):
+        """Whisper's output for a click or a breath; it used to start a real agent turn."""
+        from tools.voice_mode_transcript import is_whisper_hallucination
+
+        assert is_whisper_hallucination(junk) is True
+
+    @pytest.mark.parametrize("speech", ["42", "你好", "Привет", "- Actually, what's for lunch?", "OK?"])
+    def test_any_letter_or_digit_is_kept(self, speech):
+        from tools.voice_mode_transcript import is_whisper_hallucination
+
+        assert is_whisper_hallucination(speech) is False
+
 
 # ============================================================================
 # play_audio_file

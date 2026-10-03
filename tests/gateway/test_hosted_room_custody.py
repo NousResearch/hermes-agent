@@ -129,6 +129,11 @@ def test_custodians_acknowledge_with_watermarks_and_successors_bound_the_tail_at
         conn.row_factory = sqlite3.Row
         assert custody.custody_watermark_locked(conn, "room", store=False) == held
     assert held["seq"] == rooms.room_state(pair.source, room_id="room")["latest_seq"]
+    # Every push carries the head the host signs for the page's end; the copy keeps it.
+    vouched = custody.custody_status(pair.target, "room")["head"]
+    assert (vouched["host"], vouched["epoch"], vouched["seq"], vouched["chain_hash"]) == (
+        HOME, 1, held["seq"], held["event_hash"])
+    assert status["head"]["seq"] == held["seq"]  # the host signs its own head at its latest event
     # Not designated: its copy holds everything, and still nothing is safe from losing this host.
     assert status["at_risk_after_seq"] == 0
     assert not custody.wait_protected(pair.source, "room", 1, timeout=0)

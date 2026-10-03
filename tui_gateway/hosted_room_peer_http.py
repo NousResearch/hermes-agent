@@ -971,6 +971,11 @@ class PeerRunsHTTPClient:
             body={"room_id": room_id, "room_name": room_name, "members": members, "page": page,
                   **({"custody": dict(custody)} if custody is not None else {})})
 
+    def custody_pages(self, *, body: dict[str, Any]) -> Mapping[str, Any]:
+        """Ask another custodian for a page of its history; the signed body is the authorization."""
+        from gateway.hosted_room_custody import PAGES_PATH
+        return self._request(PAGES_PATH, method="POST", body=body, ensure_ascii=False)
+
     def replicate_work_records(self, *, grant: str, record: dict[str, Any]) -> Mapping[str, Any]:
         """Send one whole task-evidence record with a ``work_records`` grant."""
         return self._request(

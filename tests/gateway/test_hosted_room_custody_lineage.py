@@ -107,12 +107,23 @@ def page(source, *, after=0, limit=rooms.MAX_LOG_LIMIT):
 
 
 def copy_to(source, target, *, after=None, limit=rooms.MAX_LOG_LIMIT, verify=None):
-    """Store the source's history in the target's copy, as the source's pages carry it."""
+    """Store the source's history in the target's copy, as the source's pages carry it.
+
+    A host's page also carries the head it signs for the page's end, as its pushes do; the copy keeps
+    it when it vouches for the copy (signed by the host it follows).
+    """
     held = watermark(target)
     fetched = page(source, after=held["seq"] if after is None and held else after or 0, limit=limit)
+    with acting(source), closing(open_sqlite(source.db)) as conn:
+        hosts = conn.execute("SELECT 1 FROM hosted_rooms WHERE room_id=? AND authority_gateway_id=?",
+                             (ROOM, source.install_id)).fetchone()
+        head = custody.sign_head_locked(conn, ROOM, seq=fetched["page"]["cursor"]) if hosts else None
     with acting(target):
-        return replicas.ingest_page(target.db, room_id=ROOM, room_name=fetched["room_name"],
-                                    members=fetched["members"], page=fetched["page"], _verify_transition=verify)
+        stored = replicas.ingest_page(target.db, room_id=ROOM, room_name=fetched["room_name"],
+                                      members=fetched["members"], page=fetched["page"], _verify_transition=verify)
+        if head is not None:
+            custody.record_head(target.db, ROOM, head)
+        return stored
 
 
 def continuation(successor, *, from_host, from_epoch, to_epoch):

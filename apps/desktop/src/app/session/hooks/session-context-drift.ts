@@ -128,6 +128,15 @@ export function sessionContextDrift({
   // mode. Compared against submitTargetComposerScope (lineage-pinned), NOT
   // submitTargetStoredId (live tip) — see the field doc on
   // SessionContextDriftArgs for why those two must not be conflated.
+  //
+  // ANY mismatch — including a fresh-draft scope (`__new__` / `__new__:<uuid>`)
+  // against a stored target — is drift HERE. The one legitimate fresh-draft
+  // transition, the create pipeline re-keying the submit's OWN draft onto the
+  // created session, is decided by the submit pipeline (use-prompt-actions/
+  // submit.ts): it knows whether the captured draft key is still the current
+  // fresh draft and re-homes the snapshot before this comparison runs. This
+  // pure function stays fail-closed — it cannot tell a stale draft key from
+  // the create's own re-key.
   if (composerScope !== undefined && composerScope !== null && composerScope !== submitTargetComposerScope) {
     return `composer:${composerScope}->${submitTargetComposerScope}`
   }

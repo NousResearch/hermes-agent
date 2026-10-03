@@ -25,8 +25,15 @@ class TelegramTextBatchingMixin:
         if self._should_drop_delayed_delivery():
             self._hold_inbound_event(event, where="text-enqueue")
             return
-        key = self._text_batch_key(event)
-        existing = self._pending_text_batches.get(key)
+        super()._enqueue_text_event(event)
+        self._accept_update()
+
+    def _text_batch_boundary(
+        self: TelegramAdapter,
+        key: str,
+        existing: MessageEvent | None,
+        event: MessageEvent,
+    ) -> MessageEvent | None:
         if existing is not None and not self._text_batch_context_compatible(
             existing, event
         ):
@@ -39,8 +46,8 @@ class TelegramTextBatchingMixin:
                 key,
             )
             self._hold_inbound_event(existing, where="text-reply-context-boundary")
-        super()._enqueue_text_event(event)
-        self._accept_update()
+            return None
+        return existing
 
     async def _flush_buffered(
         self: TelegramAdapter,

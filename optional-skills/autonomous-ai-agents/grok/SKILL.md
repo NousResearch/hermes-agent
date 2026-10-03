@@ -256,15 +256,14 @@ write tools except the session plan file).
 auto_update = false          # skip background update checks persistently
 
 [ui]
-permission_mode = "ask"      # or "always-approve" to skip tool prompts by default
-
-[models]
-default = "grok-build-0.1"
+permission_mode = "ask"      # or "auto" / "always-approve"
 ```
 
 Put global preferences in `~/.grok/config.toml` (not project-scoped
-`.grok/config.toml`). `permission_mode` supersedes the legacy `approval_mode` /
-`yolo = true` keys.
+`.grok/config.toml`). Avoid pinning the default model unless `grok models`
+confirms that model is available for the authenticated account. For autonomous
+headless runs, use the explicit `--always-approve` flag. `permission_mode`
+supersedes the legacy `approval_mode` / `yolo = true` keys.
 
 ## Pitfalls & Gotchas
 

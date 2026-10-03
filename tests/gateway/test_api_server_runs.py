@@ -265,6 +265,7 @@ async def test_pending_approvals_survive_steer_race_and_partial_answers(adapter,
             responses = [event for _, event in frames if event["event"] == "approval.responded"]
             assert responses[0]["approval"]["request_id"] == entries[1].data["request_id"]
             assert "approval" not in responses[1]
+            assert all("approval" not in event for _, event in frames if event["event"] == "run.steered")
             stream.put_nowait(None)
             events_response.close()
     finally:

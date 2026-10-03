@@ -590,8 +590,9 @@ def build_status_phrase(tool_name: str, args: dict | None, max_len: int = 49) ->
     if not tool_name or tool_name == "_thinking" or not _friendly_tool_labels:
         return None
     verb = _tool_verb(tool_name)
-    phrase = (t("display.status_phrase.verb", verb=f"{verb[0].lower()}{verb[1:]}") if verb
-              else t("display.status_phrase.using_tool", tool=tool_name))
+    if not verb:
+        return None
+    phrase = t("display.status_phrase.verb", verb=f"{verb[0].lower()}{verb[1:]}")
     with_preview = args and verb and tool_name not in _TOOL_VERBS_NO_PREVIEW
     preview = build_tool_preview(tool_name, args, max_len=None) if with_preview else None
     if preview:  # previews can contain newlines (terminal commands); keep the first line

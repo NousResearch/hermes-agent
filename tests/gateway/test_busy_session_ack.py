@@ -511,6 +511,47 @@ class TestLongRunningNotificationOwnership:
         assert first_send.await_count == 1  # the original heartbeat only
         adapter.edit_message.assert_awaited_once()
 
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("current_tool", "friendly_phrase"),
+        [("terminal", "is running"), ("internal_plugin_tool", None)],
+    )
+    async def test_heartbeat_uses_friendly_tool_phrase_and_hides_internal_tool_names(
+        self, monkeypatch, current_tool, friendly_phrase,
+    ):
+        """Curated tools are described; unknown tools safely retain the generic heartbeat."""
+        import asyncio
+        from types import SimpleNamespace
+        from gateway.run import GatewayRunner
+        from gateway.turn_context import TurnContext
+
+        monkeypatch.setenv("HERMES_AGENT_NOTIFY_INTERVAL", "0.01")
+        runner = object.__new__(GatewayRunner)
+        runner._running_agents = {}
+        runner._draining = runner._restart_requested = False
+        adapter = MagicMock()
+        adapter.send = AsyncMock(return_value=SimpleNamespace(success=True, message_id="hb-1"))
+        runner._delivery_adapter_for = lambda source: adapter
+        runner._should_emit_long_running_notification = MagicMock(side_effect=[True, True, False])
+        runner._agent_activity_summary = staticmethod(lambda _agent: {
+            "api_call_count": 2, "max_iterations": 60, "current_tool": current_tool,
+        })
+        agent = MagicMock()
+        runner._running_agents["sess"] = agent
+        disp = MagicMock()
+        disp._display_surface_mode.return_value = "raw"
+        disp.resolve_display_setting.return_value = True
+        ctx = TurnContext(source=SimpleNamespace(chat_id="c", platform="discord"), session_key="sess")
+        ctx.agent_holder[0] = agent
+
+        await asyncio.wait_for(runner._run_agent_notify_long_running(disp, ctx, [None]), 5)
+
+        heartbeat = adapter.send.await_args.args[1]
+        assert "iteration 2/60" in heartbeat
+        if friendly_phrase:
+            assert friendly_phrase in heartbeat
+        assert current_tool not in heartbeat
+
     @pytest.mark.parametrize("flag", ["_draining", "_restart_requested"])
     def test_notification_stops_once_shutdown_or_restart_begins(self, flag):
         """After the restart/shutdown notice a heartbeat would contradict it (#10990)."""
@@ -523,5 +564,3 @@ class TestLongRunningNotificationOwnership:
         assert runner._should_emit_long_running_notification("sess", agent, executor_task=None) is True
         setattr(runner, flag, True)
         assert runner._should_emit_long_running_notification("sess", agent, executor_task=None) is False
-
-

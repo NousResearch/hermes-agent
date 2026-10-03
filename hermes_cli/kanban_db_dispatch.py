@@ -1626,32 +1626,77 @@ def check_respawn_guard(
             return "recent_success"
 
     # 4. GitHub PR URL in a recent comment — prior worker already opened a PR.
-    #    Exception: a handoff AFTER the newest PR comment (operator reassign,
+    #    Exception 1: a handoff AFTER the newest PR comment (operator reassign,
     #    reviewer changes_requested, review reopen) names the profile that must
     #    now work on THAT PR — a closer or the implementer finishing it, not a
     #    duplicate implementation (#111910). A crash/reclaim is not a handoff,
     #    so the worker that opened the PR is still not re-spawned against it.
+    #    Exception 2: the comment must be the TASK'S OWN worker reporting their
+    #    OWN PR, not a passing reference to someone else's work — a reviewer
+    #    or a different card's assignee citing a foreign PR under review, or a
+    #    follow-up card's comment pointing at the PR it must build on, is input
+    #    the worker should read, not evidence that a duplicate PR already
+    #    exists for THIS task. Only guard when the comment's author matches
+    #    the assignee this task actually had at the moment the comment landed.
     pr_cutoff = now - _RESPAWN_GUARD_PR_WINDOW
     for c in conn.execute(
-        "SELECT body, created_at FROM task_comments "
+        "SELECT author, body, created_at FROM task_comments "
         "WHERE task_id = ? AND created_at >= ? ORDER BY created_at DESC",
         (task_id, pr_cutoff),
     ).fetchall():
         body = _kb._lossy_text(c["body"])
         if not (body and _RESPAWN_GUARD_PR_URL_RE.search(body)):
             continue
+        comment_at = int(c["created_at"] or 0)
+        comment_author = _kb._lossy_text(c["author"])
+        if comment_author != _assignee_as_of(conn, task_id, comment_at):
+            # Foreign comment (a different profile's reference/review input) —
+            # not this task's own published work.
+            continue
         events = conn.execute(
             # Strictly after: a same-second tie stays guarded (fail closed).
             "SELECT kind, payload FROM task_events "
             "WHERE task_id = ? AND created_at > ? "
             "AND kind IN ('assigned', 'changes_requested', 'review_reopened')",
-            (task_id, int(c["created_at"] or 0)),
+            (task_id, comment_at),
         ).fetchall()
         if any(_is_handoff_event(e["kind"], e["payload"]) for e in events):
             return None
         return "active_pr"
 
     return None
+
+
+def _assignee_as_of(conn: sqlite3.Connection, task_id: str, as_of_ts: int) -> Optional[str]:
+    """The task's assignee at ``as_of_ts``, reconstructed from ``assigned``
+    events so a later reassign/unassign doesn't retroactively change who
+    authored an earlier PR comment as "self" or "foreign".
+
+    The most recent ``assigned`` event at-or-before ``as_of_ts`` names the
+    assignee already in effect then. Absent such an event, no reassignment
+    had happened yet by ``as_of_ts``, so the assignee is whichever profile
+    the task started with — read from the EARLIEST ``assigned`` event's
+    ``from`` (the value just before the first-ever reassign), or the task's
+    current ``assignee`` column when it was never reassigned at all.
+    """
+    row = conn.execute(
+        "SELECT payload FROM task_events WHERE task_id = ? AND kind = 'assigned' "
+        "AND created_at <= ? ORDER BY created_at DESC LIMIT 1",
+        (task_id, as_of_ts),
+    ).fetchone()
+    if row is not None:
+        data = _kb._json_or(row["payload"], {})
+        return data.get("assignee") if isinstance(data, dict) else None
+    first = conn.execute(
+        "SELECT payload FROM task_events WHERE task_id = ? AND kind = 'assigned' "
+        "ORDER BY created_at ASC LIMIT 1",
+        (task_id,),
+    ).fetchone()
+    if first is not None:
+        data = _kb._json_or(first["payload"], {})
+        return data.get("from") if isinstance(data, dict) else None
+    trow = conn.execute("SELECT assignee FROM tasks WHERE id = ?", (task_id,)).fetchone()
+    return trow["assignee"] if trow is not None else None
 
 
 def _is_handoff_event(kind: str, payload: Optional[str]) -> bool:

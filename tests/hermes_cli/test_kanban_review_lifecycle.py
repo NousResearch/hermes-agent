@@ -605,6 +605,73 @@ def test_active_pr_guard_lifts_for_implementer_after_changes_requested(
         assert kbd.check_respawn_guard(conn, done_id) == "recent_success"
 
 
+def test_active_pr_guard_ignores_foreign_authors_pr_reference(
+    kanban_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A PR URL mentioned by someone who is NOT this task's own worker must
+    not trip the duplicate-PR guard.
+
+    Covers two real shapes seen in production (DRE-230): a reviewer/other
+    worker commenting on an independent card about a PR from unrelated work
+    (``t_a379b83e``-style: default-profile card, comment names a dev's own
+    PR), and a follow-up/Nacharbeit card whose only comment references the
+    PR it must build on or review (``t_dd556b24``-style: never claimed,
+    comment from a different profile). Neither is the task's own published
+    duplicate work, so the guard must return ``None``.
+    """
+    import hermes_cli.config as cfgmod
+    import hermes_cli.profiles as profmod
+
+    monkeypatch.setattr(profmod, "profile_exists", lambda name: True)
+    monkeypatch.setattr(cfgmod, "load_config", lambda *a, **k: {})
+
+    with kbc.connect() as conn:
+        # Independent reader card: never implemented, a foreign reviewer's
+        # comment just references someone else's merged PRs.
+        reader_id = kb.create_task(conn, title="read-only review", assignee="reader")
+        kb.add_comment(
+            conn, reader_id, author="other-dev",
+            body="See https://github.com/example/repo/pull/250 and pull/251.",
+        )
+        assert kbd.check_respawn_guard(conn, reader_id) is None
+
+        # Follow-up/Nacharbeit card: never claimed by its own assignee, only
+        # a foreign reviewer's comment pointing at the PR under review.
+        followup_id = kb.create_task(conn, title="follow-up work", assignee="follower")
+        kb.add_comment(
+            conn, followup_id, author="some-reviewer",
+            body="Builds on https://github.com/example/repo/pull/198.",
+        )
+        assert kbd.check_respawn_guard(conn, followup_id) is None
+
+        res = kbd.dispatch_once(conn, dry_run=True)
+        guarded_ids = [t for t, _ in res.respawn_guarded]
+        assert reader_id not in guarded_ids
+        assert followup_id not in guarded_ids
+
+
+def test_active_pr_guard_still_blocks_same_author_genuine_duplicate(
+    kanban_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Regression guard: the author-provenance check must not blanket-exempt
+    every PR mention — a comment from the task's OWN assignee at the time it
+    was posted still trips ``active_pr`` exactly as before (#111910)."""
+    import hermes_cli.config as cfgmod
+    import hermes_cli.profiles as profmod
+
+    monkeypatch.setattr(profmod, "profile_exists", lambda name: True)
+    monkeypatch.setattr(cfgmod, "load_config", lambda *a, **k: {})
+    pr_comment = "Opened https://github.com/example/repo/pull/77 for review."
+
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="own pr", assignee="dev")
+        kb.add_comment(conn, tid, author="dev", body=pr_comment)
+        assert kbd.check_respawn_guard(conn, tid) == "active_pr"
+
+        res = kbd.dispatch_once(conn, dry_run=True)
+        assert dict(res.respawn_guarded).get(tid) == "active_pr"
+
+
 def test_dispatch_json_exposes_suppression_reasons(
     kanban_home: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:

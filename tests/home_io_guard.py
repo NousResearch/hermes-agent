@@ -100,11 +100,12 @@ class HomeIOGuard:
             for prefix in _INTERPRETER_PREFIX_STRS:
                 if _within(absolute, prefix) or (metadata and _contains(absolute, prefix)):
                     return
-            # Check the lexical path first: resolving must not probe a protected
-            # tree merely to decide that the original path was forbidden.
-            for root in roots:
-                if _within(absolute, root):
-                    self.refuse(value)
+            # A symlinked interpreter home (a PM-managed runtime generation whose
+            # lexical name differs from its resolved name) must be recognised in
+            # resolved form BEFORE the lexical root refusal below: the interpreter's
+            # own stdlib reads (linecache, tracebacks while a failure is being
+            # formatted) resolve into its installation, and refusing them crashes
+            # the very failure report that is being produced.
             if resolved is None:
                 resolved = _normcase(os.path.realpath(absolute))
             if metadata and resolved in roots:
@@ -113,6 +114,11 @@ class HomeIOGuard:
             for prefix in _INTERPRETER_PREFIX_STRS:
                 if _within(resolved, prefix):
                     return
+            # Check the lexical path first: resolving must not probe a protected
+            # tree merely to decide that the original path was forbidden.
+            for root in roots:
+                if _within(absolute, root):
+                    self.refuse(value)
             for root in roots:
                 if _within(resolved, root):
                     self.refuse(value)

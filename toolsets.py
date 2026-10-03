@@ -157,6 +157,10 @@ TOOLSETS = {
         role="setup",
     ),
     "clarify": _ts("Ask the user clarifying questions (multiple-choice or open-ended)", ["clarify"]),
+    # Opt-in (default-off): the one agent-initiated cross-chat post, gated by an in-DM approval.
+    "group_carryover": _ts(
+        "Carry an approved synopsis of a private chat into one of the user's group chats",
+        ["carry_to_group"]),
     "code_execution": _ts("Run Python scripts that call tools programmatically (reduces LLM round trips)", ["execute_code"]),
     "delegation": _ts("Spawn subagents with isolated context for complex subtasks", ["delegate_task"]),
     "homeassistant": _ts("Home Assistant smart home control and monitoring", _HA_TOOLS),

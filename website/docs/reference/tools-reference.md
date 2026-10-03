@@ -56,6 +56,14 @@ Per-surface behavior:
 
 If the prompt times out part-way, answers the user already locked are kept: the tool result carries them with `"outcome": "timed_out"` and marks the rest `"status": "unanswered"`, so the agent can distinguish a deliberate skip from an absent user. On messaging platforms the result also carries a `"notice"` saying why the wait ended (`[user did not respond within Nm]`, or `[clarify prompt could not be delivered]` when the platform rejected the card — Hermes first retries the question as a plain numbered-list message, and only reports this when that fails too; `[clarify prompt could not be delivered: no chat surface]` when the run has no chat to prompt in), so an undelivered prompt is never reported as user inactivity.
 
+## `group_carryover` toolset
+
+Off by default; opt in per platform (see [Carrying a private chat into a group](../user-guide/messaging/index.md#carrying-a-private-chat-into-a-group)).
+
+| Tool | Description | Requires environment |
+|------|-------------|----------------------|
+| `carry_to_group` | From a private (DM) messaging chat, carry a synopsis of the conversation into one of the user's group chats on the same platform. The agent drafts the synopsis; the tool shows it to the user in the DM and posts **only** on explicit approval (free-text feedback returns `status: "revise"` so the agent redrafts). On approval it posts the synopsis to the group and forks the requester's group session seeded with it. `action: "list_groups"` lists the group chats the user belongs to. | Running gateway |
+
 ## `connections` toolset
 
 One tool for both kinds of external app. A target is a managed connector (`"gmail"` or

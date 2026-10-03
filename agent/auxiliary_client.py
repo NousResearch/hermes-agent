@@ -6032,6 +6032,23 @@ def _compat_model(client: Any, model: Optional[str], cached_default: Optional[st
     return model or cached_default
 
 
+def _normalize_caller_model(provider: str, model: Optional[str]) -> Optional[str]:
+    """Normalize a caller-passed model override for the provider that will receive it.
+
+    ``resolve_provider_client`` normalizes the model it resolves, but ``_get_cached_client`` returns
+    the caller's raw ``model`` (caller-wins), which skipped that normalization on both the build and
+    the cache-hit path: ``claude-haiku-4.5`` reached the Anthropic wire un-dashed and 404'd. The
+    provider is canonicalized first (``_normalize_aux_provider``), because the caller may pass a label
+    or alias the normalizer does not recognize. Any failure keeps the raw model (no behavior change).
+    """
+    if not model:
+        return model
+    try:
+        return _normalize_resolved_model(model, _normalize_aux_provider(provider)) or model
+    except Exception:
+        return model
+
+
 def _get_cached_client(
     provider: str, model: str = None, async_mode: bool = False, base_url: str = None,
     api_key: str = None, api_mode: str = None, main_runtime: Optional[Dict[str, Any]] = None,
@@ -6067,7 +6084,7 @@ def _get_cached_client(
                 cached_loop is not None and cached_loop is current_loop and not cached_loop.is_closed()
             )
             if loop_ok:
-                return cached_client, _compat_model(cached_client, model, cached_default)
+                return cached_client, _compat_model(cached_client, _normalize_caller_model(provider, model), cached_default)
             # Stale async entry — evict. Only a closed owner loop may be awaited here; a live
             # foreign loop stays force-neutered.
             _close_cached_client(cached_client, close_async=cached_loop is not None and cached_loop.is_closed())
@@ -6104,7 +6121,7 @@ def _get_cached_client(
                 client, default_model, _ = _client_cache[cache_key]
                 # Race loser was never exposed to a caller — safe to close now.
                 _close_cached_client(built_client, close_async=async_mode)
-    return client, _compat_model(client, model, default_model)
+    return client, _compat_model(client, _normalize_caller_model(provider, model), default_model)
 
 
 # MoA virtual provider: an *explicit* `provider: moa` override (either the caller-passed `provider` arg or

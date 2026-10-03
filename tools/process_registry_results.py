@@ -85,7 +85,7 @@ def _owns_result(owner: str, parent: str | None) -> bool:
 
 def load_completed_results(prefix: str = "") -> dict:
     """Restore read-only snapshots; no process handles, watchers, or queue events."""
-    from tools.process_registry import ProcessSession
+    from tools.process_registry import ProcessSession, _process_owner_principal
 
     from gateway.session_context import get_session_env
 
@@ -107,8 +107,13 @@ def load_completed_results(prefix: str = "") -> dict:
                 continue
             if not _owns_result(owner, record.get("parent_session_id")):
                 continue
+            fields = {key: record[key] for key in _RESULT_FIELDS}
+            # _owns_result() proved this exact session (or its compression tip)
+            # owns the profile-local receipt. Bind the read-only snapshot to the
+            # current session principal so compression does not revoke access.
+            fields["owner_principal"] = _process_owner_principal(owner)
             session = ProcessSession(
-                **{key: record[key] for key in _RESULT_FIELDS},
+                **fields,
                 exited=True, output_buffer=record["output"],
             )
             session._completion_event.set()

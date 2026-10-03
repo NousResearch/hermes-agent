@@ -916,6 +916,25 @@ def _send_body(text, ctx="", extra_params=None):
     return {"jsonrpc": "2.0", "id": "1", "method": "message/send", "params": params}
 
 
+def test_ipv6_loopback_bind_serves_and_advertises_a_bracketed_url(monkeypatch):
+    """``A2A_HOST=::1`` is an accepted no-token bind: the listener must come up on it and the
+    Agent Card must advertise a URL a peer can parse (IPv6 literal in brackets)."""
+    monkeypatch.delenv("A2A_BEARER_TOKEN", raising=False)
+    monkeypatch.delenv("A2A_PEER_TOKENS", raising=False)
+    monkeypatch.setenv("A2A_HOST", "::1")
+    adapter, _ = _make_live_adapter(monkeypatch)
+    base = f"http://[::1]:{adapter.port}"
+
+    async def run():
+        assert await adapter.connect() is True
+        try:
+            return await asyncio.to_thread(_get_json, base + "/.well-known/agent-card.json")
+        finally:
+            await adapter.disconnect()
+
+    assert asyncio.run(run())["url"].startswith(base + "/")
+
+
 @pytest.mark.integration
 class TestInboundRoundTrip:
     def test_live_server_card_and_message_send(self, monkeypatch):

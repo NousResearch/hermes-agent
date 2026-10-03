@@ -35,7 +35,13 @@ export function applyDesktopBootProgress(progress: DesktopBootProgress) {
 
   // Don't let a late progress event (error: null) clobber a previously-set
   // boot failure — failDesktopBoot is terminal for this boot cycle.
-  const error = progress.error ?? (current.running ? null : current.error)
+  // EXCEPTION: if the new progress.running is true, the backend has recovered
+  // (e.g. on a slow Windows machine with AV scanning, the backend announces
+  // HERMES_BACKEND_READY after the 45s renderer timeout already latched the
+  // error overlay — #98486). A live running=true event resets the latch so
+  // the overlay clears and the desktop reconnects rather than staying
+  // permanently wedged until the user kills the process.
+  const error = progress.error ?? ((!current.running && !progress.running) ? current.error : null)
 
   $desktopBoot.set({
     ...current,

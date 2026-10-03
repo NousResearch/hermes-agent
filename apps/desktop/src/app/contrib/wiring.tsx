@@ -693,7 +693,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
 
   const kickoffFirstChat = useOnboardingKickoff({
     createBackendSessionForSend,
-    requestGateway,
+    requestGateway: ambientRequestGateway,
     resumeSession,
     runCreatePinnedTo
   })

@@ -262,6 +262,48 @@ class Machine:
         """Publish NEXT on main: an update becomes available the way it does for a user."""
         harness_git("-C", str(self.serve), "update-ref", "refs/heads/main", self.next)
 
+    def mint(self, parent: str, tag: str) -> str:
+        """A child of ``parent`` in serve.git adding ``.hermes-e2e-<tag>`` (unpublished)."""
+        blob_src = self.root / f"{tag}-marker.txt"
+        blob_src.write_text(f"synthetic {tag} commit for the Windows update E2E\n", encoding="utf-8")
+        blob = harness_git("-C", str(self.serve), "hash-object", "-w", "--no-filters", str(blob_src))
+        index = self.root / f"{tag}.index"
+        env = {"GIT_INDEX_FILE": str(index),
+               "GIT_AUTHOR_NAME": "Hermes E2E", "GIT_AUTHOR_EMAIL": "e2e@hermes.invalid",
+               "GIT_COMMITTER_NAME": "Hermes E2E", "GIT_COMMITTER_EMAIL": "e2e@hermes.invalid"}
+        harness_git("-C", str(self.serve), "read-tree", parent, env=env)
+        harness_git("-C", str(self.serve), "update-index", "--add", "--cacheinfo",
+                    f"100644,{blob},.hermes-e2e-{tag}", env=env)
+        tree = harness_git("-C", str(self.serve), "write-tree", env=env)
+        index.unlink(missing_ok=True)
+        return harness_git("-C", str(self.serve), "commit-tree", tree, "-p", parent,
+                           "-m", f"e2e: synthetic {tag} commit", env=env)
+
+    def publish(self, sha: str) -> None:
+        harness_git("-C", str(self.serve), "update-ref", "refs/heads/main", sha)
+
+    def spawn_logged(self, argv: list[str], label: str, *,
+                     env_extra: dict[str, str] | None = None) -> subprocess.Popen:
+        """Start ``argv`` with its transcript streaming to disk; the caller ends it
+        (``taskkill_tree``) or waits. The crash cells kill updates mid-flight."""
+        self._seq += 1
+        log = self.logs / f"{self._seq:02d}-{label}.log"
+        started = time.monotonic()
+        proc = subprocess.Popen(argv, cwd=self.profile, env=self.env(env_extra),
+                                stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+
+        def pump() -> None:
+            with log.open("w", encoding="utf-8") as fh:
+                for raw in iter(proc.stdout.readline, b""):
+                    fh.write(f"[{time.monotonic() - started:7.1f}s] {_decode(raw).rstrip()}\n")
+                    fh.flush()
+
+        threading.Thread(target=pump, name=f"pump-{label}", daemon=True).start()
+        self._spawned.append(proc)
+        proc.transcript = log  # type: ignore[attr-defined]
+        return proc
+
+
     # -- running --------------------------------------------------------------
 
     def _run_logged(self, argv: list[str], label: str, *, timeout: float, cwd: Path | None = None,
@@ -377,7 +419,7 @@ class Machine:
 
     def gateway_state(self) -> dict:
         try:
-            return json.loads((self.hermes_home / "gateway_state.json").read_text(encoding="utf-8"))
+            return json.loads((self.hermes_home / "gateway_state.json").read_text(encoding="utf-8-sig"))
         except (OSError, ValueError):
             return {}
 
@@ -577,3 +619,18 @@ SOURCE_COMPLETION_MARKERS = ("completing source-update", "Preparing Node depende
 
 def source_completion_detour(run: Run) -> str | None:
     return next((m for m in SOURCE_COMPLETION_MARKERS if m in run.stdout), None)
+
+
+def descendants(proc: subprocess.Popen) -> list[Any]:
+    """The live process tree under ``proc`` (empty once it exited)."""
+    import psutil
+
+    try:
+        return psutil.Process(proc.pid).children(recursive=True)
+    except psutil.Error:
+        return []
+
+
+def taskkill_tree(pid: int) -> None:
+    """``taskkill /T /F``: what Task Manager's End task tree / a power cut does to an update."""
+    subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"], capture_output=True, timeout=60)

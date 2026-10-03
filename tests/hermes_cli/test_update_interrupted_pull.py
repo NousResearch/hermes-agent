@@ -148,6 +148,42 @@ def test_killed_pull_is_restored_on_next_launch_and_update_reruns(checkout, monk
     _pull(root)  # `hermes update` again: a normal fast-forward
     assert _git(root, "rev-parse", "HEAD") == b and not marker.exists()
 
+
+def test_restore_runs_the_installers_store_git_when_path_has_none(checkout, monkeypatch, tmp_path):
+    """Windows installs whose only git is the copy install.ps1 staged in PM's store: the launch-time
+    restore must find it like the updater does, release the dead git's index.lock and put the tree back
+    (a bare ``git`` died with WinError 2 there and every update for 10 minutes refused on the lock)."""
+    import shutil
+
+    import pm
+    import pm.paths
+
+    root, a, b = checkout
+    (root / "utils.py").write_text("NEW = 1\n", encoding="utf-8", newline="")  # the killed ff's first write
+    (root / ".git" / "index.lock").write_bytes(b"")  # left by the killed git
+    dead = subprocess.Popen([sys.executable, "-c", "pass"])
+    dead.wait()
+    er.interrupted_pull_marker(root).write_text(f"pid={dead.pid}\npre={a}\ntarget={b}\nstash=\n", encoding="utf-8")
+
+    real_git = shutil.which("git")
+    store = tmp_path / "tools"
+    version = pm.Lockfile(pm.paths.lockfile_path()).version("git")
+    staged = store / f"git-{version}-win32-x64" / "cmd" / "git.exe"
+    staged.parent.mkdir(parents=True)
+    calls = tmp_path / "staged-git-calls"
+    staged.write_text(f'#!/bin/sh\necho "$@" >> "{calls}"\nexec "{real_git}" "$@"\n', encoding="utf-8")
+    staged.chmod(0o755)
+    with monkeypatch.context() as windows:
+        windows.setattr(pm.paths, "store_root", lambda: store)
+        windows.setattr(pm, "current_target", lambda: "win32-x64")
+        windows.setenv("PATH", str(tmp_path / "no-git-here"))
+        assert er.restore_interrupted_pull(root) is True
+    assert calls.read_text(encoding="utf-8-sig").count("rev-parse HEAD") >= 1, "the store's git ran the restore"
+    assert _git(root, "rev-parse", "HEAD") == a and _git(root, "status", "--porcelain") == ""
+    assert not (root / ".git" / "index.lock").exists() and not er.interrupted_pull_marker(root).exists()
+    _pull(root)  # the next `hermes update` is not refused on the lock
+    assert _git(root, "rev-parse", "HEAD") == b
+
     # Every console script (`hermes`, `hermes-agent`, `hermes-acp`) repairs before its entry module imports
     # any other checkout module past hermes_bootstrap: any of them may be a half-written file.
     repo = os.path.realpath(Path(er.__file__).parent.parent)

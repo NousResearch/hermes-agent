@@ -244,6 +244,35 @@ def interrupted_pull_marker(root: Path) -> Path:
     return _git_dir(root) / INTERRUPTED_PULL_MARKER
 
 
+def _git_executable() -> str:
+    """The git ``hermes update`` runs (``_subprocess_compat.expose_pm_git``), without installing it.
+
+    PATH's git first. A Windows install whose only git is the one install.ps1 staged in PM's store
+    has none on PATH until the updater exposes it, so this falls back to that copy: PM's recorded
+    entry, or the lockfile's pinned entry the installer extracted without recording it. A bare
+    ``git`` there dies with WinError 2 and the torn tree this repair exists for stays torn.
+    """
+    import shutil
+
+    found = shutil.which("git")
+    if found:
+        return found
+    with contextlib.suppress(Exception):  # no PM, no store, no Windows git package: PATH's answer stands
+        import pm
+        from pm import paths
+        from pm.lock import Lockfile
+
+        recorded = pm.installed_package("git", allow_outdated=True)
+        if recorded is not None and recorded.binary is not None and recorded.binary.is_file():
+            return str(recorded.binary)
+        package, target = pm.get_package("git"), pm.current_target()
+        version = Lockfile(paths.lockfile_path()).version("git")
+        staged = package.binary(paths.store_root() / package.store_entry(version, target), target)
+        if staged is not None and staged.is_file():
+            return str(staged)
+    return "git"
+
+
 def _trees_git_could_write(git, pre: str, target: str) -> tuple[list[str], set[str]]:
     """The trees the killed git was moving the checkout to, and the paths whose new content is unknowable.
 
@@ -315,9 +344,12 @@ def _paths_git_wrote(git, root: Path, pre: str, target: str) -> tuple[list[str],
             written = True
         else:  # git's own file cut short starts one of the new blobs
             content = file.read_bytes()
-            written = any(subprocess.run(["git", "-C", str(root), "cat-file", "--filters", f"--path={path}", blob],
-                                         capture_output=True, check=True, timeout=120,
-                                         stdin=subprocess.DEVNULL).stdout.startswith(content) for blob in blobs)
+            written = False
+            for blob in blobs:
+                shown = git("cat-file", "--filters", f"--path={path}", blob, text=False)
+                if shown.returncode != 0:
+                    raise subprocess.SubprocessError(shown.stderr.decode(errors="replace").strip())
+                written = written or shown.stdout.startswith(content)
         if written:
             (added if old_blob is None else restore).append(path)
     new_dirs = {str(parent) for path, (_m, old_blob, _n) in entries.items() if old_blob is None
@@ -431,8 +463,130 @@ def _release_dead_index_lock(git_dir: Path) -> bool:
     return True
 
 
-def restore_interrupted_pull(project_root: Path | None = None) -> bool:
+# The ZIP update's equivalent of the interrupted-pull marker: a journal in the install root naming
+# every entry the swap stages/renames and whether it existed before, plus an OS lock its owner holds
+# for the whole stage+swap (the kernel drops it with the owner: liveness without pids or ages).
+ZIP_SWAP_JOURNAL = ".hermes-update-zip-swap"
+_ZIP_STAGING_SUFFIX, _ZIP_OLD_SUFFIX = ".hermes-update-staging", ".hermes-update-old"
+
+
+@contextlib.contextmanager
+def zip_swap_owner_lock(root: Path, *, wait: float = 0.0):
+    """Yields True while this process owns the ZIP swap lock, False when a live owner holds it.
+
+    The lock file is removed again once no journal is left, so a settled install carries no
+    breadcrumb (the swap itself also runs under the update lock; this one only proves liveness)."""
+    lock_path = Path(root) / (ZIP_SWAP_JOURNAL + ".lock")
+    try:
+        fd = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o644)
+    except OSError:
+        yield True  # unwritable root: no swap can run there either
+        return
+    owned = False
+    try:
+        deadline = time.monotonic() + wait
+        while not _lock_fd(fd, True):
+            if time.monotonic() >= deadline:
+                yield False
+                return
+            time.sleep(0.05)
+        owned = True
+        try:
+            yield True
+        finally:
+            _lock_fd(fd, False)
+    finally:
+        os.close(fd)
+        if owned and not (Path(root) / ZIP_SWAP_JOURNAL).exists():
+            with contextlib.suppress(OSError):
+                lock_path.unlink()
+
+
+def write_zip_swap_journal(root: Path, phase: str, entries: list) -> None:
+    import json
+
+    journal = Path(root) / ZIP_SWAP_JOURNAL
+    tmp = journal.with_name(journal.name + ".tmp")
+    tmp.write_text(json.dumps({"pid": os.getpid(), "phase": phase, "entries": entries}), encoding="utf-8")
+    os.replace(tmp, journal)
+
+
+def _drop_path(path: Path) -> None:
+    if path.is_dir() and not path.is_symlink():
+        import shutil
+
+        shutil.rmtree(path)
+    elif path.exists() or path.is_symlink():
+        path.unlink()
+
+
+def restore_interrupted_zip_swap(project_root: Path | None = None) -> bool:
+    """Finish or roll back a ZIP swap whose owner died; True when the tree changed (relaunch).
+
+    ``committed``: every rename landed, only backups remain -> drop them (finish). ``swapping``: put
+    each moved-aside entry back and remove entries the swap added (roll back to the old tree, which
+    the venv was built for; ``hermes update`` redoes it). ``staging``: nothing live moved -> drop the
+    staging copies. Either way no ``*.hermes-update-staging``/``-old`` sibling is left to wedge the
+    next run's free-space or dirty-tree checks. A live owner (lock held) is never second-guessed.
+    """
+    root = _project_root() if project_root is None else Path(project_root)
+    journal = root / ZIP_SWAP_JOURNAL
+    if not journal.is_file() or _pytest_owns_live_checkout(root):
+        return False
+    with zip_swap_owner_lock(root) as owned:
+        if not owned or not journal.is_file():
+            return False
+        import json
+
+        try:
+            data = json.loads(journal.read_text(encoding="utf-8-sig"))
+            phase, entries = data["phase"], [(str(n), bool(e)) for n, e in data["entries"]]
+        except (OSError, ValueError, KeyError, TypeError):
+            phase, entries = "staging", []  # unreadable: never guess which live entry to move
+        changed = False
+        failed = False
+        for name, existed in reversed(entries):
+            if not name or "/" in name or "\\" in name or name in (".", ".."):
+                continue
+            dst = root / name
+            staging, old = Path(f"{dst}{_ZIP_STAGING_SUFFIX}"), Path(f"{dst}{_ZIP_OLD_SUFFIX}")
+            try:
+                if phase == "swapping":
+                    # Staging finished before this phase, so a backup now is the one the swap made
+                    # from the old entry: it existed, whatever an older journal recorded.
+                    existed = existed or old.exists()
+                    if existed and old.exists():
+                        if old.is_file() and not old.is_symlink() and not dst.is_dir():
+                            os.replace(old, dst)  # a file entry never goes missing, not even here
+                        else:
+                            _drop_path(dst)
+                            os.rename(old, dst)
+                        changed = True
+                    elif not existed and dst.exists() and not staging.exists():
+                        _drop_path(dst)
+                        changed = True
+                elif existed and not dst.exists() and old.exists():
+                    os.rename(old, dst)  # the backup is the only copy left
+                    changed = True
+                for leftover in (staging, old):
+                    _drop_path(leftover)
+            except OSError as exc:
+                failed = True
+                print(f"⚠ Could not settle {name} after an interrupted ZIP update: {exc}", file=sys.stderr)
+        if failed:
+            return changed  # the journal stays: the next launch retries
+        journal.unlink(missing_ok=True)
+    if changed:
+        print("⚠ A previous ZIP `hermes update` was interrupted mid-swap; the old install was put back. "
+              "`hermes update` updates it again.", file=sys.stderr)
+    return changed
+
+
+def restore_interrupted_pull(project_root: Path | None = None, *, after_failure: bool = False) -> bool:
     """Put back the files a killed ``hermes update`` had half-moved to the new commit.
+
+    ``after_failure``: the updater itself calls this when git exited non-zero mid-move (a locked or
+    read-only file): same restore, and the marker stays whenever the tree is not verified whole.
 
     Returns True when the tree changed under this process: modules it already imported may be the
     half-written ones, so the caller must relaunch (``relaunch_after_restore``).
@@ -451,6 +605,8 @@ def restore_interrupted_pull(project_root: Path | None = None) -> bool:
     """
     try:
         root = _project_root() if project_root is None else project_root
+        if restore_interrupted_zip_swap(root):
+            return True
         marker = interrupted_pull_marker(root)
         if not marker.is_file() or _pytest_owns_live_checkout(root):
             return False
@@ -461,14 +617,14 @@ def restore_interrupted_pull(project_root: Path | None = None) -> bool:
                 return False
             if not marker.is_file():
                 return True  # another launch finished while this one started: rerun from its tree
-            return _restore_holding_claim(root, marker)
+            return _restore_holding_claim(root, marker, after_failure=after_failure)
     except (OSError, subprocess.SubprocessError, ValueError) as exc:
         # Never block launch: the import that follows surfaces any real breakage.
         print(f"⚠ Could not check for an interrupted `hermes update`: {exc}", file=sys.stderr)
     return False
 
 
-def _restore_holding_claim(root: Path, marker: Path) -> bool:
+def _restore_holding_claim(root: Path, marker: Path, *, after_failure: bool = False) -> bool:
     global _merge_advice_shown
     git_dir = marker.parent
     fields = dict(line.partition("=")[::2] for line in marker.read_text(encoding="utf-8-sig").splitlines())
@@ -484,11 +640,20 @@ def _restore_holding_claim(root: Path, marker: Path) -> bool:
     pre, target = fields.get("pre", "").strip(), fields.get("target", "").strip()
     stash = fields.get("stash", "").strip()
 
-    def git(*args: str, stdin: str | None = None) -> subprocess.CompletedProcess:
-        return subprocess.run(["git", "--literal-pathspecs", "-C", str(root), *args], input=stdin,
-                              capture_output=True, text=True, encoding="utf-8", errors="replace",
-                              timeout=120, stdin=None if stdin is not None else subprocess.DEVNULL)
+    executable = _git_executable()
 
+    def git(*args: str, stdin: str | None = None, text: bool = True) -> subprocess.CompletedProcess:
+        return subprocess.run([executable, "--literal-pathspecs", "-C", str(root), *args], input=stdin, cwd=str(root),
+                              capture_output=True, timeout=120, stdin=None if stdin is not None else subprocess.DEVNULL,
+                              **({"text": True, "encoding": "utf-8", "errors": "replace"} if text else {}))
+
+    rollback = fields.get("rollback", "").strip()
+    if rollback in ("branch", "detach") and pre and target and git("rev-parse", "HEAD").stdout.strip() == target:
+        # A syntax rollback killed before it moved HEAD back: redo that step (HEAD and index, no file),
+        # so the restore below lands on ``pre`` (the code the update started from), not the broken tree.
+        if rollback == "detach":
+            git("update-ref", "--no-deref", "HEAD", pre)
+        git("reset", "-q", pre)
     if not pre or not target or git("rev-parse", "HEAD").stdout.strip() != pre:
         marker.unlink()  # git finished (HEAD moved) or the marker is unusable
         return False
@@ -503,7 +668,10 @@ def _restore_holding_claim(root: Path, marker: Path) -> bool:
                   file=sys.stderr)
         return False
     # A killed claim holder's own git child can still be writing; scanning under it reads half a tree.
-    if not _release_dead_index_lock(git_dir):
+    # After a git that EXITED (``after_failure``) no git of ours is left: a lock now is another git's
+    # (often the very reason ours failed), never ours to drop. The scan below only reads.
+    foreign_lock = after_failure and (git_dir / "index.lock").exists()
+    if not foreign_lock and not _release_dead_index_lock(git_dir):
         print("⚠ A running git holds the index after an interrupted `hermes update`; the next launch "
               "finishes the restore.", file=sys.stderr)
         return False
@@ -513,9 +681,14 @@ def _restore_holding_claim(root: Path, marker: Path) -> bool:
         print(f"⚠ Ignoring a stale interrupted-update marker: commit {target[:10]} is gone.", file=sys.stderr)
         return False
     restore, added, new_dirs = written
+    if (restore or added) and foreign_lock:
+        print("⚠ Another git holds the index, so the files the update already wrote cannot be put back "
+              "now; the next launch restores them.", file=sys.stderr)
+        return False
     if restore or added:
-        print("⚠ A previous `hermes update` was killed while git was writing the new code — "
-              f"restoring the checkout to {pre[:10]}...", file=sys.stderr)
+        print(("⚠ git stopped partway through writing the new code — " if after_failure else
+               "⚠ A previous `hermes update` was killed while git was writing the new code — ")
+              + f"restoring the checkout to {pre[:10]}...", file=sys.stderr)
         failed = _put_back_paths(git, root, restore, added)
         if failed:
             # No manual recipe: a reset would also wipe the edits this restore keeps, and the

@@ -135,6 +135,12 @@ _DESKTOP_UPDATER_TEST_PREFIX = "tests/scripts/desktop_update/"
 _DESKTOP_UPDATER_FILES = {
     "apps/desktop/electron/updater-process.ts",
     "apps/desktop/electron/managed-ssh-update.ts",
+    # The other half of the marker / result contract the script implements.
+    "apps/desktop/electron/update-marker.ts",
+    "apps/desktop/electron/handoff-result.ts",
+    # Python the script runs: the post-update verify and the staged app swap.
+    "hermes_cli/desktop_update_verify.py",
+    "hermes_cli/main_desktop.py",
     "tests/conftest.py",
     "pyproject.toml",
 }
@@ -174,6 +180,45 @@ _DESKTOP_E2E_SHARED = (
     "apps/desktop/e2e/fix-electron-tracing",
     "apps/desktop/e2e/run-tmp",
 )
+# What `hermes update` runs outside the update_* module family: the steps of the
+# pipeline (entry, lock, early recovery, completion tail, launchers, fleet
+# restart/verify, Windows pause/resume) and the lock / marker / recovery state
+# the update_* modules import. Editing any of these changes what a real update
+# does, so the real-update suites (Linux e2e-upgrade and the Windows
+# install + update journey, including its crash cells) must run on the PR.
+_UPDATE_PIPELINE = (
+    "hermes_cli/main.py",  # cmd_update: lock, pre-update backup, receipt boundary
+    "hermes_cli/main_dashboard.py",  # hangup protection + update.log mirror
+    "hermes_cli/main_desktop.py",  # staged Desktop swap / rebuild in the tail
+    "hermes_cli/_early_recovery.py",  # interrupted pull / shim restore at launch
+    "hermes_cli/venv_sync.py",  # completion obligation + launch-time tail
+    "hermes_cli/source_",  # source_completion/_build/_releases/_check/_stamp
+    "hermes_cli/_launchers.py",
+    "hermes_cli/release_channels.py",
+    "hermes_cli/gitlock.py",  # git self-heal + partial-clone fetch
+    "hermes_cli/process_identity.py",  # marker owner liveness
+    "hermes_cli/runtime_state.py",
+    "hermes_cli/relaunch.py",
+    "hermes_cli/managed_uv.py",
+    "hermes_cli/npm_engine.py",
+    "hermes_cli/_scan_venv_blockers.py",
+    "hermes_cli/dashboard_procs.py",
+    "hermes_cli/desktop_update",  # desktop_update_verify
+    "hermes_cli/gateway.py",  # fleet restart / verify
+    "hermes_cli/gateway_windows",  # Windows pause / resume
+    "hermes_cli/gateway_launchd.py",
+    "hermes_cli/gateway_migrate",
+    "hermes_cli/gateway_supervised_restart.py",
+    "hermes_bootstrap.py",  # every launch's prepare_launch
+    "hermes_constants.py",  # root home = update marker location
+    "gateway/status.py",  # code_sha stamp the fleet verify reads
+    "gateway/control_socket.py",  # pause-for-update verb
+    "gateway/code_skew.py",
+    "gateway/host_rendezvous.py",
+    "gateway/shutdown_forensics.py",
+    "gateway/restart.py",
+    "scripts/desktop-update/",  # the hand-off scripts run `hermes update`
+)
 _E2E_LANES: dict[str, tuple[str, ...]] = {
     "e2e": (
         *_PY_TEST_HARNESS,
@@ -201,6 +246,7 @@ _E2E_LANES: dict[str, tuple[str, ...]] = {
         "hermes_cli/install_",
         "hermes_cli/_install_",
         "hermes_cli/main_install",
+        *_UPDATE_PIPELINE,
     ),
     "e2e_desktop_core": (
         *_DESKTOP_E2E_SHARED,
@@ -219,9 +265,21 @@ _E2E_LANES: dict[str, tuple[str, ...]] = {
         "apps/desktop/electron/gateway-stop-before-update",
         "apps/desktop/electron/pre-update-",
         "apps/desktop/electron/install-stamp",
+        # The rest of the Electron update path (codemap desktop-update §1):
+        # main.ts owns the gate / backend stop / hand-off launch hunks (the
+        # classifier sees files, not hunks), the result reader, the install
+        # kind, the attach-time version check and the in-place app swap.
+        "apps/desktop/electron/main.ts",
+        "apps/desktop/electron/handoff-result",
+        "apps/desktop/electron/desktop-installation",
+        "apps/desktop/electron/backend-discovery",
+        "apps/desktop/electron/host-backend-attach",
+        "apps/desktop/electron/bundle-swap",
+        "apps/desktop/electron/app-installer-file",
         "scripts/desktop-update/",
         "scripts/install.sh",
         "hermes_cli/desktop_update",
+        "hermes_cli/main_desktop.py",
         "hermes_cli/update_",
     ),
 }

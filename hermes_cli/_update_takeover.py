@@ -2,9 +2,11 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
+import time
 
 
 def prepare(request: dict) -> tuple[Path, dict[str, str]]:
@@ -21,8 +23,15 @@ def prepare(request: dict) -> tuple[Path, dict[str, str]]:
     from pm.client import ensure_tools_for_sync, sync_venv, venv_is_current
     from pm.environments import activation_environment, install_state_dir, runtime_facts_path
     from hermes_cli._launchers import resolve_store_python
-    from hermes_cli.venv_sync import collect_superseded_generations, publish_launchers
+    from hermes_cli.venv_sync import (
+        arm_completion, collect_superseded_generations, publish_launchers, refuse_foreign_owned_venv)
 
+    # The historical updater already moved the tree: owe the tail and the fleet restart before the
+    # first slow step, exactly like a current updater's commit point, so a kill from here on leaves
+    # both for the next launch / `hermes update` instead of nothing.
+    refuse_foreign_owned_venv(root)
+    arm_completion(root)
+    _arm_fleet_obligation(root)
     correlation = request["update_id"]
     with receipt.worker_context(correlation):
         # A pre-PM installation has no required-tool facts. A current Python
@@ -48,6 +57,26 @@ def prepare(request: dict) -> tuple[Path, dict[str, str]]:
     if python is None:
         raise RuntimeError("updated installation has no managed interpreter")
     return python, activation_environment(root)
+
+
+def _arm_fleet_obligation(root: Path) -> None:
+    head = subprocess.run(["git", "-C", str(root), "rev-parse", "HEAD"], capture_output=True, text=True, encoding="utf-8",
+                          stdin=subprocess.DEVNULL, timeout=60)
+    sha = head.stdout.strip() if head.returncode == 0 else ""
+    if not sha:  # an SHA-less record names no code the fleet could be proven current on
+        return
+    # This runs in the HISTORICAL interpreter, before PM syncs the new dependencies: only stdlib-only
+    # modules here (``update_cmd_fleet``'s writer imports ``update_cmd`` -> config -> ruamel, which a
+    # release older than ruamel does not have).
+    from hermes_cli.update_host_obligation import write_host_obligation
+
+    if not write_host_obligation(expected_sha=sha):
+        # Same fallback as ``update_cmd_fleet._write_fleet_restart_pending_marker``: the per-home
+        # breadcrumb every reader still honours.
+        from hermes_constants import get_hermes_home
+
+        (get_hermes_home() / "fleet_restart_pending").write_text(
+            f"started={time.time()}\npid={os.getpid()}\nexpected_sha={sha}\n", encoding="utf-8")
 
 
 def _record_failure(request: dict, result: Path, code: int, detail: str) -> None:

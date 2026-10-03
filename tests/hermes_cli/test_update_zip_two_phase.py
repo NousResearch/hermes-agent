@@ -169,16 +169,16 @@ def test_file_swap_failure_restores_the_original_file(tmp_path, monkeypatch):
         for n in ("cli.py", "run_agent.py")
     ]
 
-    real_rename = os.rename
+    real_replace = os.replace
     calls = {"n": 0}
 
-    def flaky_rename(src, dst):
+    def flaky_replace(src, dst):  # a root file swaps in by os.replace over its hardlinked backup
         calls["n"] += 1
-        if calls["n"] == 4:
+        if calls["n"] == 2:
             raise OSError("simulated AV interference")
-        return real_rename(src, dst)
+        return real_replace(src, dst)
 
-    monkeypatch.setattr(update_cmd.os, "rename", flaky_rename)
+    monkeypatch.setattr(update_cmd.os, "replace", flaky_replace)
     with pytest.raises(OSError):
         update_cmd._commit_staged_replacements(staged)
     monkeypatch.undo()
@@ -327,3 +327,33 @@ def test_commit_failure_plus_discard_leaves_no_staging_litter(tmp_path, monkeypa
     # ...and zero litter of any kind (staging OR backup).
     litter = [p for p in os.listdir(live) if "hermes-update" in p]
     assert litter == [], f"orphaned update litter: {litter}"
+
+
+def test_root_files_never_go_missing_mid_swap(tmp_path, monkeypatch):
+    """Every launcher imports ``hermes_constants``/``hermes_bootstrap`` before anything else, and
+    ``hermes_bootstrap`` is what reaches the restore after a killed swap: a kill between any two
+    filesystem steps must find every root file present (old or new bytes), only directories moved."""
+    live, new = tmp_path / "live", tmp_path / "new"
+    for side, text in ((live, "old"), (new, "new")):
+        (side / "hermes_cli").mkdir(parents=True)
+        (side / "hermes_cli" / "main.py").write_text(text, encoding="utf-8")
+        for name in ("hermes_constants.py", "hermes_bootstrap.py"):
+            (side / name).write_text(text, encoding="utf-8")
+    names = ("hermes_constants.py", "hermes_cli", "hermes_bootstrap.py")
+    staged = [(update_cmd._stage_replacement(str(new / n), str(live / n)), str(live / n)) for n in names]
+    missing: list[str] = []
+
+    def probing(real):
+        def step(src, dst):
+            real(src, dst)
+            missing.extend(n for n in ("hermes_constants.py", "hermes_bootstrap.py") if not (live / n).is_file())
+        return step
+
+    monkeypatch.setattr(update_cmd.os, "rename", probing(os.rename))
+    monkeypatch.setattr(update_cmd.os, "replace", probing(os.replace))
+    update_cmd._commit_staged_replacements(staged)
+    monkeypatch.undo()
+    assert not missing, f"root modules absent mid-swap: {missing}"
+    assert {n: (live / n).read_text(encoding="utf-8-sig") for n in ("hermes_constants.py", "hermes_bootstrap.py")} == {
+        "hermes_constants.py": "new", "hermes_bootstrap.py": "new"}
+    assert not [p for p in os.listdir(live) if "hermes-update" in p]

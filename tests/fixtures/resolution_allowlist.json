@@ -125,6 +125,12 @@
     "kind": "bare_which"
   },
   {
+    "path": "hermes_cli/_early_recovery.py",
+    "symbol": "_git_executable",
+    "kind": "bare_which",
+    "reason": "stdlib-only launch-time repair (runs from hermes_bootstrap before hermes_platform or app deps import); falls back to PM's staged git"
+  },
+  {
     "path": "hermes_cli/_subprocess_compat.py",
     "symbol": "resolve_node_command",
     "kind": "bare_which"

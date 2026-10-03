@@ -6,6 +6,7 @@ Origin helpers are imported lazily per function (no cycle; test patches on the o
 
 import logging
 import re
+import stat
 import subprocess
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -25,6 +26,11 @@ _AUTOSTASH_NAME_PREFIX = "hermes-update-autostash-"
 _AUTOSTASH_WARN_AGE_DAYS = 7
 
 _STASH_LEFT_IN_PLACE = "  The stash was left in place. You can remove it manually after checking the result."
+
+# Git archives untracked files byte-for-byte when ``--include-untracked`` is used.
+# Refuse before invoking it when a dump or other sparse giant could make the update
+# appear hung (and avoid reading the file merely to diagnose the problem).
+_LARGE_UNTRACKED_FILE_BYTES = 1 << 30
 
 #: This run's autostash until it is settled: (stash ref, stashed path count). Set when the
 #: update stashes local patches; cleared when they are restored, discarded or parked because
@@ -79,6 +85,25 @@ def _print_first_line(text: str) -> None:
         print(f"  {text.strip().splitlines()[0]}")
 
 
+def _large_untracked_files(git_cmd: list[str], cwd: Path) -> tuple[tuple[str, int], ...]:
+    """Find untracked regular files whose apparent size makes an autostash unsafe."""
+    paths = _git_paths_z(git_cmd, ["ls-files", "--others", "--exclude-standard", "-z"], cwd)
+    if paths is None:
+        return ()
+    large = []
+    for path in paths:
+        try:
+            entry = (cwd / path).lstat()
+        except OSError:
+            continue
+        if not stat.S_ISREG(entry.st_mode):
+            continue
+        size = entry.st_size
+        if size >= _LARGE_UNTRACKED_FILE_BYTES:
+            large.append((path, size))
+    return tuple(sorted(large))
+
+
 def _stash_local_changes_if_needed(git_cmd: list[str], cwd: Path) -> Optional[str]:
     global _pending_autostash
     from hermes_cli.update_cmd_git import _git_run
@@ -102,6 +127,16 @@ def _stash_local_changes_if_needed(git_cmd: list[str], cwd: Path) -> Optional[st
         add = _git_run(git_cmd, ["add", "--", *intent_to_add], cwd)
         if add.returncode != 0:
             _print_nonempty(add.stderr)
+
+    large_untracked = _large_untracked_files(git_cmd, cwd)
+    if large_untracked:
+        print("✗ Update aborted: untracked files are too large to autostash safely:")
+        for path, size in large_untracked[:10]:
+            print(f"  {path} ({size:,} bytes apparent size)")
+        if len(large_untracked) > 10:
+            print(f"  ... and {len(large_untracked) - 10} more")
+        print("  Move or ignore these files, then re-run the update.")
+        raise subprocess.CalledProcessError(1, git_cmd + ["stash", "push", "--include-untracked"])
 
     stash_name = datetime.now(timezone.utc).strftime(f"{_AUTOSTASH_NAME_PREFIX}%Y%m%d-%H%M%S")
     print("→ Local changes detected — stashing before update...")

@@ -1013,6 +1013,7 @@ All commands are also available as a slash command in the interactive CLI and in
 | `kanban.max_in_progress` | unset (unlimited) | Caps the number of simultaneously running tasks. When the board already has N running, the dispatcher skips spawning more — useful for slow workers (local LLMs, resource-constrained hosts) so they finish what they have before more pile up and time out. Invalid or below-1 values log a warning and behave as unlimited. |
 | `kanban.max_in_progress_per_profile` | unset (unlimited) | Per-profile variant of `max_in_progress` — caps how many tasks any single assignee profile may run concurrently. Useful when one profile is slow or rate-limited but others should keep flowing. Applies alongside the board-wide `max_in_progress`; both must allow a spawn for it to proceed. |
 | `kanban.dispatch_profiles` | unset (any existing profile) | Per-home claim allowlist for boards shared across Hermes homes. When the key is present, this home's dispatcher only claims cards whose assignee is listed — fail-closed: an empty list, `null` or a bare `dispatch_profiles:` claims nothing, and a config read that fails logs a warning and claims nothing; other assignees land in `skipped_nonspawnable`. Only omitting the key means "any existing profile". `hermes kanban diagnostics` prints the resolved value for this home (`any`, the listed names, or `none (fail-closed: …)`). See [Shared boards across homes](#shared-boards-across-homes). |
+| `kanban.cpu_pressure_thresholds` | `{}` (1.0 / 2.0) | Overrides the CPU-pressure admission guard's load-per-core tiers. `elevated` (default 1.0) spawns at most one new worker that tick; `critical` (default 2.0) spawns none. Both tiers are measured from the 1-minute load average over the CPU count, plus Linux PSI `some avg60`. Raise them on a busy shared host whose load comes from outside Hermes; omit a key to keep its default. See [CPU-pressure guard](#cpu-pressure-guard). |
 | `kanban.auto_promote_children` | `true` | After `decompose_triage_task()` produces children with no parent-blocker dependencies, they're automatically promoted to `ready` so the dispatcher can pick them up. Set to `false` to require manual review — children stay in `todo` until you promote them. |
 | `kanban.default_workdir` | unset | Board-level default working directory applied to new tasks when neither `--workspace` nor the task itself overrides it. Per-task `workspace:` still wins. |
 
@@ -1032,11 +1033,32 @@ hermes kanban create "nightly backup audit" \
   --assignee ops --scheduled-at "2026-06-01T03:00:00Z"
 ```
 
+### CPU-pressure guard
+
+`max_in_progress` and `max_in_progress_per_profile` count only the dispatcher's OWN running tasks, so neither can see load the dispatcher did not create — cron jobs, CI runners, another tenant's workers, local inference. On a CPU-saturated host the dispatcher used to keep admitting workers up to those static caps, each one making the contention worse.
+
+Every tick therefore also reads host CPU pressure, the mirror of the memory guard:
+
+- **critical** (load per core >= 2.0, or Linux PSI `some avg60` >= 60%): no new workers this tick.
+- **elevated** (load per core >= 1.0, or PSI >= 20%): at most one new worker.
+- **ok / unknown**: no restriction. `unknown` means both signals were unreadable (no loadavg, no `/proc/pressure/cpu`), and it fails open — a host that cannot report its load is never throttled.
+
+Reclaim and promotion still run under both tiers, so deferred cards stay `ready` and spawn as soon as the host recovers; nothing is dropped. The hold is visible as `cpu_pressure=...` in the tick summary (`hermes kanban dispatch --dry-run`, `--json`, and the gateway's "dispatcher stuck" warning), next to `memory_pressure=...`. The memory and CPU guards are independent and ANDed: the tighter budget always wins, and neither widens the other's.
+
+Set `kanban.cpu_pressure_thresholds` to raise the load tiers on a shared host (the Linux PSI tiers are fixed):
+
+```yaml
+kanban:
+  cpu_pressure_thresholds:
+    elevated: 2.0
+    critical: 4.0
+```
+
 ### Respawn guard
 
 The dispatcher refuses to re-spawn a ready task when it hit a quota/auth/429 error on the previous run (`blocker_auth`), or completed a run successfully within the guard window (`recent_success`), or a recent task comment links to a GitHub PR (`active_pr`). Two cooldowns hold a card without ever counting against it: `rate_limit_cooldown` after a quota-wall requeue and `infrastructure_cooldown` after the host refused to place the worker (no restart-safe systemd scope — see [Workers and systemd cgroups](#workers-and-systemd-cgroups)); both share the `HERMES_KANBAN_RATE_LIMIT_COOLDOWN_SECONDS` window (default 300 s). This prevents repeat worker storms on the same bug or task while a human catches up. See the `respawn_guarded` row in the [event reference](#event-reference).
 
-To see why a ready card is not spawning, run `hermes kanban dispatch --dry-run` — the output lists `Guarded (<reason>): <task id>` per held card (and `respawn_guarded`, `rate_limited`, `skipped_locked`, `memory_pressure` with `--json`). The gateway's and the standalone daemon's "dispatcher stuck" warning also names what the last tick held back, e.g. `Last tick held back: active_pr=1`.
+To see why a ready card is not spawning, run `hermes kanban dispatch --dry-run` — the output lists `Guarded (<reason>): <task id>` per held card (and `respawn_guarded`, `rate_limited`, `skipped_locked`, `memory_pressure`, `cpu_pressure` with `--json`). The gateway's and the standalone daemon's "dispatcher stuck" warning also names what the last tick held back, e.g. `Last tick held back: active_pr=1`.
 
 `recent_success` and `active_pr` hold the **ready** lane only — they are the inputs to a review handoff, not signals against one. To have a reviewer, closer or other recovery profile pick up a card whose PR is already open, either move it to the review lane with `hermes kanban request-review <id>` (accepted from `ready` as well as `running`; the review-lane spawn is not subject to either guard) or hand the ready card to that profile with `hermes kanban assign <id> <profile>`: a handoff recorded *after* the PR comment — an operator reassign, a reviewer's changes-requested verdict, or a review reopen — lifts `active_pr` for the profile now named on the card, because that PR is exactly what it must work on. Only a change to a *different* profile counts: re-assigning the same profile, unassigning, or the dispatcher's own `kanban.default_assignee` fill-in does not lift the guard, so the assignee that opened the PR is still not re-spawned against it after a crash, reclaim or no-op reassign, and a newer PR comment posted after the handoff guards again. A deliberate re-queue after a success (drag `done→ready`, `unblock`, re-promotion) also lifts `recent_success`, so a manual re-run is never silently held for the whole window.
 

@@ -152,20 +152,26 @@ class DispatchResult:
     """Memory pressure that restricted this tick: ``"critical"`` (no new
     workers), ``"elevated"`` (at most one), ``None`` (no restriction).
     Reclaim/promotion bookkeeping still ran; deferred tasks stay queued."""
+    cpu_pressure: Optional[str] = None
+    """CPU pressure that restricted this tick, same tiers as
+    ``memory_pressure``. Independent of it: a host can be CPU-starved with
+    memory to spare, and a static cap cannot see load the dispatcher did not
+    create (#126119)."""
 
 
 def describe_suppression(results: Iterable[Optional["DispatchResult"]]) -> str:
     """One line naming why the tick(s) held ready work back, or ``""``.
 
     ``active_pr=1, recent_success=2, rate_limited=1, skipped_locked=1,
-    memory_pressure=critical`` — the respawn-guard reasons counted per task
-    plus the tick-level holds. Feeds the "dispatcher stuck" warnings of the
-    CLI daemon and the embedded gateway dispatcher, which otherwise report a
-    bare zero-spawn count while ``hermes kanban tail`` is the only place the
-    guard reason is written (#111910).
+    memory_pressure=critical, cpu_pressure=elevated`` — the respawn-guard
+    reasons counted per task plus the tick-level holds. Feeds the "dispatcher
+    stuck" warnings of the CLI daemon and the embedded gateway dispatcher,
+    which otherwise report a bare zero-spawn count while ``hermes kanban tail``
+    is the only place the guard reason is written (#111910).
     """
     counts: dict[str, int] = {}
     pressure: Optional[str] = None
+    cpu: Optional[str] = None
     for res in results:
         if res is None:
             continue
@@ -177,9 +183,13 @@ def describe_suppression(results: Iterable[Optional["DispatchResult"]]) -> str:
             counts["skipped_locked"] = counts.get("skipped_locked", 0) + 1
         if res.memory_pressure:
             pressure = res.memory_pressure
+        if res.cpu_pressure:
+            cpu = res.cpu_pressure
     parts = [f"{k}={v}" for k, v in sorted(counts.items())]
     if pressure:
         parts.append(f"memory_pressure={pressure}")
+    if cpu:
+        parts.append(f"cpu_pressure={cpu}")
     return ", ".join(parts)
 
 
@@ -1950,6 +1960,79 @@ def _memory_pressure_level(sample: Optional[Mapping[str, Any]] = None) -> str:
         return "unknown"
 
 
+# CPU-pressure admission guard (#126119): the memory guard above cannot see a
+# host that is out of CPU with memory to spare, and the static caps
+# (max_in_progress / max_in_progress_per_profile) only count the dispatcher's
+# OWN running tasks. Same tiers, same fail-open, same placement in the tick.
+CPU_GUARD_LOAD_ELEVATED_PER_CORE = 1.0
+CPU_GUARD_LOAD_CRITICAL_PER_CORE = 2.0
+
+
+def _system_cpu_sample() -> dict:
+    """Best-effort host CPU snapshot, ``{}`` when every signal is unreadable.
+
+    Module-level indirection is the test seam (mirrors ``_system_memory_sample``):
+    conftest patches this so results never depend on the runner's live load, and
+    so a test can never saturate the machine to produce a "saturated" reading.
+    """
+    try:
+        from gateway.cpu_status import sample_cpu_pressure
+        return sample_cpu_pressure() or {}
+    except Exception:
+        return {}
+
+
+def _cpu_pressure_level(sample: Optional[Mapping[str, Any]] = None) -> str:
+    """Classify host CPU pressure: ok/elevated/critical/unknown.
+
+    Reuses :func:`gateway.cpu_status.classify_cpu_pressure` so the tiers match
+    the one place they are defined. Thresholds come from
+    ``kanban.cpu_pressure_thresholds`` so an operator on a busy shared box can
+    tune or widen them without a code change; ``unknown`` (and any unreadable
+    threshold) falls back to the conservative shipped defaults and imposes no
+    restriction.
+    """
+    if sample is None:
+        sample = _system_cpu_sample()
+    if not sample:
+        return "unknown"
+    try:
+        from gateway.cpu_status import classify_cpu_pressure
+        return classify_cpu_pressure(
+            sample.get("load1_per_core"),
+            sample.get("psi_some_avg60_pct"),
+            **_cpu_pressure_thresholds(),
+        )
+    except Exception:
+        return "unknown"
+
+
+def _cpu_pressure_thresholds() -> dict:
+    """Operator overrides for the CPU tiers; missing/invalid keys use defaults.
+
+    ``ponytail:`` only the two load tiers are configurable. The PSI tiers stay
+    on the shipped constants because a PSI figure is a saturating stall share
+    that operators rarely calibrate against, and a too-low override there would
+    throttle a healthy host. The dict is read per tick; ``load_config_readonly``
+    is signature-cached so this is a dict lookup, not a file read.
+    """
+    overrides: dict[str, Any] = {}
+    try:
+        from hermes_cli.config import load_config_readonly
+        raw = (load_config_readonly() or {}).get("kanban", {}).get("cpu_pressure_thresholds")
+    except Exception:
+        raw = None
+    if isinstance(raw, Mapping):
+        for key, default in (
+            ("elevated", CPU_GUARD_LOAD_ELEVATED_PER_CORE),
+            ("critical", CPU_GUARD_LOAD_CRITICAL_PER_CORE),
+        ):
+            value = raw.get(key)
+            if isinstance(value, (int, float)) and not isinstance(value, bool) and value > 0:
+                overrides[key] = float(value)
+    return overrides
+
+
 def dispatch_once(
     conn: sqlite3.Connection,
     *,
@@ -2260,6 +2343,28 @@ def _tick_spawn_budget(
         if spawn_budget is None or spawn_budget > 1:
             _kb._log.warning(
                 "kanban dispatch: system memory pressure is elevated; "
+                "limiting to at most 1 new worker this tick"
+            )
+            spawn_budget = 1
+
+    # CPU-pressure guard: the same two tiers against host CPU (#126119). A
+    # static cap can't see load the dispatcher did not create, so a saturated
+    # host used to keep getting workers. Independent of the memory guard — the
+    # two are ANDed, so the tighter budget always wins and neither widens the
+    # other's.
+    cpu = _cpu_pressure_level()
+    if cpu == "critical":
+        result.cpu_pressure = cpu
+        _kb._log.warning(
+            "kanban dispatch: system CPU pressure is critical; "
+            "spawning no new workers this tick (deferred, not dropped)"
+        )
+        return False, None
+    if cpu == "elevated":
+        result.cpu_pressure = cpu
+        if spawn_budget is None or spawn_budget > 1:
+            _kb._log.warning(
+                "kanban dispatch: system CPU pressure is elevated; "
                 "limiting to at most 1 new worker this tick"
             )
             spawn_budget = 1

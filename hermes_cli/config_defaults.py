@@ -1927,6 +1927,14 @@ DEFAULT_CONFIG = {
         # fan-out workflows that would otherwise saturate one profile's local model / API quota / browser
         # pool while leaving other profiles idle. See #21582.
         "max_in_progress_per_profile": None,
+        # CPU-pressure admission guard thresholds, as load per core (1-minute
+        # loadavg / os.cpu_count()). The dispatcher's live CPU guard spawns
+        # nothing at or above `critical` and at most one worker at or above
+        # `elevated` (#126119); it fails open where loadavg and Linux PSI are
+        # both unreadable. Raise on a busy shared host where the shipped
+        # thresholds throttle faster than you want; omit a key to keep its
+        # default (1.0 / 2.0). The Linux PSI tiers are not configurable.
+        "cpu_pressure_thresholds": {},
         # Per-home claim allowlist for boards shared across Hermes homes (#110995): profile names
         # this home's dispatcher may claim (list or comma-separated string). None = any existing
         # profile is claimable. Set = fail-closed (an empty list claims nothing). Every home has a

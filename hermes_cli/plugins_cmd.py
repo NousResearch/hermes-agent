@@ -595,9 +595,39 @@ def _set_plugin_enabled(name: str, *, enable: bool, aliases=(), console=None) ->
     enabled = set(plugins.get("enabled") or ())
     disabled = set(plugins.get("disabled") or ())
     _apply_activation(enabled, disabled, name, aliases, enable=enable)
+    if not enable:
+        # A disable only shrinks the enabled set, so there is nothing new to
+        # resolve: skip the environment admission and persist the deny-list
+        # directly. Requiring a venv sync here makes `disable` unusable
+        # whenever the workspace lock is gone (#126711); the disabled list
+        # wins at load, and the environment keeps a harmless superset until
+        # the next sync. The expected_config guard keeps the optimistic
+        # concurrency the admission path enforces.
+        _save_selection_directly(enabled, disabled, expected_config=expected_config)
+        return
     _admit_and_save_plugin_sets(enabled, disabled, console=console,
-                               action=f"{'Enable' if enable else 'Disable'} '{name}'",
-                               expected_config=expected_config, plugin=name if enable else None)
+                               action=f"Enable '{name}'",
+                               expected_config=expected_config, plugin=name)
+
+
+def _save_selection_directly(enabled: set, disabled: set, *, expected_config: str) -> None:
+    """Persist an enabled/disabled selection with no environment resolution.
+
+    Only for changes that cannot need it (pure disables, see
+    :func:`_set_plugin_enabled`). Refuses when the selection moved under us
+    instead of clobbering a concurrent change.
+    """
+    from hermes_cli.config import load_config, save_config
+    from hermes_cli.plugins_admission import AdmissionRefused
+
+    if _plugin_selection_version() != expected_config:
+        raise AdmissionRefused(
+            "the plugin selection changed while applying; retry the command")
+    config = load_config()
+    section = config.setdefault("plugins", {})
+    section["enabled"] = sorted(enabled)
+    section["disabled"] = sorted(disabled)
+    save_config(config)
 
 
 def _apply_activation(enabled: set, disabled: set, key: str, aliases, *, enable: bool) -> None:

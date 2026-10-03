@@ -928,8 +928,11 @@ def prune_scratch_dir(scratch: Path | None = None, max_idle_hours: float = SCRAT
     root = scratch if scratch is not None else get_scratch_dir(prune=False)
     removed = prune_idle_entries(root, max_idle_hours, frozenset({_SCRATCH_PRUNE_STAMP}))
     if removed:
-        logging.getLogger(__name__).info(
-            "scratch prune: removed %d idle entry(ies) under %s", removed, root
+        from hermes_constants_scratch import audit_info
+
+        audit_info(
+            logging.getLogger(__name__),
+            "scratch prune: removed %d idle entry(ies) under %s", removed, root,
         )
     return removed
 

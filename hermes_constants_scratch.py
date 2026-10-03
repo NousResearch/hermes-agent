@@ -27,6 +27,46 @@ _REAP_GRACE_SECONDS = 3.0
 _GIT_FILE_MAX_DEPTH = 4
 
 
+def _audit_log_path() -> Path:
+    """Durable audit sink: ``<home>/logs/scratch-prune.log`` — the platform's real
+    hermes home (same resolver as every other hermes path), not a guess."""
+    try:
+        from hermes_constants import get_process_hermes_home  # lazy: avoids import cycle
+
+        return get_process_hermes_home() / "logs" / "scratch-prune.log"
+    except Exception:  # noqa: BLE001 — resolver unavailable: last-resort literal
+        home = Path(os.environ.get("HERMES_HOME", str(Path.home() / ".hermes")))
+        return home / "logs" / "scratch-prune.log"
+
+
+def audit_info(log: logging.Logger, msg: str, *args: object) -> None:
+    """Audit record at INFO with a durable fallback sink (#132401).
+
+    teknium1's ask was that the records "land in ``~/.hermes/logs/``" — but the
+    boot-time prune can fire before ``setup_logging`` installs the file handler,
+    so a bare ``logger.info`` is delivery-by-hope on exactly the path that
+    matters most. This emits through the logger as asked, and when nothing at
+    the root would capture INFO (the early-boot case) it appends the record to
+    ``<home>/logs/scratch-prune.log`` directly: an audit line either reaches
+    ``agent.log`` or the audit file, never nowhere. Never raises — the prune
+    must not fail for want of a log line.
+    """
+    try:
+        log.info(msg, *args)
+        if any(h.level <= logging.INFO for h in logging.getLogger().handlers):
+            return  # the log file sink is live; no fallback duplication
+        text = (msg % args) if args else msg
+        path = _audit_log_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        # Appends are one short line per rare event; POSIX O_APPEND makes each
+        # atomic. Windows MSVCRT appends are seek-then-write (weaker under
+        # concurrent prunes) — accepted for now given the event rarity.
+        with open(path, "a", encoding="utf-8", newline="\n") as fh:
+            fh.write("%s\t%s\n" % (time.strftime("%Y-%m-%dT%H:%M:%S"), text))
+    except Exception:  # noqa: BLE001 — audit must never break the prune
+        pass
+
+
 def subtree_touched_since(path: Path, cutoff: float) -> bool:
     """True when *path* or anything beneath it has an mtime at or after *cutoff*.
 
@@ -155,8 +195,10 @@ def reap_processes_rooted_in(scratch_root: Path, doomed: list[Path]) -> int:
         except (psutil.Error, OSError):
             continue
     for pid, cmdline in evidence:
-        logger.info("scratch prune: reaped pid=%d cmdline=%s", pid, cmdline)
-    logger.info("scratch prune: reaped %d process(es) rooted in pruned entries", len(victims))
+        audit_info(logger, "scratch prune: reaped pid=%d cmdline=%s", pid, cmdline)
+    audit_info(
+        logger, "scratch prune: reaped %d process(es) rooted in pruned entries", len(victims)
+    )
     return len(victims)
 
 
@@ -245,12 +287,14 @@ def prune_idle_entries(root: Path, max_idle_hours: float, skip_names: frozenset[
         touched, newest, bytes_ = _scan_entry_idleness(entry, cutoff)
         if touched:
             if not entry.exists():
-                logger.info(
+                audit_info(
+                    logger,
                     "scratch prune: entry=%r vanished since selection",
                     entry.name,
                 )
             else:
-                logger.info(
+                audit_info(
+                    logger,
                     "scratch prune: rescued entry=%r — touched since selection, kept",
                     entry.name,
                 )
@@ -264,7 +308,8 @@ def prune_idle_entries(root: Path, max_idle_hours: float, skip_names: frozenset[
         except OSError as exc:
             # Attempted, failed outright (permissions, vanished mid-run): the record
             # is the audit; the count only ever claims confirmed removals.
-            logger.info(
+            audit_info(
+                logger,
                 "scratch prune: removal failed entry=%r kind=%s error=%s",
                 entry.name, kind, exc,
             )
@@ -272,12 +317,14 @@ def prune_idle_entries(root: Path, max_idle_hours: float, skip_names: frozenset[
         if entry.exists():
             # ``rmtree(ignore_errors=True)`` can leave residue — a partial removal is
             # not a removal. Recorded, never counted (#132401 review round 2).
-            logger.info(
+            audit_info(
+                logger,
                 "scratch prune: removal left residue entry=%r kind=%s bytes=%d newest_mtime=%.0f",
                 entry.name, kind, bytes_ or 0, newest or 0.0,
             )
             continue
-        logger.info(
+        audit_info(
+            logger,
             "scratch prune: removed entry=%r kind=%s bytes=%d newest_mtime=%.0f",
             entry.name, kind, bytes_ or 0, newest or 0.0,
         )

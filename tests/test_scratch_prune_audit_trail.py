@@ -214,10 +214,18 @@ def test_audit_records_reach_durable_sink_early_boot(tmp_path, audit_records, mo
 
     audit_home = tmp_path / "audit-home"
     monkeypatch.setenv("HERMES_HOME", str(audit_home))
-    # Early-boot state: root logger has NO file handler capturing INFO.
-    monkeypatch.setattr(_logging, "root", _logging.getLogger("probe-no-sink"))
-
-    assert prune_scratch_dir(scratch) == 1
+    # Early-boot state, simulated the way the code sees it: the REAL root logger
+    # has no INFO-capable handlers. Strip any pytest/caplog handlers for the call,
+    # then restore — auditing audit_info's own check, not a patched module attr.
+    real_root = _logging.getLogger()
+    saved_handlers = list(real_root.handlers)
+    saved_level = real_root.level
+    real_root.handlers = []
+    try:
+        assert prune_scratch_dir(scratch) == 1
+    finally:
+        real_root.handlers = saved_handlers
+        real_root.setLevel(saved_level)
 
     sink = audit_home / "logs" / "scratch-prune.log"
     assert sink.exists(), "audit record did not reach the durable sink"

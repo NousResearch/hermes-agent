@@ -316,7 +316,7 @@ export function chatMessageText(message: ChatMessage): string {
 export interface UnspokenTurnSpeech {
   /** First unspoken assistant bubble — stable for the turn, the live speech session binds to it. */
   id: string
-  /** Whether the newest assistant bubble is still streaming. */
+  /** Whether the newest assistant bubble that carries text is still streaming. */
   pending: boolean
   /** All unspoken assistant text in message order, bubbles joined on a blank line. */
   text: string
@@ -364,13 +364,17 @@ export function collectUnspokenTurnSpeech(
       continue
     }
 
-    pending = Boolean(message.pending)
     const text = chatMessageText(message).trim()
 
     if (!text) {
       continue
     }
 
+    // `pending` describes the last bubble that carries speech. A tool call
+    // opens a fresh text-less pending bubble right after the narration seals;
+    // letting that bubble set the flag hides the seal from the live session's
+    // boundary flush, and the narration's tail waits out the whole tool call.
+    pending = Boolean(message.pending)
     id ??= message.id
     parts.push(text)
   }

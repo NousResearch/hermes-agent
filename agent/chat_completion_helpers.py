@@ -1937,6 +1937,13 @@ def _fallback_chain_exhausted(agent, reason: "FailoverReason | None") -> bool:
     short cooldown so next turn's restore_primary_runtime stays gated instead of replaying the whole
     context across every provider again."""
     from agent.fallback_cooldown import _RATE_LIMIT_FAILOVER_REASONS
+    # Record the end of the walk: without this the operator cannot tell "the last hop
+    # failed" from "the last hop failed and there was nothing left to try". Only when a
+    # chain actually exists — an empty chain walks nothing and must stay silent.
+    from agent.fallback_trail import record_chain_end
+    _chain_len = len(getattr(agent, "_fallback_chain", None) or ())
+    if _chain_len:
+        record_chain_end(agent, entries=_chain_len)
     if agent._fallback_chain and reason not in _RATE_LIMIT_FAILOVER_REASONS:
         agent._rate_limited_until = max(
             getattr(agent, "_rate_limited_until", 0) or 0, time.monotonic() + _FALLBACK_EXHAUSTED_COOLDOWN_S)
@@ -1960,26 +1967,29 @@ def _candidate_pool_exhausted(agent, fb_provider: str, fb_model: str) -> bool:
     return until is None or until - time.time() > 600
 
 
-def _should_skip_fallback_candidate(agent, fb: dict, fb_key: tuple, fb_provider: str, fb_model: str, unavailable: set) -> bool:
-    """True when the entry is already unavailable, malformed, locally unusable, or resolves
-    to the backend that just failed (falling back to it would loop the failure)."""
+def _should_skip_fallback_candidate(agent, fb: dict, fb_key: tuple, fb_provider: str, fb_model: str, unavailable: set) -> Optional[str]:
+    """The reason ``fb`` must be passed over, or ``None`` when it is a usable candidate.
+
+    Returns text (not a bool) so ``try_activate_fallback`` can record WHY a hop was never
+    tried, not just that it was skipped.
+    """
     if fb_key in unavailable:
         logger.debug("Fallback skip: %s previously marked unavailable", fb_key)
-        return True
+        return "already marked unavailable this session"
     if not fb_provider or not fb_model:
-        return True
+        return "entry is missing a provider or model"
     from agent.fallback_cooldown import _is_entitlement_rejected
     if _is_entitlement_rejected(agent, fb_provider, fb_model):
         logger.info("Fallback skip: %s/%s was rejected as unentitled for this account", fb_provider, fb_model)
-        return True
+        return "rejected as unentitled for this account earlier this session"
     if _candidate_pool_exhausted(agent, fb_provider, fb_model):
         logger.warning("Fallback skip: %s/%s credential pool is exhausted (every entry in cooldown)", fb_provider, fb_model)
-        return True
+        return "credential pool exhausted (every entry in cooldown)"
     local_skip_reason = _fallback_entry_unavailable_without_network(agent, fb)
     if local_skip_reason:
         unavailable.add(fb_key)
         logger.warning("Fallback skip: %s/%s is not locally usable (%s); suppressing for this session", fb_provider, fb_model, local_skip_reason)
-        return True
+        return f"not locally usable ({local_skip_reason})"
     # Identity semantics (axes, shim aliases, credential surfaces, multi-endpoint pools)
     # are owned by agent.backend_identity — do not re-implement comparisons here.
     # Skip entries that resolve to the same backend that just failed — falling back to it loops the failure.
@@ -1992,8 +2002,8 @@ def _should_skip_fallback_candidate(agent, fb: dict, fb_key: tuple, fb_provider:
         logger.warning(
             "Fallback skip: chain entry %s/%s resolves to the same backend as the current one (%s)",
             fb_provider, fb_model, current_ident.base_url or current_ident.provider)
-        return True
-    return False
+        return "resolves to the same backend that just failed (would loop the failure)"
+    return None
 
 
 def _update_fallback_context_compressor(agent) -> None:
@@ -2074,10 +2084,18 @@ def _buffer_fallback_notice(agent, notice: str) -> None:
 def try_activate_fallback(agent, reason: "FailoverReason | None" = None, reset_at=None) -> bool:
     """Switch to the next fallback model/provider in the chain; False when exhausted. Swaps client,
     model slug and provider in place so the retry loop continues on the new backend; client
-    construction goes through resolve_provider_client (no duplicated provider→key mappings)."""
+    construction goes through resolve_provider_client (no duplicated provider→key mappings).
+
+    Every hop decision is mirrored into ``agent._fallback_trail`` so a terminal error can name the whole walk.
+    """
     from agent.fallback_cooldown import _arm_rate_limit_cooldown, switch_deferred_by_reset
+    from agent import fallback_trail
     if switch_deferred_by_reset(agent, reason, reset_at):
         return False
+    _fresh_walk = agent._fallback_index == 0
+    if _fresh_walk:
+        fallback_trail.reset_fallback_trail(agent)
+    fallback_trail.record_hop_failure(agent, provider=getattr(agent, "provider", ""), model=getattr(agent, "model", ""), role="primary" if _fresh_walk else "fallback", reason=_fallback_reason_text(reason))
     cooldown_seconds = _arm_rate_limit_cooldown(agent, reason, reset_at=reset_at)
     while True:
         if agent._fallback_index >= len(agent._fallback_chain):
@@ -2090,7 +2108,9 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None, reset_a
         unavailable = agent._unavailable_fallback_keys
         fb_provider = (fb.get("provider") or "").strip().lower()
         fb_model = (fb.get("model") or "").strip()
-        if _should_skip_fallback_candidate(agent, fb, fb_key, fb_provider, fb_model, unavailable):
+        _skip_reason = _should_skip_fallback_candidate(agent, fb, fb_key, fb_provider, fb_model, unavailable)
+        if _skip_reason:
+            fallback_trail.record_hop_skip(agent, provider=fb_provider, model=fb_model, reason=_skip_reason)
             continue
 
         try:
@@ -2112,6 +2132,8 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None, reset_a
             if fb_client is None:
                 logger.warning("Fallback to %s failed: provider not configured", fb_provider)
                 unavailable.add(fb_key)
+                fallback_trail.record_hop_skip(
+                    agent, provider=fb_provider, model=fb_model, reason="provider not configured")
                 continue
             if fb_provider == "moa":
                 # A MoA entry means the preset itself, exactly like ``provider: moa`` in config or
@@ -2196,6 +2218,8 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None, reset_a
             if fb_provider == "nous":
                 unavailable.add(fb_key)
             logger.error("Failed to activate fallback %s: %s", fb_model, e)
+            fallback_trail.record_hop_skip(
+                agent, provider=fb_provider, model=fb_model, reason=f"could not activate: {e}")
             continue  # try next in chain
 
 

@@ -1,5 +1,6 @@
 """Tests for blocked-command recovery guidance (parser-limit + backgrounding)."""
 
+import pytest
 
 from tools.approval import _hardline_block_result
 from tools.approval_detection import _PARSER_LIMIT_DESCRIPTION
@@ -72,3 +73,28 @@ class TestBackgroundGuidanceRecipes:
 
     def test_quoted_ampersand_not_flagged(self):
         assert _foreground_background_guidance('git commit -m "a & b"') is None
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "grep -n h11 /app/.venv/lib/python3.13/site-packages/uvicorn/protocols/http/h11_impl.py",
+            "ls /usr/lib/python3/dist-packages/gunicorn",
+            r"type C:\app\.venv\Lib\site-packages\gunicorn\arbiter.py",
+            r"dir C:\app\.venv\Lib\site-packages\uvicorn",
+            "cat node_modules/nodemon/package.json",
+        ],
+    )
+    def test_installed_package_paths_are_not_server_launches(self, command):
+        assert _foreground_background_guidance(command) is None
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "uvicorn app:app",
+            "/app/.venv/bin/uvicorn app:app",
+            "python -m uvicorn app:app",
+            "./node_modules/.bin/nodemon server.js",
+        ],
+    )
+    def test_server_launches_still_require_background(self, command):
+        assert "background=true" in (_foreground_background_guidance(command) or "")

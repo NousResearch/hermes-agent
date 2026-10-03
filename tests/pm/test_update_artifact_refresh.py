@@ -18,8 +18,9 @@ from tests.pm._range_server import RangeHandler, dl_server, url  # noqa: F401
 
 
 @pytest.mark.parametrize("next_version", ["1.2.3", "1.2.4"])
+@pytest.mark.parametrize("failed_resolution", [False, True])
 def test_same_minor_refresh_updates_real_bytes_and_preserves_unresolved_targets(
-    tmp_path, dl_server, monkeypatch, next_version,
+    tmp_path, dl_server, monkeypatch, next_version, failed_resolution,
 ):
     class RollingPackage(Package):
         name = "rolling-tool"
@@ -58,6 +59,14 @@ def test_same_minor_refresh_updates_real_bytes_and_preserves_unresolved_targets(
     lock.save()
     store = tmp_path / "tools"
     monkeypatch.setitem(registry._packages, "rolling-tool", RollingPackage())
+    if failed_resolution:
+        class UnavailablePackage(Package):
+            name = "unrelated"
+
+            def latest_versions(self, target, locked=None):
+                raise OSError("fixture supplier index unavailable")
+
+        monkeypatch.setitem(registry._packages, "unrelated", UnavailablePackage())
     monkeypatch.setattr(paths, "lockfile_path", lambda: lock.path)
     monkeypatch.setattr(paths, "repo_root", lambda: tmp_path)
     monkeypatch.setattr(paths, "partials_root", lambda: tmp_path / "partials")
@@ -67,12 +76,14 @@ def test_same_minor_refresh_updates_real_bytes_and_preserves_unresolved_targets(
     monkeypatch.setattr(engine, "sync_venv", lambda **kwargs: syncs.append(kwargs))
     before = lock.path.read_bytes()
     args = Namespace(names=["rolling-tool"], target=None, check=True, uv=False, npm=False, termux=False)
+    if failed_resolution:
+        args.names.insert(0, "unrelated")
     assert cli.cmd_update(args) == 1
     assert lock.path.read_bytes() == before and not requests and not syncs
     assert not store.exists()
 
     args.check = False
-    assert cli.cmd_update(args) == 0
+    assert cli.cmd_update(args) == int(failed_resolution)
     after = json.loads(lock.path.read_text(encoding="utf-8"))["packages"]
     original = json.loads(before)["packages"]
     assert after["unrelated"] == original["unrelated"]
@@ -91,5 +102,5 @@ def test_same_minor_refresh_updates_real_bytes_and_preserves_unresolved_targets(
     syncs.clear()
     for check in (True, False):
         args.check = check
-        assert cli.cmd_update(args) == 0
+        assert cli.cmd_update(args) == int(failed_resolution)
     assert lock.path.read_bytes() == pinned and not requests and not syncs

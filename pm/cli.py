@@ -660,8 +660,10 @@ def cmd_update(args) -> int:
     for d in resolved:
         _report_update(d, width)
     if failures:
-        print(f"pm update: resolution failed for {', '.join(failures)}; no changes applied")
-        return 1
+        print(f"pm update: resolution failed for {', '.join(failures)}")
+        if args.check or not changed:
+            return 1
+        print("pm update: applying independently resolved packages; failed packages keep their pins")
     if args.check:
         if args.uv:
             print("uv deps: would run `uv lock --upgrade` + venv sync")
@@ -670,6 +672,8 @@ def cmd_update(args) -> int:
         return 1 if changed else 0
 
     if _apply_pins(changed, lockfile):
+        return 1
+    if failures:
         return 1
     if args.uv and _refresh_uv_lock():
         return 1

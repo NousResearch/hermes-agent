@@ -6,9 +6,16 @@ import assert from 'node:assert/strict'
 
 import { test } from 'vitest'
 
-import { isCanaryTag, resolveFeatureFlags } from './feature-flags'
+import { isCanaryTag, localModelsShipOn, resolveFeatureFlags } from './feature-flags'
 
-const shipsLocalModels: boolean = process.platform === 'win32' || process.platform === 'darwin'
+const shipsLocalModels: boolean = localModelsShipOn(process.platform)
+
+test('local models ship on every supported desktop platform', () => {
+  assert.equal(localModelsShipOn('win32'), true)
+  assert.equal(localModelsShipOn('darwin'), true)
+  assert.equal(localModelsShipOn('linux'), true)
+  assert.equal(localModelsShipOn('freebsd'), false)
+})
 
 test('without --local, local models follow the platform on every channel', () => {
   for (const canary of [false, true]) {

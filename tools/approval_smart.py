@@ -11,6 +11,7 @@ Inspired by OpenAI Codex's Smart Approvals guardian subagent.
 import logging
 import time
 from tools import approval_context as _ctx
+from tools.approval_detection import _GATEWAY_LIFECYCLE_SPLICE_DESCRIPTION
 
 logger = logging.getLogger("tools.approval")
 
@@ -69,6 +70,59 @@ def _get_smart_policy() -> str:
     """Operator rules (``approvals.smart_policy``) appended to the guardian's system prompt."""
     policy = _ctx._get_approval_config().get("smart_policy", "")
     return policy.strip() if isinstance(policy, str) else ""
+
+
+# Dangerous-pattern keys/descriptions that smart approval must NEVER auto-approve — they always
+# fall through to the human approval prompt, even when approvals.mode=smart.
+#
+# The guardian LLM evaluates commands against a generic risk rubric (recursive deletes, fork
+# bombs, disk wipes). Gateway-lifecycle commands look harmless under that rubric, but they are
+# agent self-termination: stopping/restarting the gateway kills every running agent mid-work,
+# and ``hermes gateway stop`` additionally runs ``launchctl bootout``, which UNLOADS the launchd
+# job — so KeepAlive never respawns it and a single auto-approved command leaves the gateway
+# down until a human runs ``hermes gateway start``. A guardian APPROVE must not be able to
+# authorize that; only a human can. Detection is unaffected — this set only removes these keys
+# from the guardian's jurisdiction. See #96555.
+SMART_APPROVAL_HUMAN_ONLY_DESCRIPTIONS = frozenset({
+    "stop/restart hermes gateway (kills running agents)",
+    "stop/restart hermes launchd service (kills running agents)",
+    _GATEWAY_LIFECYCLE_SPLICE_DESCRIPTION,
+    "hermes update (restarts gateway, kills running agents)",
+    "kill hermes/gateway process (self-termination)",
+})
+
+
+def _smart_approval_human_only(pattern_keys) -> bool:
+    """True when any flagged pattern key is outside guardian jurisdiction.
+
+    When True the guardian step is skipped entirely and the warning proceeds straight to the
+    human approval prompt (see ``SMART_APPROVAL_HUMAN_ONLY_DESCRIPTIONS`` for why). Pattern keys
+    *are* the descriptions in ``DANGEROUS_PATTERNS_COMPILED`` (the legacy regex-derived key is
+    kept as an alias for stored allowlists), so membership is a plain set lookup.
+    """
+    return any(key in SMART_APPROVAL_HUMAN_ONLY_DESCRIPTIONS for key in pattern_keys)
+
+
+def _script_has_gateway_lifecycle(code: str) -> bool:
+    """True when an execute_code script embeds a gateway-lifecycle command.
+
+    Delegates to ``cron.lifecycle_guard.contains_gateway_lifecycle_command`` — the same
+    token-aware detector (shlex tokenization, quote/escape splicing, argv-list punctuation,
+    referenced-script recursion) used for the in-gateway hard block and the splice-variant
+    approval pattern.
+
+    Fail-CLOSED on detector errors: an exception here must route the script to the human prompt
+    (return True), never back to the guardian LLM — failing open would reintroduce exactly the
+    auto-approved self-termination this exemption exists to prevent. The cost of a false
+    positive is one extra human approval prompt; the cost of a false negative is the gateway
+    outage class.
+    """
+    try:
+        from cron.lifecycle_guard import contains_gateway_lifecycle_command
+
+        return contains_gateway_lifecycle_command(code)
+    except Exception:
+        return True
 
 
 def _smart_approve(command: str, description: str) -> str:

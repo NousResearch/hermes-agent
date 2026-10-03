@@ -444,11 +444,14 @@ class GatewayNotificationsMixin:
                     and not getattr(stream_consumer, "_turn_split_delivery", False)
                 ):
                     try:
+                        _edit_initiated = time.monotonic()
                         _edit_res = await adapter.edit_message(
                             chat_id=source.chat_id, message_id=_sc_msg_id, content=text_content, finalize=True,
                         )
                         if getattr(_edit_res, "success", False):
                             _reconciled = True
+                            record_final_delivery(request_context, success=getattr(_edit_res, "success", False),
+                                                  initiated_at=_edit_initiated)
                             logger.info(
                                 "Queued-lane final reconciled by editing message %s in place (no duplicate send).",
                                 _sc_msg_id,

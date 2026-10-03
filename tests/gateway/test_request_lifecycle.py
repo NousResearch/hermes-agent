@@ -280,8 +280,8 @@ async def test_profile_a_b_a_real_discovery_and_original_transport(tmp_path):
     for home in homes:
         plugin = home / "plugins" / "request-probe"
         plugin.mkdir(parents=True)
-        (home / "config.yaml").write_text("plugins:\n  enabled: [request-probe]\n")
-        (plugin / "plugin.yaml").write_text("name: request-probe\nversion: '1'\n")
+        (home / "config.yaml").write_text("plugins:\n  enabled: [request-probe]\n", encoding="utf-8")
+        (plugin / "plugin.yaml").write_text("name: request-probe\nversion: '1'\n", encoding="utf-8")
         (plugin / "__init__.py").write_text('''
 from hermes_constants import get_hermes_home
 

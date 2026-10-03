@@ -23,6 +23,9 @@ def register(ctx):
 The supported handle is the `request` supplied by these hooks. Plugins do not call runner methods,
 replace core methods, or construct request contexts. Profiles without a subscriber retain existing
 message dispatch. Callback failures use the native plugin dispatcher's isolation and timeout policy.
+On the async admission path, coroutine callbacks run on the admission loop. Synchronous callbacks
+run off-loop under the same bounded worker policy, with the original profile ContextVars. A sync
+factory's returned awaitable is awaited on the admission loop within the remaining callback budget.
 
 ## Admission and observations
 

@@ -3995,12 +3995,14 @@ class GatewayTurnMixin:
 
     async def _run_agent_edit_streamed_message(
         self, _sc, source, response, content, *, _sk, ok, fail_result: str, fail_exc: str,
+        request_context=None,
     ) -> None:
         """Edit the stream consumer's message in place with ``content``; on success mark
         ``response["already_sent"]`` and log ``ok``. A returned failure logs ``fail_result`` as
         ``(session, error)`` and an exception logs ``fail_exc`` as ``(session, exc)``; either way
         ``already_sent`` stays unset so the normal final send delivers the content."""
         try:
+            _edit_initiated = time.monotonic()
             _res = await _sc.adapter.edit_message(
                 chat_id=source.chat_id, message_id=_sc.message_id, content=content, finalize=True,
             )
@@ -4010,6 +4012,9 @@ class GatewayTurnMixin:
         if not getattr(_res, "success", True):
             logger.warning(fail_result, _sk, getattr(_res, "error", None))
             return
+        if getattr(_res, "success", False) is True:
+            from gateway.request_lifecycle import record_final_delivery
+            record_final_delivery(request_context, success=True, initiated_at=_edit_initiated)
         response["already_sent"] = True
         logger.info(*ok)
 
@@ -4075,6 +4080,7 @@ class GatewayTurnMixin:
                     ok=("Reconciled stale streamed finalize for session %s: edited message %s with the complete response (#71643).", _sk, _sc_msg_id),
                     fail_result="Stale-finalize reconciliation edit failed for session %s (%s); sending complete response via normal final send.",
                     fail_exc="Stale-finalize reconciliation edit failed for session %s: %s; sending complete response via normal final send.",
+                    **({"request_context": turn_ctx.request_context} if turn_ctx.request_context is not None else {}),
                 )
             else:
                 logger.info(
@@ -4089,6 +4095,7 @@ class GatewayTurnMixin:
                     ok=("Edited streamed message %s for session %s to include plugin-transformed content.", _sc.message_id, _sk),
                     fail_result="Transformed-final edit failed for session %s (%s); sending transformed response via normal final send.",
                     fail_exc="Failed to edit streamed message for session %s: %s",
+                    **({"request_context": turn_ctx.request_context} if turn_ctx.request_context is not None else {}),
                 )
         elif _sc is not None and getattr(_sc, "stream_deltas_enabled", True):
             # DUPLICATE-RISK DIAGNOSTIC: a stream consumer existed but suppression did NOT fire; log

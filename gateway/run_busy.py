@@ -412,7 +412,8 @@ class GatewayBusySessionMixin:
                 adapter._pending_messages, session_key, event,
                 merge_text=event.message_type == MessageType.TEXT,
             )
-            event._gateway_accepted = True
+            request = getattr(event, "_gateway_request_context", None)
+            event._gateway_accepted = request is None or request.active
             return
 
         if self._queue_depth(session_key, adapter=adapter) >= self._BUSY_QUEUE_MAX_PENDING:

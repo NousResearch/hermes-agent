@@ -39,8 +39,11 @@ logger = logging.getLogger("hermes_cli.plugins")
 # dispatcher/worker processes; kanban has its own heartbeat/stale reclaim. Abandon-without-join also leaves
 # a daemon thread that may still mutate shared state — safer for value-returning observers than for
 # gates/flushes.
-_HOOK_TIMEOUT_BOUNDED_HOOKS: Set[str] = {
+_GATEWAY_REQUEST_HOOKS = frozenset({
     "gateway_request_lifecycle", "gateway_request_control", "gateway_request_final", "gateway_request_tool",
+})
+_HOOK_TIMEOUT_BOUNDED_HOOKS: Set[str] = {
+    *_GATEWAY_REQUEST_HOOKS,
     "post_tool_call", "transform_terminal_output", "transform_tool_result", "transform_llm_output",
     "pre_llm_call", "post_llm_call", "pre_api_request", "post_api_request", "api_request_error",
     "pre_auxiliary_call", "post_auxiliary_call", "pre_verify", "on_session_start", "on_session_end",
@@ -268,12 +271,14 @@ class PluginDispatchMixin:
             surface, hook_name, callback_name, exc, surface.lower(), ", ".join(sorted(kwargs)) or "no fields")
 
     def _run_hook_callback_bounded(
-        self, hook_name: str, cb: Callable, kwargs: Dict[str, Any], timeout: float
+        self, hook_name: str, cb: Callable, kwargs: Dict[str, Any], timeout: float,
+        *, resolve_awaitable: bool = True,
     ) -> Any:
         """Run one callback on a daemon worker with a wall-clock cap; ``_HOOK_SKIPPED`` when
         suppressed, still running for this call id, over the abandoned-worker cap, timed out
         (worker abandoned, never joined), or the worker could not be started. Exceptions
-        propagate."""
+        propagate. Async admission callers may leave returned awaitables unresolved so they
+        can await them on the admission loop; abandoned coroutine results are closed."""
         callback_name = getattr(cb, "__name__", repr(cb))
         # Suppression is a fact about the CALLBACK — a hung one must keep its back-off —
         # so that key stays coarse. The gate must instead tell CONCURRENT CALLS apart.
@@ -307,6 +312,7 @@ class PluginDispatchMixin:
 
         context = contextvars.copy_context()
         done = threading.Event()
+        discarded = threading.Event()
         outcome: Dict[str, Any] = {}
         failure: Dict[str, BaseException] = {}
 
@@ -322,7 +328,16 @@ class PluginDispatchMixin:
 
         def _runner() -> None:
             try:
-                outcome["value"] = context.run(self._invoke_hook_callback, cb, kwargs)
+                if resolve_awaitable:
+                    outcome["value"] = context.run(self._invoke_hook_callback, cb, kwargs)
+                else:
+                    # Async admission callers resolve a sync factory's awaitable on their own loop.
+                    value = context.run(cb, **self._hook_callback_kwargs(cb, kwargs))
+                    with self._hook_timeout_lock:
+                        if discarded.is_set() and inspect.iscoroutine(value):
+                            value.close()
+                        else:
+                            outcome["value"] = value
             except BaseException as exc:
                 failure["exc"] = exc
             finally:
@@ -340,6 +355,9 @@ class PluginDispatchMixin:
             return _HOOK_SKIPPED
         if not done.wait(timeout=timeout):  # do not join — that would reintroduce the hang
             with self._hook_timeout_lock:
+                discarded.set()
+                if not resolve_awaitable and inspect.iscoroutine(outcome.get("value")):
+                    outcome["value"].close()
                 # See #6622.
                 self._hook_timeout_suppressed_until[suppression_key] = (
                     time.monotonic() + self._hook_timeout_suppression_seconds)
@@ -489,7 +507,8 @@ class PluginDispatchMixin:
         callback that awaits anything scheduled on that loop can make progress. Through the
         sync path it runs on a helper thread while the caller blocks in ``done.wait()`` — on the
         gateway that stalls the whole event loop for the callback's duration. Sync callbacks
-        run inline. Bounded hooks keep ``plugins.hook_callback_timeout`` via ``asyncio.wait_for``
+        run inline except request hooks, whose sync callbacks use the bounded worker off-loop.
+        Bounded hooks keep ``plugins.hook_callback_timeout`` via ``asyncio.wait_for``
         (the coroutine is cancelled, not abandoned); a timed-out ``pre_tool_call`` fails closed.
         """
         from hermes_cli.plugins import _resolve_hook_callback_timeout
@@ -502,9 +521,22 @@ class PluginDispatchMixin:
         for cb in self._hooks.get(hook_name, []):
             callback_name = getattr(cb, "__name__", repr(cb))
             try:
-                ret = cb(**self._hook_callback_kwargs(cb, kwargs))
+                deadline = time.monotonic() + timeout if use_timeout and hook_name in _GATEWAY_REQUEST_HOOKS else None
+                is_async = inspect.iscoroutinefunction(cb) or inspect.iscoroutinefunction(getattr(cb, "__call__", None))
+                if hook_name in _GATEWAY_REQUEST_HOOKS and not is_async:
+                    if use_timeout:
+                        ret = await asyncio.to_thread(
+                            self._run_hook_callback_bounded, hook_name, cb, kwargs, timeout,
+                            resolve_awaitable=False)
+                        if ret is _HOOK_SKIPPED:
+                            continue
+                    else:
+                        ret = await asyncio.to_thread(cb, **self._hook_callback_kwargs(cb, kwargs))
+                else:
+                    ret = cb(**self._hook_callback_kwargs(cb, kwargs))
                 if inspect.isawaitable(ret):
-                    ret = await (asyncio.wait_for(ret, timeout) if use_timeout else ret)
+                    remaining = max(0, deadline - time.monotonic()) if deadline is not None else timeout
+                    ret = await (asyncio.wait_for(ret, remaining) if use_timeout else ret)
                 if ret is not None:
                     results.append(ret)
             except asyncio.TimeoutError:

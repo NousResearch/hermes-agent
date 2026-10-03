@@ -13,6 +13,7 @@ import uuid
 from dataclasses import dataclass
 from typing import Any
 
+from agent.async_utils import consume_detached_task_result
 from hermes_constants import get_hermes_home
 
 logger = logging.getLogger(__name__)
@@ -159,14 +160,14 @@ def _scope(runner, source):
 async def _notify(request, stage):
     from hermes_cli.plugins import ainvoke_hook
     with _scope(request._runner, request._source):
-        await ainvoke_hook("gateway_request_lifecycle", request=request, stage=stage)
+        await ainvoke_hook("gateway_request_lifecycle", request=request, stage=stage, turn_id=uuid.uuid4().hex)
 
 
 def _schedule_notify(request, stage):
     def schedule():
         task = request._loop.create_task(_notify(request, stage))
         # Observe plugin dispatcher failures; individual callback exceptions are already isolated.
-        task.add_done_callback(lambda done: done.exception() if not done.cancelled() else None)
+        task.add_done_callback(consume_detached_task_result)
     if not request._loop.is_closed():
         request._loop.call_soon_threadsafe(schedule)
 
@@ -207,7 +208,7 @@ async def admit_request(runner, event, session_key):
         request = RequestContext(runner, event, facts, adapter, asyncio.get_running_loop())
         event._gateway_request_context = request
         _requests(runner)[facts.request_id] = request
-        await ainvoke_hook("gateway_request_lifecycle", request=request, stage="admitted")
+        await ainvoke_hook("gateway_request_lifecycle", request=request, stage="admitted", turn_id=facts.request_id)
         return request
 
 
@@ -241,7 +242,8 @@ async def consume_control(runner, event, session_key):
         if not candidates:
             return False
         control = RequestControl(event.text or "", event.message_id, event.reply_to_message_id, source.user_id)
-        results = await ainvoke_hook("gateway_request_control", control=control, requests=candidates)
+        results = await ainvoke_hook("gateway_request_control", control=control, requests=candidates,
+                                    turn_id=uuid.uuid4().hex)
         for result in results:
             if not isinstance(result, dict):
                 continue
@@ -321,7 +323,8 @@ def final_response(runner, session_key, generation, response, *, failure=None):
         request.state["failure"] = failure
     from hermes_cli.plugins import invoke_hook
     with _scope(runner, request._source):
-        for value in invoke_hook("gateway_request_final", request=request, response=response):
+        for value in invoke_hook("gateway_request_final", request=request, response=response,
+                                 turn_id=request.facts.request_id):
             if isinstance(value, str):
                 response = value
     # The adapter receives the opening event even when the recursive queue drain answered a
@@ -411,6 +414,9 @@ def separate_queue_owners(pending_messages, session_key, incoming):
                  new.facts.chat_id, new.facts.thread_id, new.facts.requester_id)
     if old_owner == new_owner:
         return False
+    if new._runner._queue_depth(session_key, adapter=new._adapter) >= new._runner._BUSY_QUEUE_MAX_PENDING:
+        finish_request(new, "rejected")
+        return True
     new._runner._enqueue_fifo(session_key, incoming, new._adapter)
     return True
 

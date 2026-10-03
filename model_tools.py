@@ -16,6 +16,7 @@ from contextvars import ContextVar
 import logging
 import threading
 import time
+import uuid
 from typing import Dict, Any, List, Optional, Tuple
 
 from tools.registry import CHECK_FN_CACHE_BYPASS, check_fn_cache_scope, discover_builtin_tools, registry, tool_error
@@ -839,8 +840,8 @@ def _execute_tool(function_name: str, function_args: Dict[str, Any], original_ar
         from tools.connectors import dispatch_connector_call, is_connector_name
         from agent.tool_execution_observer import execution_observer, emit_tool_execution
         observer = execution_observer()
-        event = dict(tool_name=function_name, args=next_args)
         if observer is not None:
+            event = dict(tool_name=function_name, args=next_args, tool_call_id=ids.tool_call_id or uuid.uuid4().hex)
             emit_tool_execution(callback=observer, stage="started", **event)
         try:
             if is_connector_name(function_name):

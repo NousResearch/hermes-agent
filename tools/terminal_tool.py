@@ -1580,11 +1580,22 @@ def _handle_terminal(args, **kw):
     if not isinstance(heartbeat, int) or isinstance(heartbeat, bool) or heartbeat < 0:
         return tool_error("heartbeat must be a whole number of seconds (0 disables; positive values are clamped to min 60).")
     if not args.get("background", False):
-        if notify or watch_patterns or notify_on_complete or heartbeat:
+        # Name the exact offending arguments and lead with the foreground
+        # retry: a generic message got the same call re-sent verbatim, and
+        # leading with background=true pushed short commands into the
+        # background and flooded completion notices (#119196, #121634).
+        stray = [
+            name for name in ("notify", "heartbeat", "notify_on_complete", "watch_patterns")
+            if args.get(name)
+        ]
+        if stray:
+            given = ", ".join(f"{name}={json.dumps(args[name])}" for name in stray)
             return tool_error(
-                "notify/heartbeat only apply to background commands (foreground "
-                "results return directly). Either drop them, or run as "
-                "terminal(command=..., background=true, notify=...)."
+                f"Not run: {given} only apply to background commands "
+                "(foreground results return directly). To run this in the "
+                f"foreground, retry the same call without {', '.join(stray)}. Use "
+                "background=true only for long-running jobs you need "
+                "progress or completion notices for."
             )
         if args.get("pty", False):
             return tool_error(

@@ -1693,7 +1693,10 @@ export const deOverrides = {
         'Alle aktivierten Toolsets entfernen? Das deaktiviert Speicher, Terminal, Websuche, Delegation und die meisten anderen Tools, bis Sie sie wieder aktivieren.',
       keepAwakeTitle: 'Computer wach halten',
       keepAwakeDesc:
-        'Verhindert, dass dieser Rechner in den Ruhezustand wechselt, damit Läufe über Nacht oder länger weiterlaufen. Der Bildschirm kann trotzdem abdunkeln.',
+        'Verhindert, dass dieser Rechner in den Ruhezustand wechselt. „Während der Arbeit“ gilt nur, solange ein Durchlauf läuft: Läufe über Nacht laufen weiter, ohne den Laptop die ganze Woche wach zu halten. Der Bildschirm kann trotzdem abdunkeln.',
+      keepAwakeOff: 'Aus',
+      keepAwakeWhileWorking: 'Während der Arbeit',
+      keepAwakeAlways: 'Immer',
       disableF12Title: 'F12-DevTools deaktivieren',
       disableF12Desc:
         'Verhindert, dass F12 die Entwicklertools öffnet. Strg+Umschalt+I (bzw. Cmd+Opt+I auf dem Mac) funktioniert weiterhin.',
@@ -4294,7 +4297,7 @@ export const deOverrides = {
       '/init': 'AGENTS.md-Projektanweisungen aus einem Repo-Scan erzeugen oder aktualisieren',
       '/suggestions': 'Vorgeschlagene Automatisierungen prüfen (annehmen/verwerfen)',
       '/blueprint': 'Eine Automatisierung aus einer Blueprint-Vorlage einrichten',
-      '/browser': 'Browser-CDP-Verbindung verwalten [connect|disconnect|status] (nur lokales Gateway)',
+      '/browser': 'Browser des Agenten verwalten [connect|disconnect|status|use]',
       '/palette': 'Die unscharfe Befehlspalette öffnen (auch Strg+P)',
       '/usage': 'Token-Nutzung und Ratenlimits anzeigen; `reset` löst ein angespartes Codex-Limit-Reset ein',
       '/subscription': 'Ihren Nous-Tarif ansehen und im Browser ändern',

@@ -400,6 +400,7 @@ type BotsMessages = {
     imageSwitchApprove: string
     imageSwitchKeep: string
     start: string
+    stop: string
     attaching: string
     streamLost: string
     reconnect: string
@@ -840,6 +841,7 @@ const en: BotsMessages = {
     imageSwitchApprove: 'Switch image',
     imageSwitchKeep: 'Keep current image',
     start: 'Start screen',
+    stop: 'Stop screen',
     attaching: 'Connecting to the screen\u2026',
     streamLost: 'Screen stream ended',
     reconnect: 'Reconnect',
@@ -1280,6 +1282,7 @@ const ja: BotsMessages = {
     imageSwitchApprove: 'イメージを切り替える',
     imageSwitchKeep: '現在のイメージを使い続ける',
     start: '画面を起動',
+    stop: '画面を停止',
     attaching: '画面に接続中…',
     streamLost: '画面ストリームが終了しました',
     reconnect: '再接続',
@@ -1704,6 +1707,7 @@ const zh: BotsMessages = {
     imageSwitchApprove: '切换镜像',
     imageSwitchKeep: '保留当前镜像',
     start: '启动屏幕',
+    stop: '停止屏幕',
     attaching: '正在连接屏幕…',
     streamLost: '屏幕流已结束',
     reconnect: '重新连接',
@@ -2128,6 +2132,7 @@ const zhHant: BotsMessages = {
     imageSwitchApprove: '切換映像',
     imageSwitchKeep: '保留目前映像',
     start: '啟動螢幕',
+    stop: '停止螢幕',
     attaching: '正在連線至螢幕…',
     streamLost: '螢幕串流已結束',
     reconnect: '重新連線',

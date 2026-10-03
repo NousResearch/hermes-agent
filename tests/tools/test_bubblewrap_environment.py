@@ -349,7 +349,7 @@ class TestConstructionTimeMounts:
         # construction as well.
         assert params == [
             "config", "initial_cwd", "state_dir", "home", "hermes_home", "tracked_cwd", "bwrap_path", "hidden_paths",
-            "home_root", "home_allow", "scratch_dir",
+            "home_root", "home_allow", "scratch_dir", "staged_roots",
         ]
 
     def test_chdir_follows_tracked_cwd_with_fixed_mounts(self, sandbox_root, work_dir):
@@ -1267,6 +1267,72 @@ class TestHomeAllowAndHideKeys:
         keys.mkdir(parents=True)
         with _no_session(), pytest.raises(ValueError, match="terminal.cwd"):
             BubblewrapEnvironment(cwd=str(keys), timeout=10, config=BubblewrapConfig(hide=(str(keys),)))
+
+
+class TestStagedRoots:
+    """The staged data roots come from the registry in tools.credential_files."""
+
+    @pytest.fixture
+    def hermes_home(self, tmp_path, monkeypatch):
+        home = tmp_path / "hermes-home"
+        home.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        return home
+
+    def _ro_binds(self, env):
+        return {m[2] for m in _mounts(env._wrap_popen_args(["bash"])) if m[0] == "--ro-bind-try"}
+
+    def test_every_registry_root_is_bound_read_only(self, sandbox_root, work_dir, hermes_home):
+        from tools import credential_files
+
+        with _no_session():
+            env = BubblewrapEnvironment(cwd=str(work_dir), timeout=10)
+        try:
+            bound = self._ro_binds(env)
+            expected = {str(hermes_home / new) for new, _old in credential_files._CACHE_DIRS}
+            assert expected and expected <= bound
+        finally:
+            env.cleanup()
+
+    def test_a_root_added_to_the_registry_is_bound(self, sandbox_root, work_dir, hermes_home, monkeypatch):
+        from tools import credential_files
+
+        monkeypatch.setattr(
+            credential_files, "_CACHE_DIRS", [*credential_files._CACHE_DIRS, ("zz-invented", "zz-invented")],
+        )
+        with _no_session():
+            env = BubblewrapEnvironment(cwd=str(work_dir), timeout=10)
+        try:
+            assert str(hermes_home / "zz-invented") in self._ro_binds(env)
+        finally:
+            env.cleanup()
+
+    def test_staged_roots_sit_after_the_overlay_and_before_the_state_dir(self, sandbox_root, work_dir, hermes_home):
+        with _no_session():
+            env = BubblewrapEnvironment(cwd=str(work_dir), timeout=10)
+        try:
+            mounts = _mounts(env._wrap_popen_args(["bash"]))
+            i_overlay = mounts.index(("--tmpfs", str(hermes_home)))
+            i_root = mounts.index(("--ro-bind-try", str(hermes_home / "attachments"), str(hermes_home / "attachments")))
+            i_state = max(i for i, m in enumerate(mounts) if m[0] == "--bind")
+            assert i_overlay < i_root < i_state
+        finally:
+            env.cleanup()
+
+    def test_a_registry_that_cannot_be_read_binds_nothing_and_warns(self, sandbox_root, work_dir, hermes_home, monkeypatch, caplog):
+        from tools import credential_files
+
+        def boom(*_a, **_k):
+            raise RuntimeError("registry unavailable")
+
+        monkeypatch.setattr(credential_files, "get_cache_directory_mounts", boom)
+        with caplog.at_level(logging.WARNING), _no_session():
+            env = BubblewrapEnvironment(cwd=str(work_dir), timeout=10)
+        try:
+            assert str(hermes_home / "attachments") not in self._ro_binds(env)
+            assert any("staged data" in r.getMessage() for r in caplog.records)
+        finally:
+            env.cleanup()
 
 
 class TestMaskedCwdRecovery:

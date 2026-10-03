@@ -247,6 +247,30 @@ def load_bubblewrap_config(environ: Mapping[str, str] | None = None) -> Bubblewr
     )
 
 
+def staged_data_roots() -> tuple[str, ...]:
+    """Real host paths of the staged data directories under the active HERMES_HOME.
+
+    The list is the cache directory registry of tools.credential_files, the
+    one the container backends mount from, read through its own accessor:
+    a root added there is bound here with no change to this module. A
+    registry that cannot be read binds nothing and warns; the sandbox
+    still starts, with those paths hidden as before.
+    """
+    try:
+        from tools import credential_files
+
+        mounts = credential_files.get_cache_directory_mounts()
+    except Exception:
+        logger.warning("bubblewrap: could not read the staged data registry; staged data paths stay hidden", exc_info=True)
+        return ()
+    roots: list[str] = []
+    for mount in mounts:
+        real = os.path.realpath(mount["host_path"])
+        if real not in roots:
+            roots.append(real)
+    return tuple(roots)
+
+
 def operator_hidden_paths(home: str, items: Iterable[str]) -> tuple[str, ...]:
     """Real host paths the operator hides through terminal.bubblewrap_hide.
 
@@ -560,6 +584,7 @@ def build_bwrap_args(
     home_root: str | None | object = _UNRESOLVED,
     home_allow: Sequence[str] | None = None,
     scratch_dir: str | None = None,
+    staged_roots: Sequence[str] = (),
 ) -> list[str]:
     """Build the bwrap argv prefix; the caller appends the shell argv after the trailing ``--``.
 
@@ -571,7 +596,8 @@ def build_bwrap_args(
     and *hermes_home* on this call, with no PATH and no operator items,
     which suits tests of the pure builder only. *scratch_dir* is the Hermes
     scratch directory, bound back on top of the HERMES_HOME overlay; None
-    binds nothing. The listing of the top of
+    binds nothing. *staged_roots* are the staged data directories under
+    HERMES_HOME, bound back read-only. The listing of the top of
     HOME is the one input read from the host at each call, so a directory
     made on the host later shows in the next spawn.
     """
@@ -646,6 +672,11 @@ def build_bwrap_args(
     # a write then fails where the command can see it.
     if scratch_dir:
         late.append(("--bind-try" if profile.writable_cwd else "--ro-bind-try", scratch_dir, scratch_dir))
+    # Attachments, cached documents and the other staged data live under
+    # HERMES_HOME, and Hermes hands the model their host paths. Read-only:
+    # a command opens them, it does not produce them. The -try form lets a
+    # root that is gone from the host drop out instead of failing the spawn.
+    late += [("--ro-bind-try", root, root) for root in staged_roots]
     if config.home_mode in PROFILE_HOME_MODES:
         profile_home = os.path.join(os.path.abspath(os.path.expanduser(hermes_home)), "home")
         if os.path.isdir(profile_home):
@@ -979,6 +1010,7 @@ class BubblewrapEnvironment(LocalEnvironment):
         # Resolved once, like every other mount path. get_scratch_dir makes
         # the directory; pruning stays with the process that owns the home.
         self._scratch_dir = os.path.realpath(str(get_scratch_dir(self._hermes_home, prune=False)))
+        self._staged_roots = staged_data_roots()
         self._check_profile_home()
         # The mount paths are fixed here; only --chdir follows the tracked cwd.
         self._initial_cwd = os.path.realpath(_resolve_local_initial_cwd(cwd))
@@ -1284,6 +1316,7 @@ class BubblewrapEnvironment(LocalEnvironment):
             home_root=self._home_root,
             home_allow=self._home_allow,
             scratch_dir=self._scratch_dir,
+            staged_roots=self._staged_roots,
         )
 
     def _reset_masked_cwd(self) -> str | None:

@@ -1188,9 +1188,9 @@ class SessionSchemaMixin:
                     "(SELECT title FROM sessions WHERE title IS NOT NULL GROUP BY title HAVING COUNT(*) > 1)"
                 ).fetchall()
                 groups: Dict[str, list] = {}
-                for row in sorted(rows, key=lambda r: (self._title_rank(r[2]), r[3] or 0, r[0]), reverse=True):
+                for row in sorted(rows, key=lambda r: (self._title_rank(r[2]), r[3], r[0]), reverse=True):
                     groups.setdefault(row[1], []).append(row)
-                user_rank = self._title_rank(self.TITLE_SOURCE_USER)
+                user_rank = self._TITLE_SOURCE_RANK[self.TITLE_SOURCE_USER]
                 for title, group in groups.items():
                     # User titles: the OLDEST keeps the base and newer ones get "#k" in
                     # chronological order, so resolve_session_by_title (which prefers the

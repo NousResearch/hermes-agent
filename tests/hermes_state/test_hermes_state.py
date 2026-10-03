@@ -1779,7 +1779,7 @@ class TestSessionTitleIndexRepair:
         db.close()
         seed = {"a": ("Trip", "user", 100), "b": ("Trip", "llm", 300), "c": ("Note", "derived", 200),
                 "d": ("Note", "derived", 100), "e": ("Trip", "user", 200)}
-        with sqlite3.connect(db_path) as conn:
+        with contextlib.closing(sqlite3.connect(db_path)) as conn, conn:
             conn.execute("DROP INDEX idx_sessions_title_unique")
             conn.executemany(
                 "UPDATE sessions SET title = ?, title_source = ?, started_at = ? WHERE id = ?",

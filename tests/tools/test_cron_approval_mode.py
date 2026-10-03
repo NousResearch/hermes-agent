@@ -1,5 +1,8 @@
 """Tests for approvals.cron_mode — configurable approval behavior for cron jobs."""
 
+import shlex
+import subprocess
+
 import pytest
 
 import tools.approval as approval_module
@@ -472,3 +475,78 @@ class TestCronWithGatewayOrigin:
                 assert result.get("status") != "approval_required"
         finally:
             clear_session_vars(tokens)
+
+
+@pytest.mark.parametrize("competitor", [None, "ancestor", "divergent"])
+def test_cron_create_only_push_preserves_concurrently_created_branch(
+        tmp_path, monkeypatch, competitor):
+    """The real deny-mode guard permits creation, while Git rejects either race."""
+    import hermes_cli.config as hc
+
+    home = tmp_path / "hermes"
+    home.mkdir()
+    config = home / "config.yaml"
+    config_text = (
+        "model:\n  default: test-model\n"
+        "approvals:\n  mode: manual\n  cron_mode: deny\n"
+        "command_allowlist: []\n"
+        "security:\n  tirith_enabled: false\n"
+    )
+    config.write_text(config_text)
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    for variable in ("HERMES_CRON_SESSION", "HERMES_GATEWAY_SESSION",
+                     "HERMES_INTERACTIVE", "HERMES_EXEC_ASK", "HERMES_YOLO_MODE"):
+        monkeypatch.delenv(variable, raising=False)
+    monkeypatch.setattr(approval_module, "_YOLO_MODE_FROZEN", False)
+    hc._LOAD_CONFIG_CACHE.clear()
+    repo = tmp_path / "repo"
+    remote = tmp_path / "remote.git"
+    repo.mkdir()
+
+    def git(*args, check=True):
+        return subprocess.run(["git", "-C", str(repo), *args], check=check,
+                              capture_output=True, text=True)
+
+    git("init", "--initial-branch=main")
+    git("init", "--bare", str(remote))
+    git("config", "user.name", "Test Author")
+    git("config", "user.email", "test@example.invalid")
+    git("commit", "--allow-empty", "-m", "ancestor")
+    ancestor = git("rev-parse", "HEAD").stdout.strip()
+    git("commit", "--allow-empty", "-m", "outgoing")
+    outgoing = git("rev-parse", "HEAD").stdout.strip()
+    git("remote", "add", "origin", str(remote))
+    destination = "refs/heads/task/example"
+    command = (f"git push --force-with-lease={destination}: "
+               f"origin {outgoing}:{destination}")
+    tokens = set_session_vars(cron_session="1")
+    try:
+        assert _get_cron_approval_mode() == "deny"
+        assert check_all_command_guards(command, "local")["approved"] is True
+        for lease in ("--force", "--force-with-lease", f"--force-with-lease={destination}:{ancestor}"):
+            rewrite = f"git push {lease} origin {outgoing}:{destination}"
+            assert check_all_command_guards(rewrite, "local")["approved"] is False
+
+        assert git("ls-remote", "--exit-code", "--heads", "origin", destination,
+                   check=False).returncode == 2
+        competing_tip = ancestor
+        if competitor == "divergent":
+            competing_tip = git("commit-tree", f"{ancestor}^{{tree}}", "-m", "unrelated").stdout.strip()
+        if competitor is not None:
+            git("push", "origin", f"{competing_tip}:{destination}")
+        result = git(*shlex.split(command)[1:], check=False)
+        published_tip = git("ls-remote", "--heads", "origin", destination).stdout.split()[0]
+        if competitor is None:
+            assert result.returncode == 0, result.stderr
+            assert published_tip == outgoing
+        else:
+            assert result.returncode != 0
+            assert published_tip == competing_tip
+
+        # User deny rules are a floor even when the force finding is exempted.
+        config.write_text(config_text.replace('  mode: manual\n', '  mode: manual\n  deny: ["git push *"]\n'))
+        hc._LOAD_CONFIG_CACHE.clear()
+        assert check_all_command_guards(command, "local")["approved"] is False
+    finally:
+        clear_session_vars(tokens)
+        hc._LOAD_CONFIG_CACHE.clear()

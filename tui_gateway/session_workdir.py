@@ -573,7 +573,7 @@ def _submit_row_owner_key(staged: dict, session: dict) -> str:
 
 
 def _write_submit_user_row(session: dict, text: Any, display_kind: str | None,
-                           accept_metadata: dict | None = None) -> dict | None:
+                           accept_metadata: dict | None = None, display_text: str | None = None) -> dict | None:
     """Write the submitted user turn to the transcript and RETURN the durable dict (stamped
     ``_DB_PERSISTED_MARKER``/``_row_id``) WITHOUT slotting it on the session. The write half of
     :func:`_persist_submit_user_row`, shared by the busy-queue accept (which attaches the dict to
@@ -584,11 +584,12 @@ def _write_submit_user_row(session: dict, text: Any, display_kind: str | None,
     # ``session_key`` is only an "is this a real session" probe — the row is written to ``target`` below,
     # which a rotation can already have moved off ``session_key`` (#123545). One guard, one value: the
     # writer must not read a different key than the one it checks.
-    if not session.get("session_key") or not isinstance(text, str) or not text.strip():
+    stored_text = display_text if display_text is not None else text
+    if not session.get("session_key") or not isinstance(stored_text, str) or not stored_text.strip():
         return None
     from agent.context_compressor import _DB_PERSISTED_MARKER
     from agent.message_metadata import stamp_message_timestamp, stamp_message_uid
-    staged = stamp_message_timestamp({"role": "user", "content": text})
+    staged = stamp_message_timestamp({"role": "user", "content": stored_text})
     if display_kind:
         staged["display_kind"] = display_kind
     if accept_metadata:
@@ -599,7 +600,7 @@ def _write_submit_user_row(session: dict, text: Any, display_kind: str | None,
         target = _submit_row_target_key(session)
         try:
             staged["_row_id"] = db.append_message(
-                target, "user", content=text, display_kind=display_kind, timestamp=staged["timestamp"],
+                target, "user", content=stored_text, display_kind=display_kind, timestamp=staged["timestamp"],
                 message_uid=stamp_message_uid(staged),  # the live dict the turn adopts carries the row's uid
                 display_metadata=staged.get("display_metadata"))
         except Exception as exc:
@@ -613,7 +614,7 @@ def _write_submit_user_row(session: dict, text: Any, display_kind: str | None,
 
 
 def _persist_submit_user_row(session: dict, text: Any, display_kind: str | None,
-                             accept_metadata: dict | None = None) -> None:
+                             accept_metadata: dict | None = None, *, display_text: str | None = None) -> None:
     """Write the submitted user turn at send time, before the agent build and turn: the agent's own
     crash persist only runs once the build finished, so quitting a frozen app during a slow first build
     left a session row with no message (#111868). The dict is staged on the session already stamped
@@ -622,11 +623,13 @@ def _persist_submit_user_row(session: dict, text: Any, display_kind: str | None,
     the turn's crash persist then writes the row as before. ``accept_metadata`` marks a row that
     belongs to a still-QUEUED envelope (#125577); a dispatching turn's row is never marked."""
     session.pop("_submit_user_row", None)  # a failed/unsupported write must not acknowledge an older send
-    if (staged := _write_submit_user_row(session, text, display_kind, accept_metadata)) is not None:
+    if (staged := _write_submit_user_row(session, text, display_kind, accept_metadata,
+                                          display_text=display_text)) is not None:
         session["_submit_user_row"] = staged
 
 
-def _adopt_submit_user_row(session: dict, agent, persist_user_message: Any, text: Any) -> None:
+def _adopt_submit_user_row(session: dict, agent, persist_user_message: Any, text: Any,
+                           display_text: str | None = None) -> None:
     """Hand the row written at submit to the turn as its user dict (``agent._pending_cli_user_message``,
     adopted by ``_stage_turn_user_message`` when the content matches). A prompt the prologue rewrote
     (@-expansion, image parts) first updates that row so the durable transcript replays what the model
@@ -634,7 +637,8 @@ def _adopt_submit_user_row(session: dict, agent, persist_user_message: Any, text
     ``text`` is THIS turn's raw submit: a staged row from an earlier send (its turn ended before the agent
     ran) is discarded untouched, so the DB row stays the user's message and never a synthesized turn's text."""
     staged = session.pop("_submit_user_row", None)
-    if not isinstance(staged, dict) or agent is None or staged.get("content") != text:
+    expected_text = display_text if display_text is not None else text
+    if not isinstance(staged, dict) or agent is None or staged.get("content") != expected_text:
         return
     if staged["content"] != persist_user_message:
         from agent.session_persistence import _durable_content

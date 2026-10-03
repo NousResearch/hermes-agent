@@ -248,7 +248,7 @@ class ComputeHost:
                     self._reply("turn.error", sid, request_id, message="session busy")
                     return
                 session.update(running=True, _turn_cancel_requested=False, last_active=time.time())
-                server._start_inflight_turn(session, inflight)
+                server._start_inflight_turn(session, inflight, display_text=frame.get("display_text"))
                 turn_started_at = time.time()
             self._reply("turn.started", sid, request_id, started_ns=now_ns())
             with contextlib.suppress(Exception):
@@ -261,7 +261,8 @@ class ComputeHost:
             server._run_prompt_submit(
                 request_id, sid, session, text, display_kind=frame.get("display_kind") or None,
                 display_metadata=(frame.get("display_metadata")
-                                  if isinstance(frame.get("display_metadata"), dict) else None))
+                                  if isinstance(frame.get("display_metadata"), dict) else None),
+                display_text=frame.get("display_text") if isinstance(frame.get("display_text"), str) else None)
             run_thread = session.get("_run_thread")
             if run_thread is not None and hasattr(run_thread, "join"):
                 while run_thread.is_alive():

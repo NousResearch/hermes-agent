@@ -5,6 +5,7 @@ method_ctx.bind_module), so they reference server.py globals bare.
 """
 
 import contextlib
+from typing import Any
 
 from .method_ctx import HandlerRegistry, bind_module
 
@@ -536,7 +537,15 @@ def _storage_error_data(failure, raw) -> dict:
     return {"code": failure.code, "cause": failure.cause, "details": storage_failure_details(raw)}
 
 
-def _persist_session_row_for_submit(rid, session, text=None, display_kind=None):
+def _submit_display_text(raw: Any, model_text: Any) -> str:
+    """Bound and sanitize the optional client-authored display projection; never alter model input."""
+    if not isinstance(raw, str) or len(raw) > 100_000:
+        return model_text if isinstance(model_text, str) else ""
+    from hermes_cli.input_sanitize import sanitize_user_prompt_text
+    return sanitize_user_prompt_text(raw)
+
+
+def _persist_session_row_for_submit(rid, session, text=None, display_kind=None, *, display_text=None):
     """Lazily persist the DB row now that the user sent a message (a branch becomes real
     here), then the message itself (#111868: a freeze during the first build must leave a
     resumable transcript); the error reply is the only user-visible signal (desktop maps it to a toast)."""
@@ -551,7 +560,7 @@ def _persist_session_row_for_submit(rid, session, text=None, display_kind=None):
                 data=_storage_error_data(failure, _db_error))
         else:
             _persist_branch_seed(session)
-            _persist_submit_user_row(session, text, display_kind)
+            _persist_submit_user_row(session, text, display_kind, display_text=display_text)
             return None
     except Exception as exc:
         failure = describe_storage_failure(exc)
@@ -580,7 +589,8 @@ def _persist_session_row_for_submit(rid, session, text=None, display_kind=None):
 
 
 def _run_after_agent_ready(
-    rid, sid, session, text, display_kind, display_metadata, hosted_terminal_callback, turn_author=None
+    rid, sid, session, text, display_kind, display_metadata, hosted_terminal_callback, turn_author=None,
+    display_text=None
 ):
     """Turn thread body: patient wait for a deferred build (a slow build must not eat the
     accepted in-flight message), then run."""
@@ -611,7 +621,7 @@ def _run_after_agent_ready(
             return
     _run_prompt_submit(
         rid, sid, session, text, display_kind=display_kind, display_metadata=display_metadata,
-        terminal_callback=hosted_terminal_callback, turn_author=turn_author)
+        terminal_callback=hosted_terminal_callback, turn_author=turn_author, display_text=display_text)
 
 
 _TRUNCATION_PARAMS = (
@@ -619,7 +629,8 @@ _TRUNCATION_PARAMS = (
 
 
 def _lock_in_submit_turn(
-    rid, sid, session, text, params, has_truncation, requested_rebind_ids, hosted_task, display_kind):
+    rid, sid, session, text, params, has_truncation, requested_rebind_ids, hosted_task, display_kind,
+    display_text=None):
     """Under ``history_lock``: refuse watch-child races / malformed truncation, apply the
     cut, mark the turn running + in flight.  Returns ``(err, survivor_fields)``."""
     fields = {}
@@ -646,7 +657,7 @@ def _lock_in_submit_turn(
         session["last_active"] = time.time()
         if hosted_task is not None:
             session["_hosted_room_task"] = dict(hosted_task)
-        _start_inflight_turn(session, text, display_kind=display_kind)
+        _start_inflight_turn(session, text, display_kind=display_kind, display_text=display_text)
     return None, fields
 
 
@@ -660,6 +671,7 @@ def _(rid, params: dict) -> dict:
     sid = params.get("session_id", "")
     raw_text = params.get("text", "")
     text = sanitize_user_prompt_text(raw_text) if isinstance(raw_text, str) else raw_text
+    display_text = _submit_display_text(params.get("display_text"), text)
     # Off-screen sends (widget intents) type the row so no client renders a bubble;
     # whitelisted to "hidden" — this RPC must not mint kinds.
     display_kind = "hidden" if params.get("display_kind") == "hidden" else None
@@ -743,7 +755,7 @@ def _(rid, params: dict) -> dict:
             return _err(rid, 4009, "session busy")
         busy_response = _handle_busy_submit(
             rid, sid, session, text, busy_transport, queued=bool(params.get("queued")), turn_author=turn_author,
-            display_kind=display_kind)
+            display_kind=display_kind, display_text=display_text)
         if busy_response is not None:
             return busy_response
     raw_rebind_ids = params.get("rebind_survivor_row_ids")
@@ -751,7 +763,8 @@ def _(rid, params: dict) -> dict:
         {r for r in raw_rebind_ids if isinstance(r, int) and not isinstance(r, bool)}
         if isinstance(raw_rebind_ids, list) else None)
     err, survivor_fields = _lock_in_submit_turn(
-        rid, sid, session, text, params, has_truncation, requested_rebind_ids, hosted_task, display_kind)
+        rid, sid, session, text, params, has_truncation, requested_rebind_ids, hosted_task, display_kind,
+        display_text)
     if err is not None:
         return err
     if turn_isolation:
@@ -759,7 +772,8 @@ def _(rid, params: dict) -> dict:
             logger.debug("isolated compute turns carry no author yet; the turn from %s runs unattributed",
                          turn_author.get("id"))
         isolated_response = _submit_prompt_to_compute_host(
-            rid, sid, session, text, display_kind=display_kind, display_metadata=display_metadata)
+            rid, sid, session, text, display_kind=display_kind, display_metadata=display_metadata,
+            display_text=display_text)
         if not isolated_response.get("error"):
             # The truncation already happened inline above (memory + DB).
             isolated_response["result"].update(survivor_fields)
@@ -775,7 +789,8 @@ def _(rid, params: dict) -> dict:
         logger.warning(
             "compute-host dispatch failed for session %s; falling back inline: %s", sid,
             isolated_response["error"].get("message", "unknown error"))
-    if (err := _persist_session_row_for_submit(rid, session, text, display_kind)) is not None:
+    if (err := _persist_session_row_for_submit(
+            rid, session, text, display_kind, display_text=display_text)) is not None:
         return err
     # Capture before starting the worker: it consumes the staging dict and may finish before the RPC returns.
     staged_user = session.get("_submit_user_row") or {}
@@ -786,7 +801,8 @@ def _(rid, params: dict) -> dict:
         _start_agent_build(sid, session)
     run_thread = threading.Thread(
         target=lambda: _run_after_agent_ready(
-            rid, sid, session, text, display_kind, display_metadata, hosted_terminal_callback, turn_author),
+            rid, sid, session, text, display_kind, display_metadata, hosted_terminal_callback, turn_author,
+            display_text),
         daemon=True)
     # Handle lets session.interrupt tell a live turn from a stuck `running` flag.
     session["_run_thread"] = run_thread

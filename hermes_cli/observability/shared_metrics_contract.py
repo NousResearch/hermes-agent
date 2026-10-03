@@ -892,7 +892,7 @@ _IDENTIFIER_FIELDS: dict[str, dict[str, int]] = {
 # ---- v5 engagement ----
 # Conversation volume on the session row: new fields, so rows recorded before them still package.
 SESSION_VOLUME_DIMENSIONS = dict.fromkeys(
-    ("message_count_bucket", "model_call_count_bucket", "tool_call_count_bucket"), LONG_SIZE_BUCKETS,
+    ("message_count_bucket", "user_turn_count_bucket", "model_call_count_bucket", "tool_call_count_bucket"), LONG_SIZE_BUCKETS,
 )
 _COUNTER_DIMENSION_VALUES[SESSION_METRIC] = {**_COUNTER_DIMENSION_VALUES[SESSION_METRIC], **SESSION_VOLUME_DIMENSIONS}
 # ---- end v5 engagement ----

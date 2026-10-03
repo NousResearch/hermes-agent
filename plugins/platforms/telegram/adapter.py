@@ -6876,7 +6876,16 @@ class TelegramAdapter(BasePlatformAdapter):
 
     async def _handle_media_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle incoming media messages, downloading images to local cache."""
-        msg = update.message
+        # Channel posts / business messages arrive as update.channel_post, not
+        # update.message. Reading update.message directly dropped that media
+        # silently, so resolve the message-like payload the same way the text
+        # handlers do.
+        #
+        # `update.message` is consulted first: when it is set, PTB's
+        # `effective_message` IS that same object, so this is equivalent in
+        # production while still falling through for channel posts (where
+        # `message` is None).
+        msg = getattr(update, "message", None) or self._effective_update_message(update)
         if not msg:
             return
         if not self._is_user_authorized_from_message(msg):

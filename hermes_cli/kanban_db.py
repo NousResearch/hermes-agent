@@ -3670,7 +3670,10 @@ def unblock_task(conn: sqlite3.Connection, task_id: str) -> bool:
             if park is not None:
                 human_surface = conn.execute(
                     "SELECT 1 FROM task_events WHERE task_id = ? AND kind = 'commented' "
-                    "AND id > ? LIMIT 1", (task_id, int(park["id"])),
+                    "AND id > ? "
+                    "AND lower(trim(json_extract(payload, '$.author'))) "
+                    "NOT IN ('agent', 'worker', 'default') LIMIT 1",
+                    (task_id, int(park["id"])),
                 ).fetchone()
                 if human_surface is None:
                     return False

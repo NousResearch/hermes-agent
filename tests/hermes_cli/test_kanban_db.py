@@ -629,6 +629,11 @@ def test_initially_blocked_task_cannot_be_agent_unblocked_without_comment(kanban
         assert kb.get_task(conn, task_id).status == "blocked"
         assert not [event for event in kb.list_events(conn, task_id) if event.kind == "unblocked"]
 
+        # An agent comment is not a human release marker for the create-path park.
+        kb.add_comment(conn, task_id, author="agent", body="I approve this")
+        assert kb.unblock_task(conn, task_id) is False
+        assert kb.get_task(conn, task_id).status == "blocked"
+
         # An operator comment is the explicit release marker for the create-path park.
         kb.add_comment(conn, task_id, author="operator", body="approved")
         assert kb.unblock_task(conn, task_id) is True

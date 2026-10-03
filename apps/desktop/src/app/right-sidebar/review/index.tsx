@@ -83,14 +83,73 @@ export function ReviewPane() {
       )}
     >
       {(loading || isRepo) && (
-        <RightSidebarSectionHeader data-suppress-pane-reveal-side="">
-          <div className="flex min-w-0 flex-1">
+        <RightSidebarSectionHeader
+          className="h-auto flex-col items-stretch gap-1 py-1"
+          data-suppress-pane-reveal-side=""
+        >
+          <div className="flex flex-wrap items-center gap-y-1">
             {/* Pure self-naming label — redundant under a zone tab that already
                 says "review", so the zone header hides it (styles.css). */}
-            <SidebarPanelLabel data-pane-self-label="">{c.review}</SidebarPanelLabel>
+            <SidebarPanelLabel className="shrink-0" data-pane-self-label="">
+              {c.review}
+            </SidebarPanelLabel>
+            <div className="ml-auto flex shrink-0 items-center">
+              <Tip label={treeMode === 'tree' ? c.viewAsList : c.viewAsTree}>
+                <Button
+                  aria-label={treeMode === 'tree' ? c.viewAsList : c.viewAsTree}
+                  className={ACTION_BTN}
+                  disabled={!hasFiles}
+                  onClick={toggleReviewTreeMode}
+                  size="icon-xs"
+                  variant="ghost"
+                >
+                  <Codicon name={treeMode === 'tree' ? 'list-flat' : 'list-tree'} size="0.8125rem" />
+                </Button>
+              </Tip>
+              <Tip label={c.stageAll}>
+                <Button
+                  aria-label={c.stageAll}
+                  className={ACTION_BTN}
+                  disabled={!hasFiles || !isUncommitted}
+                  onClick={() => void stageReviewFile(null).catch(err => notifyError(err, c.stageAll))}
+                  size="icon-xs"
+                  variant="ghost"
+                >
+                  <Codicon name="add" size="0.8125rem" />
+                </Button>
+              </Tip>
+              <Tip label={c.revertAll}>
+                <Button
+                  aria-label={c.revertAll}
+                  className={ACTION_BTN}
+                  disabled={!hasFiles || !isUncommitted}
+                  onClick={() => requestRevert(null)}
+                  size="icon-xs"
+                  variant="ghost"
+                >
+                  <Codicon name="discard" size="0.8125rem" />
+                </Button>
+              </Tip>
+              <Tip label={t.rightSidebar.refreshTree}>
+                <Button
+                  aria-label={t.rightSidebar.refreshTree}
+                  className={ACTION_BTN}
+                  onClick={() => void refreshReview()}
+                  size="icon-xs"
+                  variant="ghost"
+                >
+                  <Codicon name="refresh" size="0.8125rem" spinning={loading} />
+                </Button>
+              </Tip>
+              <Button aria-label={c.close} className={ACTION_BTN} onClick={closeReview} size="icon-xs" variant="ghost">
+                <Codicon name="close" size="0.8125rem" />
+              </Button>
+            </div>
           </div>
+          {/* The scope always lives below the heading. Wrap whole options,
+              never their labels, so resizing needs no horizontal scrolling. */}
           <SegmentedControl<HermesReviewScope>
-            className="mr-1"
+            className="flex w-full flex-wrap whitespace-nowrap [&>button]:flex-1"
             onChange={id => {
               $reviewScope.set(id)
               clearReviewSelection()
@@ -103,56 +162,6 @@ export function ReviewPane() {
             ]}
             value={scope}
           />
-          <Tip label={treeMode === 'tree' ? c.viewAsList : c.viewAsTree}>
-            <Button
-              aria-label={treeMode === 'tree' ? c.viewAsList : c.viewAsTree}
-              className={ACTION_BTN}
-              disabled={!hasFiles}
-              onClick={toggleReviewTreeMode}
-              size="icon-xs"
-              variant="ghost"
-            >
-              <Codicon name={treeMode === 'tree' ? 'list-flat' : 'list-tree'} size="0.8125rem" />
-            </Button>
-          </Tip>
-          <Tip label={c.stageAll}>
-            <Button
-              aria-label={c.stageAll}
-              className={ACTION_BTN}
-              disabled={!hasFiles || !isUncommitted}
-              onClick={() => void stageReviewFile(null).catch(err => notifyError(err, c.stageAll))}
-              size="icon-xs"
-              variant="ghost"
-            >
-              <Codicon name="add" size="0.8125rem" />
-            </Button>
-          </Tip>
-          <Tip label={c.revertAll}>
-            <Button
-              aria-label={c.revertAll}
-              className={ACTION_BTN}
-              disabled={!hasFiles || !isUncommitted}
-              onClick={() => requestRevert(null)}
-              size="icon-xs"
-              variant="ghost"
-            >
-              <Codicon name="discard" size="0.8125rem" />
-            </Button>
-          </Tip>
-          <Tip label={t.rightSidebar.refreshTree}>
-            <Button
-              aria-label={t.rightSidebar.refreshTree}
-              className={ACTION_BTN}
-              onClick={() => void refreshReview()}
-              size="icon-xs"
-              variant="ghost"
-            >
-              <Codicon name="refresh" size="0.8125rem" spinning={loading} />
-            </Button>
-          </Tip>
-          <Button aria-label={c.close} className={ACTION_BTN} onClick={closeReview} size="icon-xs" variant="ghost">
-            <Codicon name="close" size="0.8125rem" />
-          </Button>
         </RightSidebarSectionHeader>
       )}
 

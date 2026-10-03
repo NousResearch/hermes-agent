@@ -86,3 +86,40 @@ def test_prune_keeps_the_compressed_segments_of_a_chat_still_in_use(tmp_path, ca
         assert db.prune_sessions(older_than_days=90) == len(idle)
         assert db.get_compression_lineage("live-3") == ["live", "live-2", "live-3"]
         assert not any(db.get_session(sid) for sid in idle)
+
+
+def test_prune_keeps_the_finished_subagents_of_a_chat_still_in_use(tmp_path):
+    """A delegate subagent's clock stops when it finishes, so on its own timestamp it expires long before the
+    chat that spawned it; it must age with that chat instead (kilocode#14502). Whole idle chats still go
+    together, subagents included, and a subagent's own compression continuation rides along."""
+    with closing(SessionDB(tmp_path / "state.db")) as db:
+        old = time.time() - 120 * 86400
+
+        def chat_with_subagent(chat):
+            db.create_session(chat, source="desktop")
+            db.append_message(chat, "user", "please delegate", timestamp=old)
+            db.create_session(f"{chat}/sub", source="subagent", parent_session_id=chat,
+                              model_config={"_delegate_from": chat})
+            db.append_message(f"{chat}/sub", "assistant", "done", timestamp=old + 30)
+
+        def finish(*ids):
+            for sid in ids:
+                db.end_session(sid, "done")
+            db._conn.execute(f"UPDATE sessions SET started_at = ?, ended_at = ? WHERE id IN ({','.join('?' * len(ids))})",
+                             (old, old + 60, *ids))
+            db._conn.commit()
+
+        chat_with_subagent("live")
+        chat_with_subagent("idle")
+        # The live chat's subagent rotated once: its continuation inherits ``_delegate_from`` (hermes_state_common).
+        db.publish_compression_child(parent_session_id="live/sub", child_session_id="live/sub-2", source="subagent",
+                                     messages=[{"role": "user", "content": "[summary]", "timestamp": old + 40}],
+                                     require_compression_lease=False)
+        finish("live/sub", "live/sub-2", "idle", "idle/sub")
+        db.append_message("live", "user", "back to this chat today")
+
+        idle = {"idle", "idle/sub"}
+        assert {c["id"] for c in db.list_prune_candidates(older_than_days=90, whole_lineages=True)} == idle
+        assert db.prune_sessions(older_than_days=90) == len(idle)
+        assert not any(db.get_session(sid) for sid in idle)
+        assert all(db.get_session(sid) for sid in ("live", "live/sub", "live/sub-2"))

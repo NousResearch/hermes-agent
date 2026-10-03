@@ -573,7 +573,7 @@ delete them too.
 
 :::info
 Pruning only deletes **ended** sessions (sessions that have been explicitly ended or auto-reset). Active sessions are never pruned.
-A conversation that compression split into several sessions is pruned as a unit: its older segments stay while any later segment does.
+A conversation that compression split into several sessions is pruned as a unit: its older segments stay while any later segment does. The same goes for the subagent runs a conversation delegated: they age with the chat that spawned them, not on their own finish time.
 :::
 
 ### Bulk-Archive Sessions
@@ -1090,7 +1090,11 @@ freshest of live activity, latest message, or session start — so a long-lived
 conversation used recently is not deleted merely because it began before the
 retention window. The same holds for a conversation that compression split into
 several sessions: its older segments are kept while any later segment is, and
-are pruned together with it once the whole conversation qualifies.
+are pruned together with it once the whole conversation qualifies. Delegate
+subagent runs follow the same rule: a subagent's clock stops when it finishes, so
+it is kept while the chat that spawned it is kept and pruned with that chat, never
+on its own finish time (otherwise an older chat you return to would lose its
+subagent transcripts on the next maintenance pass).
 
 **Stale open sessions from automation.** Some producers — cron jobs, kanban
 workers, subagents, one-shot CLI runs — can die without ever marking their

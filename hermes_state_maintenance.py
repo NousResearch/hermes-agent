@@ -8,8 +8,8 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from hermes_state_common import (
-    AUTO_VACUUM_MIN_FREELIST_RATIO, _id_chunks, _non_continuation_child_sql, _placeholders, _sql_session_last_active,
-    escape_like as _escape_like
+    AUTO_VACUUM_MIN_FREELIST_RATIO, _id_chunks, _non_continuation_child_sql, _placeholders, _sql_json_extract,
+    _sql_session_last_active, escape_like as _escape_like
 )
 from hermes_startup_watchdog import report_startup_progress
 
@@ -88,6 +88,27 @@ def _continued_ancestors_sql(candidates_where: str) -> str:
             " UNION"
             " SELECT p.id FROM kept k JOIN sessions c ON c.id = k.id JOIN sessions p ON p.id = c.parent_session_id"
             f" WHERE {_CONTINUATION_EDGE_SQL}"
+            ") SELECT id FROM kept")
+
+
+# Child ``c`` is a delegate-subagent run of ``p`` (same edge as the cascade in delete_sessions), or continues one.
+_DELEGATE_EDGE_SQL = (f"(c.parent_session_id = p.id OR {_sql_json_extract('c.model_config', '$._delegate_from')} = p.id)"
+                      f" AND {_sql_json_extract('c.model_config', '$._delegate_from')} IS NOT NULL")
+_DELEGATE_LINEAGE_EDGE_SQL = f"(({_DELEGATE_EDGE_SQL}) OR (c.parent_session_id = p.id AND {_CONTINUATION_EDGE_SQL}))"
+
+
+def _live_delegate_descendants_sql(candidates_where: str) -> str:
+    """Delegate-subagent runs (walked down) under any row *candidates_where* (alias ``s``) does not select.
+
+    A subagent's clock stops when it finishes while the chat that spawned it keeps going, so judged on its
+    own timestamp it expires long before its parent and the parent's delegation cards point at a deleted
+    transcript. A subagent ages with its chat: kept while the chat is kept, pruned with it.
+    (Ported from Kilo-Org/kilocode#14502.)"""
+    return ("WITH RECURSIVE kept(id) AS ("
+            f" SELECT c.id FROM sessions c JOIN sessions p ON {_DELEGATE_EDGE_SQL}"
+            f" WHERE NOT EXISTS (SELECT 1 FROM sessions s WHERE s.id = p.id AND {candidates_where})"
+            " UNION"
+            f" SELECT c.id FROM kept k JOIN sessions p ON p.id = k.id JOIN sessions c ON {_DELEGATE_LINEAGE_EDGE_SQL}"
             ") SELECT id FROM kept")
 
 
@@ -241,7 +262,10 @@ class SessionMaintenanceMixin:
             return where, params
         # A compressed-away segment ages with its conversation, not on its own: while any later
         # segment stays, deleting it would cut the start off a chat that is still in use.
-        return f"{where} AND s.id NOT IN ({_continued_ancestors_sql(where)})", [*params, *params]
+        where = f"{where} AND s.id NOT IN ({_continued_ancestors_sql(where)})"
+        params = [*params, *params]
+        # Likewise a delegate subagent ages with the chat that spawned it (kilocode#14502).
+        return f"{where} AND s.id NOT IN ({_live_delegate_descendants_sql(where)})", [*params, *params]
 
     def list_prune_candidates(self, older_than_days: Optional[float] = None, source: str = None, *,
                               whole_lineages: bool = False, **filters) -> List[Dict[str, Any]]:

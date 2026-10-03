@@ -775,6 +775,17 @@ def _quickstart_target(body: QuickstartBody, budget):
         "no catalog model fits this machine — open Local Models to browse for a smaller build"))
 
 
+def _repriced_quickstart(job: Dict[str, Any], body: QuickstartBody, variant):
+    """Re-pick once the engine is installed, before any bytes are committed: a Vulkan/HIP GPU's
+    type and size come from that engine's own device probe, so the preflight price was a guess."""
+    entry, picked = _quickstart_target(body, hardware.probe_budget(planning=True))
+    if picked.model_id != variant.model_id:
+        with _JOBS_LOCK:
+            job.update(target=entry.display_name, model_id=entry.id)
+    plan = _download_plan(entry, picked)
+    return entry, picked, plan if any(not dest.is_file() for _, dest, _ in plan) else []
+
+
 @router.post("/api/local-models/quickstart")
 def local_models_quickstart(body: QuickstartBody, profile: Optional[str] = None):
     """One job: install the runtime (if missing), download this machine's build of the recommended model (if
@@ -793,9 +804,11 @@ def local_models_quickstart(body: QuickstartBody, profile: Optional[str] = None)
         raise HTTPException(status_code=409, detail="Setup is already running")
     job = _job("quickstart", entry.display_name, model_id=entry.id)
     def _run():
+        nonlocal entry, variant, download_plan
         if need_runtime and binaries.installed_engine(backend) is None:
             _install_engine_job(job, backend)
-        if need_download:
+            entry, variant, download_plan = _repriced_quickstart(job, body, variant)
+        if download_plan:
             # Each phase has its own complete download plan. Resume within a
             # phase retains counters until PM reports the durable bytes.
             if job["phase"] != "downloading":

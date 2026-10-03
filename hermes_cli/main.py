@@ -2513,7 +2513,7 @@ def cmd_update(args):
         describe_holder,
     )
 
-    _update_lock = UpdateLock()
+    _update_lock = UpdateLock(install_root=PROJECT_ROOT)
     if not _update_lock.acquire():
         print(describe_holder(_update_lock.holder))
         _finalize_update_output(_update_io_state)
@@ -3648,6 +3648,8 @@ def main():
             _warn_pending_fleet_restart_on_startup()
         except Exception:
             pass
+        from hermes_cli.update_pause_record import recover as _recover_paused_gateways
+        _recover_paused_gateways()  # a killed `hermes update` left gateways paused (Windows)
 
     if _first_positional_argv() != "update":
         from hermes_cli.boot_bootstrap import maybe_run_boot_bootstrap

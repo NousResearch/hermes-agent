@@ -1,0 +1,199 @@
+"""Paused-gateway record and update-claim adoption, with real processes and a real checkout."""
+
+from __future__ import annotations
+
+import json
+import os
+import signal
+import subprocess
+import sys
+import textwrap
+import time
+from pathlib import Path
+
+import pytest
+
+from hermes_cli import update_pause_record as pause_record
+
+REPO = Path(__file__).resolve().parents[2]
+pytestmark = pytest.mark.skipif(sys.platform == "win32", reason="POSIX signals; Windows cells live in wine2e")
+
+
+# Every child (and its children) locks a private file for THIS repo's checkout, like the
+# conftest fixture does in-process: the real one lives in the git common dir that parallel test
+# files and, from a linked worktree, the live install's `hermes update` share. A held one reads
+# as "another update is live" and recovery correctly defers to it.
+_PRIVATE_CHECKOUT_LOCK = """
+import os
+from pathlib import Path
+from hermes_cli import update_lock as _lock
+_repo, _real = Path(_lock.__file__).resolve().parents[1], _lock.checkout_lock_path
+def checkout_lock_path(install_root=None):
+    root = Path(install_root) if install_root else _repo
+    return Path(os.environ["HERMES_TEST_CHECKOUT_LOCK"]) if root.resolve() == _repo else _real(install_root)
+_lock.checkout_lock_path = checkout_lock_path
+"""
+
+
+def _child(code: str, *argv: str, env: dict) -> subprocess.Popen:
+    shim = Path(env["HERMES_HOME"]) / "checkout-lock-shim"
+    shim.mkdir(exist_ok=True)
+    (shim / "sitecustomize.py").write_text(_PRIVATE_CHECKOUT_LOCK, encoding="utf-8")
+    env = {**os.environ, "PYTHONPATH": os.pathsep.join((str(shim), str(REPO))),
+           "HERMES_TEST_CHECKOUT_LOCK": str(shim / "hermes-update.lock"), **env}
+    return subprocess.Popen([sys.executable, "-c", textwrap.dedent(code), *argv], cwd=REPO, stdin=subprocess.DEVNULL,
+                            stdout=subprocess.PIPE, text=True, env=env)
+
+
+def _orphaned_profiles(home: Path) -> dict | None:
+    """``orphaned_record()`` read by a fresh process (the liveness probe reads the checkout's git dir)."""
+    probe = _child("""
+        import json
+        from hermes_cli import update_pause_record as r
+        body = r.orphaned_record()
+        print(json.dumps(None if body is None else body["token"]["profiles"]))
+    """, env={"HERMES_HOME": str(home)})
+    out, _ = probe.communicate(timeout=60)
+    return json.loads(out.strip().splitlines()[-1])
+
+
+def test_record_written_by_a_killed_updater_is_orphaned_only_after_its_death(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    owner = _child("""
+        import sys, time
+        from hermes_cli import update_pause_record as r
+        r.write(r.stamp_tree({"resume_needed": True, "profiles": {"default": 4242}}), owner=r.identity())
+        print("written", flush=True)
+        time.sleep(120)
+    """, env={"HERMES_HOME": str(tmp_path)})
+    try:
+        assert owner.stdout.readline().strip() == "written"
+        body = pause_record.read()
+        assert body["owner"]["pid"] == owner.pid and body["owner"]["ct"].startswith("ct:")
+        assert body["token"]["profiles"] == {"default": 4242}
+        assert _orphaned_profiles(tmp_path) is None  # live owner: its own resume owns the set
+    finally:
+        owner.send_signal(signal.SIGKILL)  # windows-footgun: ok — module skips on Windows
+        owner.wait(timeout=10)
+    assert _orphaned_profiles(tmp_path) == {"default": 4242}
+
+
+def _git(root: Path, *args: str) -> str:
+    return subprocess.run(["git", "-C", str(root), *args], check=True, capture_output=True, text=True, encoding="utf-8",
+                          env={**os.environ, "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t",
+                               "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t"}).stdout.strip()
+
+
+def test_resume_waits_for_a_whole_tree(tmp_path):
+    root = tmp_path / "checkout"
+    root.mkdir()
+    _git(root, "init", "-q")
+    for name in ("a.py", "b.py", "local.txt"):
+        (root / name).write_text("v1\n", encoding="utf-8")
+    _git(root, "add", ".")
+    _git(root, "commit", "-qm", "v1")
+    (root / "local.txt").write_text("user edit\n", encoding="utf-8")  # dirty before the update: not git's doing
+    token = pause_record.stamp_tree({"resume_needed": True}, root)
+    assert pause_record.tree_is_whole(token, root) == (True, "")
+
+    (root / "a.py").write_text("v2\n", encoding="utf-8")  # git wrote a.py, then died before b.py and HEAD
+    whole, why = pause_record.tree_is_whole(token, root)
+    assert not whole and "a.py" in why
+
+    (root / "a.py").write_text("v1\n", encoding="utf-8")
+    marker = root / ".git" / "hermes-update-pull"
+    marker.write_text("pid\n", encoding="utf-8")
+    assert pause_record.tree_is_whole(token, root)[0] is False
+    marker.unlink()
+
+    _git(root, "commit", "-qam", "v2")  # HEAD moved: only a dependency sync for it makes it whole
+    (root / "b.py").write_text("rewritten by a build step\n", encoding="utf-8")
+    whole, why = pause_record.tree_is_whole(token, root)
+    # A committed update is judged on its dependencies alone; a tracked file the build rewrote
+    # must not keep the gateways stopped on every later launch.
+    assert not whole and "dependencies" in why, why
+
+
+def _orphan(tmp_path: Path, profiles: dict) -> None:
+    """A record whose owner — a real ``hermes update`` stand-in — was SIGKILLed after writing it."""
+    owner = _child("""
+        import time
+        from hermes_cli import update_pause_record as r
+        r.write(r.stamp_tree({"resume_needed": True, "profiles": %r}), owner=r.identity())
+        print("written", flush=True)
+        time.sleep(120)
+    """ % profiles, env={"HERMES_HOME": str(tmp_path)})
+    assert owner.stdout.readline().strip() == "written"
+    owner.send_signal(signal.SIGKILL)  # windows-footgun: ok — module skips on Windows
+    owner.wait(timeout=10)
+
+
+# The Windows resume cannot run here: the stand-in for it prints the set it was handed and
+# (mode "hang") parks like a resume waiting on relaunch verification.
+_RECOVER = """
+    import sys, time
+    import hermes_cli.update_cmd_windows as w
+    def resume(token):
+        print("resume", sorted(token.get("profiles") or {}), flush=True)
+        if sys.argv[1] == "hang":
+            time.sleep(120)
+        token["resume_needed"] = False
+    w._resume_windows_gateways_after_update = resume
+    from hermes_cli import update_pause_record as r
+    r.recover(["status"])
+    print("done", flush=True)
+"""
+
+
+@pytest.mark.live_system_guard_bypass
+def test_a_launch_killed_mid_recovery_leaves_the_set_to_the_next_launch(tmp_path):
+    _orphan(tmp_path, {"default": 4242})
+    env = {"HERMES_HOME": str(tmp_path)}
+    first = _child(_RECOVER, "hang", env=env)
+    try:
+        assert first.stdout.readline().strip() == "resume ['default']"
+    finally:
+        first.send_signal(signal.SIGKILL)  # windows-footgun: ok — taskkill / console close mid-resume
+        first.wait(timeout=10)
+    second = _child(_RECOVER, "ok", env=env)
+    out, _ = second.communicate(timeout=60)
+    assert out.splitlines()[:1] == ["resume ['default']"], out
+    third = _child(_RECOVER, "ok", env=env)
+    out, _ = third.communicate(timeout=60)
+    assert out.strip() == "done", f"a resumed set was resumed again: {out}"
+
+
+_HOLDER = """
+    import subprocess, sys, time
+    from hermes_cli.update_lock import UpdateLock
+    lock = UpdateLock()
+    assert lock.acquire() and lock.acquired
+    host = subprocess.Popen([sys.executable, *sys.argv[1:]], stdout=subprocess.PIPE, text=True)
+    print(host.stdout.read().strip(), flush=True)
+    host.wait()
+"""
+# A stand-in for the host the update relaunched: its argv names the host command, and the
+# ``hermes update`` its agent starts is its child.
+_HOST = """
+import subprocess, sys
+probe = "from hermes_cli.update_lock import UpdateLock; l = UpdateLock(); print(l.acquire(), l.holder is not None)"
+print(subprocess.run([sys.executable, "-c", probe], capture_output=True, text=True).stdout.strip())
+"""
+
+
+# The intermediate is a stand-in script, not a real gateway/update: nothing touches the checkout.
+@pytest.mark.live_system_guard_bypass
+@pytest.mark.parametrize("host_argv, adopts", [
+    (("hermes_cli.main", "gateway", "run"), False),
+    (("hermes_cli.main", "--profile", "work", "gateway", "run"), False),
+    (("/opt/hermes/hermes_cli/main.py", "-p", "work", "gateway", "run"), False),
+    (("-m", "hermes_cli.main", "--profile", "work", "dashboard"), False),
+    (("hermes_cli.main", "status"), True),
+])
+def test_update_started_from_a_relaunched_gateway_does_not_share_the_claim(tmp_path, host_argv, adopts):
+    script = tmp_path / "host.py"
+    script.write_text(_HOST, encoding="utf-8")
+    holder = _child(_HOLDER, str(script), *host_argv, env={"HERMES_HOME": str(tmp_path)})
+    out, _ = holder.communicate(timeout=60)
+    assert holder.returncode == 0, out
+    assert out.strip() == ("True False" if adopts else "False True"), out

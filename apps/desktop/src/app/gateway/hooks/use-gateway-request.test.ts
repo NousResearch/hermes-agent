@@ -318,6 +318,76 @@ describe('useGatewayRequest', () => {
     expect(gateway.connect).toHaveBeenLastCalledWith(expect.stringContaining('ticket=fresh-2'))
   })
 
+  it.each(['default', 'research'])(
+    'does not replay a delayed local failure onto another source (%s)',
+    async profile => {
+      installRemoteDesktop()
+      const primary = makePrimaryGateway()
+      const failure = new Error('connection closed')
+      let rejectRequest!: (error: Error) => void
+      primary.request.mockImplementationOnce(
+        () =>
+          new Promise((_resolve, reject) => {
+            rejectRequest = reject
+          })
+      )
+      setPrimaryGateway(primary as unknown as HermesGateway, 'default')
+      $gateway.set(primary as unknown as HermesGateway)
+      $gatewayState.set('open')
+      const { result } = renderHook(() => useGatewayRequest())
+
+      const pending = result.current
+        .requestGateway('prompt.submit', { session_id: 'local-only', text: 'private' })
+        .catch(error => error)
+
+      await act(async () => {
+        await ensureGatewayForAgent('home', profile)
+      })
+      const destination = $gateway.get() as unknown as TestGateway
+      destination.request.mockResolvedValue({ sent: true })
+      await act(async () => {
+        rejectRequest(failure)
+      })
+
+      expect(await pending).toBe(failure)
+      expect(primary.request).toHaveBeenCalledTimes(1)
+      expect(destination.request).not.toHaveBeenCalled()
+    }
+  )
+
+  it('does not replay when the source changes while recovery is pending', async () => {
+    const desktop = installRemoteDesktop()
+    const primary = makePrimaryGateway()
+    const failure = new Error('connection closed')
+    primary.connectionState = 'closed'
+    primary.request.mockRejectedValueOnce(failure).mockResolvedValue({ sent: true })
+    let finishRecovery!: () => void
+    primary.connect.mockImplementationOnce(
+      () =>
+        new Promise<void>(resolve => {
+          finishRecovery = resolve
+        })
+    )
+    setPrimaryGateway(primary as unknown as HermesGateway, 'default')
+    $gateway.set(primary as unknown as HermesGateway)
+    $gatewayState.set('closed')
+    const { result } = renderHook(() => useGatewayRequest())
+    const pending = result.current.requestGateway('prompt.submit', { text: 'local-only' }).catch(error => error)
+    await vi.waitFor(() => expect(primary.connect).toHaveBeenCalledTimes(1))
+    await act(async () => {
+      await ensureGatewayForAgent('home', 'default')
+    })
+    const destination = $gateway.get() as unknown as TestGateway
+    await act(async () => {
+      finishRecovery()
+    })
+
+    expect(await pending).toBe(failure)
+    expect(primary.request).toHaveBeenCalledTimes(1)
+    expect(destination.request).not.toHaveBeenCalled()
+    expect(desktop.getConnection).toHaveBeenCalledTimes(1)
+  })
+
   it('does not reconnect for a non-transport request failure', async () => {
     const { desktop, gateway } = await activateRemoteGateway()
     const failure = Object.assign(new Error('request rejected'), { code: 'EVALIDATION' })

@@ -5,7 +5,14 @@ import { useCallback, useEffect, useRef } from 'react'
 import type { HermesGateway } from '@/hermes'
 import { resolveDesktopGatewayWsUrl } from '@/lib/gateway-ws-url'
 import { RECONNECT_ATTEMPT_TIMEOUT_MS, withTimeout } from '@/lib/with-timeout'
-import { $gateway, activeGateway, ensureActiveGatewayOpen, isActivePrimary } from '@/store/gateway'
+import {
+  $gateway,
+  activeGateway,
+  activeGatewayConnectionId,
+  activeGatewayProfileKey,
+  ensureActiveGatewayOpen,
+  isActivePrimary
+} from '@/store/gateway'
 import { $gatewayState, setConnection } from '@/store/session'
 
 export function useGatewayRequest() {
@@ -138,10 +145,20 @@ export function useGatewayRequest() {
         throw new Error('Hermes gateway unavailable')
       }
 
+      // Bind retries to the dispatch owner, not whichever source is focused
+      // when a delayed transport failure (or its reconnect) finishes.
+      const connectionId = activeGatewayConnectionId()
+      const profile = activeGatewayProfileKey()
+
+      const isDispatchRouteActive = () =>
+        (gatewayRef.current ?? activeGateway()) === gateway &&
+        activeGatewayConnectionId() === connectionId &&
+        activeGatewayProfileKey() === profile
+
       try {
         return await gateway.request<T>(method, params, timeoutMs, signal)
       } catch (error) {
-        if (!isGatewayTransportError(error)) {
+        if (!isGatewayTransportError(error) || !isDispatchRouteActive()) {
           throw error
         }
 
@@ -150,6 +167,10 @@ export function useGatewayRequest() {
         // connection-owned reconnect path, including composite remote/SSH
         // sources.
         const recovered = isActivePrimary() ? await ensureGatewayOpen() : await ensureActiveGatewayOpen()
+
+        if (!isDispatchRouteActive() || (recovered && recovered !== gateway)) {
+          throw error
+        }
 
         if (!recovered) {
           // Prefer the reauth error from the failed reconnect (OAuth session

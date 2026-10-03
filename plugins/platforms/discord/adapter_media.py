@@ -134,7 +134,7 @@ class DiscordMediaMixin:
     ) -> SendResult:
         """Send images as one Discord message (<=10 attachments): URLs are downloaded and uploaded
         inline (bare links don't render); on chunk failure the remainder uses the per-image loop."""
-        from plugins.platforms.discord.adapter import _prompt_target_id, _image_ext_from_content_type, _read_url_image_with_redirect_guard, is_safe_url
+        from plugins.platforms.discord.adapter import _prompt_target_id, _image_ext_from_content_type, _read_url_image_with_redirect_guard, async_is_safe_url
 
         if not self._client:
             return SendResult(success=False, error="Not connected")
@@ -199,7 +199,7 @@ class DiscordMediaMixin:
                             continue
                         files.append(_discord_mod.File(local_path, filename=os.path.basename(local_path)))
                     else:
-                        if not is_safe_url(image_url):
+                        if not await async_is_safe_url(image_url):
                             logger.warning("[%s] Blocked unsafe image URL in batch", self.name)
                             continue
                         # Download to BytesIO so it renders inline
@@ -374,11 +374,11 @@ class DiscordMediaMixin:
     ) -> SendResult:
         """Download ``url`` and post it as a native attachment (Discord renders those inline).
         ``fallback(metadata)`` is the base-adapter URL send (``error_metadata`` after download failure)."""
-        from plugins.platforms.discord.adapter import _prompt_target_id, _read_url_image_with_redirect_guard, discord, is_safe_url
+        from plugins.platforms.discord.adapter import _prompt_target_id, _read_url_image_with_redirect_guard, discord, async_is_safe_url
 
         if not self._client:
             return SendResult(success=False, error="Not connected")
-        if not is_safe_url(url):
+        if not await async_is_safe_url(url):
             logger.warning("[%s] Blocked unsafe %s URL during Discord send_%s", self.name, kind, kind)
             return await fallback(metadata)
         try:

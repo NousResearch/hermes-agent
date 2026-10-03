@@ -142,15 +142,15 @@ async def download_url(url: str, max_size_mb: int = DEFAULT_MAX_SIZE_MB) -> tupl
     # SSRF protection: yuanbao downloads model-supplied and inbound URLs server-side.
     # Reject private/internal targets up front, and re-validate every redirect hop so a
     # public URL can't 302 to http://169.254.169.254/.
-    from tools.url_safety import create_ssrf_safe_async_client, is_safe_url
+    from tools.url_safety import create_ssrf_safe_async_client, async_is_safe_url
 
-    if not is_safe_url(url):
+    if not await async_is_safe_url(url):
         raise ValueError(f"Blocked unsafe URL (SSRF protection): {url}")
 
     async def _redirect_guard(response: httpx.Response) -> None:
         if response.is_redirect and response.next_request:
             redirect_url = str(response.next_request.url)
-            if not is_safe_url(redirect_url):
+            if not await async_is_safe_url(redirect_url):
                 raise ValueError(f"Blocked redirect to private/internal address: {redirect_url}")
 
     max_bytes = max_size_mb * 1024 * 1024

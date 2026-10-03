@@ -187,12 +187,13 @@ class TestCacheDiscordDocument:
         att = _make_attachment_without_read()  # no .read → forces fallback
 
         with patch(
-            "plugins.platforms.discord.adapter.is_safe_url", return_value=False
+            "plugins.platforms.discord.adapter.async_is_safe_url",
+            new=AsyncMock(return_value=False),
         ) as mock_safe, patch("aiohttp.ClientSession") as mock_session:
             with pytest.raises(ValueError, match="SSRF"):
                 await adapter._cache_discord_document(att, ".pdf")
 
-        mock_safe.assert_called_once_with(att.url)
+        mock_safe.assert_awaited_once_with(att.url)
         # aiohttp must NOT be contacted when the URL is blocked.
         mock_session.assert_not_called()
 

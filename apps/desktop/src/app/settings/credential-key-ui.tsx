@@ -3,6 +3,7 @@ import { type ChangeEvent, type KeyboardEvent } from 'react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { translateNow, useI18n } from '@/i18n'
+import { openExternalLink } from '@/lib/external-link'
 import { ChevronDown, ExternalLink, Loader2, Save, Trash2 } from '@/lib/icons'
 import { isSubmitEnter } from '@/lib/ime'
 import { cn } from '@/lib/utils'
@@ -142,14 +143,31 @@ export function KeyField({
   )
 }
 
-function CredentialDocsLink({ href }: { href: string }) {
+export function CredentialDocsLink({ href }: { href: string }) {
   const { t } = useI18n()
 
   return (
     <a
       className="inline-flex w-fit items-center gap-1 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary) underline-offset-4 transition-colors hover:text-foreground hover:underline"
       href={href}
-      onClick={e => e.stopPropagation()}
+      // Window-open policy unconditionally denies plain target=_blank on the
+      // desktop shell (GHSA-9f4c-93c8-jc8g) — every trusted external link has
+      // to travel through `hermes:openExternal` IPC. target=_blank stays as a
+      // fallback for non-Electron surfaces and middle-click / cmd-click, which
+      // Electron still honors before the policy fires.
+      onClick={e => {
+        e.stopPropagation()
+
+        // Without the bridge (a browser/dev surface) leave the click to the
+        // anchor: preventDefault() with nothing to replace the navigation is a
+        // silent no-op, worse than the bare target=_blank it hardened.
+        if (!window.hermesDesktop?.openExternal) {
+          return
+        }
+
+        e.preventDefault()
+        openExternalLink(href)
+      }}
       rel="noreferrer"
       target="_blank"
     >

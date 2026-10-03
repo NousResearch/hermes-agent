@@ -19,6 +19,14 @@ export const sshRosterCache = new Map<string, string[]>()
 export const sshInventoryAttemptedAt = new Map<string, number>()
 
 /**
+ * Consecutive failed inventory probes per ssh connection. A remote without a usable
+ * Hermes home fails deterministically on every attempt, so the plain 60s cooldown
+ * alone would dial it forever; the count feeds the exponential backoff in
+ * `shouldRetrySshInventory`. Any success or user-triggered re-probe resets it.
+ */
+export const sshInventoryFailureCounts = new Map<string, number>()
+
+/**
  * Stable backend identity per connection (the `install_id` its /api/status reports; absent on
  * older backends). TTL-cached because enumeration runs on the ~5s Bot Mode roster poll.
  */
@@ -30,6 +38,7 @@ export const rosterSourceErrors = new Map<string, string>()
 const CONNECTION_SCOPED_CACHES: Map<string, unknown>[] = [
   sshRosterCache,
   sshInventoryAttemptedAt,
+  sshInventoryFailureCounts,
   connectionInstallIds,
   rosterSourceErrors
 ]

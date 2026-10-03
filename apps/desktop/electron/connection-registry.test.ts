@@ -960,6 +960,27 @@ test('shouldRetrySshInventory: first try, cooldown, then retry; cache never retr
   assert.equal(shouldRetrySshInventory(true, 1_000, 120_000, 60_000), false)
 })
 
+test('shouldRetrySshInventory: consecutive failures double the cooldown, capped', () => {
+  // One failure still waits out only the base cooldown — the first retry deserves
+  // the same quick second chance a transient blip always got.
+  assert.equal(shouldRetrySshInventory(false, 1_000, 59_000, 60_000, 1), false)
+  assert.equal(shouldRetrySshInventory(false, 1_000, 61_000, 60_000, 1), true)
+  // Two failures: 2 minutes.
+  assert.equal(shouldRetrySshInventory(false, 1_000, 100_000, 60_000, 2), false)
+  assert.equal(shouldRetrySshInventory(false, 1_000, 121_000, 60_000, 2), true)
+  // Three failures: 4 minutes.
+  assert.equal(shouldRetrySshInventory(false, 1_000, 240_000, 60_000, 3), false)
+  assert.equal(shouldRetrySshInventory(false, 1_000, 241_000, 60_000, 3), true)
+  // Four failures reach the 8-minute cap, and deeper streaks stay there.
+  assert.equal(shouldRetrySshInventory(false, 1_000, 480_000, 60_000, 4), false)
+  assert.equal(shouldRetrySshInventory(false, 1_000, 481_000, 60_000, 4), true)
+  assert.equal(shouldRetrySshInventory(false, 1_000, 480_000, 60_000, 99), false)
+  assert.equal(shouldRetrySshInventory(false, 1_000, 481_000, 60_000, 99), true)
+  // A null count (legacy callers) keeps the plain cooldown.
+  assert.equal(shouldRetrySshInventory(false, 1_000, 61_000, 60_000, null), true)
+  assert.equal(shouldRetrySshInventory(false, 1_000, 30_000, 60_000, null), false)
+})
+
 test('parseRemoteProfileListing: Mini/Spark dirs become roster names and drop rollbacks', () => {
   const listed = parseRemoteProfileListing(
     ['bob', 'dixie', 'goose', 'rambo', 'bob.rollback-old', '.hidden', '', 'not a name'].join('\n')

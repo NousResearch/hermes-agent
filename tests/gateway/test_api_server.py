@@ -1002,6 +1002,39 @@ class TestSkillsEndpoint:
 
 class TestToolsetsEndpoint:
     @pytest.mark.asyncio
+    async def test_toolsets_exposes_live_registered_mcp_tools(self, adapter):
+        config = {"mcp_servers": {"example": {}, "disabled": {"enabled": False}}}
+        with patch("hermes_cli.config.load_config", return_value=config), patch(
+            "hermes_cli.tools_config._get_effective_configurable_toolsets",
+            return_value=[],
+        ), patch(
+            "hermes_cli.tools_config._get_platform_tools",
+            return_value={"example"},
+        ), patch(
+            "hermes_cli.tools_config.get_nous_subscription_features",
+            return_value=object(),
+        ), patch(
+            "tools.registry.registry.get_registered_toolset_aliases",
+            return_value={"example": "mcp-example", "disabled": "mcp-disabled"},
+        ), patch(
+            "tools.registry.registry.get_tool_names_for_toolset",
+            side_effect=lambda name: {
+                "mcp-example": ["mcp__example__real_tool"],
+                "mcp-disabled": ["mcp__disabled__hidden_tool"],
+            }[name],
+        ):
+            app = _create_app(adapter)
+            async with TestClient(TestServer(app)) as cli:
+                resp = await cli.get("/v1/toolsets")
+                assert resp.status == 200
+                data = await resp.json()
+                by_name = {ts["name"]: ts for ts in data["data"]}
+                assert by_name["mcp-example"]["enabled"] is True
+                assert by_name["mcp-example"]["tools"] == ["mcp__example__real_tool"]
+                assert by_name["mcp-disabled"]["enabled"] is False
+                assert by_name["mcp-disabled"]["tools"] == ["mcp__disabled__hidden_tool"]
+
+    @pytest.mark.asyncio
     async def test_toolsets_returns_resolved_tools(self, adapter):
         fake_toolsets = [
             ("default", "Default Tools", "Core tools"),

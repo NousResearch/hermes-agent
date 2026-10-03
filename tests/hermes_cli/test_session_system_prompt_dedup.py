@@ -67,6 +67,58 @@ def test_legacy_finalized_cron_resume_backfills_marker_and_allows_later_close(db
     assert closed["end_reason"] == "tui_close"
 
 
+def test_legacy_finalized_cron_can_compress_without_later_close(db):
+    session_id = "cron_job_legacy_compress_20261002_010000"
+    db.create_session(session_id, "cron", model="test-model")
+    db._conn.execute(
+        "UPDATE sessions SET ended_at = ?, end_reason = ? WHERE id = ?",
+        (time.time(), "cron_complete", session_id),
+    )
+    db._conn.commit()
+
+    db.reopen_session(session_id)
+    assert db.try_acquire_compression_lock(session_id, "holder", ttl_seconds=60)
+
+    db.publish_compression_child(
+        parent_session_id=session_id,
+        child_session_id="cron_legacy_compress_child",
+        source="cron",
+        model="test-model",
+        messages=[{"role": "assistant", "content": "continuation"}],
+        compression_lock_holder="holder",
+    )
+
+    assert db.get_session(session_id)["end_reason"] == "compression"
+    assert db.get_session("cron_legacy_compress_child") is not None
+
+
+def test_legacy_finalized_cron_does_not_override_later_deliberate_close(db):
+    session_id = "cron_job_legacy_close_20261002_010000"
+    db.create_session(session_id, "cron", model="test-model")
+    db._conn.execute(
+        "UPDATE sessions SET ended_at = ?, end_reason = ? WHERE id = ?",
+        (time.time(), "cron_complete", session_id),
+    )
+    db._conn.commit()
+
+    db.reopen_session(session_id)
+    db.end_session(session_id, "tui_close")
+    assert db.try_acquire_compression_lock(session_id, "holder", ttl_seconds=60)
+
+    with pytest.raises(RuntimeError, match="Compression parent already ended"):
+        db.publish_compression_child(
+            parent_session_id=session_id,
+            child_session_id="cron_legacy_close_child",
+            source="cron",
+            model="test-model",
+            messages=[{"role": "assistant", "content": "continuation"}],
+            compression_lock_holder="holder",
+        )
+
+    assert db.get_session(session_id)["end_reason"] == "tui_close"
+    assert db.get_session("cron_legacy_close_child") is None
+
+
 def test_prompt_snapshots_are_deduplicated_and_hydrated_for_readers(db):
     prompt = "You are Hermes.\n" + ("Follow the profile policy.\n" * 5)
     db.create_session(

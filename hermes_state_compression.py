@@ -299,8 +299,15 @@ class SessionCompressionMixin:
                 # evict) is stale by construction — this lease holder is still continuing the
                 # conversation, and left alone it wedges rotation forever. Clear it; the closure
                 # UPDATE below re-stamps end_reason='compression'. Deliberate boundaries fail closed.
-                from hermes_state_common import is_scheduler_finalized_cron
-                if not is_automatic_end_reason(parent["end_reason"]) and not is_scheduler_finalized_cron(dict(parent)):
+                from hermes_state_common import CRON_FINALIZED_END_REASONS, is_scheduler_finalized_cron
+                scheduler_finalized_current = (
+                    parent["source"] == "cron"
+                    and (
+                        parent["end_reason"] in CRON_FINALIZED_END_REASONS
+                        or (parent["end_reason"] is None and is_scheduler_finalized_cron(dict(parent)))
+                    )
+                )
+                if not is_automatic_end_reason(parent["end_reason"]) and not scheduler_finalized_current:
                     raise RuntimeError(f"Compression parent already ended: {parent_session_id}")
                 conn.execute(
                     "UPDATE sessions SET ended_at = NULL, end_reason = NULL WHERE id = ?",

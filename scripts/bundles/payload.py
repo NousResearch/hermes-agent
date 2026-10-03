@@ -45,7 +45,12 @@ def snapshot(repo: Path, ref: str, destination: Path, exclude: tuple[str, ...] =
             shutil.rmtree(destination)
         destination.mkdir(parents=True)
         with tarfile.open(archive) as source:
-            source.extractall(destination, filter="data")
+            try:
+                source.extractall(destination, filter="data")
+            except TypeError:
+                # Python < 3.12 has no `filter` kwarg / tarfile.data_filter.
+                # The archive is a local `git archive`, so traversal is moot.
+                source.extractall(destination)
 
 
 def _payload_file(root: Path, relative: str) -> Path:

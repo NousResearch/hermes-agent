@@ -210,10 +210,61 @@ def _tar_filter(member, dest: str):
         return member.replace(deep=False, uid=None, gid=None, uname=None, gname=None, mode=None)
     return tarfile.data_filter(member, dest)
 
+# ``TarFile.extractall(filter=...)`` and ``tarfile.data_filter`` are 3.12+
+# APIs. Hermes supports >=3.11 and PM bootstraps under the host interpreter
+# (Raspberry Pi OS / Debian bookworm ship 3.11), so guard on the version and
+# use an equivalent validate-then-extract path there.
+_TAR_FILTER_SUPPORTED = sys.version_info >= (3, 12)
+
+
+def _unsafe_tar_member(member, dest: str) -> str | None:
+    """Why ``member`` must not be extracted, or None if it is safe.
+
+    The 3.11 counterpart of ``_tar_filter``: same containment policy (no
+    absolute paths, no parent traversal, no links escaping ``dest``).
+    """
+    name = member.name.rstrip("/")
+    if not name or os.path.isabs(member.name) or os.path.isabs(name):
+        return "absolute path"
+    if ".." in Path(name).parts:
+        return "parent traversal"
+    placed = os.path.realpath(os.path.join(dest, name))
+    if placed != dest and os.path.commonpath([placed, dest]) != dest:
+        return "escapes destination"
+    if member.issym() or member.islnk():
+        if os.path.isabs(member.linkname):
+            return "absolute link target"
+        # Symlink targets resolve from the link's own directory; hardlink
+        # targets resolve from the archive root (stdlib semantics).
+        base = os.path.dirname(name) if member.issym() else ""
+        target = os.path.realpath(os.path.join(dest, base, member.linkname))
+        if target != dest and os.path.commonpath([target, dest]) != dest:
+            return "link escapes destination"
+    if member.isdev():
+        return "special file"
+    return None
+
+
+def _extract_tar_legacy(tf, dest: Path, real_dest: str) -> None:
+    """3.11 fallback for ``extract_tar``: validate every member up front, then
+    extract with the mode/ownership hygiene ``tarfile.data_filter`` applies."""
+    import tarfile
+
+    members = tf.getmembers()
+    for member in members:
+        reason = _unsafe_tar_member(member, real_dest)
+        if reason is not None:
+            raise tarfile.ExtractError(f"unsafe member {member.name!r}: {reason}")
+        member.uid = member.gid = 0
+        member.uname = member.gname = ""
+        member.mode = (member.mode or 0) & 0o755
+    tf.extractall(dest, members=members)
+
+
 def extract_tar(archive: Path | IO[bytes], dest: Path) -> None:
     """Extract a tarball (a path, or an open stream such as a .deb's data.tar)
     with the one containment policy every PM tar consumer shares. Unsafe
-    members raise tarfile.FilterError.
+    members raise tarfile.FilterError (>=3.12) or tarfile.ExtractError (<3.12).
     """
     import tarfile
 
@@ -221,7 +272,10 @@ def extract_tar(archive: Path | IO[bytes], dest: Path) -> None:
     real_dest = os.path.realpath(dest)
     opened = tarfile.open(archive) if isinstance(archive, (str, os.PathLike)) else tarfile.open(fileobj=archive)
     with opened as tf:
-        tf.extractall(dest, filter=lambda member, path: _tar_filter(member, real_dest))
+        if _TAR_FILTER_SUPPORTED:
+            tf.extractall(dest, filter=lambda member, path: _tar_filter(member, real_dest))
+        else:
+            _extract_tar_legacy(tf, dest, real_dest)
 
 
 def extract(archive: Path, dest: Path) -> None:

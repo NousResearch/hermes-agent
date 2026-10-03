@@ -226,8 +226,10 @@ class DebPackage(Package):
 
         try:
             extract_tar(io.BytesIO(payload), staged)
-        except tarfile.FilterError as exc:
-            member = exc.tarinfo.name if exc.tarinfo is not None else "?"
+        except tarfile.TarError as exc:
+            # FilterError is the >=3.12 name; the <3.12 extractor raises
+            # ExtractError. Both subclass TarError, so one clause covers both.
+            member = getattr(getattr(exc, "tarinfo", None), "name", None) or "?"
             raise InstallError(self.name, f"unsafe member {member!r}: {exc}") from exc
         real_staged = os.path.realpath(staged)
         # Termux debs carry owner-only modes across the whole tree (700 on

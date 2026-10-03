@@ -411,7 +411,16 @@ class FileSyncManager:
 
             with tempfile.TemporaryDirectory(prefix=_sync_back_temp_prefix()) as staging:
                 with tarfile.open(tar_path) as tar:
-                    tar.extractall(staging, filter="data")
+                    try:
+                        tar.extractall(staging, filter="data")
+                    except TypeError:
+                        # Python < 3.12 has no `filter` kwarg / tarfile.data_filter.
+                        # The remote tar is untrusted, so reject the members the
+                        # 'data' filter would, then extract.
+                        for member in tar.getmembers():
+                            if member.name.startswith("/") or ".." in Path(member.name).parts:
+                                raise tarfile.TarError(f"refusing unsafe tar member: {member.name!r}")
+                        tar.extractall(staging)
 
                 upload_only = self._upload_only_host_paths | _credential_host_paths()
                 applied = 0

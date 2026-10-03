@@ -1873,7 +1873,27 @@ export function upsertOptimisticSession(
   // lookup shadow-filter covers any path that lists without passing here.
   setUnlistedSessionOwnerRows(prev => (prev.some(s => s.id === id) ? prev.filter(s => s.id !== id) : prev))
 
-  setSessions(prev => [session, ...prev.filter(s => s.id !== id)])
+  setSessions(prev => {
+    const existing = prev.find(candidate => sessionMatchesStoredId(candidate, id))
+
+    if (!existing) {
+      return [session, ...prev.filter(candidate => candidate.id !== id)]
+    }
+
+    // A send can race the session-list refresh with a stale runtime/stored-id
+    // pair. Keep the authoritative row in place: replacing it with this
+    // minimal optimistic shape drops user titles, pinning, and sidebar stats.
+    return prev.map(candidate =>
+      candidate === existing
+        ? {
+            ...existing,
+            preview: preview ?? existing.preview,
+            last_active: session.last_active,
+            is_active: true
+          }
+        : candidate
+    )
+  })
 }
 
 /**

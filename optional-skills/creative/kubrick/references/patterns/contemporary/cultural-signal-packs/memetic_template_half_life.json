@@ -1,0 +1,65 @@
+{
+  "pattern_id": "memetic_template_half_life",
+  "title": "Memetic Template Half-Life",
+  "version": "0.13.0",
+  "domain": "contemporary",
+  "source_tier": "SCHOLARLY",
+  "source_status": "TIME_SENSITIVE",
+  "time_sensitive": true,
+  "validity_window": {
+    "status": "active",
+    "reviewed": "2026-07-30",
+    "review_cadence_days": 90,
+    "expiry_policy": "if audience recognition collapses, demote to historical citation only"
+  },
+  "source_refs": [
+    {
+      "author": "Limor Shifman and digital folklore scholarship",
+      "title": "Memes in Digital Culture; template reuse and participatory mutation",
+      "date": "2013-present",
+      "cultural_context": "internet vernacular cultures",
+      "provenance": "scholarly + primary circulating templates"
+    }
+  ],
+  "observed_structure": [
+    "a recognizable template circulates with stable relational slots",
+    "one role, caption function, or ownership condition mutates",
+    "meaning decays or inverts as recognition becomes ironic or exhausted"
+  ],
+  "dramatic_operations": [
+    "compress social conflict into a reusable frame",
+    "show collective authorship changing meaning",
+    "mark a culture's half-life through overuse"
+  ],
+  "transformation_grammars": ["template-mutation", "recognition-decay", "role-reversal"],
+  "cinematic_affordances": [
+    "repeated pose with changed initiator",
+    "same geometry with inverted status",
+    "repost chain as montage of ownership loss"
+  ],
+  "applicable_genres": ["satire", "comedy", "drama", "horror"],
+  "applicable_formats": ["vertical video", "short", "episode", "single-frame"],
+  "cultural_scope": [
+    "time-sensitive internet artifact; provenance and current usage context must be checked"
+  ],
+  "misuse_risks": [
+    "stale trend chasing",
+    "copyrighted template copying",
+    "assuming global recognition of a local meme"
+  ],
+  "mutation_requirements": {
+    "required": true,
+    "variables": ["role assignment", "caption function", "platform context", "audience recognition", "half-life stage"]
+  },
+  "transferable_structure": "a circulating template acquires new charge when one relational role changes while enough structure remains recognizable",
+  "non_transferable_surface": "direct duplication of copyrighted meme images or platform-specific branding",
+  "production_cost": {
+    "location_dependency": 0.1,
+    "prop_dependency": 0.2,
+    "lighting_dependency": 0.1,
+    "VFX_dependency": 0.15
+  },
+  "lexicon_links": ["eternal_return", "sigilization", "egregore"],
+  "confidence": 0.77,
+  "provenance_notes": "Explicit time-sensitive cultural-signal pack; pair with audience recognition check."
+}

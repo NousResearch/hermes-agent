@@ -1,0 +1,16 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Revision Record",
+  "type": "object",
+  "properties": {
+    "issue": {"type": "string"},
+    "evidence": {"type": "string"},
+    "severity": {"type": "integer", "minimum": 1, "maximum": 5},
+    "affected_material": {"type": "array", "items": {"type": "string"}},
+    "proposed_change": {"type": "string"},
+    "expected_improvement": {"type": "string"},
+    "continuity_risk": {"type": "string"},
+    "canon_conflict": {"type": "boolean"}
+  },
+  "required": ["issue", "evidence", "severity", "proposed_change"]
+}

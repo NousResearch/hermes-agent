@@ -1,0 +1,23 @@
+{
+  "pattern_id": "alchemical_distillation_iterative_refinement",
+  "title": "Distillation / Iterative Refinement",
+  "version": "0.11.1",
+  "domain": "alchemical",
+  "source_tier": "PRIMARY",
+  "source_status": "VALIDATED",
+  "source_refs": [{"author":"European alchemical tradition","title":"Distillation operations","date":"medieval to early modern","cultural_context":"European alchemy"}],
+  "observed_structure": ["a procedure repeats with measurable reduction of noise", "each pass preserves one volatile essence while removing one obstruction", "later repetitions become more precise rather than merely more intense"],
+  "dramatic_operations": ["refine motive through repetition", "compress a scene to its operative core", "convert iteration into clarity"],
+  "transformation_grammars": ["distillation", "repetition-to-concentration"],
+  "cinematic_affordances": ["repeated scene geometry with fewer elements", "dialogue lines shortened across iterations", "ambient layers removed one by one", "camera movement narrows toward one decisive relation"],
+  "applicable_genres": ["drama", "procedural", "thriller", "art film"],
+  "applicable_formats": ["feature", "pilot", "episode", "short"],
+  "cultural_scope": ["European alchemical source; use as iterative reduction and preservation"],
+  "misuse_risks": ["repetition without mutation", "minimalism treated as automatic depth", "literal laboratory imagery"],
+  "mutation_requirements": {"required":true,"variables":["element count","dialogue density","shot duration","sound layers","retained essence"]},
+  "transferable_structure": "successive passes remove interference while concentrating one causally important quality",
+  "non_transferable_surface": "retorts, vapor coils, occult glassware, or explained purification symbolism",
+  "production_cost": {"location_dependency":0.1,"prop_dependency":0.2,"lighting_dependency":0.3,"VFX_dependency":0.0},
+  "lexicon_links": ["distillation", "alembic", "sublimatio"],
+  "confidence": 0.86
+}

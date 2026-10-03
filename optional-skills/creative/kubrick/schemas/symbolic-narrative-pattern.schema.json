@@ -1,0 +1,46 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "SymbolicNarrativePattern",
+  "type": "object",
+  "required": ["pattern_id", "title", "domain", "source_tier", "dramatic_operations", "cinematic_affordances", "confidence"],
+  "properties": {
+    "pattern_id": { "type": "string" },
+    "title": { "type": "string" },
+    "domain": { "type": "string", "enum": ["semiotic", "myth-folklore", "ritual-liminal", "dream-unconscious", "alchemical", "spatial-geometric", "sound-rhythmic", "cinematic", "historical-esoteric", "contemporary"] },
+    "source_tier": { "type": "string", "enum": ["PRIMARY", "EARLY_COMMENTARY", "SCHOLARLY", "PRACTITIONER", "COMPARATIVE", "POPULAR", "INTERNET"] },
+    "source_refs": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "author": { "type": "string" },
+          "title": { "type": "string" },
+          "date": { "type": "string" },
+          "cultural_context": { "type": "string" }
+        }
+      }
+    },
+    "dramatic_operations": { "type": "array", "items": { "type": "string" } },
+    "transformation_grammars": { "type": "array", "items": { "type": "string" } },
+    "cinematic_affordances": { "type": "array", "items": { "type": "string" } },
+    "applicable_genres": { "type": "array", "items": { "type": "string" } },
+    "applicable_formats": { "type": "array", "items": { "type": "string" } },
+    "cultural_scope": { "type": "array", "items": { "type": "string" } },
+    "misuse_risks": { "type": "array", "items": { "type": "string" } },
+    "mutation_requirements": { "type": "object" },
+    "confidence": { "type": "number", "minimum": 0, "maximum": 1 },
+    "retrieval_score": {
+      "type": "object",
+      "properties": {
+        "dramatic_fit": { "type": "number" },
+        "character_fit": { "type": "number" },
+        "cultural_fit": { "type": "number" },
+        "cinematic_fit": { "type": "number" },
+        "source_quality": { "type": "number" },
+        "mutation_potential": { "type": "number" },
+        "continuity_compatibility": { "type": "number" },
+        "cliché_risk": { "type": "number" }
+      }
+    }
+  }
+}

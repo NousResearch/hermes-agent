@@ -1,0 +1,18 @@
+{
+  "pattern_id": "denis_marching",
+  "title": "Bodies in Formation",
+  "version": "0.11.5",
+  "domain": "cinematic",
+  "source_tier": "SCHOLARLY",
+  "source_refs": [{"author": "Claire Denis", "title": "Beau Travail", "date": "1999"}],
+  "observed_structure": ["Repeated group movement establishes discipline through rhythm and geometry.", "A later deviation in timing, spacing, or posture exposes individual pressure against the formation."],
+  "dramatic_operations": ["group discipline vs individual desire"],
+  "transformation_grammars": ["bind", "fragment"],
+  "cinematic_affordances": ["repetitive formation", "body as geometry", "rhythm mutating to collapse"],
+  "misuse_risks": ["decorative marching", "militarized spectacle without character stakes", "direct imitation of a specific dance or drill"],
+  "mutation_requirements": {"required": true, "variables": ["formation", "rhythm", "spacing", "deviating body", "collapse trigger"]},
+  "transferable_structure": "Use repeated coordinated physical action to establish group order, then make a measurable deviation reveal individual conflict.",
+  "non_transferable_surface": "Do not copy Beau Travail choreography, uniforms, locations, music, or shot design.",
+  "production_cost": "medium",
+  "confidence": 0.8
+}

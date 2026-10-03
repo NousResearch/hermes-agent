@@ -1,0 +1,23 @@
+{
+  "pattern_id": "kubrick_one_point_control_void",
+  "title": "One-Point Perspective as Control Becoming Void",
+  "version": "0.11.0",
+  "domain": "cinematic",
+  "source_tier": "SCHOLARLY",
+  "source_refs": [{"author": "Kubrick formal-analysis tradition", "title": "Perspective, control, and depersonalization", "cultural_context": "cinema studies"}],
+  "observed_structure": ["stable converging lines", "subject aligned to vanishing point", "alignment persists after agency fails"],
+  "dramatic_operations": ["enclose agency", "expose system scale", "convert order into void"],
+  "transformation_grammars": ["alignment", "decentering", "scale reversal"],
+  "cinematic_affordances": ["central vanishing point", "axial tracking", "subject shrinkage", "empty endpoint"],
+  "applicable_genres": ["drama", "thriller", "science fiction", "satire"],
+  "applicable_formats": ["feature", "pilot", "short", "single-frame"],
+  "cultural_scope": ["formal cinematic perspective"],
+  "misuse_risks": ["perspective used as a style preset", "automatic power reading"],
+  "mutation_requirements": {"required": true, "variables": ["subject scale", "axis ownership", "endpoint visibility", "camera motion"]},
+  "transferable_structure": "a perspective system first promises order, then reveals the subject's replaceability or absence",
+  "non_transferable_surface": "copying recognizable hotel, spacecraft, or barracks corridors",
+  "production_cost": {"location_dependency": 0.7, "prop_dependency": 0.1, "lighting_dependency": 0.3, "VFX_dependency": 0.1},
+  "lexicon_links": ["axis_mundi", "demiurge", "saturn", "kenoma"],
+  "confidence": 0.78,
+  "source_status": "VALIDATED"
+}

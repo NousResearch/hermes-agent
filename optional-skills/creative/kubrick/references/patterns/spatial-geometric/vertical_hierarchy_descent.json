@@ -1,0 +1,23 @@
+{
+  "pattern_id": "vertical_hierarchy_descent",
+  "title": "Vertical Hierarchy / Descent Into Consequence",
+  "version": "0.11.3",
+  "domain": "spatial-geometric",
+  "source_tier": "COMPARATIVE",
+  "source_status": "VALIDATED",
+  "source_refs": [{"author":"Comparative spatial dramaturgy","title":"Vertical hierarchy and descent","date":"cross-period","cultural_context":"Architecture and cinematic blocking"}],
+  "observed_structure": ["status or abstraction is organized vertically", "downward movement increases bodily or material consequence", "return upward is altered by knowledge or cost acquired below"],
+  "dramatic_operations": ["materialize hierarchy", "convert abstraction into bodily consequence", "stage descent and altered return"],
+  "transformation_grammars": ["descent", "hierarchy-to-consequence"],
+  "cinematic_affordances": ["stacked levels with unequal access", "camera height lowering with increasing consequence", "sound becoming denser below", "return framing preserving evidence of descent"],
+  "applicable_genres": ["drama", "thriller", "mystery", "science fiction"],
+  "applicable_formats": ["feature", "pilot", "episode", "short"],
+  "cultural_scope": ["comparative vertical structure; do not assign fixed moral value to upward or downward movement"],
+  "misuse_risks": ["fixed moral coding", "low angle equals power cliché", "descent without changed material stakes"],
+  "mutation_requirements": {"required":true,"variables":["level access","camera height","sound density","body state","return cost"]},
+  "transferable_structure": "movement through vertical levels converts abstract rank into increasing material consequence and altered return",
+  "non_transferable_surface": "borrowed cosmological diagrams or culturally specific sacred geography without provenance",
+  "production_cost": {"location_dependency":0.6,"prop_dependency":0.2,"lighting_dependency":0.4,"VFX_dependency":0.1},
+  "lexicon_links": ["descensio", "katabasis", "axis_mundi", "anabasis"],
+  "confidence": 0.82
+}

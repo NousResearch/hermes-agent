@@ -1,0 +1,23 @@
+{
+  "pattern_id": "costume_state_identity_migration",
+  "title": "Costume State / Identity Migrates Through Wear",
+  "version": "0.11.3",
+  "domain": "semiotic",
+  "source_tier": "COMPARATIVE",
+  "source_status": "VALIDATED",
+  "source_refs": [{"author":"Costume design and performance analysis","title":"Wardrobe state as continuity and identity evidence","date":"modern stage and screen practice","cultural_context":"Costume, role, and embodied continuity"}],
+  "observed_structure": ["a garment establishes role, status, or public identity", "ownership, wear, damage, or arrangement changes", "the altered costume state changes behavior or social recognition"],
+  "dramatic_operations": ["make identity migration visible", "record role change in material state", "separate public mask from operative self"],
+  "transformation_grammars": ["costume-to-identity-state", "persona-mutation"],
+  "cinematic_affordances": ["same garment worn by a different person", "fastening, removal, damage, or repair emphasized", "wardrobe state preserved across cuts", "social reaction changing before verbal recognition"],
+  "applicable_genres": ["drama", "thriller", "comedy", "romance", "science fiction"],
+  "applicable_formats": ["feature", "pilot", "episode", "short", "single-frame"],
+  "cultural_scope": ["costume meaning is project- and culture-specific; avoid universalizing colors, garments, or dress codes"],
+  "misuse_risks": ["costume change as shorthand without behavior change", "fixed color symbolism", "cultural clothing used as archetype costume"],
+  "mutation_requirements": {"required":true,"variables":["wearer","garment state","fastening","social reading","behavioral effect"]},
+  "transferable_structure": "a change in garment ownership or material state makes a role transition legible and alters subsequent behavior",
+  "non_transferable_surface": "specific uniforms, ceremonial dress, or culturally coded clothing used without contextual provenance",
+  "production_cost": {"location_dependency":0.0,"prop_dependency":0.7,"lighting_dependency":0.2,"VFX_dependency":0.0},
+  "lexicon_links": ["persona", "mask", "true_name", "salt"],
+  "confidence": 0.86
+}

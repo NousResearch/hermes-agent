@@ -1,0 +1,23 @@
+{
+  "pattern_id": "material_repair_visible_scar",
+  "title": "Visible Repair / Scar Preserves Transformation",
+  "version": "0.11.4",
+  "domain": "semiotic",
+  "source_tier": "COMPARATIVE",
+  "source_status": "VALIDATED",
+  "source_refs": [{"author":"Comparative material-culture and production-design analysis","title":"Repair, wear, and visible continuity","date":"cross-period","cultural_context":"Material practice and screen design"}],
+  "observed_structure": ["an object or surface is damaged through a known event", "repair restores function without erasing the break", "later use depends on both restoration and retained scar"],
+  "dramatic_operations": ["preserve consequence through repair", "differentiate healing from reset", "make resilience materially testable"],
+  "transformation_grammars": ["damage-to-repaired-function", "rupture-to-visible-continuity"],
+  "cinematic_affordances": ["repair process shown through precise action", "scar retained in close and wide continuity", "changed handling because of repair", "light or sound revealing the repaired seam on recurrence"],
+  "applicable_genres": ["drama", "science fiction", "romance", "thriller", "adventure"],
+  "applicable_formats": ["feature", "pilot", "episode", "short", "single-frame"],
+  "cultural_scope": ["general repair structure; specific repair traditions require their own provenance"],
+  "misuse_risks": ["damage romanticized as automatic wisdom", "decorative kintsugi shorthand", "repair with no functional consequence"],
+  "mutation_requirements": {"required":true,"variables":["damage source","repair material","visible seam","changed handling","later stress test"]},
+  "transferable_structure": "function returns through repair while visible evidence of rupture continues to shape later use",
+  "non_transferable_surface": "borrowing culturally specific repair aesthetics or ceremonial meanings without provenance",
+  "production_cost": {"location_dependency":0.0,"prop_dependency":0.7,"lighting_dependency":0.3,"VFX_dependency":0.1},
+  "lexicon_links": ["tikkun", "coagulation", "residue", "scar"],
+  "confidence": 0.86
+}

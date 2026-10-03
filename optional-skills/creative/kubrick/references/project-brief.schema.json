@@ -1,0 +1,64 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Project Brief",
+  "type": "object",
+  "properties": {
+    "project": {
+      "type": "object",
+      "properties": {
+        "title": { "type": ["string", "null"] },
+        "format": { "type": "string" },
+        "genre": { "type": "string" },
+        "subgenre": { "type": ["string", "null"] },
+        "audience": { "type": "string" },
+        "runtime": { "type": "string" },
+        "rating_or_content_limits": { "type": ["string", "null"] },
+        "production_scale": { "type": ["string", "null"] },
+        "platform": { "type": ["string", "null"] },
+        "status": { "type": "string" },
+        "requested_output": { "type": "string" }
+      },
+      "required": ["format", "audience", "runtime", "status"]
+    },
+    "creative_contract": {
+      "type": "object",
+      "properties": {
+        "premise": { "type": "string" },
+        "dramatic_question": { "type": ["string", "null"] },
+        "protagonist": { "type": "string" },
+        "protagonist_goal": { "type": "string" },
+        "internal_need": { "type": ["string", "null"] },
+        "opposition": { "type": ["string", "null"] },
+        "stakes": { "type": "string" },
+        "urgency": { "type": ["string", "null"] },
+        "theme_tension": { "type": ["string", "null"] },
+        "tone": { "type": "string" },
+        "ending_direction": { "type": ["string", "null"] },
+        "reference_points": { "type": "array", "items": { "type": "string" } },
+        "prohibited_elements": { "type": "array", "items": { "type": "string" } },
+        "approved_canon": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "constraints": {
+      "type": "object",
+      "properties": {
+        "locations": { "type": "array", "items": { "type": "string" } },
+        "cast_size": { "type": ["integer", "null"] },
+        "budget": { "type": ["string", "null"] },
+        "visual_effects": { "type": ["string", "null"] },
+        "timeline": { "type": ["string", "null"] },
+        "technology": { "type": ["string", "null"] },
+        "cultural_or_historical_requirements": { "type": "array", "items": { "type": "string" } },
+        "downstream_pipeline": { "type": ["string", "null"] }
+      }
+    },
+    "provenance": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "string",
+        "enum": ["OBSERVED", "INFERRED", "SPECULATIVE", "NOT_APPLICABLE"]
+      }
+    }
+  },
+  "required": ["project", "creative_contract"]
+}

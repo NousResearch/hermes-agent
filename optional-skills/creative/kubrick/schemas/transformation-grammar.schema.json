@@ -1,0 +1,20 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "TransformationGrammar",
+  "type": "object",
+  "required": ["name", "physical_operation", "narrative_operation", "cinematic_forms"],
+  "properties": {
+    "name": { "type": "string" },
+    "physical_operation": { "type": "string" },
+    "narrative_operation": { "type": "string" },
+    "character_operation": { "type": "string" },
+    "relationship_operation": { "type": "string" },
+    "visual_form": { "type": "array", "items": { "type": "string" } },
+    "blocking": { "type": "array", "items": { "type": "string" } },
+    "shot_structure": { "type": "array", "items": { "type": "string" } },
+    "editing": { "type": "array", "items": { "type": "string" } },
+    "sound": { "type": "array", "items": { "type": "string" } },
+    "failure_mode": { "type": "string" },
+    "inversion": { "type": "string" }
+  }
+}

@@ -500,11 +500,18 @@ class GitHubSource(SkillSource):
         if (cached := self._get_repo_tree(repo)) is None:
             return None
         skill_md_suffix = f"/{skill_name}/SKILL.md"
+        generic_candidates = []
         for entry in cached[1]:
             path = entry.get("path", "")
-            if entry.get("type") == "blob" and (path.endswith(skill_md_suffix) or path == skill_md_suffix[1:]):
+            if entry.get("type") != "blob" or entry.get("mode") == "120000":
+                continue
+            if path.endswith(skill_md_suffix) or path == skill_md_suffix[1:]:
                 return f"{repo}/{path[: -len('/SKILL.md')]}"
-        return None
+            # Some older index rows use a public slug even though the repo
+            # exposes one skill from a generic directory such as ``skills/``.
+            if path.endswith("/skills/SKILL.md") or path == "skills/SKILL.md":
+                generic_candidates.append(path[: -len('/SKILL.md')])
+        return f"{repo}/{generic_candidates[0]}" if len(generic_candidates) == 1 else None
 
     def _find_repo_root_skill(self, repo: str) -> Optional[str]:
         """Identifier for a single-skill repo whose ``SKILL.md`` sits at the repo ROOT (no skill

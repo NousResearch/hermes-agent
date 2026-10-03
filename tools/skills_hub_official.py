@@ -356,9 +356,20 @@ class HermesIndexSource(SkillSource):
         if not entry:
             return None
         repo, path = entry.get("repo", ""), entry.get("path", "")
+        github = self._get_github()
         candidates = [entry.get("resolved_github_id")] + ([f"{repo}/{path}"] if repo and path else [])
-        for github_id in filter(None, candidates):
-            bundle = self._get_github().fetch(github_id)
+        # Older index rows used the skill slug as ``path`` even when the
+        # repository stores the skill directly under a generic directory such
+        # as ``skills/``. Resolve that slug against the repository tree before
+        # declaring the catalog entry stale.
+        if repo and path:
+            skill_token = path.rstrip("/").rsplit("/", 1)[-1]
+            candidates.extend([
+                github._find_skill_in_repo_tree(repo, skill_token),
+                github._find_repo_root_skill(repo),
+            ])
+        for github_id in filter(None, dict.fromkeys(candidates)):
+            bundle = github.fetch(github_id)
             if bundle:
                 bundle.source = entry.get("source", "hermes-index")
                 bundle.identifier = identifier

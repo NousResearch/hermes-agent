@@ -233,3 +233,87 @@ def test_protected_provider_daemon_inherits_the_host_deadline():
 
     assert seen["thread"] != threading.current_thread().name
     assert seen["deadline"] == deadline
+
+
+def test_codex_blocked_iterator_cannot_hold_owner_past_host_deadline():
+    """The deadline is enforced by the owner, not by an iterator event hook."""
+    release = threading.Event()
+
+    class _NeverYields:
+        def __iter__(self):
+            release.wait(timeout=1)
+            return iter(())
+
+        def close(self):
+            pass
+
+    class _Responses:
+        def create(self, **_kwargs):
+            return _NeverYields()
+
+    real_client = SimpleNamespace(
+        responses=_Responses(), api_key="test", base_url="https://example.test/codex",
+        close=lambda: None,
+    )
+    client = aux.CodexAuxiliaryClient(real_client, "gpt-test")
+    started = time.monotonic()
+    try:
+        with aux.aux_stream_deadline(started + 0.05):
+            with pytest.raises(TimeoutError, match="host deadline"):
+                aux._run_protected_sync_provider_call(
+                    lambda request: client.chat.completions.create(**request),
+                    {"model": "gpt-test", "messages": [], "timeout": 30},
+                )
+    finally:
+        release.set()
+
+    assert time.monotonic() - started < 0.5
+
+
+def test_repeated_deadline_expirations_keep_abandoned_provider_workers_bounded():
+    """N host-deadline expirations against a provider that never returns must not stack N
+    live daemons: the slot fills to the cap, then new calls fail fast until a worker exits."""
+    release = threading.Event()
+    calls = []
+
+    def _never_returns(_request):
+        calls.append(threading.current_thread().name)
+        release.wait(timeout=30)
+        return "late"
+
+    def _live_workers():
+        return sum(1 for t in threading.enumerate()
+                   if t.name == "hermes-protected-aux-provider" and t.is_alive())
+
+    cap = aux._AUX_MAX_ABANDONED_PROVIDER_WORKERS
+    baseline = _live_workers()
+    outcomes = []
+    try:
+        for _ in range(10):
+            started = time.monotonic()
+            with aux.aux_stream_deadline(started + 0.03):
+                try:
+                    aux._run_protected_sync_provider_call(_never_returns, {"model": "stuck"}, slot_key="p:stuck")
+                except aux.AuxiliaryProviderSaturated:
+                    outcomes.append("saturated")
+                except TimeoutError:
+                    outcomes.append("deadline")
+            assert time.monotonic() - started < 0.5
+            assert aux._aux_abandoned_worker_count("p:stuck") <= cap
+            assert _live_workers() - baseline <= cap
+
+        assert outcomes == ["deadline"] * cap + ["saturated"] * (10 - cap)
+        assert len(calls) == cap  # refused attempts never reached the provider
+
+        # Another provider slot is not starved by the wedged one.
+        with aux.aux_stream_deadline(time.monotonic() + 5):
+            assert aux._run_protected_sync_provider_call(lambda _r: "ok", {"model": "x"}, slot_key="q:x") == "ok"
+    finally:
+        release.set()
+
+    deadline = time.monotonic() + 5
+    while aux._aux_abandoned_worker_count("p:stuck") and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert aux._aux_abandoned_worker_count("p:stuck") == 0
+    with aux.aux_stream_deadline(time.monotonic() + 5):
+        assert aux._run_protected_sync_provider_call(lambda _r: "ok", {"model": "stuck"}, slot_key="p:stuck") == "ok"

@@ -111,6 +111,24 @@ def _scrub_surrogates(value: Any) -> Any:
     return _sanitize_surrogates(value) if isinstance(value, str) else value
 
 
+# Stored in ``reasoning`` when it duplicates ``reasoning_content``. A NULL ``reasoning`` can't mark
+# this: turns that carry ``reasoning_content`` alone store NULL too. NUL cannot collide with text.
+_SHARED_REASONING = "\x00shared"
+
+
+def _reasoning_is_shared(role: Any, reasoning: Any, reasoning_content: Any) -> bool:
+    """Assistant ``reasoning`` is built from ``reasoning_content`` (``extract_reasoning``), so for
+    reasoning-content providers the two are byte-identical. Blank pads (" ") are left alone."""
+    return (role == "assistant" and isinstance(reasoning_content, str) and bool(reasoning_content.strip())
+            and reasoning == reasoning_content)
+
+
+def _restore_shared_reasoning(msg: Dict[str, Any]) -> None:
+    """Read-side inverse of the write-side dedup: swap the marker back for ``reasoning_content``."""
+    if msg.get("reasoning") == _SHARED_REASONING:
+        msg["reasoning"] = msg.get("reasoning_content")
+
+
 def _stale_holder(row, now: float) -> bool:
     """A lock/lease row whose holder is expired or a provably dead local process."""
     from hermes_state import _compression_lock_holder_process_is_dead
@@ -266,6 +284,10 @@ class SessionMessagesMixin:
         encoded_tool_calls = json.dumps(tool_calls) if tool_calls else None
         encoded_tool_name = _scrub_surrogates(msg.get("tool_name"))
         display_metadata = self._encode_display_metadata(msg.get("display_metadata"))
+        reasoning = _scrub_surrogates(_reasoning("reasoning"))
+        reasoning_content = _scrub_surrogates(_reasoning("reasoning_content"))
+        if _reasoning_is_shared(role, reasoning, reasoning_content):
+            reasoning = _SHARED_REASONING  # one copy on disk (#125273); _restore_shared_reasoning rebuilds it on read
         identity_row = {
             "role": role, "content": encoded_content, "timestamp": message_timestamp,
             "tool_call_id": msg.get("tool_call_id"), "tool_calls": encoded_tool_calls,
@@ -275,7 +297,7 @@ class SessionMessagesMixin:
         return (session_id, role, encoded_content, msg.get("tool_call_id"),
             encoded_tool_calls, encoded_tool_name,
             msg.get("effect_disposition"), message_timestamp, msg.get("token_count"), msg.get("finish_reason"),
-            _scrub_surrogates(_reasoning("reasoning")), _scrub_surrogates(_reasoning("reasoning_content")),
+            reasoning, reasoning_content,
             *(self._reasoning_json_text(_reasoning(k))
               for k in ("reasoning_details", "codex_reasoning_items", "codex_message_items")),
             msg.get("platform_message_id") or msg.get("message_id"),
@@ -1322,6 +1344,7 @@ class SessionMessagesMixin:
                 msg["tool_calls"], [], f"Failed to deserialize tool_calls in {warn_context}, falling back to []")
         if msg.get("display_metadata") is not None:
             msg["display_metadata"] = self._decode_display_metadata(msg["display_metadata"])
+        _restore_shared_reasoning(msg)
         # A `SELECT *` picks up every column, including any BLOB added to the schema later; the
         # JSON encoder that serves these dicts over HTTP fails outright on raw bytes. Drop them
         # here, once, rather than needing a new named pop for each future binary column. Known
@@ -1607,6 +1630,7 @@ class SessionMessagesMixin:
                 msg.update((col, row[col]) for col in ("finish_reason", "reasoning") if row[col])
                 if row["reasoning_content"] is not None:
                     msg["reasoning_content"] = row["reasoning_content"]
+                _restore_shared_reasoning(msg)
                 msg.update(
                     (col, _json_or(row[col], None, f"Failed to deserialize {col}, falling back to None"))
                     for col in ("reasoning_details", "codex_reasoning_items", "codex_message_items") if row[col])

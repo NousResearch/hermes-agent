@@ -59,7 +59,7 @@ export const archiveTodosAtTurnEnd = () => {
     ...(done ? { todoCollapsedByDefault: true } : { todoIncomplete: true })
   }
 
-  patchTurnState({ todoCollapsed: false, todos: [] })
+  patchTurnState({ todoCollapsed: false })
 
   return [msg]
 }

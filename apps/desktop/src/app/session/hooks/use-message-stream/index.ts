@@ -40,6 +40,7 @@ import { collapseDuplicateFinalAfterToolInterim, type DuplicateFinalCollapse } f
 import { useGatewayEventHandler } from './gateway-event'
 import { handleServerRequest as dispatchServerRequest } from './gateway-event/server-requests'
 import { extendInterruptedReply } from './interrupted-reply'
+import { hasHighTextOverlap, previousTurnFrameIndex } from './previous-turn-frame'
 import { currentResponseParts, mergeCurrentResponseText } from './response-parts'
 import { completionErrorText, delegateTaskPayloads, MAX_STREAM_FLUSH_GAP_MS, STREAM_DELTA_FLUSH_MS } from './utils'
 
@@ -74,61 +75,6 @@ interface QueuedStreamDelta {
 let streamMessageSeq = 0
 
 const nextStreamMessageId = (prefix: string) => `${prefix}-${Date.now()}-${++streamMessageSeq}`
-
-/**
- * A sealed stream can lose a few characters while the authoritative final
- * remains the same reply. Limit the tolerated edit distance so a separate
- * assistant segment cannot replace a merely similar interim.
- */
-function hasHighTextOverlap(left: string, right: string): boolean {
-  const maxLength = Math.max(left.length, right.length)
-
-  if (maxLength < 160) {
-    return false
-  }
-
-  const maxEdits = Math.max(1, Math.min(32, Math.floor(maxLength * 0.02)))
-
-  if (Math.abs(left.length - right.length) > maxEdits) {
-    return false
-  }
-
-  const [shorter, longer] = left.length < right.length ? [left, right] : [right, left]
-
-  let previous = Array.from({ length: shorter.length + 1 }, (_, index) =>
-    index <= maxEdits ? index : Number.POSITIVE_INFINITY
-  )
-
-  let current = new Array<number>(shorter.length + 1).fill(Number.POSITIVE_INFINITY)
-
-  for (let longerIndex = 1; longerIndex <= longer.length; longerIndex += 1) {
-    const start = Math.max(1, longerIndex - maxEdits)
-    const end = Math.min(shorter.length, longerIndex + maxEdits)
-    current.fill(Number.POSITIVE_INFINITY, start, end + 1)
-    current[start - 1] = start === 1 ? longerIndex : Number.POSITIVE_INFINITY
-
-    let rowMinimum = Number.POSITIVE_INFINITY
-
-    for (let shorterIndex = start; shorterIndex <= end; shorterIndex += 1) {
-      current[shorterIndex] = Math.min(
-        previous[shorterIndex] + 1,
-        current[shorterIndex - 1] + 1,
-        previous[shorterIndex - 1] + Number(longer[longerIndex - 1] !== shorter[shorterIndex - 1])
-      )
-      rowMinimum = Math.min(rowMinimum, current[shorterIndex])
-    }
-
-    if (rowMinimum > maxEdits) {
-      return false
-    }
-
-    const nextPrevious = current
-    current = previous
-    previous = nextPrevious
-  }
-
-  return previous[shorter.length] <= maxEdits
-}
 
 export function useMessageStream({
   activeGatewayProfile = 'default',
@@ -173,7 +119,32 @@ export function useMessageStream({
           }
 
           const reconciledId = opts.eventTarget?.(state) ?? null
-          const streamId = reconciledId ?? state.streamId ?? nextStreamMessageId('assistant-stream')
+
+          // A stale streamId must not append into the previous turn's bubble
+          // (#101321): when the id survives a turn boundary (a provider
+          // stream drop left it behind, message.start released it too late,
+          // or a projection re-parented history), seeding fresh is the only
+          // safe move. The id is "stale" exactly when it names a bubble above
+          // the newest user row — same-turn bubbles (steer rebuilds, chained
+          // turns, queued-prompt live rows) always sit below it.
+          const staleStreamId = (() => {
+            if (reconciledId !== null || state.streamId === null) {
+              return false
+            }
+
+            const prev = state.messages
+            const targetIndex = prev.findIndex(message => message.id === state.streamId)
+
+            const lastUserIndex = prev.findLastIndex(
+              message => message.role === 'user' && message.id !== `user-queued-${sessionId}`
+            )
+
+            return targetIndex >= 0 && targetIndex < lastUserIndex
+          })()
+
+          const streamId =
+            reconciledId ?? (staleStreamId ? null : state.streamId) ?? nextStreamMessageId('assistant-stream')
+
           // The event landed on a bubble that is NOT the live stream (sealed
           // by interim commentary, a mid-turn user message, or turn settle).
           // It is a patch to history: the bubble keeps its own pending bit
@@ -861,6 +832,36 @@ export function useMessageStream({
           prev.map((message, messageIndex) => (messageIndex === index ? completeMessage(message) : message))
 
         let collapsed: DuplicateFinalCollapse | null = null
+
+        const previousTurnIndex = previousTurnFrameIndex(state, sessionId, text, {
+          responsePreviewed,
+          responseTransformed
+        })
+
+        if (previousTurnIndex !== null) {
+          return {
+            ...state,
+            messages: prev.map((message, messageIndex) => {
+              if (messageIndex !== previousTurnIndex) {
+                return message
+              }
+
+              const completed = completeMessage(message)
+
+              // The frame belongs to a previous turn: this turn's clock must
+              // not restamp that row's duration — keep what it had.
+              const { durationS: _restamped, ...withoutDuration } = completed
+
+              const settled =
+                message.durationS !== undefined ? { ...completed, durationS: message.durationS } : withoutDuration
+
+              // The dropped turn may hold tool calls whose complete events
+              // died with the stream. Seal only this row: the live turn's
+              // tools are still running.
+              return sealOpenToolParts([settled])[0]
+            })
+          }
+        }
 
         if (streamIndex >= 0) {
           collapsed = collapseDuplicateFinalAfterToolInterim(prev, streamIndex, {

@@ -19,6 +19,8 @@ import { refreshSupportedSessionControlAfterTurn } from '@/store/session-control
 import { pruneFinishedSessionSubagents } from '@/store/subagents'
 import { clearActiveSessionTodos } from '@/store/todos'
 
+import { previousTurnFrameIndex } from '../previous-turn-frame'
+
 import type { GatewayEventContext } from './types'
 
 function firstBillingLine(text: string): string {
@@ -134,6 +136,26 @@ export function handleMessageStreamEvent(ctx: GatewayEventContext): boolean {
         return state
       }
 
+      // The previous turn's in-flight bubble id must not leak into the new
+      // turn (#101321). On a provider stream drop (Grok) the terminal frame
+      // never arrives, so state.streamId can still name the old turn's
+      // bubble when this turn starts — mutateStream would then append the
+      // new turn's deltas into the previous answer below the new prompt.
+      // When that bubble sits above the newest user row it is previous-turn
+      // territory: release it and let the first payload seed a fresh bubble.
+      // A same-turn id keeps streaming: a steer rebuild or chained turn has
+      // no new user row, the queued-prompt projection's live row sits below
+      // the projected prompt, and the flush above may have just seeded the
+      // id with real output of the turn now starting.
+      const lastUserIndex = state.messages.findLastIndex(
+        message => message.role === 'user' && message.id !== `user-queued-${sessionId}`
+      )
+
+      const streamTargetIndex =
+        state.streamId !== null ? state.messages.findIndex(message => message.id === state.streamId) : -1
+
+      const staleStreamId = streamTargetIndex >= 0 && streamTargetIndex < lastUserIndex
+
       return {
         ...state,
         busy: true,
@@ -147,6 +169,9 @@ export function handleMessageStreamEvent(ctx: GatewayEventContext): boolean {
         // A new turn is a new occurrence: the previous turn's late terminal
         // frame (#119569) can no longer claim its heartbeat-settled bubble.
         heartbeatSettledStreamId: null,
+        // Release a previous-turn bubble id so the new turn seeds its own
+        // bubble instead of appending into the old answer (#101321).
+        ...(staleStreamId ? { streamId: null } : {}),
         // Keep the submit-time seed (submit.ts seedOptimistic) — resetting
         // here would hide the submit→accept round trip from the timer.
         // Backend-originated turns (queue drain elsewhere, goal follow-up)
@@ -333,22 +358,7 @@ export function handleMessageStreamEvent(ctx: GatewayEventContext): boolean {
       return true
     }
 
-    // Turn ended — drop any blocking prompt still open for THIS session
-    // (e.g. interrupted, or the approval already resolved). Scoped to the
-    // session so a background turn finishing can't wipe the active chat's
-    // prompt, and vice versa.
-    clearAllPrompts(sessionId)
-    clearSettledClarifyRequest(sessionId)
-    // Turn ended without a final `todo` update — drop a still-unfinished
-    // list so "Tasks N/M" doesn't stay pinned above the composer with the
-    // last item stuck pending/in_progress. Finished lists keep their linger.
-    clearActiveSessionTodos(sessionId)
-    setSessionCompacting(sessionId, false)
-
     flushQueuedDeltas(sessionId)
-
-    // Keyed by session so only one window beeps when several are open.
-    playCompletionSound(sessionId)
 
     const finalText = coerceGatewayText(payload?.text) || coerceGatewayText(payload?.rendered)
 
@@ -365,16 +375,50 @@ export function handleMessageStreamEvent(ctx: GatewayEventContext): boolean {
           }
         : undefined
 
-    completeAssistantMessage(
-      sessionId,
-      finalText,
-      payload?.response_previewed,
-      failure,
-      occurredAt,
-      payload?.persisted_turn,
-      Boolean(payload?.response_transformed),
-      typeof payload?.status === 'string' ? payload.status : undefined
-    )
+    const complete = () =>
+      completeAssistantMessage(
+        sessionId,
+        finalText,
+        payload?.response_previewed,
+        failure,
+        occurredAt,
+        payload?.persisted_turn,
+        Boolean(payload?.response_transformed),
+        typeof payload?.status === 'string' ? payload.status : undefined
+      )
+
+    // A late terminal frame from the PREVIOUS turn (#101321, Grok stream
+    // drop) settles only its own row. It must not run the live turn's
+    // turn-end effects: prompts, todos, compacting, completion sound, turn
+    // clock, pet, usage and control refresh all still belong to that turn.
+    const lateFrame =
+      previousTurnFrameIndex(sessionStateByRuntimeIdRef.current.get(sessionId), sessionId, finalText, {
+        responsePreviewed: payload?.response_previewed,
+        responseTransformed: Boolean(payload?.response_transformed)
+      }) !== null
+
+    if (lateFrame) {
+      complete()
+
+      return true
+    }
+
+    // Turn ended — drop any blocking prompt still open for THIS session
+    // (e.g. interrupted, or the approval already resolved). Scoped to the
+    // session so a background turn finishing can't wipe the active chat's
+    // prompt, and vice versa.
+    clearAllPrompts(sessionId)
+    clearSettledClarifyRequest(sessionId)
+    // Turn ended without a final `todo` update — drop a still-unfinished
+    // list so "Tasks N/M" doesn't stay pinned above the composer with the
+    // last item stuck pending/in_progress. Finished lists keep their linger.
+    clearActiveSessionTodos(sessionId)
+    setSessionCompacting(sessionId, false)
+
+    // Keyed by session so only one window beeps when several are open.
+    playCompletionSound(sessionId)
+
+    complete()
 
     // Onboarding's first build: between turns is the only moment Setup may
     // put a check-in into that session (no-op everywhere else).

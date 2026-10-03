@@ -1645,6 +1645,20 @@ class SessionDB(
         else:
             self._write_sql(sql, (key, value))
 
+    def set_observation_meta(self, key: str, value: str) -> None:
+        """Upsert observational metadata with the response-critical activity write budget.
+
+        Label/activity observations are retryable hints, not turn settlement. They must never ride
+        the generic 20-second write patience while an inbound relay frame is waiting for admission.
+        """
+        sql = (
+            "INSERT INTO state_meta (key, value) VALUES (?, ?) "
+            "ON CONFLICT(key) DO UPDATE SET value = excluded.value"
+        )
+        self._write_sql(
+            sql, (key, value), patience_s=self._ACTIVITY_WRITE_PATIENCE_S,
+        )
+
     def retag_kanban_worker_sessions(self, workspaces_root: str) -> int:
         """Retag legacy kanban worker rows from ``cli`` to ``kanban`` by cwd under the board's workspaces
         root; gated once per root via state_meta. Returns rows retagged."""

@@ -483,6 +483,10 @@ class GatewayBusySessionMixin:
 
     @staticmethod
     def _busy_reply_to(event: MessageEvent, reply_anchor):
+        # A forwarded Discord interaction's event id is the inbound action identity, not a
+        # reactable/replyable message. The centralized anchor resolves its attached message.
+        if event.source.platform == Platform.DISCORD:
+            return reply_anchor
         # Telegram DM topics anchor on the thread; other Telegram threads send unanchored.
         return (
             reply_anchor

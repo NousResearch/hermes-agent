@@ -95,6 +95,24 @@ def _event_ids(event) -> Tuple[Optional[str], Optional[str]]:
     return message_id, getattr(event.source, "chat_id", None)
 
 
+def _processing_event_ids(event) -> Tuple[Optional[str], Optional[str]]:
+    """Reaction target for the processing lifecycle.
+
+    Forwarded Discord interactions deliberately keep the action id on event.message_id for
+    dedupe/persistence. Reactions can target only the attached Discord message, so use the
+    centralized reply anchor for that interaction shape. An unattached slash command therefore
+    has no reaction target.
+    """
+    source = getattr(event, "source", None)
+    raw_platform = getattr(source, "platform", None)
+    platform = getattr(raw_platform, "value", raw_platform)
+    metadata = getattr(event, "metadata", None)
+    if platform == Platform.DISCORD.value and isinstance(metadata, dict) and metadata.get("discord_interaction_id"):
+        from gateway.platforms.base import _reply_anchor_for_event
+        return _reply_anchor_for_event(event), getattr(source, "chat_id", None)
+    return _event_ids(event)
+
+
 def _profile_from_session_key(session_key: str) -> Optional[str]:
     """Named profile encoded in an ``agent:<ns>:...`` session key; None for the legacy ``agent:main``
     namespace (single-profile gateway) so the wire frame stays byte-identical there."""
@@ -152,6 +170,15 @@ class RelayAdapter(BasePlatformAdapter):
         self._auto_thread_waiters: Dict[str, asyncio.Event] = {}
         # Bounded FIFO seen-set for inbound replay dedupe (insertion-ordered dict).
         self._seen_inbound: Dict[str, None] = {}
+        # key -> admission future while pre-admission work is in flight. A duplicate waits for the
+        # owner; if that owner is cancelled before admission, the waiter can retry instead of
+        # treating unfinished metadata work as proof that the message was handled.
+        self._inflight_inbound: Dict[str, asyncio.Future[bool]] = {}
+        # Production adapters share one SessionStore, which owns Discord interaction context so
+        # observations made by one relay adapter are immediately visible to its peers. These two
+        # bounded maps are only the no-store compatibility path used by isolated adapters/tests.
+        self._discord_chat_fallback: Dict[Tuple[str, str], Dict[str, Optional[str]]] = {}
+        self._discord_user_fallback: Dict[Tuple[str, str], Optional[str]] = {}
         # Live cards: draft_key -> draft_id of the OPEN native stream. Armed by
         # send_draft; consumed by send() to convert the turn-final into
         # draft(final=true) instead of a duplicate post. Keyed by _draft_key (chat +
@@ -872,29 +899,228 @@ class RelayAdapter(BasePlatformAdapter):
         # class default is False, so only an explicit descriptor bit turns it on.
         self.supports_inchannel_continuable = bool(getattr(descriptor, "supports_inchannel_continuable", False))
 
-    async def _on_inbound(self, event) -> None:
-        """Bridge a connector-delivered MessageEvent into the normal adapter path."""
-        # Inbound replay dedupe: the relay leg is at-least-once — on WS re-handshake
-        # the connector replays its durable buffer, and a long turn straddling a
-        # quiet socket drop got re-run (final answer 2-5x). Platform message identity
-        # is stable across replays.
-        dedupe_key = self._inbound_dedupe_key(event)
-        if dedupe_key is not None:
+    async def _claim_inbound_dedupe(
+        self, dedupe_key: Optional[str],
+    ) -> Tuple[bool, Optional[asyncio.Future[bool]]]:
+        """Claim pre-admission ownership for one at-least-once relay event.
+
+        Seen means the event reached a consuming prompt or handle_message. In-flight means only
+        that pre-admission work is running. Followers wait for that decision; if the owner is
+        cancelled before admission, one follower loops and becomes the new owner.
+        """
+        if dedupe_key is None:
+            return True, None
+        inflight = self.__dict__.setdefault("_inflight_inbound", {})
+        while True:
             if dedupe_key in self._seen_inbound:
                 logger.info("relay inbound dropped as replay (dedupe key=%s)", dedupe_key)
-                return
+                return False, None
+            pending = inflight.get(dedupe_key)
+            if pending is None:
+                claim = asyncio.get_running_loop().create_future()
+                inflight[dedupe_key] = claim
+                return True, claim
+            admitted = await asyncio.shield(pending)
+            if admitted:
+                logger.info("relay inbound dropped as replay (dedupe key=%s)", dedupe_key)
+                return False, None
+            # The previous owner exited before admission. Re-check seen/inflight atomically on
+            # this event loop turn and claim the retry if nobody else already did.
+
+    def _finish_inbound_dedupe(
+        self, dedupe_key: Optional[str], claim: Optional[asyncio.Future[bool]], *, admitted: bool,
+    ) -> None:
+        if dedupe_key is None or claim is None:
+            return
+        inflight = self.__dict__.setdefault("_inflight_inbound", {})
+        if admitted:
             self._seen_inbound[dedupe_key] = None
             self._evict_oldest(self._seen_inbound, self._SEEN_INBOUND_MAX)
-        self._capture_scope(event)
-        self._stamp_slack_session_thread(event)
-        # A structured prompt answer resolves its waiting primitive and is CONSUMED —
-        # never also dispatched as chat.
-        if await self._consume_prompt_response(event):
+        if inflight.get(dedupe_key) is claim:
+            inflight.pop(dedupe_key, None)
+        if not claim.done():
+            claim.set_result(admitted)
+
+    async def _on_inbound(self, event) -> None:
+        """Bridge a connector-delivered MessageEvent into the normal adapter path."""
+        # Inbound replay dedupe is two-phase. The old code inserted into _seen_inbound before the
+        # new off-loop Discord metadata await; cancellation there could ACK a later replay without
+        # ever admitting the message. Keep concurrent duplicates serialized, but publish "seen"
+        # only once a prompt consumed the event or immediately before handle_message.
+        dedupe_key = self._inbound_dedupe_key(event)
+        should_process, claim = await self._claim_inbound_dedupe(dedupe_key)
+        if not should_process:
             return
-        await self._localize_inbound_media(event)
-        await self.handle_message(event)
+        try:
+            self._capture_scope(event)
+            await self._remember_discord_context(event.source)
+            self._stamp_slack_session_thread(event)
+            # A structured prompt answer resolves its waiting primitive and is CONSUMED —
+            # never also dispatched as chat.
+            if await self._consume_prompt_response(event):
+                self._finish_inbound_dedupe(dedupe_key, claim, admitted=True)
+                claim = None
+                return
+            await self._localize_inbound_media(event)
+            # Admission ownership transfers here. If handle_message later fails or is cancelled,
+            # replay suppression matches the historical behavior: the event did reach admission.
+            self._finish_inbound_dedupe(dedupe_key, claim, admitted=True)
+            claim = None
+            await self.handle_message(event)
+        finally:
+            # Any exit before admission (including cancellation while asyncio.to_thread is still
+            # running) leaves the durable frame retryable and wakes one waiting duplicate.
+            if claim is not None:
+                self._finish_inbound_dedupe(dedupe_key, claim, admitted=False)
 
     _SEEN_INBOUND_MAX = 512
+    _DISCORD_CONTEXT_MAX = 2048
+
+    def _remember_discord_fallback(self, source) -> None:
+        """No-store compatibility cache. Production authority belongs to SessionStore."""
+        platform = getattr(source, "platform", None)
+        if getattr(platform, "value", platform) != Platform.DISCORD.value:
+            return
+        scope = str(getattr(source, "scope_id", None) or "")
+        chat_id = str(getattr(source, "chat_id", None) or "")
+        if chat_id:
+            key = (scope, chat_id)
+            previous = self._discord_chat_fallback.get(key, {})
+            current = {
+                "chat_name": getattr(source, "chat_name", None) or previous.get("chat_name"),
+                "chat_topic": getattr(source, "chat_topic", None) or previous.get("chat_topic"),
+                "parent_chat_id": (
+                    getattr(source, "parent_chat_id", None)
+                    if getattr(source, "chat_type", None) == "thread"
+                    else previous.get("parent_chat_id")
+                ),
+            }
+            self._discord_chat_fallback[key] = current
+            self._evict_oldest(self._discord_chat_fallback, self._DISCORD_CONTEXT_MAX)
+        user_id = str(getattr(source, "user_id", None) or "")
+        user_name = getattr(source, "user_name", None)
+        if user_id and user_name:
+            self._discord_user_fallback[(scope, user_id)] = str(user_name)
+            self._evict_oldest(self._discord_user_fallback, self._DISCORD_CONTEXT_MAX)
+
+    async def _offload_discord_context_io(self, func, *args):
+        """Run context storage on the gateway-owned executor when attached to a live runner.
+
+        The shutdown close gate quiesces that executor before SessionDB.close(). asyncio.to_thread
+        is retained only for isolated adapters/tests that have no runner lifecycle to coordinate.
+        """
+        runner = getattr(self, "gateway_runner", None)
+        offload = getattr(runner, "_run_in_executor_with_context", None) if runner is not None else None
+        if callable(offload):
+            return await offload(func, *args)
+        return await asyncio.to_thread(func, *args)
+
+    async def _remember_discord_context(self, source) -> None:
+        """Publish normalized Discord context into the shared SessionStore off the event loop."""
+        platform = getattr(source, "platform", None)
+        if getattr(platform, "value", platform) != Platform.DISCORD.value:
+            return
+        store = getattr(self, "_session_store", None)
+        observe = getattr(store, "observe_relay_discord_context", None) if store is not None else None
+        if not callable(observe):
+            self._remember_discord_fallback(source)
+            return
+        scope = str(getattr(source, "scope_id", None) or "")
+        chat_id = str(getattr(source, "chat_id", None) or "")
+        user_id = str(getattr(source, "user_id", None) or "")
+        cached = self._cached_discord_context(scope, chat_id, user_id)
+        expected = {
+            "chat_name": getattr(source, "chat_name", None),
+            "chat_topic": getattr(source, "chat_topic", None),
+        }
+        if getattr(source, "chat_type", None) == "thread":
+            expected["parent_chat_id"] = getattr(source, "parent_chat_id", None)
+        if getattr(source, "user_name", None):
+            expected["user_name"] = str(source.user_name)
+        if expected and all(cached.get(key) == value for key, value in expected.items()):
+            return
+        try:
+            await self._offload_discord_context_io(observe, source)
+        except Exception:
+            logger.debug("relay: failed to persist Discord interaction context", exc_info=True)
+
+    def _cached_discord_context(self, scope: str, chat_id: str, user_id: str) -> Dict[str, Optional[str]]:
+        """Read only process-local state; never performs storage I/O."""
+        store = getattr(self, "_session_store", None)
+        cached = getattr(store, "cached_relay_discord_context", None) if store is not None else None
+        if callable(cached):
+            try:
+                return dict(cached(scope, chat_id, user_id) or {})
+            except Exception:
+                logger.debug("relay: cached Discord context unavailable", exc_info=True)
+        result = dict(self._discord_chat_fallback.get((scope, chat_id), {}))
+        if user_id and (scope, user_id) in self._discord_user_fallback:
+            result["user_name"] = self._discord_user_fallback[(scope, user_id)]
+        return result
+
+    async def _discord_context_for(self, scope: str, chat_id: str, user_id: str) -> Dict[str, Optional[str]]:
+        """Load shared context off-loop. Failed reads stay retryable on the next interaction."""
+        store = getattr(self, "_session_store", None)
+        loader = getattr(store, "relay_discord_context", None) if store is not None else None
+        if not callable(loader):
+            return self._cached_discord_context(scope, chat_id, user_id)
+        try:
+            return dict(await self._offload_discord_context_io(loader, scope, chat_id, user_id) or {})
+        except Exception:
+            logger.debug("relay: persisted Discord interaction context unavailable", exc_info=True)
+            return {}
+
+    @staticmethod
+    def _discord_interaction_user_name(
+        member: Dict[str, Any], user: Dict[str, Any], known_name: Optional[str], *,
+        is_guild: bool,
+    ) -> Tuple[Optional[str], bool]:
+        """Return (display name, payload-is-authoritative).
+
+        Discord marks member.nick optional. Absence does not prove a known guild nickname was
+        removed, while an explicitly present null does. A DM has no guild-member ambiguity:
+        its user object is the current authoritative identity and must outrank cached text state.
+        """
+        if not is_guild:
+            fallback = user.get("global_name") or user.get("username")
+            return (str(fallback) if fallback else None), True
+        if "nick" in member:
+            nick = member.get("nick")
+            if nick:
+                return str(nick), True
+            fallback = user.get("global_name") or user.get("username")
+            return (str(fallback) if fallback else None), True
+        if known_name:
+            return str(known_name), False
+        fallback = user.get("global_name") or user.get("username")
+        return (str(fallback) if fallback else None), False
+
+    async def _remember_discord_interaction_context(
+        self, payload: Dict[str, Any], event: MessageEvent,
+    ) -> None:
+        """Persist only raw-interaction facts that resolve a previous ambiguity."""
+        store = getattr(self, "_session_store", None)
+        observe = getattr(store, "observe_relay_discord_interaction_context", None) if store is not None else None
+        if not callable(observe):
+            return
+        member = payload.get("member") if isinstance(payload.get("member"), dict) else {}
+        channel = payload.get("channel") if isinstance(payload.get("channel"), dict) else {}
+        is_guild = bool(payload.get("guild_id"))
+        user_is_authoritative = (not is_guild) or ("nick" in member)
+        parent = channel.get("parent_id") if channel.get("type") in (10, 11, 12) else None
+        if not user_is_authoritative and not parent:
+            return
+        try:
+            await self._offload_discord_context_io(
+                observe,
+                str(payload.get("guild_id") or ""),
+                str(payload.get("channel_id") or ""),
+                str(event.source.user_id or ""),
+                user_name=event.source.user_name if user_is_authoritative else None,
+                parent_chat_id=str(parent) if parent else None,
+            )
+        except Exception:
+            logger.debug("relay: failed to persist Discord interaction identity", exc_info=True)
 
     def _inbound_dedupe_key(self, event) -> Optional[str]:
         """Stable replay identity: (platform, chat, platform message id). The platform
@@ -1117,41 +1343,89 @@ class RelayAdapter(BasePlatformAdapter):
         """Bridge a connector-delivered /stop into the per-session interrupt path."""
         await self.interrupt_session_activity(session_key, chat_id)
 
+    async def _ack_passthrough_buffer(self, buffer_id: Optional[str]) -> None:
+        if not buffer_id:
+            return
+        ack = getattr(self._transport, "ack_inbound", None)
+        if not callable(ack):
+            logger.warning("relay passthrough buffer cannot be acked: transport has no ack_inbound")
+            return
+        await ack(str(buffer_id))
+
     async def _on_passthrough(self, forward, buffer_id: Optional[str] = None) -> None:
-        """Handle a connector-forwarded passthrough request. The connector answered the
-        provider's latency-critical ACK at the edge, verified the signature and vaulted
-        any shared-identity credential; the agent later acts via the token-less
-        ``send_follow_up`` path. A Discord interaction becomes a normalized
-        ``MessageEvent`` on the SAME agent path as chat; other forwards are logged and
-        dropped. NEVER raises: a malformed forward must not kill the read loop."""
+        """Handle a connector-forwarded passthrough request and settle its delivery buffer."""
+        dedupe_key = f"passthrough_buffer:{buffer_id}" if buffer_id else None
+        should_process, claim = await self._claim_inbound_dedupe(dedupe_key)
+        if not should_process:
+            await self._ack_passthrough_buffer(buffer_id)
+            return
         try:
             platform = getattr(forward, "platform", "") or ""
             if platform == "discord":
-                event = self._discord_interaction_to_event(forward)
+                payload = self._discord_interaction_payload(forward)
+                if payload is None:
+                    self._finish_inbound_dedupe(dedupe_key, claim, admitted=True)
+                    claim = None
+                    await self._ack_passthrough_buffer(buffer_id)
+                    return
+                member = payload.get("member") if isinstance(payload.get("member"), dict) else {}
+                user = (member.get("user") if isinstance(member, dict) else None) or payload.get("user") or {}
+                if not isinstance(user, dict):
+                    user = {}
+                context = await self._discord_context_for(
+                    str(payload.get("guild_id") or ""),
+                    str(payload.get("channel_id") or ""),
+                    str(user.get("id") or ""),
+                )
+                event = self._discord_interaction_to_event(forward, payload=payload, context=context)
                 if event is not None:
                     self._capture_scope(event)
-                    # A prompt-token component press is consumed (same gate as _on_inbound).
+                    await self._remember_discord_interaction_context(payload, event)
                     if await self._consume_prompt_response(event):
+                        self._finish_inbound_dedupe(dedupe_key, claim, admitted=True)
+                        claim = None
+                        await self._ack_passthrough_buffer(buffer_id)
                         return
+                    self._finish_inbound_dedupe(dedupe_key, claim, admitted=True)
+                    claim = None
                     await self.handle_message(event)
+                    await self._ack_passthrough_buffer(buffer_id)
                     return
             logger.info(
                 "relay passthrough_forward dropped (no handler): platform=%s method=%s path=%s",
                 platform, getattr(forward, "method", "?"), getattr(forward, "path", "?"),
             )
-        except Exception:  # noqa: BLE001 - a bad forward must never break the reader
+            self._finish_inbound_dedupe(dedupe_key, claim, admitted=True)
+            claim = None
+            await self._ack_passthrough_buffer(buffer_id)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
             logger.warning("relay passthrough_forward handling failed", exc_info=True)
+        finally:
+            if claim is not None:
+                self._finish_inbound_dedupe(dedupe_key, claim, admitted=False)
 
-    def _discord_interaction_to_event(self, forward):
-        """Convert a forwarded Discord interaction body to a MessageEvent, or None for
-        an unusable body (a PING is answered at the edge and never forwarded). The
-        session source mirrors the connector's ``interactionSessionSource`` so the
-        session key matches the one the follow-up capability was bound under."""
+    @staticmethod
+    def _discord_interaction_payload(forward) -> Optional[Dict[str, Any]]:
+        """Parse one forwarded Discord interaction body without performing any storage I/O."""
         try:
             payload = json.loads(bytes(getattr(forward, "body", b"")).decode("utf-8"))
         except Exception:  # noqa: BLE001
             return None
-        if not isinstance(payload, dict):
+        return payload if isinstance(payload, dict) else None
+
+    def _discord_interaction_to_event(
+        self, forward, *, payload: Optional[Dict[str, Any]] = None,
+        context: Optional[Dict[str, Optional[str]]] = None,
+    ):
+        """Convert a Discord interaction to a MessageEvent.
+
+        Production callers preload *context* asynchronously. Direct synchronous callers use only
+        already-cached process state, so this conversion can never block on SQLite.
+        """
+        payload = payload if isinstance(payload, dict) else self._discord_interaction_payload(forward)
+        if payload is None:
             return None
         # type 2 = APPLICATION_COMMAND; 3 = MESSAGE_COMPONENT; 5 = MODAL_SUBMIT.
         itype = payload.get("type")
@@ -1167,6 +1441,11 @@ class RelayAdapter(BasePlatformAdapter):
                 message_type = MessageType.COMMAND
         elif itype == 3:
             text = str(data.get("custom_id") or "")
+        elif itype == 5:
+            modal_fields = self._discord_modal_fields(data.get("components"))
+            text = "\n".join(
+                f"{field[\'custom_id\']}={field[\'value\']}" for field in modal_fields
+            )
         else:
             text = ""
         member = payload.get("member") or {}
@@ -1174,19 +1453,48 @@ class RelayAdapter(BasePlatformAdapter):
         if not isinstance(user, dict):
             user = {}
         guild_id = payload.get("guild_id")
+        scope = str(guild_id or "")
+        chat_id = str(payload.get("channel_id") or "")
+        context = (
+            dict(context)
+            if isinstance(context, dict)
+            else self._cached_discord_context(scope, chat_id, str(user.get("id") or ""))
+        )
+        user_name, _user_is_authoritative = self._discord_interaction_user_name(
+            member if isinstance(member, dict) else {},
+            user,
+            context.get("user_name"),
+            is_guild=bool(guild_id),
+        )
+        chat_name = context.get("chat_name")
+        chat_topic = context.get("chat_topic")
+        channel = payload.get("channel") if isinstance(payload.get("channel"), dict) else {}
+        is_thread = bool(guild_id) and channel.get("type") in (10, 11, 12)
+        parent_chat_id = None
+        if is_thread:
+            parent_chat_id = (
+                str(channel["parent_id"])
+                if channel.get("parent_id")
+                else context.get("parent_chat_id")
+            )
+        attached_message = payload.get("message") if isinstance(payload.get("message"), dict) else {}
+        actual_message_id = str(attached_message["id"]) if attached_message.get("id") else None
+        interaction_id = str(payload["id"]) if payload.get("id") else None
         source = SessionSource(
             # The LOGICAL platform, not RELAY: session keys must match the connector's
             # capability binding (platform="discord"), /sethome must file under the
             # logical platform, and _capture_scope skips the generic "relay".
             platform=Platform.DISCORD,
-            chat_id=str(payload.get("channel_id") or ""),
-            # "group", not "channel": both the connector's capability binding and the
-            # native Discord adapter key guild channels as "group".
-            chat_type="group" if guild_id else "dm",
+            chat_id=chat_id,
+            chat_type="thread" if is_thread else ("group" if guild_id else "dm"),
+            thread_id=chat_id if is_thread else None,
+            parent_chat_id=parent_chat_id,
             user_id=str(user["id"]) if user.get("id") else None,
-            user_name=str(user["username"]) if user.get("username") else None,
+            user_name=user_name,
+            chat_name=chat_name,
+            chat_topic=chat_topic,
             scope_id=str(guild_id) if guild_id else None,
-            message_id=str(payload.get("id")) if payload.get("id") else None,
+            message_id=actual_message_id,
             # Same upstream-trust marker the relay text lane stamps. Set locally, never
             # read off the wire (engages /sethome's via_relay guard).
             delivered_via_upstream_relay=True,
@@ -1197,7 +1505,23 @@ class RelayAdapter(BasePlatformAdapter):
             # connector resolved a specific profile for it.
             profile=getattr(forward, "profile", None),
         )
-        event = MessageEvent(text=text, message_type=message_type, source=source)
+        metadata = {"discord_interaction_id": interaction_id} if interaction_id else {}
+        if itype == 5:
+            # Preserve exact submitted identity/value pairs separately from the human-readable
+            # text rendering. Empty optional values are meaningful and must not disappear.
+            metadata["discord_modal_fields"] = modal_fields
+        event = MessageEvent(
+            text=text,
+            message_type=message_type,
+            source=source,
+            raw_message=payload if itype == 5 else None,
+            # The attached bot message is a reply/prompt anchor, not the inbound action.
+            # Every Discord interaction has its own platform identity; keep that on the
+            # MessageEvent so owner, dedupe, transcript and delivery-ledger consumers do
+            # not collapse two presses of the same component message into one turn.
+            message_id=interaction_id,
+            metadata=metadata,
+        )
         if itype == 3:
             # A component press whose custom_id is a Hermes prompt token
             # (hp1:<prompt_id>:<option_id>) becomes a STRUCTURED prompt answer;
@@ -1205,8 +1529,7 @@ class RelayAdapter(BasePlatformAdapter):
             decoded = self._decode_prompt_token(text)
             if decoded:
                 prompt_id, option_id = decoded
-                msg = payload.get("message") or {}
-                prompt_message_id = str(msg["id"]) if isinstance(msg, dict) and msg.get("id") else None
+                prompt_message_id = actual_message_id
                 event.prompt_response = {
                     "prompt_id": prompt_id,
                     "option_id": option_id,
@@ -1215,6 +1538,35 @@ class RelayAdapter(BasePlatformAdapter):
                 event.text = f"/{option_id}"
                 event.message_type = MessageType.COMMAND
         return event
+
+    @staticmethod
+    def _discord_modal_fields(components) -> list[dict[str, str]]:
+        """Flatten supported Discord modal trees without losing empty values.
+
+        Legacy action rows nest under components; current Label (type 18) wraps one child
+        under component. Preserve each leaf custom_id and submitted value exactly as text.
+        """
+        fields: list[dict[str, str]] = []
+
+        def walk(node) -> None:
+            if isinstance(node, list):
+                for item in node:
+                    walk(item)
+                return
+            if not isinstance(node, dict):
+                return
+            custom_id = node.get("custom_id")
+            if custom_id is not None and "value" in node:
+                value = node.get("value")
+                fields.append({
+                    "custom_id": str(custom_id),
+                    "value": "" if value is None else str(value),
+                })
+            walk(node.get("components"))
+            walk(node.get("component"))
+
+        walk(components)
+        return fields
 
     @staticmethod
     def _decode_prompt_token(token: str):
@@ -2316,7 +2668,7 @@ class RelayAdapter(BasePlatformAdapter):
 
     async def on_processing_start(self, event) -> None:
         """Add the in-progress reaction (op-gated; silent no-op otherwise)."""
-        message_id, chat_id = _event_ids(event)
+        message_id, chat_id = _processing_event_ids(event)
         if message_id and chat_id:
             eyes, _ok, _fail = self._ack_emoji(event, chat_id)
             await self._react(str(chat_id), str(message_id), eyes)
@@ -2324,7 +2676,7 @@ class RelayAdapter(BasePlatformAdapter):
     async def on_processing_complete(self, event, outcome) -> None:
         """Swap the in-progress reaction for the outcome one (op-gated; silent
         no-op otherwise)."""
-        message_id, chat_id = _event_ids(event)
+        message_id, chat_id = _processing_event_ids(event)
         if not (message_id and chat_id):
             return
         eyes, ok_emoji, fail_emoji = self._ack_emoji(event, chat_id)

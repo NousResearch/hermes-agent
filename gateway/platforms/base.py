@@ -161,6 +161,17 @@ def _reply_anchor_for_event(event) -> str | None:
         return override  # the turn was redirected onto another message (#115001)
     source = getattr(event, "source", None)
     platform = _platform_name(getattr(source, "platform", None))
+    # A forwarded Discord interaction has two identities: event.message_id is the unique
+    # inbound interaction (dedupe/persistence/ledger), while source.message_id is the attached
+    # Discord message that can actually be replied to/reacted to/pinned. Slash interactions have
+    # no attached message and therefore no reply anchor.
+    metadata = getattr(event, "metadata", None)
+    if (
+        platform == "discord"
+        and isinstance(metadata, dict)
+        and metadata.get("discord_interaction_id")
+    ):
+        return getattr(source, "message_id", None)
     thread_id = getattr(source, "thread_id", None)
     raw_message = getattr(event, "raw_message", None)
     if (platform == "slack" and isinstance(raw_message, dict)

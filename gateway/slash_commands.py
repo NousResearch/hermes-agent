@@ -271,8 +271,13 @@ class GatewaySlashCommandsMixin(
             return confirmation_text
         if adapter:
             try:
+                reply_to = (
+                    self._reply_anchor_for_event(event)
+                    if source.platform == Platform.DISCORD
+                    else event.message_id
+                )
                 await adapter.send(
-                    source.chat_id, confirmation_text, reply_to=event.message_id,
+                    source.chat_id, confirmation_text, reply_to=reply_to,
                     metadata={"is_approval_prompt": True, "force_proactive_send": True})
             except Exception as exc:
                 logger.warning("Failed to send /%s confirmation to %s: %s", verb, source.chat_id,

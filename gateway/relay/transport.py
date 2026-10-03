@@ -51,6 +51,13 @@ class RelayTransport(Protocol):
         """
         ...
 
+    async def ack_inbound(self, buffer_id: str) -> None:
+        """Acknowledge durable handoff of one buffered delivery-leg item (§5.3).
+
+        Passthrough callbacks own this boundary because they receive the buffer id directly.
+        """
+        ...
+
     async def send_outbound(
         self, action: Dict[str, Any], *, platform: Optional[str] = None
     ) -> Dict[str, Any]:

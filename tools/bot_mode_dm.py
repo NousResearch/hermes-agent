@@ -113,6 +113,10 @@ def message_agent_tool_schema() -> dict:
                             "'Message from …' prefix — it is added automatically."
                         ),
                     },
+                    "idempotency_key": {
+                        "type": "string",
+                        "description": "Optional stable key (1-128 chars) for local CLI delivery retries. Same key with different input is refused. Live-owner and remote transports retain their existing receipt-id protocol.",
+                    },
                 },
                 "required": ["target", "message"],
             },
@@ -198,7 +202,8 @@ def _err(message: str, *, roster: list[str] | None = None, peers: list[str] | No
     return json.dumps(payload)
 
 
-def message_agent_tool(target: str = "", message: str = "", task_id: Optional[str] = None, agent: Any = None) -> str:
+def message_agent_tool(target: str = "", message: str = "", task_id: Optional[str] = None, agent: Any = None,
+                       idempotency_key: Optional[str] = None) -> str:
     """Deliver ``message`` to ``target``'s Bot Chat. Returns a JSON ack/error.
     ``agent`` is the calling AIAgent — used for the Bot Chat gate and sender identity."""
     home = _agent_home(agent)
@@ -230,6 +235,8 @@ def message_agent_tool(target: str = "", message: str = "", task_id: Optional[st
         return _err(msg, roster=teammates, peers=peers)
 
     body = str(message or "").strip()
+    if idempotency_key is not None and (not isinstance(idempotency_key, str) or not 1 <= len(idempotency_key) <= 128):
+        return _err("idempotency_key must be 1-128 characters")
     if not body:
         return _err("message is required — compose what you want to say to that agent.")
     if len(body) > MESSAGE_MAX_CHARS:
@@ -248,6 +255,8 @@ def message_agent_tool(target: str = "", message: str = "", task_id: Optional[st
     # Peer target: '<peer>/<agent>' or a bare registered peer name.
     peer_match = _PEER_TARGET_RE.match(raw_target)
     if peer_match or raw_target.lower() in peers:
+        if idempotency_key is not None:
+            return _err("idempotency_key is supported only for local CLI delivery; nothing sent")
         peer_name, peer_profile = peer_match.groups() if peer_match else (raw_target.lower(), None)
         if peer_name not in peers:
             return _roster_err(f"No registered peer named '{peer_name}'.")
@@ -271,6 +280,8 @@ def message_agent_tool(target: str = "", message: str = "", task_id: Optional[st
     # hands out for a colliding row, and stamps on replies. Resolved locally first, a local bot whose friendly
     # name slugs to 'hermes-mini' captured it. An '@' name no connection answers to still resolves locally.
     if "@" in raw_target.strip().lstrip("@"):
+        if idempotency_key is not None:
+            return _err("idempotency_key is supported only for local CLI delivery; nothing sent")
         relayed = _try_relay_delivery(root, raw_target, content, me, **delivery)
         if relayed is not None:
             return relayed
@@ -280,6 +291,8 @@ def message_agent_tool(target: str = "", message: str = "", task_id: Optional[st
     if resolved is None and not is_local_shape and "@" not in raw_target:
         return _roster_err(f"Invalid target: {raw_target!r}.")
     if resolved is None or resolved == me:
+        if idempotency_key is not None:
+            return _err("idempotency_key requires another local teammate; nothing sent")
         # Unknown locally, or same-name target on ANOTHER connection (this gateway's 'default'
         # messaging the cloud 'default'): every Desktop-connected gateway is reachable via the
         # relay roster, so try that before reporting a resolution failure / self-message.
@@ -292,7 +305,8 @@ def message_agent_tool(target: str = "", message: str = "", task_id: Optional[st
                            "machine, or on a registered peer. Pick a name from the roster "
                            "(roles are listed in your system prompt).")
     return _start_delivery([_hermes_cli(), "-p", resolved, *BOT_CHAT_TURN_ARGS], content, f"@{_handle(resolved)}",
-                           stdin_file=False, profile_home=roster_homes[resolved], author=author, **delivery)
+                           stdin_file=False, profile_home=roster_homes[resolved], author=author,
+                           sender_home=home, idempotency_key=idempotency_key, **delivery)
 
 
 def _try_relay_delivery(root: Path, raw_target: str, content: str, me: str, *,
@@ -482,6 +496,9 @@ def _live_intent_file(dm_file: "str | os.PathLike") -> str:
 def _dm_delivery_id(dm_file: "str | os.PathLike") -> str:
     """One delivery id per DM file: the dispatch ack, the live-owner intent and every retry
     of the runner derive it the same way, so the sender can correlate all of them."""
+    name = Path(dm_file).name
+    if re.fullmatch(r"dm-[0-9a-f]{64}\.txt", name):
+        return name[3:-4]
     return hashlib.sha256(str(Path(dm_file).resolve()).encode()).hexdigest()
 
 
@@ -601,7 +618,7 @@ def _runner_argv(args: list[str]) -> tuple[Optional[str], str, str, list[str]] |
 
 
 def _run_delivery(argv: list[str], dm_file: str, *, stdin_file: bool,
-                  profile_home: Path | None = None, author: Optional[dict] = None) -> int:
+                  profile_home: Path | None = None, author: Optional[dict] = None, durable: bool = False) -> int:
     """Route to the live owner before attempting a CLI transport. Live deliveries
     retain their intent/payload and immutable receipt; only CLI/peer payloads are
     removed after consumption. The CLI turn window holds the profile lock, so two
@@ -617,6 +634,22 @@ def _run_delivery(argv: list[str], dm_file: str, *, stdin_file: bool,
     # The live consumer owns turn admission; never compete for its CLI lease.
     if not stdin_file:
         home = profile_home or _local_delivery_home(argv)
+        if home is not None:
+            from tools.bot_live_delivery import read_delivery_result
+            from tools.bot_cli_delivery import drain, public_result
+
+            ticket = read_delivery_result(home, _dm_delivery_id(dm_file))
+            if durable and (ticket is None or ticket.get("transport") != "cli"):
+                raise ValueError("Durable ticket is missing or uninspectable; transport will not be replayed")
+            if ticket is not None and ticket.get("transport") == "cli":
+                outcome = drain(home, ticket["delivery_id"], argv, dm_file, author)
+                print(json.dumps(public_result(outcome)))
+                if outcome["status"] in ("settled", "failed", "cancelled"):
+                    _unlink_dm_file(dm_file)
+                    _unlink_dm_file(dm_file + ".turn.json")
+                return 0 if outcome["status"] in ("settled", "queued", "claimed") else 1
+        if durable:
+            raise ValueError("Durable target home is unavailable; transport will not be replayed")
         if home is not None or os.path.exists(_live_intent_file(dm_file)):
             try:
                 record = _admit_live_dm(home, dm_file, author)
@@ -642,13 +675,15 @@ def _run_delivery(argv: list[str], dm_file: str, *, stdin_file: bool,
 
 
 def _delivery_command(argv: list[str], dm_file: str, *, stdin_file: bool,
-                      profile_home: Path | None = None, author: Optional[dict] = None) -> str:
+                      profile_home: Path | None = None, author: Optional[dict] = None, durable: bool = False) -> str:
     """Build an argv-safe command for the cleanup-owning background runner:
     ``--run-delivery [--author <json>] <mode> <dm_file> [--profile-home <path>] <argv...>``."""
     runner_argv = [sys.executable, str(Path(__file__).resolve()), "--run-delivery",
                    "stdin" if stdin_file else "query-file", dm_file]
     if profile_home is not None:
         runner_argv.extend(["--profile-home", str(Path(profile_home).resolve())])
+    if durable:
+        runner_argv.append("--durable")
     runner_argv.extend(argv)
     if sys.platform == "win32":
         # The tracked local backend uses Git Bash on native Windows: forward slashes keep drive
@@ -662,12 +697,28 @@ def _delivery_command(argv: list[str], dm_file: str, *, stdin_file: bool,
 
 def _start_delivery(argv: list[str], content: str, label: str, *, stdin_file: bool,
                     task_id: Optional[str], agent: Any, profile_home: Path | None = None,
-                    author: Optional[dict] = None) -> str:
+                    author: Optional[dict] = None, sender_home: Optional[str] = None,
+                    idempotency_key: Optional[str] = None) -> str:
     """Create a DM file and transfer its cleanup ownership to the runner."""
     dm_file = _write_dm_file(content)
     if profile_home is not None:
+        from tools.bot_live_delivery import find_canonical_live_owner, read_delivery_result
+        from tools.bot_cli_delivery import has_pending
+
+        if idempotency_key is not None:
+            _unlink_dm_file(dm_file)
+            key = hashlib.sha256(json.dumps([str(Path(sender_home or _agent_home(agent)).resolve()),
+                                            str(Path(profile_home).resolve()), idempotency_key]).encode()).hexdigest()
+            dm_file = str(_dm_dir() / f"dm-{key}.txt")
         try:
-            record = _admit_live_dm(profile_home, dm_file, author)
+            prior = read_delivery_result(profile_home, _dm_delivery_id(dm_file))
+            pending_cli = has_pending(profile_home)
+        except Exception:
+            return _err("Local mailbox is uninspectable; no turn dispatched. Do not resend an existing input.")
+        if idempotency_key is not None and prior is None and not pending_cli and find_canonical_live_owner(profile_home) is not None:
+            return _err("Explicit idempotency_key is supported only for local CLI delivery; live-owner messages use their receipt id. Nothing sent.")
+        try:
+            record = None if idempotency_key is not None or pending_cli else _admit_live_dm(profile_home, dm_file, author)
         except Exception as exc:
             return json.dumps({"status": "ambiguous", "delivery_id": _dm_delivery_id(dm_file),
                 "error": f"Live delivery admission could not be confirmed: {exc}. Do not resend.",
@@ -687,6 +738,32 @@ def _start_delivery(argv: list[str], content: str, label: str, *, stdin_file: bo
                     # the poll instruction here too, not 'finish your turn'.
                     result["detail"] = f"Durably queued for the live Bot Chat owner. Do NOT resend. {notification['detail']}"
             return json.dumps(result)
+        from tools.bot_cli_delivery import admit, public_result, verified_result
+
+        try:
+            ticket = admit(profile_home, sender_home=sender_home or _agent_home(agent), target_profile=argv[2],
+                           message=content, author=author, delivery_id=_dm_delivery_id(dm_file), dm_file=dm_file)
+        except Exception:
+            # Never delete the payload of an existing input on a mismatched retry.
+            if prior is None:
+                _unlink_dm_file(dm_file)
+            return _err("Local durable admission refused (invalid input, duplicate payload mismatch, or full mailbox); no turn dispatched")
+        if ticket["status"] != "queued":
+            if ticket["status"] in ("settled", "failed") and verified_result(profile_home, ticket["delivery_id"], ticket) is None:
+                return _err("Local terminal receipt is unverified; no turn dispatched. Do not resend.")
+            return json.dumps(public_result(ticket))
+        command = _delivery_command(argv, dm_file, stdin_file=False, profile_home=profile_home, author=author, durable=True)
+        notification = json.loads(_spawn_delivery(command, label, delivery_id=str(ticket["delivery_id"]), task_id=task_id, agent=agent))
+        result = public_result(ticket)
+        result.update(to=label, detail="Durably retained for local delivery. Do NOT resend. A busy runner may exit queued; retry the same key or runner only, never an uncertain claim.")
+        for field in ("process_id", "reply_delivery"):
+            if field in notification:
+                result[field] = notification[field]
+        if notification.get("error"):
+            result["notification_error"] = "Delivery runner did not start; durable input remains queued"
+        elif result.get("reply_delivery") == "poll":
+            result["detail"] += " " + notification["detail"]
+        return json.dumps(result)
     try:
         command = _delivery_command(argv, dm_file, stdin_file=stdin_file, profile_home=profile_home, author=author)
     except BaseException:
@@ -848,7 +925,12 @@ def _delivery_main(args: list[str]) -> int:
         profile_home = None
         if len(argv) >= 2 and argv[0] == "--profile-home":
             profile_home, argv = Path(argv[1]), argv[2:]
-        return _run_delivery(argv, dm_file, stdin_file=mode == "stdin", profile_home=profile_home, author=author)
+        durable = argv[:1] == ["--durable"]
+        if durable:
+            argv = argv[1:]
+            if mode != "query-file" or profile_home is None:
+                return 2
+        return _run_delivery(argv, dm_file, stdin_file=mode == "stdin", profile_home=profile_home, author=author, durable=durable)
     except Exception as exc:
         # Every refusal ships a typed reason on stdout so the completion notification carries it
         # back to the sender (#93091): 'target_busy' from the queue's bounded wait, otherwise the

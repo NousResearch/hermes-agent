@@ -209,6 +209,9 @@ def _run_quiet_single_query(cli, effective_query, emitter=None):
     # A spawner that bounds only the turn (cron Bot Chat lane) learns the outcome from this
     # report, written before the linger below; popped so tool subprocesses do not inherit it.
     turn_report_path = take_turn_report_path()
+    from tools.bot_cli_delivery import take_target_ticket, complete_target
+
+    delivery_ticket = take_target_ticket(effective_query, author, session_id=cli.session_id)
     # A dispatcher's re-run of a failed bot delivery resumes the DM row its first attempt persisted.
     adopt_unanswered_turn(cli, effective_query)
     author_kwargs = {"turn_author": author} if author is not None and _accepts_keyword(cli.agent.run_conversation, "turn_author") else {}
@@ -260,6 +263,9 @@ def _run_quiet_single_query(cli, effective_query, emitter=None):
                 reply=res.get("final_response", "") if isinstance(res, dict) else str(res),
             )
 
+        # The original target turn owns this receipt; linger/follow-ups cannot rewrite it.
+        complete_target(delivery_ticket, exit_code=_single_query_exit_code(result), session_id=cli.session_id,
+                        reply=result.get("final_response", "") if isinstance(result, dict) else str(result))
         _report_turn(result)
         if isinstance(result, dict) and not result.get("failed"):
             history = result.get("messages") or cli.conversation_history

@@ -957,6 +957,21 @@ class TestBrowserExec:
         assert "bu:r7k2" in result["output"]
         assert result["session"] == "r7k2"
 
+    def test_unnamed_daemon_follows_the_resolved_browser(self, tmp_path, monkeypatch):
+        """Unnamed calls that resolve to different browsers (per-task local/provider sessions) must not
+        share one harness daemon: it would keep driving the first browser while the vault supervisor
+        attaches to the second. Calls resolving to the SAME browser keep sharing a daemon."""
+        endpoints = {"a": "ws://127.0.0.1:1111/devtools/browser/a", "b": "ws://127.0.0.1:2222/devtools/browser/b"}
+        monkeypatch.setattr(bu_cli, "_route_backend",
+                            lambda env, session, task_id, local: env.__setitem__("BU_CDP_WS", endpoints[task_id]))
+        cli = _fake_cli(tmp_path, 'cat > /dev/null\necho "bu:$BU_NAME"\n')
+        monkeypatch.setattr(bu_cli, "_find_cli", lambda: [cli])
+        names = {t: json.loads(bu_cli.browser_exec("print(1)", task_id=t))["output"].strip() for t in ("a", "b")}
+        again = json.loads(bu_cli.browser_exec("print(1)", task_id="a"))["output"].strip()
+        assert names["a"] != names["b"]
+        assert again == names["a"]
+        assert all(n.startswith("bu:") and n != "bu:" for n in names.values())
+
     def test_invalid_session_name_rejected(self, monkeypatch, tmp_path):
         cli = _fake_cli(tmp_path, "cat > /dev/null\n")
         monkeypatch.setattr(bu_cli, "_find_cli", lambda: [cli])

@@ -650,6 +650,16 @@ def browser_exec(code: str, session: str = "", timeout_s: int = _DEFAULT_TIMEOUT
     route_err = _route_backend(env, session, task_id, bool(local))
     if route_err:
         return tool_error(route_err)
+    if not session:
+        # The harness keeps ONE long-lived daemon per BU_NAME and never re-checks which browser it is
+        # attached to. Unnamed calls from different tasks resolve to DIFFERENT per-task browsers, so a
+        # shared "default" daemon kept driving whichever browser it met first while the vault supervisor
+        # attached to this task's (blank) browser — browser_vault_fill then saw chrome://new-tab-page.
+        # Key the daemon by the resolved endpoint: one daemon per browser, shared browsers still share.
+        cdp = env.get("BU_CDP_WS") or env.get("BU_CDP_URL")
+        if cdp:
+            import hashlib
+            env["BU_NAME"] = "hx-" + hashlib.sha256(cdp.encode()).hexdigest()[:12]
     bot_desktop_browser = bool(env.pop(_BOT_DESKTOP_BROWSER_SENTINEL, None))
 
     # SHARED browser (/browser connect CDP override): pin each named session to its own tab (see

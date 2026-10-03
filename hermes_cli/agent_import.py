@@ -25,8 +25,10 @@ logger = logging.getLogger(__name__)
 
 # Entry delimiter of the Hermes memory store (memories/MEMORY.md) and the openclaw script.
 ENTRY_DELIMITER = "\n§\n"
-# Character budget for merged memory files (openclaw script default).
-MEMORY_CHAR_LIMIT = 20_000
+# Fallback memory budget when the target config has no usable value. MUST match the runtime
+# default ``memory.memory_char_limit`` (DEFAULT_CONFIG) so an import never writes a store the
+# memory tool immediately refuses to extend (#123569).
+DEFAULT_MEMORY_CHAR_LIMIT = 2200
 SUPPORTED_AGENTS = ("claude-code", "codex")
 _AGENT_DEFAULT_DIRS = {"claude-code": ".claude", "codex": ".codex"}
 _SKILL_CATEGORY = {"claude-code": "claude-code-imports", "codex": "codex-imports"}
@@ -85,6 +87,20 @@ def load_yaml_file(path: Path) -> Dict[str, Any]:
 def dump_yaml_file(path: Path, data: Dict[str, Any]) -> None:
     """Atomic YAML write; only reached after :func:`load_yaml_file` succeeded on the same path."""
     atomic_yaml_write(path, data)
+
+
+def resolve_memory_char_limit(config: Optional[Mapping[str, Any]]) -> int:
+    """The target's ``memory.memory_char_limit`` — the same budget MemoryStore enforces.
+
+    Falls back to :data:`DEFAULT_MEMORY_CHAR_LIMIT` when the key is absent or malformed so
+    an import never produces a store every later ``memory add`` would refuse (#123569)."""
+    memory = config.get("memory") if isinstance(config, Mapping) else None
+    value = memory.get("memory_char_limit") if isinstance(memory, Mapping) else None
+    if isinstance(value, bool):  # bool is an int subclass; never a limit
+        return DEFAULT_MEMORY_CHAR_LIMIT
+    if isinstance(value, int) and value > 0:
+        return value
+    return DEFAULT_MEMORY_CHAR_LIMIT
 
 
 def extract_markdown_entries(text: str) -> List[str]:
@@ -258,6 +274,14 @@ class AgentImporter:
                            "destination": str(destination) if destination else None,
                            "status": status, "reason": reason, **details})
 
+    def _memory_char_limit(self) -> int:
+        """Budget for the merged MEMORY.md: the target config's value, else the default (#123569)."""
+        try:
+            return resolve_memory_char_limit(load_yaml_file(self.target_root / "config.yaml"))
+        except ConfigReadError as exc:
+            logger.warning("import-agent: using default memory limit — %s", exc)
+            return DEFAULT_MEMORY_CHAR_LIMIT
+
     def load_target_config(self, kind: str, source,
                            destination: Path) -> Optional[Dict[str, Any]]:
         """Read the destination config.yaml, or record a refusal and return None. Runs in dry-run
@@ -381,7 +405,7 @@ class AgentImporter:
                 self.record(kind, source, destination, "skipped", "No importable entries found")
             return
         existing = parse_existing_memory_entries(destination)
-        merged, stats = merge_entries(existing, incoming, MEMORY_CHAR_LIMIT)
+        merged, stats = merge_entries(existing, incoming, self._memory_char_limit())
         details = {"existing_entries": stats["existing"], "added_entries": stats["added"],
                    "duplicate_entries": stats["duplicates"],
                    "overflowed_entries": stats["overflowed"]}

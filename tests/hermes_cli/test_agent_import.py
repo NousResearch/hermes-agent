@@ -23,6 +23,7 @@ from hermes_cli.agent_import import (
     detect_agents,
     extract_markdown_entries,
     is_secret_key,
+    resolve_memory_char_limit,
     sanitize_mcp_env,
 )
 
@@ -225,6 +226,35 @@ class TestMarkdownEntries:
         entries = extract_markdown_entries(CLAUDE_MD)
         assert any("type hints" in e for e in entries)
         assert any("linter" in e for e in entries)
+
+
+class TestMemoryCharLimit:
+    """Regression for #123569: the importer must honour memory.memory_char_limit."""
+
+    def test_resolve_reads_configured_limit(self):
+        assert resolve_memory_char_limit({"memory": {"memory_char_limit": 5000}}) == 5000
+
+    def test_resolve_falls_back_when_absent_or_malformed(self):
+        for config in ({}, {"memory": None}, {"memory": {}},
+                       {"memory": {"memory_char_limit": 0}},
+                       {"memory": {"memory_char_limit": "big"}},
+                       {"memory": {"memory_char_limit": True}}):
+            assert resolve_memory_char_limit(config) == 2200
+
+    def test_import_respects_configured_limit(self, hermes_home, tmp_path):
+        (hermes_home / "config.yaml").write_text(
+            "memory:\n  memory_char_limit: 200\n", encoding="utf-8")
+        source = tmp_path / ".claude"
+        source.mkdir()
+        (source / "CLAUDE.md").write_text(
+            "\n".join(f"- fact number {i} with some padding text" for i in range(40)),
+            encoding="utf-8")
+        report = run_import("claude-code", source, hermes_home, execute=True)
+        memory_item = next(i for i in report["items"]
+                           if "MEMORY.md" in (i["destination"] or ""))
+        assert memory_item["overflowed_entries"] > 0, "limit was not honoured"
+        merged = (hermes_home / "memories" / "MEMORY.md").read_text(encoding="utf-8")
+        assert len(merged) <= 200
 
 
 # ---------------------------------------------------------------------------

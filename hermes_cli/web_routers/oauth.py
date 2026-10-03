@@ -316,7 +316,8 @@ def _codex_full_login_worker(session_id: str) -> None:
             return
 
         tokens = _codex_exchange_tokens(httpx, code_resp)
-        from hermes_cli.auth import _save_codex_tokens
+        from hermes_cli.auth import DEFAULT_CODEX_BASE_URL, _save_codex_tokens, _update_config_for_provider
+        from hermes_cli.models import get_default_model_for_provider
 
         # The cancellation check and the save are one atomic critical section
         # under the lock cancel_oauth_session() uses; otherwise DELETE could
@@ -328,6 +329,10 @@ def _codex_full_login_worker(session_id: str) -> None:
             if _codex_cancelled(sess, session_id, " before token save"):
                 return
             _save_codex_tokens(tokens)
+            _update_config_for_provider(
+                "openai-codex", DEFAULT_CODEX_BASE_URL,
+                default_model=get_default_model_for_provider("openai-codex"),
+            )
             sess["status"] = "approved"
         _log.info("oauth/device: openai-codex login completed (session=%s)", session_id)
     except Exception as e:

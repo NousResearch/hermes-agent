@@ -5,6 +5,7 @@ with memory and ephemeral prompts.
 """
 
 import contextvars
+import hashlib
 import json
 import logging
 import os
@@ -1206,8 +1207,9 @@ def drain_truncation_warnings() -> list:
 _SKILLS_PROMPT_CACHE_MAX = 32
 _SKILLS_PROMPT_CACHE: OrderedDict[tuple, str] = OrderedDict()
 _SKILLS_PROMPT_CACHE_LOCK = threading.Lock()
-# v2 added org provenance fields (org_id/org_author); older snapshots are rebuilt.
-_SKILLS_SNAPSHOT_VERSION = 3
+# v2 added org provenance fields (org_id/org_author), v3 requires_apps, v4 sha256/depth for copy dedupe;
+# older snapshots are rebuilt.
+_SKILLS_SNAPSHOT_VERSION = 4
 
 
 def _skills_prompt_snapshot_path() -> Path:
@@ -1274,9 +1276,10 @@ def _requires_apps_list(frontmatter: dict) -> list[str]:
     return [str(a).strip() for a in items if str(a).strip()]
 
 
-def _build_snapshot_entry(skill_file: Path, skills_dir: Path, frontmatter: dict, description: str) -> dict:
-    """Serialisable metadata dict for one skill."""
+def _build_snapshot_entry(skill_file: Path, skills_dir: Path, frontmatter: dict, description: str, digest: str) -> dict:
+    """Serialisable metadata dict for one skill; ``digest`` is the SKILL.md sha256 ("" when it could not be read)."""
     parts = skill_file.relative_to(skills_dir).parts
+    depth = len(parts)
     # Org mirror: category/name derive from the path WITHIN `_org/<org_id>/`; org_id drives labeling + collisions.
     org_id: str | None = None
     if len(parts) >= 3 and parts[0] == ORG_MIRROR_DIR_NAME:
@@ -1290,6 +1293,7 @@ def _build_snapshot_entry(skill_file: Path, skills_dir: Path, frontmatter: dict,
         "description": description, "platforms": [str(p).strip() for p in platforms if str(p).strip()],
         "conditions": extract_skill_conditions(frontmatter),
         "requires_apps": _requires_apps_list(frontmatter),
+        "sha256": digest, "depth": depth,
     }
     if org_id:
         entry["org_id"] = org_id
@@ -1309,18 +1313,21 @@ def _build_snapshot_entry(skill_file: Path, skills_dir: Path, frontmatter: dict,
     return entry
 
 
-def _parse_skill_file(skill_file: Path) -> tuple[bool, dict, str]:
-    """Read a SKILL.md once -> (is_compatible, frontmatter, description); errors yield (True, {}, "")."""
+def _parse_skill_file(skill_file: Path) -> tuple[bool, dict, str, str]:
+    """Read a SKILL.md once -> (is_compatible, frontmatter, description, sha256 of its bytes); errors yield
+    (True, {}, "", "")."""
     try:
-        raw = skill_file.read_text(encoding="utf-8-sig")
-        frontmatter, _ = parse_frontmatter(raw)
+        data = skill_file.read_bytes()
+        # Digest of the raw bytes (skill_view's copy identity); parse the text read_text(encoding="utf-8-sig") gives.
+        frontmatter, _ = parse_frontmatter(data.decode("utf-8-sig").replace("\r\n", "\n").replace("\r", "\n"))
+        digest = hashlib.sha256(data).hexdigest()
         # Host-platform / runtime-environment gates are offer-time only; explicit loads bypass them.
         if not skill_matches_platform(frontmatter) or not skill_matches_environment(frontmatter) or not skill_matches_apps(frontmatter):
-            return False, frontmatter, extract_skill_description(frontmatter)
-        return True, frontmatter, extract_skill_description(frontmatter)
+            return False, frontmatter, extract_skill_description(frontmatter), digest
+        return True, frontmatter, extract_skill_description(frontmatter), digest
     except Exception as e:
         logger.warning("Failed to parse skill file %s: %s", skill_file, e)
-        return True, {}, ""
+        return True, {}, "", ""
 
 
 def _skill_should_show(
@@ -1412,8 +1419,8 @@ def _collect_extra_skills(
     """Add visible skills from a project/external dir; names already in *claimed* are skipped."""
     for skill_file in skill_files:
         try:
-            is_compatible, frontmatter, desc = _parse_skill_file(skill_file)
-            entry = _build_snapshot_entry(skill_file, root, frontmatter, desc) if is_compatible else None
+            is_compatible, frontmatter, desc, digest = _parse_skill_file(skill_file)
+            entry = _build_snapshot_entry(skill_file, root, frontmatter, desc, digest) if is_compatible else None
             fm_name = entry["frontmatter_name"] if entry else ""
             if not entry or fm_name in claimed or hides(fm_name, entry["skill_name"], extract_skill_conditions(frontmatter)):
                 continue
@@ -1421,6 +1428,19 @@ def _collect_extra_skills(
             skills_by_category.setdefault(entry["category"], []).append((fm_name, f"{desc_prefix}{entry['description']}".strip()))
         except Exception as e:
             logger.debug(log_fmt, skill_file, e)
+
+
+def _drop_skill_copies(entries: list[dict]) -> list[dict]:
+    """One row per skill, by skill_view's identity rule (``_provably_same_skill``): rows with the same name and the
+    same SKILL.md bytes are copies of one skill (a symlink view beside a nested copy, #112179), listed once as the
+    shallowest copy, the one skill_view(name) resolves to. A different name or different bytes is a different skill.
+    Runs after the visibility rules so hiding one row never drops another; org rows stay apart so a personal/org
+    clash is still flagged."""
+    first: dict[tuple, int] = {}
+    for entry in sorted(entries, key=lambda e: e.get("depth") or 0):  # stable: walk order breaks depth ties
+        first.setdefault((entry.get("org_id"), _entry_name(entry), entry.get("sha256") or id(entry)), id(entry))
+    kept = set(first.values())
+    return [entry for entry in entries if id(entry) in kept]
 
 
 def _label_visible_entries(visible_entries: list[dict], skills_by_category: dict[str, list[tuple[str, str]]]) -> None:
@@ -1548,12 +1568,12 @@ def _build_skills_system_prompt_inner(
     else:
         candidates = []
         for skill_file in iter_skill_index_files(skills_dir, "SKILL.md"):
-            is_compatible, frontmatter, desc = _parse_skill_file(skill_file)
-            candidates.append((_build_snapshot_entry(skill_file, skills_dir, frontmatter, desc), is_compatible))
-    visible_entries: list[dict] = [
+            is_compatible, frontmatter, desc, digest = _parse_skill_file(skill_file)
+            candidates.append((_build_snapshot_entry(skill_file, skills_dir, frontmatter, desc, digest), is_compatible))
+    visible_entries: list[dict] = _drop_skill_copies([
         entry for entry, is_compatible in candidates
         if is_compatible and not hides(_entry_name(entry), entry.get("skill_name") or "", entry.get("conditions") or {})
-    ]
+    ])
 
     # Project-local skills (highest precedence) shadow same-named profile-local skills; tagged [project].
     project_names: set[str] = set()

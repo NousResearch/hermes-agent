@@ -15,7 +15,7 @@ from agent.compression_marker import elide
 from agent.interrupt_compat import request_hard_interrupt
 from dataclasses import dataclass, field
 from tools import file_state
-from tools.delegate_tool_progress import _quiet, _safe_progress
+from tools.delegate_tool_progress import _quiet, _reasoning_label, _safe_progress
 from tools.delegate_tool_registry import (
     _capture_gateway_steer_authority, _close_subagent_steering, _register_subagent, _unregister_subagent,
 )
@@ -366,6 +366,7 @@ def _register_child(
         "goal": goal,
         "delegation_id": _str_or_none(getattr(child, "_delegation_id", None)),
         "model": _str_or_none(getattr(child, "model", None)),
+        "reasoning_effort": _reasoning_label(getattr(child, "reasoning_config", None)),
         "started_at": time.time(), "status": "running", "tool_count": 0, "agent": child,
         # Owning conversation's durable session id (same lineage completion delivery routes by), sourced from the
         # child's stamp so it survives a parent_agent rebuild between dispatch and run; used for list/steer/stop

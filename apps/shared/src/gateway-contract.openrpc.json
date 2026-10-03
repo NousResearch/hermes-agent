@@ -34250,6 +34250,18 @@
             "default": null,
             "title": "Model"
           },
+          "reasoning_effort": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Reasoning Effort"
+          },
           "tool_count": {
             "anyOf": [
               {
@@ -34614,6 +34626,18 @@
             ],
             "default": null,
             "title": "Model"
+          },
+          "reasoning_effort": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Reasoning Effort"
           },
           "started_at": {
             "anyOf": [

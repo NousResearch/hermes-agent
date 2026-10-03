@@ -38,7 +38,7 @@ from tools.delegate_tool_config import (  # noqa: F401
 from tools.delegate_tool_dispatch import _Batch, _announce_batch, _capture_origin, _run_batch
 from tools.delegate_tool_progress import (  # noqa: F401
     DelegateEvent, SUBAGENT_FAILURE_STATUSES, _batch_prefix, _build_child_progress_callback,
-    _build_child_system_prompt, _clean_error_text, _emit_parent_console, _quiet, _resolve_workspace_hint,
+    _build_child_system_prompt, _clean_error_text, _emit_parent_console, _quiet, _reasoning_label, _resolve_workspace_hint,
     _safe_progress, format_batch_tag, format_subagent_failure_line,
 )
 from tools.delegate_tool_registry import (  # noqa: F401
@@ -49,6 +49,7 @@ from tools.delegate_tool_registry import (  # noqa: F401
 )
 from tools.delegate_tool_tasks import (  # noqa: F401
     _MAX_TASK_IMAGES, _coerce_task_images, _coerce_task_schemas, _normalize_task_images, _normalize_task_list,
+    _task_routing_cfg, _task_routing_error,
 )
 from tools.delegate_tool_toolsets import (  # noqa: F401
     DELEGATE_BLOCKED_TOOLS, _expand_parent_toolsets, _resolve_child_toolsets, _strip_blocked_tools,
@@ -210,6 +211,7 @@ def _build_child_agent(
     # callers such as /review pass auxiliary.review here so fallback policy is
     # not accidentally read from the general delegation block.
     routing_cfg: Optional[Dict[str, Any]] = None,
+    override_reasoning_effort: Optional[str] = None,
     # Legacy; accepted for wire compat but ignored (capability is depth-derived).
     role: str = "leaf",
 ):
@@ -255,8 +257,10 @@ def _build_child_agent(
         override_base_url=override_base_url, override_api_key=override_api_key, override_api_mode=override_api_mode,
         override_acp_command=override_acp_command,
         override_acp_args=override_acp_args,
-        routing_cfg=routing_cfg,
+        routing_cfg=routing_cfg, override_reasoning_effort=override_reasoning_effort,
     )
+    if child_progress_cb is not None:
+        child_progress_cb.reasoning_effort = _reasoning_label(rt.get("reasoning_config"))
     if override_request_overrides is not None:
         # honored whenever set, incl. the inherit branch where
         # _resolve_delegation_credentials already merged OVER the parent's
@@ -405,26 +409,43 @@ def _build_children(
     ``(children, None)`` or ``([], error)`` on an explicit-pin preflight failure."""
     from tools.delegation_live_log import wrap_progress_callback
     from tools.delegation_output_schema import append_output_contract
-    overrides = {
-        "override_provider": creds["provider"], "override_base_url": creds["base_url"],
-        "override_api_key": creds["api_key"], "override_api_mode": creds["api_mode"],
-        "override_request_overrides": creds.get("request_overrides"),
-        "override_acp_command": creds.get("command"),
-        "override_acp_args": creds.get("args"),
-        "routing_cfg": routing_cfg,
-    }
+
+    def _route(c: Dict[str, Any], cfg: Dict[str, Any]) -> Dict[str, Any]:
+        return {
+            "override_provider": c["provider"], "override_base_url": c["base_url"],
+            "override_api_key": c["api_key"], "override_api_mode": c["api_mode"],
+            "override_request_overrides": c.get("request_overrides"),
+            "override_acp_command": c.get("command"),
+            "override_acp_args": c.get("args"),
+            "routing_cfg": cfg,
+        }
+
+    routes = []
+    for t in task_list:
+        task_routing = _task_routing_cfg(routing_cfg, t)
+        if task_routing is None:
+            routes.append((creds, _route(creds, routing_cfg)))
+            continue
+        try:
+            task_creds = _resolve_delegation_credentials(task_routing, parent_agent)
+        except ValueError as exc:
+            return [], str(exc)
+        routes.append((task_creds, _route(task_creds, task_routing)))
     children = []
     for i, t in enumerate(task_list):
         _task_schema = task_schemas[i] if i < len(task_schemas) else None
         _child_context = t.get("context")
         if _task_schema is not None:
             _child_context = append_output_contract(_child_context, _task_schema)
+        task_creds, task_overrides = routes[i]
+        task_effort = t["reasoning_effort"].strip() if isinstance(t.get("reasoning_effort"), str) else None
         try:
             child = _build_child_preserving_parent_tools(
                 task_index=i, goal=t["goal"], context=_child_context,
                 toolsets=None,  # always inherit the parent's toolsets
-                model=creds["model"], max_iterations=max_iterations, task_count=len(task_list),
-                parent_agent=parent_agent, role=_normalize_role(t.get("role") or top_role), **overrides,
+                model=task_creds["model"], max_iterations=max_iterations, task_count=len(task_list),
+                parent_agent=parent_agent, role=_normalize_role(t.get("role") or top_role),
+                override_reasoning_effort=task_effort, **task_overrides,
             )
         except ValueError as exc:
             return [], str(exc)
@@ -537,6 +558,8 @@ def delegate_task(
         task_schemas, err = _coerce_task_schemas(task_list, output_schema)
     if not err:
         task_images, err = _coerce_task_images(task_list, images)
+    if not err:
+        err = _task_routing_error(task_list, creds.get("provider") or getattr(parent_agent, "provider", None))
     if err:
         return tool_error(err)
     err = _oneshot_spawn_budget(parent_agent, len(task_list))
@@ -638,7 +661,8 @@ _DESCRIPTION_HEAD = (
     "the parent applies the transition.\n"
 )
 _DESCRIPTION_TAIL = (
-    "- Children inherit the parent model unless pinned via delegation.provider / delegation.model in config.yaml."
+    "- Children inherit the parent model unless a task sets `model` / `provider` / `reasoning_effort`, or "
+    "delegation.provider / delegation.model pin them in config.yaml."
 )
 
 def _build_tasks_param_description() -> str:
@@ -732,6 +756,20 @@ DELEGATE_TASK_SCHEMA = {
                             "is enabled; otherwise the whole call returns as one message). Tasks sharing a group return "
                             "together in ONE message; ungrouped tasks return individually as each finishes. This does not "
                             "order execution; if B needs A's output, dispatch B after A returns.",
+                        ),
+                        "model": _p(
+                            "string",
+                            "Optional model for THIS child only (e.g. a cheaper model for mechanical work). Omit to use "
+                            "delegation.model or the parent's model.",
+                        ),
+                        "provider": _p(
+                            "string",
+                            "Optional provider for THIS child only; resolves its own credentials. Omit to use "
+                            "delegation.provider or the parent's provider.",
+                        ),
+                        "reasoning_effort": _p(
+                            "string",
+                            "Optional reasoning effort for THIS child only: none, minimal, low, medium, high, xhigh.",
                         ),
                     },
                     "required": ["goal"],

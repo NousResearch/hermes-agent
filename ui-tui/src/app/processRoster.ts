@@ -45,6 +45,49 @@ export function applyProcessSnapshot(sid: string | null, processes: ProcessEntry
 
 const REASON_STATUS: Record<string, ProcessRow['status']> = { failed_start: 'failed', killed: 'killed', lost: 'lost' }
 
+const SETUP_STEP = /^(cd|set|export|source|\.|rm|mkdir|unset|ulimit|trap|sleep|true|:)(\s|$)|^\w+=\S*$/
+const SHELL_WRAPPER = /^(nohup|exec|time|env|caffeinate)$/
+const ASSIGNMENT = /^\w+=/
+
+const basename = (token: string): string => {
+  const cut = token.replace(/\/+$/, '').lastIndexOf('/')
+
+  return cut >= 0 && !token.endsWith('/') ? token.slice(cut + 1) : token
+}
+
+/** A background command's display name: the last real step of a `&&` chain with its `cd`/env setup,
+ * wrapper programs, redirections and directory prefixes dropped, plus the worktree it was started in. */
+export const processLabel = (command: string): { label: string; where?: string } => {
+  const steps = command
+    .split(/\s*(?:&&|;)\s*/)
+    .map(s => s.trim())
+    .filter(Boolean)
+  const cdTarget = steps
+    .find(s => /^cd\s/.test(s))
+    ?.slice(3)
+    .trim()
+  const main = [...steps].reverse().find(s => !SETUP_STEP.test(s)) ?? steps.at(-1) ?? command
+  const tokens = main
+    .replace(/\s*\d*>>?\s*&?\S+/g, '')
+    .split(/\s+/)
+    .filter(Boolean)
+  let i = 0
+
+  while (i < tokens.length) {
+    if (tokens[i] === '-u' && tokens[i - 1] === 'env') {
+      i += 2
+    } else if (SHELL_WRAPPER.test(tokens[i]!) || ASSIGNMENT.test(tokens[i]!)) {
+      i += 1
+    } else {
+      break
+    }
+  }
+
+  const label = tokens.slice(i).map(basename).join(' ') || command.trim()
+
+  return cdTarget ? { label, where: basename(cdTarget) } : { label }
+}
+
 export const processStatus = (entry: ProcessEntry): ProcessRow['status'] => {
   if (entry.status !== 'exited') {
     return 'running'

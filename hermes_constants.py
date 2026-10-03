@@ -781,22 +781,44 @@ _IGNORED_MANAGED_VALUES = frozenset({"brew", "homebrew"})
 _MANAGED_FALSE_VALUES = frozenset({"false", "0", "no", "off"})
 
 
+def _resolve_managed_marker(home: Path) -> str | None:
+    """Return managed marker for specific Hermes home, or ``None``."""
+    managed_marker = home / ".managed"
+    if not managed_marker.exists():
+        return None
+    try:
+        return managed_marker.read_text(encoding="utf-8", errors="replace").strip().lower()
+    except OSError:
+        return ""
+
+
 def get_managed_system(home: str | Path | None = None) -> str | None:
     """Return the package manager owning this install, if any.
     Signals: HERMES_MANAGED env var (systemd service) or a ``.managed`` marker file in
     HERMES_HOME (NixOS activation script — interactive shells don't see the service env).
     An unreadable or empty marker still counts as managed (the legacy NixOS shape).
 
+    Managed-ness is home-aware: when a profile home override is active, the decision
+    comes from that profile dir's ``.managed`` marker — not the process-global
+    ``HERMES_MANAGED`` env var. A package manager manages the main install's
+    ``config.yaml``, not per-profile configs, so a profile without its own
+    ``.managed`` marker must remain user-writable even when the global install is
+    managed.
+
     ``home`` names the home whose marker file is read, for callers that already resolved it
     (:func:`get_scratch_dir` at boot, before ``--profile`` re-homes the process).
     Defaults to the effective home."""
-    marker = os.getenv("HERMES_MANAGED", "").strip().lower() or None
-    managed_marker = (Path(home) if home is not None else get_hermes_home()) / ".managed"
-    if marker is None and managed_marker.exists():
-        try:
-            marker = managed_marker.read_text(encoding="utf-8", errors="replace").strip().lower()
-        except OSError:
-            marker = ""
+    override = get_hermes_home_override()
+    marker = None
+    if override is not None and home is None:
+        marker = _resolve_managed_marker(Path(override))
+    else:
+        raw = os.getenv("HERMES_MANAGED", "").strip()
+        if raw:
+            marker = raw.lower()
+        else:
+            managed_home = Path(home) if home is not None else get_hermes_home()
+            marker = _resolve_managed_marker(managed_home)
     if marker is None or marker in _IGNORED_MANAGED_VALUES or marker in _MANAGED_FALSE_VALUES:
         return None
     if marker == "" or marker in _MANAGED_TRUE_VALUES:

@@ -27,6 +27,7 @@ from hermes_cli.process_identity import (
     own_process_groups, register_child, release_process_group_once_empty, spawn_env, spawned_by_this_process)
 from hermes_constants import get_hermes_home, hermes_home_key
 from tools.browser_harness_dirs import daemon_env, daemon_identity, harness_pid_file, namespace_harness_dirs
+from tools.tool_output_truncate import truncate_head_tail
 from utils import is_truthy_value
 
 logger = logging.getLogger(__name__)
@@ -892,8 +893,7 @@ def browser_exec(code: str, session: str = "", timeout_s: int = _DEFAULT_TIMEOUT
         result["session"] = session
     result.update(_take_real_profile_note(route_key))
     stderr = redact_sensitive_text((proc.stderr or "").strip(), force=True)
-    if len(stderr) > _STDERR_CAP_CHARS:
-        stderr = stderr[:_STDERR_CAP_CHARS] + "\n… (stderr truncated)"
+    stderr = truncate_head_tail(stderr, _STDERR_CAP_CHARS, label="STDERR")
     if stderr:
         result["stderr"] = stderr
     screenshot = _find_screenshot(proc.stdout, started)

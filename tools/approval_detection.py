@@ -35,9 +35,12 @@ _CREDENTIAL_FILES = r'(?:~|\$home|\$\{home\})/\.' r'(?:netrc|pgpass|npmrc|pypirc
 # flag, so a long run that never reaches the subcommand fails in linear time instead of holding the
 # GIL for minutes (#129281). Whole groups still backtrack to expose the target flag or verb.
 _GLOBAL_FLAGS = r'(?:-\S++(?:\s++(?!-\S)\S++)?\s++)*'
-# Same grammar for the docker/podman rules, which have always taken a separate value only after exactly
-# one whitespace character; keeping that means this fix changes no approval decision.
-_CONTAINER_GLOBAL_FLAGS = r'(?:-\S++(?:\s(?!-\S)\S++)?\s++)*'
+# Same grammar for the docker/podman rules. The container flags historically took a separate value
+# only after exactly one whitespace character, which let a value behind a whitespace run (collapsed
+# by the shell before docker sees it) end the flag group and hide the verb (#130511); the value
+# separator is now the same whitespace run as _GLOBAL_FLAGS, so e.g. `docker --log-level  warn stop
+# web` reaches the lifecycle verb again. Single-space commands match exactly as before.
+_CONTAINER_GLOBAL_FLAGS = r'(?:-\S++(?:\s++(?!-\S)\S++)?\s++)*'
 # macOS: /etc, /var, /tmp, /home are symlinks to /private/*, so /private/etc/sudoers would bypass a plain
 # "/etc/" check. Match both forms.
 _MACOS_PRIVATE_SYSTEM_PATH = r'/private/(?:etc|var|tmp|home)/'

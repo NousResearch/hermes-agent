@@ -200,6 +200,32 @@ def terminal_run_status(result: Dict[str, Any]) -> Tuple[str, Dict[str, Any]]:
     return status, fields
 
 
+def provider_rate_limit_disposition(error: BaseException) -> Dict[str, Any] | None:
+    """Return a bounded, persisted retry disposition for a provider HTTP 429.
+
+    A provider exception used to reach the generic executor error path as opaque text.
+    That is insufficient for unattended callers: the caller needs a terminal status that
+    says whether retrying is appropriate and, when supplied, exactly how long to wait.
+    """
+    response = getattr(error, "response", None)
+    status_code = getattr(error, "status_code", None) or getattr(response, "status_code", None)
+    if status_code != 429:
+        return None
+    headers = getattr(response, "headers", None) or getattr(error, "headers", None)
+    retry_after = None
+    try:
+        from agent.retry_utils import parse_retry_after_seconds
+        retry_after = parse_retry_after_seconds(headers)
+    except Exception:
+        pass
+    disposition: Dict[str, Any] = {"action": "retry", "reason": "provider_rate_limited"}
+    if retry_after is not None:
+        # Keep the public run record bounded even if an upstream sends a pathological value.
+        retry_after = min(max(float(retry_after), 0.0), 86400.0)
+        disposition["retry_after_seconds"] = retry_after
+    return disposition
+
+
 def _run_not_found(_openai_error, run_id: str) -> "web.Response":
     return _json_error(_openai_error, f"Run not found: {run_id}", code="run_not_found", status=404)
 
@@ -993,7 +1019,16 @@ async def _execute_run(self, run: _RunLaunch, *, _api_server) -> None:
         _finish("failed", error=exc.user_text())
     except Exception as exc:
         logger.exception("[api_server] run %s failed", run_id)
-        _finish("failed", error=_redact_api_error_text(exc))
+        if disposition := provider_rate_limit_disposition(exc):
+            retry_after = disposition.get("retry_after_seconds")
+            delay = f" after {retry_after:g} seconds" if retry_after is not None else " with bounded backoff"
+            _finish(
+                "failed",
+                error=f"Provider rate limited this run; retry{delay}.",
+                failure_reason="provider_rate_limited", disposition=disposition,
+            )
+        else:
+            _finish("failed", error=_redact_api_error_text(exc))
     finally:
         # On cancellation (/stop) the executor thread may still block on an approval
         # Event; unregistering releases it. Idempotent on normal completion.

@@ -966,12 +966,15 @@ class TestWebhookApprovalExclusion:
         monkeypatch.delenv("HERMES_CRON_SESSION", raising=False)
         monkeypatch.delenv("HERMES_GATEWAY_SESSION", raising=False)
         monkeypatch.delenv("HERMES_INTERACTIVE", raising=False)
+        # A process-wide ask marker must not convert this external request into a five-minute wait.
+        monkeypatch.setenv("HERMES_EXEC_ASK", "1")
         monkeypatch.setenv("HERMES_SESSION_PLATFORM", "api_server")
         monkeypatch.setenv("HERMES_SESSION_KEY", "test-api-session")
 
         result = check_all_command_guards("sudo systemctl restart nginx", "local")
         assert result["approved"] is False
         assert "api_server" in result["message"]
+        assert "approvals.unattended_mode" in result["message"]
 
     def test_execute_code_denied_on_unattended_platform(self, monkeypatch):
         """execute_code is denied instantly on unattended platforms (parity with cron)."""

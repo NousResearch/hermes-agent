@@ -653,6 +653,42 @@ class TestRunEvents:
                 assert "Hello!" in body
 
     @pytest.mark.asyncio
+    async def test_provider_429_persists_bounded_retry_disposition(self, adapter):
+        """A provider quota error must settle the durable run record, not kill the request silently."""
+        app = _create_runs_app(adapter)
+
+        class Provider429(Exception):
+            status_code = 429
+
+            def __init__(self):
+                self.response = type("Response", (), {"status_code": 429, "headers": {"Retry-After": "17"}})()
+
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_create_agent") as mock_create:
+                mock_agent = MagicMock()
+                mock_agent.run_conversation.side_effect = Provider429()
+                mock_agent.session_prompt_tokens = 0
+                mock_agent.session_completion_tokens = 0
+                mock_agent.session_total_tokens = 0
+                mock_create.return_value = mock_agent
+
+                started = await cli.post("/v1/runs", json={"input": "simulate provider quota"})
+                run_id = (await started.json())["run_id"]
+                status = {}
+                for _ in range(40):
+                    status = await (await cli.get(f"/v1/runs/{run_id}")).json()
+                    if status["status"] == "failed":
+                        break
+                    await asyncio.sleep(0.05)
+
+        assert status["status"] == "failed"
+        assert status["failure_reason"] == "provider_rate_limited"
+        assert status["disposition"] == {
+            "action": "retry", "reason": "provider_rate_limited", "retry_after_seconds": 17.0,
+        }
+        assert status["error"] == "Provider rate limited this run; retry after 17 seconds."
+
+    @pytest.mark.asyncio
     async def test_completed_event_carries_served_runtime_and_cache_tokens(self, adapter):
         """The run.completed SSE event discloses the same served runtime and cache tokens as the
         pollable status, so streaming clients get identical cost-attribution data (#102101)."""

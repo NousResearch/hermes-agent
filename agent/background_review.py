@@ -3,7 +3,8 @@
 forked :class:`AIAgent` and asks "should any skill/memory be saved or updated?". Writes go
 straight to the memory + skill stores; the main conversation and prompt cache are never touched.
 The fork inherits the parent's live runtime (provider, model, credentials, cached system prompt)
-so it hits the same prefix cache, and runs under a dispatch-side tool whitelist."""
+so it hits the same prefix cache, and runs under a dispatch-side tool whitelist admitting memory,
+skill-management, and taste tools; everything else is denied at runtime."""
 
 from __future__ import annotations
 
@@ -780,6 +781,172 @@ def build_memory_write_metadata(
     return {k: v for k, v in metadata.items() if v not in {None, ""}}
 
 
+# ---------------------------------------------------------------------------
+# Taste learning (decaying, corroborated preference scores).
+#
+# Rides the existing review fork at near-zero marginal cost: after the
+# review/memory/skill writes complete, any `taste learn` observations the
+# fork recorded are folded through a candidate-keyed CorroborationEngine and
+# established candidates are flushed to the CC-compatible taste.md sidecar.
+# Fail-open throughout: taste must never break the review pass.
+# ---------------------------------------------------------------------------
+
+#: Candidate-keyed engine registry: preference id -> CorroborationEngine.
+#: One engine per candidate (NOT per session) so the same preference id
+#: across sessions maps to the same instance and cross-session
+#: corroboration can accumulate. Persisted via snapshot()/restore().
+
+
+def _taste_cfg_from(task_cfg: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    """Merge the taste config block (defaults fill any missing keys)."""
+    try:
+        from tools.taste_tool import DEFAULT_TASTE_CFG
+        cfg = dict(DEFAULT_TASTE_CFG)
+    except Exception:
+        cfg = {
+            "enabled": True,
+            "half_life_days": 14.0,
+            "escalate_stale_after_days": 21,
+            "conflict_epsilon": 0.15,
+            "min_observations_for_write": 3,
+            "auto_ack_observations": 10,
+            "taste_dir": ".commandcode/taste",
+        }
+    if isinstance(task_cfg, dict):
+        block = task_cfg.get("taste")
+        if isinstance(block, dict):
+            for k, v in block.items():
+                if v is not None:
+                    cfg[k] = v
+    return cfg
+
+
+def _normalize_taste_snapshot(snapshot: Any) -> Optional[Dict[str, Any]]:
+    """Coerce a taste observation to a plain dict (object or mapping)."""
+    if snapshot is None:
+        return None
+    if isinstance(snapshot, dict):
+        data = snapshot
+    else:
+        data = {
+            k: getattr(snapshot, k, None)
+            for k in ("preference_id", "id", "label", "project",
+                      "assessed_confidence", "confidence", "score")
+        }
+    preference_id = data.get("preference_id") or data.get("id")
+    raw_confidence = data.get("assessed_confidence")
+    if raw_confidence is None:
+        raw_confidence = data.get("confidence", data.get("score", 0.5))
+    if not preference_id:
+        return None
+    try:
+        confidence = float(raw_confidence)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
+    if not 0.0 <= confidence <= 1.0:
+        return None
+    return {
+        "preference_id": str(preference_id),
+        "label": str(data.get("label") or data.get("project")
+                     or preference_id),
+        "project": str(data.get("project") or ""),
+        "assessed_confidence": confidence,
+    }
+
+
+def _get_taste_engine(preference_id: str, label: str,
+                      taste_cfg: Dict[str, Any]) -> Any:
+    """Get-or-create the engine for one candidate (shared registry).
+
+    Delegates to :func:`tools.taste_tool.get_engine` so the hook and the
+    ``taste`` tool share a single candidate-keyed registry (and a single
+    ``_save_state`` persistence path); a private hook-side registry would
+    reset corroboration to zero on every restart.
+    """
+    try:
+        from tools.taste_tool import get_engine
+    except ImportError:  # pragma: no cover — package-layout fallback
+        from agent.tools.taste_tool import get_engine  # type: ignore[no-redef]
+    return get_engine(preference_id, label, taste_cfg,
+                      taste_cfg.get("taste_dir"))
+
+
+def _run_taste_learning(review_agent: Any, snapshot: Any,
+                        task_cfg: Optional[Dict[str, Any]]) -> Any:
+    """Ride the existing review fork; write the CC-compatible taste.md.
+
+    ``snapshot`` carries one candidate observation (``preference_id`` /
+    ``assessed_confidence`` — object attributes or mapping keys). Returns
+    the :class:`CorroborationResult`, or ``None`` when taste is disabled
+    or the observation is unusable. Never raises (fail-open).
+    """
+    try:
+        if not load_background_review_settings()[1].get(
+                "taste", {}).get("enabled", True):
+            return None
+        taste_cfg = _taste_cfg_from(task_cfg)
+        if not taste_cfg.get("enabled", True):
+            return None
+        norm = _normalize_taste_snapshot(snapshot)
+        if norm is None:
+            return None
+        engine = _get_taste_engine(norm["preference_id"], norm["label"],
+                                   taste_cfg)
+        result = engine.observe(norm["assessed_confidence"])
+        try:
+            try:
+                import tools.taste_tool as _taste_tool_mod
+            except ImportError:  # pragma: no cover — package-layout fallback
+                from agent.tools import taste_tool as _taste_tool_mod  # type: ignore[no-redef]
+            # Persist every observation (not just established ones) so
+            # corroboration accumulates in the sidecar across restarts —
+            # mirrors tools.taste_tool.taste_learn.
+            _taste_tool_mod._save_state(taste_cfg.get("taste_dir"))  # type: ignore[attr-defined]
+            if engine.should_write() and result.established:
+                snap = engine.snapshot()
+                snap["score"] = result.score
+                snap["label"] = result.label
+                _taste_tool_mod.write_taste_md(snap, taste_cfg.get("taste_dir"))
+        except Exception:
+            logger.debug("Taste taste.md write failed (fail-open)",
+                         exc_info=True)
+        return result
+    except Exception:
+        logger.debug("Taste learning skipped (fail-open)", exc_info=True)
+        return None
+
+
+def _iter_taste_snapshots(review_messages: Any) -> List[Dict[str, Any]]:
+    """Extract `taste learn` observations the review fork recorded.
+
+    Scans the fork's assistant tool calls for ``taste``/``learn`` invocations
+    (same message shape ``summarize_background_review_actions`` walks) so the
+    hook runs after — not inside — the existing review/memory/skill writes.
+    """
+    snapshots: List[Dict[str, Any]] = []
+    for msg in review_messages or []:
+        if not isinstance(msg, dict) or msg.get("role") != "assistant":
+            continue
+        for tc in msg.get("tool_calls", []) or []:
+            if not isinstance(tc, dict):
+                continue
+            fn = tc.get("function", {}) or {}
+            if fn.get("name") != "taste":
+                continue
+            try:
+                args = json.loads(fn.get("arguments", "{}"))
+            except (ValueError, TypeError):
+                continue
+            if not isinstance(args, dict):
+                continue
+            if str(args.get("action", "")).strip().lower() != "learn":
+                continue
+            norm = _normalize_taste_snapshot(args)
+            if norm is not None:
+                snapshots.append(norm)
+    return snapshots
+
+
 _USAGE_COUNTERS = (
     "input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens", "reasoning_tokens", "api_calls",
 )
@@ -1121,6 +1288,10 @@ def _review_tool_whitelist(
     # starved the loop (read_file also registers the read with the read-before-write guard).
     # Write tools stay denied — autonomous maintenance goes through skill_manage's validation.
     whitelist |= {"read_file", "search_files"}
+    # Taste learning rides this fork: admit the ``taste`` tool dispatch-side as a plain name
+    # (not via review_toolsets) so the fork keeps working even when toolset discovery has not
+    # run in this process — the post-loop hook persists observations directly (fail-open).
+    whitelist.add("taste")
     # ``extra_tools`` admits named parent tools (e.g. a human-gated proposal tool). The whitelist
     # can only admit, never advertise: a listed tool must already exist in the inherited schema.
     # Read-only file tools are whitelisted too (#61521, #39996): the model naturally reaches for
@@ -1192,7 +1363,7 @@ def _run_review_fork(
         deny_msg_fmt=(
             "Background review denied non-whitelisted tool: "
             "{tool_name}. Allowed here: skill_view/skills_list/read_file/search_files to read, "
-            "skill_manage(action='patch'|...) to change skills"
+            "skill_manage(action='patch'|...) to change skills, taste (learn) to record preferences"
             + memory_phrase_deny + "." + deny_extra + " Do not retry {tool_name}."
         ),
     )
@@ -1206,7 +1377,7 @@ def _run_review_fork(
             st.review_agent.run_conversation(
                 user_message=(
                     prompt + "\n\nYou can only call " + memory_phrase_prompt +
-                    "management tools. Other tools will be denied "
+                    "management and taste tools. Other tools will be denied "
                     "at runtime — do not attempt them." + prompt_extra
                 ),
                 conversation_history=_digest_history(messages_snapshot) if _routed else messages_snapshot,
@@ -1300,6 +1471,15 @@ def _run_review_in_thread(
             )
             actions = []
         _log_review_completion(st.review_usage, _classify_review_result(actions))
+        # Taste learning rides this same fork: fold any `taste learn` observations the review
+        # tool loop recorded through the candidate-keyed engines and flush established
+        # candidates to taste.md. Runs after the review/memory/skill writes above;
+        # fail-open — never breaks the review pass.
+        try:
+            for _taste_snapshot in _iter_taste_snapshots(st.review_messages):
+                _run_taste_learning(agent, _taste_snapshot, task_cfg)
+        except Exception:
+            logger.debug("Taste hook failed (fail-open)", exc_info=True)
         if actions:
             _publish_review_summary(agent, actions)
     except Exception as e:
@@ -1361,4 +1541,5 @@ def spawn_background_review_thread(
 __all__ = [
     "_MEMORY_REVIEW_PROMPT", "_SKILL_REVIEW_PROMPT", "_COMBINED_REVIEW_PROMPT", "load_background_review_settings",
     "spawn_background_review_thread", "summarize_background_review_actions", "build_memory_write_metadata",
+    "_run_taste_learning",
 ]

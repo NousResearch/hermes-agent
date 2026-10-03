@@ -574,7 +574,8 @@ def _finish_remote_kernel_result(kernel_result: Dict[str, Any], *,
         # the output under one marker so the model sees the failure inline.
         stdout_text = stdout_text + "\n--- stderr ---\n" + stderr_text + traceback_text
     result = _remote_result(kernel_result.get("status", "error"), stdout_text, exec_start,
-                            {"tool_calls_made": kernel_result.get("tool_calls_made", 0)},
+                            {"exit_code": kernel_result.get("exit_code", -1),
+                             "tool_calls_made": kernel_result.get("tool_calls_made", 0)},
                             kernel=kernel_result.get("kernel", {"remote": True}))
     if kernel_result.get("tool_errors"):
         result["tool_errors"] = kernel_result["tool_errors"]

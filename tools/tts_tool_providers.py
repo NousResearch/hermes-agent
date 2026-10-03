@@ -17,7 +17,7 @@ import os
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Callable, Dict, Optional
 from urllib.parse import urlparse
 
 from tools.tts_tool_delivery import _origin, _section, _wrap_pcm_as_wav, _write_wav_bytes_as
@@ -178,6 +178,7 @@ _TAG_REWRITE_TAIL = "- Do not explain or comment.\n- Return only the tagged TTS 
 
 def _rewrite_with_auxiliary_model(
     system_prompt: str, user_prompt: str, fallback: str, *, label: str, fallback_label: str, level: int,
+    validate: Optional[Callable[[str, str], bool]] = None,
 ) -> str:
     """Ask the auxiliary model (task ``tts_audio_tags``) to rewrite a script; *fallback* on any failure/empty reply."""
     try:
@@ -186,7 +187,11 @@ def _rewrite_with_auxiliary_model(
             task=GEMINI_AUDIO_TAG_REWRITE_TASK, temperature=0.7,
             messages=[{"role": "system", "content": system_prompt},
                       {"role": "user", "content": user_prompt}])
-        return _auxiliary_reply_text(response) or fallback
+        tagged = _auxiliary_reply_text(response)
+        if tagged and validate is not None and not validate(tagged, fallback):
+            logger.log(level, "%s audio tag rewrite was invalid; using %s", label, fallback_label)
+            return fallback
+        return tagged or fallback
     except Exception as exc:
         logger.log(level, "%s audio tag rewrite failed; using %s: %s", label, fallback_label, exc)
         return fallback
@@ -217,12 +222,16 @@ def _elevenlabs_environment_kwargs(el_config: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def _generate_elevenlabs(text: str, output_path: str, tts_config: Dict[str, Any]) -> str:
+    from tools.tts_tool_instructions import _elevenlabs_text_with_instructions, _tts_instructions_channel
     api_key = _require_key("ELEVENLABS_API_KEY", "elevenlabs", "Get one at https://elevenlabs.io/")
     el_config = tts_config.get("elevenlabs") or {}
+    model_id = el_config.get("model_id", DEFAULT_ELEVENLABS_MODEL_ID)
+    instructions = _tts_instructions_channel(tts_config)
+    text = _elevenlabs_text_with_instructions(text, instructions, str(model_id))
     client = _origin()._import_elevenlabs()(api_key=api_key, **_elevenlabs_environment_kwargs(el_config))
     audio_generator = client.text_to_speech.convert(
         text=text, voice_id=el_config.get("voice_id", DEFAULT_ELEVENLABS_VOICE_ID),
-        model_id=el_config.get("model_id", DEFAULT_ELEVENLABS_MODEL_ID),
+        model_id=model_id,
         output_format="opus_48000_64" if output_path.endswith(".ogg") else "mp3_44100_128")
     with open(output_path, "wb") as f:
         f.writelines(audio_generator)
@@ -235,14 +244,46 @@ _XAI_INLINE_SPEECH_TAGS = (
     "tongue-click", "lip-smack", "breath", "inhale", "exhale", "sigh")
 _XAI_WRAPPING_SPEECH_TAGS = (
     "soft", "whisper", "loud", "build-intensity", "decrease-intensity", "higher-pitch",
-    "lower-pitch", "slow", "fast", "sing-song", "singing", "laugh-speak", "emphasis")
+    "lower-pitch", "slow", "fast", "sing-song", "singing", "emphasis")
 _XAI_SPEECH_TAG_RE = re.compile(
     rf"(\[(?:{'|'.join(_XAI_INLINE_SPEECH_TAGS)})\]|</?(?:{'|'.join(_XAI_WRAPPING_SPEECH_TAGS)})>)",
     flags=re.IGNORECASE)
 _XAI_FIRST_SENTENCE_RE = re.compile(r"^(.{12,120}?[.!?…])\s+(?=\S)", flags=re.DOTALL)
 
 
-def _apply_xai_auto_speech_tags(text: str) -> str:
+def _is_valid_xai_speech_tag_rewrite(tagged: str, transcript: str) -> bool:
+    """Return whether tags are balanced and the spoken text is unchanged."""
+    wrapping_tags: list[str] = []
+
+    for match in _XAI_SPEECH_TAG_RE.finditer(tagged):
+        token = match.group(0)
+        if token.startswith("["):
+            continue
+
+        closing = token.startswith("</")
+        name = token[2:-1] if closing else token[1:-1]
+        name = name.casefold()
+
+        if not closing:
+            wrapping_tags.append(name)
+            continue
+
+        if not wrapping_tags or wrapping_tags[-1] != name:
+            return False
+
+        wrapping_tags.pop()
+
+    if wrapping_tags:
+        return False
+
+    def spoken_text(value: str) -> str:
+        without_tags = _XAI_SPEECH_TAG_RE.sub(" ", value)
+        return re.sub(r"\s+", " ", without_tags).strip()
+
+    return spoken_text(tagged) == spoken_text(transcript)
+
+
+def _apply_xai_auto_speech_tags(text: str, direction: str = "") -> str:
     """Add xAI speech tags: a conservative local pass ([pause] between paragraphs / after the first
     sentence), then — only when the text carried no explicit tags — an auxiliary-model rewrite
     with the richer xAI tag set, falling back to the locally tagged text on any failure."""
@@ -259,16 +300,36 @@ def _apply_xai_auto_speech_tags(text: str) -> str:
         "You rewrite transcripts for the xAI /v1/tts endpoint by inserting "
         "expressive speech tags.\n\n"
         "Valid inline tags (use as `[tag]`): " + ", ".join(_XAI_INLINE_SPEECH_TAGS) + ".\n"
-        "Valid wrapping tags (use as `[tag]...[/tag]`): " + ", ".join(_XAI_WRAPPING_SPEECH_TAGS) + ".\n\n"
+        "Valid wrapping tags (use as `<tag>...</tag>`): " + ", ".join(_XAI_WRAPPING_SPEECH_TAGS) + ".\n\n"
         + _TAG_REWRITE_RULES +
         "- Use inline `[tag]` for short modifiers (laughs, sighs, pause, etc.).\n"
-        "- Use wrapping `[tag]...[/tag]` for sustained effects (whisper, soft, slow, fast, loud, etc.).\n"
-        "- Do not use angle-bracket tags like `<tag>...</tag>` — xAI uses BBCode-style closing tags with `[/tag]`.\n"
+        "- Use wrapping `<tag>...</tag>` for sustained effects (whisper, soft, slow, fast, loud, etc.).\n"
+        "- Square brackets are only for inline tags.\n"
         "- Do not use SSML.\n"
         + _TAG_REWRITE_TAIL)
+    if direction:
+        system_prompt += (
+            "\n\nSTYLE DIRECTION (from the user): " + direction + "\n"
+            "Choose tags that realize this direction across the transcript."
+        )
     return _rewrite_with_auxiliary_model(
         system_prompt, f"TRANSCRIPT TO TAG:\n{local}", local, label="xAI TTS", fallback_label="locally-tagged text", level=logging.DEBUG,
+        validate=_is_valid_xai_speech_tag_rewrite,
     )
+
+
+def _xai_text_with_instructions(text: str, tts_config: Dict[str, Any]) -> str:
+    from tools.tts_tool_instructions import _tts_instructions_channel, _xai_instructions_wrap_tag
+
+    xai_config = tts_config.get("xai") or {}
+    instructions = _tts_instructions_channel(tts_config)
+    wrap_tag = _xai_instructions_wrap_tag(instructions) if instructions else ""
+    if wrap_tag:
+        text = f"<{wrap_tag}>{text}</{wrap_tag}>"
+    auto_speech_tags = xai_config.get("auto_speech_tags", xai_config.get("speech_tags"))
+    if _config_bool(auto_speech_tags, DEFAULT_XAI_AUTO_SPEECH_TAGS):
+        text = _apply_xai_auto_speech_tags(text, direction="" if wrap_tag else instructions)
+    return text
 
 
 def _clamped_number(raw: Any, cast, lo, hi):
@@ -299,9 +360,7 @@ def _generate_xai_tts(text: str, output_path: str, tts_config: Dict[str, Any]) -
     language = str(xai_config.get("language", DEFAULT_XAI_LANGUAGE)).strip() or DEFAULT_XAI_LANGUAGE
     sample_rate, bit_rate = (int(xai_config.get("sample_rate", DEFAULT_XAI_SAMPLE_RATE)),
                              int(xai_config.get("bit_rate", DEFAULT_XAI_BIT_RATE)))
-    auto_speech_tags = xai_config.get("auto_speech_tags", xai_config.get("speech_tags"))
-    if _config_bool(auto_speech_tags, DEFAULT_XAI_AUTO_SPEECH_TAGS):
-        text = _apply_xai_auto_speech_tags(text)
+    text = _xai_text_with_instructions(text, tts_config)
     # ``tts.xai.<knob>`` overrides global ``tts.<knob>``; out-of-range values are clamped into the
     # API's band rather than 400ing the request.
     speed = _clamped_number(xai_config.get("speed", tts_config.get("speed")), float,
@@ -393,10 +452,13 @@ def _raise_minimax_api_error(result: Dict[str, Any]) -> None:
 def _generate_minimax_tts(text: str, output_path: str, tts_config: Dict[str, Any]) -> str:
     """Generate audio via MiniMax: ``t2a_v2`` (nested payload, JSON reply with hex audio) or the legacy
     ``text_to_speech`` endpoint (flat payload, raw ``audio/*`` body), detected from the URL."""
+    from tools.tts_tool_instructions import _MINIMAX_TTS_EMOTIONS, _tts_instructions_channel
+
     runtime = _resolve_minimax_tts_runtime(tts_config)
     mm_config = _section(tts_config, "minimax")
     model = mm_config.get("model", DEFAULT_MINIMAX_MODEL)
     voice_id = mm_config.get("voice_id", DEFAULT_MINIMAX_VOICE_ID)
+    style = _tts_instructions_channel(tts_config).lower()
     base_url = runtime.endpoint
     # MiniMax scopes TTS requests by GroupId (``?GroupId=<id>`` on the t2a_v2 URL): config or
     # MINIMAX_GROUP_ID, attached only when absent from the URL.
@@ -411,7 +473,8 @@ def _generate_minimax_tts(text: str, output_path: str, tts_config: Dict[str, Any
             "model": model, "text": text,
             "voice_setting": {
                 "voice_id": voice_id, "speed": mm_config.get("speed", 1.0), "vol": mm_config.get("vol", 1.0),
-                "pitch": mm_config.get("pitch", 0), "emotion": mm_config.get("emotion", "neutral"),
+                "pitch": mm_config.get("pitch", 0),
+                "emotion": style if style in _MINIMAX_TTS_EMOTIONS else mm_config.get("emotion", "neutral"),
             },
             "audio_setting": {
                 "sample_rate": mm_config.get("sample_rate", 32000), "bitrate": mm_config.get("bitrate", 128000),
@@ -527,23 +590,49 @@ def _rewrite_gemini_tts_audio_tags(text: str, persona_prompt: str = "") -> str:
                                          fallback_label="untagged text", level=logging.WARNING)
 
 
-def _compose_gemini_tts_prompt(text: str, gemini_config: Dict[str, Any], persona_prompt: Optional[str] = None) -> str:
+def _compose_gemini_tts_prompt(
+    text: str, gemini_config: Dict[str, Any], persona_prompt: Optional[str] = None,
+    instructions: str = "",
+) -> str:
     """Gemini prompt = persona direction + transcript; a ``{transcript}`` / ``{{transcript}}``
     placeholder is substituted in place, otherwise the transcript is appended under a heading."""
     transcript = text.strip()
     if persona_prompt is None:
         persona_prompt = _read_gemini_persona_prompt(gemini_config)
-    if not persona_prompt:
+    instructions = instructions.strip()
+    if not persona_prompt and not instructions:
         return transcript
     preamble = (
         "Synthesize speech from the TRANSCRIPT only. Treat AUDIO PROFILE, "
-        "SCENE, DIRECTOR'S NOTES, and SAMPLE CONTEXT as performance direction; "
+        "SCENE, DIRECTOR'S NOTES, STYLE DIRECTION, and SAMPLE CONTEXT as performance direction; "
         "do not speak those sections aloud.")
+    sections = [preamble]
+    if instructions:
+        sections.append(f"#### STYLE DIRECTION\n{instructions}")
     for pattern in (r"\{\{\s*transcript\s*\}\}", r"\{\s*transcript\s*\}"):
         compiled = re.compile(pattern, flags=re.IGNORECASE)
         if compiled.search(persona_prompt):
-            return f"{preamble}\n\n{compiled.sub(transcript, persona_prompt)}".strip()
-    return f"{preamble}\n\n{persona_prompt}\n\n#### TRANSCRIPT\n{transcript}".strip()
+            sections.append(compiled.sub(transcript, persona_prompt))
+            return "\n\n".join(sections).strip()
+    if persona_prompt:
+        sections.append(persona_prompt)
+    sections.append(f"#### TRANSCRIPT\n{transcript}")
+    return "\n\n".join(sections).strip()
+
+
+def _gemini_prompt_with_instructions(
+    text: str, gemini_config: Dict[str, Any], tts_config: Dict[str, Any], model: str,
+) -> str:
+    from tools.tts_tool_instructions import _tts_instructions_channel
+
+    persona_prompt = _read_gemini_persona_prompt(gemini_config)
+    tts_script = text
+    if _gemini_audio_tags_enabled(gemini_config, model):
+        tts_script = _rewrite_gemini_tts_audio_tags(text, persona_prompt=persona_prompt)
+    return _compose_gemini_tts_prompt(
+        tts_script, gemini_config, persona_prompt=persona_prompt,
+        instructions=_tts_instructions_channel(tts_config),
+    )
 
 
 def _gemini_error_detail(response: Any) -> str:
@@ -572,12 +661,7 @@ def _generate_gemini_tts(text: str, output_path: str, tts_config: Dict[str, Any]
     base_url = normalize_gemini_base_url(
         gemini_config.get("base_url") or get_env_value("GEMINI_BASE_URL") or DEFAULT_GEMINI_TTS_BASE_URL,
     )
-    persona_prompt = _read_gemini_persona_prompt(gemini_config)
-    tts_script = text
-    if _gemini_audio_tags_enabled(gemini_config, model):
-        tts_script = _rewrite_gemini_tts_audio_tags(text, persona_prompt=persona_prompt)
-    prompt_text = _compose_gemini_tts_prompt(
-        tts_script, gemini_config, persona_prompt=persona_prompt)
+    prompt_text = _gemini_prompt_with_instructions(text, gemini_config, tts_config, model)
     max_len = origin._resolve_max_text_length("gemini", tts_config)
     if len(prompt_text) > max_len:
         raise ValueError(

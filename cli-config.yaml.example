@@ -1620,6 +1620,7 @@ platform_toolsets:
 # tts:
 #   provider: "gemini"
 #   speed: 1.0              # global speed multiplier (provider-specific overrides this)
+#   instructions: ""        # default style guidance; per-provider and per-call values override it
 #   # Per-platform audio upload limits. Built-in defaults: discord 10 MiB,
 #   # telegram 50 MiB, everything else 10 MiB, each with safety_ratio 0.85
 #   # (the fraction of max_file_bytes actually targeted). Override per platform:

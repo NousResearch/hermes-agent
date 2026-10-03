@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import time
+from unittest.mock import MagicMock
 from urllib.parse import urlencode
 
 import pytest
@@ -223,3 +224,70 @@ def test_edge_speak_stream_speaks_each_sentence_instead_of_whole_text_fallback(
     assert reply not in calls
 
 
+def test_openai_stream_receives_profile_tts_instructions(
+    stream_client,
+    monkeypatch,
+):
+    captured = {}
+
+    class _Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def iter_bytes(self):
+            yield b"\x01\x02"
+
+    class _StreamingCreate:
+        @staticmethod
+        def create(**kwargs):
+            captured["request"] = kwargs
+            return _Response()
+
+    class _OpenAI:
+        def __init__(self, **kwargs):
+            captured["client"] = kwargs
+            self.audio = MagicMock()
+            self.audio.speech.with_streaming_response = _StreamingCreate()
+
+    config = {
+        "provider": "openai",
+        "instructions": "calm and measured",
+        "openai": {
+            "api_key": "profile-key",
+            "base_url": "http://profile-tts.example/v1",
+        },
+    }
+    monkeypatch.setattr("tools.tts_tool._load_tts_config", lambda: config)
+    monkeypatch.setattr(
+        "tools.tts_streaming._openai_config_api_key",
+        lambda: "profile-key",
+    )
+    monkeypatch.setattr("openai.OpenAI", _OpenAI)
+
+    with stream_client.websocket_connect(_url()) as conn:
+        conn.send_text(json.dumps({"text": "Hello there.", "done": True}))
+        assert conn.receive_json() == {
+            "type": "start",
+            "sample_rate": 24000,
+            "channels": 1,
+        }
+
+        assert conn.receive_bytes() == b"\x01\x02"
+        assert conn.receive_json() == {"type": "end"}
+
+    assert captured == {
+        "client": {
+            "api_key": "profile-key",
+            "base_url": "http://profile-tts.example/v1",
+        },
+        "request": {
+            "model": "gpt-4o-mini-tts",
+            "voice": "alloy",
+            "input": "Hello there.",
+            "response_format": "pcm",
+            "instructions": "calm and measured",
+        },
+    }

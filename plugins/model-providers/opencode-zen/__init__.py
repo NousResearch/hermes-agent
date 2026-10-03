@@ -46,8 +46,9 @@ class OpenCodeGoProfile(ProviderProfile):
     """OpenCode Go - model-specific reasoning controls."""
 
     # The relay's default max_tokens (262144) exceeds what Xiaomi accepts for
-    # mimo-v2.5-pro and 400s; keys are normalized via _flat_model_name().
-    _MODEL_MAX_TOKENS: dict[str, int] = {"mimo-v2.5-pro": 131072}
+    # mimo-v2.5-pro / MiMo-V2.6 (pro, flash) and 400s; keys are normalized via _flat_model_name().
+    _MODEL_MAX_TOKENS: dict[str, int] = {
+        "mimo-v2.5-pro": 131072, "mimo-v2.6-pro": 131072, "mimo-v2.6-flash": 131072}
 
     def get_max_tokens(self, model: str | None) -> int | None:
         cap = self._MODEL_MAX_TOKENS.get(_flat_model_name(model))

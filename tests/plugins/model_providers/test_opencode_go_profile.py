@@ -262,6 +262,17 @@ class TestOpenCodeGoFullKwargsIntegration:
 
 
 
+def test_opencode_go_mimo_models_are_output_capped(opencode_go_profile):
+    """A live probe shows the Go relay rejects MiMo-V2.6 pro/flash above 131072 completion
+    tokens, so the profile must set a cap below the 262144 relay default — otherwise the
+    default is sent and the request 400s upstream. Asserted as a bound, not a snapshot:
+    any cap that stays within the upstream completion limit is correct."""
+    for model in ("mimo-v2.6-pro", "mimo-v2.6-flash"):
+        cap = opencode_go_profile.get_max_tokens(model)
+        assert cap is not None, f"{model} has no output cap; the relay default would 400"
+        assert cap <= 131072, f"{model} cap {cap} exceeds the upstream completion limit"
+
+
 def test_opencode_go_plan_windows_reach_usage_through_profile_hook(opencode_go_profile, monkeypatch):
     """The Go plan's rolling/weekly/monthly windows feed /usage via the profile hook — no core table entry."""
     from datetime import datetime, timezone

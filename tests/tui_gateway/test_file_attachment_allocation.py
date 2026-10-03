@@ -135,3 +135,4 @@ def test_cross_session_attached_images_allocate_unique_paths(sessions, tmp_path)
     assert path_a.read_bytes() == img_bytes_a
     assert path_b.read_bytes() == img_bytes_b
     assert path_a.exists() and path_b.exists()
+

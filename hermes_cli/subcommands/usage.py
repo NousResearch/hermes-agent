@@ -44,10 +44,16 @@ def cmd_usage(args: argparse.Namespace) -> int:
     # No explicit key: the fetcher resolves the credential exactly as a session without a live agent
     # would (singleton store, then credential pool) — it never adopts or refreshes anything else.
     snapshot = fetch_account_usage(provider)
-    if snapshot is None:
+    if snapshot is None or snapshot.unavailable_reason:
+        reason = (
+            snapshot.unavailable_reason
+            if snapshot is not None
+            else (
+                "no credential is configured for it, the provider has no usage endpoint, or the fetch failed."
+            )
+        )
         print(
-            f"No account usage available for provider '{provider}': no credential is configured for it, "
-            "the provider has no usage endpoint, or the fetch failed.",
+            f"No account usage available for provider '{provider}': {reason}",
             file=sys.stderr,
         )
         return 1

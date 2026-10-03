@@ -1968,6 +1968,23 @@ def _select_context_engine(_agent_cfg):
     return _selected_engine
 
 
+def _configured_context_engine(_agent_cfg) -> str:
+    with suppress(Exception):
+        return (_agent_cfg.get("context", {}) or {}).get("engine", "compressor") or "compressor"
+    return "compressor"
+
+
+def _context_engine_fallback_notice(_agent_cfg, selected) -> Optional[str]:
+    """User-facing notice when ``context.engine`` names a plugin that did not load. The fallback
+    itself is right (the turn must run), but a silent one leaves the user paying for, and
+    trusting, an engine that is not running."""
+    name = _configured_context_engine(_agent_cfg)
+    if name == "compressor" or selected is not None:
+        return None
+    return (f"⚠️ Context engine '{name}' failed to load — this session uses the built-in "
+            f"compressor. Details: `hermes logs --level WARNING`.")
+
+
 def _compressor_max_tokens(agent):
     """``agent.max_tokens``, or the native-Gemini adapter default when unset: generateContent
     still sends maxOutputTokens=65,535 and the threshold is pct×(window − max_tokens), so
@@ -1988,6 +2005,7 @@ def _compressor_max_tokens(agent):
 
 def _build_context_engine(agent, _agent_cfg, cs, _custom_providers, _effective_context_length, session_db):
     _selected_engine = _select_context_engine(_agent_cfg)
+    agent._context_engine_fallback_notice = _context_engine_fallback_notice(_agent_cfg, _selected_engine)
     if _selected_engine is not None:
         agent.context_compressor = _selected_engine
         # External engines own compaction policy — the host threshold (and its Codex
@@ -2274,9 +2292,13 @@ def _emit_compression_summary(agent, cs):
         if _autoraise_notice:
             agent._safe_print(_autoraise_notice, diagnostic=True)
 
+    _engine_notice = getattr(agent, "_context_engine_fallback_notice", None)
+    if _engine_notice and not agent.quiet_mode:
+        agent._safe_print(_engine_notice, diagnostic=True)
+
     # status_callback isn't wired yet: stash for replay on the first turn; mark shown so
     # repeated inits stay silent.
-    agent._compression_warning = _autoraise_notice
+    agent._compression_warning = "\n".join(n for n in (_engine_notice, _autoraise_notice) if n) or None
     if _autoraise_notice:
         _record_codex_gpt55_autoraise_notice(_autoraise)
     # Feasibility check deferred to the first turn near threshold (eager costs ~400ms cold).

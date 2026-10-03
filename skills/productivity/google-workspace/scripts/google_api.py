@@ -51,6 +51,7 @@ SCOPES = [
     "https://www.googleapis.com/auth/contacts.readonly",
     "https://www.googleapis.com/auth/spreadsheets",
     "https://www.googleapis.com/auth/documents",
+    "https://www.googleapis.com/auth/forms.body",
 ]
 
 
@@ -1143,6 +1144,32 @@ def _docs_insert_text(doc_id: str, text: str, index: int, tab_id: str | None = N
 
 
 # =========================================================================
+# Forms
+# =========================================================================
+
+
+def forms_create(args):
+    """Create a new Form and return its IDs plus the responder link to share."""
+    body = {"info": {"title": args.title}}
+
+    if _gws_binary():
+        form = _run_gws(["forms", "forms", "create"], body=body)
+    else:
+        service = build_service("forms", "v1")
+        form = service.forms().create(body=body).execute()
+
+    form_id = form.get("formId", "")
+
+    print(json.dumps({
+        "status": "created",
+        "formId": form_id,
+        "title": form.get("info", {}).get("title", ""),
+        "responderUri": form.get("responderUri", ""),
+        "url": f"https://docs.google.com/forms/d/{form_id}/edit" if form_id else "",
+    }, indent=2, ensure_ascii=False))
+
+
+# =========================================================================
 # CLI parser
 # =========================================================================
 
@@ -1314,6 +1341,14 @@ def main():
     p.add_argument("--text", required=True, help="Text to append to the end of the document")
     p.add_argument("--tab", default=None, help="Tab ID to append to (required for multi-tab Docs)")
     p.set_defaults(func=docs_append)
+
+    # --- Forms ---
+    forms = sub.add_parser("forms")
+    forms_sub = forms.add_subparsers(dest="action", required=True)
+
+    p = forms_sub.add_parser("create")
+    p.add_argument("--title", required=True, help="Google Form title")
+    p.set_defaults(func=forms_create)
 
     args = parser.parse_args()
     args.func(args)

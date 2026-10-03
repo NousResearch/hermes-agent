@@ -269,3 +269,53 @@ def test_docs_append_carries_tab_id_and_refuses_ambiguous_writes(api_module, mon
         api_module.docs_append(types.SimpleNamespace(doc_id="doc1", text="more", tab=None))
     err = json.loads(capsys.readouterr().err)
     assert "tabs" in err and len(err["tabs"]) == 3
+
+
+FORM_RESPONSE = {
+    "formId": "form-123",
+    "info": {"title": "Client Intake"},
+    "responderUri": "https://docs.google.com/forms/d/e/abc/viewform",
+}
+
+
+def test_forms_create_uses_gws_when_available(api_module, monkeypatch, capsys):
+    """With the gws binary present the Forms call goes through it, like the other
+    create commands, and the result exposes both links a caller needs."""
+    sent = {}
+
+    def fake_run_gws(parts, params=None, body=None):
+        sent["parts"] = parts
+        sent["body"] = body
+        return FORM_RESPONSE
+
+    monkeypatch.setattr(api_module, "_run_gws", fake_run_gws)
+    api_module.forms_create(types.SimpleNamespace(title="Client Intake"))
+
+    assert sent["parts"] == ["forms", "forms", "create"]
+    assert sent["body"] == {"info": {"title": "Client Intake"}}
+    result = json.loads(capsys.readouterr().out)
+    assert result["status"] == "created"
+    assert result["formId"] == "form-123"
+    assert result["responderUri"] == FORM_RESPONSE["responderUri"]
+    assert result["url"] == "https://docs.google.com/forms/d/form-123/edit"
+
+
+def test_forms_create_falls_back_to_python_sdk_without_gws(api_module, monkeypatch, capsys):
+    """Without gws the same command must still work through the Python SDK."""
+    calls = {}
+
+    def fake_build_service(api, version):
+        calls["api"] = api
+        calls["version"] = version
+        service = MagicMock()
+        service.forms.return_value.create.return_value.execute.return_value = FORM_RESPONSE
+        return service
+
+    monkeypatch.setattr(api_module, "_gws_binary", lambda: None)
+    monkeypatch.setattr(api_module, "build_service", fake_build_service)
+    api_module.forms_create(types.SimpleNamespace(title="Client Intake"))
+
+    assert (calls["api"], calls["version"]) == ("forms", "v1")
+    result = json.loads(capsys.readouterr().out)
+    assert result["formId"] == "form-123"
+    assert result["title"] == "Client Intake"

@@ -394,7 +394,7 @@ def cmd_status(args) -> None:
         if provider and hasattr(provider, "get_status_config"):
             try:
                 display_config = provider.get_status_config(provider_config)
-            except Exception as e:
+            except (Exception, SystemExit) as e:
                 display_config = dict(provider_config) if isinstance(provider_config, dict) else provider_config
                 if isinstance(display_config, dict):
                     display_config["status_config_error"] = str(e)
@@ -405,7 +405,12 @@ def cmd_status(args) -> None:
 
         if provider:
             print("\n  Plugin:    installed ✓")
-            if provider.is_available():
+            _is_avail = False
+            try:
+                _is_avail = bool(provider.is_available())
+            except (Exception, SystemExit):
+                _is_avail = False
+            if _is_avail:
                 print("  Status:    available ✓")
             else:
                 print("  Status:    not available ✗")

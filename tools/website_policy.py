@@ -38,9 +38,12 @@ def _normalize_rule(rule: Any) -> Optional[str]:
     """Reduce a rule (bare host, URL, or ``host/path``) to a lowercase host; None for blanks/comments."""
     if not isinstance(rule, str) or not (value := rule.strip().lower()) or value.startswith("#"):
         return None
-    if "://" in value:
-        parsed = urlparse(value)
-        value = parsed.netloc or parsed.path
+    # Requests match on bare hostname, so a rule must drop any port/userinfo or it can never match.
+    try:
+        parsed = urlparse(value if "://" in value else f"//{value}")
+        value = parsed.hostname or parsed.netloc or parsed.path
+    except ValueError:  # malformed (e.g. unbalanced "[") — keep the raw rule as before
+        pass
     return value.split("/", 1)[0].strip().rstrip(".").removeprefix("www.") or None
 
 

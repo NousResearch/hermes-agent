@@ -539,7 +539,7 @@ export default function SkillsDashboard() {
         {
           type: "hermes-skill-pick",
           name: skill.name,
-          identifier: skillCatalogInstallIdentifier(skill) || skill.name,
+          identifier: skillCatalogInstallIdentifier(skill),
           installCmd: skill.installCmd || `hermes skills install ${skillCatalogInstallIdentifier(skill) || skill.name}`,
           source: skill.source,
         },

@@ -193,6 +193,17 @@ describe('hub pick messages', () => {
     expect(installCalls()).toEqual([['skills.manage', { action: 'install', query: 'nous/web-research' }]])
   })
 
+  it('preserves a source-qualified ClawHub owner identifier', () => {
+    const frame = openHubBrowser()
+
+    postPick(
+      { identifier: 'clawhub/@owner/humanizer', name: 'humanizer', type: 'hermes-skill-pick' },
+      { source: frame.contentWindow }
+    )
+
+    expect(installCalls()).toEqual([['skills.manage', { action: 'install', query: 'clawhub/@owner/humanizer' }]])
+  })
+
   it('routes an existing source-scoped bot install through its owner connection', async () => {
     const { container } = render(
       <HubSkillsSection
@@ -273,8 +284,21 @@ describe('hub pick messages', () => {
       postPick({ identifier, name: 'Web Research', type: 'hermes-skill-pick' }, { source: frame.contentWindow })
     }
 
-    // The empty identifier falls back to `name`, which is also off-charset.
+    // Empty identifiers are rejected; picker cards must carry the exact
+    // source-qualified target instead of falling back to their display name.
     expect(installCalls()).toEqual([])
+  })
+
+  it('reports a pick with no identifier even when its display name is valid', () => {
+    const frame = openHubBrowser()
+
+    postPick({ name: 'humanizer', type: 'hermes-skill-pick' }, { source: frame.contentWindow })
+
+    expect(installCalls()).toEqual([])
+    expect(mocks.notify).toHaveBeenCalledWith({
+      kind: 'error',
+      message: 'Install unavailable: missing canonical identifier'
+    })
   })
 
   it('ignores messages that are not a skill pick', () => {

@@ -573,6 +573,22 @@ def _is_recoverable_error_job(job: Dict[str, Any]) -> bool:
     )
 
 
+def _is_spent_recurring_job(job: Dict[str, Any]) -> bool:
+    """True for a recurring job whose finite ``repeat.times`` budget ran out — the
+    ``state=completed`` written by ``mark_job_run``'s limit branch. Unlike a spent
+    one-shot, its schedule still has future occurrences, so an explicit ``resume_job``
+    restarts the series (budget back to 0/``times``) instead of wedging the record
+    behind the terminal guard with no exit except delete-and-recreate (#125872).
+    """
+    if job.get("state") != "completed":
+        return False
+    if (job.get("schedule") or {}).get("kind") not in {"cron", "interval"}:
+        return False
+    repeat = job.get("repeat") or {}
+    times = repeat.get("times")
+    return times is not None and times > 0 and repeat.get("completed", 0) >= times
+
+
 def _secure_dir(path: Path):
     """Owner-only (0700) via the shared helper, so cron/ and cron/output honor the same managed/
     container/HERMES_HOME_MODE rules as the rest of HERMES_HOME (#10757)."""
@@ -2005,9 +2021,13 @@ def _reject_terminal_activation(job: Dict[str, Any], updated: Dict[str, Any], jo
             or updated.get("next_run_at") is not None
         )
     ):
+        if _is_spent_recurring_job(job):
+            hint = "use plain 'cron resume' to restart the series (budget resets to 0/repeat.times)"
+        else:
+            hint = "use cron resume --run-now or --at"
         raise ValueError(
             f"Cannot activate terminal cron job '{job.get('name', job_id)}' "
-            "through update_job; use cron resume --run-now or --at.")
+            f"through update_job; {hint}.")
 
 
 def _apply_pin_update(job: Dict[str, Any], updates: Dict[str, Any]) -> None:
@@ -2162,6 +2182,49 @@ def pause_job(job_id: str, reason: Optional[str] = None) -> Optional[Dict[str, A
     })
 
 
+def _restart_spent_recurring(job_ref: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """Restart a spent bounded recurring series as a sanctioned exception to the terminal
+    guard — the ``resume_job`` door of #125872, mirroring ``rearm_oneshot``'s dedicated write
+    path for spent one-shots. Budget resets to 0/``times`` (the user's stated intent), schedule
+    and run history survive; nothing automatic can reach this — only explicit ``cron resume``.
+    """
+    def apply(jobs, _i, job):
+        now = _hermes_now()
+        # Re-check under the lock: another writer may have revived/rewritten the record
+        # between resolve_job_ref and this critical section.
+        if not _is_spent_recurring_job(job):
+            raise ValueError(
+                f"Cannot restart job '{job.get('name', job.get('id', '?'))}': it is no longer a "
+                "spent recurring job (changed while resuming); re-run 'hermes cron list' and retry.")
+        if _claim_is_live(job.get("run_claim"), now, _oneshot_run_claim_ttl_seconds()):
+            raise ValueError("Cannot restart a spent recurring job over a live run claim.")
+        if _claim_is_live(job.get("fire_claim"), now, FIRE_CLAIM_TTL_SECONDS):
+            raise ValueError("Cannot restart a spent recurring job over a live fire claim.")
+        next_run_at = compute_next_run(job["schedule"])
+        if next_run_at is None:
+            raise ValueError(
+                f"Cannot restart job '{job.get('name', job.get('id', '?'))}': the schedule has no "
+                "next occurrence (is the 'croniter' package installed in the gateway's Python "
+                "env?); nothing was changed.")
+        repeat = dict(job.get("repeat") or {})
+        repeat["completed"] = 0
+        job.update(
+            repeat=repeat,
+            run_claim=None,
+            fire_claim=None,
+        )
+        job.pop("pending_slot", None)
+        _activate_job_record(job)
+        job["next_run_at"] = next_run_at
+        save_jobs(jobs)
+        logger.info(
+            "Job '%s': restarting series — repeat budget reset to 0/%s, next run %s (#125872).",
+            job.get("name", job.get("id", "?")), repeat.get("times"), next_run_at)
+        return _normalize_job_record(job)
+
+    return _with_job(job_ref["id"], apply)
+
+
 def resume_job(job_id: str) -> Optional[Dict[str, Any]]:
     """Resume a paused job. Accepts a job ID or name.
 
@@ -2170,10 +2233,17 @@ def resume_job(job_id: str) -> Optional[Dict[str, Any]]:
     catch-up / ``cron.catch_up_missed`` policy in the due scan decides what happens to it — one
     fire or a logged skip, never a silent re-anchor past it (#113603). One-shots and future
     instants recompute from now as before.
+
+    A recurring job whose finite ``repeat.times`` budget ran out (``state=completed`` via
+    ``mark_job_run``'s limit branch) is restarted as a fresh series: the budget resets to
+    0/``times`` while the schedule and run history survive (#125872). This is the one sanctioned
+    door — ``update_job`` stays blocked so nothing automatic can revive a spent budget.
     """
     job = resolve_job_ref(job_id)
     if not job:
         return None
+    if _is_spent_recurring_job(job):
+        return _restart_spent_recurring(job)
     stored_next = job.get("next_run_at")
     stored_dt = _parse_aware(stored_next) if stored_next else None
     if (
@@ -2210,6 +2280,11 @@ def trigger_job(job_id: str, extra_prompt: Optional[str] = None) -> Optional[Dic
         return None
     if is_terminal_job(job):
         name = job.get("name", job_id)
+        if _is_spent_recurring_job(job):
+            raise ValueError(
+                f"Cannot run: job '{name}' is {job.get('state')} (terminal) — its repeat budget "
+                f"is spent. Restart the series with plain 'hermes cron resume {name}' (budget "
+                "resets to 0/repeat.times).")
         raise ValueError(
             f"Cannot run: job '{name}' is {job.get('state')} (terminal). "
             f"Create a new occurrence with 'hermes cron resume {name} "

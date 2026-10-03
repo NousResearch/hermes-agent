@@ -273,7 +273,8 @@ describe('the catalog owns favorite models', () => {
 
     renderMenu()
 
-    await screen.findByText(/Gemini 2\.5/i)
+    // Favorites paint the full model id, not the prettified provider-group name.
+    await screen.findByText('gemini-2.5-flash')
 
     const label = screen.getByText('Favorites')
     const googleHeading = screen.getByText('Google')
@@ -298,13 +299,13 @@ describe('the catalog owns favorite models', () => {
 
     await screen.findByText('Favorites')
 
-    const rows = screen.getAllByText(/Gemini (3\.1|2\.5)/).map(node => node.textContent)
+    const rows = screen.getAllByText(/gemini-(3\.1|2\.5)/).map(node => node.textContent)
 
     // One label per provider, never one per row, and each provider's
     // favorites sit together under it.
     expect(screen.getAllByText('Google')).toHaveLength(1)
     expect(screen.getAllByText('OpenRouter')).toHaveLength(1)
-    expect(rows).toEqual(['Gemini 3.1 Pro', 'Gemini 2.5', 'Gemini 3.1 Pro'])
+    expect(rows).toEqual(['gemini-3.1-pro', 'gemini-2.5-flash', 'gemini-3.1-pro'])
   })
 
   it('does not label the provider when every favorite shares one', async () => {
@@ -318,6 +319,35 @@ describe('the catalog owns favorite models', () => {
     expect(screen.getAllByText('Google')).toHaveLength(1)
   })
 
+  it('shows the full model id, never a long OAuth badge', async () => {
+    // Reproduces the live bug: xAI OAuth's backend name is a mouthful that
+    // used to render as an uppercase badge and eat the row, leaving only a
+    // clipped "XAI GROK OAUTH (SUPERGROK / PREMIUM+" string.
+    const longId = 'grok-4-1-fast-reasoning-with-a-very-long-model-id'
+    getGlobalModelOptions.mockResolvedValue({
+      providers: [
+        {
+          models: [longId, 'grok-code-fast-1'],
+          name: 'xAI Grok OAuth (SuperGrok / Premium+ Plan)',
+          slug: 'xai-oauth'
+        }
+      ]
+    })
+    toggleFavoriteModel('xai-oauth', longId)
+
+    renderMenu()
+
+    await screen.findByText('Favorites')
+
+    // Full id is present as its own text node — not truncated away.
+    expect(screen.getByText(longId)).toBeTruthy()
+
+    // The long OAuth string is not a badge on the row.
+    const row = screen.getByText(longId).closest('[role="menuitem"]')!
+    expect(row.textContent).not.toMatch(/SuperGrok/i)
+    expect(row.querySelector('[data-slot="badge"]')?.textContent ?? '').not.toMatch(/xAI|OAuth|SuperGrok/i)
+  })
+
   it('does not also list a favorite under its provider', async () => {
     toggleFavoriteModel('google', 'gemini-2.5-flash')
 
@@ -325,8 +355,11 @@ describe('the catalog owns favorite models', () => {
 
     await screen.findByText('Favorites')
 
-    // Listed once, under Favorites — not also down in Google's group.
-    expect(screen.getAllByText(/Gemini 2\.5/i)).toHaveLength(1)
+    // Listed once, under Favorites — not also down in Google's group. The
+    // Favorites row shows the full id; the provider group would have shown
+    // the pretty "Gemini 2.5" name, so neither string can appear twice.
+    expect(screen.getAllByText('gemini-2.5-flash')).toHaveLength(1)
+    expect(screen.queryByText('Gemini 2.5')).toBeNull()
   })
 
   it('keeps a favorite whose provider is not connected without painting an empty section', async () => {
@@ -347,7 +380,7 @@ describe('the catalog owns favorite models', () => {
     renderMenu()
 
     await screen.findByText('Favorites')
-    expect(screen.getAllByText(/Gemini 2\.5/i)).toHaveLength(1)
+    expect(screen.getAllByText('gemini-2.5-flash')).toHaveLength(1)
   })
 
   it('folds the section away while searching and lists the match in its provider place', async () => {
@@ -359,7 +392,8 @@ describe('the catalog owns favorite models', () => {
     fireEvent.change(screen.getByRole('textbox', { name: 'Search models' }), { target: { value: 'gemini-2.5' } })
 
     // A query means "show me every match": the section folds and the match
-    // paints in its provider's place. Still exactly once, still starred.
+    // paints in its provider's place (pretty name again). Still exactly once,
+    // still starred.
     await vi.waitFor(() => {
       expect(screen.queryByText('Favorites')).toBeNull()
     })
@@ -374,15 +408,18 @@ describe('the catalog owns favorite models', () => {
   it('the star, shift-click and Shift+Enter toggle a favorite without selecting or closing', async () => {
     const select = renderMenu()
     const key = favoriteModelKey('google', 'gemini-2.5-flash')
-    const row = () => screen.getByText('Gemini 2.5').closest('[role="menuitem"]')!
-    const star = () => row().querySelector('button[aria-pressed]')!
+    // Under the provider group the pretty name paints; after starring the
+    // Favorites row shows the full model id instead.
+    const groupRow = () => screen.getByText('Gemini 2.5').closest('[role="menuitem"]')!
+    const favoriteRow = () => screen.getByText('gemini-2.5-flash').closest('[role="menuitem"]')!
+    const star = (row: Element) => row.querySelector('button[aria-pressed]')!
 
     await screen.findByText('Gemini 2.5')
-    fireEvent.click(star())
+    fireEvent.click(star(groupRow()))
     expect($favoriteModels.get()).toEqual([key])
     await screen.findByText('Favorites')
 
-    fireEvent.click(row(), { shiftKey: true })
+    fireEvent.click(favoriteRow(), { shiftKey: true })
     expect($favoriteModels.get()).toEqual([])
 
     const search = screen.getByRole('textbox', { name: 'Search models' })
@@ -556,6 +593,42 @@ describe('the per-row options submenu is discoverable', () => {
     fireEvent.keyDown(input, { key: 'ArrowRight' })
 
     expect(screen.queryByText('Effort')).toBeNull()
+  })
+
+  it('paints an always-visible scrollbar on the nested model list', async () => {
+    renderMenu()
+    await screen.findByText(/Gemini 3\.1 Pro/i)
+
+    const list = screen.getByText(/Gemini 3\.1 Pro/i).closest('.dt-portal-scrollbar')
+
+    expect(list?.className).toMatch(/dt-portal-scrollbar-always/)
+    expect(list?.className).toMatch(/overflow-y-auto/)
+  })
+
+  // Nested overflow on the list is invisible to Floating UI's Content-scoped
+  // position updates, so a portaled OPTIONS panel drifts off its row while
+  // scrolling. Closing the sub on list scroll is the contract.
+  it('closes the options submenu when the model list scrolls', async () => {
+    renderMenu()
+    await screen.findByText(/Gemini 3\.1 Pro/i)
+
+    const input = screen.getByRole('textbox', { name: 'Search models' })
+
+    fireEvent.keyDown(input, { key: 'ArrowDown' })
+    fireEvent.keyDown(input, { key: 'ArrowRight' })
+    expect(await screen.findByText('Effort')).not.toBeNull()
+
+    const list = document.querySelector('.dt-portal-scrollbar-always')
+
+    expect(list).not.toBeNull()
+
+    // Keyboard ArrowDown may have primed a one-shot ignore for scrollIntoView;
+    // a real user wheel always arrives as a later scroll. Fire twice so the
+    // ignore (if any) is consumed and the close still runs.
+    fireEvent.scroll(list as Element)
+    fireEvent.scroll(list as Element)
+
+    await waitFor(() => expect(screen.queryByText('Effort')).toBeNull())
   })
 })
 

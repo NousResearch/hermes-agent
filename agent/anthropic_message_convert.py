@@ -167,15 +167,24 @@ def convert_tools_to_anthropic(tools: List[Dict]) -> List[Dict]:
     return result
 
 
-def _image_source_from_openai_url(url: str) -> Dict[str, str]:
-    """OpenAI image URL / data URL -> Anthropic image ``source``."""
+def _image_block_from_openai_url(url: str) -> Dict[str, Any]:
+    """OpenAI image URL / data URL -> Anthropic ``image`` block. An inline subtype the API rejects
+    (svg+xml, bmp, tiff) 400s every replay once in history: an SVG is rasterized to PNG when a
+    rasterizer is installed, anything else unsupported becomes a text placeholder."""
+    from tools.vision_tools_image_prep import rasterize_svg_data_url, unsupported_inline_image_media_type
     url = str(url or "").strip()
-    if url.startswith("data:"):
-        header, _, data = url.partition(",")
-        mime_part = header[len("data:"):].split(";", 1)[0].strip()
-        media_type = mime_part if mime_part.startswith("image/") else "image/jpeg"
-        return {"type": "base64", "media_type": media_type, "data": data}
-    return {"type": "url", "url": url}
+    if not url.startswith("data:"):
+        return {"type": "image", "source": {"type": "url", "url": url}}
+    unsupported = unsupported_inline_image_media_type(url)
+    if unsupported == "image/svg+xml" and (png_url := rasterize_svg_data_url(url)) is not None:
+        url, unsupported = png_url, None
+    if unsupported is not None:
+        return _text_block(f"[image omitted: {unsupported} is not a supported image format]")
+    header, _, data = url.partition(",")
+    mime_part = header[len("data:"):].split(";", 1)[0].strip()
+    media_type = mime_part if mime_part.startswith("image/") else "image/jpeg"
+    media_type = "image/jpeg" if media_type.lower() == "image/jpg" else media_type
+    return {"type": "image", "source": {"type": "base64", "media_type": media_type, "data": data}}
 
 
 def _convert_content_part_to_anthropic(part: Any) -> Optional[Dict[str, Any]]:
@@ -192,7 +201,7 @@ def _convert_content_part_to_anthropic(part: Any) -> Optional[Dict[str, Any]]:
     elif ptype in {"image_url", "input_image"}:
         image_value = part.get("image_url", {})
         url = image_value.get("url", "") if isinstance(image_value, dict) else str(image_value or "")
-        block = {"type": "image", "source": _image_source_from_openai_url(url)}
+        block = _image_block_from_openai_url(url)
     else:
         block = dict(part)
     if (cache_control := _cache_control_of(part)) is not None:

@@ -15,13 +15,13 @@ Frontend design guidance, upstream-maintained (impeccable).
 | | |
 |---|---|
 | Source | Optional — install with `hermes skills install official/creative/impeccable` |
-| Path | `optional-skills/creative\impeccable` |
+| Path | `optional-skills/creative/impeccable` |
 | Version | `4.1.2` |
 | Author | Paul Bakaus (pbakaus) |
 | License | Apache-2.0 |
 | Platforms | linux, macos, windows |
 | Tags | `design`, `frontend`, `ui`, `ux`, `web-design`, `anti-slop` |
-| Related skills | [`claude-design`](/docs/user-guide/skills/bundled/creative/creative-claude-design), [`popular-web-designs`](/docs/user-guide/skills/bundled/creative/creative-popular-web-designs) |
+| Related skills | [`claude-design`](../../bundled/creative/creative-claude-design.md), [`popular-web-designs`](../../bundled/creative/creative-popular-web-designs.md) |
 
 ## Reference: full SKILL.md
 

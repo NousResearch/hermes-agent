@@ -130,6 +130,14 @@ test('instanceWindowBounds cascades a new window off its source bounds', () => {
   assert.deepEqual(bounds, { width: 1400, height: 900, x: 132, y: 152 })
 })
 
+test('instanceWindowBounds keeps the cascaded window inside the work area it lands on', () => {
+  const displays = [{ workArea: { x: 0, y: 0, width: 1920, height: 1040 } }]
+  // Source docked at the bottom-right: a raw +32/+32 cascade would overshoot both edges.
+  const bounds = instanceWindowBounds({ x: 700, y: 240, width: 1220, height: 800 }, { width: 1, height: 1 }, displays)
+
+  assert.deepEqual(bounds, { width: 1220, height: 800, x: 700, y: 240 })
+})
+
 test('instanceWindowBounds falls back to the persisted geometry with no source window', () => {
   const fallback = { width: 1280, height: 800 }
 
@@ -272,4 +280,25 @@ test('chatWindowWebPreferences allows autoplay so wake-started voice speaks its 
   const prefs = chatWindowWebPreferences('/tmp/preload.cjs')
 
   assert.equal(prefs.autoplayPolicy, 'no-user-gesture-required')
+})
+
+test('secondary URLs preserve exact local and remote routes in packaged and development windows', () => {
+  for (const connectionId of [null, 'remote/a']) {
+    for (const devServer of [undefined, 'http://localhost:5174']) {
+      const url = new URL(
+        buildSessionWindowUrl('child', {
+          connectionId,
+          profile: 'research',
+          watch: true,
+          devServer,
+          rendererIndexPath: '/tmp/hermes/index.html'
+        })
+      )
+
+      assert.equal(url.searchParams.get('connectionId'), connectionId ?? '')
+      assert.equal(url.searchParams.get('profile'), 'research')
+      assert.equal(url.searchParams.get('watch'), '1')
+      assert.equal(url.hash, '#/child')
+    }
+  }
 })

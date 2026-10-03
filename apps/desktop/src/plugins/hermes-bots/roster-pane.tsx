@@ -51,7 +51,13 @@ import { botNeedsHandleLabel, rosterGatewayOptions } from './roster-sections'
 import { botWorkspaceOwnerKey, setBotsWorkspaceOwner } from './routing'
 import { activeBots, useTurnBusy } from './row-helpers'
 import type { BotMeta, GatewaySource, GroupMember, RosterActivityFilter, RosterKindFilter, RosterRow } from './types'
-import { $botSections, $draggingBot, type SectionDialogState } from './user-sections'
+import {
+  $botSections,
+  $draggingBot,
+  adoptBotSectionsFromMeta,
+  backfillBotSectionNames,
+  type SectionDialogState
+} from './user-sections'
 import { useEscapeCancelsBotDrag } from './user-sections-ui'
 
 // ── roster pane ──────────────────────────────────────────────────────────────
@@ -290,6 +296,17 @@ export function BotsPane() {
     selectionHydrated && rosterHydrated ? rosterWithSelectedOwner(source, sourceSnapshot, selectedRosterKey) : source
 
   const { roster, activityOf, isPinned } = sortRosterBots(sourceWithSelectedOwner, allMeta)
+
+  // Sections made on ANOTHER desktop arrive as id + name on each member's
+  // ui_meta; rebuild the records this machine has never seen so the roster
+  // draws the same folders instead of a flat list (#114355). Then the reverse:
+  // members filed here before names rode along carry only the id — stamp the
+  // name from this machine's records so other desktops can rebuild them too.
+  // Each stamp is a one-time write: once sectionName is set it is skipped.
+  useEffect(() => {
+    adoptBotSectionsFromMeta(roster, allMeta)
+    backfillBotSectionNames(roster, allMeta)
+  }, [roster, allMeta])
 
   // React Query can briefly report neither loading nor data while the plugin
   // and the persisted connection registry hydrate. Keep that transition in a

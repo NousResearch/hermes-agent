@@ -6,7 +6,7 @@
 import { host } from '@hermes/plugin-sdk'
 
 import { botFriendlyNames, botHandle, botMentionTag, mentionNameForms } from './data'
-import { recordGroupActivity } from './group-activity'
+import { groupFailureReason, recordGroupActivity } from './group-activity'
 import {
   $groupChats,
   $groupNeedsYou,
@@ -91,6 +91,29 @@ export function parseGroupChatMentions(text: unknown, members: GroupMember[]) {
     for (const form of forms) {
       if (form) {
         handles.set(form, groupMemberKey(member))
+      }
+    }
+
+    // Normalized slug/collapsed variants of a live identity, gap-filled only — an exact live name elsewhere always wins, so an old handle can never squat (#110200).
+    for (const raw of [member.name, handle, title, ...botFriendlyNames(member)]) {
+      for (const form of mentionNameForms(raw)) {
+        if (form && !handles.has(form)) {
+          handles.set(form, groupMemberKey(member))
+        }
+      }
+    }
+  }
+
+  // Renamed members answer to previous handles, gap-fill only — every live identity's variants are claimed first, so a live name always wins (#110200).
+  for (const member of members) {
+    const key = groupMemberKey(member)
+    const previous = Array.isArray(member.previous_names) ? member.previous_names : []
+
+    for (const name of previous) {
+      for (const form of mentionNameForms(name)) {
+        if (form && !handles.has(form)) {
+          handles.set(form, key)
+        }
       }
     }
   }
@@ -241,10 +264,59 @@ export function classifyGroupHoldDirective(
   }
 }
 
+/** #117040: what a fenced block, inline code span, straight-quoted span or
+ *  blockquote line says is content the user quotes or pastes, not a room
+ *  directive — its stop words must not hold a member. Mask each span down to
+ *  the @tokens it contains (mentions resolve from the raw text and must keep
+ *  their place in the proximity window, so an address like "…"@impl"…" still
+ *  releases a held member) or to one neutral filler word when it has none. */
+function maskQuotedAndCodeSpans(value: string): string {
+  const mentionsOnly = (span: string): string => (span.match(/@[\p{L}\p{N}._-]+/gu) || []).join(' ') || 'quoted'
+  const kept: string[] = []
+  let fence = ''
+
+  for (const line of value.split('\n')) {
+    if (fence) {
+      // Closing fence rows carry no content; an unterminated fence (a
+      // cut-short paste) simply swallows the rest of the message.
+      const closing = line.trim().startsWith(fence)
+
+      kept.push(closing ? '' : mentionsOnly(line))
+
+      if (closing) {
+        fence = ''
+      }
+
+      continue
+    }
+
+    const opened = line.match(/^\s*(`{3,}|~{3,})/)
+
+    if (opened) {
+      fence = opened[1]
+
+      continue
+    }
+
+    if (/^\s*>/.test(line)) {
+      kept.push(mentionsOnly(line))
+
+      continue
+    }
+
+    // Typographic quotes too: macOS smart-quote substitution rewrites the
+    // straight ones as the user types into the composer.
+    kept.push(line.replace(/`[^`\n]*`/g, mentionsOnly).replace(/["“”][^"“”\n]*["“”]/g, mentionsOnly))
+  }
+
+  return kept.join('\n')
+}
+
 /** #103893: where the stop/halt/pause tokens sit relative to the @tokens —
  *  `adjacent` when one is within two words of ANY mention, `distant` when
  *  the message carries a stop word but none that close, null without one.
- *  Proximity is measured against the raw @tokens,
+ *  Proximity is measured against the raw @tokens of the DIRECTIVE surface —
+ *  quoted/pasted spans are masked first (#117040) —
  *  not the resolved member keys the caller passes (those are roster keys
  *  such as `<connectionId>::<name>`, and a mention resolves through titles
  *  and friendly names too, so the @token text rarely equals the key). The
@@ -252,7 +324,11 @@ export function classifyGroupHoldDirective(
  *  halt" = 2, "@x go, das ist halt ein Test" = 4); widen only with measured
  *  cases, never by guessing. */
 function stopWordPlacement(value: string): 'adjacent' | 'distant' | null {
-  const tokens = value.toLowerCase().match(/@[\p{L}\p{N}._-]+|[\p{L}\p{N}_-]+/gu) || []
+  const tokens =
+    maskQuotedAndCodeSpans(value)
+      .toLowerCase()
+      .match(/@[\p{L}\p{N}._-]+|[\p{L}\p{N}_-]+/gu) || []
+
   const mentionAt: number[] = []
   const stopAt: number[] = []
 
@@ -409,9 +485,10 @@ export function unaddressedGroupMentions(group: string, members: GroupMember[], 
  *
  *  1. Bumps the room epoch — the driving loop bails at its next boundary and
  *     never selects another member (`isCurrent()` in runGroupChatRounds).
- *  2. Sets a #93129 hold for EVERY member — future turns stay skipped until
- *     the user explicitly releases (resume / @all resume / direct mention),
- *     the exact contract user-typed "@all stop" already has.
+ *  2. When hold detection is enabled, sets a #93129 hold for EVERY member —
+ *     future turns stay skipped until the user explicitly releases (resume /
+ *     @all resume / direct mention). Rooms that disable automatic holds still
+ *     stop the active run through the epoch and interrupt legs.
  *  3. Sends session.interrupt to the member currently ON TURN (room.turn,
  *     runtime-only) via its own route, so the in-flight model call actually
  *     dies instead of grinding to completion in the background. Best-effort:
@@ -434,17 +511,15 @@ export async function stopGroupThread(group: string, thread: null | string, memb
 
   updateGroupChat(group, (r: GroupChatRoom) => {
     r.epoch = (r.epoch || 0) + 1
+    r.stoppedEpoch = r.epoch
     r.running = false
     r.turn = null
 
-    // Same hold shape applyGroupHoldDirective mints for "@all stop" — the
-    // held-skip path (watermark consume + 'held' activity note) and every
-    // release gesture apply unchanged. An existing hold keeps its stamp.
-    const holds: Record<string, GroupHoldStamp> = {
-      ...(r.holds || {})
-    }
+    // Same hold shape applyGroupHoldDirective mints for "@all stop" — unless
+    // this room disabled hold detection. An existing hold keeps its stamp.
+    const holds: Record<string, GroupHoldStamp> = r.holdDetection === false ? {} : { ...(r.holds || {}) }
 
-    for (const member of roster) {
+    for (const member of r.holdDetection === false ? [] : roster) {
       const key = groupMemberKey(member)
 
       if (key && !holds[key]) {
@@ -496,7 +571,12 @@ export async function stopGroupThread(group: string, thread: null | string, memb
  *  epoch and discards queued continuations.
  *  Watermarks are per thread+member (`${thread}::${memberKey}`), so parallel
  *  topics never eat each other's deltas. */
-export async function runGroupChatRounds(group: string, members: GroupMember[], thread: string, failedMembers = new Set<string>()) {
+export async function runGroupChatRounds(
+  group: string,
+  members: GroupMember[],
+  thread: string,
+  failedMembers = new Set<string>()
+) {
   const binding = followGroupChat(group, name => {
     group = name
   })
@@ -796,17 +876,20 @@ export function sendToGroupChat(
     // explicit "stop @member" sets a sticky hold; "@member resume" (or
     // @all resume, or any direct non-stop mention of the held member)
     // releases it. Bot replies never flow through this function.
-    room.holds = applyGroupHoldDirective(
-      room.holds,
-      parseGroupChatMentions(trimmed, members),
-      trimmed,
-      {
-        at: sent?.at,
-        byMessageId: sent?.id,
-        thread: target
-      },
-      members.map((member: GroupMember) => groupMemberKey(member))
-    )
+    room.holds =
+      room.holdDetection === false
+        ? {}
+        : applyGroupHoldDirective(
+            room.holds,
+            parseGroupChatMentions(trimmed, members),
+            trimmed,
+            {
+              at: sent?.at,
+              byMessageId: sent?.id,
+              thread: target
+            },
+            members.map((member: GroupMember) => groupMemberKey(member))
+          )
 
     return room
   })
@@ -867,9 +950,15 @@ function queueGroupChatDrive(group: string, members: GroupMember[], thread: stri
         updateGroupChat(group, room => ({ ...room, running: true }))
         await runGroupChatRounds(group, nextMembers, nextThread, drive.failedMembers)
       }
-    } catch {
+    } catch (error) {
       if (binding.isLive()) {
-        recordGroupActivity(group, { kind: 'failed', member: null, thread: currentThread })
+        const reason = groupFailureReason(error)
+        recordGroupActivity(group, {
+          kind: 'failed',
+          member: null,
+          thread: currentThread,
+          ...(reason ? { reason } : {})
+        })
         updateGroupChat(group, room => ({ ...room, running: false, turn: null }))
       }
     } finally {

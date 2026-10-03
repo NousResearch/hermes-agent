@@ -71,8 +71,31 @@ def owned(monkeypatch):
 
 
 def _rpc(client, method, **params):
-    return server.dispatch({"jsonrpc": "2.0", "id": 7, "method": method, "params": {"session_id": SID, **params}},
-                           client.transport)
+    before = len(client.frames)
+    response = server.dispatch({"jsonrpc": "2.0", "id": 7, "method": method,
+                                "params": {"owner": {"type": "session", "session_id": SID}, **params}}, client.transport)
+    if response is not None:
+        return response
+    deadline = time.time() + 2
+    while time.time() < deadline:
+        replies = [frame for frame in list(client.frames)[before:] if frame.get("id") == 7]
+        if replies:
+            return replies[-1]
+        time.sleep(0.01)
+    raise AssertionError("no reply")
+
+
+def _connect_rpc(client, **params):
+    """``connectors.connect`` runs on the long-handler pool and writes its reply to the transport."""
+    before = len(client.frames)
+    _rpc(client, "connectors.connect", **params)
+    deadline = time.time() + 2
+    while time.time() < deadline:
+        replies = [f for f in list(client.frames)[before:] if f.get("id") == 7]
+        if replies:
+            return replies[-1]
+        time.sleep(0.01)
+    raise AssertionError("no reply")
 
 
 def _open_op():
@@ -124,14 +147,18 @@ def test_respond_drives_the_live_operation_and_emits_update(owned):
     assert updates[-1]["payload"]["op_id"] == operation.op_id
 
 
-def test_respond_cannot_claim_connected_for_a_managed_target(owned):
+def test_respond_cannot_claim_an_outcome_for_any_target(owned):
+    """The card renders the operation; only skip, approve and Continue are its to say. The contract
+    refuses any other claim (4002) before it reaches the operation."""
     owner, _, _ = owned
     operation = _open_op()
     operation.transition("gmail", TargetState.initiated, Actor.backend_watcher)
     reply = _rpc(owner, "connection.respond", op_id=operation.op_id,
-                 result={"targets": [{"name": "gmail", "status": "connected"}]})
-    assert reply["error"]["code"] == 4002
+                 result={"targets": [{"name": "gmail", "status": "connected"},
+                                     {"name": "notion", "status": "failed"}]})
+    assert reply["error"]["code"] == 4002, reply
     assert operation.target("gmail").state == TargetState.initiated
+    assert operation.target("notion").state == TargetState.pending
 
 
 def test_respond_continue_settles_and_emits_the_settlement_update(owned):
@@ -164,7 +191,7 @@ def test_panel_connect_reissues_only_a_dead_link(owned, monkeypatch):
     mints = []
 
     class Client:
-        def connections(self, names, *, reinitiate=False):
+        def connections(self, names, *, reinitiate=False, **_):
             mints.append((tuple(names), reinitiate))
             return {"results": [{"connector": n, "status": "initiated", "connect_url": f"https://l/{n}/2"} for n in names]}
 
@@ -173,23 +200,11 @@ def test_panel_connect_reissues_only_a_dead_link(owned, monkeypatch):
     monkeypatch.setattr("tools.connectors.connectors_available", lambda: True)
     monkeypatch.setattr("model_tools._select_tool_names", lambda *a, **k: {"manage_connections"})
 
-    def long_rpc(**params):
-        # connectors.connect runs on the pool and writes its reply to the transport.
-        before = len(owner.frames)
-        _rpc(owner, "connectors.connect", **params)
-        deadline = time.time() + 2
-        while time.time() < deadline:
-            replies = [f for f in list(owner.frames)[before:] if f.get("id") == 7]
-            if replies:
-                return replies[-1]
-            time.sleep(0.01)
-        raise AssertionError("no reply")
-
-    refused = long_rpc(connectors=["gmail"])
+    refused = _connect_rpc(owner, connectors=["gmail"])
     assert refused["error"]["code"] == 4002 and mints == []
     assert operation.target("gmail").connect_url == "https://l/gmail/1"
 
-    reply = long_rpc(connectors=["notion"])
+    reply = _connect_rpc(owner, connectors=["notion"])
     assert "result" in reply, reply
     assert mints == [(("notion",), True)]
     assert operation.target("notion").state == TargetState.initiated
@@ -206,7 +221,7 @@ def test_a_failed_reissue_leaves_the_row_failed_with_no_link(owned, monkeypatch,
     operation.transition("notion", dead, actor, detail="vendor: nope")
 
     class Client:
-        def connections(self, names, *, reinitiate=False):
+        def connections(self, names, *, reinitiate=False, **_):
             return {"results": [{"connector": n, "status": "failed", "status_reason": "vendor: still no"} for n in names]}
 
     monkeypatch.setattr("tools.connectors.gateway.client.ConnectorClient", Client)
@@ -222,4 +237,3 @@ def test_a_failed_reissue_leaves_the_row_failed_with_no_link(owned, monkeypatch,
     assert target.state == TargetState.failed
     assert target.connect_url is None
     assert target.detail == "vendor: still no"
-

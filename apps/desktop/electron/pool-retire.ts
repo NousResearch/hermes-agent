@@ -4,6 +4,13 @@ export interface PoolRetireEntry {
   /** An early veto only; backend admission owns the proof. */
   activeTurn?: boolean
   lastActiveAt?: null | number
+  /**
+   * Last prompt turn that leased this backend (#105239): a keepalive touch
+   * only proves the chat is open, while this stamp proves streamed activity.
+   * The idle reaper reads it for the pinned-tier TTL; absent means the entry
+   * predates the stamp and keeps the legacy lastActiveAt clock.
+   */
+  lastStreamedAt?: null | number
   process?: unknown
 }
 
@@ -47,8 +54,8 @@ export function createPoolRetirer<E extends PoolRetireEntry>(deps: PoolRetirerDe
     return result
   }
 
-  const needsCapacity = () => !disposed && deps.coordinator.foregroundWaiters.size > 0 &&
-    deps.coordinator.activeCount >= deps.coordinator.limit
+  const needsCapacity = () =>
+    !disposed && deps.coordinator.foregroundWaiters.size > 0 && deps.coordinator.activeCount >= deps.coordinator.limit
 
   async function retire(key: string, entry: E, needed: () => boolean): Promise<boolean> {
     const eligible = () => !disposed && deps.pool.get(key) === entry && entry.activeTurn !== true && needed()
@@ -122,16 +129,18 @@ export function createPoolRetirer<E extends PoolRetireEntry>(deps: PoolRetirerDe
 
     clearTimeout(retry)
     scheduled = true
-    void enqueue(reclaim).catch(report).finally(() => {
-      scheduled = false
+    void enqueue(reclaim)
+      .catch(report)
+      .finally(() => {
+        scheduled = false
 
-      // Busy work may finish without a renderer touch (cron / side agents).
-      // The coordinator's existing ticket deadline bounds these retries.
-      if (needsCapacity()) {
-        retry = setTimeout(wake, 1000)
-        retry.unref?.()
-      }
-    })
+        // Busy work may finish without a renderer touch (cron / side agents).
+        // The coordinator's existing ticket deadline bounds these retries.
+        if (needsCapacity()) {
+          retry = setTimeout(wake, 1000)
+          retry.unref?.()
+        }
+      })
   }
 
   const unsubscribe = deps.coordinator.onChange(wake)
@@ -145,27 +154,42 @@ export function createPoolRetirer<E extends PoolRetireEntry>(deps: PoolRetirerDe
         throw new Error(`Backend for "${key}" was retired; open it explicitly to reconnect.`)
       }
     },
-    retireIdle: (key: string, idleMs: number) => enqueue(async () => {
-      const entry = deps.pool.get(key)
+    retireIdle: (key: string, idleMs: number, idleEligibility?: (entry: E) => boolean) =>
+      enqueue(async () => {
+        const entry = deps.pool.get(key)
 
-      return entry ? retire(key, entry, () => Date.now() - (entry.lastActiveAt || 0) > idleMs) : false
-    }),
-    evictTo: (keep: number, freshMs: number) => enqueue(async () => {
-      const retired: string[] = []
-      const overCap = () => [...deps.pool.values()].filter(entry => entry.process).length > Math.max(0, keep)
-
-      for (const [key, entry] of selectRetirementCandidates(deps.pool, deps.coordinator.foregroundWaiters)) {
-        if (await retire(key, entry, () => overCap() && Date.now() - (entry.lastActiveAt || 0) > freshMs)) {
-          retired.push(key)
+        if (!entry) {
+          return false
         }
-      }
 
-      return retired
-    }),
+        // The default clock is the keepalive-touched lastActiveAt; the reaper
+        // passes an override that also honours the pinned-tier TTL
+        // (lastStreamedAt) so a keepalive-fresh but stream-idle entry can
+        // still be retired (#105239). The retirer keeps every other
+        // safeguard: identity, admission permit, activeTurn veto, proof probe.
+        return retire(
+          key,
+          entry,
+          () => idleEligibility ? idleEligibility(entry) : Date.now() - (entry.lastActiveAt || 0) > idleMs
+        )
+      }),
+    evictTo: (keep: number, freshMs: number) =>
+      enqueue(async () => {
+        const retired: string[] = []
+        const overCap = () => [...deps.pool.values()].filter(entry => entry.process).length > Math.max(0, keep)
+
+        for (const [key, entry] of selectRetirementCandidates(deps.pool, deps.coordinator.foregroundWaiters)) {
+          if (await retire(key, entry, () => overCap() && Date.now() - (entry.lastActiveAt || 0) > freshMs)) {
+            retired.push(key)
+          }
+        }
+
+        return retired
+      }),
     dispose: () => {
       disposed = true
       clearTimeout(retry)
       unsubscribe()
-    },
+    }
   }
 }

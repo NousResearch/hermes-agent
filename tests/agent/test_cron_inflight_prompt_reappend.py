@@ -138,20 +138,6 @@ def test_cron_job_prompt_survives_after_the_handoff():
     )
 
 
-def test_model_is_not_left_without_a_user_message_after_the_handoff():
-    """The 'no user message after this summary → do nothing' branch of
-    SUMMARY_PREFIX must not be what a mid-run cron compaction produces."""
-    compressed = _compress(_cron_transcript())
-
-    idx = _handoff_idx(compressed)
-    after = compressed[idx + 1:]
-    has_user_after = bool(_actionable_user_rows(after)) or bool(
-        _text(compressed[idx]).split(_SUMMARY_END_MARKER)[-1].strip()
-    )
-    assert has_user_after, (
-        "compaction left no user message after the handoff; the model is "
-        "instructed to do nothing and the cron run fails silently"
-    )
 
 
 def test_role_alternation_and_head_are_preserved():
@@ -293,7 +279,9 @@ def test_merged_restatement_is_not_anchored_twice():
 
     original = [{"role": "user", "content": JOB_SENTINEL}, *_tool_pairs(40)]
     out = _compress_with(2, 1, original)
-    assert any(m.get("_inflight_replay_merged") for m in out), "expected merge layout"
+    assert any(
+        ContextCompressor._has_merged_inflight_replay(m) for m in out
+    ), "expected merge layout"
     assert _job_copies(out) == 1
     assert _ensure_compressed_has_user_turn(original, out) == "already_present"
     assert _job_copies(out) == 1
@@ -315,6 +303,47 @@ def test_restatement_survives_repeated_compactions_without_stacking():
         ) == 1, cycle
         last = str(users[-1].get("content"))
         assert last.rfind(JOB_SENTINEL) > last.rfind(_SUMMARY_END_MARKER), cycle
+
+
+def test_replay_row_does_not_carry_the_original_timestamp():
+    """#121064: the standalone replay row is a NEW row at the compaction
+    boundary. Persisting it with the in-flight turn's original timestamp
+    puts the question after its own answer in timestamp-ordered views."""
+    import time
+
+    from agent.context_compressor import (
+        _INFLIGHT_TASK_REPLAY_HEADER,
+        COMPRESSED_SUMMARY_METADATA_KEY,
+    )
+
+    old_ts = 1757577257.0
+    carrier = {
+        "role": "assistant",
+        "content": SUMMARY_PREFIX + "\n## Summary\nran steps.\n\n" + _SUMMARY_END_MARKER,
+        COMPRESSED_SUMMARY_METADATA_KEY: True,
+    }
+    compressed = [
+        {"role": "system", "content": "You are Hermes."},
+        carrier,
+        {
+            "role": "assistant",
+            "content": "step 0",
+            "tool_calls": [{"id": "c0", "function": {"name": "terminal", "arguments": "{}"}}],
+        },
+        {"role": "tool", "tool_call_id": "c0", "content": "tool output 0"},
+    ]
+    inflight = {"role": "user", "content": JOB_SENTINEL, "timestamp": old_ts}
+    before = time.time()
+    out = _make_compressor()._reappend_inflight_user_task(compressed, inflight)
+    replays = [
+        m for m in out
+        if m is not carrier and _INFLIGHT_TASK_REPLAY_HEADER in _text(m)
+    ]
+    assert len(replays) == 1, "expected one standalone replay row"
+    assert replays[0].get("timestamp", before) >= before, (
+        "replay row kept the original task timestamp — it must be stamped "
+        "at compaction time (#121064)"
+    )
 
 
 def test_flagged_scaffolding_row_is_never_the_inflight_task():

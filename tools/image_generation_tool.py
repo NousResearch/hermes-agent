@@ -31,7 +31,7 @@ def _load_fal_client() -> Any:
 from tools.debug_helpers import DebugSession
 from tools.fal_common import (
     _ManagedFalSyncClient, _extract_http_status, _managed_fal_billing_error,
-    _normalize_fal_queue_url_format,
+    _normalize_fal_queue_url_format, submit_managed_fal_with_rate_limit_retry,
 )
 from tools.image_generation_catalog import (
     DEFAULT_ASPECT_RATIO, DEFAULT_MODEL, FAL_MODELS, UPSCALER_CREATIVITY, UPSCALER_DEFAULT_PROMPT,
@@ -127,8 +127,10 @@ def _submit_fal_request(model: str, arguments: Dict[str, Any]):
     if managed_gateway is None:
         return fal_client.submit(model, arguments=arguments, headers=request_headers)
     try:
-        return _get_managed_fal_client(managed_gateway).submit(
-            model, arguments=arguments, headers=request_headers)
+        return submit_managed_fal_with_rate_limit_retry(
+            lambda headers: _get_managed_fal_client(managed_gateway).submit(
+                model, arguments=arguments, headers=headers),
+            what="image model", name=model)
     except Exception as exc:
         # A managed-gateway 4xx usually means the portal doesn't proxy this model
         # (allowlist miss, billing gate): give remediation instead of a raw httpx error.
@@ -894,14 +896,3 @@ registry.register(
     is_async=False,   # sync fal_client API to avoid "Event loop is closed" in gateway
     emoji="🎨", dynamic_schema_overrides=_build_dynamic_image_schema,
 )
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-
-def is_krea_model(model_id: Optional[str]) -> bool:
-    """True when ``model_id`` is a native Krea plugin id (``krea-2-*``)."""
-    return _normalize_krea_model(model_id) is not None
-# ---- END PLUGIN-COMPAT ----

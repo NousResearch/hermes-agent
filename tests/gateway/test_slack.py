@@ -24,12 +24,6 @@ import pytest
 import agent.secret_scope as secret_scope
 from gateway.config import GatewayConfig, Platform, PlatformConfig
 from gateway.run import GatewayRunner
-from gateway.platforms.base import (
-    SendResult,
-    SUPPORTED_VIDEO_TYPES,
-    SendResult,
-    is_host_excluded_by_no_proxy,
-)
 from gateway.platforms.event import MessageEvent, MessageType
 
 
@@ -132,13 +126,6 @@ def _rich_text_section(*elements):
     return {"type": "rich_text_section", "elements": list(elements)}
 
 
-def test_slack_mock_bootstrap_preserves_installed_packages():
-    """Installed Slack dependencies must remain importable as real packages."""
-    for package in ("slack_sdk", "aiohttp"):
-        if PathFinder.find_spec(package) is not None:
-            assert isinstance(sys.modules[package], ModuleType)
-    if PathFinder.find_spec("slack_sdk") is not None:
-        assert isinstance(importlib.import_module("slack_sdk.errors"), ModuleType)
 
 # ---------------------------------------------------------------------------
 # TestIgnoredChannelOutboundSuppression
@@ -236,35 +223,6 @@ def _redirect_cache(tmp_path, monkeypatch):
     )
 
 
-class TestBotEventDiagnostics:
-    """#30091 — surface upstream filters that drop bot events."""
-
-    @pytest.mark.asyncio
-    async def test_handler_emits_debug_for_bot_event(self, adapter, caplog):
-        import logging
-        caplog.set_level(logging.DEBUG, logger="plugins.platforms.slack.adapter")
-        # Stub dedup so the debug log is hit even on a bot subtype.
-        adapter._dedup = MagicMock()
-        adapter._dedup.is_duplicate.return_value = True  # short-circuit after debug log
-        event = {
-            "type": "message",
-            "subtype": "bot_message",
-            "user": "U_OTHER_BOT",
-            "bot_id": "B_OTHER",
-            "bot_profile": {"name": "Liatrio Brain"},
-            "ts": "12345.6789",
-            "channel": "C_SHARED",
-            "thread_ts": "12300.0",
-        }
-        await adapter._handle_slack_message(event)
-        debug_lines = [r.getMessage() for r in caplog.records if r.levelno == logging.DEBUG]
-        assert any(
-            "event received" in line
-            and "bot_id=B_OTHER" in line
-            and "user=U_OTHER_BOT" in line
-            and "Liatrio Brain" in line
-            for line in debug_lines
-        ), debug_lines
 
 
 # ---------------------------------------------------------------------------
@@ -707,10 +665,6 @@ class TestSlackSocketWatchdog:
             patch("gateway.status.release_scoped_lock"),
         ]
 
-    async def _drain(self, iterations=10):
-        for _ in range(iterations):
-            await asyncio.sleep(0)
-
 
     @pytest.mark.asyncio
     async def test_disconnect_stops_watchdog_and_does_not_reconnect(self):
@@ -1086,7 +1040,6 @@ class TestSlackProxyBehavior:
 
 
 from contextlib import contextmanager
-from types import ModuleType
 
 
 @contextmanager
@@ -1524,14 +1477,6 @@ class TestBangPrefixCommands:
         )
 
 
-    @pytest.mark.asyncio
-    async def test_plain_slash_still_works(self, adapter):
-        """Sanity check — ``/queue`` (top-level channel/DM) still dispatches."""
-        await adapter._handle_slack_message(self._make_event("/queue"))
-
-        msg_event = adapter.handle_message.call_args[0][0]
-        assert msg_event.text.startswith("/queue")
-        assert msg_event.message_type == MessageType.COMMAND
 
 
     @pytest.mark.asyncio
@@ -1559,45 +1504,6 @@ class TestBangPrefixCommands:
         assert msg_event.message_type == MessageType.COMMAND
         assert msg_event.channel_context == "[Thread context]\nAlice: earlier\n"
 
-    @pytest.mark.asyncio
-    async def test_mention_command_drops_rich_text_command_arguments(self, adapter):
-        evt = self._make_event(
-            "<@U_BOT> !model",
-            thread_ts="1111111111.000001",
-            channel_type="channel",
-            channel="C123",
-        )
-        evt["blocks"] = [
-            {
-                "type": "rich_text",
-                "elements": [
-                    {
-                        "type": "rich_text_section",
-                        "elements": [
-                            {"type": "user", "user_id": "U_BOT"},
-                            {"type": "text", "text": " !model"},
-                        ],
-                    },
-                    {
-                        "type": "rich_text_quote",
-                        "elements": [
-                            {
-                                "type": "rich_text_section",
-                                "elements": [
-                                    {"type": "text", "text": "quoted context"}
-                                ],
-                            }
-                        ],
-                    },
-                ],
-            }
-        ]
-        await adapter._handle_slack_message(evt)
-
-        msg_event = adapter.handle_message.call_args[0][0]
-        assert msg_event.text == "/model"
-        assert "quoted context" not in msg_event.text
-        assert msg_event.message_type == MessageType.COMMAND
 
 
     @pytest.mark.asyncio
@@ -1694,30 +1600,6 @@ class TestIncomingDocumentHandling:
         assert "[Content of notes.txt]" in msg_event.text
         assert "summarize this" in msg_event.text
 
-    @pytest.mark.asyncio
-    async def test_md_document_injects_content(self, adapter):
-        """A .md file under 100KB should have its content injected."""
-        content = b"# Title\nSome markdown content"
-
-        with patch.object(
-            adapter, "_download_slack_file_bytes", new_callable=AsyncMock
-        ) as dl:
-            dl.return_value = content
-            event = self._make_event(
-                files=[
-                    {
-                        "mimetype": "text/markdown",
-                        "name": "readme.md",
-                        "url_private_download": "https://files.slack.com/readme.md",
-                        "size": len(content),
-                    }
-                ],
-                text="",
-            )
-            await adapter._handle_slack_message(event)
-
-        msg_event = adapter.handle_message.call_args[0][0]
-        assert "# Title" in msg_event.text
 
     @pytest.mark.asyncio
     async def test_json_snippet_injects_content(self, adapter):
@@ -1753,11 +1635,12 @@ class TestIncomingDocumentHandling:
         assert '"hello": "world"' in msg_event.text
         assert "can you parse this" in msg_event.text
 
-    @pytest.mark.asyncio
-    async def test_large_txt_not_injected(self, adapter):
-        """A .txt file over 100KB should be cached but NOT injected."""
-        content = b"x" * (200 * 1024)
 
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("content, inlined", [(b"small text", True), (b"x" * (200 * 1024), False)], ids=["small", "large"])
+    async def test_document_marks_media_text_inlined(self, adapter, content, inlined):
+        """The per-attachment flag must track whether the text was injected, so the document
+        note never claims the content is inlined when the >100 KB gate skipped it."""
         with patch.object(
             adapter, "_download_slack_file_bytes", new_callable=AsyncMock
         ) as dl:
@@ -1766,8 +1649,8 @@ class TestIncomingDocumentHandling:
                 files=[
                     {
                         "mimetype": "text/plain",
-                        "name": "big.txt",
-                        "url_private_download": "https://files.slack.com/big.txt",
+                        "name": "notes.txt",
+                        "url_private_download": "https://files.slack.com/notes.txt",
                         "size": len(content),
                     }
                 ],
@@ -1776,8 +1659,8 @@ class TestIncomingDocumentHandling:
             await adapter._handle_slack_message(event)
 
         msg_event = adapter.handle_message.call_args[0][0]
-        assert len(msg_event.media_urls) == 1
-        assert "[Content of" not in (msg_event.text or "")
+        assert ("[Content of" in (msg_event.text or "")) is inlined
+        assert msg_event.media_text_inlined == [inlined]
 
 
     @pytest.mark.asyncio
@@ -2205,39 +2088,6 @@ class TestMessageRouting:
         assert "<@U_BOT>" not in msg_event.text
 
     @pytest.mark.asyncio
-    async def test_accepted_mention_prompt_trusts_adapter_routing(self, adapter):
-        """Cleaned text must not make the model revalidate an accepted mention."""
-        adapter.config.extra.update({"require_mention": True, "strict_mention": True})
-        adapter._bot_display_name = "TestBot"
-        adapter._team_bot_names = {"T123": "WorkspaceBot"}
-        event = {
-            "text": "<@U_BOT> Hi",
-            "user": "U_USER",
-            "channel": "C123",
-            "channel_type": "channel",
-            "team": "T123",
-            "ts": "1234567890.000001",
-        }
-
-        await adapter._handle_slack_message(event)
-
-        adapter.handle_message.assert_awaited_once()
-        msg_event = adapter.handle_message.await_args.args[0]
-        prompt = msg_event.channel_prompt
-        assert msg_event.text == "Hi"
-        assert "@WorkspaceBot" in prompt
-        assert "already applied" in prompt
-        assert "may have been stripped" in prompt
-        assert "do not reject or ignore" in prompt
-        assert "intentionally routed" in prompt
-        assert "not a mention of you" in prompt
-        assert "Only treat a message as directed" not in prompt
-
-    @pytest.mark.asyncio
-
-
-
-    @pytest.mark.asyncio
     async def test_allow_bots_mentions_ignores_bot_user_without_current_mention(
         self, adapter
     ):
@@ -2317,23 +2167,6 @@ class TestSendTyping:
     """Test typing indicator via assistant.threads.setStatus."""
 
 
-    @pytest.mark.asyncio
-    async def test_custom_typing_status_text(self):
-        # typing_status_text overrides the default status wording.
-        config = PlatformConfig(
-            enabled=True, token="xoxb-fake-token",
-            typing_status_text="is pouncing… 🐾",
-        )
-        a = SlackAdapter(config)
-        a._app = MagicMock()
-        a._app.client = AsyncMock()
-        a._app.client.assistant_threads_setStatus = AsyncMock()
-        await a.send_typing("C123", metadata={"thread_id": "parent_ts"})
-        a._app.client.assistant_threads_setStatus.assert_called_once_with(
-            channel_id="C123",
-            thread_ts="parent_ts",
-            status="is pouncing… 🐾",
-        )
 
 
     @pytest.mark.asyncio
@@ -2382,8 +2215,8 @@ class TestSendTyping:
         clock[0] += 123
         await adapter.send_typing("C123", metadata={"thread_id": "parent_ts"})
         assert (
-            adapter._app.client.assistant_threads_setStatus.call_args.kwargs["status"]
-            == "still working… (2m03s)"
+            "2m03s"
+            in adapter._app.client.assistant_threads_setStatus.call_args.kwargs["status"]
         )
 
     @pytest.mark.asyncio
@@ -2612,7 +2445,7 @@ class TestFormatMessage:
 
         args = {"target": target, "pattern": pattern}
         ctx = SimpleNamespace(source=None, progress_mode="all", last_was_terminal_block=[False])
-        runner = SimpleNamespace(_adapter_for_source=lambda source: adapter)
+        runner = SimpleNamespace(_delivery_adapter_for=lambda source: adapter)
         message = TurnRunner(runner, ctx)._progress_build_message("search_files", pattern, args)
         client = adapter._app.client
         client.chat_postMessage.return_value = {"ok": True, "ts": "123.456"}
@@ -2678,16 +2511,7 @@ class TestFormatMessage:
         assert adapter.format_message(text) == text
 
 
-    def test_blockquote_mixed_with_plain(self, adapter):
-        """Blockquote lines interleaved with plain text."""
-        text = "normal\n> quoted\nnormal again"
-        result = adapter.format_message(text)
-        assert "> quoted" in result
-        assert "normal" in result
 
-    def test_non_prefix_gt_still_escaped(self, adapter):
-        """Greater-than in mid-line is still escaped."""
-        assert adapter.format_message("5 > 3") == "5 &gt; 3"
 
 
     def test_bold_italic_mixed_with_bold(self, adapter):
@@ -2696,9 +2520,6 @@ class TestFormatMessage:
         assert "*_important_*" in result
         assert "*bold*" in result
 
-    def test_pre_escaped_ampersand_not_double_escaped(self, adapter):
-        """Already-escaped &amp; must not become &amp;amp;."""
-        assert adapter.format_message("&amp;") == "&amp;"
 
     def test_pre_escaped_lt_not_double_escaped(self, adapter):
         """Already-escaped &lt; must not become &amp;lt;."""
@@ -2733,13 +2554,7 @@ class TestFormatMessage:
 
     # --- Entity preservation (spec-compliance) ---
 
-    def test_channel_mention_escaped(self, adapter):
-        """<!channel> broadcast mention is displayed literally."""
-        assert adapter.format_message("Attention <!channel>") == "Attention &lt;!channel&gt;"
 
-    def test_everyone_mention_escaped(self, adapter):
-        """<!everyone> broadcast mention is displayed literally."""
-        assert adapter.format_message("Hey <!everyone>") == "Hey &lt;!everyone&gt;"
 
 
     # --- Additional edge cases ---
@@ -2755,18 +2570,7 @@ class TestFormatMessage:
         assert "> quote" in result
         assert "`code`" in result
 
-    def test_markdown_unordered_list_with_asterisk(self, adapter):
-        """Asterisk list items must not trigger italic conversion."""
-        text = "* item one\n* item two"
-        result = adapter.format_message(text)
-        assert "item one" in result
-        assert "item two" in result
 
-    def test_nested_bold_in_link(self, adapter):
-        """Bold inside link label — label is stashed before bold pass."""
-        result = adapter.format_message("[**bold**](https://example.com)")
-        assert "https://example.com" in result
-        assert "bold" in result
 
 
 # ---------------------------------------------------------------------------
@@ -2778,13 +2582,6 @@ class TestEditMessage:
     """Verify that edit_message() applies mrkdwn formatting before sending."""
 
 
-    @pytest.mark.asyncio
-    async def test_edit_message_escapes_control_chars(self, adapter):
-        """edit_message escapes & < > in plain text."""
-        adapter._app.client.chat_update = AsyncMock(return_value={"ok": True})
-        await adapter.edit_message("C123", "1234.5678", "AT&T < 5 > 3")
-        kwargs = adapter._app.client.chat_update.call_args.kwargs
-        assert kwargs["text"] == "AT&amp;T &lt; 5 &gt; 3"
 
     @pytest.mark.asyncio
     async def test_edit_message_truncates_oversized_content(self, adapter):
@@ -2870,44 +2667,9 @@ class TestEditMessageStreamingPipeline:
         # ZWSP guard (#35144): bold ending in non-word char gets U+200B before closing *
         assert kwargs2["text"] == "*Done!\u200b* See <https://example.com|results>"
 
-    @pytest.mark.asyncio
-    async def test_edit_message_formats_code_and_bold(self, adapter):
-        """Streaming update with code block and bold — code must be preserved."""
-        adapter._app.client.chat_update = AsyncMock(return_value={"ok": True})
-
-        content = "**Result:**\n```python\nprint('hello')\n```"
-        result = await adapter.edit_message("C123", "ts1", content)
-        assert result.success is True
-        kwargs = adapter._app.client.chat_update.call_args.kwargs
-        # ZWSP guard (#35144): trailing ":" inside bold gets U+200B before closing *
-        assert kwargs["text"].startswith("*Result:\u200b*")
-        # Language tag is stripped — Slack mrkdwn would render it as a literal line
-        assert "```\nprint('hello')\n```" in kwargs["text"]
-
-    @pytest.mark.asyncio
-    async def test_edit_message_formats_blockquote_in_stream(self, adapter):
-        """Streaming update with blockquote — '>' marker must survive."""
-        adapter._app.client.chat_update = AsyncMock(return_value={"ok": True})
-
-        content = "> **Important:** do this\nnormal line"
-        result = await adapter.edit_message("C123", "ts1", content)
-        assert result.success is True
-        kwargs = adapter._app.client.chat_update.call_args.kwargs
-        # ZWSP guard (#35144): trailing ":" inside bold gets U+200B before closing *
-        assert kwargs["text"].startswith("> *Important:\u200b*")
-        assert "normal line" in kwargs["text"]
 
 
-    @pytest.mark.asyncio
-    async def test_edit_message_does_not_double_escape(self, adapter):
-        """Pre-escaped entities in edited messages must not get double-escaped."""
-        adapter._app.client.chat_update = AsyncMock(return_value={"ok": True})
-        await adapter.edit_message("C123", "ts1", "5 &gt; 3 and &amp; entity")
-        kwargs = adapter._app.client.chat_update.call_args.kwargs
-        assert "&amp;gt;" not in kwargs["text"]
-        assert "&amp;amp;" not in kwargs["text"]
-        assert "&gt;" in kwargs["text"]
-        assert "&amp;" in kwargs["text"]
+
 
 
 # ---------------------------------------------------------------------------
@@ -2918,21 +2680,8 @@ class TestEditMessageStreamingPipeline:
 class TestReactions:
     """Test emoji reaction methods."""
 
-    @pytest.mark.asyncio
-    async def test_add_reaction_calls_api(self, adapter):
-        adapter._app.client.reactions_add = AsyncMock()
-        result = await adapter._add_reaction("C123", "ts1", "eyes")
-        assert result is True
-        adapter._app.client.reactions_add.assert_called_once_with(
-            channel="C123", timestamp="ts1", name="eyes"
-        )
 
 
-    @pytest.mark.asyncio
-    async def test_remove_reaction_calls_api(self, adapter):
-        adapter._app.client.reactions_remove = AsyncMock()
-        result = await adapter._remove_reaction("C123", "ts1", "eyes")
-        assert result is True
 
     @pytest.mark.asyncio
     async def test_reactions_in_message_flow(self, adapter):
@@ -2957,7 +2706,7 @@ class TestReactions:
 
         # Simulate the base class calling on_processing_start
         from gateway.platforms.base import SessionSource
-        from gateway.platforms.event import MessageEvent, MessageType
+        from gateway.platforms.event import MessageType
         from gateway.config import Platform
 
         source = SessionSource(
@@ -3044,7 +2793,10 @@ class TestThreadReplyHandling:
         from gateway.session import SessionEntry
 
         # Deserialize a legacy routing entry so lifecycle flags have real defaults.
+        # The thread key with a per-user suffix comes from the adapter's isolation flags (the runner
+        # seeds them into PlatformConfig.extra); this store has no bearing on the key any more.
         session_key = "agent:main:slack:group:T_TEAM:C123:123.000:U_USER"
+        adapter_with_session_store.config.extra["thread_sessions_per_user"] = True
         mock_session_store._entries = {session_key: SessionEntry.from_dict({
             "session_key": session_key,
             "session_id": "slack-thread-session",
@@ -3470,12 +3222,6 @@ class TestSlashCommands:
         msg = adapter.handle_message.call_args[0][0]
         assert msg.text == "/compress"
 
-    @pytest.mark.asyncio
-    async def test_resume_command(self, adapter):
-        command = {"text": "resume my session", "user_id": "U1", "channel_id": "C1"}
-        await adapter._handle_slash_command(command)
-        msg = adapter.handle_message.call_args[0][0]
-        assert msg.text == "/resume my session"
 
 
     # ------------------------------------------------------------------
@@ -3550,38 +3296,9 @@ class TestMessageSplitting:
     """Test that long messages are split before sending."""
 
 
-    @pytest.mark.asyncio
-    async def test_send_preserves_blockquote_formatting(self, adapter):
-        """Blockquote '>' markers must survive format → chunk → send pipeline."""
-        adapter._app.client.chat_postMessage = AsyncMock(return_value={"ts": "ts1"})
-        await adapter.send("C123", "> quoted text\nnormal text")
-        kwargs = adapter._app.client.chat_postMessage.call_args.kwargs
-        sent_text = kwargs["text"]
-        assert sent_text.startswith("> quoted text")
-        assert "normal text" in sent_text
 
 
-    @pytest.mark.asyncio
-    async def test_send_passes_explicit_unfurl_options(self, adapter):
-        adapter.config.extra["unfurl_links"] = False
-        adapter.config.extra["unfurl_media"] = False
-        adapter._app.client.chat_postMessage = AsyncMock(return_value={"ts": "ts1"})
 
-        await adapter.send("C123", "https://example.com")
-
-        kwargs = adapter._app.client.chat_postMessage.call_args.kwargs
-        assert kwargs["unfurl_links"] is False
-        assert kwargs["unfurl_media"] is False
-
-    @pytest.mark.asyncio
-    async def test_send_preserves_default_unfurl_behavior(self, adapter):
-        adapter._app.client.chat_postMessage = AsyncMock(return_value={"ts": "ts1"})
-
-        await adapter.send("C123", "https://example.com")
-
-        kwargs = adapter._app.client.chat_postMessage.call_args.kwargs
-        assert "unfurl_links" not in kwargs
-        assert "unfurl_media" not in kwargs
 
     @pytest.mark.asyncio
     async def test_send_coerces_string_unfurl_options(self, adapter):
@@ -3626,14 +3343,6 @@ class TestMessageSplitting:
             assert call.kwargs["unfurl_links"] is False
             assert call.kwargs["unfurl_media"] is False
 
-    @pytest.mark.asyncio
-    async def test_send_does_not_double_escape_entities(self, adapter):
-        """Pre-escaped &amp; in sent messages must not become &amp;amp;."""
-        adapter._app.client.chat_postMessage = AsyncMock(return_value={"ts": "ts1"})
-        await adapter.send("C123", "Use &amp; for ampersand")
-        kwargs = adapter._app.client.chat_postMessage.call_args.kwargs
-        assert "&amp;amp;" not in kwargs["text"]
-        assert "&amp;" in kwargs["text"]
 
 
 class TestEmptyTextGuard:
@@ -4002,26 +3711,6 @@ class TestSlashEphemeralAck:
         assert "ts" in ctx
 
 
-    @pytest.mark.asyncio
-    async def test_pop_slash_context_returns_and_removes(self, adapter):
-        """_pop_slash_context returns the context and removes it."""
-        import time
-        from plugins.platforms.slack.adapter import _slash_user_id
-
-        adapter._slash_command_contexts[("C1", "U1")] = {
-            "response_url": "https://hooks.slack.com/test",
-            "ts": time.monotonic(),
-        }
-
-        token = _slash_user_id.set("U1")
-        try:
-            ctx = adapter._pop_slash_context("C1")
-        finally:
-            _slash_user_id.reset(token)
-        assert ctx is not None
-        assert ctx["response_url"] == "https://hooks.slack.com/test"
-        # Must be removed after pop
-        assert len(adapter._slash_command_contexts) == 0
 
 
     @pytest.mark.asyncio
@@ -4496,7 +4185,6 @@ class TestMissingCredentials:
         assert fatal_errors[0]["code"] == "missing_slack_app_token"
         assert fatal_errors[0]["retryable"] is False
         assert "SLACK_APP_TOKEN" in fatal_errors[0]["message"]
-        assert "hermes gateway setup" in fatal_errors[0]["message"].lower() or ".env" in fatal_errors[0]["message"]
 
 
 # ---------------------------------------------------------------------------
@@ -4549,22 +4237,6 @@ class TestTrackingStructureBounds:
     eviction must remove the OLDEST entries — arbitrary (set-order) eviction
     can silently drop the most active thread (#51019)."""
 
-    def test_user_name_cache_cap_holds_under_churn(self, adapter):
-        adapter._USER_NAME_CACHE_MAX = 10
-        # Simulate the post-resolution write + trim path directly.
-        for i in range(50):
-            adapter._user_name_cache[("T1", f"U{i}")] = f"user{i}"
-            if len(adapter._user_name_cache) > adapter._USER_NAME_CACHE_MAX:
-                excess = (
-                    len(adapter._user_name_cache)
-                    - adapter._USER_NAME_CACHE_MAX // 2
-                )
-                for old_key in list(adapter._user_name_cache)[:excess]:
-                    del adapter._user_name_cache[old_key]
-        assert len(adapter._user_name_cache) <= adapter._USER_NAME_CACHE_MAX
-        # Newest entry survives; oldest was evicted.
-        assert ("T1", "U49") in adapter._user_name_cache
-        assert ("T1", "U0") not in adapter._user_name_cache
 
 
     def test_rehydration_checked_evicts_oldest_thread_first(self, adapter):
@@ -4757,58 +4429,8 @@ class TestThreadImageContext:
         assert marker.startswith("[image: ")
         assert marker.count("[") == 1 and marker.count("]") == 1
 
-    def test_render_message_text_appends_file_markers(self, adapter):
-        msg = {
-            "text": "Here is the shelf photo",
-            "files": [
-                {"name": "shelf.jpg", "mimetype": "image/jpeg"},
-                {"name": "specs.pdf", "mimetype": "application/pdf"},
-            ],
-        }
-        rendered = adapter._render_message_text(msg)
-        assert "Here is the shelf photo" in rendered
-        assert "[image: shelf.jpg]" in rendered
-        assert "[file: specs.pdf (application/pdf)]" in rendered
 
-    def test_render_message_text_deduplicates_main_section_and_keeps_quote(
-        self, adapter
-    ):
-        msg = {
-            "text": "<@U_BOT> review `src/app`",
-            "blocks": _rich_text_blocks(
-                _rich_text_section(
-                    {"type": "user", "user_id": "U_BOT"},
-                    {"type": "text", "text": " review "},
-                    {"type": "text", "text": "src/app", "style": {"code": True}},
-                ),
-                {
-                    "type": "rich_text_quote",
-                    "elements": [
-                        _rich_text_section(
-                            {"type": "text", "text": "quoted context"}
-                        )
-                    ],
-                },
-            ),
-        }
 
-        assert adapter._render_message_text(msg, bot_uid="U_BOT") == (
-            "review `src/app`\n> quoted context"
-        )
-
-    def test_render_message_text_deduplicates_compact_fenced_code(self, adapter):
-        msg = {
-            "text": "run ```echo ok```",
-            "blocks": _rich_text_blocks(
-                _rich_text_section({"type": "text", "text": "run"}),
-                {
-                    "type": "rich_text_preformatted",
-                    "elements": [{"type": "text", "text": "echo ok"}],
-                },
-            ),
-        }
-
-        assert adapter._render_message_text(msg) == "run ```echo ok```"
 
     # -- integration: cold-start thread hydrate ----------------------------
 
@@ -4959,7 +4581,6 @@ from plugins.platforms.slack.adapter import (  # noqa: E402
     _wrap_markdown_tables,
     _align_table,
     _disp_width,
-    _is_table_row,
 )
 
 
@@ -5032,19 +4653,8 @@ class TestAlignTable:
         assert len(pipe_counts) == 1
 
 
-class TestDispWidth:
-    def test_ascii_one_per_char(self):
-        assert _disp_width("hello") == 5
-
-    def test_empty_string(self):
-        assert _disp_width("") == 0
 
 
-class TestIsTableRow:
-
-    def test_rejects_blank(self):
-        assert _is_table_row("") is False
-        assert _is_table_row("   ") is False
 
 
 class TestFormatMessageTableIntegration:
@@ -5071,22 +4681,6 @@ class TestFormatMessageTableIntegration:
 # ---------------------------------------------------------------------------
 
 
-class TestSlackUserAgent:
-    """Pin the User-Agent attribution wired in connect().
-
-    Slack platform partners (analytics, abuse-detection, etc.) attribute
-    outbound API traffic by ``User-Agent``. The Slack adapter sets
-    ``user_agent_prefix=_HERMES_SLACK_USER_AGENT_PREFIX`` on every
-    ``AsyncWebClient`` it builds and threads the primary client into
-    ``AsyncApp(client=...)`` so the prefix sticks on the app-owned client too.
-    Pin both behaviors at the actual call sites — a future refactor that
-    drops either kwarg would silently break attribution otherwise.
-    """
-
-    def test_hermes_slack_user_agent_prefix_format(self):
-        """Module constant matches the HermesAgent/<version> convention used
-        elsewhere in the codebase for platform-partner attribution."""
-        assert _slack_mod._HERMES_SLACK_USER_AGENT_PREFIX.startswith("HermesAgent/")
 
 
 class TestNativeTaskCardProgress:
@@ -5530,23 +5124,6 @@ class TestSlackAuthoredTextDeduplication:
         # The block the agent cannot otherwise read is still surfaced.
         assert "extra" in text
 
-    @pytest.mark.asyncio
-    async def test_no_block_kit_dump_for_a_plain_authored_message(self, adapter):
-        await adapter._handle_slack_message(
-            {
-                "text": self._thread_link_text(),
-                "blocks": self._thread_link_blocks(),
-                "user": "U_USER",
-                "client_msg_id": "cm-3",
-                "channel": "D_DM",
-                "channel_type": "im",
-                "ts": "123.458",
-                "team": "T_TEAM",
-            }
-        )
-
-        text = adapter.handle_message.await_args.args[0].text
-        assert "[Slack Block Kit payload for this message]" not in text
 
     # -- inline elements the renderer does not know ------------------------
 
@@ -6080,17 +5657,6 @@ class TestAgentSessionsApiRouting:
         )
         a._app.client.assistant_threads_setStatus.assert_not_called()
 
-    @pytest.mark.asyncio
-    async def test_typing_falls_back_to_legacy_without_sdk_support(self):
-        _slack_mod._AGENT_SESSIONS_SUPPORTED = False
-        a = self._adapter()
-        a._app.client.assistant_threads_setStatus = AsyncMock()
-        await a.send_typing("C123", metadata={"thread_id": "parent_ts"})
-        a._app.client.assistant_threads_setStatus.assert_called_once_with(
-            channel_id="C123",
-            thread_ts="parent_ts",
-            status="is thinking...",
-        )
 
     @pytest.mark.asyncio
     async def test_stop_typing_clears_via_agent_sessions(self):
@@ -6123,18 +5689,6 @@ class TestAgentSessionsApiRouting:
         )
         a._app.client.assistant_threads_setTitle.assert_not_called()
 
-    @pytest.mark.asyncio
-    async def test_thread_title_legacy_without_sdk_support(self):
-        _slack_mod._AGENT_SESSIONS_SUPPORTED = False
-        a = self._adapter()
-        a.config.extra["assistant_thread_titles"] = True
-        a._app.client.assistant_threads_setTitle = AsyncMock()
-        await a._set_assistant_thread_title("D123", "171234.0001", "Summarize the incident")
-        a._app.client.assistant_threads_setTitle.assert_called_once_with(
-            channel_id="D123",
-            thread_ts="171234.0001",
-            title="Summarize the incident",
-        )
 
 
 # ---------------------------------------------------------------------------

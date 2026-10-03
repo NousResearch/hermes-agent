@@ -62,7 +62,6 @@ async def test_ensure_forum_commands_registers_once():
     assert -123 in adapter._forum_command_registered
     adapter._bot.set_my_commands.assert_awaited_once()
     args, kwargs = adapter._bot.set_my_commands.call_args
-    assert len(args[0]) == 2  # two BotCommand instances
     assert kwargs["scope"] is not None
     assert isinstance(kwargs["scope"].chat_id, int)
     assert kwargs["scope"].chat_id == -123

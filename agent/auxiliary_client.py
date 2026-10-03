@@ -5755,10 +5755,25 @@ def get_auxiliary_extra_body() -> dict:
     return _nous_extra_body() if auxiliary_is_nous else {}
 
 
-def auxiliary_max_tokens_param(value: int, *, model: Optional[str] = None) -> dict:
+def auxiliary_max_tokens_param(
+    value: int,
+    *,
+    model: Optional[str] = None,
+    provider: Optional[str] = None,
+    base_url: Optional[str] = None,
+) -> dict:
     """Max-tokens kwarg for the auxiliary provider: direct OpenAI/Copilot and newer OpenAI-family
-    models (by ``model`` name, so custom endpoints fronting gpt-5.x are caught) need max_completion_tokens."""
-    _custom_host = base_url_hostname(_current_custom_base_url()) or ""
+    models (by ``model`` name, so custom endpoints fronting gpt-5.x are caught) need max_completion_tokens.
+
+    Anthropic-compatible wires (provider in ``_ANTHROPIC_COMPAT_PROVIDERS`` or ``/anthropic`` in the
+    base URL) always use ``max_tokens`` — that's the field name on the Messages API and on MiniMax's
+    Anthropic transport. Name-based OpenAI-family detection (incl. ``minimax-*``) only applies on the
+    OpenAI-compatible wire, otherwise an Anthropic-routed MiniMax call would 400 on an unknown kwarg.
+    """
+    effective_base = base_url or _current_custom_base_url() or ""
+    if _is_anthropic_compat_endpoint((provider or "").strip().lower(), effective_base):
+        return {"max_tokens": value}
+    _custom_host = base_url_hostname(effective_base) or ""
     direct_openai_family = (
         not _scoped_key_env("OPENROUTER_API_KEY") and _read_nous_auth() is None
         and (_custom_host in ("api.openai.com", "api.githubcopilot.com") or _custom_host.endswith(".githubcopilot.com"))
@@ -6806,7 +6821,7 @@ def _build_call_kwargs(
             kwargs["temperature"] = temperature
     provider_norm = str(provider or "").strip().lower()
     if max_tokens is not None and _forwards_max_tokens(provider, provider_norm, model, effective_base, task):
-        kwargs.update(auxiliary_max_tokens_param(max_tokens, model=model))  # picks max_completion_tokens where needed
+        kwargs.update(auxiliary_max_tokens_param(max_tokens, model=model, provider=provider, base_url=effective_base))  # picks max_completion_tokens where needed
     if tools:
         kwargs["tools"] = _dedupe_tool_names(tools, provider, model)
     # Provider profiles are the source of truth for reasoning wire shapes (top-level, nested body,
@@ -7082,8 +7097,14 @@ def _create_with_progress(
         retry_kwargs = dict(kwargs)
         retry_kwargs.pop("max_tokens", None)
         retry_kwargs.pop("max_completion_tokens", None)
+        # Keep the field name the original request already used: this retries the same wire, and the
+        # helper cannot re-derive it here (no provider/base_url in scope — it falls back to
+        # `_current_custom_base_url()`, the *custom* route's base, so an Anthropic-wired MiniMax call
+        # would flip max_tokens → max_completion_tokens and 400 instead of recovering).
+        cap_key = next((k for k in ("max_tokens", "max_completion_tokens") if k in kwargs), "")
         retry_kwargs.update(
-            auxiliary_max_tokens_param(affordable, model=str(kwargs.get("model") or "") or None))
+            {cap_key: affordable} if cap_key
+            else auxiliary_max_tokens_param(affordable, model=str(kwargs.get("model") or "") or None))
         logger.info("Auxiliary %s: credit-limited 402 (affordable=%d tokens); "
                     "retrying once with a clamped output cap instead of failing: %s",
                     task or "call", affordable, exc)

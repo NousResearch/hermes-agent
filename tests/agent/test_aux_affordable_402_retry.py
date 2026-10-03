@@ -156,6 +156,51 @@ class TestCreateWithProgressAffordableRetry:
         assert len(client.calls) == 2
 
 
+class TestRetryPreservesCapFieldName:
+    """The 402 retry keeps the field name ``_build_call_kwargs`` already chose (#37151).
+
+    ``_create_with_progress`` has no provider/base_url in scope, so re-deriving the field name
+    there falls back to the *custom* route's base URL: an Anthropic-wired MiniMax call would get
+    ``max_completion_tokens`` — an unknown kwarg next to the mandatory ``max_tokens`` — turning a
+    recoverable 402 into a hard 400.
+    """
+
+    def test_anthropic_wired_minimax_retry_keeps_max_tokens(self):
+        client = _FlakyClient()
+        kwargs = _build_call_kwargs(
+            provider="minimax",
+            model="MiniMax-M3",
+            messages=[{"role": "user", "content": "summarize"}],
+            max_tokens=65536,
+            base_url="https://api.minimax.io/v1",
+        )
+        assert kwargs["max_tokens"] == 65536  # mandatory on the Messages API
+
+        response = _create_with_progress(client, kwargs, "compression")
+
+        assert response.choices[0].message.content == "summary"
+        assert len(client.calls) == 2
+        assert client.calls[1]["max_tokens"] == 7117 - 64
+        assert "max_completion_tokens" not in client.calls[1]
+
+    def test_openai_compat_retry_keeps_max_completion_tokens(self):
+        """The mirror case: the OpenAI-compatible field name survives the retry too."""
+        client = _FlakyClient()
+        kwargs = _build_call_kwargs(
+            provider="openrouter",
+            model="minimaxai/MiniMax-M3",
+            messages=[{"role": "user", "content": "summarize"}],
+            max_tokens=65536,
+            base_url="https://openrouter.ai/api/v1",
+        )
+        assert kwargs["max_completion_tokens"] == 65536
+
+        _create_with_progress(client, kwargs, "compression")
+
+        assert client.calls[1]["max_completion_tokens"] == 7117 - 64
+        assert "max_tokens" not in client.calls[1]
+
+
 class TestOpenRouterMaxTokensPreserved:
     """Salvage of PR #41055 (@liuhao1024): OpenRouter keeps an explicit cap."""
 

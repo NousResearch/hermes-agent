@@ -350,6 +350,9 @@ class TestBuildCallKwargsMaxTokens:
         "provider,model,base_url",
         [
             ("minimax", "minimax-m2", "https://api.minimax.io/v1"),
+            # The `minimax-` family selector (utils.model_forces_max_completion_tokens) must not leak
+            # onto the Anthropic transport of the same models (#37151).
+            ("minimax", "MiniMax-M3", "https://api.minimax.io/anthropic/v1"),
             ("custom", "claude", "https://proxy.example.com/anthropic/v1"),
         ],
     )
@@ -365,6 +368,25 @@ class TestBuildCallKwargsMaxTokens:
         )
         assert kwargs["max_tokens"] == 1234
         assert "max_completion_tokens" not in kwargs
+
+
+    def test_minimax_openai_compat_wire_uses_max_completion_tokens(self):
+        """#37151: MiniMax on the OpenAI-compatible wire gets the newer field name.
+
+        Pins the production path (not just ``model_forces_max_completion_tokens``):
+        the ``minimax-`` selector must reach the emitted kwargs.
+        """
+        from agent.auxiliary_client import _build_call_kwargs
+
+        kwargs = _build_call_kwargs(
+            provider="openrouter",
+            model="minimaxai/MiniMax-M3",
+            messages=[{"role": "user", "content": "hi"}],
+            max_tokens=4096,
+            base_url="https://openrouter.ai/api/v1",
+        )
+        assert kwargs["max_completion_tokens"] == 4096
+        assert "max_tokens" not in kwargs
 
 
     # ── MoA task should honor max_tokens on ALL providers (#reference_max_tokens) ──

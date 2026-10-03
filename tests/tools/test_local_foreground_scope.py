@@ -91,6 +91,8 @@ def test_gateway_command_is_wrapped_recorded_and_given_the_bus_env(monkeypatch, 
     # too or a system-level unit would fail where the probe succeeded.
     assert kwargs["env"]["DBUS_SESSION_BUS_ADDRESS"] == "unix:path=/run/user/1/bus"
     assert "share the gateway cgroup" not in caplog.text
+    # A scope left over from an earlier gateway with the same PID must not collide.
+    assert env._run_bash("true")._hermes_scope_unit != proc._hermes_scope_unit
 
 
 def test_scope_is_stopped_even_when_the_group_kill_raises_and_survives_adoption(monkeypatch, tmp_path):

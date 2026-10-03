@@ -2412,6 +2412,8 @@ export interface Translations {
     noUsage: (period: number) => string
     retry: string
     dailyTokens: string
+    cacheHitRate: string
+    cacheHitRateVolume: string
     input: string
     output: string
     noDailyActivity: string

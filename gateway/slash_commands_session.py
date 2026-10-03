@@ -747,6 +747,9 @@ class GatewaySessionCommandsMixin:
         export_data = await self._session_db.export_session(session_id, **export_projection(fmt in SAVE_TRANSCRIPT_FORMATS))
         if not export_data:
             return t("gateway.save.no_messages", session_id=session_id)
+        if fmt not in SAVE_TRANSCRIPT_FORMATS:
+            # Turns removed by /undo, rewind or edit stay out of a file sent into the chat (archived turns are kept).
+            export_data["messages"] = [m for m in export_data["messages"] if m["active"] or m["compacted"]]
         if redact:
             from hermes_cli.session_export_md import redact_session_data
             export_data = redact_session_data(export_data)

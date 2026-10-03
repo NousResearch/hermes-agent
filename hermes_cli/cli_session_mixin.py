@@ -665,6 +665,9 @@ class CLISessionMixin:
                 session_data = _db.export_session(_sid, **export_projection(fmt in SAVE_TRANSCRIPT_FORMATS))
             except Exception:
                 session_data = None
+            if session_data and fmt not in SAVE_TRANSCRIPT_FORMATS:
+                # Turns removed by /undo, rewind or edit stay out of a /save file (archived turns are kept).
+                session_data["messages"] = [m for m in session_data["messages"] if m["active"] or m["compacted"]]
         if not session_data:
             if not self.conversation_history:
                 print(t("cli.session.save_nothing"))

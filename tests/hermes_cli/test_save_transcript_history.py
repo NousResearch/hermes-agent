@@ -81,6 +81,8 @@ def test_save_json_restores_compacted_history_as_archived(tmp_path, monkeypatch,
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     db = _compacted_store(tmp_path / "state.db")
+    db.append_message("s1", "user", "undone secret")
+    db.rewind_to_message("s1", db.get_messages("s1")[-1]["id"])
 
     def shape(store, **flags):
         return [(m["role"], m["content"]) for m in store.get_messages("s1", **flags)]
@@ -88,6 +90,7 @@ def test_save_json_restores_compacted_history_as_archived(tmp_path, monkeypatch,
     try:
         shown, live = shape(db, include_compacted=True), shape(db)
         snapshot = json.loads(save(db, "json", tmp_path / "saved.json"))
+        assert "undone secret" not in [m["content"] for m in snapshot["messages"]]
         # Like `hermes sessions export`, the in-memory backup is capped per session (sessions.max_export_messages).
         monkeypatch.setattr("hermes_state.resolved_max_export_messages", lambda: 5)
         assert "max_export_messages" in save(db, "json", tmp_path / "capped.json")

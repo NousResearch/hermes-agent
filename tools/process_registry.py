@@ -1792,6 +1792,15 @@ class ProcessRegistry(ProcessCheckpointMixin):
                     with suppress(OSError, ValueError):  # a stdin flush can hit EPIPE
                         stream.close()
         if session._pty is not None:
+            # A live PTY reader sits in a blocking read holding the PTY file
+            # object's buffer lock, and that read only ends once every holder of
+            # the slave side is gone. A descendant that setsid()s past the kill
+            # keeps it open, so close() here would block forever (under _lock on
+            # the prune path). The reader closes the PTY itself via
+            # _finish_reader once its read ends.
+            reader = session._reader_thread
+            if reader is not None and reader.is_alive() and reader is not threading.current_thread():
+                return
             # ptyprocess/pywinpty close() is idempotent (``closed`` flag) and
             # closes the master fd exactly once; it raises only if the child
             # ignores SIGKILL, which we don't want to surface on the finish path.

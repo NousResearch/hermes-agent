@@ -350,6 +350,37 @@ _TRANSPARENT_PREFIX_OPERANDS = {"timeout": 1}
 
 _ENV_ASSIGNMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
 
+# --- shell-variable indirection (#see module note) ----------------------------------------------
+# A cron spec may build the gateway lifecycle command out of pieces the regexes never see together:
+#     U=hermes-gateway.service; systemctl restart $U
+#     V=restart; systemctl $V hermes-gateway.service
+#     eval "systemctl restart $U"
+# Each assignment is resolved and substituted BEFORE matching, so the existing anchored patterns
+# read the command the shell will actually run. This is a second VIEW of the same text, never a
+# rewrite of it: expansion can only reveal more command shape, never remove any.
+#
+# Bound the resolution: at most _MAX_VARIABLE_EXPANSION_ROUNDS fixed-point rounds, at most
+# _MAX_VARIABLE_ASSIGNMENTS names, and only values under _MAX_VARIABLE_VALUE_CHARS — a text with
+# thousands of assignments or a multi-KB value must not turn the guard into a substitution engine.
+_SHELL_ASSIGNMENT_RE = re.compile(
+    r"(?<![A-Za-z0-9_])([A-Za-z_][A-Za-z0-9_]*)="
+    r"(\"[^\"\n]*\"|'[^'\n]*'|[A-Za-z0-9_./:@%+,=-]+)"
+)
+# A variable reference in a command position (`$U`, `${U}`). Used to decide whether a re-evaluating
+# builtin was handed a value this text actually contains.
+_VARIABLE_REFERENCE_RE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}|\$([A-Za-z_][A-Za-z0-9_]*)")
+_MAX_VARIABLE_EXPANSION_ROUNDS = 3
+_MAX_VARIABLE_ASSIGNMENTS = 64
+_MAX_VARIABLE_VALUE_CHARS = 256
+
+# Re-evaluating builtins: their operand is CODE the shell parses at run time, not data. After
+# expansion the literal operand is scanned like any other command text (that is what catches
+# `eval "systemctl restart $U"`). What CANNOT be resolved is an operand still carrying a variable
+# this text never assigned — its content arrives from the environment, a file, or stdin, so the
+# guard is blind to it. Fail closed on exactly that shape: `eval "$X"` is the one construct where a
+# fully opaque command string is a documented, ordinary spelling.
+_RE_EVALUATING_COMMANDS = frozenset({"eval"})
+
 # Bound the walk: a pathological token run must not spin here.
 _MAX_PREFIX_PEELS = 8
 
@@ -392,6 +423,68 @@ def _contains_launchctl_gateway_lifecycle(normalized_text: str) -> bool:
     )
 
 
+def _strip_variable_quotes(value: str) -> str:
+    """Unquote one shell word: exactly one balanced matching pair, else the word unchanged."""
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
+        return value[1:-1]
+    return value
+
+
+def _shell_assignments(text: str) -> dict[str, str]:
+    """``NAME -> value`` for every simple assignment in *text*, later assignments winning. Values
+    longer than the cap are DROPPED (not truncated): a half-known value must not expand into a
+    command-shaped prefix that then matches."""
+    assignments: dict[str, str] = {}
+    for match in _SHELL_ASSIGNMENT_RE.finditer(text):
+        if len(assignments) >= _MAX_VARIABLE_ASSIGNMENTS:
+            break
+        value = _strip_variable_quotes(match.group(2))
+        if not value or len(value) > _MAX_VARIABLE_VALUE_CHARS:
+            continue
+        assignments[match.group(1)] = value
+    return assignments
+
+
+def _substitute_variables(text: str) -> str:
+    """Substitute assignments into references, to a fixed point. Unresolvable references are LEFT
+    IN PLACE — the guard's verdict for a variable it cannot read is the same as today's."""
+    current = text
+    for _ in range(_MAX_VARIABLE_EXPANSION_ROUNDS):
+        assignments = _shell_assignments(current)
+        if not assignments:
+            return current
+
+        def _replace(match: re.Match) -> str:
+            name = match.group(1) or match.group(2)
+            return assignments.get(name, match.group(0))
+
+        expanded = _VARIABLE_REFERENCE_RE.sub(_replace, current)
+        if expanded == current:
+            return current
+        current = expanded
+    return current
+
+
+def _has_unresolved_reeval(text: str) -> bool:
+    """True when an EXECUTED ``eval`` is handed a command string that still contains a variable
+    reference this text never assigned — the guard cannot know what it expands to. ``eval "$X"``
+    and ``eval "$X; $Y"`` block; ``eval "systemctl restart $U"`` with ``U=`` assigned in the same text
+    does not (the operand is literal after expansion and is scanned normally)."""
+    assignments = _shell_assignments(text)
+    for segment in _iter_command_segments(text):
+        index = _executed_command_index(segment)
+        if index is None or _executable_name(segment[index]) not in _RE_EVALUATING_COMMANDS:
+            continue
+        for argument in segment[index + 1:]:
+            if argument.startswith("-"):
+                continue
+            for match in _VARIABLE_REFERENCE_RE.finditer(argument):
+                name = match.group(1) or match.group(2)
+                if name not in assignments:
+                    return True
+    return False
+
+
 def contains_gateway_lifecycle_command(text: str) -> bool:
     """Return True if *text* contains a gateway lifecycle command pattern.
 
@@ -423,6 +516,15 @@ def contains_gateway_lifecycle_command(text: str) -> bool:
 
     text = strip_inert_heredoc_bodies(text)
     normalized = _SHELL_LINE_CONTINUATION.sub(" ", text)
+    # Variable-indirection pass. Resolve `NAME=value` assignments to a fixed point and re-run the
+    # whole verdict on the expansion, so `U=hermes-gateway.service; systemctl restart $U` reads as
+    # the command the shell runs. Additive by construction — expansion only reveals command shape,
+    # so it can block more, never less. Every existing pass below still runs on the ORIGINAL text.
+    expanded = _SHELL_LINE_CONTINUATION.sub(" ", _substitute_variables(normalized))
+    if expanded != normalized and contains_gateway_lifecycle_command(expanded):
+        return True
+    if _has_unresolved_reeval(expanded):
+        return True
     if _GATEWAY_LIFECYCLE_PATTERN.search(normalized):
         return True
     # Profile-flag form: blocked only when the named profile IS the one running the guard.

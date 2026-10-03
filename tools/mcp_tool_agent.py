@@ -107,7 +107,7 @@ def refresh_agent_mcp_tools(
 
     ``preserve_prefix``: for rebuilds inside a live conversation the tool array is a cached
     request prefix and any moved byte re-prefills the whole history — existing tools keep their
-    slot (schemas still refresh), a still-registered tool whose ``check_fn`` merely flapped is
+    slot and their already-sent schema bytes, a still-registered tool whose ``check_fn`` merely flapped is
     carried forward (``check_fn`` gates exposure, never invocation), a deregistered tool is
     dropped, new tools append at the tail. The caller owns the prompt-cache contract."""
     from model_tools import get_tool_definitions
@@ -240,8 +240,9 @@ def restore_agent_tool_prefix(agent, saved) -> bool:
 
 def _merge_preserving_prefix(current_defs: list, new_defs: list, registered_names: set) -> tuple[list, set]:
     """Fold a fresh tool snapshot into a live one without moving existing bytes. Ordered by
-    ``current_defs`` (the cached request prefix): a name in both keeps its slot but takes the
-    fresh schema; a name only in the live list is kept if still registered (``check_fn``
+    ``current_defs`` (the cached request prefix): a name in both keeps its slot AND its
+    already-sent schema bytes (a refreshed schema would re-prefill the whole history,
+    fixes #128817); a name only in the live list is kept if still registered (``check_fn``
     flapped), else dropped; a name only in the fresh list is appended at the tail.
 
     The bridge tools keep their BUILT entry, not the fresh one: ``tool_search``'s description
@@ -257,7 +258,9 @@ def _merge_preserving_prefix(current_defs: list, new_defs: list, registered_name
         if name in BRIDGE_TOOL_NAMES:
             merged.append(entry)
         elif replacement is not None:
-            merged.append(replacement)
+            # Keep the already-sent bytes; an explicit reload (preserve_prefix off)
+            # still takes fresh schemas.
+            merged.append(entry)
         elif name and name in registered_names:
             merged.append(entry)
     merged.extend(fresh.values())

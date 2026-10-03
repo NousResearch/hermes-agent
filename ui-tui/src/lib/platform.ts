@@ -39,6 +39,25 @@ export const isAction = (key: { ctrl: boolean; meta: boolean; super?: boolean },
 export const isRemoteShell = (env: NodeJS.ProcessEnv = process.env): boolean =>
   Boolean(env.SSH_CONNECTION || env.SSH_CLIENT || env.SSH_TTY)
 
+/**
+ * True under legacy Windows consoles: ``win32`` without Windows Terminal's
+ * WT_SESSION / WT_PROFILE_ID markers. Stock Windows 10 conhost renders with
+ * Consolas, which has no coverage for the kaomoji faces (katakana, stars,
+ * combining marks), U+276F/U+276E or U+2624 — those glyphs come out as tofu
+ * (#67151). Windows Terminal ships Cascadia Code, which covers them.
+ */
+export const isLegacyWindowsConsole = (
+  platform: NodeJS.Platform = process.platform,
+  env: NodeJS.ProcessEnv = process.env
+): boolean =>
+  platform === 'win32' && env.WT_SESSION === undefined && env.WT_PROFILE_ID === undefined
+
+/** Composer/steer prompt glyph: U+276F is tofu in legacy Windows consoles — '>' there (#67151). */
+export const promptGlyph = (
+  platform: NodeJS.Platform = process.platform,
+  env: NodeJS.ProcessEnv = process.env
+): string => (isLegacyWindowsConsole(platform, env) ? '>' : '❯')
+
 export const isCopyShortcut = (
   key: { ctrl: boolean; meta: boolean; super?: boolean },
   ch: string,

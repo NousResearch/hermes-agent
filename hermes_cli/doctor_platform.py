@@ -525,6 +525,38 @@ def _check_windows_gateway_autostart(should_fix: bool, f: Finding) -> None:
         f.manual_issues.extend(warnings)
 
 
+def _legacy_windows_console(platform: str = sys.platform, env: "dict[str, str] | None" = None) -> bool:
+    """True under a legacy Windows console: win32 without Windows Terminal's WT_SESSION /
+    WT_PROFILE_ID markers. Stock Windows 10 conhost renders with Consolas, which has no
+    coverage for the TUI's kaomoji faces, U+276F/U+276E or U+2624 (#67151)."""
+    if platform != "win32":
+        return False
+    e = os.environ if env is None else env
+    return not (e.get("WT_SESSION") or e.get("WT_PROFILE_ID"))
+
+
+@doctor_check(on_error="Windows font coverage", detail="(could not check: {e})")
+def _check_windows_font_coverage(should_fix: bool, f: Finding) -> None:
+    """Windows: legacy conhost fonts (Consolas) render the TUI's kaomoji faces, the U+276F
+    prompt glyph and the CLI's U+2624 banner as tofu; Windows Terminal / Cascadia Code
+    covers them (#67151). Nothing to auto-fix — this names the remedy."""
+    if sys.platform != "win32":
+        return
+    _section("Windows Font Coverage")
+    if not _legacy_windows_console():
+        check_ok("Windows Terminal detected (its Cascadia fonts cover the TUI's Unicode glyphs)")
+        return
+    check_warn(
+        "Legacy Windows console fonts cannot render the TUI's kaomoji and prompt glyphs",
+        "(the TUI fell back to ASCII indicators; the full glyph set needs a font with coverage)",
+    )
+    f.manual_issues.append(
+        "Unicode tofu in the legacy console (#67151): install Cascadia Code"
+        " (`winget install --id Microsoft.CascadiaCode`) or run Hermes in Windows Terminal;"
+        " `/indicator kaomoji` restores the animated faces once the font covers them"
+    )
+
+
 @doctor_check()
 def _check_web_dashboard_import(should_fix: bool, f: Finding) -> None:
     """Import the dashboard web surface in a subprocess so an import-time crash lands in the report.

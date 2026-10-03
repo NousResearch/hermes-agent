@@ -49,8 +49,11 @@ is documented as a known limitation at the end of this document.
 - Env override: `GATEWAY_MULTIPLEX_PROFILES` accepts explicit truthy/falsy
   tokens only; a blank or unrecognized value returns "no override" so an empty
   deployment secret cannot shadow a config opt-in.
-- At startup, `GatewayRunner.__init__` calls
-  `agent.secret_scope.set_multiplex_active(...)` once. `_MULTIPLEX_ACTIVE` is
+- At startup, `load_gateway_config_for_runner` (or `GatewayRunner.__init__`
+  for an injected config) arms multiplexing through
+  `tui_gateway.launch_profile_policy.activate_multi_profile_hosting()`, which
+  freezes `os.environ` as the launch profile's env and then calls
+  `agent.secret_scope.set_multiplex_active(True)`. `_MULTIPLEX_ACTIVE` is
   a plain module global, not a contextvar: it describes the deployment mode,
   not a per-task value. Its only job is to arm the fail-closed behavior in
   `get_secret()`.
@@ -85,7 +88,7 @@ is documented as a known limitation at the end of this document.
 
 ## Scope composition
 
-Every inbound event composes the same two context-local scopes before any
+Every inbound event composes the same three context-local scopes before any
 profile-owned code runs:
 
 ```
@@ -98,8 +101,10 @@ profile_routes match ──► served-set check ──► SessionSource.profile 
 _profile_runtime_scope(profile_home)           (gateway/run.py)
    ├── set_hermes_home_override(home)          config / state.db / skills /
    │                                           memory / sessions resolve here
-   └── set_secret_scope(profile .env + secret sources)
+   ├── set_secret_scope(profile .env + secret sources)
    │                                           provider keys, platform tokens
+   └── terminal scope (profile TERMINAL_* policy)
+   │                                           backend, sandbox, limits
    ▼
 agent turn (worker thread via copy_context())
    │
@@ -114,7 +119,30 @@ background tasks, and the agent turn itself. Config reloads run under the
 default profile's scope so global gateway settings (`#64674`) resolve
 consistently.
 
-Both scopes are `contextvars`, so they propagate into executor worker threads
+The launch home (the routing home pinned at activation, which is a named
+profile when one started the host) builds its secret and terminal scopes from its files **over
+the env frozen at activation** (`launch_profile_policy.served_secret_scope` /
+`served_terminal_overlay`), the same binding `hermes serve` gives its launch
+profile: a provider key, bot token or `TERMINAL_ENV` that systemd
+`Environment=`, `op run` or a shell export injected has no file to rebuild
+from. Every other served home, the default root under a named launcher
+included, is built from its own files only. Cron fires bind the same pair
+(`cron/scheduler.py::_run_one_job_body`); the restart-safe cron worker hands
+the frozen env only to the launch profile's worker, and a secondary's worker
+freezes an empty launch env so the launch residue left in its env never
+enters its scope.
+
+`served_terminal_overlay` is not gated on activation the way
+`served_secret_scope` is: a secret miss still reaches `os.environ` before
+activation, but a bound terminal scope is the whole policy. On a host that
+never multiplexes, the launch home's cron fires therefore overlay the live
+env's `TERMINAL_*`, the same policy that profile's unscoped turns read. The
+host computes the worker's overlay and sends it in the payload
+(`terminal_overlay`), because the worker's own home is the fired profile's
+and cannot tell the launch profile from a secondary. A secondary's worker
+gets a credential-scrubbed env whether or not the host multiplexes.
+
+All three are `contextvars`, so they propagate into executor worker threads
 via `copy_context()` and unwind deterministically — nothing is written to
 `os.environ`, ever.
 

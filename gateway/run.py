@@ -1802,13 +1802,13 @@ def _load_profile_secret_scope(profile_home: "Path") -> dict:
     """Hydrate and load one profile's secrets under its home override."""
     from hermes_constants import set_hermes_home_override, reset_hermes_home_override
     # Caller already hydrated external sources off-loop (#99519).
-    from agent.secret_scope import build_profile_secret_scope
     from hermes_cli.env_loader import hydrate_profile_secret_sources
+    from tui_gateway.launch_profile_policy import served_secret_scope
 
     home_token = set_hermes_home_override(str(profile_home))
     try:
         hydrate_profile_secret_sources(Path(profile_home))
-        return build_profile_secret_scope(Path(profile_home))
+        return served_secret_scope(Path(profile_home))
     finally:
         reset_hermes_home_override(home_token)
 
@@ -1820,9 +1820,12 @@ def _profile_runtime_scope(
     """Scope config/skills/memory AND credentials to a profile for one turn (multiplexed path only).
     ``set_hermes_home_override`` is a contextvar (reaches the agent worker via ``copy_context()``);
     ``set_secret_scope`` makes the profile ``.env`` the credential source without mutating
-    ``os.environ``, so subprocesses never inherit cross-profile secrets."""
+    ``os.environ``, so subprocesses never inherit cross-profile secrets. The launch home is a tenant
+    too: its secrets and terminal policy also carry the env frozen at activation
+    (``tui_gateway.launch_profile_policy.served_secret_scope`` / ``served_terminal_overlay``)."""
     from hermes_constants import set_hermes_home_override, reset_hermes_home_override
     from agent.secret_scope import set_secret_scope, reset_secret_scope
+    from tui_gateway.launch_profile_policy import served_secret_scope, served_terminal_overlay
 
     home_token = secret_token = None
     try:
@@ -1832,15 +1835,15 @@ def _profile_runtime_scope(
         elif hydrate_secrets:
             secrets = _load_profile_secret_scope(Path(profile_home))
         else:
-            from agent.secret_scope import build_profile_secret_scope  # caller already hydrated off-loop
-            secrets = build_profile_secret_scope(Path(profile_home))
+            secrets = served_secret_scope(Path(profile_home))  # caller already hydrated off-loop
         secret_token = set_secret_scope(secrets, profile_home=str(profile_home))
         # Install the routed profile's COMPLETE terminal policy, never ambient TERMINAL_* a prior turn set.
         # Without it terminal_tool reads the process-global TERMINAL_* vars a previous profile's turn may have
         # pinned (first-writer-wins backend leak; #68559).
         from tools.terminal_scope import install_and_reset_profile_terminal_scope
 
-        with install_and_reset_profile_terminal_scope(Path(profile_home)):
+        with install_and_reset_profile_terminal_scope(
+                Path(profile_home), env_overlay=served_terminal_overlay(profile_home)):
             yield
     finally:
         if secret_token is not None:
@@ -1879,8 +1882,10 @@ def load_gateway_config_for_runner() -> "GatewayConfig":
     if not cfg.multiplex_profiles:
         return cfg
     try:
-        from agent.secret_scope import set_multiplex_active
-        set_multiplex_active(True)
+        # Freeze the launch env as the guard arms: nothing has run for a secondary yet, and a key
+        # only systemd / `op run` injected has no file for the launch home's scope to rebuild from.
+        from tui_gateway.launch_profile_policy import activate_multi_profile_hosting
+        activate_multi_profile_hosting()
     except Exception:
         logger.debug("could not set multiplex-active before primary config load", exc_info=True)
     try:
@@ -3485,8 +3490,13 @@ class GatewayRunner(
         # Multiplexer flag flips agent.secret_scope.get_secret() to fail-closed on unscoped credential
         # reads, so a missed migration crashes loudly instead of leaking a cross-profile value.
         try:
-            from agent.secret_scope import set_multiplex_active
-            set_multiplex_active(bool(getattr(self.config, "multiplex_profiles", False)))
+            if getattr(self.config, "multiplex_profiles", False):
+                # An injected config (--config) arms here: freeze the launch env with it.
+                from tui_gateway.launch_profile_policy import activate_multi_profile_hosting
+                activate_multi_profile_hosting()
+            else:
+                from agent.secret_scope import set_multiplex_active
+                set_multiplex_active(False)
         except Exception:
             logger.debug("could not set multiplex-active flag", exc_info=True)
         self.adapters: Dict[Platform, BasePlatformAdapter] = {}

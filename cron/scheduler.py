@@ -2796,12 +2796,15 @@ def _run_with_fire_claim_heartbeat(job: dict, run) -> bool:
 def run_one_job(
     job: dict, *, adapters=None, loop=None, verbose: bool = False,
     extra_prompt: Optional[str] = None, cancel_event: Optional[_CancelEventLike] = None,
+    worker_terminal_overlay: Optional[Dict[str, str]] = None,
 ) -> bool:
     """Run ONE due job end-to-end: execute → save output → deliver → mark. Shared by the built-in
     ticker and external providers' ``fire_due``; does NOT decide due-ness or acquire the initial
     claim (callers use the store CAS) but keeps it alive. True if processed (a job failure is
     recorded via ``mark_job_run``), False only if processing raised. ``cancel_event``: optional
-    transport-level cancel (dashboard drain)."""
+    transport-level cancel (dashboard drain). ``worker_terminal_overlay``: the ``TERMINAL_*``
+    overlay the dispatching host granted a detached worker (payload ``terminal_overlay``); read
+    only by the worker that owns the execution."""
     # Every gateway path (built-in scheduler, external providers, and direct
     # API fires) crosses this seam.  Ensure the detached worker has a durable
     # attempt to adopt before any launch can occur.
@@ -2883,7 +2886,8 @@ def run_one_job(
                     extra_prompt=extra_prompt,
                     claim_lost=lost_ownership,
                     transport_cancel=cancel_event,
-                    execution_token=execution_token))
+                    execution_token=execution_token,
+                    worker_terminal_overlay=worker_terminal_overlay))
     finally:
         with _running_lock:
             executions = _running_fire_owners.get(_fire_key)
@@ -3264,14 +3268,16 @@ def _install_fire_secret_scope() -> "tuple[contextvars.Token, Optional[contextva
     here rather than at the tick means no read is ever fail-closed without a scope to read — the
     restart-safe handoff in ``run_one_job`` runs before this and keeps today's semantics (#107692).
     """
-    from agent.secret_scope import (
-        build_profile_secret_scope, set_multiplex_context, set_secret_scope)
+    from agent.secret_scope import set_multiplex_context, set_secret_scope
     from cron.scheduler_provider import routed_profile_fire
     from hermes_cli.env_loader import hydrate_profile_secret_sources
+    from tui_gateway.launch_profile_policy import served_secret_scope
 
     home = Path(_get_hermes_home())
     hydrate_profile_secret_sources(home)
-    scope_token = set_secret_scope(build_profile_secret_scope(home), profile_home=str(home))
+    # A multiplexing host's launch profile also keeps the env frozen at activation (systemd /
+    # `op run` keys have no file to rebuild from); every other profile resolves from its files.
+    scope_token = set_secret_scope(served_secret_scope(home), profile_home=str(home))
     context_token = set_multiplex_context(True) if routed_profile_fire() else None
     return scope_token, context_token
 
@@ -3292,6 +3298,7 @@ def _run_one_job_body(
     extra_prompt: Optional[str] = None, claim_lost: Optional[_CancelEventLike] = None,
     transport_cancel: Optional[_CancelEventLike] = None,
     execution_token: Optional[object] = None,
+    worker_terminal_overlay: Optional[Dict[str, str]] = None,
 ) -> bool:
     fence = _FireOwnership(job, claim_lost, transport_cancel)
     fire_owner = fence.owner
@@ -3304,6 +3311,7 @@ def _run_one_job_body(
             job["id"], source="direct", scheduled_instant=job.get("_scheduled_instant"))["id"]
     delivery_attempted = False
     delivery_error = None
+    from tui_gateway.launch_profile_policy import served_terminal_overlay
 
     _fire_scope_tokens = None
     _terminal_scope_token = None
@@ -3351,7 +3359,14 @@ def _run_one_job_body(
         from tools.terminal_scope import (
             install_profile_terminal_scope)
 
-        _terminal_scope_token = install_profile_terminal_scope(_get_hermes_home())
+        # The launch profile's env-only TERMINAL_* (live on a single-profile host, frozen once it
+        # multiplexes) overlays its files; any other profile gets none. A detached worker applies the
+        # host's grant instead of deciding: its process home is the fired profile's whichever that
+        # is, and a secondary's env still carries launch TERMINAL_* the strip does not know (#191).
+        _terminal_scope_token = install_profile_terminal_scope(
+            _get_hermes_home(),
+            env_overlay=(worker_terminal_overlay if external_owner
+                         else served_terminal_overlay(_get_hermes_home())))
         # Defer agent teardown until AFTER delivery; closing first races the live send against a
         # torn-down async client. run_job hands the agent back via this list.
         # Defer the cron agent's async-resource teardown until AFTER delivery. run_job normally closes the
@@ -3649,7 +3664,7 @@ def _launch_external_cron_worker(job: dict) -> bool:
         str(ack_path),
     ]
 
-    from agent.secret_scope import is_multiplex_active
+    from agent.secret_scope import _is_process_home, is_multiplex_active
     from cron.scheduler_provider import routed_profile_fire
     from tools.environments.local import build_subprocess_env, strip_launch_profile_env
     from tools.process_registry import (
@@ -3657,6 +3672,7 @@ def _launch_external_cron_worker(job: dict) -> bool:
         scoped_spawn_lost_user_bus,
         systemd_user_bus_env,
     )
+    from tui_gateway.launch_profile_policy import capture_launch_env, served_terminal_overlay
 
     # A fire routed to another profile is multiplexed at this handoff even when the process flag is
     # off (the desktop ticker is not a multiplexer): the payload says so, and the worker env is built
@@ -3682,6 +3698,15 @@ def _launch_external_cron_worker(job: dict) -> bool:
             "cron execution claim changed before external worker handoff"
         )
 
+    profile_home = _get_hermes_home().resolve()
+    # The host decides the worker's grant; the worker cannot, because its own process home is the
+    # fired profile's. The launch profile's worker keeps the launch env unscrubbed (the env frozen at
+    # activation once this host multiplexes: systemd / `op run` keys have no file to rebuild from)
+    # and its TERMINAL_* overlay. Any other profile's worker gets a scrubbed base and no overlay and
+    # resolves from its own files, on a single-profile host too: a scoped miss in the worker falls
+    # back to its env, which is never that profile's. The payload tells the child what it got.
+    own_profile = _is_process_home(profile_home)
+    launch_worker = own_profile and multiplex_active
     _ensure_cron_dir(handoff_dir)
     try:
         handoff_dir.chmod(0o700)
@@ -3693,8 +3718,10 @@ def _launch_external_cron_worker(job: dict) -> bool:
             json.dump(
                 {
                     "job": job,
-                    "profile_home": str(_get_hermes_home().resolve()),
+                    "profile_home": str(profile_home),
                     "multiplex_active": multiplex_active,
+                    "launch_env": launch_worker,
+                    "terminal_overlay": served_terminal_overlay(profile_home),
                 },
                 payload_file,
             )
@@ -3704,7 +3731,6 @@ def _launch_external_cron_worker(job: dict) -> bool:
         payload_path.unlink(missing_ok=True)
         raise
 
-    profile_home = _get_hermes_home().resolve()
     # Same hydrate -> scope -> (routed) multiplex-context install the in-process fire uses, for exactly
     # the env build; the helper's reset order keeps the context from outliving its scope.
     fire_scope_tokens = _install_fire_secret_scope()
@@ -3712,7 +3738,8 @@ def _launch_external_cron_worker(job: dict) -> bool:
         # No restore_managed_env here: the worker re-runs load_hermes_dotenv -> _apply_managed_env at
         # import, and strip_launch_profile_env leaves managed keys in place.
         worker_env = strip_launch_profile_env(build_subprocess_env(
-            scrub_secrets=multiplex_active,
+            base=capture_launch_env() if launch_worker else None,
+            scrub_secrets=not own_profile,
             inherit_profile_home=True,
             extra={"HERMES_HOME": str(profile_home)},
         ))
@@ -3883,7 +3910,6 @@ def _run_external_worker_payload(payload_path: Path, ack_path: Path) -> bool:
             pass
 
     from agent.secret_scope import (
-        build_profile_secret_scope,
         is_multiplex_active,
         reset_secret_scope,
         set_multiplex_active,
@@ -3895,6 +3921,7 @@ def _run_external_worker_payload(payload_path: Path, ack_path: Path) -> bool:
         reset_hermes_home_override,
         set_hermes_home_override,
     )
+    from tui_gateway.launch_profile_policy import capture_launch_env, served_secret_scope
 
     previous_multiplex = is_multiplex_active()
     home_token = secret_token = None
@@ -3902,6 +3929,12 @@ def _run_external_worker_payload(payload_path: Path, ack_path: Path) -> bool:
         home_token = set_hermes_home_override(profile_home)
         multiplex_active = bool(payload.get("multiplex_active", False))
         set_multiplex_active(multiplex_active)
+        if multiplex_active:
+            # This process's own home is the payload's, so every worker looks like a launch home to
+            # the scope helpers: freeze exactly what the host granted — the launch profile's frozen
+            # env for its own worker, nothing for a secondary's (whose env still carries launch
+            # residue that is never that profile's).
+            capture_launch_env(None if payload.get("launch_env") else {})
         # Plugin secret sources (``ctx.register_secret_source()``) only exist after plugin
         # discovery; this process starts with the builtin registry alone, so hydrating without it
         # silently dropped every plugin-sourced credential (#121929). Runs under the home override
@@ -3910,7 +3943,7 @@ def _run_external_worker_payload(payload_path: Path, ack_path: Path) -> bool:
 
         discover_plugins()
         hydrate_profile_secret_sources(profile_home)
-        secret_token = set_secret_scope(build_profile_secret_scope(profile_home), profile_home=str(profile_home))
+        secret_token = set_secret_scope(served_secret_scope(profile_home), profile_home=str(profile_home))
         with use_cron_store(profile_home):
             if adopt_claimed_execution(execution_id) is None:
                 logger.error(
@@ -3947,7 +3980,9 @@ def _run_external_worker_payload(payload_path: Path, ack_path: Path) -> bool:
             old_external_execution = os.environ.get("_HERMES_CRON_EXTERNAL_WORKER")
             os.environ["_HERMES_CRON_EXTERNAL_WORKER"] = execution_id
             try:
-                completed = run_one_job(job, adapters=None, loop=None, verbose=False)
+                completed = run_one_job(
+                    job, adapters=None, loop=None, verbose=False,
+                    worker_terminal_overlay=payload.get("terminal_overlay"))
                 # Successful return: the worker recorded its outcome. If it raises,
                 # retain fd 2's pathname until the waiter consumes the traceback.
                 with contextlib.suppress(OSError):

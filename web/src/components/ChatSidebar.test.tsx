@@ -207,6 +207,29 @@ describe('ChatSidebar event socket', () => {
       { timeout: 3000 },
     );
   });
+
+  it('reports the runtime session id from the PTY event stream', async () => {
+    const { ChatSidebar } = await import('./ChatSidebar')
+    const onSessionIdChange = vi.fn()
+
+    await render(<ChatSidebar channel="chat-1" onSessionIdChange={onSessionIdChange} />)
+    await vi.waitFor(() => expect(FakeWebSocket.instances).toHaveLength(1))
+
+    FakeWebSocket.instances[0].emit('open', {})
+    FakeWebSocket.instances[0].emit('message', {
+      data: JSON.stringify({
+        jsonrpc: '2.0',
+        method: 'event',
+        params: {
+          type: 'session.info',
+          session_id: 'runtime-session-42',
+          payload: { title: 'current' }
+        }
+      })
+    })
+
+    expect(onSessionIdChange).toHaveBeenCalledWith('runtime-session-42')
+  })
 })
 
 describe('ChatSidebar event socket reconnect', () => {

@@ -25,7 +25,7 @@ import "@xterm/xterm/css/xterm.css";
 import { Button } from "@nous-research/ui/ui/components/button";
 import { Typography } from "@nous-research/ui/ui/components/typography/index";
 import { cn } from "@/lib/utils";
-import { Copy, PanelRight, RotateCcw, X } from "lucide-react";
+import { Copy, PanelRight, RotateCcw, Square, X } from "lucide-react";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useNavigate, useSearchParams } from "react-router";
@@ -35,6 +35,9 @@ import { ChatSessionList } from "@/components/ChatSessionList";
 import { usePageHeader } from "@/contexts/usePageHeader";
 import { useI18n } from "@/i18n";
 import { api } from "@/lib/api";
+import { errorMessage } from "@/lib/api-error";
+import { GatewayClient } from "@/lib/gatewayClient";
+import { interruptCurrentSession, isCurrentStopRequest } from "@/lib/chat-stop";
 import { readStoredWorkspace, writeStoredWorkspace } from "@/lib/chat-workspaces";
 import { latchChatActivation } from "@/lib/chat-activation";
 import { copyTextToClipboard } from "@/lib/clipboard";
@@ -72,8 +75,8 @@ import {
   sendPtyShortcutSequence,
 } from "@/lib/pty-keyboard-shortcuts";
 import {
+  bindResumeSessionFromControlMessage,
   isViewportPinnedToBottom,
-  parseResumeControlMessage,
   shouldFollowPtyOutput,
 } from "@/lib/pty-scroll";
 import {
@@ -102,7 +105,6 @@ import { loseWebglContexts } from "@/lib/xterm-webgl-release";
 import { PluginSlot } from "@/plugins";
 import { useTheme } from "@/themes";
 import { useProfileScope } from "@/contexts/useProfileScope";
-import { errorMessage } from "@/lib/api-error";
 
 // Per-tab keep-alive identity (`?attach=`): lives in pty-attach-token.ts so a
 // second tab — including a Chrome "Duplicate tab" — gets its own PTY instead of
@@ -235,6 +237,17 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
   // server could not start it at all (close 1011; the reason is in the terminal).
   const [endedReason, setEndedReason] = useState<"exited" | "start-failed">("exited");
   const navigate = useNavigate();
+  const stopGateway = useMemo(() => new GatewayClient(), []);
+  const [chatSessionId, setChatSessionId] = useState<string | null>(null);
+  const [chatSessionChannel, setChatSessionChannel] = useState<string | null>(null);
+  const chatSessionIdRef = useRef<string | null>(null);
+  const chatSessionScopeRef = useRef<string | null>(null);
+  const stopRequestGenerationRef = useRef(0);
+  const [stopState, setStopState] = useState<"idle" | "stopping" | "acknowledged" | "error">("idle");
+  const [stopError, setStopError] = useState<string | null>(null);
+  useEffect(() => {
+    return () => stopGateway.close();
+  }, [stopGateway]);
   const [copyState, setCopyState] = useState<"idle" | "copied">("idle");
   const copyResetRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -413,6 +426,68 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     () => generateChannelId(`${resumeParam ?? ""}\0${scopedProfile}`),
     [resumeParam, scopedProfile],
   );
+  const activeChatChannelRef = useRef(channel);
+  useLayoutEffect(() => {
+    activeChatChannelRef.current = channel;
+    stopRequestGenerationRef.current += 1;
+    chatSessionScopeRef.current = null;
+    chatSessionIdRef.current = null;
+  }, [channel]);
+  const handleChatSessionIdChange = useCallback(
+    (sessionId: string | null) => {
+      if (activeChatChannelRef.current !== channel) {
+        return;
+      }
+      if (chatSessionScopeRef.current === channel && chatSessionIdRef.current === sessionId) {
+        return;
+      }
+      stopRequestGenerationRef.current += 1;
+      chatSessionScopeRef.current = channel;
+      chatSessionIdRef.current = sessionId;
+      setChatSessionChannel(channel);
+      setChatSessionId(sessionId);
+      setStopState("idle");
+      setStopError(null);
+    },
+    [channel],
+  );
+  const stopCurrentTurn = useCallback(() => {
+    const sessionId =
+      chatSessionScopeRef.current === channel ? chatSessionIdRef.current : null;
+    if (!sessionId) {
+      setStopState("error");
+      setStopError("Current chat session is not available.");
+      return;
+    }
+
+    const requestGeneration = ++stopRequestGenerationRef.current;
+    const requestedChannel = channel;
+    const requestedSessionId = sessionId;
+    const isCurrentRequest = () =>
+      isCurrentStopRequest(
+        requestGeneration,
+        stopRequestGenerationRef.current,
+        requestedChannel,
+        chatSessionScopeRef.current,
+        requestedSessionId,
+        chatSessionIdRef.current,
+      );
+
+    setStopState("stopping");
+    setStopError(null);
+    void interruptCurrentSession(stopGateway, requestedSessionId)
+      .then(() => {
+        if (isCurrentRequest()) {
+          setStopState("acknowledged");
+        }
+      })
+      .catch((error: unknown) => {
+        if (isCurrentRequest()) {
+          setStopState("error");
+          setStopError(errorMessage(error));
+        }
+      });
+  }, [channel, stopGateway]);
   const titleScope = `${channel}\0${reconnectNonce}`;
   const sessionTitle =
     sessionTitleState.scope === titleScope ? sessionTitleState.title : null;
@@ -1399,7 +1474,10 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
         // isn't this control shape (e.g. the ANSI "Chat unavailable" banners
         // pty_ws sends as text on failure) falls through to the write path
         // below unchanged.
-        const resumeId = parseResumeControlMessage(ev.data);
+        const resumeId = bindResumeSessionFromControlMessage(
+          ev.data,
+          handleChatSessionIdChange,
+        );
         if (resumeId) {
           effectiveResume = resumeId;
           beginResumeReplay();
@@ -1659,6 +1737,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     resumeParam,
     scopedProfile,
     reconnectNonce,
+    handleChatSessionIdChange,
   ]);
 
   // NS-434 follow-up: attach the visualViewport keyboard-inset listeners
@@ -1901,6 +1980,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
                 channel={channel}
                 profile={scopedProfile}
                 onDashboardNewSessionRequest={startFreshDashboardChat}
+                onSessionIdChange={handleChatSessionIdChange}
                 onSessionTitleChange={handleSessionTitleChange}
               />
             </div>
@@ -2033,6 +2113,58 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
             </div>
           )}
 
+          <div className="absolute bottom-2 left-2 z-10 flex max-w-[calc(100%-5rem)] flex-wrap items-center gap-2 sm:bottom-3 sm:left-3 lg:bottom-4 lg:left-4">
+            <Button
+              ghost
+              onClick={stopCurrentTurn}
+              disabled={
+                ptyState !== "open" ||
+                chatSessionChannel !== channel ||
+                !chatSessionId ||
+                stopState === "stopping"
+              }
+              title={
+                stopState === "acknowledged"
+                  ? "Stop acknowledged; worker exit is not verified"
+                  : "Stop the current dashboard TUI turn"
+              }
+              aria-label={
+                stopState === "acknowledged"
+                  ? "Stop acknowledged; worker exit is not verified"
+                  : "Stop current turn"
+              }
+              aria-busy={stopState === "stopping"}
+              className={cn(
+                "normal-case tracking-normal font-normal",
+                "rounded border border-current/30",
+                "bg-black/20",
+                "opacity-70 hover:opacity-100 hover:border-current/60",
+                "transition-opacity duration-150",
+                "px-2 py-1 text-xs sm:px-2.5 sm:py-1.5",
+              )}
+              style={{ color: terminalFg }}
+            >
+              <span className="inline-flex items-center gap-1.5">
+                <Square className="h-3 w-3 shrink-0 fill-current" />
+                <span className="tracking-wide">
+                  {stopState === "stopping"
+                    ? "stopping…"
+                    : stopState === "acknowledged"
+                      ? "Stop acknowledged"
+                      : "stop turn"}
+                </span>
+              </span>
+            </Button>
+            {stopError && (
+              <span
+                role="alert"
+                className="max-w-[min(28rem,calc(100vw-6rem))] border border-danger/50 bg-black/80 px-2 py-1 text-xs text-danger"
+              >
+                {stopError}
+              </span>
+            )}
+          </div>
+
           <Button
             ghost
             onClick={handleCopyLast}
@@ -2110,6 +2242,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
                 channel={channel}
                 profile={scopedProfile}
                 onDashboardNewSessionRequest={startFreshDashboardChat}
+                onSessionIdChange={handleChatSessionIdChange}
                 onSessionTitleChange={handleSessionTitleChange}
               />
             </div>

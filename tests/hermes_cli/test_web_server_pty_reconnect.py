@@ -89,12 +89,16 @@ def test_active_session_fallback_sends_resume_control_message(pty_client, monkey
     fires when the frontend can see a resume id. Without `?resume=` on the URL
     it previously had no way to learn that `pty_ws` fell back to the
     per-channel active-session file, so the viewport stayed pinned at the top
-    of the replayed scrollback.
+    of the replayed scrollback. The session id must come from this channel,
+    not from another channel's most-recent record.
     """
     ws, client, token = pty_client
     channel = "implicit-resume-chan"
+    other_channel = "other-implicit-resume-chan"
     active_file = _web_server_chat._active_session_file_for_channel(ws.app, channel)
+    other_active_file = _web_server_chat._active_session_file_for_channel(ws.app, other_channel)
     active_file.write_text(json.dumps({"session_id": "sess-old"}), encoding="utf-8")
+    other_active_file.write_text(json.dumps({"session_id": "sess-most-recent"}), encoding="utf-8")
 
     monkeypatch.setattr(
         _web_server_chat, "_resolve_chat_argv", lambda **kw: (["fake-hermes-tui"], None, None)

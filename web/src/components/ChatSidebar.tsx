@@ -96,6 +96,7 @@ interface ChatSidebarProps {
   profile?: string
   className?: string
   onDashboardNewSessionRequest?: () => void
+  onSessionIdChange?: (sessionId: string | null) => void
   onSessionTitleChange?: (title: string | null) => void
 }
 
@@ -119,6 +120,7 @@ export function ChatSidebar({
   profile,
   className,
   onDashboardNewSessionRequest,
+  onSessionIdChange,
   onSessionTitleChange
 }: ChatSidebarProps) {
   const navigate = useNavigate()
@@ -318,10 +320,9 @@ export function ChatSidebar({
   //
   // Framing, dispatch and connect timeout come from the shared JSON-RPC
   // client (`EventsFeedClient`); this effect owns only the retry policy and
-  // the banner. Failures (auth/loopback rejection, server too old to expose
-  // the endpoint, transient drops) surface in the same banner as the
-  // JSON-RPC sidecar so the sidebar matches its documented best-effort UX
-  // and the user always has a reconnect affordance.
+  // the banner. Failures (auth/loopback rejection, transient drops) surface in
+  // the same banner as the JSON-RPC sidecar so the sidebar matches its
+  // documented best-effort UX and the user always has a reconnect affordance.
   useEffect(() => {
     if (!channel) {
       return
@@ -408,6 +409,12 @@ export function ChatSidebar({
         onSessionTitleChange?.(title)
       }
     })
+    const offSessionId = feed.onAny(ev => {
+      const sessionId = ev.session_id
+      if (typeof sessionId === 'string' && sessionId) {
+        onSessionIdChange?.(sessionId)
+      }
+    })
     const offNewSession = feed.on('dashboard.new_session_requested', () => {
       onDashboardNewSessionRequest?.()
     })
@@ -423,10 +430,11 @@ export function ChatSidebar({
       offClose()
       offState()
       offSessionInfo()
+      offSessionId()
       offNewSession()
       feed.close()
     }
-  }, [channel, feed, onDashboardNewSessionRequest, onSessionTitleChange, version])
+  }, [channel, feed, onDashboardNewSessionRequest, onSessionIdChange, onSessionTitleChange, version])
 
   // Seed the badge on mount and re-read it whenever the sockets are rebuilt
   // (a profile/channel switch bumps `version`).

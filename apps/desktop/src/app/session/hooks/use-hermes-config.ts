@@ -3,6 +3,7 @@ import { type MutableRefObject, useCallback, useRef, useState } from 'react'
 import { setTerminalFontFamilyFromConfig } from '@/app/right-sidebar/terminal/terminal-font'
 import { getHermesConfig, getHermesConfigDefaults } from '@/hermes'
 import { BUILTIN_PERSONALITIES, normalizePersonalityValue, personalityNamesFromConfig } from '@/lib/chat-runtime'
+import { composerServiceTier } from '@/lib/model-status-label'
 import { normalize } from '@/lib/text'
 import { setDisplayTimestampsFromConfig } from '@/store/display-timestamps'
 import { setShowReasoningFromConfig } from '@/store/reasoning-disclosure'
@@ -30,18 +31,6 @@ import {
 import { setChatFontFamilyFromConfig } from '@/themes/chat-font'
 
 const DEFAULT_VOICE_SECONDS = 120
-const FAST_TIERS = new Set(['fast', 'priority', 'on'])
-
-/** `agent.service_tier` is whatever the user wrote (`flex`, `scale`, `auto`, …);
- *  the composer only speaks the three exact tiers `session.create` accepts.
- *  Unset stays unset (the profile default rides). */
-function composerServiceTier(value: unknown): string {
-  const tier = String(value ?? '')
-    .trim()
-    .toLowerCase()
-
-  return !tier ? '' : tier === 'ultrafast' ? 'ultrafast' : FAST_TIERS.has(tier) ? 'priority' : 'normal'
-}
 
 function recordingLimit(value: unknown) {
   return typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : DEFAULT_VOICE_SECONDS

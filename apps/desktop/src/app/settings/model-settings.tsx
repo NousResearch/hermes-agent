@@ -31,6 +31,7 @@ import { isCodeSkewRestartRequired } from '@/lib/code-skew-error'
 import { AlertTriangle, Cpu, Loader2 } from '@/lib/icons'
 import { isSubmitEnter } from '@/lib/ime'
 import { findCatalogProvider } from '@/lib/model-options'
+import { composerServiceTier } from '@/lib/model-status-label'
 import { cn } from '@/lib/utils'
 import { $customModels, withCustomModels } from '@/store/custom-models'
 import { setMainModelAssignment } from '@/store/model-assignment'
@@ -85,14 +86,6 @@ export function ModelSettingsSkeleton({ subpage }: Pick<ModelSettingsProps, 'sub
 }
 
 type SpeedTier = 'fast' | 'normal' | 'ultrafast'
-
-// Priority aliases and Ultrafast are distinct choices in the profile default.
-const isFastTier = (tier: unknown): boolean =>
-  ['fast', 'priority', 'on'].includes(
-    String(tier ?? '')
-      .trim()
-      .toLowerCase()
-  )
 
 // A provider row is "ready" to pick a model from when it reports models. The
 // backend now surfaces the full `hermes model` universe (every canonical
@@ -636,19 +629,11 @@ export function ModelSettings({ onMainModelChanged, scopeProfile, subpage }: Mod
 
   const effortValue = rawEffort === 'false' || rawEffort === 'disabled' ? 'none' : rawEffort || DEFAULT_REASONING_EFFORT
 
-  const rawTier = getNested(config ?? {}, 'agent.service_tier')
-  const fastOn = isFastTier(rawTier)
-
   // One profile-default speed: Standard, Fast (Priority) or Ultrafast. Ultrafast
   // only shows as a choice on models that offer it.
-  const speedValue: SpeedTier =
-    String(rawTier ?? '')
-      .trim()
-      .toLowerCase() === 'ultrafast'
-      ? 'ultrafast'
-      : fastOn
-        ? 'fast'
-        : 'normal'
+  const tier = composerServiceTier(getNested(config ?? {}, 'agent.service_tier'))
+  const fastOn = tier === 'priority'
+  const speedValue: SpeedTier = fastOn ? 'fast' : tier === 'ultrafast' ? 'ultrafast' : 'normal'
 
   // Persist a single agent.* default as a sparse patch (PUT /api/config
   // deep-merges onto disk). Never send the whole cached record: it is a

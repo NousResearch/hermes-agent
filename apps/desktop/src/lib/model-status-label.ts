@@ -238,3 +238,16 @@ export function formatModelPillLabel(model: string, options?: { fastMode?: boole
 
   return tag ? `${name} · ${tag}` : name
 }
+
+const FAST_TIERS = new Set(['fast', 'priority', 'on'])
+
+/** `agent.service_tier` is whatever the user wrote (`flex`, `scale`, `auto`, …);
+ *  the composer only speaks the three exact tiers `session.create` accepts.
+ *  Unset stays unset (the profile default rides). */
+export function composerServiceTier(value: unknown): string {
+  const tier = String(value ?? '')
+    .trim()
+    .toLowerCase()
+
+  return !tier ? '' : tier === 'ultrafast' ? 'ultrafast' : FAST_TIERS.has(tier) ? 'priority' : 'normal'
+}

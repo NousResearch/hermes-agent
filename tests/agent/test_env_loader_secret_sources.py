@@ -26,10 +26,12 @@ def _reset_sources():
     """Each test starts with a clean source map and applied-home guard."""
     env_loader._SECRET_SOURCES.clear()
     env_loader._SECRET_SOURCE_VALUES_BY_HOME.clear()
+    env_loader._SECRET_SOURCE_OWNED_NAMES_BY_HOME.clear()
     env_loader.reset_secret_source_cache()
     yield
     env_loader._SECRET_SOURCES.clear()
     env_loader._SECRET_SOURCE_VALUES_BY_HOME.clear()
+    env_loader._SECRET_SOURCE_OWNED_NAMES_BY_HOME.clear()
     env_loader.reset_secret_source_cache()
 
 
@@ -690,8 +692,8 @@ def _fresh_registry():
     reg_module._reset_registry_for_tests()
 
 
-def _register_fake_bulk_source(value_for_home):
-    """One bulk source supplying GLM_API_KEY, resolved per home."""
+def _register_fake_bulk_source(value_for_home, *, env_name="GLM_API_KEY"):
+    """One bulk source supplying ``env_name``, resolved per home."""
     from agent.secret_sources import registry as reg_module
     from agent.secret_sources.base import FetchResult, SecretSource
 
@@ -702,10 +704,50 @@ def _register_fake_bulk_source(value_for_home):
 
         def fetch(self, cfg, home_path):
             result = FetchResult()
-            result.secrets = {"GLM_API_KEY": value_for_home(Path(home_path))}
+            result.secrets = {env_name: value_for_home(Path(home_path))}
             return result
 
     reg_module.register_source(_Fake(), replace=True)
+
+
+def test_scoped_rehydrate_keeps_launch_source_ownership(tmp_path, monkeypatch, _fresh_registry):
+    """A source's previous process write must not become an operator TERMINAL_* export."""
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    (home / "config.yaml").write_text("secrets:\n  fakebulk:\n    enabled: true\n", encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.delenv("TERMINAL_DOCKER_ENV", raising=False)
+    _register_fake_bulk_source(lambda _home: "launch-secret", env_name="TERMINAL_DOCKER_ENV")
+
+    env_loader.load_hermes_dotenv(hermes_home=home)
+    assert env_loader.get_secret_source_owned_names(home) == frozenset({"TERMINAL_DOCKER_ENV"})
+    env_loader.reset_secret_source_cache(home)
+    monkeypatch.setattr(env_loader, "_load_secrets_config", lambda _home: {"fakebulk": {"enabled": True}})
+    # The old process write is skipped in the private scope; it is not a new
+    # credential value, but its provenance must survive this refresh.
+    assert env_loader.hydrate_profile_secret_sources(home) == {}
+    assert env_loader.get_secret_source_owned_names(home) == frozenset({"TERMINAL_DOCKER_ENV"})
+
+
+def test_revoked_source_releases_terminal_export_ownership(tmp_path, monkeypatch, _fresh_registry):
+    """A removed source must not keep suppressing a later operator export."""
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    (home / "config.yaml").write_text("secrets:\n  fakebulk:\n    enabled: true\n", encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.delenv("TERMINAL_SSH_USER", raising=False)
+    _register_fake_bulk_source(lambda _home: "source-value", env_name="TERMINAL_SSH_USER")
+
+    env_loader.load_hermes_dotenv(hermes_home=home)
+    assert env_loader.get_secret_source_owned_names(home) == frozenset({"TERMINAL_SSH_USER"})
+    env_loader.reset_secret_source_cache(home)
+    monkeypatch.setattr(env_loader, "_load_secrets_config", lambda _home: {})
+    env_loader._apply_external_secret_sources(home)
+
+    assert "TERMINAL_SSH_USER" not in os.environ
+    assert env_loader.get_secret_source_owned_names(home) == frozenset()
+    monkeypatch.setenv("TERMINAL_SSH_USER", "operator-user")
+    assert env_loader.get_secret_source_owned_names(home) == frozenset()
 
 
 def test_env_shadowed_reapply_keeps_home_snapshot(tmp_path, monkeypatch, _fresh_registry):
@@ -724,12 +766,14 @@ def test_env_shadowed_reapply_keeps_home_snapshot(tmp_path, monkeypatch, _fresh_
 
     env_loader.load_hermes_dotenv(hermes_home=home)
     assert env_loader.get_secret_source_values(home) == {"GLM_API_KEY": "vault-value"}
+    assert env_loader.get_secret_source_owned_names(home) == frozenset({"GLM_API_KEY"})
 
     # cron per-fire / plugin-discovery re-pull: reset + reload with the key now shadowing itself.
     env_loader.reset_secret_source_cache()
     env_loader.load_hermes_dotenv(hermes_home=home)
 
     assert str(home.resolve()) in env_loader._APPLIED_HOMES
+    assert env_loader.get_secret_source_owned_names(home) == frozenset({"GLM_API_KEY"})
     assert env_loader.hydrate_profile_secret_sources(home) == {"GLM_API_KEY": "vault-value"}
     assert build_profile_secret_scope(home)["GLM_API_KEY"] == "vault-value"
 

@@ -924,7 +924,8 @@ def _routed_client_kwargs(agent, fallback_model, _provider_timeout) -> Optional[
     # configured" setup message even though the config default was fine (#94785). Prefer a billing
     # verdict (402 / classifier "billing") and fall back to the existing cooldown wording (which
     # names the 429 reset time, #56810); raise before the missing-credentials branch so a genuine
-    # 402 is never described as a missing key or a transient rate limit.
+    # 402 is never described as a missing key or a transient rate limit. The cooldown verdict
+    # takes the session's model so a model-scoped bench is named, not "no API key" (#128995).
     if _pool_exhausted:
         from agent.auxiliary_unavailable import (
             ProviderCredentialsExhaustedError,
@@ -933,14 +934,14 @@ def _routed_client_kwargs(agent, fallback_model, _provider_timeout) -> Optional[
         )
         _exhausted_message = (
             pool_billing_message(_explicit, model=agent.model, pool=_pool)
-            or pool_cooldown_message(_explicit)
+            or pool_cooldown_message(_explicit, model=agent.model)
         )
         if _exhausted_message:
             raise ProviderCredentialsExhaustedError(_exhausted_message, provider=_explicit)
     if _explicit and _explicit not in {"auto", "openrouter", "custom"}:
         # Explicit non-OpenRouter provider with no creds and no usable fallback: fail fast.
         from agent.auxiliary_unavailable import ProviderNotConfiguredError, missing_provider_credentials_message
-        raise ProviderNotConfiguredError(missing_provider_credentials_message(_explicit))
+        raise ProviderNotConfiguredError(missing_provider_credentials_message(_explicit, model=agent.model))
     from hermes_constants import profile_cli_selector
     from agent.auxiliary_unavailable import ProviderNotConfiguredError
     _sel = profile_cli_selector()

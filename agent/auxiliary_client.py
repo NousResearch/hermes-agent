@@ -7424,7 +7424,8 @@ def _resolve_call_client(
                 if fb_client is None:
                     nous_detail = nous_credential_failure_detail() if _explicit == "nous" else None
                     raise AuxiliaryClientUnavailable(
-                        nous_detail or missing_provider_credentials_message(_explicit))
+                        nous_detail or missing_provider_credentials_message(
+                            _explicit, model=resolved_model))
                 client, final_model = fb_client, fb_model
                 if async_mode:
                     client, final_model = _to_async_client(

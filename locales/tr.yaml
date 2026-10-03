@@ -1448,8 +1448,6 @@ platform:
   irc:
     quit_message: "Hermes Agent kapatılıyor"
     standalone_quit: "teslim edildi"
-  homeassistant:
-    notification_title: "Hermes Agent"
   relay:
     confirm_approve_once: "Bir Kez Onayla"
     confirm_always_approve: "Her Zaman Onayla"

@@ -350,7 +350,7 @@ Most platforms also accept an optional thread/topic as a third segment: `platfor
 | Email | `email`, `email:<address>` | `email:alerts@example.com` |
 | Weixin | `weixin`, `weixin:<wxid>` | `weixin:wxid_abc123` |
 | Mattermost | `mattermost` or `mattermost:<channel_id>` | Bare name delivers to Mattermost home |
-| Home Assistant | `homeassistant` or `homeassistant:<conversation>` | Bare name delivers to HA conversation |
+| Home Assistant (plugin) | `homeassistant` or `homeassistant:<notify target>` | Bare name delivers to `HASS_HOME_CHANNEL`; needs the `homeassistant` catalog plugin |
 | DingTalk | `dingtalk` or `dingtalk:<chat_id>` | Bare name delivers to DingTalk |
 | WeCom | `wecom` or `wecom:<chat_id>` | Bare name delivers to WeCom |
 | BlueBubbles | `bluebubbles` or `bluebubbles:<chat_guid>` | Bare name delivers to iMessage via BlueBubbles |

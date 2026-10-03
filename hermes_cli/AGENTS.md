@@ -201,7 +201,7 @@ root). Profiles are independent
 islands by design — no live config inheritance; `--clone` copies at creation, minus messaging
 channels (`profile_channels.py`: ownership-based inventory evaluated in the SOURCE's plugin scope —
 adapter-declared keys + canonical/alias prefixes + `GATEWAY_ALLOW*`/`GATEWAY_RELAY_*`; prefixes shared
-with tools (`HASS_`/`TWILIO_`/`EMAIL_`) are stripped only when the source runs that adapter; never a hand
+with tools (`TWILIO_`/`EMAIL_`, plus a plugin platform's `shared_env_prefixes`) are stripped only when the source runs that adapter; never a hand
 list). `--clone-channels` opts in and its live-multiplexer refusal lives in `create_profile` (CLI, REST
 and TUI all go through it). Clones are built in `profiles/.<name>.staging-<pid>` (hidden → invisible to
 `_iter_named_profile_dirs` and the hot-serve rescan) and published by one `os.rename` after the strip;

@@ -161,7 +161,6 @@ plugins/platforms/                  # plugin-packaged adapters (one dir each)
 ├── line/adapter.py         # LINE Messaging API
 ├── teams/adapter.py        # Microsoft Teams
 ├── irc/adapter.py          # IRC (canonical scoped-lock example)
-├── homeassistant/adapter.py # Home Assistant conversation integration
 └── …                       # google_chat, ntfy, photon, raft, simplex, …
 
 gateway/platforms/                  # core base + legacy direct adapters

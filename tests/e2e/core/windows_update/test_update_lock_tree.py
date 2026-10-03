@@ -1,7 +1,7 @@
 """One ``hermes update`` owns an installed checkout on native Windows, and its whole tree.
 
 Failure class: concurrent updates of one install (contract C1.7). The update lock lives on the
-install root (an msvcrt byte lock on ``<install>/.hermes-update.lock``), not in HERMES_HOME, so a
+install's git dir (an msvcrt byte lock on ``<install>/.git/hermes-update.lock``), not in HERMES_HOME, so a
 second ``hermes update`` from ANOTHER home cannot mutate the checkout while the first runs. On
 Windows a child cannot inherit that lock, so the owner binds every update-tree child into a
 kill-on-close job: ``taskkill /F`` of the owner kills the child too, and only then is the lock free.
@@ -24,6 +24,7 @@ from tests.e2e.core.windows._helpers import wait_until
 from tests.e2e.core.windows_update._machine import (
     REQUIRES_OPT_IN,
     fail_with,
+    harness_git,
     new_machine,
 )
 from tests.fakes.fake_llm_provider import FakeLLMServer
@@ -85,6 +86,8 @@ def journey(tmp_path_factory):
                 raise AssertionError(fail_with(machine, f"owner failed to start:\n{first}{rest}"))
             child, out["root_lock"] = int(line[0]), line[1] == "True"
             out["child_alive"] = _alive(child)
+            out["held_status"] = harness_git("-C", str(machine.install_dir), "status", "--porcelain",
+                                             "--untracked-files=all")
             # (a) a real update of the same checkout from the machine's own home
             out["a_update"] = machine.update(label="update-while-held")
             out["a_head"] = machine.installed_head()
@@ -108,6 +111,8 @@ def journey(tmp_path_factory):
 def test_second_home_update_is_refused_while_the_checkout_is_held(journey) -> None:
     m, run = journey["machine"], journey["a_update"]
     assert journey["child_alive"], fail_with(m, "premise: the owner's update-tree child never ran")
+    assert journey["held_status"] == "", fail_with(
+        m, f"the held update lock shows in `git status` (autostash would take it): {journey['held_status']!r}")
     assert run.returncode == 2 and REFUSAL in run.stdout and journey["a_head"] == m.head, fail_with(
         m, f"a second `hermes update` of one checkout ran while another home's update held it "
            f"(rc={run.returncode}, checkout {journey['a_head']} vs HEAD {m.head}, "

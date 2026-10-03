@@ -548,8 +548,14 @@ def discover_plugin_cli_commands() -> List[dict]:
             if not spec or not spec.loader:
                 return []
             cli_mod = importlib.util.module_from_spec(spec)
-            sys.modules[module_name] = cli_mod
-            spec.loader.exec_module(cli_mod)
+            _publish_module(module_name, cli_mod)
+            try:
+                spec.loader.exec_module(cli_mod)
+            except Exception:
+                # Symmetric rollback: a half-executed module must not stay bound
+                # on the parent while sys.modules no longer holds it.
+                _unpublish_module(module_name)
+                raise
 
         register_cli = getattr(cli_mod, "register_cli", None)
         if not callable(register_cli):
@@ -566,3 +572,71 @@ def discover_plugin_cli_commands() -> List[dict]:
     except Exception as e:
         logger.debug("Failed to scan CLI for memory plugin '%s': %s", active_provider, e)
         return []
+
+
+def _publish_module(full_name: str, module) -> None:
+    """Register ``module`` under ``full_name`` the way real import machinery does.
+
+    TWO steps, and this loader only ever did the first.  ``importlib``'s
+    ``_handle_fromlist`` / ``_load`` finish an import by ALSO binding the child
+    on its parent package object (``setattr(plugins.memory, "honcho", mod)``);
+    a hand-rolled ``spec_from_file_location`` + ``sys.modules[name] = mod``
+    stops one step short, and the two spellings of the same import then answer
+    differently forever:
+
+    * ``import plugins.memory.honcho`` / ``importlib.import_module(...)`` read
+      ``sys.modules`` and succeed — including on a LATER call, because
+      ``import_module`` short-circuits on the row it finds and never repairs
+      the missing attribute;
+    * ``from plugins.memory import honcho`` and every attribute walk built on
+      it — ``getattr(plugins.memory, "honcho")``, which is what
+      ``unittest.mock.patch("plugins.memory.honcho.client…")`` and pytest's
+      ``monkeypatch.setattr("<dotted>")`` resolver actually do — raise
+      ``AttributeError: 'module' object at plugins.memory has no attribute
+      'honcho'``.
+
+    So whether ``memory.<name>`` resolves depends on which spelling ran first,
+    which is a PRODUCT shape and not a test shape: a plugin doing ``from
+    plugins.memory import <sibling>``, or any caller patching into a provider,
+    hits it in production exactly as a test does.  Repairing it at the loader
+    is the fix; ``tests/hermes_cli/conftest.py``'s setup-half repair loop is a
+    suite-order mitigation for the same defect and is not what makes the
+    product correct.
+
+    Idempotent and never destructive: the attribute is set unconditionally to
+    the module just registered (that is what an import does — a re-import
+    rebinds), and a parent that is absent from ``sys.modules`` is simply not
+    written to.
+    """
+
+    sys.modules[full_name] = module
+    parent_name, _, child = full_name.rpartition(".")
+    if not parent_name:
+        return
+    parent = sys.modules.get(parent_name)
+    if parent is None:
+        return
+    try:
+        setattr(parent, child, module)
+    except Exception:  # noqa: BLE001 — a binding failure must never fail a load
+        logger.debug("could not bind %s on %s", child, parent_name, exc_info=True)
+
+def _unpublish_module(full_name: str) -> None:
+    """Undo :func:`_publish_module` — BOTH halves.
+
+    The rollback has to be symmetric or the fix trades one inconsistency for
+    another: a provider whose ``exec_module`` raised used to leave nothing
+    behind, and would now leave a parent attribute pointing at a half-executed
+    module that ``sys.modules`` no longer holds — which is the same
+    two-answers-for-one-name defect, aimed at the failure path.
+    """
+
+    sys.modules.pop(full_name, None)
+    parent_name, _, child = full_name.rpartition(".")
+    parent = sys.modules.get(parent_name) if parent_name else None
+    if parent is None:
+        return
+    try:
+        delattr(parent, child)
+    except AttributeError:
+        pass

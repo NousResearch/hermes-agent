@@ -1915,12 +1915,78 @@ def _lazy_attr(obj: Any, name: str, factory: Callable[[], Any]) -> Any:
 _strip_media_directives = _strip_media_tag_directives
 
 
+def _wrap_with_egress_guard(fn, method_name: str):
+    """Return ``fn`` wrapped so its ``content`` argument passes the egress
+    guardrail before the platform API is called. See
+    ``BasePlatformAdapter.__init_subclass__`` for why the boundary lives here.
+    """
+    import functools
+
+    sig = inspect.signature(fn)
+
+    @functools.wraps(fn)
+    async def guarded(self, *args, **kwargs):
+        from hermes_durability.egress import (BLOCK_ERROR, EgressBlocked,
+                                              guard_outbound_text)
+
+        try:
+            bound = sig.bind(self, *args, **kwargs)
+        except TypeError:
+            # Let the real method raise the natural signature error.
+            return await fn(self, *args, **kwargs)
+        content = bound.arguments.get("content")
+        if isinstance(content, str) and content:
+            try:
+                bound.arguments["content"] = guard_outbound_text(
+                    content,
+                    platform=getattr(self, "name", "") or "",
+                    category=f"adapter_{method_name}",
+                )
+            except EgressBlocked as exc:
+                logger.warning(
+                    "[%s] Egress guardrail blocked %s: %s",
+                    getattr(self, "name", "?"), method_name, exc.reason,
+                )
+                return SendResult(success=False, error=BLOCK_ERROR,
+                                  retryable=False)
+        bound_args = bound.args[1:]
+        return await fn(self, *bound_args, **bound.kwargs)
+
+    guarded._egress_guarded = True
+    return guarded
+
+
 class BasePlatformAdapter(ABC):
     """Base class for platform adapters: connect/auth, receive, send, handle media."""
 
     # ``format_message`` renders ``` fences as real code blocks (tool-progress then sends a bare
     # fenced terminal command; plain-text platforms get the preview).
     supports_code_blocks: bool = False
+
+    def __init_subclass__(cls, **kwargs):
+        """Wrap concrete ``send``/``edit_message`` with the egress guardrail.
+
+        The guardrail must hold for EVERY caller that reaches a platform
+        adapter — not just ``_send_with_retry``. The stream consumer edits
+        model text into chats via ``edit_message``/``send`` directly, media
+        captions and clarify/private notices call ``self.send()``, and the
+        delivery-ledger redelivery path calls raw ``adapter.send`` at boot.
+        Guarding each call site individually is unwinnable (and was the bug:
+        streaming replies bypassed the boundary entirely), so the boundary
+        lives on the adapter methods themselves. Wrapping happens at subclass
+        creation; already-wrapped methods are skipped so diamond/child
+        adapters don't double-guard, and plugin ``outbound_message``
+        middleware therefore runs exactly once per delivered body.
+        """
+        super().__init_subclass__(**kwargs)
+        for method_name in ("send", "edit_message"):
+            fn = cls.__dict__.get(method_name)
+            if fn is None or getattr(fn, "_egress_guarded", False):
+                continue
+            if not inspect.iscoroutinefunction(fn):
+                continue
+            setattr(cls, method_name, _wrap_with_egress_guard(fn, method_name))
+
     # Typing indicator renders TEXT (status line); the gateway then feeds set_status_text().
     supports_status_text: bool = False
 
@@ -4390,8 +4456,24 @@ class BasePlatformAdapter(ABC):
         delivery_adapter = self._final_delivery_adapter(event.source)
         logger.info("[%s] Sending response (%d chars) to %s", delivery_adapter.name,
                     len(text_content), event.source.chat_id)
-        obligation_id = await self._record_delivery_obligation(
-            event, session_key, text_content, delivery_adapter, is_ephemeral_response)
+        # Redact BEFORE the ledger records the body: otherwise a secret sits unredacted in
+        # delivery_obligations.content and the boot-time redelivery sweep hands it to
+        # adapter.send verbatim. Redaction only (idempotent): plugin outbound_message
+        # middleware runs exactly once, at the adapter send wrapper. If redaction itself fails
+        # the boundary is fail-closed: skip recording and let the guarded send veto delivery.
+        egress_recordable = True
+        try:
+            from hermes_durability.egress import EgressBlocked, guard_outbound_text
+
+            text_content = guard_outbound_text(
+                text_content, platform=delivery_adapter.name, category="final_response",
+                apply_middleware=False)
+        except EgressBlocked:
+            egress_recordable = False
+        obligation_id = None
+        if egress_recordable:
+            obligation_id = await self._record_delivery_obligation(
+                event, session_key, text_content, delivery_adapter, is_ephemeral_response)
         if obligation_id is not None:
             await self._release_turn_marker(event)  # the ledger now owns the crash recovery
         result = await delivery_adapter._send_with_retry(

@@ -692,6 +692,25 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
     from gateway.config import Platform
     platform_name = platform.value if hasattr(platform, "value") else str(platform)
     media_files = media_files or []
+    # Egress guardrail on the WHOLE body, BEFORE chunking and BEFORE the
+    # platform branches below. Both orderings matter:
+    #   * chunking first would split a secret across a chunk boundary into
+    #     fragments too short to match the redaction patterns' length gates;
+    #   * most branches (_send_telegram, _send_signal, _send_matrix, ...)
+    #     talk to platform APIs directly and never pass a wrapped adapter
+    #     ``send``, so this is their only redaction boundary.
+    # Redaction only (idempotent): plugin outbound_message middleware runs at
+    # the adapter wrapper on the live-adapter path.
+    from hermes_durability.egress import EgressBlocked, guard_outbound_text
+
+    try:
+        message = guard_outbound_text(
+            message, platform=platform_name, category="send_message_tool",
+            apply_middleware=False,
+        )
+    except EgressBlocked as exc:
+        return {"error": f"Egress guardrail blocked send: {exc.reason}"}
+
     if platform == Platform.WEIXIN:
         return await _send_weixin(pconfig, chat_id, message, media_files=media_files)
     # Telegram chunks internally on the *formatted* text (escaping inflates length).

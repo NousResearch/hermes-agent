@@ -1044,6 +1044,9 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
         (NFC/NFD, confusable spaces/quotes) render identically, so the model can never
         discover the byte mismatch by retyping — retrying is the tool's job. No
         equivalent spelling → suggest similar files."""
+        if "cache/spillover" in path.replace("\\", "/"):
+            return ReadResult(error=f"File not found: {path} (expired — re-run the tool if you still need it)", not_found=True)
+            
         variant = self._unicode_variant_match(path)
         if variant is not None:
             result = self.read_file(variant, offset=offset, limit=limit)
@@ -1203,6 +1206,9 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
 
     def _suggest_similar_files(self, path: str) -> ReadResult:
         """"File not found" result listing up to 5 similar names from the same directory."""
+        if "cache/spillover" in path.replace("\\", "/"):
+            return ReadResult(error=f"File not found: {path} (expired — re-run the tool if you still need it)", not_found=True)
+            
         dir_path = os.path.dirname(path) or "."
         filename = os.path.basename(path)
         basename_no_ext = os.path.splitext(filename)[0].lower()
@@ -1270,6 +1276,8 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
         path = self._expand_path(path)
         file_size, status = self._probe_regular_file(path)
         if status == "missing":
+            if "cache/spillover" in path.replace("\\", "/"):
+                return ReadResult(error=f"File not found: {path} (expired — re-run the tool if you still need it)", not_found=True)
             return ReadResult(error=f"File not found: {path}", not_found=True)
         if status == "not_regular":
             return self._not_regular_error(path)

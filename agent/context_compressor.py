@@ -5773,6 +5773,7 @@ Write only the summary body. Do not include any preamble or prefix."""
             # regurgitating it (#33256).
             compressed.append({
                 "role": summary_role, "content": summary + "\n\n" + _SUMMARY_END_MARKER,
+                "display_kind": "hidden",
                 COMPRESSED_SUMMARY_METADATA_KEY: True,
                 COMPRESSED_SUMMARY_HAS_USER_TURN_KEY: bool(self._summary_has_user_turn),
             })

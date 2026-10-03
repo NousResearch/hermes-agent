@@ -66,6 +66,7 @@ def step_migrate_config() -> dict:
     No-op when the on-disk version is current (the 99% case).
     """
     from hermes_cli.config import (
+        _read_config_version_stamp,
         check_config_version,
         get_config_path,
         get_env_path,
@@ -79,7 +80,13 @@ def step_migrate_config() -> dict:
     current_ver, latest_ver = check_config_version()
     if current_ver >= latest_ver:
         return {"ok": True, "skipped": "up-to-date"}
-    if current_ver < SUPPORT_FLOOR_VERSION:
+    # Distinguish "never stamped" from "genuinely old": check_config_version() reports both as 0,
+    # but only a real version below the floor is un-migratable. An unversioned config (template
+    # seed, Desktop --non-interactive bootstrap) just needs the legacy-key steps, which
+    # migrate_config() applies and stamps. Same predicate scripts/docker_config_migrate.py uses
+    # since #121251; this sibling was missed (#123555).
+    stamp, _latest = _read_config_version_stamp()
+    if stamp is not None and stamp < SUPPORT_FLOOR_VERSION:
         # migrate_config() refuses sub-floor configs and leaves the file
         # untouched; warn instead of failing the boot.
         logger.warning("config migration skipped: %s", support_floor_message())

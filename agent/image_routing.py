@@ -327,6 +327,22 @@ _VISION_PROBES: Tuple[Tuple[str, Callable[..., Optional[bool]]], ...] = (
 )
 
 
+def _known_native_vision_capability(provider: str, model: str) -> Optional[bool]:
+    """Return a stable capability for provider/model families with native vision.
+
+    Anthropic's Claude models accept image content across the supported Anthropic
+    wire routes, including newly released model ids that may not be in models.dev
+    yet. Keep this after explicit config overrides so users can still opt out.
+    """
+    provider_key = _clean_str(provider).lower()
+    model_key = _clean_str(model).lower()
+    if provider_key in {"anthropic", "bedrock"} and "claude" in model_key:
+        return True
+    if provider_key == "openrouter" and model_key.startswith("anthropic/claude-"):
+        return True
+    return None
+
+
 def _lookup_supports_vision(
     provider: str,
     model: str,
@@ -354,6 +370,8 @@ def _lookup_supports_vision(
     override = _supports_vision_override(cfg, provider, model, requested_provider=requested_provider)
     if override is not None:
         return override
+    if known := _known_native_vision_capability(provider, model):
+        return known
     if not provider or not model:
         return None
 

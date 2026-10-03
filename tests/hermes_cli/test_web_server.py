@@ -1598,7 +1598,7 @@ CONFIG_SCHEMA = ProviderConfigSchema(
             resp = self.client.post(
                 "/api/model/set",
                 json={"scope": "main", "provider": "custom", "model": "local-model",
-                      "base_url": "http://127.0.0.1:8081/v1", "api_key": "sk-local"},
+                      "base_url": "http://127.0.0.1:8081/v1", "api_key": "sk-test"},
             )
             assert resp.status_code == 200 and resp.json()["ok"] is True
             record = fb.current_record()
@@ -3808,6 +3808,96 @@ class TestModelInfoEndpoint:
         assert resp.status_code == 200
         data = resp.json()
         assert data["auto_context_length"] == 0
+
+
+    def test_model_info_probes_with_the_providers_credentials(self, monkeypatch):
+        """A custom/local provider needs its endpoint + key for the live context probe;
+        without them the lookup 401s and silently reports the catalog maximum."""
+
+        monkeypatch.setattr(_cfg_mod, "load_config", lambda: {
+            "model": {"default": "example/local-model", "provider": "my-provider"},
+            "providers": {"my-provider": {"api": "http://provider.test/v1", "key_env": "MY_PROVIDER_KEY"}},
+        })
+        resolved = []
+
+        def fake_resolve_runtime_provider(*, requested=None, explicit_api_key=None,
+                                          explicit_base_url=None, target_model=None):
+            resolved.append((requested, explicit_base_url, target_model))
+            return {"provider": "my-provider", "api_mode": "openai", "base_url": "http://provider.test/v1",
+                    "api_key": "sk-test"}
+
+        seen = {}
+
+        def fake_context_length(**kwargs):
+            seen.update(kwargs)
+            return 64000
+
+        monkeypatch.setattr("hermes_cli.runtime_provider.resolve_runtime_provider",
+                            fake_resolve_runtime_provider)
+        with patch("agent.model_metadata.get_model_context_length", side_effect=fake_context_length):
+            resp = self.client.get("/api/model/info")
+
+        assert resp.status_code == 200
+        assert resp.json()["effective_context_length"] == 64000
+        assert resolved == [("my-provider", None, "example/local-model")]
+        assert seen["base_url"] == "http://provider.test/v1"
+        assert seen["api_key"] == "sk-test"
+        assert seen["provider"] == "my-provider"
+
+
+    def test_model_info_keeps_config_values_when_credentials_fail(self, monkeypatch):
+
+        monkeypatch.setattr(_cfg_mod, "load_config", lambda: {
+            "model": {"default": "some/model", "provider": "custom", "base_url": "http://provider.test/v1"},
+        })
+
+        def fail(**kwargs):
+            raise RuntimeError("no key")
+
+        seen = {}
+
+        def fake_context_length(**kwargs):
+            seen.update(kwargs)
+            return 32768
+
+        monkeypatch.setattr("hermes_cli.runtime_provider.resolve_runtime_provider", fail)
+        with patch("agent.model_metadata.get_model_context_length", side_effect=fake_context_length):
+            resp = self.client.get("/api/model/info")
+
+        assert resp.json()["auto_context_length"] == 32768
+        assert seen["base_url"] == "http://provider.test/v1"
+        assert seen["api_key"] == ""
+
+
+    def test_model_info_passes_a_key_cmd_token_source_through_uncoerced(self, monkeypatch):
+        """``key_cmd`` providers resolve to a callable token source (minted per request);
+        the probe must receive it as-is so ``_auth_headers`` can materialize it, never
+        ``str(callable)`` which would send ``Bearer <function …>``."""
+        from agent.model_metadata import _auth_headers
+
+        monkeypatch.setattr(_cfg_mod, "load_config", lambda: {
+            "model": {"default": "some/model", "provider": "my-provider"},
+        })
+
+        def token_source():
+            return "live-token"
+
+        monkeypatch.setattr(
+            "hermes_cli.runtime_provider.resolve_runtime_provider",
+            lambda **kwargs: {"provider": "my-provider", "api_mode": "openai",
+                              "base_url": "http://provider.test/v1", "api_key": token_source})
+        seen = {}
+
+        def fake_context_length(**kwargs):
+            seen.update(kwargs)
+            return 65536
+
+        with patch("agent.model_metadata.get_model_context_length", side_effect=fake_context_length):
+            resp = self.client.get("/api/model/info")
+
+        assert resp.json()["auto_context_length"] == 65536
+        assert seen["api_key"] is token_source
+        assert _auth_headers(seen["api_key"]) == {"Authorization": "Bearer live-token"}
 
 
 # ---------------------------------------------------------------------------

@@ -875,7 +875,8 @@ export default function SessionsPage() {
   const { toast, showToast } = useToast();
   const { t } = useI18n();
   const { setAfterTitle, setEnd } = usePageHeader();
-  const { activeAction, actionStatus, dismissLog } = useSystemActions();
+  const { activeAction, actionStatus, dismissLog, isRunning } = useSystemActions();
+  const updateOutcomeUnknown = activeAction === "update" && actionStatus?.exit_code === null;
   const resumeInChatEnabled = isDashboardEmbeddedChatEnabled();
   const selectedSources = sourceSelectionsByCategory[sessionCategory];
 
@@ -1778,12 +1779,12 @@ export default function SessionsPage() {
         <div className="border border-border bg-background-base/50">
           <div className="flex items-center justify-between gap-2 border-b border-border px-3 py-2">
             <div className="flex items-center gap-2 min-w-0">
-              {actionStatus?.running ? (
+              {isRunning ? (
                 <Spinner className="shrink-0 text-[0.875rem] text-warning" />
               ) : actionStatus?.exit_code === 0 ? (
                 <CheckCircle2 className="h-3.5 w-3.5 shrink-0 text-success" />
               ) : actionStatus !== null ? (
-                <AlertTriangle className="h-3.5 w-3.5 shrink-0 text-destructive" />
+                <AlertTriangle className={updateOutcomeUnknown ? "h-3.5 w-3.5 shrink-0 text-warning" : "h-3.5 w-3.5 shrink-0 text-destructive"} />
               ) : (
                 <Spinner className="shrink-0 text-[0.875rem] text-muted-foreground" />
               )}
@@ -1796,23 +1797,23 @@ export default function SessionsPage() {
 
               <Badge
                 tone={
-                  actionStatus?.running
+                  isRunning
                     ? "warning"
                     : actionStatus?.exit_code === 0
                       ? "success"
-                      : actionStatus
-                        ? "destructive"
-                        : "outline"
+                      : updateOutcomeUnknown
+                        ? "warning"
+                        : actionStatus ? "destructive" : "outline"
                 }
                 className="text-xs shrink-0"
               >
-                {actionStatus?.running
+                {isRunning
                   ? t.status.running
                   : actionStatus?.exit_code === 0
                     ? t.status.actionFinished
-                    : actionStatus
-                      ? `${t.status.actionFailed} (${actionStatus.exit_code ?? "?"})`
-                      : t.common.loading}
+                    : updateOutcomeUnknown
+                      ? "Update outcome unknown"
+                      : actionStatus ? `${t.status.actionFailed} (${actionStatus.exit_code ?? "?"})` : t.common.loading}
               </Badge>
             </div>
 

@@ -24,8 +24,17 @@ def test_restart_deferral_crosses_real_completion_process(transition):
 
     assert result["exit_code"] == 0
     assert result["receipt"]["outcome"] == "success"
+    assert result["receipt"]["finished_at"]
+    assert result["receipt"]["update_id"] == request["receipt"]["update_id"]
     assert result["windows_resume"]["resume_needed"] is False
-    events = [json.loads(line)["name"] for line in (root / "events.jsonl").read_text().splitlines()]
+    records = [json.loads(line) for line in (root / "events.jsonl").read_text().splitlines()]
+    events = [record["name"] for record in records]
     assert {"prepare", "build", "maintenance", "deferred", "emergency_resume"} <= set(events)
     assert "restart" not in events and "verify" not in events
+    assert events.index("deferred") < events.index("emergency_resume") < events.index("terminal_receipt")
+    assert events.index("terminal_receipt") < events.index("exit_marker") < events.index("completion_report")
+    report = next(record for record in records if record["name"] == "completion_report")
+    assert report["response"]["receipt"] == result["receipt"]
+    assert "Code update complete; gateway restart deferred (--no-gateway-restart)" in report["message"]
+    assert "Update complete!" not in report["message"]
     assert marker.read_text() == "pending"

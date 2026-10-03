@@ -5,9 +5,9 @@ The update receipt (written by every `hermes update` run since #91283,
 
 - GET /api/hermes/update/receipt returns the full receipt + summary; 404
   when none exists.
-- GET /api/actions/hermes-update/status attaches the receipt summary, and
-  uses a finished receipt as the outcome when both in-memory registries AND
-  the log marker are gone (dashboard restarted + log rotated).
+- GET /api/actions/hermes-update/status attaches the correlated receipt summary,
+  and uses a finished receipt when in-memory registries and the completion marker
+  are gone, but the durable admission identity survives.
 """
 
 import json
@@ -35,8 +35,9 @@ def client():
 def _write_receipt(tmp_path: Path, monkeypatch, *, outcome="success") -> dict:
     receipt = {
         "schema": 1,
+        "update_id": "a" * 32,
         "started_at": "2026-08-23T07:00:00+00:00",
-        "finished_at": "2026-08-23T07:03:20+00:00",
+        "finished_at": None if outcome == "running" else "2026-08-23T07:03:20+00:00",
         "argv": ["hermes", "update"],
         "pid": 12345,
         "outcome": outcome,
@@ -69,6 +70,8 @@ class TestUpdateReceiptEndpoint:
         data = resp.json()
         assert data["receipt"]["outcome"] == "success"
         assert data["receipt"]["steps"] == receipt["steps"]
+        assert data["receipt"]["update_id"] == receipt["update_id"]
+        assert data["receipt"]["finished_at"] == receipt["finished_at"]
         summary = data["summary"]
         assert summary["outcome"] == "success"
         assert summary["pre_sha"] == "a" * 40
@@ -91,6 +94,9 @@ class TestUpdateStatusReadsReceipt:
     def _clear_registries(self, monkeypatch, tmp_path):
         monkeypatch.setattr(_web_server_gateway, "_ACTION_LOG_DIR", tmp_path / "actions")
         (tmp_path / "actions").mkdir(exist_ok=True)
+        (tmp_path / "actions" / "hermes-update.log").write_text(
+            f"=== hermes-update started {'a' * 32} ===\n", encoding="utf-8",
+        )
         monkeypatch.setattr(_web_server_gateway, "_ACTION_PROCS", {})
         monkeypatch.setattr(_web_server_gateway, "_ACTION_RESULTS", {})
         monkeypatch.setattr(_web_server_gateway, "_ACTION_COMMANDS", {})
@@ -106,9 +112,9 @@ class TestUpdateStatusReadsReceipt:
         data = resp.json()
         assert data["receipt"]["outcome"] == "success"
 
-    def test_finished_receipt_is_the_outcome_when_marker_and_memory_gone(self, client, tmp_path, monkeypatch):
-        """Dashboard restarted (registries lost) AND update.log has no
-        completion marker (rotated): the receipt alone reports success."""
+    def test_finished_receipt_is_the_outcome_when_completion_marker_and_memory_gone(self, client, tmp_path, monkeypatch):
+        """With registries lost and update.log rotated, the durable admission
+        identity correlates the terminal receipt before reporting success."""
         _write_receipt(tmp_path, monkeypatch, outcome="success")
         self._clear_registries(monkeypatch, tmp_path)
 
@@ -135,6 +141,7 @@ class TestUpdateStatusReadsReceipt:
         resp = client.get("/api/actions/hermes-update/status")
 
         assert resp.json()["exit_code"] is None
+        assert resp.json()["receipt"]["finished_at"] is None
 
     def test_non_update_actions_untouched(self, client, tmp_path, monkeypatch):
         _write_receipt(tmp_path, monkeypatch)

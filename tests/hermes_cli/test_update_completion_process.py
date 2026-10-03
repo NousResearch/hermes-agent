@@ -118,18 +118,27 @@ def transition(tmp_path):
         "from types import SimpleNamespace\nRuntimeRecord = UpdatePlan = SimpleNamespace\n"
     )
     (package / "update_cmd_maint.py").write_text(
+        "import json, pathlib, sys\n"
         "from hermes_cli.probe import event\n"
         "def _run_post_update_maintenance(**kwargs):\n"
         "    from hermes_cli.update_cmd_config import _LAST_SIBLING_SNAPSHOTS\n"
         "    event('maintenance', snapshots=_LAST_SIBLING_SNAPSHOTS, **kwargs)\n"
         "    return True\n"
+        "def _update_complete_message(previous): return '✓ Update complete! ' + str(previous)\n"
+        "def _print_update_completion(message):\n"
+        "    response = json.loads(pathlib.Path(sys.argv[2]).read_text())\n"
+        "    event('completion_report', message=message, response=response)\n"
+        "    print(message, flush=True)\n"
     )
     (package / "update_cmd.py").write_text(
+        "import json, pathlib, sys\n"
         "from hermes_cli.probe import event\n"
         "_invalidate_update_cache = lambda: event('cache')\n"
         "_sweep_bytecode_after_update = lambda branch: event('bytecode')\n"
         "_write_fleet_restart_pending_marker = lambda **kw: event('pending')\n"
-        "_write_gateway_update_exit_code = lambda ok: event('exit_marker', ok=ok)\n"
+        "def _write_gateway_update_exit_code(ok):\n"
+        "    response = json.loads(pathlib.Path(sys.argv[2]).read_text())\n"
+        "    event('exit_marker', ok=ok, response=response)\n"
         "_fleet_restart_skip_reason = lambda plan: None\n"
         "def _restart_gateway_fleet_after_update(plan, gateway_mode):\n"
         "    event('restart', profiles=[r.profile for r in plan.runtimes])\n"
@@ -159,6 +168,8 @@ def transition(tmp_path):
         "    path.mkdir(parents=True, exist_ok=True)\n"
         "    path = path / ('update_test_' + r.correlation_id + '.json')\n"
         "    path.write_text(json.dumps(r.data, ensure_ascii=False), encoding=r.data.get('encoding', 'utf-8'))\n"
+        "    from hermes_cli.probe import event\n"
+        "    event('terminal_receipt', receipt=json.loads(path.read_text(encoding='utf-8-sig')))\n"
         "    _current.set(None)\n"
         "    return path\n"
     )
@@ -210,7 +221,7 @@ def test_old_process_new_git_tree_completes_in_fresh_python(transition, tmp_path
     )
     assert result.returncode == 0, result.stdout + result.stderr
     response = json.loads(result.stdout.split("RESULT=")[1])
-    assert response["exit_code"] == 0
+    assert response["exit_code"] == 0, result.stdout + result.stderr
     assert response["receipt"]["update_id"] == request["receipt"]["update_id"]
     assert response["windows_resume"]["resume_needed"] is False
     assert not (Path(request["home"]) / "completion-pending").exists()
@@ -223,8 +234,17 @@ def test_old_process_new_git_tree_completes_in_fresh_python(transition, tmp_path
     assert by_name["maintenance"]["snapshots"] == {"work": "work-before"}
     assert by_name["maintenance"]["pre_update_snapshot_id"] == "active-before"
     assert by_name["maintenance"]["pre_update_version"] == "日本 café"
+    assert by_name["maintenance"]["report_completion"] is False
     assert by_name["restart"]["profiles"] == ["work"]
-    assert [e["name"] for e in events].index("exit_marker") < [e["name"] for e in events].index("restart")
+    names = [e["name"] for e in events]
+    assert names.index("restart") < names.index("verify") < names.index("terminal_receipt")
+    assert names.index("terminal_receipt") < names.index("exit_marker") < names.index("completion_report")
+    assert names.count("exit_marker") == names.count("completion_report") == 1
+    assert by_name["exit_marker"]["ok"] is True
+    # The marker and success report must see the already-published terminal response.
+    assert by_name["terminal_receipt"]["receipt"] == response["receipt"]
+    assert response["receipt"]["finished_at"] and response["receipt"]["outcome"] == "success"
+    assert by_name["exit_marker"]["response"] == by_name["completion_report"]["response"] == response
 
 
 @pytest.mark.parametrize("code", [0, 23])
@@ -496,13 +516,15 @@ def test_interactive_configuration_keeps_terminal_input(transition):
 
     root, git, old, new, request = transition
     shutil.copy2(update_completion.__file__, root / "hermes_cli/update_completion.py")
-    (root / "hermes_cli/update_cmd_maint.py").write_text(
-        "import sys\nfrom hermes_cli.probe import event\n"
-        "def _run_post_update_maintenance(**kw):\n"
-        "    assert sys.stdin.isatty() and sys.stdout.isatty()\n"
-        "    event('answer', value=input('CONFIG? '))\n"
-        "    return True\n"
-    )
+    # Override only the prompt, preserving the completion reporter in the new tree.
+    with (root / "hermes_cli/update_cmd_maint.py").open("a", encoding="utf-8") as stream:
+        stream.write(
+            "def _run_post_update_maintenance(**kw):\n"
+            "    assert sys.stdin.isatty() and sys.stdout.isatty()\n"
+            "    assert kw['report_completion'] is False\n"
+            "    event('answer', value=input('CONFIG? '))\n"
+            "    return True\n"
+        )
     master, slave = pty.openpty()
     driver = "import json,runpy,sys; m=runpy.run_path(sys.argv[1]); raise SystemExit(m['run_completion'](json.loads(sys.argv[2]))['exit_code'])"
     proc = subprocess.Popen([sys.executable, "-c", driver, update_completion.__file__, json.dumps(request)],

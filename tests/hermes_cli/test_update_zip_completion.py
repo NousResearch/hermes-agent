@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import contextvars
 from pathlib import Path
 import subprocess
 from types import SimpleNamespace
@@ -11,7 +12,7 @@ import zipfile
 import pytest
 
 from hermes_cli import main, update_cmd, update_cmd_fleet as fleet, update_cmd_maint as maint
-from hermes_cli import update_cmd_zip, update_receipt
+from hermes_cli import update_cmd_zip, update_completion, update_receipt
 from hermes_cli.config_defaults import DEFAULT_CONFIG
 from hermes_cli.update_inventory import RuntimeRecord, UpdatePlan
 import hermes_yaml
@@ -96,6 +97,8 @@ def zip_update(tmp_path, monkeypatch, isolated_source_completion):
         token["resume_needed"] = False
         events.append("resume")
     monkeypatch.setattr(main, "_resume_windows_gateways_after_update", resume)
+    monkeypatch.setattr(update_cmd, "_resume_windows_gateways_after_update",
+                        lambda received: resume(received) if received.get("resume_needed") else None)
     monkeypatch.setattr(update_cmd, "_write_gateway_update_exit_code", lambda ok: events.append(("marker", ok)))
 
     def restart(received, gateway_mode):
@@ -109,9 +112,44 @@ def zip_update(tmp_path, monkeypatch, isolated_source_completion):
     real_finalize = update_receipt.finalize_update_receipt
 
     def finalize(*args, **kwargs):
+        path = real_finalize(*args, **kwargs)
         events.append("finalize")
-        return real_finalize(*args, **kwargs)
+        return path
     monkeypatch.setattr(update_receipt, "finalize_update_receipt", finalize)
+    real_verify = update_cmd._verify_fleet_after_update
+
+    def verify(*args, **kwargs):
+        events.append("verify")
+        return real_verify(*args, **kwargs)
+    monkeypatch.setattr(update_cmd, "_verify_fleet_after_update", verify)
+
+    # The shared unit seam only calls _complete_selected, which no longer owns
+    # reporting. Exercise the real terminal owner, in a fresh context like its child.
+    result_path = tmp_path / "completion-result.json"
+    real_write = update_completion._write_json
+
+    def publish(path, data):
+        assert path == result_path
+        assert data["receipt"]["finished_at"]
+        assert data["receipt"]["update_id"] == data["update_id"]
+        real_write(path, data)
+        events.append(("result", data["exit_code"]))
+    monkeypatch.setattr(update_completion, "_write_json", publish)
+    real_report = maint._print_update_completion
+
+    def report(message):
+        response = json.loads(result_path.read_text())
+        assert response["exit_code"] == 0 and response["receipt"]["outcome"] == "success"
+        events.append("report")
+        real_report(message)
+    monkeypatch.setattr(maint, "_print_update_completion", report)
+
+    def complete(request):
+        code = contextvars.Context().run(update_completion._finish, request, result_path)
+        response = json.loads(result_path.read_text())
+        assert response["exit_code"] == code
+        return response
+    monkeypatch.setattr(update_cmd, "run_completion", complete)
     yield SimpleNamespace(root=root, active=active, sibling=sibling, jobs=jobs,
                           original_jobs=original_jobs, events=events, token=token, plan=plan)
     update_receipt._current.set(None)
@@ -144,10 +182,11 @@ def test_zip_command_migrates_profiles_recovers_snapshot_and_verifies_fleet(
         assert (state.root / name).read_text(encoding="utf-8") == "new"
     for name in ("apps/desktop/release/Hermes.exe", "venv/keep", "node_modules/keep", ".env"):
         assert (state.root / name).read_text(encoding="utf-8") == "retained"
-    assert state.events == ["prepare", *([("marker", True)] if gateway_mode else []),
-                            "restart", "resume", "finalize"]
+    assert state.events == ["prepare", "restart", "resume", "verify", "finalize", ("result", 0),
+                            *([("marker", True)] if gateway_mode else []), "report"]
     receipt = json.loads((state.active / "logs/update_receipts/latest.json").read_text())
     assert receipt["outcome"] == "success"
+    assert receipt["finished_at"] and receipt["update_id"]
     assert receipt["runtime_outcomes"][0]["outcome"] == "restarted"
     assert update_receipt._current.get() is None
     assert state.token["resume_needed"] is False
@@ -174,10 +213,12 @@ def test_zip_helper_propagates_completion_status_after_real_verification(zip_upd
         with pytest.raises(SystemExit) as error:
             update_cmd_zip._update_via_zip(args, completion_request=request)
         assert error.value.code == 1
-    assert state.events == ["prepare", ("marker", verdict != "unsafe-sqlite"),
-                            "restart", "resume", "finalize"]
+    code = 0 if verdict == "healthy" else 1
+    assert state.events == ["prepare", "restart", "resume", "verify", "finalize", ("result", code),
+                            ("marker", code == 0), *(["report"] if code == 0 else [])]
     receipt = json.loads((state.active / "logs/update_receipts/latest.json").read_text())
     assert receipt["outcome"] == ("success" if verdict == "healthy" else "partial")
+    assert receipt["finished_at"] and receipt["update_id"]
     assert receipt["runtime_outcomes"][0]["outcome"] == (
         "unaccounted" if verdict == "stale-fleet" else "restarted")
     assert json.loads(state.jobs.read_text()) == state.original_jobs
@@ -230,7 +271,9 @@ def test_zip_failure_recovers_pause_without_completion_mutations(zip_update, mon
             assert (state.root / "payload.txt").read_text() == "new"
             raise pm.InstallError("venv", "preparation stopped")
         monkeypatch.setattr("hermes_cli.source_build.build_update_products", fail_preparation)
-        expected = pm.InstallError
+        # The selected completion owner reports the build exception as a failed
+        # terminal result, rather than leaking it across the interpreter boundary.
+        expected = SystemExit
     with pytest.raises(expected) as raised:
         update_cmd._cmd_update_impl(SimpleNamespace(branch="main", yes=True), gateway_mode=True)
     if failure in {"swap", "late-swap"}:
@@ -241,12 +284,20 @@ def test_zip_failure_recovers_pause_without_completion_mutations(zip_update, mon
     if failure != "preparation":
         assert {p.relative_to(state.root): p.read_bytes()
                 for p in state.root.rglob("*") if p.is_file()} == original_tree
-    assert state.events == ["resume"]
+    assert state.events == (["resume", "finalize", ("result", 1), ("marker", False)]
+                            if failure == "preparation" else ["resume"])
     assert state.token["resume_needed"] is False
     assert {profile: (profile / "config.yaml").read_bytes() for profile in before} == before
     assert not (state.sibling / ".env").exists()
     assert json.loads(state.jobs.read_text()) == state.original_jobs
-    assert not (state.active / "logs/update_receipts/latest.json").exists()
+    receipt_path = state.active / "logs/update_receipts/latest.json"
+    if failure == "preparation":
+        assert raised.value.code == 1
+        receipt = json.loads(receipt_path.read_text())
+        assert receipt["outcome"] == "failed" and receipt["finished_at"]
+        assert "InstallError:" in receipt["stop_reason"] and "preparation stopped" in receipt["stop_reason"]
+    else:
+        assert not receipt_path.exists()
     assert not list(state.root.glob("*.hermes-update-*"))
 
 

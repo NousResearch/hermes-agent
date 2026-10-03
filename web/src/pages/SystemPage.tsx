@@ -45,6 +45,7 @@ import { DeleteConfirmDialog } from "@/components/DeleteConfirmDialog";
 import { HermesConsoleModal } from "@/components/HermesConsoleModal";
 import { cn, themedBody } from "@/lib/utils";
 import { api } from "@/lib/api";
+import { actionNeedsPolling } from "@/lib/action-status";
 import { copyTextToClipboard } from "@/lib/clipboard";
 import {
   gatewayStateNeedsLogs,
@@ -109,10 +110,12 @@ function backupFileName(path: string | null): string {
  */
 function ActionLogViewer({
   action,
+  actionId,
   onClose,
   onComplete,
 }: {
   action: string;
+  actionId?: string;
   onClose: () => void;
   onComplete?: (action: string, exitCode: number | null) => void;
 }) {
@@ -127,18 +130,21 @@ function ActionLogViewer({
     completeRef.current = false;
     const poll = async () => {
       try {
-        const st = await api.getActionStatus(action, 400);
+        const st = await api.getActionStatus(action, 400, actionId);
         if (cancelled) return;
         setLines(st.lines);
-        setRunning(st.running);
+        const polling = actionNeedsPolling(action, st, actionId);
+        setRunning(polling);
         setExitCode(st.exit_code);
-        if (!st.running && !completeRef.current) {
+        if (!polling && st.exit_code !== null && !completeRef.current) {
           completeRef.current = true;
           onComplete?.(action, st.exit_code);
         }
-        if (st.running) timer.current = setTimeout(poll, 1200);
+        if (polling) timer.current = setTimeout(poll, 1200);
       } catch {
-        if (!cancelled) setRunning(false);
+        if (!cancelled && action === "hermes-update") {
+          timer.current = setTimeout(poll, 1200);
+        } else if (!cancelled) setRunning(false);
       }
     };
     poll();
@@ -146,7 +152,7 @@ function ActionLogViewer({
       cancelled = true;
       if (timer.current) clearTimeout(timer.current);
     };
-  }, [action, onComplete]);
+  }, [action, actionId, onComplete]);
 
   return (
     <Card>
@@ -158,8 +164,8 @@ function ActionLogViewer({
             {running ? (
               <Badge tone="warning">running</Badge>
             ) : (
-              <Badge tone={exitCode === 0 ? "success" : "destructive"}>
-                {exitCode === 0 ? "done" : `exit ${exitCode}`}
+              <Badge tone={exitCode === null ? "warning" : exitCode === 0 ? "success" : "destructive"}>
+                {exitCode === null ? "Update outcome unknown" : exitCode === 0 ? "done" : `exit ${exitCode}`}
               </Badge>
             )}
           </div>
@@ -217,6 +223,7 @@ export default function SystemPage() {
   const [loading, setLoading] = useState(true);
 
   const [activeAction, setActiveAction] = useState<string | null>(null);
+  const [updateActionId, setUpdateActionId] = useState<string | undefined>();
   const [consoleOpen, setConsoleOpen] = useState(false);
   const [migratePlan, setMigratePlan] = useState<GatewayMigratePlan | null>(null);
 
@@ -626,6 +633,7 @@ export default function SystemPage() {
         );
         return;
       }
+      setUpdateActionId(resp.action_id);
       setActiveAction(resp.name ?? "hermes-update");
       showToast("Update started", "success");
     } catch (e) {
@@ -893,6 +901,7 @@ export default function SystemPage() {
       {activeAction && (
         <ActionLogViewer
           action={activeAction}
+          actionId={activeAction === "hermes-update" ? updateActionId : undefined}
           onComplete={handleActionComplete}
           onClose={() => setActiveAction(null)}
         />

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { api } from "@/lib/api";
+import { actionNeedsPolling } from "@/lib/action-status";
 import type { ActionStatusResponse } from "@/lib/api";
 import { Toast } from "@nous-research/ui/ui/components/toast";
 import { sharedGatewayProfiles, sharedGatewayRestartedMessage } from "@/lib/shared-gateway";
@@ -21,6 +22,7 @@ export function SystemActionsProvider({
 }) {
   const [pendingAction, setPendingAction] = useState<SystemAction | null>(null);
   const [activeAction, setActiveAction] = useState<SystemAction | null>(null);
+  const [actionId, setActionId] = useState<string | undefined>();
   const [actionStatus, setActionStatus] = useState<ActionStatusResponse | null>(
     null,
   );
@@ -37,13 +39,18 @@ export function SystemActionsProvider({
     if (!activeAction) return;
     const name = ACTION_NAMES[activeAction];
     let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
 
     const poll = async () => {
       try {
-        const resp = await api.getActionStatus(name);
+        const resp = await api.getActionStatus(name, 200, actionId);
         if (cancelled) return;
         setActionStatus(resp);
-        if (!resp.running) {
+        if (!actionNeedsPolling(name, resp, actionId)) {
+          if (name === "hermes-update" && resp.exit_code === null) {
+            setToast({type: "success", message: "Update outcome unknown — automatic polling stopped; check the update log."});
+            return;
+          }
           const ok = resp.exit_code === 0;
           // A restart of the shared multiplexer reconnected every bot on the device: name the count.
           const shared =
@@ -64,18 +71,21 @@ export function SystemActionsProvider({
       } catch {
         // transient fetch error; keep polling
       }
-      if (!cancelled) setTimeout(poll, 1500);
+      if (!cancelled) timer = setTimeout(poll, 1500);
     };
 
     poll();
     return () => {
       cancelled = true;
+      if (timer) clearTimeout(timer);
     };
-  }, [activeAction, t.status.actionFinished, t.status.actionFailed]);
+  }, [activeAction, actionId, t.status.actionFinished, t.status.actionFailed]);
 
   const runAction = useCallback(
     async (action: SystemAction) => {
       setPendingAction(action);
+      setActiveAction(null);
+      setActionId(undefined);
       setActionStatus(null);
       try {
         if (action === "restart") {
@@ -98,6 +108,7 @@ export function SystemActionsProvider({
             });
             return;
           }
+          setActionId(resp.action_id);
           setActiveAction(action);
         }
       } catch (err) {
@@ -118,7 +129,7 @@ export function SystemActionsProvider({
     setActionStatus(null);
   }, []);
 
-  const isRunning = activeAction !== null && actionStatus?.running !== false;
+  const isRunning = activeAction !== null && (!actionStatus || actionNeedsPolling(ACTION_NAMES[activeAction], actionStatus, actionId));
   const isBusy = pendingAction !== null || isRunning;
 
   return (

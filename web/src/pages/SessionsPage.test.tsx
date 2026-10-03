@@ -3,6 +3,12 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { MemoryRouter } from "react-router";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { useSystemActions } from "@/contexts/useSystemActions";
+
+function UpdateControl() {
+  const {runAction} = useSystemActions();
+  return <button onClick={() => void runAction("update")}>Test update</button>;
+}
 
 const apiMocks = vi.hoisted(() => ({
   getSessions: vi.fn(),
@@ -20,6 +26,8 @@ const apiMocks = vi.hoisted(() => ({
   getProfiles: vi.fn(),
   getActiveProfile: vi.fn(),
   getSessionStats: vi.fn(),
+  updateHermes: vi.fn(),
+  getActionStatus: vi.fn(),
 }));
 
 vi.mock("@/lib/api", () => ({
@@ -52,7 +60,7 @@ function click(el: Element | null) {
 
 const button = (label: string) => document.querySelector(`button[aria-label="${label}"]`);
 
-async function renderSessionsPage(rows: Record<string, unknown>[]) {
+async function renderSessionsPage(rows: Record<string, unknown>[], updateControl = false) {
   // Page list uses limit 20; the overview tab's recent-cards fetch uses 50 —
   // keep the overview empty so the list view (with row actions) renders.
   apiMocks.getSessions.mockImplementation(async (limit: number) => ({
@@ -77,6 +85,7 @@ async function renderSessionsPage(rows: Record<string, unknown>[]) {
       <I18nProvider>
         <MemoryRouter>
           <SystemActionsProvider>
+            {updateControl && <UpdateControl />}
             <ProfileProvider>
               <PageHeaderProvider pluginTabs={[]}>
                 <SessionsPage />
@@ -116,6 +125,19 @@ afterEach(async () => {
   await act(async () => root?.unmount());
   container?.remove();
   vi.unstubAllGlobals();
+});
+
+it.each(["pending", "abandoned"])("renders %s update without a false failed badge", async state => {
+  const actionId = "e".repeat(32);
+  apiMocks.updateHermes.mockResolvedValue({ok: true, action_id: actionId});
+  apiMocks.getActionStatus.mockResolvedValue({name: "hermes-update", action_id: actionId,
+    state, running: false, exit_code: null, lines: []});
+  await renderSessionsPage([{id: "fixture", profile: "default", source: "cli", title: "Fixture",
+    started_at: 1, message_count: 1}], true);
+  await act(async () => click(Array.from(container.querySelectorAll("button")).find(
+    button => button.textContent === "Test update") ?? null));
+  expect(container.textContent).not.toContain("Action failed");
+  expect(container.textContent).toContain(state === "pending" ? "Running" : "Update outcome unknown");
 });
 
 describe("SessionsPage per-row profile routing (#99387)", () => {

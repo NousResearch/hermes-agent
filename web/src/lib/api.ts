@@ -1063,9 +1063,9 @@ export const api = {
     fetchJSON<UpdateCheckResponse>(
       `/api/hermes/update/check${force ? "?force=true" : ""}`,
     ),
-  getActionStatus: (name: string, lines = 200) =>
+  getActionStatus: (name: string, lines = 200, actionId?: string) =>
     fetchJSON<ActionStatusResponse>(
-      `/api/actions/${encodeURIComponent(name)}/status?lines=${lines}`,
+      `/api/actions/${encodeURIComponent(name)}/status?lines=${lines}${actionId ? `&action_id=${encodeURIComponent(actionId)}` : ""}`,
     ),
 
   // Dashboard plugins
@@ -1479,6 +1479,7 @@ export interface GatewayMigratePlan {
 }
 
 export interface ActionResponse {
+  action_id?: string;
   archive?: string;
   name: string;
   ok: boolean;
@@ -1976,6 +1977,8 @@ interface FetchJSONOptions {
 }
 
 export interface ActionStatusResponse {
+  action_id?: string;
+  state?: "running" | "pending" | "unknown" | "abandoned" | "superseded" | "finished";
   exit_code: number | null;
   lines: string[];
   name: string;

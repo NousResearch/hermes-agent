@@ -374,11 +374,14 @@ def _post_update_sqlite_runtime_status():
     return info is not None and not info.wal_reset_vulnerable, info
 
 
-def _print_verified_update_completion(message: str) -> bool:
+def _print_verified_update_completion(message: str, *, report_completion: bool = True) -> bool:
     """Print a success completion only after probing the next Hermes runtime."""
     from hermes_cli.update_cmd import _post_update_sqlite_runtime_status
     if not message.startswith("✓"):
-        _print_update_completion(message)
+        if report_completion:
+            _print_update_completion(message)
+        else:
+            print(message)
         return False
     sqlite_runtime_ok, sqlite_info = _post_update_sqlite_runtime_status()
     if sqlite_info is None:
@@ -386,7 +389,8 @@ def _print_verified_update_completion(message: str) -> bool:
         # fail the update — only a POSITIVE vulnerable probe withholds success.
         logger.debug("Post-update SQLite runtime probe unavailable; not blocking")
     if sqlite_info is None or sqlite_runtime_ok:
-        _print_update_completion(message)
+        if report_completion:
+            _print_update_completion(message)
         return True
     print()
     for line in _sqlite_partial_completion_lines(sqlite_info.sqlite_version_string):
@@ -967,7 +971,7 @@ def _migrate_relay_exporter_env() -> None:
 
 def _run_post_update_maintenance(
     *, assume_yes, gateway_mode, pre_update_snapshot_id, had_desktop_app_before_update,
-    pre_update_version, completion_message=None,
+    pre_update_version, completion_message=None, report_completion=True,
 ) -> bool:
     """Post-build housekeeping and completion, returning the SQLite runtime verdict.
 
@@ -1037,7 +1041,8 @@ def _run_post_update_maintenance(
     )
 
     print()
-    update_complete = _print_verified_update_completion(completion_message or _update_complete_message(pre_update_version))
+    update_complete = _print_verified_update_completion(
+        completion_message or _update_complete_message(pre_update_version), report_completion=report_completion)
     # A multi-profile host whose gateway came back standalone on a guard says so here too — the
     # update summary is the one line operators read (the boot log under s6 is not).
     with suppress(Exception):

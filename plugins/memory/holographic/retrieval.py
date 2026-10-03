@@ -12,6 +12,7 @@ if TYPE_CHECKING:
     from .store import MemoryStore
 
 from . import holographic as hrr
+from .cjk_tokenize import tokenize_for_index
 
 _FACT_COLUMNS = "fact_id, content, category, tags, trust_score, retrieval_count, helpful_count, created_at, updated_at"
 _ROLE_ENTITY, _ROLE_CONTENT = hrr.ROLE_ENTITY, hrr.ROLE_CONTENT
@@ -51,7 +52,8 @@ class FactRetriever:
 
     def search(self, query: str, category: str | None = None, min_trust: float = 0.3, limit: int = 10) -> list[dict]:
         """FTS5 candidates (limit*3) → Jaccard + HRR rerank → trust weighting → optional temporal decay
-        0.5^(age_days / half_life). Returns fact dicts with 'score', sorted desc."""
+        0.5^(age_days / half_life). Returns fact dicts with 'score', sorted desc. retrieval_count
+        is incremented for the surfaced ids (via store.record_retrieval)."""
         candidates = self._fts_candidates(query, category, min_trust, limit * 3)
         query_tokens = self._tokenize(query)
         # Query vector is loop-invariant; encode lazily on the first candidate that carries an HRR vector
@@ -72,7 +74,15 @@ class FactRetriever:
         results = sorted(candidates, key=lambda x: x["score"], reverse=True)[:limit]
         for fact in results:
             fact.pop("hrr_vector", None)  # callers expect JSON-serializable dicts
+        self._count_retrieval(results)
         return results
+
+    def _count_retrieval(self, results: list[dict]) -> None:
+        """Best-effort retrieval_count increment (#78801): never let counting break retrieval."""
+        try:
+            self.store.record_retrieval([f["fact_id"] for f in results])
+        except Exception:
+            pass
 
     def _vector_query(self, fallback: str, category: str | None, limit: int, sim_fn: Callable) -> list[dict]:
         """Rank every fact vector (optionally per category) by sim_fn; FTS5 fallback when no vectors exist."""
@@ -176,6 +186,9 @@ class FactRetriever:
             results = [dict(row) for row in self.store._conn.execute(sql, params).fetchall()]
         except Exception:
             return []  # FTS5 MATCH can fail on malformed queries
+        # search_text is an index-side artifact (bigram soup), never part of tool output.
+        for fact in results:
+            fact.pop("search_text", None)
         # FTS5 rank is negative (lower = better); normalize |rank| / max to [0, 1] (1e-6 floor avoids div by zero)
         max_rank = max([abs(f["fts_rank_raw"]) for f in results] + [1e-6])
         for fact in results:
@@ -191,12 +204,18 @@ class FactRetriever:
     def _sanitize_fts_query(query: str) -> str:
         """Natural-language query -> FTS5-safe OR expression of quoted tokens. FTS5 AND-joins a multi-word
         MATCH by default, which tanks recall on prose: drop stopwords and <2-char tokens, strip FTS5 operator
-        chars, phrase-quote each survivor. If nothing survives, return the raw query (zero results, not a SQL error)."""
+        chars, phrase-quote each survivor. CJK runs are expanded into 2-grams via the shared tokenizer
+        (same one that builds facts.search_text) so unsegmented CJK queries match the bigram index.
+        If nothing survives, return the raw query (zero results, not a SQL error)."""
         if not query:
             return ""
-        tokens = [f'"{c}"' for c in (raw.strip(_PUNCT).translate(_FTS_OPERATORS) for raw in query.lower().split())
-                  if len(c) >= 2 and c not in _FTS_STOPWORDS]
-        return " OR ".join(tokens) if tokens else query
+        tokens: list[str] = []
+        for raw in query.lower().split():
+            for cjk_or_latin in tokenize_for_index(raw):
+                if len(cjk_or_latin) >= 2 and cjk_or_latin not in _FTS_STOPWORDS:
+                    tokens.append(cjk_or_latin)
+        quoted = [f'"{t}"' for t in tokens]
+        return " OR ".join(quoted) if quoted else query
 
     @staticmethod
     def _jaccard_similarity(set_a: set, set_b: set) -> float:

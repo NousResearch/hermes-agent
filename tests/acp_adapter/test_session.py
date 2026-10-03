@@ -460,6 +460,64 @@ class TestPersistence:
         "    base_url: https://proxy.example/v1\n"
         "    api_key: sk-account-b\n"
     )
+    # ``first`` answers to the alias ``second``, so ``custom:second`` resolves to ``first``'s endpoint and key.
+    _ALIAS_COLLISION = (
+        "model:\n"
+        "  default: proxy-model\n"
+        "  provider: custom:first\n"
+        "providers:\n"
+        "  first:\n"
+        "    name: second\n"
+        "    base_url: https://a.example/v1\n"
+        "    api_key: sk-first\n"
+        "  second:\n"
+        "    base_url: https://b.example/v1\n"
+        "    api_key: sk-second\n"
+    )
+    # Two accounts on one endpoint whose names share the slug ``custom:foo-bar``.
+    _SLUG_COLLISION = (
+        "model:\n"
+        "  default: proxy-model\n"
+        "providers:\n"
+        "  foo-bar:\n"
+        "    base_url: https://proxy.example/v1\n"
+        "    api_key: sk-foo-dash\n"
+        "custom_providers:\n"
+        "  - name: Foo Bar\n"
+        "    base_url: https://proxy.example/v1\n"
+        "    api_key: sk-foo-space\n"
+    )
+    # Two accounts on different endpoints both serve the session's model.
+    _SHARED_MODEL = (
+        "model:\n"
+        "  default: proxy-model\n"
+        "  provider: custom:account-a\n"
+        "providers:\n"
+        "  account-a:\n"
+        "    base_url: https://a.example/v1\n"
+        "    api_key: sk-account-a\n"
+        "    models: [proxy-model]\n"
+        "  account-b:\n"
+        "    base_url: https://b.example/v1\n"
+        "    api_key: sk-account-b\n"
+        "    models: [proxy-model]\n"
+    )
+    # One account listed twice: keyed under ``providers:`` and again in legacy ``custom_providers:``.
+    _DUPLICATED_ACCOUNT = (
+        "model:\n"
+        "  default: proxy-model\n"
+        "  provider: custom:cliproxyapi\n"
+        "providers:\n"
+        "  cliproxyapi:\n"
+        "    name: CLIProxyAPI\n"
+        "    api: http://cliproxy.example:8317/v1\n"
+        "    api_key: sk-cliproxy-test\n"
+        "    models: [proxy-model]\n"
+        "custom_providers:\n"
+        "  - name: CLIProxyAPI\n"
+        "    base_url: http://cliproxy.example:8317/v1\n"
+        "    api_key: sk-cliproxy-test\n"
+    )
 
     @pytest.mark.parametrize("config, model_config, billing, env, expected", [
         (_NAMED, {"cwd": "/work", "provider": "custom", "base_url": "http://cliproxy.example:8317/v1",
@@ -481,8 +539,21 @@ class TestPersistence:
         # Only the bare label heals; a real provider passes through even when the model is a custom entry's.
         (_NAMED, {"cwd": "/work", "provider": "openrouter"}, {}, {"OPENROUTER_API_KEY": "sk-or-test"},
          ("openrouter", "https://openrouter.ai/api/v1", "sk-or-test")),
+        # The endpoint's entry is ``second``, but its slug resolves to ``first``: no heal.
+        (_ALIAS_COLLISION, {"cwd": "/work", "provider": "custom", "base_url": "https://b.example/v1"}, {}, {},
+         (None, None, None)),
+        # One slug, two keys at the endpoint: the slug cannot say which account the session used.
+        (_SLUG_COLLISION, {"cwd": "/work", "provider": "custom", "base_url": "https://proxy.example/v1"}, {}, {},
+         (None, None, None)),
+        # No saved endpoint and two accounts serve the model: neither is picked.
+        (_SHARED_MODEL, {"cwd": "/work", "provider": "custom"}, {}, {}, (None, None, None)),
+        # Duplicate listings of one account (same endpoint and key) still heal, slash or not.
+        (_DUPLICATED_ACCOUNT, {"cwd": "/work", "provider": "custom", "base_url": "http://cliproxy.example:8317/v1/"},
+         {}, {}, ("custom", "http://cliproxy.example:8317/v1/", "sk-cliproxy-test")),
+        (_DUPLICATED_ACCOUNT, {"cwd": "/work", "provider": "custom"}, {}, {}, _CLIPROXY),
     ], ids=["model_config", "billing_only", "no_saved_endpoint", "case_distinct_endpoint", "unmatched_endpoint",
-            "shared_endpoint", "openrouter"])
+            "shared_endpoint", "openrouter", "alias_collision", "slug_collision", "shared_model",
+            "duplicated_account", "duplicated_account_by_model"])
     def test_restore_resolves_stored_provider(self, tmp_path, monkeypatch, config, model_config, billing, env,
                                               expected):
         """A row whose stored provider is the bare ``custom`` label (what a named custom provider

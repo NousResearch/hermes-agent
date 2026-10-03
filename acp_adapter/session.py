@@ -153,23 +153,29 @@ class SessionState:
     message_ids: Any = None
 
 
-def _named_custom_identity(requested_provider: str | None, base_url: str | None, model: str | None) -> str | None:
-    """``custom:<name>`` for a requested bare ``custom`` label that failed to resolve on its own.
+def _named_custom_runtime(requested_provider: str | None, base_url: str | None, model: str | None) -> dict | None:
+    """Runtime of the named entry behind a requested bare ``custom`` label that failed to resolve on its own.
 
     Session rows store the agent's resolved provider, which for a named custom provider is the bare
-    label, and that label carries no credentials of its own. A saved endpoint heals only to the single
-    entry registered at it, so the conversation and its credentials never move to another endpoint or
-    to one of several accounts sharing it; without one, fall back to the model or configured provider.
+    label, and that label carries no credentials of its own. Recovery uses the saved endpoint, else
+    the model or configured provider, and declines unless that evidence names exactly one account
+    and its slug resolves back to that account's endpoint, so the conversation and its credentials
+    never move to another endpoint or account.
     """
     if str(requested_provider or "").strip().lower() != "custom":
         return None
     try:
-        from hermes_cli.runtime_provider import canonical_custom_identity, find_custom_provider_identity
-        return (find_custom_provider_identity(base_url, unique=True) if base_url
-                else canonical_custom_identity(model=model))
+        from hermes_cli.runtime_provider import (
+            _normalize_base_url_for_match, recover_custom_account, resolve_runtime_provider)
+        account = recover_custom_account(base_url=base_url, model=model)
+        if not account:
+            return None
+        slug, endpoint = account
+        runtime = resolve_runtime_provider(requested=slug, target_model=model)
     except Exception:
         logger.debug("custom provider identity recovery failed", exc_info=True)
         return None
+    return runtime if _normalize_base_url_for_match(runtime.get("base_url")) == endpoint else None
 
 
 class SessionManager:
@@ -559,10 +565,9 @@ class SessionManager:
             try:
                 runtime = resolve_runtime_provider(requested=requested_provider or config_provider, target_model=target_model)
             except Exception:
-                named = _named_custom_identity(requested_provider, base_url, target_model)
-                if not named:
+                runtime = _named_custom_runtime(requested_provider, base_url, target_model)
+                if runtime is None:
                     raise
-                runtime = resolve_runtime_provider(requested=named, target_model=target_model)
             kwargs.update({
                 "provider": runtime.get("provider"), "api_mode": api_mode or runtime.get("api_mode"),
                 "base_url": base_url or runtime.get("base_url"), "api_key": runtime.get("api_key"),

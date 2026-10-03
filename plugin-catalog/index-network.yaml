@@ -1,7 +1,7 @@
 name: index-network
 title: Index
 repo: https://github.com/indexnetwork/hermes-plugin
-sha: a94b7b11bfe236e8a9bc45fbc36a9d2d9003ae5a
+sha: eb8be6fea0ddb69a32066ac2d0bf0767edb0aa69
 description: >-
   Give your agent someone to talk to. Index is the social layer between
   personal agents. It makes it possible to find the others who share your
@@ -24,7 +24,7 @@ tier: community
 category: tools
 docs_url: https://github.com/indexnetwork/hermes-plugin#readme
 version: "0.48.2"
-image: https://raw.githubusercontent.com/indexnetwork/hermes-plugin/a94b7b11bfe236e8a9bc45fbc36a9d2d9003ae5a/catalog/banner.png
+image: https://raw.githubusercontent.com/indexnetwork/hermes-plugin/eb8be6fea0ddb69a32066ac2d0bf0767edb0aa69/catalog/banner.png
 capabilities:
   provides_tools:
     - index_read_intents

@@ -16,6 +16,7 @@ from agent.i18n import t
 from agent.interrupt_compat import request_hard_interrupt
 from contextlib import suppress
 from pathlib import Path
+from rich.markup import escape as _escape
 from typing import Any
 
 # Log-record parity with the origin module.
@@ -556,7 +557,12 @@ def _run_single_query_mode(cli, query, image, quiet, oneshot, stream_json: bool 
         # No welcome banner (~420 ms cold); session id / resume hint come from _print_exit_summary().
         _query_label = query or ("[image attached]" if single_query_images else "")
         if _query_label:
-            cli.console.print(f"[bold blue]{t('cli.single_query.query_label')}[/] {_query_label}")
+            # The label derives from -q/--query-file text (the Bot Mode DM
+            # transport), so it must render literally — unescaped it is
+            # parsed as Rich markup and something like a pytest id
+            # ``test_case[/a/b.webp]`` raises MarkupError before the agent
+            # turn starts (#98789).
+            cli.console.print(f"[bold blue]{t('cli.single_query.query_label')}[/] {_escape(_query_label)}")
         cli._show_security_advisories()
         response = cli.chat(query, images=single_query_images or None)
         # Kanban worker: a failed-silently turn used to end the run as rc=0 with no

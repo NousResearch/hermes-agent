@@ -80,8 +80,14 @@ _INTERRUPTED_RESPONSE_PLACEHOLDER = "[The previous response was interrupted befo
 _SKIP_SIGNATURE = "skip_thought_signature_validator"
 _END = object()  # stream-exhausted marker for _advance_stream_iterator
 _TOOL_CHOICE_MODES = {"auto": "AUTO", "required": "ANY", "none": "NONE"}
+# Every safety/policy stop is a deterministic refusal (content_filter), not an empty reply to retry.
 _FINISH_REASON_MAP = {
-    "STOP": "stop", "MAX_TOKENS": "length", "SAFETY": "content_filter", "RECITATION": "content_filter", "OTHER": "stop",
+    "STOP": "stop", "MAX_TOKENS": "length", "OTHER": "stop",
+    **dict.fromkeys((
+        "SAFETY", "RECITATION", "BLOCKLIST", "PROHIBITED_CONTENT", "SPII",
+        "IMAGE_SAFETY", "IMAGE_PROHIBITED_CONTENT", "IMAGE_RECITATION",
+        "MODEL_ARMOR",  # Vertex (express base URL): the response was blocked by Model Armor
+    ), "content_filter"),
 }
 _HTTP_ERROR_CODES = {401: "gemini_unauthorized", 429: "gemini_rate_limited", 404: "gemini_model_not_found"}
 _MISSING_KEY_ERROR = (
@@ -616,6 +622,13 @@ def _part_function_call(part: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     return fc if isinstance(fc, dict) and fc.get("name") else None
 
 
+def _prompt_blocked(resp: Dict[str, Any]) -> bool:
+    """Gemini refused the prompt itself: ``promptFeedback.blockReason`` is set and no candidate exists."""
+    feedback = resp.get("promptFeedback")
+    reason = str(feedback.get("blockReason") or "") if isinstance(feedback, dict) else ""
+    return bool(reason) and reason.upper() != "BLOCK_REASON_UNSPECIFIED" and not resp.get("candidates")
+
+
 def translate_gemini_response(resp: Dict[str, Any], model: str) -> SimpleNamespace:
     candidates = resp.get("candidates") or []
     cand = parts = None
@@ -633,7 +646,8 @@ def translate_gemini_response(resp: Dict[str, Any], model: str) -> SimpleNamespa
             pieces[is_thought].append(text)
         elif fc := _part_function_call(part):
             tool_calls.append(_tool_call_ns(str(fc["name"]), _dump_call_args(fc), index, _new_call_id(fc), _tool_call_extra_from_part(part)))
-    finish_reason = "tool_calls" if tool_calls else _FINISH_REASON_MAP.get(str((cand or {}).get("finishReason") or "").upper(), "stop")
+    finish_reason = "tool_calls" if tool_calls else "content_filter" if _prompt_blocked(resp) else _FINISH_REASON_MAP.get(
+        str((cand or {}).get("finishReason") or "").upper(), "stop")
     usage = _usage_from_metadata((resp.get("usageMetadata") or {}) if cand is not None else {})
     reasoning = "".join(pieces[True]) or None
     message = SimpleNamespace(role="assistant", content="".join(pieces[False]) if pieces[False] else ("" if cand is None else None),
@@ -719,10 +733,17 @@ def _tool_call_slot(fc: Dict[str, Any], part: Dict[str, Any], part_index: int, a
     return f"{key}#{len(tool_call_indices)}", None
 
 
+def _finish_chunk(model: str, finish_reason: str, event: Dict[str, Any]) -> _GeminiStreamChunk:
+    chunk = _make_stream_chunk(model=model, finish_reason=finish_reason)
+    if usage_meta := event.get("usageMetadata") or {}:  # rides on the finish chunk so the stream loop records tokens
+        chunk.usage = _usage_from_metadata(usage_meta)
+    return chunk
+
+
 def translate_stream_event(event: Dict[str, Any], model: str, tool_call_indices: Dict[str, Dict[str, Any]]) -> List[_GeminiStreamChunk]:
     candidates = event.get("candidates") or []
     if not candidates:
-        return []
+        return [_finish_chunk(model, "content_filter", event)] if _prompt_blocked(event) else []
     cand = candidates[0] if isinstance(candidates[0], dict) else {}
     parts = (cand.get("content") or {}).get("parts") or []
     chunks: List[_GeminiStreamChunk] = []
@@ -749,10 +770,7 @@ def translate_stream_event(event: Dict[str, Any], model: str, tool_call_indices:
             chunks.append(_make_stream_chunk(model=model, tool_call_delta=delta))
     if finish_reason_raw := str(cand.get("finishReason") or ""):
         finish_reason = "tool_calls" if tool_call_indices else _FINISH_REASON_MAP.get(finish_reason_raw.upper(), "stop")
-        finish_chunk = _make_stream_chunk(model=model, finish_reason=finish_reason)
-        if usage_meta := event.get("usageMetadata") or {}:  # rides on the finish chunk so the stream loop records tokens
-            finish_chunk.usage = _usage_from_metadata(usage_meta)
-        chunks.append(finish_chunk)
+        chunks.append(_finish_chunk(model, finish_reason, event))
     return chunks
 
 

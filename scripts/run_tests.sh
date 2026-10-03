@@ -161,6 +161,16 @@ for _test_var in HERMES_TEST_IMAGE HERMES_TEST_WORKERS HERMES_TEST_PATHS \
   fi
 done
 
+# Loopback must never be proxied. The hermetic env deliberately strips the
+# operator's HTTP(S)_PROXY, but with no env proxy at all a reqwest-based tool
+# (uv) falls back to the PLATFORM system proxy (macOS scutil), and a loopback
+# test server behind that proxy answers 502 instead of serving the fixture.
+# Setting NO_PROXY suppresses that fallback for loopback targets; CI has no
+# system proxy, so this is a no-op there. It is not a credential — it only
+# ever says "reach 127.0.0.1 directly".
+NO_PROXY="127.0.0.1,::1,localhost"
+no_proxy="$NO_PROXY"
+
 # ── Run in hermetic env ──────────────────────────────────────────────────────
 # env -i: start with empty environment, opt-in only what we need.
 # No credential var can leak — you'd have to explicitly add it here.
@@ -181,6 +191,8 @@ echo "▶ launching test runner"
 exec env -i \
   PATH="$PATH" \
   HOME="$HOME" \
+  NO_PROXY="$NO_PROXY" \
+  no_proxy="$no_proxy" \
   ${WIN_ENV[@]+"${WIN_ENV[@]}"} \
   ${TEST_ENV[@]+"${TEST_ENV[@]}"} \
   TZ=UTC \

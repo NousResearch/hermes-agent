@@ -118,6 +118,28 @@ class TestBuildToolStart:
         assert "src/main.py" in item.content.text
 
 
+    def test_start_carries_programmatic_tool_name_in_meta_on_the_wire(self):
+        """Clients (Zed) read the real tool name from ``_meta.tool_name``; the title is a human sentence.
+
+        Dumped with the SDK's exact notification serializer flags so a post-construction
+        attribute that pydantic did not mark as set would be caught here."""
+        result = build_tool_start("tc-meta", "read_file", {"path": "src/main.py"})
+        wire = result.model_dump(mode="json", by_alias=True, exclude_none=True, exclude_unset=True)
+        assert wire["_meta"] == {"tool_name": "read_file"}
+        assert wire["title"] != "read_file"
+
+    def test_render_failure_fallback_still_carries_tool_name_meta(self, monkeypatch):
+        """The minimal fallback start (title/content builder blew up) keeps the programmatic name too."""
+        import acp_adapter.tools as tools_mod
+
+        def _boom(*_a, **_k):
+            raise ValueError("render failed")
+
+        monkeypatch.setattr(tools_mod, "_build_tool_start", _boom)
+        result = build_tool_start("tc-bad", "terminal", {"command": "ls"})
+        assert result.title == "terminal"
+        assert result.field_meta == {"tool_name": "terminal"}
+
     def test_auto_approved_edit_start_shows_diff_content(self):
         """Auto-approved edit starts need the diff because no approval card exists."""
         args = {"path": "/tmp/acp.txt", "old_string": "old", "new_string": "new"}

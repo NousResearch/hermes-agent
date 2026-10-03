@@ -787,11 +787,25 @@ def build_tool_start(tool_call_id: str, tool_name: str, arguments: Args, *, edit
     title/content/location builders falls back to a minimal valid start event
     (mirrors ``get_cute_tool_message`` in ``agent/display.py``)."""
     try:
-        return _build_tool_start(tool_call_id, tool_name, arguments, edit_diff=edit_diff)
+        start = _build_tool_start(tool_call_id, tool_name, arguments, edit_diff=edit_diff)
     except Exception as exc:  # noqa: BLE001 — a tool-call render must never abort the turn
         logger.debug("ACP tool-start render failed for %r: %s", tool_name, exc)
         safe_name = tool_name if isinstance(tool_name, str) and tool_name else "tool"
-        return acp.start_tool_call(tool_call_id, safe_name, kind=get_tool_kind(safe_name), content=None, locations=[])
+        start = acp.start_tool_call(tool_call_id, safe_name, kind=get_tool_kind(safe_name), content=None, locations=[])
+    return _with_tool_name_meta(start, tool_name)
+
+
+def _with_tool_name_meta(start: ToolCallStart, tool_name: Any) -> ToolCallStart:
+    """Attach the programmatic tool name as ``_meta.tool_name``.
+
+    ``title`` is the human sentence ("Reading file x"); clients that surface the real tool
+    (Zed's ``Tool: <name>`` tooltip, blank-title fallbacks, transcript search) read the
+    name from ``_meta.tool_name`` — the key Zed's own agent used before ACP grew a
+    first-class ``name`` field, and the one it still accepts from older agents. The pinned
+    Python SDK predates that field, so ``_meta`` is the interoperable carrier."""
+    if isinstance(tool_name, str) and tool_name:
+        start.field_meta = {**(start.field_meta or {}), "tool_name": tool_name}
+    return start
 
 
 def _build_tool_start(tool_call_id: str, tool_name: str, arguments: Args, *, edit_diff: Any = None) -> ToolCallStart:

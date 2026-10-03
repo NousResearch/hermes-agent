@@ -870,6 +870,30 @@ function splitHuggingDisplayMath(text: string): string {
   for (let index = 0; index < lines.length; index += 1) {
     const openingMatch = lines[index].match(HUGGING_DISPLAY_MATH_OPEN_RE)
 
+    // A single-line `$$body$$` that owns its whole line is the compact display
+    // form every LLM emits. Left alone, remark-math routes it through the
+    // mathText (inline) construct — its flow construct needs the `$$`
+    // delimiters on their own lines — so KaTeX typesets it inline and the
+    // equation hugs the left edge of the bubble instead of centering.
+    // Promote it to the flow form: delimiter line, body line, delimiter line.
+    // Only when the body is non-empty and carries no embedded `$$` (an inner
+    // `$$` would terminate the flow fence early).
+    if (openingMatch && openingMatch[2].endsWith('$$')) {
+      const compactBody = openingMatch[2].slice(0, -2).trim()
+
+      if (compactBody && !compactBody.includes('$$')) {
+        const carriageReturn = lines[index].endsWith('\r') ? '\r' : ''
+
+        out.push(
+          `${openingMatch[1]}$$${carriageReturn}`,
+          `${openingMatch[1]}${compactBody}${carriageReturn}`,
+          `${openingMatch[1]}$$${carriageReturn}`
+        )
+
+        continue
+      }
+    }
+
     // `$$x^2$$` closes on the same line — not our case.
     if (!openingMatch || openingMatch[2].endsWith('$$')) {
       out.push(lines[index])

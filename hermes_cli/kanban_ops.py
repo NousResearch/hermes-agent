@@ -97,7 +97,17 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
                for k in ("reclaimed", "crashed", "timed_out", "stale", "auto_blocked", "promoted",
                          "reaped_terminal_workers")},
             "spawned": [
-                {"task_id": tid, "assignee": who, "workspace": ws} for (tid, who, ws) in res.spawned
+                {
+                    "task_id": tid, "assignee": who, "workspace": ws,
+                    "route": res.spawn_routes.get(tid),
+                    "route_source": res.spawn_route_sources.get(tid),
+                }
+                for (tid, who, ws) in res.spawned
+            ],
+            "expired_lane_models": [
+                {"lane": lane, "route": route,
+                 "successor": res.expired_lane_successors.get(lane, "profile default")}
+                for (lane, route) in res.expired_lane_models
             ],
             "skipped_unassigned": res.skipped_unassigned,
             "skipped_nonspawnable": res.skipped_nonspawnable,
@@ -131,7 +141,18 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
     print(f"Spawned:      {len(res.spawned)}")
     tag = " (dry)" if args.dry_run else ""
     for tid, who, ws in res.spawned:
-        print(f"  - {tid}  ->  {who}  @ {ws or '-'}{tag}")
+        # source= names WHICH layer chose the route (card / lane window /
+        # profile); without it a lane override is invisible in the tick log.
+        route = res.spawn_routes.get(tid)
+        source = res.spawn_route_sources.get(tid)
+        route_part = f"  route={route}" if route else ""
+        source_part = f" source={source}" if source else ""
+        print(f"  - {tid}  ->  {who}  @ {ws or '-'}{route_part}{source_part}{tag}")
+    for lane, route in res.expired_lane_models:
+        print(
+            f"lane-model expired ({lane}: {route}) -> "
+            f"{res.expired_lane_successors.get(lane, 'profile default')}"
+        )
     if res.auto_assigned_default:
         print(
             f"Auto-assigned to kanban.default_assignee={default_assignee!r}: "

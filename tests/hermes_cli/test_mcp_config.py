@@ -911,9 +911,116 @@ class TestMcpReauth:
 
 def test_tool_filters_keeps_explicit_empty_include():
     """``include: []`` (block-all, as written by an all-unchecked picker) is a filter, not
-    "no filter"; only an absent/non-list key is None (#12865)."""
+    "no filter"; only an absent key is None (#12865). A scalar entry is a one-item filter,
+    matching runtime registration (#93313)."""
     from hermes_cli.mcp_config import _tool_filters
 
     assert _tool_filters({"tools": {"include": []}}) == ([], None)
-    assert _tool_filters({"tools": {"include": "bad", "exclude": ["x"]}}) == (None, ["x"])
+    assert _tool_filters({"tools": {"include": "bad", "exclude": ["x"]}}) == (["bad"], ["x"])
     assert _tool_filters({}) == (None, None)
+
+
+def test_tool_filters_shorthand_matches_runtime():
+    """``tools`` shorthand (string/list) is an include whitelist — ``hermes mcp list`` must
+    show the selection instead of "all" (PR #122381 review follow-up)."""
+    from hermes_cli.mcp_config import _tool_filters
+
+    assert _tool_filters({"tools": "a,b"}) == (["a", "b"], None)
+    assert _tool_filters({"tools": ["a", "b"]}) == (["a", "b"], None)
+    assert _tool_filters({"tools": {}}) == (None, None)
+
+
+def test_mcp_list_reports_shorthand_tools_selection(tmp_path, capsys):
+    """CLI-level regression: a server configured with ``tools: a,b`` lists "2 selected",
+    not "all"."""
+    _seed_config(tmp_path, {
+        "x_docs": {
+            "url": "https://docs.x.com/mcp",
+            "tools": "search_x,query_docs",
+        },
+    })
+    from hermes_cli.mcp_config import cmd_mcp_list
+
+    cmd_mcp_list()
+    out = capsys.readouterr().out
+    assert "x_docs" in out
+    assert "2 selected" in out
+
+
+def _saved_servers(tmp_path) -> dict:
+    import hermes_yaml as yaml
+
+    with open(tmp_path / "config.yaml", encoding="utf-8") as f:
+        return yaml.safe_load(f)["mcp_servers"]
+
+
+def _run_configure_with_shorthand_pick(monkeypatch, chosen):
+    """Drive ``cmd_mcp_configure`` non-interactively over a ``tools: "a,b"`` shorthand config."""
+    from unittest.mock import MagicMock
+
+    mock_stdin = MagicMock()
+    mock_stdin.isatty.return_value = True
+    monkeypatch.setattr("sys.stdin", mock_stdin)
+    monkeypatch.setattr(
+        "hermes_cli.mcp_config._probe_single_server",
+        lambda name, cfg: [("a", ""), ("b", ""), ("c", "")],
+    )
+    monkeypatch.setattr("hermes_cli.curses_ui.curses_checklist", lambda *args, **kwargs: chosen)
+    from hermes_cli.mcp_config import cmd_mcp_configure
+
+    cmd_mcp_configure(_make_args(name="x"))
+
+
+def test_configure_shorthand_tools_saves_canonical_include(tmp_path, monkeypatch):
+    """``tools: "a,b"`` shorthand must not crash the configure save path (PR #122381 review):
+    ``setdefault("tools", {})`` hands back the string and item assignment raised TypeError.
+    The picker rewrites the filter in canonical dict form."""
+    _seed_config(tmp_path, {"x": {"url": "https://x.example.com/mcp", "tools": "a,b"}})
+
+    _run_configure_with_shorthand_pick(monkeypatch, {0, 2})
+
+    assert _saved_servers(tmp_path)["x"]["tools"] == {"include": ["a", "c"]}
+
+
+def test_configure_shorthand_tools_select_all_clears_filter(tmp_path, monkeypatch):
+    """Selecting every tool of a shorthand-filtered server drops the filter entirely."""
+    _seed_config(tmp_path, {"x": {"url": "https://x.example.com/mcp", "tools": "a,b"}})
+
+    _run_configure_with_shorthand_pick(monkeypatch, {0, 1, 2})
+
+    assert "tools" not in _saved_servers(tmp_path)["x"]
+
+
+def test_details_probe_accepts_shorthand_tools_filter(monkeypatch):
+    """The desktop/TUI ``details`` probe must accept a shorthand ``tools`` filter (PR #122381
+    review follow-up): ``tools_filter.get(cap)`` raised AttributeError on the string, breaking
+    the server-info views. The shorthand whitelist has no prompts/resources keys, so both
+    capability probes still run and record counts."""
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    class _FakeServer:
+        def __init__(self):
+            self._tools = [FakeTool("a", "")]
+            self.initialize_result = SimpleNamespace(
+                capabilities=SimpleNamespace(prompts=object(), resources=object()))
+            self.session = SimpleNamespace(
+                list_prompts=AsyncMock(return_value=SimpleNamespace(prompts=[1, 2])),
+                list_resources=AsyncMock(return_value=SimpleNamespace(resources=[1])),
+            )
+
+        async def shutdown(self):
+            pass
+
+    async def _fake_connect(name, config):
+        return _FakeServer()
+
+    monkeypatch.setattr("tools.mcp_tool_discovery._connect_server", _fake_connect)
+    from hermes_cli.mcp_config import _probe_single_server
+
+    details = {}
+    found = _probe_single_server("x", {"tools": "a,b"}, connect_timeout=5, details=details)
+
+    assert found == [("a", "")]
+    assert details["prompts"] == 2
+    assert details["resources"] == 1

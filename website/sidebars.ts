@@ -394,6 +394,7 @@ const sidebars: SidebarsConfig = {
                     'user-guide/skills/optional/creative/creative-system-atlas',
                     'user-guide/skills/optional/creative/creative-tldraw-offline',
                     'user-guide/skills/optional/creative/creative-unreal-mcp',
+                    'user-guide/skills/optional/creative/creative-yomiyasu',
                   ],
                 },
                 {

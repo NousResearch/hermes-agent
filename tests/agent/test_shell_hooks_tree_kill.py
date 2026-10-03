@@ -125,6 +125,39 @@ def test_successful_hook_preserves_detached_helpers(tmp_path):
     assert alive, "successful hook's detached helper must survive"
 
 
+@pytest.mark.live_system_guard_bypass  # cleanup-kills a helper reparented to init
+def test_hook_finishes_when_undetached_helper_keeps_pipes(tmp_path):
+    """A hook that leaves ``some-daemon &`` running WITHOUT redirecting its stdio must still finish
+    when the hook itself exits: its verdict is read and the helper survives. ``communicate()`` waited
+    for pipe EOF instead, so the hook "timed out" and the tree kill took the helper with it
+    (Claude Code 2.1.285 fixed the same hang)."""
+    script, marker = _write_forking_script(tmp_path, stall_after=False)
+    script.write_text(
+        textwrap.dedent(
+            f"""\
+            #!/usr/bin/env bash
+            sleep 300 &
+            echo $! > {marker}
+            printf '{{"action":"allow"}}\\n'
+            exit 0
+            """
+        )
+    )
+
+    t0 = time.monotonic()
+    r = _spawn(_spec(str(script), timeout=10), "{}")
+    elapsed = time.monotonic() - t0
+
+    child_pid = _read_marker(marker)
+    alive = _pid_alive(child_pid)
+    if alive:
+        os.kill(child_pid, 9)
+    assert r["timed_out"] is False and r["returncode"] == 0
+    assert r["stdout"].strip() == '{"action":"allow"}'
+    assert elapsed < 5, f"hook waited on the helper's pipes for {elapsed:.1f}s"
+    assert alive, "the helper the hook left running must survive the hook's return"
+
+
 def test_hook_child_leads_own_process_group(tmp_path):
     """The hook child must lead its own group (killpg ownership precondition)."""
     script = tmp_path / "pgid.sh"

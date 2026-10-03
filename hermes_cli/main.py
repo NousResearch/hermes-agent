@@ -3599,7 +3599,16 @@ def _default_to_chat(args) -> None:
 
 
 def main():
-    """Main entry point for hermes CLI."""
+    """Console-script and module entry point, including startup interrupts."""
+    try:
+        return _main_body()
+    except KeyboardInterrupt:
+        print("\nInterrupted.", file=sys.stderr)
+        sys.exit(130)
+
+
+def _main_body():
+    """Run CLI startup and dispatch under the entry-point interrupt guard."""
     _set_process_title()
     _warn_if_unsupervised_pid1()
     _advertise_agent_env()
@@ -3719,4 +3728,7 @@ def main():
 
 
 if __name__ == "__main__":
+    # KeyboardInterrupt is already caught inside main(), so this path is now
+    # covered regardless of whether hermes is launched via the installed
+    # console script, ``python -m hermes_cli.main``, or this file directly.
     main()

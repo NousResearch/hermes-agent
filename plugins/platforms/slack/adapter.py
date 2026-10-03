@@ -4076,16 +4076,26 @@ class SlackAdapter(BasePlatformAdapter):
         if not bot_uid:
             return False
 
-        # team_id may be empty here, so match on the channel+thread key prefix; on a miss the
-        # (TTL-cached) fetch populates parent_user_id, then re-check.
+        # On a cache miss the (TTL-cached) fetch populates parent_user_id, then re-check.
         for attempt in range(2):
-            for cached_key, cached_entry in self._thread_context_cache.items():
-                if cached_key.startswith(f"{channel_id}:{thread_ts}:"):
-                    return bool(
-                        cached_entry.parent_user_id and cached_entry.parent_user_id == bot_uid)
+            if self._cached_bot_authored_root(channel_id, thread_ts, bot_uid):
+                return True
             if attempt == 0:
                 await self._fetch_thread_context(
                     channel_id=channel_id, thread_ts=thread_ts, current_ts="", team_id=team_id)
+        return False
+
+    def _cached_bot_authored_root(self, channel_id: str, thread_ts: str, bot_uid: str) -> bool:
+        """Cache-only twin of :meth:`_bot_authored_thread_root`: True when the thread-context
+        cache already records *bot_uid* as this thread's root author. No API call — a miss means
+        "unknown", not "not bot-authored"."""
+        if not thread_ts or not bot_uid:
+            return False
+        # team_id may be empty at the call sites, so match on the channel+thread key prefix.
+        for cached_key, cached_entry in self._thread_context_cache.items():
+            if cached_key.startswith(f"{channel_id}:{thread_ts}:"):
+                return bool(
+                    cached_entry.parent_user_id and cached_entry.parent_user_id == bot_uid)
         return False
 
     async def _should_wake_on_unmentioned_message(
@@ -4419,6 +4429,43 @@ class SlackAdapter(BasePlatformAdapter):
         self._reacting_message_ids.add(self._workspace_message_marker(team_id, ts))
         self._evict_oldest_by_ts(self._reacting_message_ids, self._REACTING_MESSAGE_IDS_MAX)
 
+    def _message_earns_reaction(
+        self, *, is_one_to_one_dm: bool, is_mentioned: bool, is_thread_reply: bool,
+        event_thread_ts, channel_id: str, user_id: str, team_id: str, is_dm: bool) -> bool:
+        """Whether this message is directly addressed to the bot and so earns the reaction
+        lifecycle. A 1:1 IM or an @mention always does. A thread reply that woke us through
+        thread engagement does too: the user is mid-conversation with us and a reply carries no
+        second mention, so gating on ``is_mentioned`` alone leaves every follow-up turn
+        unacknowledged.
+
+        Engagement is read from the in-memory markers (bot-sent root, earlier @mention, live
+        session) plus the cache-only twin of ``_bot_authored_thread_root`` — a root the bot
+        posted via direct chat.postMessage (#63530) still counts after a restart, but only when
+        the thread-context cache already says so: by call time the wake check and the cold-start
+        hydrate have populated it. An acknowledgement emoji must never cost a Slack API
+        round-trip, so a cold-cache miss reads as "unknown", not "not engaged", and on a
+        free-response channel the wake check is otherwise never reached at all. Passing the
+        channel gate is not being addressed, so a non-thread unmentioned channel message still
+        earns nothing.
+        """
+        if is_one_to_one_dm or is_mentioned:
+            return True
+        if not is_thread_reply or not event_thread_ts:
+            return False
+        thread_marker = self._workspace_message_marker(team_id, event_thread_ts)
+        # Bare ts too: markers recorded before team_id was known are unscoped.
+        if (
+            thread_marker in self._bot_message_ts or event_thread_ts in self._bot_message_ts
+            or thread_marker in self._mentioned_threads
+            or event_thread_ts in self._mentioned_threads):
+            return True
+        if self._has_active_session_for_thread(
+            channel_id=channel_id, thread_ts=event_thread_ts, user_id=user_id, team_id=team_id,
+            chat_type="dm" if is_dm else "group"):
+            return True
+        bot_uid = self._team_bot_user_ids.get(team_id, self._bot_user_id) or ""
+        return self._cached_bot_authored_root(channel_id, event_thread_ts, bot_uid)
+
     async def _handle_slack_message(self, event: dict, payload: Optional[dict] = None) -> None:
         """Guard around :meth:`_handle_slack_message_impl`: the impl claims the ts early (no second
         turn from a mid-flight unfurl); if THIS call newly claimed it and raises, release the claim
@@ -4669,9 +4716,12 @@ class SlackAdapter(BasePlatformAdapter):
             reply_expected=self._slack_reply_expected(
                 routing_text, bot_uid, channel_id=channel_id, opens_own_session=thread_ts == ts,
                 addressed=is_one_to_one_dm or is_mentioned or is_command_text or force_process))
-        # React only when directly addressed; MPIMs are shared, so they need a
-        # mention like any channel.
-        if (is_one_to_one_dm or is_mentioned) and self._reactions_enabled():
+        # React only when directly addressed: a 1:1 IM, an @mention, or a thread reply that woke
+        # us through thread engagement. MPIMs are shared, so they need a mention like any channel.
+        if self._reactions_enabled() and self._message_earns_reaction(
+            is_one_to_one_dm=is_one_to_one_dm, is_mentioned=is_mentioned,
+            is_thread_reply=is_thread_reply, event_thread_ts=event_thread_ts,
+            channel_id=channel_id, user_id=user_id, team_id=team_id, is_dm=is_dm):
             self._track_reacting_message(team_id, ts)
         # App-context is per-turn UI state: in the user message, not SessionSource (would rebuild
         # the agent per view switch and leak stale context). Inert label, never a channel body.

@@ -881,6 +881,7 @@ def _build_provider_picker_rows(config: dict, active: str, provider_labels: dict
     fold into display groups (PROVIDER_GROUPS): a group row's ``members`` drive a sub-picker, leaf
     rows have ``members == []``; saved custom providers and trailing actions stay flat. Honors
     ``model_catalog.excluded_providers`` (slug or alias, case-insensitive) like the gateway/TUI."""
+    from hermes_cli.config import is_provider_enabled
     from hermes_cli.models import CANONICAL_PROVIDERS, _PROVIDER_ALIASES
     from hermes_cli.models_catalog_static import group_providers, provider_group_for_slug
     canonical_descs = {p.slug: p.tui_desc for p in CANONICAL_PROVIDERS}
@@ -888,6 +889,15 @@ def _build_provider_picker_rows(config: dict, active: str, provider_labels: dict
         str(p).strip().lower()
         for p in (config.get("model_catalog", {}) or {}).get("excluded_providers") or []
         if p}
+    # `providers.<name>.enabled: false` is the per-provider hide key (is_provider_enabled owns
+    # that contract for list_authenticated_providers, /models, the runtime resolver and doctor).
+    # This menu builds from CANONICAL_PROVIDERS instead, so without this the only way to hide a
+    # provider from `hermes model` was the global model_catalog.excluded_providers list.
+    _providers_cfg = config.get("providers")
+    if isinstance(_providers_cfg, dict):
+        _cli_excluded |= {
+            str(name).strip().lower() for name, cfg in _providers_cfg.items()
+            if str(name).strip() and not is_provider_enabled(cfg)}
     if _cli_excluded:
         # A canonical provider is hidden if its slug OR any alias is excluded.
         _names_for: dict[str, set[str]] = {_p.slug: {_p.slug.lower()} for _p in CANONICAL_PROVIDERS}

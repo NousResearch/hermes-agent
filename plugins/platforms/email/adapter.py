@@ -13,7 +13,6 @@ import socket
 import ssl
 import uuid
 from email.header import decode_header
-from email.message import Message
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from email.mime.base import MIMEBase
@@ -721,7 +720,7 @@ class EmailAdapter(BasePlatformAdapter):
         self._seen_uids_snapshot[self._address] = set(self._seen_uids)
         return results
 
-    def _message_metadata(self, uid: bytes, msg: Message) -> Optional[Dict[str, Any]]:
+    def _message_metadata(self, uid: bytes, msg: email_lib.message.Message) -> Optional[Dict[str, Any]]:
         """Parse sender-facing headers and authentication without touching the MIME body."""
         if not (sender_addr := _extract_email_address(msg.get("From", ""))):  # never dispatch an empty identity
             logger.debug("[Email] Dropping message with no parseable From address: %r", msg.get("From", ""))

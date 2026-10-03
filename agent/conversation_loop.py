@@ -1787,15 +1787,18 @@ def _redact_display_metadata(metadata: dict) -> dict:
 
 
 def _close_durable_failed_turn(agent, result: Any) -> None:
-    """Append a Hermes-authored assistant boundary when a failed turn left ``user`` as the
-    durable conversation tail (in place, on ``result["messages"]`` and in SessionDB).
+    """Append a Hermes-authored assistant boundary when a failed turn left ``user`` or a raw
+    ``tool`` result as the durable conversation tail (in place, on ``result["messages"]`` and in
+    SessionDB).
 
     The terminal-failure paths (content-policy refusal, ``_Trunc.end_turn``, retry exhaustion,
-    interrupt before any assistant text) persist the accepted user row and return without
-    reaching ``finalize_turn``; the next prompt then appends a second user row and
-    ``repair_message_sequence`` merges the failed request into the new one. The gateway
-    compensates with ``_hmwa_close_failed_turn``; CLI, TUI/Desktop and ACP hosts hand
-    ``result["messages"]`` straight back as history, so the seam is here.
+    non-retryable API errors, interrupt before any assistant text) persist and return without
+    reaching ``finalize_turn``. A ``user`` tail makes the next prompt a second user row that
+    ``repair_message_sequence`` merges the failed request into; a ``tool`` tail (the exit came
+    after a tool round) makes it land ``tool → user``, which strict providers answer by resuming
+    the stale tool work (#48879, #55316 — ``finalize_turn`` closes that shape on its own exits).
+    The gateway compensates for the user tail with ``_hmwa_close_failed_turn``; CLI, TUI/Desktop
+    and ACP hosts hand ``result["messages"]`` straight back as history, so the seam is here.
 
     Excluded: the context-pressure classes (``compression_exhausted``, ``compression_deferred``,
     ``failure_reason == "context_overflow"``) — appending to an already-oversized session is the
@@ -1815,7 +1818,7 @@ def _close_durable_failed_turn(agent, result: Any) -> None:
         db, session_id = getattr(agent, "_session_db", None), getattr(agent, "session_id", None)
         if not isinstance(messages, list) or not messages or db is None or not session_id:
             return
-        if getattr(agent, "_persist_disabled", False) or db.latest_conversation_role(session_id) != "user":
+        if getattr(agent, "_persist_disabled", False) or db.latest_conversation_role(session_id) not in ("user", "tool"):
             return
         # Scope the "did a tool run" scan to this turn when its boundary is proven; otherwise
         # hedge over the whole list rather than under-report a possible side effect.

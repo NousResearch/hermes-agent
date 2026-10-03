@@ -89,6 +89,21 @@ def planned(calls=PLAN_CALLS):
 # ---------------------------------------------------------------------------
 
 
+def test_list_connectors_percent_encodes_the_opaque_cursor():
+    transport = FakeTransport(
+        FakeResponse(200, {"items": [{"connector": "gmail"}], "nextCursor": "page+2/&="}),
+        FakeResponse(200, {"items": [{"connector": "notion"}]}),
+    )
+
+    items = make_client(transport).list_connectors(timeout=2.0)
+
+    assert [item["connector"] for item in items] == ["gmail", "notion"]
+    assert transport.requests[1]["url"].endswith(
+        "/v1/connectors?limit=50&cursor=page%2B2%2F%26%3D"
+    )
+    assert all(request["timeout"] == 2.0 for request in transport.requests)
+
+
 def test_execute_sends_one_request_with_camelcase_body_and_key():
     transport = FakeTransport(
         FakeResponse(

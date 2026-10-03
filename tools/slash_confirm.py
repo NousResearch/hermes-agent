@@ -10,6 +10,8 @@ synchronous variant (``_prompt_slash_confirm`` in ``cli.py``).
 
 from __future__ import annotations
 
+import asyncio
+import contextvars
 import logging
 import threading
 import time
@@ -31,7 +33,8 @@ def register(session_key: str, confirm_id: str, command: str,
     """Register a pending confirm, superseding any prior one for the session."""
     with _lock:
         _pending[session_key] = {"confirm_id": confirm_id, "command": command,
-                                 "handler": handler, "created_at": time.time()}
+                                 "handler": handler, "created_at": time.time(),
+                                 "context": contextvars.copy_context()}
 
 
 def get_pending(session_key: str) -> Optional[Dict[str, Any]]:
@@ -82,7 +85,14 @@ async def resolve(session_key: str, confirm_id: str, choice: str,
     if not handler:
         return None
     try:
-        result = await handler(choice)
+        async def run_handler():
+            return await handler(choice)
+
+        # Coroutine creation alone does not bind its execution context. Create the task
+        # inside the registration context so the entire callback (including awaits) keeps
+        # the originating profile's home, secrets and terminal policy, not the adapter's.
+        task = entry["context"].run(asyncio.create_task, run_handler())
+        result = await task
     except Exception as exc:
         logger.error("Slash-confirm handler for /%s raised: %s", command, exc, exc_info=True)
         return f"❌ Error handling confirmation: {exc}"

@@ -144,6 +144,17 @@ _MAX_TEXT_INJECT_BYTES = 100 * 1024
 _FEISHU_CONNECT_ATTEMPTS = 3
 _FEISHU_SEND_ATTEMPTS = 3
 _FEISHU_APP_LOCK_SCOPE = "feishu-app-id"
+# The SDK's ``Client.start()`` only returns on fatal errors and runs the handshake asynchronously on
+# its own thread, so a submitted thread is not a live link. Bound how long ``connect()`` waits for the
+# in-thread link-up proof before it treats the attempt as failed — capped per attempt by
+# ``_FEISHU_CONNECT_BUDGET_SECONDS`` below, which is what actually keeps the ladder inside the
+# gateway's 30s per-platform connect budget.
+_FEISHU_WS_HANDSHAKE_CONFIRM_TIMEOUT = 25.0
+# One budget for the whole ``_FEISHU_CONNECT_ATTEMPTS`` ladder, comfortably inside the gateway's 30s
+# per-platform wait (``_PLATFORM_CONNECT_TIMEOUT_SECS_DEFAULT``). A per-attempt figure alone does not
+# bound the ladder: 3 × 25s plus backoff runs to ~78s, so the gateway detaches the connect mid-flight,
+# and that ``CancelledError`` skips the handler that releases the app lock.
+_FEISHU_CONNECT_BUDGET_SECONDS = 28.0
 _DEFAULT_TEXT_BATCH_DELAY_SECONDS = 0.6
 _DEFAULT_TEXT_BATCH_MAX_MESSAGES = 8
 _DEFAULT_TEXT_BATCH_MAX_CHARS = 4000
@@ -1307,6 +1318,9 @@ class FeishuAdapter(BasePlatformAdapter):
         self._sdk_executor: Optional[concurrent.futures.ThreadPoolExecutor] = None
         self._sdk_executor_closing = False  # set on disconnect so a real teardown isn't resurrected
         self._ws_client = self._ws_future = self._ws_supervisor = self._ws_thread_loop = None
+        # Released by the WS thread once its link is provably up (SDK scheduled a receive loop).
+        # ``connect()`` waits on it, so a handshake that never completes cannot read as "connected".
+        self._ws_link_up_event: Optional[asyncio.Event] = None
         self._ws_restart_backoff = 5.0
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._webhook_runner = self._webhook_site = self._event_handler = None
@@ -1535,6 +1549,16 @@ class FeishuAdapter(BasePlatformAdapter):
             # Plugin-registered native handlers (lark_oapi client).
             self._wire_plugin_handlers(self._client)
             return True
+        except asyncio.CancelledError:
+            # The gateway's per-platform wait detaches a slow connect rather than waiting for it, and a
+            # ``CancelledError`` is a ``BaseException``: the handler below never ran, so the app lock
+            # stayed owned by a live PID. The next start then read it as the non-retryable "another
+            # gateway owns this app_id" case and dropped the platform from the reconnect queue.
+            try:
+                await asyncio.shield(self._release_app_lock())
+            except Exception:
+                logger.error("[Feishu] Could not release the app lock while cancelling connect", exc_info=True)
+            raise
         except Exception as exc:
             await self._release_app_lock()
             message = f"Feishu startup failed: {exc}"
@@ -1563,6 +1587,7 @@ class FeishuAdapter(BasePlatformAdapter):
         await self._teardown_ws_thread(ws_client, ws_thread_loop)
         self._ws_future = None
         self._ws_thread_loop = None
+        self._ws_link_up_event = None
         self._loop = None
         self._event_handler = None
         self._shutdown_sdk_executor()
@@ -3796,10 +3821,27 @@ class FeishuAdapter(BasePlatformAdapter):
 
     # --- Connection internals — websocket / webhook setup ---
     async def _connect_with_retry(self) -> None:
+        """Run the connect ladder inside one budget.
+
+        Each attempt's handshake wait is sized against what is LEFT of ``_FEISHU_CONNECT_BUDGET_SECONDS``
+        instead of a fixed per-attempt figure: three fixed waits plus backoff overrun the gateway's 30s
+        per-platform wait, and the cancellation that follows arrives as ``CancelledError``. Sizing against
+        the remaining budget makes the ladder fail on its own terms, well inside that outer wait, and stops
+        a retry the budget cannot cover from starting at all.
+        """
+        started = time.monotonic()
         for attempt in range(_FEISHU_CONNECT_ATTEMPTS):
+            remaining = _FEISHU_CONNECT_BUDGET_SECONDS - (time.monotonic() - started)
+            if remaining <= 0:
+                raise TimeoutError(
+                    f"Feishu connect budget ({_FEISHU_CONNECT_BUDGET_SECONDS:.0f}s) is spent after "
+                    f"{attempt} attempt(s)"
+                )
             try:
                 if self._connection_mode == "websocket":
-                    await self._connect_websocket()
+                    await self._connect_websocket(
+                        confirm_timeout=min(_FEISHU_WS_HANDSHAKE_CONFIRM_TIMEOUT, remaining)
+                    )
                 else:
                     await self._connect_webhook()
                 return
@@ -3807,10 +3849,18 @@ class FeishuAdapter(BasePlatformAdapter):
                 self._running = False
                 self._disable_websocket_auto_reconnect()
                 self._ws_future = None
+                # A late link-up from the abandoned thread must not release the next attempt's wait.
+                self._ws_link_up_event = None
                 await self._stop_webhook_server()
+                wait_seconds = 2 ** attempt
                 if attempt >= _FEISHU_CONNECT_ATTEMPTS - 1:
                     raise
-                wait_seconds = 2 ** attempt
+                if _FEISHU_CONNECT_BUDGET_SECONDS - (time.monotonic() - started) <= wait_seconds:
+                    logger.warning(
+                        "[Feishu] Connect attempt %d/%d failed and the connect budget is spent; not retrying: %s",
+                        attempt + 1, _FEISHU_CONNECT_ATTEMPTS, exc,
+                    )
+                    raise
                 logger.warning(
                     "[Feishu] Connect attempt %d/%d failed; retrying in %ds: %s",
                     attempt + 1, _FEISHU_CONNECT_ATTEMPTS, wait_seconds, exc,
@@ -3860,6 +3910,9 @@ class FeishuAdapter(BasePlatformAdapter):
 
     def _ws_link_up(self, ws_client: Any) -> None:
         """WS thread reports its link is up (SDK receive loop scheduled); re-stamp ``connected`` after a rebuild."""
+        if self._ws_client is ws_client and self._ws_link_up_event is not None:
+            # Proof for the in-flight connect() (which is still un-``connected`` at this point).
+            self._ws_link_up_event.set()
         if self._running and self._ws_client is ws_client:
             self._mark_connected()
 
@@ -3871,7 +3924,7 @@ class FeishuAdapter(BasePlatformAdapter):
                 error_message="Feishu websocket link lost; reconnecting",
             )
 
-    async def _connect_websocket(self) -> None:
+    async def _connect_websocket(self, *, confirm_timeout: Optional[float] = None) -> None:
         if not FEISHU_WEBSOCKET_AVAILABLE:
             raise RuntimeError("websockets not installed; websocket mode unavailable")
         domain = self._prepare_client()
@@ -3894,8 +3947,26 @@ class FeishuAdapter(BasePlatformAdapter):
         # .update_response marker, reactions env, drive comments) runs under. A bare executor
         # thread has an empty context = launch profile. connect() runs inside the profile scope
         # under multiplex (and the supervisor task inherits it), so snapshot it here.
+        link_up = self._ws_link_up_event = asyncio.Event()
         self._ws_future = loop.run_in_executor(
             self._get_sdk_executor(), contextvars.copy_context().run, _run_official_feishu_ws_client, self._ws_client, self)
+        # Submitting the SDK thread is NOT evidence of a live link: ``lark_oapi.start()`` only returns
+        # on fatal errors and handshakes asynchronously, so a hung socket or a rejected handshake left
+        # the adapter reporting "Connected in websocket mode" while the profile stayed deaf — a silent
+        # inbound blackout that restarts did not cure. The SDK's receive-loop entry is the only
+        # in-thread proof a link is up (``_receive_message_loop_exit_notify`` → ``_ws_link_up``), so
+        # wait for it here and fail the attempt when it never arrives; ``_connect_with_retry`` then
+        # rebuilds instead of stamping ``connected`` on a connection that does not exist.
+        timeout = _FEISHU_WS_HANDSHAKE_CONFIRM_TIMEOUT if confirm_timeout is None else max(confirm_timeout, 0.1)
+        try:
+            await asyncio.wait_for(link_up.wait(), timeout=timeout)
+        except asyncio.TimeoutError:
+            logger.error(
+                "[Feishu] WebSocket link was not up %.0fs after the SDK client was submitted "
+                "— treating the attempt as failed instead of reporting connected",
+                timeout,
+            )
+            raise TimeoutError(f"Feishu WebSocket handshake did not complete within {timeout:.0f}s") from None
 
     async def _connect_webhook(self) -> None:
         if not FEISHU_WEBHOOK_AVAILABLE:

@@ -159,6 +159,67 @@ def test_repair_restores_recorded_plugin_dependencies_without_config(tmp_path, m
     assert config.read_bytes() == config_before
 
 
+@pytest.mark.platforms("posix")
+def test_repair_prunes_recorded_extras_the_tree_no_longer_declares(tmp_path, monkeypatch, recovery_graph):
+    """A stale recorded extra must not ride the ledger into `uv sync` on repair.
+
+    Regression mirror of #122248's launch-path prune for the repair path: when
+    the recorded fact carries no replayed workspace (the shape
+    `pm.recovery.refresh_dependencies` writes on its offline fallback, and
+    pre-workspace ledgers), repair rebuilds from the CURRENT pyproject/uv.lock.
+    The recorded spelling of a still-declared extra survives untouched.
+    """
+    import pm.paths as paths
+    import pm.workspace as workspace
+    from pm.environments import selected_venv, site_packages
+
+    engine = importlib.import_module("pm.install")
+    uv = shutil.which("uv")
+    assert uv, "recovery integration requires real uv"
+    core, plugin = recovery_graph
+    monkeypatch.setattr(paths, "repo_root", lambda: core)
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+    monkeypatch.setattr("pm._uv._toolchain", lambda **kwargs: (Path(uv), Path(sys.executable)))
+    monkeypatch.setattr(engine, "lazy_installs_allowed", lambda: True)
+    monkeypatch.setattr(workspace, "enabled_member_dirs", lambda: [plugin])
+    env = {**runtime_environment(), "UV_PYTHON": sys.executable, "UV_OFFLINE": "1"}
+    env.pop("UV_NO_CONFIG", None)
+    subprocess.run([uv, "lock"], cwd=core, env=env, capture_output=True, check=True, timeout=60)
+    engine.sync_venv([], explicit=True)
+
+    old = selected_venv(core)
+    old_fact = Facts(paths.runtime_facts_path(), strict=True).get("venv")
+    assert old_fact is not None
+    # The no-replay shape: refresh_dependencies' offline fallback re-records
+    # the selection without the replayed workspace keys.
+    fact = Facts(paths.runtime_facts_path(), strict=True)
+    fact.record_state("venv", "stale", ["all", "removed-extra"])
+    shutil.rmtree(site_packages(old) / "core_dep")
+
+    engine.sync_venv(repair=True)
+
+    restored = selected_venv(core)
+    assert restored != old
+    python = restored / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+    result = subprocess.run(
+        [str(python), "-I", "-c", "import core_dep; print(core_dep.__version__)"],
+        cwd=tmp_path, capture_output=True, text=True, check=True, timeout=30,
+    )
+    assert result.stdout.strip() == "1.0"
+    repaired_fact = Facts(paths.runtime_facts_path(), strict=True).get("venv")
+    assert repaired_fact is not None
+    assert repaired_fact["extras"] == ["all"]
+    # The repaired ledger must read CURRENT against the members the launch
+    # path will stamp with — a stamp over a different member set would make
+    # the next ordinary sync report "out of sync" and pay a spurious rebuild.
+    from pm.packages import Venv
+    from pm.registry import get_package
+
+    venv_package = get_package("venv")
+    assert isinstance(venv_package, Venv)
+    assert repaired_fact["stamp"] == venv_package.expected_stamp(["all"])
+
+
 def test_uncertain_profile_selection_skips_sync_but_not_admission_or_recorded_repair(tmp_path, monkeypatch, recovery_graph, caplog):
     import pm.paths as paths
     from hermes_cli.plugins_admission import AdmissionRefused, admit_plugin_set_change

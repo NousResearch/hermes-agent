@@ -151,7 +151,16 @@ def test_circuit_breaker_half_opens_after_cooldown(monkeypatch, tmp_path):
         result = handler({})
         parsed = json.loads(result)
         assert "error" in parsed, parsed
-        assert "unreachable" in parsed["error"].lower()
+        assert "unavailable" in parsed["error"].lower()
+        # Guard against reintroducing directive wording that causes
+        # model over-adherence (the original bug this PR fixes).
+        _err = parsed["error"].lower()
+        assert "do not" not in _err, "error must not contain imperative directives"
+        assert "do not retry" not in _err
+        assert "give it" not in _err
+        assert "wait" not in _err or "auto-retry" in _err, (
+            "error must not instruct the model to wait"
+        )
         assert call_count["n"] == 0, (
             "breaker should short-circuit before cooldown elapses"
         )
@@ -214,7 +223,15 @@ def test_circuit_breaker_reopens_on_probe_failure(monkeypatch, tmp_path):
         # immediate call should short-circuit, not invoke session again.
         result = handler({})
         parsed = json.loads(result)
-        assert "unreachable" in parsed.get("error", "").lower()
+        assert "unavailable" in parsed.get("error", "").lower()
+        # Guard against reintroducing directive wording that causes
+        # model over-adherence (the original bug this PR fixes).
+        _err = parsed.get("error", "").lower()
+        assert "do not" not in _err, "error must not contain imperative directives"
+        assert "give it" not in _err
+        assert "wait" not in _err or "auto-retry" in _err, (
+            "error must not instruct the model to wait"
+        )
         assert call_count["n"] == 1, (
             "breaker should re-open and block further calls after probe failure"
         )
@@ -263,6 +280,14 @@ def test_half_open_probe_on_dead_session_requests_reconnect(monkeypatch, tmp_pat
 
         # Clean "reconnecting" error, and a reconnect was actually signalled.
         assert "reconnect" in parsed.get("error", "").lower(), parsed
+        # Guard against reintroducing directive wording that causes
+        # model over-adherence (the original bug this PR fixes).
+        _err = parsed.get("error", "").lower()
+        assert "do not" not in _err, "error must not contain imperative directives"
+        assert "give it" not in _err
+        assert "wait" not in _err or "auto-retry" in _err, (
+            "error must not instruct the model to wait"
+        )
         server._reconnect_event.assert_called_once()
     finally:
         _cleanup(mcp_tool, "srv")
@@ -577,7 +602,7 @@ def test_initial_connect_budget_parks_instead_of_exiting_then_revives(monkeypatc
 def test_breaker_opened_by_tool_errors_says_rejected_not_unreachable(monkeypatch, tmp_path):
     """Three completed calls whose payload is an error still open the breaker (#10447), but the
     open-breaker message must not claim the server is unreachable — it answered every time
-    (#11113); a single transport strike in the streak makes it "unreachable" again."""
+    (#11113); a transport strike switches to the neutral "unavailable" wording."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
 
     from tools import mcp_tool
@@ -605,7 +630,8 @@ def test_breaker_opened_by_tool_errors_says_rejected_not_unreachable(monkeypatch
         mcp_tool._bump_server_error("srv")                      # transport strike
         mcp_tool._bump_server_error("srv", application=True)
         mcp_tool._bump_server_error("srv", application=True)
-        assert "unreachable" in json.loads(handler({}))["error"].lower()
+        mixed_error = json.loads(handler({}))["error"].lower()
+        assert "unavailable" in mixed_error and "rejected" not in mixed_error
     finally:
         _cleanup(mcp_tool, "srv")
         mcp_tool._server_errors_all_application.pop("srv", None)

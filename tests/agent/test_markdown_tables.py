@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from textwrap import dedent
 
+import pytest
 from wcwidth import wcswidth
 
 from agent.markdown_tables import (
@@ -119,6 +120,25 @@ def test_vertical_fallback_wraps_long_cell_text_with_indent():
     # Every line still fits the budget.
     for line in lines:
         assert wcswidth(line) <= 60
+
+
+@pytest.mark.parametrize(
+    "token",
+    [
+        "https://example.com/a/very/long/path/without/breaks",
+        "sha256:0123456789abcdef0123456789abcdef0123456789abcdef",
+    ],
+)
+def test_vertical_fallback_preserves_unbroken_cell_value(token):
+    """Wrapping may add line breaks, but must not insert characters into a cell value."""
+    src = f"| Name | Payload |\n|---|---|\n| row | {token} |"
+
+    lines = realign_markdown_tables(src, available_width=24).splitlines()
+    value_index = next(i for i, line in enumerate(lines) if line.startswith("Payload: "))
+    rendered_value = lines[value_index].removeprefix("Payload: ")
+    rendered_value += "".join(line.removeprefix("  ") for line in lines[value_index + 1 :])
+
+    assert rendered_value == token
 
 
 

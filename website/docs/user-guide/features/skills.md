@@ -894,6 +894,7 @@ hermes skills install skills-sh/anthropics/skills/pdf --force
 Important behavior:
 - `--force` can override policy blocks for caution/warn-style findings.
 - `--force` does **not** override a `dangerous` scan verdict.
+- An install whose target directory already holds a skill the hub did not install (your own skill, or your edited copy of a formerly bundled one) is refused and the directory is left alone; `--force` replaces it.
 - Official optional skills (`official/...`) are treated as built-in trust and do not show the third-party warning panel.
 
 ### Trust levels

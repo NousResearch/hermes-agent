@@ -835,6 +835,7 @@ hermes skills reset google-workspace --restore --yes
 注意：
 - `--force` 可以覆盖第三方/社区 skill 的非危险性策略阻止。
 - `--force` 不覆盖 `dangerous` 扫描结论。
+- 如果安装目标目录中已有一个并非从 hub 安装的 skill（你自己的 skill，或你编辑过的、原为内置的 skill 副本），安装会被拒绝且该目录保持不变；`--force` 会替换它。
 - `--source skills-sh` 搜索公共 `skills.sh` 目录。
 - `--source well-known` 允许你将 Hermes 指向暴露 `/.well-known/skills/index.json` 的站点。
 - `--source browse-sh` 搜索 [browse.sh](https://browse.sh) 包含 200+ 站点特定浏览器自动化 skill 的目录。标识符形如 `browse-sh/airbnb.com/search-listings-ddgioa`。

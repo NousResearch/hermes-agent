@@ -59,7 +59,7 @@ def build_skills_parser(subparsers, *, cmd_skills: Callable) -> None:
     skills_install.add_argument("--name", default="",
         help="Override the skill name (useful when installing from a URL whose SKILL.md has no `name:` frontmatter)",
     )
-    _flag(skills_install, "--force", help="Install despite blocked scan verdict")
+    _flag(skills_install, "--force", help="Install despite a blocked scan verdict, replacing any skill already at the target")
     add_yes_flag(skills_install, "Skip confirmation prompt (needed in TUI mode)")
 
     skills_inspect = skills_subparsers.add_parser(

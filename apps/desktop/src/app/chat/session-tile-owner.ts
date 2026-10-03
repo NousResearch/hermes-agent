@@ -35,3 +35,35 @@ export function tileOwnerRoute(
     ...(owner.targetProfile ? { targetProfile: owner.targetProfile } : {})
   }
 }
+
+/**
+ * Stable scalar identity for a resolved tile owner route.
+ *
+ * `tileOwnerRoute` builds a fresh object on every call, so a component that
+ * derives the route through `useMemo` over a whole `$sessions` array re-creates
+ * it (and everything keyed on it) whenever the list is republished — which
+ * happens on every `sessions.changed` tick even when this tile's own row never
+ * moved (multi-profile / Bots setups tick every ~2s). Encoding the route as a
+ * string lets components subscribe through `useStoreSelector`/`useStoresSelector`
+ * instead: `Object.is` bails out when the owner fields are unchanged, so
+ * unrelated list churn stops at the subscription instead of re-rendering the
+ * tile's chat shell.
+ */
+export function ownerRouteKey(route: SessionOwnerRoute | undefined): string | null {
+  if (!route) {
+    return null
+  }
+
+  return `${route.connectionId}\u0000${route.profile}\u0000${route.targetProfile ?? ''}`
+}
+
+/** Inverse of `ownerRouteKey`; the two live together so the field order cannot drift. */
+export function ownerRouteFromKey(key: string | null): SessionOwnerRoute | undefined {
+  if (!key) {
+    return undefined
+  }
+
+  const [connectionId, profile, targetProfile] = key.split('\u0000')
+
+  return { connectionId, profile, ...(targetProfile ? { targetProfile } : {}) }
+}

@@ -2366,9 +2366,19 @@ export interface AcceptedSessionIdentity {
 let delegate: SessionTileDelegate | null = null
 export const $sessionTileDelegateRevision = atom(0)
 
+/** Bumped when a delegate first becomes available, so tiles that tried to
+ *  resume before the wiring mounted retry. Re-registering a replacement (the
+ *  wiring rebuilds it whenever one of its callbacks changes identity, which
+ *  includes every sessions.changed tick) must not bump it: every tile pane
+ *  subscribes, and a bump re-renders each tile's whole chat shell. Actions
+ *  read the current delegate at call time, so a replacement needs no signal. */
 export function setSessionTileDelegate(next: SessionTileDelegate) {
+  const firstDelegate = delegate === null
   delegate = next
-  $sessionTileDelegateRevision.set($sessionTileDelegateRevision.get() + 1)
+
+  if (firstDelegate) {
+    $sessionTileDelegateRevision.set($sessionTileDelegateRevision.get() + 1)
+  }
 }
 
 export function sessionTileDelegate(): SessionTileDelegate | null {

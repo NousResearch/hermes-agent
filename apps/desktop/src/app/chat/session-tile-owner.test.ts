@@ -4,7 +4,7 @@ import { _resetSessionOwnerHintsForTests, setSessionOwnerHint } from '@/store/se
 import type { SessionTile } from '@/store/session-states'
 import type { SessionInfo } from '@/types/hermes'
 
-import { tileOwnerRoute } from './session-tile-owner'
+import { ownerRouteFromKey, ownerRouteKey, tileOwnerRoute } from './session-tile-owner'
 
 const row = (over: Partial<SessionInfo>): SessionInfo => over as SessionInfo
 
@@ -67,5 +67,46 @@ describe('tileOwnerRoute', () => {
   it('is undefined for an untagged session, preserving ambient routing', () => {
     expect(tileOwnerRoute([], [row({ id: 's1' })], 's1')).toBeUndefined()
     expect(tileOwnerRoute([], [], 'missing')).toBeUndefined()
+  })
+})
+
+describe('tileOwnerRoute key stability under session-list churn', () => {
+  it('keeps the current tile key when an UNRELATED row changes (sessions.changed tick)', () => {
+    const tiles = [tile({ storedSessionId: 'mine' })]
+    const mine = { connection_id: 'local', id: 'mine', profile: 'default' }
+    // The only difference is an unrelated row's last_active moving — exactly
+    // what a sessions.changed broadcast republishes for every profile.
+    const rowsBefore: SessionInfo[] = [row({ id: 'other-session', last_active: 100 }), row(mine)]
+    const rowsAfter: SessionInfo[] = [row({ id: 'other-session', last_active: 9_999 }), row(mine)]
+
+    expect(ownerRouteKey(tileOwnerRoute(tiles, rowsBefore, 'mine'))).toBe(
+      ownerRouteKey(tileOwnerRoute(tiles, rowsAfter, 'mine'))
+    )
+  })
+
+  it('changes the key when THIS tile owner actually re-homes', () => {
+    const tiles = [tile({ storedSessionId: 'mine' })]
+
+    expect(
+      ownerRouteKey(tileOwnerRoute(tiles, [row({ connection_id: 'local', id: 'mine', profile: 'default' })], 'mine'))
+    ).not.toBe(
+      ownerRouteKey(tileOwnerRoute(tiles, [row({ connection_id: 'remote', id: 'mine', profile: 'default' })], 'mine'))
+    )
+    // A target profile is part of the owner identity too, and an unresolved
+    // owner has no key at all.
+    expect(ownerRouteKey({ connectionId: 'local', profile: 'default' })).not.toBe(
+      ownerRouteKey({ connectionId: 'local', profile: 'default', targetProfile: 'tech-review' })
+    )
+    expect(ownerRouteKey(undefined)).toBeNull()
+
+    // The component rebuilds the route from the key; encoder and decoder must round-trip.
+    for (const route of [
+      { connectionId: 'local', profile: 'default' },
+      { connectionId: 'local', profile: 'default', targetProfile: 'tech-review' }
+    ]) {
+      expect(ownerRouteFromKey(ownerRouteKey(route))).toEqual(route)
+    }
+
+    expect(ownerRouteFromKey(null)).toBeUndefined()
   })
 })

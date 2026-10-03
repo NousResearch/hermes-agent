@@ -112,6 +112,9 @@ class StreamingWaitMonitor:
         else:  # the copy names the setting, like a cap kill that did unwind
             self._abandon_error = StreamLifetimeExceeded(elapsed, self._lifetime.cap)
         self._call_done.set()
+    # True while a retry queues on our own provider limit: no request is open, so the
+    # monitor must not read that wait as provider silence.
+    admission_waiting = False
 
     def _poll_local_load_notice(self, now: float) -> bool:
         """Managed local server: surface a cold model's weight-load progress
@@ -278,6 +281,10 @@ class StreamingWaitMonitor:
             if sleep_watch is not None:
                 self._skip_sleep(sleep_watch.slept())
             _hb_now = time.time()
+            if self.admission_waiting:
+                # A retry queued on our own provider limit has no request open: nothing to warn,
+                # kill or strike. Interrupts still apply (the admission wait polls the flag too).
+                self.last_chunk_time["t"] = _hb_now
             if _is_local_base and self._poll_local_load_notice(_hb_now):
                 continue
             # Reasoning callbacks do not clear the classic CLI spinner. The empty

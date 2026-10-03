@@ -39,11 +39,18 @@ def test_timeout_parses_minutes_to_seconds():
 
 
 def test_timeout_invalid_values_degrade_to_default():
-    # Behavior contract: bad config falls back to the module default (whatever
-    # its current value), never to zero/negative — an instant-dormant gateway
-    # is never the intent.
-    for bad in (None, "", "nope", 0, -3):
+    # Behavior contract: missing/garbage config falls back to the module default
+    # (whatever its current value), never to zero — an instant-dormant gateway
+    # is never the intent. Explicit 0/negative DISABLES instead (#120457).
+    for bad in (None, "", "nope"):
         assert parse_idle_timeout_seconds(bad) == DEFAULT_IDLE_TIMEOUT_MINUTES * 60.0
+
+
+def test_timeout_explicit_zero_or_negative_disables():
+    import math
+
+    for off in (0, 0.0, "0", -1, -2.5):
+        assert parse_idle_timeout_seconds(off) == math.inf
 
 
 # ── messaging_is_relay_only_or_absent (F6/D1) ────────────────────────────────

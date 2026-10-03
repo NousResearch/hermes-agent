@@ -1273,6 +1273,39 @@ class TestDeleteAndExport:
         assert result["errors"][0]["error"] == "messages exceeds the per-session import limit"
         assert db.get_session("too-many-messages") is None
 
+    def test_import_sessions_disambiguates_a_duplicate_title(self, db, tmp_path):
+        """A payload title already used by another session must be renamed, not abort
+        the whole import on the sessions.title UNIQUE index, and the rename must respect
+        the title length cap."""
+        long_title = "L" * SessionDB.MAX_TITLE_LENGTH
+        db.create_session("existing", "cli")
+        db.set_session_title("existing", "Bot Chat")
+        db.create_session("existing-long", "cli")
+        db.set_session_title("existing-long", long_title)
+
+        donor = SessionDB(db_path=tmp_path / "donor.db")
+        try:
+            payloads = []
+            for session_id, title in (("incoming", "Bot Chat"), ("incoming-long", long_title)):
+                donor.create_session(session_id, "cli")
+                donor.set_session_title(session_id, title)
+                donor.append_messages_batch(session_id, [{"role": "user", "content": session_id}])
+                payloads.append(donor.export_session(session_id))
+        finally:
+            donor.close()
+
+        result = db.import_sessions(payloads)
+
+        assert result["ok"] is True
+        assert result["imported"] == 2
+        imported = db.get_session("incoming")
+        assert imported is not None
+        assert imported["title"] == "Bot Chat (incoming)"
+        titles = [db.get_session(sid)["title"] for sid in
+                  ("existing", "existing-long", "incoming", "incoming-long")]
+        assert len(set(titles)) == len(titles)
+        assert all(len(title) <= SessionDB.MAX_TITLE_LENGTH for title in titles)
+
 
 # =========================================================================
 # Prune

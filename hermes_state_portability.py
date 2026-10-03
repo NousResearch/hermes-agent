@@ -534,6 +534,26 @@ class SessionPortabilityMixin:
             raise ValueError("messages exceeds the total import limit")
         return item
 
+    def _disambiguated_title(self, conn, title: Optional[str], session_id: str) -> Optional[str]:
+        """A title that does not collide with the per-profile UNIQUE title index.
+
+        Titles are globally unique within a profile; an import whose title already
+        exists (a common LLM-derived or "Bot Chat" title) must not abort the whole
+        import transaction on the unique index. Mirrors ``import_foreign_history`` and
+        ``import_moved_session``: keep the readable title, add the short id suffix, and
+        trim to ``MAX_TITLE_LENGTH`` so a full-length title still fits. A title that
+        still collides (a row already named for this very id) imports untitled rather
+        than violating the index."""
+        if not title:
+            return title
+        if conn.execute("SELECT 1 FROM sessions WHERE title = ? LIMIT 1", (title,)).fetchone() is None:
+            return title
+        suffix = f" ({session_id[-12:]})"
+        candidate = title[: self.MAX_TITLE_LENGTH - len(suffix)] + suffix
+        if conn.execute("SELECT 1 FROM sessions WHERE title = ? LIMIT 1", (candidate,)).fetchone() is None:
+            return candidate
+        return None
+
     def _import_session_row(self, conn, raw: Dict[str, Any], messages: List[Dict[str, Any]], session_id: str) -> None:
         """INSERT one normalized session + its messages; counts fixed up after."""
         started_at = coerce_epoch(raw.get("started_at"), session_id=session_id, field="started_at")
@@ -546,6 +566,7 @@ class SessionPortabilityMixin:
             **{col: self._coerce_or(raw.get(col), float, None) for col in _IMPORT_FLOAT_COLS},
             **{col: self._coerce_or(raw.get(col), int, 0) for col in _IMPORT_INT_COLS},
         }
+        params["title"] = self._disambiguated_title(conn, params.get("title"), session_id)
         conn.execute(_IMPORT_SESSION_INSERT_SQL, params)
         def _json_value(value: Any) -> Any:
             return safe_json_loads(value, default=value) if isinstance(value, str) else value

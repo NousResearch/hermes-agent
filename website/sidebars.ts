@@ -462,6 +462,7 @@ const sidebars: SidebarsConfig = {
                   collapsed: true,
                   items: [
                     'user-guide/skills/optional/gaming/gaming-minecraft-modpack-server',
+                    'user-guide/skills/optional/gaming/gaming-mod-any-game',
                     'user-guide/skills/optional/gaming/gaming-pokemon-player',
                   ],
                 },

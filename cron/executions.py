@@ -467,6 +467,25 @@ def list_executions(
     return [dict(row) for row in rows]
 
 
+def execution_history_summary(*, job_id: Optional[str] = None) -> Dict[str, Any]:
+    """Describe retained rows, not a guarantee of complete history between their endpoints."""
+    where = " WHERE job_id=?" if job_id is not None else ""
+    params = (str(job_id),) if job_id is not None else ()
+    with _transaction() as conn:
+        # One statement keeps count/endpoints on one snapshot even while a worker prunes.
+        # ISO offsets can differ between writes; compare instants, not timestamp text.
+        row = conn.execute(
+            "WITH retained AS (SELECT claimed_at FROM executions" + where + ") "
+            "SELECT COUNT(*) AS retained_count, "
+            "(SELECT claimed_at FROM retained ORDER BY julianday(claimed_at), claimed_at "
+            "LIMIT 1) AS oldest_claimed_at, "
+            "(SELECT claimed_at FROM retained ORDER BY julianday(claimed_at) DESC, "
+            "claimed_at DESC LIMIT 1) AS newest_claimed_at FROM retained",
+            params,
+        ).fetchone()
+    return dict(row)
+
+
 def get_execution(execution_id: str) -> Optional[Dict[str, Any]]:
     """Return one exact execution attempt, or ``None`` when it is absent."""
     with _transaction() as conn:

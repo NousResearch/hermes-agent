@@ -81,6 +81,19 @@ def test_reasoning_effort_none_unsupported_reversed_wording():
     assert not _is_reasoning_field_rejection(_Bad400("reasoning models: tool_choice 'required' is unsupported"))
 
 
+def test_google_payload_unknown_name_rejection_strips_reasoning_field():
+    """Google's OpenAI-compat surface rejects a folded ``extra_body.reasoning`` with a protobuf
+    wire-validation 400 — ``Invalid JSON payload received. Unknown name "reasoning": Cannot find
+    field.`` — carrying no "unsupported" wording at all. Without a marker match the strip-and-retry
+    rung never fires and the folded call dies on the 400 instead of retrying without the field."""
+    assert _is_reasoning_field_rejection(
+        _Bad400('Error code: 400 - Invalid JSON payload received. Unknown name "reasoning": Cannot find field.')
+    )
+    assert _is_reasoning_field_rejection(
+        _Bad400("Unknown name 'reasoning_effort': Cannot find field.")
+    )
+
+
 def test_structured_param_rejection_strips_reasoning_effort_on_retry():
     """commandcode.ai rejects ``reasoning_effort`` as an enum violation with no "unsupported" marker
     (#115277) and a custom Responses relay sends a message-less structured 400 whose only signal is

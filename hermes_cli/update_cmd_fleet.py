@@ -1247,6 +1247,34 @@ def _resolve_manage_cmd(cache: dict, scope_: str, scope_cmd_: list, svc_name_: s
     return cmd
 
 
+def _unit_or_dropin_parks_fatal_exit(unit_path: Path, code: int) -> bool | None:
+    """Whether the unit parks exit ``code``.
+
+    ``None`` when the main unit file cannot be read (the caller stays quiet).
+    A sibling ``<unit>.d/*.conf`` drop-in is part of the merged unit (#126362);
+    reading only the main file warns on every update for hosts that park via a drop-in.
+    """
+    pattern = rf"^RestartPreventExitStatus=.*\b{code}\b"
+
+    def _matches(path: Path) -> bool:
+        try:
+            text = path.read_text(encoding="utf-8-sig")
+        except OSError:
+            return False
+        return re.search(pattern, text, re.M) is not None
+
+    try:
+        main_text = unit_path.read_text(encoding="utf-8-sig")
+    except OSError:
+        return None
+    if re.search(pattern, main_text, re.M):
+        return True
+    dropin_dir = unit_path.parent / f"{unit_path.name}.d"
+    if not dropin_dir.is_dir():
+        return False
+    return any(_matches(conf) for conf in sorted(dropin_dir.glob("*.conf")))
+
+
 def _repair_unit_without_fatal_exit_park(svc_name: str, scope: str) -> None:
     """A unit whose restart policy predates ``RestartPreventExitStatus=78`` crash-loops on the PERMANENT
     exit: a ``Restart=on-failure`` system unit restarted ~180x on a host-attach refusal while the
@@ -1258,11 +1286,8 @@ def _repair_unit_without_fatal_exit_park(svc_name: str, scope: str) -> None:
     )
     system = scope == "system"
     unit_path = (_SYSTEM_UNIT_DIR if system else user_systemd_unit_dir()) / f"{svc_name}.service"
-    try:
-        parked = re.search(rf"^RestartPreventExitStatus=.*\b{GATEWAY_FATAL_CONFIG_EXIT_CODE}\b", unit_path.read_text(encoding="utf-8-sig"), re.M)
-    except OSError:
-        return
-    if parked:
+    parked = _unit_or_dropin_parks_fatal_exit(unit_path, GATEWAY_FATAL_CONFIG_EXIT_CODE)
+    if parked is None or parked:
         return
     if system and not _needs_sudo(scope) and svc_name == get_service_name():
         # The refresh adopts the unit's HERMES_HOME into os.environ (sudo strips it); the rest of the

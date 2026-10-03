@@ -145,3 +145,21 @@ def test_fleet_restart_repairs_a_system_unit_that_cannot_park_on_exit_78(monkeyp
         assert refreshed == []
         assert out.count("RestartPreventExitStatus=78") == 1 and "hermes-gateway lacks" in out
         assert "sudo hermes gateway install --system" in out
+
+
+def test_repair_warning_honors_fatal_exit_park_in_a_drop_in(monkeypatch, tmp_path, capsys):
+    """A drop-in is part of the merged unit. Reading only the main file warns on every update (#126362)."""
+    from hermes_cli import gateway as gateway_cli
+
+    unit_dir = tmp_path / "system"
+    unit_dir.mkdir()
+    (unit_dir / "hermes-dashboard.service").write_text("[Service]\nRestart=on-failure\n", encoding="utf-8")
+    dropin = unit_dir / "hermes-dashboard.service.d"
+    dropin.mkdir()
+    (dropin / "execstart.conf").write_text("[Service]\nRestartPreventExitStatus=78\n", encoding="utf-8")
+    monkeypatch.setattr(gateway_cli, "_SYSTEM_UNIT_DIR", unit_dir)
+    monkeypatch.setattr(fleet, "_needs_sudo", lambda scope: True)
+
+    fleet._repair_unit_without_fatal_exit_park("hermes-dashboard", "system")
+
+    assert "lacks RestartPreventExitStatus" not in capsys.readouterr().out

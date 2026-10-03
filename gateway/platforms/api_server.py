@@ -3753,12 +3753,9 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         ``POST /v1/runs/{run_id}/approval`` (#58856). Keyed by the run id (never the shared
         session key) so concurrent turns on one session can't cross-resolve."""
         self._run_approval_sessions[run_id] = run_id
-
-        def _approval_notify(approval_data: Dict[str, Any]) -> None:
-            event = _approval_request_event(run_id, approval_data, message_id=message_id)
-            self._set_run_status(run_id, "waiting_for_approval", last_event="approval.request", approval=event)
-            events.enqueue("approval.request", event)  # executor thread -> loop hop inside
-        return _approval_notify
+        return _api_runs._make_approval_notify(
+            self, run_id, enqueue_event=lambda event: events.enqueue("approval.request", event),
+            _api_server=sys.modules[__name__], message_id=message_id)
 
     async def _drain_session_stream_task_on_disconnect(
         self, run_id: str, task: "asyncio.Task", *, interrupt_message: str, shield_wait: bool

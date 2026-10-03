@@ -217,7 +217,7 @@ async def test_pending_approvals_survive_steer_race_and_partial_answers(adapter,
     entries = [approval_gateway_wait._ApprovalEntry({"request_id": f"approval-{i}",
                                                    "command": f"rm -r fixture-{i}"}) for i in (1, 2)]
     notify = api_server_runs._make_approval_notify(
-        adapter, SimpleNamespace(run_id=run_id, queue=stream), _api_server=api_server)
+        adapter, run_id, enqueue_event=stream.put_nowait, _api_server=api_server)
     reading_body = asyncio.Event()
     read_json = adapter._read_json_body
 

@@ -847,16 +847,19 @@ def _run_agent_sync(self, run: _RunLaunch, agent, approval_notify, *, _api_serve
         return r, _run_usage(agent), _served_runtime(agent)
 
 
-def _make_approval_notify(self, run: _RunLaunch, *, _api_server) -> Callable[[Dict[str, Any]], None]:
+def _make_approval_notify(
+    self, run_id: str, *, enqueue_event: Callable[[Dict[str, Any]], None], _api_server,
+    **event_fields: Any,
+) -> Callable[[Dict[str, Any]], None]:
     """Approval-request bridge: redact, stamp the event envelope, park the run status, enqueue."""
-    run_id, q, loop = run.run_id, run.queue, asyncio.get_running_loop()
+    loop = asyncio.get_running_loop()
 
     def _approval_notify(approval_data: Dict[str, Any]) -> None:
         # Clients must never receive the raw flagged command (#48456): the shared builder redacts.
-        event = _api_server._approval_request_event(run_id, approval_data)
+        event = _api_server._approval_request_event(run_id, approval_data, **event_fields)
         self._set_run_status(run_id, "waiting_for_approval", last_event="approval.request", approval=event)
         with suppress(Exception):
-            loop.call_soon_threadsafe(q.put_nowait, event)
+            loop.call_soon_threadsafe(enqueue_event, event)
 
     return _approval_notify
 
@@ -962,7 +965,8 @@ async def _execute_run(self, run: _RunLaunch, *, _api_server) -> None:
                 stream_delta_callback=_text_cb, tool_progress_callback=self._make_run_event_callback(run_id, loop),
                 interim_assistant_callback=_interim_cb, **run.agent_kwargs)
         self._active_run_agents[run_id] = agent
-        approval_notify = _make_approval_notify(self, run, _api_server=_api_server)
+        approval_notify = _make_approval_notify(
+            self, run_id, enqueue_event=run.queue.put_nowait, _api_server=_api_server)
         result, usage, served_runtime = await _submit_api_worker(
             loop, lambda: _run_agent_sync(self, run, agent, approval_notify, _api_server=_api_server))
         # Publish request metrics (daily counters + latency) with each completed run (#52323).

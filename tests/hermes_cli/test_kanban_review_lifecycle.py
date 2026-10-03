@@ -380,6 +380,26 @@ def test_review_requested_event_is_claimable_for_wake(kanban_home: Path) -> None
 # ---------------------------------------------------------------------------
 
 
+def _install_review_skill(home: Path, profile: str = "reviewer", extra_skills: tuple[str, ...] = ()) -> None:
+    """Materialize a real profile home with the forced ``sdlc-review`` skill installed
+    and enabled, so the forced-skill preflight (``_forced_review_skill_issues``) resolves this
+    profile as eligible instead of ``lookup_error``. A bare skills dir is not enough:
+    ``resolve_profile_env`` requires ``named_profile_is_live``, which needs an identity
+    marker file (``config.yaml``) in the profile home. ``extra_skills`` additionally
+    installs each named skill (e.g. a task's own explicit ``task.skills``) so the
+    explicit-skill preflight also resolves the profile as eligible for it."""
+    profile_home = home / "profiles" / profile
+    profile_home.mkdir(parents=True, exist_ok=True)
+    (profile_home / "config.yaml").write_text("{}\n", encoding="utf-8")
+    for name in ("sdlc-review", *extra_skills):
+        skill_dir = profile_home / "skills" / "devops" / name
+        skill_dir.mkdir(parents=True, exist_ok=True)
+        (skill_dir / "SKILL.md").write_text(
+            f"---\nname: {name}\ndescription: Review test fixture.\n---\n\n# Review\n",
+            encoding="utf-8",
+        )
+
+
 def test_review_dispatch_gate_prevents_phantom_reviewer(
     kanban_home: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -402,6 +422,7 @@ def test_review_dispatch_gate_prevents_phantom_reviewer(
         # The assignee profile is spawnable — so ONLY the gate can stop the
         # review-column dispatch from claiming it.
         monkeypatch.setattr(profmod, "profile_exists", lambda name: True)
+        _install_review_skill(kanban_home, "worker")
 
         # Gate OFF -> review task is left alone.
         monkeypatch.setattr(
@@ -453,6 +474,7 @@ def test_active_pr_guard_skipped_for_review_lane_but_defers_ready_lane(
             conn, review_id, summary="PR ready",
             expected_run_id=claimed.current_run_id,
         )
+        _install_review_skill(kanban_home)
         # Ready-lane task with the same fresh PR comment.
         ready_id = kb.create_task(conn, title="already PRed", assignee="worker")
         kb.add_comment(conn, ready_id, author="worker", body=pr_comment)
@@ -645,6 +667,7 @@ def test_review_dispatch_preserves_task_skills_and_adds_reviewer_skill(
         "load_config",
         lambda *args, **kwargs: {"kanban": {"review_dispatch": True}},
     )
+    _install_review_skill(kanban_home, extra_skills=("domain-specific-review",))
     captured: list[list[str]] = []
 
     def spawn(task, workspace):
@@ -698,6 +721,7 @@ def test_review_dispatch_honors_global_and_per_profile_caps(
         "load_config",
         lambda *args, **kwargs: {"kanban": {"review_dispatch": True}},
     )
+    _install_review_skill(kanban_home)
 
     with kbc.connect() as conn:
         running_id = kb.create_task(conn, title="already running", assignee="builder")
@@ -929,3 +953,219 @@ def test_synthesized_run_for_unassigned_card_keeps_null_profile(kanban_home: Pat
             "SELECT profile, outcome FROM task_runs WHERE task_id = ? ORDER BY id DESC LIMIT 1", (tid,),
         ).fetchone()
         assert (run["outcome"], run["profile"]) == ("blocked", None)
+
+
+# ---------------------------------------------------------------------------
+# Skill preflight: defer before claim when a forced/explicit skill is unavailable
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("installed", "disabled", "expected_state"),
+    [(False, False, "missing"), (True, True, "disabled")],
+)
+def test_review_preflight_defers_unavailable_forced_skill_before_claim(
+    kanban_home: Path, monkeypatch: pytest.MonkeyPatch, installed: bool, disabled: bool,
+    expected_state: str,
+) -> None:
+    """An ineligible review profile (skill missing, or
+    installed-but-disabled via that profile's own config.yaml) must be deferred
+    BEFORE claim/workspace/spawn — no run consumed, no failure counted, the
+    existing handoff/result preserved except for the new diagnostic."""
+    import hermes_cli.config as cfgmod
+    import hermes_cli.profiles as profmod
+
+    monkeypatch.setattr(profmod, "profile_exists", lambda _name: True)
+    monkeypatch.setattr(
+        cfgmod, "load_config", lambda *a, **k: {"kanban": {"review_dispatch": True}},
+    )
+    profile_home = kanban_home / "profiles" / "reviewer"
+    profile_home.mkdir(parents=True)
+    if disabled:
+        (profile_home / "config.yaml").write_text(
+            "skills:\n  disabled:\n    - sdlc-review\n", encoding="utf-8",
+        )
+    else:
+        (profile_home / "config.yaml").write_text("{}\n", encoding="utf-8")
+    if installed:
+        skill_dir = profile_home / "skills" / "devops" / "sdlc-review"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text(
+            "---\nname: sdlc-review\ndescription: fixture.\n---\n\n# Review\n", encoding="utf-8",
+        )
+
+    spawned: list[str] = []
+    with kbc.connect() as conn:
+        task_id = kb.create_task(conn, title="preflight defers", assignee="reviewer")
+        implementation = kb.claim_task(conn, task_id)
+        assert implementation is not None
+        assert kb.request_review(
+            conn, task_id, summary="ready", expected_run_id=implementation.current_run_id,
+        )
+        runs_before = conn.execute(
+            "SELECT COUNT(*) FROM task_runs WHERE task_id = ?", (task_id,),
+        ).fetchone()[0]
+        result_before = kb.get_task(conn, task_id).result
+
+        monkeypatch.setattr(
+            kb, "claim_review_task",
+            lambda *_a, **_k: pytest.fail("review task must not be claimed"),
+        )
+        monkeypatch.setattr(
+            kbd._kbw, "resolve_workspace",
+            lambda *_a, **_k: pytest.fail("workspace must not be resolved"),
+        )
+        result = kbd.dispatch_once(conn, spawn_fn=lambda task, _ws: spawned.append(task.id))
+
+        task = kb.get_task(conn, task_id)
+        assert task is not None
+        assert task.status == "review"
+        assert task.current_run_id is None
+        persisted = conn.execute(
+            "SELECT consecutive_failures, result FROM tasks WHERE id = ?", (task_id,),
+        ).fetchone()
+        assert persisted["consecutive_failures"] == 0
+        assert conn.execute(
+            "SELECT COUNT(*) FROM task_runs WHERE task_id = ?", (task_id,),
+        ).fetchone()[0] == runs_before
+        # The diagnostic lives ONLY in task_events; tasks.result is the worker's own
+        # handoff and must be left exactly as request_review wrote it.
+        assert persisted["result"] == result_before
+        disposition = _events(conn, task_id, kind="review_dispatch_deferred")
+        assert disposition[-1][1]["state"] == expected_state
+        assert disposition[-1][1]["skill"] == "sdlc-review"
+        assert disposition[-1][1]["category"] == "skill-development-needed"
+        assert "reviewer" in disposition[-1][1]["message"]
+
+        # Repeated unchanged tick: no duplicate event, no extra write.
+        events_before = len(_events(conn, task_id, kind="review_dispatch_deferred"))
+        kbd.dispatch_once(conn, spawn_fn=lambda task, _ws: spawned.append(task.id))
+        assert len(_events(conn, task_id, kind="review_dispatch_deferred")) == events_before
+
+    assert spawned == []
+    assert result.spawned == []
+    assert result.skill_development_needed == [(task_id, "reviewer", "sdlc-review", expected_state)]
+
+
+def test_review_preflight_lookup_error_fails_closed(
+    kanban_home: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A profile that cannot be resolved at all (never created) reports
+    ``lookup_error`` and defers exactly like missing/disabled — never an
+    exception that crashes the dispatch tick, never a silent spawn."""
+    import hermes_cli.config as cfgmod
+    import hermes_cli.profiles as profmod
+
+    monkeypatch.setattr(profmod, "profile_exists", lambda _name: True)
+    monkeypatch.setattr(
+        cfgmod, "load_config", lambda *a, **k: {"kanban": {"review_dispatch": True}},
+    )
+    with kbc.connect() as conn:
+        task_id = kb.create_task(conn, title="ghost reviewer", assignee="ghost-profile")
+        implementation = kb.claim_task(conn, task_id)
+        assert implementation is not None
+        assert kb.request_review(
+            conn, task_id, summary="ready", expected_run_id=implementation.current_run_id,
+        )
+        result = kbd.dispatch_once(conn, spawn_fn=lambda *_a, **_k: pytest.fail("must not spawn"))
+        assert result.spawned == []
+        assert result.skill_development_needed == [
+            (task_id, "ghost-profile", "sdlc-review", "lookup_error")
+        ]
+        assert kb.get_task(conn, task_id).status == "review"
+
+
+def test_review_preflight_eligible_profile_spawns_and_dedupes_skill(
+    kanban_home: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An eligible profile spawns exactly once with the forced skill deduplicated
+    against any pre-existing task-specific skill list."""
+    import hermes_cli.config as cfgmod
+    import hermes_cli.profiles as profmod
+
+    monkeypatch.setattr(profmod, "profile_exists", lambda _name: True)
+    monkeypatch.setattr(
+        cfgmod, "load_config", lambda *a, **k: {"kanban": {"review_dispatch": True}},
+    )
+    _install_review_skill(kanban_home)
+    captured: list[list[str]] = []
+    with kbc.connect() as conn:
+        task_id = kb.create_task(
+            conn, title="eligible reviewer", assignee="reviewer", skills=["sdlc-review"],
+        )
+        implementation = kb.claim_task(conn, task_id)
+        assert implementation is not None
+        assert kb.request_review(
+            conn, task_id, summary="ready", expected_run_id=implementation.current_run_id,
+        )
+        result = kbd.dispatch_once(
+            conn, spawn_fn=lambda task, _ws: captured.append(list(task.skills or [])),
+        )
+        assert [t[0] for t in result.spawned] == [task_id]
+        assert result.skill_development_needed == []
+    assert captured == [["sdlc-review"]]
+
+
+def test_ready_explicit_skill_preflight_rechecks_availability_before_claim(
+    kanban_home: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Ready-lane task.skills is checked against the current assignee on
+    every tick; missing defers without a run, then installing it resumes."""
+    import hermes_cli.profiles as profmod
+
+    monkeypatch.setattr(profmod, "profile_exists", lambda _name: True)
+    profile_home = kanban_home / "profiles" / "worker"
+    profile_home.mkdir(parents=True)
+    (profile_home / "config.yaml").write_text("{}\n", encoding="utf-8")
+
+    with kbc.connect() as conn:
+        task_id = kb.create_task(
+            conn, title="explicit ready skill", assignee="worker", skills=["domain-skill"],
+        )
+        first = kbd.dispatch_once(
+            conn, spawn_fn=lambda *_a, **_k: pytest.fail("missing skill must not spawn"),
+        )
+        assert first.skill_development_needed == [
+            (task_id, "worker", "domain-skill", "missing")
+        ]
+        assert kb.get_task(conn, task_id).status == "ready"
+        assert conn.execute(
+            "SELECT COUNT(*) FROM task_runs WHERE task_id = ?", (task_id,),
+        ).fetchone()[0] == 0
+
+        skill_dir = profile_home / "skills" / "engineering" / "domain-skill"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text(
+            "---\nname: domain-skill\ndescription: fixture.\n---\n\n# Domain\n",
+            encoding="utf-8",
+        )
+        spawned: list[str] = []
+        second = kbd.dispatch_once(
+            conn, spawn_fn=lambda task, _ws: spawned.append(task.id),
+        )
+        assert [item[0] for item in second.spawned] == [task_id]
+        assert spawned == [task_id]
+
+
+def test_ready_explicit_disabled_skill_defers_without_enabling(
+    kanban_home: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import hermes_cli.profiles as profmod
+
+    monkeypatch.setattr(profmod, "profile_exists", lambda _name: True)
+    _install_review_skill(kanban_home, profile="worker", extra_skills=("domain-skill",))
+    config = kanban_home / "profiles" / "worker" / "config.yaml"
+    config.write_text("skills:\n  disabled:\n    - domain-skill\n", encoding="utf-8")
+
+    with kbc.connect() as conn:
+        task_id = kb.create_task(
+            conn, title="disabled ready skill", assignee="worker", skills=["domain-skill"],
+        )
+        result = kbd.dispatch_once(
+            conn, spawn_fn=lambda *_a, **_k: pytest.fail("disabled skill must not spawn"),
+        )
+        assert result.skill_development_needed == [
+            (task_id, "worker", "domain-skill", "disabled")
+        ]
+        assert "domain-skill" in config.read_text(encoding="utf-8")
+        assert kb.get_task(conn, task_id).status == "ready"

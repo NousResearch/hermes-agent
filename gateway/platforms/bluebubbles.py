@@ -6,6 +6,7 @@ import json
 import logging
 import os
 import re
+import time
 import uuid
 from collections import OrderedDict
 from contextlib import suppress
@@ -63,6 +64,7 @@ _PAGINATION_SUFFIX_RE = re.compile(r"\s*\(\d+/\d+\)$")
 _ADDRESS_RE = re.compile(r"^\+\d+")
 
 _GUID_CACHE_SIZE = 500  # LRU cap for resolved chat-GUID lookups
+_GUID_NEGATIVE_TTL = 60.0  # seconds; a clean miss is cached briefly so send()/typing loops don't rescan all pages
 _LOCAL_HOSTS = {"0.0.0.0", "127.0.0.1", "localhost", "::"}
 
 
@@ -131,6 +133,7 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         self._private_api_enabled: Optional[bool] = None
         self._helper_connected: bool = False
         self._guid_cache: OrderedDict[str, str] = OrderedDict()
+        self._guid_neg: Dict[str, float] = {}  # target -> monotonic expiry of a negative resolution
 
     # --- API helpers ---
 
@@ -332,19 +335,40 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         target = (target or "").strip()
         if not target or ";" in target:
             return target or None
+        now = time.monotonic()
         if target in self._guid_cache:
             self._guid_cache.move_to_end(target)
             return self._guid_cache[target]
+        if self._guid_neg.get(target, 0.0) > now:
+            return None
+        # chat/query ignores search/filter params and returns chats newest-first
+        # from `offset`; a DM target can sit past page 1 once SMS/RCS spam fills
+        # the chat table (seen at index ~103 of 500+), so page through (bounded)
+        # instead of probing only the first page. A clean miss is negative-cached
+        # for _GUID_NEGATIVE_TTL so the per-call resolve paths (send chunks,
+        # typing/read via _private_api_chat_call) don't rescan the whole table.
+        page_size = 100
+        max_pages = 20  # 2000 chats cap
         with suppress(Exception):
-            payload = await self._api_post("/api/v1/chat/query", {"limit": 100, "offset": 0})
-            for chat in payload.get("data", []) or []:
-                if (chat.get("chatIdentifier") or chat.get("identifier")) != target:
-                    continue
-                if guid := chat.get("guid") or chat.get("chatGuid"):
-                    self._guid_cache[target] = guid
-                    while len(self._guid_cache) > _GUID_CACHE_SIZE:
-                        self._guid_cache.popitem(last=False)
-                return guid
+            for page in range(max_pages):
+                payload = await self._api_post(
+                    "/api/v1/chat/query", {"limit": page_size, "offset": page * page_size})
+                chats = payload.get("data", []) or []
+                if not chats:
+                    break
+                for chat in chats:
+                    if (chat.get("chatIdentifier") or chat.get("identifier")) != target:
+                        continue
+                    if guid := chat.get("guid") or chat.get("chatGuid"):
+                        self._guid_cache[target] = guid
+                        while len(self._guid_cache) > _GUID_CACHE_SIZE:
+                            self._guid_cache.popitem(last=False)
+                    return guid
+                if len(chats) < page_size:
+                    break
+        self._guid_neg[target] = now + _GUID_NEGATIVE_TTL
+        while len(self._guid_neg) > _GUID_CACHE_SIZE:
+            self._guid_neg.pop(next(iter(self._guid_neg)))
         return None
 
     async def _create_chat_for_handle(self, address: str, message: str) -> SendResult:
@@ -369,12 +393,14 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         chunks = [c for para in paragraphs for c in (
             [para] if len(para) <= self.MAX_MESSAGE_LENGTH else self.truncate_message(para, self.MAX_MESSAGE_LENGTH))]
         last = SendResult(success=True)
+        # Resolve the chat once up front: the GUID is chat-scoped, not chunk-scoped,
+        # so a multi-chunk message must not rescan the chat table per bubble.
+        guid = await self._resolve_chat_guid(chat_id)
+        if not guid:
+            if self._private_api_enabled and ("@" in chat_id or _ADDRESS_RE.match(chat_id)):  # address → new chat
+                return await self._create_chat_for_handle(chat_id, chunks[0])
+            return SendResult(success=False, error=f"BlueBubbles chat not found for target: {chat_id}")
         for chunk in chunks:
-            guid = await self._resolve_chat_guid(chat_id)
-            if not guid:
-                if self._private_api_enabled and ("@" in chat_id or _ADDRESS_RE.match(chat_id)):  # address → new chat
-                    return await self._create_chat_for_handle(chat_id, chunk)
-                return SendResult(success=False, error=f"BlueBubbles chat not found for target: {chat_id}")
             payload: Dict[str, Any] = {"chatGuid": guid, "tempGuid": _temp_guid(), "message": chunk}
             if reply_to and self._private_api_enabled and self._helper_connected:
                 payload.update(method="private-api", selectedMessageGuid=reply_to, partIndex=0)

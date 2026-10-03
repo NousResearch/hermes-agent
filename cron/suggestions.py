@@ -140,7 +140,9 @@ def get_suggestion(ref: str) -> Optional[Dict[str, Any]]:
         idx = int(ref) - 1
         if 0 <= idx < len(pending):
             return pending[idx]
-    for s in suggestions:
+    # Titles are not unique (a re-offered blueprint keeps its title), so a pending match wins over
+    # an accepted/dismissed record with the same title.
+    for s in sorted(suggestions, key=lambda s: s.get("status") != _STATUS_PENDING):
         if s.get("title", "").lower() == ref.lower():
             return s
     return None

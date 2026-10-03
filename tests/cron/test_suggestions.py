@@ -168,6 +168,16 @@ class TestStore:
         assert store.get_suggestion("findable")["id"] == rec["id"]
         assert store.get_suggestion("nope") is None
 
+    def test_title_ref_resolves_pending_over_resolved_namesake(self, store):
+        # A blueprint re-offered with a new schedule keeps its title but gets a new dedup_key.
+        _add(store, key="blueprint:brief:0 8 * * *", title="Schedule 'brief'")
+        store.dismiss_suggestion("1")
+        fresh = _add(store, key="blueprint:brief:0 7 * * *", title="Schedule 'brief'")
+
+        assert store.get_suggestion("schedule 'brief'")["id"] == fresh["id"]
+        assert store.dismiss_suggestion("schedule 'brief'") is True
+        assert store.list_pending() == []
+
     def test_clear_resolved_drops_accepted_only(self, store):
         _add(store, key="a")
         _add(store, key="b")

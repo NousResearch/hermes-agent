@@ -86,7 +86,9 @@ describe('model-status-label', () => {
 
   it('keeps the model pill to name + speed tier; the effort lives on its own pill', () => {
     expect(formatModelPillLabel('openai/gpt-5.5', { fastMode: true })).toBe('GPT-5.5 · Fast')
-    expect(formatModelPillLabel('openai/gpt-5.5', { fastMode: true, serviceTier: 'ultrafast' })).toBe('GPT-5.5 · Ultrafast')
+    expect(formatModelPillLabel('openai/gpt-5.5', { fastMode: true, serviceTier: 'ultrafast' })).toBe(
+      'GPT-5.5 · Ultrafast'
+    )
     expect(formatModelPillLabel('anthropic/claude-opus-4.8-fast')).toBe('Opus 4.8 · Fast')
     expect(formatModelPillLabel('openai/gpt-5.5')).toBe('GPT-5.5')
     expect(formatModelPillLabel('')).toBe('No model')

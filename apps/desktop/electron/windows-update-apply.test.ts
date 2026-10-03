@@ -1,0 +1,370 @@
+const CLAIM: UpdateMarkerClaim = { pid: 41, startedAt: 100 }
+import type { UpdateMarkerClaim } from './update-marker'
+import { authenticateRecoveryUpdaterHandoff, runRecoveryUpdaterHandoff, type RecoveryUpdaterHandoffDeps } from './windows-update-apply'
+import assert from 'node:assert/strict'
+import { test } from 'vitest'
+import { readUpdateHandoffAck, waitForAcknowledgedUpdaterClaim } from './windows-update-apply'
+const NONCE = 'a1b2c3d4e5f60718293a4b5c6d7e8f90'
+const HOME = 'C:\\Users\\u\\.hermes'
+
+function ackFixture(overrides: Record<string, unknown> = {}) {
+  return { nonce: NONCE, pid: 500, createdAt: 1_723_330_000, ...overrides }
+}
+
+function liveMarker(pid: number, startedAt: number) {
+  return { kind: 'live' as const, pid, startedAt, ageMs: 0, overdue: false }
+}
+
+function claimDeps(overrides: Record<string, unknown> = {}) {
+  let clock = 0
+
+  return {
+    hermesHome: HOME,
+    nonce: NONCE,
+    excludedPids: [41],
+    startedAfter: 1_723_329_999,
+    timeoutMs: 500,
+    pollMs: 50,
+    now: () => clock,
+    sleep: async (ms: number) => { clock += Math.max(ms, 50) },
+    readMarker: () => liveMarker(500, 1_723_330_000),
+    readAck: () => ackFixture(),
+    queryCreatedAt: async () => 1_723_330_000,
+    ...overrides
+  }
+}
+
+test('an acknowledged claim from the spawned updater authenticates', async () => {
+  assert.equal(await waitForAcknowledgedUpdaterClaim(claimDeps()), true)
+})
+
+test('a foreign same-user claimant with a fresh createdAt is rejected', async () => {
+  // Exactly the accepted case before: not excluded, marker body internally
+  // consistent, created inside the window. It never saw the nonce.
+  assert.equal(
+    await waitForAcknowledgedUpdaterClaim(claimDeps({ readAck: () => null })),
+    false,
+    'no ack at all must not authenticate'
+  )
+
+  assert.equal(
+    await waitForAcknowledgedUpdaterClaim(claimDeps({ readAck: () => ackFixture({ nonce: 'f'.repeat(32) }) })),
+    false,
+    'an ack carrying somebody else\u2019s nonce must not authenticate'
+  )
+})
+
+test('an ack that names a different pid than the marker is rejected', async () => {
+  assert.equal(
+    await waitForAcknowledgedUpdaterClaim(claimDeps({ readAck: () => ackFixture({ pid: 501 }) })),
+    false
+  )
+})
+
+test('an acknowledged claim whose pid was recycled is rejected', async () => {
+  assert.equal(
+    await waitForAcknowledgedUpdaterClaim(claimDeps({ queryCreatedAt: async () => 1_723_339_999 })),
+    false
+  )
+
+  assert.equal(
+    await waitForAcknowledgedUpdaterClaim(claimDeps({ queryCreatedAt: async () => null })),
+    false,
+    'an unprovable owner is not an authenticated one'
+  )
+})
+
+test('a claim stamped before the spawn is rejected', async () => {
+  assert.equal(
+    await waitForAcknowledgedUpdaterClaim(claimDeps({ startedAfter: 1_723_330_500 })),
+    false
+  )
+})
+
+test('an excluded pid can never authenticate its own handoff', async () => {
+  assert.equal(
+    await waitForAcknowledgedUpdaterClaim(claimDeps({
+      excludedPids: [41, 500],
+      readMarker: () => liveMarker(500, 1_723_330_000)
+    })),
+    false
+  )
+})
+
+test('readUpdateHandoffAck refuses partial and malformed sidecars', () => {
+  const read = (body: string) => readUpdateHandoffAck(HOME, () => body)
+
+  assert.deepEqual(read(`${NONCE}\n500\n1723330000\n`), { nonce: NONCE, pid: 500, createdAt: 1_723_330_000 })
+  assert.equal(read(`${NONCE}\n500\n`), null, 'a torn ack is no ack')
+  assert.equal(read(''), null)
+  assert.equal(read(`${NONCE}\n-1\n1723330000\n`), null)
+  assert.equal(read(`not-hex\n500\n1723330000\n`), null)
+  assert.equal(
+    readUpdateHandoffAck(HOME, () => { throw new Error('ENOENT') }),
+    null,
+    'a missing ack is no ack'
+  )
+})
+
+// ---------------------------------------------------------------------------
+// Bootstrap recovery (#B4). The old path wrote the child PID into the marker
+// with transferUpdateMarkerIfOwnedBy and then "verified" a marker owned by
+// that PID -- satisfied by construction.
+// ---------------------------------------------------------------------------
+
+function recoveryDeps(overrides: Record<string, unknown> = {}) {
+  let clock = 0
+
+  return {
+    hermesHome: HOME,
+    nonce: NONCE,
+    childPid: 500,
+    childCreatedAt: 1_723_330_000,
+    desktopHoldsMarker: false,
+    startedAfter: 1_723_329_999,
+    isChildGenerationActive: () => true,
+    timeoutMs: 300,
+    pollMs: 50,
+    now: () => clock,
+    sleep: async (ms: number) => { clock += Math.max(ms, 50) },
+    readMarker: () => null,
+    readAck: () => null,
+    queryCreatedAt: async () => 1_723_330_000,
+    ...overrides
+  }
+}
+
+test('bootstrap recovery rejects a child that never acknowledges or claims', async () => {
+  assert.equal(await authenticateRecoveryUpdaterHandoff(recoveryDeps()), false)
+})
+
+test('bootstrap recovery accepts the child once it acknowledges with our nonce', async () => {
+  assert.equal(
+    await authenticateRecoveryUpdaterHandoff(recoveryDeps({ readAck: () => ackFixture() })),
+    true
+  )
+})
+
+test('bootstrap recovery accepts a marker the child claimed on its own', async () => {
+  assert.equal(
+    await authenticateRecoveryUpdaterHandoff(recoveryDeps({
+      readMarker: () => liveMarker(500, 1_723_330_008)
+    })),
+    true,
+    'the staged updater writes its own UpdateMarkerGuard claim, which we did not author'
+  )
+})
+
+test('bootstrap recovery rejects a marker claimed by anyone but the child', async () => {
+  assert.equal(
+    await authenticateRecoveryUpdaterHandoff(recoveryDeps({
+      readMarker: () => liveMarker(999, 1_723_330_008)
+    })),
+    false
+  )
+})
+
+test('a marker the Desktop itself holds is never evidence about the child', async () => {
+  // Repair keeps the marker under the Desktop's own claim, so the child
+  // cannot possibly have written it. Only the spawn handle can speak here.
+  assert.equal(
+    await authenticateRecoveryUpdaterHandoff(recoveryDeps({
+      desktopHoldsMarker: true,
+      readMarker: () => liveMarker(500, 1_723_330_008),
+      isChildGenerationActive: () => false
+    })),
+    false,
+    'a dead child is not authenticated by a marker naming its pid'
+  )
+
+  assert.equal(
+    await authenticateRecoveryUpdaterHandoff(recoveryDeps({
+      desktopHoldsMarker: true,
+      queryCreatedAt: async () => 1_723_339_999
+    })),
+    false,
+    'a recycled pid is not the generation we spawned'
+  )
+
+  assert.equal(
+    await authenticateRecoveryUpdaterHandoff(recoveryDeps({ desktopHoldsMarker: true })),
+    true,
+    'the live generation we started is the honest proof on the repair path'
+  )
+})
+
+test('bootstrap recovery rejects a child whose generation was never captured', async () => {
+  assert.equal(
+    await authenticateRecoveryUpdaterHandoff(recoveryDeps({ childCreatedAt: null, readAck: () => ackFixture() })),
+    false
+  )
+})
+
+// ---------------------------------------------------------------------------
+// The recovery handoff transaction. authenticateRecoveryUpdaterHandoff above
+// decides whether the child is ours; this decides what the Desktop does with
+// that answer, and in which order.
+// ---------------------------------------------------------------------------
+
+type FakeChild = { pid: number | null }
+
+function handoffDeps(
+  trace: string[],
+  overrides: Partial<RecoveryUpdaterHandoffDeps<FakeChild, string>> = {}
+): RecoveryUpdaterHandoffDeps<FakeChild, string> {
+  return {
+    hermesHome: HOME,
+    nonce: NONCE,
+    startedAfter: 1_723_329_999,
+    repairClaim: CLAIM,
+    spawn: () => {
+      trace.push('spawn')
+
+      return { pid: 500 }
+    },
+    observe: async () => {
+      trace.push('observe')
+
+      return { ok: true }
+    },
+    childPid: child => child.pid,
+    captureCreatedAt: async () => {
+      trace.push('capture')
+
+      return 1_723_330_000
+    },
+    isChildGenerationActive: () => true,
+    commit: () => {
+      trace.push('commit')
+
+      return 'handed-off'
+    },
+    restore: ({ markerTransferred, createdAt }) => {
+      trace.push(`restore transferred=${markerTransferred} createdAt=${String(createdAt)}`)
+    },
+    authenticate: async () => {
+      trace.push('authenticate')
+
+      return true
+    },
+    transferMarker: async () => {
+      trace.push('transfer')
+
+      return true
+    },
+    authenticationError: 'The recovery updater did not acknowledge startup.',
+    ...overrides
+  }
+}
+
+test('the repair handoff authenticates before it hands over the marker', async () => {
+  const trace: string[] = []
+  const result = await runRecoveryUpdaterHandoff(handoffDeps(trace))
+
+  assert.deepEqual(result, { ok: true, value: 'handed-off' })
+  // #B4: the marker transfer used to run FIRST and then satisfy the check that
+  // followed it. capture -> authenticate -> transfer is the whole fix.
+  assert.deepEqual(
+    trace.filter(step => step !== 'observe'),
+    ['spawn', 'capture', 'authenticate', 'transfer', 'commit']
+  )
+})
+
+test('a child that fails authentication never receives the marker', async () => {
+  const trace: string[] = []
+
+  const refuse = async () => {
+    trace.push('authenticate')
+
+    return false
+  }
+
+  const result = await runRecoveryUpdaterHandoff(handoffDeps(trace, { authenticate: refuse }))
+
+  assert.equal(result.ok, false)
+  assert.equal(result.ok === false && result.error, 'update-handoff-unacknowledged')
+  assert.ok(!trace.includes('transfer'), 'the gate is never handed to an unauthenticated process')
+  assert.ok(!trace.includes('commit'))
+  assert.ok(trace.includes('restore transferred=false createdAt=1723330000'))
+})
+
+test('a refused marker transfer fails the handoff', async () => {
+  const trace: string[] = []
+
+  const refuse = async () => {
+    trace.push('transfer')
+
+    return false
+  }
+
+  const result = await runRecoveryUpdaterHandoff(handoffDeps(trace, { transferMarker: refuse }))
+
+  // The Desktop's claim did not move, so the child cannot be allowed to
+  // proceed as the update's owner.
+  assert.equal(result.ok, false)
+  assert.ok(!trace.includes('commit'))
+  assert.ok(trace.includes('restore transferred=false createdAt=1723330000'))
+})
+
+test('the gentle path never transfers a marker it does not hold', async () => {
+  const trace: string[] = []
+  const result = await runRecoveryUpdaterHandoff(handoffDeps(trace, { repairClaim: null }))
+
+  assert.deepEqual(result, { ok: true, value: 'handed-off' })
+  assert.ok(!trace.includes('transfer'), 'the staged updater claims the marker itself')
+})
+
+test('the repair flag follows the claim the Desktop actually holds', async () => {
+  const seen: boolean[] = []
+
+  const spy = {
+    authenticate: async (deps: { desktopHoldsMarker: boolean }) => {
+      seen.push(deps.desktopHoldsMarker)
+
+      return true
+    }
+  }
+
+  await runRecoveryUpdaterHandoff(handoffDeps([], { ...spy, repairClaim: CLAIM }))
+  await runRecoveryUpdaterHandoff(handoffDeps([], { ...spy, repairClaim: null }))
+
+  assert.deepEqual(seen, [true, false])
+})
+
+test('a child with no pid or no captured generation is refused before authentication', async () => {
+  const noPid: string[] = []
+
+  const withoutPid = await runRecoveryUpdaterHandoff(
+    handoffDeps(noPid, { spawn: () => ({ pid: null }) })
+  )
+
+  assert.equal(withoutPid.ok, false)
+  assert.ok(!noPid.includes('authenticate'))
+  assert.ok(noPid.includes('restore transferred=false createdAt=null'))
+
+  const noGeneration: string[] = []
+
+  const withoutGeneration = await runRecoveryUpdaterHandoff(
+    handoffDeps(noGeneration, { captureCreatedAt: async () => null })
+  )
+
+  assert.equal(withoutGeneration.ok, false)
+  assert.ok(!noGeneration.includes('authenticate'), 'an unread generation cannot be authenticated')
+})
+
+test('an updater that exits during the dwell is not a successful handoff', async () => {
+  const trace: string[] = []
+
+  const result = await runRecoveryUpdaterHandoff(
+    handoffDeps(trace, { observe: async () => ({ ok: false, message: 'updater exited' }) })
+  )
+
+  assert.deepEqual(result, {
+    ok: false,
+    error: 'updater-spawn-failed',
+    message: 'updater exited'
+  })
+  assert.ok(!trace.includes('commit'))
+  // Authentication passed, so the marker did move; restore has to know that.
+  assert.ok(trace.includes('restore transferred=true createdAt=1723330000'))
+})

@@ -13,6 +13,8 @@
 export type UpdateTarget = 'client' | 'backend'
 
 export interface UpdateCopyStrings {
+  rebuildTitle: string
+  rebuildBody: string
   availableTitle: string
   availableBody: string
   availableTitleBackend: string
@@ -25,6 +27,7 @@ export interface UpdateCopyStrings {
 }
 
 export interface ResolveUpdateCopyInput {
+  bundleRebuildOnly?: boolean
   target: UpdateTarget
   /** Number of commit rows actually shown in the changelog. 0 → no notes. */
   shownItems: number
@@ -58,12 +61,17 @@ export interface UpdateCopyResult {
 
 export function resolveUpdateCopy({
   target,
+  bundleRebuildOnly = false,
   shownItems,
   channel = 'main',
   latestTag = null,
   mechanism,
   copy
 }: ResolveUpdateCopyInput): UpdateCopyResult {
+  if (bundleRebuildOnly && target === 'client') {
+    return { title: copy.rebuildTitle, body: copy.rebuildBody }
+  }
+
   const title = target === 'backend' ? copy.availableTitleBackend : copy.availableTitle
 
   // App-installer: the OS owns the apply, and there is no commit list by

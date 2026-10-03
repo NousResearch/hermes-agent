@@ -3,11 +3,71 @@
 import subprocess
 from unittest.mock import patch
 
+from types import SimpleNamespace
 import pytest
 
 from hermes_cli import update_cmd
 
 
+def test_cmd_update_refuses_unreadable_marker_without_traceback(monkeypatch, capsys):
+    import hermes_cli.main as main
+    import hermes_cli.update_lock as update_lock
+
+    monkeypatch.setattr(main, "_update_preflight_handled", lambda _args: False)
+    monkeypatch.setattr(main, "_install_hangup_protection", lambda **_kwargs: object())
+    monkeypatch.setattr(main, "_finalize_update_output", lambda _state: None)
+    monkeypatch.setattr(
+        update_lock.UpdateLock,
+        "acquire",
+        lambda _self: (_ for _ in ()).throw(update_lock.UpdateMarkerError("marker unreadable")),
+    )
+
+    with pytest.raises(SystemExit) as exc:
+        main.cmd_update(SimpleNamespace(gateway=False))
+
+    assert exc.value.code == update_lock.UPDATE_EXIT_CONCURRENT
+    assert "marker unreadable" in capsys.readouterr().out
+
+
+def _make_run_side_effect(branch="main", verify_ok=True, commit_count="0"):
+    """Build a side_effect function for subprocess.run that simulates git commands."""
+
+    def side_effect(cmd, **kwargs):
+        joined = " ".join(str(c) for c in cmd)
+
+        # git rev-parse --abbrev-ref HEAD  (get current branch)
+        if "rev-parse" in joined and "--abbrev-ref" in joined:
+            return subprocess.CompletedProcess(cmd, 0, stdout=f"{branch}\n", stderr="")
+
+        # git rev-parse --verify origin/{branch}  (check remote branch exists)
+        if "rev-parse" in joined and "--verify" in joined:
+            rc = 0 if verify_ok else 128
+            return subprocess.CompletedProcess(cmd, rc, stdout="", stderr="")
+
+        # git rev-list HEAD..origin/{branch} --count
+        if "rev-list" in joined:
+            return subprocess.CompletedProcess(cmd, 0, stdout=f"{commit_count}\n", stderr="")
+
+        # Fallback: return a successful CompletedProcess with empty stdout
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    return side_effect
+
+
+@pytest.fixture
+def mock_args():
+    return SimpleNamespace()
+
+
+# ---------------------------------------------------------------------------
+# Managed-uv compatibility for tests that patch shutil.which
+# ---------------------------------------------------------------------------
+# The production code now uses ``ensure_uv()`` / ``update_managed_uv()``
+# instead of ``shutil.which("uv")``.  Many tests in this file patch
+# ``shutil.which`` to control whether uv is "available" — these autouse
+# fixtures make the managed_uv functions delegate to the patched
+# ``shutil.which`` so the existing test setup keeps working without
+# per-test changes.
 @pytest.fixture(autouse=True)
 def _isolate_venv_holders(monkeypatch):
     """The update flow's venv-holder guard sees the live gateway processes on

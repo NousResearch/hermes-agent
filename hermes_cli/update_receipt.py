@@ -56,14 +56,20 @@ _current: contextvars.ContextVar[Optional["UpdateReceipt"]] = contextvars.Contex
 )
 
 
+_last_finalize: contextvars.ContextVar[Optional[dict[str, Any]]] = contextvars.ContextVar(
+    "update_receipt_last_finalize", default=None
+)
+
 @contextmanager
 def update_receipt_scope():
     """Keep the command's finalization guard away from an enclosing update."""
     token = _current.set(None)
+    last_token = _last_finalize.set(None)
     try:
         yield
     finally:
         _current.reset(token)
+        _last_finalize.reset(last_token)
 
 
 def current_correlation_id() -> Optional[str]:
@@ -344,11 +350,13 @@ def finalize_update_receipt(outcome: str, fleet: list | None = None, stop_reason
         with suppress(Exception):  # stable pointer for the dashboard/desktop
             _atomic_bytes(directory / "latest.json", payload)
         _prune_old_receipts(directory)
+        _last_finalize.set({"path": path, "error": None, "outcome": outcome})
         _publish_shared_metrics(receipt.data)
         return path
     except Exception as exc:
         # Visible, not debug: a run that pulled code and left no receipt is exactly the run
         # operators need to post-mortem, and INFO-level logs discard debug (#112465, #112558).
+        _last_finalize.set({"path": None, "error": str(exc), "outcome": outcome})
         logger.warning("Could not write update receipt (%s): %s", outcome, exc)
         print(f"  ⚠ Update receipt not written: {exc}")
         return None
@@ -793,3 +801,18 @@ def print_fleet_version_matrix(fleet: list[dict[str, Any]]) -> bool:
         print("  Run `hermes gateway restart` (or `hermes -p <profile> gateway restart` for a named")
         print("  profile), then `hermes gateway status` to confirm.")
     return stale_or_down > 0
+
+def describe_last_receipt() -> str:
+    """Describe where the most recently finalized receipt went. Never raises."""
+    try:
+        path = (_last_finalize.get() or {}).get("path")
+        error = (_last_finalize.get() or {}).get("error")
+        if path is not None:
+            return f"→ Update receipt: {path}"
+        if error:
+            return f"⚠ Update receipt NOT written: {error}"
+        if _current.get() is not None:
+            return "⚠ Update receipt still open at the command boundary (never finalized)"
+        return "⚠ No update receipt was recorded for this run (never started)"
+    except Exception:  # pragma: no cover - defensive
+        return "⚠ Update receipt state unavailable"

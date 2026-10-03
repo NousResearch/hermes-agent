@@ -1560,6 +1560,12 @@ def start_server(
 
     apply_nofile_soft_limit()
 
+    # Background processes this backend spawns get their own systemd scope when it runs
+    # under a service manager, like the supervised gateway's (#132358).
+    from tools.process_registry import mark_backend_host
+
+    mark_backend_host()
+
     import uvicorn  # noqa: F401 — fail fast (before any side effects) when the dashboard extra is missing
 
     try:

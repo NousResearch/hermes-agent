@@ -369,7 +369,7 @@ def _id_chunks(ids, size: int = _SQL_IN_CHUNK):
 _FTS_TRIGGERS = ("messages_fts_insert", "messages_fts_delete", "messages_fts_update",
                  "messages_fts_trigram_insert", "messages_fts_trigram_delete", "messages_fts_trigram_update")
 
-SCHEMA_SQL = """
+SCHEMA_SQL = f"""
 CREATE TABLE IF NOT EXISTS schema_version (
     version INTEGER NOT NULL
 );
@@ -623,6 +623,19 @@ CREATE INDEX IF NOT EXISTS idx_messages_session_id ON messages(session_id, id);
 CREATE INDEX IF NOT EXISTS idx_messages_assistant_calls_by_session
     ON messages(session_id)
     WHERE role = 'assistant' AND tool_calls IS NOT NULL;
+-- Partial index for the oversized-tool-result supplement
+-- (hermes_state_search._search_tool_overflow): it filters role='tool' AND
+-- LENGTH(content) > FTS_TOOL_CONTENT_PREFIX_CHARS, a few percent of tool rows
+-- (2,639 of 46,858 on a 90k-message store), then orders by timestamp. Without
+-- this index the LENGTH() gate has to read and UTF-8-decode every tool row's
+-- content just to reject it -- measured 59.7ms of an 88ms supplement, and the
+-- ORDER BY then needs a sort. 60 KB on that store, 420ms to build.
+-- The bound must be a LITERAL in both the index and the query or SQLite cannot
+-- prove the partial index applies, which is why both interpolate the same
+-- constant rather than binding a parameter.
+CREATE INDEX IF NOT EXISTS idx_messages_oversized_tool
+    ON messages(timestamp DESC, id)
+    WHERE role = 'tool' AND LENGTH(COALESCE(content, '')) > {FTS_TOOL_CONTENT_PREFIX_CHARS};
 CREATE INDEX IF NOT EXISTS idx_compression_locks_expires ON compression_locks(expires_at);
 CREATE INDEX IF NOT EXISTS idx_session_turn_leases_expires ON session_turn_leases(expires_at);
 CREATE INDEX IF NOT EXISTS idx_session_model_usage_session ON session_model_usage(session_id);

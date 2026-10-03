@@ -151,6 +151,9 @@ class SessionState:
     # Per-session allocator for ACP assistant messageIds (lazily created by
     # the server so streamed chunks group into distinct assistant replies).
     message_ids: Any = None
+    # ACP-provided MCP servers currently registered into this session's registry scope
+    # (name -> config); the server retires the scope's stale entries before replacing them.
+    mcp_server_configs: Dict[str, Any] = field(default_factory=dict)
 
 
 class SessionManager:

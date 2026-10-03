@@ -59,6 +59,172 @@ def _mod(name: str, **attrs) -> ModuleType:
     return module
 
 
+def test_acp_same_name_mcp_tools_are_isolated_by_session_scope():
+    """Two ACP sessions may advertise the same MCP name without first-writer wins."""
+    from tools.registry import ToolRegistry, reset_registry_scope, set_registry_scope
+
+    registry = ToolRegistry()
+    states = [SimpleNamespace(session_id="session-a"), SimpleNamespace(session_id="session-b")]
+    scopes = [HermesACPAgent._mcp_session_scope(state) for state in states]  # type: ignore[arg-type]
+    assert scopes[0] != scopes[1]
+
+    schema = {"description": "session tool", "parameters": {"type": "object", "properties": {}}}
+    handlers = [lambda _args: "a", lambda _args: "b"]
+    for scope, handler in zip(scopes, handlers):
+        registry.register(
+            name="mcp_shared_echo", toolset="mcp-shared", schema=schema,
+            handler=handler, scope=scope,
+        )
+
+    for scope, handler in zip(scopes, handlers):
+        token = set_registry_scope(scope)
+        try:
+            entry = registry.get_entry("mcp_shared_echo")
+            assert entry is not None and entry.handler is handler
+            definitions = registry.get_definitions({"mcp_shared_echo"}, quiet=True)
+            assert [item["function"]["name"] for item in definitions] == ["mcp_shared_echo"]
+        finally:
+            reset_registry_scope(token)
+
+
+def _fake_session_mcp_registration(handler_result: str):
+    """Stand-in for ``register_mcp_servers`` that registers each server's tool into the
+    current (session) registry scope like a schema-cache (lazy) registration does."""
+    from tools.mcp_tool_common import _core
+    from tools.registry import registry
+
+    def _register(configs):
+        scope = registry.current_scope_key()
+        names = []
+        for server_name, config in configs.items():
+            tool = f"mcp_{server_name}_echo"
+            registry.register(
+                name=tool, toolset=f"mcp-{server_name}",
+                schema={"description": "echo", "parameters": {"type": "object", "properties": {}}},
+                handler=lambda _args, _r=handler_result: _r, scope=scope)
+            with _core._lock:
+                _core._lazy_server_configs[(scope, server_name)] = config
+                _core._lazy_server_tool_names[(scope, server_name)] = [tool]
+            names.append(tool)
+        return names
+
+    return _register
+
+
+def _scoped_definitions(enabled_toolsets=None, **_kwargs):
+    from tools.registry import registry
+
+    return [{"function": {"name": entry.name}} for entry in registry._snapshot_entries()
+            if entry.toolset in (enabled_toolsets or [])]
+
+
+@pytest.mark.asyncio
+async def test_acp_session_mcp_scope_is_retired_and_not_resurrected(monkeypatch):
+    """A registers mcp_shared_echo -> A's MCP is retired -> scope gone, tool unavailable ->
+    the same id comes back with no MCP and the old handler does not return. Replacing the
+    set retires the dropped server before registering the new one."""
+    import asyncio
+
+    from acp.schema import McpServerStdio
+    from tools.mcp_tool_common import _core
+    from tools.registry import registry, reset_registry_scope, set_registry_scope
+
+    monkeypatch.setattr("model_tools.get_tool_definitions", _scoped_definitions)
+    monkeypatch.setattr("agent.memory_manager.inject_memory_provider_tools", lambda _agent: None)
+    manager = SessionManager(agent_factory=FakeAgent, db=NoopDb())
+    server = HermesACPAgent(session_manager=manager)
+    state = manager.create_session(cwd="/tmp")
+    shared = McpServerStdio(name="shared", command="/bin/echo", args=["a"], env=[])
+
+    def _entry(name):
+        token = set_registry_scope(server._mcp_session_scope(state))
+        try:
+            return registry.get_entry(name)
+        finally:
+            reset_registry_scope(token)
+
+    token = set_registry_scope(server._mcp_session_scope(state))
+    scope = registry.current_scope_key()  # canonical key of the session overlay
+    reset_registry_scope(token)
+    try:
+        monkeypatch.setattr("tools.mcp_tool_discovery.register_mcp_servers", _fake_session_mcp_registration("A"))
+        await server._register_session_mcp_servers(state, [shared])
+        assert _entry("mcp_shared_echo").handler({}) == "A"
+        assert "mcp_shared_echo" in state.agent.valid_tool_names
+        assert scope in registry._scoped_tools
+
+        # Retire: overlay dropped, lazy ledger forgotten, handler unreachable.
+        assert await asyncio.to_thread(server._retire_session_mcp, state) == ["shared"]
+        assert scope not in registry._scoped_tools
+        assert _entry("mcp_shared_echo") is None
+        assert not any(key[0] == scope for key in _core._lazy_server_configs if isinstance(key, tuple))
+        assert state.mcp_server_configs == {}
+
+        # Re-register, then the same id is loaded again with NO MCP servers.
+        await server._register_session_mcp_servers(state, [shared])
+        assert _entry("mcp_shared_echo") is not None
+        await server._register_session_mcp_servers(state, [])
+        assert scope not in registry._scoped_tools
+        assert _entry("mcp_shared_echo") is None
+        assert "mcp_shared_echo" not in state.agent.valid_tool_names
+        assert "mcp-shared" not in state.agent.enabled_toolsets
+
+        # Replacing the set retires the dropped/reconfigured server first.
+        await server._register_session_mcp_servers(state, [shared])
+        other = McpServerStdio(name="other", command="/bin/echo", args=["b"], env=[])
+        await server._register_session_mcp_servers(state, [other])
+        assert _entry("mcp_shared_echo") is None
+        assert _entry("mcp_other_echo") is not None
+        assert state.agent.enabled_toolsets == ["hermes-acp", "mcp-other"]
+
+        # Process shutdown releases every live session scope.
+        assert server.retire_all_session_mcp() == 1
+        assert scope not in registry._scoped_tools
+    finally:
+        from tools.mcp_tool_discovery import release_mcp_scope
+        release_mcp_scope(scope)
+
+
+def test_release_mcp_scope_closes_owned_and_drops_adopted_connections(monkeypatch):
+    """Owned connections go through the scoped shutdown; an overlay on a connection adopted
+    from another scope is removed without touching that owner's connection."""
+    from tools import mcp_tool_lifecycle
+    from tools.mcp_tool_common import _core
+    from tools.mcp_tool_discovery import release_mcp_scope
+    from tools.registry import registry, reset_registry_scope, set_registry_scope
+
+    token = set_registry_scope("/tmp/hermes-test-home/.acp-sessions/release-sid")
+    scope = registry.current_scope_key()
+    reset_registry_scope(token)
+    owner = "/tmp/hermes-test-home/.acp-sessions/owner-sid"
+    owned_key, adopted_key = (scope, "live"), (owner, "adopt")
+    schema = {"description": "x", "parameters": {"type": "object", "properties": {}}}
+    registry.register(name="mcp_adopt_echo", toolset="mcp-adopt", schema=schema,
+                      handler=lambda _a: "owner", scope=scope)
+    shutdowns = []
+    monkeypatch.setattr(mcp_tool_lifecycle, "shutdown_mcp_servers",
+                        lambda **kwargs: shutdowns.append(kwargs))
+    owned_server, adopted_server = object(), object()
+    with _core._lock:
+        _core._servers[owned_key] = owned_server
+        _core._server_scope_keys[owned_key] = scope
+        _core._servers[adopted_key] = adopted_server
+        _core._server_tool_scopes[adopted_key] = {owner, scope}
+    try:
+        assert release_mcp_scope(scope) == ["adopt", "live"]
+        assert shutdowns == [{"scope": scope, "names": None, "timeout": 15.0}]
+        assert _core._server_tool_scopes[adopted_key] == {owner}
+        assert _core._servers[adopted_key] is adopted_server  # the owner keeps its connection
+        assert registry.get_entry("mcp_adopt_echo", scope=scope) is None
+        assert scope not in registry._scoped_tools
+    finally:
+        with _core._lock:
+            for key in (owned_key, adopted_key):
+                _core._servers.pop(key, None)
+                _core._server_scope_keys.pop(key, None)
+                _core._server_tool_scopes.pop(key, None)
+
+
 @pytest.fixture(autouse=True)
 def _reset_mcp_startup_state():
     """Ensure each test starts with a clean discovery thread state."""

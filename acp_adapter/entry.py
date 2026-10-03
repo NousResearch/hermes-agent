@@ -228,6 +228,11 @@ def main(argv: list[str] | None = None) -> None:
         # ended_at writer here, source='acp' rows stay open forever and the
         # ended-session guard keeps prune/archive away from them (#118216). A
         # later load/resume reopens the row (acp_adapter.session._restore).
+        # Release per-session MCP scopes (connections + registry overlays) before the rows end.
+        try:
+            agent.retire_all_session_mcp()
+        except Exception:
+            logger.debug("Failed to retire ACP session MCP scopes", exc_info=True)
         agent.session_manager.end_all_sessions()
 
 

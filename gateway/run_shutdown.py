@@ -23,6 +23,7 @@ from typing import Any, Callable, Dict, Optional
 
 from agent.i18n import t
 from gateway.config import Platform
+from gateway.delivery import event_bound_delivery_metadata
 from gateway.restart import (
     DEFAULT_GATEWAY_CRON_DRAIN_TIMEOUT, GATEWAY_SERVICE_RESTART_EXIT_CODE,
     effective_stop_drain_timeout, effective_stop_watchdog_delay, resolve_cron_drain_budget
@@ -943,6 +944,13 @@ class GatewayShutdownMixin:
             job_name = job.get("name") or job_id
             msg = t("gateway.shutdown.cron_interrupted", job=job_name, action=action)
             for target in targets or ():
+                origin = job.get("origin") or {}
+                if isinstance(origin, dict) and (
+                    str(origin.get("platform", "")).lower() == str(target.get("platform", "")).lower()
+                    and str(origin.get("chat_id", "")) == str(target.get("chat_id", ""))
+                    and event_bound_delivery_metadata(origin).get("_delivery_route_blocked") is True
+                ):
+                    continue
                 try:
                     platform = Platform(str(target.get("platform", "")).lower())
                 except Exception:
@@ -985,9 +993,13 @@ class GatewayShutdownMixin:
         if source is None:
             source = self._get_cached_session_source(session_key)
         if source is not None:
+            if event_bound_delivery_metadata(source).get("_delivery_route_blocked") is True:
+                return None
             return source, source.platform.value, str(source.chat_id), source.thread_id, getattr(source, "profile", None)
         _parsed = _parse_session_key(session_key)
         if not _parsed:
+            return None
+        if event_bound_delivery_metadata(_parsed).get("_delivery_route_blocked") is True:
             return None
         return None, _parsed["platform"], _parsed["chat_id"], _parsed.get("thread_id"), _parsed.get("profile")
 

@@ -2996,6 +2996,15 @@ def _parse_session_key(session_key: str) -> "dict | None":
         result = {"platform": parts[2], "chat_type": parts[3], "chat_id": parts[4]}
         if parts[1] != "main":
             result["profile"] = profile_from_session_key_namespace(parts[1])
+        if parts[2] == "telegram" and parts[4] == "telegram-business":
+            # This scope occupies two slots; treating it as chat/thread silently turns
+            # a synthetic Business reply into an ordinary bot DM. Preserve even an
+            # incomplete scope so reconstructed routes remain fail-closed.
+            result["scope_id"] = "telegram-business:" + (parts[5] if len(parts) > 5 else "")
+            result["chat_id"] = parts[6] if len(parts) > 6 else ""
+            if len(parts) > 7:
+                result["thread_id"] = parts[7]
+            return result
         if len(parts) > 5 and parts[3] in {"dm", "thread"}:
             result["thread_id"] = parts[5]
         return result
@@ -4167,7 +4176,11 @@ class GatewayRunner(
         history: Any = None
 
     def _thread_metadata_for_source(
-        self, source, reply_to_message_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
+        self,
+        source,
+        reply_to_message_id: Optional[str] = None,
+        event_metadata: Optional[Dict[str, Any]] = None,
+    ) -> Optional[Dict[str, Any]]:
         """Build the metadata dict platforms need for thread-aware replies."""
         metadata = self._thread_metadata_for_target(
             getattr(source, "platform", None), getattr(source, "chat_id", None),
@@ -4195,6 +4208,10 @@ class GatewayRunner(
                     metadata.setdefault("user_id", str(user_id))
         from gateway.session_context import source_route_metadata
         metadata = source_route_metadata(source, metadata)
+        from gateway.delivery import event_bound_delivery_metadata
+        route_metadata = event_bound_delivery_metadata(source, event_metadata)
+        if route_metadata:
+            metadata = {**(metadata or {}), **route_metadata}
         # Routed profile for shared state.db namespaces: under profile_routes the transport adapter's
         # stamp is not the profile that wrote the binding (Telegram prune path needs it).
         # See #76423.

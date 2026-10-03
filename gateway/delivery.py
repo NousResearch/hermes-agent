@@ -30,6 +30,35 @@ _SILENCE_NARRATION = re.compile(
 _THREAD_ROUTING_KEYS = ("thread_id", "message_thread_id", "direct_messages_topic_id", "telegram_direct_messages_topic_id")
 
 
+def event_bound_delivery_metadata(source, event_metadata: Optional[dict] = None) -> dict:
+    """Preserve a delegated route even when its immediate send authority is absent.
+
+    An absent route is an ordinary bot send, not a safe refusal. The blocking marker is
+    platform-neutral; the live adapter validates the opaque, nonserialized source proof
+    and current policy again before sending. Synthetic/restored events never gain that
+    proof merely by carrying a connection id.
+    """
+    read = source.get if isinstance(source, dict) else lambda key, default=None: getattr(source, key, default)
+    platform = read("platform")
+    platform = str(getattr(platform, "value", platform) or "").lower()
+    scope = str(read("scope_id", "") or "")
+    if platform != "telegram" or not scope.startswith("telegram-business:"):
+        return {}
+    connection_id = scope.removeprefix("telegram-business:").strip()
+    metadata = {"business_connection_id": connection_id, "scope_id": scope}
+    event_metadata = event_metadata or {}
+    if (
+        connection_id
+        and getattr(source, "authorized_via_telegram_business", False) is True
+        and event_metadata.get("allow_business_send_as_account") is True
+        and str(event_metadata.get("business_connection_id") or "").strip() == connection_id
+    ):
+        metadata.update(allow_business_send_as_account=True, _telegram_business_source=source)
+    else:
+        metadata["_delivery_route_blocked"] = True
+    return metadata
+
+
 def _is_silence_narration(content: Optional[str]) -> bool:
     """True when ``content`` is *only* a silence-narration token (length-guarded)."""
     stripped = content.strip() if content else ""
@@ -119,13 +148,16 @@ class DeliveryTarget:
     # deliver() can report {success: False, error: unknown_platform} instead
     # of silently misrouting to local files.
     unknown_platform: Optional[str] = None
+    # Routing intent only. A persisted scope never grants account-send authority.
+    scope_id: Optional[str] = None
 
     @classmethod
     def parse(cls, target: str, origin: Optional[SessionSource] = None) -> "DeliveryTarget":
         """Parse "origin" | "local" | "<platform>" | "<platform>:<chat_id>[:<thread_id>]"."""
         target = target.strip()
         if target.lower() == "origin":
-            return (cls(platform=origin.platform, chat_id=origin.chat_id, thread_id=origin.thread_id, is_origin=True)
+            return (cls(platform=origin.platform, chat_id=origin.chat_id, thread_id=origin.thread_id,
+                        is_origin=True, scope_id=origin.scope_id)
                     if origin else cls(platform=Platform.LOCAL, is_origin=True))
         # Platform names are case-insensitive; chat/thread ids keep case. Unknown platforms ->
         # LOCAL for routing but preserve the raw target so deliver() reports
@@ -269,6 +301,9 @@ class DeliveryRouter:
         adapters dict cannot re-derive that grant under satellite config
         (#115656). Omitted (None) preserves resolution for every other caller.
         """
+        route = {"platform": target.platform, "scope_id": target.scope_id or (metadata or {}).get("scope_id")}
+        if event_bound_delivery_metadata(route).get("_delivery_route_blocked") is True:
+            raise ValueError("Delivery requires immediate event-bound account authority")
         if transport is None:
             transport = resolve_delivery_transport(target.platform, self.config, self.adapters)
         if transport is None:

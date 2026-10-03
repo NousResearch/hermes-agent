@@ -133,14 +133,31 @@ _OPENROUTER_STATUS = {
 }
 
 
+def _http_probe(method: str, url: str, **kwargs):
+    """Use the runtime's per-target proxy matcher, not httpx's NO_PROXY parser.
+
+    httpx rejects curl-compatible bracketed IPv6 bypass entries before sending
+    anything. Resolve routing explicitly without mutating the shared environment
+    (doctor probes run concurrently), while retaining environment CA overrides.
+    """
+    import httpx
+    from agent.process_bootstrap import _get_proxy_for_base_url
+
+    if "proxy" not in kwargs:
+        kwargs["proxy"] = _get_proxy_for_base_url(url)
+    kwargs.setdefault("trust_env", False)
+    if "verify" not in kwargs:
+        kwargs["verify"] = httpx.create_ssl_context(trust_env=True)
+    return getattr(httpx, method)(url, **kwargs)
+
+
 def _probe_openrouter() -> ProbeResult:
     name = "OpenRouter API"
     key = os.getenv("OPENROUTER_API_KEY")
     if not key:
         return _row(name, "warn", "(not configured)")
     try:
-        import httpx
-        r = httpx.get(OPENROUTER_MODELS_URL, headers={"Authorization": f"Bearer {key}"}, timeout=10)
+        r = _http_probe("get", OPENROUTER_MODELS_URL, headers={"Authorization": f"Bearer {key}"}, timeout=10)
     except Exception as e:
         return _row(name, "fail", f"({e})", ["Check network connectivity"])
     if r.status_code == 200:
@@ -156,19 +173,18 @@ def _probe_anthropic() -> ProbeResult:
     if not key:
         return _skip(name)
     try:
-        import httpx
         from agent.anthropic_adapter import _COMMON_BETAS, _OAUTH_ONLY_BETAS, _CONTEXT_1M_BETA
         from agent.anthropic_credentials import _is_oauth_token
         is_oauth = _is_oauth_token(key)
         headers = {"anthropic-version": "2023-06-01", **({"Authorization": f"Bearer {key}", "anthropic-beta": ",".join(_COMMON_BETAS + _OAUTH_ONLY_BETAS)}
                                                          if is_oauth else {"x-api-key": key})}
         url = "https://api.anthropic.com/v1/models"
-        r = httpx.get(url, headers=headers, timeout=10)
+        r = _http_probe("get", url, headers=headers, timeout=10)
         # OAuth subscriptions without 1M context reject with 400 "long context beta is not yet available";
         # retry once with that beta stripped so doctor doesn't falsely report Anthropic as unreachable.
         if is_oauth and r.status_code == 400 and "long context beta" in r.text.lower() and "not yet available" in r.text.lower():
             headers["anthropic-beta"] = ",".join([b for b in _COMMON_BETAS if b != _CONTEXT_1M_BETA] + list(_OAUTH_ONLY_BETAS))
-            r = httpx.get(url, headers=headers, timeout=10)
+            r = _http_probe("get", url, headers=headers, timeout=10)
     except Exception as e:
         return _row(name, "warn", f"({e})")
     return _row(name, *{200: ("ok",), 401: ("fail", "(invalid API key)")}.get(r.status_code, ("warn", "(couldn't verify)")))
@@ -182,7 +198,6 @@ def _probe_apikey_provider(pname, env_vars, default_url, base_env, supports_heal
     if not supports_health_check:
         return _row(pname, "ok", "(key configured)", label=label)
     try:
-        import httpx
         base, url, headers = _apikey_request(key, base_env, default_url)
         if base.rstrip("/").endswith("/anthropic"):
             # Anthropic-only gateway (no OpenAI-compat sibling, so no /models): probe the route the runtime uses.
@@ -192,9 +207,9 @@ def _probe_apikey_provider(pname, env_vars, default_url, base_env, supports_heal
             if r.status_code == 403:
                 return _row(pname, "fail", "(access denied)", [f"Check {env_vars[0]} in .env"], label=label)
         else:
-            r = httpx.get(url, headers=headers, timeout=10)
+            r = _http_probe("get", url, headers=headers, timeout=10)
         if pname == "Alibaba/DashScope" and not base and r.status_code == 401:
-            r = httpx.get("https://dashscope.aliyuncs.com/compatible-mode/v1/models", headers=headers, timeout=10)
+            r = _http_probe("get", "https://dashscope.aliyuncs.com/compatible-mode/v1/models", headers=headers, timeout=10)
     except Exception as e:
         return _row(pname, "warn", f"({e})", label=label)
     if r.status_code == 401:
@@ -206,7 +221,6 @@ def _anthropic_messages_probe(base: str, key: str):
     """POST ``<base>/v1/messages`` with ``max_tokens=1`` exactly as the Anthropic adapter would: same
     auth family (Bearer for Azure Foundry, else x-api-key) and the same ``api-version`` query. Azure
     Foundry's ``/anthropic`` route 404s on ``GET /models`` even when chat works (#66756)."""
-    import httpx
     from agent.anthropic_adapter import _base_client_kwargs
     from agent.anthropic_endpoints import _requires_bearer_auth
     normalized, kwargs = _base_client_kwargs(base, None)
@@ -214,7 +228,7 @@ def _anthropic_messages_probe(base: str, key: str):
     headers = {"anthropic-version": "2023-06-01", "User-Agent": _HERMES_USER_AGENT, **auth}
     model = str(_model_cfg().get("default") or "").strip() or "claude-sonnet-4-5"
     body = {"model": model, "max_tokens": 1, "messages": [{"role": "user", "content": "ping"}]}
-    return httpx.post(normalized + "/v1/messages", headers=headers, params=kwargs.get("default_query"), json=body, timeout=10)
+    return _http_probe("post", normalized + "/v1/messages", headers=headers, params=kwargs.get("default_query"), json=body, timeout=10)
 
 
 def _model_cfg() -> dict:
@@ -393,8 +407,7 @@ def _probe_github_token() -> ProbeResult:
     from hermes_cli.doctor import _DHH
     where = f"{_DHH}/.env" if var in load_env() else "the environment"
     try:
-        import httpx
-        r = httpx.get(GITHUB_API_PROBE_URL, timeout=10, headers={
+        r = _http_probe("get", GITHUB_API_PROBE_URL, timeout=10, headers={
             "Authorization": f"Bearer {get_env_value(var)}", "User-Agent": _HERMES_USER_AGENT,
             "Accept": "application/vnd.github+json"})
     except Exception as e:

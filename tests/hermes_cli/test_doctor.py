@@ -944,7 +944,7 @@ def test_run_doctor_kimi_cn_env_is_detected_and_probe_is_null_safe(monkeypatch, 
 
     calls = []
 
-    def fake_get(url, headers=None, timeout=None):
+    def fake_get(url, headers=None, timeout=None, **kwargs):
         calls.append((url, headers, timeout))
         return types.SimpleNamespace(status_code=200)
 
@@ -993,7 +993,7 @@ def test_run_doctor_dashscope_retries_china_endpoint_after_intl_unauthorized(mon
 
     calls = []
 
-    def fake_get(url, headers=None, timeout=None):
+    def fake_get(url, headers=None, timeout=None, **kwargs):
         calls.append((url, headers, timeout))
         status = 200 if "dashscope.aliyuncs.com" in url else 401
         return types.SimpleNamespace(status_code=status)
@@ -1052,7 +1052,7 @@ def test_run_doctor_opencode_go_skips_invalid_models_probe(monkeypatch, tmp_path
 
     calls = []
 
-    def fake_get(url, headers=None, timeout=None):
+    def fake_get(url, headers=None, timeout=None, **kwargs):
         calls.append((url, headers, timeout))
         return types.SimpleNamespace(status_code=200)
 
@@ -1144,7 +1144,7 @@ def _run_doctor_with_healthy_oauth_fallback(
     _xai_status = xai_oauth_status if xai_oauth_status is not None else {}
     monkeypatch.setattr(_auth_mod, "get_xai_oauth_auth_status", lambda: _xai_status)
 
-    def fake_get(url, headers=None, timeout=None):
+    def fake_get(url, headers=None, timeout=None, **kwargs):
         status = 401 if failing_host in url else 200
         return types.SimpleNamespace(status_code=status)
 

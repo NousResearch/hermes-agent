@@ -212,7 +212,14 @@ Just send a message to yourself from your phone — signal-cli picks it up and H
 - The adapter detects when these are addressed to the bot's own account and processes them as regular inbound messages
 - Echo-back protection (sent-timestamp tracking) prevents infinite loops — the bot's own replies are filtered out automatically
 
-**No extra configuration needed.** This works automatically as long as `SIGNAL_ACCOUNT` matches your phone number.
+To leave Note to Self available as a personal notepad while interacting with Hermes elsewhere, opt out of prompt handling:
+
+```yaml
+signal:
+  note_to_self: false
+```
+
+This defaults to `true`, preserving the single-number setup described above. Group sync-sents are unaffected.
 
 ### Health Monitoring
 

@@ -1129,15 +1129,17 @@ def _auxiliary_model_call_dimensions(event: Any) -> dict[str, str] | None:
             scope_category="end", category_profile=None,
         )
         or not isinstance(data, dict)
-        or set(data) - {"response_model"} != {"model", "outcome", "provider"}
+        or set(data) - {"response_model", "error_class"} != {"model", "outcome", "provider"}
         or data.get("outcome") not in _LEGACY_MODEL_OUTCOMES
     ):
         return None
     outcome = data["outcome"]
-    dimensions = model_route_fields(
-        data, call_role="auxiliary", outcome=outcome,
-        error_class="none" if outcome == "success" else "unknown",
-    )
+    # Same reading as a primary call: a cancelled call reports ``none``, a failure without a
+    # classified reason ``unknown``, a success the last error it recovered from.
+    error_class = "none" if outcome == "cancelled" else data.get("error_class") or "none"
+    if outcome == "failed" and error_class == "none":
+        error_class = "unknown"
+    dimensions = model_route_fields(data, call_role="auxiliary", outcome=outcome, error_class=error_class)
     return dimensions if counter_dimensions_are_valid(MODEL_ROUTE_METRIC, dimensions) else None
 
 

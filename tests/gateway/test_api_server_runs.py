@@ -625,6 +625,40 @@ class TestRunEvents:
         assert event["preview"].endswith("...")
 
     @pytest.mark.asyncio
+    async def test_tool_started_carries_redacted_full_args(self, adapter):
+        loop = asyncio.get_running_loop()
+        adapter._run_streams["run_args"] = _RunStream()
+        callback = adapter._make_run_event_callback("run_args", loop)
+        command = "cd /repo && " + "echo long; " * 40 + "OPENAI_API_KEY=sk-proj-abcdefghijklmnopqrstuvwxyz0123 run"
+
+        callback("tool.started", "terminal", "cd /repo && echo…", {"command": command, "timeout": 60})
+        await asyncio.sleep(0)
+        _, event = adapter._run_streams["run_args"].backlog[-1]
+
+        assert event["preview"] == "cd /repo && echo…"
+        assert event["args"]["timeout"] == 60
+        assert event["args"]["command"].startswith("cd /repo && echo long;")
+        assert len(event["args"]["command"]) > len(event["preview"])
+        assert "abcdefghijklmnopqrstuvwxyz0123" not in event["args"]["command"]
+
+    @pytest.mark.asyncio
+    async def test_tool_completed_carries_redacted_full_result_beside_preview(self, adapter):
+        loop = asyncio.get_running_loop()
+        adapter._run_streams["run_res"] = _RunStream()
+        callback = adapter._make_run_event_callback("run_res", loop)
+        output = "line\n" * 300 + "token sk-proj-abcdefghijklmnopqrstuvwxyz0123 end"
+
+        callback("tool.completed", "terminal", duration=0.1, is_error=False,
+                 result={"exit_code": 0, "output": output})
+        await asyncio.sleep(0)
+        _, event = adapter._run_streams["run_res"].backlog[-1]
+
+        assert len(event["preview"]) <= 500
+        assert len(event["result"]) > 500
+        assert json.loads(event["result"])["output"].endswith(" end")
+        assert "abcdefghijklmnopqrstuvwxyz0123" not in event["result"]
+
+    @pytest.mark.asyncio
     async def test_events_stream_returns_completed(self, adapter):
         """Events stream should receive run.completed when agent finishes."""
         app = _create_runs_app(adapter)

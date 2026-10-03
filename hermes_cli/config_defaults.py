@@ -788,6 +788,7 @@ DEFAULT_CONFIG = {
             "extra_body": {},
             "reasoning_effort": "",
             "language": "",
+            "max_words": 0,  # 0 = 3-7 word titles; N caps model titles at N words (e.g. 4 for a narrow sidebar)
         },
         "memory_query_rewrite": _aux(8, reasoning_effort=False),
         "tts_audio_tags": _aux(30),

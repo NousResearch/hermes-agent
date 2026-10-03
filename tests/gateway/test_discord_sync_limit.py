@@ -176,6 +176,60 @@ async def test_safe_sync_continues_after_obsolete_command_was_deleted(adapter):
 
 
 @pytest.mark.asyncio
+async def test_safe_sync_tolerates_missing_recreate_delete_and_still_upserts(adapter):
+    current = SimpleNamespace(id="gone", name="command", type=1)
+    desired = [_FakeTreeCommand(name="command")]
+    adapter._client.tree.fetch_commands = AsyncMock(return_value=[current])
+    adapter._client.tree.get_commands = MagicMock(return_value=desired)
+    adapter._existing_command_to_payload = MagicMock(return_value={"name": "command", "description": "old"})
+    adapter._canonicalize_app_command_payload = MagicMock(side_effect=lambda payload: payload)
+    adapter._patchable_app_command_payload = MagicMock(return_value={"name": "command"})
+    calls = []
+
+    async def delete(*_args):
+        calls.append("delete")
+        raise _UnknownApplicationCommand()
+
+    async def upsert(_app_id, payload):
+        calls.append(("upsert", payload["name"]))
+
+    adapter._client.http.delete_global_command = delete
+    adapter._client.http.upsert_global_command = upsert
+
+    summary = await adapter._safe_sync_slash_commands()
+
+    assert calls == ["delete", ("upsert", "command")]
+    assert summary["recreated"] == 1
+
+
+@pytest.mark.asyncio
+async def test_safe_sync_recreates_when_edit_target_disappears(adapter):
+    current = SimpleNamespace(id="gone", name="command", type=1)
+    desired = [_FakeTreeCommand(name="command")]
+    adapter._client.tree.fetch_commands = AsyncMock(return_value=[current])
+    adapter._client.tree.get_commands = MagicMock(return_value=desired)
+    adapter._existing_command_to_payload = MagicMock(return_value={"name": "command", "description": "old"})
+    adapter._canonicalize_app_command_payload = MagicMock(side_effect=lambda payload: payload)
+    adapter._patchable_app_command_payload = MagicMock(side_effect=lambda payload: payload)
+    calls = []
+
+    async def edit(*_args):
+        calls.append("edit")
+        raise _UnknownApplicationCommand()
+
+    async def upsert(_app_id, payload):
+        calls.append(("upsert", payload["name"]))
+
+    adapter._client.http.edit_global_command = edit
+    adapter._client.http.upsert_global_command = upsert
+
+    summary = await adapter._safe_sync_slash_commands()
+
+    assert calls == ["edit", ("upsert", "command")]
+    assert summary["created"] == 1
+
+
+@pytest.mark.asyncio
 async def test_safe_sync_propagates_other_obsolete_delete_errors(adapter):
     class OtherDiscordError(Exception):
         code = 50013

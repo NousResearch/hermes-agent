@@ -62,6 +62,14 @@ _COMMENT_RE = re.compile(r"\([^()]*\)")
 _MAX_FROM_LEN = 2048
 # Authentication-Results clause head (``dmarc=pass``), matched only at the start of a clause.
 _AUTH_METHOD_RE = re.compile(r"\s*(dmarc|dkim|spf)\s*=\s*([a-z]+)", re.IGNORECASE)
+_NO_AUTH_RESULTS_REASON = "no Authentication-Results header"
+_UNTRUSTED_AUTHSERV_REASON = "no Authentication-Results from trusted authserv-id"
+# Operator-fixable reasons a granted sender's mail fails authentication, and the fix each log line names.
+_DROP_HINTS = {
+    _NO_AUTH_RESULTS_REASON: " If your mail server does not stamp Authentication-Results, set "
+    "platforms.email.require_authenticated_sender: false (or EMAIL_TRUST_FROM_HEADER=true) to accept the risk.",
+    _UNTRUSTED_AUTHSERV_REASON: " Check that platforms.email.authserv_id (EMAIL_AUTHSERV_ID) names your mail server.",
+}
 # One token of a clause: a property we read (``header.from=x``; the value may be or contain a quoted-string), or
 # any other whitespace-delimited token consumed whole, so text inside quotes or other values is never read as a prop.
 _QUOTED = r'"(?:[^"\\]|\\.)*"'
@@ -343,12 +351,12 @@ def _verify_sender_authentication(msg: email_lib.message.Message, from_addr: str
     if not from_domain:
         return False, "missing From domain"
     if not (headers := msg.get_all("Authentication-Results")):
-        return False, "no Authentication-Results header"
+        return False, _NO_AUTH_RESULTS_REASON
     values = (" ".join(str(raw).split()) for raw in headers)  # authserv-id precedes the first ';'
     trusted = next((v for v in values if not authserv_id or (serv := v.split(";", 1)[0].strip().lower()) == authserv_id.lower()
                     or _domains_aligned(serv, authserv_id)), None)
     if trusted is None:
-        return False, "no Authentication-Results from trusted authserv-id"
+        return False, _UNTRUSTED_AUTHSERV_REASON
     # Each verdict comes from the head of its own clause (split outside quotes/comments) and its domains only from that
     # clause: a quoted local part or comment can otherwise smuggle ``spf=pass``/``header.d=`` (GHSA-rxqh-5572-8m77).
     if (clauses := _ar_clauses(trusted)) is None:
@@ -686,15 +694,6 @@ class EmailAdapter(BasePlatformAdapter):
         return any(_get_secret(name, "").strip().lower() in _TRUTHY
                    for name in ("EMAIL_ALLOW_ALL_USERS", "GATEWAY_ALLOW_ALL_USERS"))
 
-    @staticmethod
-    def _open_access() -> bool:
-        """True when the gateway admits any sender, so a forged From: gains nothing. The gateway's own order:
-        EMAIL_ALLOW_ALL_USERS wins over a list, GATEWAY_ALLOW_ALL_USERS applies only while no list is set."""
-        if _get_secret("EMAIL_ALLOW_ALL_USERS", "").strip().lower() in _TRUTHY:
-            return True
-        return (_get_secret("GATEWAY_ALLOW_ALL_USERS", "").strip().lower() in _TRUTHY
-                and not any(_get_secret(name, "").strip() for name in ("EMAIL_ALLOWED_USERS", "GATEWAY_ALLOWED_USERS")))
-
     def _answers_unknown_senders(self) -> bool:
         """True when ``platforms.email.unauthorized_dm_behavior`` opts into ``pair`` or ``decline``."""
         behavior = (self.config.extra or {}).get("unauthorized_dm_behavior")
@@ -714,7 +713,8 @@ class EmailAdapter(BasePlatformAdapter):
             raw = decode_json_list_literal(raw)
             listed.update(str(a).strip().lower() for a in (raw if isinstance(raw, list) else str(raw).split(","))
                           if str(a).strip())
-        if sender_addr.lower() in listed:
+        is_listed = sender_addr.lower() in listed
+        if is_listed:
             granted = True
         elif sender_addr.split("@", 1)[0].lower() in listed:
             # The gateway's check also matches an address by its bare local part (#119446), so an entry like "alice"
@@ -731,20 +731,19 @@ class EmailAdapter(BasePlatformAdapter):
         if not granted and not self._answers_unknown_senders():
             logger.debug("[Email] Dropping unauthorized sender at dispatch (unknown senders are ignored): %s", sender_addr)
             return False
-        # Reject spoofed senders (GHSA-rxqh-5572-8m77): short of open access, every grant keys on the attacker-controlled
-        # From:, and a pairing code or decline is mailed back to it, open access or not; fail-closed. Only a granted
-        # sender's drop warns: forged mail from strangers is routine, and the opt-out hint would be wrong advice for it.
+        # Reject spoofed senders (GHSA-rxqh-5572-8m77): every grant keys on the attacker-controlled From:, and a pairing
+        # code or decline is mailed back to it; fail-closed. Open access is no exception: the session and every reply
+        # key on From:, so a forged one lands in that address's conversation and makes the agent mail it.
+        # Warn only where the operator can act: a known misconfiguration, or a listed contact's own mail failing.
+        # Forged stranger mail (open access grants everyone) stays at debug.
         if self._require_authenticated_sender and not msg_data.get("sender_authenticated", False):
-            if not granted:
-                logger.debug("[Email] Not answering unknown sender with unauthenticated From: %s (%s)",
-                             sender_addr, msg_data.get("auth_reason", "no verdict"))
-                return False
-            if self._open_access():
-                return True
-            logger.warning("[Email] Dropping sender with unauthenticated From: %s (%s). If your mail server does not "
-                           "stamp Authentication-Results, set platforms.email.require_authenticated_sender: false "
-                           "(or EMAIL_TRUST_FROM_HEADER=true) to accept the risk.",
-                           sender_addr, msg_data.get("auth_reason", "no verdict"))
+            auth_reason = msg_data.get("auth_reason", "no verdict")
+            hint = _DROP_HINTS.get(auth_reason, "")
+            if is_listed or (granted and hint):
+                logger.warning("[Email] Dropping sender with unauthenticated From: %s (%s).%s", sender_addr, auth_reason, hint)
+            else:
+                logger.debug("[Email] Dropping %s sender with unauthenticated From: %s (%s)",
+                             "authorized" if granted else "unknown", sender_addr, auth_reason)
             return False
         return True
 

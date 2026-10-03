@@ -46,7 +46,10 @@ _MAX_LOAD_TIMEOUT_SECS = 600.0
 _MAX_ABANDONED_LOADERS = 8
 _ABANDONED_LOADERS: List[threading.Thread] = []
 _ABANDONED_LOADERS_LOCK = threading.Lock()
-_IN_PLUGIN_LOAD = threading.local()  # ``.active`` on a loader worker thread
+# PluginContexts of the outermost deadline-bounded load; set only inside its worker.
+_IN_PLUGIN_LOAD: contextvars.ContextVar[Optional[List["PluginContext"]]] = contextvars.ContextVar(
+    "hermes_plugin_load_scope", default=None,
+)
 
 
 class PluginLoadTimeout(Exception):
@@ -55,7 +58,7 @@ class PluginLoadTimeout(Exception):
 
 def in_plugin_load_worker() -> bool:
     """True on a deadline worker thread; re-entrant discovery from there must not block on its own parent."""
-    return bool(getattr(_IN_PLUGIN_LOAD, "active", False))
+    return _IN_PLUGIN_LOAD.get() is not None
 
 
 def _resolve_plugin_load_timeout() -> float:
@@ -105,6 +108,14 @@ def run_with_load_deadline(plugin_key: str, ctx: "PluginContext", fn: Callable[[
     and :class:`PluginLoadTimeout` is raised on the calling thread so the usual failure path records the
     reason and disposes whatever was registered before the hang.
     """
+    # Re-entrant load on our own deadline worker: run inline; the outer deadline covers it.
+    outer_scope = _IN_PLUGIN_LOAD.get()
+    if outer_scope is not None:
+        outer_scope.append(ctx)
+        try:
+            return fn()
+        finally:
+            outer_scope.remove(ctx)
     timeout = _resolve_plugin_load_timeout()
     if timeout <= 0:
         return fn()
@@ -112,12 +123,16 @@ def run_with_load_deadline(plugin_key: str, ctx: "PluginContext", fn: Callable[[
     outcome: List[Any] = []
     failure: List[BaseException] = []
 
+    scope = [ctx]
+
     def _worker() -> None:
-        _IN_PLUGIN_LOAD.active = True
+        token = _IN_PLUGIN_LOAD.set(scope)
         try:
             outcome.append(fn())
         except BaseException as exc:  # re-raised on the loading thread, KeyboardInterrupt included
             failure.append(exc)
+        finally:
+            _IN_PLUGIN_LOAD.reset(token)
 
     worker = threading.Thread(
         target=contextvars.copy_context().run, args=(_worker,), name=f"plugin-load:{plugin_key}", daemon=True,
@@ -125,7 +140,8 @@ def run_with_load_deadline(plugin_key: str, ctx: "PluginContext", fn: Callable[[
     worker.start()
     worker.join(timeout)
     if worker.is_alive():
-        ctx._abandon_load()
+        for loaded_ctx in scope:
+            loaded_ctx._abandon_load()
         with _ABANDONED_LOADERS_LOCK:
             _ABANDONED_LOADERS.append(worker)
         raise PluginLoadTimeout(f"load timed out after {timeout:g}s (import + register() never returned)")

@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import logging
 import re
+import time
 from dataclasses import dataclass
 from typing import Optional
 
@@ -42,6 +43,7 @@ matching profile from the available roster.
 
 You will be given:
   - The original task title and body
+  - The parent's comment thread, if any (decisions already taken)
   - The list of available profiles (each with name + description)
   - The fallback "default_assignee" used when no profile fits
 
@@ -74,6 +76,9 @@ Rules:
     and the system will route to the default_assignee.
   - Each child task body is what a fresh worker will read with no other
     context — be specific about goal, approach, and acceptance criteria.
+  - Comments are DECISIONS ALREADY TAKEN (a scope ruling, a widened target
+    set, an accepted block). They override the original body — carry the
+    post-ruling scope into the children, never the stale pre-ruling one.
 
 When the task is genuinely a single unit of work (no useful decomposition),
 return:
@@ -99,6 +104,9 @@ Title: {title}
 Body:
 {body}
 
+Parent comments (decisions already taken — they override the body):
+{comments}
+
 Available profiles (assignees you may pick from):
 {roster}
 
@@ -107,6 +115,58 @@ Default assignee (used when no profile fits a task): {default_assignee}
 
 
 _FENCE_RE = re.compile(r"^```(?:json)?\s*|\s*```$", re.MULTILINE)
+
+# The parent's comment thread rides the decompose prompt and every child body (#126700):
+# a decision made after the body was written (a scope ruling, a widened target set) lives
+# in the comments, and re-carding drops it at exactly the moment the work is split.
+_DECISION_COMMENTS_MAX_BYTES = 2 * 1024   # the prompt slot (the body itself is capped at 4000)
+_WORKER_BODY_CAP_BYTES = 8 * 1024         # build_worker_context's task.body cap
+_COMMENT_RENDER_FLOOR = 160               # the largest decision always rides, at least this much
+
+
+def _comment_rendering(comment) -> str:
+    """One comment as a decision line: verbatim body with author + timestamp."""
+    author = (getattr(comment, "author", None) or "unknown").strip()
+    created_at = getattr(comment, "created_at", None)
+    stamp = time.strftime("%Y-%m-%d %H:%M", time.gmtime(int(created_at))) if created_at else ""
+    body = (getattr(comment, "body", None) or "").strip()
+    return f"- [{stamp}] {author}: {body}"
+
+
+def _decision_comments_block(comments: list, budget: int) -> str:
+    """The parent's comment thread as decisions already taken, clipped LARGEST-first
+    with a per-comment floor — a discussion after a decision is newer than the decision,
+    so newest-first drops the ruling (#126700)."""
+    if not comments:
+        return ""
+    ranked = sorted(comments, key=lambda c: len((getattr(c, "body", None) or "")), reverse=True)
+    lines: list[str] = []
+    used = 0
+    for idx, comment in enumerate(ranked):
+        line = _comment_rendering(comment)
+        if used + len(line) > budget:
+            if idx == 0:
+                lines.append(line[:max(budget - 20, _COMMENT_RENDER_FLOOR)])
+            break
+        lines.append(line)
+        used += len(line)
+    if not lines:
+        return ""
+    return "\n".join(lines)
+
+
+def _append_comments_to_body(body: str, comments_block: str) -> str:
+    """Child body + the decision thread, sized to stay inside the worker context's
+    8 KiB ``task.body`` cap — the block sits at the END of the body, so anything past
+    the cap is invisible to the worker. A body already at the cap shrinks the block."""
+    if not comments_block:
+        return body
+    remaining = _WORKER_BODY_CAP_BYTES - len(body.encode("utf-8")) - len(comments_block.encode("utf-8")) - 64
+    if remaining >= 0:
+        return f"{body}\n\n{comments_block}"
+    fit = max(0, _WORKER_BODY_CAP_BYTES - len(body.encode("utf-8")) - 64)
+    block = comments_block.encode("utf-8")[:fit].decode("utf-8", errors="ignore").rstrip()
+    return f"{body}\n\n{block}" if block else body
 
 
 @dataclass
@@ -218,7 +278,8 @@ def _load_routing(*, root_assignee: Optional[str] = None) -> _Routing:
     )
 
 
-def _apply_single(task: kb.Task, parsed: dict, routing: _Routing, author: str) -> DecomposeOutcome:
+def _apply_single(task: kb.Task, parsed: dict, routing: _Routing, author: str,
+                  *, comments_block: str = "") -> DecomposeOutcome:
     """``fanout=false``: single-task spec promotion (same effect as specify)."""
     title_val, body_val = _title_body(parsed)
     assignee_val = None
@@ -228,6 +289,9 @@ def _apply_single(task: kb.Task, parsed: dict, routing: _Routing, author: str) -
         )
     if title_val is None and body_val is None:
         return DecomposeOutcome(task.id, False, "decomposer returned fanout=false with no title/body")
+    # A single-task promotion replaces the body too — the decision thread rides it (#126700).
+    if body_val:
+        body_val = _append_comments_to_body(body_val, comments_block)
     with kbc.connect_closing() as conn:
         ok = kb.specify_triage_task(
             conn, task.id, title=title_val, body=body_val, assignee=assignee_val, author=author,
@@ -271,13 +335,22 @@ def _clean_children(task_id: str, raw_tasks: list, routing: _Routing) -> tuple[l
     return children, ""
 
 
-def _apply_fanout(task_id: str, parsed: dict, routing: _Routing, author: str) -> DecomposeOutcome:
+def _apply_fanout(task_id: str, parsed: dict, routing: _Routing, author: str,
+                  *, comments_block: str = "") -> DecomposeOutcome:
     raw_tasks = parsed.get("tasks") or []
     if not isinstance(raw_tasks, list) or not raw_tasks:
         return DecomposeOutcome(task_id, False, "decomposer returned fanout=true with empty tasks list")
     children, reason = _clean_children(task_id, raw_tasks, routing)
     if reason:
         return DecomposeOutcome(task_id, False, reason)
+    # The same decision thread rides every child body verbatim (#126700): a model that
+    # ignores the prompt cannot lose a ruling made after the body was written.
+    if comments_block:
+        for child in children:
+            if child.get("body"):
+                child["body"] = _append_comments_to_body(child["body"], comments_block)
+            else:
+                child["body"] = comments_block
     try:
         with kbc.connect_closing() as conn:
             child_ids = decompose_triage_task(
@@ -313,6 +386,10 @@ def decompose_task(
     if task is None:
         return DecomposeOutcome(task_id, False, reason)
 
+    with kbc.connect_closing() as conn:
+        comments = kb.list_comments(conn, task_id)
+    comments_block = _decision_comments_block(comments, _DECISION_COMMENTS_MAX_BYTES)
+
     routing = _load_routing(root_assignee=task.assignee)
     raw, reason = _call_aux(
         "decompose", task_id, aux_task="kanban_decomposer", system=_SYSTEM_PROMPT,
@@ -320,6 +397,7 @@ def decompose_task(
             **_task_prompt_fields(task),
             roster=_format_roster(routing.roster),
             default_assignee=routing.default_assignee,
+            comments=comments_block or "(none)",
         ),
         max_tokens=4000, timeout=timeout or 180, log=logger,
     )
@@ -332,8 +410,8 @@ def decompose_task(
 
     audit_author = author or _profile_author()
     if not parsed.get("fanout"):
-        return _apply_single(task, parsed, routing, audit_author)
-    return _apply_fanout(task_id, parsed, routing, audit_author)
+        return _apply_single(task, parsed, routing, audit_author, comments_block=comments_block)
+    return _apply_fanout(task_id, parsed, routing, audit_author, comments_block=comments_block)
 
 
 def list_triage_ids(*, tenant: Optional[str] = None) -> list[str]:

@@ -104,6 +104,8 @@ _EXACT_HANDLERS = {
 # `/goal resume last goal` resumes instead of silently replacing the goal text.
 # clear/stop/done stay out — guessing wrong would end a goal the user meant to keep.
 _BARE_CONTROL_VERBS = frozenset({"resume", "continue", "unpause", "pause", "status", "show", "unwait"})
+# First words that make a command goal control (the gateway busy path dispatches these).
+_CONTROL_FIRST_WORDS = _BARE_CONTROL_VERBS | {"wait", "gate"}
 
 
 def _bare_control(mgr, verb, rest, render):
@@ -174,7 +176,7 @@ def is_goal_control(arg: str) -> bool:
     """Whether this command controls an existing goal rather than replacing it."""
     normalized = arg.strip().lower()
     first = normalized.split(None, 1)[0] if normalized else ""
-    return normalized in _EXACT_HANDLERS or first in _BARE_CONTROL_VERBS or first in {"wait", "gate"}
+    return normalized in _EXACT_HANDLERS or first in _CONTROL_FIRST_WORDS
 
 
 def dispatch_goal_command(

@@ -1164,11 +1164,13 @@ def _parse_codex_final_response(
                 _field(item, "type") not in _SERVER_SIDE_TOOL_CALL_TYPES
                 and _lower_or_none(_field(item, "status")) in _INCOMPLETE_STATUSES
                 for item in output):
+        # Same gate as the normalizer: commentary/analysis is never the answer, nor is output_text alongside it.
+        narration = {"commentary", "analysis"}
+        phases = {_lower_or_none(_field(item, "phase")) for item in output if _field(item, "type") == "message"}
         answer = "\n".join(filter(None, (
             _extract_responses_message_text(item) for item in output
-            if _field(item, "type") == "message"
-            and _lower_or_none(_field(item, "phase")) not in {"commentary", "analysis"}
-        ))).strip() or (normalized_final.output_text or "").strip()
+            if _field(item, "type") == "message" and _lower_or_none(_field(item, "phase")) not in narration
+        ))).strip() or ("" if phases & narration else (normalized_final.output_text or "").strip())
         if answer and _leaked_tool_call_text(answer):
             message.content, finish_reason = answer, "stop"
     # Aux consumers speak Chat Completions: "length" activates their existing

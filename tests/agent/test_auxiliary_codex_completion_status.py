@@ -94,6 +94,9 @@ _CODEX_REASONING_ONLY = SimpleNamespace(
                      "length", id="tool-call-like-partial-item"),
         # A str ``output`` is delivered only via output_text (empty output list), as streamed Codex answers can be.
         pytest.param("", "completed", _LEAK_LIKE_ANSWER, None, _LEAK_LIKE_ANSWER, "stop", id="tool-call-like-output-text"),
+        # (items, text): output_text beside a commentary item is narration, never the rescued answer.
+        pytest.param("", "completed", ([_message("", phase="commentary")], _LEAK_LIKE_ANSWER), None, None, "length",
+                     id="tool-call-like-output-text-beside-commentary"),
         pytest.param("", "incomplete", [_message("PARTIAL")], "max_output_tokens", "PARTIAL", "length", id="token-cap"),
         pytest.param("", "incomplete", [_TOOL_CALL], "max_output_tokens", None, "tool_calls", id="token-cap-after-tool-call"),
         # Route-sensitive normalization: the issuer comes from the request's route classification.
@@ -104,9 +107,9 @@ _CODEX_REASONING_ONLY = SimpleNamespace(
 def test_actual_adapter_preserves_completion_contract(
     streamed, base_url, status, output, reason, expected_content, expected_finish,
 ):
+    items, output_text = output if isinstance(output, tuple) else ([], output) if isinstance(output, str) else (output, "")
     final = SimpleNamespace(
-        status=status, output=[] if isinstance(output, str) else output,
-        output_text=output if isinstance(output, str) else "",
+        status=status, output=items, output_text=output_text,
         incomplete_details={"reason": reason} if reason else None, error=None,
         usage={"input_tokens": 11, "output_tokens": 3, "total_tokens": 14},
     )

@@ -427,6 +427,45 @@ def _staged_venv_dir() -> "Path | None":
     return None
 
 
+def windows_store_python_stubs(python_path: str | None, python3_path: str | None) -> list[str]:
+    """Names among (``python``, ``python3``) whose resolved path is a Microsoft
+    Store App Execution Alias (#129102, #129121). A ``WindowsApps`` path only
+    counts when it is a 0-byte stub or a dead redirector — a non-zero
+    ``WindowsApps`` binary (e.g. the Python Install Manager shim) is a real
+    interpreter. The ``win32`` gate lives in the caller."""
+    from pm.shell import is_windows_app_alias
+
+    stubs = []
+    if python_path and is_windows_app_alias(python_path):
+        stubs.append("python")
+    if python3_path and is_windows_app_alias(python3_path):
+        stubs.append("python3")
+    return stubs
+
+
+def _check_windows_store_python_aliases(f: Finding) -> None:
+    """Windows-only: warn when ``python``/``python3`` resolve to Store alias
+    stubs instead of a real interpreter. Silent on other platforms and when
+    both names resolve to real binaries (or are absent). Never raises."""
+    if sys.platform != "win32":
+        return
+    try:
+        stubs = windows_store_python_stubs(shutil.which("python"), shutil.which("python3"))
+    except Exception as exc:
+        return check_warn("Store Python alias probe failed", f"({exc})")
+    if not stubs:
+        return
+    names = " and ".join(f"`{name}`" for name in stubs)
+    check_warn(f"{names} resolve to Microsoft Store aliases, not a real interpreter",
+               "(%LOCALAPPDATA%\\Microsoft\\WindowsApps are App Execution Aliases — "
+               "running one prints 'Python was not found' instead of running)")
+    f.manual_issues.append(
+        "Install a real Python (python.org or the Microsoft Store entry), or run "
+        "`hermes pm install`, then ensure `python3` resolves to it instead of the "
+        "WindowsApps Store alias"
+    )
+
+
 @doctor_check()
 def _check_python_environment(should_fix: bool, f: Finding) -> None:
     """Interpreter, linked SQLite, venv, macOS TCC anchors/FDA/grants, version-file drift."""
@@ -471,6 +510,8 @@ def _check_python_environment(should_fix: bool, f: Finding) -> None:
     # loses every permission grant on each rebuild; a post-#73681 identifier-pinned DR survives, but grants
     # made to older binaries stay stale (toggle shows ON while macOS re-prompts).
     check_macos_tcc_grants()
+    # Windows Store alias stubs (#129102): python/python3 under WindowsApps are not interpreters.
+    _check_windows_store_python_aliases(f)
 
 
 @doctor_check()

@@ -103,11 +103,20 @@ class SessionCompressionMixin:
             return None
 
         def _do(conn):
-            row = conn.execute(_ENDED_ROW_SQL, (session_id,)).fetchone()
+            row = conn.execute(
+                "SELECT ended_at, end_reason, source, model_config FROM sessions WHERE id = ?",
+                (session_id,),
+            ).fetchone()
             if row is None or row["ended_at"] is None:
                 return None
             reason = row["end_reason"]
-            if is_automatic_end_reason(reason) or reason == "compression" or reason in _BOUNDARY_END_REASONS:
+            from hermes_state_common import is_scheduler_finalized_cron
+            if (
+                is_automatic_end_reason(reason)
+                or is_scheduler_finalized_cron(dict(row))
+                or reason == "compression"
+                or reason in _BOUNDARY_END_REASONS
+            ):
                 return None
             superseded = conn.execute(
                 "SELECT 1 FROM sessions WHERE parent_session_id = ?"
@@ -280,7 +289,7 @@ class SessionCompressionMixin:
                 raise CompressionSessionBusyError(
                     f"Compression lease lost before publication: {parent_session_id}")
             parent = conn.execute(
-                """SELECT ended_at, end_reason, cwd, git_branch, git_repo_root,
+                """SELECT ended_at, end_reason, source, model_config, cwd, git_branch, git_repo_root,
                           user_id, session_key, chat_id, chat_type,
                           thread_id, display_name, origin_json, profile_name, tool_names,
                           archived, auto_archived, pinned
@@ -294,7 +303,15 @@ class SessionCompressionMixin:
                 # evict) is stale by construction — this lease holder is still continuing the
                 # conversation, and left alone it wedges rotation forever. Clear it; the closure
                 # UPDATE below re-stamps end_reason='compression'. Deliberate boundaries fail closed.
-                if not is_automatic_end_reason(parent["end_reason"]):
+                from hermes_state_common import CRON_FINALIZED_END_REASONS, is_scheduler_finalized_cron
+                scheduler_finalized_current = (
+                    parent["source"] == "cron"
+                    and (
+                        parent["end_reason"] in CRON_FINALIZED_END_REASONS
+                        or (parent["end_reason"] is None and is_scheduler_finalized_cron(dict(parent)))
+                    )
+                )
+                if not is_automatic_end_reason(parent["end_reason"]) and not scheduler_finalized_current:
                     raise RuntimeError(f"Compression parent already ended: {parent_session_id}")
                 conn.execute(
                     "UPDATE sessions SET ended_at = NULL, end_reason = NULL WHERE id = ?",

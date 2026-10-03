@@ -528,6 +528,8 @@ class SessionDB(
     @staticmethod
     def _session_row_dict(row: sqlite3.Row) -> Dict[str, Any]:
         data = dict(row)
+        from hermes_state_common import is_scheduler_finalized_cron
+        data["cron_finalized"] = is_scheduler_finalized_cron(data)
         for column in ("system_prompt", "tool_names"):
             if f"_{column}_resolved" in data:
                 resolved = data.pop(f"_{column}_resolved")

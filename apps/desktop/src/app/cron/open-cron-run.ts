@@ -1,7 +1,7 @@
 import { hasCronRunVerdict, isCronRunReadOnly, recordCronRunVerdict } from '@/store/read-only-transcript'
 import type { SessionInfo } from '@/types/hermes'
 
-type CronRunLiveness = Pick<SessionInfo, 'ended_at' | 'last_active' | 'scheduler_owned'> &
+type CronRunLiveness = Pick<SessionInfo, 'ended_at' | 'last_active' | 'scheduler_owned' | 'cron_finalized'> &
   Partial<Pick<SessionInfo, 'is_active'>>
 
 type CronRunRow = CronRunLiveness & Pick<SessionInfo, 'id'>
@@ -33,6 +33,20 @@ const CRON_RUN_SESSION_ID = /^cron_.+_\d{8}_\d{6}$/
  * is re-evaluated on every refresh and send, so it never latches.
  */
 export function isResumableCronRun(run: CronRunLiveness, nowMs = Date.now()): boolean {
+  // Modern backends explicitly classify scheduler finalization. That verdict is
+  // authoritative over the mutable lifecycle timestamp; only a live scheduler
+  // may override an explicit negative result.
+  if (typeof run.cron_finalized === 'boolean') {
+    if (run.cron_finalized) {
+      return true
+    }
+    if (typeof run.scheduler_owned === 'boolean') {
+      return run.scheduler_owned
+    }
+    return false
+  }
+
+  // Compatibility path for older backends that do not provide the classifier.
   if (run.ended_at != null) {
     return true
   }

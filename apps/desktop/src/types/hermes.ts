@@ -589,6 +589,7 @@ export interface SessionInfo {
    *  long tool call and is false for a zombie whose process died (#88443).
    *  Undefined against older backends and for non-cron rows. */
   scheduler_owned?: boolean
+  cron_finalized?: boolean
   last_active: number
   message_count: number
   model: null | string

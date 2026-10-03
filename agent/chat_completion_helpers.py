@@ -2644,6 +2644,11 @@ class _BedrockStream:
 
     def _fire_first(self):
         self.response_started = True
+        if getattr(self.agent, "_last_api_first_chunk_at", None) is None:
+            now = time.time()
+            self.agent._last_api_first_chunk_at = now
+            self.agent._last_api_ttfb = max(0.0, now - self.started_at)
+            self.agent._last_api_ttft = self.agent._last_api_ttfb
         if not self.first_delta_fired and self.on_first_delta:
             self.first_delta_fired = True
             with contextlib.suppress(Exception):
@@ -4108,6 +4113,10 @@ class _StreamingCall(StreamingWaitMonitor):
         # Propagate first-chunk timing for the ``post_api_request`` hook.
         if isinstance(self.clients.diag, dict) and self.clients.diag.get("first_chunk_at"):
             self.agent._last_api_first_chunk_at = float(self.clients.diag["first_chunk_at"])
+            _started = self.clients.diag.get("started_at")
+            if _started:
+                self.agent._last_api_ttfb = max(0.0, self.agent._last_api_first_chunk_at - float(_started))
+                self.agent._last_api_ttft = self.agent._last_api_ttfb
         return self.result["response"]
 
 

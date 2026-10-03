@@ -2351,6 +2351,8 @@ _USAGE_STATE: Dict[str, Any] = {
     # Status-bar latency/velocity history (last 10 calls), shared by loop + codex_runtime.
     "_api_latency_history": lambda: deque(maxlen=10),
     "_api_output_history": lambda: deque(maxlen=10),
+    "_api_ttfb_history": lambda: deque(maxlen=10),
+    "_api_ttft_history": lambda: deque(maxlen=10),
 }
 
 # Constructor params stored verbatim under the same name.

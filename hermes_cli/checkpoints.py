@@ -115,7 +115,7 @@ def cmd_prune(args: argparse.Namespace) -> int:
     print(f"Deleted stale:   {result['deleted_stale']}")
     print(f"Errors:          {result['errors']}")
     print(f"Bytes reclaimed: {_fmt_bytes(result['bytes_freed'])}")
-    return 0
+    return 2 if result["errors"] else 0
 
 
 def _confirm(prompt: str) -> bool:

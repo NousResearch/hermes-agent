@@ -32,9 +32,11 @@ from __future__ import annotations
 
 import argparse
 import collections
+import contextvars
 import hashlib
 import json
 import os
+import re
 import sys
 import tempfile
 import threading
@@ -68,7 +70,9 @@ import anthropic
 from anthropic.resources.messages import Messages
 _orig_stream = Messages.stream
 LOCK = threading.Lock()
-TLS = threading.local()
+# The agent makes each API call on a worker thread started with the caller's ContextVars
+# (agent.chat_completion_helpers._context_thread_target); a threading.local would read empty there.
+WORKER: contextvars.ContextVar = contextvars.ContextVar("probe_worker", default=None)
 
 def _write(rec):
     with LOCK:
@@ -98,9 +102,17 @@ class _Ctx:
     def __exit__(self, *a): return self.mgr.__exit__(*a)
     def __getattr__(self, n): return getattr(self.mgr, n)
 
+def _sha(obj):
+    return hashlib.sha256(json.dumps(obj, sort_keys=True, default=str).encode()).hexdigest()[:10]
+
 def patched_stream(self, **kw):
     msgs = kw.get("messages") or []
-    rec = dict(worker=int(m.group(1)) if m else None, call=len(msgs), t_start=time.time(), model=kw.get("model"),
+    first = (msgs[0].get("content") if msgs else None) or ""
+    ftxt = first if isinstance(first, str) else "".join(b.get("text", "") for b in first if isinstance(b, dict))
+    m = re.search(r"\[probe-session (\d+)\]", ftxt)
+    sys_sha, tools_sha, msg_shas = _sha(kw.get("system")), _sha(kw.get("tools")), [_sha(x) for x in msgs]
+    # The tag can be gone from messages[0] (a compacted history leads with a placeholder turn).
+    rec = dict(worker=int(m.group(1)) if m else WORKER.get(), call=len(msgs), t_start=time.time(), model=kw.get("model"),
                n_msgs=len(msgs), system_sha=sys_sha, tools_sha=tools_sha, msg_shas=msg_shas)
     if SETTLE_S > 0 and len(msgs) > 1:
         time.sleep(SETTLE_S); rec["settle_s"] = SETTLE_S
@@ -138,7 +150,7 @@ def patched_create(self, *a, **kw):
     ftxt = f0.get("content") if isinstance(f0.get("content"), str) else "".join(b.get("text", "") for b in (f0.get("content") or []) if isinstance(b, dict))
     m = _re.search(r"\[probe-session (\d+)\]", ftxt or "")
     sha = lambda o: hashlib.sha256(json.dumps(o, sort_keys=True, default=str).encode()).hexdigest()[:10]
-    rec = dict(worker=int(m.group(1)) if m else None, call=len(nonsys), t_start=time.time(), model=kw.get("model"), n_msgs=len(nonsys),
+    rec = dict(worker=int(m.group(1)) if m else WORKER.get(), call=len(nonsys), t_start=time.time(), model=kw.get("model"), n_msgs=len(nonsys),
                system_sha=sha(sysm), tools_sha=sha(kw.get("tools")), msg_shas=[sha(x) for x in nonsys], extra_body=kw.get("extra_body"))
     if SETTLE_S > 0 and len(nonsys) > 1: time.sleep(SETTLE_S); rec["settle_s"] = SETTLE_S
     if kw.get("stream"):
@@ -190,7 +202,7 @@ TASK = (f"You are testing a tool loop. In {WORKDIR} there are part0.txt..part5.t
         f"of the sha on line 00042 of part3. Do not summarize the files; just call the tools, one at a time. Total tool calls: {CALLS}.")
 
 def worker(w):
-    TLS.worker = w
+    WORKER.set(w)
     try:
         extra = dict(providers_allowed=[ARGS.pin], provider_sort=None) if (ARGS.pin and PROVIDER == "openrouter") else {}
         a = AIAgent(api_key=CRED["api_key"], base_url=CRED["base_url"], provider=CRED["provider"], **extra,

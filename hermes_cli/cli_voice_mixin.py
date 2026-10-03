@@ -277,6 +277,18 @@ class CLIVoiceMixin:
         """Schedule TTS and mark it pending before continuous recording can restart."""
         if not self._voice_tts or not text:
             return
+        # A new reply preempts any still-playing previous reply — cut it first so the
+        # two never overlap. The TUI-gateway streaming path already does this in
+        # _tts_stream_begin ("cutting a still-speaking previous turn IS this turn's
+        # barge-in"); the batch speak path must match it.
+        try:
+            tts_stop = getattr(self, "_voice_tts_stop", None)
+            if tts_stop is not None:
+                tts_stop.set()
+            from tools.voice_mode import stop_playback
+            stop_playback()
+        except Exception:
+            pass
         self._voice_tts_done.clear()
         threading.Thread(target=self._voice_speak_response, args=(text,), daemon=True).start()
         # Barge-in safety net for speak calls outside a chat turn (the agent-turn listener

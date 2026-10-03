@@ -105,8 +105,10 @@ class _SyncSentencePipeline:
     the bound keeps lookahead/temp files small and gives the caller backpressure.
     ``text_to_speech_tool`` / ``play_audio_file`` are resolved late so test patches apply."""
 
-    def __init__(self, stop_event: threading.Event, *, lookahead: int = 2):
+    def __init__(self, stop_event: threading.Event, *, lookahead: int = 2, on_first_audio=None):
         self._stop = stop_event
+        self._first_audio_fired = False
+        self._on_first_audio = on_first_audio  # fires once, right before the first real playback
         self._queue: "queue.Queue[Optional[tuple[str, Future]]]" = queue.Queue(maxsize=max(1, lookahead))
         self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="tts-sync-synth")
         self._player = threading.Thread(target=self._drain, name="tts-sync-play", daemon=True)
@@ -146,6 +148,11 @@ class _SyncSentencePipeline:
             try:
                 tmp_path = future.result()
                 if tmp_path and not self._stop.is_set() and os.path.isfile(tmp_path) and os.path.getsize(tmp_path) > 0:
+                    if not self._first_audio_fired:  # deferred cut: new audio is about to sound
+                        self._first_audio_fired = True
+                        if self._on_first_audio is not None:
+                            with contextlib.suppress(Exception):
+                                self._on_first_audio()
                     from tools.voice_mode import play_audio_file
                     play_audio_file(tmp_path)
             except Exception as exc:
@@ -165,8 +172,10 @@ class _StreamerPlayback:
     _MAX_REINIT = 3
     _CHUNK_QUEUE_MAX = 64
 
-    def __init__(self, streamer, stop_event: threading.Event):
+    def __init__(self, streamer, stop_event: threading.Event, on_first_audio=None):
         self.streamer, self.stop_event = streamer, stop_event
+        self._first_audio_fired = False
+        self._on_first_audio = on_first_audio  # fires once, right before the first real playback
         # The device is opened lazily, once the first sentence's first chunk has arrived: an
         # OpenAI-compatible endpoint reports its real PCM rate in the response headers, so
         # ``streamer.sample_rate`` is only trustworthy after the request answered (#76466).
@@ -251,6 +260,11 @@ class _StreamerPlayback:
 
     def _play_sentence_via_tempfile(self, chunk_queue) -> None:
         chunks = _drain_chunks(chunk_queue)  # drained first: the rate is final once chunks exist
+        if chunks and not self._first_audio_fired:  # deferred cut: new audio is about to sound
+            self._first_audio_fired = True
+            if self._on_first_audio is not None:
+                with contextlib.suppress(Exception):
+                    self._on_first_audio()
         _play_via_tempfile(chunks, self.stop_event, self.streamer.sample_rate)
 
     def _for_each_sentence(self, play: Callable[[queue.Queue], None]) -> None:
@@ -288,6 +302,11 @@ class _StreamerPlayback:
         first = next(chunks, None)  # blocks until the endpoint answered: the rate is final now
         if first is None:
             return
+        if not self._first_audio_fired:  # deferred cut: new audio is about to sound
+            self._first_audio_fired = True
+            if self._on_first_audio is not None:
+                with contextlib.suppress(Exception):
+                    self._on_first_audio()
         chunks = itertools.chain([first], chunks)
         if not self._ensure_output_stream():
             _play_via_tempfile(list(chunks), self.stop_event, self.streamer.sample_rate)
@@ -330,7 +349,8 @@ class _StreamerPlayback:
 
 def stream_tts_to_speaker(
     text_queue: queue.Queue, stop_event: threading.Event, tts_done_event: threading.Event,
-    display_callback: Optional[Callable[[str], None]] = None, provider: Optional[str] = None):
+    display_callback: Optional[Callable[[str, None]]] = None, provider: Optional[str] = None,
+    on_first_audio: Optional[Callable[[], None]] = None):
     """Consume text deltas from *text_queue*, cut into sentences, speak each the moment it's ready.
 
     A registered streaming provider plays chunked PCM; every other provider is spoken
@@ -349,12 +369,12 @@ def stream_tts_to_speaker(
         streamer = resolve_streaming_provider(tts_config, preferred=provider)
         stream_max_len = 0
         if streamer is None:
-            sync_pipeline = _SyncSentencePipeline(stop_event)
+            sync_pipeline = _SyncSentencePipeline(stop_event, on_first_audio=on_first_audio)
         else:
             with contextlib.suppress(Exception):
                 stream_max_len = origin._resolve_max_text_length(
                     provider or origin._get_provider(tts_config), tts_config)
-            playback = _StreamerPlayback(streamer, stop_event)
+            playback = _StreamerPlayback(streamer, stop_event, on_first_audio=on_first_audio)
         chunker = SentenceChunker.from_config(tts_config)
         spoken_sentences: list[str] = []  # skip duplicate/near-duplicate sentences (LLM repetition)
 

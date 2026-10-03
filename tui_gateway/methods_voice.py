@@ -85,11 +85,43 @@ def _any_session_running() -> bool:
         return False
 
 
-# ── Streaming TTS: one pipeline per process (one speaker); a new turn's pipeline barges in on
-# the previous. Token deltas feed a sentence-buffering consumer (stream_tts_to_speaker).
+# ── Streaming TTS: one pipeline per process (one speaker). Deferred
+# barge-in): a new turn no longer cuts the previous turn's TTS at submit — typing must
+# not silence a still-speaking reply. The previous pipeline is DETACHED and keeps
+# playing; the new turn's first real audio (on_first_audio), a mic barge-in, or a mode
+# switch cuts it. Token deltas feed a sentence-buffering consumer (stream_tts_to_speaker).
 
 _tts_stream_lock = threading.Lock()
 _tts_stream_state: Optional[dict] = None
+# Detached previous-turn pipelines: still speaking, waiting to be cut by the new turn's
+# first audio (or any real stop). Kept so _fd_tts_pending keeps the listener armed and
+# _tts_stream_stop can silence everything on /voice off or a keypress interrupt.
+_detached_pipelines: "set[tuple[threading.Event, threading.Event]]" = set()
+
+
+def _adopt_detached(state: Optional[dict]) -> None:
+    """Park a still-speaking previous pipeline so it keeps playing (deferred cut)."""
+    if state is not None and not state["done"].is_set():
+        with _tts_stream_lock:
+            _detached_pipelines.add((state["stop"], state["done"]))
+
+
+def _cut_detached_pipelines(mark_note: bool = True) -> None:
+    """Cut every detached previous-turn pipeline — the deferred barge-in moment (new
+    turn's first audio is about to sound). Fires once per new pipeline via on_first_audio."""
+    with _tts_stream_lock:
+        pairs = [(s, d) for s, d in _detached_pipelines if not d.is_set()]
+        _detached_pipelines.clear()
+    for _stop, _done in pairs:
+        if mark_note:
+            with contextlib.suppress(Exception):
+                from tools.tts_streaming import mark_speech_interrupted
+                mark_speech_interrupted()  # previous speech WAS cut mid-flight
+        _stop.set()
+    if pairs:
+        with contextlib.suppress(Exception):
+            from tools.voice_mode import stop_playback
+            stop_playback()
 
 
 def _tts_stream_begin() -> Optional[queue.Queue]:
@@ -103,11 +135,17 @@ def _tts_stream_begin() -> Optional[queue.Queue]:
             return None
     except Exception:
         return None
-    _tts_stream_stop()
+    # Deferred barge-in: do NOT stop the previous turn's pipeline here.
+    # Detach it so typing doesn't cut it; the new turn's first real audio cuts it.
+    global _tts_stream_state
+    with _tts_stream_lock:
+        previous, _tts_stream_state = _tts_stream_state, None
+    _adopt_detached(previous)
     text_queue: queue.Queue = queue.Queue()
     stop, done = threading.Event(), threading.Event()
-    threading.Thread(target=stream_tts_to_speaker, args=(text_queue, stop, done), daemon=True).start()
-    global _tts_stream_state
+    threading.Thread(
+        target=stream_tts_to_speaker, args=(text_queue, stop, done),
+        kwargs={"on_first_audio": _cut_detached_pipelines}, daemon=True).start()
     with _tts_stream_lock:
         _tts_stream_state = {"stop": stop, "done": done}
     _arm_barge_listener_if_enabled()
@@ -115,20 +153,28 @@ def _tts_stream_begin() -> Optional[queue.Queue]:
 
 
 def _tts_stream_stop(user_barge: bool = True) -> None:
-    """Cut in-flight streaming TTS. *user_barge* latches the interruption for the next turn's
-    model note; ``False`` for mode changes (/voice off)."""
+    """Cut in-flight streaming TTS — the current pipeline AND any detached previous
+    one. *user_barge* latches the interruption for the next turn's model note;
+    ``False`` for mode changes (/voice off)."""
     global _tts_stream_state
     with _tts_stream_lock:
         state, _tts_stream_state = _tts_stream_state, None
-    if state is None:
+        detached = [(s, d) for s, d in _detached_pipelines if not d.is_set()]
+        _detached_pipelines.clear()
+    live = []
+    if state is not None and not state["done"].is_set():
+        live.append(state["stop"])
+    live.extend(s for s, _d in detached)
+    if not live:
         return
-    if user_barge and not state["done"].is_set():
+    if user_barge:
         import traceback
         from tools.tts_streaming import mark_speech_interrupted
         logger.debug("TTS CUT: _tts_stream_stop(user_barge=True) — new turn or "
                      "interrupt cutting in-flight TTS\n%s", "".join(traceback.format_stack()))
         mark_speech_interrupted()
-    state["stop"].set()
+    for stop_event in live:
+        stop_event.set()
     with contextlib.suppress(Exception):
         from tools.voice_mode import stop_playback
         stop_playback()
@@ -162,11 +208,14 @@ def _arm_barge_listener_if_enabled() -> None:
 
 
 def _fd_tts_pending() -> bool:
-    """True while any TTS (streaming pipeline or fallback speak) is unfinished."""
+    """True while any TTS (streaming pipeline, detached previous one, or fallback speak)
+    is unfinished."""
     with _tts_stream_lock:
         state = _tts_stream_state
+        detached_done = [done for _stop, done in _detached_pipelines]
     with _fd_listener_lock:
-        pending = ([state["done"]] if state is not None else []) + [done for _stop, done in _fd_speak_pipelines]
+        pending = ([state["done"]] if state is not None else []) + detached_done + [
+            done for _stop, done in _fd_speak_pipelines]
     return any(not done.is_set() for done in pending)
 
 

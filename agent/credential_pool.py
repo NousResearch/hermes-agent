@@ -960,6 +960,7 @@ def persist_pool_entries(
 _TOKENS_SINGLETON_PROVIDERS: Dict[str, Tuple[str, str, str, str]] = {
     "openai-codex": ("Codex", "Codex", "refresh_codex_oauth_pure", "_is_terminal_codex_oauth_refresh_error"),
     "xai-oauth": ("xAI OAuth", "xAI", "refresh_xai_oauth_pure", "_is_terminal_xai_oauth_refresh_error"),
+    "meta-oauth": ("Meta OAuth", "Meta", "refresh_meta_oauth_pure", "_is_terminal_meta_oauth_refresh_error"),
 }
 
 # Built-in providers whose pooled OAuth entries ``_refresh_entry_impl`` can actually refresh. Plugin
@@ -983,6 +984,7 @@ _REFRESH_SWEEP_SPACING_SECONDS = 0.5
 _REFRESH_TIMEOUT_ENV_VARS = {
     "openai-codex": "HERMES_CODEX_REFRESH_TIMEOUT_SECONDS",
     "xai-oauth": "HERMES_XAI_REFRESH_TIMEOUT_SECONDS",
+    "meta-oauth": "HERMES_META_REFRESH_TIMEOUT_SECONDS",
 }
 
 # Singleton-seeded source whose exhausted/DEAD pool row may be revived by a
@@ -992,6 +994,7 @@ _RESYNC_SOURCE = {
     "nous": "device_code",
     "openai-codex": "device_code",
     "xai-oauth": "device_code",
+    "meta-oauth": "device_code",
 }
 
 
@@ -2816,6 +2819,9 @@ def _seed_tokens_singleton(seed: _Seeder, auth_store: Dict[str, Any]) -> None:
     if seed.provider == "openai-codex":
         base_url = auth_mod.DEFAULT_CODEX_BASE_URL
         custom_label = str(state.get("label") or "").strip()
+    elif seed.provider == "meta-oauth":
+        base_url = auth_mod.DEFAULT_META_OAUTH_BASE_URL
+        custom_label = ""
     else:
         base_url = auth_mod.DEFAULT_XAI_OAUTH_BASE_URL
         custom_label = ""

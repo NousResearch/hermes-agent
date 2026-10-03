@@ -491,15 +491,30 @@ def classify_removal(
     return "refuse", steward_uninstall_message(install.steward)
 
 
-def _owned_launchers(root: Path, default_root: Path, windows: bool) -> tuple[Path, ...]:
-    """Launchers in ``<default root>\\bin`` that belong to the managed clone at ``root``."""
-    if not windows or root.parent != default_root.resolve():
-        return ()
-    from hermes_cli._launchers import WINDOWS_BIN_LAUNCHERS
+def _launcher_bin_dirs(default_root: Path) -> tuple[Path, ...]:
+    """Where ``expose_cli`` publishes the ``hermes`` commands on Linux and macOS."""
+    return (Path.home() / ".local" / "bin", default_root / "bin", Path("/usr/local/bin"))
 
-    bin_dir = default_root / "bin"
-    candidates = (bin_dir / f"{name}{ext}" for name in WINDOWS_BIN_LAUNCHERS for ext in (".exe", ".cmd"))
-    return tuple(p for p in candidates if p.exists())
+
+def _owned_launchers(root: Path, default_root: Path, windows: bool) -> tuple[Path, ...]:
+    """Launcher files that belong to the install at ``root``.
+
+    On Windows, the managed clone owns the launchers in ``<default root>\\bin``. On Linux and macOS,
+    a launcher belongs to ``root`` when ``_owns_launcher`` says so: a symlink into the tree, or a
+    script that names the tree. A launcher that names another tree stays.
+    """
+    from hermes_cli._launchers import WINDOWS_BIN_LAUNCHERS, _owns_launcher
+
+    if windows:
+        if root.parent != default_root.resolve():
+            return ()
+        bin_dir = default_root / "bin"
+        candidates = (bin_dir / f"{name}{ext}" for name in WINDOWS_BIN_LAUNCHERS for ext in (".exe", ".cmd"))
+        return tuple(p for p in candidates if p.exists())
+    names = (*WINDOWS_BIN_LAUNCHERS, "hermes-agent")
+    candidates = (directory / name for directory in _launcher_bin_dirs(default_root) for name in names)
+    owned = (p for p in candidates if (p.is_symlink() or p.exists()) and _owns_launcher(p, root))
+    return tuple(dict.fromkeys(owned))
 
 
 def _shortcuts_into(root: Path, run: Runner) -> tuple[Path, ...]:
@@ -559,11 +574,16 @@ def execute_removal(plan: RemovalPlan, *, run: Runner = subprocess.run) -> int:
         except OSError as exc:
             print(f"Could not remove {plan.tree}: {exc}", file=sys.stderr)
             return 1
+        failed = 0
         for leftover in (*plan.launchers, *plan.shortcuts):
             try:
                 leftover.unlink(missing_ok=True)
             except OSError as exc:
+                failed += 1
                 print(f"Could not remove {leftover}: {exc}", file=sys.stderr)
+        if failed:
+            print(f"The folder is removed, but {failed} launcher or shortcut file(s) remain.", file=sys.stderr)
+            return 1
         return 0
     if plan.action == "appx":
         try:

@@ -56,6 +56,7 @@ def _quiet(*args, **kwargs) -> subprocess.CompletedProcess:
 def _no_real_machine_state(monkeypatch):
     monkeypatch.setattr(installs, "_packaged_app_dirs", lambda: [])
     monkeypatch.setattr(installs, "_path_entries", lambda windows: [])
+    monkeypatch.setattr(installs, "_launcher_bin_dirs", lambda default_root: ())
     monkeypatch.setattr("hermes_cli.boot_bootstrap._git_binary", lambda: "git")
 
 
@@ -423,6 +424,54 @@ class TestRemovalPlan:
 
         assert plan.action == "refuse"
         assert plan.command is None
+
+    def test_posix_removal_takes_only_the_launchers_that_belong_to_the_tree(self, home, running, tmp_path, monkeypatch):
+        managed = _checkout(home / "hermes-agent")
+        user_bin = tmp_path / "user-bin"
+        user_bin.mkdir()
+        for name in ("hermes", "hermes-acp", "hermes-agent"):
+            (user_bin / name).write_text(f"owner={managed.resolve()}\n", encoding="utf-8")
+        (user_bin / "uv").write_text("unrelated\n", encoding="utf-8")
+        bin_dir = home / "bin"
+        bin_dir.mkdir()
+        (bin_dir / "hermes").write_text("owner=another-tree\n", encoding="utf-8")
+        (bin_dir / "hermes-acp").write_text(f"owner={managed.resolve()}\n", encoding="utf-8")
+        monkeypatch.setattr(installs, "_launcher_bin_dirs", lambda default_root: (user_bin, default_root / "bin"))
+        monkeypatch.setattr(
+            "hermes_cli._launchers._owns_launcher",
+            lambda target, root: f"owner={root}" in target.read_text(encoding="utf-8-sig"))
+        plan = self._plan(self._install(managed), home, running.resolve(), windows=False)
+
+        assert sorted(p.name for p in plan.launchers) == ["hermes", "hermes-acp", "hermes-acp", "hermes-agent"]
+        assert installs.execute_removal(plan) == 0
+
+        assert not managed.exists()
+        assert sorted(p.name for p in user_bin.iterdir()) == ["uv"]
+        assert sorted(p.name for p in bin_dir.iterdir()) == ["hermes"]
+
+    @pytest.mark.platforms("posix")
+    def test_posix_launcher_that_runs_the_trees_venv_is_recognized(self, home, running, tmp_path, monkeypatch):
+        managed = _checkout(home / "hermes-agent")
+        user_bin = tmp_path / "user-bin"
+        user_bin.mkdir()
+        launcher = user_bin / "hermes"
+        launcher.write_text(f'#!/bin/sh\nexec {managed.resolve()}/venv/bin/hermes "$@"\n', encoding="utf-8")
+        monkeypatch.setattr(installs, "_launcher_bin_dirs", lambda default_root: (user_bin,))
+
+        plan = self._plan(self._install(managed), home, running.resolve(), windows=False)
+
+        assert plan.launchers == (launcher,)
+
+    def test_a_launcher_that_cannot_be_removed_makes_the_command_fail(self, home, running, tmp_path):
+        managed = _checkout(home / "hermes-agent")
+        stuck = tmp_path / "stuck-launcher"
+        stuck.mkdir()
+        plan = installs.RemovalPlan(self._install(managed), "tree", tree=managed.resolve(), launchers=(stuck,))
+
+        assert installs.execute_removal(plan) == 1
+
+        assert not managed.exists()
+        assert stuck.exists()
 
     def test_managed_clone_removal_keeps_everything_the_installs_share(self, home, running):
         managed = _checkout(home / "hermes-agent")

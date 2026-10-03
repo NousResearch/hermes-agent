@@ -72,7 +72,11 @@ Ask Hermes normally:
 Every morning at 9am, check Hacker News for AI news and send me a summary on Telegram.
 ```
 
-Hermes will use the unified `cronjob_manage` tool internally.
+Hermes will use the unified `cronjob_manage` tool internally. The tool's create and update
+results carry `upcoming` — the next three fire times (a one-shot has one; a bounded `repeat` stops
+at its budget) — so the agent can check a schedule it authored ("weekdays at 9", a cron expression)
+against what you asked for before the first run, instead of discovering a wrong weekday rule when
+it fires.
 
 ## Pre-dispatch configuration validation
 

@@ -632,10 +632,15 @@ def _try_dispatch_background_run(
 # ---------------------------------------------------------------------------
 
 def _with_guidance(result: Dict[str, Any], job: Dict[str, Any], deliver: Optional[str]) -> Dict[str, Any]:
-    """Attach mode/delivery guidance (create and update echo the same notes)."""
+    """Attach mode/delivery guidance and the ``upcoming`` fire-time preview (create and update
+    echo the same notes)."""
+    from cron.occurrences import upcoming_runs
+
     _notes = _mode_guidance_notes(job, deliver)
     if _notes:
         result["guidance"] = _notes
+    # The next few fires, not just the first: a wrong weekday/month rule shows up here.
+    result["upcoming"] = upcoming_runs(job)
     return result
 
 
@@ -1081,7 +1086,7 @@ Jobs run in a fresh session with no current-chat context, so prompts must be sel
             "schedule": {
                 "type": "string",
                 "type": "string",
-                "description": "REQUIRED for create. Schedule forms: (1) recurring interval — '30m', 'every 2h', 'every hour' (EVERY 30 minutes / 2 hours / hour, forever by default); (2) explicit one-shot by duration — 'in 30m', 'in 2h' (fires ONCE that far from now; use this for 'remind me in N minutes' — do NOT hand-compute an absolute timestamp); (3) natural day/time — 'every monday 9am', 'weekdays at 9am', 'every day at 9am' (recurring weekly/daily); (4) cron syntax — '0 9 * * *' (daily 9am); (5) absolute one-shot — ISO timestamp '2026-06-01T09:00:00'."
+                "description": "REQUIRED for create. Schedule forms: (1) recurring interval — '30m', 'every 2h', 'every hour' (EVERY 30 minutes / 2 hours / hour, forever by default); (2) explicit one-shot by duration — 'in 30m', 'in 2h' (fires ONCE that far from now; use this for 'remind me in N minutes' — do NOT hand-compute an absolute timestamp); (3) natural day/time — 'every monday 9am', 'weekdays at 9am', 'every day at 9am' (recurring weekly/daily); (4) cron syntax — '0 9 * * *' (daily 9am); (5) absolute one-shot — ISO timestamp '2026-06-01T09:00:00'. The create/update result's `upcoming` lists the next fire times — check them against what the user asked for."
             },
             "name": {
                 "type": "string",

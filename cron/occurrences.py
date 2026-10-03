@@ -100,3 +100,32 @@ def unclaimed_pending_slot(job, now):
     if pending.get("by") != _machine_id() and _claim_is_live(pending, now, FIRE_CLAIM_TTL_SECONDS):
         return None
     return slot
+
+
+UPCOMING_RUNS_PREVIEW = 3
+
+
+def upcoming_runs(job, count=UPCOMING_RUNS_PREVIEW):
+    """The next ``count`` fire instants of ``job`` as stored ISO strings, starting at its
+    ``next_run_at`` and walking :func:`cron.jobs.compute_next_run` forward; a finite repeat budget
+    caps the list and a one-shot has at most one. Returned to the agent on create/update so a
+    schedule it authored ("weekdays at 9", a cron expression) can be checked against the user's
+    intent BEFORE the first fire — the single ``next_run_at`` cannot show a wrong weekday rule."""
+    from cron.jobs import compute_next_run
+
+    schedule = job.get("schedule") or {}
+    repeat = job.get("repeat") if isinstance(job.get("repeat"), dict) else {}
+    times = repeat.get("times")
+    if times is not None:
+        try:
+            count = min(count, max(0, int(times) - int(repeat.get("completed") or 0)))
+        except (TypeError, ValueError):
+            pass
+    runs = []
+    next_run = job.get("next_run_at")
+    while isinstance(next_run, str) and next_run and len(runs) < count:
+        if next_run in runs:  # a schedule that cannot advance must not spin
+            break
+        runs.append(next_run)
+        next_run = compute_next_run(schedule, last_run_at=next_run)
+    return runs

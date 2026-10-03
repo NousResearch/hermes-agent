@@ -520,6 +520,7 @@ import {
   revalidateRemoteConnection,
   revalidateSuspectPooledRemoteBackends
 } from './remote-liveness'
+import { remoteOnlyLocalBootstrapReason, RemoteOnlyLocalBootstrapError } from './remote-only-local-bootstrap'
 import { resolveRemoteOauthTicket, rosterSourceEnumerationTimeoutMs } from './remote-oauth-ticket'
 import { createRemoteOwnerCache } from './remote-owner-cache'
 import { remoteSessionCookies } from './remote-session-cookies'
@@ -5541,6 +5542,21 @@ async function ensureRuntime(
   }
 
   if (backend.kind === 'bootstrap-needed') {
+    // "Remote gateway only" (#112514): every local-install path funnels through
+    // here (primary boot, pooled-profile spawn, repair re-resolution), so this
+    // one guard keeps the choice the user already made — a Desktop whose
+    // primary connection is a remote gateway never installs a runtime it will
+    // not use. Default (no remote primary) is unchanged, and the skip is
+    // classified as a remote boot failure (attemptedRemote is true here), so it
+    // is not latched and the recovery overlay still offers Gateway settings and
+    // "Use local gateway" — which flips the mode back and re-enables installs.
+    const localInstallSkipped = remoteOnlyLocalBootstrapReason(globalRemoteActive())
+
+    if (localInstallSkipped) {
+      rememberLog(`[bootstrap] local install skipped: ${localInstallSkipped}`)
+      throw new RemoteOnlyLocalBootstrapError(localInstallSkipped)
+    }
+
     rememberLog('[bootstrap] no Hermes install found; starting first-launch bootstrap')
 
     if (await handOffWindowsBootstrapRecovery('bootstrap-needed')) {
@@ -13136,6 +13152,11 @@ async function runHermesStart({ supervisorRecovery = false }: { supervisorRecove
       connectRemote,
       ensureLocalRuntime: backend =>
         ensureRuntime(backend, () => backendConnectionState.assertCurrentAttempt(connectionAttempt)),
+      // Re-read on every boot: the first-run "Connect to existing Hermes" pick
+      // (and Settings → Gateway) persists as the primary connection, so a
+      // remote-gateway Desktop must never install the local runtime it opted
+      // out of (#112514).
+      localBootstrapBlockReason: () => remoteOnlyLocalBootstrapReason(globalRemoteActive()),
       prepareLocalBackend: async () => {
         await advanceBootProgress('backend.runtime', 'Resolving Hermes runtime', 28)
 

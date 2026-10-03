@@ -651,7 +651,11 @@ def _unattended_deny(command: str, ctx: _Unattended) -> dict | None:
             advice="Find an alternative approach that avoids this command.")}
 
     is_dangerous, pattern_key, description = detect_dangerous_command(command)
-    if is_dangerous and not _is_permanently_approved(pattern_key):
+    session_approved = (
+        ctx.name == "single_query"
+        and is_approved(get_current_session_key(), pattern_key)
+    )
+    if is_dangerous and not (_is_permanently_approved(pattern_key) or session_approved):
         result = block(f"Command flagged as dangerous ({description})")
         if ctx.name == "single_query":
             result.update(pattern_key=pattern_key, description=description)

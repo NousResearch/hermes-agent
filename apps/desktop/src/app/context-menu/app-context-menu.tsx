@@ -138,7 +138,6 @@ function applySelectAll(editable: HTMLElement) {
 }
 
 function guardEditableSelection(editable: HTMLElement) {
-  const started = performance.now()
   let frame: number
 
   const stop = () => {
@@ -167,23 +166,35 @@ function guardEditableSelection(editable: HTMLElement) {
     return true
   }
 
-  // Cover the full teardown window regardless of the display's frame rate:
-  // Radix can remove the menu and steal focus after early checks have passed.
-  const retry = () => {
-    if (!verify() || performance.now() - started >= 500) {
-      stop()
+  const start = () => {
+    frame = requestAnimationFrame(() => {
+      if (!editable.isConnected) {
+        stop()
 
-      return
-    }
+        return
+      }
 
-    frame = requestAnimationFrame(retry)
+      editable.focus()
+      applySelectAll(editable)
+      const started = performance.now()
+
+      // Cover the full teardown window regardless of the display's frame rate:
+      // Radix can remove the menu and steal focus after early checks have passed.
+      const retry = () => {
+        if (!verify() || performance.now() - started >= 500) {
+          stop()
+
+          return
+        }
+
+        frame = requestAnimationFrame(retry)
+      }
+
+      frame = requestAnimationFrame(retry)
+    })
   }
 
-  // New user intent beats restoration; DOM-only teardown emits neither event.
-  // Register after the initial selection so its initiating click cannot cancel it.
-  document.addEventListener('pointerdown', stop, true)
-  document.addEventListener('keydown', stop, true)
-  frame = requestAnimationFrame(retry)
+  return { start, stop }
 }
 
 function domSections(open: Extract<OpenContextMenu, { kind: 'dom' }>, t: Translations): ReactNode[][] {
@@ -225,15 +236,19 @@ function domSections(open: Extract<OpenContextMenu, { kind: 'dom' }>, t: Transla
     const editable = target.editable
 
     closeContextMenu()
-    requestAnimationFrame(() => {
-      if (!editable?.isConnected) {
-        return
-      }
 
-      editable.focus()
-      applySelectAll(editable)
-      guardEditableSelection(editable)
-    })
+    if (!editable) {
+      return
+    }
+
+    const { start, stop } = guardEditableSelection(editable)
+
+    // Listen before the first frame so newer user intent can cancel it too.
+    // The initiating pointerdown precedes onSelect; we do not listen to click
+    // or pointerup, so that same click cannot cancel its own selection.
+    document.addEventListener('pointerdown', stop, true)
+    document.addEventListener('keydown', stop, true)
+    start()
   }
 
   const spellcheckAction = (action: { kind: 'add' | 'replace'; word: string }) => {

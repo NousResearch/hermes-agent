@@ -433,6 +433,60 @@ describe('AppContextMenu', () => {
     expect(vi.getTimerCount()).toBe(0)
   })
 
+  it.each(
+    ['contenteditable', 'textarea', 'input'].flatMap(kind =>
+      ['pointerdown', 'keydown'].map(event => ({ kind, event }))
+    )
+  )('cancels $kind select all on $event before the initial frame', async ({ kind, event }) => {
+    installBridge()
+    mountMenu()
+
+    const html = {
+      contenteditable: '<div contenteditable="true" tabindex="0">alpha <span>beta gamma</span></div>',
+      textarea: '<textarea>alpha beta gamma</textarea>',
+      input: '<input value="alpha beta gamma">'
+    }
+
+    const host = attach(html[kind as keyof typeof html] + '<button>Other focus</button>')
+    const editable = host.firstElementChild as HTMLElement
+    const other = host.querySelector('button')!
+
+    if (kind === 'contenteditable') {
+      Object.defineProperty(editable, 'isContentEditable', { value: true })
+    } else {
+      (editable as HTMLInputElement | HTMLTextAreaElement).setSelectionRange(0, 0)
+    }
+
+    window.getSelection()!.removeAllRanges()
+    fireEvent.contextMenu(editable)
+    const item = await screen.findByText('Select all')
+
+    vi.useFakeTimers()
+    fireEvent.click(item)
+    const focus = vi.spyOn(editable, 'focus')
+
+    if (event === 'pointerdown') {
+      fireEvent.pointerDown(other)
+    } else {
+      fireEvent.keyDown(other, { key: 'Tab' })
+    }
+
+    other.focus()
+    act(() => vi.advanceTimersToNextFrame())
+    act(() => vi.advanceTimersByTime(1000))
+    expect(document.activeElement).toBe(other)
+    expect(focus).not.toHaveBeenCalled()
+
+    if (editable instanceof HTMLInputElement || editable instanceof HTMLTextAreaElement) {
+      expect(editable.selectionStart).toBe(0)
+      expect(editable.selectionEnd).toBe(0)
+    } else {
+      expect(window.getSelection()!.toString()).toBe('')
+    }
+
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
   it.each(['before initial frame', 'during guard'])('stops select all on disconnection %s', async timing => {
     installBridge()
     mountMenu()

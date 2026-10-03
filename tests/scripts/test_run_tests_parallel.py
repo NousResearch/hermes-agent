@@ -78,6 +78,7 @@ def test_progress_output_tolerates_legacy_stdout_encoding(tmp_path: Path) -> Non
 
     probe_dir = tmp_path / "probe"
     probe_dir.mkdir()
+    (probe_dir / "pytest.ini").write_text("[pytest]\n", encoding="utf-8")
     probe = probe_dir / "test_probe_smoke.py"
     probe.write_text("def test_smoke():\n    assert True\n", encoding="utf-8")
 
@@ -127,6 +128,7 @@ def test_grandchild_leak_is_killed_by_runner(tmp_path: Path) -> None:
     # never picks it up — only our explicit invocation does.
     probe_dir = tmp_path / "probe"
     probe_dir.mkdir()
+    _root_the_probe(probe_dir)
     probe = probe_dir / "test_probe_leaker.py"
     nonce = f"{os.getpid()}-{int(time.time() * 1000)}"
     handoff = tmp_path / f"grandchild-{nonce}.json"
@@ -248,6 +250,34 @@ def test_grandchild_leak_is_killed_by_runner(tmp_path: Path) -> None:
 # positional-path discovery.
 
 
+def _root_the_probe(directory: Path) -> Path:
+    """Give a probe tree its own ``pytest.ini``, and return the directory.
+
+    Without one, the inner pytest finds no ini file at or above the probe —
+    ``tmp_path`` is under the system temp, which has none — and its rootdir
+    falls back ABOVE the probe. The collection tree is then rooted over the
+    shared temp directory, which means walking every other test process's
+    hermetic home while those are being created and deleted.
+
+    Measured on Windows, the same probe both ways:
+    ``python -m pytest --collect-only <probe>`` cost 58.5 s and died with
+    ``FileNotFoundError`` on a sibling temp dir that vanished underneath the
+    walk, against 1.0 s with this file present. That is why this test FILE
+    could not finish inside its own budget — one inner invocation cost more
+    than the repo-wide per-test cap, so the file timed out at 8 workers and
+    passed only on the runner's 1-worker retry (185.8 s total, 111.8 s of it
+    the retry).
+
+    An empty ``[pytest]`` section is the entire content: what is wanted is a
+    rootdir anchor, not configuration. The probe deliberately does not inherit
+    this repo's ``addopts`` — it is a couple of trivial asserts, and the bound
+    that matters to it is the runner's own ``--file-timeout``.
+    """
+
+    (directory / "pytest.ini").write_text("[pytest]\n", encoding="utf-8")
+    return directory
+
+
 def _make_probe_dir(tmp_path: Path) -> Path:
     """Two trivial passing tests, one named test_alpha, one test_beta."""
     probe_dir = tmp_path / "probe"
@@ -256,7 +286,7 @@ def _make_probe_dir(tmp_path: Path) -> Path:
         "def test_alpha():\n    assert True\n\n"
         "def test_beta():\n    assert True\n"
     )
-    return probe_dir
+    return _root_the_probe(probe_dir)
 
 
 def _run_runner(probe_dir: Path, *extra: str) -> subprocess.CompletedProcess:
@@ -340,7 +370,9 @@ def test_file_retry_self_heals_and_prints_both_attempts(tmp_path: Path) -> None:
     repo_root = _probe_root(tmp_path)
     runner = repo_root / "scripts" / "run_tests_parallel.py"
     marker = tmp_path / "ran-once"
-    probe = tmp_path / "test_flaky_probe.py"
+    # This probe is a bare file rather than a directory, so `tmp_path` itself is
+    # what the inner pytest has to root on.
+    probe = _root_the_probe(tmp_path) / "test_flaky_probe.py"
     probe.write_text(
         textwrap.dedent(
             f"""
@@ -372,7 +404,8 @@ def test_file_retry_self_heals_and_prints_both_attempts(tmp_path: Path) -> None:
         cwd=tmp_path,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
-        text=True,
+        encoding="utf-8",
+        errors="replace",
         timeout=60,
     )
 
@@ -403,6 +436,92 @@ def test_zero_collected_across_run_fails_and_says_so(tmp_path: Path) -> None:
     assert "NOT a pass" in proc.stdout
 
 
+def test_isolation_retry_keeps_the_scaled_timeout_and_counts_skips(tmp_path: Path) -> None:
+    """The 1-worker retry gets the pool's scaled bound, and its skips are counted.
+
+    The cached 10 s duration scales the 2 s flat cap to 30 s.
+    The first (pool) attempt hangs and is killed at 30 s; the retry sleeps 3 s
+    (about 15 s of wall with interpreter start on a busy Windows box), which the
+    30 s bound survives and the 2 s flat cap cannot, and it skips one test.
+    """
+    repo_root = _probe_root(tmp_path)
+    (repo_root / "tests").mkdir()
+    tests_dir = _root_the_probe(repo_root / "tests")
+    probe = tests_dir / "test_straggler_probe.py"
+    marker = tmp_path / "first-attempt"
+    probe.write_text(
+        textwrap.dedent(
+            f"""
+            import time
+            from pathlib import Path
+            import pytest
+
+            def test_straggler():
+                marker = Path({str(marker)!r})
+                if not marker.exists():
+                    marker.write_text("hung once")
+                    time.sleep(120)
+                time.sleep(3)
+
+            @pytest.mark.skip(reason="counted by the retry")
+            def test_skipped():
+                pass
+            """
+        ),
+        encoding="utf-8",
+    )
+    (repo_root / "test_durations.json").write_text(
+        json.dumps({str(Path("tests") / probe.name): 10.0}), encoding="utf-8"
+    )
+    proc = subprocess.run(
+        [sys.executable, str(repo_root / "scripts" / "run_tests_parallel.py"),
+         "--files", str(probe), "--file-timeout", "2", "--file-retries", "0", "-j", "1"],
+        cwd=repo_root, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+        encoding="utf-8", errors="replace", timeout=170,
+    )
+    assert marker.exists(), proc.stdout  # the pool attempt really ran first
+    assert "RETRY PASS" in proc.stdout, proc.stdout
+    assert proc.returncode == 0, proc.stdout
+    assert "1 skipped" in proc.stdout, proc.stdout
+
+
+def test_node_id_selector_runs_the_named_test(tmp_path: Path) -> None:
+    """``file.py::test_alpha`` runs that test instead of discovering nothing."""
+    probe_dir = _make_probe_dir(tmp_path)
+    target = probe_dir / "test_flagprobe.py"
+    repo_root = Path(__file__).resolve().parent.parent.parent
+    proc = subprocess.run(
+        [sys.executable, str(repo_root / "scripts" / "run_tests_parallel.py"),
+         f"{target}::test_alpha", "-j", "1", "--file-timeout", "30"],
+        cwd=repo_root, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+        # Decode as UTF-8 like the runner emits (see _run_runner's note);
+        # text=True alone uses the locale codec and blows up on cp1252.
+        encoding="utf-8", errors="replace", timeout=60,
+    )
+    assert proc.returncode == 0, proc.stdout
+    assert "No test files to run" not in proc.stdout
+    assert "node id" in proc.stdout  # explains the translation
+    # Ran exactly the one selected test, not both in the file.
+    assert "1 tests passed" in proc.stdout
+
+
+def test_explicit_k_wins_over_node_id_inference(tmp_path: Path) -> None:
+    """A caller's own ``-k`` is not overridden by the node-id translation."""
+    probe_dir = _make_probe_dir(tmp_path)
+    target = probe_dir / "test_flagprobe.py"
+    repo_root = Path(__file__).resolve().parent.parent.parent
+    proc = subprocess.run(
+        [sys.executable, str(repo_root / "scripts" / "run_tests_parallel.py"),
+         f"{target}::test_alpha", "-k", "test_beta",
+         "-j", "1", "--file-timeout", "30"],
+        cwd=repo_root, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+        # Decode as UTF-8 like the runner emits (see _run_runner's note);
+        # text=True alone uses the locale codec and blows up on cp1252.
+        encoding="utf-8", errors="replace", timeout=60,
+    )
+    # -k test_beta wins: one test ran, and it wasn't filtered to nothing.
+    assert proc.returncode == 0, proc.stdout
+    assert "1 tests passed" in proc.stdout
 
 
 @pytest.mark.parametrize("form,expected", [

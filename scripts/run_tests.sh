@@ -177,6 +177,18 @@ cd "$REPO_ROOT"
 echo "▶ pre-compiling bytecode cache"
 "$PYTHON" -m compileall -q -j 0 -- $(git ls-files '*.py') >/dev/null 2>&1 || true
 
+# Git Bash / MSYS / WSL: a native-Windows "$PYTHON" (…/Scripts/python.exe) cannot open a
+# POSIX-style /x/... or /mnt/x/... script path, so translate the runner path to the spelling
+# Windows itself uses before exec'ing.
+RUNNER_PATH="$SCRIPT_DIR/run_tests_parallel.py"
+if command -v cygpath >/dev/null 2>&1 && [[ "$PYTHON" == *.exe ]]; then
+  RUNNER_PATH="$(cygpath -w "$RUNNER_PATH")"
+elif [[ "$PYTHON" == *.exe && "$RUNNER_PATH" =~ ^/mnt/([A-Za-z])/(.*)$ ]]; then
+  drive="${BASH_REMATCH[1]^^}"
+  rest="${BASH_REMATCH[2]//\//\\}"
+  RUNNER_PATH="${drive}:\\${rest}"
+fi
+
 echo "▶ launching test runner"
 exec env -i \
   PATH="$PATH" \
@@ -193,4 +205,4 @@ exec env -i \
   ${HERMES_RUN_E2E:+HERMES_RUN_E2E="$HERMES_RUN_E2E"} \
   ${EXTRA_PYTHONPATH:+PYTHONPATH="$EXTRA_PYTHONPATH"} \
   ${EXTRA_PYTEST_PLUGINS:+PYTEST_PLUGINS="$EXTRA_PYTEST_PLUGINS"} \
-  "$PYTHON" "$SCRIPT_DIR/run_tests_parallel.py" "$@"
+  "$PYTHON" "$RUNNER_PATH" "$@"

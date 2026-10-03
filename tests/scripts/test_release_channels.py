@@ -168,6 +168,88 @@ def put_build(objects, request):
     return manifest
 
 
+def stable_candidate(public_base, version, commit_char, release_epoch):
+    from scripts.releases import stable
+
+    tag, commit = f"v{version}", commit_char * 40
+    archive = f"rc.1-{tag}"
+    windows_version = stable.stable_windows_version(release_epoch)
+    packages = []
+    for platform in ("macos", "windows"):
+        for arch in ("arm64", "x64"):
+            suffix = "zip" if platform == "macos" else "msixbundle"
+            packages.append({
+                "platform": platform, "arch": arch, "tag": tag, "commit": commit,
+                "version": version if platform == "macos" else windows_version,
+                "identity": "fixture.identity",
+                "artifact": {
+                    "url": f"{public_base}/releases/tag/{archive}/{platform}-{arch}.{suffix}",
+                    "sha256": commit_char * 64,
+                },
+                **({"teamId": "ABCDEFGHIJ"} if platform == "macos" else {
+                    "executableVersion": windows_version,
+                    "publisher": "CN=Fixture", "applicationId": "Fixture",
+                }),
+            })
+    return {
+        "schema": 2, "tag": tag, "commit": commit, "releaseEpoch": release_epoch,
+        "archive": archive,
+        "smoke_results": {job: {"result": "success"} for job in stable.SMOKE_JOBS},
+        "packages": packages,
+    }
+
+
+def test_stable_candidate_pointer_retries_etag_conflict_and_advances():
+    from hermes_cli.release_channels import canonical_json
+    from scripts.releases import channel_releases
+
+    with object_server() as (url, objects, headers, requests, faults):
+        pub = publisher(url)
+        pub.public_base = "https://releases.example"
+        first = stable_candidate(pub.public_base, "1.0.0", "a", 1_700_000_000)
+        intervening = stable_candidate(pub.public_base, "1.1.0", "b", 1_710_000_000)
+        second = stable_candidate(pub.public_base, "2.0.0", "c", 1_720_000_000)
+        key = "releases/stable/release-candidates.json"
+
+        channel_releases.publish_stable_candidate(pub, first)
+        assert headers[key]["If-None-Match"] == "*"
+
+        def race(store, object_key):
+            assert object_key == key
+            store[object_key] = canonical_json(intervening)
+
+        faults["conflict"] = race
+        channel_releases.publish_stable_candidate(pub, second)
+
+        assert json.loads(objects[key]) == second
+        assert headers[key]["If-Match"] == '"' + hashlib.sha256(canonical_json(intervening)).hexdigest() + '"'
+        assert sum(method == "PUT" and path == key for method, path in requests) == 3
+
+
+def test_stable_candidate_pointer_preserves_concurrent_newer_winner():
+    from hermes_cli.release_channels import ChannelError, canonical_json
+    from scripts.releases import channel_releases
+
+    with object_server() as (url, objects, headers, requests, faults):
+        pub = publisher(url)
+        pub.public_base = "https://releases.example"
+        first = stable_candidate(pub.public_base, "1.0.0", "a", 1_700_000_000)
+        attempted = stable_candidate(pub.public_base, "2.0.0", "b", 1_710_000_000)
+        winner = stable_candidate(pub.public_base, "3.0.0", "c", 1_720_000_000)
+        key = "releases/stable/release-candidates.json"
+        channel_releases.publish_stable_candidate(pub, first)
+
+        def race(store, object_key):
+            assert object_key == key
+            store[object_key] = canonical_json(winner)
+
+        faults["conflict"] = race
+        with pytest.raises(ChannelError, match="newer stable candidate"):
+            channel_releases.publish_stable_candidate(pub, attempted)
+
+        assert json.loads(objects[key]) == winner
+
+
 def test_concurrent_allocations_reverse_completion_retirement_and_readback():
     from concurrent.futures import ThreadPoolExecutor
     from hermes_cli.release_channels import ChannelError, canonical_json
@@ -452,7 +534,7 @@ def test_accepted_release_receipts_feed_the_protected_head_without_rebuilding(tm
         assert {p["arch"] for p in manifest["packages"]} == {"arm64", "x64"}
         assert all(p["artifact"]["key"].startswith(prefix) for p in manifest["packages"])
         assert all(f.is_file() for f in feeds)
-        accepted = {"packages": []}
+        accepted = {"schema": 2, "tag": tag, "commit": commit, "archive": tag, "packages": []}
         for row in manifest["packages"]:
             accepted["packages"].append({"platform": "macos" if row["platform"] == "darwin" else "windows", "arch": row["arch"], "identity": row["identity"], "version": row["version"], "artifact": {"url": base + "/" + row["artifact"]["key"], "sha256": row["artifact"]["sha256"]}, **{k: row[k] for k in ("teamId", "publisher") if k in row}})
             if row["platform"] == "win32":

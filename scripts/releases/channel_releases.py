@@ -11,11 +11,11 @@ import tempfile
 from datetime import datetime, timezone
 
 from hermes_cli.release_channels import (
-    ChannelError, build_prefix, canonical_json, validate_identity,
+    ChannelError, build_prefix, canonical_json, decode_json, validate_identity,
 )
 from scripts.bundles.channel_artifacts import assemble
 from scripts.releases import handoff, r2, stable
-from scripts.releases.channels import ChannelPublisher, R2ChannelStore
+from scripts.releases.channels import ChannelConflict, ChannelPublisher, R2ChannelStore
 from scripts.releases.versioning import parse_attempt_ref
 
 NATIVE_LEGS = ("darwin-arm64", "darwin-x64", "win32-arm64", "win32-x64", "windows-universal")
@@ -185,7 +185,7 @@ def admit_transaction(policy: str, env: dict, *, require_published: bool = False
 def accepted_stable(publisher: ChannelPublisher, env: dict, tag: str, commit: str,
                     release_epoch: int, *, skip_tests: bool) -> dict:
     """Read the accepted candidate from the attempt-scoped release archive."""
-    from hermes_cli.release_channels import decode_json, require_sha256
+    from hermes_cli.release_channels import require_sha256
 
     parsed = parse_attempt_ref(tag)
     payload_tag = f"v{parsed[0]}" if parsed else tag
@@ -213,6 +213,70 @@ def stable_head_version(env: dict) -> str | None:
         raise ChannelError("Stable protected head manifest is unavailable or changed")
     manifest = json.loads(found[0])
     return manifest["request"]["version"]
+
+
+def _stable_candidate_version(candidate: dict, public_base: str) -> str:
+    from urllib.parse import unquote, urlsplit
+
+    from scripts.releases.semver import is_stable_version
+
+    tag = candidate.get("tag")
+    if not isinstance(tag, str) or not tag.startswith("v"):
+        raise ChannelError("Stable candidate pointer has an invalid release version")
+    version = tag[1:]
+    archive, packages = candidate.get("archive"), candidate.get("packages")
+    if (not is_stable_version(version) or not isinstance(archive, str)
+            or not isinstance(packages, list) or not packages):
+        raise ChannelError("Stable candidate pointer has an invalid release identity")
+    prefix = urlsplit(f"{public_base.rstrip('/')}/releases/tag/{archive}/")
+    for row in packages:
+        artifact = row.get("artifact") if isinstance(row, dict) else None
+        raw_url = artifact.get("url") if isinstance(artifact, dict) else None
+        url = urlsplit(raw_url) if isinstance(raw_url, str) else None
+        decoded = unquote(url.path) if url is not None else ""
+        digest = artifact.get("sha256") if isinstance(artifact, dict) else None
+        if (url is None or (url.scheme, url.netloc) != (prefix.scheme, prefix.netloc)
+                or not url.path.startswith(prefix.path) or url.query or url.fragment
+                or url.username or url.password or "\\" in decoded or "%" in decoded
+                or any(part in (".", "..") for part in decoded.split("/"))
+                or not isinstance(digest, str) or len(digest) != 64
+                or any(char not in "0123456789abcdef" for char in digest)):
+            raise ChannelError("Stable candidate pointer must reference its immutable release archive")
+    return version
+
+
+def publish_stable_candidate(publisher: ChannelPublisher, candidate: dict) -> None:
+    """Advance the mutable accepted-candidate pointer with version-ordered ETag CAS."""
+    from scripts.releases.semver import compare
+
+    key = "releases/stable/release-candidates.json"
+    body = canonical_json(candidate)
+    version = _stable_candidate_version(candidate, publisher.public_base)
+    for _ in range(16):
+        current = publisher.store.get(key)
+        etag = None
+        if current is not None:
+            current_body, etag = current
+            try:
+                current_candidate = decode_json(current_body)
+                current_version = _stable_candidate_version(current_candidate, publisher.public_base)
+            except ChannelError as exc:
+                raise ChannelError("Existing stable candidate pointer is invalid") from exc
+            if current_body == body:
+                if publisher.reader.read_bytes(key) != body:
+                    raise ChannelError("Stable candidate pointer public read-back differs")
+                return
+            order = compare(current_version, version)
+            if order > 0:
+                raise ChannelError("A newer stable candidate pointer won publication; stale release refused")
+            if order == 0:
+                raise ChannelError("Stable candidate pointer differs for the same immutable release version")
+        try:
+            publisher._write(key, candidate, etag)
+        except ChannelConflict:
+            continue
+        return
+    raise ChannelConflict("Stable candidate pointer remained contended")
 
 
 def read_archive_bytes(key: str) -> bytes:
@@ -407,7 +471,7 @@ def publish_release(policy: str, env: dict, root: Path) -> dict:
 
     publisher.verify_build = qualified
     if accepted is not None:
-        publisher._write("releases/stable/release-candidates.json", accepted)
+        publish_stable_candidate(publisher, accepted)
         if publisher.reader.read_bytes("releases/stable/release-candidates.json") != canonical_json(accepted):
             raise ChannelError("Stable candidate pointer read-back differs")
         promote_stable_feeds(accepted, root, publisher.public_base)

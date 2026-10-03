@@ -238,13 +238,34 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
         logger.info("[%s] Disconnected", self._log_tag)
 
     async def _close_ws(self) -> None:
-        """Close the WebSocket + its aiohttp session (keeps _http_client alive)."""
-        if self._ws and not self._ws.closed:
-            await self._ws.close()
+        """Close the WebSocket + its aiohttp session (keeps _http_client alive).
+
+        Detach first (atomic on the event loop), close second. The op-7/op-9 path
+        closes the WS asynchronously too (``_close_ws_soon``) while the reconnect
+        path closes on entry (``_open_ws``); two concurrent close() calls on the
+        same aiohttp objects contend on aiohttp's internal locks and can wedge the
+        event loop, leaving the gateway silently unresponsive. Detaching before
+        closing guarantees a single owner per close.
+        """
+        ws, session = self._ws, self._session
         self._ws = None
-        if self._session and not self._session.closed:
-            await self._session.close()
         self._session = None
+        if ws is not None:
+            await self._close_ws_object(ws)
+        if session is not None and not session.closed:
+            try:
+                await session.close()
+            except Exception:
+                logger.debug("[%s] WS session close failed (ignored)", self._log_tag, exc_info=True)
+
+    async def _close_ws_object(self, ws) -> None:
+        """Best-effort close of one WS object this caller now solely references."""
+        if ws.closed:
+            return
+        try:
+            await ws.close()
+        except Exception:
+            logger.debug("[%s] WS close failed (ignored)", self._log_tag, exc_info=True)
 
     async def _cleanup(self) -> None:
         """Close WebSocket, HTTP session, and client; fail pending futures."""
@@ -503,9 +524,19 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
             return None
 
     def _close_ws_soon(self) -> None:
-        """Close the WS so _read_events raises and _listen_loop reconnects (with Resume)."""
-        if self._ws and not self._ws.closed:
-            self._create_task(self._ws.close())
+        """Close the WS so _read_events raises and _listen_loop reconnects (with Resume).
+
+        Detach here, before the background close task runs: the reconnect path
+        closes on entry (``_open_ws`` → ``_close_ws``), and racing a second
+        close() on the same aiohttp object can wedge the event loop.
+        """
+        ws = self._ws
+        self._ws = None
+        if ws is not None and not ws.closed:
+            close_coro = self._close_ws_object(ws)
+            if self._create_task(close_coro) is None:
+                # No running loop (synchronous callers): nothing will await it.
+                close_coro.close()
 
     def _dispatch_payload(self, payload: Dict[str, Any]) -> None:
         """Route inbound WebSocket payloads (dispatch synchronously, spawn async handlers)."""

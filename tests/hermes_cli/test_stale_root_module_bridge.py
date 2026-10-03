@@ -64,3 +64,34 @@ def test_drop_stale_root_modules_leaves_complete_utils_alone():
     before = sys.modules["utils"]
     assert drop_stale_root_modules() == []
     assert sys.modules["utils"] is before
+
+
+def test_pre_handoff_purge_must_not_leave_a_stale_submodule_binding(monkeypatch, pre_handoff_purge):
+    """``from hermes_cli import X`` returns the PRE-pull submodule unless the binding is dropped.
+
+    The purge popped ``sys.modules["hermes_cli.main_dashboard"]`` but not the attribute the import
+    system had set on the surviving ``hermes_cli`` package, and ``_handle_fromlist`` only imports a
+    name when the attribute is *absent*. So the pulled ``dashboard_procs`` — freshly imported, its
+    own line present in the pulled tree — called ``_loaded_launchd_backend_jobs`` on the old module
+    and killed the run with ``AttributeError`` after ``✓ Update complete!`` (#115091).
+    """
+    import hermes_cli
+    import hermes_cli.main_dashboard as pre_pull
+
+    try:
+        # What the pre-pull import did: the submodule got bound onto the surviving package object.
+        monkeypatch.setattr(hermes_cli, "main_dashboard", pre_pull, raising=False)
+        monkeypatch.delattr(pre_pull, "_loaded_launchd_backend_jobs")  # pulled tree gained it
+        pre_handoff_purge()
+        assert sys.modules.get("hermes_cli.main_dashboard") is None
+        assert hermes_cli.main_dashboard is pre_pull  # the binding outlives the purge
+
+        importlib.import_module("hermes_cli.config")  # any fresh consumer: the bridge runs at its top
+
+        # Call-time shape of the pulled code (dashboard_procs._kill_stale_dashboard_processes).
+        from hermes_cli import main_dashboard as resumed
+
+        assert resumed is not pre_pull
+        assert callable(resumed._loaded_launchd_backend_jobs)
+    finally:
+        hermes_cli.main_dashboard = pre_pull  # pair the package attr back with the restored sys.modules entry

@@ -32,6 +32,25 @@ def test_scratch_env_follows_home_and_respects_user_tmpdir(tmp_path):
     assert "TMP" not in user_env  # a partially user-set triple is left exactly as found
 
 
+def test_msys_default_tmpdir_is_not_user_intent(tmp_path):
+    """Git Bash/MSYS pre-sets TMPDIR/TMP/TEMP=/tmp with MSYSTEM in the env — a shell
+    default, not a user choice — so the scratch dir must still be exported (#120323)."""
+    home = tmp_path / "home"
+    env = {"HERMES_HOME": str(home), "MSYSTEM": "MINGW64",
+           "TMPDIR": "/tmp", "TMP": "/tmp", "TEMP": "/tmp"}
+    assert apply_scratch_tmp_env(env) is True
+    scratch = str(home / "cache" / "scratch")
+    assert env["TMPDIR"] == env["TMP"] == env["TEMP"] == env["HERMES_SCRATCH_DIR"] == scratch
+
+
+def test_msys_real_user_override_still_respected(tmp_path):
+    """Under MSYSTEM a genuine override (not the /tmp shell default) is still left alone."""
+    home = tmp_path / "home"
+    env = {"HERMES_HOME": str(home), "MSYSTEM": "MINGW64", "TMPDIR": "/var/folders/zz"}
+    assert apply_scratch_tmp_env(env) is False
+    assert env["TMPDIR"] == "/var/folders/zz" and "HERMES_SCRATCH_DIR" not in env
+
+
 def test_bootstrap_import_exports_scratch_to_process_and_children(tmp_path):
     """``import hermes_bootstrap`` alone makes ``tempfile`` (this process AND a child) land in scratch."""
     env = {k: v for k, v in os.environ.items() if k not in ("TMPDIR", "TMP", "TEMP", "HERMES_SCRATCH_DIR")}

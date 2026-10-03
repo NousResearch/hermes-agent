@@ -2433,10 +2433,44 @@ class TestThresholdTokensCap:
         assert comp.threshold_tokens_cap is None
         assert comp.threshold_tokens == ratio_only.threshold_tokens
 
+    def test_explicit_high_ratio_not_capped_by_default(self):
+        """#126304: a user-raised ratio on a 1M window is not cut to the old 256K default.
 
+        Shipped defaults carry no token cap, so an explicit 0.90 threshold compacts at the
+        ratio trigger (~870K with a 32768 output reservation), not at 256K. The default-cap
+        compressor must agree with the ratio-only one."""
+        from hermes_cli.config import DEFAULT_CONFIG
 
+        default_cap = DEFAULT_CONFIG["compression"]["threshold_tokens"]
+        assert default_cap is None
+        with patch("agent.context_compressor.get_model_context_length", return_value=1_000_000):
+            defaulted = ContextCompressor(
+                "deepseek-flash", provider="deepseek", config_context_length=1_000_000,
+                threshold_percent=0.90, threshold_tokens_cap=default_cap, max_tokens=32768,
+                quiet_mode=True,
+            )
+            ratio_only = ContextCompressor(
+                "deepseek-flash", provider="deepseek", config_context_length=1_000_000,
+                threshold_percent=0.90, max_tokens=32768, quiet_mode=True,
+            )
+            _ = defaulted.context_length, ratio_only.context_length
 
+        assert defaulted.threshold_tokens == ratio_only.threshold_tokens
+        assert defaulted.threshold_tokens == int((1_000_000 - 32_768) * 0.90)
+        assert defaulted.threshold_tokens != 256_000
 
+    def test_explicit_cap_still_binds_on_high_ratio(self):
+        """#126304: an explicitly configured cap is still honoured, even under a raised ratio."""
+        with patch("agent.context_compressor.get_model_context_length", return_value=1_000_000):
+            comp = ContextCompressor(
+                "deepseek-flash", provider="deepseek", config_context_length=1_000_000,
+                threshold_percent=0.90, threshold_tokens_cap=256_000, max_tokens=32768,
+                quiet_mode=True,
+            )
+            _ = comp.context_length
+
+        assert comp.threshold_tokens_cap == 256_000
+        assert comp.threshold_tokens == 256_000
 
     def test_invalid_cap_treated_as_none(self):
         """Non-numeric, zero, or negative cap values are treated as None."""

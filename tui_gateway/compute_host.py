@@ -254,9 +254,6 @@ class ComputeHost:
             with contextlib.suppress(Exception):
                 server._ensure_session_db_row(session)
             with contextlib.suppress(Exception):
-                import hermes_undo
-                hermes_undo.on_user_message_appended(session["session_key"])
-            with contextlib.suppress(Exception):
                 server._persist_branch_seed(session)
             server._run_prompt_submit(
                 request_id, sid, session, text, display_kind=frame.get("display_kind") or None,

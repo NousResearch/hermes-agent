@@ -67,18 +67,30 @@ def _emit_result(result_json: str, *, json_mode: bool, quiet: bool) -> int:
     except json.JSONDecodeError:
         # Pass the raw string through so the user can still see what went wrong.
         payload = {"error": "invalid JSON from send_message_tool", "raw": result_json}
+    is_object = isinstance(payload, dict)
+    error = payload.get("error") if is_object else None
+    succeeded = bool(
+        is_object
+        and not error
+        and (payload.get("skipped") or payload.get("success"))
+    )
+
     if json_mode:
         print(json.dumps(payload, indent=2))
+    elif error:
+        print(f"hermes send: {error}", file=sys.stderr)
     elif not quiet:
-        if payload.get("error"):
-            print(f"hermes send: {payload['error']}", file=sys.stderr)
-        elif payload.get("success"):
+        if is_object and payload.get("success"):
             print(payload.get("note") or "sent")
         else:
             print(json.dumps(payload, indent=2))  # unknown shape — dump it, drop nothing
-    if not payload.get("error") and (payload.get("skipped") or payload.get("success")):
-        return _SUCCESS_EXIT
-    return _FAILURE_EXIT
+    elif not succeeded:
+        # Quiet is a success-output policy, not a failure-output policy. Keep an
+        # unexpected backend result visible to scripts even when it has no
+        # conventional "error" field.
+        print(json.dumps(payload, indent=2), file=sys.stderr)
+
+    return _SUCCESS_EXIT if succeeded else _FAILURE_EXIT
 
 
 def _list_targets(platform_filter: Optional[str], *, json_mode: bool) -> int:

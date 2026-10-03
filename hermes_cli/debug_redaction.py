@@ -53,7 +53,7 @@ _QUOTED_HEADER_RE = re.compile(
 )
 _BARE_HEADER_RE = re.compile(
     rf"(?P<prefix>\b(?:{_HEADER_NAME_PATTERN})\b\s*[:=]\s*)"
-    r"(?P<value>(?>(?:Bearer|Basic|Digest)\s+)?(?!\[REDACTED\])[^\s,}\]]+)",
+    r"(?P<value>(?>(?:(?:Bearer|Basic|Digest)\s+)?)(?!\[REDACTED\])[^\s,}\]]+)",
     re.IGNORECASE,
 )
 
@@ -87,7 +87,7 @@ _HEADER_ARGV_RE = re.compile(
 )
 _PLAIN_HEADER_ARG_RE = re.compile(
     rf"(?P<prefix>--header\s+(?:{_HEADER_NAME_PATTERN})\s+)"
-    r"(?>(?:Bearer|Basic|Digest)\s+)?(?!\[REDACTED\])(?P<value>[^\s,}\]]+)",
+    r"(?>(?:(?:Bearer|Basic|Digest)\s+)?)(?!\[REDACTED\])(?P<value>[^\s,}\]]+)",
     re.IGNORECASE,
 )
 _SUPPORT_BEARER_RE = re.compile(

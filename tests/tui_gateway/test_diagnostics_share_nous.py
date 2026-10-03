@@ -177,6 +177,7 @@ def test_redacted_support_egress_scrubs_structured_values_and_errors(
             f"{canaries['error']} headers={{'X-API-Key': '{canaries['header']}'}} "
             + real_redact(f"cookie={canaries['error']}; --api-key {canaries['error']} "
                           f"--header X-API-Key {canaries['error']}")
+            + " --header X-API-Key Basic [REDACTED]"
         )
 
     monkeypatch.setattr(du, "share_to_nous", _fail)
@@ -185,6 +186,7 @@ def test_redacted_support_egress_scrubs_structured_values_and_errors(
     assert canaries["error"] not in failure["error"]
     assert canaries["header"] not in failure["error"]
     assert "[REDACTED]]" not in failure["error"]
+    assert failure["error"].endswith(" --header X-API-Key Basic [REDACTED]")
 
 
 def test_share_nous_linkless_success_is_a_failure(monkeypatch):

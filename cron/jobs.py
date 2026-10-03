@@ -3308,11 +3308,20 @@ def _evaluate_due_job(job: Dict[str, Any], scan: _DueScan, run_claim_ttl: float)
         job["last_dispatch"] = dispatch_stamp
         # The tick advances next_run_at past this occurrence before any fire claim exists; the
         # stamp survives a process death in that window so the slot is restored, not lost.
-        from cron.occurrences import pending_slot_stamp
+        from cron.occurrences import pending_slot_stamp, stored_pending_slot
 
-        scan.persist(
-            job["id"], last_dispatch=dispatch_stamp,
-            pending_slot=pending_slot_stamp(next_run, now))
+        # A stamp still stored here is an EARLIER occurrence nobody has claimed (this process is
+        # mid-run and refuses to dispatch, or a live owner elsewhere holds the slot). Replacing
+        # it with this occurrence's instant would drop the earlier slot with no trace — the
+        # restore path can only ever recover the one stamp. Keep the older stamp (it is the one
+        # the restore path must recover) and let the refusal record of the later occurrence
+        # account for it; a malformed stamp is dead and is replaced.
+        if stored_pending_slot(job) is not None:
+            scan.persist(job["id"], last_dispatch=dispatch_stamp)
+        else:
+            scan.persist(
+                job["id"], last_dispatch=dispatch_stamp,
+                pending_slot=pending_slot_stamp(next_run, now))
     return True
 
 

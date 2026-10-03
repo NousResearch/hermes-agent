@@ -31,6 +31,7 @@ logger = logging.getLogger(__name__)
 
 _DEFAULT_BASE_URL = "https://api.retaindb.com"
 _ASYNC_SHUTDOWN = object()
+_CLAIM_LEASE_S = 300.0  # a writer that died mid-ingest holds its row this long before a replay may re-send it
 _TEXT_EXTS = (".txt", ".md", ".json", ".csv", ".yaml", ".yml", ".xml", ".html")
 
 
@@ -182,7 +183,13 @@ class _Client:
 
 
 class _WriteQueue:
-    """SQLite-backed async write queue. Survives crashes — pending rows replay on startup."""
+    """SQLite-backed async write queue. Survives crashes — pending rows replay on startup.
+
+    Every provider instance and process on a home shares the db and replays its pending rows, so
+    each row is claimed before it is sent: a replayed copy of a row another writer is already
+    sending (or has sent) is skipped instead of ingested twice, and retried once that writer's
+    claim lapses in case it died mid-ingest.
+    """
 
     def __init__(self, client: _Client, db_path: Path):
         self._client, self._db_path, self._q = client, db_path, queue.Queue()
@@ -192,7 +199,16 @@ class _WriteQueue:
         self._connections: set[sqlite3.Connection] = set()
         self._connections_lock, self._shutdown_lock, self._shutdown = threading.Lock(), threading.Lock(), False
         conn = self._execute("CREATE TABLE IF NOT EXISTS pending (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id TEXT, "
-                             "session_id TEXT, messages_json TEXT, created_at TEXT, last_error TEXT)").connection
+                             "session_id TEXT, messages_json TEXT, created_at TEXT, last_error TEXT, claimed_at REAL)").connection
+        def has_claims() -> bool:
+            return "claimed_at" in {col[1] for col in conn.execute("PRAGMA table_info(pending)")}
+
+        if not has_claims():  # db from before claims
+            try:
+                self._execute("ALTER TABLE pending ADD COLUMN claimed_at REAL")
+            except sqlite3.OperationalError:
+                if not has_claims():  # only a concurrent writer adding it first is benign
+                    raise
         self._thread.start()
         replay = conn.execute("SELECT id, user_id, session_id, messages_json FROM pending ORDER BY id ASC LIMIT 200").fetchall()
         for row_id, user_id, session_id, msgs_json in replay:  # rows left from a previous crash
@@ -232,20 +248,42 @@ class _WriteQueue:
                                 (user_id, session_id, json.dumps(messages, ensure_ascii=False), now))
             self._q.put((cur.lastrowid, user_id, session_id, messages))
 
-    def _flush_row(self, row_id: int, user_id: str, session_id: str, messages: list) -> None:
+    def _claim(self, row_id: int) -> bool:
+        """Mark *row_id* as being sent by this writer; False when it is gone or another writer's live claim holds it."""
+        now = time.time()
+        return self._execute("UPDATE pending SET claimed_at = ? WHERE id = ? AND (claimed_at IS NULL OR claimed_at <= ?)",
+                             (now, row_id, now - _CLAIM_LEASE_S)).rowcount == 1
+
+    def _flush_row(self, row_id: int, user_id: str, session_id: str, messages: list) -> float | None:
+        """Send one row; returns when to retry it if another writer's live claim holds it, else None."""
+        if not self._claim(row_id):
+            held = self._execute("SELECT claimed_at FROM pending WHERE id = ?", (row_id,)).fetchone()
+            return None if held is None else (held[0] or 0.0) + _CLAIM_LEASE_S
         try:
             self._client.ingest_session(user_id, session_id, messages)
             self._execute("DELETE FROM pending WHERE id = ?", (row_id,))
         except Exception as exc:
             logger.warning("RetainDB ingest failed (will retry): %s", exc)
-            self._execute("UPDATE pending SET last_error = ? WHERE id = ?", (str(exc), row_id))
+            self._execute("UPDATE pending SET last_error = ?, claimed_at = NULL WHERE id = ?", (str(exc), row_id))
             time.sleep(2)
 
     def _loop(self) -> None:
+        held: list[tuple[float, tuple]] = []  # (claim lapses at, row) for rows another writer is sending
         try:
-            while (item := self._q.get()) is not _ASYNC_SHUTDOWN:
+            while True:
+                now = time.time()
+                for entry in [entry for entry in held if entry[0] <= now]:
+                    held.remove(entry)
+                    self._q.put(entry[1])
                 try:
-                    self._flush_row(*item)
+                    item = self._q.get(timeout=min(due for due, _ in held) - now if held else None)
+                except queue.Empty:
+                    continue
+                if item is _ASYNC_SHUTDOWN:
+                    break
+                try:
+                    if (retry_at := self._flush_row(*item)) is not None:
+                        held.append((retry_at, item))
                 except Exception as exc:
                     logger.error("RetainDB writer error: %s", exc)
         finally:

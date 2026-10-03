@@ -6626,6 +6626,28 @@ def _is_gemini_native_route(provider_norm: str, effective_base: str) -> bool:
         return False
 
 
+# DeepSeek's chat-completions wire silently defaults the output cap to 8,192 tokens when
+# ``max_tokens`` is omitted — below the compression summary's target budget (~10K summary
+# ceiling plus the ~4K log envelope), so every summary ends ``finish_reason=length`` and
+# compression wedges behind its cooldown ladder (#126305). 32K covers that budget with
+# reasoning headroom; it is clamped to the model's catalogued output ceiling so an 8K-ceiling
+# model cannot 400 on an oversized cap. Unknown-to-the-catalog models keep the omission.
+_DEEPSEEK_COMPRESSION_OUTPUT_CAP = 32_768
+
+
+def _deepseek_compression_output_cap(model: str) -> Optional[int]:
+    """Explicit compression-lane output cap for DeepSeek, clamped to the catalogued ceiling."""
+    try:
+        from agent.models_dev import get_model_info
+        info = get_model_info("deepseek", model)
+        ceiling = int(getattr(info, "max_output", 0) or 0) if info is not None else 0
+    except Exception:
+        return None
+    if ceiling <= 0:
+        return None
+    return min(_DEEPSEEK_COMPRESSION_OUTPUT_CAP, ceiling)
+
+
 def _forwards_max_tokens(provider: str, provider_norm: str, model: str, effective_base: str, task: Optional[str]) -> bool:
     """Whether an explicit max_tokens is forwarded on this route.
 
@@ -6805,7 +6827,15 @@ def _build_call_kwargs(
         if not _forbids_sampling_params(model):
             kwargs["temperature"] = temperature
     provider_norm = str(provider or "").strip().lower()
-    if max_tokens is not None and _forwards_max_tokens(provider, provider_norm, model, effective_base, task):
+    # DeepSeek's omitted-cap default (8,192 output tokens) truncates every compression summary
+    # (#126305); send an explicit cap on that lane only, clamped to the model's catalogued
+    # output ceiling. Other providers/tasks keep the omission semantics documented above.
+    if max_tokens is None and task == "compression" and provider_norm == "deepseek":
+        max_tokens = _deepseek_compression_output_cap(model)
+    if max_tokens is not None and (
+        _forwards_max_tokens(provider, provider_norm, model, effective_base, task)
+        or (task == "compression" and provider_norm == "deepseek")
+    ):
         kwargs.update(auxiliary_max_tokens_param(max_tokens, model=model))  # picks max_completion_tokens where needed
     if tools:
         kwargs["tools"] = _dedupe_tool_names(tools, provider, model)

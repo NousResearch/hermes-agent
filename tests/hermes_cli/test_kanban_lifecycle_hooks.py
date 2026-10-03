@@ -66,6 +66,36 @@ def test_claim_fires_hook(kanban_home, captured_hooks):
     assert kw["run_id"] is not None
 
 
+def test_auto_decompose_terminal_failure_fires_blocked_hook_after_commit(
+    kanban_home, captured_hooks,
+):
+    observed_statuses = []
+
+    def _observe_committed_status(*, task_id, **_kwargs):
+        with kbc.connect() as observer:
+            observed_statuses.append(kb.get_task(observer, task_id).status)
+
+    get_plugin_manager()._hooks.setdefault("kanban_task_blocked", []).append(
+        _observe_committed_status,
+    )
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="needs decomposition", triage=True)
+        kb.record_auto_decompose_failure(conn, tid, reason="provider unavailable", now=100)
+        kb.record_auto_decompose_failure(conn, tid, reason="provider unavailable", now=400)
+        terminal = kb.record_auto_decompose_failure(
+            conn, tid, reason="provider unavailable", now=1000,
+        )
+
+    assert terminal is not None and terminal["blocked"] is True
+    fired = [event for event in captured_hooks if event[0] == "kanban_task_blocked"]
+    assert len(fired) == 1
+    kwargs = fired[0][1]
+    assert kwargs["task_id"] == tid
+    assert kwargs["run_id"] is None
+    assert kwargs["reason"].startswith("Automatic decomposition failed 3 times;")
+    assert observed_statuses == ["blocked"]
+
+
 
 
 def test_misbehaving_hook_does_not_break_transition(kanban_home, monkeypatch):

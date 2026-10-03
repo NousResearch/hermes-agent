@@ -6,7 +6,9 @@ Covers the design agreed 2026-07-23 (bare-name first-class org skills):
  2. Fail-loud collisions — a personal/org name clash lists BOTH sides flagged;
     skill_view's existing multi-candidate guard refuses the bare name.
  3. Load-time provenance header — org skill content announces org + author.
- 4. Org mirrors are read-only (skill_manage guards) and curation-exempt.
+ 4. Org skills are editable in place and curation-eligible.
+The mirror is populated by the separately installed Skill Sync plugin; its pull, propose and
+delete guard are tested there.
 """
 
 import json
@@ -156,8 +158,7 @@ class TestOrgSkillsAreEditableInPlace:
     Refusing edits to `_org/` froze exactly the skills the most people use:
     the agent is instructed to patch a skill the moment it finds a gap, and
     "fork it to a personal skill first" is not something an agent does
-    mid-task. So edits land in place; org updates never clobber them; the
-    user (or auto-propose) shares them back.
+    mid-task. So edits land in place.
     """
 
     def _org_skill(self, tmp_path, monkeypatch):
@@ -181,13 +182,6 @@ class TestOrgSkillsAreEditableInPlace:
         assert result["success"] is True, result.get("error")
         assert "improved" in (d / "SKILL.md").read_text(encoding="utf-8")
 
-
-    def test_delete_is_still_refused(self, tmp_path, monkeypatch):
-        smt, _skills, d = self._org_skill(tmp_path, monkeypatch)
-        guard = smt._org_mirror_write_guard("shared-x", d, "delete")
-        assert guard is not None and guard["success"] is False
-        assert "admin" in guard["error"]
-
     def test_curation_is_allowed(self, tmp_path, monkeypatch):
         from tools import skill_usage as su
 
@@ -199,107 +193,3 @@ class TestOrgSkillsAreEditableInPlace:
         # The curator must be able to improve shared skills — they are the
         # highest-leverage ones in the system.
         assert su.is_curation_eligible("shared-x", d) is True
-
-
-class TestOrgPullIsWiredIn:
-    """Guards the integration gap that unit tests structurally cannot catch.
-
-    The org pull functions were fully implemented and unit-tested while having
-    ZERO runtime callers, so org skills never loaded for anyone. Testing the
-    functions directly could never surface that. These tests assert the CALL
-    SITES exist, so the feature can't silently become dead code again.
-    """
-
-
-
-    def test_sync_status_exposes_org_state(self):
-        from tools import skills_sync_client as ssc
-
-        status = ssc.sync_status()
-        # These keys must always be present so a user can tell whether the org
-        # workflow applies to them, rather than it being invisible.
-        for key in ("org_available", "org_id", "org_role", "org_skills"):
-            assert key in status, f"sync status must expose {key!r}"
-
-
-
-
-
-class TestLocalEditsSurviveOrgUpdates:
-    """Ben's requirement: local edits are never silently overwritten.
-
-    An org pull materializes the shared set. Before this, it `rmtree`'d each
-    skill dir and re-wrote it, so any local improvement vanished on the next
-    session start with no warning. Now a locally-modified skill is skipped
-    and reported as a conflict for the user to resolve deliberately.
-    """
-
-    def _mirror(self, tmp_path, monkeypatch, body="original\n"):
-        from tools import skills_sync_client as ssc
-
-        skills = tmp_path / "skills"
-        d = _mk_skill(
-            skills,
-            f"{sku.ORG_MIRROR_DIR_NAME}/org-1/shared-x",
-            name="shared-x",
-            body=body,
-        )
-        _mark_active(skills, "org-1")
-        monkeypatch.setattr(ssc, "_skills_dir", lambda: skills)
-        monkeypatch.setattr(
-            ssc, "_org_dir", lambda: skills / sku.ORG_MIRROR_DIR_NAME
-        )
-        from tools import skills_sync_client_org as org
-        return org, skills, d
-
-    def test_unmodified_skill_is_not_flagged(self, tmp_path, monkeypatch):
-        org, _skills, d = self._mirror(tmp_path, monkeypatch)
-        org._write_org_baseline(
-            "org-1",
-            {"shared-x": {"fingerprint": org._skill_dir_fingerprint(d), "tree": "t1"}},
-        )
-        assert org.org_skill_is_locally_modified("shared-x", "org-1") is False
-        assert org.list_locally_modified_org_skills("org-1") == []
-
-    def test_edited_skill_is_detected(self, tmp_path, monkeypatch):
-        org, _skills, d = self._mirror(tmp_path, monkeypatch)
-        org._write_org_baseline(
-            "org-1",
-            {"shared-x": {"fingerprint": org._skill_dir_fingerprint(d), "tree": "t1"}},
-        )
-        (d / "SKILL.md").write_text("---\nname: shared-x\n---\nEDITED\n", encoding="utf-8")
-        assert org.org_skill_is_locally_modified("shared-x", "org-1") is True
-        assert org.list_locally_modified_org_skills("org-1") == ["shared-x"]
-
-    def test_missing_baseline_does_not_cry_wolf(self, tmp_path, monkeypatch):
-        org, _skills, _d = self._mirror(tmp_path, monkeypatch)
-        # Mirror pulled before baselines existed — must not be reported as
-        # modified (that would block every update with a phantom conflict).
-        assert org.org_skill_is_locally_modified("shared-x", "org-1") is False
-
-    def test_fingerprint_is_content_based_not_mtime(self, tmp_path, monkeypatch):
-        import os
-        import time
-
-        org, _skills, d = self._mirror(tmp_path, monkeypatch)
-        before = org._skill_dir_fingerprint(d)
-        time.sleep(0.01)
-        os.utime(d / "SKILL.md", None)  # touch: mtime changes, content doesn't
-        assert org._skill_dir_fingerprint(d) == before
-
-    def test_auto_propose_defaults_off(self, monkeypatch):
-        from tools import skills_sync_client as ssc
-
-        monkeypatch.delenv("HERMES_SYNC_ORG_AUTO_PROPOSE", raising=False)
-        monkeypatch.setattr(
-            "hermes_cli.config.load_config", lambda: {}, raising=False
-        )
-        # Default must be OFF: silently pushing every agent edit to the whole
-        # organisation is not a safe default.
-        assert ssc.sync_org_auto_propose() is False
-
-    def test_auto_propose_can_be_enabled_by_env(self, monkeypatch):
-        from tools import skills_sync_client as ssc
-
-        monkeypatch.setenv("HERMES_SYNC_ORG_AUTO_PROPOSE", "1")
-        assert ssc.sync_org_auto_propose() is True

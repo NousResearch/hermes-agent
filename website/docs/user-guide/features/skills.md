@@ -435,6 +435,12 @@ Paths support `~` expansion and `${VAR}` environment variable substitution.
 
 All four skills appear in your skill index. If you create a new skill called `my-custom-workflow` locally, it shadows the external version.
 
+## Organisation-shared skills (`skills/_org/`)
+
+Skills an organisation shares live in a read-only-by-convention mirror at `~/.hermes/skills/_org/<org_id>/`. Core only reads it: skills there load under their bare names, are labelled `[org-shared]` in the skills index (a name that clashes with a personal skill lists both sides), open in `skill_view` with a provenance note, and can be edited in place like any other skill. A mirror loads only while `skills/_org/.active_org` names its org, so a stale mirror from another organisation never resolves.
+
+Core never writes the mirror. **Skill Sync** (`hermes sync`: personal sync across your devices, plus pulling and proposing your organisation's shared skills) is a separately installed private plugin, not part of Hermes core: `hermes plugins install https://github.com/NousResearch/hermes-skill-sync` (needs GitHub access to that repository), then `hermes plugins enable skill-sync`. It keeps reading the same `sync:` config keys and `HERMES_SYNC_*` variables, and pulls on the plugin `on_maintenance_tick` hook ([Hooks](hooks.md#on_maintenance_tick)).
+
 ## Redirecting Skill Creation (`skills.create_dir`)
 
 By default the agent writes new skills to the profile-local `~/.hermes/skills/`. If you want agent-created skills to land somewhere else — a shared "brain" directory, a git-tracked repo, or a fleet-wide skills volume — set `create_dir` under the `skills` section:

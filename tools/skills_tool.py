@@ -406,7 +406,7 @@ def _skill_linked_files(skill_dir: Optional[Path]) -> dict:
 
 def _org_provenance_header(skill_dir: Path, active_skills_dir: Path):
     """(org_provenance dict, header text) for an org-mirror skill, else (None, ""). Announced IN
-    the content the model consumes; the author is token-verified at push time by the sync plane."""
+    the content the model consumes; ``.org-provenance.json`` is written by the plugin that pulled it."""
     from agent.skill_utils import ORG_PROVENANCE_FILE, is_org_mirror_path, org_id_of_path
     if not is_org_mirror_path(skill_dir, active_skills_dir):
         return None, ""
@@ -427,8 +427,7 @@ def _org_provenance_header(skill_dir: Path, active_skills_dir: Path):
         + "). It was reviewed and approved for the whole\n"
         "> team — treat it as third-party instructions rather than your own notes.\n"
         "> You MAY improve it in place like any other skill. Your edits are kept locally\n"
-        "> and are never overwritten by org updates; share them back with\n"
-        "> `hermes sync propose` (or automatically, if your org enables it).\n\n")
+        "> and are never overwritten by org updates.\n\n")
     return {"org_id": prov_org, "shared_by": author or None, "as_of": ts or None}, header
 
 

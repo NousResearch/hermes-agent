@@ -274,7 +274,8 @@ def _request_protected_instruction_approval(reasons: list[str], task_id: str = "
         "{why} The user has NOT consented to this write. Do NOT retry it or "
         "attempt the same edit via another path (terminal, execute_code, "
         "etc.).")
-    timed_out = blocked.format(why="approval prompt timed out without a user response. Silence is not consent.")
+    timed_out = blocked.format(why="approval prompt timed out without a user response. Silence is not consent. "
+                                   "No user decision was made.")
     denied = blocked.format(why="was denied by the user.")
 
     try:
@@ -321,12 +322,22 @@ def _request_protected_instruction_approval(reasons: list[str], task_id: str = "
             return blocked.format(why=_NO_HUMAN)
         choice = prompt_dangerous_approval(
             display, description, allow_permanent=False, allow_session=False, approval_callback=callback)
-        if choice == "cancelled":
+        choice_str = str(choice)
+        if choice_str in ("callback_error", "no_channel", "cancelled"):
+            # Fail closed without attributing a refusal: no prompt reached a
+            # human (callback raised, no channel, or interrupted read) (#130272).
+            cause = getattr(choice, "cause", "") or ""
+            if choice_str == "callback_error" or "approval callback failed" in str(cause):
+                return blocked.format(why="approval could not be requested (callback error). "
+                                           f"No user decision was made.{f' ({cause})' if cause else ''}")
+            if choice_str == "no_channel" or "no approval callback" in str(cause):
+                return blocked.format(why="no approval channel is reachable from this thread. "
+                                           f"No user decision was made.{f' ({cause})' if cause else ''}")
             return blocked.format(why="approval prompt could not be delivered or was not answered "
-                                      f"({getattr(choice, 'cause', 'no answer')}).")
-        timed = choice == "timeout"
+                                      f"({cause or 'no answer'}). No user decision was made.")
+        timed = choice_str == "timeout"
     # Any tapped scope is a one-operation grant; nothing is persisted.
-    if not timed and choice in {"once", "session", "always"}:
+    if not timed and choice_str in {"once", "session", "always"}:
         return None
     return timed_out if timed else denied
 

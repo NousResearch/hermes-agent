@@ -504,7 +504,8 @@ def _approved() -> dict:
 # ``approval.summary.<outcome>`` (``approval.summary.default`` for unknown outcomes). ``message`` is
 # addressed to the model ("Do NOT retry ..."); surfaces render ``user_summary`` first and fold the
 # model text away, so a Reject click does not read like an error the user caused.
-_USER_SUMMARY_OUTCOMES = frozenset({"denied", "timeout", "notify_failed", "cancelled", "blocked"})
+_USER_SUMMARY_OUTCOMES = frozenset({"denied", "timeout", "notify_failed", "cancelled", "blocked",
+                                    "callback_error", "no_channel"})
 # ``_GateSpec.noun`` values (identifiers) -> ``approval.noun.<noun>`` for the human sentence.
 _USER_SUMMARY_NOUNS = frozenset({"command", "code", "action"})
 
@@ -915,16 +916,49 @@ def _human_decision(spec: _GateSpec, *, command: str, description: str,
     choice = prompt_dangerous_approval(prompt_command, prompt_description, allow_permanent=allow_permanent,
                                        smart_denied=smart_denied, approval_callback=approval_callback)
     approval_context._fire_approval_hook("post_approval_response", **hook_kwargs, choice=choice)
-    if choice == "timeout":
-        return deny(spec.cli_timeout, "timeout")
-    if choice == "cancelled":
-        # The prompt never reached a human (callback raised, no callback under prompt_toolkit, interrupted
-        # read): fail closed, but do not attribute a refusal to the user (#22992).
+    choice_str = str(choice)
+    if choice_str == "timeout":
+        # No prompt answer arrived: fail closed, but do not claim the user
+        # refused. The seconds are the window the prompt actually waited, so
+        # the agent can tell "nobody answered" from "the user said no" (#130272).
+        try:
+            timeout_seconds = approval_context.approval_wait_seconds()
+        except Exception:
+            timeout_seconds = approval_context._get_approval_timeout()
+        return deny(
+            f"BLOCKED: approval timed out after {timeout_seconds}s with no response. "
+            "No user decision was made. (timed out without user response.) "
+            "Silence is not consent." + _STOP_COMMAND + "{breaker}",
+            "timeout", timeout_seconds=timeout_seconds)
+    if choice_str in ("callback_error", "no_channel", "cancelled"):
+        # The prompt never reached a human: the callback raised, the
+        # fail-closed guard fired (prompt_toolkit owns the terminal, no
+        # per-thread callback), or the read was interrupted/withdrawn. Fail
+        # closed without attributing a refusal to the user (#22992, #130272).
+        # Legacy "cancelled" values are classified by their cause so older
+        # callers still produce the accurate message.
+        cause = str(getattr(choice, "cause", "") or "")
+        if choice_str == "callback_error" or "approval callback failed" in cause:
+            detail = f" ({cause})" if cause else ""
+            return deny(
+                "BLOCKED: approval could not be requested (callback error). "
+                f"No user decision was made.{detail} The user has NOT consented to this action. "
+                "Do NOT retry this command, do NOT rephrase it, and do NOT attempt the same "
+                "outcome via a different command.{breaker}",
+                "callback_error")
+        if choice_str == "no_channel" or "no approval callback" in cause:
+            detail = f" ({cause})" if cause else ""
+            return deny(
+                "BLOCKED: no approval channel is reachable from this thread. "
+                f"No user decision was made.{detail} The user has NOT consented to this action. "
+                "Do NOT retry this command, do NOT rephrase it, and do NOT attempt the same "
+                "outcome via a different command.{breaker}",
+                "no_channel")
         return deny(spec.gateway_refused, "cancelled",
                     reason="was not approved: the approval prompt could not be delivered or was not answered "
-                           f"({getattr(choice, 'cause', 'no answer')})",
+                           f"({cause or 'no answer'})",
                     reason_addendum="", timeout_addendum=" Silence is not consent.", deny_reason=None)
-    if choice == "deny":
+    if choice_str == "deny":
         # No _record_denial(): the breaker counts consecutive guardian LLM
         # DENY verdicts, not deliberate human denials.
         return deny(spec.cli_denied, "denied")

@@ -35,11 +35,15 @@ def prompt_dangerous_approval(command: str, description: str, timeout_seconds: i
     allow_permanent=True, allow_session=True, smart_denied=False) -> str``; legacy
     signatures keep working while both keywords hold their defaults.
 
-    Returns 'once', 'session', 'always', 'deny', 'timeout', or 'cancelled'. 'timeout'
-    means no user response — still blocked (fail-closed), but callers report "no
-    response" rather than an explicit denial. 'cancelled' is an :class:`Unanswered`
-    sentinel: the prompt never reached a human (callback raised, no callback under
-    prompt_toolkit, interrupted read) and ``.cause`` says why (#22992).
+    Returns 'once', 'session', 'always', 'deny', 'timeout', 'callback_error',
+    'no_channel', or 'cancelled'. 'timeout' means the input wait expired with no
+    answer; 'callback_error' means the approval callback raised; 'no_channel'
+    means the fail-closed guard fired (prompt_toolkit active, no callback on this
+    thread, so the prompt could not be shown); 'cancelled' is an :class:`Unanswered`
+    sentinel for the remaining no-decision paths (interrupted read). All four are
+    still blocked (fail-closed), but callers report "no user decision was made"
+    rather than an explicit denial. 'cancelled' keeps its historical value so
+    older callers comparing against it still fail closed (#22992, #130272).
 
     See #81887.
     """
@@ -61,6 +65,36 @@ class Unanswered(str):
 
     def __new__(cls, cause: str):
         self = super().__new__(cls, "cancelled")
+        self.cause = cause
+        return self
+
+
+class CallbackError(str):
+    """The approval callback raised instead of returning a choice (#130272).
+
+    Distinct from ``"deny"`` (an affirmative human refusal) and from ``"cancelled"``
+    (a withdrawn/interrupted prompt): no prompt was shown and no user decision was
+    made. Fail-closed like every other non-consent outcome.
+    """
+    __slots__ = ("cause",)
+
+    def __new__(cls, cause: str):
+        self = super().__new__(cls, "callback_error")
+        self.cause = cause
+        return self
+
+
+class NoChannel(str):
+    """No approval channel is reachable from this thread (#130272).
+
+    The fail-closed guard in :func:`_ask_human` (prompt_toolkit owns the terminal
+    and no per-thread callback is registered): the prompt could not be shown, so
+    no user decision was made. Fail-closed, never auto-approve.
+    """
+    __slots__ = ("cause",)
+
+    def __new__(cls, cause: str):
+        self = super().__new__(cls, "no_channel")
         self.cause = cause
         return self
 
@@ -126,7 +160,7 @@ def _ask_human(command: str, description: str, timeout_seconds: int, allow_perma
             return approval_callback(display_command, display_description, **callback_kwargs)
         except Exception as e:
             logger.error("Approval callback failed: %s", e, exc_info=True)
-            return Unanswered(f"the approval callback failed: {type(e).__name__}")
+            return CallbackError(f"the approval callback failed: {type(e).__name__}")
 
     # Fail-closed guard: when prompt_toolkit owns the terminal and no callback is registered on this thread, the
     # input() fallback would spawn a daemon thread whose read never sees Enter (keystrokes go to prompt_toolkit) — an
@@ -143,7 +177,7 @@ def _ask_human(command: str, description: str, timeout_seconds: int, allow_perma
             logger.warning("Dangerous-command approval requested on a thread with no "
                            "approval callback while prompt_toolkit is active; failing closed "
                            "to avoid stdin deadlock. command=%r description=%r", command, description)
-            return Unanswered("no approval callback is registered on this thread while prompt_toolkit owns "
+            return NoChannel("no approval callback is registered on this thread while prompt_toolkit owns "
                               "the terminal, so the prompt could not be shown")
     except Exception:
         pass  # prompt_toolkit absent or detection failed: legacy input() path is safe
@@ -278,7 +312,11 @@ def _consent(choice, unresolved: str) -> str:
     """Map an approval choice to an elicitation verdict; *unresolved* is the no-answer outcome."""
     if choice in ("once", "session", "always"):
         return "accept"
-    return unresolved if choice in ("timeout", "cancelled") else "decline"
+    # ``str(choice)`` so CallbackError/NoChannel sentinels (str subclasses with
+    # distinct values) map to the no-decision outcome like timeout/cancelled.
+    if str(choice) in ("timeout", "cancelled", "callback_error", "no_channel"):
+        return unresolved
+    return "decline"
 
 
 def request_elicitation_consent(message: str, description: str, *,

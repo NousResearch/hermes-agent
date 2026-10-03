@@ -143,13 +143,21 @@ def cli_session(monkeypatch):
 
 
 def test_cli_callback_failure_reports_undelivered_prompt_not_user_deny(cli_session):
-    """The CLI residual of #22992: a prompt that never reached a human (the approval callback
-    raised) is 'cancelled' with its cause, not 'User denied this command'."""
+    """The CLI residual of #22992, refined by #130272: a prompt that never reached
+    a human (the approval callback raised) is 'callback_error' with its cause,
+    not 'User denied this command'."""
     def broken_callback(command, description, **kwargs):
         raise TypeError("callback signature mismatch")
 
     result = mod.check_all_command_guards("rm -rf .git", "local", approval_callback=broken_callback)
-    _assert_withdrawn(result, "the approval callback failed: TypeError")
+    assert result["approved"] is False
+    assert result.get("user_consent") is False
+    assert result["outcome"] == "callback_error"
+    assert "denied by user" not in result["message"].lower()
+    assert "the approval callback failed: TypeError" in result["message"]
+    assert "NOT consented" in result["message"]  # still fail-closed for the model
+    assert "No user decision was made" in result["message"]
+    assert "approval could not be requested (callback error)" in result["message"]
     assert "user denied" not in result["message"].lower()
     posts = [kw for name, kw in cli_session if name == "post_approval_response"]
-    assert posts[-1]["choice"] == "cancelled"
+    assert str(posts[-1]["choice"]) == "callback_error"

@@ -3245,15 +3245,142 @@ def looks_like_codex_intermediate_ack(
 ) -> bool:
     """Detect a planning/ack message that should continue instead of ending the turn.
     ``require_workspace=False`` (opt-in for all api_modes) drops the filesystem/repo reference
-    requirement; future-ack + short-content + no-prior-tools + action-verb checks always apply."""
+    requirement; short-content + no-prior-tools guardrails always apply. A response must then
+    contain either a first-person future acknowledgement with an action marker or a narrowly
+    bounded pronounless action clause with an explicit transition cue; this keeps ordinary
+    conversational replies such as "I'll help you brainstorm" from tripping it."""
     if any(isinstance(msg, dict) and msg.get("role") == "tool" for msg in messages):
         return False
     assistant_text = agent._strip_think_blocks(assistant_content or "").strip().lower()
     if not assistant_text or len(assistant_text) > 1200:
         return False
-    if not _ACK_FUTURE_RE.search(assistant_text):
+    # Some tool-using providers narrate the next action in terse log style
+    # rather than with a first-person lead-in: "Brief written. Creating the
+    # session now." Bare gerunds are too ambiguous ("Reading the traceback
+    # explains the failure" is a final answer), so this path also requires an
+    # explicit transition cue such as "now", "via acpx", "actual log", or
+    # "then launching". Completed reports and questions stay final.
+    action_clause_pattern = re.compile(
+        r"(?:^|[.!…—–]\s+|\n+\s*|,\s+then\s+)"
+        r"(?:(?P<transition>then)\s+)?"
+        r"(?P<action>(?:re)?launching|(?:re)?starting|creating|"
+        r"checking|running|writing|opening|reading|inspecting|reviewing|"
+        r"testing|debugging|searching|fixing)\b"
+    )
+    list_item_prefix_pattern = re.compile(r"(?:^|\n)\s*(?:[-*+]|\d+[.)])\s*$")
+    numbered_item_pattern = re.compile(r"(?:^|\s)(\d+)[.)](?=\s)")
+    status_number_pattern = re.compile(
+        r"\b(?P<label>exit\s+code|attempt|step|retry)\s+"
+        r"(?P<number>\d+)[.)](?=\s)"
+    )
+    question_pattern = re.compile(r"\?(?=\s|$|[\"'’”)\\]])")
+    sentence_boundary_pattern = re.compile(
+        r"(?:[.!…](?=\s|$)|\?(?=\s|$|[\"'’”)\\]])|\n+)"
+    )
+    allowed_trailing_action_pattern = re.compile(
+        r"\s*(?:will\s+report\s+back|"
+        r"then\s+(?:launching|relaunching|starting|restarting|creating)\s+"
+        r"(?:it|(?:the\s+)?(?:session|worker|agent|job|process))|"
+        r"(?:checking|reading|opening|inspecting)\s+(?:the\s+)?(?:log|output))"
+        r"\s*[.!…]?\s*$"
+    )
+    launch_now_tail_pattern = re.compile(
+        r"\s+(?:(?:it|(?:the\s+)?(?:session|worker|agent|job|process)|"
+        r"(?:the\s+)?migration\s+file\s+in\s+the\s+repo)\s+)?"
+        r"now(?:\s*\([^)]*\))?\s*$"
+    )
+    run_now_tail_pattern = re.compile(
+        r"\s+(?:(?:it|(?:the\s+)?(?:(?:repo\s+)?suite|tests?|job|process|"
+        r"server|service))\s+)?now(?:\s*\([^)]*\))?\s*$"
+    )
+    check_now_tail_pattern = re.compile(
+        r"\s+(?:the\s+)?(?:log|output|status|service|session|job)\s+"
+        r"now(?:\s*\([^)]*\))?\s*$"
+    )
+    launch_url_tail_pattern = re.compile(
+        r"\s+now\s*[—–-]\s*see\s+https?://\S+"
+        r"(?:\s+for\s+progress)?\s*$"
+    )
+    provider_tail_pattern = re.compile(
+        r"\s+(?:it|(?:the\s+)?(?:session|worker|agent|job|process))\s+"
+        r"on\s+copilot(?:\s+via\s+acpx)?\s*$"
+    )
+    actual_log_tail_pattern = re.compile(
+        r"\s+(?:the\s+)?actual\s+(?:log|output)\s*$"
+    )
+    health_check_tail_pattern = re.compile(
+        r"\s+whether\b.*\b(?:healthy|ready|running|available|reachable|working)\s*$"
+    )
+    launch_with_pattern = re.compile(
+        r"\s+with\s+(?:(?:corrected|updated|new)\s+"
+        r"(?:arguments?|args?|options?|flags?|parameters?)|"
+        r"globals?\s+before\s+(?:the\s+)?agent\s+name)\s*$"
+    )
+    has_pronounless_action = False
+    step_numbers = {
+        status_match.group("number")
+        for status_match in status_number_pattern.finditer(assistant_text)
+        if status_match.group("label") == "step"
+    }
+    has_step_sequence = len(step_numbers) >= 2
+    numbering_text = status_number_pattern.sub("", assistant_text)
+    numbered_markers = {
+        match.group(1) for match in numbered_item_pattern.finditer(numbering_text)
+    }
+    has_numbered_list = has_step_sequence or bool(numbered_markers)
+    if not question_pattern.search(assistant_text):
+        for action_match in action_clause_pattern.finditer(assistant_text):
+            action_prefix = assistant_text[: action_match.start("action")]
+            if has_numbered_list or list_item_prefix_pattern.search(action_prefix):
+                continue
+            raw_clause_tail = assistant_text[action_match.end() :]
+            boundary_match = sentence_boundary_pattern.search(raw_clause_tail)
+            if boundary_match:
+                clause_tail = raw_clause_tail[: boundary_match.start()]
+                remaining_text = raw_clause_tail[boundary_match.end() :]
+            else:
+                clause_tail = raw_clause_tail
+                remaining_text = ""
+            if remaining_text.strip() and not allowed_trailing_action_pattern.fullmatch(
+                remaining_text
+            ):
+                continue
+            action_word = action_match.group("action")
+            is_launch_action = action_word in {
+                "launching",
+                "relaunching",
+                "starting",
+                "restarting",
+                "creating",
+            }
+            has_transition_cue = bool(
+                (is_launch_action and launch_now_tail_pattern.fullmatch(clause_tail))
+                or (action_word == "running" and run_now_tail_pattern.fullmatch(clause_tail))
+                or (
+                    action_word == "checking"
+                    and check_now_tail_pattern.fullmatch(clause_tail)
+                )
+                or (is_launch_action and launch_url_tail_pattern.fullmatch(clause_tail))
+                or (is_launch_action and provider_tail_pattern.fullmatch(clause_tail))
+                or (
+                    action_word in {"checking", "reading", "opening", "inspecting"}
+                    and actual_log_tail_pattern.fullmatch(clause_tail)
+                )
+                or (
+                    action_word == "checking"
+                    and health_check_tail_pattern.fullmatch(clause_tail)
+                )
+                or (is_launch_action and launch_with_pattern.fullmatch(clause_tail))
+            )
+            if not has_transition_cue:
+                continue
+            has_pronounless_action = True
+            break
+    if not (_ACK_FUTURE_RE.search(assistant_text) or has_pronounless_action):
         return False
-    if not any(marker in assistant_text for marker in _ACK_ACTION_MARKERS):
+    if not has_pronounless_action and not any(
+        marker in assistant_text for marker in _ACK_ACTION_MARKERS
+    ):
         return False
     # Opted-in (all-api_mode) path: future-ack + action verb + no prior tool call suffices.
     if not require_workspace:

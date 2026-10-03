@@ -7,6 +7,7 @@ import logging
 import sys
 import threading
 import time
+from concurrent.futures import Future
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 
@@ -326,7 +327,6 @@ def _run_claimed_job(job: Dict[str, Any], extra_prompt: Optional[str] = None) ->
     job_id = job["id"]
     _registered = False
     fire_owner = None
-    from concurrent.futures import Future
 
     registration_owner = object()
     running_future = Future()

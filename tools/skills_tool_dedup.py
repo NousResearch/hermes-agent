@@ -81,6 +81,17 @@ def _check_skill_view_dedup(task_id, name, file_path) -> str | None:
     return None
 
 
+def invalidate_skill_view_file(task_id: str | None, source_path: str) -> None:
+    """A failed patch needs a fresh view even when the file itself hasn't changed."""
+    if not task_id:
+        return
+    with _skill_view_tracker_lock:
+        cache = _skill_view_tracker.get(str(task_id), {})
+        for key, (src, _, _) in list(cache.items()):
+            if src == source_path:
+                cache.pop(key, None)
+
+
 def reset_skill_view_dedup(task_id: str | None = None) -> None:
     """Clear the dedup cache (all tasks when task_id is None); called on context compression."""
     with _skill_view_tracker_lock:

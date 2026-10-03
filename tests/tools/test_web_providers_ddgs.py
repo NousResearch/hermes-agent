@@ -287,3 +287,30 @@ class TestDDGSSearchOnlyErrors:
         assert result["success"] is False
         assert "search-only" in result["error"].lower()
         assert "duckduckgo" in result["error"].lower() or "ddgs" in result["error"].lower()
+
+    def test_fresh_install_extract_autodetect_skips_ddgs(self, monkeypatch):
+        """An importable search-only ddgs must not select web_extract's backend."""
+        from agent import web_search_registry
+        from tools import web_tools
+
+        ddgs = types.SimpleNamespace(name="ddgs", supports_extract=lambda: False)
+        keyless_extract = types.SimpleNamespace(name="exa")
+        monkeypatch.setattr(web_tools, "_load_web_config", lambda: {})
+        monkeypatch.setattr(web_tools, "_ddgs_package_importable", lambda: True)
+        monkeypatch.setattr(web_tools, "_is_tool_gateway_ready", lambda: False)
+        monkeypatch.setattr(web_tools, "_ensure_web_plugins_loaded", lambda: None)
+        monkeypatch.setattr(web_tools, "_registered_web_provider", lambda name: ddgs if name == "ddgs" else None)
+        monkeypatch.setattr(web_search_registry, "get_active_extract_provider", lambda: keyless_extract)
+
+        assert web_tools._get_extract_backend() == "exa"
+
+    @pytest.mark.parametrize("config", [
+        {"extract_backend": "ddgs"},
+        {"backend": "ddgs"},
+    ])
+    def test_explicit_ddgs_selection_remains_strict(self, monkeypatch, config):
+        """Explicit per-capability and shared selections are never silently rerouted."""
+        from tools import web_tools
+
+        monkeypatch.setattr(web_tools, "_load_web_config", lambda: config)
+        assert web_tools._get_extract_backend() == "ddgs"

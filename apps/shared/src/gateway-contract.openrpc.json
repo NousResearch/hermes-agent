@@ -18877,10 +18877,12 @@
         "description": "``hermes_cli/inventory.py::_apply_capabilities``.",
         "properties": {
           "fast": {
+            "default": false,
             "title": "Fast",
             "type": "boolean"
           },
           "reasoning": {
+            "default": false,
             "title": "Reasoning",
             "type": "boolean"
           },
@@ -18897,10 +18899,6 @@
             "title": "Can Disable Reasoning"
           }
         },
-        "required": [
-          "fast",
-          "reasoning"
-        ],
         "title": "ModelCapabilities",
         "type": "object"
       },

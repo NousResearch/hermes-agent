@@ -1025,15 +1025,11 @@ class GatewayNotificationsMixin:
             if chat in notified_chats:
                 delivered.add(target)
                 continue
-            sent = await self._send_home_channel_message(
+            if await self._send_home_channel_message(
                 platform, home, transport, message, "Home-channel startup notification failed for %s:%s: %s",
-            )
-            # A live transport that rejects this one-way startup notice cannot make progress by
-            # being retried forever. Treat the attempted target as settled so one broken adapter
-            # does not block notices for every other home channel on subsequent boots.
-            delivered.add(target)
-            if sent:
+            ):
                 notified_chats.add(chat)
+                delivered.add(target)
                 logger.info("Sent home-channel startup notification to %s:%s", platform.value, home.chat_id)
         return delivered
 

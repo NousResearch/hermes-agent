@@ -147,6 +147,15 @@ async def test_failed_live_home_does_not_block_other_startup_notices(boot_notice
 
     broken.send.assert_awaited_once()
     reachable.send.assert_awaited_once()
+    assert json.loads(marker.read_text(encoding="utf-8"))["delivered_targets"] == [
+        ["telegram", "reachable-home", None]
+    ]
+
+    # A transient live-transport failure must remain pending so reconnect replay can deliver it.
+    recovered = _adapter()
+    await _reconnect(runner, Platform.DISCORD, recovered)
+
+    recovered.send.assert_awaited_once()
     assert not marker.exists()
 
 

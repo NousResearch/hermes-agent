@@ -4285,6 +4285,9 @@ def _try_main_agent_model_fallback(
     so a hung aux model says nothing about the main model's health. Returns (client, model, label) or (None, None, "")."""
     main_provider = (_read_main_provider() or "").strip()
     main_model = (_read_main_model() or "").strip()
+    alias_base_url = alias_api_key = ""
+    if (alias_route := _config_model_alias_route(main_model)) is not None:
+        main_provider, main_model, alias_base_url, alias_api_key = alias_route
     if main_provider.lower() == "moa":
         # MoA virtual provider: fall back to the preset's aggregator (the acting model).
         _agg_provider, _agg_model = _resolve_moa_aggregator(main_model)
@@ -4300,7 +4303,7 @@ def _try_main_agent_model_fallback(
         logger.info("Auxiliary vision: %s on %s — main agent provider %s accepts no image input, not falling back",
                     reason, failed_provider, main_provider)
         return None, None, ""
-    main_base_url = _custom_health_base_url(main_provider)
+    main_base_url = _custom_health_base_url(main_provider, alias_base_url)
     if _failed_backend_skip(
             failed_provider, failed_model, failed_base_url=failed_base_url,
             failure_scope=failure_scope)(main_provider, main_model, main_base_url):
@@ -4309,7 +4312,9 @@ def _try_main_agent_model_fallback(
         _log_skip_unhealthy(main_provider, task, base_url=main_base_url)
         return None, None, ""
     try:
-        client, resolved_model = resolve_provider_client(provider=main_provider, model=main_model)
+        client, resolved_model = resolve_provider_client(
+            provider=main_provider, model=main_model,
+            explicit_base_url=alias_base_url or None, explicit_api_key=alias_api_key or None)
     except Exception:
         client, resolved_model = None, None
     if client is None:

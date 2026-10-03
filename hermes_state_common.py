@@ -1080,6 +1080,14 @@ _FTS_REBUILD_LOCK_POLL_SECONDS = 0.1
 _IS_WINDOWS = sys.platform == "win32"
 # Post-break re-acquire budget: the fresh inode is contended only by live processes — never the full timeout.
 _LOCK_BREAK_REACQUIRE_SECONDS = 5.0
+# Orphan breaks per acquire.  A second, concurrent breaker can replace the file again right after our
+# unlink, which invalidates the inode we just retook (issue #126784); one allowance per call made that
+# racer indistinguishable from a live holder, so full FTS rebuilds deferred indefinitely.  Breaks are
+# bounded because each one re-verifies provable death and re-arms the re-acquire budget above (itself
+# capped at the caller's own timeout, so a non-blocking probe never buys extra waiting).
+# ponytail: a fixed small attempt count, not adaptive backoff — the loop only has to survive a
+# concurrent breaker, and the deadline still bounds the polling between breaks.
+_MAX_BREAK_ATTEMPTS = 3
 
 # "Another process holds the lock": flock → EWOULDBLOCK/EAGAIN, msvcrt.locking → EACCES (EDEADLK when its retry
 # gives up).  Anything else (ESTALE, ENOTSUP, ENOLCK, EIO) is a persistent failure polling cannot fix.
@@ -1114,13 +1122,18 @@ def _read_lock_holder_record(handle):
 
 
 def _rewrite_lock_file(handle, payload: bytes) -> None:
-    """Best-effort truncate-and-write of *payload* at offset 0."""
+    """Best-effort truncate-and-write of *payload* at offset 0, flushed and fsync'd.
+
+    The holder record gates the orphan break, so it must be durable before a contender
+    can read it: an unserialized write left a contender reading a stale record of a
+    live holder (issue #126784)."""
     with contextlib.suppress(OSError, ValueError):
         handle.seek(0)
         handle.truncate()
         if payload:
             handle.write(payload)
         handle.flush()
+        os.fsync(handle.fileno())
 
 
 def _write_lock_holder_record(handle) -> None:
@@ -1173,7 +1186,12 @@ def _acquire_db_flock(lock_path, handle, timeout_seconds, poll_seconds, descript
     without the held-by-another-process warning).  ``flock`` rides the open file DESCRIPTION, which ``fork()``
     duplicates, so a holder that forks then dies leaves the lock held forever; when the acquirer is provably
     dead the file is unlinked and retaken on a fresh inode (the orphan's flock excludes nobody).  Every
-    acquire verifies its inode still names *lock_path*, so a racer on a dead inode retries.
+    acquire verifies its inode still names *lock_path*, so a racer on a dead inode retries — up to
+    ``_MAX_BREAK_ATTEMPTS`` breaks, since a concurrent breaker can invalidate the inode we just retook.
+    ``timeout_seconds`` bounds the *waiting*, not just the first expiry: a break re-arms the re-acquire
+    budget below, and that budget is itself capped at the caller's own timeout, so a non-blocking probe
+    (``timeout_seconds=0``, the in-process FTS retry) still gets its one orphan break but never waits past
+    the budget it asked for.
 
     A holder that forks (multiprocessing worker, daemonized helper) and then dies leaves the flock held by a
     child that will never release it — the kernel's holder-death release never triggers, and every contender
@@ -1181,7 +1199,7 @@ def _acquire_db_flock(lock_path, handle, timeout_seconds, poll_seconds, descript
     """
     import fcntl
     deadline = time.monotonic() + timeout_seconds
-    broke_lock = False
+    break_attempts = 0
     while True:
         try:
             fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -1194,7 +1212,7 @@ def _acquire_db_flock(lock_path, handle, timeout_seconds, poll_seconds, descript
             if time.monotonic() < deadline:
                 time.sleep(poll_seconds)
                 continue
-            if broke_lock:
+            if break_attempts >= _MAX_BREAK_ATTEMPTS:
                 return False, handle
             record = _read_lock_holder_record(handle)
             if not _lock_holder_provably_dead(record):
@@ -1209,8 +1227,10 @@ def _acquire_db_flock(lock_path, handle, timeout_seconds, poll_seconds, descript
             except OSError as exc:
                 logger.warning("Could not break stale %s %s (%s) — deferring.", description, lock_path, exc)
                 return False, handle
-            broke_lock = True
-            deadline = time.monotonic() + _LOCK_BREAK_REACQUIRE_SECONDS
+            break_attempts += 1
+            # Never hand a break more patience than the caller budgeted: a `timeout_seconds=0` probe gets
+            # its one orphan break (and acquires at once if the fresh inode is free) but no post-break wait.
+            deadline = time.monotonic() + min(_LOCK_BREAK_REACQUIRE_SECONDS, timeout_seconds)
             continue
         # A breaker may have replaced the file while we waited; a lock on a dead inode excludes nobody.
         try:

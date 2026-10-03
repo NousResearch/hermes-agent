@@ -159,6 +159,9 @@ _OAUTH_PROVIDER_CATALOG: tuple[Dict[str, Any], ...] = (
     {"id": "xai-oauth", "name": "xAI Grok OAuth (SuperGrok / Premium+)", "flow": "device_code",
      "cli_command": "hermes auth add xai-oauth",
      "docs_url": "https://hermes-agent.nousresearch.com/docs/guides/xai-grok-oauth", "status_fn": None},
+    {"id": "meta-oauth", "name": "Meta (Muse subscription)", "flow": "device_code",
+     "cli_command": "hermes auth add meta-oauth",
+     "docs_url": "https://hermes-agent.nousresearch.com/docs/guides/meta-muse-oauth", "status_fn": None},
     # `copilot login` is the non-interactive subcommand; `copilot /login` is not valid
     # (slash-commands only exist inside an interactive session).
     {"id": "copilot-acp", "name": "GitHub Copilot (ACP)", "flow": "external", "cli_command": "copilot login",
@@ -445,3 +448,31 @@ def _xai_device_poller(session_id: str, sess: Dict[str, Any]) -> None:
         # duplicates the single-use refresh token and triggers ``refresh_token_reused`` churn.
         # An interactive login is an explicit re-enable, so clear any prior suppression.
         unsuppress_credential_source("xai-oauth", "device_code")
+
+
+@_oauth_poller("meta")
+def _meta_device_poller(session_id: str, sess: Dict[str, Any]) -> None:
+    """Complete Meta's device-code flow, then mint and persist its inference key."""
+    from hermes_cli import auth_meta
+    from hermes_cli.auth import mark_provider_active_if_unset, unsuppress_credential_source
+    from hermes_cli.web_server_profiles import _profile_scope
+    import httpx
+
+    with httpx.Client(timeout=httpx.Timeout(20.0), headers={"Accept": "application/json"}) as client:
+        identity_token = auth_meta.poll_for_identity_token(
+            client, sess["device_code"], expires_in=max(60, int(sess["expires_at"] - time.time())),
+            poll_interval=int(sess["interval"]),
+        )
+        tokens = auth_meta.mint_meta_api_key(identity_token, client)
+    with _profile_scope(sess.get("profile")), _oauth_sessions_lock:
+        if sess.get("cancelled"):
+            sess["status"] = "cancelled"
+            return
+        auth_meta._save_meta_oauth_tokens(
+            tokens, set_active=False,
+            last_refresh=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        )
+        mark_provider_active_if_unset("meta-oauth")
+        # The singleton auth-store entry seeds the credential pool. A second dashboard pool entry
+        # would duplicate Meta's refresh token and cause avoidable credential churn.
+        unsuppress_credential_source("meta-oauth", "device_code")

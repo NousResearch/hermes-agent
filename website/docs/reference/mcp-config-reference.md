@@ -65,6 +65,7 @@ mcp_servers:
 | `idle_timeout_seconds` | number | stdio | Optional stdio server recycle after idle time (`0` disables). May also live under a `lifecycle:` mapping |
 | `max_lifetime_seconds` | number | stdio | Optional stdio server recycle after age (`0` disables). May also live under a `lifecycle:` mapping |
 | `tools` | mapping | both | Filtering and utility-tool policy |
+| `result_filter` | mapping | both | Values removed from tool results before they reach the model. `drop_string_prefixes` (list of strings) drops every object entry and list item, in a JSON text block or `structuredContent`, whose string value starts with one of the prefixes. Use it for opaque encoded IDs a provider's prompt-injection screen rejects, e.g. `["gbrain-page:v1:"]` for gbrain, whose hits keep `slug` |
 | `auth` | string | HTTP | Authentication method. Set to `oauth` to enable OAuth 2.1 with PKCE |
 | `sampling` | mapping | both | Server-initiated LLM request policy (see MCP guide) |
 | `elicitation` | mapping | both | Server-initiated user-input requests. `enabled` (default `true`) and `timeout` in seconds (default `300`). Form-mode requests route through the approval surface; URL-mode is declined (see MCP guide) |

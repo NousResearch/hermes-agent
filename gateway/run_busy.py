@@ -21,7 +21,7 @@ from gateway.platforms.base import EphemeralReply
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.session import SessionSource
 from gateway.whatsapp_identity import canonical_whatsapp_identifier
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple, Union
 
 if TYPE_CHECKING:  # string annotations only; never imported at runtime (cycle)
     from gateway.run import GatewayRunner  # noqa: F401
@@ -91,6 +91,9 @@ def _same_chat_key_slots(
 
 class GatewayBusySessionMixin:
     """Busy-session queueing, slot claims, slash dispatch tables, destructive-slash confirmation."""
+
+    _handle_approve_command: Callable[[MessageEvent], Awaitable[Any]]
+    _handle_deny_command: Callable[[MessageEvent], Awaitable[Any]]
 
     def _queue_during_drain_enabled(self, busy_input_mode: Optional[str] = None) -> bool:
         # "queue"/"steer" mean messages survive a restart (queued for the new process); "interrupt" drops.
@@ -528,45 +531,87 @@ class GatewayBusySessionMixin:
                 words.setdefault(word, verb_args)
         return words
 
+    async def _route_pending_approval_response(
+        self, event: MessageEvent, session_key: str
+    ) -> Optional[str]:
+        """Route exact approval words or an explicit final-line command before busy handling."""
+        if not event.allow_gateway_control:
+            return None
+        try:
+            from tools.approval import has_blocking_approval
+            if not has_blocking_approval(session_key):
+                return None
+        except Exception:
+            return None
+
+        full_text = (event.text or "").strip()
+        if not full_text:
+            return None
+
+        words = self._plaintext_approval_words()
+        match = words.get(full_text.lower())
+        # Preserve reversed scope aliases such as "always yes", without
+        # treating a sentence that merely begins with "yes" as consent.
+        parts = full_text.lower().split()
+        if match is None and len(parts) == 2:
+            scope, answer = words.get(parts[0]), words.get(parts[1])
+            if scope in (("approve", "always"), ("approve", "session")) and answer == ("approve", ""):
+                match = scope
+
+        # Bare words must match the whole message. In quoted/multiline replies
+        # only an explicit final-line command can supply consent.
+        if match is None:
+            candidates = [full_text]
+            if "\n" in full_text:
+                candidates.append(full_text.rsplit("\n", 1)[-1].strip())
+            for candidate in candidates:
+                if not candidate.startswith(("/", "!")):
+                    continue
+                command_text = candidate[1:].strip()
+                match = words.get(command_text.lower())
+                if match is not None:
+                    break
+                command_parts = command_text.split(maxsplit=1)
+                if not command_parts:
+                    continue
+                command = command_parts[0].lower().split("@", 1)[0]
+                word = words.get(command)
+                if word is not None and not word[1] and command not in ("👍", "👎"):
+                    match = (word[0], command_parts[1] if len(command_parts) > 1 else "")
+                    break
+        if match is None:
+            return None
+
+        verb, args = match
+        denied = self._check_slash_access(event.source, verb)
+        if denied is not None:
+            return denied
+        event.text = f"/{verb} {args}".rstrip()
+        logger.info(
+            "Approval response routed: session=%s verb=%s", session_key, verb,
+        )
+        handler = self._handle_approve_command if verb == "approve" else self._handle_deny_command
+        return await handler(event)
+
     async def _route_plaintext_approval_while_busy(self, event: MessageEvent, session_key: str) -> bool:
         """Route a bare "yes"/"no" to the approval handlers while a dangerous-command approval blocks.
 
         Returns True when the message was consumed as an approval response.
         """
-        # A bare "yes" while blocked on a dangerous-command approval must reach the approval handler,
-        # not queue behind a turn that can't start until it resolves (auto-deny deadlock). Gated on
-        # has_blocking_approval so a conversational "yes" never fires a command.
+        # --- Approval response routing (#46866, #81026) ---
+        # When the agent is blocked waiting for a dangerous-command approval,
+        # user responses ("yes", "/approve", "!approve", quoted replies with
+        # the slash on the last line, etc.) must be routed to the approval
+        # handler instead of being steered/queued/interrupted. Otherwise the
+        # reply is queued behind a turn that can't start until the approval
+        # resolves, so the approval times out and auto-denies (a deadlock).
         try:
-            from tools.approval import has_blocking_approval
-            # --- Approval response routing (#46866) --- When the agent is blocked waiting for a
-            # dangerous-command approval, plain-text responses like "yes" or "approve" must be routed to the
-            # approval handler instead of being steered/queued/interrupted. Slash forms (/approve, /deny)
-            # already bypass to the runner at the base-adapter guard. This handles the bare-word forms
-            # (Signal/SMS users naturally type "yes" rather than "/approve"). Gating on
-            # has_blocking_approval(session_key) is the disambiguator that keeps a conversational "yes" from
-            # triggering a dangerous command when no approval is actually pending (design intent — see
-            # run.py "Pending exec approvals are handled by /approve and /deny" note). We reuse the
-            # canonical /approve and /deny handlers rather than re-deriving the resolution + i18n messaging:
-            # they resolve the waiting thread, resume typing, AND return a localized confirmation string.
-            # The busy-handler path does not auto-send that return, so we deliver it ourselves (mirroring
-            # the draining-case send above).
-            if event.allow_gateway_control and has_blocking_approval(session_key):
-                _raw_text = (event.text or "").strip().lower()
-                _match = self._plaintext_approval_words().get(_raw_text)
-                if _match is not None:
-                    _verb, _normalized_args = _match
-                    _approval_handler = (
-                        self._handle_approve_command if _verb == "approve" else self._handle_deny_command
-                    )
-                    # Synthesize "/approve [args]" / "/deny" so the slash handlers parse modifiers via
-                    # event.get_command_args(). Always a literal "/": is_command()/get_command_args()
-                    # don't recognize per-platform display prefixes ("!" on Slack/Matrix).
-                    event.text = f"/{_verb} {_normalized_args}".rstrip()
-                    _reply = await _approval_handler(event)
-                    logger.info(
-                        "Approval response via plain text: session=%s verb=%s args=%r",
-                        session_key, _verb, _normalized_args,
-                    )
+            # Keep main's allow_gateway_control gate; the helper covers
+            # quoted last-line slash commands and second-pending replies
+            # that the inlined word-set matcher misses.
+            if event.allow_gateway_control:
+                _reply = await self._route_pending_approval_response(event, session_key)
+                if _reply is not None:
                     _adapter = self._delivery_adapter_for(event.source)
                     if _adapter and _reply:
                         _text, _eph_ttl = _adapter._unwrap_ephemeral(_reply)
@@ -575,7 +620,7 @@ class GatewayBusySessionMixin:
                     return True
         except Exception:
             logger.warning(
-                "Plain-text approval routing failed for session %s; "
+                "Approval response routing failed for session %s; "
                 "falling through to busy handling", session_key, exc_info=True,
             )
         return False

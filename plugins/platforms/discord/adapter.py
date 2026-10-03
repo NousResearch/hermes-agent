@@ -4347,7 +4347,6 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         if not to_resolve:
             return
         print(f"[{self.name}] Resolving {len(to_resolve)} username(s): {', '.join(to_resolve)}")
-        resolved_count = 0
         display_only = set()
         for guild in self._client.guilds:
             # Fetch full member list (requires members intent)
@@ -4364,7 +4363,6 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                     uid = str(member.id)
                     numeric_ids.add(uid)
                     self._username_resolved_ids.add(uid)
-                    resolved_count += 1
                     to_resolve.discard(name_lower)
                     print(f"[{self.name}] Resolved '{name_lower}' -> {uid} ({member.name}#{member.discriminator})")
                     continue
@@ -4392,8 +4390,8 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         if not _multiplex_active():
             # Single-profile: legacy env rewrite so gateway env-based auth sees numeric IDs.
             os.environ["DISCORD_ALLOWED_USERS"] = ",".join(sorted(numeric_ids))
-        if resolved_count:
-            print(f"[{self.name}] Updated DISCORD_ALLOWED_USERS with {resolved_count} resolved ID(s)")
+        if self._username_resolved_ids:
+            print(f"[{self.name}] Updated DISCORD_ALLOWED_USERS with {len(self._username_resolved_ids)} resolved ID(s)")
 
     def format_message(self, content: str) -> str:
         """Format for Discord: GFM tables become bullet lists (Discord doesn't render pipe tables)."""
@@ -4967,10 +4965,8 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         The env mirror of ``_allowed_user_ids`` doesn't survive the per-turn .env hot-reload, so the
         gateway authz layer unions these in. Only IDs resolved from username entries: numeric entries
         are read live from the reloaded env, so one removed there (``hermes pairing revoke``, a hand
-        edit) must not stay authorized from this connect-time snapshot until restart. Numeric only:
-        passing "*" through would widen access."""
-        resolved = getattr(self, "_username_resolved_ids", None) or set()
-        return {str(uid) for uid in resolved if str(uid).isdigit()}
+        edit) must not stay authorized from this connect-time snapshot until restart."""
+        return set(self._username_resolved_ids)
 
     def _discord_allow_all_users(self) -> bool:
         """Per-profile DISCORD_ALLOW_ALL_USERS flag."""

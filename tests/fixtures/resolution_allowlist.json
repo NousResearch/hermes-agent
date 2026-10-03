@@ -645,7 +645,7 @@
     "kind": "bare_which"
   },
   {
-    "path": "tui_gateway/methods_prompt.py",
+    "path": "tui_gateway/methods_pdf.py",
     "symbol": "_",
     "kind": "bare_which"
   },

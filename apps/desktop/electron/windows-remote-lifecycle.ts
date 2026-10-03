@@ -20,6 +20,10 @@ function powerShellCommand(script) {
   return `powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand ${encodedPowerShell(script)}`
 }
 
+function powerShellStdinCommand() {
+  return 'powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command -'
+}
+
 async function probeWindowsRemote(ssh, explicitHermesPath = '') {
   const explicit = psLiteral(explicitHermesPath)
 
@@ -68,7 +72,10 @@ async function probeWindowsRemote(ssh, explicitHermesPath = '') {
     '[ordered]@{os="Windows";arch=$env:PROCESSOR_ARCHITECTURE;hermesHome=$hermesHome;hermesPath=$hermes;python=$python}|ConvertTo-Json -Compress'
   ].join(';')
 
-  return JSON.parse((await ssh.exec(powerShellCommand(script))).trim())
+  // Keep the probe script out of the remote command line. Windows OpenSSH
+  // commonly invokes cmd.exe, whose command-line limit is 8191 characters;
+  // the UTF-16LE/base64 representation is large enough to exceed it.
+  return JSON.parse((await ssh.exec(powerShellStdinCommand(), { stdinData: script })).trim())
 }
 
 function windowsUpdateMarkerProbeCommand(hermesHome) {

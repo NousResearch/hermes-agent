@@ -77,20 +77,21 @@ test('every emitted PowerShell script keeps try blocks attached to their catch/f
   // (MissingCatchOrFinally), so no probe may join a handler onto a separate
   // statement. The line-oriented builders join with `;`; the pair must live
   // in one array element.
-  const decode = (command: string) => Buffer.from(command.split(' ').at(-1) || '', 'base64').toString('utf16le')
+  const decode = (command: string, options?: any) =>
+    options?.stdinData ?? Buffer.from(command.split(' ').at(-1) || '', 'base64').toString('utf16le')
 
   const scripts: string[] = []
 
   await probeWindowsRemote(
-    sshWith(async command => {
-      scripts.push(decode(command))
+    sshWith(async (command: string, options: any) => {
+      scripts.push(decode(command, options))
 
       return JSON.stringify({ os: 'Windows' })
     })
   )
   await assertWindowsRemoteInstallUpdateClear(
-    sshWith(async command => {
-      scripts.push(decode(command))
+    sshWith(async (command: string, options: any) => {
+      scripts.push(decode(command, options))
 
       return 'CLEAR'
     }),
@@ -120,8 +121,8 @@ test('Windows relaunch gate refuses live and uncertain markers before executing 
   for (const observation of ['LIVE:4242', 'UNCERTAIN']) {
     const scripts: string[] = []
 
-    const ssh = sshWith(async command => {
-      const script = Buffer.from(command.split(' ').at(-1) || '', 'base64').toString('utf16le')
+    const ssh = sshWith(async (command: any, options?: any) => {
+      const script = options?.stdinData ?? Buffer.from(command.split(' ').at(-1) || '', 'base64').toString('utf16le')
       scripts.push(script)
 
       if (script.includes('Get-Command hermes.exe')) {
@@ -164,8 +165,8 @@ test('Windows relaunch gate refuses live and uncertain markers before executing 
 test('Windows relaunch gate uses strict install-wide marker parsing and fail-closed PID probing', async () => {
   let script = ''
 
-  const ssh = sshWith(async command => {
-    script = Buffer.from(command.split(' ').at(-1) || '', 'base64').toString('utf16le')
+  const ssh = sshWith(async (command: any, options?: any) => {
+    script = options?.stdinData ?? Buffer.from(command.split(' ').at(-1) || '', 'base64').toString('utf16le')
 
     return 'CLEAR'
   })
@@ -182,8 +183,8 @@ test('Windows relaunch gate uses strict install-wide marker parsing and fail-clo
 test('Windows probe validates Hermes and Python topology before selection', async () => {
   let script = ''
   await probeWindowsRemote(
-    sshWith(async command => {
-      script = Buffer.from(command.split(' ').at(-1) || '', 'base64').toString('utf16le')
+    sshWith(async (command: any, options?: any) => {
+      script = options?.stdinData ?? Buffer.from(command.split(' ').at(-1) || '', 'base64').toString('utf16le')
 
       return JSON.stringify({
         os: 'Windows',
@@ -244,7 +245,24 @@ test('platform detection preserves POSIX and falls back to Windows PowerShell', 
   )
 
   assert.equal(result.os, 'Windows')
-  assert.match(calls[1], /EncodedCommand/)
+  assert.match(calls[1], /-Command -$/)
+})
+
+test('Windows platform probe sends the script over SSH stdin instead of the command line', async () => {
+  let command = ''
+  let stdinData = ''
+
+  await probeWindowsRemote(
+    sshWith(async (actualCommand: string, options: any) => {
+      command = actualCommand
+      stdinData = options.stdinData
+      return JSON.stringify({ os: 'Windows' })
+    })
+  )
+
+  assert.match(command, /powershell\.exe .* -Command -$/)
+  assert.match(stdinData, /Get-Command hermes\.exe/)
+  assert.ok(stdinData.length > command.length)
 })
 
 test('platform detection surfaces transport failures as themselves, not unsupported-platform', async () => {
@@ -360,8 +378,8 @@ test('managed update drain preserves a Windows owner when creation time does not
 
   const operations: string[] = []
 
-  const ssh = sshWith(async command => {
-    const script = Buffer.from(command.split(' ').at(-1) || '', 'base64').toString('utf16le')
+  const ssh = sshWith(async (command: any, options?: any) => {
+    const script = options?.stdinData ?? Buffer.from(command.split(' ').at(-1) || '', 'base64').toString('utf16le')
     operations.push(script)
 
     return JSON.stringify(lock)
@@ -402,8 +420,8 @@ test('managed update drain rechecks Windows PID/create-time ownership before exa
 
   const operations: string[] = []
 
-  const ssh = sshWith(async command => {
-    const script = Buffer.from(command.split(' ').at(-1) || '', 'base64').toString('utf16le')
+  const ssh = sshWith(async (command: any, options?: any) => {
+    const script = options?.stdinData ?? Buffer.from(command.split(' ').at(-1) || '', 'base64').toString('utf16le')
     operations.push(script)
 
     if (script.includes("'read-lock'")) {

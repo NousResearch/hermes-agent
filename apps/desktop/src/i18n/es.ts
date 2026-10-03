@@ -1206,6 +1206,9 @@ export const esOverrides = {
       backdropDesc: 'La tenue imagen de la estatua detrás de la conversación.',
       userBubbleTitle: 'Burbuja de mensaje',
       userBubbleDesc: 'Cuánta transparencia tienen tus propios mensajes. Opaca en 0; en 100 solo queda el contorno.',
+      fullMessagesTitle: 'Mostrar mensajes completos',
+      fullMessagesDesc:
+        'Muestra tus mensajes largos completos en lugar de contraerlos. Los más altos se desplazan en vez de quedar fijados arriba.',
       textDirectionTitle: 'Dirección del texto',
       textDirectionDesc:
         'Cómo eligen su dirección los mensajes del chat y el campo de escritura. Auto sigue la primera letra de cada párrafo; elige una dirección cuando un texto mixto se alinee mal. El código siempre va de izquierda a derecha.',

@@ -312,6 +312,9 @@ export const zhHantSettings = {
       backdropDesc: '對話後方那張淡淡的雕像圖片。',
       userBubbleTitle: '訊息氣泡',
       userBubbleDesc: '你自己的訊息有多透明。0 為不透明，100 時只保留邊框。',
+      fullMessagesTitle: '顯示完整訊息',
+      fullMessagesDesc:
+        '完整顯示你傳送的長訊息，而不是摺疊。較長的訊息會隨捲動離開，而不是固定在頂部。',
       textDirectionTitle: '文字方向',
       textDirectionDesc:
         '設定聊天訊息和輸入框的文字方向。「自動」依每段的第一個字母判斷；混合文字排列不對時，可手動選擇方向。程式碼一律從左到右顯示。',

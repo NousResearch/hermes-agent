@@ -34,6 +34,7 @@ import { $activeGatewayProfile, $profiles, normalizeProfileKey } from '@/store/p
 import { $reactionsEnabled, setReactionsEnabled } from '@/store/reactions-enabled'
 import { $reasoningCollapsedByDefault, setReasoningCollapsedByDefault } from '@/store/reasoning-disclosure'
 import { $sessionListDensity, type SessionListDensity, setSessionListDensity } from '@/store/session-list-density'
+import { $showFullUserMessages, setShowFullUserMessages } from '@/store/show-full-user-messages'
 import { $tabStripDefault, setTabStripDefault, type TabStripDefault } from '@/store/tabstrip-prefs'
 import { $textDirection, setTextDirection, TEXT_DIRECTIONS, type TextDirection } from '@/store/text-direction'
 import { $hideThreadTimeline, setHideThreadTimeline } from '@/store/thread-timeline'
@@ -434,6 +435,7 @@ export function AppearanceSettings({ subpage }: AppearanceSettingsProps = {}) {
   const translucency = useStore($translucency)
   const glassMode = translucency.mode === 'glass' && GLASS_SUPPORTED
   const userBubbleTransparency = useStore($userBubbleTransparency)
+  const showFullUserMessages = useStore($showFullUserMessages)
   const textDirection = useStore($textDirection)
   const reactionsEnabled = useStore($reactionsEnabled)
   const tipsEnabled = useStore($tipsEnabled)
@@ -891,6 +893,16 @@ export function AppearanceSettings({ subpage }: AppearanceSettingsProps = {}) {
               description={a.userBubbleDesc}
               id={settingElementId(ids.userBubble)}
               title={a.userBubbleTitle}
+            />
+          )}
+
+          {show('chat-display') && (
+            <ToggleRow
+              checked={showFullUserMessages}
+              description={a.fullMessagesDesc}
+              id={settingElementId(ids.fullMessages)}
+              label={a.fullMessagesTitle}
+              onChange={setShowFullUserMessages}
             />
           )}
 

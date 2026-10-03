@@ -2388,6 +2388,10 @@ class TelegramAdapter(BasePlatformAdapter):
             "Polling is fine; PTB's dispatcher is not draining its queue.",
             self.name, backlog, _INGRESS_DISPATCH_STALL_HEARTBEATS, received, dispatched,
             getattr(self, "_polling_generation", 0))
+        # Reset the debounce before the hand-off: if there is no running loop the call raises
+        # below and recovery is deferred, so leaving the counter at the threshold would make the
+        # next heartbeat's guard swallow the retry this fallback promises.
+        self._ingress_stalled_heartbeats = 0
         try:
             self._schedule_polling_recovery(
                 _IngressDispatchStallError(

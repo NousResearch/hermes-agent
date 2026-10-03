@@ -95,13 +95,26 @@ def _launchctl_domain_unsupported(returncode: int) -> bool:
 _LAUNCHCTL_BOOTSTRAP_EIO = 5
 
 
-def _launchctl_bootstrap(domain: str, plist_path, label: str, *, timeout: int = 30) -> None:
+def _launchctl_remaining_timeout(deadline: float, timeout: float) -> float:
+    """Cap one launchctl operation by the shared monotonic deadline."""
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        raise subprocess.TimeoutExpired("launchctl", timeout)
+    return min(timeout, remaining)
+
+
+def _launchctl_bootstrap(
+    domain: str, plist_path, label: str, *, timeout: float = 30,
+    deadline: float | None = None,
+) -> None:
     """Bootstrap a launchd job, recovering from a stale still-registered label (EIO 5). Without the
     bootout + retry that case is misread as an unmanageable domain and degrades to detached, silently
     losing auto-start and crash-restart."""
+    if deadline is None:
+        deadline = time.monotonic() + timeout
     bootstrap = ["launchctl", "bootstrap", domain, str(plist_path)]
     try:
-        subprocess.run(bootstrap, check=True, timeout=timeout)
+        subprocess.run(bootstrap, check=True, timeout=_launchctl_remaining_timeout(deadline, timeout))
     except subprocess.CalledProcessError as exc:
         if exc.returncode != _LAUNCHCTL_BOOTSTRAP_EIO:
             raise
@@ -110,8 +123,8 @@ def _launchctl_bootstrap(domain: str, plist_path, label: str, *, timeout: int = 
         # unloaded), so its expected 3/113/125 stderr must not leak to the terminal.
         subprocess.run(
             ["launchctl", "bootout", f"{domain}/{label}"],
-            check=False, timeout=timeout, **_gw()._CAPTURE_TEXT)
-        subprocess.run(bootstrap, check=True, timeout=timeout)
+            check=False, timeout=_launchctl_remaining_timeout(deadline, timeout), **_gw()._CAPTURE_TEXT)
+        subprocess.run(bootstrap, check=True, timeout=_launchctl_remaining_timeout(deadline, timeout))
 
 
 def _launchd_reload_log_path() -> Path:
@@ -138,13 +151,13 @@ def _launchd_reload_budget() -> float:
     return max(30.0, _gw()._get_restart_drain_timeout())
 
 
-def _launchctl_supervised_pid(label: str) -> int | None:
+def _launchctl_supervised_pid(label: str, *, timeout: float = 10) -> int | None:
     """PID launchd currently runs for ``label``, or None when it runs none. ``launchctl list`` exits 0 for
     a mere registered definition (``state = not running`` on macOS 26+), so a PID — not the exit code — is
     the answer. Domain-agnostic on purpose: ``launchctl print`` domain probes fail on macOS-26 per-user
     domains, which is why the invoking profile verifies through this and not ``_launchd_print_service_pid``."""
     try:
-        result = subprocess.run(["launchctl", "list", label], check=False, timeout=10, **_gw()._CAPTURE_TEXT)
+        result = subprocess.run(["launchctl", "list", label], check=False, timeout=timeout, **_gw()._CAPTURE_TEXT)
     except (subprocess.TimeoutExpired, OSError):
         return None
     if result.returncode != 0:
@@ -164,10 +177,14 @@ def _retry_launchctl_bootstrap_until_registered(
     load bootstrap can fail even after bootout, during a drain (default 180s) — ~10s is too short."""
     attempt = 0
     while True:
+        if time.monotonic() >= deadline:
+            return False
         attempt += 1
         try:
-            _gw()._launchctl_bootstrap(domain, plist_path, label, timeout=30)
-            if _gw()._launchctl_label_supervising_process(label):
+            _gw()._launchctl_bootstrap(domain, plist_path, label, timeout=30, deadline=deadline)
+            if _gw()._launchctl_supervised_pid(
+                label, timeout=_launchctl_remaining_timeout(deadline, 10),
+            ) is not None:
                 return True
             outcome = f"exited 0 but {domain}/{label} has no supervised process (launchctl list)"
         except subprocess.CalledProcessError as exc:
@@ -175,9 +192,10 @@ def _retry_launchctl_bootstrap_until_registered(
         except subprocess.TimeoutExpired:
             outcome = f"timed out for {domain}/{label}"
         _gw()._append_launchd_reload_log(f"bootstrap attempt {attempt} {outcome} — retrying")
-        if time.monotonic() >= deadline:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
             return False
-        time.sleep(2)
+        time.sleep(min(2, remaining))
 
 
 # launchd-unsupported marker: written when the domain can't be managed (exit 5/125, macOS 26+) so
@@ -666,10 +684,8 @@ def launchd_install(force: bool = False, *, start_now: bool = True):
 
 def launchd_uninstall():
     plist_path = _gw().get_launchd_plist_path()
-    # Captured: uninstalling an already-unloaded job is fine — don't print Boot-out failed: 3.
-    subprocess.run(
-        ["launchctl", "bootout", f"{_launchd_domain()}/{get_launchd_label()}"],
-        check=False, timeout=90, **_gw()._CAPTURE_TEXT)
+    if _gw().launchd_stop() is False:
+        raise LaunchdStopError("Gateway did not stop; preserving the launchd plist")
     if plist_path.exists():
         plist_path.unlink()
         print(f"✓ Removed {plist_path}")
@@ -727,8 +743,12 @@ def _launchd_ok(message: str) -> None:
     _gw()._clear_launchd_unsupported_marker()
 
 
-def launchd_stop():
-    target = f"{_launchd_domain()}/{get_launchd_label()}"
+class LaunchdStopError(RuntimeError):
+    """The launchd gateway could not be confirmed stopped."""
+
+
+def launchd_stop() -> bool:
+    target = f"{_gw()._launchd_domain()}/{_gw().get_launchd_label()}"
     _gw()._mark_planned_stop()
     # bootout unloads the definition so KeepAlive doesn't respawn; `hermes gateway start` re-bootstraps.
     try:
@@ -741,8 +761,10 @@ def launchd_stop():
         # below.
         if not (_launchd_error_indicates_unloaded(e) or _launchctl_domain_unsupported(e.returncode)):
             raise
-    _gw()._wait_for_gateway_exit(timeout=10.0, force_after=5.0)
+    if not _gw()._wait_for_gateway_exit(timeout=10.0, force_after=5.0):
+        return False
     print("✓ Service stopped")
+    return True
 
 
 def _launchd_kickstart(label: str, domain: str) -> None:

@@ -56,6 +56,21 @@ class TestScheduleResolution:
         )
         assert spec["schedule"] == "0 14 * * 1-5"
 
+    @pytest.mark.parametrize("blueprint", CATALOG, ids=lambda b: b.key)
+    def test_defaults_fill_to_a_valid_schedule(self, blueprint):
+        # The dashboard, the pre-filled /blueprint command and the docs all submit the slot
+        # defaults, so they must pass validation and be pickable in a select control.
+        croniter = pytest.importorskip("croniter").croniter
+        for slot in blueprint.slots:
+            if slot.type in ("enum", "weekdays") and slot.strict:
+                assert str(slot.default) in map(str, slot.options), slot.name
+        spec = fill_blueprint(blueprint, {})
+        assert croniter.is_valid(spec["schedule"]), spec["schedule"]
+
+    def test_single_day_recurrence_runs_weekly(self):
+        spec = fill_blueprint(get_blueprint("competitor-watch"), {"recurrence": "friday"})
+        assert spec["schedule"] == "0 9 * * 5"
+
 
 
 class TestValidation:

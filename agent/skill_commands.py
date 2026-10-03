@@ -11,6 +11,7 @@ from typing import Any, Dict, Optional
 from hermes_constants import display_hermes_home
 from agent.prompt_cache_boundary import register_stable_prefix
 from agent.skill_preprocessing import load_skills_config as _load_skills_config, preprocess_skill_content
+from agent.skill_utils import AMBIGUOUS_SKILL_PREFIX
 
 logger = logging.getLogger(__name__)
 
@@ -249,7 +250,6 @@ def ambiguous_skill_label(identifier: str, payload: dict) -> Optional[str]:
     """``Ambiguous skill name X: use one of <paths>`` when a failed skill_view *payload* is a same-tier
     name collision, else None — so preload/cron say why instead of "Unknown"/"not found"."""
     load_names = payload.get("load_names") if isinstance(payload, dict) else None
-    from agent.skill_utils import AMBIGUOUS_SKILL_PREFIX
     return f"{AMBIGUOUS_SKILL_PREFIX}{identifier}: use one of {', '.join(load_names)}" if load_names else None
 
 
@@ -267,7 +267,6 @@ def _missing_skill_label(identifier: str) -> str:
 def format_missing_skills(missing: list[str]) -> str:
     """One error line for unresolved preload identifiers: ambiguous ones keep their own wording,
     the rest are reported as ``Unknown skill(s): ...``."""
-    from agent.skill_utils import AMBIGUOUS_SKILL_PREFIX
     ambiguous = [m for m in missing if m.startswith(AMBIGUOUS_SKILL_PREFIX)]
     unknown = [m for m in missing if m not in ambiguous]
     return "; ".join(ambiguous + ([f"Unknown skill(s): {', '.join(unknown)}"] if unknown else []))

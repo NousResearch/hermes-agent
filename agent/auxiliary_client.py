@@ -1028,13 +1028,42 @@ def _load_pool_with_credentials(provider: str, note: str = "") -> Optional[Any]:
     return pool if pool and pool.has_credentials() else None
 
 
-def _select_pool_entry(provider: str) -> Tuple[bool, Optional[Any]]:
+def _accepts_model_scope(fn: Any) -> bool:
+    """Whether ``fn`` accepts a ``model`` keyword (or swallows ``**kwargs``).
+
+    Unknown signatures (C builtins without introspectable parameters) count as
+    accepting: attempt the scoped call and let genuine errors surface.
+    """
+    try:
+        params = inspect.signature(fn).parameters.values()
+    except (TypeError, ValueError):
+        return True
+    return any(p.kind == inspect.Parameter.VAR_KEYWORD or p.name == "model" for p in params)
+
+
+def _call_scoped_or_unscoped(fn: Any, *args: Any, model: Optional[str] = None, **kwargs: Any) -> Any:
+    """Call ``fn`` scoped by ``model`` when its signature allows it.
+
+    Legacy callees without a ``model`` parameter fall back to an unscoped call
+    with a warning. Any other ``TypeError`` is a real bug: it propagates to the
+    caller's outer handler (logged, no credential) instead of silently
+    downgrading to the credential the scoped path refused (#130053).
+    """
+    if _accepts_model_scope(fn):
+        return fn(*args, model=model, **kwargs)
+    if model is not None:
+        logger.warning("Auxiliary client: %s does not accept a model scope; falling back unscoped",
+                       getattr(fn, "__qualname__", repr(fn)))
+    return fn(*args, **kwargs)
+
+
+def _select_pool_entry(provider: str, model: Optional[str] = None) -> Tuple[bool, Optional[Any]]:
     """Return (pool_exists_for_provider, selected_entry)."""
     pool = _load_pool_with_credentials(provider)
     if pool is None:
         return False, None
     try:
-        return True, pool.select()
+        return True, _call_scoped_or_unscoped(pool.select, model=model)
     except Exception as exc:
         logger.debug("Auxiliary client: could not select pool entry for %s: %s", provider, exc)
         return True, None
@@ -2128,13 +2157,13 @@ def _resolve_xai_oauth_for_aux() -> Optional[Tuple[str, str]]:
     return _creds_pair(creds)
 
 
-def _resolve_codex_credential_and_base() -> Tuple[Optional[str], str]:
+def _resolve_codex_credential_and_base(model: Optional[str] = None) -> Tuple[Optional[str], str]:
     """``(token, base_url)`` taken from ONE authority, so a Codex key is only ever sent to the host
     it belongs to (#121486): the profile-scoped ``HERMES_CODEX_BASE_URL`` wins; otherwise a pooled
     key goes where that pool entry routes (row URL / ``model.base_url``) and the auth.json OAuth
     token goes to the ChatGPT default. ``(None, <base>)`` without a usable token."""
     override = _codex_base_url_override()
-    pool_present, entry = _select_pool_entry("openai-codex")
+    pool_present, entry = _call_scoped_or_unscoped(_select_pool_entry, "openai-codex", model=model)
     if pool_present:
         token = _pool_runtime_api_key(entry)
         if token:
@@ -2190,7 +2219,8 @@ def _resolve_api_key_provider() -> Tuple[Optional[OpenAI], Optional[str]]:
                 from hermes_cli.auth import is_provider_explicitly_configured
                 if not is_provider_explicitly_configured("anthropic"):
                     continue
-            return _try_anthropic()
+            return _call_scoped_or_unscoped(
+                _try_anthropic, model=_get_aux_model_for_provider(provider_id) or None)
         if provider_id == "copilot":
             # Explicit-config gate: ambient gh-CLI credentials must not silently become aux fallback (#114740).
             with contextlib.suppress(ImportError):
@@ -2200,7 +2230,7 @@ def _resolve_api_key_provider() -> Tuple[Optional[OpenAI], Optional[str]]:
         model = _get_aux_model_for_provider(provider_id) or None
         if model is None:
             continue  # skip provider if we don't know a valid aux model
-        pool_present, entry = _select_pool_entry(provider_id)
+        pool_present, entry = _call_scoped_or_unscoped(_select_pool_entry, provider_id, model=model)
         if pool_present:
             api_key = _pool_runtime_api_key(entry)
             if not api_key:
@@ -2338,7 +2368,7 @@ def _try_openrouter(explicit_api_key: Optional[Union[str, Callable[[], str]]] = 
     # A caller-supplied endpoint (fallback_providers entry, custom_providers entry) is
     # authoritative over both the pool row and the canonical host (#121359).
     override_url = (explicit_base_url or "").strip().rstrip("/")
-    pool_present, entry = _select_pool_entry("openrouter")
+    pool_present, entry = _call_scoped_or_unscoped(_select_pool_entry, "openrouter", model=or_model)
     if pool_present:
         or_key = explicit_api_key or _pool_runtime_api_key(entry)
         if or_key:
@@ -2369,7 +2399,7 @@ def _describe_openrouter_unavailable(model: str = None) -> str:
             f"auxiliary.free_only rejected non-free model {or_model!r}; "
             "the request was skipped before provider availability checks"
         )
-    pool_present, entry = _select_pool_entry("openrouter")
+    pool_present, entry = _call_scoped_or_unscoped(_select_pool_entry, "openrouter", model=or_model)
     if pool_present:
         if entry is None:
             return "OpenRouter credential pool has no usable entries (credentials may be exhausted)"
@@ -2983,7 +3013,7 @@ def _build_codex_client(model: str) -> Tuple[Optional[Any], Optional[str]]:
             "pass model explicitly (auxiliary.<task>.model in config.yaml)."
         )
         return None, None
-    codex_token, base_url = _resolve_codex_credential_and_base()
+    codex_token, base_url = _resolve_codex_credential_and_base(model=model)
     if not codex_token:
         return None, None
     logger.debug("Auxiliary client: Codex OAuth (%s via Responses API)", model)
@@ -3052,13 +3082,15 @@ def _try_azure_foundry(
 
 
 def _try_anthropic(explicit_api_key: Optional[Union[str, Callable[[], str]]] = None,
-                   explicit_base_url: Optional[str] = None) -> Tuple[Optional[Any], Optional[str]]:
+                   explicit_base_url: Optional[str] = None,
+                   model: Optional[str] = None) -> Tuple[Optional[Any], Optional[str]]:
     try:
         from agent.anthropic_adapter import build_anthropic_client
         from agent.anthropic_credentials import resolve_anthropic_token
     except ImportError:
         return None, None
-    pool_present, entry = _select_pool_entry("anthropic")
+    target_model = model or _get_aux_model_for_provider("anthropic") or "claude-haiku-4-5-20251001"
+    pool_present, entry = _call_scoped_or_unscoped(_select_pool_entry, "anthropic", model=target_model)
     if pool_present and entry is not None:
         token = explicit_api_key or _pool_runtime_api_key(entry)
     else:
@@ -3097,7 +3129,7 @@ def _try_anthropic(explicit_api_key: Optional[Union[str, Callable[[], str]]] = N
         base_url = override_url
     from agent.anthropic_credentials import _is_oauth_token
     is_oauth = _is_oauth_token(token)
-    model = _get_aux_model_for_provider("anthropic") or "claude-haiku-4-5-20251001"
+    model = target_model
     if _aux_probe_active():
         # Probe: token + adapter import resolved; skip real client construction.
         return _AuxProbeClientStub(api_key="", base_url=base_url), model
@@ -5066,7 +5098,8 @@ def _resolve_openai_codex_branch(req: _ResolveRequest) -> _ResolveResult:
     no_token_msg = "resolve_provider_client: openai-codex requested but no Codex OAuth token found (run: hermes model)"
     if req.raw_codex:
         # Raw OpenAI client for callers needing responses.stream() (main agent loop).
-        codex_token, base_url = _resolve_codex_credential_and_base()
+        codex_token, base_url = _call_scoped_or_unscoped(
+            _resolve_codex_credential_and_base, model=model)
         if not codex_token:
             logger.warning(no_token_msg)
             return None, None
@@ -5289,8 +5322,9 @@ def _resolve_api_key_branch(req: _ResolveRequest, pconfig: Any, resolve_creds: C
     """PROVIDER_REGISTRY ``api_key`` providers (Anthropic via its own resolver), honouring explicit overrides."""
     provider = req.provider
     if provider == "anthropic":
-        client, default_model = _try_anthropic(explicit_api_key=req.explicit_api_key,
-                                               explicit_base_url=req.explicit_base_url)
+        client, default_model = _call_scoped_or_unscoped(
+            _try_anthropic, explicit_api_key=req.explicit_api_key,
+            explicit_base_url=req.explicit_base_url, model=req.model)
         return _route_or_warn(req, client, default_model,
                               "resolve_provider_client: anthropic requested but no Anthropic credentials found")
     creds = resolve_creds(provider)
@@ -5578,7 +5612,7 @@ _STRICT_VISION_BACKENDS: Dict[str, Callable[[Optional[str]], Tuple[Optional[Any]
     "openrouter": lambda model: _try_openrouter(model=model),
     "nous": lambda model: resolve_provider_client("nous", model, is_vision=True),
     "openai-codex": lambda model: resolve_provider_client("openai-codex", model, is_vision=True),
-    "anthropic": lambda model: _try_anthropic(),
+    "anthropic": lambda model: _try_anthropic(model=model),
     "deepinfra": _deepinfra_strict_vision_backend,
     "custom": lambda model: _try_custom_endpoint(),
 }

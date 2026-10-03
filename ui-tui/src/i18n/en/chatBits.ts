@@ -68,6 +68,8 @@ export const chatBitsEn = {
       agentsHint: '(/agents)'
     },
     messageLine: {
+      collapseLiveResponse: 'Collapse live response',
+      showFullLiveResponse: 'Show full live response',
       emptyToolResult: '(empty tool result)',
       systemMessage: '(system message)',
       chars: (count: string) => `${count} chars`,

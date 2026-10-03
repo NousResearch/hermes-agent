@@ -42,21 +42,30 @@ _DENIED_HOME_RELATIVE = tuple(PurePosixPath(s) for s in _MEDIA_DELIVERY_DENIED_H
 
 def remote_path_is_denied(path: str, remote_home: Optional[str]) -> bool:
     """Pure string check (the remote fs can't be stat'd from here) applying the host denylist to a
-    sandbox path. Unknown home ⇒ home-relative entries match ANY path component (conservative)."""
+    sandbox path. A denied prefix that is the sandbox home, or an ancestor of it, spares paths
+    under that home — the more specific credential entries inside it stay denied. Unknown home ⇒
+    home-relative entries match ANY path component (conservative)."""
     target = PurePosixPath(posixpath.normpath(path))
     if not target.is_absolute():
         return True
     home = PurePosixPath(posixpath.normpath(remote_home)) if remote_home else None
 
-    def _under(root: PurePosixPath) -> bool:
-        return target == root or root in target.parents
+    def _within(child: PurePosixPath, ancestor: PurePosixPath) -> bool:
+        return child == ancestor or ancestor in child.parents
 
-    # The sandbox's own home may be a denied system prefix (/root); its credential subpaths are
-    # separate, more specific entries — same exception as _path_under_denied_prefix.
-    if any(_under(p) for p in _DENIED_PREFIXES if p != home):
+    # The sandbox's own home may BE a denied system prefix (/root) or live under one (systemd
+    # StateDirectory= puts $HOME at /var/lib/<svc>); its credential subpaths are separate, more
+    # specific entries — same exception as _path_under_denied_prefix.
+    for prefix in _DENIED_PREFIXES:
+        if not _within(target, prefix):
+            continue
+        if home is not None and (
+            prefix == home or (_within(home, prefix) and _within(target, home))
+        ):
+            continue
         return True
     if home is not None:
-        return any(_under(home / rel) for rel in _DENIED_HOME_RELATIVE)
+        return any(_within(target, home / rel) for rel in _DENIED_HOME_RELATIVE)
     parts = target.parts
     return any(parts[i:i + len(rel.parts)] == rel.parts
                for rel in _DENIED_HOME_RELATIVE for i in range(len(parts) - len(rel.parts) + 1))

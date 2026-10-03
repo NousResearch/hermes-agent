@@ -56,6 +56,21 @@ def test_sandbox_artifact_is_fetched_but_credentials_and_symlinks_to_them_are_no
     assert remote_env.fetched == ["/home/agent/out/report.txt", "/home/agent/out/report.txt"]
 
 
+def test_home_under_a_denied_prefix_stays_deliverable():
+    """systemd ``StateDirectory=`` puts $HOME at /var/lib/<svc> — under the /var/lib entry, which
+    used to refuse every artifact there. Credentials inside that home are still refused."""
+    home = "/var/lib/hermes"
+    for ok in ("/var/lib/hermes/workspace/report.md", "/var/lib/hermes/kanban/attachments/r.pdf"):
+        assert not media_fetch.remote_path_is_denied(ok, home), ok
+    for denied in ("/var/lib/hermes/.ssh/id_rsa", "/var/lib/hermes/.hermes/.env",
+                   "/var/lib/hermes/.hermes/state.db-wal", "/var/lib/hermes/.hermes/sessions/a.json",
+                   "/var/lib/postgresql/data.csv", "/etc/passwd"):
+        assert media_fetch.remote_path_is_denied(denied, home), denied
+    # A home that IS a denied prefix (/root) keeps its exemption, credentials excepted.
+    assert not media_fetch.remote_path_is_denied("/root/out/report.txt", "/root")
+    assert media_fetch.remote_path_is_denied("/root/.ssh/id_rsa", "/root")
+
+
 def test_local_backend_and_strict_mode_do_not_fetch(monkeypatch, tmp_path, remote_env):
     """Strict mode keeps its recency gate: a fetched copy would land in an allowlisted root and skip it."""
     monkeypatch.setenv("HERMES_MEDIA_DELIVERY_STRICT", "1")

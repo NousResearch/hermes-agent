@@ -806,6 +806,53 @@ class TestMediaDeliveryDefaultMode:
             == str(doc.resolve())
         )
 
+    def test_home_under_denied_prefix_stays_deliverable(self, tmp_path, monkeypatch):
+        """#117900: systemd StateDirectory= puts $HOME at /var/lib/<svc>, UNDER
+        the /var/lib denylist entry. Agent-written files under $HOME must still
+        deliver; ~/.ssh, HERMES_HOME credential files and sibling services
+        under the same prefix must stay denied."""
+        self._patch_roots(monkeypatch)
+
+        fake_home = tmp_path / "var" / "lib" / "hermes"
+        workdir = fake_home / "workspace"
+        workdir.mkdir(parents=True)
+        report = workdir / "report.md"
+        report.write_bytes(b"# report\n")
+        ssh_dir = fake_home / ".ssh"
+        ssh_dir.mkdir(parents=True)
+        key = ssh_dir / "id_rsa"
+        key.write_bytes(b"-----BEGIN OPENSSH PRIVATE KEY-----")
+        hermes_dir = fake_home / ".hermes"
+        hermes_dir.mkdir(parents=True)
+        env_file = hermes_dir / ".env"
+        env_file.write_text("SECRET=x\n")
+        sibling_dir = tmp_path / "var" / "lib" / "postgresql"
+        sibling_dir.mkdir(parents=True)
+        sibling = sibling_dir / "data.csv"
+        sibling.write_bytes(b"a,b\n")
+        monkeypatch.setenv("HOME", str(fake_home))
+        # On Windows os.path.expanduser("~") reads USERPROFILE, not HOME.
+        monkeypatch.setenv("USERPROFILE", str(fake_home))
+        # Stand-in for the literal /var/lib entry: an ANCESTOR of $HOME.
+        monkeypatch.setattr(
+            "gateway.platforms.base._MEDIA_DELIVERY_DENIED_PREFIXES",
+            (str(tmp_path / "var" / "lib"),),
+        )
+        monkeypatch.setattr(
+            "gateway.platforms.base._HERMES_HOME", hermes_dir
+        )
+        monkeypatch.setattr(
+            "gateway.platforms.base._HERMES_ROOT", hermes_dir
+        )
+
+        assert (
+            BasePlatformAdapter.validate_media_delivery_path(str(report))
+            == str(report.resolve())
+        )
+        assert BasePlatformAdapter.validate_media_delivery_path(str(key)) is None
+        assert BasePlatformAdapter.validate_media_delivery_path(str(env_file)) is None
+        assert BasePlatformAdapter.validate_media_delivery_path(str(sibling)) is None
+
 
     def test_profile_scoped_cache_delivers_under_symlinked_root(self, tmp_path, monkeypatch):
         """Reopened #31733: a profile gateway whose HERMES_HOME is symlinked

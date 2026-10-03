@@ -956,17 +956,28 @@ def _resolve_path(path: Path, *, strict: bool = False, expand: bool = False) -> 
 
 def _path_under_denied_prefix(resolved: Path) -> bool:
     """True if ``resolved`` lives under a deny-listed system path — except a denied prefix that
-    IS the running user's own home: ``/root`` is listed so a non-root gateway can't deliver
-    another user's home, but a root-run gateway's own deliverables live under ``$HOME=/root``.
-    Credential sub-dirs (``~/.ssh``, ``~/.hermes/.env``) stay blocked (more-specific entries)."""
+    IS the running user's own home, or an ancestor of it: ``/root`` is listed so a non-root
+    gateway can't deliver another user's home, but a root-run gateway's own deliverables live
+    under ``$HOME=/root``, and systemd ``StateDirectory=`` puts ``$HOME`` at ``/var/lib/<svc>``
+    under the ``/var/lib`` entry. Credential sub-dirs (``~/.ssh``, ``~/.hermes/.env``) stay
+    blocked (more-specific entries)."""
     home = _resolve_path(Path(os.path.expanduser("~")))
     for denied in _media_delivery_denied_paths():
         resolved_denied = _resolve_path(denied, expand=True)
         if resolved_denied is None:
             continue
         hit = resolved == resolved_denied or _path_is_within(resolved, resolved_denied)
-        if hit and resolved_denied != home:
-            return True
+        if not hit:
+            continue
+        if home is not None and (
+            resolved_denied == home
+            # Ancestor check only; deeper credential entries stay denied as separate
+            # denylist members inside home (systemd StateDirectory= puts $HOME at
+            # /var/lib/<svc>, under the /var/lib entry).
+            or (_path_is_within(home, resolved_denied) and _path_is_within(resolved, home))
+        ):
+            continue
+        return True
     return False
 
 

@@ -197,18 +197,23 @@ class SessionMaintenanceMixin:
 
     @staticmethod
     def _prune_filter_where(*, archived: Optional[bool] = None, include_pinned: bool = False,
-                            lineage_tips_only: bool = False, **filters) -> Tuple[str, list]:
-        """Shared WHERE clause for bulk prune/archive selection (alias ``s``): ``_PRUNE_FILTERS``
-        AND together, only ended sessions are ever candidates, ``archived`` is tri-state
-        (None = both), ``*_like`` are case-insensitive substrings, the rest exact.
+                            lineage_tips_only: bool = False, ended_only: bool = True,
+                            **filters) -> Tuple[str, list]:
+        """Shared WHERE clause for bulk prune/archive/unarchive selection (alias ``s``):
+        ``_PRUNE_FILTERS`` AND together, ``archived`` is tri-state (None = both), ``*_like`` are
+        case-insensitive substrings, the rest exact.
         ``lineage_tips_only`` (bulk archive) drops compression ancestors: they are archived with
         their tip, never on their own age — matching an old ancestor would fan out over the lineage
-        and hide its OPEN, recently active tip (#115489)."""
+        and hide its OPEN, recently active tip (#115489).
+        ``ended_only`` is the safety guard that keeps prune and archive away from live
+        conversations; unarchive passes False, because :meth:`archive_stale_sessions` may retire
+        an unended session and an ended-only candidate set would leave exactly those rows hidden
+        with no way back."""
         unknown = set(filters) - _PRUNE_FILTER_NAMES
         if unknown:
             raise TypeError("SessionMaintenanceMixin._prune_filter_where() got an unexpected "
                             f"keyword argument {sorted(unknown)[0]!r}")
-        clauses = ["s.ended_at IS NOT NULL"]
+        clauses = ["s.ended_at IS NOT NULL"] if ended_only else ["s.id IS NOT NULL"]
         if lineage_tips_only:
             clauses.append("COALESCE(s.end_reason, '') <> 'compression'")
         params: list = []
@@ -225,7 +230,8 @@ class SessionMaintenanceMixin:
             clauses.append("COALESCE(s.pinned, 0) = 0")
         return " AND ".join(clauses), params
 
-    def _prune_where(self, older_than_days, source, filters, *, whole_lineages: bool = False) -> Tuple[str, list]:
+    def _prune_where(self, older_than_days, source, filters, *, whole_lineages: bool = False,
+                     ended_only: bool = True) -> Tuple[str, list]:
         """Translate the legacy age window into the shared activity filter, then build WHERE.
         ``whole_lineages`` (prune) keeps a compression ancestor while any continuation after it
         is unmatched."""
@@ -236,24 +242,40 @@ class SessionMaintenanceMixin:
                     f"older_than_days must be >= 0, got {older_than_days!r}: a negative "
                     "retention builds a future cutoff that matches every ended session.")
             filters["last_active_before"] = time.time() - (older_than_days * 86400)
-        where, params = self._prune_filter_where(source=source, **filters)
+        where, params = self._prune_filter_where(source=source, ended_only=ended_only, **filters)
         if not whole_lineages:
             return where, params
         # A compressed-away segment ages with its conversation, not on its own: while any later
         # segment stays, deleting it would cut the start off a chat that is still in use.
         return f"{where} AND s.id NOT IN ({_continued_ancestors_sql(where)})", [*params, *params]
 
-    def list_prune_candidates(self, older_than_days: Optional[float] = None, source: str = None, *,
-                              whole_lineages: bool = False, **filters) -> List[Dict[str, Any]]:
-        """Dry-run: sessions a matching prune/archive would touch, oldest first (``older_than_days``
-        = inactivity threshold: freshest of ``last_activity_at`` / latest message / ``started_at``)."""
-        where, params = self._prune_where(older_than_days, source, filters, whole_lineages=whole_lineages)
+    def _list_candidates(self, older_than_days, source, filters, *,
+                         whole_lineages: bool = False, ended_only: bool = True) -> List[Dict[str, Any]]:
+        """Row shape shared by :meth:`list_prune_candidates` and :meth:`list_archived_candidates`."""
+        where, params = self._prune_where(older_than_days, source, filters,
+                                          whole_lineages=whole_lineages, ended_only=ended_only)
         return [dict(row) for row in self._read_all(
             f"""SELECT s.id, s.source, s.title, s.model, s.started_at,
                            {_LAST_ACTIVE_SQL} AS last_active,
                            s.ended_at, s.message_count, s.archived
                     FROM sessions s WHERE {where}
                     ORDER BY last_active ASC, s.started_at ASC""", params)]
+
+    def list_prune_candidates(self, older_than_days: Optional[float] = None, source: str = None, *,
+                              whole_lineages: bool = False, **filters) -> List[Dict[str, Any]]:
+        """Dry-run: sessions a matching prune/archive would touch, oldest first (``older_than_days``
+        = inactivity threshold: freshest of ``last_activity_at`` / latest message / ``started_at``)."""
+        return self._list_candidates(older_than_days, source, filters, whole_lineages=whole_lineages)
+
+    def list_archived_candidates(self, older_than_days: Optional[float] = None, source: str = None,
+                                 **filters) -> List[Dict[str, Any]]:
+        """Dry-run: sessions an ``unarchive`` would restore, oldest first.  Same row shape and filter
+        surface as :meth:`list_prune_candidates`, minus the ``ended_at`` guard; ``archived``
+        defaults to True and pinned rows are included, because un-hiding is never destructive, so
+        neither a live continuation nor a pin may block recovery."""
+        filters.setdefault("archived", True)
+        filters.setdefault("include_pinned", True)
+        return self._list_candidates(older_than_days, source, filters, ended_only=False)
 
     def count_prune_matches(self, older_than_days: Optional[float] = None, source: str = None,
                             **filters) -> int:

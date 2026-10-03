@@ -180,6 +180,7 @@ import {
   buildAgentRoster,
   connectionDialFieldsChanged,
   connectionIdForPendingLogin,
+  denormalizeScopeProfileArg,
   mergeConnectionInput,
   migrateV1ToRegistry,
   normalizeConnectionInput,
@@ -11023,7 +11024,22 @@ async function ensureBackend(
     spawnPriority?: LocalBackendSpawnPriority
   } = {}
 ): Promise<Awaited<ReturnType<typeof backendConnectionState.getPromise>>> {
-  const key = profile && String(profile).trim() ? String(profile).trim() : primaryProfileKey()
+  const rawProfile = profile && String(profile).trim() ? String(profile).trim() : ''
+
+  // Boundary denormalization (#107828): a scope-shaped `profile` is a full
+  // (connectionId, profile) identity. Dial the explicit pair through the
+  // registry path instead of spawning/looking up a backend for a nonexistent
+  // profile literally named "conn:local::default".
+  if (denormalizeScopeProfileArg(rawProfile)) {
+    const scoped = denormalizeScopeProfileArg(rawProfile)!
+
+    return ensureRegistryBackend(scoped.connectionId, scoped.profile, '', {
+      passive: opts.passive,
+      spawnPriority: opts.spawnPriority
+    })
+  }
+
+  const key = rawProfile || primaryProfileKey()
   const spawnPriority = spawnPriorityFrom(opts.spawnPriority)
   poolRetirer.assertCanOpen(key, spawnPriority)
   const passive = Boolean(opts.passive)
@@ -11138,6 +11154,17 @@ async function ensureRegistryBackend(
 ) {
   const spawnPriority = spawnPriorityFrom(opts.spawnPriority)
   const passive = Boolean(opts.passive)
+
+  // Boundary denormalization (#107828): a pool scope key in the `profile` slot
+  // is a full identity, not a name. Parse it and dial the explicit pair instead
+  // of minting nonsense like a forced-local spawn for profile
+  // "conn:local::default" or the double composite `conn:ssh1::conn:local::…`.
+  const scoped = denormalizeScopeProfileArg(profile)
+
+  if (scoped) {
+    return ensureRegistryBackend(scoped.connectionId, scoped.profile, managedUpdateCorrelation, opts)
+  }
+
   const registry = readDesktopConnectionsRegistry()
   const id = registryDialConnectionId(connectionId, registry.primary)
   const source = registry.connections.find(c => c.id === id)

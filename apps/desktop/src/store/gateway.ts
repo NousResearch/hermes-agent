@@ -1084,7 +1084,14 @@ function isMissingConnectionError(error: unknown): boolean {
 function isMissingProfileError(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error ?? '')
 
-  return message.includes('no longer exists') || message.includes('is being deleted')
+  // "exists only on the remote connection" is the same permanent condition:
+  // a forced-local spawn of a remote-only profile can never succeed on this
+  // device, so the reconnect ladder must fail-stop, not retry forever (#107828).
+  return (
+    message.includes('no longer exists') ||
+    message.includes('is being deleted') ||
+    message.includes('exists only on the remote connection')
+  )
 }
 
 function createSecondary(profile: string, connectionId: null | string = null): Secondary {

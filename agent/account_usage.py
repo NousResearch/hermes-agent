@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import math
+import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Callable, Optional
@@ -647,9 +648,158 @@ def _fetch_openrouter_account_usage(base_url: Optional[str], api_key: Optional[s
     return _snapshot("openrouter", "credits_api", windows, details)
 
 
+_NANO_GPT_BASE = "https://nano-gpt.com/api"
+_NANO_GPT_NO_SUBSCRIPTION = "No active NanoGPT subscription on this key."
+
+
+def _nano_gpt_http_reason(status_code: int) -> Optional[str]:
+    """Why a non-2xx NanoGPT usage response cannot be read as account data."""
+    if status_code < 400:
+        return None
+    if status_code in (401, 403):
+        return f"NanoGPT rejected the key (HTTP {status_code})."
+    if status_code == 429:
+        return "NanoGPT rate limited the usage request — try again shortly."
+    return f"NanoGPT usage request failed (HTTP {status_code}) — try again shortly."
+
+
+def _nano_gpt_balance_detail(balance: dict, *, unavailable: bool) -> Optional[str]:
+    if unavailable:
+        return "Balance: unavailable"
+    usd = balance.get("usd_balance")
+    if usd is None:
+        return None
+    try:
+        value = float(usd)
+    except (TypeError, ValueError):
+        return "Balance: unavailable"
+    if not math.isfinite(value):
+        return "Balance: unavailable"
+    return f"Balance: ${value:,.2f}"
+
+
+def _fetch_nano_gpt_account_usage(
+    base_url: Optional[str] = None, api_key: Optional[str] = None,
+) -> Optional[AccountUsageSnapshot]:
+    """NanoGPT subscription quota + prepaid balance. ``GET {base}/v1/subscription/usage``
+    and ``POST {base}/check-balance``. Auth is the ``NANOGPT_API_KEY`` bearer.
+    Transport failure → None. A non-2xx subscription response is not read as a document.
+    A balance failure keeps the quota windows."""
+    token = str(api_key or "").strip()
+    if not token:
+        return None
+    base = (base_url or _NANO_GPT_BASE).strip().rstrip("/")
+    # base_url carries the inference host (…/api/v1); the billing API lives above it.
+    if base.endswith("/v1"):
+        base = base[:-3]
+    headers = {"Authorization": f"Bearer {token}", "Accept": "application/json"}
+    # Error JSON has no active key; decoding it reports a missing subscription.
+    # The pair shares the plugin-hook deadline; gateway /usage has none of its own.
+    deadline = time.monotonic() + PLUGIN_USAGE_HOOK_DEADLINE_S
+    balance: dict = {}
+    balance_unavailable = False
+    try:
+        with httpx.Client(timeout=PLUGIN_USAGE_HOOK_DEADLINE_S, follow_redirects=False) as client:
+            sub_resp = client.get(
+                f"{base}/v1/subscription/usage", headers=headers, timeout=PLUGIN_USAGE_HOOK_DEADLINE_S,
+            )
+            if reason := _nano_gpt_http_reason(sub_resp.status_code):
+                return _snapshot("nano-gpt", "subscription_usage_api", [], [], unavailable_reason=reason)
+            sub = sub_resp.json() or {}
+            if not isinstance(sub, dict):
+                return None
+            if not sub.get("active"):
+                return _snapshot("nano-gpt", "subscription_usage_api", [], [],
+                                 unavailable_reason=_NANO_GPT_NO_SUBSCRIPTION)
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                balance_unavailable = True
+            else:
+                try:
+                    bal_resp = client.post(
+                        f"{base}/check-balance", headers=headers, json={}, timeout=remaining,
+                    )
+                    if _nano_gpt_http_reason(bal_resp.status_code):
+                        balance_unavailable = True
+                    else:
+                        parsed = bal_resp.json() or {}
+                        if isinstance(parsed, dict):
+                            balance = parsed
+                        else:
+                            balance_unavailable = True
+                except Exception:
+                    logger.debug("nano-gpt ▸ /usage balance fetch failed", exc_info=True)
+                    balance_unavailable = True
+    except Exception:
+        logger.debug("nano-gpt ▸ /usage subscription/balance fetch failed (fail-open)", exc_info=True)
+        return None
+
+    windows: list[AccountUsageWindow] = []
+    weekly = sub.get("weeklyInputTokens")
+    if isinstance(weekly, dict):
+        used_pct = weekly.get("percentUsed")
+        reset_at = _parse_dt(weekly.get("resetAt") / 1000.0 if _is_finite_num(weekly.get("resetAt")) else weekly.get("resetAt"))
+        limits = sub.get("limits") if isinstance(sub.get("limits"), dict) else {}
+        allowance = limits.get("weeklyInputTokens")
+        if _is_finite_num(weekly.get("used")) and _is_finite_num(allowance) and float(allowance) > 0:
+            # The plan allowance is the true denominator: past the cap (allowOverage) the server
+            # clamps remaining to 0 — used/(used+remaining) would pin at exactly 100% — and
+            # percentUsed is a 0–1 fraction that stalls at 1.0. used/allowance still reads 100.03%.
+            used_percent = float(weekly["used"]) / float(allowance) * 100.0
+            if math.isfinite(used_percent):
+                windows.append(AccountUsageWindow(
+                    label="Weekly token limit", used_percent=used_percent, reset_at=reset_at,
+                ))
+        elif _is_finite_num(weekly.get("used")) and _is_finite_num(weekly.get("remaining")) and float(weekly["used"]) + float(weekly["remaining"]) > 0:
+            total = float(weekly["used"]) + float(weekly["remaining"])
+            used_percent = float(weekly["used"]) / total * 100.0
+            if math.isfinite(used_percent):
+                windows.append(AccountUsageWindow(
+                    label="Weekly token limit", used_percent=used_percent, reset_at=reset_at,
+                ))
+        elif _is_finite_num(used_pct):
+            # percentUsed is a 0–1 fraction (56.1M/60M tokens → 0.934), never a percent.
+            used_percent = min(float(used_pct) * 100.0, 100.0)
+            if math.isfinite(used_percent):
+                windows.append(AccountUsageWindow(
+                    label="Weekly token limit", used_percent=used_percent, reset_at=reset_at,
+                ))
+    daily_images = sub.get("dailyImages")
+    if isinstance(daily_images, dict):
+        used, remaining = daily_images.get("used"), daily_images.get("remaining")
+        used_ok = _is_finite_num(used) and _is_finite_num(remaining)
+        pct_ok = _is_finite_num(daily_images.get("percentUsed"))
+        if used_ok or pct_ok:
+            label = "Daily images"
+            if used_ok:
+                # The allowance (used + remaining) is the natural unit; plans may vary it.
+                label += f" ({int(float(used))}/{int(float(used) + float(remaining))})"
+            # percentUsed is a 0–1 fraction, not a percent — scale it (used/remaining preferred
+            # when present: it stays exact if the server ever reports >100% here).
+            if used_ok and float(used) + float(remaining) > 0:
+                pct = float(used) / (float(used) + float(remaining)) * 100.0
+            elif pct_ok:
+                pct = min(float(daily_images["percentUsed"]) * 100.0, 100.0)
+            else:
+                pct = None
+            if pct is not None and math.isfinite(pct):
+                windows.append(AccountUsageWindow(
+                    label=label, used_percent=pct,
+                    reset_at=_parse_dt(daily_images.get("resetAt") / 1000.0 if _is_finite_num(daily_images.get("resetAt")) else daily_images.get("resetAt")),
+                ))
+
+    details: list[str] = []
+    if balance_line := _nano_gpt_balance_detail(balance, unavailable=balance_unavailable):
+        details.append(balance_line)
+    if sub.get("allowOverage"):
+        details.append("Overage billed to balance when the weekly allowance runs out")
+    return _snapshot("nano-gpt", "subscription_usage_api", windows, details)
+
+
 _USAGE_FETCHERS: dict[str, Callable[[Optional[str], Optional[str]], Optional[AccountUsageSnapshot]]] = {
     "openai-codex": _fetch_codex_account_usage, "anthropic": _fetch_anthropic_account_usage,
     "openrouter": _fetch_openrouter_account_usage,
+    "nano-gpt": _fetch_nano_gpt_account_usage,
 }
 
 

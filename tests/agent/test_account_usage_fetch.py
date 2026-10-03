@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 import pytest
 
 from agent.account_usage import (
+    PLUGIN_USAGE_HOOK_DEADLINE_S,
     AccountUsageSnapshot,
     AccountUsageWindow,
     _fetch_portal_account,
@@ -157,6 +158,230 @@ def test_fetch_account_usage_prefers_builtin_fetcher_over_profile(monkeypatch):
 
     assert fetch_account_usage("openrouter") is builtin
     assert profile.calls == 0
+
+
+def test_fetch_account_usage_nano_gpt_scales_fraction_and_reads_balance(monkeypatch):
+    """NanoGPT: percentUsed is a 0–1 fraction; balance comes from POST check-balance."""
+    class _RoutingClient:
+        def __init__(self, sub, balance):
+            self._sub, self._balance = sub, balance
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def get(self, url, headers=None, **kwargs):
+            assert "subscription/usage" in url
+            return _Response(self._sub)
+
+        def post(self, url, headers=None, json=None, **kwargs):
+            assert "check-balance" in url
+            return _Response(self._balance)
+
+    monkeypatch.setattr(
+        "agent.account_usage.httpx.Client",
+        lambda timeout=15.0, follow_redirects=False: _RoutingClient(
+            {
+                "active": True,
+                "allowOverage": True,
+                "weeklyInputTokens": {"used": 56_058_595, "remaining": 3_941_405,
+                                      "percentUsed": 0.9343099166666666, "resetAt": 1_789_948_800_000},
+                "dailyImages": {"used": 0, "remaining": 100, "percentUsed": 0, "resetAt": 1_789_776_000_000},
+            },
+            {"usd_balance": "27.29969381"},
+        ),
+    )
+
+    snapshot = fetch_account_usage("nano-gpt", api_key="sk-nano-test")
+
+    assert snapshot is not None
+    assert snapshot.provider == "nano-gpt"
+    assert len(snapshot.windows) == 2
+    assert snapshot.windows[0].label == "Weekly token limit"
+    assert snapshot.windows[0].used_percent > 90  # fraction scaled, NOT 0.93%
+    assert snapshot.windows[0].reset_at == datetime.fromtimestamp(1_789_948_800, tz=timezone.utc)
+    assert "Balance: $27.30" in snapshot.details
+
+
+def test_fetch_account_usage_nano_gpt_over_quota_weekly_reads_over_100_percent(monkeypatch):
+    """Real payload 2026-09-25: 60,019,979 of 60,000,000 weekly tokens used —
+    percentUsed is the 0–1 fraction 1.0003. The old ``<= 1.0`` scale heuristic
+    flipped on it and rendered 100.03% as "1% used, 99% remaining". With allowOverage
+    the server clamps remaining to 0, so used/(used+remaining) stays authoritative
+    past the cap and percentUsed (stalled at 1.0) must clamp, not scale-by-magnitude."""
+
+    class _Client:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def get(self, url, headers=None, **kwargs):
+            return _Response({
+                "active": True,
+                "allowOverage": True,
+                "limits": {"weeklyInputTokens": 60_000_000, "dailyImages": 100},
+                "weeklyInputTokens": {"used": 60_019_979, "remaining": 0,
+                                      "percentUsed": 1.0003329833333334, "resetAt": 1_790_553_600_000},
+                "dailyImages": {"used": 37, "remaining": 63, "percentUsed": 0.37, "resetAt": 1_790_380_800_000},
+            })
+
+        def post(self, url, headers=None, json=None, **kwargs):
+            return _Response({"usd_balance": "20.56824493"})
+
+    monkeypatch.setattr(
+        "agent.account_usage.httpx.Client",
+        lambda timeout=15.0, follow_redirects=False: _Client(),
+    )
+
+    snapshot = fetch_account_usage("nano-gpt", api_key="sk-nano-test")
+
+    assert snapshot is not None
+    weekly, images = snapshot.windows[0], snapshot.windows[1]
+    assert weekly.used_percent > 100  # overage visible, NOT flipped to 1.0%
+    assert images.used_percent == 37.0  # fraction scaled, NOT 0.37%
+    lines = render_account_usage_lines(snapshot)
+    assert any("0% remaining" in line for line in lines)  # renderer clamps the remaining side
+
+
+def _install_nano_client(monkeypatch, sub, balance=None, *, sub_status=200, bal_status=200, bal_exc=None):
+    calls = []
+
+    class _Client:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def get(self, url, headers=None, **kwargs):
+            calls.append(("get", kwargs.get("timeout")))
+            return _Response(sub, status_code=sub_status)
+
+        def post(self, url, headers=None, json=None, **kwargs):
+            calls.append(("post", kwargs.get("timeout")))
+            if bal_exc is not None:
+                raise bal_exc
+            return _Response({} if balance is None else balance, status_code=bal_status)
+
+    _install_nano_client.calls = calls
+    monkeypatch.setattr(
+        "agent.account_usage.httpx.Client",
+        lambda timeout=15.0, follow_redirects=False: _Client(),
+    )
+
+
+@pytest.mark.parametrize("status,needle", [
+    (401, "rejected the key (HTTP 401)"),
+    (403, "rejected the key (HTTP 403)"),
+    (429, "rate limited"),
+    (500, "failed (HTTP 500)"),
+])
+def test_fetch_account_usage_nano_gpt_http_error_is_not_a_missing_subscription(monkeypatch, status, needle):
+    """A non-2xx body is not a subscription document, even if it claims active."""
+    _install_nano_client(
+        monkeypatch,
+        {"active": True, "error": {"code": "invalid_api_key"}},
+        sub_status=status,
+        bal_exc=AssertionError("balance must not be fetched after a subscription HTTP error"),
+    )
+
+    snapshot = fetch_account_usage("nano-gpt", api_key="sk-nano-test")
+
+    assert snapshot is not None
+    assert snapshot.unavailable_reason is not None
+    assert needle in snapshot.unavailable_reason
+    assert "No active NanoGPT subscription" not in snapshot.unavailable_reason
+    assert snapshot.windows == ()
+
+
+def test_fetch_account_usage_nano_gpt_inactive_subscription_stays_specific(monkeypatch):
+    _install_nano_client(monkeypatch, {"active": False})
+
+    snapshot = fetch_account_usage("nano-gpt", api_key="sk-nano-test")
+
+    assert snapshot is not None
+    assert snapshot.unavailable_reason == "No active NanoGPT subscription on this key."
+    assert snapshot.windows == ()
+
+
+def test_fetch_account_usage_nano_gpt_balance_failure_keeps_quota(monkeypatch):
+    _install_nano_client(
+        monkeypatch,
+        {"active": True, "weeklyInputTokens": {"used": 10, "remaining": 10, "percentUsed": 0.5}},
+        {"error": "unavailable"},
+        bal_status=500,
+    )
+
+    snapshot = fetch_account_usage("nano-gpt", api_key="sk-nano-test")
+
+    assert snapshot is not None
+    assert snapshot.windows[0].used_percent == 50.0
+    assert "Balance: unavailable" in snapshot.details
+    assert not any(line.startswith("Balance: $") for line in snapshot.details)
+    get_timeout = next(timeout for kind, timeout in _install_nano_client.calls if kind == "get")
+    post_timeout = next(timeout for kind, timeout in _install_nano_client.calls if kind == "post")
+    assert get_timeout == PLUGIN_USAGE_HOOK_DEADLINE_S
+    assert 0 < post_timeout <= PLUGIN_USAGE_HOOK_DEADLINE_S
+
+
+@pytest.mark.parametrize("usd", ["nan", "1e400", float("nan"), float("inf")])
+def test_fetch_account_usage_nano_gpt_non_finite_balance_does_not_crash_render(monkeypatch, usd):
+    _install_nano_client(
+        monkeypatch,
+        {"active": True, "weeklyInputTokens": {"percentUsed": float("nan")},
+         "dailyImages": {"percentUsed": float("nan")}},
+        {"usd_balance": usd},
+    )
+
+    snapshot = fetch_account_usage("nano-gpt", api_key="sk-nano-test")
+
+    assert snapshot is not None
+    assert snapshot.windows == ()
+    assert "Balance: unavailable" in snapshot.details
+    render_account_usage_lines(snapshot)
+
+
+def test_fetch_account_usage_nano_gpt_daily_images_without_percent_used(monkeypatch):
+    _install_nano_client(
+        monkeypatch,
+        {"active": True, "dailyImages": {"used": 37, "remaining": 63}},
+        {"usd_balance": "1.00"},
+    )
+
+    snapshot = fetch_account_usage("nano-gpt", api_key="sk-nano-test")
+
+    assert snapshot is not None
+    assert snapshot.windows[0].label == "Daily images (37/100)"
+    assert snapshot.windows[0].used_percent == 37.0
+
+
+def test_fetch_account_usage_nano_gpt_does_not_follow_redirects(monkeypatch):
+    seen = {}
+
+    class _Client:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def get(self, url, headers=None, **kwargs):
+            return _Response({"active": False})
+
+        def post(self, url, headers=None, json=None, **kwargs):
+            raise AssertionError("inactive subscription should not fetch balance")
+
+    def _factory(**kwargs):
+        seen.update(kwargs)
+        return _Client()
+
+    monkeypatch.setattr("agent.account_usage.httpx.Client", _factory)
+    fetch_account_usage("nano-gpt", api_key="sk-nano-test")
+    assert seen["follow_redirects"] is False
 
 
 def test_fetch_account_usage_openrouter_uses_limit_remaining_and_ignores_deprecated_rate_limit(monkeypatch):

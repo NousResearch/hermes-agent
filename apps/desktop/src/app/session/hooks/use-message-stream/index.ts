@@ -20,6 +20,7 @@ import {
   upsertToolPart
 } from '@/lib/chat-messages'
 import type { ErrorSurface } from '@/lib/error-surface'
+import type { TurnStats } from '@/types/hermes'
 import {
   dedupeGeneratedImageEchoesInParts,
   generatedImageEchoSources,
@@ -725,7 +726,8 @@ export function useMessageStream({
       occurredAt = Date.now() / 1000,
       persistedTurn?: PersistedTurn | null,
       responseTransformed?: boolean,
-      status?: string
+      status?: string,
+      turnStats?: TurnStats
     ) => {
       let shouldHydrate = false
 
@@ -810,6 +812,7 @@ export function useMessageStream({
             interim: false,
             recovered: false,
             ...(durationS !== undefined ? { durationS } : {}),
+            ...(turnStats ? { turnStats } : {}),
             ...(completionError && failure?.surface ? { errorSurface: failure.surface } : {})
           }
 
@@ -840,6 +843,7 @@ export function useMessageStream({
             completedAt: occurredAt,
             branchGroupId: state.pendingBranchGroup ?? undefined,
             ...(durationS !== undefined ? { durationS } : {}),
+            ...(turnStats ? { turnStats } : {}),
             ...(completionError && { error: completionError }),
             ...(completionError && failure?.surface ? { errorSurface: failure.surface } : {})
           })

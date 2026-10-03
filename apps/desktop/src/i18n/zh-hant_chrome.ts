@@ -347,6 +347,7 @@ export const zhHantChrome = {
       starmap: '記憶圖譜',
       openStarmap: '開啟記憶圖譜',
       turnRunning: '執行中',
+      cacheTtl: t => `提示詞快取 ${t} 後過期`,
       contextUsage: '上下文使用量',
       compressions: count => `壓縮次數：${count}`,
       systemResources: {

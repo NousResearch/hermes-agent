@@ -11,7 +11,9 @@ import contextlib
 import json
 import logging
 import os
+import sys
 import threading
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from hermes_cli._subprocess_compat import windows_hide_flags
@@ -19,6 +21,84 @@ from tools.computer_use import cua_backend_driver as _driver
 from tools.computer_use.cua_backend_parse import _extract_tool_result, _mcp_field, _tool_envelope
 
 logger = logging.getLogger("tools.computer_use.cua_backend")
+
+# Keep os.add_dll_directory cookies alive; dropping them unregisters the dir.
+_PYWIN32_DLL_COOKIES: List[Any] = []
+
+
+def _ensure_windows_pywin32() -> None:
+    """Load pywin32 when Hermes runs on uv's base interpreter.
+
+    Desktop ``resolveRealPythonExecutable`` unwraps ``venv\\\\Scripts\\\\python.exe``
+    to ``Roaming\\\\uv\\\\python\\\\cpython-...\\\\python.exe`` and puts the venv
+    ``site-packages`` on ``sys.path`` as a plain directory.  That skips
+    ``pywin32.pth``, so ``import pywintypes`` fails even though the wheels
+    are installed.  ``mcp`` then fails the same way; if that import sits
+    *outside* ``_lifecycle_coro``'s ``try``, the wrapper waits 30s and
+    reports ``stuck in phase: unknown``.
+    """
+    if sys.platform != "win32":
+        return
+    try:
+        import pywintypes  # noqa: F401
+        return
+    except ImportError:
+        pass
+
+    import site
+
+    candidates: List[Path] = []
+    seen = set()
+    for entry in list(sys.path):
+        if not entry:
+            continue
+        resolved = Path(entry)
+        try:
+            resolved = resolved.resolve()
+        except OSError:
+            pass
+        is_sp = (
+            resolved.name.lower() == "site-packages"
+            or (resolved / "pywin32.pth").is_file()
+            or (resolved / "pywin32_system32").is_dir()
+        )
+        if not is_sp:
+            continue
+        key = str(resolved)
+        if key in seen:
+            continue
+        seen.add(key)
+        candidates.append(resolved)
+
+    for sp in candidates:
+        try:
+            site.addsitedir(str(sp))
+        except Exception:
+            logger.debug("site.addsitedir(%s) failed", sp, exc_info=True)
+            continue
+        dll_dir = sp / "pywin32_system32"
+        path_before = os.environ.get("PATH", "")
+        cookie = None
+        if dll_dir.is_dir() and hasattr(os, "add_dll_directory"):
+            try:
+                cookie = os.add_dll_directory(str(dll_dir))
+            except OSError:
+                cookie = None
+        try:
+            import pywintypes  # noqa: F401
+            if cookie is not None:
+                _PYWIN32_DLL_COOKIES.append(cookie)
+            if dll_dir.is_dir():
+                os.environ["PATH"] = str(dll_dir) + os.pathsep + path_before
+            logger.debug("pywin32 bootstrapped from %s", sp)
+            return
+        except ImportError:
+            if cookie is not None:
+                try:
+                    cookie.close()
+                except Exception:
+                    pass
+            continue
 
 
 class _AsyncBridge:
@@ -210,18 +290,19 @@ class _CuaDriverSession:
     async def _lifecycle_coro(self) -> None:
         """Owns the stdio MCP contexts: open, signal ready, block on shutdown, clean up — all in one task."""
         import time as _time
-        from mcp import ClientSession, StdioServerParameters
-        from mcp.client.stdio import stdio_client
         from tools.computer_use import cua_backend as _cb
         from tools.environments.local import _sanitize_subprocess_env
 
         self._shutdown_event = asyncio.Event()  # built on the loop's own thread
         _t0 = _time.monotonic()
-        # Phase marker: the ready-timeout error reports HOW FAR a wedged startup got.
         # Phase marker surfaced by the ready-timeout error (issue #57025): when startup wedges, the caller
         # reports HOW FAR it got instead of an opaque "never reached ready".
-        self._startup_phase = "binary-check"
+        self._startup_phase = "import-mcp"
         try:
+            _ensure_windows_pywin32()
+            from mcp import ClientSession, StdioServerParameters
+            from mcp.client.stdio import stdio_client
+            self._startup_phase = "binary-check"
             driver_cmd = _driver.resolve_cua_driver_cmd()
             if not driver_cmd and _cb.sandbox_mcp_invocation() is None:
                 raise RuntimeError(_driver.cua_driver_install_hint())
@@ -299,6 +380,31 @@ class _CuaDriverSession:
         if loop is None:
             raise RuntimeError("cua-driver bridge not started")
         self._lifecycle_future = asyncio.run_coroutine_threadsafe(self._lifecycle_coro(), loop)
+
+        def _lifecycle_done(fut: concurrent.futures.Future) -> None:
+            if self._ready_event.is_set():
+                return
+            if fut.cancelled():
+                self._setup_error = RuntimeError(
+                    "cua-driver lifecycle cancelled before ready"
+                )
+                self._ready_event.set()
+                return
+            try:
+                exc = fut.exception()
+            except Exception as e:
+                self._setup_error = e
+                self._ready_event.set()
+                return
+            if exc is None:
+                return
+            self._setup_error = exc
+            self._ready_event.set()
+
+        try:
+            self._lifecycle_future.add_done_callback(_lifecycle_done)
+        except Exception:
+            pass
         if not self._ready_event.wait(timeout=30.0):
             self._signal_shutdown_locked()
             # Surface which startup phase wedged (issue #57025) — "doctor passes but the wrapper times out"

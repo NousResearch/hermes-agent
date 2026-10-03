@@ -7,6 +7,7 @@ from dataclasses import dataclass
 import hashlib
 import json
 import re
+from ssl import SSLCertVerificationError
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit
 from urllib.request import HTTPRedirectHandler, Request, build_opener
@@ -302,6 +303,9 @@ class ChannelReader:
                 raise ChannelNotFound(f"Channel object not found: {key}") from exc
             raise ChannelError(f"Channel read unavailable: HTTP {exc.code}") from exc
         except (OSError, URLError) as exc:
+            # Name a rejected certificate, but never echo its text (URL, CA path, verify detail).
+            if isinstance(exc.reason if isinstance(exc, URLError) else exc, SSLCertVerificationError):
+                raise ChannelError("Channel read unavailable: TLS certificate verification failed") from exc
             raise ChannelError("Channel read unavailable") from exc
         if len(body) > MAX_METADATA:
             raise ChannelError("Channel metadata exceeds size limit")

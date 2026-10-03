@@ -141,6 +141,66 @@ def test_passive_reads_and_missing_objects_make_one_attempt(monkeypatch):
     assert waits == []
 
 
+_SECRET = "sentinel-7f3a"
+
+
+def _cert_failure():
+    import ssl
+    exc = ssl.SSLCertVerificationError(1, f"certificate verify failed: /ca/{_SECRET}.pem")
+    exc.verify_code, exc.verify_message = 20, f"unable to get issuer {_SECRET}"
+    return exc
+
+
+def _read_failure(fault, *, retry):
+    """The ChannelError one read raises for ``fault`` and how many requests it made."""
+    from contextlib import nullcontext
+    from hermes_cli.release_channels import ChannelError, ChannelReader, retrying_reads
+
+    calls = []
+
+    def opener(request, timeout):
+        calls.append(request.full_url)
+        raise fault
+
+    reader = ChannelReader(f"https://releases.example/{_SECRET}", opener=opener)
+    with retrying_reads() if retry else nullcontext(), pytest.raises(ChannelError) as raised:
+        reader.read_bytes("releases/channels/main.json")
+    return str(raised.value), len(calls)
+
+
+@pytest.mark.parametrize("wrap", [False, True], ids=["direct", "url-error"])
+def test_certificate_rejection_names_tls_without_leaking_detail(monkeypatch, wrap):
+    """A rejected certificate is a stable diagnosis, never retried, never echoed."""
+    from urllib.error import URLError
+
+    waits = []
+    monkeypatch.setattr("pm.network.time.sleep", waits.append)
+    fault = URLError(_cert_failure()) if wrap else _cert_failure()
+    message, attempts = _read_failure(fault, retry=True)
+    assert message == "Channel read unavailable: TLS certificate verification failed"
+    assert attempts == 1 and waits == []
+
+
+def _other_failures():
+    import errno
+    import ssl
+    from urllib.error import URLError
+    return {
+        "ssl-error": ssl.SSLError(1, f"handshake failure {_SECRET}"),
+        "ssl-eof": ssl.SSLEOFError(8, f"EOF occurred {_SECRET}"),
+        "offline": URLError(OSError(errno.ENETUNREACH, f"unreachable {_SECRET}")),
+        "text-reason": URLError(f"certificate verify failed {_SECRET}"),
+        "os-error": OSError(errno.ECONNRESET, f"reset {_SECRET}"),
+    }
+
+
+@pytest.mark.parametrize("kind", list(_other_failures()))
+def test_other_read_failures_stay_generic(kind):
+    message, attempts = _read_failure(_other_failures()[kind], retry=False)
+    assert message == "Channel read unavailable"
+    assert attempts == 1
+
+
 def test_reader_rejects_cycles_identity_substitution_and_cross_authority():
     from hermes_cli.release_channels import ChannelReader, ChannelError, canonical_json
     with object_server() as (url, objects, headers, requests, faults):

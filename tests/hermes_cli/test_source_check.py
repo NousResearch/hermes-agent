@@ -285,6 +285,30 @@ def test_channel_failure_never_probes_or_heals_a_branch(installation, name, fail
     assert json.loads(branch_file.read_text())["branch"] == "deleted"
 
 
+def test_rejected_channel_certificate_reports_a_safe_tls_diagnosis(installation, monkeypatch):
+    import ssl
+    from urllib.error import URLError
+    from hermes_cli import release_channels
+    from hermes_cli.source_check import check_for_updates
+
+    root, linked, home, base, head, responses, requests, git = installation
+    secret = "sentinel-7f3a"
+    failure = ssl.SSLCertVerificationError(1, f"certificate verify failed: /ca/{secret}.pem")
+    failure.verify_message = f"unable to get issuer {secret}"
+
+    class Opener:
+        def open(self, request, timeout):
+            raise URLError(failure)
+
+    monkeypatch.setattr(release_channels, "build_opener", lambda *handlers: Opener())
+    status = check_for_updates(install_root=linked, home=home, channel="stable", force=True)
+    assert status["error"] == "release-unavailable", status
+    assert status["message"] == ("Could not resolve the stable source channel: "
+                                 "Channel read unavailable: TLS certificate verification failed")
+    assert secret not in json.dumps(status)
+    assert "targetSha" not in status and requests == []
+
+
 def test_unpublished_main_record_follows_the_branch(installation):
     """A 404 for main.json keeps a checkout updating via git: the configured
     branch is probed exactly as for a published source-branch channel, and the

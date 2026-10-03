@@ -450,13 +450,18 @@ def _fmt_block_loop_detected(ev, n) -> tuple:
     return msg, None, None
 
 
-def _fmt_gave_up(ev, n) -> tuple:
-    # The dispatcher auto-blocked the task after ``failures`` consecutive non-success attempts
-    # (spawn failure, crash, or timeout alike): it is now Blocked and waiting for a human.
-    failures = _payload(ev, "failures")
+def gave_up_cause(payload: dict) -> tuple[str, str]:
+    """``(count, last)`` copy for gave_up; spawn failures, crashes and timeouts all trip it."""
+    failures = payload.get("failures")
     count = (t("gateway.kanban.ping.failed_n_times", count=int(failures)) if failures
              else t("gateway.kanban.ping.kept_failing"))
-    last = _clip(ev, "error", "gateway.kanban.ping.last_error", 160)
+    error = payload.get("error")
+    last = t("gateway.kanban.ping.last_error", value=str(error)[:160]) if error else ""
+    return count, last
+
+
+def _fmt_gave_up(ev, n) -> tuple:
+    count, last = gave_up_cause(ev.payload or {})
     return t("gateway.kanban.ping.gave_up", head=n.head, count=count, last=last, task_id=n.task_id), None, None
 
 

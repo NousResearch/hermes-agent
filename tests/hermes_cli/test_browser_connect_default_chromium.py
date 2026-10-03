@@ -104,6 +104,12 @@ class TestDetectDefaultDarwin:
             ("org.chromium.Chromium", "chromium"),
             ("com.brave.Browser.origin.beta", bc.UNSUPPORTED_CHANNEL),
             ("com.brave.Browser.origin.nightly", bc.UNSUPPORTED_CHANNEL),
+            ("com.vivaldi.Vivaldi", "vivaldi"),
+            ("com.operasoftware.Opera", "opera"),
+            ("com.operasoftware.OperaGX", "opera-gx"),
+            ("ru.yandex.desktop.yandex-browser", "yandex"),
+            ("com.browseros.BrowserClaw", "browseros-neo"),
+            ("ai.perplexity.Comet", "comet"),
         ],
     )
     def test_bundle_map(self, bundle, expected):
@@ -132,6 +138,14 @@ class TestDetectDefaultLinux:
             ("brave-origin-nightly.desktop", bc.UNSUPPORTED_CHANNEL),
             ("microsoft-edge.desktop", "edge"),
             ("com.microsoft.Edge.desktop", "edge"),
+            ("vivaldi-stable.desktop", "vivaldi"),
+            ("vivaldi-snapshot.desktop", bc.UNSUPPORTED_CHANNEL),
+            ("opera-gx.desktop", "opera-gx"),
+            ("opera.desktop", "opera"),
+            ("opera-beta.desktop", bc.UNSUPPORTED_CHANNEL),
+            ("opera-developer.desktop", bc.UNSUPPORTED_CHANNEL),
+            ("yandex-browser.desktop", "yandex"),
+            ("yandex-browser-beta.desktop", bc.UNSUPPORTED_CHANNEL),
             ("firefox.desktop", None),
             ("org.mozilla.firefox.desktop", None),
             ("", None),
@@ -180,7 +194,55 @@ class TestLinuxProfileDir:
         (tmp_path / ".var" / "app" / "com.brave.Browser" / "config" / "BraveSoftware" / "Brave-Browser").mkdir(parents=True)
         assert bc.real_profile_data_dir("brave", "Linux") == native.as_posix()
 
+    def test_unsupported_platform_browser_fails_closed(self, tmp_path, monkeypatch):
+        # Comet has no Windows/Linux profile table entries (macOS only) — resolution
+        # must return None rather than a generic path built from empty tuples.
+        self._env(monkeypatch, tmp_path)
+        assert bc.real_profile_data_dir("comet", "Linux") is None
+
+    def test_browseros_neo_has_no_linux_profile_table_entry(self, tmp_path, monkeypatch):
+        # BrowserOS neo ships macOS + Windows only (no Linux build) — resolution
+        # must fail closed rather than guessing a native ~/.config path.
+        self._env(monkeypatch, tmp_path)
+        assert bc.real_profile_data_dir("browseros-neo", "Linux") is None
+
+    def test_vivaldi_native_profile_dir(self, tmp_path, monkeypatch):
+        self._env(monkeypatch, tmp_path)
+        assert bc.real_profile_data_dir("vivaldi", "Linux") == str(tmp_path / ".config" / "vivaldi")
+
+    def test_yandex_native_profile_dir(self, tmp_path, monkeypatch):
+        self._env(monkeypatch, tmp_path)
+        assert bc.real_profile_data_dir("yandex", "Linux") == str(tmp_path / ".config" / "yandex-browser")
+
     def test_xdg_config_home_is_honoured(self, tmp_path, monkeypatch):
         monkeypatch.setenv("HOME", str(tmp_path))
         monkeypatch.setenv("XDG_CONFIG_HOME", "/home/t/.config")
         assert bc.real_profile_data_dir("edge", "Linux") == "/home/t/.config/microsoft-edge"
+
+
+class TestBrowserOSNeoMacProfileDir:
+    """Regression: BrowserOS neo's real macOS profile dir is "BrowserClaw" (the legacy
+    product name retained internally), NOT "BrowserOS" — that name belongs to a separate,
+    older non-agentic product with its own distinct ``~/Library/Application Support``
+    directory. Verified against a real ``brew install --cask browseros-neo`` (v0.50.5)
+    install: CFBundleIdentifier ``com.browseros.BrowserClaw`` and a post-first-launch
+    ``~/Library/Application Support/BrowserClaw`` directory. Resolving to the "BrowserOS"
+    dir instead would read/leak into the wrong browser's profile."""
+
+    def test_mac_profile_dir_is_browserclaw_not_browseros(self, monkeypatch):
+        monkeypatch.setenv("HOME", "/Users/example")
+        path = bc.real_profile_data_dir("browseros-neo", "Darwin")
+        assert path == "/Users/example/Library/Application Support/BrowserClaw"
+        assert path.endswith("BrowserClaw")
+        assert not path.endswith("BrowserOS")
+
+    def test_mac_app_bundle_path_has_space_before_neo(self):
+        b = bc._BROWSER_BY_KEY["browseros-neo"]
+        assert b.mac_app == "/Applications/BrowserOS neo.app/Contents/MacOS/BrowserOS neo"
+
+    def test_mac_bundle_id_maps_to_browseros_neo(self):
+        with patch.object(
+            bc.subprocess, "run",
+            return_value=type("_Proc", (), {"stdout": _ls_dump(_handler("https", "com.browseros.BrowserClaw"))})(),
+        ):
+            assert bc._detect_default_darwin() == "browseros-neo"

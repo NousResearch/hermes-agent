@@ -204,7 +204,11 @@ def _cmd_skills_trust(args):
             print(f"Not a directory: {root}")
             return
     else:
-        root = find_project_root()
+        # This subcommand runs in the user's shell, so "current directory" is
+        # the process cwd. The agent-cwd ladder (session cwd, then a
+        # config-pinned TERMINAL_CWD) can point outside the repo the user is
+        # standing in (#127025).
+        root = find_project_root(Path.cwd())
         if root is None:
             print(
                 "Not inside a git checkout. Run from a project directory or "

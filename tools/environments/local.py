@@ -586,6 +586,88 @@ def _find_shell() -> str:
     return _find_bash()
 
 
+# --- macOS login-shell PATH order (issue #118220) ---
+# ``bash -l`` on macOS sources /etc/profile, which runs path_helper and puts
+# /usr/bin ahead of Homebrew — even when the user's login shell (zsh since
+# Catalina) has Homebrew first. The snapshot is a bash-specific ``export -p``
+# dump (declare/shopt), so it cannot run under zsh directly; instead, after a
+# successful snapshot, re-assert zsh's PATH order for the entries both shells
+# share. Snapshot-only entries (nvm/asdf shims from bashrc) keep precedence
+# at the front.
+# ponytail: snapshot-only entries stay first as a block; per-entry rank
+# interpolation if a shim ever must lose to a system dir.
+_MACOS_LOGIN_PATH_SHELLS = frozenset({"zsh"})
+
+
+def _macos_login_shell_path(run_env: dict) -> str | None:
+    """User login-shell PATH on macOS, else None. Fail-safe: any failure means
+    the caller keeps the bash snapshot order (today's behavior). The login shell
+    runs its startup files on every LocalEnvironment construction, so it gets the
+    same scrubbed env as every other child on this path (``_make_run_env``) —
+    Hermes-managed provider secrets must not reach it."""
+    if sys.platform != "darwin":
+        return None
+    shell = _find_shell()
+    if Path(shell).name not in _MACOS_LOGIN_PATH_SHELLS:
+        return None
+    try:
+        proc = subprocess.run(
+            [shell, "-l", "-c", 'printf "%s" "$PATH"'],
+            capture_output=True, text=True, encoding="utf-8", errors="replace",
+            timeout=15, stdin=subprocess.DEVNULL, env=run_env)
+    except Exception as exc:
+        logger.debug("macOS login-shell PATH query failed: %s", exc)
+        return None
+    if proc.returncode != 0:
+        return None
+    return (proc.stdout or "").strip() or None
+
+
+def _reorder_path_to_reference(snapshot_path: str, ref_path: str) -> str:
+    """Reorder a ``:``-separated PATH so entries also present in *ref_path*
+    follow the reference order; snapshot-only entries keep their relative
+    order at the front. Empty entries dropped, duplicates collapsed."""
+    ref_rank = {entry: i for i, entry in enumerate(e for e in ref_path.split(":") if e)}
+    snap_entries = [entry for entry in snapshot_path.split(":") if entry]
+    unknown = [e for e in snap_entries if e not in ref_rank]
+    known = sorted((e for e in snap_entries if e in ref_rank), key=ref_rank.__getitem__)
+    return ":".join(dict.fromkeys((*unknown, *known)))
+
+
+def _decode_bash_dquote(value: str) -> str:
+    """Decode one line of bash ``export -p`` double-quoted value: ``\\`` takes
+    the next char literally (covers ``\\"``, ``\\\\``, ``\\$``, backtick)."""
+    out, i = [], 0
+    while i < len(value):
+        if value[i] == "\\" and i + 1 < len(value):
+            out.append(value[i + 1])
+            i += 2
+        else:
+            out.append(value[i])
+            i += 1
+    return "".join(out)
+
+
+def _read_snapshot_path(snapshot_file: str) -> str | None:
+    """Current PATH from an ``export -p`` snapshot file, else None. A leading
+    ``\"`` without a closing quote is a multi-line (bash 3.2) value, skipped."""
+    try:
+        text = Path(snapshot_file).read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    for line in text.splitlines():
+        m = re.match(r"^declare -x PATH=(.*)$", line)
+        if not m:
+            continue
+        raw = m.group(1)
+        if raw.startswith('"'):
+            if len(raw) >= 2 and raw.endswith('"'):
+                return _decode_bash_dquote(raw[1:-1])
+            continue
+        return raw
+    return None
+
+
 # --- PATH completion for the terminal subshell ---
 
 # Standard PATH entries for environments with minimal PATH.
@@ -973,6 +1055,37 @@ class LocalEnvironment(BaseEnvironment):
     def __init__(self, cwd: str = "", timeout: int = 60, env: dict = None):
         super().__init__(cwd=_resolve_local_initial_cwd(cwd), timeout=timeout, env=env)
         self.init_session()
+
+    def init_session(self):
+        """Base login-shell snapshot, then re-assert the macOS login shell's
+        PATH order for the entries both shells share (#118220)."""
+        super().init_session()
+        if self._snapshot_ready:
+            self._fix_macos_snapshot_path()
+
+    def _fix_macos_snapshot_path(self) -> None:
+        """Append ``export PATH=<login-shell order>`` to the snapshot (sourced
+        last, so it wins; the next per-command re-dump persists it). Every
+        failure mode is a no-op keeping today's bash order."""
+        try:
+            ref = _macos_login_shell_path(_make_run_env(self.env))
+        except Exception as exc:  # env scrub failure must not break the constructor
+            logger.debug("macOS login-shell PATH query skipped: %s", exc)
+            return
+        if not ref:
+            return
+        current = _read_snapshot_path(self._snapshot_path)
+        if not current:
+            return
+        fixed = _reorder_path_to_reference(current, ref)
+        if fixed == current:
+            return
+        import shlex
+        try:
+            with open(self._snapshot_path, "a", encoding="utf-8") as fh:
+                fh.write(f"export PATH={shlex.quote(fixed)}\n")
+        except OSError as exc:
+            logger.debug("macOS snapshot PATH fixup skipped: %s", exc)
 
     def get_temp_dir(self) -> str:
         """Shell-safe writable temp dir. Precedence: ``TERMINAL_TEMP_DIR``, TMPDIR/TMP/TEMP

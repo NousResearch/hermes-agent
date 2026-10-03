@@ -7813,6 +7813,14 @@ def _next_fallback_after_quarantine(
     return fb
 
 
+def _host_deadline_has_expired(exc: Exception) -> bool:
+    """Whether an auxiliary failure belongs to the caller's expired host deadline."""
+    if "host compression deadline" in str(exc).lower():
+        return True
+    deadline = _current_aux_stream_deadline()
+    return deadline is not None and time.monotonic() >= deadline
+
+
 def _ladder_provider_fallback(first_err: Exception, route: _LadderRoute):
     """Last rung: other providers (per-task chain; then auto: main fallback chain + discovery
     chain, explicit: main-agent-model net). Returns the response or None.
@@ -7821,6 +7829,10 @@ def _ladder_provider_fallback(first_err: Exception, route: _LadderRoute):
     regardless of user intent. Auth errors from an explicit provider may only use the task's
     own configured fallback_chain; they never imply an unconfigured provider hop."""
     task, tag, resolved_provider = route.task, route.tag, route.resolved_provider
+    # The host has stopped waiting; do not bill another provider or quarantine a
+    # healthy endpoint for a timeout caused by the host's own deadline.
+    if _host_deadline_has_expired(first_err):
+        raise first_err
     # Respect explicit provider choice for transient errors (auth, request validation, etc.) but allow
     # fallback when the provider clearly cannot serve the request due to capacity: payment/quota exhaustion
     # and connection failures are capacity problems, not request constraints. See #26803: daily token quota
@@ -7934,7 +7946,11 @@ def _aux_recovery_ladder(
     resp, first_err = yield from _ladder_credential_rungs(first_err, route, kwargs, client_is_nous)
     if first_err is None:
         return resp
-    resp = yield from _ladder_provider_fallback(first_err, route)
+    # Stop fallback after the host deadline, but keep the caller-side cleanup below.
+    if _host_deadline_has_expired(first_err):
+        resp = None
+    else:
+        resp = yield from _ladder_provider_fallback(first_err, route)
     if resp is not None:
         return resp
     # Connection/timeout errors poison the cached client (closed transport, half-read

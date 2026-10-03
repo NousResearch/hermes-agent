@@ -238,12 +238,19 @@ def strip_stale_dangerous_confirmations(
             age, expiry_seconds, (msg.get("content") or "")[:80],
         )
         redacted = dict(msg)
-        redacted["content"] = re.sub(
+        redacted_content = re.sub(
             "|".join(re.escape(pattern) for pattern in _DANGEROUS_CONFIRMATION_PATTERNS),
             _EXPIRED_CONFIRMATION_SENTINEL,
             str(msg.get("content") or ""),
             flags=re.IGNORECASE,
         )
+        # Never leave an actionable destructive instruction in a user row after
+        # its confirmation expires. Preserve unrelated context when the row is
+        # only a reference/mixed request; if the remaining text still names a
+        # destructive action, replace the whole carrier with the safety notice.
+        if re.search(r"\b(?:reboot|restart|shutdown|power\s+off|wipe|delete|factory\s+reset)\b", redacted_content, re.IGNORECASE):
+            redacted_content = _EXPIRED_CONFIRMATION_SENTINEL
+        redacted["content"] = redacted_content
         # The api_content sidecar carries the exact bytes sent — the confirmation itself; replaying it would undo the redaction.
         drop_stale_api_content(redacted)
         cleaned.append(redacted)

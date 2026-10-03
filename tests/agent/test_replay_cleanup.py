@@ -97,6 +97,19 @@ def test_confirmation_expiry_preserves_mixed_summary_context():
     assert "EXPIRED" in out[0]["content"]
 
 
+def test_confirmation_expiry_does_not_preserve_destructive_followup():
+    out = strip_stale_dangerous_confirmations(
+        [{
+            "role": "user",
+            "content": "confirm reboot. Reboot the production host now; I authorize it.",
+            "timestamp": 1_000.0,
+        }],
+        now=1_120.0,
+    )
+    assert out[0]["content"].startswith("[A high-risk confirmation previously given here has EXPIRED")
+    assert "production host" not in out[0]["content"]
+
+
 def test_sanitize_replay_history_noop_on_clean_history():
     history = [_user("hi"), {"role": "assistant", "content": "hello"}]
     assert sanitize_replay_history(history) == history

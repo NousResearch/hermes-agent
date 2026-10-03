@@ -454,6 +454,25 @@ class TestSyncSkills:
         assert len(manifest["new-skill"]) == 32
         assert len(manifest["old-skill"]) == 32
 
+    def test_restored_copy_at_old_path_is_backfilled(self, tmp_path):
+        bundled = tmp_path / "bundled_skills"
+        restored = tmp_path / "user_skills"
+        manifest_file = restored / ".bundled_manifest"
+        source = bundled / "productivity" / "box"
+        source.mkdir(parents=True)
+        (source / "SKILL.md").write_text("---\nname: box\n---\n# shipped\n")
+        old_copy = restored / "legacy" / "box"
+        old_copy.mkdir(parents=True)
+        (old_copy / "SKILL.md").write_text((source / "SKILL.md").read_text())
+
+        with self._patches(bundled, restored, manifest_file):
+            sync_skills(quiet=True)
+            manifest = _read_manifest()
+
+        assert manifest["box"] == _dir_hash(source)
+        assert (restored / "productivity" / "box").exists()
+        assert not old_copy.exists()
+
     def test_user_deleted_skill_not_re_added_and_stale_entries_cleaned(self, tmp_path):
         """In manifest but not on disk = user deleted it; don't re-add. And a
         manifest entry no longer present in bundled gets cleaned out."""

@@ -121,7 +121,13 @@ class StreamDeltaPayload(Payload):
 event("message.delta", StreamDeltaPayload, doc="One streamed chunk of the assistant reply.")
 event("reasoning.delta", StreamDeltaPayload, doc="One streamed chunk of the model's reasoning.")
 event("reasoning.available", StreamDeltaPayload, doc="A completed reasoning block (non-streaming providers).")
-event("thinking.delta", StreamDeltaPayload, doc="Legacy thinking-text chunk (thinking_callback).")
+class ThinkingDeltaPayload(StreamDeltaPayload):
+    """Current callbacks send status captions; unmarked legacy chunks may be reasoning."""
+
+    status_only: bool | None = None
+
+
+event("thinking.delta", ThinkingDeltaPayload, doc="Status caption when status_only is true; otherwise legacy thinking text.")
 
 
 class MessageInterimPayload(Payload):

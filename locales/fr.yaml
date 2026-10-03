@@ -994,11 +994,13 @@ gateway:
     cron_interrupted: "⚠️ La tâche planifiée '{job}' a été interrompue car Hermes est {action} ; aucun résultat pour cette exécution. Elle se relancera selon son planning, ou lancez-la maintenant avec `hermes cron run {job}` une fois Hermes de retour."
     notice_shutdown: "⚠️ Hermes s'arrête — votre tâche en cours va être interrompue. Une fois de retour en ligne, envoyez n'importe quel message et j'essaierai de reprendre là où nous en étions."
     notice_restart: "⚠️ Hermes redémarre — votre tâche en cours va être interrompue. Envoyez n'importe quel message après le redémarrage et j'essaierai de reprendre là où vous en étiez."
+    notice_update: "⬆️ Hermes se met à jour — redémarrage planifié, de retour dans un instant. Votre tâche en cours sera interrompue ; envoyez un message une fois que je serai de retour et j'essaierai de reprendre là où nous nous étions arrêtés."
   startup:
     handoff_thread_title: "Hermes — {title}"
     restarted: "♻ Gateway redémarré avec succès. Votre session continue."
     free_tier_line: "Inférence : offre gratuite Nous (nous/welcome). Connectez-vous pour en obtenir plus : /login"
     online: "♻️ Gateway en ligne — Hermes est de retour et prêt."
+    online_after_update: "✅ Mise à jour terminée — Hermes est de retour avec la nouvelle version et prêt."
     db_corrupt: |-
       ⚠️ Corruption détectée dans la base de données des sessions. Les messages risquent de ne pas être persistés. Options de récupération :
       1. Exécutez `hermes {profile_arg}doctor --fix`

@@ -838,11 +838,13 @@ gateway:
     cron_interrupted: "⚠️ Il job pianificato '{job}' è stato interrotto perché Hermes è {action}; nessun risultato per questa esecuzione. Verrà eseguito di nuovo come pianificato, oppure eseguilo subito con `hermes cron run {job}` quando Hermes sarà tornato."
     notice_shutdown: "⚠️ Hermes si sta arrestando — la tua attività corrente verrà interrotta. Quando sarà di nuovo online, invia un messaggio qualsiasi e proverò a riprendere da dove eravamo rimasti."
     notice_restart: "⚠️ Hermes si sta riavviando — la tua attività corrente verrà interrotta. Invia un messaggio qualsiasi dopo il riavvio e proverò a riprendere da dove eri rimasto."
+    notice_update: "⬆️ Hermes si sta aggiornando — riavvio pianificato, torno tra un attimo. L'attività in corso verrà interrotta; invia un messaggio quando sarò tornato e proverò a riprendere da dove eravamo rimasti."
   startup:
     handoff_thread_title: "Hermes — {title}"
     restarted: "♻ Gateway riavviato correttamente. La tua sessione continua."
     free_tier_line: "Inferenza: piano gratuito Nous (nous/welcome). Accedi per avere di più: /login"
     online: "♻️ Gateway online — Hermes è tornato ed è pronto."
+    online_after_update: "✅ Aggiornamento completato — Hermes è tornato con la nuova versione ed è pronto."
     db_corrupt: "⚠️ Rilevata corruzione del database delle sessioni. I messaggi potrebbero non essere salvati. Opzioni di ripristino:\n1. Esegui `hermes {profile_arg}doctor --fix`\n2. Ferma il gateway, poi ripristina con:\n   hermes {profile_arg}sessions recover --source {db_path} --inspect-only\n   (se segnala che è recuperabile) hermes {profile_arg}sessions recover --source {db_path} --output recovered-state.db\n   — il ripristino crea prima uno snapshot del file danneggiato; NON eseguire `sqlite3 ... \".recover\"` sullo state.db attivo, una CLI sqlite3 vulnerabile può corromperlo ulteriormente\n3. Ripristina da un backup in {backups_dir}/\nEsegui `hermes {profile_arg}doctor` per una diagnostica sanificata."
     db_fts_corrupt: "⚠️ Il database delle sessioni ha segnalato un errore di corruzione limitato all'indice di ricerca (FTS5); le tabelle dei messaggi non sono danneggiate. I messaggi potrebbero non essere salvati finché non viene riparato: esegui `hermes {profile_arg}doctor --fix`, poi riavvia il gateway. Non eseguire strumenti di ripristino né ripristinare un backup a meno che `hermes {profile_arg}doctor` non confermi il danno."
     db_then_restart: "{action} Poi `hermes {profile_arg}gateway restart`."

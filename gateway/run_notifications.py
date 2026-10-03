@@ -992,7 +992,14 @@ class GatewayNotificationsMixin:
         """
         delivered: set[tuple[str, str, Optional[str]]] = set()
         skipped = skip_targets or set()
-        message = t("gateway.startup.online")
+        from gateway.run import _planned_update_marker
+        # Close the loop on the "updating" notice sent before we exited, so the
+        # pair reads as one planned event rather than two unexplained ones.
+        message = t(
+            "gateway.startup.online_after_update"
+            if _planned_update_marker() is not None
+            else "gateway.startup.online"
+        )
         free_tier_line = self._free_tier_startup_line()
         if free_tier_line:
             message = f"{message}\n{free_tier_line}"

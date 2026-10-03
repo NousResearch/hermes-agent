@@ -1026,8 +1026,16 @@ class GatewayShutdownMixin:
 
         Called at the start of stop() while adapters are connected; send failures never block shutdown.
         """
+        from gateway.run import _planned_update_marker
         restart_source = self._restart_command_source if self._restart_requested else None
-        msg = t("gateway.shutdown.notice_restart" if self._restart_requested else "gateway.shutdown.notice_shutdown")
+        if not self._restart_requested:
+            msg = t("gateway.shutdown.notice_shutdown")
+        elif _planned_update_marker() is not None:
+            # An update-driven restart was asked for — say so, rather than
+            # sending the same ⚠️ wording a crash restart sends.
+            msg = t("gateway.shutdown.notice_update")
+        else:
+            msg = t("gateway.shutdown.notice_restart")
         restart_key = None
         if restart_source is not None:
             with suppress(Exception):

@@ -838,11 +838,13 @@ gateway:
     cron_interrupted: "⚠️ 排程任務 '{job}' 因 Hermes 正在{action}而中斷；本次沒有結果。它會依排程再次執行，或在 Hermes 恢復後用 `hermes cron run {job}` 立即執行。"
     notice_shutdown: "⚠️ Hermes 正在關閉 — 你目前的任務將被中斷。恢復上線後，傳送任何訊息，我會試著從中斷處繼續。"
     notice_restart: "⚠️ Hermes 正在重新啟動 — 你目前的任務將被中斷。重新啟動後傳送任何訊息，我會試著從中斷處繼續。"
+    notice_update: "⬆️ Hermes 正在更新 — 計畫內重新啟動，馬上回來。目前的任務將被中斷；我回來後傳送任意訊息，我會嘗試從中斷處繼續。"
   startup:
     handoff_thread_title: "Hermes — {title}"
     restarted: "♻ 閘道已成功重新啟動。你的工作階段將繼續。"
     free_tier_line: "推論：Nous 免費方案（nous/welcome）。登入以取得更多：/login"
     online: "♻️ 閘道已上線 — Hermes 已恢復並準備就緒。"
+    online_after_update: "✅ 更新完成 — Hermes 已在新版本上恢復並準備就緒。"
     db_corrupt: "⚠️ 偵測到工作階段資料庫損毀。訊息可能無法保存。復原選項：\n1. 執行 `hermes {profile_arg}doctor --fix`\n2. 停止閘道，然後以下列指令復原：\n   hermes {profile_arg}sessions recover --source {db_path} --inspect-only\n   （若回報可復原）hermes {profile_arg}sessions recover --source {db_path} --output recovered-state.db\n   — 復原前會先為受損檔案建立快照；切勿對線上的 state.db 執行 `sqlite3 ... \".recover\"`，有漏洞的 sqlite3 CLI 可能使其進一步損毀\n3. 從 {backups_dir}/ 中的備份還原\n執行 `hermes {profile_arg}doctor` 可取得去識別化的診斷資訊。"
     db_fts_corrupt: "⚠️ 工作階段資料庫回報的損毀錯誤僅限於搜尋索引（FTS5）；訊息資料表並未受損。修復前訊息可能無法保存：請執行 `hermes {profile_arg}doctor --fix`，然後重新啟動閘道。除非 `hermes {profile_arg}doctor` 確認有損毀，否則請勿執行復原工具或還原備份。"
     db_then_restart: "{action} 然後執行 `hermes {profile_arg}gateway restart`。"

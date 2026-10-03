@@ -233,6 +233,18 @@ describe('I18nProvider', () => {
     })
   })
 
+  it('applies RTL direction for Hebrew', () => {
+    render(
+      <I18nProvider configClient={null} initialLocale="he">
+        <LanguageProbe target="en" />
+      </I18nProvider>
+    )
+
+    expect(screen.getByTestId('locale').textContent).toBe('he')
+    expect(document.documentElement.dir).toBe('rtl')
+    expect(document.documentElement.lang).toBe('he')
+  })
+
   it('applies RTL direction for Arabic and restores LTR on switch back', async () => {
     render(
       <I18nProvider configClient={null} initialLocale="ar">

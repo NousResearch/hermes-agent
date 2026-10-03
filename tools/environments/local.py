@@ -988,39 +988,30 @@ def _foreground_scope_argv(args: list[str], run_env: dict) -> "tuple[list[str], 
     variables on the scoped path only — the availability probe derives them
     (``systemd_user_bus_env``) so a system-level unit without login variables can still
     reach the manager, and an ulterior spawn that skipped them would fail where the probe
-    succeeded. Fail-open everywhere else: any surprise leaves the command exactly as it is
-    today (``unit_name is None``).
+    succeeded. Every helper used here fails closed, so a fallback leaves the command
+    unwrapped (``unit_name is None``).
     """
     if _IS_WINDOWS:
         return args, None, run_env
     from tools import process_registry as _pr
-    supervised = False
-    try:
-        if not (_pr._IS_LINUX and _pr._is_supervised_gateway_process()):
-            return args, None, run_env
-        # Past this point the command is *meant* to be isolated, so every fallback is a
-        # degraded failure domain and must be reported (once), not silently degraded.
-        supervised = True
-        if not _pr._systemd_run_user_scope_available():
-            _warn_foreground_scope_degraded("systemd-run --user --scope is unavailable")
-            return args, None, run_env
-        # Random, not a counter: a scope leaked past a restart must not collide with a later
-        # gateway that reuses the same PID ("Unit ... already exists").
-        suffix = f"{os.getpid()}-{uuid.uuid4().hex[:8]}"
-        # Own cgroup only, no worker MemoryMax: a foreground build may legitimately need
-        # more than the background cap; the isolation alone protects the gateway.
-        scoped = _pr._build_systemd_scope_argv(args, unit_suffix=suffix, prefix=_FOREGROUND_SCOPE_PREFIX,
-                                               memory_max=False)
-        if scoped == args:
-            _warn_foreground_scope_degraded("no systemd-run wrapper could be built")
-            return args, None, run_env
-        return scoped, f"{_FOREGROUND_SCOPE_PREFIX}-{suffix}.scope", _pr.systemd_user_bus_env(run_env)
-    except Exception as exc:
-        if supervised:
-            _warn_foreground_scope_degraded(f"building the scope wrapper failed ({type(exc).__name__}: {exc})")
-        else:
-            logger.debug("foreground executor not isolated in a systemd scope: %s", exc)
+    if not (_pr._IS_LINUX and _pr._is_supervised_gateway_process()):
         return args, None, run_env
+    # Past this point the command is *meant* to be isolated, so every fallback is a
+    # degraded failure domain and must be reported (once), not silently degraded.
+    if not _pr._systemd_run_user_scope_available():
+        _warn_foreground_scope_degraded("systemd-run --user --scope is unavailable")
+        return args, None, run_env
+    # Random, not a counter: a scope leaked past a restart must not collide with a later
+    # gateway that reuses the same PID ("Unit ... already exists").
+    suffix = f"{os.getpid()}-{uuid.uuid4().hex[:8]}"
+    # Own cgroup only, no worker MemoryMax: a foreground build may legitimately need
+    # more than the background cap; the isolation alone protects the gateway.
+    scoped = _pr._build_systemd_scope_argv(args, unit_suffix=suffix, prefix=_FOREGROUND_SCOPE_PREFIX,
+                                           memory_max=False)
+    if scoped == args:
+        _warn_foreground_scope_degraded("no systemd-run wrapper could be built")
+        return args, None, run_env
+    return scoped, f"{_FOREGROUND_SCOPE_PREFIX}-{suffix}.scope", _pr.systemd_user_bus_env(run_env)
 
 
 class LocalEnvironment(BaseEnvironment):
@@ -1166,11 +1157,10 @@ class LocalEnvironment(BaseEnvironment):
             unit = getattr(proc, "_hermes_scope_unit", None)
             if unit:
                 from tools.process_registry import _stop_systemd_unit
-                with contextlib.suppress(Exception):
-                    if not _stop_systemd_unit(unit):
-                        logger.debug(
-                            "foreground scope %s could not be reaped; the unit may "
-                            "outlive the command (its cgroup still holds survivors)", unit)
+                if not _stop_systemd_unit(unit):
+                    logger.debug(
+                        "foreground scope %s could not be reaped; the unit may "
+                        "outlive the command (its cgroup still holds survivors)", unit)
 
     def _force_kill_process(self, proc):
         """SIGKILL the whole group with no TERM grace or wait: the caller os._exit()s next."""

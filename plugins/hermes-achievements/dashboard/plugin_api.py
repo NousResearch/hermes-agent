@@ -272,6 +272,21 @@ _PROVIDER_MARKERS = ["openai", "anthropic", "google", "gemini", "mistral", "meta
 _LOCAL_MARKERS = ["ollama", "llama.cpp", "localhost", "127.0.0.1", "local/", "local:", "gguf", "vllm-local"]
 
 
+def _is_memory_write_call(call: Any) -> bool:
+    """Check if a memory tool call is a write operation (add/replace action)."""
+    if not isinstance(call, dict):
+        return False
+    fn = call.get("function") or {}
+    args = fn.get("arguments") or call.get("arguments") or call.get("args") or {}
+    if isinstance(args, str):
+        try:
+            args = json.loads(args)
+        except Exception:
+            return False
+    action = args.get("action") if isinstance(args, dict) else None
+    return isinstance(action, str) and action in ("add", "replace")
+
+
 def model_provider(model_name: str) -> Optional[str]:
     name = (model_name or "").strip().lower()
     if not name or name == "none":
@@ -292,6 +307,7 @@ def is_local_model_name(model_name: str) -> bool:
 def analyze_messages(session_id: str, title: str, messages: List[Dict[str, Any]]) -> Dict[str, Any]:
     tool_names: Set[str] = set()
     tool_sequence: List[str] = []
+    tool_calls_list: List[Any] = []  # Track raw call objects for memory write detection
     files_touched: Set[str] = set()
     full_text_parts: List[str] = []
     error_count = 0
@@ -305,11 +321,13 @@ def analyze_messages(session_id: str, title: str, messages: List[Dict[str, Any]]
             # keep it for distinct-tool detection but don't double-count it as a new call.
             if msg.get("role") != "tool":
                 tool_sequence.append(name)
+                tool_calls_list.append(None)  # No call object for tool_name entries
         for call in msg.get("tool_calls") or []:
             name = _tool_name_from_call(call)
             if name:
                 tool_names.add(name)
                 tool_sequence.append(name)
+                tool_calls_list.append(call)
         if ERROR_RE.search(text):
             error_count += 1
         blob = text
@@ -324,6 +342,26 @@ def analyze_messages(session_id: str, title: str, messages: List[Dict[str, Any]]
         return len(re.findall(pattern, full_text, re.I))
     web_calls = _count_tool(tool_sequence, "web_search", "web_extract")
     browser_calls = _count_tool(tool_sequence, "browser")
+    web_browser_calls = web_calls + browser_calls
+    patch_calls = _count_tool(tool_sequence, "patch")
+    file_reads_searches = _count_tool(tool_sequence, "read_file", "search_files")
+    file_tool_calls = _count_tool(tool_sequence, "read_file", "write_file", "patch", "search_files")
+    delegate_calls = _count_tool(tool_sequence, "delegate_task")
+    process_calls = _count_tool(tool_sequence, "process") + len(re.findall(r"background\s*=\s*true", full_text, re.I))
+    cron_calls = _count_tool(tool_sequence, "cronjob")
+    image_vision_calls = _count_tool(tool_sequence, "image", "vision")
+    tts_calls = _count_tool(tool_sequence, "tts", "text_to_speech")
+    skill_events = _count_tool(tool_sequence, "skill") + len(re.findall(r"\bskill", lower))
+    skill_manage_events = _count_tool(tool_sequence, "skill_manage")
+    memory_events = _count_tool(tool_sequence, "memory", "mnemosyne")
+    # Count memory write events: mnemosyne_remember always counts, memory tool only counts
+    # when the action parameter is "add" or "replace" (write operations).
+    # tool_calls_list[i] is None for tool_name-only entries, so we check both paths.
+    memory_write_events = _count_tool(tool_sequence, "mnemosyne_remember")
+    for i, name in enumerate(tool_sequence):
+        if str(name).lower() == "memory" and tool_calls_list[i] is not None:
+            if _is_memory_write_call(tool_calls_list[i]):
+                memory_write_events += 1
 
     return {
         "session_id": session_id,

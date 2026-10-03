@@ -793,3 +793,45 @@ test('remoteProfileQueryScope resolves the wire scope for a profile override', (
   assert.equal(remoteProfileQueryScope('default', 'dixie'), 'dixie')
   assert.equal(remoteProfileQueryScope(''), '')
 })
+
+test('remote owner sweep respects the backend page cap and finds a later lineage root', async () => {
+  const calls: number[][] = []
+
+  const owner = await findRemoteOwnerProfileForSession('wanted-root', ['remote'], async (_profile, params) => {
+    const limit = Number(params.get('limit'))
+    const offset = Number(params.get('offset'))
+    assert.ok(limit <= 100, 'the backend rejects larger pages with HTTP 422')
+    calls.push([limit, offset])
+
+    return {
+      total: 101,
+      sessions:
+        offset === 0
+          ? Array.from({ length: 100 }, (_, i) => ({ id: 'other-' + i }))
+          : [{ id: 'live-tip', _lineage_root_id: 'wanted-root' }]
+    }
+  })
+
+  assert.equal(owner, 'remote')
+  assert.deepEqual(calls, [
+    [100, 0],
+    [100, 100]
+  ])
+})
+
+test('remote owner sweep stops at exhaustion or a failed page', async () => {
+  const offsets: number[] = []
+
+  const owner = await findRemoteOwnerProfileForSession('wanted', ['dead', 'live'], async (profile, params) => {
+    if (profile === 'dead') {
+      throw new Error('unreachable')
+    }
+
+    offsets.push(Number(params.get('offset')))
+
+    return { sessions: [], total: 0 }
+  })
+
+  assert.equal(owner, null)
+  assert.deepEqual(offsets, [0])
+})

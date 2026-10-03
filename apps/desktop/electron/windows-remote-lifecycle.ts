@@ -20,6 +20,15 @@ function powerShellCommand(script) {
   return `powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand ${encodedPowerShell(script)}`
 }
 
+function powerShellBufferedStdinCommand() {
+  // PowerShell's `-Command -` reads stdin interactively and does not reliably
+  // preserve multiline here-strings. Use a short encoded bootstrap that reads
+  // the full generated script before compiling it as one script block.
+  return powerShellCommand(
+    '[Console]::OutputEncoding=[Text.UTF8Encoding]::new($false);$payload=[Console]::In.ReadToEnd();$script=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($payload));& ([scriptblock]::Create($script))'
+  )
+}
+
 async function probeWindowsRemote(ssh, explicitHermesPath = '') {
   const explicit = psLiteral(explicitHermesPath)
 
@@ -68,10 +77,16 @@ async function probeWindowsRemote(ssh, explicitHermesPath = '') {
     '[ordered]@{os="Windows";arch=$env:PROCESSOR_ARCHITECTURE;hermesHome=$hermesHome;hermesPath=$hermes;python=$python}|ConvertTo-Json -Compress'
   ].join(';')
 
-  return JSON.parse((await ssh.exec(powerShellCommand(script))).trim())
+  return JSON.parse(
+    (
+      await ssh.exec(powerShellBufferedStdinCommand(), {
+        stdinData: Buffer.from(script, 'utf8').toString('base64')
+      })
+    ).trim()
+  )
 }
 
-function windowsUpdateMarkerProbeCommand(hermesHome) {
+function windowsUpdateMarkerProbeScript(hermesHome) {
   const script = [
     '$ErrorActionPreference="Stop"',
     `Add-Type -TypeDefinition @'
@@ -131,7 +146,7 @@ public static class HermesMarkerNoFollow {
     'Write-Output $result'
   ].join(';')
 
-  return powerShellCommand(script)
+  return script
 }
 
 /**
@@ -143,8 +158,13 @@ async function assertWindowsRemoteInstallUpdateClear(ssh, hermesHome) {
   let observation = ''
 
   try {
+    const markerScript = windowsUpdateMarkerProbeScript(hermesHome)
     observation =
-      String(await ssh.exec(windowsUpdateMarkerProbeCommand(hermesHome)))
+      String(
+        await ssh.exec(powerShellBufferedStdinCommand(), {
+          stdinData: Buffer.from(markerScript, 'utf8').toString('base64')
+        })
+      )
         .replace(/^\uFEFF/, '')
         .trim()
         .split(/\r?\n/)
@@ -248,12 +268,16 @@ async function helper(ssh, runtime, operation, args = [], stdinData?) {
   return parsed
 }
 
-function atomicWindowsSpawnCommand(runtime, reservation: any = {}) {
+function atomicWindowsSpawnScript(runtime, reservation: any = {}, stdinData = '') {
   const argv = [runtime.python, '-m', 'hermes_cli.windows_ssh_runtime', 'spawn']
   const helper = operation => [runtime.python, '-m', 'hermes_cli.windows_ssh_runtime', operation]
 
   const script = [
     '$ErrorActionPreference="Stop"',
+    `$spawnPayload=${psLiteral(stdinData)}`,
+    '$ProgressPreference="SilentlyContinue"',
+    '[Console]::OutputEncoding=[Text.UTF8Encoding]::new($false)',
+    '$OutputEncoding=[Text.UTF8Encoding]::new($false)',
     `$hermesHome=${psLiteral(runtime.hermesHome)}`,
     '$installRoot=$hermesHome',
     '$parent=Split-Path -Parent $hermesHome',
@@ -272,8 +296,8 @@ function atomicWindowsSpawnCommand(runtime, reservation: any = {}) {
         `& ${helper('remove-lock').map(psLiteral).join(' ')} ${psLiteral(reservation.ownershipId)}|Out-Null}`
       : '',
     reservation.ownershipId
-      ? `  $spawnLines=@(& ${argv.map(psLiteral).join(' ')}); $spawnExit=$LASTEXITCODE`
-      : `  & ${argv.map(psLiteral).join(' ')}`,
+      ? `  $spawnLines=@($spawnPayload | & ${argv.map(psLiteral).join(' ')}); $spawnExit=$LASTEXITCODE`
+      : `  $spawnPayload | & ${argv.map(psLiteral).join(' ')}`,
     reservation.ownershipId
       ? '  if($spawnExit -ne 0){exit $spawnExit}'
       : '  if($LASTEXITCODE -ne 0){exit $LASTEXITCODE}',
@@ -287,11 +311,15 @@ function atomicWindowsSpawnCommand(runtime, reservation: any = {}) {
     .filter(line => line !== '')
     .join(';')
 
-  return powerShellCommand(script)
+  return script
 }
 
 async function atomicWindowsSpawn(ssh, runtime, stdinData, reservation: any = {}) {
-  const output = await ssh.exec(atomicWindowsSpawnCommand(runtime, reservation), { stdinData })
+  const script = atomicWindowsSpawnScript(runtime, reservation, stdinData)
+
+  const output = await ssh.exec(powerShellBufferedStdinCommand(), {
+    stdinData: Buffer.from(script, 'utf8').toString('base64')
+  })
 
   const lines = String(output || '')
     .replace(/^\uFEFF/, '')
@@ -769,7 +797,8 @@ function buildWindowsInteractiveCommand(remoteCwd = '') {
 
 export {
   assertWindowsRemoteInstallUpdateClear,
-  atomicWindowsSpawnCommand,
+  atomicWindowsSpawn,
+  atomicWindowsSpawnScript,
   buildWindowsInteractiveCommand,
   connectWindowsRemote,
   detectRemotePlatform,

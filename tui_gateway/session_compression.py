@@ -97,7 +97,6 @@ def _apply_live_compression_config(agent: Any, cfg: dict | None) -> None:
     cfg = cfg if isinstance(cfg, dict) else {}
     compression = cfg.get("compression") if isinstance(cfg.get("compression"), dict) else {}
     model_cfg = cfg.get("model") if isinstance(cfg.get("model"), dict) else {}
-    from agent.agent_init import config_context_length_for_runtime, set_config_context_length
     enabled_raw = compression.get("enabled", True)
     agent.compression_enabled = enabled_raw if isinstance(enabled_raw, bool) else str(enabled_raw).lower() in {"true", "1", "yes"}
     agent.codex_responses_native_compaction = is_truthy_value(compression.get("codex_responses_native", False))
@@ -114,6 +113,15 @@ def _apply_live_compression_config(agent: Any, cfg: dict | None) -> None:
         agent.compression_idle_compact_after_seconds = max(0, int(compression.get("idle_compact_after_seconds", 0) or 0))
     cc = getattr(agent, "context_compressor", None)
     if cc is None:
+        return
+    from agent.context_compressor import ContextCompressor
+    # External context engines (e.g. LCM) own compaction policy, so every write below that
+    # reaches into ContextCompressor internals is skipped for them (agent_init #44439 pattern;
+    # construction-time model_thresholds/update_model stay untouched). ``model.context_length``
+    # is NOT one of those: it is an agent-level pin, so the engine branch still adopts it below.
+    is_compressor = isinstance(cc, ContextCompressor)
+    if not is_compressor:
+        _apply_live_context_length_pin(agent, cfg, None)
         return
     # tail_mode: unknown/absent values land on the ctor default ("lean"), matching agent_init.
     default_tail = str(_compressor_ctor_default("tail_mode", "lean"))
@@ -149,27 +157,48 @@ def _apply_live_compression_config(agent: Any, cfg: dict | None) -> None:
         cc.threshold_percent = cc._effective_threshold_percent(cc.context_length, base)
     except Exception:
         cc.threshold_percent = pct
-    # Same scoping rule as construction and the switch path: the pin describes the configured default
-    # route, so a session that /model-switched elsewhere must not have it re-applied on a config save
-    # (None = absent, invalid, or scoped out).
+    _apply_live_context_length_pin(agent, cfg, cc)
+    cc.threshold_tokens_cap = cc._coerce_threshold_tokens_cap(
+        compression.get("threshold_tokens", _default_threshold_tokens_cap())
+    )
+    # Invalidate the cached trigger so the next preflight re-derives from percent/window, then the cap.
+    cc._threshold_tokens = cc._tail_token_budget = None
+
+
+def _apply_live_context_length_pin(agent: Any, cfg: dict | None, cc: Any) -> None:
+    """Adopt the ``model.context_length`` pin on a live session. Same scoping rule as construction
+    and the switch path: the pin describes the configured default route, so a session that
+    /model-switched elsewhere must not have it re-applied on a config save (None = absent,
+    invalid, or scoped out).
+
+    The pin is cached on the AGENT (read by the switch path, the @-reference budget and every
+    display surface) and, when there is a ContextCompressor, on the compressor for its own
+    re-resolution. Writing only one copy left the other stale, so the session showed a pinned
+    ceiling while compressing against a different window (#116467). ``cc`` is None for an
+    external context engine, which has no window cache of ours to keep in step — the agent
+    half is still the authoritative pin there.
+    """
+    from agent.agent_init import config_context_length_for_runtime, set_config_context_length
+
     new_ctx = config_context_length_for_runtime(agent, cfg)
     if new_ctx is not None:
+        if cc is None:
+            agent._config_context_length = new_ctx
+            return
         # Both cached copies: the compressor's (its own re-resolution) and the agent's
         # (switch/fallback + every display surface). Writing one left the other stale, so the
         # session showed a pinned ceiling while compressing against a different window (#116467).
         set_config_context_length(agent, new_ctx)
         with contextlib.suppress(Exception):
             cc.context_length = new_ctx
+    elif cc is None:
+        if getattr(agent, "_config_context_length", None) is not None:
+            agent._config_context_length = None
     elif getattr(cc, "_config_context_length", None) is not None:
         # model.context_length removed: drop the override and force re-inference from model metadata on
         # next access (construction's deferred resolution); re-applies the small-context floor too.
         set_config_context_length(agent, None)
         cc._resolved_context_length = None
-    cc.threshold_tokens_cap = cc._coerce_threshold_tokens_cap(
-        compression.get("threshold_tokens", _default_threshold_tokens_cap())
-    )
-    # Invalidate the cached trigger so the next preflight re-derives from percent/window, then the cap.
-    cc._threshold_tokens = cc._tail_token_budget = None
 
 
 def _sync_agent_compression_with_config(sid: str, session: dict) -> None:

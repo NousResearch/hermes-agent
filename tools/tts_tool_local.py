@@ -9,6 +9,7 @@ container. Piper and KittenTTS keep loaded models in small LRU caches registered
 from __future__ import annotations
 
 import logging
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -168,8 +169,58 @@ def _generate_piper_tts(text: str, output_path: str, tts_config: Dict[str, Any])
 
 
 # --- KittenTTS (local ONNX, 25-80MB models, CPU only) ---
+# espeak-ng 1.52 (what espeakng-loader 0.2.4 bundles) keeps the data directory in
+# path_home[160]; a longer path is truncated, espeak_Initialize falls back to its build-time
+# prefix and — phonemizer passes options=0, without DONT_EXIT — exit(1)s the whole backend
+# on first synthesis. A PM install's site-packages path runs ~162 bytes (#131776).
+_ESPEAK_PATH_HOME_MAX = 160
+
+
+def _shorten_espeak_data_path() -> None:
+    """Swap espeak-ng onto a short data path before the first kittentts/misaki import.
+
+    misaki fixes phonemizer's data path to ``espeakng_loader.get_data_path()`` — inside
+    site-packages — at import time, and that value goes straight into ``espeak_Initialize``'s
+    160-byte buffer. When it does not fit, link the data under the hermes home and patch
+    ``get_data_path`` so the import that follows picks the short symlink up. No-op when the
+    path already fits, espeakng_loader is absent, or anything blocks the link — never worse
+    than the status quo.
+    """
+    try:
+        import espeakng_loader
+        data_path = espeakng_loader.get_data_path()
+    except Exception:
+        return
+    if len(os.fsencode(data_path)) < _ESPEAK_PATH_HOME_MAX:
+        return
+    from hermes_constants import get_hermes_home
+    short = get_hermes_home() / "cache" / "espeak-ng-data"
+    if len(os.fsencode(str(short))) >= _ESPEAK_PATH_HOME_MAX:
+        logger.warning("[KittenTTS] espeak-ng data path is over %d bytes even at %s; leaving it as-is",
+                       _ESPEAK_PATH_HOME_MAX, short)
+        return
+    try:
+        short.parent.mkdir(parents=True, exist_ok=True)
+        if short.is_symlink():
+            if Path(os.readlink(short)) != Path(data_path):
+                short.unlink()
+                short.symlink_to(data_path)
+        elif not short.exists():
+            short.symlink_to(data_path)
+        else:  # a real file/dir occupies the name — do not clobber it
+            logger.warning("[KittenTTS] %s exists and is not a symlink; leaving espeak-ng data path as-is", short)
+            return
+    except OSError as exc:
+        logger.warning("[KittenTTS] could not link espeak-ng data to %s (%s); leaving it as-is", short, exc)
+        return
+    logger.info("[KittenTTS] espeak-ng data path %s exceeds %d bytes; using short symlink %s",
+                data_path, _ESPEAK_PATH_HOME_MAX, short)
+    espeakng_loader.get_data_path = lambda: str(short)  # misaki reads this at import time
+
+
 def _load_kittentts_model_for_config(tts_config: Dict[str, Any]) -> Tuple[Any, Dict[str, Any]]:
     """Load (or fetch from cache) the KittenTTS model; returns ``(model, kittentts_config)``."""
+    _shorten_espeak_data_path()  # before _import_kittentts(): misaki fixes the data path at import time
     KittenTTS = _origin()._import_kittentts()
     kt_config = _section(tts_config, "kittentts")
     model_name = kt_config.get("model", DEFAULT_KITTENTTS_MODEL)

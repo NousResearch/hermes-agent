@@ -219,3 +219,43 @@ class TestProfileDeleteStopRefusal:
             if proc.poll() is None:
                 proc.kill()
             proc.wait(timeout=10)
+
+    def test_stop_gateway_process_refuses_a_foreign_namespace_pid(
+        self, tmp_path, monkeypatch
+    ):
+        """A PID stamped in another namespace names an unrelated process here (#123081).
+
+        Under ``PrivatePIDs=`` this gateway recorded PID 1. ``profile delete`` /
+        ``rename`` / ``gateway migrate --multiplex`` all reach ``_stop_gateway_process``,
+        which reads ``gateway.pid`` raw and checked only the home stamp — which matches
+        here, because the record IS this profile's. So the stop path would SIGTERM the host's
+        init. The signal is irreversible, so the namespace gate precedes it, exactly as it
+        does for the ``--replace`` takeover in ``gateway/status.py``.
+        """
+        from hermes_platform.host import pid_namespace as pns
+
+        ours = pns.local_pid_namespace()
+        if not ours.known:
+            pytest.skip("no PID namespace on this platform")
+        tim_home = tmp_path / "profiles" / "tim"
+        tim_home.mkdir(parents=True)
+
+        proc = _spawn_gateway_lookalike(
+            tmp_path / "bin", tim_home / "gateway.lock"
+        )
+        try:
+            record = _pid_record(proc, tmp_path / "bin" / "hermes", tim_home)
+            record["pidns"] = "4026532999"  # a real, canonical, foreign namespace id
+            (tim_home / "gateway.pid").write_text(json.dumps(record))
+
+            from hermes_cli.profiles import _stop_gateway_process
+
+            _stop_gateway_process(tim_home)
+            time.sleep(0.5)
+            assert proc.poll() is None, (
+                "SIGTERM fired at a PID stamped in another PID namespace"
+            )
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+            proc.wait(timeout=10)

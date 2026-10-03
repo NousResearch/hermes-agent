@@ -167,6 +167,27 @@ def exe_is_venv_bound(exe: Path, venv_dir: Path | None) -> bool:
     return any(needle in data for needle in needles)
 
 
+def smart_app_control_enforcing() -> bool:
+    """True when Windows Smart App Control is in enforcement, not evaluation.
+
+    Enforcement refuses an unsigned ``hermes.exe`` before the process starts
+    (``VerifiedAndReputablePolicyState`` 1). Evaluation (2) and off (0) do not.
+    """
+    if os.name != "nt":
+        return False
+    import winreg
+
+    try:
+        with winreg.OpenKey(
+            winreg.HKEY_LOCAL_MACHINE,
+            r"SYSTEM\CurrentControlSet\Control\CI\Policy",
+        ) as key:
+            state, _kind = winreg.QueryValueEx(key, "VerifiedAndReputablePolicyState")
+    except OSError:
+        return False
+    return state == 1
+
+
 def _write_atomic(target: Path, write) -> Path | None:
     """Stage under a pid-suffixed name then os.replace, so a concurrent
     process start never sees a torn launcher."""
@@ -183,20 +204,60 @@ def _write_atomic(target: Path, write) -> Path | None:
         return None
 
 
+def _write_cmd_launcher(name: str, out_dir: Path, python_exe: Path, script: str) -> Path | None:
+    """A command file is not a PE image, so Smart App Control does not block it."""
+    import base64
+
+    encoded = base64.b64encode(script.encode("utf-8")).decode("ascii")
+    code = f"import base64; exec(base64.b64decode('{encoded}'))"
+    body = (
+        "@echo off\r\n"
+        f'"{python_exe}" -I -c "{code}" %*\r\n'
+    )
+    return _write_atomic(out_dir / f"{name}.cmd", lambda p: p.write_text(body, encoding="utf-8"))
+
+
+def _drop_shadowing_exe(out_dir: Path, name: str) -> bool:
+    """PATHEXT runs ``.exe`` before ``.cmd`` and does not fall through when the exe is blocked."""
+    exe = out_dir / f"{name}.exe"
+    try:
+        exe.unlink(missing_ok=True)
+    except OSError:
+        return not exe.exists()
+    return True
+
+
 def mint_launcher(
     name: str,
     repo_root: Path,
     out_dir: Path,
     python_exe: Path,
     site_packages: Path | None,
+    *,
+    windows: bool | None = None,
+    app_control: bool | None = None,
 ) -> Path | None:
-    """Write a native launcher with the shared bootstrap script, or return None."""
+    """Write a native launcher with the shared bootstrap script, or return None.
+
+    ``windows`` and ``app_control`` are injectable so the Smart App Control
+    decision can be tested without pretending the host OS changed.
+    """
     module, func = ENTRY_POINTS[name]
     out_dir = Path(out_dir)
     script = _launcher_script(name, Path(repo_root), site_packages)
+    windows = _is_windows() if windows is None else windows
 
-    if not _is_windows():
+    if not windows:
         return _mint_shell_launcher(name, out_dir, python_exe, script)
+
+    # The distlib stub is unsigned. Under enforcement, PowerShell resolves
+    # ``hermes`` to that exe, Windows blocks it, and a sibling .cmd never runs.
+    enforcing = smart_app_control_enforcing() if app_control is None else app_control
+    if enforcing:
+        written = _write_cmd_launcher(name, out_dir, python_exe, script)
+        if written is None or not _drop_shadowing_exe(out_dir, name):
+            return None
+        return written
 
     script_maker_cls = _load_script_maker()
     if script_maker_cls is not None:
@@ -263,15 +324,7 @@ def mint_launcher(
     except (OSError, BadZipFile, KeyError):
         pass
 
-    # The script is data to Python, not interpolated shell source.
-    import base64
-    encoded = base64.b64encode(script.encode("utf-8")).decode("ascii")
-    code = f"import base64; exec(base64.b64decode('{encoded}'))"
-    body = (
-        "@echo off\r\n"
-        f'"{python_exe}" -I -c "{code}" %*\r\n'
-    )
-    return _write_atomic(out_dir / f"{name}.cmd", lambda p: p.write_text(body, encoding="utf-8"))
+    return _write_cmd_launcher(name, out_dir, python_exe, script)
 
 
 def _launcher_script(name: str, repo_root: Path, dependencies: Path | None) -> str:
@@ -371,12 +424,22 @@ def _publish_conveniences(root: Path, out_dir: Path, names, *, create: bool = Tr
     return published
 
 
-def stage_launcher(name: str, repo_root: Path, out_dir: Path) -> Path | None:
+def stage_launcher(
+    name: str,
+    repo_root: Path,
+    out_dir: Path,
+    *,
+    windows: bool | None = None,
+    app_control: bool | None = None,
+) -> Path | None:
     """Publish one launcher bound to store Python, or refuse missing tools."""
     repo_root = Path(repo_root)
     store_python = resolve_store_python(repo_root)
     if store_python is not None:
-        path = mint_launcher(name, repo_root, out_dir, store_python, None)
+        path = mint_launcher(
+            name, repo_root, out_dir, store_python, None,
+            windows=windows, app_control=app_control,
+        )
         if path is not None and path.suffix == ".cmd":
             # cmd.exe prefers .exe. An older launcher must not shadow the
             # newly published command when distlib is unavailable.

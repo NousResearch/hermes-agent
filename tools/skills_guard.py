@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import List, Tuple
 
 
-SCANNER_VERSION = "skills-guard-v8"
+SCANNER_VERSION = "skills-guard-v9"
 
 # NVIDIA-verified skills each ship a signed `skill.oms.sig` + governance `skill-card.md`.
 TRUSTED_REPOS = {"openai/skills", "anthropics/skills", "huggingface/skills", "NVIDIA/skills"}
@@ -78,9 +78,20 @@ def _shell_write_re(file_alt: str) -> str:
     """Mechanical shell write into *file_alt*: ``>``/``>>``, ``sed -i``, ``tee`` (target as immediate argument, so
     ``| tee output | AGENTS.md |`` cells miss), ``cp``/``mv`` with the file as destination (source arg required, so
     ``cp AGENTS.md backup/`` misses; ``AGENTS.md.bak`` is not the file). A single ``>`` needs a preceding word/quote/
-    paren char so blockquotes (``> text``) and arrows (``-> file``) miss."""
+    paren char so blockquotes (``> text``) and arrows (``-> file``) miss. Before a slash, unquoted tokens
+    match from their boundary so the closing bracket in ``<vault-root>/...`` is not a redirect."""
+    redirect = (
+        r'(?:>>|["\'`)\]]\s*>|(?<![<\w./\\:-])[\w./\\:-]*\w(?:<[\w./\\:-]+)?\s*>'
+        r'|\w\s*>(?![/\\]))')
+    # At command position, ``<input>/path`` is an input/output redirect pair, even though
+    # the same token inside a prose sentence can be a documented path placeholder.
+    input_output = (
+        r'(?:^|[;&|`(])\s*(?:\$\s+)?[\w./\\:-]+(?:\s+-[\w-]+)*\s+<[\w./\\:-]+\s*>')
+    # A real redirect can target a documented placeholder path; excluding its closing ``>``
+    # must not hide an earlier write operator on the same line.
+    path_prefix = r'["\']?(?:[~\w./-]|<[\w./\\:-]+>)*'
     return (
-        rf'(?:>>|[\w"\'`)\]]\s*>)\s*[~\w./-]*{file_alt}(?!\.?\w)'
+        rf'(?:{redirect}|{input_output})\s*{path_prefix}{file_alt}(?!\.?\w)'
         rf'|\bsed\b[^\n]*\s(?:-[A-Za-z]*i[A-Za-z]*|--in-place)\b[^\n]*{file_alt}(?!\.?\w)'
         rf'|\btee\s+(?:-a\s+)?[~\w./"\'-]*{file_alt}(?!\.?\w)'
         rf'|\b(?:cp|mv)\s+[^\s|;&]+\s+[^\n|;&]{{0,40}}?{file_alt}(?!\.?\w)')

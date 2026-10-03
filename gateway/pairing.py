@@ -406,6 +406,12 @@ class PairingStore:
         with self._lock:
             return bool(_matching_ids(platform, self._load_approved(platform), user_id))
 
+    def approved_user_ids(self, platform: str) -> frozenset:
+        """Approved (paired) user ids on a platform, as stored. Cached until the file changes, so
+        polling costs a stat."""
+        with self._lock:
+            return frozenset(self._load_approved(platform))
+
     def list_approved(self, platform: str = None) -> list:
         """List approved users, optionally filtered by platform."""
         return [

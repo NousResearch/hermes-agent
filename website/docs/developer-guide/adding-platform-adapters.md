@@ -375,6 +375,25 @@ The hook is invoked during `load_gateway_config()` after the generic shared-key 
 Exceptions raised by the hook are swallowed and logged at debug level — a misbehaving plugin never aborts gateway config load.
 
 
+## Pairing on a Device Screen
+
+An unknown sender normally gets their pairing code as a DM reply. On a screen-first platform, where the person pairing looks at a device rather than a chat, the adapter asks for the code and shows it itself:
+
+```python
+offer = await self.request_pairing(self.build_source(chat_id=device_id, chat_type="dm", user_id=device_id))
+if offer is not None:
+    await self._show_on_screen(device_id, offer.code, offer.command)  # cache it until offer.expires_in
+```
+
+`request_pairing` goes through the same path as an unauthorized DM: the authorization check, `unauthorized_dm_behavior`, the profile's pairing store, the per-sender rate limit and the per-platform pending cap. It returns `None` wherever that path would send no code, including a second request inside the rate-limit window, so keep the offer until it expires.
+
+The owner approves on the host (`hermes pairing approve`, or the dashboard), which runs in another process. Override `on_pairing_changed` to hear about it; the gateway checks the pairing store of adapters that override it every few seconds and calls the hook for each approval and revocation:
+
+```python
+async def on_pairing_changed(self, user_id: str, approved: bool) -> None:
+    await self._set_device_paired(user_id, approved)
+```
+
 ## Cron Delivery
 
 To let `deliver=my_platform` cron jobs route to a configured home channel, set `cron_deliver_env_var` to the env var name that holds the default chat/room/channel ID:

@@ -37,12 +37,17 @@ def pairing_profile_arg(pairing_store) -> str:
     return ""
 
 
+def pairing_approve_command(platform_name: str, code: str, profile_arg: str = "") -> str:
+    """The host command that approves ``code`` (``profile_arg`` from :func:`pairing_profile_arg`)."""
+    return f"hermes {profile_arg}pairing approve {platform_name} {code}"
+
+
 def pairing_code_reply(platform_name: str, code: str, profile_arg: str = "") -> str:
     """The DM a first-time sender receives: what happened, how long the code lives, what to do
     whether they are the owner or a guest, and that they must message again after approval."""
     hours = max(1, CODE_TTL_SECONDS // 3600)
     validity = t("gateway.pairing.validity_hour" if hours == 1 else "gateway.pairing.validity_hours", hours=hours)
-    approve_cmd = f"hermes {profile_arg}pairing approve {platform_name} {code}"
+    approve_cmd = pairing_approve_command(platform_name, code, profile_arg)
     return t("gateway.pairing.code_reply", code=code, validity=validity, approve_cmd=approve_cmd)
 
 

@@ -1317,6 +1317,7 @@ class GatewayAdapterLifecycleMixin:
     def _wire_adapter_handlers(
         self, adapter: BasePlatformAdapter, *, message_handler=None, fatal_error_handler=None,
         busy_session_handler=None, authorization_check=None, platform_event_handler=None,
+        pairing_requester=None,
         busy_text_mode: Optional[str] = None, busy_text_timing: Optional[tuple[float, float]] = None,
         human_delay: Optional[tuple[int, int]] | object = _UNSET,
     ) -> None:
@@ -1334,6 +1335,7 @@ class GatewayAdapterLifecycleMixin:
             authorization_check or self._make_adapter_auth_check(adapter.platform)
         )
         adapter.set_platform_event_handler(platform_event_handler or self._primary_platform_event_handler())
+        adapter.set_pairing_requester(pairing_requester or self._make_pairing_requester())
         adapter._busy_text_mode = (self._busy_text_mode if busy_text_mode is None else busy_text_mode)
         timing = busy_text_timing or getattr(self, "_busy_text_timing", None)
         if timing:
@@ -1364,6 +1366,7 @@ class GatewayAdapterLifecycleMixin:
             busy_session_handler=self._make_profile_busy_session_handler(profile_name),
             authorization_check=self._make_adapter_auth_check(platform, profile_name=profile_name),
             platform_event_handler=self._make_profile_platform_event_handler(profile_name),
+            pairing_requester=self._make_pairing_requester(profile_name),
             busy_text_mode=(
                 text_modes.get(profile_name, self._busy_text_mode)
                 if isinstance(text_modes, dict)

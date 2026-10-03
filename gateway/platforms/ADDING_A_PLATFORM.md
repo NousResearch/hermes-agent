@@ -76,6 +76,15 @@ come **first** in the bases list — `class WhatsAppAdapter(Mixin,
 BasePlatformAdapter)` — so the mixin's `format_message` overrides
 `BasePlatformAdapter`'s generic default.
 
+**Pairing without a chat reply.** On a screen-first platform (a device
+that shows the code) nobody reads the pairing DM. Call
+`await self.request_pairing(source)` instead: it returns a `PairingOffer`
+(`code`, `command`, `expires_in`) from the same path an unauthorized DM
+takes, with the same rate limit, pending cap and `unauthorized_dm_behavior`,
+or `None` where that path would send no code. Override
+`on_pairing_changed(user_id, approved)` to hear about `hermes pairing
+approve` / `revoke` without waiting for the sender's next message.
+
 See `plugins/platforms/irc/`, `plugins/platforms/teams/`, and
 `plugins/platforms/google_chat/` for complete working examples, and
 `website/docs/developer-guide/adding-platform-adapters.md` for the full

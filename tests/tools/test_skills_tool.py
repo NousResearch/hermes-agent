@@ -1081,8 +1081,11 @@ class TestSameRootDuplicationResolves:
 
 
 class TestTrustWarningSymlinkAware:
-    """The trust check is on the RESOLVED path: a symlink whose target lives under a registered
-    search dir is quiet, a SKILL.md symlinked to a file outside every root still warns."""
+    """Trust is asked of BOTH views of the path: the resolved target under a registered search
+    dir is quiet, and so is an entry that sits lexically inside a trusted root — exposing a
+    skill source stored elsewhere under that root with a directory symlink is the supported
+    install shape (#35674). What still warns: a SKILL.md that is itself a symlink to a file
+    outside every root, and anything reached from outside every root."""
 
     def _log(self, name, skill_md, all_dirs, active):
         from tools.skills_tool import _log_security_warnings
@@ -1122,3 +1125,141 @@ class TestTrustWarningSymlinkAware:
             self._log("sym", root / "sym" / "SKILL.md", [root], root)
 
         assert "outside the trusted" in caplog.text, caplog.text
+
+    def test_skill_dir_symlinked_into_trusted_root_is_quiet(self, tmp_path, caplog):
+        """#35674: ``<trusted>/<name> -> /elsewhere/<name>`` is how a skill whose canonical
+        source lives outside the profile gets installed. The entry sits inside the trusted
+        root, so the load must stay quiet even though the target does not."""
+        root = tmp_path / "root"
+        root.mkdir()
+        source = tmp_path / "sources" / "demo"
+        source.mkdir(parents=True)
+        (source / "SKILL.md").write_text("---\nname: demo\ndescription: d.\n---\nbody\n")
+        try:
+            (root / "demo").symlink_to(source, target_is_directory=True)
+        except (OSError, NotImplementedError) as exc:
+            pytest.skip(f"symlinks unavailable in test environment: {exc}")
+
+        with caplog.at_level("WARNING"):
+            self._log("demo", root / "demo" / "SKILL.md", [root], root)
+
+        assert "outside the trusted" not in caplog.text, caplog.text
+
+    def test_symlinked_category_dir_into_trusted_root_is_quiet(self, tmp_path, caplog):
+        """Same shape one level up: the CATEGORY directory is the symlink, so every
+        ``<trusted>/<cat>/<name>/SKILL.md`` reached through it is an entry under the root."""
+        root = tmp_path / "root"
+        root.mkdir()
+        source = tmp_path / "sources" / "cats" / "demo"
+        source.mkdir(parents=True)
+        (source / "SKILL.md").write_text("---\nname: demo\ndescription: d.\n---\nbody\n")
+        try:
+            (root / "cats").symlink_to(source.parents[1], target_is_directory=True)
+        except (OSError, NotImplementedError) as exc:
+            pytest.skip(f"symlinks unavailable in test environment: {exc}")
+
+        with caplog.at_level("WARNING"):
+            self._log("demo", root / "cats" / "demo" / "SKILL.md", [root], root)
+
+        assert "outside the trusted" not in caplog.text, caplog.text
+
+    def test_link_path_outside_every_root_still_warns(self, tmp_path, caplog):
+        """Counterpart the fix must not swallow: a skill entry whose link path AND target
+        both sit outside every trusted root keeps the warning."""
+        root = tmp_path / "root"
+        root.mkdir()
+        rogue = tmp_path / "rogue" / "demo"
+        rogue.mkdir(parents=True)
+        (rogue / "SKILL.md").write_text("---\nname: demo\ndescription: d.\n---\nbody\n")
+        try:
+            (tmp_path / "linked").symlink_to(rogue, target_is_directory=True)
+        except (OSError, NotImplementedError) as exc:
+            pytest.skip(f"symlinks unavailable in test environment: {exc}")
+
+        with caplog.at_level("WARNING"):
+            self._log("demo", tmp_path / "linked" / "SKILL.md", [root], root)
+
+        assert "outside the trusted" in caplog.text, caplog.text
+
+    def test_symlink_cycle_does_not_hang(self, tmp_path):
+        """#35674 asks for cycles to stay bounded: the guard must answer, not recurse."""
+        import signal
+
+        root = tmp_path / "root"
+        root.mkdir()
+        try:
+            (root / "a").symlink_to(root / "b", target_is_directory=True)
+            (root / "b").symlink_to(root / "a", target_is_directory=True)
+        except (OSError, NotImplementedError) as exc:
+            pytest.skip(f"symlinks unavailable in test environment: {exc}")
+
+        from tools.skills_tool import _under_any
+
+        def _timeout(signum, frame):
+            raise TimeoutError("_under_any hung on a symlink cycle")
+
+        has_alarm = hasattr(signal, "alarm")
+        previous = None
+        if has_alarm:
+            previous = signal.signal(signal.SIGALRM, _timeout)
+            signal.alarm(10)
+        try:
+            trusted = _under_any(root / "a" / "SKILL.md", [root])
+        finally:
+            if has_alarm:
+                signal.alarm(0)
+                signal.signal(signal.SIGALRM, previous)
+
+        assert isinstance(trusted, bool), trusted
+
+    def test_skill_view_of_symlinked_skill_is_quiet_end_to_end(self, tmp_path, caplog):
+        """The reported repro (#35674): ``skill_view`` on a skill directory symlinked into
+        the active skills dir must load without the false warning."""
+        skills_root = tmp_path / "skills"
+        skills_root.mkdir()
+        source = tmp_path / "external-skills" / "demo"
+        source.mkdir(parents=True)
+        (source / "SKILL.md").write_text("---\nname: demo\ndescription: d.\n---\nbody\n")
+        try:
+            (skills_root / "demo").symlink_to(source, target_is_directory=True)
+        except (OSError, NotImplementedError) as exc:
+            pytest.skip(f"symlinks unavailable in test environment: {exc}")
+
+        with patch("tools.skills_tool.SKILLS_DIR", skills_root), caplog.at_level("WARNING"):
+            raw = skill_view("demo")
+
+        result = json.loads(raw)
+        assert result["success"] is True, result
+        assert "outside the trusted skills directory" not in caplog.text, caplog.text
+
+    def test_skill_in_symlinked_project_dir_is_quiet_end_to_end(self, tmp_path, caplog):
+        """The project-tier shape from the #35674 thread: real files in
+        ``.claude/skills/<name>/``, ``.agents/skills/<name>`` symlinked to them, the repo
+        root's skills dir listed in ``skills.trusted_project_dirs``. The scanner path sits
+        inside the trusted project dir, so the load must be quiet."""
+        repo = tmp_path / "repo"
+        real = repo / ".claude" / "skills" / "demo"
+        real.mkdir(parents=True)
+        (real / "SKILL.md").write_text("---\nname: demo\ndescription: d.\n---\nbody\n")
+        project_root = repo / ".agents" / "skills"
+        project_root.mkdir(parents=True)
+        active = tmp_path / "skills"
+        active.mkdir()
+        try:
+            (project_root / "demo").symlink_to(real, target_is_directory=True)
+        except (OSError, NotImplementedError) as exc:
+            pytest.skip(f"symlinks unavailable in test environment: {exc}")
+
+        with (
+            patch("tools.skills_tool.SKILLS_DIR", active),
+            patch(
+                "agent.skill_utils.get_project_skills_dirs", return_value=[project_root]
+            ),
+            patch("agent.skill_utils.get_external_skills_dirs", return_value=[]),
+            caplog.at_level("WARNING"),
+        ):
+            raw = skill_view("demo")
+
+        result = json.loads(raw)
+        assert result["success"] is True, result
+        assert "outside the trusted skills directory" not in caplog.text, caplog.text

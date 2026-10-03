@@ -173,6 +173,10 @@ export function ProfilesView({ onClose }: ProfilesViewProps) {
       <CreateProfileDialog
         onClose={() => setCreateOpen(false)}
         onCreated={selectAndRefresh}
+        onUseExisting={async name => {
+          setCreateOpen(false)
+          await selectAndRefresh(name)
+        }}
         open={createOpen}
         profiles={profiles ?? []}
       />

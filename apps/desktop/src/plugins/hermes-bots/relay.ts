@@ -47,6 +47,8 @@ const RELAY_PUSH_DEBOUNCE_MS = 250
 interface RelayLifecycle {
   disposed: boolean
   drainBusy: boolean
+  /** This Desktop's relay identity, resolved once per run; null until then. */
+  ownerId: null | string
   /** A push landing while a drain is ALREADY running would be lost forever —
    *  the gateway signature is monotone (one event per new envelope, never
    *  re-broadcast) — so remember it and re-schedule after the drain finishes. */
@@ -65,6 +67,7 @@ interface RelayLifecycle {
 const relay: RelayLifecycle = {
   disposed: false,
   drainBusy: false,
+  ownerId: null,
   drainRerun: false,
   drainTimer: null,
   pushDebounceTimer: null,
@@ -294,6 +297,28 @@ async function connectionLabels(): Promise<Map<string, string>> {
   }
 }
 
+/** This Desktop's relay identity, fetched once per run. The gateway keeps a roster per
+ *  publishing Desktop and hands each Desktop back only the envelopes addressed through it:
+ *  connection ids are registry-local — every Desktop calls its own machine `local` — so without
+ *  this a second Desktop on the same gateway erased the first's roster and could claim, and then
+ *  deliver to its OWN machine, a message addressed to the other's. "" on a shell without the
+ *  door keeps the single-Desktop behaviour. */
+async function relayOwnerId(): Promise<string> {
+  if (relay.ownerId === null) {
+    relay.ownerId = typeof host.relayOwnerId === 'function' ? await host.relayOwnerId() : ''
+  }
+
+  return relay.ownerId
+}
+
+/** `{ desktop }` when this shell can name itself, `{}` otherwise — an older shell's requests stay
+ *  byte-identical to today's. */
+async function relayOwnerParams(): Promise<{ desktop?: string }> {
+  const owner = await relayOwnerId()
+
+  return owner ? { desktop: owner } : {}
+}
+
 /** The agents living on one connection, as relay roster rows.
  *  Returns null on FAILURE (transient RPC blip, slow socket) — distinct from
  *  a genuine empty profile list. Conflating the two would push a fresh union
@@ -354,6 +379,7 @@ async function syncRelayRosters() {
     }
 
     const labels = await connectionLabels()
+    const owner = await relayOwnerParams()
 
     if (!isCurrent()) {
       return
@@ -449,7 +475,8 @@ async function syncRelayRosters() {
 
         try {
           await host.requestProfile(connection.route, 'bot_relay.roster.sync', {
-            agents: others
+            agents: others,
+            ...owner
           })
         } catch {
           // Older backend without the relay RPCs — skip this connection.
@@ -520,7 +547,7 @@ async function drainRelayOutboxes() {
         const res = await host.requestProfile<{ envelopes?: RelayEnvelope[] }>(
           sender.route,
           'bot_relay.outbox.drain',
-          {}
+          await relayOwnerParams()
         )
 
         for (const envelope of Array.isArray(res?.envelopes) ? res.envelopes : []) {

@@ -974,6 +974,25 @@ _PROTOCOL_VIOLATION_ERROR = (
 )
 
 
+# Non-empty lines this footer produces AFTER the resume-command line(s):
+# ``CLISessionMixin._print_exit_summary`` prints an optional second resume hint
+# ("hermes -c \"<title>\" ..."), a blank line, then Session:/Title:/Duration:/
+# Messages: metadata — never free-form crash text. Distinguishing this known shape
+# from genuine new-invocation output is what keeps a normal current-run footer
+# from being mistaken for a stale predecessor's leaked crash (or the reverse).
+def _footer_metadata_prefixes() -> tuple[str, ...]:
+    from agent.i18n import t
+
+    # Read the same templates as the printer; ASCII ':' is not universal.
+    # Keep English labels for older append-only logs after a language change.
+    localized = tuple(
+        t(f"cli.session.exit_label_{label}").split("{", 1)[0].strip()
+        for label in ("session", "title", "duration", "messages")
+    )
+    return ("Session:", "Title:", "Duration:", "Messages:") + tuple(
+        prefix for prefix in localized if prefix
+    )
+
 # Rich panel/rule chrome around the rendered response, and the CLI's own preamble lines.
 _LOG_CHROME = re.compile(r"[─━═╭╮╰╯│┃┌┐└┘]+|☤\s*Hermes")
 
@@ -987,6 +1006,18 @@ def _exit_summary_marker() -> str:
 def _log_noise_prefixes() -> tuple[str, ...]:
     from agent.i18n import t
     return ("session_id:", "Query:", t("cli.chat.initializing_agent"))
+# Written to the per-task log at open time (flushed before the worker subprocess is
+# spawned) so a later crash-diagnostic read can bound itself to THIS invocation instead
+# of an older successful run's trailing text still sitting in the append-only file.
+_RUN_HEADER_PREFIX = "=== HERMES_KANBAN_RUN"
+_RUN_HEADER_RE = re.compile(
+    r"^=== HERMES_KANBAN_RUN task=\S+ run=\S+ started_at=\S+ ===\s*$", re.MULTILINE,
+)
+
+
+def _run_header_line(task: "Task") -> str:
+    return f"{_RUN_HEADER_PREFIX} task={task.id} run={task.current_run_id} started_at={int(time.time())} ===\n"
+
 
 
 def _worker_final_output(task_id: str, board: Optional[str] = None) -> str:
@@ -1000,6 +1031,16 @@ def _worker_final_output(task_id: str, board: Optional[str] = None) -> str:
     summary, rule lines and the ``session_id:`` trailer; returns "" (never raises)
     on a missing/empty log.
 
+    The log is append-only across retries on the same task, so a naive tail read can
+    surface an OLDER run's success text sitting before a resume footer while the
+    CURRENT (failed) invocation logged nothing after it. ``_open_worker_log`` writes an
+    explicit ``_RUN_HEADER_RE`` line at spawn time; when present, only text AFTER the
+    last header is considered (bounding extraction to the current invocation — an empty
+    remainder after the header is reported as "", never falling back to a predecessor's
+    text). Legacy logs written before this fix carry no header: fall back to the latest
+    CLI ``Query:`` start segment (the same boundary the CLI itself prints per session)
+    before trimming its own trailing resume footer.
+
     ``board`` must come from the dispatching tick: ambient current-board resolution
     is wrong for every board but the one the dispatcher thread happens to call
     "current", so the log would silently not be found.
@@ -1010,10 +1051,52 @@ def _worker_final_output(task_id: str, board: Optional[str] = None) -> str:
         return ""
     if not raw:
         return ""
+    headers = list(_RUN_HEADER_RE.finditer(raw))
+    if headers:
+        raw = raw[headers[-1].end():]
+    else:
+        # Legacy log with no run header: bound to the latest CLI invocation segment
+        # (its own "Query: ..." start line) instead of the whole append-only tail.
+        idx = raw.rfind("\nQuery:")
+        if idx == -1 and raw.startswith("Query:"):
+            idx = 0
+        elif idx != -1:
+            idx += 1  # drop the leading newline, keep "Query:" itself
+        if idx != -1:
+            raw = raw[idx:]
     raw = _EXIT_TRAILER_RE.sub("", raw)
-    cut = raw.rfind(_exit_summary_marker())
+    marker = _exit_summary_marker()
+    cut = raw.rfind(marker)
     if cut != -1:
-        raw = raw[:cut]
+        # The footer is "Resume this session with:\n  hermes --resume <id>\n" plus
+        # an optional second "  hermes -c \"<title>\" ..." line, a blank line, then
+        # Session:/Title:/Duration:/Messages: metadata lines (_print_exit_summary
+        # above) — never free-form text. In a legacy (no-header) log, a NEW
+        # invocation's own crash text can be appended right after that footer with
+        # no boundary marker of its own — the exact append-only leak this fallback
+        # exists to avoid. Walk the lines after the marker: skip the resume-command
+        # line(s) and the blank separator, then check whether what remains is
+        # exactly the known metadata shape (real current footer, nothing to keep)
+        # or genuine trailing content (a new invocation's output, which takes
+        # precedence over the old success text before the marker).
+        after = raw[cut + len(marker):].split("\n")
+        i = 0
+        while i < len(after) and (not after[i].strip() or after[i].strip().startswith("hermes ")):
+            i += 1
+        remainder_lines = after[i:]
+        metadata_prefixes = _footer_metadata_prefixes()
+        is_known_footer = all(
+            not ln.strip() or ln.strip().startswith(metadata_prefixes)
+            for ln in remainder_lines
+        )
+        if not is_known_footer:
+            trailing = "\n".join(remainder_lines)
+        else:
+            trailing = ""
+        if trailing.strip():
+            raw = trailing
+        else:
+            raw = raw[:cut]
     lines = []
     for ln in raw.splitlines():
         ln = _LOG_CHROME.sub("", ln).strip()
@@ -2781,13 +2864,40 @@ def _open_worker_log(task: Task, board: Optional[str]):
     """Append-mode per-task log (a re-run on unblock appends, never overwrites),
     rotated first. Anchored at the board root (not the shared kanban root) so
     `hermes kanban log` reads its own file and boards sharing task ids don't
-    collide."""
+    collide.
+
+    Writes and flushes a ``_RUN_HEADER_RE`` marker line before returning, so a crash
+    diagnostic (`_worker_final_output`) can bound its read to THIS invocation instead of
+    an older run's success text left over in the append-only file. Flushed here (not
+    left for the child to write its own) because the header must exist even if the
+    worker crashes before printing anything at all.
+    """
     log_dir = _kb.worker_logs_dir(board=board)
     log_dir.mkdir(parents=True, exist_ok=True)
     log_path = log_dir / f"{task.id}.log"
     rotate_bytes, backup_count = worker_log_rotation_config()
     _rotate_worker_log(log_path, rotate_bytes, backup_count)
-    return open(log_path, "ab")
+    # The header regex is line-anchored (``^...$`` MULTILINE) so it can find each
+    # invocation's boundary with a plain scan. A prior invocation that crashed or was
+    # killed mid-line (no trailing newline) would otherwise glue this run's header onto
+    # its last line, making the header invisible to the regex and leaking the prior
+    # run's tail as if it belonged to this (possibly empty) run. Prepend a newline
+    # whenever the existing file doesn't already end with one.
+    needs_leading_newline = False
+    try:
+        if log_path.stat().st_size > 0:
+            with open(log_path, "rb") as rf:
+                rf.seek(-1, os.SEEK_END)
+                needs_leading_newline = rf.read(1) != b"\n"
+    except OSError:
+        pass
+    log_f = open(log_path, "ab")
+    header = _run_header_line(task)
+    if needs_leading_newline:
+        header = "\n" + header
+    log_f.write(header.encode("utf-8"))
+    log_f.flush()
+    return log_f
 
 
 def _restart_safe_worker_argv(task: Task, command: list[str]) -> list[str]:

@@ -258,6 +258,7 @@ def test_runtime_exec_tracks_scope_and_clears_missing_value(monkeypatch):
     assert "unset SERVICE_TOKEN" in second_cmd[-1]
 
 
+@pytest.mark.platforms("posix")
 def test_wrapped_exec_scopes_explicit_forward_env_across_profiles(monkeypatch, tmp_path):
     """The shared snapshot must not resurrect an explicit forward-only value."""
     from agent import secret_scope as ss

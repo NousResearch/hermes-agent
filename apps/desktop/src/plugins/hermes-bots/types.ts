@@ -320,6 +320,7 @@ export interface RoutineJob {
   enabled?: boolean
   job_id: string
   last_delivery_error?: string
+  last_error?: string
   last_fire_error?: string
   last_run_at?: string
   last_status?: string

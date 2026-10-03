@@ -9,6 +9,7 @@ import {
   HOUR,
   MINUTE,
   nominalDayStart,
+  relativeTime,
   SECOND,
   sessionBucketLabel
 } from './time'
@@ -23,6 +24,25 @@ const labels = {
 
 const now = 1_000 * DAY
 const ago = (delta: number) => formatAgo(now - delta, labels, now)
+
+it('formats relative time in the requested UI locale without changing the time buckets', () => {
+  for (const locale of ['en', 'ko', 'ja', 'zh', 'zh-Hant']) {
+    const formatter = new Intl.RelativeTimeFormat(locale, { numeric: 'auto', style: 'short' })
+
+    for (const [delta, unit, amount] of [
+      [-5 * SECOND, 'second', -5],
+      [3 * MINUTE, 'minute', 3],
+      [-2 * HOUR, 'hour', -2],
+      [3 * DAY, 'day', 3]
+    ] as const) {
+      expect(relativeTime(now + delta, now, locale)).toBe(formatter.format(amount, unit))
+    }
+  }
+
+  expect(relativeTime(now - HOUR, now)).toBe(
+    new Intl.RelativeTimeFormat(undefined, { numeric: 'auto', style: 'short' }).format(-1, 'hour')
+  )
+})
 
 describe('formatAgo', () => {
   it('reads "now" under two seconds, then seconds', () => {

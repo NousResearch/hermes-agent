@@ -57,7 +57,9 @@ export async function surfaceModelSwitchConfirm<T extends GuardedModelSwitchResu
   const accepted = await confirm({
     cancelLabel: translateNow('desktop.modelSwitchKeepLabel'),
     confirmLabel: translateNow('desktop.modelSwitchConfirmLabel'),
-    description: options.confirmMessage?.trim() || translateNow('desktop.modelSwitchConfirmBody'),
+    description: [translateNow('desktop.modelSwitchConfirmBody'), options.confirmMessage?.trim()]
+      .filter(Boolean)
+      .join('\n\n'),
     destructive: true,
     title: options.model
       ? translateNow('desktop.modelSwitchConfirmTitle', options.model)

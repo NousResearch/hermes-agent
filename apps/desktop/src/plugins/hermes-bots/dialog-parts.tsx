@@ -8,13 +8,37 @@
  * without the others importing a sibling surface.
  */
 
-import type { ReactNode } from 'react'
+import { Input, Textarea } from '@hermes/plugin-sdk'
+import { cloneElement, isValidElement, type ReactNode, useId } from 'react'
 
 export function labeled(label: ReactNode, control: ReactNode) {
+  return <LabeledControl control={control} label={label} />
+}
+
+interface LabeledControlProps {
+  control: ReactNode
+  label: ReactNode
+}
+
+function LabeledControl({ control, label }: LabeledControlProps) {
+  const generatedId = useId()
+
+  // Composite pickers and capability groups have several controls; their
+  // caption must not implicitly label whichever input happens to come first.
+  const input =
+    isValidElement<{ id?: string }>(control) &&
+    (control.type === Input || control.type === Textarea || control.type === 'input' || control.type === 'textarea')
+      ? control
+      : null
+
+  const inputId = input ? input.props.id || generatedId : undefined
+
   return (
     <div className="grid gap-1.5">
-      <label className="text-xs font-medium text-(--ui-text-secondary)">{label}</label>
-      {control}
+      <label className="text-xs font-medium text-(--ui-text-secondary)" htmlFor={inputId}>
+        {label}
+      </label>
+      {input ? cloneElement(input, { id: inputId }) : control}
     </div>
   )
 }

@@ -2,6 +2,7 @@ import { useStore } from '@nanostores/react'
 import { useContext } from 'react'
 
 import { Button } from '@/components/ui/button'
+import { LogView } from '@/components/ui/log-view'
 import type { DesktopRegistryConnection } from '@/global'
 import { useI18n } from '@/i18n'
 import { Download, Loader2 } from '@/lib/icons'
@@ -80,14 +81,16 @@ export function ManagedUpdatesSection() {
       return null
     }
 
-    const parts = [m.receipt(state.receipt.correlationId.slice(0, 8), state.receipt.outcome)]
+    const rawOutcome = state.receipt.outcome
+
+    const outcome = Object.prototype.hasOwnProperty.call(m.receiptOutcomes, rawOutcome)
+      ? m.receiptOutcomes[rawOutcome as keyof typeof m.receiptOutcomes]
+      : rawOutcome
+
+    const parts = [m.receipt(state.receipt.correlationId.slice(0, 8), outcome)]
 
     if (state.receipt.preVersion && state.receipt.postVersion) {
       parts.push(m.receiptVersions(state.receipt.preVersion, state.receipt.postVersion))
-    }
-
-    if (state.receipt.stopReason) {
-      parts.push(state.receipt.stopReason)
     }
 
     return parts.join(' · ')
@@ -108,6 +111,7 @@ export function ManagedUpdatesSection() {
           const receipt = state ? receiptLine(state) : null
           const restored = state?.scopes.filter(scope => scope.restored).map(scope => scope.profile) ?? []
           const unrestored = state?.scopes.filter(scope => !scope.restored) ?? []
+          const details = state ? [...(state.message ? [state.message] : []), ...state.details] : []
 
           return (
             <ListRow
@@ -123,16 +127,25 @@ export function ManagedUpdatesSection() {
                 )
               }
               below={
-                state && (updating || state.message || receipt || state.scopes.length > 0) ? (
+                state && (updating || details.length > 0 || receipt || state.scopes.length > 0) ? (
                   <div className="mt-1 grid gap-1 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
                     {updating ? <p>{m.progress}</p> : null}
-                    {!updating && state.message ? <p>{state.message}</p> : null}
                     {receipt ? <p className="font-mono text-[0.68rem]">{receipt}</p> : null}
                     {!updating && restored.length > 0 ? <p>{m.scopesRestored(restored.join(', '))}</p> : null}
                     {!updating &&
                       unrestored.map(scope => (
                         <p key={scope.profile}>{m.scopeNotRestored(scope.profile, scope.error ?? m.failed)}</p>
                       ))}
+                    {!updating && details.length > 0 ? (
+                      <details>
+                        <summary>{t.notifications.details}</summary>
+                        <LogView className="mt-1 max-h-40">
+                          {details.map(detail => (
+                            <p key={detail}>{detail}</p>
+                          ))}
+                        </LogView>
+                      </details>
+                    ) : null}
                   </div>
                 ) : null
               }

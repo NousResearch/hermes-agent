@@ -1,3 +1,5 @@
+import { zhHant as permissionModelCopy } from './permission-model-copy'
+import { billingRiskZhHant as billingRiskCopy } from './billing-risk-copy'
 import { defineLocale } from './define-locale'
 import { introZhHant } from './intro-zh-hant'
 import { zhHantArtifacts } from './zh-hant_artifacts'
@@ -125,5 +127,7 @@ export const zhHant = defineLocale({
   desktop: zhHantChat.desktop,
   errors: zhHantDiagnostics.errors,
   tips: zhHantChat.tips,
-  ui: zhHantCommon.ui
+  ui: zhHantCommon.ui,
+  billingRisk: billingRiskCopy,
+  permissionModel: permissionModelCopy
 })

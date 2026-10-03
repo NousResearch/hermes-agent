@@ -134,7 +134,12 @@ export const zhHantCommandCenter = {
     noModelUsage: '暫無模型使用量。',
     topSkills: '常用技能',
     noSkillActivity: '暫無技能活動。',
-    actions: count => `${count} 次動作`
+    actions: count => `${count} 次動作`,
+    sectionDescriptions: {
+      sessions: '搜尋和管理工作階段',
+      system: '狀態、記錄和系統動作',
+      usage: '一段時間內的詞元、費用和技能活動'
+    }
   },
 
   messaging: {
@@ -571,6 +576,17 @@ export const zhHantCommandCenter = {
       failedLoad: '載入藍圖失敗',
       emptyTitle: '沒有可用的藍圖',
       emptyDesc: '此後端上沒有可用的自動化藍圖。'
+    },
+    modelImpact: {
+      title: '排程工作將繼續使用原模型',
+      message: count => `${count} 個未固定的排程工作將繼續使用建立時的模型執行。固定它們或設定 cron.model 以遷移。`,
+      detailMore: (names, remaining) => `${names}，以及另外 ${remaining} 個`,
+      review: '檢查排程工作',
+      saveFailed: 'Hermes 未儲存該模型變更。',
+      confirmTitle: '模型選擇警告',
+      confirmDetail: '僅在你接受此權衡時確認。',
+      confirmAction: '確認',
+      declined: '已取消模型變更 — 你拒絕了資料訓練層級警告。'
     }
   }
 } satisfies Pick<TranslationOverrides, 'commandCenter' | 'messaging' | 'profiles' | 'cron'>

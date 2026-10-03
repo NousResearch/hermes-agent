@@ -16,6 +16,7 @@ import {
   setSkillEnabled
 } from '@/hermes'
 import { useI18n } from '@/i18n'
+import type { Translations } from '@/i18n/types'
 import { Loader2 } from '@/lib/icons'
 import { Codecs, persistentAtom } from '@/lib/persisted'
 import { queryClient } from '@/lib/query-client'
@@ -47,8 +48,8 @@ import { categoryFor, filteredOfficial, filteredSkills, skillsQueryKey, usageOf 
 const $skillsSortDesc = persistentAtom('hermes.desktop.capabilities.skillsSortDesc', true, Codecs.bool)
 
 // Row subtitle: category, with non-default origins badged.
-function skillSubtitle(skill: SkillInfo): ReactNode {
-  const category = prettyName(categoryFor(skill))
+function skillSubtitle(skill: SkillInfo, copy: Translations['skills']): ReactNode {
+  const category = copy.skillCategoryNames?.[categoryFor(skill)] ?? prettyName(categoryFor(skill))
   const provenance = skill.provenance
 
   return (
@@ -56,12 +57,12 @@ function skillSubtitle(skill: SkillInfo): ReactNode {
       <span className="truncate">{category}</span>
       {provenance === 'agent' && (
         <Badge className="shrink-0 normal-case" variant="default">
-          learned
+          {copy.provenance.agent}
         </Badge>
       )}
       {provenance === 'hub' && (
         <Badge className="shrink-0 normal-case" variant="muted">
-          hub
+          {copy.provenance.hub}
         </Badge>
       )}
     </>
@@ -110,7 +111,10 @@ export function SkillsTab({ onRefresh, profile, query, skills }: SkillsTabProps)
     [profile]
   )
 
-  const visibleSkills = useMemo(() => filteredSkills(skills, query, skillsSortDesc), [query, skills, skillsSortDesc])
+  const visibleSkills = useMemo(
+    () => filteredSkills(skills, query, skillsSortDesc, t.skills),
+    [query, skills, skillsSortDesc, t.skills]
+  )
 
   // Installed-name set stays unfiltered so search cannot make a skill look absent.
   const installedSkillNames = useMemo(() => new Set(skills.map(s => s.name)), [skills])
@@ -120,8 +124,8 @@ export function SkillsTab({ onRefresh, profile, query, skills }: SkillsTabProps)
       skill => !skill.installed && !installedSkillNames.has(skill.name)
     )
 
-    return filteredOfficial(catalog, query)
-  }, [installedSkillNames, officialData, query])
+    return filteredOfficial(catalog, query, t.skills)
+  }, [installedSkillNames, officialData, query, t.skills])
 
   const runningInstallKey = useStoreSelector($hubActions, actions =>
     Object.keys(actions)
@@ -313,7 +317,7 @@ export function SkillsTab({ onRefresh, profile, query, skills }: SkillsTabProps)
                   setSelectedOfficial(null)
                 }}
                 onToggle={enabled => void handleToggleSkill(skill, enabled)}
-                subtitle={skillSubtitle(skill)}
+                subtitle={skillSubtitle(skill, t.skills)}
                 title={skill.name}
                 toggleLabel={skill.name}
               />
@@ -338,7 +342,7 @@ export function SkillsTab({ onRefresh, profile, query, skills }: SkillsTabProps)
                   enabled={false}
                   key={skill.identifier}
                   onSelect={() => setSelectedOfficial(skill.identifier)}
-                  subtitle={prettyName(skill.category)}
+                  subtitle={t.skills.skillCategoryNames?.[skill.category] ?? prettyName(skill.category)}
                   title={skill.name}
                 />
               )

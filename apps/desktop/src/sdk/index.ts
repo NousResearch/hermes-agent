@@ -43,6 +43,7 @@ import {
   setWorkspaceOwnerLabel,
   type WorkspaceNewSessionTarget
 } from '@/components/pane-shell/workspace-scope'
+import { DIALOGS_AREA } from '@/contrib/dialogs'
 import { onGatewayEvent } from '@/contrib/events'
 import { registry } from '@/contrib/registry'
 import type { WorkspaceMode } from '@/contrib/types'
@@ -667,6 +668,8 @@ async function awaitProfileActivation(
 }
 
 export const host = {
+  /** Stable dialog host, independent of pane visibility. Older hosts omit it. */
+  dialogArea: DIALOGS_AREA,
   state: {
     /** Runtime id of the active chat session (null on a fresh draft). */
     activeSessionId: readonlyAtom<null | string>($activeSessionId),

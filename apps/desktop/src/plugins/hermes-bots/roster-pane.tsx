@@ -40,6 +40,7 @@ import { $activeGroupMemberKeys } from './group-presence'
 import { $showHiddenBots, isBotHidden } from './hidden-bots'
 import { useBots } from './i18n'
 import { $activityToasts } from './roster-actions'
+import { useRosterDialogState } from './roster-dialog-state'
 import { renderRosterContent } from './roster-pane-content'
 import { deriveRosterPresentation, deriveRosterRows, sortRosterBots } from './roster-pane-derivation'
 import { renderRosterDialogs } from './roster-pane-dialogs'
@@ -51,13 +52,7 @@ import { botNeedsHandleLabel, rosterGatewayOptions } from './roster-sections'
 import { botWorkspaceOwnerKey, setBotsWorkspaceOwner } from './routing'
 import { activeBots, useTurnBusy } from './row-helpers'
 import type { BotMeta, GatewaySource, GroupMember, RosterActivityFilter, RosterKindFilter, RosterRow } from './types'
-import {
-  $botSections,
-  $draggingBot,
-  adoptBotSectionsFromMeta,
-  backfillBotSectionNames,
-  type SectionDialogState
-} from './user-sections'
+import { $botSections, $draggingBot, adoptBotSectionsFromMeta, backfillBotSectionNames } from './user-sections'
 import { useEscapeCancelsBotDrag } from './user-sections-ui'
 
 // ── roster pane ──────────────────────────────────────────────────────────────
@@ -238,22 +233,31 @@ export function BotsPane() {
   const turnBusy = useTurnBusy()
   const workingOwner = focusedRosterOwner(useValue($focusedBotOwner))
   const activeConnectionId = host.state.connectionId?.get?.() || 'local'
-  const [createOpen, setCreateOpen] = useState(false)
-  const [groupCreateOpen, setGroupCreateOpen] = useState(false)
-  const [editing, setEditing] = useState<null | RosterRow>(null)
-  // `path` is the profile directory the gateway reports on a profiles.list row;
-  // it is not part of the shared RosterRow model, so it rides as an extra here.
-  const [deleting, setDeleting] = useState<null | (RosterRow & { path?: string })>(null)
-  const [deletingGroup, setDeletingGroup] = useState<null | { members: GroupMember[]; name: string }>(null)
+
+  const {
+    createOpen,
+    setCreateOpen,
+    groupCreateOpen,
+    setGroupCreateOpen,
+    editing,
+    setEditing,
+    deleting,
+    setDeleting,
+    deletingGroup,
+    setDeletingGroup,
+    sectionDialog,
+    setSectionDialog,
+    grouping,
+    setGrouping
+  } = useRosterDialogState()
+
   const userSections = useValue($botSections)
   const dragging = useValue($draggingBot)
   useEscapeCancelsBotDrag()
 
   // The one name dialog serves both New section (optionally filing the bot
   // or group whose menu opened it) and Rename.
-  const [sectionDialog, setSectionDialog] = useState<SectionDialogState>(null)
 
-  const [grouping, setGrouping] = useState<null | RosterRow>(null)
   const [query, setQuery] = useState('')
   const [rowKindFilter, setRowKindFilter] = useState<RosterKindFilter>('all')
   const [activityFilter, setActivityFilter] = useState<RosterActivityFilter>('all')
@@ -522,27 +526,28 @@ export function BotsPane() {
         renderUserSections,
         renderHiddenGatewaySection
       })}
-      {renderRosterDialogs({
-        b,
-        t,
-        createOpen,
-        setCreateOpen,
-        groupCreateOpen,
-        setGroupCreateOpen,
-        editing,
-        setEditing,
-        deleting,
-        setDeleting,
-        deletingGroup,
-        setDeletingGroup,
-        grouping,
-        setGrouping,
-        sectionDialog,
-        setSectionDialog,
-        roster,
-        activeSourceRoster,
-        refetch
-      })}
+      {!host.dialogArea &&
+        renderRosterDialogs({
+          b,
+          t,
+          createOpen,
+          setCreateOpen,
+          groupCreateOpen,
+          setGroupCreateOpen,
+          editing,
+          setEditing,
+          deleting,
+          setDeleting,
+          deletingGroup,
+          setDeletingGroup,
+          grouping,
+          setGrouping,
+          sectionDialog,
+          setSectionDialog,
+          roster,
+          activeSourceRoster,
+          refetch
+        })}
     </div>
   )
 }

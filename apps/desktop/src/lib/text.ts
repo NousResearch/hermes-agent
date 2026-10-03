@@ -2,13 +2,19 @@
 
 export const asText = (v: unknown): string => (typeof v === 'string' ? v : v == null ? '' : String(v))
 
-export const includesQuery = (v: unknown, q: string) => asText(v).toLowerCase().includes(q)
+// Search treats canonically equivalent Unicode text alike, while stored names
+// and the length-preserving model highlighter keep their original spelling.
+export const includesQuery = (v: unknown, q: string) =>
+  asText(v).normalize('NFC').toLowerCase().includes(q.normalize('NFC'))
 
 export const prettyName = (v: string) => v.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase())
 
 /** Search-key normalization: the exact `value.trim().toLowerCase()` idiom that
  *  was hand-written at ~30 filter/lookup sites. */
 export const normalize = (v: unknown): string => asText(v).trim().toLowerCase()
+
+/** Canonical Unicode equivalence for search keys, not display/highlight offsets. */
+export const normalizeSearch = (v: unknown): string => normalize(v).normalize('NFC')
 
 /** Uppercase the first character, leave the rest. Matches the
  *  `s.charAt(0).toUpperCase() + s.slice(1)` idiom (empty-safe). */

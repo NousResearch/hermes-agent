@@ -12,6 +12,7 @@ import { asText, prettyName } from '../../settings/helpers'
 import { DetailHeader } from '../primitives'
 
 import { parseFrontmatter } from './frontmatter'
+import { skillDescription } from './korean-descriptions'
 import { isEditableProvenance } from './skill-provenance'
 import { categoryFor } from './skills-data'
 
@@ -48,10 +49,10 @@ export function SkillDetail({
   return (
     <>
       <DetailHeader
-        description={asText(skill.description) || t.skills.noDescription}
+        description={asText(skillDescription(skill, t.skills)) || t.skills.noDescription}
         pills={
           <>
-            <PanelPill>{prettyName(categoryFor(skill))}</PanelPill>
+            <PanelPill>{t.skills.skillCategoryNames?.[categoryFor(skill)] ?? prettyName(categoryFor(skill))}</PanelPill>
             {(skill.provenance === 'agent' || skill.provenance === 'hub') && (
               <PanelPill tone={skill.provenance === 'agent' ? 'good' : 'muted'}>
                 {t.skills.provenance[skill.provenance]}

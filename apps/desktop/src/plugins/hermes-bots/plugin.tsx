@@ -22,7 +22,8 @@ import {
   LocalizedTabTitle,
   PALETTE_AREA,
   SIDEBAR_PROFILE_GROUP_HEADER_AREA,
-  translateNow
+  translateNow,
+  useI18n
 } from '@hermes/plugin-sdk'
 import type { ChatEmptyProps, PluginContext, ProfileGroupRoute } from '@hermes/plugin-sdk'
 
@@ -67,10 +68,12 @@ import {
 } from './group-chat'
 import { groupWorkspaceOwnerKey } from './group-membership'
 import { annotateOrphanedGroupChatMembers } from './hygiene'
-import { BOTS_LOCALES } from './i18n'
+import { BOTS_LOCALES, useBots } from './i18n'
 import { displayName } from './labels'
 import { startBotRelay, stopBotRelay } from './relay'
 import { $activityToasts } from './roster-actions'
+import { RosterDialogHost } from './roster-dialog-host'
+import { resetRosterDialogs } from './roster-dialog-state'
 import {
   botChatOwnsWorkspace,
   BotsPane,
@@ -105,6 +108,14 @@ interface MentionCompletionItem {
 interface ComposerDraftPayload {
   attachments?: unknown[]
   text: string
+}
+
+function BotsPaneTitle() {
+  return <>{useBots().roster.title}</>
+}
+
+function RoutinesPaneTitle() {
+  return <>{useI18n().t.cron.title}</>
 }
 
 export default {
@@ -432,6 +443,14 @@ export default {
     // the meta/room storage hydrates above have landed; idempotent after that.
     // (Feature-guarded: bare vm test harnesses have no setTimeout global.)
     startHideSweepScheduler(ctx)
+
+    // Dialog drafts belong to the window, not the sidebar instance that can
+    // unmount on zoom/resize. Keep inline rendering on older desktop hosts.
+    if (host.dialogArea) {
+      ctx.register({ id: 'dialogs', area: host.dialogArea, render: () => <RosterDialogHost /> })
+    }
+
+    ctx.onDispose(resetRosterDialogs)
     // Sessions sidebar: each gateway/profile group gets the profile's Screen portal
     // above its sessions, so the bot's computer is reachable from either mode.
     ctx.register({
@@ -500,8 +519,8 @@ export default {
         id: 'routines',
         area: 'panes',
         // The app's noun for these, so the tab agrees with the pane header and
-        // with the core Scheduled jobs surface. `translateNow`, not `useI18n`:
-        // a pane title is read at registration, outside React.
+        // with the core Scheduled jobs surface. The registration fallback is
+        // static; tabTitle follows locale changes without replacing the pane.
         title: translateNow('cron.title'),
         data: {
           tabTitle: () => <LocalizedTabTitle select={t => t.cron.title} />,
@@ -737,7 +756,8 @@ export default {
       area: PALETTE_AREA,
       data: {
         id: `${ID}.new-agent`,
-        label: 'New Bot…',
+        label: ctx.i18n.t('bot.newTitle'),
+        labelKey: 'bot.newTitle',
         keywords: ['bot', 'agent', 'profile', 'teammate', 'create'],
         run: () => {
           host.notify({

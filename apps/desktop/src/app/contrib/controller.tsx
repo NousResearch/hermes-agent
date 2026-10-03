@@ -36,10 +36,12 @@ import {
 } from '@/components/pane-shell/tree/store'
 import { $workspaceOwnerLabels, workspaceOwnerTitle } from '@/components/pane-shell/workspace-scope'
 import { SidebarProvider } from '@/components/ui/sidebar'
+import { DIALOGS_AREA } from '@/contrib/dialogs'
 import { discoverBundledPlugins } from '@/contrib/plugins'
 import { Slot } from '@/contrib/react/slot'
 import { registry } from '@/contrib/registry'
 import { discoverRuntimePlugins } from '@/contrib/runtime-loader'
+import { useI18n } from '@/i18n'
 import { LocalizedTabTitle, translateNow } from '@/i18n'
 import { NEW_SESSION_TITLE, sessionTitle as storedSessionTitle } from '@/lib/chat-runtime'
 import {
@@ -153,6 +155,13 @@ const renderWorkspacePane = () => (
     <WiredPane part="chatRoutes" />
   </WorkspacePageHeaderHostContext.Provider>
 )
+
+// Translate the standing label without re-registering the stateful sidebar.
+function SessionsPaneTitle() {
+  const { t } = useI18n()
+
+  return t.sidebar.sessions
+}
 
 // Boot-hidden panes mount behind display:none (instant-toggle contract) — defer
 // them to idle so they're off the first-paint path, warm before reveal.
@@ -834,6 +843,7 @@ export function ContribController() {
     >
       <ContribWiring>
         <AppContextMenu />
+        <Slot area={DIALOGS_AREA} />
         <div
           className="flex h-screen min-h-0 w-screen flex-col bg-(--ui-bg-chrome) text-(--ui-text-primary)"
           // Window-glass hook: this div and the sidebar-wrapper above it are

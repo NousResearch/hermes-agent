@@ -40,7 +40,11 @@ const defaultConfigClient: I18nConfigClient = {
     // No explicit scope: saveHermesConfig resolves the record's captured read
     // origin itself (resolveConfigWriteScope), and withConfigDisplayLanguage
     // retains that origin onto the derived record.
-    return saveHermesConfig(config, undefined, { preserveLanguage: true })
+    return saveHermesConfig(
+      retainConfigReadOrigin({ display: { language: getConfigDisplayLanguage(config) } }, config),
+      undefined,
+      { preserveLanguage: true }
+    )
   }
 }
 

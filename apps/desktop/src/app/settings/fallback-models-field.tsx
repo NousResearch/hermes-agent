@@ -131,7 +131,7 @@ export function FallbackModelsField({
           <div className="flex flex-wrap items-center gap-2" key={index}>
             <span className="w-4 shrink-0 text-center font-mono text-[0.7rem] text-muted-foreground">{index + 1}</span>
             <Select onValueChange={provider => updateRow(index, { provider, model: '' })} value={entry.provider}>
-              <SelectTrigger className={cn('min-w-36', CONTROL_TEXT)}>
+              <SelectTrigger aria-label={`${m.provider} ${index + 1}`} className={cn('min-w-36', CONTROL_TEXT)}>
                 <SelectValue placeholder={m.provider} />
               </SelectTrigger>
               <SelectContent>

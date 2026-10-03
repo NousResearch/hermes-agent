@@ -7,8 +7,10 @@ import { createFirstRunSetupGate } from './first-run-setup-gate'
 import {
   createPrimaryRemoteConnection,
   FirstRunSetupResetError,
+  primaryStartupProfile,
   runPrimaryBackendStartup
 } from './primary-backend-startup'
+import { PrimaryProfilePin, resolveLaunchProfile } from './primary-profile-pin'
 
 const bootstrapBackend = {
   activeRoot: '/tmp/hermes-home/hermes-agent',
@@ -152,6 +154,31 @@ test('an already-saved remote bypasses every local startup step', async () => {
   assert.equal(options.prepareLocalBackend.mock.calls.length, 0)
   assert.equal(options.waitForDecision.mock.calls.length, 0)
   assert.equal(options.ensureLocalRuntime.mock.calls.length, 0)
+})
+
+test('managed recovery restores the captured owner while the next ordinary launch honors the saved profile', async () => {
+  const owner = { profile: 'ssh-primary', connection: { baseUrl: 'http://127.0.0.1:43210' } }
+
+  for (const saved of [null, 'writer']) {
+    const state = new PrimaryProfilePin()
+    const restoring = primaryStartupProfile(saved, owner.profile)
+    state.pin(resolveLaunchProfile(() => restoring).routingProfile)
+
+    const options = startupOptions({
+      resolveRemote: vi.fn(async () => (state.booted === owner.profile ? owner.connection : null))
+    })
+
+    const result = await runPrimaryBackendStartup(options)
+    assert.equal(result.kind, 'remote')
+    assert.equal(options.ensureLocalRuntime.mock.calls.length, 0)
+    assert.equal(state.booted, owner.profile)
+
+    state.clear()
+    const coldStart = primaryStartupProfile(saved)
+    assert.equal(coldStart, saved)
+    state.pin(resolveLaunchProfile(() => coldStart).routingProfile)
+    assert.equal(state.booted, saved || 'default')
+  }
 })
 
 test('remote apply fails clearly when no saved remote can be resolved', async () => {

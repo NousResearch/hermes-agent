@@ -77,7 +77,10 @@ export const zhHantSettings = {
         skillsReady: names => (names.length === 1 ? `技能 ${names[0]} 已就緒` : `${names.length} 個技能已就緒`),
         nextChat: '更多工具將在下一次聊天中可用',
         serverNotConnected: (server, reason) => `MCP 伺服器 ${server} 未連線${reason ? `：${reason}` : '。'}`
-      }
+      },
+      sourceTooLarge: '外掛檔案超過此應用程式的讀取大小限制。請縮小檔案後重新載入。',
+      sourcePreviewTruncated: '此舊版應用程式只能讀取 plugin.js 的前 512 KiB。請更新 Hermes Desktop 以載入此外掛。',
+      loadFailed: name => `無法載入外掛「${name}」`
     },
     closeSettings: '關閉設定',
     exportConfig: '匯出設定',
@@ -230,7 +233,8 @@ export const zhHantSettings = {
       safety: '安全性',
       memory: '記憶與上下文',
       voice: '語音',
-      advanced: '進階'
+      advanced: '進階',
+      browser: '瀏覽器'
     },
     searchPlaceholder: {
       about: '關於 Hermes Desktop',
@@ -393,8 +397,25 @@ export const zhHantSettings = {
         exportFailed: slug => `無法匯出 ${slug}`,
         noneAvailable: '目前沒有可開啟的寵物。',
         turnOnFailed: '無法開啟寵物。',
-        turnOffFailed: '無法關閉寵物。'
-      }
+        turnOffFailed: '無法關閉寵物。',
+        on: '開啟',
+        off: '關閉'
+      },
+      themeDescriptions: {
+        github: 'GitHub 預設淺色與深色佈景主題',
+        nous: 'GitHub 風格介面，搭配 Nous 藍色點綴',
+        catppuccin: '柔和的粉彩色調 — Latte 與 Mocha',
+        everforest: '溫暖、低對比的森林綠',
+        solarized: '保持固定對比的淺色與深色佈景主題',
+        'nous-alt': '玻璃質感的中性色，深藍底色搭配奶油色',
+        midnight: '深藍紫色搭配冷色點綴',
+        ember: '溫暖的深紅與青銅色，營造鍛造爐氛圍',
+        mono: '簡潔灰階，便於專注',
+        cyberpunk: '黑底霓虹綠 — 矩陣風格終端機',
+        slate: '冷調藍灰色，適合專注開發'
+      },
+      themeMarketplace: 'VS Code Marketplace 佈景主題',
+      noInstalledThemes: query => `沒有與「${query}」相符的已安裝佈景主題。`
     },
     fieldLabels: defineFieldCopy({
       model: '預設模型',
@@ -753,7 +774,40 @@ export const zhHantSettings = {
       driverHealth: '驅動程式健康狀態'
     },
     about: {
-      updates: '更新'
+      updates: '更新',
+      heading: 'Hermes Desktop',
+      version: value => `版本 ${value}`,
+      versionUnavailable: '版本不可用',
+      bundleOutOfSync: '應用程式建置版本過舊',
+      bundleOutOfSyncDesc:
+        'Hermes 執行環境已更新,但桌面應用程式本身仍是舊建置——在應用程式更新之前,新的介面功能(如 Bot Mode)不會顯示。請執行下方的更新以重新建置應用程式。如果此警告仍未消除,請從最新的桌面安裝程式重新安裝。',
+      bundleOutOfSyncAction: '取得安裝程式',
+      bundleSwapPending: '重新啟動以完成更新',
+      bundleSwapPendingDesc:
+        '更新後的應用程式已安裝完成，只需重新啟動 Hermes 即可載入新版本。聊天記錄和設定不會受到影響。',
+      bundleSwapPendingAction: '重新啟動 Hermes',
+      checkNow: '立即檢查',
+      checking: '檢查中…',
+      seeWhatsNew: '查看新增內容',
+      updateNow: '立即更新',
+      releaseNotes: '發行說明',
+      onLatest: '你已是最新版本。',
+      installing: '正在安裝更新。',
+      cantUpdate: '此版本無法從應用程式內自行更新。',
+      cantReach: '無法連線到更新伺服器。',
+      tapCheck: '點選「立即檢查」以尋找更新。',
+      updateReady: count => `新更新已就緒（包含 ${count} 項變更）。`,
+      updateReadyUnknown: '新更新已就緒。',
+      lastChecked: age => `上次檢查：${age}`,
+      justNowSuffix: ' · 剛剛',
+      automaticUpdates: '自動更新',
+      automaticUpdatesDesc: 'Hermes 會在背景自動檢查更新，並在有可用更新時通知你。',
+      branchCommit: (branch, commit) => `分支 ${branch} · 提交 ${commit}`,
+      never: '從未',
+      justNow: '剛剛',
+      minAgo: count => `${count} 分鐘前`,
+      hoursAgo: count => `${count} 小時前`,
+      daysAgo: count => `${count} 天前`
     },
     config: {
       minimizeToTrayTitle: '最小化至系統匣',
@@ -1002,7 +1056,32 @@ export const zhHantSettings = {
       deepLinkErrorConfig: '連結中的設定不是有效的 base64 編碼 JSON。',
       deepLinkErrorShape: '設定必須是包含字串 `url` 或 `command` 欄位的 JSON 物件。',
       deepLinkErrorUrl: '僅允許 http:// 和 https:// 伺服器網址。',
-      deepLinkErrorTooLarge: '設定內容超過 32KB 上限。'
+      deepLinkErrorTooLarge: '設定內容超過 32KB 上限。',
+      failedLoad: 'MCP 設定載入失敗',
+      nameRequiredTitle: '需要名稱',
+      nameRequiredMessage: '請為此 MCP 伺服器提供設定鍵。',
+      objectRequired: '伺服器設定必須是 JSON 物件',
+      gatewayUnavailableTitle: '閘道不可用',
+      gatewayUnavailableMessage: '重新載入 MCP 前請先重新連線閘道。',
+      reloadedTitle: 'MCP 工具已重新載入',
+      reloadedMessage: '新的工具 Schema 將套用至後續回合。',
+      newServer: '新伺服器',
+      reload: '重新載入 MCP',
+      reloading: '重新載入中...',
+      emptyTitle: '沒有 MCP 伺服器',
+      emptyDesc: '新增 stdio 或 HTTP 伺服器以公開 MCP 工具。',
+      editServer: '編輯伺服器',
+      saveServer: '儲存伺服器',
+      unusedPill: '未使用',
+      waitingForBrowser: '等待瀏覽器…',
+      unsavedConnect: '未儲存 — 儲存 mcp.json 以連線。',
+      enableTool: tool => `啟用 ${tool}`,
+      disableTool: tool => `停用 ${tool}`,
+      importButton: '匯入',
+      importPlaceholder: '貼上 mcp.json 片段、npx/docker 指令、claude mcp add 指令、URL 或 Cursor 連結…',
+      importNoMatch: '貼上的文字中未識別到伺服器設定。',
+      importConfirm: '加入 mcp.json',
+      importConfirmMany: count => `將 ${count} 個伺服器加入 mcp.json`
     },
     model: {
       setupProviderFallback: '提供方',
@@ -1166,7 +1245,8 @@ export const zhHantSettings = {
       deleteAction: '刪除模型',
       deleteConfirm: model => `從磁碟刪除 ${model}？`,
       deleted: model => `已刪除 ${model}。`,
-      deleteFailed: '刪除失敗'
+      deleteFailed: '刪除失敗',
+      updateToast: next => `本地引擎有新組建（${next}）。可在 設定 → 本地模型 中更新。`
     },
     billing: {
       perMonth: amount => `${amount}/月`,
@@ -1537,6 +1617,15 @@ export const zhHantSettings = {
           notNow: '暫不',
           enable: '使用我的設定檔'
         }
+      }
+    },
+    managedUpdates: {
+      receiptOutcomes: {
+        success: '成功',
+        failed: '失敗',
+        partial: '部分完成',
+        running: '執行中',
+        refused: '已拒絕'
       }
     }
   },

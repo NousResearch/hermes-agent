@@ -1,7 +1,10 @@
 import { defineFieldCopy } from '@/app/settings/field-copy'
 
+import { billingRiskZh as billingRiskCopy } from './billing-risk-copy'
 import { defineLocale } from './define-locale'
 import { introZh } from './intro-zh'
+import { zh as permissionModelCopy } from './permission-model-copy'
+import { settingsRiskCopyZh } from './settings-risk-copy'
 
 export const zh = defineLocale({
   externalOpenFailed: {
@@ -74,7 +77,11 @@ export const zh = defineLocale({
     openInBrowser: '在浏览器中打开',
     setupCancel: '取消',
     authorizedToolsUnavailable: '已授权。工具不可用。',
-    required: '必填'
+    required: '必填',
+    keepWaiting: '继续等待',
+    statusError: '无法检查连接，请刷新重试。',
+    connectTitle: app => `连接 ${app}？`,
+    describe: app => `Hermes 会在浏览器中登录 ${app}，读取任何内容前都会先询问。`
   },
   sessionImport: {
     title: '从其他应用继续',
@@ -151,7 +158,6 @@ export const zh = defineLocale({
     on: '开',
     off: '关'
   },
-
   fileMenu: {
     revealFinder: '在访达中显示',
     revealExplorer: '在文件资源管理器中显示',
@@ -171,7 +177,6 @@ export const zh = defineLocale({
     pathCopied: '已复制路径',
     revealMissing: '该文件夹不在这台电脑上'
   },
-
   boot: {
     ready: 'Hermes 桌面版已就绪',
     desktopBootFailedWithMessage: message => `桌面启动失败：${message}`,
@@ -230,7 +235,6 @@ export const zh = defineLocale({
       identityProvider: '你的身份提供方'
     }
   },
-
   notifications: {
     sharedProfileWarning:
       '另一个 Hermes 安装实例正在使用此配置。两个实例共享此配置的设置和数据，因此更改可能发生冲突。你可以继续使用，也可以在更改前关闭另一个实例。',
@@ -275,7 +279,8 @@ export const zh = defineLocale({
       microphonePermission: '麦克风权限已被拒绝。',
       openaiRejectedApiKey: 'OpenAI 拒绝了该 API key。',
       openaiTtsNeedsKey: 'OpenAI TTS 需要 VOICE_TOOLS_OPENAI_KEY 或 OPENAI_API_KEY。',
-      codeSkewRestartRequired: '更新后此后端仍在运行旧代码。请重启以加载新代码。'
+      codeSkewRestartRequired: '更新后此后端仍在运行旧代码。请重启以加载新代码。',
+      openaiRejectedApiKeyWithStatus: status => `OpenAI 拒绝了该 API key (${status} invalid_api_key)。`
     },
     voice: {
       configureSpeechToText: '配置语音转文字后即可使用语音模式。',
@@ -319,11 +324,9 @@ export const zh = defineLocale({
       creditsTitle: '额度'
     }
   },
-
   remoteDisplayBanner: {
     message: reason => `软件渲染已启用 — 检测到远程显示（${reason}）。为防止画面闪烁，已禁用 GPU 加速。`
   },
-
   billingBlock: {
     titleNous: 'Nous 额度已用尽',
     titleProvider: provider => `额度已用尽 — ${provider}`,
@@ -332,7 +335,6 @@ export const zh = defineLocale({
     addCredits: '添加额度',
     dismiss: '忽略'
   },
-
   sendDiagnostics: {
     title: '向 Nous 发送诊断信息',
     privacyNotice:
@@ -355,7 +357,6 @@ export const zh = defineLocale({
       discord: 'Discord'
     }
   },
-
   titlebar: {
     hideSidebar: '隐藏侧边栏',
     showSidebar: '显示侧边栏',
@@ -375,7 +376,6 @@ export const zh = defineLocale({
     layoutEditor: '布局编辑器',
     layoutEditorTitle: mod => `布局编辑器 — ${mod} 点击重置布局`
   },
-
   keybinds: {
     title: '键盘快捷键',
     subtitle: open => `点击快捷键即可重新绑定 · ${open} 可重新打开此面板。`,
@@ -483,15 +483,14 @@ export const zh = defineLocale({
       'composer.slash': '斜杠命令面板',
       'composer.help': '快速帮助',
       'composer.history': '切换弹窗/历史',
-      'composer.cancel': '关闭弹窗·取消运行'
+      'composer.cancel': '关闭弹窗·取消运行',
+      'nav.skills': '打开技能'
     }
   },
-
   findInPage: {
     next: '下一个匹配',
     previous: '上一个匹配'
   },
-
   language: {
     label: '语言',
     description: '选择桌面界面的语言。',
@@ -501,7 +500,6 @@ export const zh = defineLocale({
     searchPlaceholder: '搜索语言…',
     noResults: '未找到语言'
   },
-
   settings: {
     subpages: {
       appearanceTheme: '主题',
@@ -595,7 +593,11 @@ export const zh = defineLocale({
       adding: '保存中…',
       addConfirm: '保存',
       kindField: '类型',
-      kinds: { login: '登录', payment: '支付卡', address: '地址' },
+      kinds: {
+        login: '登录',
+        payment: '支付卡',
+        address: '地址'
+      },
       labelField: '标签',
       labelPlaceholder: '例如：GitHub 工作账号',
       labelRequired: '标签为必填项。',
@@ -604,7 +606,11 @@ export const zh = defineLocale({
       originPlaceholderCheckout: 'https://shop.example.com',
       originInvalid: '请输入有效的 URL，例如 https://example.com。',
       identifierTypeField: '标识符类型',
-      identifierTypes: { email: '邮箱', phone: '电话', username: '用户名' },
+      identifierTypes: {
+        email: '邮箱',
+        phone: '电话',
+        username: '用户名'
+      },
       identifierField: '标识符',
       identifierShown: identifier => identifier,
       passwordField: '密码',
@@ -664,7 +670,11 @@ export const zh = defineLocale({
       disable: '禁用',
       failed: '失败',
       empty: '尚未安装桌面插件。',
-      kinds: { bundled: '内置', disk: '磁盘', runtime: '运行时' },
+      kinds: {
+        bundled: '内置',
+        disk: '磁盘',
+        runtime: '运行时'
+      },
       agentHalfMissing: '此处缺少 agent 部分',
       agentHalfMissingTip:
         '这是捆绑插件的桌面部分，但其 agent 部分未安装在当前连接的后端/配置上。请在 能力 → 插件 中安装。',
@@ -719,8 +729,13 @@ export const zh = defineLocale({
         agentFailed: '智能体插件安装失败',
         installUncertain: 'Hermes 已停止等待安装结果，但插件可能仍在安装。关闭此窗口并刷新插件列表，然后再尝试安装。',
         desktopFailed: '桌面插件安装失败',
-        missingEnv: (_name, vars) => `缺少环境变量：${vars}。请在设置 → 密钥中添加。`
-      }
+        missingEnv: (_name, vars) => `缺少环境变量：${vars}。请在设置 → 密钥中添加。`,
+        restartToApply: '重启网关后插件才会生效。',
+        restartNow: '重启网关'
+      },
+      sourceTooLarge: '插件文件超出此应用的读取大小限制。请缩小文件后重新加载。',
+      sourcePreviewTruncated: '此旧版本应用只能读取 plugin.js 的前 512 KiB。请更新 Hermes Desktop 以加载此插件。',
+      loadFailed: name => `无法加载插件“${name}”`
     },
     notifications: {
       title: '通知',
@@ -775,7 +790,8 @@ export const zh = defineLocale({
       safety: '安全',
       memory: '记忆与上下文',
       voice: '语音',
-      advanced: '高级'
+      advanced: '高级',
+      browser: '浏览器'
     },
     searchPlaceholder: {
       about: '关于 Hermes Desktop',
@@ -786,9 +802,18 @@ export const zh = defineLocale({
       sessions: '搜索已归档会话…'
     },
     modeOptions: {
-      light: { label: '明亮', description: '明亮的桌面界面' },
-      dark: { label: '暗色', description: '低眩光工作区' },
-      system: { label: '跟随系统', description: '跟随系统外观' }
+      light: {
+        label: '明亮',
+        description: '明亮的桌面界面'
+      },
+      dark: {
+        label: '暗色',
+        description: '低眩光工作区'
+      },
+      system: {
+        label: '跟随系统',
+        description: '跟随系统外观'
+      }
     },
     appearance: {
       chatTextScaleTitle: '聊天文字大小',
@@ -938,8 +963,25 @@ export const zh = defineLocale({
         exportFailed: slug => `无法导出 ${slug}`,
         noneAvailable: '当前没有可开启的宠物。',
         turnOnFailed: '无法开启宠物。',
-        turnOffFailed: '无法关闭宠物。'
-      }
+        turnOffFailed: '无法关闭宠物。',
+        on: '开启',
+        off: '关闭'
+      },
+      themeDescriptions: {
+        github: 'GitHub 默认浅色与深色主题',
+        nous: 'GitHub 风格界面，搭配 Nous 蓝色点缀',
+        catppuccin: '柔和的粉彩色调 — Latte 与 Mocha',
+        everforest: '温暖、低对比度的森林绿',
+        solarized: '保持固定对比度的浅色与深色主题',
+        'nous-alt': '玻璃质感的中性色，深蓝底色搭配奶油色',
+        midnight: '深蓝紫色搭配冷色点缀',
+        ember: '温暖的深红与青铜色，营造锻造炉氛围',
+        mono: '简洁灰阶，便于专注',
+        cyberpunk: '黑底霓虹绿 — 矩阵风格终端',
+        slate: '冷调蓝灰色，适合专注开发'
+      },
+      themeMarketplace: 'VS Code Marketplace 主题',
+      noInstalledThemes: query => `没有与“${query}”匹配的已安装主题。`
     },
     fieldLabels: defineFieldCopy({
       model: '默认模型',
@@ -1217,6 +1259,7 @@ export const zh = defineLocale({
       }
     }),
     uninstallSection: {
+      ...settingsRiskCopyZh.uninstallSection,
       dangerZone: '危险操作',
       checkingInstalled: '正在检查已安装内容…',
       uninstallHermes: '卸载 Hermes',
@@ -1252,6 +1295,7 @@ export const zh = defineLocale({
       backendIdleTimeoutTitle: '后端空闲超时（毫秒）'
     },
     customEndpoints: {
+      ...settingsRiskCopyZh.customEndpoints,
       active: '已启用',
       apiKeySet: '已设置 API 密钥',
       use: '使用',
@@ -1298,7 +1342,39 @@ export const zh = defineLocale({
       driverHealth: '驱动健康状态'
     },
     about: {
-      updates: '更新'
+      updates: '更新',
+      heading: 'Hermes Desktop',
+      version: value => `版本 ${value}`,
+      versionUnavailable: '版本不可用',
+      bundleOutOfSync: '应用构建版本过旧',
+      bundleOutOfSyncDesc:
+        'Hermes 运行时已更新,但桌面应用本身仍是旧构建——在应用更新之前,新的界面功能(如 Bot Mode)不会显示。请运行下方的更新以重新构建应用。如果此警告仍未消除,请从最新的桌面安装程序重新安装。',
+      bundleOutOfSyncAction: '获取安装程序',
+      bundleSwapPending: '重启以完成更新',
+      bundleSwapPendingDesc: '更新后的应用已安装完成，只需重启 Hermes 即可加载新版本。聊天记录和设置不会受到影响。',
+      bundleSwapPendingAction: '重启 Hermes',
+      checkNow: '立即检查',
+      checking: '检查中…',
+      seeWhatsNew: '查看新增内容',
+      updateNow: '立即更新',
+      releaseNotes: '发行说明',
+      onLatest: '你已是最新版本。',
+      installing: '正在安装更新。',
+      cantUpdate: '此版本无法在应用内自我更新。',
+      cantReach: '无法连接更新服务器。',
+      tapCheck: '点击"立即检查"以查找更新。',
+      updateReady: count => `已准备好新更新 (包含 ${count} 项更改)。`,
+      updateReadyUnknown: '新更新已就绪。',
+      lastChecked: age => `上次检查:${age}`,
+      justNowSuffix: ' · 刚刚',
+      automaticUpdates: '自动更新',
+      automaticUpdatesDesc: 'Hermes 会在后台自动检查更新，并在有可用更新时通知你。',
+      branchCommit: (branch, commit) => `分支 ${branch} · 提交 ${commit}`,
+      never: '从未',
+      justNow: '刚刚',
+      minAgo: count => `${count} 分钟前`,
+      hoursAgo: count => `${count} 小时前`,
+      daysAgo: count => `${count} 天前`
     },
     config: {
       minimizeToTrayTitle: '最小化到托盘',
@@ -1404,7 +1480,6 @@ export const zh = defineLocale({
       set: '设置',
       clear: '清除'
     },
-    // v2 多连接注册表：设置 → 网关。
     connections: {
       title: '已注册网关',
       intro: '管理本机以及通过远程、SSH 或 Hermes Cloud 连接可访问的每个 Hermes 网关。',
@@ -1481,7 +1556,14 @@ export const zh = defineLocale({
       receipt: (id: string, outcome: string) => `回执 ${id} · ${outcome}`,
       receiptVersions: (pre: string, post: string) => `${pre} → ${post}`,
       scopesRestored: (profiles: string) => `已恢复的 profile：${profiles}`,
-      scopeNotRestored: (profile: string, error: string) => `Profile“${profile}”未恢复：${error}`
+      scopeNotRestored: (profile: string, error: string) => `Profile“${profile}”未恢复：${error}`,
+      receiptOutcomes: {
+        success: '成功',
+        failed: '失败',
+        partial: '部分完成',
+        running: '进行中',
+        refused: '已拒绝'
+      }
     },
     gateway: {
       loading: '正在加载网关设置...',
@@ -1679,7 +1761,51 @@ export const zh = defineLocale({
       deepLinkErrorConfig: '链接中的配置不是有效的 base64 编码 JSON。',
       deepLinkErrorShape: '配置必须是包含字符串 `url` 或 `command` 字段的 JSON 对象。',
       deepLinkErrorUrl: '仅允许 http:// 和 https:// 服务器地址。',
-      deepLinkErrorTooLarge: '配置负载超过 32KB 上限。'
+      deepLinkErrorTooLarge: '配置负载超过 32KB 上限。',
+      failedLoad: 'MCP 配置加载失败',
+      nameRequiredTitle: '需要名称',
+      nameRequiredMessage: '请为此 MCP 服务器提供配置键。',
+      objectRequired: '服务器配置必须是 JSON 对象',
+      gatewayUnavailableTitle: '网关不可用',
+      gatewayUnavailableMessage: '重新加载 MCP 前请先重连网关。',
+      reloadedTitle: 'MCP 工具已重新加载',
+      reloadedMessage: '新的工具 schema 将应用到后续回合。',
+      newServer: '新服务器',
+      reload: '重新加载 MCP',
+      reloading: '重新加载中...',
+      emptyTitle: '没有 MCP 服务器',
+      emptyDesc: '添加 stdio 或 HTTP 服务器以暴露 MCP 工具。',
+      editServer: '编辑服务器',
+      saveServer: '保存服务器',
+      testing: '测试中…',
+      testOk: count => `已连接 — ${count} 个工具可用`,
+      testFailed: '连接失败',
+      enableServer: name => `启用 ${name}`,
+      disableServer: name => `禁用 ${name}`,
+      serverEnabled: name => `${name} 已启用 — 对新会话生效。`,
+      serverDisabled: name => `${name} 已禁用 — 对新会话生效。`,
+      toggleFailed: (name, enabled) => `${enabled ? '开启' : '关闭'} ${name} 失败`,
+      tabServers: '服务器',
+      tabCatalog: '目录',
+      catalogLoadFailed: 'MCP 目录加载失败',
+      catalogEmpty: '没有可用的目录条目。',
+      catalogInstalled: '已安装',
+      catalogEnabled: '已启用',
+      catalogNeedsInstall: '需要构建',
+      catalogInstall: '安装',
+      catalogInstalling: '安装中…',
+      catalogInstallStarted: name => `正在安装 ${name}… 完成后对新会话生效。`,
+      catalogEnvPrompt: name => `${name} 需要凭据`,
+      unusedPill: '未使用',
+      waitingForBrowser: '等待浏览器…',
+      unsavedConnect: '未保存 — 保存 mcp.json 以连接。',
+      enableTool: tool => `启用 ${tool}`,
+      disableTool: tool => `禁用 ${tool}`,
+      importButton: '导入',
+      importPlaceholder: '粘贴 mcp.json 片段、npx/docker 命令、claude mcp add 命令、URL 或 Cursor 链接…',
+      importNoMatch: '粘贴的文本中未识别到服务器配置。',
+      importConfirm: '添加到 mcp.json',
+      importConfirmMany: count => `添加 ${count} 个服务器到 mcp.json`
     },
     model: {
       setupProviderFallback: '提供方',
@@ -1732,17 +1858,41 @@ export const zh = defineLocale({
       moaAggregatorBilled: '执行模型 · 整个运行在此计费',
       moaReferenceHint: '默认每轮仅建议一次',
       tasks: {
-        vision: { label: '视觉', hint: '图片分析' },
-        compression: { label: '压缩', hint: '上下文压缩' },
-        skills_hub: { label: '技能中心', hint: '技能搜索' },
-        approval: { label: '审批', hint: '智能自动批准' },
-        mcp: { label: 'MCP', hint: 'MCP 工具路由' },
-        title_generation: { label: '标题生成', hint: '会话标题' },
-        review: { label: '评审', hint: '/review 评审子智能体' },
+        vision: {
+          label: '视觉',
+          hint: '图片分析'
+        },
+        compression: {
+          label: '压缩',
+          hint: '上下文压缩'
+        },
+        skills_hub: {
+          label: '技能中心',
+          hint: '技能搜索'
+        },
+        approval: {
+          label: '审批',
+          hint: '智能自动批准'
+        },
+        mcp: {
+          label: 'MCP',
+          hint: 'MCP 工具路由'
+        },
+        title_generation: {
+          label: '标题生成',
+          hint: '会话标题'
+        },
+        review: {
+          label: '评审',
+          hint: '/review 评审子智能体'
+        },
         triage_specifier: { label: '分类指定', hint: '看板任务规格补全' },
         kanban_decomposer: { label: '看板分解', hint: '任务拆解' },
         profile_describer: { label: '配置描述', hint: '自动生成配置描述' },
-        curator: { label: '维护器', hint: '技能使用审查' }
+        curator: {
+          label: '维护器',
+          hint: '技能使用审查'
+        }
       }
     },
     localModels: {
@@ -1858,7 +2008,8 @@ export const zh = defineLocale({
       deleteAction: '删除模型',
       deleteConfirm: model => `从磁盘删除 ${model}？`,
       deleted: model => `已删除 ${model}。`,
-      deleteFailed: '删除失败'
+      deleteFailed: '删除失败',
+      updateToast: next => `本地引擎有新构建（${next}）。可在 设置 → 本地模型 中更新。`
     },
     billing: {
       perMonth: amount => `${amount}/月`,
@@ -2424,9 +2575,39 @@ export const zh = defineLocale({
       previewFailed: '技能预览失败',
       scanFailed: '安全扫描失败',
       searchFailed: '技能中心搜索失败'
-    }
+    },
+    toolsetLabels: {
+      web: '网页搜索与内容提取',
+      browser: '浏览器自动化',
+      terminal: '终端与进程',
+      file: '文件操作',
+      code_execution: '代码执行',
+      vision: '图像分析',
+      video: '视频分析',
+      image_gen: '图像生成',
+      video_gen: '视频生成',
+      x_search: 'X（Twitter）搜索',
+      tts: '文本转语音',
+      stt: '语音转文本',
+      skills: '技能',
+      todo: '任务规划',
+      kanban: '看板',
+      memory: '记忆',
+      context_engine: '上下文引擎',
+      session_search: '会话记录搜索',
+      connections: '连接',
+      clarify: '澄清问题',
+      delegation: '任务委派',
+      cronjob: '定时任务',
+      homeassistant: 'Home Assistant',
+      spotify: 'Spotify',
+      discord: 'Discord（读取与参与）',
+      discord_admin: 'Discord 服务器管理',
+      yuanbao: 'Yuanbao',
+      computer_use: '计算机操作（macOS/Windows/Linux）'
+    },
+    tabMcp: 'MCP'
   },
-
   starmap: {
     title: '记忆图谱',
     subtitle: (nodes, clusters) => `${clusters} 个类别中的 ${nodes} 个技能`,
@@ -2458,7 +2639,6 @@ export const zh = defineLocale({
     extendedTranscript: '扩展记录',
     transcriptTruncated: '显示最新 16 KiB',
     transcriptUnavailable: '实时记录不可用',
-
     close: '关闭代理',
     title: '派生树',
     subtitle: '当前回合的子代理实时活动。',
@@ -2496,7 +2676,6 @@ export const zh = defineLocale({
     durationMinutes: (minutes, seconds) => `${minutes} 分 ${seconds} 秒`,
     tokens: value => `${value} 词元`
   },
-
   commandCenter: {
     close: '关闭命令中心',
     paletteTitle: '命令面板',
@@ -2575,18 +2754,44 @@ export const zh = defineLocale({
     settingsFields: '设置字段',
     mcpServers: 'MCP 服务器',
     archivedChats: '已归档对话',
-    sections: { maintenance: '维护', sessions: '会话', system: '系统', usage: '用量' },
+    sections: {
+      maintenance: '维护',
+      sessions: '会话',
+      system: '系统',
+      usage: '用量'
+    },
     nav: {
-      newChat: { title: '新建会话', detail: '开始一个新会话' },
-      settings: { title: '设置', detail: '配置 Hermes 桌面端' },
+      newChat: {
+        title: '新建会话',
+        detail: '开始一个新会话'
+      },
+      settings: {
+        title: '设置',
+        detail: '配置 Hermes 桌面端'
+      },
       capabilities: { title: '技能与工具', detail: '启用技能、工具集与提供方' },
-      messaging: { title: '消息平台', detail: '配置 Telegram、Slack、Discord 等' },
-      artifacts: { title: '产物', detail: '浏览生成的输出' }
+      messaging: {
+        title: '消息平台',
+        detail: '配置 Telegram、Slack、Discord 等'
+      },
+      artifacts: {
+        title: '产物',
+        detail: '浏览生成的输出'
+      }
     },
     sectionEntries: {
-      sessions: { title: '会话面板', detail: '搜索、置顶与管理会话' },
-      system: { title: '系统面板', detail: '网关状态、日志、重启/更新' },
-      usage: { title: '用量面板', detail: '词元、成本与技能活动' }
+      sessions: {
+        title: '会话面板',
+        detail: '搜索、置顶与管理会话'
+      },
+      system: {
+        title: '系统面板',
+        detail: '网关状态、日志、重启/更新'
+      },
+      usage: {
+        title: '用量面板',
+        detail: '词元、成本与技能活动'
+      }
     },
     providerNavigate: '导航',
     providerSessions: '会话',
@@ -2682,9 +2887,14 @@ export const zh = defineLocale({
       actionFailed: name => `${name} 启动失败`,
       running: '运行中…',
       viewLog: '操作日志'
+    },
+    sectionDescriptions: {
+      maintenance: '诊断、备份、维护器与记忆数据',
+      sessions: '搜索与管理会话',
+      system: '状态、日志与系统操作',
+      usage: '一段时间内的词元、成本与技能活动'
     }
   },
-
   messaging: {
     search: '搜索消息平台…',
     statusFilter: {
@@ -2802,22 +3012,54 @@ export const zh = defineLocale({
         label: '允许的 Telegram 用户 ID',
         help: '推荐。来自 @userinfobot 的逗号分隔数字 ID。不设置则任何人都能私信你的机器人。'
       },
-      TELEGRAM_PROXY: { label: '代理 URL', help: '仅在 Telegram 被屏蔽的网络中需要。' },
-      DISCORD_BOT_TOKEN: { label: 'Bot 令牌', help: '在 Discord 开发者门户创建应用，添加机器人，然后粘贴其令牌。' },
-      DISCORD_ALLOWED_USERS: { label: '允许的 Discord 用户 ID', help: '推荐。逗号分隔的 Discord 用户 ID。' },
-      DISCORD_REPLY_TO_MODE: { label: '回复方式', help: 'first、all 或 off。' },
+      TELEGRAM_PROXY: {
+        label: '代理 URL',
+        help: '仅在 Telegram 被屏蔽的网络中需要。'
+      },
+      DISCORD_BOT_TOKEN: {
+        label: 'Bot 令牌',
+        help: '在 Discord 开发者门户创建应用，添加机器人，然后粘贴其令牌。'
+      },
+      DISCORD_ALLOWED_USERS: {
+        label: '允许的 Discord 用户 ID',
+        help: '推荐。逗号分隔的 Discord 用户 ID。'
+      },
+      DISCORD_REPLY_TO_MODE: {
+        label: '回复方式',
+        help: 'first、all 或 off。'
+      },
       DISCORD_ALLOW_ALL_USERS: {
         label: '允许所有 Discord 用户',
         help: '仅用于开发。为 true 时，任何人都可以私信 bot，不需要允许列表。'
       },
-      DISCORD_HOME_CHANNEL: { label: '主页频道 ID', help: 'bot 主动发送消息的频道（cron 输出、提醒等）。' },
-      DISCORD_HOME_CHANNEL_NAME: { label: '主页频道名称', help: '日志和状态输出中显示的主页频道名称。' },
-      BLUEBUBBLES_ALLOW_ALL_USERS: { label: '允许所有 iMessage 用户', help: '为 true 时跳过 BlueBubbles 允许列表。' },
-      MATTERMOST_ALLOW_ALL_USERS: { label: '允许所有 Mattermost 用户' },
-      MATTERMOST_HOME_CHANNEL: { label: '主页频道' },
-      QQ_ALLOW_ALL_USERS: { label: '允许所有 QQ 用户' },
-      QQBOT_HOME_CHANNEL: { label: 'QQ 主页频道', help: 'cron 投递的默认频道或群组。' },
-      QQBOT_HOME_CHANNEL_NAME: { label: 'QQ 主页频道名称' },
+      DISCORD_HOME_CHANNEL: {
+        label: '主页频道 ID',
+        help: 'bot 主动发送消息的频道（cron 输出、提醒等）。'
+      },
+      DISCORD_HOME_CHANNEL_NAME: {
+        label: '主页频道名称',
+        help: '日志和状态输出中显示的主页频道名称。'
+      },
+      BLUEBUBBLES_ALLOW_ALL_USERS: {
+        label: '允许所有 iMessage 用户',
+        help: '为 true 时跳过 BlueBubbles 允许列表。'
+      },
+      MATTERMOST_ALLOW_ALL_USERS: {
+        label: '允许所有 Mattermost 用户'
+      },
+      MATTERMOST_HOME_CHANNEL: {
+        label: '主页频道'
+      },
+      QQ_ALLOW_ALL_USERS: {
+        label: '允许所有 QQ 用户'
+      },
+      QQBOT_HOME_CHANNEL: {
+        label: 'QQ 主页频道',
+        help: 'cron 投递的默认频道或群组。'
+      },
+      QQBOT_HOME_CHANNEL_NAME: {
+        label: 'QQ 主页频道名称'
+      },
       SLACK_BOT_TOKEN: {
         label: 'Slack bot 令牌',
         help: '安装 Slack 应用后，在 OAuth & Permissions 中找到 bot 令牌。',
@@ -2828,24 +3070,60 @@ export const zh = defineLocale({
         help: 'Socket Mode 需要 app 级令牌。',
         placeholder: '粘贴 Slack app 令牌'
       },
-      SLACK_ALLOWED_USERS: { label: '允许的 Slack 用户 ID', help: '推荐。逗号分隔的 Slack 用户 ID。' },
-      MATTERMOST_URL: { label: '服务器 URL', placeholder: 'https://mattermost.example.com' },
-      MATTERMOST_TOKEN: { label: 'Bot 令牌' },
-      MATTERMOST_ALLOWED_USERS: { label: '允许的用户 ID', help: '推荐。逗号分隔的 Mattermost 用户 ID。' },
-      MATRIX_HOMESERVER: { label: 'Homeserver URL', placeholder: 'https://matrix.org' },
-      MATRIX_ACCESS_TOKEN: { label: '访问令牌' },
-      MATRIX_USER_ID: { label: 'Bot 用户 ID', placeholder: '@hermes:example.org' },
-      MATRIX_ALLOWED_USERS: { label: '允许的 Matrix 用户 ID', help: '推荐。@user:server 格式的逗号分隔用户 ID。' },
+      SLACK_ALLOWED_USERS: {
+        label: '允许的 Slack 用户 ID',
+        help: '推荐。逗号分隔的 Slack 用户 ID。'
+      },
+      MATTERMOST_URL: {
+        label: '服务器 URL',
+        placeholder: 'https://mattermost.example.com'
+      },
+      MATTERMOST_TOKEN: {
+        label: 'Bot 令牌'
+      },
+      MATTERMOST_ALLOWED_USERS: {
+        label: '允许的用户 ID',
+        help: '推荐。逗号分隔的 Mattermost 用户 ID。'
+      },
+      MATRIX_HOMESERVER: {
+        label: 'Homeserver URL',
+        placeholder: 'https://matrix.org'
+      },
+      MATRIX_ACCESS_TOKEN: {
+        label: '访问令牌'
+      },
+      MATRIX_USER_ID: {
+        label: 'Bot 用户 ID',
+        placeholder: '@hermes:example.org'
+      },
+      MATRIX_ALLOWED_USERS: {
+        label: '允许的 Matrix 用户 ID',
+        help: '推荐。@user:server 格式的逗号分隔用户 ID。'
+      },
       SIGNAL_HTTP_URL: {
         label: 'Signal 桥接 URL',
         placeholder: 'http://127.0.0.1:8080',
         help: '运行中的 signal-cli REST 桥接的 URL。'
       },
-      SIGNAL_ACCOUNT: { label: '电话号码', help: '在 signal-cli 桥接中注册的号码。' },
-      SIGNAL_ALLOWED_USERS: { label: '允许的 Signal 用户', help: '推荐。逗号分隔的 Signal 标识符。' },
-      WHATSAPP_ENABLED: { label: '启用 WhatsApp 桥接', help: '由下方开关自动设置。除非确知需要，否则请勿改动。' },
-      WHATSAPP_MODE: { label: '桥接模式' },
-      WHATSAPP_ALLOWED_USERS: { label: '允许的 WhatsApp 用户', help: '推荐。逗号分隔的电话号码或 WhatsApp ID。' }
+      SIGNAL_ACCOUNT: {
+        label: '电话号码',
+        help: '在 signal-cli 桥接中注册的号码。'
+      },
+      SIGNAL_ALLOWED_USERS: {
+        label: '允许的 Signal 用户',
+        help: '推荐。逗号分隔的 Signal 标识符。'
+      },
+      WHATSAPP_ENABLED: {
+        label: '启用 WhatsApp 桥接',
+        help: '由下方开关自动设置。除非确知需要，否则请勿改动。'
+      },
+      WHATSAPP_MODE: {
+        label: '桥接模式'
+      },
+      WHATSAPP_ALLOWED_USERS: {
+        label: '允许的 WhatsApp 用户',
+        help: '推荐。逗号分隔的电话号码或 WhatsApp ID。'
+      }
     },
     platformIntro: {
       telegram:
@@ -2874,7 +3152,6 @@ export const zh = defineLocale({
       webhook: '运行一个 HTTP 服务器，供其他工具 (GitHub、GitLab、自定义应用)POST。用 secret 验证签名。'
     }
   },
-
   webhooks: {
     search: '搜索 Webhook…',
     loading: '正在加载 Webhook…',
@@ -2940,7 +3217,6 @@ export const zh = defineLocale({
       github_comment: 'GitHub 评论'
     }
   },
-
   profiles: {
     close: '关闭配置档案',
     nameHint: '小写字母、数字、连字符和下划线。必须以字母或数字开头。',
@@ -3084,7 +3360,6 @@ export const zh = defineLocale({
     failedCreate: '创建配置档案失败',
     failedRename: '重命名配置档案失败'
   },
-
   modelAssignment: {
     saveFailed: 'Hermes 未保存该模型更改。',
     confirmTitle: '模型选择警告',
@@ -3092,7 +3367,6 @@ export const zh = defineLocale({
     confirmAction: '确认',
     declined: '已取消模型更改 — 你拒绝了数据训练层级警告。'
   },
-
   cron: {
     close: '关闭定时任务',
     title: '定时任务',
@@ -3162,7 +3436,6 @@ export const zh = defineLocale({
     showRuns: '显示运行记录',
     hideRuns: '隐藏运行记录',
     runHistory: '运行记录',
-
     actionsTitle: '定时任务操作',
     resume: '恢复定时任务',
     pause: '暂停定时任务',
@@ -3227,9 +3500,19 @@ export const zh = defineLocale({
       failedLoad: '加载蓝图失败',
       emptyTitle: '没有可用的蓝图',
       emptyDesc: '此后端上没有可用的自动化蓝图。'
+    },
+    modelImpact: {
+      title: '定时任务将继续使用原模型',
+      message: count => `${count} 个未固定的定时任务将继续使用创建时的模型运行。固定它们或设置 cron.model 以迁移。`,
+      detailMore: (names, remaining) => `${names}，以及另外 ${remaining} 个`,
+      review: '检查定时任务',
+      saveFailed: 'Hermes 未保存该模型更改。',
+      confirmTitle: '模型选择警告',
+      confirmDetail: '仅在你接受此权衡时确认。',
+      confirmAction: '确认',
+      declined: '已取消模型更改 — 你拒绝了数据训练层级警告。'
     }
   },
-
   artifacts: {
     search: '搜索产物…',
     refresh: '刷新产物',
@@ -3264,14 +3547,16 @@ export const zh = defineLocale({
     copyUrl: '复制 URL',
     copyPath: '复制路径'
   },
-
   artifactCard: {
-    kind: { code: '代码', html: '交互页面', svg: '图形' },
+    kind: {
+      code: '代码',
+      html: '交互页面',
+      svg: '图形'
+    },
     generating: lines => `生成中… ${lines} 行`,
     versionBadge: count => `${count} 个版本`,
     open: '打开'
   },
-
   artifactPreview: {
     versionOf: (current, total) => `第 ${current}/${total} 版`,
     olderVersion: '较旧版本',
@@ -3284,7 +3569,6 @@ export const zh = defineLocale({
     missingTitle: '产物不可用',
     missingBody: '此产物已不在本地注册表中。'
   },
-
   sidebar: {
     filter: {
       grouping: '分组',
@@ -3462,7 +3746,6 @@ export const zh = defineLocale({
       openInNewTab: '在新标签页中打开',
       openInSplit: '在分屏中打开',
       copyIdFailed: '无法复制会话 ID',
-
       sessionActions: '会话操作',
       sessionRunning: '会话运行中',
       needsInput: '需要你输入',
@@ -3503,7 +3786,6 @@ export const zh = defineLocale({
     },
     markAllRead: '全部标记为已读'
   },
-
   composer: {
     message: '消息',
     wakingProfile: profile => `正在唤醒 ${profile}…`,
@@ -3762,7 +4044,6 @@ export const zh = defineLocale({
       }
     }
   },
-
   statusStack: {
     hideStack: '隐藏状态面板',
     showStack: '显示状态面板',
@@ -3916,7 +4197,6 @@ export const zh = defineLocale({
       worktrees: '工作树'
     }
   },
-
   updates: {
     discontinuedTitle: '此版本的 Hermes 已停止支持',
     discontinuedBody: '此版本的 Hermes 已停止支持，可能无法正常运行——请卸载。您的数据仍保留在磁盘上。',
@@ -4014,7 +4294,6 @@ export const zh = defineLocale({
       failed: '后端更新失败。',
       noReturn: '后端未恢复在线。更新可能未完成——请检查后端主机。'
     },
-    // Update-status overlay + version-details (mechanism-aware update UI).
     appName: 'Hermes',
     version: value => `版本 ${value}`,
     versionUnavailable: '版本不可用',
@@ -4060,7 +4339,6 @@ export const zh = defineLocale({
     versionDetailsInstallId: '安装 ID',
     versionDetailsUncommittedChanges: '未提交的变更'
   },
-
   guidedGreeting: {
     line: '来了，进来吧。我是 Hermes。给我两分钟，把这里按你的习惯收拾一下，然后我们找件你真正想做的事来做。\n\n先说，我该怎么称呼你？',
     nameSuggestion: (name: string) => `（如果你愿意，我也可以直接叫你 ${name}。）`
@@ -4087,7 +4365,6 @@ export const zh = defineLocale({
     connectExistingShort: '连接现有环境',
     connectExistingDesc: '使用会话令牌或浏览器登录连接远程后端。不会启动本地安装。',
     setupChoiceDescLocal: '在这台电脑上安装 Hermes，或连接到已在运行的 Hermes 网关。',
-
     installLocalTitle: '本地安装 Hermes',
     installLocalDesc: '下载 Hermes，创建 Python 环境，并在这台电脑上运行后端。',
     useLocalTitle: '使用这台电脑上的 Hermes',
@@ -4140,7 +4417,6 @@ export const zh = defineLocale({
     copyOutput: '复制输出',
     reloadRetry: '重新加载并重试'
   },
-
   onboarding: {
     headerTitle: '开始设置 Hermes Agent',
     headerDesc: '连接模型提供方即可开始对话。大多数选项只需一次点击。',
@@ -4159,11 +4435,26 @@ export const zh = defineLocale({
     localModelsPitch: '无需账号——下载模型，在本机运行',
     openRouterPitch: '一个密钥，数百个模型 — 稳妥的默认选择',
     apiKeyOptions: {
-      fireworks: { short: '直接模型 API', description: '直接访问 Fireworks AI 托管的模型。' },
-      openrouter: { short: '一个密钥，多个模型', description: '用一个密钥访问数百个模型。适合新安装的默认选择。' },
-      openai: { short: 'GPT 级模型', description: '直接访问 OpenAI 模型。' },
-      gemini: { short: 'Gemini 模型', description: '直接访问 Google Gemini 模型。' },
-      xai: { short: 'Grok 模型', description: '直接访问 xAI Grok 模型。' },
+      fireworks: {
+        short: '直接模型 API',
+        description: '直接访问 Fireworks AI 托管的模型。'
+      },
+      openrouter: {
+        short: '一个密钥，多个模型',
+        description: '用一个密钥访问数百个模型。适合新安装的默认选择。'
+      },
+      openai: {
+        short: 'GPT 级模型',
+        description: '直接访问 OpenAI 模型。'
+      },
+      gemini: {
+        short: 'Gemini 模型',
+        description: '直接访问 Google Gemini 模型。'
+      },
+      xai: {
+        short: 'Grok 模型',
+        description: '直接访问 xAI Grok 模型。'
+      },
       local: {
         short: '自托管',
         description: '将 Hermes 指向本地或自托管的 OpenAI 兼容端点 (vLLM、llama.cpp、Ollama 等)。'
@@ -4214,9 +4505,6 @@ export const zh = defineLocale({
     startChatting: '开始',
     docs: provider => `${provider} 文档`
   },
-
-  // Not yet translated — English fallbacks so the free-tier surfaces stay
-  // readable until a zh pass lands.
   freeTier: {
     providerRowTitle: 'Nous · 免费层',
     providerRowPitch: '登录 Nous 账户以解锁更多模型和工具。',
@@ -4259,7 +4547,6 @@ export const zh = defineLocale({
     alreadySignedInHeading: '已登录。',
     alreadySignedInBody: '此 Hermes 已登录 Nous 账户。'
   },
-
   modelPicker: {
     title: '切换模型',
     current: '当前：',
@@ -4282,7 +4569,6 @@ export const zh = defineLocale({
     addCustomModelAction: '添加自定义模型…',
     customModelPlaceholder: '输入模型 ID，例如 openai/gpt-5'
   },
-
   modelVisibility: {
     title: '模型',
     search: '搜索模型',
@@ -4295,7 +4581,6 @@ export const zh = defineLocale({
     resetDescription: '你对模型显示与隐藏的选择将被清除，每个提供方都会恢复默认列表。你添加的自定义模型会保留并显示。',
     resetAction: '恢复'
   },
-
   shell: {
     windowControls: '窗口控件',
     paneControls: '面板控件',
@@ -4459,10 +4744,10 @@ export const zh = defineLocale({
       openModelPicker: '打开模型选择器',
       modelPinned: '已由你固定；新对话将使用此模型而非“设置”中的默认模型',
       modelTitle: (provider, model) => `模型 · ${provider}: ${model}`,
-      providerModelTitle: (provider, model) => `${provider} · ${model}`
+      providerModelTitle: (provider, model) => `${provider} · ${model}`,
+      session: '会话'
     }
   },
-
   rightSidebar: {
     terminalReadOnly: '只读输出',
     terminalReadOnlyHelp:
@@ -4510,7 +4795,6 @@ export const zh = defineLocale({
     terminalCloseAll: '关闭全部',
     addToChat: '添加到对话'
   },
-
   preview: {
     tab: '预览',
     pin: '固定到工作区',
@@ -4624,7 +4908,6 @@ export const zh = defineLocale({
       cancelComment: '取消批注'
     }
   },
-
   interfaceMode: {
     title: '界面模式',
     hint: '只改变显示的内容，不改变 Hermes 的能力。',
@@ -4638,7 +4921,6 @@ export const zh = defineLocale({
       description: '面向开发者。终端、文件、差异、状态栏和布局，按你的设置显示。'
     }
   },
-
   zones: {
     showTabStrip: '显示标签',
     hideTabStrip: '隐藏标签',
@@ -4687,7 +4969,6 @@ export const zh = defineLocale({
     zoneCount: count => `${count} 个区域`,
     tabCount: count => `${count} 个标签页`
   },
-
   contextMenu: {
     link: {
       openInApp: '在应用内浏览器中打开',
@@ -4711,7 +4992,6 @@ export const zh = defineLocale({
       inspectElement: '检查元素'
     }
   },
-
   assistant: {
     thread: {
       loadingSession: '正在加载会话',
@@ -4864,7 +5144,12 @@ export const zh = defineLocale({
       singleSelectHint: '选一个',
       multiSelectHint: '可多选',
       questionProgress: (answered, total) => `已回答 ${answered}/${total}`,
-      notDelivered: '此问题未送达应用，无法在此回答。请按停止结束本轮，然后在聊天中回复。'
+      notDelivered: '此问题未送达应用，无法在此回答。请按停止结束本轮，然后在聊天中回复。',
+      continueLabel: '继续',
+      answeredBadge: '已回答',
+      lateAnswer: (question, choice) => `关于"${question}" — 我的回答: ${choice}`,
+      lateAnswerTip: '将此回答起草为后续消息',
+      lateAnswerHint: '此问题已不再等待回答。选择一个选项会将其起草为后续消息。'
     },
     catalogInstall: {
       preparing: '正在准备安装…',
@@ -4904,7 +5189,12 @@ export const zh = defineLocale({
       envRequired: '请先填写所需凭据',
       sendFailed: '无法发送 MCP 设置响应',
       reloadFailed: '服务器已保存，但重新加载 MCP 工具失败 — 将在下个会话加载',
-      gatewayDisconnected: 'Hermes 网关未连接'
+      gatewayDisconnected: 'Hermes 网关未连接',
+      decline: '暂不',
+      declined: '已拒绝',
+      unanswered: '未响应',
+      notInCatalog: server => `“${server}”不在 MCP 目录中`,
+      catalogSource: '来自 Nous 认证目录'
     },
     tool: {
       copyCode: '复制代码',
@@ -4970,33 +5260,124 @@ export const zh = defineLocale({
         runningTool: action => `正在运行 ${action}`
       },
       titles: {
-        browser_click: { done: '已点击页面元素', pending: '正在点击页面元素', pendingAction: '正在点击' },
-        browser_fill: { done: '已填写表单字段', pending: '正在填写表单字段', pendingAction: '正在填写' },
-        browser_navigate: { done: '已打开页面', pending: '正在打开页面', pendingAction: '正在打开' },
-        browser_snapshot: { done: '已捕获页面快照', pending: '正在捕获页面快照', pendingAction: '正在捕获' },
-        browser_take_screenshot: { done: '已捕获截图', pending: '正在捕获截图', pendingAction: '正在捕获' },
-        browser_type: { done: '已在页面输入', pending: '正在页面输入', pendingAction: '正在输入' },
-        clarify: { done: '已提问', pending: '正在提问', pendingAction: '正在提问' },
-        cronjob: { done: 'Cron 任务', pending: '正在安排 Cron 任务', pendingAction: '正在安排' },
-        edit_file: { done: '已编辑文件', pending: '正在编辑文件', pendingAction: '正在编辑' },
-        execute_code: { done: '已运行代码', pending: '正在编写脚本', pendingAction: '正在编写脚本' },
-        image_generate: { done: '已生成图片', pending: '正在生成图片', pendingAction: '正在生成' },
-        list_files: { done: '已列出文件', pending: '正在列出文件', pendingAction: '正在列出' },
-        memory: { done: '已保存到记忆', pending: '正在保存到记忆', pendingAction: '正在保存' },
-        patch: { done: '已修补文件', pending: '正在修补文件', pendingAction: '正在修补' },
-        read_file: { done: '已读取文件', pending: '正在读取文件', pendingAction: '正在读取' },
-        search_files: { done: '已搜索文件', pending: '正在搜索文件', pendingAction: '正在搜索' },
-        session_search_recall: { done: '已搜索会话历史', pending: '正在搜索会话历史', pendingAction: '正在搜索' },
-        terminal: { done: '已运行命令', pending: '正在运行命令', pendingAction: '正在运行' },
-        todo: { done: '已更新待办', pending: '正在更新待办', pendingAction: '正在更新' },
-        vision_analyze: { done: '已分析图片', pending: '正在分析图片', pendingAction: '正在分析' },
-        web_extract: { done: '已读取网页', pending: '正在读取网页', pendingAction: '正在读取' },
-        web_search: { done: '已搜索网页', pending: '正在搜索网页', pendingAction: '正在搜索' },
-        write_file: { done: '已编辑文件', pending: '正在编辑文件', pendingAction: '正在编辑' }
+        browser_click: {
+          done: '已点击页面元素',
+          pending: '正在点击页面元素',
+          pendingAction: '正在点击'
+        },
+        browser_fill: {
+          done: '已填写表单字段',
+          pending: '正在填写表单字段',
+          pendingAction: '正在填写'
+        },
+        browser_navigate: {
+          done: '已打开页面',
+          pending: '正在打开页面',
+          pendingAction: '正在打开'
+        },
+        browser_snapshot: {
+          done: '已捕获页面快照',
+          pending: '正在捕获页面快照',
+          pendingAction: '正在捕获'
+        },
+        browser_take_screenshot: {
+          done: '已捕获截图',
+          pending: '正在捕获截图',
+          pendingAction: '正在捕获'
+        },
+        browser_type: {
+          done: '已在页面输入',
+          pending: '正在页面输入',
+          pendingAction: '正在输入'
+        },
+        clarify: {
+          done: '已提问',
+          pending: '正在提问',
+          pendingAction: '正在提问'
+        },
+        cronjob: {
+          done: 'Cron 任务',
+          pending: '正在安排 Cron 任务',
+          pendingAction: '正在安排'
+        },
+        edit_file: {
+          done: '已编辑文件',
+          pending: '正在编辑文件',
+          pendingAction: '正在编辑'
+        },
+        execute_code: {
+          done: '已运行代码',
+          pending: '正在编写脚本',
+          pendingAction: '正在编写脚本'
+        },
+        image_generate: {
+          done: '已生成图片',
+          pending: '正在生成图片',
+          pendingAction: '正在生成'
+        },
+        list_files: {
+          done: '已列出文件',
+          pending: '正在列出文件',
+          pendingAction: '正在列出'
+        },
+        memory: {
+          done: '已保存到记忆',
+          pending: '正在保存到记忆',
+          pendingAction: '正在保存'
+        },
+        patch: {
+          done: '已修补文件',
+          pending: '正在修补文件',
+          pendingAction: '正在修补'
+        },
+        read_file: {
+          done: '已读取文件',
+          pending: '正在读取文件',
+          pendingAction: '正在读取'
+        },
+        search_files: {
+          done: '已搜索文件',
+          pending: '正在搜索文件',
+          pendingAction: '正在搜索'
+        },
+        session_search_recall: {
+          done: '已搜索会话历史',
+          pending: '正在搜索会话历史',
+          pendingAction: '正在搜索'
+        },
+        terminal: {
+          done: '已运行命令',
+          pending: '正在运行命令',
+          pendingAction: '正在运行'
+        },
+        todo: {
+          done: '已更新待办',
+          pending: '正在更新待办',
+          pendingAction: '正在更新'
+        },
+        vision_analyze: {
+          done: '已分析图片',
+          pending: '正在分析图片',
+          pendingAction: '正在分析'
+        },
+        web_extract: {
+          done: '已读取网页',
+          pending: '正在读取网页',
+          pendingAction: '正在读取'
+        },
+        web_search: {
+          done: '已搜索网页',
+          pending: '正在搜索网页',
+          pendingAction: '正在搜索'
+        },
+        write_file: {
+          done: '已编辑文件',
+          pending: '正在编辑文件',
+          pendingAction: '正在编辑'
+        }
       }
     }
   },
-
   prompts: {
     gatewayDisconnected: 'Hermes 网关未连接',
     sudoSendFailed: '无法发送 sudo 密码',
@@ -5036,7 +5417,6 @@ export const zh = defineLocale({
     vaultCodeSkip: '跳过',
     vaultCodeConfirm: '输入验证码'
   },
-
   desktop: {
     audioReadFailed: '无法读取录制的音频',
     sessionUnavailable: '会话不可用',
@@ -5132,7 +5512,6 @@ export const zh = defineLocale({
       timedOut: '等待网关超时。`hermes gateway` 是否正在运行？'
     }
   },
-
   tips: {
     close: '不再显示这条提示',
     items: {
@@ -5184,7 +5563,6 @@ export const zh = defineLocale({
       }
     }
   },
-
   errors: {
     genericFailure: '发生错误',
     boundaryTitle: '界面出错了',
@@ -5192,7 +5570,6 @@ export const zh = defineLocale({
     reloadWindow: '重新加载窗口',
     openLogs: '打开日志'
   },
-
   ui: {
     search: {
       clear: '清除搜索'
@@ -5214,5 +5591,7 @@ export const zh = defineLocale({
       description: '显示移动端侧边栏。',
       toggle: open => `${open ? '显示' : '隐藏'}侧边栏`
     }
-  }
+  },
+  billingRisk: billingRiskCopy,
+  permissionModel: permissionModelCopy
 })

@@ -460,6 +460,7 @@ import { previewHttpUrlTarget } from './preview-url-target'
 import {
   createPrimaryRemoteConnection,
   FirstRunSetupResetError,
+  primaryStartupProfile,
   runPrimaryBackendStartup
 } from './primary-backend-startup'
 import { rehomePrimaryConnection } from './primary-connection-rehome'
@@ -12685,7 +12686,10 @@ async function prepareProfileDeleteRequest(request) {
   }
 
   if (decision.action === 'teardown-primary') {
-    writeActiveDesktopProfile('default')
+    if (readActiveDesktopProfile() === decision.profile) {
+      writeActiveDesktopProfile('default')
+    }
+
     await Promise.all([teardownPrimaryBackendAndWait(), teardownPoolBackendAndWait(decision.profile)])
 
     return decision.profile
@@ -12700,6 +12704,7 @@ async function prepareProfileRenameRequest(request) {
   return prepareProfileRenameLifecycle(request, {
     isValidProfileName: profile => PROFILE_NAME_RE.test(profile),
     primaryProfileKey,
+    readActiveDesktopProfile,
     reloadPrimaryWindow: () => {
       mainWindow?.reload()
     },
@@ -13065,7 +13070,9 @@ async function runHermesStart({ supervisorRecovery = false }: { supervisorRecove
   // preference instead of splitting routing identity from the launch
   // argument. (The pin below still honors a live primary — but a primary
   // being live means startHermes never got here.)
-  const { argvProfile: activeProfile, routingProfile: primaryProfile } = resolveLaunchProfile(readActiveDesktopProfile)
+  const { argvProfile: activeProfile, routingProfile: primaryProfile } = resolveLaunchProfile(() =>
+    primaryStartupProfile(readActiveDesktopProfile(), managedPrimaryRestoreOwners.values().next().value?.profile)
+  )
 
   // Pin the routing table to the profile this primary actually boots as; a
   // later hermes:profile:remember must not retarget requests mid-life.

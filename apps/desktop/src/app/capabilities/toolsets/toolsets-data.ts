@@ -33,7 +33,9 @@ export function filteredToolsets(
   toolsets: ToolsetInfo[],
   query: string,
   toolCalls: Record<string, number>,
-  desc: boolean
+  desc: boolean,
+  descriptions?: Record<string, string>,
+  labels?: Record<string, string>
 ): ToolsetInfo[] {
   const q = normalize(query)
   const sign = desc ? 1 : -1
@@ -50,15 +52,16 @@ export function filteredToolsets(
 
       return (
         includesQuery(toolset.name, q) ||
-        includesQuery(toolsetDisplayLabel(toolset), q) ||
+        includesQuery(toolsetDisplayLabel(toolset, labels), q) ||
         includesQuery(toolset.description, q) ||
+        includesQuery(descriptions?.[toolset.name], q) ||
         toolNames(toolset).some(name => includesQuery(name, q))
       )
     })
     .sort(
       (a, b) =>
         sign * (toolsetCalls(b, toolCalls) - toolsetCalls(a, toolCalls)) ||
-        toolsetDisplayLabel(a).localeCompare(toolsetDisplayLabel(b))
+        toolsetDisplayLabel(a, labels).localeCompare(toolsetDisplayLabel(b, labels))
     )
 }
 

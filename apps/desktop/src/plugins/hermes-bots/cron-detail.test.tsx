@@ -1,3 +1,7 @@
+import type * as HermesSdk from '@hermes/plugin-sdk'
+import { type PluginContext, useI18n } from '@hermes/plugin-sdk'
+import { cleanup, fireEvent, render, screen, within } from '@testing-library/react'
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 /**
  * Bot Mode's cronjob rows were inert: the only interactive controls were the
  * enable switch and the hover-only delete button, so clicking a job to see
@@ -7,11 +11,13 @@
  * and no second mutation path beside the row's own switch and delete.
  */
 
-import type * as HermesSdk from '@hermes/plugin-sdk'
-import { cleanup, render, screen, within } from '@testing-library/react'
-import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
+// eslint-disable-next-line no-restricted-imports -- integration test exercises the app provider and registered plugin together
+import { createPluginI18n, I18nProvider } from '@/i18n'
+// eslint-disable-next-line no-restricted-imports -- integration test exercises the app provider and registered plugin together
+import { setRuntimeI18nLocale } from '@/i18n/runtime'
 
-import { translateBots } from './i18n-test-helper'
+import { BOTS_LOCALES } from './i18n'
+import { setPluginCtx } from './shared'
 import type { RoutineJob } from './types'
 
 // Radix calls these on open; jsdom doesn't implement them.
@@ -26,7 +32,7 @@ const { request } = vi.hoisted(() => ({ request: vi.fn(async () => ({})) }))
 vi.mock('@hermes/plugin-sdk', async importOriginal => {
   const sdk = await importOriginal<typeof HermesSdk>()
 
-  return { ...sdk, usePluginI18n: () => translateBots, host: { ...sdk.host, request } }
+  return { ...sdk, host: { ...sdk.host, request } }
 })
 
 const { RoutineDetailDialog, RoutineRow, routineDetailIssue, routineDetailRows } = await import('./cron')
@@ -49,10 +55,31 @@ const activeJob: RoutineJob = {
 const valueOf = (rows: Array<{ label: string; value: string }>, label: string) =>
   rows.find(row => row.label === label)?.value
 
+let disposeLocales: () => void
+
+beforeEach(() => {
+  const i18n = createPluginI18n('hermes-bots', dispose => dispose)
+  disposeLocales = i18n.register(BOTS_LOCALES)
+  setPluginCtx({ i18n } as PluginContext)
+})
+
 afterEach(() => {
   cleanup()
+  disposeLocales()
+  setPluginCtx(null)
+  setRuntimeI18nLocale('en')
   vi.clearAllMocks()
 })
+
+function SwitchLanguage() {
+  const { setLocale } = useI18n()
+
+  return (
+    <button onClick={() => void setLocale('ko')} type="button">
+      Switch language
+    </button>
+  )
+}
 
 describe('the facts the row never showed', () => {
   it('carries only the fields the gateway actually sent', () => {
@@ -173,6 +200,83 @@ describe('the row is reachable', () => {
 })
 
 describe('the inspector', () => {
+  it('distinguishes completed jobs and exposes execution failures without changing backend values', () => {
+    const completed = { ...activeJob, enabled: false, state: 'completed', last_error: 'agent execution failed' }
+    expect(valueOf(routineDetailRows(completed), 'Status')).toBe('Completed')
+    expect(valueOf(routineDetailRows(completed), 'Next run')).toBeUndefined()
+    expect(routineDetailIssue(completed)).toBe('agent execution failed')
+    expect(routineDetailIssue({ ...completed, last_delivery_error: 'delivery failed' })).toBe('agent execution failed')
+    expect(routineDetailIssue({ ...completed, last_fire_error: 'dispatch failed' })).toBe('dispatch failed')
+
+    render(<RoutineRow job={completed} onOpen={() => undefined} owner={{ name: 'notetaker' }} />)
+    expect(screen.getByText('Completed')).toBeTruthy()
+    expect(screen.queryByText('paused')).toBeNull()
+    expect(request).not.toHaveBeenCalled()
+  })
+
+  it('switches known display values and both timestamp parts with UI language, preserving raw identifiers', () => {
+    vi.spyOn(Date, 'now').mockReturnValue(new Date('2026-08-23T09:05:00Z').getTime())
+    const job = Object.freeze({ ...activeJob, deliver: 'local', repeat: '3 times', model: 'vendor/model:1' })
+    render(
+      <I18nProvider configClient={null} initialLocale="en">
+        <SwitchLanguage />
+        <RoutineDetailDialog job={job} onClose={() => undefined} open />
+      </I18nProvider>
+    )
+
+    const timestamp = (locale: string) =>
+      `${new Intl.RelativeTimeFormat(locale, { numeric: 'auto', style: 'short' }).format(-5, 'minute')} · ${new Date(job.last_run_at!).toLocaleString(locale)}`
+
+    expect(screen.getByText(timestamp('en'))).toBeTruthy()
+    fireEvent.click(screen.getByText('Switch language'))
+    expect(screen.getByText(timestamp('ko'))).toBeTruthy()
+    expect(screen.queryByText(timestamp('en'))).toBeNull()
+    expect(screen.getByText('3회')).toBeTruthy()
+    expect(screen.getByText('실행 기록에만 저장')).toBeTruthy()
+    expect(screen.getByText('vendor/model:1')).toBeTruthy()
+    expect(screen.getByText(job.prompt_preview!)).toBeTruthy()
+
+    for (const [repeat, expected] of [
+      ['forever', '계속 반복'],
+      ['once', '1회'],
+      ['1/3', '1/3'],
+      ['unknown-repeat', 'unknown-repeat']
+    ]) {
+      const rows = routineDetailRows({ ...job, repeat, deliver: 'unknown-target' })
+      expect(rows.some(row => row.value === expected)).toBe(true)
+      expect(rows.some(row => row.value === 'unknown-target')).toBe(true)
+    }
+
+    expect(job.repeat).toBe('3 times')
+    expect(job.deliver).toBe('local')
+    expect(request).not.toHaveBeenCalled()
+    vi.restoreAllMocks()
+  })
+
+  it('translates its facts while preserving the backend payload and delivery failure meaning', () => {
+    render(
+      <I18nProvider configClient={null} initialLocale="en">
+        <SwitchLanguage />
+        <RoutineDetailDialog
+          job={{ ...activeJob, last_status: 'delivery_failed', model: 'vendor/model:1' }}
+          onClose={() => undefined}
+          open
+        />
+      </I18nProvider>
+    )
+
+    fireEvent.click(screen.getByText('Switch language'))
+    const dialog = within(screen.getByRole('dialog'))
+    expect(dialog.getByText('모델')).toBeTruthy()
+    expect(dialog.getByText('전송 대상')).toBeTruthy()
+    expect(dialog.getByText(/전달.*실패/)).toBeTruthy()
+    expect(dialog.queryByText('Ran, but delivery failed')).toBeNull()
+    expect(dialog.getByText('vendor/model:1')).toBeTruthy()
+    expect(dialog.getByText('bot-chat')).toBeTruthy()
+    expect(dialog.getByText('Summarize yesterday and post it.')).toBeTruthy()
+    expect(request).not.toHaveBeenCalled()
+  })
+
   it('renders the job\u2019s instruction and its failure', () => {
     render(
       <RoutineDetailDialog job={{ ...activeJob, last_fire_error: 'model timeout' }} onClose={() => undefined} open />

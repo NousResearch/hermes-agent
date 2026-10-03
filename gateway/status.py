@@ -576,6 +576,10 @@ def inline_source_flag_index(tokens: list[str]) -> int | None:
         for position, letter in enumerate(cluster):
             if letter == "c":
                 return index
+            # After -m, every following token belongs to the selected module, not Python.
+            # Its attached module name can itself contain "c".
+            if letter == "m":
+                return None
             if letter in _PYTHON_SHORT_OPTIONS_WITH_OPERANDS:
                 index += 1 if cluster[position + 1 :] else 2
                 break

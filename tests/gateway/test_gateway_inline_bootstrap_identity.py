@@ -16,7 +16,7 @@ from pathlib import Path
 
 import pytest
 
-from gateway.status import looks_like_gateway_command_line
+from gateway.status import command_line_runs_inline_source, looks_like_gateway_command_line
 from hermes_cli import _launchers, venv_sync
 from hermes_cli.update_cmd_windows import _hermes_holder_subcommand
 
@@ -24,6 +24,15 @@ ROOT = Path("/opt/Hermes Agent/hermes-agent")
 PY = "/opt/venv/bin/python3"
 _SCRIPT = _launchers._launcher_script("hermes", ROOT, None)
 _JOINS = {"space-joined": " ".join, "windows": subprocess.list2cmdline}
+
+
+@pytest.mark.parametrize("module_option", ["-mhermes_cli.main", "-umhermes_cli.main"])
+def test_attached_module_option_is_not_inline_source(module_option: str) -> None:
+    argv = [PY, module_option, "serve"]
+    command_line = " ".join(argv)
+
+    assert not command_line_runs_inline_source(argv)
+    assert _hermes_holder_subcommand(command_line) == "serve"
 
 
 def _forms(argv: list[str]) -> dict[str, list[str]]:

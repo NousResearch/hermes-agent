@@ -27,7 +27,7 @@ def _append_row(rows: list[tuple[int, str]], pid_text: str, command: str) -> Non
 
 
 def _iter_process_table() -> list[tuple[int, str]]:
-    """``(pid, cmdline)`` for every process, via wmic (Windows) or ps. Raises on scan failure."""
+    """Return ``(pid, cmdline)`` rows via wmic (Windows) or ps, with live argv when available."""
     rows: list[tuple[int, str]] = []
     if sys.platform == "win32":
         # errors="ignore": wmic may emit the system code page. bounded_probe_run, not run():
@@ -63,6 +63,22 @@ def _iter_process_table() -> list[tuple[int, str]]:
             parts = line.strip().split(None, 1)
             if len(parts) == 2 and "grep" not in line:
                 _append_row(rows, parts[0], parts[1])
+
+    # ps joins argv with spaces, so it loses boundaries in paths like
+    # ``/Applications/Hermes Agent/venv/bin/python``. use psutil's token list for likely hermes
+    # rows before the strict matcher decides what can be reaped.
+    with contextlib.suppress(Exception):
+        from hermes_cli.update_cmd_windows import _cmdline_or_empty, _psutil
+
+        psutil = _psutil()
+        if psutil is not None:
+            for index, (pid, command) in enumerate(rows):
+                if "hermes" not in command.lower():
+                    continue
+                with contextlib.suppress(Exception):
+                    live_command = _cmdline_or_empty(psutil.Process(pid))
+                    if live_command:
+                        rows[index] = (pid, live_command)
     return rows
 
 

@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import argparse
 import json
+import subprocess
+from types import SimpleNamespace
 
 import pytest
 
@@ -46,6 +48,24 @@ def test_list_venv_holders_json_and_exit_3_when_holders_present(monkeypatch, cap
         (4242, "backend"), (4343, "gateway"), (4444, "hermes:kanban"), (4545, "python")]
     assert set(payload[0]) == {"pid", "exe", "argv", "kind"}
     assert payload[0]["argv"].endswith("serve --port 8642")
+
+
+def test_list_venv_holders_preserves_paths_with_spaces(monkeypatch, capsys, _quiet_preflight):
+    argv = [r"C:\Program Files\Hermes\venv\Scripts\python.exe", "-m", "hermes_cli.main", "serve"]
+    proc = SimpleNamespace(exe=lambda: argv[0], cmdline=lambda: argv)
+    fake_psutil = SimpleNamespace(Process=lambda _pid: proc)
+    monkeypatch.setattr(update_cmd_windows, "_psutil", lambda: fake_psutil)
+    monkeypatch.setattr(cli_main, "_detect_venv_python_processes", lambda: [
+        (4242, "python.exe", " ".join(argv)),
+    ])
+
+    with pytest.raises(SystemExit) as exc:
+        cli_main.cmd_update(_args())
+
+    assert exc.value.code == update_cmd_windows.VENV_HOLDERS_EXIT
+    payload = json.loads(capsys.readouterr().out)
+    assert payload[0]["kind"] == "backend"
+    assert payload[0]["argv"] == subprocess.list2cmdline(argv)
 
 
 def test_list_venv_holders_empty_list_exits_zero_without_updating(monkeypatch, capsys, _quiet_preflight):

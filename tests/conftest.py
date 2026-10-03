@@ -385,6 +385,10 @@ def _hermetic_environment(tmp_path, tmp_path_factory, monkeypatch):
     # should never perform that implicit network/bootstrap path; Tirith-specific
     # tests opt back in by patching the security config directly.
     monkeypatch.setenv("TIRITH_ENABLED", "false")
+    # The gateway's default-on Kanban SQL trace patches sqlite3.connect for the
+    # rest of the process; one GatewayRunner() must not arm it for every later
+    # test. test_kanban_sql_trace opts back in.
+    monkeypatch.setenv("HERMES_KANBAN_SQL_TRACE", "0")
     # On-demand extras (pm.sync_venv) install mid-test-run by design —
     # _allow_lazy_installs() fails open for users. Unit tests must never reach
     # pip/the network: with the SDK absent, any agent init whose tool checks

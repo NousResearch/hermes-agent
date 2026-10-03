@@ -729,10 +729,26 @@ def connect(db_path: Optional[Path] = None, *, board: Optional[str] = None) -> s
             if resolved not in _INITIALIZED_PATHS:
                 conn.executescript(_kb.SCHEMA_SQL)
                 _migrate_add_optional_columns(conn)
+                _warn_foreign_triggers(conn, path)
                 _INITIALIZED_PATHS.add(resolved)
 
         conn, _ = _open_configured(path, _init_if_needed)
     return conn
+
+
+def _warn_foreign_triggers(conn: sqlite3.Connection, path: Path) -> None:
+    """Log each trigger SCHEMA_SQL did not create. It runs inside the statement
+    of whichever process fires it (dispatcher, worker, CLI), so its writes have
+    no Hermes call site and no ``task_events`` row: one such trigger reproduces
+    #119003's ghost ``t_running`` board exactly. Logged, never dropped."""
+    for row in conn.execute("SELECT name, tbl_name FROM sqlite_master WHERE type = 'trigger' ORDER BY name"):
+        if row["name"] not in _kb.KANBAN_SCHEMA_TRIGGERS:
+            _kb._log.warning(
+                "kanban DB %s has trigger %r on %r that Hermes did not create; it runs inside "
+                "every matching write from any process (see #119003). Review it with: "
+                "SELECT sql FROM sqlite_master WHERE name = '%s'",
+                path, row["name"], row["tbl_name"], row["name"],
+            )
 
 
 @contextlib.contextmanager

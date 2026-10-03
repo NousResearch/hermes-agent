@@ -33,14 +33,14 @@ def _make_legacy_db(path: Path) -> None:
             PRIMARY KEY (task_id, platform, chat_id, thread_id));
         """
     )
-    conn.execute("INSERT INTO tasks (id, title, status, created_at) VALUES ('task-1', 'T', 'done', 1000)")
-    conn.execute("INSERT INTO task_comments VALUES ('c-1', 'task-1', 'agent', 'hi', 1500)")
-    conn.execute("INSERT INTO task_events VALUES ('e-1', 'task-1', 'completed', NULL, 2000)")
-    conn.execute("INSERT INTO task_events VALUES ('e-2', 'task-1', 'blocked', NULL, 2100)")
-    conn.execute("INSERT INTO task_runs VALUES ('r-1', 'task-1', 'default', 'done', 1000)")
+    conn.execute("INSERT INTO tasks (id, title, status, created_at) VALUES ('t_0001', 'T', 'done', 1000)")
+    conn.execute("INSERT INTO task_comments VALUES ('c-1', 't_0001', 'agent', 'hi', 1500)")
+    conn.execute("INSERT INTO task_events VALUES ('e-1', 't_0001', 'completed', NULL, 2000)")
+    conn.execute("INSERT INTO task_events VALUES ('e-2', 't_0001', 'blocked', NULL, 2100)")
+    conn.execute("INSERT INTO task_runs VALUES ('r-1', 't_0001', 'default', 'done', 1000)")
     conn.execute(
         "INSERT INTO kanban_notify_subs (task_id, platform, chat_id, created_at, last_event_id) "
-        "VALUES ('task-1', 'telegram', '123', 1000, 'e-1')"
+        "VALUES ('t_0001', 'telegram', '123', 1000, 'e-1')"
     )
     conn.commit()
     conn.close()
@@ -102,7 +102,7 @@ def test_legacy_text_pk_tables_rebuilt_to_integer_autoincrement(tmp_path, monkey
             assert name in indexes
 
         # AUTOINCREMENT actually works after the rebuild.
-        conn.execute("INSERT INTO task_events (task_id, kind, created_at) VALUES ('task-1', 'completed', 3000)")
+        conn.execute("INSERT INTO task_events (task_id, kind, created_at) VALUES ('t_0001', 'completed', 3000)")
         new_id = conn.execute("SELECT id FROM task_events ORDER BY id DESC LIMIT 1").fetchone()["id"]
         assert isinstance(new_id, int) and new_id >= 1
 
@@ -159,7 +159,7 @@ def test_connect_reinitializes_schema_when_db_file_vanished(tmp_path, monkeypatc
 
     with kbc.connect_closing(db_path) as conn:
         conn.execute(
-            "INSERT INTO tasks (id, title, status, created_at) VALUES ('t-1', 'T', 'ready', 1000)"
+            "INSERT INTO tasks (id, title, status, created_at) VALUES ('t_0001', 'T', 'ready', 1000)"
         )
         conn.commit()
     assert str(db_path.resolve()) in kb._INITIALIZED_PATHS
@@ -189,7 +189,7 @@ def test_connect_reinitializes_schema_when_db_replaced_by_empty_file(tmp_path, m
 
     with kbc.connect_closing(db_path) as conn:
         conn.execute(
-            "INSERT INTO tasks (id, title, status, created_at) VALUES ('t-2', 'T', 'ready', 1000)"
+            "INSERT INTO tasks (id, title, status, created_at) VALUES ('t_0002', 'T', 'ready', 1000)"
         )
         conn.commit()
     assert "tasks" in _tables(db_path)

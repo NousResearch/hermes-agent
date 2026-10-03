@@ -93,9 +93,12 @@ dependencies = [
   "Markdown==3.10.2; python_version >= '3.14'",
   # Skills Hub (GitHub App JWT auth — optional, only needed for bot identity)
   "PyJWT[crypto]==2.13.0; python_version >= '3.14'",  # PYSEC-2026-175/177/178/179
-  # urllib3 2.7.0 fixes GHSA-mf9v-mfxr-j63j (decompression-bomb bypass)
-  # and GHSA-qccp-gfcp-xxvc (header leak across origins).
-  "urllib3>=2.7.0,<3; python_version >= '3.14'",
+  # urllib3 2.8.0 fixes GHSA-8988-9cw3-xx77 (HTTPS proxy TLS configuration
+  # ignored), GHSA-gh4c-6fx4-qh6g (chunked deflate infinite loop) and
+  # GHSA-vxq7-64xx-v4gw (unbounded chunk-size line). 2.7.0 fixed
+  # GHSA-mf9v-mfxr-j63j (decompression-bomb bypass) and GHSA-qccp-gfcp-xxvc
+  # (header leak across origins).
+  "urllib3>=2.8.0,<3; python_version >= '3.14'",
   # PyJWT[crypto] pulls cryptography in transitively. Pin it here as well, so
   # that the WeCom and Weixin crypto paths cannot fall below the patched
   # version. 50.0.0 is the floor: it fixes CVE-2026-69247, a Bleichenbacher

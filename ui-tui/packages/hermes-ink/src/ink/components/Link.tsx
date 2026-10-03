@@ -1,53 +1,38 @@
 import type { ReactNode } from 'react'
 import React from 'react'
-import { c as _c } from 'react/compiler-runtime'
-
-import { supportsHyperlinks } from '../supports-hyperlinks.js'
 
 import Text from './Text.js'
 export type Props = {
   readonly children?: ReactNode
   readonly url: string
+  // Kept for backwards-compat: prior versions rendered `fallback` instead of
+  // the linked content on terminals where supportsHyperlinks() was false. We
+  // now always emit the hyperlink metadata so the in-process click/hover
+  // dispatcher can act on it regardless of the terminal's own OSC 8 support
+  // (see comment in the function body), so `fallback` is no longer wired up.
+  // Leaving the prop on the interface keeps existing call sites compiling.
   readonly fallback?: ReactNode
 }
 
-export default function Link(t0: Props) {
-  const $ = _c(5)
-
-  const { children, url, fallback } = t0
-
+export default function Link({ children, url }: Props): React.ReactNode {
+  // Always emit <ink-link>: the renderer stores `hyperlink` per cell in the
+  // screen buffer, which the click dispatcher (Ink.getHyperlinkAt →
+  // onHyperlinkClick) reads on mouseup to open URLs externally. Gating this
+  // on supportsHyperlinks() broke clicks in Apple Terminal / any terminal
+  // not on the OSC 8 allowlist — the cell's hyperlink field stayed empty,
+  // so the click pipeline had nothing to open.
+  //
+  // The OSC 8 escape itself is emitted unconditionally by the renderer
+  // (wrapWithOsc8Link in render-node-to-output.ts, oscLink in log-update.ts).
+  // Terminals that don't understand OSC 8 silently strip it — including
+  // Apple Terminal, which is why hover/click affordance has to come from
+  // the in-process overlay (applyHyperlinkHoverHighlight) and not from the
+  // terminal's own link rendering.
   const content = children ?? url
 
-  if (supportsHyperlinks()) {
-    let t1
-
-    if ($[0] !== content || $[1] !== url) {
-      t1 = (
-        <Text>
-          <ink-link href={url}>{content}</ink-link>
-        </Text>
-      )
-      $[0] = content
-      $[1] = url
-      $[2] = t1
-    } else {
-      t1 = $[2]
-    }
-
-    return t1
-  }
-
-  const t1 = fallback ?? content
-  let t2
-
-  if ($[3] !== t1) {
-    t2 = <Text>{t1}</Text>
-    $[3] = t1
-    $[4] = t2
-  } else {
-    t2 = $[4]
-  }
-
-  return t2
+  return (
+    <Text>
+      <ink-link href={url}>{content}</ink-link>
+    </Text>
+  )
 }
-//# sourceMappingURL=data:application/json;charset=utf-8;base64,eyJ2ZXJzaW9uIjozLCJuYW1lcyI6WyJSZWFjdE5vZGUiLCJSZWFjdCIsInN1cHBvcnRzSHlwZXJsaW5rcyIsIlRleHQiLCJQcm9wcyIsImNoaWxkcmVuIiwidXJsIiwiZmFsbGJhY2siLCJMaW5rIiwidDAiLCIkIiwiX2MiLCJjb250ZW50IiwidDEiLCJ0MiJdLCJzb3VyY2VzIjpbIkxpbmsudHN4Il0sInNvdXJjZXNDb250ZW50IjpbImltcG9ydCB0eXBlIHsgUmVhY3ROb2RlIH0gZnJvbSAncmVhY3QnXG5pbXBvcnQgUmVhY3QgZnJvbSAncmVhY3QnXG5pbXBvcnQgeyBzdXBwb3J0c0h5cGVybGlua3MgfSBmcm9tICcuLi9zdXBwb3J0cy1oeXBlcmxpbmtzLmpzJ1xuaW1wb3J0IFRleHQgZnJvbSAnLi9UZXh0LmpzJ1xuXG5leHBvcnQgdHlwZSBQcm9wcyA9IHtcbiAgcmVhZG9ubHkgY2hpbGRyZW4/OiBSZWFjdE5vZGVcbiAgcmVhZG9ubHkgdXJsOiBzdHJpbmdcbiAgcmVhZG9ubHkgZmFsbGJhY2s/OiBSZWFjdE5vZGVcbn1cblxuZXhwb3J0IGRlZmF1bHQgZnVuY3Rpb24gTGluayh7XG4gIGNoaWxkcmVuLFxuICB1cmwsXG4gIGZhbGxiYWNrLFxufTogUHJvcHMpOiBSZWFjdC5SZWFjdE5vZGUge1xuICAvLyBVc2UgY2hpbGRyZW4gaWYgcHJvdmlkZWQsIG90aGVyd2lzZSBkaXNwbGF5IHRoZSBVUkxcbiAgY29uc3QgY29udGVudCA9IGNoaWxkcmVuID8/IHVybFxuXG4gIGlmIChzdXBwb3J0c0h5cGVybGlua3MoKSkge1xuICAgIC8vIFdyYXAgaW4gVGV4dCB0byBlbnN1cmUgd2UncmUgaW4gYSB0ZXh0IGNvbnRleHRcbiAgICAvLyAoaW5rLWxpbmsgaXMgYSB0ZXh0IGVsZW1lbnQgbGlrZSBpbmstdGV4dClcbiAgICByZXR1cm4gKFxuICAgICAgPFRleHQ+XG4gICAgICAgIDxpbmstbGluayBocmVmPXt1cmx9Pntjb250ZW50fTwvaW5rLWxpbms+XG4gICAgICA8L1RleHQ+XG4gICAgKVxuICB9XG5cbiAgcmV0dXJuIDxUZXh0PntmYWxsYmFjayA/PyBjb250ZW50fTwvVGV4dD5cbn1cbiJdLCJtYXBwaW5ncyI6IjtBQUFBLGNBQWNBLFNBQVMsUUFBUSxPQUFPO0FBQ3RDLE9BQU9DLEtBQUssTUFBTSxPQUFPO0FBQ3pCLFNBQVNDLGtCQUFrQixRQUFRLDJCQUEyQjtBQUM5RCxPQUFPQyxJQUFJLE1BQU0sV0FBVztBQUU1QixPQUFPLEtBQUtDLEtBQUssR0FBRztFQUNsQixTQUFTQyxRQUFRLENBQUMsRUFBRUwsU0FBUztFQUM3QixTQUFTTSxHQUFHLEVBQUUsTUFBTTtFQUNwQixTQUFTQyxRQUFRLENBQUMsRUFBRVAsU0FBUztBQUMvQixDQUFDO0FBRUQsZUFBZSxTQUFBUSxLQUFBQyxFQUFBO0VBQUEsTUFBQUMsQ0FBQSxHQUFBQyxFQUFBO0VBQWM7SUFBQU4sUUFBQTtJQUFBQyxHQUFBO0lBQUFDO0VBQUEsSUFBQUUsRUFJckI7RUFFTixNQUFBRyxPQUFBLEdBQWdCUCxRQUFlLElBQWZDLEdBQWU7RUFFL0IsSUFBSUosa0JBQWtCLENBQUMsQ0FBQztJQUFBLElBQUFXLEVBQUE7SUFBQSxJQUFBSCxDQUFBLFFBQUFFLE9BQUEsSUFBQUYsQ0FBQSxRQUFBSixHQUFBO01BSXBCTyxFQUFBLElBQUMsSUFBSSxDQUNILFNBQXlDLENBQXpCUCxJQUFHLENBQUhBLElBQUUsQ0FBQyxDQUFHTSxRQUFNLENBQUUsRUFBOUIsUUFBeUMsQ0FDM0MsRUFGQyxJQUFJLENBRUU7TUFBQUYsQ0FBQSxNQUFBRSxPQUFBO01BQUFGLENBQUEsTUFBQUosR0FBQTtNQUFBSSxDQUFBLE1BQUFHLEVBQUE7SUFBQTtNQUFBQSxFQUFBLEdBQUFILENBQUE7SUFBQTtJQUFBLE9BRlBHLEVBRU87RUFBQTtFQUlHLE1BQUFBLEVBQUEsR0FBQU4sUUFBbUIsSUFBbkJLLE9BQW1CO0VBQUEsSUFBQUUsRUFBQTtFQUFBLElBQUFKLENBQUEsUUFBQUcsRUFBQTtJQUExQkMsRUFBQSxJQUFDLElBQUksQ0FBRSxDQUFBRCxFQUFrQixDQUFFLEVBQTFCLElBQUksQ0FBNkI7SUFBQUgsQ0FBQSxNQUFBRyxFQUFBO0lBQUFILENBQUEsTUFBQUksRUFBQTtFQUFBO0lBQUFBLEVBQUEsR0FBQUosQ0FBQTtFQUFBO0VBQUEsT0FBbENJLEVBQWtDO0FBQUEiLCJpZ25vcmVMaXN0IjpbXX0=

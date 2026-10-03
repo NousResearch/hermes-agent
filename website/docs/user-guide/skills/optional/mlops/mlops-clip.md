@@ -1,14 +1,14 @@
 ---
-title: "Clip — OpenAI's model connecting vision and language"
+title: "Clip — Zero-shot image classification and image-text search"
 sidebar_label: "Clip"
-description: "OpenAI's model connecting vision and language"
+description: "Zero-shot image classification and image-text search"
 ---
 
 {/* This page is auto-generated from the skill's SKILL.md by website/scripts/generate-skill-docs.py. Edit the source SKILL.md, not this page. */}
 
 # Clip
 
-OpenAI's model connecting vision and language. Enables zero-shot image classification, image-text matching, and cross-modal retrieval. Trained on 400M image-text pairs. Use for image search, content moderation, or vision-language tasks without fine-tuning. Best for general-purpose image understanding.
+Zero-shot image classification and image-text search.
 
 ## Skill metadata
 
@@ -20,6 +20,7 @@ OpenAI's model connecting vision and language. Enables zero-shot image classific
 | Author | Orchestra Research |
 | License | MIT |
 | Dependencies | `transformers`, `torch`, `pillow` |
+| Platforms | linux, macos, windows |
 | Tags | `Multimodal`, `CLIP`, `Vision-Language`, `Zero-Shot`, `Image Classification`, `OpenAI`, `Image Search`, `Cross-Modal Retrieval`, `Content Moderation` |
 
 ## Reference: full SKILL.md

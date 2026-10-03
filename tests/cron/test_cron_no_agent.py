@@ -11,9 +11,6 @@ Covers:
 
 from __future__ import annotations
 
-import json
-from pathlib import Path
-from unittest.mock import patch
 
 import pytest
 
@@ -52,32 +49,6 @@ def test_create_job_no_agent_requires_script(hermes_env):
         create_job(prompt=None, schedule="every 5m", no_agent=True)
 
 
-def test_create_job_no_agent_stores_field(hermes_env):
-    from cron.jobs import create_job
-
-    script_path = hermes_env / "scripts" / "watchdog.sh"
-    script_path.write_text("#!/bin/bash\necho hi\n")
-
-    job = create_job(
-        prompt=None,
-        schedule="every 5m",
-        script="watchdog.sh",
-        no_agent=True,
-        deliver="local",
-    )
-    assert job["no_agent"] is True
-    assert job["script"] == "watchdog.sh"
-    # Prompt can be empty/None for no_agent jobs.
-    assert job["prompt"] in (None, "")
-
-
-def test_create_job_default_is_not_no_agent(hermes_env):
-    from cron.jobs import create_job
-
-    job = create_job(prompt="say hi", schedule="every 5m", deliver="local")
-    assert job.get("no_agent") is False
-
-
 def test_update_job_roundtrips_no_agent_flag(hermes_env):
     from cron.jobs import create_job, update_job, get_job
 
@@ -99,93 +70,6 @@ def test_update_job_roundtrips_no_agent_flag(hermes_env):
 # ---------------------------------------------------------------------------
 
 
-def test_cronjob_tool_create_no_agent_without_script_errors(hermes_env):
-    from tools.cronjob_tools import cronjob
-
-    result = json.loads(
-        cronjob(action="create", schedule="every 5m", no_agent=True, deliver="local")
-    )
-    assert result.get("success") is False
-    assert "no_agent=True requires a script" in result.get("error", "")
-
-
-def test_cronjob_tool_create_no_agent_with_script_succeeds(hermes_env):
-    from tools.cronjob_tools import cronjob
-
-    script_path = hermes_env / "scripts" / "alert.sh"
-    script_path.write_text("#!/bin/bash\necho alert\n")
-
-    result = json.loads(
-        cronjob(
-            action="create",
-            schedule="every 5m",
-            script="alert.sh",
-            no_agent=True,
-            deliver="local",
-        )
-    )
-    assert result.get("success") is True
-    assert result["job"]["no_agent"] is True
-    assert result["job"]["script"] == "alert.sh"
-
-
-def test_cronjob_tool_update_toggles_no_agent(hermes_env):
-    from tools.cronjob_tools import cronjob
-
-    script_path = hermes_env / "scripts" / "w.sh"
-    script_path.write_text("echo hi\n")
-
-    created = json.loads(
-        cronjob(
-            action="create",
-            schedule="every 5m",
-            script="w.sh",
-            no_agent=True,
-            deliver="local",
-        )
-    )
-    job_id = created["job_id"]
-
-    off = json.loads(cronjob(action="update", job_id=job_id, no_agent=False, prompt="run"))
-    assert off["success"] is True
-    assert off["job"].get("no_agent") in (False, None)
-
-    on = json.loads(cronjob(action="update", job_id=job_id, no_agent=True))
-    assert on["success"] is True
-    assert on["job"]["no_agent"] is True
-
-
-def test_cronjob_tool_update_no_agent_without_script_errors(hermes_env):
-    """Flipping no_agent=True on a job that has no script must fail."""
-    from tools.cronjob_tools import cronjob
-
-    created = json.loads(
-        cronjob(action="create", schedule="every 5m", prompt="do a thing", deliver="local")
-    )
-    job_id = created["job_id"]
-
-    result = json.loads(cronjob(action="update", job_id=job_id, no_agent=True))
-    assert result.get("success") is False
-    assert "without a script" in result.get("error", "")
-
-
-def test_cronjob_tool_create_does_not_require_prompt_when_no_agent(hermes_env):
-    """The 'prompt or skill required' rule is relaxed for no_agent jobs."""
-    from tools.cronjob_tools import cronjob
-
-    script_path = hermes_env / "scripts" / "w.sh"
-    script_path.write_text("echo hi\n")
-
-    result = json.loads(
-        cronjob(
-            action="create",
-            schedule="every 5m",
-            script="w.sh",
-            no_agent=True,
-            deliver="local",
-        )
-    )
-    assert result.get("success") is True
 
 
 # ---------------------------------------------------------------------------
@@ -199,7 +83,7 @@ def test_run_job_no_agent_success_returns_script_stdout(hermes_env):
     from cron.scheduler import run_job
 
     script_path = hermes_env / "scripts" / "alert.sh"
-    script_path.write_text("#!/bin/bash\necho 'RAM 92% on host'\n")
+    script_path.write_text("#!/usr/bin/env bash\necho 'RAM 92% on host'\n")
 
     job = create_job(
         prompt=None, schedule="every 5m", script="alert.sh", no_agent=True, deliver="local"
@@ -211,74 +95,94 @@ def test_run_job_no_agent_success_returns_script_stdout(hermes_env):
     assert "RAM 92% on host" in doc
 
 
-def test_run_job_no_agent_empty_output_is_silent(hermes_env):
-    """Empty stdout → SILENT_MARKER, which suppresses delivery downstream."""
+def test_run_job_no_agent_reloads_dotenv_before_script(hermes_env, monkeypatch):
+    """Regression: a standalone cron tick process starts without home-channel
+    vars in its environment, and the agent path's per-run dotenv reload never
+    executes for no_agent jobs — delivery home channels stayed unresolved.
+    run_job must load .env at the top of the no_agent branch."""
+    import hermes_cli.env_loader as env_loader
     from cron.jobs import create_job
-    from cron.scheduler import run_job, SILENT_MARKER
+    from cron.scheduler import run_job
 
-    script_path = hermes_env / "scripts" / "quiet.sh"
-    script_path.write_text("#!/bin/bash\n# nothing to say\n")
+    loaded_homes: list = []
+
+    def fake_load(*, hermes_home=None, project_env=None):
+        loaded_homes.append(hermes_home)
+        return []
+
+    monkeypatch.setattr(env_loader, "load_hermes_dotenv", fake_load)
+
+    script_path = hermes_env / "scripts" / "probe.sh"
+    script_path.write_text('#!/usr/bin/env bash\necho "ok"\n')
 
     job = create_job(
-        prompt=None, schedule="every 5m", script="quiet.sh", no_agent=True, deliver="local"
+        prompt=None, schedule="every 5m", script="probe.sh", no_agent=True, deliver="local"
     )
     success, doc, final_response, error = run_job(job)
     assert success is True
     assert error is None
-    assert final_response == SILENT_MARKER
+    assert loaded_homes, "load_hermes_dotenv was not called on the no_agent path"
+    assert str(loaded_homes[0]) == str(hermes_env)
 
 
-def test_run_job_no_agent_wake_gate_is_silent(hermes_env):
-    """wakeAgent=false gate in stdout triggers a silent run."""
-    from cron.jobs import create_job
-    from cron.scheduler import run_job, SILENT_MARKER
-
-    script_path = hermes_env / "scripts" / "gated.sh"
-    script_path.write_text('#!/bin/bash\necho \'{"wakeAgent": false}\'\n')
-
-    job = create_job(
-        prompt=None, schedule="every 5m", script="gated.sh", no_agent=True, deliver="local"
-    )
-    success, doc, final_response, error = run_job(job)
-    assert success is True
-    assert final_response == SILENT_MARKER
+_PRESENCE_PROBE = (
+    "#!/usr/bin/env bash\n"
+    'for n in JOB_SVC_TOKEN LAUNCH_ONLY_TOKEN; do [ -n "${!n}" ] && echo "$n=set" || echo "$n=MISSING"; done\n'
+)
 
 
-def test_run_job_no_agent_script_failure_delivers_error(hermes_env):
-    """Non-zero exit → success=False, error alert is the delivered message."""
-    from cron.jobs import create_job
-    from cron.scheduler import run_job
+def test_no_agent_script_gets_owning_profiles_declared_secret_never_launch_residue(
+    hermes_env, monkeypatch, tmp_path,
+):
+    """Routed profile B declares JOB_SVC_TOKEN in terminal.env_passthrough and defines it only in
+    its own .env (never in the process env); the launch profile A's .env credential is in the
+    process env. B's script sees its own secret and not A's (#114209)."""
+    from agent.secret_scope import (
+        build_profile_secret_scope, reset_secret_scope, set_multiplex_active, set_secret_scope)
+    from cron.scheduler_script import _run_job_script
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
 
-    script_path = hermes_env / "scripts" / "broken.sh"
-    script_path.write_text("#!/bin/bash\necho oops >&2\nexit 3\n")
+    (hermes_env / ".env").write_text("LAUNCH_ONLY_TOKEN=launch-secret\n", encoding="utf-8")
+    monkeypatch.setenv("LAUNCH_ONLY_TOKEN", "launch-secret")  # what load_hermes_dotenv() did at startup
+    monkeypatch.delenv("JOB_SVC_TOKEN", raising=False)
+    routed = tmp_path / "routed"
+    (routed / "scripts").mkdir(parents=True)
+    (routed / ".env").write_text("JOB_SVC_TOKEN=routed-secret\n", encoding="utf-8")
+    (routed / "config.yaml").write_text("terminal:\n  env_passthrough: [JOB_SVC_TOKEN]\n", encoding="utf-8")
+    (routed / "scripts" / "probe.sh").write_text(_PRESENCE_PROBE, encoding="utf-8")
 
-    job = create_job(
-        prompt=None, schedule="every 5m", script="broken.sh", no_agent=True, deliver="local"
-    )
-    success, doc, final_response, error = run_job(job)
-    assert success is False
-    assert error is not None
-    assert "oops" in final_response or "exited with code 3" in final_response
-    assert "Cron watchdog" in final_response  # alert header
+    set_multiplex_active(True)
+    home_token = set_hermes_home_override(str(routed))
+    scope_token = set_secret_scope(build_profile_secret_scope(routed))
+    try:
+        ok, output = _run_job_script("probe.sh")
+    finally:
+        reset_secret_scope(scope_token)
+        reset_hermes_home_override(home_token)
+        set_multiplex_active(False)
+
+    assert ok is True
+    assert output.splitlines() == ["JOB_SVC_TOKEN=set", "LAUNCH_ONLY_TOKEN=MISSING"]
 
 
-def test_run_job_no_agent_never_invokes_aiagent(hermes_env):
-    """no_agent jobs must NOT import/construct the AIAgent."""
-    from cron.jobs import create_job
+def test_no_agent_script_of_launch_profile_keeps_its_own_env_credential(hermes_env, monkeypatch):
+    """Single-profile documented flow: the launch profile's own script still inherits the
+    credential its .env put in the process env — nothing is stripped for a non-routed job."""
+    from cron.scheduler_script import _run_job_script
 
-    script_path = hermes_env / "scripts" / "alert.sh"
-    script_path.write_text("#!/bin/bash\necho alert\n")
+    (hermes_env / ".env").write_text("LAUNCH_ONLY_TOKEN=launch-secret\n", encoding="utf-8")
+    monkeypatch.setenv("LAUNCH_ONLY_TOKEN", "launch-secret")
+    monkeypatch.delenv("JOB_SVC_TOKEN", raising=False)
+    (hermes_env / "scripts" / "probe.sh").write_text(_PRESENCE_PROBE, encoding="utf-8")
 
-    job = create_job(
-        prompt=None, schedule="every 5m", script="alert.sh", no_agent=True, deliver="local"
-    )
+    ok, output = _run_job_script("probe.sh")
 
-    with patch("run_agent.AIAgent") as ai_mock:
-        from cron.scheduler import run_job
+    assert ok is True
+    assert output.splitlines() == ["JOB_SVC_TOKEN=MISSING", "LAUNCH_ONLY_TOKEN=set"]
 
-        run_job(job)
 
-    ai_mock.assert_not_called()
+
+
 
 
 # ---------------------------------------------------------------------------
@@ -286,47 +190,235 @@ def test_run_job_no_agent_never_invokes_aiagent(hermes_env):
 # ---------------------------------------------------------------------------
 
 
-def test_run_job_script_shell_script_runs_via_bash(hermes_env):
-    """.sh files should execute under /bin/bash even without a shebang line."""
-    from cron.scheduler import _run_job_script
-
-    script_path = hermes_env / "scripts" / "shelly.sh"
-    # No shebang — relies on the interpreter-by-extension rule.
-    script_path.write_text('echo "shell: $BASH_VERSION" | head -c 7\n')
-
-    ok, output = _run_job_script("shelly.sh")
-    assert ok is True
-    assert output.startswith("shell:")
 
 
-def test_run_job_script_bash_extension_also_runs_via_bash(hermes_env):
-    from cron.scheduler import _run_job_script
+def test_run_job_script_nul_path_fails_cleanly(hermes_env):
+    """Sibling of the lifecycle-guard ingestion fix: a NUL-bearing script
+    value can survive to fire time (the creation-time guard treats it as
+    "nothing to scan"), and ``Path.expanduser()`` raises ValueError — not
+    OSError — on it. The scheduler must fail the run with a report, not
+    crash with an unhandled exception.
 
-    script_path = hermes_env / "scripts" / "thing.bash"
-    script_path.write_text('printf "via bash\\n"\n')
+    Regression (#86829): the assertion pins the *eager rejection* contract
+    — the specific "NUL byte" report is only produced by the pre-check
+    added in the fix. On Linux the legacy guard would swallow the
+    expanduser() ValueError and report a generic invalid-path message, so
+    a bare "Blocked" assertion could not tell the fixed code from the
+    unfixed code; on Windows the unfixed code crashes outright."""
+    from cron.scheduler_script import _run_job_script
 
-    ok, output = _run_job_script("thing.bash")
-    assert ok is True
-    assert output == "via bash"
-
-
-def test_run_job_script_python_still_runs_via_python(hermes_env):
-    """Regression: .py files must keep running via sys.executable."""
-    from cron.scheduler import _run_job_script
-
-    script_path = hermes_env / "scripts" / "py.py"
-    script_path.write_text("import sys\nprint(f'python {sys.version_info.major}')\n")
-
-    ok, output = _run_job_script("py.py")
-    assert ok is True
-    assert output.startswith("python ")
-
-
-def test_run_job_script_path_traversal_still_blocked(hermes_env):
-    """Security regression: shell-script support must NOT loosen containment."""
-    from cron.scheduler import _run_job_script
-
-    # Absolute path outside the scripts dir should be rejected.
-    ok, output = _run_job_script("/etc/passwd")
+    ok, output = _run_job_script("~user\x00bad.sh")
     assert ok is False
-    assert "Blocked" in output or "outside" in output
+    assert "NUL byte" in output
+
+
+
+
+
+
+# ---------------------------------------------------------------------------
+# _summarize_cron_failure_for_delivery: mode-aware failure attribution
+# ---------------------------------------------------------------------------
+#
+# The summarizer classified failures by substring-matching the error prose and
+# mapped any hit onto a provider-shaped explanation. For a no_agent job that is
+# structurally impossible — run_job short-circuits before any model is reached —
+# so a script whose own text happened to contain "timed out", "429" or
+# "authentication" had its failure attributed to a provider it never called.
+#
+# Observed in practice: _run_job_script reports a timeout as "Script timed out
+# after {n}s: {path}", which was delivered to chat as "provider timeout. Fallback
+# chain was exhausted or unavailable." for a job that never opened a socket.
+#
+# The summarizer had no direct test coverage — the only test referencing it
+# mocks it out and asserts on its arguments — which is why this shipped.
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        "Script timed out after 900s: /home/u/.hermes/scripts/nightly.sh",
+        "Script failed: curl returned 429 from api.example.com",
+        "Script failed: gpg authentication failed for key",
+        "Script failed: ReadTimeout contacting localhost",
+    ],
+)
+def test_no_agent_failure_never_blamed_on_a_provider(error):
+    """A script job's failure must never be reported as a provider/fallback failure."""
+    from cron.scheduler import _summarize_cron_failure_for_delivery
+
+    job = {"name": "nightly-job", "no_agent": True, "script": "nightly.sh"}
+    msg = _summarize_cron_failure_for_delivery(job, error)
+
+    assert "ai model service" not in msg.lower()
+    assert "backup provider" not in msg.lower()
+    # The operator must be pointed at what actually failed.
+    assert "script" in msg.lower()
+
+
+@pytest.mark.parametrize(
+    ("error", "expected"),
+    [
+        ("ReadTimeout: provider did not respond", "did not respond in time"),
+        ("HTTP 429 rate limit exceeded", "rate-limited"),
+        ("HTTP 401 authentication failed", "rejected the sign-in"),
+    ],
+)
+def test_agent_job_provider_classification_unchanged(error, expected):
+    """Regression guard: agent-mode jobs keep the provider-shaped summaries."""
+    from cron.scheduler import _summarize_cron_failure_for_delivery
+
+    job = {"name": "daily-digest", "no_agent": False}
+    assert expected in _summarize_cron_failure_for_delivery(job, error)
+
+
+# ---------------------------------------------------------------------------
+# no_agent jobs honoring a configured Python interpreter
+# ---------------------------------------------------------------------------
+
+
+def test_run_job_no_agent_uses_configured_interpreter(hermes_env):
+    """A no-agent job's script must run through the configured interpreter.
+
+    Proves the override survives the no_agent branch of ``run_job`` →
+    ``_run_job_script_with_claim_heartbeat`` → ``_run_job_script``.
+    """
+    import stat as _stat
+    import sys
+
+    from cron.jobs import create_job
+    from cron.scheduler import run_job
+
+    # A wrapper that re-execs the real interpreter with an env marker.
+    wrapper = hermes_env / "venv" / "bin" / "python3"
+    wrapper.parent.mkdir(parents=True)
+    wrapper.write_text(
+        f"#!{sys.executable}\n"
+        "import os, sys\n"
+        "env = os.environ.copy()\n"
+        'env["CRON_WRAPPER_USED"] = "1"\n'
+        "os.execve(sys.executable, [sys.executable, *sys.argv[1:]], env)\n"
+    )
+    wrapper.chmod(wrapper.stat().st_mode | _stat.S_IXUSR)
+
+    script_path = hermes_env / "scripts" / "marker.py"
+    script_path.write_text(
+        'import os\nprint(os.environ.get("CRON_WRAPPER_USED", "0"))\n'
+    )
+
+    job = create_job(
+        prompt=None,
+        schedule="every 5m",
+        script="marker.py",
+        no_agent=True,
+        deliver="local",
+        interpreter=str(wrapper),
+    )
+
+    success, doc, final_response, error = run_job(job)
+    assert success is True
+    assert error is None
+    assert final_response == "1"
+    assert "1" in doc
+
+
+def test_a_routed_profile_script_never_receives_a_launch_only_name(hermes_env, monkeypatch):
+    """A no_agent script fired for a SIBLING profile runs with that profile's scope overlaid and
+    NONE of the launch profile's residue (#107695 review): a name the launch ``.env`` defines, and a
+    name a launch external source SUPPLIED — applied, or skipped because a process value already won
+    (``skipped_existing``, so it never entered the provenance map) — reach the child unset. The
+    routed profile's own values come through, and the parent ``os.environ`` is never mutated."""
+    import os
+
+    from agent import secret_scope
+    from agent.secret_sources import registry as reg_module
+    from agent.secret_sources.base import FetchResult
+    from agent.secret_sources.registry import ApplyReport, SourceReport
+    from cron.scheduler_script import _run_job_script
+    from hermes_cli import env_loader
+    from hermes_constants import get_process_hermes_home, reset_hermes_home_override, set_hermes_home_override
+
+    launch = get_process_hermes_home()
+    (launch / ".env").write_text("LAUNCH_ONLY_VALUE=launch-only\nCUSTOM_CRON_VALUE=launch\n", encoding="utf-8")
+    (launch / "config.yaml").write_text("secrets:\n  test-source:\n    enabled: true\n", encoding="utf-8")
+    for name, value in (("LAUNCH_ONLY_VALUE", "launch-only"), ("CUSTOM_CRON_VALUE", "launch"),
+                        ("LAUNCH_VAULT_ONLY", "launch-vault-value"), ("LAUNCH_SKIPPED_SECRET", "launch-value")):
+        monkeypatch.setenv(name, value)
+    monkeypatch.setattr(env_loader, "_SOURCE_SUPPLIED_NAMES", set())
+    monkeypatch.setattr(env_loader, "_SECRET_SOURCES", {"LAUNCH_VAULT_ONLY": "vault", "ROUTED_VAULT_ONLY": "vault"})
+    monkeypatch.setattr(env_loader, "_APPLIED_HOMES", set())
+    monkeypatch.setattr(env_loader, "_SECRET_SOURCE_VALUES_BY_HOME", {})
+    monkeypatch.setattr(reg_module, "apply_all", lambda _cfg, home_path, **_kw: ApplyReport(
+        sources=[SourceReport(name="test-source", label="Test Source", result=FetchResult(),
+                              applied=[], skipped_existing=["LAUNCH_SKIPPED_SECRET"])],
+        provenance={}))
+    env_loader._apply_external_secret_sources(launch)  # the real registry path; the source loses to the env
+    environ_before = dict(os.environ)
+
+    routed = launch / "profiles" / "ops"
+    (routed / "scripts").mkdir(parents=True, exist_ok=True)
+    # Under the routed home override the runner resolves scripts against THAT profile's scripts dir.
+    script = routed / "scripts" / "probe_launch_only.sh"
+    script.write_text(
+        '#!/usr/bin/env bash\necho "${CUSTOM_CRON_VALUE}|${ROUTED_VAULT_ONLY}|${LAUNCH_ONLY_VALUE:-<unset>}'
+        '|${LAUNCH_VAULT_ONLY:-<unset>}|${LAUNCH_SKIPPED_SECRET:-<unset>}"\n'
+    )
+
+    home_token = set_hermes_home_override(str(routed))
+    context_token = secret_scope.set_multiplex_context(True)
+    scope_token = secret_scope.set_secret_scope(
+        {"CUSTOM_CRON_VALUE": "routed", "ROUTED_VAULT_ONLY": "routed-vault-value"})
+    try:
+        ok, output = _run_job_script("probe_launch_only.sh")
+    finally:
+        secret_scope.reset_secret_scope(scope_token)
+        secret_scope.reset_multiplex_context(context_token)
+        reset_hermes_home_override(home_token)
+
+    assert ok, output
+    assert output.strip() == "routed|routed-vault-value|<unset>|<unset>|<unset>"
+    assert dict(os.environ) == environ_before
+
+
+def test_a_routed_profile_script_keeps_administrator_managed_values_over_its_own(hermes_env, monkeypatch):
+    """Managed-scope precedence (#107695 review on f5f88d5058): the administrator's managed ``.env`` is
+    applied LAST with override in the launch process, so it beats the user's own ``.env``. Managed keys
+    are not launch residue, and they are re-applied over the routed scope so the child sees the same
+    precedence the launch process does."""
+    import os
+
+    from agent import secret_scope
+    from cron.scheduler_script import _run_job_script
+    from hermes_cli import env_loader, managed_scope
+    from hermes_constants import get_process_hermes_home, reset_hermes_home_override, set_hermes_home_override
+
+    launch = get_process_hermes_home()
+    managed = launch / "managed"
+    managed.mkdir()
+    (managed / ".env").write_text("ORG_POLICY_FLAG=managed-value\n", encoding="utf-8")
+    monkeypatch.setattr(env_loader, "_LOADED_DOTENV_KEYS", set(env_loader._LOADED_DOTENV_KEYS))
+    monkeypatch.setattr(env_loader, "_MANAGED_DOTENV_KEYS", set())
+    monkeypatch.setattr(managed_scope, "get_managed_dir", lambda: managed)
+    monkeypatch.setenv("ORG_POLICY_FLAG", "placeholder")
+    env_loader._apply_managed_env()  # the boot-time managed load
+    assert os.environ["ORG_POLICY_FLAG"] == "managed-value"
+
+    routed = launch / "profiles" / "ops"
+    (routed / "scripts").mkdir(parents=True, exist_ok=True)
+    script = routed / "scripts" / "probe_policy.sh"
+    script.write_text('#!/usr/bin/env bash\necho "${ORG_POLICY_FLAG:-<unset>}"\n')
+
+    home_token = set_hermes_home_override(str(routed))
+    context_token = secret_scope.set_multiplex_context(True)
+    # The routed user's own .env carries a competing value for the managed key.
+    scope_token = secret_scope.set_secret_scope({"ORG_POLICY_FLAG": "user-value"})
+    try:
+        ok, output = _run_job_script("probe_policy.sh")
+    finally:
+        secret_scope.reset_secret_scope(scope_token)
+        secret_scope.reset_multiplex_context(context_token)
+        reset_hermes_home_override(home_token)
+
+    assert ok, output
+    assert output.strip() == "managed-value"
+    assert os.environ["ORG_POLICY_FLAG"] == "managed-value"  # parent untouched

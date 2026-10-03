@@ -31,6 +31,11 @@ type TokenizerOptions = {
    * output streams, and enabling this there swallows display text. Default false.
    */
   x10Mouse?: boolean
+  /**
+   * Treat ESC followed by CR or LF as one legacy Alt+Enter key sequence.
+   * Only enable for keyboard input; output streams must preserve line endings.
+   */
+  legacyAltEnter?: boolean
 }
 
 /**
@@ -47,11 +52,20 @@ type TokenizerOptions = {
 export function createTokenizer(options?: TokenizerOptions): Tokenizer {
   let currentState: State = 'ground'
   let currentBuffer = ''
+  // The control-sequence buffer kept across the previous flush, if any. Used
+  // as a one-tick truncation valve: a partial CSI mouse report normally
+  // reassembles on the very next feed, so if a flush sees the exact same
+  // buffer it kept last time (the continuation never arrived), we drop it.
+  let lastFlushedBuffer = ''
   const x10Mouse = options?.x10Mouse ?? false
+  const legacyAltEnter = options?.legacyAltEnter ?? false
 
   return {
     feed(input: string): Token[] {
-      const result = tokenize(input, currentState, currentBuffer, false, x10Mouse)
+      // Real bytes arrived — any kept partial is no longer stale.
+      lastFlushedBuffer = ''
+
+      const result = tokenize(input, currentState, currentBuffer, false, x10Mouse, legacyAltEnter)
 
       currentState = result.state.state
       currentBuffer = result.state.buffer
@@ -60,9 +74,21 @@ export function createTokenizer(options?: TokenizerOptions): Tokenizer {
     },
 
     flush(): Token[] {
-      const result = tokenize('', currentState, currentBuffer, true, x10Mouse)
+      const result = tokenize('', currentState, currentBuffer, true, x10Mouse, legacyAltEnter)
       currentState = result.state.state
       currentBuffer = result.state.buffer
+
+      // tokenize() keeps (doesn't emit) an incomplete control sequence on
+      // flush. If two consecutive flushes see the same buffer with no feed in
+      // between, the continuation is never coming (truncated write / killed
+      // process) — drop it so it can't fuse with the next keypress's bytes.
+      if (currentBuffer && currentBuffer === lastFlushedBuffer) {
+        currentState = 'ground'
+        currentBuffer = ''
+        lastFlushedBuffer = ''
+      } else {
+        lastFlushedBuffer = currentBuffer
+      }
 
       return result.tokens
     },
@@ -70,6 +96,7 @@ export function createTokenizer(options?: TokenizerOptions): Tokenizer {
     reset(): void {
       currentState = 'ground'
       currentBuffer = ''
+      lastFlushedBuffer = ''
     },
 
     buffer(): string {
@@ -88,7 +115,8 @@ function tokenize(
   initialState: State,
   initialBuffer: string,
   flush: boolean,
-  x10Mouse: boolean
+  x10Mouse: boolean,
+  legacyAltEnter: boolean
 ): { tokens: Token[]; state: InternalState } {
   const tokens: Token[] = []
 
@@ -156,6 +184,13 @@ function tokenize(
           // 'O' - SS3
           result.state = 'ss3'
           i++
+        } else if (legacyAltEnter && (code === C0.CR || code === C0.LF)) {
+          // Legacy terminals encode Alt+Enter as ESC followed by CR or LF.
+          // Keep both bytes in one token so the key parser can preserve Alt.
+          // A standalone Escape is emitted by flush() before a later Enter;
+          // without that timing boundary the legacy encoding is ambiguous.
+          i++
+          emitSequence(data.slice(seqStart, i))
         } else if (isCSIIntermediate(code)) {
           // Intermediate byte (e.g., ESC ( for charset) - continue buffering
           result.state = 'escapeIntermediate'
@@ -298,8 +333,10 @@ function tokenize(
   // Handle end of input
   if (result.state === 'ground') {
     flushText()
-  } else if (flush) {
-    // Force output incomplete sequence
+  } else if (flush && result.state === 'escape') {
+    // A bare ESC with nothing after it is the Escape key — the one incomplete
+    // state a flush should turn into input (the classic ESCDELAY lone-ESC
+    // disambiguation: ESC alone vs. ESC as a sequence/meta prefix).
     const remaining = data.slice(seqStart)
 
     if (remaining) {
@@ -308,7 +345,18 @@ function tokenize(
 
     result.state = 'ground'
   } else {
-    // Buffer incomplete sequence for next call
+    // Buffer the incomplete sequence. Two paths land here:
+    //   - streaming (flush=false): normal carry-over to the next feed.
+    //   - flush=true while still inside a multi-byte control sequence
+    //     (csi/osc/dcs/apc/ss3/escapeIntermediate): we deliberately do NOT
+    //     emit it. A half-arrived CSI mouse report (ESC[<btn;col;row M) is an
+    //     unfinished sequence, not user input — force-emitting it is what
+    //     injects `46M`/`35;46M` shards into the prompt during a render stall.
+    //     Keeping it buffered lets the continuation reassemble on the next
+    //     feed (the xterm.js state-machine discipline — partial sequences
+    //     never become text). createTokenizer.flush() drops the buffer if it
+    //     survives a second flush with no progress (a genuine truncation), so
+    //     a stuck partial can never merge into the next keypress's bytes.
     result.buffer = data.slice(seqStart)
   }
 

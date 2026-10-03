@@ -4,6 +4,7 @@ description: "Karpathy's LLM Wiki: build/query interlinked markdown KB."
 version: 2.1.0
 author: Hermes Agent
 license: MIT
+platforms: [linux, macos, windows]
 metadata:
   hermes:
     tags: [wiki, knowledge-base, research, notes, markdown, rag-alternative]
@@ -34,7 +35,7 @@ Use this skill when the user:
 
 ## Wiki Location
 
-**Location:** Set via `WIKI_PATH` environment variable (e.g. in `~/.hermes/.env`).
+**Location:** Set via `WIKI_PATH` environment variable (e.g. in `${HERMES_HOME:-~/.hermes}/.env`).
 
 If unset, defaults to `~/wiki`.
 
@@ -455,7 +456,7 @@ Wants=network-online.target
 
 [Service]
 ExecStart=/path/to/ob sync --continuous
-WorkingDirectory=/home/user/wiki
+WorkingDirectory=%h/wiki
 Restart=on-failure
 RestartSec=10
 

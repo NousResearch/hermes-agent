@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env -S bash -c 'exec "$BASH" "$(dirname "$0")/run-in-hermes-env" python3 "$0" "$@"'
 """Drive the Hermes TUI under HERMES_DEV_PERF and summarize the pipeline.
 
 Usage:
@@ -15,7 +15,7 @@ session-picker flow.
 Environment overrides:
   HERMES_PERF_LOG     (default ~/.hermes/perf.log)
   HERMES_PERF_NODE    (default node from $PATH)
-  HERMES_TUI_DIR      (default /home/bb/hermes-agent/ui-tui)
+  HERMES_TUI_DIR      (default: <repo>/ui-tui relative to this script)
 
 Exit code is 0 if the harness ran and parsed results, 2 if the TUI crashed
 or produced no perf data (suggests HERMES_DEV_PERF wiring is broken).
@@ -26,11 +26,12 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import pty
+import pty  # windows-footgun: ok — dev profiling script, POSIX pty by design
 import select
 import signal
 import sqlite3
 import sys
+import tempfile
 import time
 from pathlib import Path
 from typing import Any
@@ -44,7 +45,10 @@ except ImportError:
         val = (os.environ.get("HERMES_HOME") or "").strip()
         return Path(val) if val else Path.home() / ".hermes"
 
-DEFAULT_TUI_DIR = Path(os.environ.get("HERMES_TUI_DIR", "/home/bb/hermes-agent/ui-tui"))
+DEFAULT_TUI_DIR = Path(
+    os.environ.get("HERMES_TUI_DIR")
+    or str(Path(__file__).resolve().parent.parent / "ui-tui")
+)
 DEFAULT_LOG = Path(os.environ.get("HERMES_PERF_LOG", str(get_hermes_home() / "perf.log")))
 DEFAULT_STATE_DB = get_hermes_home() / "state.db"
 
@@ -111,7 +115,7 @@ def summarize(log: Path, since_ts_ms: int) -> dict[str, Any]:
     frame_events: list[dict[str, Any]] = []
     if not log.exists():
         return {"error": f"no log at {log}", "react": [], "frame": []}
-    for line in log.read_text().splitlines():
+    for line in log.read_text(encoding="utf-8-sig").splitlines():
         line = line.strip()
         if not line:
             continue
@@ -343,7 +347,7 @@ def key_metrics(data: dict[str, Any]) -> dict[str, float]:
         metrics["backpressure_frames"] = bp
 
     if react:
-        for pid in set(e["id"] for e in react):
+        for pid in {e["id"] for e in react}:
             ms = [e["actualMs"] for e in react if e["id"] == pid]
             metrics[f"react_{pid}_p99"] = pct(ms, 0.99)
             metrics[f"react_{pid}_max"] = max(ms)
@@ -360,7 +364,7 @@ def format_diff(before: dict[str, float], after: dict[str, float]) -> str:
         b = before.get(k, 0.0)
         a = after.get(k, 0.0)
         d = a - b
-        pct_change = ((a / b) - 1) * 100 if b not in (0, 0.0) else float("inf") if a else 0
+        pct_change = ((a / b) - 1) * 100 if b not in {0, 0.0} else float("inf") if a else 0
 
         # Flag improvements vs regressions. For _p99 / _max / _total / gaps_over /
         # patches / writeBytes / backpressure, LOWER is better.  For fps / gaps_under,
@@ -457,7 +461,7 @@ def run_once(args: argparse.Namespace) -> dict[str, Any]:
                     break
                 time.sleep(0.1)
             else:
-                os.kill(pid, signal.SIGKILL)
+                os.kill(pid, signal.SIGKILL)  # windows-footgun: ok — POSIX-only script (imports pty at top)
                 os.waitpid(pid, 0)
         except (ProcessLookupError, ChildProcessError):
             pass
@@ -484,9 +488,9 @@ def main() -> int:
     p.add_argument("--tui-dir", default=str(DEFAULT_TUI_DIR))
     p.add_argument("--log", default=str(DEFAULT_LOG))
     p.add_argument("--save", metavar="LABEL",
-                   help="save the final metrics as /tmp/perf-<LABEL>.json for later --compare")
+                   help="save the final metrics as <tempdir>/perf-<LABEL>.json for later --compare")
     p.add_argument("--compare", metavar="LABEL",
-                   help="diff against /tmp/perf-<LABEL>.json after running")
+                   help="diff against <tempdir>/perf-<LABEL>.json after running")
     p.add_argument("--loop", action="store_true",
                    help="watch for source changes, rebuild, rerun, and diff vs previous run")
     p.add_argument("--extra-flag", dest="extra_flags", action="append", default=[],
@@ -504,17 +508,17 @@ def main() -> int:
     metrics = key_metrics(data)
 
     if args.save:
-        path = Path(f"/tmp/perf-{args.save}.json")
-        path.write_text(json.dumps(metrics, indent=2))
+        path = Path(tempfile.gettempdir()) / f"perf-{args.save}.json"
+        path.write_text(json.dumps(metrics, indent=2), encoding="utf-8")
         print(f"\n• saved: {path}")
 
     if args.compare:
-        path = Path(f"/tmp/perf-{args.compare}.json")
+        path = Path(tempfile.gettempdir()) / f"perf-{args.compare}.json"
         if not path.exists():
             print(f"\n⚠ no baseline at {path} — run with --save {args.compare} first")
         else:
-            before = json.loads(path.read_text())
-            print(f"\n═══ A/B diff vs /tmp/perf-{args.compare}.json ═══")
+            before = json.loads(path.read_text(encoding="utf-8-sig"))
+            print(f"\n═══ A/B diff vs {path} ═══")
             print(format_diff(before, metrics))
 
     if not data["react"] and not data["frame"]:
@@ -569,7 +573,7 @@ def loop_mode(args: argparse.Namespace) -> int:
                     ["npm", "run", "build"],
                     cwd=tui_dir,
                     capture_output=True,
-                    text=True,
+                    text=True, encoding='utf-8', errors='replace',
                 )
                 if result.returncode != 0:
                     print("✗ build failed:")

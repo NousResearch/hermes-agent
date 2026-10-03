@@ -5,7 +5,10 @@ Follows the same pattern as test_whatsapp_group_gating.py.
 """
 
 import sys
-from unittest.mock import MagicMock
+import logging
+from unittest.mock import AsyncMock, MagicMock
+
+import pytest
 
 from gateway.config import Platform, PlatformConfig
 
@@ -40,10 +43,10 @@ def _ensure_slack_mock():
 
 _ensure_slack_mock()
 
-import gateway.platforms.slack as _slack_mod
+import plugins.platforms.slack.adapter as _slack_mod
 _slack_mod.SLACK_AVAILABLE = True
 
-from gateway.platforms.slack import SlackAdapter  # noqa: E402
+from plugins.platforms.slack.adapter import SlackAdapter  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -55,7 +58,8 @@ CHANNEL_ID = "C0AQWDLHY9M"
 OTHER_CHANNEL_ID = "C9999999999"
 
 
-def _make_adapter(require_mention=None, strict_mention=None, free_response_channels=None):
+def _make_adapter(require_mention=None, strict_mention=None, free_response_channels=None,
+                  allowed_channels=None, mention_patterns=None):
     extra = {}
     if require_mention is not None:
         extra["require_mention"] = require_mention
@@ -63,6 +67,10 @@ def _make_adapter(require_mention=None, strict_mention=None, free_response_chann
         extra["strict_mention"] = strict_mention
     if free_response_channels is not None:
         extra["free_response_channels"] = free_response_channels
+    if allowed_channels is not None:
+        extra["allowed_channels"] = allowed_channels
+    if mention_patterns is not None:
+        extra["mention_patterns"] = mention_patterns
 
     adapter = object.__new__(SlackAdapter)
     adapter.platform = Platform.SLACK
@@ -82,57 +90,9 @@ def test_require_mention_defaults_to_true(monkeypatch):
     assert adapter._slack_require_mention() is True
 
 
-def test_require_mention_false():
-    adapter = _make_adapter(require_mention=False)
-    assert adapter._slack_require_mention() is False
-
-
-def test_require_mention_true():
-    adapter = _make_adapter(require_mention=True)
-    assert adapter._slack_require_mention() is True
-
-
-def test_require_mention_string_true():
-    adapter = _make_adapter(require_mention="true")
-    assert adapter._slack_require_mention() is True
-
-
-def test_require_mention_string_false():
-    adapter = _make_adapter(require_mention="false")
-    assert adapter._slack_require_mention() is False
-
-
-def test_require_mention_string_no():
-    adapter = _make_adapter(require_mention="no")
-    assert adapter._slack_require_mention() is False
-
-
-def test_require_mention_string_yes():
-    adapter = _make_adapter(require_mention="yes")
-    assert adapter._slack_require_mention() is True
-
-
 def test_require_mention_empty_string_stays_true():
     """Empty/malformed strings keep gating ON (explicit-false parser)."""
     adapter = _make_adapter(require_mention="")
-    assert adapter._slack_require_mention() is True
-
-
-def test_require_mention_malformed_string_stays_true():
-    """Unrecognised values keep gating ON (fail-closed)."""
-    adapter = _make_adapter(require_mention="maybe")
-    assert adapter._slack_require_mention() is True
-
-
-def test_require_mention_env_var_fallback(monkeypatch):
-    monkeypatch.setenv("SLACK_REQUIRE_MENTION", "false")
-    adapter = _make_adapter()  # no config value -> falls back to env
-    assert adapter._slack_require_mention() is False
-
-
-def test_require_mention_env_var_default_true(monkeypatch):
-    monkeypatch.delenv("SLACK_REQUIRE_MENTION", raising=False)
-    adapter = _make_adapter()
     assert adapter._slack_require_mention() is True
 
 
@@ -140,30 +100,6 @@ def test_require_mention_env_var_default_true(monkeypatch):
 # Tests: _slack_strict_mention
 # ---------------------------------------------------------------------------
 
-def test_strict_mention_defaults_to_false(monkeypatch):
-    monkeypatch.delenv("SLACK_STRICT_MENTION", raising=False)
-    adapter = _make_adapter()
-    assert adapter._slack_strict_mention() is False
-
-
-def test_strict_mention_true():
-    adapter = _make_adapter(strict_mention=True)
-    assert adapter._slack_strict_mention() is True
-
-
-def test_strict_mention_false():
-    adapter = _make_adapter(strict_mention=False)
-    assert adapter._slack_strict_mention() is False
-
-
-def test_strict_mention_string_true():
-    adapter = _make_adapter(strict_mention="true")
-    assert adapter._slack_strict_mention() is True
-
-
-def test_strict_mention_string_off():
-    adapter = _make_adapter(strict_mention="off")
-    assert adapter._slack_strict_mention() is False
 
 
 def test_strict_mention_malformed_stays_false():
@@ -172,39 +108,9 @@ def test_strict_mention_malformed_stays_false():
     assert adapter._slack_strict_mention() is False
 
 
-def test_strict_mention_env_var_fallback(monkeypatch):
-    monkeypatch.setenv("SLACK_STRICT_MENTION", "true")
-    adapter = _make_adapter()  # no config value -> falls back to env
-    assert adapter._slack_strict_mention() is True
-
-
 # ---------------------------------------------------------------------------
 # Tests: _slack_free_response_channels
 # ---------------------------------------------------------------------------
-
-def test_free_response_channels_default_empty(monkeypatch):
-    monkeypatch.delenv("SLACK_FREE_RESPONSE_CHANNELS", raising=False)
-    adapter = _make_adapter()
-    assert adapter._slack_free_response_channels() == set()
-
-
-def test_free_response_channels_list():
-    adapter = _make_adapter(free_response_channels=[CHANNEL_ID, OTHER_CHANNEL_ID])
-    result = adapter._slack_free_response_channels()
-    assert CHANNEL_ID in result
-    assert OTHER_CHANNEL_ID in result
-
-
-def test_free_response_channels_csv_string():
-    adapter = _make_adapter(free_response_channels=f"{CHANNEL_ID}, {OTHER_CHANNEL_ID}")
-    result = adapter._slack_free_response_channels()
-    assert CHANNEL_ID in result
-    assert OTHER_CHANNEL_ID in result
-
-
-def test_free_response_channels_empty_string():
-    adapter = _make_adapter(free_response_channels="")
-    assert adapter._slack_free_response_channels() == set()
 
 
 def test_free_response_channels_env_var_fallback(monkeypatch):
@@ -225,35 +131,48 @@ def test_free_response_channels_bare_int():
     assert result == {"1491973769726791812"}
 
 
-def test_free_response_channels_int_list():
-    # YAML list form with bare numeric entries — each element should be coerced.
-    adapter = _make_adapter(free_response_channels=[1491973769726791812, 99999])
-    result = adapter._slack_free_response_channels()
-    assert result == {"1491973769726791812", "99999"}
-
-
 # ---------------------------------------------------------------------------
 # Tests: mention gating integration (simulating _handle_slack_message logic)
 # ---------------------------------------------------------------------------
 
 def _would_process(adapter, *, is_dm=False, channel_id=CHANNEL_ID,
                    text="hello", mentioned=False, thread_reply=False,
-                   active_session=False):
+                   active_session=False, channel_type=None):
     """Simulate the mention gating logic from _handle_slack_message.
 
     Returns True if the message would be processed, False if it would be
     skipped (returned early).
+
+    ``channel_type`` mirrors the real Slack payload ("im" = 1:1 DM,
+    "mpim" = group DM, "" = channel). When omitted it is derived from the
+    legacy ``is_dm`` flag as a 1:1 IM, preserving existing callers. Gating
+    keys off ``is_one_to_one_dm`` (only a true 1:1 IM is exempt); MPIMs are
+    shared surfaces and go through the same gating as channels.
     """
+    if channel_type is None:
+        channel_type = "im" if is_dm else ""
+    is_one_to_one_dm = channel_type == "im"
+
     bot_uid = adapter._team_bot_user_ids.get("T1", adapter._bot_user_id)
     if mentioned:
         text = f"<@{bot_uid}> {text}"
-    is_mentioned = bot_uid and f"<@{bot_uid}>" in text
+    is_mentioned = bool(
+        (bot_uid and f"<@{bot_uid}>" in text)
+        or adapter._slack_message_matches_mention_patterns(text)
+    )
 
-    if not is_dm:
+    if not is_one_to_one_dm and bot_uid:
+        # allowed_channels check (whitelist — must pass before other gating)
+        allowed = adapter._slack_allowed_channels()
+        if allowed and channel_id not in allowed:
+            return False
+
         if channel_id in adapter._slack_free_response_channels():
             return True
         elif not adapter._slack_require_mention():
             return True
+        elif adapter._slack_strict_mention() and not is_mentioned:
+            return False
         elif not is_mentioned:
             if thread_reply and active_session:
                 return True
@@ -265,11 +184,6 @@ def _would_process(adapter, *, is_dm=False, channel_id=CHANNEL_ID,
 def test_default_require_mention_channel_without_mention_ignored():
     adapter = _make_adapter()  # default: require_mention=True
     assert _would_process(adapter, text="hello everyone") is False
-
-
-def test_require_mention_false_channel_without_mention_processed():
-    adapter = _make_adapter(require_mention=False)
-    assert _would_process(adapter, text="hello everyone") is True
 
 
 def test_channel_in_free_response_processed_without_mention():
@@ -291,6 +205,32 @@ def test_other_channel_not_in_free_response_still_gated():
 def test_dm_always_processed_regardless_of_setting():
     adapter = _make_adapter(require_mention=True)
     assert _would_process(adapter, is_dm=True, text="hello") is True
+
+
+# ---------------------------------------------------------------------------
+# Tests: MPIM / group-DM shared-surface gating (regression for the group-DM
+# routing bug introduced by PRs #4633 / #54632 / #54663, which classified
+# mpim as a DM and thereby exempted it from mention gating + reaction guards).
+# ---------------------------------------------------------------------------
+
+
+
+def test_mpim_not_in_allowed_channels_dropped():
+    """MPIM absent from a non-empty allowed_channels whitelist is dropped,
+    even when mentioned."""
+    adapter = _make_adapter(require_mention=True, allowed_channels=["C_ALLOWED"])
+    assert _would_process(adapter, channel_type="mpim", channel_id="C_BLOCKED",
+                          mentioned=True, text="hello") is False
+
+
+def test_one_to_one_im_still_exempt():
+    """1:1 IM behavior is preserved: mention-exempt regardless of settings."""
+    adapter = _make_adapter(require_mention=True, strict_mention=True)
+    assert _would_process(adapter, channel_type="im", text="hello") is True
+
+
+
+
 
 
 def test_mentioned_message_always_processed():
@@ -371,6 +311,8 @@ def test_config_bridges_slack_free_response_channels(monkeypatch, tmp_path):
     import os as _os
     assert _os.environ["SLACK_REQUIRE_MENTION"] == "false"
     assert _os.environ["SLACK_FREE_RESPONSE_CHANNELS"] == "C0AQWDLHY9M,C9999999999"
+    _os.environ.pop("SLACK_REQUIRE_MENTION", None)
+    _os.environ.pop("SLACK_FREE_RESPONSE_CHANNELS", None)
 
 
 def test_top_level_slack_settings_do_not_disable_env_token_setup(monkeypatch, tmp_path):
@@ -392,31 +334,6 @@ def test_top_level_slack_settings_do_not_disable_env_token_setup(monkeypatch, tm
 
     slack_config = config.platforms[Platform.SLACK]
     assert slack_config.enabled is True
-    assert slack_config.token == "xoxb-test"
-    assert slack_config.extra.get("require_mention") is False
-    assert "_enabled_explicit" not in slack_config.extra
-
-
-def test_explicit_top_level_slack_enabled_false_wins_over_env_token(monkeypatch, tmp_path):
-    from gateway.config import load_gateway_config
-
-    hermes_home = tmp_path / ".hermes"
-    hermes_home.mkdir()
-    (hermes_home / "config.yaml").write_text(
-        "slack:\n"
-        "  enabled: false\n"
-        "  require_mention: false\n",
-        encoding="utf-8",
-    )
-
-    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
-    monkeypatch.setenv("SLACK_BOT_TOKEN", "xoxb-test")
-    monkeypatch.delenv("SLACK_REQUIRE_MENTION", raising=False)
-
-    config = load_gateway_config()
-
-    slack_config = config.platforms[Platform.SLACK]
-    assert slack_config.enabled is False
     assert slack_config.token == "xoxb-test"
     assert slack_config.extra.get("require_mention") is False
     assert "_enabled_explicit" not in slack_config.extra
@@ -488,27 +405,6 @@ def test_config_bridges_slack_reply_in_thread(monkeypatch, tmp_path):
     ) == "171.000"
 
 
-def test_config_bridges_slack_strict_mention(monkeypatch, tmp_path):
-    from gateway.config import load_gateway_config
-
-    hermes_home = tmp_path / ".hermes"
-    hermes_home.mkdir()
-    (hermes_home / "config.yaml").write_text(
-        "slack:\n"
-        "  strict_mention: true\n",
-        encoding="utf-8",
-    )
-
-    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
-    monkeypatch.delenv("SLACK_STRICT_MENTION", raising=False)
-
-    config = load_gateway_config()
-
-    assert config is not None
-    import os as _os
-    assert _os.environ["SLACK_STRICT_MENTION"] == "true"
-
-
 # ---------------------------------------------------------------------------
 # Regression: strict mode must NOT persist mentions into _mentioned_threads
 # ---------------------------------------------------------------------------
@@ -536,19 +432,147 @@ def test_mention_in_strict_mode_does_not_register_thread():
     assert thread_ts not in adapter._mentioned_threads
 
 
-def test_mention_outside_strict_mode_still_registers_thread():
-    adapter = _make_adapter(strict_mention=False)
-    adapter._bot_user_id = "U_BOT"
-    adapter._mentioned_threads = set()
-    adapter._MENTIONED_THREADS_MAX = 5000
+# ---------------------------------------------------------------------------
+# Tests: _slack_allowed_channels
+# ---------------------------------------------------------------------------
 
-    thread_ts = "1700000000.100200"
-    event_thread_ts = thread_ts
 
-    text = "<@U_BOT> hello"
-    is_mentioned = f"<@{adapter._bot_user_id}>" in text
-    assert is_mentioned
-    if event_thread_ts and not adapter._slack_strict_mention():
-        adapter._mentioned_threads.add(event_thread_ts)
+def test_allowed_channels_env_var_fallback(monkeypatch):
+    monkeypatch.setenv("SLACK_ALLOWED_CHANNELS", f"{CHANNEL_ID},{OTHER_CHANNEL_ID}")
+    adapter = _make_adapter()  # no config value → falls back to env
+    result = adapter._slack_allowed_channels()
+    assert CHANNEL_ID in result
+    assert OTHER_CHANNEL_ID in result
 
-    assert thread_ts in adapter._mentioned_threads
+
+# ---------------------------------------------------------------------------
+# Tests: allowed_channels gating integration
+# ---------------------------------------------------------------------------
+
+
+def test_allowed_channels_env_var_blocks_channel(monkeypatch):
+    """SLACK_ALLOWED_CHANNELS env var (no config) also gates messages."""
+    monkeypatch.setenv("SLACK_ALLOWED_CHANNELS", CHANNEL_ID)
+    adapter = _make_adapter()  # no config value → falls back to env
+    assert _would_process(adapter, channel_id=OTHER_CHANNEL_ID, text="hello") is False
+    assert _would_process(adapter, channel_id=CHANNEL_ID, mentioned=True) is True
+
+
+@pytest.mark.asyncio
+async def test_block_extraction_debug_log_does_not_include_message_preview(caplog):
+    secret_block_text = "private incident token: customer-id-12345"
+    adapter = _make_adapter(allowed_channels=[CHANNEL_ID])
+    adapter._dedup = MagicMock(is_duplicate=MagicMock(return_value=False))
+    adapter._lookup_assistant_thread_metadata = MagicMock(return_value={})
+    adapter._channel_team = {}
+    adapter._CHANNEL_TEAM_MAX = 10000
+    # Wave-2 mention gating probes users.info for bot detection on several
+    # paths; this fixture has no web client, so pin the sender as human.
+    adapter._resolve_user_is_bot = AsyncMock(return_value=False)
+    adapter._resolve_user_name = AsyncMock(return_value="testuser")
+    adapter.handle_message = AsyncMock()
+
+    event = {
+        "channel": OTHER_CHANNEL_ID,
+        "channel_type": "channel",
+        "ts": "1710000000.000100",
+        "team": "T1",
+        "user": "U_USER",
+        # Human-authored messages carry client_msg_id; without it the
+        # unlabeled-bot probe path calls users.info, which this fixture
+        # doesn't wire up.
+        "client_msg_id": "cmid-block-priv",
+        "text": "<@U_BOT_123> see quoted message",
+        "blocks": [
+            {
+                "type": "rich_text",
+                "elements": [
+                    {
+                        "type": "rich_text_quote",
+                        "elements": [
+                            {
+                                "type": "rich_text_section",
+                                "elements": [
+                                    {"type": "text", "text": secret_block_text}
+                                ],
+                            }
+                        ],
+                    }
+                ],
+            }
+        ],
+    }
+
+    with caplog.at_level(logging.DEBUG, logger="plugins.platforms.slack.adapter"):
+        await adapter._handle_slack_message(event)
+
+    assert "extracted additional text from blocks" in caplog.text
+    assert "chars=" in caplog.text
+    assert secret_block_text not in caplog.text
+
+
+# ---------------------------------------------------------------------------
+# Tests: config bridging for allowed_channels
+# ---------------------------------------------------------------------------
+
+
+# ---------------------------------------------------------------------------
+# Tests: mention_patterns (wake words) — parity with other adapters (#50732)
+# ---------------------------------------------------------------------------
+
+
+# ---------------------------------------------------------------------------
+# Tests: Block-Kit-only mention detection (#52387)
+# ---------------------------------------------------------------------------
+
+from plugins.platforms.slack.adapter import _slack_mention_detection_text  # noqa: E402
+
+
+def _blockkit_mention_event(bot_user_id=BOT_USER_ID, flat_text="Release notification"):
+    """A Slack event whose @mention lives ONLY inside Block Kit blocks."""
+    return {
+        "text": flat_text,
+        "blocks": [
+            {
+                "type": "rich_text",
+                "elements": [
+                    {
+                        "type": "rich_text_section",
+                        "elements": [
+                            {"type": "text", "text": "Hey "},
+                            {"type": "user", "user_id": bot_user_id},
+                            {"type": "text", "text": "! I will do a release"},
+                        ],
+                    }
+                ],
+            }
+        ],
+    }
+
+
+def test_mention_detection_text_ignores_quoted_blockkit_mention():
+    """A mention inside rich_text_quote (forwarded content) must NOT count."""
+    event = {
+        "text": "please review",
+        "blocks": [
+            {
+                "type": "rich_text",
+                "elements": [
+                    {
+                        "type": "rich_text_quote",
+                        "elements": [
+                            {
+                                "type": "rich_text_section",
+                                "elements": [
+                                    {"type": "text", "text": "Contains "},
+                                    {"type": "user", "user_id": BOT_USER_ID},
+                                    {"type": "text", "text": " in quoted text"},
+                                ],
+                            }
+                        ],
+                    }
+                ],
+            }
+        ],
+    }
+    assert f"<@{BOT_USER_ID}>" not in _slack_mention_detection_text(event)

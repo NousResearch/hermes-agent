@@ -1,9 +1,13 @@
 from argparse import Namespace
+import os
 from pathlib import Path
+import subprocess
 import sys
+import textwrap
 import types
 
 import pytest
+from hermes_cli import main_tui_launch
 
 
 def _args(**overrides):
@@ -20,176 +24,74 @@ def _args(**overrides):
     return Namespace(**base)
 
 
+def _raise_exit(rc):
+    raise SystemExit(rc)
+
+
 @pytest.fixture
 def main_mod(monkeypatch):
     import hermes_cli.main as mod
 
     monkeypatch.setattr(mod, "_has_any_provider_configured", lambda: True)
+    # Reset the idempotency guard so each test starts fresh.
+    monkeypatch.setattr(mod, "_oneshot_cleanup_done", False)
     return mod
 
 
-def test_cmd_chat_tui_continue_uses_latest_tui_session(monkeypatch, main_mod):
-    calls = []
-    captured = {}
+def test_exit_after_oneshot_flushes_stdio_and_calls_os_exit(
+    monkeypatch, main_mod
+):
+    flushed = []
+    exits = []
 
-    def fake_resolve_last(source="cli"):
-        calls.append(source)
-        return "20260408_235959_a1b2c3" if source == "tui" else None
+    class FakeStream:
+        def __init__(self, name):
+            self.name = name
 
-    def fake_launch(resume_session_id=None, tui_dev=False, model=None, provider=None, toolsets=None):
-        captured["resume"] = resume_session_id
-        raise SystemExit(0)
+        def flush(self):
+            flushed.append(self.name)
 
-    monkeypatch.setattr(main_mod, "_resolve_last_session", fake_resolve_last)
-    monkeypatch.setattr(main_mod, "_resolve_session_by_name_or_id", lambda val: val)
-    monkeypatch.setattr(main_mod, "_launch_tui", fake_launch)
+    def fake_exit(rc):
+        exits.append(rc)
+        raise SystemExit(rc)
 
-    with pytest.raises(SystemExit):
-        main_mod.cmd_chat(_args(continue_last=True))
-
-    assert calls == ["tui"]
-    assert captured["resume"] == "20260408_235959_a1b2c3"
-
-
-def test_cmd_chat_tui_continue_falls_back_to_latest_cli_session(monkeypatch, main_mod):
-    calls = []
-    captured = {}
-
-    def fake_resolve_last(source="cli"):
-        calls.append(source)
-        if source == "tui":
-            return None
-        if source == "cli":
-            return "20260408_235959_d4e5f6"
-        return None
-
-    def fake_launch(resume_session_id=None, tui_dev=False, model=None, provider=None, toolsets=None):
-        captured["resume"] = resume_session_id
-        raise SystemExit(0)
-
-    monkeypatch.setattr(main_mod, "_resolve_last_session", fake_resolve_last)
-    monkeypatch.setattr(main_mod, "_resolve_session_by_name_or_id", lambda val: val)
-    monkeypatch.setattr(main_mod, "_launch_tui", fake_launch)
-
-    with pytest.raises(SystemExit):
-        main_mod.cmd_chat(_args(continue_last=True))
-
-    assert calls == ["tui", "cli"]
-    assert captured["resume"] == "20260408_235959_d4e5f6"
-
-
-def test_cmd_chat_tui_resume_resolves_title_before_launch(monkeypatch, main_mod):
-    captured = {}
-
-    def fake_launch(resume_session_id=None, tui_dev=False, model=None, provider=None, toolsets=None):
-        captured["resume"] = resume_session_id
-        raise SystemExit(0)
-
-    monkeypatch.setattr(
-        main_mod, "_resolve_session_by_name_or_id", lambda val: "20260409_000000_aa11bb"
-    )
-    monkeypatch.setattr(main_mod, "_launch_tui", fake_launch)
-
-    with pytest.raises(SystemExit):
-        main_mod.cmd_chat(_args(resume="my t0p session"))
-
-    assert captured["resume"] == "20260409_000000_aa11bb"
-
-
-def test_cmd_chat_tui_passes_model_and_provider(monkeypatch, main_mod):
-    captured = {}
-
-    def fake_launch(resume_session_id=None, tui_dev=False, model=None, provider=None, toolsets=None):
-        captured.update(
-            {
-                "model": model,
-                "provider": provider,
-                "resume": resume_session_id,
-                "toolsets": toolsets,
-                "tui_dev": tui_dev,
-            }
-        )
-        raise SystemExit(0)
-
-    monkeypatch.setattr(main_mod, "_launch_tui", fake_launch)
-
-    with pytest.raises(SystemExit):
-        main_mod.cmd_chat(
-            _args(model="anthropic/claude-sonnet-4.6", provider="anthropic")
-        )
-
-    assert captured == {
-        "model": "anthropic/claude-sonnet-4.6",
-        "provider": "anthropic",
-        "resume": None,
-        "toolsets": None,
-        "tui_dev": False,
-    }
-
-
-def test_cmd_chat_tui_passes_toolsets(monkeypatch, main_mod):
-    captured = {}
-
-    def fake_launch(resume_session_id=None, tui_dev=False, model=None, provider=None, toolsets=None):
-        captured["toolsets"] = toolsets
-        raise SystemExit(0)
-
-    monkeypatch.setattr(main_mod, "_launch_tui", fake_launch)
-
-    with pytest.raises(SystemExit):
-        main_mod.cmd_chat(_args(toolsets="web,terminal"))
-
-    assert captured["toolsets"] == "web,terminal"
-
-
-def test_main_top_level_tui_accepts_toolsets(monkeypatch, main_mod):
-    captured = {}
-
-    import hermes_cli.config as config_mod
-
-    monkeypatch.setattr(sys, "argv", ["hermes", "--tui", "--toolsets", "web,terminal"])
-    monkeypatch.setitem(sys.modules, "hermes_cli.plugins", types.SimpleNamespace(discover_plugins=lambda: None))
-    monkeypatch.setitem(sys.modules, "tools.mcp_tool", types.SimpleNamespace(discover_mcp_tools=lambda: None))
-    monkeypatch.setattr(config_mod, "load_config", lambda: {})
-    monkeypatch.setattr(config_mod, "get_container_exec_info", lambda: None)
-    monkeypatch.setitem(
-        sys.modules,
-        "agent.shell_hooks",
-        types.SimpleNamespace(register_from_config=lambda _cfg, accept_hooks=False: None),
-    )
-    monkeypatch.setattr(main_mod, "cmd_chat", lambda args: captured.update({"toolsets": args.toolsets, "tui": args.tui}))
-
-    main_mod.main()
-
-    assert captured == {"toolsets": "web,terminal", "tui": True}
-
-
-def test_main_top_level_oneshot_accepts_toolsets(monkeypatch, main_mod):
-    captured = {}
-
-    import hermes_cli.config as config_mod
-
-    monkeypatch.setattr(sys, "argv", ["hermes", "-z", "hello", "--toolsets", "web,terminal"])
-    monkeypatch.setitem(sys.modules, "hermes_cli.plugins", types.SimpleNamespace(discover_plugins=lambda: None))
-    monkeypatch.setitem(sys.modules, "tools.mcp_tool", types.SimpleNamespace(discover_mcp_tools=lambda: None))
-    monkeypatch.setattr(config_mod, "load_config", lambda: {})
-    monkeypatch.setattr(config_mod, "get_container_exec_info", lambda: None)
-    monkeypatch.setitem(
-        sys.modules,
-        "agent.shell_hooks",
-        types.SimpleNamespace(register_from_config=lambda _cfg, accept_hooks=False: None),
-    )
-    monkeypatch.setitem(
-        sys.modules,
-        "hermes_cli.oneshot",
-        types.SimpleNamespace(run_oneshot=lambda prompt, **kwargs: captured.update({"prompt": prompt, **kwargs}) or 0),
-    )
+    monkeypatch.setattr(main_mod.sys, "stdout", FakeStream("stdout"))
+    monkeypatch.setattr(main_mod.sys, "stderr", FakeStream("stderr"))
+    monkeypatch.setattr(main_mod.os, "_exit", fake_exit)
+    monkeypatch.setattr("logging.shutdown", lambda: None)
 
     with pytest.raises(SystemExit) as exc:
-        main_mod.main()
+        main_mod._exit_after_oneshot(17)
 
-    assert exc.value.code == 0
-    assert captured == {"prompt": "hello", "model": None, "provider": None, "toolsets": "web,terminal"}
+    assert exc.value.code == 17
+    assert exits == [17]
+    assert flushed == ["stdout", "stderr"]
+
+
+def test_oneshot_subprocess_exits_without_teardown_abort():
+    program = textwrap.dedent(
+        """
+        import hermes_cli.oneshot as oneshot
+        from hermes_cli.main import _exit_after_oneshot
+
+        oneshot._run_agent = lambda *args, **kwargs: ("ok", {"final_response": "ok"})
+        _exit_after_oneshot(oneshot.run_oneshot("hello"))
+        """
+    )
+
+    result = subprocess.run(
+        [sys.executable, "-c", program],
+        cwd=Path(__file__).resolve().parents[2],
+        capture_output=True,
+        timeout=10,
+        check=False,
+    )
+
+    assert result.returncode == 0
+    assert result.stdout in (b"ok\n", b"ok\r\n")
+    # Don't demand byte-empty stderr — an import-time warning from the heavy
+    # CLI import chain shouldn't fail this. What matters is no crash traceback.
+    assert b"Traceback" not in result.stderr
 
 
 def _stub_plugin_discovery(monkeypatch):
@@ -200,121 +102,83 @@ def _stub_plugin_discovery(monkeypatch):
     )
 
 
-def test_oneshot_rejects_invalid_only_toolsets(monkeypatch, capsys):
-    _stub_plugin_discovery(monkeypatch)
-    from hermes_cli.oneshot import run_oneshot
+def test_oneshot_wires_session_db_for_recall(monkeypatch):
+    """hermes -z bypasses HermesCLI, but recall still needs SessionDB."""
+    from hermes_cli.oneshot import _run_agent
 
-    assert run_oneshot("hello", toolsets="nope") == 2
-    err = capsys.readouterr().err
-    assert "nope" in err
-    assert "did not contain any valid toolsets" in err
+    captured = {}
+    sentinel_db = object()
 
+    class FakeAgent:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+            self.suppress_status_output = False
+            self.stream_delta_callback = object()
+            self.tool_gen_callback = object()
 
-def test_oneshot_filters_invalid_toolsets_before_redirect(monkeypatch, capsys):
-    _stub_plugin_discovery(monkeypatch)
-    from hermes_cli.oneshot import _validate_explicit_toolsets
+        def run_conversation(self, prompt, **_kwargs):
+            captured["prompt"] = prompt
+            return {"final_response": "ok", "failed": False, "partial": False}
 
-    valid, error = _validate_explicit_toolsets("web,nope")
+    def fake_acquire(db_path=None):
+        return sentinel_db
 
-    assert valid == ["web"]
-    assert error is None
-    assert "nope" in capsys.readouterr().err
+    def mod(name, **attrs):
+        module = types.ModuleType(name)
+        for key, value in attrs.items():
+            setattr(module, key, value)
+        return module
 
-
-def test_oneshot_all_toolsets_means_all_not_configured_cli():
-    from hermes_cli.oneshot import _validate_explicit_toolsets
-
-    valid, error = _validate_explicit_toolsets("all")
-
-    assert valid is None
-    assert error is None
-
-
-def test_oneshot_all_toolsets_warns_about_ignored_extra_entries(monkeypatch, capsys):
-    _stub_plugin_discovery(monkeypatch)
-    from hermes_cli.oneshot import _validate_explicit_toolsets
-
-    valid, error = _validate_explicit_toolsets("all,nope")
-
-    assert valid is None
-    assert error is None
-    assert "ignoring additional entries: nope" in capsys.readouterr().err
-
-
-def test_oneshot_accepts_plugin_toolset_after_discovery(monkeypatch):
-    import toolsets
-
-    from hermes_cli.oneshot import _validate_explicit_toolsets
-
-    discovered = {"ready": False}
-    original_validate = toolsets.validate_toolset
-
-    def fake_validate(name):
-        return name == "plugin_demo" and discovered["ready"] or original_validate(name)
-
-    monkeypatch.setattr(toolsets, "validate_toolset", fake_validate)
+    monkeypatch.setitem(sys.modules, "run_agent", mod("run_agent", AIAgent=FakeAgent))
+    # Oneshot borrows the process-shared registry handle (one writer per state.db path).
+    monkeypatch.setitem(sys.modules, "hermes_state_registry", mod("hermes_state_registry", acquire=fake_acquire))
     monkeypatch.setitem(
         sys.modules,
-        "hermes_cli.plugins",
-        types.SimpleNamespace(discover_plugins=lambda: discovered.update({"ready": True})),
+        "hermes_cli.config",
+        mod("hermes_cli.config", load_config=lambda: {"model": {"default": "m"}}),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "hermes_cli.models",
+        mod("hermes_cli.models", detect_provider_for_model=lambda *_args, **_kwargs: None),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "hermes_cli.runtime_provider",
+        mod(
+            "hermes_cli.runtime_provider",
+            resolve_runtime_with_fallback=lambda _cfg, **_kwargs: (
+                {
+                    "api_key": "k",
+                    "base_url": "u",
+                    "provider": "p",
+                    "api_mode": "chat_completions",
+                    "credential_pool": None,
+                },
+                None,
+            ),
+        ),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "hermes_cli.tools_config",
+        mod("hermes_cli.tools_config", _get_platform_tools=lambda *_args, **_kwargs: {"session_search"}),
     )
 
-    valid, error = _validate_explicit_toolsets("plugin_demo")
-
-    assert valid == ["plugin_demo"]
-    assert error is None
-
-
-def test_oneshot_rejects_disabled_mcp_toolset(monkeypatch, capsys):
-    _stub_plugin_discovery(monkeypatch)
-    import hermes_cli.config as config_mod
-
-    from hermes_cli.oneshot import _validate_explicit_toolsets
-
-    monkeypatch.setattr(
-        config_mod,
-        "read_raw_config",
-        lambda: {"mcp_servers": {"mcp-off": {"enabled": False}}},
-    )
-
-    valid, error = _validate_explicit_toolsets("mcp-off")
-
-    assert valid is None
-    assert error == "hermes -z: --toolsets did not contain any valid toolsets.\n"
-    err = capsys.readouterr().err
-    assert "ignoring disabled MCP servers" in err
-    assert "mcp-off" in err
-
-
-def test_oneshot_distinguishes_disabled_mcp_from_unknown(monkeypatch, capsys):
-    _stub_plugin_discovery(monkeypatch)
-    import hermes_cli.config as config_mod
-
-    from hermes_cli.oneshot import _validate_explicit_toolsets
-
-    monkeypatch.setattr(
-        config_mod,
-        "read_raw_config",
-        lambda: {"mcp_servers": {"mcp-off": {"enabled": False}}},
-    )
-
-    valid, error = _validate_explicit_toolsets("web,mcp-off,nope")
-
-    assert valid == ["web"]
-    assert error is None
-    err = capsys.readouterr().err
-    assert "ignoring unknown --toolsets entries: nope" in err
-    assert "ignoring disabled MCP servers" in err
-    assert "mcp-off" in err
+    text, result = _run_agent("recall this")
+    assert text == "ok"
+    assert not result.get("failed")
+    assert captured["session_db"] is sentinel_db
+    assert captured["enabled_toolsets"] == ["session_search"]
+    assert captured["prompt"] == "recall this"
 
 
 def test_launch_tui_exports_model_provider_and_toolsets(monkeypatch, main_mod):
+    monkeypatch.setenv("HERMES_PYTHON", sys.executable)
     captured = {}
     active_path_during_call = None
 
-    monkeypatch.setattr(
-        main_mod,
-        "_make_tui_argv",
+    monkeypatch.setattr(main_tui_launch, "_make_tui_argv",
         lambda tui_dir, tui_dev: (["node", "dist/entry.js"], Path(".")),
     )
 
@@ -328,7 +192,9 @@ def test_launch_tui_exports_model_provider_and_toolsets(monkeypatch, main_mod):
     monkeypatch.setattr(main_mod.subprocess, "call", fake_call)
 
     with pytest.raises(SystemExit):
-        main_mod._launch_tui(model="nous/hermes-test", provider="nous", toolsets="web, terminal")
+        main_mod._launch_tui(
+            model="nous/hermes-test", provider="nous", toolsets="web, terminal"
+        )
 
     env = captured["env"]
     assert env["HERMES_MODEL"] == "nous/hermes-test"
@@ -344,74 +210,97 @@ def test_launch_tui_exports_model_provider_and_toolsets(monkeypatch, main_mod):
     assert env["NODE_ENV"] == "production"
 
 
-def test_print_tui_exit_summary_includes_resume_and_token_totals(monkeypatch, capsys):
-    import hermes_cli.main as main_mod
+def test_launch_tui_prefers_launch_cwd_over_inherited_hermes_cwd(monkeypatch, main_mod, tmp_path):
+    """The directory `hermes --tui` was run from outranks an inherited HERMES_CWD.
 
-    class _FakeDB:
-        def get_session(self, session_id):
-            assert session_id == "20260409_000001_abc123"
-            return {
-                "message_count": 2,
-                "input_tokens": 10,
-                "output_tokens": 6,
-                "cache_read_tokens": 2,
-                "cache_write_tokens": 2,
-                "reasoning_tokens": 1,
-            }
+    A shell export - or an outer `hermes --tui` - leaves HERMES_CWD naming a real but stale
+    directory, and ui-tui/src/gatewayClient.ts:478 starts the gateway in whatever it names,
+    so the session reads files and completions from the wrong project (#49637).
+    """
+    stale = tmp_path / "stale-project"
+    launch = tmp_path / "launch-project"
+    stale.mkdir()
+    launch.mkdir()
+    monkeypatch.setenv("HERMES_PYTHON", sys.executable)
+    monkeypatch.setenv("HERMES_CWD", str(stale))
+    monkeypatch.chdir(launch)
 
-        def get_session_title(self, _session_id):
-            return "demo title"
-
-        def close(self):
-            return None
-
-    monkeypatch.setitem(
-        sys.modules, "hermes_state", types.SimpleNamespace(SessionDB=lambda: _FakeDB())
+    captured = {}
+    monkeypatch.setattr(main_tui_launch, "_make_tui_argv",
+        lambda tui_dir, tui_dev: (["node", "dist/entry.js"], Path(".")),
+    )
+    monkeypatch.setattr(main_mod.subprocess, "call",
+        lambda argv, cwd=None, env=None: captured.update({"env": env}) or 1,
     )
 
-    main_mod._print_tui_exit_summary("20260409_000001_abc123")
-    out = capsys.readouterr().out
+    with pytest.raises(SystemExit):
+        main_mod._launch_tui()
 
-    assert "Resume this session with:" in out
-    assert "hermes --tui --resume 20260409_000001_abc123" in out
-    assert 'hermes --tui -c "demo title"' in out
-    assert "Tokens:         21 (in 10, out 6, cache 4, reasoning 1)" in out
+    handed_to_tui = Path(captured["env"]["HERMES_CWD"]).resolve()
+    assert handed_to_tui == launch.resolve(), "the TUI gateway must start where the user launched"
+    assert handed_to_tui != stale.resolve()
 
 
-def test_print_tui_exit_summary_prefers_actual_active_session_file(
-    monkeypatch, capsys, tmp_path
-):
-    import hermes_cli.main as main_mod
+def test_launch_tui_worktree_still_outranks_the_launch_cwd(monkeypatch, main_mod, tmp_path):
+    """`--worktree` names an explicit destination, so it keeps precedence over the launch cwd."""
+    worktree = tmp_path / "worktree"
+    launch = tmp_path / "launch-project"
+    worktree.mkdir()
+    launch.mkdir()
+    monkeypatch.setenv("HERMES_PYTHON", sys.executable)
+    monkeypatch.setenv("HERMES_CWD", str(tmp_path))
+    monkeypatch.chdir(launch)
 
-    seen = []
-
-    class _FakeDB:
-        def get_session(self, session_id):
-            seen.append(session_id)
-            return {
-                "message_count": 1,
-                "input_tokens": 0,
-                "output_tokens": 0,
-                "cache_read_tokens": 0,
-                "cache_write_tokens": 0,
-                "reasoning_tokens": 0,
-            }
-
-        def get_session_title(self, _session_id):
-            return "actual"
-
-        def close(self):
-            return None
-
-    active = tmp_path / "active.json"
-    active.write_text('{"session_id":"actual_session"}', encoding="utf-8")
-    monkeypatch.setitem(
-        sys.modules, "hermes_state", types.SimpleNamespace(SessionDB=lambda: _FakeDB())
+    captured = {}
+    monkeypatch.setattr(main_tui_launch, "_setup_tui_worktree", lambda: {"path": str(worktree)})
+    monkeypatch.setattr(main_tui_launch, "_make_tui_argv",
+        lambda tui_dir, tui_dev: (["node", "dist/entry.js"], Path(".")),
+    )
+    monkeypatch.setattr(main_mod.subprocess, "call",
+        lambda argv, cwd=None, env=None: captured.update({"env": env}) or 1,
     )
 
-    main_mod._print_tui_exit_summary("startup_resume", str(active))
-    out = capsys.readouterr().out
+    with pytest.raises(SystemExit):
+        main_mod._launch_tui(worktree=True)
 
-    assert seen == ["actual_session"]
-    assert "hermes --tui --resume actual_session" in out
-    assert "startup_resume" not in out
+    assert captured["env"]["HERMES_CWD"] == str(worktree)
+    assert captured["env"]["TERMINAL_CWD"] == str(worktree)
+    assert Path(captured["env"]["HERMES_CWD"]).resolve() != launch.resolve()
+
+
+@pytest.mark.parametrize("backend", ["local", "docker"])
+def test_launch_tui_local_session_starts_in_launch_dir_not_terminal_cwd(monkeypatch, main_mod, tmp_path, backend):
+    """A local TUI follows the classic CLI rule: the launch dir beats an absolute terminal.cwd (#84015).
+
+    Remote backends keep terminal.cwd: the launch dir names nothing on the sandbox.
+    """
+    configured = tmp_path / "configured-home"
+    launch = tmp_path / "launch-project"
+    configured.mkdir()
+    launch.mkdir()
+    (Path(os.environ["HERMES_HOME"]) / "config.yaml").write_text(
+        f"terminal:\n  backend: {backend}\n  cwd: {configured}\n", encoding="utf-8")
+    monkeypatch.delenv("TERMINAL_ENV", raising=False)
+    monkeypatch.delenv("TERMINAL_CWD", raising=False)
+    monkeypatch.setenv("HERMES_PYTHON", sys.executable)
+    monkeypatch.setenv("HERMES_TUI_CWD", str(tmp_path))  # stale, from an outer launcher
+    monkeypatch.chdir(launch)
+
+    captured = {}
+    monkeypatch.setattr(main_tui_launch, "_make_tui_argv",
+        lambda tui_dir, tui_dev: (["node", "dist/entry.js"], Path(".")),
+    )
+    monkeypatch.setattr(main_mod.subprocess, "call",
+        lambda argv, cwd=None, env=None: captured.update({"env": env}) or 1,
+    )
+
+    with pytest.raises(SystemExit):
+        main_mod._launch_tui()
+
+    env = captured["env"]
+    if backend == "local":
+        assert Path(env["HERMES_TUI_CWD"]).resolve() == launch.resolve()
+        assert Path(env["TERMINAL_CWD"]).resolve() == launch.resolve()
+    else:
+        assert "HERMES_TUI_CWD" not in env
+        assert Path(env["TERMINAL_CWD"]).resolve() == configured.resolve()

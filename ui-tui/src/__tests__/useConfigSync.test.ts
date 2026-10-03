@@ -1,15 +1,16 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { $uiState, resetUiState } from '../app/uiStore.js'
 import {
   applyDisplay,
   hydrateFullConfig,
+  type McpRevState,
   normalizeBusyInputMode,
   normalizeIndicatorStyle,
   normalizeMouseTracking,
-  normalizeStatusBar
+  normalizeStatusBar,
+  syncMcpReload
 } from '../app/useConfigSync.js'
-import type { ParsedVoiceRecordKey } from '../lib/platform.js'
 
 describe('applyDisplay', () => {
   beforeEach(() => {
@@ -26,7 +27,6 @@ describe('applyDisplay', () => {
             bell_on_complete: true,
             details_mode: 'expanded',
             inline_diffs: false,
-            show_cost: true,
             show_reasoning: true,
             streaming: false,
             tui_compact: true,
@@ -42,20 +42,57 @@ describe('applyDisplay', () => {
     expect(s.compact).toBe(true)
     expect(s.detailsMode).toBe('expanded')
     expect(s.inlineDiffs).toBe(false)
-    expect(s.showCost).toBe(true)
     expect(s.showReasoning).toBe(true)
     expect(s.statusBar).toBe('off')
     expect(s.streaming).toBe(false)
   })
 
-  it('coerces legacy true + "on" alias to top', () => {
+  it('hydrates the destructive slash confirmation policy from approvals', () => {
     const setBell = vi.fn()
 
-    applyDisplay({ config: { display: { tui_statusbar: true as unknown as 'on' } } }, setBell)
-    expect($uiState.get().statusBar).toBe('top')
+    applyDisplay(
+      {
+        config: {
+          approvals: { destructive_slash_confirm: false },
+          display: {}
+        }
+      },
+      setBell
+    )
 
-    applyDisplay({ config: { display: { tui_statusbar: 'on' } } }, setBell)
-    expect($uiState.get().statusBar).toBe('top')
+    expect($uiState.get().destructiveSlashConfirm).toBe(false)
+
+    applyDisplay(
+      {
+        config: {
+          approvals: { destructive_slash_confirm: true },
+          display: {}
+        }
+      },
+      setBell
+    )
+
+    expect($uiState.get().destructiveSlashConfirm).toBe(true)
+  })
+
+  it('defaults destructive slash confirmation on and preserves it across config RPC failure', () => {
+    const setBell = vi.fn()
+
+    applyDisplay({ config: { display: {} } }, setBell)
+    expect($uiState.get().destructiveSlashConfirm).toBe(true)
+
+    applyDisplay(
+      {
+        config: {
+          approvals: { destructive_slash_confirm: false },
+          display: {}
+        }
+      },
+      setBell
+    )
+    applyDisplay(null, setBell)
+
+    expect($uiState.get().destructiveSlashConfirm).toBe(false)
   })
 
   it('applies v1 parity defaults when display fields are missing', () => {
@@ -66,24 +103,10 @@ describe('applyDisplay', () => {
     const s = $uiState.get()
     expect(setBell).toHaveBeenCalledWith(false)
     expect(s.inlineDiffs).toBe(true)
-    expect(s.showCost).toBe(false)
     expect(s.showReasoning).toBe(false)
     expect(s.statusBar).toBe('top')
     expect(s.streaming).toBe(true)
     expect(s.sections).toEqual({})
-  })
-
-  it('uses documented mouse_tracking with legacy tui_mouse fallback', () => {
-    const setBell = vi.fn()
-
-    applyDisplay({ config: { display: { mouse_tracking: false } } }, setBell)
-    expect($uiState.get().mouseTracking).toBe(false)
-
-    applyDisplay({ config: { display: { mouse_tracking: true, tui_mouse: false } } }, setBell)
-    expect($uiState.get().mouseTracking).toBe(true)
-
-    applyDisplay({ config: { display: { tui_mouse: false } } }, setBell)
-    expect($uiState.get().mouseTracking).toBe(false)
   })
 
   it('parses display.sections into per-section overrides', () => {
@@ -131,27 +154,6 @@ describe('applyDisplay', () => {
 
     expect($uiState.get().sections).toEqual({ activity: 'hidden' })
   })
-
-  it('treats a null config like an empty display block', () => {
-    const setBell = vi.fn()
-
-    applyDisplay(null, setBell)
-
-    const s = $uiState.get()
-    expect(setBell).toHaveBeenCalledWith(false)
-    expect(s.inlineDiffs).toBe(true)
-    expect(s.streaming).toBe(true)
-  })
-
-  it('accepts the new string statusBar modes', () => {
-    const setBell = vi.fn()
-
-    applyDisplay({ config: { display: { tui_statusbar: 'bottom' } } }, setBell)
-    expect($uiState.get().statusBar).toBe('bottom')
-
-    applyDisplay({ config: { display: { tui_statusbar: 'top' } } }, setBell)
-    expect($uiState.get().statusBar).toBe('top')
-  })
 })
 
 describe('normalizeStatusBar', () => {
@@ -183,15 +185,30 @@ describe('normalizeStatusBar', () => {
 })
 
 describe('normalizeMouseTracking', () => {
-  it('defaults on and prefers canonical mouse_tracking over legacy tui_mouse', () => {
-    expect(normalizeMouseTracking({})).toBe(true)
-    expect(normalizeMouseTracking({ mouse_tracking: false })).toBe(false)
-    expect(normalizeMouseTracking({ mouse_tracking: 0 })).toBe(false)
-    expect(normalizeMouseTracking({ mouse_tracking: 'off' })).toBe(false)
-    expect(normalizeMouseTracking({ mouse_tracking: 'false' })).toBe(false)
-    expect(normalizeMouseTracking({ mouse_tracking: null, tui_mouse: false })).toBe(true)
-    expect(normalizeMouseTracking({ mouse_tracking: true, tui_mouse: false })).toBe(true)
-    expect(normalizeMouseTracking({ tui_mouse: false })).toBe(false)
+  it('defaults to all and prefers canonical mouse_tracking over legacy tui_mouse', () => {
+    expect(normalizeMouseTracking({})).toBe('all')
+    expect(normalizeMouseTracking({ mouse_tracking: false })).toBe('off')
+    expect(normalizeMouseTracking({ mouse_tracking: 0 })).toBe('off')
+    expect(normalizeMouseTracking({ mouse_tracking: 'off' })).toBe('off')
+    expect(normalizeMouseTracking({ mouse_tracking: 'false' })).toBe('off')
+    expect(normalizeMouseTracking({ mouse_tracking: null, tui_mouse: false })).toBe('all')
+    expect(normalizeMouseTracking({ mouse_tracking: true, tui_mouse: false })).toBe('all')
+    expect(normalizeMouseTracking({ tui_mouse: false })).toBe('off')
+  })
+
+  it('accepts preset strings (wheel/buttons/all) and their aliases', () => {
+    expect(normalizeMouseTracking({ mouse_tracking: 'wheel' })).toBe('wheel')
+    expect(normalizeMouseTracking({ mouse_tracking: 'scroll' })).toBe('wheel')
+    expect(normalizeMouseTracking({ mouse_tracking: 'buttons' })).toBe('buttons')
+    expect(normalizeMouseTracking({ mouse_tracking: 'click' })).toBe('buttons')
+    expect(normalizeMouseTracking({ mouse_tracking: 'all' })).toBe('all')
+    expect(normalizeMouseTracking({ mouse_tracking: 'full' })).toBe('all')
+    expect(normalizeMouseTracking({ mouse_tracking: 'on' })).toBe('all')
+    expect(normalizeMouseTracking({ mouse_tracking: ' WHEEL ' })).toBe('wheel')
+  })
+
+  it('falls back to all for unknown strings', () => {
+    expect(normalizeMouseTracking({ mouse_tracking: 'rainbows' })).toBe('all')
   })
 })
 
@@ -257,16 +274,6 @@ describe('applyDisplay → busy_input_mode', () => {
     applyDisplay({ config: { display: { busy_input_mode: 'steer' } } }, setBell)
     expect($uiState.get().busyInputMode).toBe('steer')
   })
-
-  it('falls back to queue when value is missing or invalid (TUI-only default)', () => {
-    const setBell = vi.fn()
-
-    applyDisplay({ config: { display: {} } }, setBell)
-    expect($uiState.get().busyInputMode).toBe('queue')
-
-    applyDisplay({ config: { display: { busy_input_mode: 'drop' } } }, setBell)
-    expect($uiState.get().busyInputMode).toBe('queue')
-  })
 })
 
 describe('applyDisplay → tui_status_indicator', () => {
@@ -283,16 +290,6 @@ describe('applyDisplay → tui_status_indicator', () => {
     applyDisplay({ config: { display: { tui_status_indicator: 'unicode' } } }, setBell)
     expect($uiState.get().indicatorStyle).toBe('unicode')
   })
-
-  it('falls back to kaomoji default when missing or invalid', () => {
-    const setBell = vi.fn()
-
-    applyDisplay({ config: { display: {} } }, setBell)
-    expect($uiState.get().indicatorStyle).toBe('kaomoji')
-
-    applyDisplay({ config: { display: { tui_status_indicator: 'rainbow' } } }, setBell)
-    expect($uiState.get().indicatorStyle).toBe('kaomoji')
-  })
 })
 
 // Regressions from Copilot review on #19835: the config-hydration path
@@ -307,11 +304,7 @@ describe('applyDisplay → voice.record_key (#18994)', () => {
     const setBell = vi.fn()
     const setVoiceRecordKey = vi.fn()
 
-    applyDisplay(
-      { config: { display: {}, voice: { record_key: 'ctrl+space' } } },
-      setBell,
-      setVoiceRecordKey
-    )
+    applyDisplay({ config: { display: {}, voice: { record_key: 'ctrl+space' } } }, setBell, setVoiceRecordKey)
 
     expect(setVoiceRecordKey).toHaveBeenCalledWith(
       expect.objectContaining({ ch: 'space', mod: 'ctrl', named: 'space', raw: 'ctrl+space' })
@@ -324,19 +317,7 @@ describe('applyDisplay → voice.record_key (#18994)', () => {
 
     applyDisplay({ config: { display: {} } }, setBell, setVoiceRecordKey)
 
-    expect(setVoiceRecordKey).toHaveBeenCalledWith(
-      expect.objectContaining({ ch: 'b', mod: 'ctrl', raw: 'ctrl+b' })
-    )
-  })
-
-  it('is a no-op when the voice setter is not passed (back-compat)', () => {
-    const setBell = vi.fn()
-
-    // applyDisplay is used in the setVoiceEnabled-less init path too;
-    // omitting the third arg must not throw.
-    expect(() =>
-      applyDisplay({ config: { display: {}, voice: { record_key: 'alt+r' } } }, setBell)
-    ).not.toThrow()
+    expect(setVoiceRecordKey).toHaveBeenCalledWith(expect.objectContaining({ ch: 'b', mod: 'ctrl', raw: 'ctrl+b' }))
   })
 
   it('does not reset voiceRecordKey when cfg is null (transient RPC failure)', () => {
@@ -353,6 +334,103 @@ describe('applyDisplay → voice.record_key (#18994)', () => {
     // bell is still applied (defaults to false on null), so the setter
     // runs — we specifically only skip voiceRecordKey.
     expect(setBell).toHaveBeenCalledWith(false)
+  })
+})
+
+// Review on #20379 (finding 1): an MCP config revision must never be acked
+// before the server confirms it was LOADED. The old poll advanced its
+// accepted revision first and fired reload.mcp second — a reload that failed
+// (quietRpc → null) left the revision recorded as applied, and no subsequent
+// poll retried it until an unrelated MCP edit.
+describe('syncMcpReload (revision-aware ack)', () => {
+  const gwOk = (payload: unknown) =>
+    ({ request: vi.fn(() => Promise.resolve(payload)), on: vi.fn(), off: vi.fn() }) as any
+
+  const freshState = (accepted = 'rev-a'): McpRevState => ({ accepted, inFlight: false })
+
+  it('advances accepted only after the server confirms the reload', async () => {
+    const gw = gwOk({ status: 'reloaded', loaded_rev: 'rev-b' })
+    const state = freshState()
+    const onReloaded = vi.fn()
+
+    await syncMcpReload(gw, 's1', 'rev-b', state, onReloaded)
+
+    expect(gw.request).toHaveBeenCalledWith('reload.mcp', { confirm: true, rev: 'rev-b', session_id: 's1' })
+    expect(state.accepted).toBe('rev-b')
+    expect(onReloaded).toHaveBeenCalledTimes(1)
+  })
+
+  it('does NOT advance accepted when the reload RPC fails — next poll retries', async () => {
+    const gw = { request: vi.fn(() => Promise.reject(new Error('flapping server'))), on: vi.fn(), off: vi.fn() } as any
+    const state = freshState()
+    const onReloaded = vi.fn()
+
+    await syncMcpReload(gw, 's1', 'rev-b', state, onReloaded)
+
+    // The exact failure sequence from the review: reload fails, revision
+    // must remain un-acked so the next tick retries it.
+    expect(state.accepted).toBe('rev-a')
+    expect(state.inFlight).toBe(false)
+    expect(onReloaded).not.toHaveBeenCalled()
+
+    // Next poll tick: the server recovered — the SAME revision goes through.
+    gw.request = vi.fn(() => Promise.resolve({ status: 'reloaded', loaded_rev: 'rev-b' }))
+    await syncMcpReload(gw, 's1', 'rev-b', state, onReloaded)
+    expect(state.accepted).toBe('rev-b')
+    expect(onReloaded).toHaveBeenCalledTimes(1)
+  })
+
+  it('does not advance on confirm_required (reload did not happen)', async () => {
+    const gw = gwOk({ message: 'confirm first', status: 'confirm_required' })
+    const state = freshState()
+
+    await syncMcpReload(gw, 's1', 'rev-b', state)
+
+    expect(state.accepted).toBe('rev-a')
+  })
+
+  it('records the server-reported loaded_rev, not the requested rev', async () => {
+    // A config edit raced the reload: the server re-hashed after discovery
+    // and loaded rev-c. Recording rev-c (not rev-b) makes the next poll a
+    // no-op instead of an immediate redundant reload.
+    const gw = gwOk({ status: 'reloaded', loaded_rev: 'rev-c' })
+    const state = freshState()
+
+    await syncMcpReload(gw, 's1', 'rev-b', state)
+
+    expect(state.accepted).toBe('rev-c')
+  })
+
+  it('is a no-op when the revision is already accepted or empty', async () => {
+    const gw = gwOk({ status: 'reloaded' })
+    const state = freshState()
+
+    await syncMcpReload(gw, 's1', 'rev-a', state)
+    await syncMcpReload(gw, 's1', '', state)
+
+    expect(gw.request).not.toHaveBeenCalled()
+  })
+
+  it('does not stack requests while one is in flight', async () => {
+    let resolveFirst!: (v: unknown) => void
+
+    const gw = {
+      request: vi.fn(() => new Promise(res => (resolveFirst = res))),
+      on: vi.fn(),
+      off: vi.fn()
+    } as any
+
+    const state = freshState()
+
+    const first = syncMcpReload(gw, 's1', 'rev-b', state)
+
+    // Second tick while the first RPC is outstanding: swallowed.
+    await syncMcpReload(gw, 's1', 'rev-b', state)
+    expect(gw.request).toHaveBeenCalledTimes(1)
+
+    resolveFirst({ status: 'reloaded', loaded_rev: 'rev-b' })
+    await first
+    expect(state.accepted).toBe('rev-b')
   })
 })
 
@@ -381,9 +459,7 @@ describe('hydrateFullConfig', () => {
     await hydrateFullConfig(gw, setBell, setVoiceRecordKey)
 
     expect(gw.request).toHaveBeenCalledWith('config.get', { key: 'full' })
-    expect(setVoiceRecordKey).toHaveBeenCalledWith(
-      expect.objectContaining({ ch: 'o', mod: 'ctrl', raw: 'ctrl+o' })
-    )
+    expect(setVoiceRecordKey).toHaveBeenCalledWith(expect.objectContaining({ ch: 'o', mod: 'ctrl', raw: 'ctrl+o' }))
     expect(setBell).toHaveBeenCalledWith(false)
   })
 

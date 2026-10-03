@@ -1,12 +1,11 @@
-import { Link } from "react-router-dom";
+import { Link } from "react-router";
 import type { StatusResponse } from "@/lib/api";
-import { useSidebarStatus } from "@/hooks/useSidebarStatus";
 import { cn } from "@/lib/utils";
 import { useI18n } from "@/i18n";
+import { en } from "@/i18n/en";
 
 /** Gateway + session summary for the System sidebar block (no separate strip chrome). */
-export function SidebarStatusStrip() {
-  const status = useSidebarStatus();
+export function SidebarStatusStrip({ status }: SidebarStatusStripProps) {
   const { t } = useI18n();
 
   if (status === null) {
@@ -27,21 +26,21 @@ export function SidebarStatusStrip() {
       className={cn(
         "block text-left",
         "px-5 pb-2 pt-0.5",
-        "text-muted-foreground/70",
-        "transition-colors hover:text-muted-foreground/90",
+        "text-text-secondary",
+        "transition-colors hover:text-midground",
         "focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-midground/40",
         "focus-visible:ring-inset",
       )}
     >
-      <div className="flex flex-col gap-1 font-mondwest text-[0.55rem] leading-snug tracking-[0.12em]">
+      <div className="flex flex-col gap-1 font-sans text-xs leading-snug tracking-[0.08em]">
         <p className="break-words">
-          <span className="text-muted-foreground/50">{gatewayStatusLabel}</span>{" "}
+          <span className="text-text-tertiary">{gatewayStatusLabel}</span>{" "}
           <span className={cn("font-medium", gw.tone)}>{gw.label}</span>
         </p>
 
         <p className="break-words">
-          <span className="text-muted-foreground/50">{activeSessionsLabel}</span>{" "}
-          <span className="tabular-nums text-muted-foreground/70">
+          <span className="text-text-tertiary">{activeSessionsLabel}</span>{" "}
+          <span className="tabular-nums text-text-secondary">
             {status.active_sessions}
           </span>
         </p>
@@ -50,7 +49,7 @@ export function SidebarStatusStrip() {
   );
 }
 
-function gatewayLine(
+export function gatewayLine(
   status: StatusResponse,
   t: ReturnType<typeof useI18n>["t"],
 ): { label: string; tone: string } {
@@ -59,12 +58,27 @@ function gatewayLine(
     running: { label: g.running, tone: "text-success" },
     starting: { label: g.starting, tone: "text-warning" },
     startup_failed: { label: g.failed, tone: "text-destructive" },
+    // Live: some channels offline. Retained on a dead PID: a watchdog hard-exited a wedged
+    // process (gateway_exit_reason names it) — same verdict `hermes gateway status` prints.
+    degraded: {
+      label: g.degraded ?? en.app.gatewayStrip.degraded!,
+      tone: status.gateway_running ? "text-warning" : "text-destructive",
+    },
     stopped: { label: g.stopped, tone: "text-muted-foreground" },
   };
+  // Alive but housekeeping stopped stamping the heartbeat: 'Running' would be the lie the
+  // reporter saw (loop/housekeeping wedged while gateway_state.json still said running).
+  if (status.gateway_heartbeat_stale_s != null) {
+    return { label: g.heartbeatStale ?? en.app.gatewayStrip.heartbeatStale!, tone: "text-destructive" };
+  }
   if (status.gateway_state && byState[status.gateway_state]) {
     return byState[status.gateway_state];
   }
   return status.gateway_running
     ? { label: g.running, tone: "text-success" }
     : { label: g.off, tone: "text-muted-foreground" };
+}
+
+interface SidebarStatusStripProps {
+  status: StatusResponse | null;
 }

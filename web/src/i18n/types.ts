@@ -1,4 +1,21 @@
-export type Locale = "en" | "zh";
+export type Locale =
+  | "en"
+  | "zh"
+  | "zh-hant"
+  | "ja"
+  | "de"
+  | "es"
+  | "fr"
+  | "tr"
+  | "uk"
+  | "af"
+  | "ko"
+  | "it"
+  | "ga"
+  | "pt"
+  | "ru"
+  | "hu"
+  | "ar";
 
 export interface Translations {
   // ── Common ──
@@ -11,6 +28,9 @@ export interface Translations {
     delete: string;
     refresh: string;
     retry: string;
+    /** Optional — English fallback until translated. "{what}" = the noun that failed to load. */
+    loadFailed?: string;
+    loadFailedDetails?: string;
     search: string;
     loading: string;
     create: string;
@@ -44,6 +64,10 @@ export interface Translations {
     expand: string;
     general: string;
     messaging: string;
+    // Optional: non-English locales fall back to the English literal in the
+    // component until translated, matching the enriched-profiles keys.
+    gateway?: string;
+    gatewayHint?: string;
     pluginLoadFailed: string;
     pluginNotRegistered: string;
   };
@@ -60,7 +84,9 @@ export interface Translations {
     activeSessionsLabel: string;
     gatewayStatusLabel: string;
     gatewayStrip: {
+      degraded?: string;
       failed: string;
+      heartbeatStale?: string;
       off: string;
       running: string;
       starting: string;
@@ -90,6 +116,28 @@ export interface Translations {
     statusOverview: string;
     system: string;
     webUi: string;
+    /** Optional — fall back to English literals until translated. */
+    managingProfile?: string;
+    currentProfileOption?: string;
+    managingProfileBanner?: string;
+    /** NS-656 memory-pressure banner — optional, English fallback. */
+    memoryOomRestartBanner?: string;
+    memoryCriticalBanner?: string;
+    memoryElevatedBanner?: string;
+    /** NS-656 disk-usage banner — optional, English fallback. */
+    diskCriticalBanner?: string;
+    diskElevatedBanner?: string;
+    /** Multi-profile host whose gateway boots standalone on a guard — optional, English fallback. */
+    multiplexStandaloneBanner?: string;
+    dismiss?: string;
+    /** First-run shared-metrics offer — optional, English fallback. */
+    sharedMetricsTitle?: string;
+    sharedMetricsBody?: string;
+    sharedMetricsShare?: string;
+    sharedMetricsLocal?: string;
+    sharedMetricsOff?: string;
+    sharedMetricsDetails?: string;
+    sharedMetricsSaveFailed?: string;
   };
 
   // ── Status page ──
@@ -100,6 +148,7 @@ export interface Translations {
     agent: string;
     connected: string;
     connectedPlatforms: string;
+    disabled?: string;
     disconnected: string;
     error: string;
     failed: string;
@@ -114,6 +163,8 @@ export interface Translations {
     activeSessions: string;
     recentSessions: string;
     restartGateway: string;
+    restartGatewayConfirmMessage?: string;
+    restartGatewayConfirmTitle?: string;
     restartingGateway: string;
     running: string;
     runningRemote: string;
@@ -122,6 +173,9 @@ export interface Translations {
     startedInBackground: string;
     stopped: string;
     updateHermes: string;
+    updateHermesConfirmMessage?: string;
+    updateHermesConfirmNow?: string;
+    updateHermesConfirmTitle?: string;
     updatingHermes: string;
     waitingForOutput: string;
   };
@@ -129,8 +183,16 @@ export interface Translations {
   // ── Sessions page ──
   sessions: {
     title: string;
+    history: string;
+    overview: string;
+    filterChats: string;
+    filterAutomation: string;
+    filterAll: string;
+    sourceFilter: string;
+    anySource: string;
     searchPlaceholder: string;
     noSessions: string;
+    noSessionsInFilter: string;
     noMatch: string;
     startConversation: string;
     noMessages: string;
@@ -140,7 +202,27 @@ export interface Translations {
     confirmDeleteMessage: string;
     sessionDeleted: string;
     failedToDelete: string;
+    deleteEmpty: string;
+    deleteEmptyConfirmTitle: string;
+    deleteEmptyConfirmMessage: string;
+    emptySessionsDeleted: string;
+    failedToDeleteEmpty: string;
+    selectSession: string;
+    selectAllOnPage: string;
+    clearSelection: string;
+    selectedCount: string;
+    deleteSelected: string;
+    deleteSelectedConfirmTitle: string;
+    deleteSelectedConfirmMessage: string;
+    selectedSessionsDeleted: string;
+    selectedSessionsSkippedActive: string;
+    failedToDeleteSelected: string;
     resumeInChat: string;
+    newChat: string;
+    workspace: string;
+    workspaceDefault: string;
+    workspaceRescan: string;
+    workspaceCustom: string;
     previousPage: string;
     nextPage: string;
     roles: {
@@ -204,6 +286,9 @@ export interface Translations {
 
   // ── Cron page ──
   cron: {
+    /** Optional — English fallback until translated. */
+    loadWhat?: string;
+    scriptRequired?: string;
     confirmDeleteMessage: string;
     confirmDeleteTitle: string;
     newJob: string;
@@ -213,11 +298,47 @@ export interface Translations {
     promptPlaceholder: string;
     schedule: string;
     schedulePlaceholder: string;
+    scheduleMode: string;
+    scheduleModes: {
+      interval: string;
+      daily: string;
+      weekly: string;
+      monthly: string;
+      once: string;
+      custom: string;
+      intervalEvery: string;
+      intervalUnit: string;
+      unitMinutes: string;
+      unitHours: string;
+      unitDays: string;
+      timeOfDay: string;
+      weekdays: string;
+      weekdaysShort: [string, string, string, string, string, string, string];
+      dayOfMonth: string;
+      onceAt: string;
+      customLabel: string;
+      customPlaceholder: string;
+      customHint: string;
+      preview: string;
+      previewEmpty: string;
+    };
+    scheduleDescribe: {
+      none: string;
+      everyMinutes: string;
+      everyHours: string;
+      everyDays: string;
+      dailyAt: string;
+      weeklyAt: string;
+      monthlyAt: string;
+      onceAt: string;
+    };
     deliverTo: string;
     scheduledJobs: string;
     noJobs: string;
     last: string;
     next: string;
+    overdueSince?: string;
+    schedulerLastTicked?: string;
     pause: string;
     resume: string;
     triggerNow: string;
@@ -227,6 +348,8 @@ export interface Translations {
       discord: string;
       slack: string;
       email: string;
+      needsHomeChannel?: string;
+      noneConfigured?: string;
     };
   };
 
@@ -237,6 +360,7 @@ export interface Translations {
     disableRuntime: string;
     enableAfterInstall: string;
     enableRuntime: string;
+    toggleTakesEffectAfterRestart: string;
     forceReinstall: string;
     headline: string;
     identifierLabel: string;
@@ -265,9 +389,25 @@ export interface Translations {
     authRequired: string;
     authRequiredHint: string;
     updateGit: string;
+    /** Optional: locales without it fall back to the English body at the call site. */
+    updateConsentBody?: (name: string, sha: string) => string;
     versionBadge: string;
     showInSidebar: string;
     hideFromSidebar: string;
+    // Catalog section (en-only fallback convention — optional keys).
+    catalogHeading?: string;
+    catalogHint?: string;
+    catalogSearchPlaceholder?: string;
+    catalogEmpty?: string;
+    catalogEmptyDocsLink?: string;
+    catalogInstallBtn?: string;
+    catalogInstalledBadge?: string;
+    catalogUpdateBtn?: string;
+    catalogRemovedBadge?: string;
+    catalogConfirmTitle?: string;
+    catalogConfirmInstallNote?: string;
+    catalogRequiresEnv?: string;
+    removedFromCatalog?: string;
   };
 
   // ── Profiles page ──
@@ -278,7 +418,8 @@ export interface Translations {
     nameRequired: string;
     nameRule: string;
     invalidName: string;
-    cloneFromDefault: string;
+    cloneFrom: string;
+    cloneFromNone: string;
     allProfiles: string;
     noProfiles: string;
     defaultBadge: string;
@@ -299,12 +440,51 @@ export interface Translations {
     created: string;
     deleted: string;
     renamed: string;
+    // Optional keys added for the enriched profiles experience. Non-English
+    // locales fall back to the English literal in the component until
+    // translated, so these are optional to avoid churning every locale file.
+    activeProfile?: string;
+    activeBadge?: string;
+    setActive?: string;
+    activeSet?: string;
+    gatewayRunning?: string;
+    gatewayStopped?: string;
+    gatewayRunningWarning?: string;
+    aliasBadge?: string;
+    description?: string;
+    descriptionPlaceholder?: string;
+    noDescription?: string;
+    editDescription?: string;
+    descriptionSaved?: string;
+    reviewBadge?: string;
+    autoGenerate?: string;
+    generating?: string;
+    describeFailed?: string;
+    distribution?: string;
+    advancedOptions?: string;
+    cloneAll?: string;
+    noSkillsOption?: string;
+    descriptionOptional?: string;
+    modelOptional?: string;
+    modelInherit?: string;
+    modelLoading?: string;
+    modelNone?: string;
+    editModel?: string;
+    modelSaved?: string;
+    modelSelect?: string;
+    actions?: string;
+    manageSkills?: string;
+    activeSetHint?: string;
   };
 
   // ── Skills page ──
   skills: {
     title: string;
     searchPlaceholder: string;
+    /** Optional — English fallback until translated. */
+    loadWhat?: string;
+    browseHub?: string;
+    createSkill?: string;
     enabledOf: string;
     all: string;
     categories: string;
@@ -320,6 +500,10 @@ export interface Translations {
     setupNeeded: string;
     disabledForCli: string;
     more: string;
+    /** Optional — fall back to English literals until translated. */
+    profileSelector?: string;
+    currentProfile?: string;
+    managingProfile?: string;
   };
 
   // ── Config page ──
@@ -380,7 +564,17 @@ export interface Translations {
     providersConfigured: string;
     replaceCurrentValue: string;
     showAdvanced: string;
+    showLess: string;
+    showMore: string;
     showValue: string;
+    customTitle: string;
+    customHint: string;
+    customConfigured: string;
+    addCustomKey: string;
+    customKeyName: string;
+    customKeyNamePlaceholder: string;
+    add: string;
+    invalidKeyName: string;
   };
 
   // ── OAuth ──
@@ -397,10 +591,13 @@ export interface Translations {
     disconnect: string;
     managedExternally: string;
     copied: string;
+    copyCode: string;
+    copyFailed: string;
     cli: string;
     copyCliCommand: string;
     connect: string;
     sessionExpires: string;
+    sessionExpiredNoError: string;
     initiatingLogin: string;
     exchangingCode: string;
     connectedClosing: string;
@@ -432,5 +629,293 @@ export interface Translations {
   theme: {
     title: string;
     switchTheme: string;
+    /** Font-override section (optional — locales fall back to English). */
+    fontTitle?: string;
+    fontDefault?: string;
+    fontDefaultHint?: string;
+    fontSans?: string;
+    fontSerif?: string;
+    fontMono?: string;
+  };
+
+  // ── Achievements plugin (plugins/hermes-achievements) ──
+  achievements: {
+    hero: {
+      kicker: string;
+      title: string;
+      subtitle: string;
+      scan_subtitle: string;
+    };
+    actions: {
+      rescan: string;
+    };
+    stats: {
+      unlocked: string;
+      unlocked_hint: string;
+      discovered: string;
+      discovered_hint: string;
+      secrets: string;
+      secrets_hint: string;
+      highest_tier: string;
+      highest_tier_hint: string;
+      latest: string;
+      latest_hint_empty: string;
+      none_yet: string;
+    };
+    state: {
+      unlocked: string;
+      discovered: string;
+      secret: string;
+    };
+    tier: {
+      target: string;
+      hidden: string;
+      complete: string;
+      objective: string;
+    };
+    progress: {
+      hidden: string;
+    };
+    scan: {
+      building_headline: string;
+      building_detail: string;
+      starting_headline: string;
+      progress_detail: string;
+      idle_detail: string;
+    };
+    guide: {
+      tiers_header: string;
+      secret_header: string;
+      secret_body: string;
+      scan_status_header: string;
+      scan_status_body: string;
+      what_scanned_header: string;
+      what_scanned_body: string;
+    };
+    card: {
+      share_title: string;
+      share_label: string;
+      share_text: string;
+      how_to_reveal: string;
+      what_counts: string;
+      evidence_label: string;
+      evidence_session_fallback: string;
+      no_evidence: string;
+    };
+    latest: {
+      header: string;
+    };
+    empty: {
+      no_secrets_header: string;
+      no_secrets_body: string;
+    };
+    filters: {
+      all_categories: string;
+      visibility_all: string;
+      visibility_unlocked: string;
+      visibility_discovered: string;
+      visibility_secret: string;
+    };
+    share: {
+      dialog_label: string;
+      header: string;
+      close: string;
+      rendering: string;
+      card_alt: string;
+      error_generic: string;
+      x_title: string;
+      x_button: string;
+      copy_title: string;
+      copy_button: string;
+      copied: string;
+      download_button: string;
+      hint: string;
+      clipboard_unsupported: string;
+      tweet_text: string;
+    };
+  };
+
+  // ── Kanban ──
+  kanban: {
+    loading: string;
+    loadFailed: string;
+    loadFailedHint: string;
+    board: string;
+    newBoard: string;
+    newBoardTitle: string;
+    newBoardDescription: string;
+    slug: string;
+    slugHint: string;
+    displayName: string;
+    displayNameHint: string;
+    description: string;
+    descriptionHint: string;
+    icon: string;
+    iconHint: string;
+    switchAfterCreate: string;
+    cancel: string;
+    creating: string;
+    createBoard: string;
+    search: string;
+    filterCards: string;
+    tenant: string;
+    allTenants: string;
+    assignee: string;
+    allProfiles: string;
+    showArchived: string;
+    lanesByProfile: string;
+    nudgeDispatcher: string;
+    refresh: string;
+    selected: string;
+    complete: string;
+    archive: string;
+    apply: string;
+    clear: string;
+    createTask: string;
+    noTasks: string;
+    unassigned: string;
+    needsAssignee?: string;
+    needsAssigneeHint?: string;
+    untitled: string;
+    loadingDetail: string;
+    addComment: string;
+    comment: string;
+    status: string;
+    workspace: string;
+    skills: string;
+    createdBy: string;
+    result: string;
+    comments: string;
+    events: string;
+    runHistory: string;
+    workerLog: string;
+    loadingLog: string;
+    noWorkerLog: string;
+    noDescription: string;
+    noComments: string;
+    edit: string;
+    save: string;
+    dependencies: string;
+    parents: string;
+    children: string;
+    none: string;
+    addParent: string;
+    addChild: string;
+    removeDependency: string;
+    block: string;
+    unblock: string;
+    notifyHomeChannels: string;
+    diagnostics: string;
+    hide: string;
+    show: string;
+    attention: string;
+    tasksNeedAttention: string;
+    taskNeedsAttention: string;
+    diagnostic: string;
+    open: string;
+    close: string;
+    reassignTo: string;
+    copied: string;
+    copyCommand: string;
+    reclaim: string;
+    reassign: string;
+    renderingError: string;
+    reloadView: string;
+    wsAuthFailed: string;
+    markDone: string;
+    markArchived: string;
+    warning: string;
+    phantomIds: string;
+    active: string;
+    ended: string;
+    noProfile: string;
+    showAllAttempts: string;
+    sendingUpdates: string;
+    sendNotifications: string;
+    archiveBoardConfirm: string;
+    archiveBoardTitle: string;
+    boardSwitcherHint: string;
+    taskCreatedWarning: string;
+    moveFailed: string;
+    bulkFailed: string;
+    completionBlockedHallucination: string;
+    suspectedHallucinatedReferences: string;
+    pickProfileFirst: string;
+    unblockedMessage: string;
+    unblockFailed: string;
+    reclaimedMessage: string;
+    reclaimFailed: string;
+    reassignedMessage: string;
+    reassignFailed: string;
+    selectForBulk: string;
+    clickToEdit: string;
+    clickToEditAssignee: string;
+    emptyAssignee: string;
+    columnLabels: {
+      triage: string;
+      todo: string;
+      scheduled: string;
+      ready: string;
+      running: string;
+      blocked: string;
+      done: string;
+      archived: string;
+    };
+    columnHelp: {
+      triage: string;
+      todo: string;
+      scheduled: string;
+      ready: string;
+      running: string;
+      blocked: string;
+      done: string;
+      archived: string;
+    };
+    confirmDone: string;
+    confirmArchive: string;
+    confirmBlocked: string;
+    confirmScheduled?: string;
+    confirmDoneMany: string;
+    confirmArchiveMany: string;
+    confirmBlockedMany: string;
+    completionSummary: string;
+    completionSummaryRequired: string;
+    triagePlaceholder: string;
+    taskTitlePlaceholder: string;
+    specifier: string;
+    assigneePlaceholder: string;
+    priority: string;
+    skillsPlaceholder: string;
+    noParent: string;
+    workspacePathDir: string;
+    workspacePathOptional: string;
+    logTruncated: string;
+    logAt: string;
+    // Optional keys added with the modal create-task dialog, board-settings
+    // dialog, and comment workflow hint. Non-English locales fall back to
+    // the English literal in the plugin bundle until translated, so these
+    // are optional to avoid churning every locale file.
+    newTaskTitle?: string;
+    taskTitleLabel?: string;
+    assigneeLabel?: string;
+    assigneeLabelHint?: string;
+    skillsLabel?: string;
+    skillsLabelHint?: string;
+    parentLabel?: string;
+    parentLabelHint?: string;
+    create?: string;
+    boardSettings?: string;
+    boardSettingsTitle?: string;
+    boardSettingsTitleFor?: string;
+    projectDirectoryOverrideHint?: string;
+    saving?: string;
+    commentHint?: string;
+    commentHintTitle?: string;
+    // Optional in-app confirm-dialog strings for the trash/delete flow;
+    // non-English locales fall back to the English literals in the bundle.
+    trash?: {
+      confirmTitle?: string;
+      confirmManyTitle?: string;
+    };
   };
 }

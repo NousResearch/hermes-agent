@@ -125,6 +125,7 @@ const SOURCE_LABELS: Record<string, string> = {
   linkedin: 'LinkedIn',
   gist: 'GitHub Gist',
   producthunt: 'Product Hunt',
+  discord: 'Discord',
 };
 
 function sourceColor(source: string): string {
@@ -139,11 +140,12 @@ function sourceColor(source: string): string {
     case 'linkedin': return '#0a66c2';
     case 'gist': return '#8b949e';
     case 'producthunt': return '#da552f';
+    case 'discord': return '#5865f2';
     default: return '#64748b';
   }
 }
 
-export default function UserStoriesCollage(): JSX.Element {
+export default function UserStoriesCollage(): React.JSX.Element {
   const [activeCategory, setActiveCategory] = useState<string>('all');
   const [activeSource, setActiveSource] = useState<string>('all');
 

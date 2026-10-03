@@ -9,18 +9,20 @@ reports exactly what was skipped and why.
 from __future__ import annotations
 
 import argparse
+import errno
 import hashlib
 import json
 import os
 import re
 import shutil
+import tempfile
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 try:
-    import yaml
+    from ruamel import yaml
 except Exception:  # pragma: no cover - handled at runtime
     yaml = None
 
@@ -145,7 +147,7 @@ MIGRATION_OPTION_METADATA: Dict[str, Dict[str, str]] = {
     },
     "session-config": {
         "label": "Session configuration",
-        "description": "Import session reset policies (daily/idle) into Hermes session_reset config.",
+        "description": "Archive advanced session settings; automatic reset timers are not imported.",
     },
     "full-providers": {
         "label": "Full model provider definitions",
@@ -312,7 +314,7 @@ def sha256_file(path: Path) -> str:
 
 
 def read_text(path: Path) -> str:
-    return path.read_text(encoding="utf-8")
+    return path.read_text(encoding="utf-8", errors="replace")
 
 
 def normalize_text(text: str) -> str:
@@ -346,28 +348,141 @@ def resolve_secret_input(value: Any, env: Optional[Dict[str, str]] = None) -> Op
     return None
 
 
+class ConfigReadError(RuntimeError):
+    """An existing config file is present but cannot be read or parsed.
+
+    Signals that a read-modify-write round trip must be abandoned: the caller
+    has no idea what the file holds, so writing a merged result back would
+    replace real settings with only the keys it merged.
+    """
+
+
 def load_yaml_file(path: Path) -> Dict[str, Any]:
+    """Load a YAML mapping, distinguishing "absent" from "unreadable".
+
+    Every config.yaml caller here reads the file, merges a section into it and
+    writes the whole mapping straight back.  Collapsing a present-but-unreadable
+    file to ``{}`` therefore destroys it: a YAML syntax error, a permission
+    problem or a broken mount would make the migration replace every setting
+    the user had with only the section it merged, and still report ``migrated``.
+
+    - Absent, or present but empty -> ``{}``; first-time creation still works.
+    - Present but unreadable, unparseable, or not a mapping -> raise
+      :class:`ConfigReadError` so the caller refuses and leaves the file
+      byte-identical.
+
+    ``yaml is None`` (ruamel.yaml not installed) still yields ``{}``: nothing can be
+    written in that state either, since :func:`dump_yaml_file` raises.
+    """
     if yaml is None or not path.exists():
         return {}
-    data = yaml.safe_load(path.read_text(encoding="utf-8"))
-    return data if isinstance(data, dict) else {}
+    try:
+        # errors="replace" means read_text() cannot raise UnicodeDecodeError;
+        # OSError covers races like the file disappearing or being unreadable.
+        raw = path.read_text(encoding="utf-8", errors="replace")
+    except OSError as exc:
+        raise ConfigReadError(
+            f"Refusing to overwrite {path}: the existing file cannot be read "
+            f"({exc}). Fix the file permissions or move it aside first."
+        ) from exc
+    try:
+        reader = yaml.YAML(typ="safe")
+        reader.version = (1, 1)  # Match Hermes' existing config scalar semantics.
+        data = reader.load(raw)
+    except yaml.YAMLError as exc:
+        raise ConfigReadError(
+            f"Refusing to overwrite {path}: the existing file is not valid YAML "
+            f"({exc}). Fix it with `hermes config edit` (or move it aside), then "
+            f"re-run the migration."
+        ) from exc
+    # An empty file parses to None — a legitimate state with nothing to lose.
+    if data is None:
+        return {}
+    if not isinstance(data, dict):
+        raise ConfigReadError(
+            f"Refusing to overwrite {path}: expected the existing file to hold a "
+            f"YAML mapping but found {type(data).__name__}. Fix it with "
+            f"`hermes config edit` (or move it aside), then re-run the migration."
+        )
+    return data
 
 
 def dump_yaml_file(path: Path, data: Dict[str, Any]) -> None:
+    """Write ``data`` as YAML via temp file + fsync + atomic rename.
+
+    Only ever reached after :func:`load_yaml_file` has successfully read the
+    same path, so the mapping being written is the real file's content plus the
+    merged section — never a silently-empty stand-in.  Writing atomically means
+    an interrupted migration cannot leave a truncated config.yaml behind.
+
+    Inlined rather than importing ``utils.atomic_write_text``: this script is
+    standalone and runs with only the stdlib on its path.  The symlink and
+    cross-device handling mirrors ``utils.atomic_replace``: a plain
+    ``os.replace`` onto a symlinked config.yaml would replace the *link* with a
+    regular file, silently detaching managed deployments that symlink
+    ``~/.hermes/config.yaml`` into a dotfiles repo or profile package.
+    """
     if yaml is None:
-        raise RuntimeError("PyYAML is required to update Hermes config.yaml")
+        raise RuntimeError("ruamel.yaml is required to update Hermes config.yaml")
     ensure_parent(path)
-    path.write_text(
-        yaml.safe_dump(data, sort_keys=False, allow_unicode=False),
-        encoding="utf-8",
+    target = os.path.realpath(str(path)) if os.path.islink(str(path)) else str(path)
+    fd, tmp_path = tempfile.mkstemp(
+        dir=os.path.dirname(target) or ".", prefix=".tmp_", suffix=".yaml"
     )
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            # The C emitter leaves YAML 1.1 boolean-like strings unquoted.
+            writer = yaml.YAML(typ="safe", pure=True)
+            writer.version = (1, 1)
+            writer.default_flow_style = False
+            writer.sort_base_mapping_type_on_output = False
+            writer.allow_unicode = False
+            writer.dump(data, handle)
+            handle.flush()
+            os.fsync(handle.fileno())
+        try:
+            os.replace(tmp_path, target)
+        except OSError as exc:
+            # Cross-device or bind-mount deployments cannot rename into place.
+            if exc.errno not in (errno.EXDEV, errno.EBUSY):
+                raise
+            shutil.copyfile(tmp_path, target)
+            try:
+                shutil.copystat(tmp_path, target)
+            except OSError:
+                pass
+            # fsync the copied target so the durability claim holds on the
+            # cross-device path too (mirrors utils.atomic_replace, including
+            # its swallow — a failed fsync must not report the already-copied
+            # write as failed).
+            try:
+                target_fd = os.open(target, os.O_RDONLY)
+                try:
+                    os.fsync(target_fd)
+                finally:
+                    os.close(target_fd)
+            except OSError:
+                pass
+            os.unlink(tmp_path)
+    except BaseException:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
 
 
 def parse_env_file(path: Path) -> Dict[str, str]:
     if not path.exists():
         return {}
     data: Dict[str, str] = {}
-    for raw_line in path.read_text(encoding="utf-8").splitlines():
+    try:
+        # errors="replace" means read_text() cannot raise UnicodeDecodeError;
+        # OSError covers races like the file disappearing or being unreadable.
+        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return {}
+    for raw_line in lines:
         line = raw_line.strip()
         if not line or line.startswith("#") or "=" not in line:
             continue
@@ -439,14 +554,21 @@ def rebrand_text(text: str) -> str:
 
 
 def parse_existing_memory_entries(path: Path) -> List[str]:
+    """Parse a DESTINATION Hermes memory store (memories/MEMORY.md, USER.md).
+
+    Splits on ``ENTRY_DELIMITER`` only, matching ``MemoryStore._parse_entries``
+    in ``tools/memory_tool.py``: a store with no delimiter is ONE intact entry.
+    Do NOT fall back to :func:`extract_markdown_entries` — it is the *source*
+    parser (workspace/MEMORY.md and friends), it drops fenced code blocks and
+    table rows and splits a block into one entry per bullet, and the merged
+    result is written back over the destination.
+    """
     if not path.exists():
         return []
     raw = read_text(path)
     if not raw.strip():
         return []
-    if ENTRY_DELIMITER in raw:
-        return [e.strip() for e in raw.split(ENTRY_DELIMITER) if e.strip()]
-    return extract_markdown_entries(raw)
+    return [e.strip() for e in raw.split(ENTRY_DELIMITER) if e.strip()]
 
 
 def extract_markdown_entries(text: str) -> List[str]:
@@ -610,7 +732,7 @@ def _is_secret_key(key: str) -> bool:
     normalized = _normalize_secret_key(key)
     if normalized == "token" or normalized.endswith("token"):
         return True
-    if normalized in ("auth", "authorization"):
+    if normalized in {"auth", "authorization"}:
         return True
     return any(marker in normalized for marker in _SECRET_KEY_MARKERS)
 
@@ -765,7 +887,14 @@ class Migrator:
                     # ws_path is outside source_root — use it as custom workspace
                     self._custom_workspace = ws_path
 
-        config = load_yaml_file(self.target_root / "config.yaml")
+        # Read-only probe for the memory limits, during construction — nothing
+        # is written from here, so an unreadable config just falls back to the
+        # defaults.  Every path that WRITES config.yaml refuses separately (see
+        # run_if_selected), so this cannot become a silent overwrite.
+        try:
+            config = load_yaml_file(self.target_root / "config.yaml")
+        except ConfigReadError:
+            config = {}
         mem_cfg = config.get("memory", {}) if isinstance(config.get("memory"), dict) else {}
         self.memory_limit = int(mem_cfg.get("memory_char_limit", DEFAULT_MEMORY_CHAR_LIMIT))
         self.user_limit = int(mem_cfg.get("user_char_limit", DEFAULT_USER_CHAR_LIMIT))
@@ -794,7 +923,6 @@ class Migrator:
         "hooks-config",
         "agent-config",
         "gateway-config",
-        "session-config",
         "full-providers",
         "deep-channels",
         "browser-config",
@@ -831,7 +959,7 @@ class Migrator:
         # Flip the config-block flag when a conflict/error occurs on a
         # config.yaml write.  Later config-mutating options will skip rather
         # than attempting a partial write.
-        if status in (STATUS_CONFLICT, STATUS_ERROR) and destination is not None:
+        if status in {STATUS_CONFLICT, STATUS_ERROR} and destination is not None:
             dest_str = str(destination)
             if dest_str.endswith("config.yaml") or dest_str.endswith("config.yml"):
                 self._config_apply_blocked = True
@@ -983,7 +1111,24 @@ class Migrator:
                 option_label=meta["label"],
             )
             return
-        func()
+        try:
+            func()
+        except ConfigReadError as exc:
+            # The destination config.yaml is present but unreadable, so this
+            # step cannot merge into it.  Record the refusal against the
+            # config path — record() then flips _config_apply_blocked, and the
+            # remaining config-mutating options short-circuit above instead of
+            # each rediscovering the same unreadable file.  The file itself is
+            # left byte-identical.
+            meta = MIGRATION_OPTION_METADATA[option_id]
+            self.record(
+                option_id,
+                None,
+                self.target_root / "config.yaml",
+                STATUS_ERROR,
+                str(exc),
+                option_label=meta["label"],
+            )
 
     def build_report(self) -> Dict[str, Any]:
         summary: Dict[str, int] = {
@@ -1204,13 +1349,16 @@ class Migrator:
             self.record("command-allowlist", None, destination, "skipped", "No OpenClaw exec approvals file found")
             return
         if yaml is None:
-            self.record("command-allowlist", source, destination, "error", "PyYAML is not available")
+            self.record("command-allowlist", source, destination, "error", "ruamel.yaml is not available")
             return
 
         try:
-            data = json.loads(source.read_text(encoding="utf-8"))
+            data = json.loads(source.read_text(encoding="utf-8", errors="replace"))
         except json.JSONDecodeError as exc:
             self.record("command-allowlist", source, destination, "error", f"Invalid JSON: {exc}")
+            return
+        except OSError as exc:
+            self.record("command-allowlist", source, destination, "error", f"Could not read file: {exc}")
             return
 
         patterns: List[str] = []
@@ -1262,9 +1410,11 @@ class Migrator:
             config_path = self.source_root / name
             if config_path.exists():
                 try:
-                    data = json.loads(config_path.read_text(encoding="utf-8"))
+                    # errors="replace" means read_text() cannot raise
+                    # UnicodeDecodeError; OSError covers unreadable/vanished files.
+                    data = json.loads(config_path.read_text(encoding="utf-8", errors="replace"))
                     return data if isinstance(data, dict) else {}
-                except json.JSONDecodeError:
+                except (json.JSONDecodeError, OSError):
                     continue
         return {}
 
@@ -1343,9 +1493,11 @@ class Migrator:
         allowlist_path = self.source_root / "credentials" / "telegram-default-allowFrom.json"
         if allowlist_path.exists():
             try:
-                allow_data = json.loads(allowlist_path.read_text(encoding="utf-8"))
+                allow_data = json.loads(allowlist_path.read_text(encoding="utf-8", errors="replace"))
             except json.JSONDecodeError:
                 self.record("messaging-settings", allowlist_path, self.target_root / ".env", "error", "Invalid JSON in Telegram allowlist file")
+            except OSError as exc:
+                self.record("messaging-settings", allowlist_path, self.target_root / ".env", "error", f"Could not read Telegram allowlist file: {exc}")
             else:
                 allow_from = allow_data.get("allowFrom", [])
                 if isinstance(allow_from, list):
@@ -1526,7 +1678,7 @@ class Migrator:
                 api_key = resolve_secret_input(raw_key, openclaw_env)
                 if not api_key:
                     # Warn if a SecretRef with file/exec source was silently unresolvable
-                    if isinstance(raw_key, dict) and raw_key.get("source") in ("file", "exec"):
+                    if isinstance(raw_key, dict) and raw_key.get("source") in {"file", "exec"}:
                         self.record(
                             "provider-keys",
                             self.source_root / "openclaw.json",
@@ -1617,7 +1769,7 @@ class Migrator:
         auth_profiles_path = self.source_root / "agents" / "main" / "agent" / "auth-profiles.json"
         if auth_profiles_path.exists():
             try:
-                profiles = json.loads(auth_profiles_path.read_text(encoding="utf-8"))
+                profiles = json.loads(auth_profiles_path.read_text(encoding="utf-8", errors="replace"))
                 if isinstance(profiles, dict):
                     # auth-profiles.json wraps profiles in a "profiles" key
                     profile_entries = profiles.get("profiles", profiles) if isinstance(profiles.get("profiles"), dict) else profiles
@@ -1695,7 +1847,7 @@ class Migrator:
                     break
 
         if yaml is None:
-            self.record("model-config", source_path, destination, "error", "PyYAML is not available")
+            self.record("model-config", source_path, destination, "error", "ruamel.yaml is not available")
             return
 
         hermes_config = load_yaml_file(destination)
@@ -1730,13 +1882,13 @@ class Migrator:
             return
 
         if yaml is None:
-            self.record("tts-config", source_path, destination, "error", "PyYAML is not available")
+            self.record("tts-config", source_path, destination, "error", "ruamel.yaml is not available")
             return
 
         tts_data: Dict[str, Any] = {}
 
         provider = tts.get("provider")
-        if isinstance(provider, str) and provider in ("elevenlabs", "openai", "edge", "microsoft"):
+        if isinstance(provider, str) and provider in {"elevenlabs", "openai", "edge", "microsoft"}:
             # OpenClaw renamed "edge" to "microsoft"; Hermes still uses "edge"
             tts_data["provider"] = "edge" if provider == "microsoft" else provider
 
@@ -1901,7 +2053,12 @@ class Migrator:
 
         all_incoming: List[str] = []
         for md_file in md_files:
-            entries = extract_markdown_entries(read_text(md_file))
+            try:
+                # read_text() uses errors="replace" so it cannot raise
+                # UnicodeDecodeError; OSError covers unreadable/vanished files.
+                entries = extract_markdown_entries(read_text(md_file))
+            except OSError:
+                continue
             all_incoming.extend(entries)
 
         if not all_incoming:
@@ -2304,11 +2461,11 @@ class Migrator:
         if defaults.get("thinkingDefault"):
             # Map OpenClaw thinking -> Hermes reasoning_effort
             thinking = defaults["thinkingDefault"]
-            if thinking in ("always", "high", "xhigh"):
+            if thinking in {"always", "high", "xhigh"}:
                 agent_cfg["reasoning_effort"] = "high"
-            elif thinking in ("auto", "medium", "adaptive"):
+            elif thinking in {"auto", "medium", "adaptive"}:
                 agent_cfg["reasoning_effort"] = "medium"
-            elif thinking in ("off", "low", "none", "minimal"):
+            elif thinking in {"off", "low", "none", "minimal"}:
                 agent_cfg["reasoning_effort"] = "low"
             changes = True
 
@@ -2423,48 +2580,9 @@ class Migrator:
             self.record("session-config", None, None, "skipped", "No session configuration found")
             return
 
-        hermes_cfg_path = self.target_root / "config.yaml"
-        hermes_cfg = load_yaml_file(hermes_cfg_path)
-        sr = hermes_cfg.get("session_reset") or {}
-        changes = False
-
-        # OpenClaw uses session.reset (structured) and session.resetTriggers (string array)
-        reset = session.get("reset") or {}
-        reset_triggers = session.get("resetTriggers") or session.get("reset_triggers") or []
-
-        if reset:
-            # Structured reset config: has mode, atHour, idleMinutes
-            mode = reset.get("mode", "")
-            if mode == "daily":
-                sr["mode"] = "daily"
-            elif mode == "idle":
-                sr["mode"] = "idle"
-            else:
-                sr["mode"] = mode or "none"
-            if reset.get("atHour") is not None:
-                sr["at_hour"] = reset["atHour"]
-            if reset.get("idleMinutes"):
-                sr["idle_minutes"] = reset["idleMinutes"]
-            changes = True
-        elif isinstance(reset_triggers, list) and reset_triggers:
-            # Simple string triggers: ["daily", "idle"]
-            has_daily = "daily" in reset_triggers
-            has_idle = "idle" in reset_triggers
-            if has_daily and has_idle:
-                sr["mode"] = "both"
-            elif has_daily:
-                sr["mode"] = "daily"
-            elif has_idle:
-                sr["mode"] = "idle"
-            changes = True
-
-        if changes:
-            hermes_cfg["session_reset"] = sr
-            if self.execute:
-                self.maybe_backup(hermes_cfg_path)
-                dump_yaml_file(hermes_cfg_path, hermes_cfg)
-            self.record("session-config", "openclaw.json session.resetTriggers",
-                        "config.yaml session_reset", "migrated")
+        if session.get("reset") or session.get("resetTriggers") or session.get("reset_triggers"):
+            self.record("session-config", "session reset timers", None, "skipped",
+                        "Hermes conversations do not reset on idle or daily timers")
 
         # Archive full session config (identity links, thread bindings, etc.)
         complex_keys = {"identityLinks", "threadBindings", "maintenance", "scope", "sendPolicy"}
@@ -2626,8 +2744,8 @@ class Migrator:
             if not isinstance(ch_cfg, dict):
                 continue
             complex_keys = {k: v for k, v in ch_cfg.items()
-                          if k not in ("botToken", "appToken", "allowFrom", "enabled")
-                          and v and k not in ("requireMention", "autoThread")}
+                          if k not in {"botToken", "appToken", "allowFrom", "enabled"}
+                          and v and k not in {"requireMention", "autoThread"}}
             if complex_keys:
                 complex_archive[ch_name] = complex_keys
 
@@ -2671,7 +2789,7 @@ class Migrator:
 
         # Archive remaining browser settings
         advanced = {k: v for k, v in browser.items()
-                   if k not in ("cdpUrl", "headless") and v}
+                   if k not in {"cdpUrl", "headless"} and v}
         if advanced and self.archive_dir:
             if self.execute:
                 self.archive_dir.mkdir(parents=True, exist_ok=True)
@@ -3043,16 +3161,16 @@ def main() -> int:
     total = sum(s.values())
 
     print()
-    print(f"  ╔══════════════════════════════════════════════════════╗")
+    print("  ╔══════════════════════════════════════════════════════╗")
     print(f"  ║   OpenClaw -> Hermes Migration   [{mode_label:>8s}]   ║")
-    print(f"  ╠══════════════════════════════════════════════════════╣")
+    print("  ╠══════════════════════════════════════════════════════╣")
     print(f"  ║  Source:  {str(report['source_root'])[:42]:<42s}  ║")
     print(f"  ║  Target:  {str(report['target_root'])[:42]:<42s}  ║")
-    print(f"  ╠══════════════════════════════════════════════════════╣")
+    print("  ╠══════════════════════════════════════════════════════╣")
     print(f"  ║  ✔ Migrated:  {s.get('migrated', 0):>3d}    ◆ Archived:  {s.get('archived', 0):>3d}        ║")
     print(f"  ║  ⊘ Skipped:   {s.get('skipped', 0):>3d}    ⚠ Conflicts: {s.get('conflict', 0):>3d}        ║")
     print(f"  ║  ✖ Errors:    {s.get('error', 0):>3d}    Total:       {total:>3d}        ║")
-    print(f"  ╚══════════════════════════════════════════════════════╝")
+    print("  ╚══════════════════════════════════════════════════════╝")
 
     # Show what was migrated
     migrated = [i for i in items if i["status"] == "migrated"]

@@ -176,9 +176,12 @@ def check_env_vars():
 
     # Load .env
     try:
-        from dotenv import load_dotenv
-        if ENV_FILE.exists():
-            load_dotenv(ENV_FILE)
+        from hermes_cli.env_loader import load_hermes_dotenv
+
+        load_hermes_dotenv(
+            hermes_home=ENV_FILE.parent,
+            project_env=PROJECT_ROOT / ".env",
+        )
     except ImportError:
         pass
 
@@ -238,8 +241,8 @@ def check_config(groq_key, eleven_key):
     config_path = HERMES_HOME / "config.yaml"
     if config_path.exists():
         try:
-            import yaml
-            with open(config_path) as f:
+            import hermes_yaml as yaml
+            with open(config_path, encoding="utf-8-sig") as f:
                 cfg = yaml.safe_load(f) or {}
 
             stt_provider = cfg.get("stt", {}).get("provider", "local")
@@ -265,7 +268,7 @@ def check_config(groq_key, eleven_key):
     if voice_mode_path.exists():
         try:
             import json
-            modes = json.loads(voice_mode_path.read_text(encoding="utf-8"))
+            modes = json.loads(voice_mode_path.read_text(encoding="utf-8-sig"))
             off_count = sum(1 for v in modes.values() if v == "off")
             all_count = sum(1 for v in modes.values() if v == "all")
             check("Voice mode state", True, f"{all_count} on, {off_count} off, {len(modes)} total")

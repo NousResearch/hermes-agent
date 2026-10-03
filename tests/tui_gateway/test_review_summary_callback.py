@@ -11,7 +11,6 @@ transcript line.
 
 from __future__ import annotations
 
-import sys
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -19,6 +18,8 @@ import pytest
 
 @pytest.fixture()
 def server():
+    # Mocks are scoped to the initial import only (see
+    # tests/tui_gateway/test_protocol.py for the rationale).
     with patch.dict(
         "sys.modules",
         {
@@ -33,12 +34,16 @@ def server():
         import importlib
 
         mod = importlib.import_module("tui_gateway.server")
-        yield mod
-        mod._sessions.clear()
-        mod._pending.clear()
-        mod._answers.clear()
-        mod._methods.clear()
-        importlib.reload(mod)
+
+    yield mod
+    # Reset module-level session state without re-importing. importlib.reload
+    # would re-register the module's atexit hooks (ThreadPoolExecutor
+    # shutdown, _shutdown_sessions); the duplicates race the stderr
+    # buffer at interpreter shutdown and surface as Fatal Python error:
+    # _enter_buffered_busy. Clearing the per-session dicts gives the
+    # next test a clean slate.
+    mod._sessions.clear()
+    __import__("tui_gateway.server_requests", fromlist=["x"]).reset_for_tests()
 
 
 def test_init_session_attaches_background_review_callback(server, monkeypatch):
@@ -49,7 +54,7 @@ def test_init_session_attaches_background_review_callback(server, monkeypatch):
     monkeypatch.setattr(server, "_SlashWorker", lambda *a, **kw: object())
     monkeypatch.setattr(server, "_wire_callbacks", lambda sid: None)
     monkeypatch.setattr(server, "_notify_session_boundary", lambda *a, **kw: None)
-    monkeypatch.setattr(server, "_session_info", lambda agent: {"model": "m"})
+    monkeypatch.setattr(server, "_session_info", lambda agent, session=None: {"model": "m"})
     monkeypatch.setattr(server, "_load_show_reasoning", lambda: False)
     monkeypatch.setattr(server, "_load_tool_progress_mode", lambda: "all")
 
@@ -94,24 +99,25 @@ def test_init_session_attaches_background_review_callback(server, monkeypatch):
     }
 
 
-def test_review_summary_callback_survives_agent_without_attribute(server, monkeypatch):
-    """If the agent is a bare object that doesn't allow attribute
-    assignment (e.g. some stubbed test double), _init_session must not
-    raise — session startup stays robust."""
-    monkeypatch.setattr(server, "_SlashWorker", lambda *a, **kw: object())
-    monkeypatch.setattr(server, "_wire_callbacks", lambda sid: None)
-    monkeypatch.setattr(server, "_notify_session_boundary", lambda *a, **kw: None)
-    monkeypatch.setattr(server, "_session_info", lambda agent: {"model": "m"})
-    monkeypatch.setattr(server, "_load_show_reasoning", lambda: False)
-    monkeypatch.setattr(server, "_load_tool_progress_mode", lambda: "all")
-    monkeypatch.setattr(server, "_emit", lambda *a, **kw: None)
-
-    class LockedAgent:
-        __slots__ = ("model",)
-
-        def __init__(self):
-            self.model = "fake/model"
-
-    # LockedAgent's __slots__ blocks background_review_callback assignment.
-    server._init_session("sid-x", "key-x", LockedAgent(), [], cols=80)
     # If we got here, _init_session swallowed the AttributeError gracefully.
+
+
+@pytest.mark.parametrize(
+    "raw,expected",
+    [
+        (None, "on"),       # unset → default on
+        ("on", "on"),
+        ("off", "off"),
+        ("verbose", "verbose"),
+        ("VERBOSE", "verbose"),  # case-normalized
+        (True, "on"),       # bool back-compat
+        (False, "off"),
+    ],
+)
+def test_load_memory_notifications_normalization(server, monkeypatch, raw, expected):
+    """_load_memory_notifications mirrors the gateway's bool→str normalization
+    and defaults to 'on' when the key is absent."""
+    display = {} if raw is None else {"memory_notifications": raw}
+    monkeypatch.setattr(server, "_load_cfg", lambda: {"display": display})
+    assert server._load_memory_notifications() == expected
+

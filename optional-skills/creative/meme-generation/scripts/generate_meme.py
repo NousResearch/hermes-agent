@@ -5,8 +5,8 @@ Usage:
     python generate_meme.py <template_id_or_name> <output_path> <text1> [text2] [text3] [text4]
 
 Example:
-    python generate_meme.py drake /tmp/meme.png "Writing tests" "Shipping to prod and hoping"
-    python generate_meme.py "Disaster Girl" /tmp/meme.png "Top text" "Bottom text"
+    python generate_meme.py drake ~/.hermes/cache/scratch/meme.png "Writing tests" "Shipping to prod and hoping"
+    python generate_meme.py "Disaster Girl" ~/.hermes/cache/scratch/meme.png "Top text" "Bottom text"
     python generate_meme.py --list                    # show curated templates
     python generate_meme.py --search "distracted"     # search all imgflip templates
 
@@ -18,7 +18,6 @@ unknown templates get smart default text positioning based on their box_count.
 import json
 import os
 import sys
-import textwrap
 from io import BytesIO
 from pathlib import Path
 
@@ -358,7 +357,7 @@ def generate_meme(template_id: str, texts: list[str], output_path: str) -> str:
     img = _overlay_on_image(img, texts, fields)
 
     output = Path(output_path)
-    if output.suffix.lower() in (".jpg", ".jpeg"):
+    if output.suffix.lower() in {".jpg", ".jpeg"}:
         img = img.convert("RGB")
     img.save(str(output), quality=95)
     return str(output)
@@ -378,7 +377,7 @@ def generate_from_image(
         result = _overlay_on_image(img, texts, fields)
 
     output = Path(output_path)
-    if output.suffix.lower() in (".jpg", ".jpeg"):
+    if output.suffix.lower() in {".jpg", ".jpeg"}:
         result = result.convert("RGB")
     result.save(str(output), quality=95)
     return str(output)

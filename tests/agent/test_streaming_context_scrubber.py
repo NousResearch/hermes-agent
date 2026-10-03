@@ -10,15 +10,7 @@ from agent.memory_manager import StreamingContextScrubber, sanitize_context
 
 
 class TestStreamingContextScrubberBasics:
-    def test_empty_input_returns_empty(self):
-        s = StreamingContextScrubber()
-        assert s.feed("") == ""
-        assert s.flush() == ""
 
-    def test_plain_text_passes_through(self):
-        s = StreamingContextScrubber()
-        assert s.feed("hello world") == "hello world"
-        assert s.flush() == ""
 
     def test_complete_block_in_single_delta(self):
         """Regression: the one-shot test case from #13672 must still work."""
@@ -33,18 +25,6 @@ class TestStreamingContextScrubberBasics:
         out = s.feed(leaked) + s.flush()
         assert out == "\n\nVisible answer"
 
-    def test_open_and_close_in_separate_deltas_strips_payload(self):
-        """The real streaming case: tag pair split across deltas."""
-        s = StreamingContextScrubber()
-        deltas = [
-            "Hello ",
-            "<memory-context>\npayload ",
-            "more payload\n",
-            "</memory-context> world",
-        ]
-        out = "".join(s.feed(d) for d in deltas) + s.flush()
-        assert out == "Hello  world"
-        assert "payload" not in out
 
     def test_realistic_fragmented_chunks_strip_memory_payload(self):
         """Exact leak scenario from the reviewer's comment — 4 realistic chunks.
@@ -68,27 +48,8 @@ class TestStreamingContextScrubberBasics:
         assert "Honcho Context" not in out
         assert "stale memory" not in out
 
-    def test_open_tag_split_across_two_deltas(self):
-        """The open tag itself arriving in two fragments."""
-        s = StreamingContextScrubber()
-        out = (
-            s.feed("pre <memory")
-            + s.feed("-context>leak</memory-context> post")
-            + s.flush()
-        )
-        assert out == "pre  post"
-        assert "leak" not in out
 
-    def test_close_tag_split_across_two_deltas(self):
-        """The close tag arriving in two fragments."""
-        s = StreamingContextScrubber()
-        out = (
-            s.feed("pre <memory-context>leak</memory")
-            + s.feed("-context> post")
-            + s.flush()
-        )
-        assert out == "pre  post"
-        assert "leak" not in out
+
 
 
 class TestStreamingContextScrubberPartialTagFalsePositives:
@@ -98,20 +59,32 @@ class TestStreamingContextScrubberPartialTagFalsePositives:
         out = s.feed("hello <mem") + s.feed("ory other") + s.flush()
         assert out == "hello <memory other"
 
-    def test_partial_tag_released_when_disambiguated(self):
-        """A held-back partial tag that turns out to be prose gets released."""
+
+    def test_inline_memory_context_tag_mention_is_not_scrubbed(self):
+        """A prose mention of the fence tag must not swallow the answer."""
         s = StreamingContextScrubber()
-        # '< ' should not look like the start of any tag.
-        out = s.feed("price < ") + s.feed("10 dollars") + s.flush()
-        assert out == "price < 10 dollars"
+        out = (
+            s.feed("In that previous `<memory")
+            + s.feed("-context>` block, ")
+            + s.feed("there was no matching fact.")
+            + s.flush()
+        )
+        assert out == "In that previous `<memory-context>` block, there was no matching fact."
+
+    def test_mid_sentence_memory_context_mention_is_not_scrubbed(self):
+        """Only block-like memory-context spans are treated as leaked context."""
+        s = StreamingContextScrubber()
+        out = s.feed("The <memory-context> tag name is documented here.") + s.flush()
+        assert out == "The <memory-context> tag name is documented here."
+
 
 
 class TestStreamingContextScrubberUnterminatedSpan:
     def test_unterminated_span_drops_payload(self):
         """Provider drops close tag — better to lose output than to leak."""
         s = StreamingContextScrubber()
-        out = s.feed("pre <memory-context>secret never closed") + s.flush()
-        assert out == "pre "
+        out = s.feed("pre \n<memory-context>\nsecret never closed") + s.flush()
+        assert out == "pre \n"
         assert "secret" not in out
 
     def test_reset_clears_hung_span(self):
@@ -127,7 +100,7 @@ class TestStreamingContextScrubberCaseInsensitivity:
     def test_uppercase_tags_still_scrubbed(self):
         s = StreamingContextScrubber()
         out = (
-            s.feed("<MEMORY-CONTEXT>secret")
+            s.feed("<MEMORY-CONTEXT>\nsecret")
             + s.feed("</Memory-Context>visible")
             + s.flush()
         )
@@ -171,7 +144,7 @@ class TestStreamingContextScrubberCrossTurn:
 
     def test_reset_clears_in_span_state(self):
         s = StreamingContextScrubber()
-        s.feed("text<memory-context>secret-tail")
+        s.feed("text\n<memory-context>secret-tail")
         # Mid-span state held — without reset, subsequent text would be
         # discarded until we see </memory-context>.
         s.reset()

@@ -1,0 +1,22 @@
+Subject: CCPA/CPRA request to delete and opt out (do not sell or share)
+
+To the {broker_name} privacy team,
+
+Under the California Consumer Privacy Act as amended by the CPRA (Cal. Civ. Code 1798.105 and
+1798.120), I request that you:
+
+  1. DELETE all personal information you hold about me, and
+  2. OPT me OUT of the sale and sharing of my personal information.
+
+My information appears at:
+{listing_urls}
+
+Identifying details for this request:
+  Name:  {full_name}
+  Email: {contact_email}
+
+Please do not request more sensitive information than necessary to process this request. Confirm
+completion in writing to the email above within the statutory timeframe.
+
+Sincerely,
+{full_name}

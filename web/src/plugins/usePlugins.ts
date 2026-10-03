@@ -8,7 +8,7 @@
  */
 
 import { useState, useEffect, useRef } from "react";
-import { api } from "@/lib/api";
+import { api, HERMES_BASE_PATH } from "@/lib/api";
 import type { PluginManifest, RegisteredPlugin } from "./types";
 import {
   getPluginComponent,
@@ -17,17 +17,76 @@ import {
   setPluginLoadError,
 } from "./registry";
 
+export const MANIFEST_CACHE_KEY = "hermes:plugin-manifests";
+
+export function getCachedManifests(): PluginManifest[] | null {
+  try {
+    const raw = sessionStorage.getItem(MANIFEST_CACHE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? (parsed as PluginManifest[]) : null;
+  } catch {
+    return null;
+  }
+}
+
+export function cacheManifests(manifests: PluginManifest[]): void {
+  try {
+    sessionStorage.setItem(MANIFEST_CACHE_KEY, JSON.stringify(manifests));
+  } catch {
+    // sessionStorage unavailable (private browsing, storage full, etc.)
+  }
+}
+
+/**
+ * Whether it is safe to skip the initial plugin-loading gate for a set of
+ * cached manifests.
+ *
+ * App.tsx waits on `pluginsLoading` before mounting the persistent ChatPage
+ * host: if a plugin overrides /chat (`tab.override === "/chat"`), mounting
+ * the built-in chat first would spawn a PTY and then yank it out from under
+ * the user when the plugin resolves. That gate is load-bearing — so we may
+ * only seed `loading = false` from the cache when no cached manifest
+ * declares a /chat override. Manifests are still seeded either way; only
+ * the loading flag stays conservative.
+ */
+export function canSeedLoadedFromCache(
+  cached: PluginManifest[] | null,
+): boolean {
+  if (cached === null) return false;
+  return !cached.some((m) => m.tab?.override === "/chat");
+}
+
 export function usePlugins() {
-  const [manifests, setManifests] = useState<PluginManifest[]>([]);
+  // Lazy initialisers run once at mount — safe to read sessionStorage here.
+  // This avoids the "cannot access ref during render" lint error that would
+  // occur if we stored the cached value in a useRef and read .current in the
+  // useState initial value expression.
+  const [manifests, setManifests] = useState<PluginManifest[]>(
+    () => getCachedManifests() ?? [],
+  );
   const [plugins, setPlugins] = useState<RegisteredPlugin[]>([]);
-  const [loading, setLoading] = useState(true);
+  // Start loading=false when the cache has manifests so plugin routes are
+  // registered synchronously on the first render after a refresh.
+  // The catch-all in App.tsx is only a safety net for the very first visit
+  // (no cache yet). On subsequent visits this flag starts false immediately.
+  //
+  // Exception: if any cached manifest overrides /chat we must keep
+  // loading=true — App.tsx's pluginsLoading gate around the persistent
+  // ChatPage host is load-bearing (see canSeedLoadedFromCache).
+  const [loading, setLoading] = useState<boolean>(
+    () => !canSeedLoadedFromCache(getCachedManifests()),
+  );
   const loadedScripts = useRef<Set<string>>(new Set());
 
-  // Fetch manifests on mount.
+  // Always re-fetch in the background to keep the cache fresh.
+  // This handles: new plugins added, plugins removed, manifest changes.
+  // setManifests(list) will update routes if the server list differs from cache.
   useEffect(() => {
     api
       .getPlugins()
       .then((list) => {
+        cacheManifests(list);
         setManifests(list);
         if (list.length === 0) setLoading(false);
       })
@@ -43,7 +102,7 @@ export function usePlugins() {
     for (const manifest of manifests) {
       // Inject CSS if specified.
       if (manifest.css) {
-        const cssUrl = `/dashboard-plugins/${manifest.name}/${manifest.css}`;
+        const cssUrl = `${HERMES_BASE_PATH}/dashboard-plugins/${manifest.name}/${manifest.css}`;
         if (!document.querySelector(`link[href="${cssUrl}"]`)) {
           const link = document.createElement("link");
           link.rel = "stylesheet";
@@ -55,7 +114,7 @@ export function usePlugins() {
       // Load JS bundle. In dev, cache-bust so Vite HMR can clear the
       // in-memory registry while the browser would otherwise never
       // re-execute a previously cached <script> URL.
-      const baseUrl = `/dashboard-plugins/${manifest.name}/${manifest.entry}`;
+      const baseUrl = `${HERMES_BASE_PATH}/dashboard-plugins/${manifest.name}/${manifest.entry}`;
       const scriptSrc = import.meta.env.DEV
         ? `${baseUrl}?hermes_dv=${Date.now()}`
         : baseUrl;
@@ -68,6 +127,16 @@ export function usePlugins() {
       script.setAttribute("data-hermes-plugin", manifest.name);
       script.src = scriptSrc;
       script.async = true;
+      // SRI integrity verification — defense against compromised plugin
+      // delivery. Plugin manifests can declare an integrity hash
+      // (e.g. "sha384-...") which the browser verifies before executing.
+      // Without this, a man-in-the-middle or compromised plugin server
+      // can substitute the JS bundle silently. Opt-in: when no integrity
+      // is declared in the manifest, behavior is unchanged.
+      if (manifest.integrity && typeof manifest.integrity === "string") {
+        script.integrity = manifest.integrity;
+        script.crossOrigin = "anonymous";
+      }
       script.onerror = () => {
         setPluginLoadError(manifest.name, "LOAD_FAILED");
         console.warn(

@@ -4,6 +4,7 @@ description: "Himalaya CLI: IMAP/SMTP email from terminal."
 version: 1.1.0
 author: community
 license: MIT
+platforms: [linux, macos, windows]
 metadata:
   hermes:
     tags: [Email, IMAP, SMTP, CLI, Communication]
@@ -15,6 +16,11 @@ prerequisites:
 # Himalaya Email CLI
 
 Himalaya is a CLI email client that lets you manage emails from the terminal using IMAP, SMTP, Notmuch, or Sendmail backends.
+
+This skill is separate from the Hermes Email gateway adapter. The gateway
+adapter lets people email the agent and uses Hermes' built-in IMAP/SMTP
+adapter; this skill lets the agent operate a mailbox from terminal tools and
+requires the external `himalaya` CLI.
 
 ## References
 
@@ -207,16 +213,16 @@ Note: `himalaya message write` without piped input opens `$EDITOR`. This works w
 
 ### Move/Copy Emails
 
-Move to folder:
+Move to folder (target folder comes first, then the message ID):
 
 ```bash
-himalaya message move 42 "Archive"
+himalaya message move "Archive" 42
 ```
 
-Copy to folder:
+Copy to folder (target folder comes first, then the message ID):
 
 ```bash
-himalaya message copy 42 "Important"
+himalaya message copy "Important" 42
 ```
 
 ### Delete an Email
@@ -264,7 +270,7 @@ himalaya attachment download 42
 Save to specific directory:
 
 ```bash
-himalaya attachment download 42 --dir ~/Downloads
+himalaya attachment download 42 --downloads-dir ~/Downloads
 ```
 
 ## Output Formats

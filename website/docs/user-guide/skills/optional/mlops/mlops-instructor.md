@@ -1,14 +1,14 @@
 ---
-title: "Instructor"
+title: "Instructor — Structured LLM outputs validated with Pydantic"
 sidebar_label: "Instructor"
-description: "Extract structured data from LLM responses with Pydantic validation, retry failed extractions automatically, parse complex JSON with type safety, and stream ..."
+description: "Structured LLM outputs validated with Pydantic"
 ---
 
 {/* This page is auto-generated from the skill's SKILL.md by website/scripts/generate-skill-docs.py. Edit the source SKILL.md, not this page. */}
 
 # Instructor
 
-Extract structured data from LLM responses with Pydantic validation, retry failed extractions automatically, parse complex JSON with type safety, and stream partial results with Instructor - battle-tested structured output library
+Structured LLM outputs validated with Pydantic.
 
 ## Skill metadata
 
@@ -20,6 +20,7 @@ Extract structured data from LLM responses with Pydantic validation, retry faile
 | Author | Orchestra Research |
 | License | MIT |
 | Dependencies | `instructor`, `pydantic`, `openai`, `anthropic` |
+| Platforms | linux, macos, windows |
 | Tags | `Prompt Engineering`, `Instructor`, `Structured Output`, `Pydantic`, `Data Extraction`, `JSON Parsing`, `Type Safety`, `Validation`, `Streaming`, `OpenAI`, `Anthropic` |
 
 ## Reference: full SKILL.md

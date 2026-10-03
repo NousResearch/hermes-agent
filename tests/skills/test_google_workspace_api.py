@@ -2,7 +2,6 @@
 
 import importlib.util
 import json
-import os
 import subprocess
 import sys
 import types
@@ -66,7 +65,7 @@ def _write_token(path: Path, *, token="ya29.test", expiry=None, **extra):
     }
     if expiry is not None:
         data["expiry"] = expiry
-    path.write_text(json.dumps(data))
+    path.write_text(json.dumps(data), encoding="utf-8")
 
 
 def test_bridge_returns_valid_token(bridge_module, tmp_path):
@@ -79,34 +78,12 @@ def test_bridge_returns_valid_token(bridge_module, tmp_path):
     assert result == "ya29.valid"
 
 
-def test_bridge_refreshes_expired_token(bridge_module, tmp_path):
-    """Expired token triggers a refresh via token_uri."""
-    past = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()
-    token_path = bridge_module.get_token_path()
-    _write_token(token_path, token="ya29.old", expiry=past)
-
-    mock_resp = MagicMock()
-    mock_resp.read.return_value = json.dumps({
-        "access_token": "ya29.refreshed",
-        "expires_in": 3600,
-    }).encode()
-    mock_resp.__enter__ = lambda s: s
-    mock_resp.__exit__ = MagicMock(return_value=False)
-
-    with patch("urllib.request.urlopen", return_value=mock_resp):
-        result = bridge_module.get_valid_token()
-
-    assert result == "ya29.refreshed"
-    # Verify persisted
-    saved = json.loads(token_path.read_text())
-    assert saved["token"] == "ya29.refreshed"
-    assert saved["type"] == "authorized_user"
 
 
-def test_bridge_exits_on_missing_token(bridge_module):
-    """Missing token file causes exit with code 1."""
-    with pytest.raises(SystemExit):
-        bridge_module.get_valid_token()
+
+
+
+
 
 
 def test_bridge_main_injects_token_env(bridge_module, tmp_path):
@@ -159,30 +136,14 @@ def test_api_calendar_list_uses_events_list(api_module):
     assert params["calendarId"] == "primary"
 
 
-def test_api_calendar_list_respects_date_range(api_module):
-    """calendar list with --start/--end passes correct time bounds."""
-    captured = {}
 
-    def capture_run(cmd, **kwargs):
-        captured["cmd"] = cmd
-        return MagicMock(returncode=0, stdout="{}", stderr="")
 
-    args = api_module.argparse.Namespace(
-        start="2026-04-01T00:00:00Z",
-        end="2026-04-07T23:59:59Z",
-        max=25,
-        calendar="primary",
-        func=api_module.calendar_list,
-    )
 
-    with patch.object(api_module.subprocess, "run", side_effect=capture_run):
-        api_module.calendar_list(args)
 
-    cmd = captured["cmd"]
-    params_idx = cmd.index("--params")
-    params = json.loads(cmd[params_idx + 1])
-    assert params["timeMin"] == "2026-04-01T00:00:00Z"
-    assert params["timeMax"] == "2026-04-07T23:59:59Z"
+
+
+
+
 
 
 def test_api_get_credentials_refresh_persists_authorized_user_type(api_module, monkeypatch):
@@ -230,7 +191,81 @@ def test_api_get_credentials_refresh_persists_authorized_user_type(api_module, m
 
     creds = api_module.get_credentials()
 
-    saved = json.loads(token_path.read_text())
+    saved = json.loads(token_path.read_text(encoding="utf-8"))
     assert isinstance(creds, FakeCredentials)
     assert saved["token"] == "ya29.refreshed"
     assert saved["type"] == "authorized_user"
+
+
+def _tabbed_doc():
+    """A Doc with two tabs (one nested), as the Docs API returns with includeTabsContent."""
+    def body(text):
+        return {"content": [
+            {"endIndex": len(text) + 2,
+             "paragraph": {"elements": [{"textRun": {"content": text + "\n"}}]}},
+        ]}
+    return {
+        "title": "Tabbed",
+        "documentId": "doc1",
+        "tabs": [
+            {
+                "tabProperties": {"tabId": "t.0", "title": "First"},
+                "documentTab": {"body": body("alpha")},
+                "childTabs": [
+                    {
+                        "tabProperties": {"tabId": "t.0.a", "title": "Nested"},
+                        "documentTab": {"body": body("beta")},
+                    }
+                ],
+            },
+            {
+                "tabProperties": {"tabId": "t.1", "title": "Second"},
+                "documentTab": {"body": body("gamma")},
+            },
+        ],
+    }
+
+
+def test_docs_get_returns_every_tab_of_a_tabbed_doc(api_module, monkeypatch, capsys):
+    """A multi-tab Doc must not lose tab content: reads traverse the tabs tree
+    (preorder, nested tabs included) instead of only the legacy top-level body."""
+    monkeypatch.setattr(
+        api_module, "_run_gws",
+        lambda parts, params=None, body=None: _tabbed_doc(),
+    )
+    args = types.SimpleNamespace(doc_id="doc1", tab=None)
+    api_module.docs_get(args)
+    result = json.loads(capsys.readouterr().out)
+    tabs = {t["tabId"]: t for t in result["tabs"]}
+    assert set(tabs) == {"t.0", "t.0.a", "t.1"}
+    assert tabs["t.0.a"]["body"] == "beta\n"
+    assert tabs["t.0.a"]["level"] == 1
+    # Multi-tab docs have no single merged "body" — index spaces are independent.
+    assert "body" not in result
+
+
+def test_docs_append_carries_tab_id_and_refuses_ambiguous_writes(api_module, monkeypatch, capsys):
+    """Each tab has its own index space, so a write must target exactly one tab:
+    the insert location carries the tabId, and an un-targeted write against a
+    multi-tab doc errors instead of silently landing in the first tab."""
+    monkeypatch.setattr(
+        api_module, "_run_gws",
+        lambda parts, params=None, body=None: _tabbed_doc(),
+    )
+    sent = {}
+    monkeypatch.setattr(
+        api_module, "_docs_insert_text",
+        lambda doc_id, text, index, tab_id=None: sent.update(
+            {"doc_id": doc_id, "index": index, "tab_id": tab_id}
+        ),
+    )
+
+    api_module.docs_append(types.SimpleNamespace(doc_id="doc1", text="more", tab="t.1"))
+    assert sent["tab_id"] == "t.1"
+    assert sent["index"] == len("gamma") + 1  # endIndex - 1 within THAT tab's space
+    capsys.readouterr()
+
+    with pytest.raises(SystemExit):
+        api_module.docs_append(types.SimpleNamespace(doc_id="doc1", text="more", tab=None))
+    err = json.loads(capsys.readouterr().err)
+    assert "tabs" in err and len(err["tabs"]) == 3

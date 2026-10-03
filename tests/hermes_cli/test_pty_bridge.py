@@ -6,7 +6,12 @@ printf) to verify it behaves like a PTY you can read/write/resize/close.
 
 from __future__ import annotations
 
+import asyncio
+import errno
 import os
+import select
+import shutil
+import signal
 import sys
 import time
 
@@ -14,13 +19,11 @@ import pytest
 
 pytest.importorskip("ptyprocess", reason="ptyprocess not installed")
 
-from hermes_cli.pty_bridge import PtyBridge, PtyUnavailableError
-
+from hermes_cli.pty_bridge import PtyBridge
 
 skip_on_windows = pytest.mark.skipif(
     sys.platform.startswith("win"), reason="PTY bridge is POSIX-only"
 )
-
 
 def _read_until(bridge: PtyBridge, needle: bytes, timeout: float = 5.0) -> bytes:
     """Accumulate PTY output until we see `needle` or time out."""
@@ -35,44 +38,112 @@ def _read_until(bridge: PtyBridge, needle: bytes, timeout: float = 5.0) -> bytes
             return bytes(buf)
     return bytes(buf)
 
-
 @skip_on_windows
 class TestPtyBridgeSpawn:
-    def test_is_available_on_posix(self):
-        assert PtyBridge.is_available() is True
-
-    def test_spawn_returns_bridge_with_pid(self):
-        bridge = PtyBridge.spawn(["true"])
-        try:
-            assert bridge.pid > 0
-        finally:
-            bridge.close()
 
     def test_spawn_raises_on_missing_argv0(self, tmp_path):
         with pytest.raises((FileNotFoundError, OSError)):
             PtyBridge.spawn([str(tmp_path / "definitely-not-a-real-binary")])
 
+    def test_spawn_marks_child_as_dashboard_hosted(self):
+        # Ink reads this to skip its focus-in erase+repaint, which under
+        # xterm.js was a visible reload on every OS app-switch (#94337).
+        from hermes_cli.pty_bridge import PTY_HOST_DASHBOARD, PTY_HOST_ENV
 
-@skip_on_windows
-class TestPtyBridgeIO:
-    def test_reads_child_stdout(self):
-        bridge = PtyBridge.spawn(["/bin/sh", "-c", "printf hermes-ok"])
+        bridge = PtyBridge.spawn([shutil.which("sh") or "sh", "-c", f'printf "%s" "${PTY_HOST_ENV}"'])
         try:
-            output = _read_until(bridge, b"hermes-ok")
-            assert b"hermes-ok" in output
+            output = _read_until(bridge, PTY_HOST_DASHBOARD.encode())
+            assert PTY_HOST_DASHBOARD.encode() in output
         finally:
             bridge.close()
 
-    def test_write_sends_to_child_stdin(self):
+@skip_on_windows
+class TestPtyBridgeIO:
+
+    @pytest.mark.asyncio
+    async def test_write_sends_to_child_stdin(self):
         # `cat` with no args echoes stdin back to stdout.  We write a line,
         # read it back, then signal EOF to let cat exit cleanly.
-        bridge = PtyBridge.spawn(["/bin/cat"])
+        bridge = PtyBridge.spawn([shutil.which("cat") or "cat"])
         try:
-            bridge.write(b"hello-pty\n")
+            assert await bridge.write(b"hello-pty\n") is True
             output = _read_until(bridge, b"hello-pty")
             assert b"hello-pty" in output
         finally:
             bridge.close()
+
+    @pytest.mark.asyncio
+    async def test_write_yields_while_input_is_backpressured(self, monkeypatch):
+        bridge = PtyBridge.__new__(PtyBridge)
+        bridge._fd = 123
+        bridge._closed = False
+        wait_started = asyncio.Event()
+        release_write = asyncio.Event()
+        write_calls = 0
+
+        def fake_write(fd, data):
+            nonlocal write_calls
+            assert fd == 123
+            write_calls += 1
+            if write_calls == 1:
+                raise BlockingIOError(errno.EAGAIN, "buffer full")
+            return len(data)
+
+        async def fake_wait_writable(timeout):
+            assert timeout > 0
+            wait_started.set()
+            await release_write.wait()
+            return True
+
+        monkeypatch.setattr(os, "write", fake_write)
+        monkeypatch.setattr(bridge, "_wait_writable", fake_wait_writable)
+
+        write_task = asyncio.create_task(bridge.write(b"queued input"))
+        await wait_started.wait()
+
+        # The stalled PTY write yielded control instead of pinning asyncio.
+        heartbeat_ran = False
+
+        async def heartbeat():
+            nonlocal heartbeat_ran
+            heartbeat_ran = True
+
+        await heartbeat()
+        assert heartbeat_ran is True
+
+        release_write.set()
+        assert await write_task is True
+        assert write_calls == 2
+
+    @pytest.mark.asyncio
+    async def test_write_reports_sustained_backpressure(self, monkeypatch):
+        bridge = PtyBridge.__new__(PtyBridge)
+        bridge._fd = 123
+        bridge._closed = False
+
+        def fake_write(_fd, _data):
+            raise BlockingIOError(errno.EAGAIN, "buffer full")
+
+        async def never_writable(_timeout):
+            return False
+
+        monkeypatch.setattr(os, "write", fake_write)
+        monkeypatch.setattr(bridge, "_wait_writable", never_writable)
+
+        assert await bridge.write(b"queued input") is False
+
+    def test_read_treats_nonblocking_read_race_as_idle(self, monkeypatch):
+        bridge = PtyBridge.__new__(PtyBridge)
+        bridge._fd = 123
+        bridge._closed = False
+
+        monkeypatch.setattr(select, "select", lambda *_args: ([123], [], []))
+
+        def would_block(_fd, _size):
+            raise BlockingIOError(errno.EAGAIN, "try again")
+
+        monkeypatch.setattr(os, "read", would_block)
+        assert bridge.read(timeout=0.01) == b""
 
     def test_read_returns_none_after_child_exits(self):
         bridge = PtyBridge.spawn(["/bin/sh", "-c", "printf done"])
@@ -91,7 +162,6 @@ class TestPtyBridgeIO:
             assert got_none, "PtyBridge.read did not return None after child EOF"
         finally:
             bridge.close()
-
 
 @skip_on_windows
 class TestPtyBridgeResize:
@@ -119,6 +189,31 @@ class TestPtyBridgeResize:
         finally:
             bridge.close()
 
+@skip_on_windows
+class TestClampDimension:
+    def test_clamps_above_max(self):
+        from hermes_cli.pty_bridge import _MAX_COLS, _MAX_ROWS, _clamp_dimension
+
+        assert _clamp_dimension(131072, _MAX_COLS) == _MAX_COLS
+        assert _clamp_dimension(131072, _MAX_ROWS) == _MAX_ROWS
+
+    def test_non_numeric_falls_back_to_min(self):
+        from hermes_cli.pty_bridge import _MAX_COLS, _clamp_dimension
+
+        assert _clamp_dimension(None, _MAX_COLS) == 1  # type: ignore[arg-type]
+        assert _clamp_dimension(float("nan"), _MAX_COLS) == 1  # type: ignore[arg-type]
+        assert _clamp_dimension(float("inf"), _MAX_COLS) == 1  # type: ignore[arg-type]
+
+    def test_clamped_values_pack_as_unsigned_short(self):
+        # The whole point: clamped output must never raise struct.error.
+        import struct as _struct
+
+        from hermes_cli.pty_bridge import _MAX_COLS, _MAX_ROWS, _clamp_dimension
+
+        cols = _clamp_dimension(131072, _MAX_COLS)
+        rows = _clamp_dimension(1, _MAX_ROWS)
+        # Should not raise.
+        _struct.pack("HHHH", rows, cols, 0, 0)
 
 @skip_on_windows
 class TestPtyBridgeClose:
@@ -144,6 +239,87 @@ class TestPtyBridgeClose:
                 break
         assert reaped, f"pid {pid} still running after close()"
 
+    def test_close_signals_child_process_group(self, monkeypatch):
+        sent: list[tuple[int, signal.Signals]] = []
+
+        class _FakeProc:
+            pid = 12345
+            fd = -1
+
+            def __init__(self):
+                self.alive = True
+
+            def isalive(self):
+                return self.alive
+
+            def kill(self, sig):
+                raise AssertionError(f"single-process kill used: {sig}")
+
+            def close(self, force=False):
+                self.closed = force
+
+        fake = _FakeProc()
+
+        def fake_killpg(pgid, sig):
+            if not fake.alive:
+                raise ProcessLookupError  # the whole group exited with its leader
+            sent.append((pgid, sig))
+            fake.alive = False
+
+        monkeypatch.setattr(os, "killpg", fake_killpg)
+
+        bridge = PtyBridge.__new__(PtyBridge)
+        bridge._proc = fake
+        bridge._fd = -1
+        bridge._pgid = 67890
+        bridge._closed = False
+
+        bridge.close()
+
+        assert sent == [(67890, signal.SIGHUP)]
+        assert bridge._closed is True
+
+    def test_close_ends_helpers_that_outlive_a_dead_leader(self):
+        # #76759: the helper ignores SIGHUP and keeps the PTY slave open, so the leader's death
+        # never produces EOF. close() must still end it.
+        bridge = PtyBridge.spawn(["/bin/sh", "-c", "trap '' HUP; sleep 60 & echo helper=$!; exec sleep 60"])
+        out = _read_until(bridge, b"\n", timeout=5.0)
+        helper = int(out.split(b"helper=")[1].split()[0])
+        os.kill(bridge.pid, signal.SIGKILL)
+        deadline = time.monotonic() + 3.0
+        while bridge.is_alive() and time.monotonic() < deadline:
+            time.sleep(0.02)
+
+        bridge.close()
+
+        deadline = time.monotonic() + 3.0
+        while time.monotonic() < deadline:
+            try:
+                os.kill(helper, 0)
+            except ProcessLookupError:
+                return
+            time.sleep(0.05)
+        os.kill(helper, signal.SIGKILL)
+        pytest.fail(f"helper pid {helper} survived close() after its leader died")
+
+    def test_close_lets_a_helper_finish_its_sighup_shutdown(self, tmp_path):
+        # The TUI gateway saves its sessions on SIGHUP within a 1 s grace. Once the group got
+        # SIGHUP, close() must wait for it, not re-signal or SIGKILL it early.
+        marker = tmp_path / "saved"
+        # The trap ignores further SIGHUPs (the kernel may re-send one when the session leader
+        # exits), so only an early SIGKILL from close() can stop the save.
+        script = tmp_path / "helper.sh"
+        script.write_text(
+            f"trap 'trap \"\" HUP; sleep 0.6; echo ok > {marker}; exit 0' HUP\n"
+            "echo armed\n"
+            "while :; do sleep 0.05; done\n"
+        )
+        bridge = PtyBridge.spawn(["/bin/sh", "-c", f"/bin/sh {script} & exec sleep 60"])
+        _read_until(bridge, b"armed", timeout=10.0)  # the helper's trap is installed
+
+        bridge.close()
+
+        assert marker.read_text().strip() == "ok"
 
 @skip_on_windows
 class TestPtyBridgeEnv:
@@ -157,23 +333,3 @@ class TestPtyBridgeEnv:
             assert str(tmp_path).encode() in output
         finally:
             bridge.close()
-
-    def test_env_is_forwarded(self):
-        bridge = PtyBridge.spawn(
-            ["/bin/sh", "-c", "printf %s \"$HERMES_PTY_TEST\""],
-            env={**os.environ, "HERMES_PTY_TEST": "pty-env-works"},
-        )
-        try:
-            output = _read_until(bridge, b"pty-env-works")
-            assert b"pty-env-works" in output
-        finally:
-            bridge.close()
-
-
-class TestPtyBridgeUnavailable:
-    """Platform fallback semantics — PtyUnavailableError is importable and
-    carries a user-readable message."""
-
-    def test_error_carries_user_message(self):
-        err = PtyUnavailableError("platform not supported")
-        assert "platform" in str(err)

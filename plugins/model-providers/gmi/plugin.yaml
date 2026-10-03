@@ -1,0 +1,5 @@
+name: gmi-provider
+kind: model-provider
+version: 1.0.0
+description: GMI Cloud
+author: Nous Research

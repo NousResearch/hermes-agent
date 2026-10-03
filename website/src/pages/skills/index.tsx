@@ -1,11 +1,13 @@
 import React, { useState, useMemo, useCallback, useRef, useEffect } from "react";
 import Layout from "@theme/Layout";
-import skills from "../../data/skills.json";
+import Link from "@docusaurus/Link";
 import styles from "./styles.module.css";
+import { skillCatalogInstallIdentifier, skillCatalogInstallUrl } from "../../../../apps/shared/src/catalog-install";
 
 interface Skill {
   name: string;
   description: string;
+  overview?: string;
   category: string;
   categoryLabel: string;
   source: string;
@@ -13,9 +15,52 @@ interface Skill {
   platforms: string[];
   author: string;
   version: string;
+  license?: string;
+  envVars?: string[];
+  commands?: string[];
+  docsPath?: string;
+  identifier?: string;
+  installIdentifier?: string;
+  installCmd?: string;
+  /** Clickable URL to the skill's origin (repo / detail page). Synthesized
+   *  in extract-skills.py for community skills that have no generated docs
+   *  page, so the expanded card always has somewhere to send the user. */
+  sourceUrl?: string;
+  /** Lowercase pre-joined haystack used by the search filter.
+   *  Built once at load time so per-keystroke filtering is a single
+   *  `.includes()` per skill instead of array-join + toLowerCase on
+   *  every render. Skipped on the wire — added in the loader. */
+  _search?: string;
 }
 
-const allSkills: Skill[] = skills as Skill[];
+const allSkills: Skill[] = [];
+
+interface IndexMeta {
+  extractedAt?: string;
+  indexGeneratedAt?: string;
+  totalSkills?: number;
+  externalSource?: string;
+  bySource?: Record<string, number>;
+}
+const indexMeta: IndexMeta = {};
+
+function formatRelativeTime(iso?: string): string | null {
+  if (!iso) return null;
+  const then = new Date(iso).getTime();
+  if (!Number.isFinite(then)) return null;
+  const now = Date.now();
+  const diffMs = now - then;
+  if (diffMs < 0) return "just now";
+  const mins = Math.floor(diffMs / 60_000);
+  if (mins < 1) return "just now";
+  if (mins < 60) return `${mins} minute${mins === 1 ? "" : "s"} ago`;
+  const hours = Math.floor(mins / 60);
+  if (hours < 24) return `${hours} hour${hours === 1 ? "" : "s"} ago`;
+  const days = Math.floor(hours / 24);
+  if (days < 30) return `${days} day${days === 1 ? "" : "s"} ago`;
+  const months = Math.floor(days / 30);
+  return `${months} month${months === 1 ? "" : "s"} ago`;
+}
 
 const CATEGORY_ICONS: Record<string, string> = {
   apple: "\u{f179}",
@@ -83,16 +128,103 @@ const SOURCE_CONFIG: Record<
     border: "rgba(96, 165, 250, 0.2)",
     icon: "\u{25CB}",
   },
-  "Claude Marketplace": {
-    label: "Marketplace",
-    color: "#a78bfa",
-    bg: "rgba(167, 139, 250, 0.08)",
-    border: "rgba(167, 139, 250, 0.2)",
-    icon: "\u{25A0}",
+  "skills.sh": {
+    label: "skills.sh",
+    color: "#34d399",
+    bg: "rgba(52, 211, 153, 0.08)",
+    border: "rgba(52, 211, 153, 0.2)",
+    icon: "\u{2734}",
+  },
+  ClawHub: {
+    label: "ClawHub",
+    color: "#f472b6",
+    bg: "rgba(244, 114, 182, 0.08)",
+    border: "rgba(244, 114, 182, 0.2)",
+    icon: "\u{2726}",
+  },
+  "browse.sh": {
+    label: "browse.sh",
+    color: "#22d3ee",
+    bg: "rgba(34, 211, 238, 0.08)",
+    border: "rgba(34, 211, 238, 0.2)",
+    icon: "\u{29BF}",
+  },
+  OpenAI: {
+    label: "OpenAI",
+    color: "#10b981",
+    bg: "rgba(16, 185, 129, 0.08)",
+    border: "rgba(16, 185, 129, 0.2)",
+    icon: "\u{2737}",
+  },
+  HuggingFace: {
+    label: "HuggingFace",
+    color: "#fbbf24",
+    bg: "rgba(251, 191, 36, 0.08)",
+    border: "rgba(251, 191, 36, 0.2)",
+    icon: "\u{1F917}",
+  },
+  NVIDIA: {
+    label: "NVIDIA",
+    color: "#76b900",
+    bg: "rgba(118, 185, 0, 0.08)",
+    border: "rgba(118, 185, 0, 0.25)",
+    icon: "\u{25B6}",
+  },
+  VoltAgent: {
+    label: "VoltAgent",
+    color: "#facc15",
+    bg: "rgba(250, 204, 21, 0.08)",
+    border: "rgba(250, 204, 21, 0.2)",
+    icon: "\u{26A1}",
+  },
+  GitHub: {
+    label: "GitHub",
+    color: "#94a3b8",
+    bg: "rgba(148, 163, 184, 0.08)",
+    border: "rgba(148, 163, 184, 0.2)",
+    icon: "\u{2756}",
+  },
+  "Well-Known": {
+    label: "Well-Known",
+    color: "#818cf8",
+    bg: "rgba(129, 140, 248, 0.08)",
+    border: "rgba(129, 140, 248, 0.2)",
+    icon: "\u{2756}",
+  },
+  gstack: {
+    label: "gstack",
+    color: "#fb923c",
+    bg: "rgba(251, 146, 60, 0.08)",
+    border: "rgba(251, 146, 60, 0.2)",
+    icon: "\u{2756}",
+  },
+  MiniMax: {
+    label: "MiniMax",
+    color: "#f87171",
+    bg: "rgba(248, 113, 113, 0.08)",
+    border: "rgba(248, 113, 113, 0.2)",
+    icon: "\u{2756}",
   },
 };
 
-const SOURCE_ORDER = ["all", "built-in", "optional", "Anthropic", "LobeHub", "Claude Marketplace"];
+const SOURCE_ORDER = [
+  "all",
+  "built-in",
+  "optional",
+  "Anthropic",
+  "OpenAI",
+  "HuggingFace",
+  "NVIDIA",
+  "skills.sh",
+  "ClawHub",
+  "browse.sh",
+  "LobeHub",
+  "VoltAgent",
+  "Well-Known",
+  "GitHub",
+  "gstack",
+  "MiniMax",
+];
 
 function highlightMatch(text: string, query: string): React.ReactNode {
   if (!query || !text) return text;
@@ -107,6 +239,47 @@ function highlightMatch(text: string, query: string): React.ReactNode {
   );
 }
 
+function CopyButton({ text }: { text: string }) {
+  const [copied, setCopied] = useState(false);
+  const onCopy = useCallback(
+    (e: React.MouseEvent) => {
+      e.stopPropagation();
+      navigator.clipboard?.writeText(text).then(
+        () => {
+          setCopied(true);
+          setTimeout(() => setCopied(false), 1500);
+        },
+        () => {},
+      );
+    },
+    [text],
+  );
+  return (
+    <button
+      className={styles.copyBtn}
+      onClick={onCopy}
+      title="Copy install command"
+      aria-label="Copy install command"
+    >
+      {copied ? (
+        <svg viewBox="0 0 20 20" fill="currentColor" width="14" height="14">
+          <path
+            fillRule="evenodd"
+            d="M16.704 4.153a.75.75 0 01.143 1.052l-8 10.5a.75.75 0 01-1.127.075l-4.5-4.5a.75.75 0 011.06-1.06l3.894 3.893 7.48-9.817a.75.75 0 011.05-.143z"
+            clipRule="evenodd"
+          />
+        </svg>
+      ) : (
+        <svg viewBox="0 0 20 20" fill="currentColor" width="14" height="14">
+          <path d="M7 3.5A1.5 1.5 0 018.5 2h3.879a1.5 1.5 0 011.06.44l3.122 3.12A1.5 1.5 0 0117 6.622V12.5a1.5 1.5 0 01-1.5 1.5h-1v-3.379a3 3 0 00-.879-2.121L10.5 5.379A3 3 0 008.379 4.5H7v-1z" />
+          <path d="M4.5 6A1.5 1.5 0 003 7.5v9A1.5 1.5 0 004.5 18h7a1.5 1.5 0 001.5-1.5v-5.879a1.5 1.5 0 00-.44-1.06L9.44 6.439A1.5 1.5 0 008.378 6H4.5z" />
+        </svg>
+      )}
+      <span className={styles.copyBtnLabel}>{copied ? "Copied" : "Copy"}</span>
+    </button>
+  );
+}
+
 function SkillCard({
   skill,
   query,
@@ -115,6 +288,7 @@ function SkillCard({
   onCategoryClick,
   onTagClick,
   style,
+  onPick,
 }: {
   skill: Skill;
   query: string;
@@ -123,9 +297,12 @@ function SkillCard({
   onCategoryClick: (cat: string) => void;
   onTagClick: (tag: string) => void;
   style?: React.CSSProperties;
+  /** Picker embed mode: render "+ Add to this Agent" and call this. */
+  onPick?: (skill: Skill) => void;
 }) {
   const src = SOURCE_CONFIG[skill.source] || SOURCE_CONFIG["optional"];
   const icon = CATEGORY_ICONS[skill.category] || "\u{1F4E6}";
+  const installUrl = skillCatalogInstallUrl(skill);
 
   return (
     <div
@@ -177,8 +354,49 @@ function SkillCard({
           ))}
         </div>
 
+        {!onPick && installUrl && (
+          <a
+            className={styles.pickBtn}
+            href={installUrl}
+            onClick={(e) => e.stopPropagation()}
+          >
+            Install in Hermes
+          </a>
+        )}
+
         {expanded && (
           <div className={styles.cardDetail}>
+            {skill.overview && (
+              <div className={styles.overviewBlock}>
+                <span className={styles.detailLabel}>Overview</span>
+                <p className={styles.overviewText}>{skill.overview}</p>
+              </div>
+            )}
+            {(skill.envVars?.length || skill.commands?.length) ? (
+              <div className={styles.prereqBlock}>
+                <span className={styles.detailLabel}>Prerequisites</span>
+                {skill.envVars?.length ? (
+                  <div className={styles.prereqRow}>
+                    <span className={styles.prereqKind}>env</span>
+                    <span className={styles.prereqList}>
+                      {skill.envVars.map((v) => (
+                        <code key={v} className={styles.prereqItem}>{v}</code>
+                      ))}
+                    </span>
+                  </div>
+                ) : null}
+                {skill.commands?.length ? (
+                  <div className={styles.prereqRow}>
+                    <span className={styles.prereqKind}>cmd</span>
+                    <span className={styles.prereqList}>
+                      {skill.commands.map((c) => (
+                        <code key={c} className={styles.prereqItem}>{c}</code>
+                      ))}
+                    </span>
+                  </div>
+                ) : null}
+              </div>
+            ) : null}
             {skill.tags?.length > 0 && (
               <div className={styles.tagRow}>
                 {skill.tags.map((tag) => (
@@ -207,8 +425,49 @@ function SkillCard({
                 <span className={styles.authorValue}>{skill.version}</span>
               </div>
             )}
+            {skill.license && (
+              <div className={styles.authorRow}>
+                <span className={styles.authorLabel}>License</span>
+                <span className={styles.authorValue}>{skill.license}</span>
+              </div>
+            )}
             <div className={styles.installHint}>
-              <code>hermes skills install {skill.name}</code>
+              <code>{skill.installCmd || `hermes skills install ${skillCatalogInstallIdentifier(skill) || skill.name}`}</code>
+              <CopyButton
+                text={skill.installCmd || `hermes skills install ${skillCatalogInstallIdentifier(skill) || skill.name}`}
+              />
+            </div>
+            {onPick ? (
+              <button
+                className={styles.pickBtn}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onPick(skill);
+                }}
+              >
+                + Add to this Agent
+              </button>
+            ) : null}
+            <div className={styles.cardLinks}>
+              {skill.docsPath ? (
+                <a
+                  className={styles.docsLink}
+                  href={`/docs/user-guide/skills/${skill.docsPath}`}
+                  onClick={(e) => e.stopPropagation()}
+                >
+                  View full documentation →
+                </a>
+              ) : skill.sourceUrl ? (
+                <a
+                  className={styles.docsLink}
+                  href={skill.sourceUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  onClick={(e) => e.stopPropagation()}
+                >
+                  View source ↗
+                </a>
+              ) : null}
             </div>
           </div>
         )}
@@ -230,41 +489,267 @@ function StatCard({ value, label, color }: { value: number; label: string; color
 
 const PAGE_SIZE = 60;
 
+// Routes Docusaurus serves the static API JSON from. `baseUrl` is `/docs/`,
+// `static/api/` ends up at `/docs/api/`. Hardcoding here is fine because the
+// same `baseUrl` is enforced repo-wide; if it ever changes, this is the only
+// place that needs to follow.
+const SKILLS_URL = "/docs/api/skills.json";
+const META_URL = "/docs/api/skills-meta.json";
+// Idle timeout for the catalog fetch — abort only when the transfer has
+// produced no bytes for this long, so slow-but-alive downloads survive.
+const CATALOG_STALL_TIMEOUT_MS = 45_000;
+/** Mirrors the `max-width: 600px` blocks in styles.module.css. */
+const MOBILE_FILTER_QUERY = "(max-width: 600px)";
+
+function buildSearchHaystack(s: Skill): string {
+  // Pre-compute the lowercase blob the search filter scans. Done once at
+  // load time instead of per-keystroke per-skill. With 50k+ skills the
+  // per-keystroke variant was unusably slow.
+  return [
+    s.name,
+    s.description,
+    s.overview,
+    s.categoryLabel,
+    s.author,
+    ...(s.tags || []),
+  ]
+    .filter(Boolean)
+    .join(" ")
+    .toLowerCase();
+}
+
 export default function SkillsDashboard() {
+  // Picker embed mode (?embed=picker): the page is being iframed by a host
+  // app (Hermes desktop's Bot Mode agent editor) as a skill PICKER. Site
+  // chrome is hidden via a CSS class and every card gains an
+  // "+ Add to this Agent" button that posts
+  //   { type: 'hermes-skill-pick', name, identifier, installCmd, source }
+  // to the parent window. The HOST performs the actual install through its
+  // own gateway (skills.manage) — the page never installs anything, so
+  // there is no origin to trust in this direction; parents must validate
+  // event.origin themselves before acting on the message.
+  const pickerMode =
+    typeof window !== "undefined" &&
+    new URLSearchParams(window.location.search).get("embed") === "picker";
+
+  const pickSkill = useCallback(
+    (skill: Skill) => {
+      if (typeof window === "undefined" || window.parent === window) return;
+      window.parent.postMessage(
+        {
+          type: "hermes-skill-pick",
+          name: skill.name,
+          identifier: skillCatalogInstallIdentifier(skill) || skill.name,
+          installCmd: skill.installCmd || `hermes skills install ${skillCatalogInstallIdentifier(skill) || skill.name}`,
+          source: skill.source,
+        },
+        "*"
+      );
+    },
+    []
+  );
+
+  // Lazy-loaded data. Was bundled into the JS chunk (~22 MB at 50k skills,
+  // which made the initial page load unusable on mobile). Now fetched on
+  // mount from the same CDN that serves the docs.
+  const [data, setData] = useState<{ skills: Skill[]; meta: IndexMeta } | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  // Bumped by the error card's Retry button to re-run the catalog load.
+  const [reloadKey, setReloadKey] = useState(0);
+
   const [search, setSearch] = useState("");
+  // Debounced copy of `search` — used by the filter. Without the debounce,
+  // typing into the search box ran .filter() over the whole catalog on
+  // every keystroke, which on a 50k-item list felt like the page had
+  // hung. 150ms gives a snappy feel without lagging behind the user.
+  const [debouncedSearch, setDebouncedSearch] = useState("");
   const [sourceFilter, setSourceFilter] = useState("all");
   const [categoryFilter, setCategoryFilter] = useState("all");
   const [expandedCard, setExpandedCard] = useState<string | null>(null);
   const [visibleCount, setVisibleCount] = useState(PAGE_SIZE);
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [mobileFiltersActive, setMobileFiltersActive] = useState(false);
   const searchRef = useRef<HTMLInputElement>(null);
   const gridRef = useRef<HTMLDivElement>(null);
+  const filterToggleRef = useRef<HTMLButtonElement>(null);
+  const filterDialogRef = useRef<HTMLElement>(null);
+  const filterCloseRef = useRef<HTMLButtonElement>(null);
+
+  // The catalog comes from the docs CDN (skills.json 301s onto GitHub
+  // Pages, ~50 MB raw). A connection that silently hangs — polluted DNS,
+  // TLS resets — would otherwise leave the page on "Loading the
+  // catalog…" forever, so read the body as a stream and abort only when
+  // no bytes have arrived for CATALOG_STALL_TIMEOUT_MS. Slow-but-alive
+  // transfers keep resetting the timer and are never cut off (#97861).
+  useEffect(() => {
+    const ctrl = new AbortController();
+    let stallTimer: ReturnType<typeof setTimeout> | null = null;
+    const armStallTimer = () => {
+      if (stallTimer) clearTimeout(stallTimer);
+      stallTimer = setTimeout(() => ctrl.abort(), CATALOG_STALL_TIMEOUT_MS);
+    };
+    let cancelled = false;
+    const readJson = async (url: string): Promise<unknown> => {
+      const res = await fetch(url, { signal: ctrl.signal });
+      if (!res.ok) throw new Error(`HTTP ${res.status} from ${url}`);
+      if (!res.body) return res.json();
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let text = "";
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        armStallTimer();
+        text += decoder.decode(value, { stream: true });
+      }
+      return JSON.parse(text);
+    };
+    (async () => {
+      try {
+        armStallTimer();
+        const [sk, mt] = await Promise.all([
+          readJson(SKILLS_URL),
+          readJson(META_URL).catch(() => ({})),
+        ]);
+        if (cancelled) return;
+        const skillsArr = Array.isArray(sk) ? (sk as Skill[]) : [];
+        // Stamp the precomputed search haystack onto each row.
+        for (const s of skillsArr) s._search = buildSearchHaystack(s);
+        setData({ skills: skillsArr, meta: mt || {} });
+      } catch (err) {
+        if (cancelled) return;
+        if (ctrl.signal.aborted) {
+          setLoadError(
+            `catalog fetch stalled — no data received for ${CATALOG_STALL_TIMEOUT_MS / 1000}s`,
+          );
+          return;
+        }
+        setLoadError(err instanceof Error ? err.message : String(err));
+      }
+    })();
+    return () => {
+      cancelled = true;
+      ctrl.abort();
+      if (stallTimer) clearTimeout(stallTimer);
+    };
+  }, [reloadKey]);
+
+  const retryCatalogLoad = () => {
+    setLoadError(null);
+    setReloadKey((k) => k + 1);
+  };
+
+  // Debounce the search input — 150ms feels instant while preventing the
+  // filter from running on every individual keystroke.
+  useEffect(() => {
+    const t = setTimeout(() => setDebouncedSearch(search), 150);
+    return () => clearTimeout(t);
+  }, [search]);
+
+  const allSkillsLocal: Skill[] = data?.skills ?? [];
+  const indexMetaLocal: IndexMeta = data?.meta ?? indexMeta;
 
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
-      if (e.key === "/" && document.activeElement?.tagName !== "INPUT") {
+      const target = e.target instanceof HTMLElement ? e.target : null;
+      const isEditable =
+        target?.matches("input, textarea, select") ||
+        target?.isContentEditable ||
+        Boolean(target?.closest("[contenteditable='true']"));
+      if (e.key === "/" && !isEditable) {
         e.preventDefault();
+        e.stopImmediatePropagation();
         searchRef.current?.focus();
       }
       if (e.key === "Escape") {
         searchRef.current?.blur();
         setExpandedCard(null);
+        setSidebarOpen(false);
       }
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
   }, []);
 
-  const sources = useMemo(() => {
-    const set = new Set(allSkills.map((s) => s.source));
-    return SOURCE_ORDER.filter((s) => s === "all" || set.has(s));
+  useEffect(() => {
+    const media = window.matchMedia(MOBILE_FILTER_QUERY);
+    const sync = () => {
+      setMobileFiltersActive(media.matches);
+      // Leaving the mobile band hides the drawer, so its state has to go with
+      // it: otherwise a resize leaves aria-expanded="true" on a hidden toggle
+      // and coming back reopens the drawer and re-locks body scroll.
+      if (!media.matches) setSidebarOpen(false);
+    };
+    sync();
+    media.addEventListener("change", sync);
+    return () => media.removeEventListener("change", sync);
   }, []);
+
+  useEffect(() => {
+    if (!sidebarOpen || !mobileFiltersActive) return;
+
+    const dialog = filterDialogRef.current;
+    const previouslyFocused = document.activeElement instanceof HTMLElement
+      ? document.activeElement
+      : filterToggleRef.current;
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    filterCloseRef.current?.focus();
+
+    const trapFocus = (e: KeyboardEvent) => {
+      if (!dialog) return;
+      if (e.key === "Escape") {
+        e.preventDefault();
+        e.stopPropagation();
+        setSidebarOpen(false);
+        return;
+      }
+      if (e.key !== "Tab") {
+        if (!dialog.contains(e.target as Node)) {
+          e.preventDefault();
+          e.stopPropagation();
+        }
+        return;
+      }
+
+      const focusable = Array.from(
+        dialog.querySelectorAll<HTMLElement>(
+          "button:not([disabled]), select:not([disabled]), input:not([disabled]), [href], [tabindex]:not([tabindex='-1'])"
+        )
+      ).filter((element) => element.offsetParent !== null);
+      if (focusable.length === 0) {
+        e.preventDefault();
+        return;
+      }
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (e.shiftKey && document.activeElement === first) {
+        e.preventDefault();
+        last.focus();
+      } else if (!e.shiftKey && document.activeElement === last) {
+        e.preventDefault();
+        first.focus();
+      }
+    };
+
+    document.addEventListener("keydown", trapFocus, true);
+    return () => {
+      document.removeEventListener("keydown", trapFocus, true);
+      document.body.style.overflow = previousOverflow;
+      previouslyFocused?.focus();
+    };
+  }, [sidebarOpen, mobileFiltersActive]);
+
+  const sources = useMemo(() => {
+    const set = new Set(allSkillsLocal.map((s) => s.source));
+    return SOURCE_ORDER.filter((s) => s === "all" || set.has(s));
+  }, [allSkillsLocal]);
 
   const categoryEntries = useMemo(() => {
     const pool =
       sourceFilter === "all"
-        ? allSkills
-        : allSkills.filter((s) => s.source === sourceFilter);
+        ? allSkillsLocal
+        : allSkillsLocal.filter((s) => s.source === sourceFilter);
     const map = new Map<string, { label: string; count: number }>();
     for (const s of pool) {
       const key = s.category || "uncategorized";
@@ -281,27 +766,25 @@ export default function SkillsDashboard() {
     return Array.from(map.entries())
       .sort((a, b) => b[1].count - a[1].count)
       .map(([key, { label, count }]) => ({ key, label, count }));
-  }, [sourceFilter]);
+  }, [sourceFilter, allSkillsLocal]);
 
   const filtered = useMemo(() => {
-    const q = search.toLowerCase().trim();
-    return allSkills.filter((s) => {
+    const q = debouncedSearch.toLowerCase().trim();
+    return allSkillsLocal.filter((s) => {
       if (sourceFilter !== "all" && s.source !== sourceFilter) return false;
       if (categoryFilter !== "all" && s.category !== categoryFilter) return false;
       if (q) {
-        const haystack = [s.name, s.description, s.categoryLabel, s.author, ...(s.tags || [])]
-          .join(" ")
-          .toLowerCase();
-        return haystack.includes(q);
+        // _search is pre-built in the load effect — single .includes() per row.
+        return (s._search || "").includes(q);
       }
       return true;
     });
-  }, [search, sourceFilter, categoryFilter]);
+  }, [debouncedSearch, sourceFilter, categoryFilter, allSkillsLocal]);
 
   useEffect(() => {
     setVisibleCount(PAGE_SIZE);
     setExpandedCard(null);
-  }, [search, sourceFilter, categoryFilter]);
+  }, [debouncedSearch, sourceFilter, categoryFilter]);
 
   const visible = filtered.slice(0, visibleCount);
   const hasMore = visibleCount < filtered.length;
@@ -336,32 +819,64 @@ export default function SkillsDashboard() {
       title="Skills Hub"
       description="Browse all skills and plugins available for Hermes Agent"
     >
-      <div className={styles.page}>
+      <div className={`${styles.page} ${pickerMode ? styles.pickerMode : ""}`}>
         <header className={styles.hero}>
           <div className={styles.heroGlow} />
           <div className={styles.heroContent}>
             <p className={styles.heroEyebrow}>Hermes Agent</p>
             <h1 className={styles.heroTitle}>Skills Hub</h1>
+            <nav className={styles.crossNav} aria-label="Catalog pages">
+              <span className={`${styles.crossNavLink} ${styles.crossNavActive}`}>
+                Skills
+              </span>
+              <Link className={styles.crossNavLink} to="/plugins">
+                Plugins
+              </Link>
+            </nav>
             <p className={styles.heroSub}>
               Discover, search, and install from{" "}
-              <strong className={styles.heroAccent}>{allSkills.length}</strong> skills
-              across {sources.length - 1} registries
+              <strong className={styles.heroAccent}>
+                {data ? allSkillsLocal.length.toLocaleString() : "…"}
+              </strong>{" "}
+              skills across {sources.length - 1} registries
+              {loadError && (
+                <span style={{ color: "#f87171", marginLeft: 8 }}>
+                  · failed to load catalog ({loadError})
+                </span>
+              )}
+            </p>
+            {(indexMetaLocal?.indexGeneratedAt || indexMetaLocal?.extractedAt) && (
+              <p className={styles.heroSub} style={{ fontSize: "0.85rem", opacity: 0.75 }}>
+                Catalog refreshed{" "}
+                <span title={indexMetaLocal.indexGeneratedAt || indexMetaLocal.extractedAt}>
+                  {formatRelativeTime(
+                    indexMetaLocal.indexGeneratedAt || indexMetaLocal.extractedAt,
+                  ) || "recently"}
+                </span>
+                {" "}· auto-rebuilt twice daily
+              </p>
+            )}
+
+            <p className={styles.heroSub} style={{ fontSize: "0.85rem", opacity: 0.85 }}>
+              <a href="https://portal.nousresearch.com/terms" target="_blank" rel="noopener noreferrer">Terms</a>
+              {" • "}
+              <a href="https://portal.nousresearch.com/privacy" target="_blank" rel="noopener noreferrer">Privacy Policy</a>
             </p>
 
             <div className={styles.statsRow}>
               <StatCard
-                value={allSkills.filter((s) => s.source === "built-in").length}
+                value={allSkillsLocal.filter((s) => s.source === "built-in").length}
                 label="Built-in"
                 color="#4ade80"
               />
               <StatCard
-                value={allSkills.filter((s) => s.source === "optional").length}
+                value={allSkillsLocal.filter((s) => s.source === "optional").length}
                 label="Optional"
                 color="#fbbf24"
               />
               <StatCard
                 value={
-                  allSkills.filter(
+                  allSkillsLocal.filter(
                     (s) => s.source !== "built-in" && s.source !== "optional"
                   ).length
                 }
@@ -369,7 +884,7 @@ export default function SkillsDashboard() {
                 color="#60a5fa"
               />
               <StatCard
-                value={new Set(allSkills.map((s) => s.category)).size}
+                value={new Set(allSkillsLocal.map((s) => s.category)).size}
                 label="Categories"
                 color="#a78bfa"
               />
@@ -378,6 +893,7 @@ export default function SkillsDashboard() {
         </header>
 
         <div className={styles.controlsBar}>
+          <div className={styles.controlsTopRow}>
           <div className={styles.searchWrap}>
             <svg className={styles.searchIcon} viewBox="0 0 20 20" fill="currentColor" width="18" height="18">
               <path
@@ -389,7 +905,7 @@ export default function SkillsDashboard() {
             <input
               ref={searchRef}
               type="text"
-              placeholder='Search skills... (press "/" to focus)'
+              placeholder="Search skills"
               value={search}
               onChange={(e) => setSearch(e.target.value)}
               className={styles.searchInput}
@@ -407,14 +923,48 @@ export default function SkillsDashboard() {
             )}
           </div>
 
+          <button
+            ref={filterToggleRef}
+            type="button"
+            className={styles.filterToggle}
+            aria-expanded={sidebarOpen}
+            aria-controls="skills-directory-filters"
+            onClick={() => setSidebarOpen((open) => !open)}
+          >
+            Filters
+            {(sourceFilter !== "all" || categoryFilter !== "all") && (
+              <span className={styles.activeFilterCount}>
+                {Number(sourceFilter !== "all") + Number(categoryFilter !== "all")}
+              </span>
+            )}
+          </button>
+
+          <label className={styles.compactSelect}>
+            <span>Source</span>
+            <select value={sourceFilter} onChange={(e) => handleSourceChange(e.target.value)}>
+              {sources.map((src) => (
+                <option key={src} value={src}>{src === "all" ? "All sources" : SOURCE_CONFIG[src]?.label || src}</option>
+              ))}
+            </select>
+          </label>
+
+          <label className={styles.compactSelect}>
+            <span>Category</span>
+            <select value={categoryFilter} onChange={(e) => setCategoryFilter(e.target.value)}>
+              <option value="all">All categories</option>
+              {categoryEntries.map((cat) => <option key={cat.key} value={cat.key}>{cat.label}</option>)}
+            </select>
+          </label>
+          </div>
+
           <div className={styles.sourcePills}>
             {sources.map((src) => {
               const active = sourceFilter === src;
               const conf = SOURCE_CONFIG[src];
               const count =
                 src === "all"
-                  ? allSkills.length
-                  : allSkills.filter((s) => s.source === src).length;
+                  ? allSkillsLocal.length
+                  : allSkillsLocal.filter((s) => s.source === src).length;
               return (
                 <button
                   key={src}
@@ -439,34 +989,39 @@ export default function SkillsDashboard() {
         </div>
 
         <div className={styles.layout}>
-          <button
-            className={styles.sidebarToggle}
-            onClick={() => setSidebarOpen(!sidebarOpen)}
+          <aside
+            id="skills-directory-filters"
+            ref={filterDialogRef}
+            role={mobileFiltersActive && sidebarOpen ? "dialog" : undefined}
+            aria-modal={mobileFiltersActive && sidebarOpen ? true : undefined}
+            aria-labelledby="skills-directory-filters-title"
+            className={`${styles.sidebar} ${sidebarOpen ? styles.sidebarOpen : ""}`}
           >
-            <svg viewBox="0 0 20 20" fill="currentColor" width="18" height="18">
-              <path
-                fillRule="evenodd"
-                d="M3 5a1 1 0 011-1h12a1 1 0 110 2H4a1 1 0 01-1-1zM3 10a1 1 0 011-1h12a1 1 0 110 2H4a1 1 0 01-1-1zM3 15a1 1 0 011-1h6a1 1 0 110 2H4a1 1 0 01-1-1z"
-                clipRule="evenodd"
-              />
-            </svg>
-            Categories
-            {categoryFilter !== "all" && (
-              <span className={styles.activeCatBadge}>
-                {categoryEntries.find((c) => c.key === categoryFilter)?.label}
-              </span>
-            )}
-          </button>
-
-          <aside className={`${styles.sidebar} ${sidebarOpen ? styles.sidebarOpen : ""}`}>
             <div className={styles.sidebarHeader}>
-              <h2 className={styles.sidebarTitle}>Categories</h2>
+              <h2 id="skills-directory-filters-title" className={styles.sidebarTitle}>Categories</h2>
               {categoryFilter !== "all" && (
                 <button className={styles.sidebarClear} onClick={() => setCategoryFilter("all")}>
                   Clear
                 </button>
               )}
+              <button
+                ref={filterCloseRef}
+                type="button"
+                className={styles.sidebarClose}
+                aria-label="Close skill filters"
+                onClick={() => setSidebarOpen(false)}
+              >
+                <span aria-hidden="true">×</span>
+              </button>
             </div>
+            <label className={styles.sidebarSourceSelect}>
+              <span>Source</span>
+              <select value={sourceFilter} onChange={(e) => handleSourceChange(e.target.value)}>
+                {sources.map((src) => (
+                  <option key={src} value={src}>{src === "all" ? "All sources" : SOURCE_CONFIG[src]?.label || src}</option>
+                ))}
+              </select>
+            </label>
             <nav className={styles.catList}>
               <button
                 className={`${styles.catItem} ${categoryFilter === "all" ? styles.catItemActive : ""}`}
@@ -526,7 +1081,28 @@ export default function SkillsDashboard() {
               </div>
             )}
 
-            {visible.length > 0 ? (
+            {!data && !loadError ? (
+              <div className={styles.empty}>
+                <div className={styles.loadingSpinner} />
+                <h3 className={styles.emptyTitle}>Loading the catalog…</h3>
+                <p className={styles.emptyDesc}>
+                  Fetching 88k+ skills across every registry. One moment.
+                </p>
+              </div>
+            ) : loadError ? (
+              <div className={styles.empty}>
+                <div className={styles.emptyIcon}>{"\u26A0\uFE0F"}</div>
+                <h3 className={styles.emptyTitle}>Couldn't load the catalog</h3>
+                <p className={styles.emptyDesc}>
+                  {loadError}. The catalog is served from a public CDN —
+                  restricted networks may need a working proxy. Check your
+                  connection and retry.
+                </p>
+                <button className={styles.emptyReset} onClick={retryCatalogLoad}>
+                  Retry
+                </button>
+              </div>
+            ) : visible.length > 0 ? (
               <>
                 <div className={styles.grid}>
                   {visible.map((skill, i) => {
@@ -543,6 +1119,7 @@ export default function SkillsDashboard() {
                         onCategoryClick={handleCategoryClick}
                         onTagClick={handleTagClick}
                         style={{ animationDelay: `${Math.min(i, 20) * 25}ms` }}
+                        onPick={pickerMode ? pickSkill : undefined}
                       />
                     );
                   })}

@@ -16,13 +16,12 @@ Yuanbao is an enterprise messaging platform primarily used within Tencent and en
 
 - A Yuanbao account with bot creation permissions
 - Yuanbao APP_ID and APP_SECRET (from platform admin)
-- Python packages: `websockets` and `httpx`
-- For media support: `aiofiles`
+- Python packages: `websockets` and `httpx`, both core Hermes dependencies
 
-Install the required dependencies:
+If these core dependencies are damaged, repair the selected environment:
 
 ```bash
-pip install websockets httpx aiofiles
+hermes pm repair
 ```
 
 ## Setup
@@ -98,6 +97,7 @@ The adapter will connect to the Yuanbao WebSocket gateway, authenticate using HM
 - **Automatic reconnection** — handles WebSocket disconnections with exponential backoff
 - **Group information queries** — retrieve group details and member lists
 - **Sticker/Emoji support** — send TIMFaceElem stickers and emoji in conversations
+- **WeChat forwarded chat-history support** — when a user forwards a WeChat chat-history bundle into Yuanbao, the adapter decodes the forwarded records (sender nicknames, text, and multimedia entries, including nested forwards) and injects them into the conversation so the agent can read the full forwarded thread
 - **Auto-sethome** — first user to message the bot is automatically set as the home channel owner
 - **Slow-response notification** — sends a waiting message when the agent takes longer than expected
 
@@ -244,7 +244,7 @@ When you ask the bot to create or export a file, it sends the file directly to y
 1. Check gateway logs for error patterns
 2. Increase heartbeat timeout in connection settings
 3. Ensure stable network connection to Yuanbao API
-4. Consider enabling verbose logging: `HERMES_LOG_LEVEL=debug`
+4. Consider enabling verbose logging: `hermes gateway run -vv`
 
 ## Access Control
 
@@ -302,7 +302,7 @@ These values are currently not configurable via environment variables. They are 
 Enable debug logging to troubleshoot connection issues:
 
 ```bash
-HERMES_LOG_LEVEL=debug hermes gateway
+hermes gateway run -vv
 ```
 
 ## Integration with Other Features
@@ -322,7 +322,7 @@ Results are delivered to your home channel.
 Run long operations without blocking the conversation:
 
 ```
-/background Analyze all files in the archive
+/bg Analyze all files in the archive
 ```
 
 ### Cross-Platform Messages
@@ -336,6 +336,6 @@ hermes chat -q "Send 'Hello from CLI' to yuanbao:group:group_code"
 ## Related Documentation
 
 - [Messaging Gateway Overview](./index.md)
-- [Slash Commands Reference](/docs/reference/slash-commands.md)
-- [Cron Jobs](/docs/user-guide/features/cron.md)
-- [Background Sessions](/docs/user-guide/cli#background-sessions)
+- [Slash Commands Reference](../../reference/slash-commands.md)
+- [Cron Jobs](../features/cron.md)
+- [Background Sessions](../cli.md#background-sessions)

@@ -8,7 +8,6 @@ of tool-progress bubbles for calls that were already parsed from the LLM
 response — making the interrupt feel ignored.
 """
 
-import asyncio
 import importlib
 import sys
 import time
@@ -29,7 +28,7 @@ class ProgressCaptureAdapter(BasePlatformAdapter):
         self.edits = []
         self.typing = []
 
-    async def connect(self) -> bool:
+    async def connect(self, *, is_reconnect: bool = False) -> bool:
         return True
 
     async def disconnect(self) -> None:
@@ -105,6 +104,29 @@ class InterruptedAgent:
         self.tool_progress_callback("tool.started", "web_search", "platform.moonshot.cn", {})
         time.sleep(0.35)  # let the drain loop attempt to process the queue
         return {"final_response": "interrupted", "messages": [], "api_calls": 1}
+
+
+class PartialTruncationAgent:
+    """Returns an incomplete turn with no visible assistant text."""
+
+    def __init__(self, **kwargs):
+        self.tool_progress_callback = kwargs.get("tool_progress_callback")
+        self.tools = []
+        self._interrupt_requested = False
+
+    @property
+    def is_interrupted(self) -> bool:
+        return self._interrupt_requested
+
+    def run_conversation(self, message, conversation_history=None, task_id=None):
+        return {
+            "final_response": None,
+            "messages": [],
+            "api_calls": 2,
+            "completed": False,
+            "partial": True,
+            "error": "Response truncated due to output length limit",
+        }
 
 
 def _make_runner(adapter):
@@ -183,6 +205,20 @@ async def test_baseline_non_interrupted_agent_renders_progress(monkeypatch, tmp_
 
 
 @pytest.mark.asyncio
+async def test_partial_empty_agent_response_is_normalized(monkeypatch, tmp_path):
+    """Messaging gateways should not echo raw truncation errors as final text."""
+    adapter, result = await _run_once(
+        monkeypatch, tmp_path, PartialTruncationAgent, "sess-partial-empty"
+    )
+
+    assert result["final_response"].startswith("⚠️ I had to stop before finishing")
+    assert "Response truncated due to output length limit" in result["final_response"]
+    assert result["final_response"] != "⚠️ Response truncated due to output length limit"
+    assert result["partial"] is True
+    assert adapter.sent == []
+
+
+@pytest.mark.asyncio
 async def test_progress_suppressed_when_agent_is_interrupted(monkeypatch, tmp_path):
     """Post-interrupt tool.started events must not render as bubbles.
 
@@ -213,3 +249,25 @@ async def test_progress_suppressed_when_agent_is_interrupted(monkeypatch, tmp_pa
             f"event '{leaked_query}' leaked into the UI after interrupt — "
             f"progress_callback / drain loop is not checking is_interrupted"
         )
+
+
+def test_partial_site_code_result_is_delivered_verbatim_not_double_wrapped():
+    """A truncated-tool-call exit already carries the curated site copy; the gateway must not
+    prefix it with 'I had to stop before finishing:' and cut it at 200 chars."""
+    from agent.turn_failure_copy import site_copy
+    from gateway.run import _normalize_empty_agent_response
+    curated = site_copy("truncated")
+    result = {"final_response": None, "messages": [], "api_calls": 2, "completed": False, "partial": True,
+              "error": curated, "failure_reason": "truncated", "failure_retryable": True}
+    text = _normalize_empty_agent_response(result, "", history_len=0)
+    assert curated in text
+    assert "I had to stop before finishing" not in text
+    assert text.count("continue") == curated.count("continue")
+
+
+def test_partial_without_site_code_keeps_the_generic_wrapper():
+    from gateway.run import _normalize_empty_agent_response
+    result = {"final_response": None, "messages": [], "api_calls": 2, "completed": False, "partial": True,
+              "error": "Response truncated due to output length limit"}
+    text = _normalize_empty_agent_response(result, "", history_len=0)
+    assert text.startswith("⚠️ I had to stop before finishing")

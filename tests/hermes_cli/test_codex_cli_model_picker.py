@@ -13,11 +13,8 @@ existing Codex CLI tokens via `hermes auth openai-codex`. The old
 
 import base64
 import json
-import os
-import sys
 import time
 from pathlib import Path
-from unittest.mock import patch
 
 import pytest
 
@@ -73,6 +70,8 @@ def test_normal_path_still_works(hermes_auth_only_env):
     )
     slugs = [p["slug"] for p in providers]
     assert "openai-codex" in slugs
+
+
 
 
 @pytest.fixture()

@@ -16,7 +16,7 @@ Before setup, here's the part most people want to know: how Hermes behaves once 
 |---------|----------|
 | **DMs** | Hermes responds to every message. No `@mention` needed. Each DM has its own session. |
 | **Server channels** | By default, Hermes only responds when you `@mention` it. If you post in a channel without mentioning it, Hermes ignores the message. |
-| **Free-response channels** | You can make specific channels mention-free with `DISCORD_FREE_RESPONSE_CHANNELS`, or disable mentions globally with `DISCORD_REQUIRE_MENTION=false`. Messages in these channels are answered inline — auto-threading is skipped so the channel stays a lightweight chat. |
+| **Free-response channels** | You can make specific channels mention-free with `DISCORD_FREE_RESPONSE_CHANNELS`, or disable mentions globally with `DISCORD_REQUIRE_MENTION=false`. Messages in these channels are answered inline by default — auto-threading is skipped so the channel stays a lightweight chat. Set `discord.free_response_auto_thread: true` to get both mention-free replies and a thread per top-level message. |
 | **Threads** | Hermes replies in the same thread. Mention rules still apply unless that thread or its parent channel is configured as free-response. Threads stay isolated from the parent channel for session history. |
 | **Shared channels with multiple users** | By default, Hermes isolates session history per user inside the channel for safety and clarity. Two people talking in the same channel do not share one transcript unless you explicitly disable that. |
 | **Messages mentioning other users** | When `DISCORD_IGNORE_NO_MENTION` is `true` (the default), Hermes stays silent if a message @mentions other users but does **not** mention the bot. This prevents the bot from jumping into conversations directed at other people. Set to `false` if you want the bot to respond to all messages regardless of who is mentioned. This only applies in server channels, not DMs. |
@@ -81,6 +81,29 @@ With `group_sessions_per_user: false`:
 - follow-up messages from different people can interrupt or queue behind each other
 
 This guide walks you through the full setup process — from creating your bot on Discord's Developer Portal to sending your first message.
+
+### Gateway WebSocket health
+
+Discord REST and the Gateway WebSocket are separate transports. A successful REST response (including `fetch_user()` returning HTTP 200) does not prove that the bot can still receive Gateway events. Hermes therefore combines the ready state, client/socket closure state, socket openness, heartbeat ACK age, finite heartbeat latency, and — since the dispatch-side dimension — how long it has been since the last parsed Gateway event.
+
+After the configured number of consecutive unhealthy samples, the adapter emits one retryable fatal event. A closed transport (`socket_closed` / `client_closed`) is a confirmed death and forces the reconnect on the first unhealthy sample; the threshold applies to soft signals only (stale heartbeat ACK, latency, event silence) — see [#118487](https://github.com/NousResearch/hermes-agent/issues/118487). The existing gateway reconnect watcher creates a fresh adapter; the Discord adapter does not start a second unbounded reconnect loop.
+
+Configure the non-secret thresholds in `config.yaml`:
+
+```yaml
+discord:
+  websocket_liveness_interval_seconds: 15
+  websocket_liveness_failure_threshold: 2
+  websocket_heartbeat_ack_max_age_seconds: 60
+  websocket_max_latency_seconds: 30
+  websocket_event_max_silence_seconds: 14400
+```
+
+The old `liveness_interval_seconds` and `liveness_failure_threshold` names remain compatibility aliases only; they no longer mean REST probing.
+
+Any knob at `0` disables the whole WebSocket liveness probe. Values that fail to parse as a positive number (e.g. `15s`, `nan`, `true`, `-1`) also disable it, and log a warning each time the adapter starts — check `gateway.log` if the probe seems inactive.
+
+`websocket_event_max_silence_seconds` is the exception: it guards a single dimension (event dispatch), so `0` opts out of **that check only** — ready/ACK/latency keep guarding. A socket can stay ESTABLISHED and keep ACKing heartbeats while delivering zero Gateway events; heartbeat ACKs are frames without an event type, so no transport-side check can see that state. The default (4 hours) matches the outage window operators have observed in the field; a quiet guild can legitimately go hours without a single Gateway event, so keep this bound generous unless you know your traffic.
 
 ## Step 1: Create a Discord Application
 
@@ -271,28 +294,62 @@ Discord behavior is controlled through two files: **`~/.hermes/.env`** for crede
 | Variable | Required | Default | Description |
 |----------|----------|---------|-------------|
 | `DISCORD_BOT_TOKEN` | **Yes** | — | Bot token from the [Discord Developer Portal](https://discord.com/developers/applications). |
-| `DISCORD_ALLOWED_USERS` | **Yes** | — | Comma-separated Discord user IDs allowed to interact with the bot. Without this **or** `DISCORD_ALLOWED_ROLES`, the gateway denies all users. |
+| `DISCORD_ALLOWED_USERS` | Conditional | — | Comma-separated Discord user IDs allowed to interact with the bot. Without this **or** `DISCORD_ALLOWED_ROLES`, the gateway denies all users unless `DISCORD_ALLOW_ALL_USERS=true`, `GATEWAY_ALLOW_ALL_USERS=true`, or `DISCORD_ALLOWED_CHANNELS` explicitly scopes guild access. Usernames also work: they are resolved to IDs when the bot connects (requires the **Server Members Intent**). Display names and server nicknames are never matched, because any member can set them. |
 | `DISCORD_ALLOWED_ROLES` | No | — | Comma-separated Discord role IDs. Any member with one of these roles is authorized — OR semantics with `DISCORD_ALLOWED_USERS`. Auto-enables the **Server Members Intent** on connect. Useful when moderation teams churn: new mods get access as soon as the role is granted, no config push needed. |
+| `DISCORD_ALLOW_ALL_USERS` | No | `false` | Explicit opt-in to allow every Discord user who can reach the bot. This restores the pre-0.18 open behavior for Discord only; use only for trusted/private guilds or development. |
+| `GATEWAY_ALLOW_ALL_USERS` | No | `false` | Global allow-all opt-in for every gateway platform. Prefer the platform-specific `DISCORD_ALLOW_ALL_USERS` unless you intentionally want all connected platforms open. |
 | `DISCORD_HOME_CHANNEL` | No | — | Channel ID where the bot sends proactive messages (cron output, reminders, notifications). |
 | `DISCORD_HOME_CHANNEL_NAME` | No | `"Home"` | Display name for the home channel in logs and status output. |
 | `DISCORD_COMMAND_SYNC_POLICY` | No | `"safe"` | Controls native slash-command startup sync. `"safe"` diffs existing global commands and only updates what changed, recreating commands when Discord metadata changes cannot be applied via patch. `"bulk"` preserves the old `tree.sync()` behavior. `"off"` skips startup sync entirely. |
 | `DISCORD_REQUIRE_MENTION` | No | `true` | When `true`, the bot only responds in server channels when `@mentioned`. Set to `false` to respond to all messages in every channel. |
+| `DISCORD_THREAD_REQUIRE_MENTION` | No | `false` | When `true`, the in-thread mention shortcut is disabled — threads are gated the same as channels, requiring `@mention` even after the bot has already participated. Use this when multiple bots share a thread and you want each to fire only on explicit `@mention`. |
 | `DISCORD_FREE_RESPONSE_CHANNELS` | No | — | Comma-separated channel IDs where the bot responds without requiring an `@mention`, even when `DISCORD_REQUIRE_MENTION` is `true`. |
 | `DISCORD_IGNORE_NO_MENTION` | No | `true` | When `true`, the bot stays silent if a message `@mentions` other users but does **not** mention the bot. Prevents the bot from jumping into conversations directed at other people. Only applies in server channels, not DMs. |
 | `DISCORD_AUTO_THREAD` | No | `true` | When `true`, automatically creates a new thread for every `@mention` in a text channel, so each conversation is isolated (similar to Slack behavior). Messages already inside threads or DMs are unaffected. |
-| `DISCORD_ALLOW_BOTS` | No | `"none"` | Controls how the bot handles messages from other Discord bots. `"none"` — ignore all other bots. `"mentions"` — only accept bot messages that `@mention` Hermes. `"all"` — accept all bot messages. |
+| `DISCORD_FREE_RESPONSE_AUTO_THREAD` | No | `false` | When `true`, free-response channels (listed in `DISCORD_FREE_RESPONSE_CHANNELS`) also auto-create a thread for each top-level message, while staying mention-free. Default `false` preserves the lightweight inline-chat behavior. Requires `DISCORD_AUTO_THREAD=true`; `DISCORD_NO_THREAD_CHANNELS` still wins, and voice-linked channels always ignore it. |
+| `DISCORD_ALLOW_BOTS` | No | `"none"` | Controls how the bot handles messages from other Discord bots. `"none"` — ignore all other bots. `"mentions"` — only accept bot messages that `@mention` Hermes. `"all"` — accept all bot messages. By default, either enabled mode still requires a literal inline mention; see the next setting. |
+| `DISCORD_BOTS_REQUIRE_INLINE_MENTION` | No | `true` | Require a literal `<@BOT_ID>` / `<@!BOT_ID>` token to start a bot handoff. Reply metadata alone does not start one. Brief same-sender/channel continuations are admitted as described below. Set to `false` only for trusted relays needing legacy admission. Human messages are unaffected. |
 | `DISCORD_REACTIONS` | No | `true` | When `true`, the bot adds emoji reactions to messages during processing (👀 when starting, ✅ on success, ❌ on error). Set to `false` to disable reactions entirely. |
 | `DISCORD_IGNORED_CHANNELS` | No | — | Comma-separated channel IDs where the bot **never** responds, even when `@mentioned`. Takes priority over all other channel settings. |
 | `DISCORD_ALLOWED_CHANNELS` | No | — | Comma-separated channel IDs. When set, the bot **only** responds in these channels (plus DMs if allowed). Overrides `config.yaml` `discord.allowed_channels`. Combine with `DISCORD_IGNORED_CHANNELS` to express allow/deny rules. |
 | `DISCORD_NO_THREAD_CHANNELS` | No | — | Comma-separated channel IDs where the bot responds directly in the channel instead of creating a thread. Only relevant when `DISCORD_AUTO_THREAD` is `true`. |
+| `DISCORD_HISTORY_BACKFILL` | No | `true` | When `true`, prepend recent channel scrollback (since the bot's last response) to the user message when the bot is mentioned. Recovers context the bot would otherwise miss with `require_mention`. Skipped in DMs and free-response channels. Set to `false` to disable. |
+| `DISCORD_HISTORY_BACKFILL_LIMIT` | No | `50` | Maximum number of messages to scan backwards when assembling the backfill block. In practice the scan usually stops earlier — at the bot's own last message in the channel. |
 | `DISCORD_REPLY_TO_MODE` | No | `"first"` | Controls reply-reference behavior: `"off"` — never reply to the original message, `"first"` — reply-reference on the first message chunk only (default), `"all"` — reply-reference on every chunk. |
 | `DISCORD_ALLOW_MENTION_EVERYONE` | No | `false` | When `false` (default), the bot cannot ping `@everyone` or `@here` even if its response contains those tokens. Set to `true` to opt back in. See [Mention Control](#mention-control) below. |
 | `DISCORD_ALLOW_MENTION_ROLES` | No | `false` | When `false` (default), the bot cannot ping `@role` mentions. Set to `true` to allow. |
 | `DISCORD_ALLOW_MENTION_USERS` | No | `true` | When `true` (default), the bot can ping individual users by ID. |
 | `DISCORD_ALLOW_MENTION_REPLIED_USER` | No | `true` | When `true` (default), replying to a message pings the original author. |
 | `DISCORD_PROXY` | No | — | Proxy URL for Discord connections (HTTP, WebSocket, REST). Overrides `HTTPS_PROXY`/`ALL_PROXY`. Supports `http://`, `https://`, and `socks5://` schemes. |
+| `DISCORD_ALLOW_ANY_ATTACHMENT` | No | `false` | When `true`, the bot accepts attachments of any file type (not just the built-in PDF/text/zip/office allowlist). Unknown types are cached to disk and surfaced to the agent as a local path with `application/octet-stream` MIME so it can inspect them with `terminal` / `read_file` / `ffprobe` / etc. |
+| `DISCORD_MAX_ATTACHMENT_BYTES` | No | `33554432` | Maximum bytes per attachment the gateway will download and cache. Default 32 MiB. Set to `0` for no cap (attachments are held in memory while being written, so unlimited carries a real memory cost). |
 | `HERMES_DISCORD_TEXT_BATCH_DELAY_SECONDS` | No | `0.6` | Grace window the adapter waits before flushing a queued text chunk. Useful for smoothing streamed output. |
-| `HERMES_DISCORD_TEXT_BATCH_SPLIT_DELAY_SECONDS` | No | `2.0` | Delay between split chunks when a single message exceeds Discord's length limit. |
+| `HERMES_DISCORD_TEXT_BATCH_SPLIT_DELAY_SECONDS` | No | `2.0` | Longer quiet period for near-limit Discord splits and continuation chunks from a recently tagged bot in the same channel. |
+
+### Bot-to-bot handoffs: tag once, collect the burst
+
+Bot input remains opt-in (`DISCORD_ALLOW_BOTS=none` by default). When enabled with `mentions` or `all`, **starting a bot handoff requires a literal `<@BOT_ID>` / `<@!BOT_ID>` in the message content by default**. Discord's automatic reply ping alone does not start a handoff. Human-authored messages retain their existing mention behavior.
+
+After an admitted bot mention, Hermes briefly accepts unmentioned follow-ups from **that same bot in that same channel or thread**. Text follow-ups enter the existing text batcher, so a rapidly split response can reach the agent together without repeating the tag on every part. No special sender protocol or part markers are required.
+
+For example, bot A sends `<@BOT_B_ID> Here is the review …`, followed immediately by two untagged text chunks in the same thread. Bot B admits those chunks during the continuation window and batches them with the tagged text. After the window expires, an untagged message or reply ping cannot start another handoff under the default policy. Explicit reciprocal tags remain supported; this prevents accidental reply-metadata loops, not intentionally continued conversations.
+
+#### Timing and limits
+
+The admission window lasts `max(HERMES_DISCORD_TEXT_BATCH_DELAY_SECONDS, HERMES_DISCORD_TEXT_BATCH_SPLIT_DELAY_SECONDS)` after the admitted mention (2 seconds with the defaults), and each admitted continuation re-arms it, so a long handoff paced at Discord's send rate arrives whole. Separately, each queued text chunk restarts the batch's quiet timer; a tagged bot batch uses the split quiet period even when its first chunk is short. These settings control receiver batching, not sender pacing. Disabling text batching (`HERMES_DISCORD_TEXT_BATCH_DELAY_SECONDS=0`) also disables continuation admission.
+
+This is a short-burst heuristic, not guaranteed multipart delivery. A delayed chunk outside the window needs its own mention under the default policy. Unrelated messages from the same bot and channel inside the window can also be admitted. The exception is not restricted to text: attachments and commands may pass admission, but only text enters this batcher; other message types follow their normal handling. Existing channel restrictions and `DISCORD_ALLOW_BOTS=none` still apply. History/backfill behavior is unchanged. The gateway's bot loop guard remains as a backstop: after 20 bot-authored messages in one channel inside 5 minutes, further bot messages there are dropped for 10 minutes (tunable under `gateway.bot_loop_guard` in `config.yaml`; human messages are never counted).
+
+#### Compatibility with trusted relays
+
+The inline-mention requirement now defaults to **true** (previously false), including when `DISCORD_ALLOW_BOTS=all`. If an existing relay intentionally relies on reply pings or unmentioned bot messages, retain the old admission behavior explicitly:
+
+```yaml
+discord:
+  bots_require_inline_mention: false
+```
+
+The existing `DISCORD_BOTS_REQUIRE_INLINE_MENTION=false` environment override is also supported when the YAML option is unset. With this opt-out, `mentions` accepts Discord's resolved mentions, including reply pings, and `all` removes the bot-specific mention requirement; other channel mention rules still apply. An admitted reply ping can also open the continuation window in this compatibility mode. Use it only for trusted relays because it restores the accidental reply-loop risk.
 
 ### Config File (`config.yaml`)
 
@@ -302,12 +359,26 @@ The `discord` section in `~/.hermes/config.yaml` mirrors the env vars above. Con
 # Discord-specific settings
 discord:
   require_mention: true           # Require @mention in server channels
+  thread_require_mention: false   # If true, require @mention in threads too (multi-bot threads)
+  bots_require_inline_mention: true  # Bot authors must type a literal @mention (default: true)
   free_response_channels: ""      # Comma-separated channel IDs (or YAML list)
   auto_thread: true               # Auto-create threads on @mention
+  free_response_auto_thread: false # If true, free_response_channels also auto-thread (default: inline)
   reactions: true                 # Add emoji reactions during processing
   ignored_channels: []            # Channel IDs where bot never responds
   no_thread_channels: []          # Channel IDs where bot responds without threading
+  history_backfill: true          # Prepend recent channel scrollback on mention (default: true)
+  history_backfill_limit: 50      # Max messages to scan backwards (default: 50)
+  missed_message_backfill:        # Replay messages missed while disconnected (opt-in)
+    enabled: false
+    channels: []                  # Empty uses free_response_channels
+    window_seconds: 21600         # Look back at most 6 hours
+    limit: 100                    # Global scan cap per reconnect
+    max_dispatches: 10            # Recovery dispatch cap per reconnect
+    max_attempts: 3               # Lifetime re-dispatch cap per message
   channel_prompts: {}             # Per-channel ephemeral system prompts
+  voice_channel_inactivity_timeout_seconds: 300  # Set 0 to stay in VC until explicit /voice leave
+  voice_playback_timeout_seconds: 120             # Minimum playback watchdog; long clips get duration+padding
   allow_mentions:                 # What the bot is allowed to ping (safe defaults)
     everyone: false               # @everyone / @here pings (default: false)
     roles: false                  # @role pings (default: false)
@@ -323,6 +394,20 @@ group_sessions_per_user: true     # Isolate sessions per user in shared channels
 **Type:** boolean — **Default:** `true`
 
 When enabled, the bot only responds in server channels when directly `@mentioned`. DMs always get a response regardless of this setting.
+
+#### `discord.thread_require_mention`
+
+**Type:** boolean — **Default:** `false`
+
+By default, once the bot has participated in a thread (auto-created on `@mention` or replied in once), it keeps responding to every subsequent message in that thread without needing to be `@mentioned` again. That's the right default for one-on-one conversations.
+
+In **multi-bot threads** where users address one bot per turn, this default becomes a footgun — every other bot in the thread also fires on every message, burning credits and spamming the channel. Set `thread_require_mention: true` to disable the in-thread shortcut and gate threads the same way channels are gated. Explicit `@mentions` still work as before.
+
+```yaml
+discord:
+  require_mention: true
+  thread_require_mention: true    # multi-bot setup
+```
 
 #### `discord.free_response_channels`
 
@@ -344,15 +429,35 @@ discord:
 
 If a thread's parent channel is in this list, the thread also becomes mention-free.
 
-Free-response channels also **skip auto-threading** — the bot replies inline rather than spinning off a new thread per message. This keeps the channel usable as a lightweight chat surface. If you want threading behavior, don't list the channel as free-response (use normal `@mention` flow instead).
+Free-response channels also **skip auto-threading** by default — the bot replies inline rather than spinning off a new thread per message. This keeps the channel usable as a lightweight chat surface.
+
+To opt in to threading for free-response channels, set `discord.free_response_auto_thread: true` (or `DISCORD_FREE_RESPONSE_AUTO_THREAD=true`). In that mode each new top-level message in a free channel still gets its own thread, but the channel remains @mention-free. Requires `discord.auto_thread: true`.
+
+#### `discord.free_response_auto_thread`
+
+**Type:** boolean — **Default:** `false`
+
+When `true`, channels listed in `discord.free_response_channels` also auto-create a thread for each top-level message, instead of answering inline. The channel stays mention-free; it only changes where the conversation lives.
+
+```yaml
+discord:
+  free_response_channels:
+    - 1234567890
+  auto_thread: true                # required — this flag refines it
+  free_response_auto_thread: true  # thread every top-level message there
+```
+
+Requires `discord.auto_thread: true` (with it off, nothing threads anywhere). [`discord.no_thread_channels`](#discordno_thread_channels) still wins, voice-linked text channels always reply inline, and reply-type messages are never auto-threaded.
+
+`DISCORD_FREE_RESPONSE_AUTO_THREAD` wins over the `config.yaml` key when both are set — the YAML value only seeds the env var when it isn't already set, like every other `discord.*` bridge.
 
 #### `discord.auto_thread`
 
 **Type:** boolean — **Default:** `true`
 
-When enabled, every `@mention` in a regular text channel automatically creates a new thread for the conversation. This keeps the main channel clean and gives each conversation its own isolated session history. Once a thread is created, subsequent messages in that thread don't require `@mention` — the bot knows it's already participating.
+When enabled, every `@mention` in a regular text channel automatically creates a new thread for the conversation. This keeps the main channel clean and gives each conversation its own isolated session history. Once a thread is created, subsequent messages in that thread don't require `@mention` — the bot knows it's already participating. Set [`thread_require_mention`](#discordthread_require_mention) to `true` to disable this in-thread shortcut for multi-bot setups.
 
-Messages sent in existing threads or DMs are unaffected by this setting. Channels listed in `discord.free_response_channels` or `discord.no_thread_channels` also bypass auto-threading and get inline replies instead.
+Messages sent in existing threads or DMs are unaffected by this setting. Channels listed in `discord.no_thread_channels`, and channels listed in `discord.free_response_channels` unless [`discord.free_response_auto_thread`](#discordfree_response_auto_thread) is `true`, also bypass auto-threading and get inline replies instead.
 
 #### `discord.reactions`
 
@@ -421,6 +526,68 @@ Behavior:
 - If a message arrives inside a thread or forum post and that thread has no explicit entry, Hermes falls back to the parent channel/forum ID.
 - Prompts are applied ephemerally at runtime, so changing them affects future turns immediately without rewriting past session history.
 
+#### `discord.history_backfill`
+
+**Type:** boolean — **Default:** `true`
+
+When enabled, the bot recovers missed channel messages on each `@mention`. With `require_mention: true`, the bot only processes messages that tag it directly — everything else in the channel is invisible to the session transcript. History backfill scans backwards through recent channel history when triggered, collecting messages between the bot's last response and the current mention, and includes them as context.
+
+Behavior by surface:
+
+- **Server channels** (with `require_mention: true`): backfill scans the channel since the bot's last response. Useful when other participants posted while the bot wasn't addressed.
+- **Threads**: backfill scans the thread only — Discord's `channel.history()` on a thread returns only that thread's messages, not the parent channel. This is the right scope because threads are usually self-contained conversations.
+- **DMs**: skipped. Every DM message triggers the bot, so the session transcript is already complete — there's no mention gap to fill.
+- **Free-response channels** and **bot's own auto-created threads**: skipped for the same reason — no mention gating means no gap.
+
+Per-user sessions (`group_sessions_per_user: true`, the default) also benefit: a user's session is missing the context posted by other channel participants and the user's own messages from before they tagged the bot. Backfill fills both gaps.
+
+```yaml
+discord:
+  history_backfill: true   # default
+```
+
+To turn it off:
+
+```yaml
+discord:
+  history_backfill: false
+```
+
+> **Note:** Messages that arrive *while* the bot is processing (between a trigger and its response) are not captured. This is an accepted simplification — the user can re-send or tag again.
+
+#### `discord.history_backfill_limit`
+
+**Type:** integer — **Default:** `50`
+
+Maximum number of messages to scan backwards when recovering channel context. In practice the scan usually stops much earlier — at the bot's own last message in the channel, which is the natural boundary between turns. This limit is a safety cap for cold starts and long gaps where no prior bot message exists in recent history.
+
+```yaml
+discord:
+  history_backfill: true
+  history_backfill_limit: 50
+```
+
+#### `discord.missed_message_backfill`
+
+**Type:** object — **Default:** disabled
+
+Discord's WebSocket resume window can expire during a restart or network outage. Messages sent during that gap are not delivered as live gateway events. When this option is enabled, Hermes scans a bounded set of configured channel and thread histories after Discord reconnects, then sends still-unhandled messages through the same authorization, mention, channel, deduplication, and dispatch path as live events.
+
+```yaml
+discord:
+  missed_message_backfill:
+    enabled: true
+    channels: ["123456789012345678"]
+    window_seconds: 3600
+    limit: 100
+    max_dispatches: 10
+    max_attempts: 3
+```
+
+If `channels` is empty, Hermes uses `discord.free_response_channels`. Set it to `"*"` only when the bot should inspect every reachable server text channel. The recovery ledger is stored per profile under `gateway/discord_message_recovery.db`, preventing a successfully answered message from being replayed again after a later restart. A message counts as answered once its turn delivered a final reply, whether or not that reply carried a Discord reply reference (`reply_to_mode: "off"`, streamed replies and media-only replies included).
+
+`max_dispatches` caps one scan; `max_attempts` (default 3) caps how many times a single message can ever be re-dispatched, so a message whose turn keeps failing is not re-run on every reconnect. `window_seconds` is always honoured: the per-channel scan cursor can narrow a scan but never reaches further back than the window.
+
 #### `group_sessions_per_user`
 
 **Type:** boolean — **Default:** `true`
@@ -462,6 +629,61 @@ display:
   tool_progress_command: true
 ```
 
+#### `display.reasoning_style`
+
+**Type:** string — **Default (Discord):** `"subtext"` — **Values:** `code`, `blockquote`, `subtext`
+
+Controls how the model's reasoning block is rendered when reasoning display is enabled. Discord defaults to `subtext`, which uses Discord's native `-# ` small grey metadata text so reasoning stays visually secondary to the answer. `blockquote` renders it as a `>` quote, and `code` (the default on other platforms) uses a fenced code block. Long reasoning is collapsed to the first 15 lines.
+
+```yaml
+display:
+  platforms:
+    discord:
+      reasoning_style: subtext   # code | blockquote | subtext
+```
+
+## Slash Command Access Control
+
+By default, every allowed user can run every slash command. To split your allowlist into **admins** (full slash command access) and **regular users** (only commands you explicitly enable), add `allow_admin_from` and `user_allowed_commands` to the Discord platform's `extra` block:
+
+```yaml
+gateway:
+  platforms:
+    discord:
+      extra:
+        # Existing user allowlist (unchanged)
+        allow_from:
+          - "123456789012345678"  # admin user ID
+          - "999888777666555444"  # regular user ID
+
+        # NEW — admins get all slash commands (built-in + plugin)
+        allow_admin_from:
+          - "123456789012345678"
+
+        # NEW — non-admin allowed users can only run these slash commands.
+        # /help and /whoami are always allowed so users can see their access.
+        user_allowed_commands:
+          - status
+          - model
+          - history
+
+        # Optional: separate admin / command lists for server channels
+        group_allow_admin_from:
+          - "123456789012345678"
+        group_user_allowed_commands:
+          - status
+```
+
+**Behavior:**
+
+- A user in `allow_admin_from` for a scope (DM or server channel) can run **every** registered slash command — built-in AND plugin-registered — through the live command registry.
+- A user not in `allow_admin_from` can only run commands listed in `user_allowed_commands`, plus the always-allowed floor: `/help` and `/whoami`.
+- Plain chat (non-slash messages) is unaffected. Non-admin users can still talk to the agent normally; they just can't trigger arbitrary commands.
+- **Backward compat:** if `allow_admin_from` is not set for a scope, slash command gating is disabled for that scope. Existing installs keep working with no changes.
+- DM admin status does not imply server-channel admin status. Each scope has its own admin list.
+
+Use `/whoami` to see the active scope, your tier (admin / user / unrestricted), and which slash commands you can run.
+
 ## Interactive Model Picker
 
 Send `/model` with no arguments in a Discord channel to open a dropdown-based model picker:
@@ -478,7 +700,7 @@ Hermes automatically registers installed skills as **native Discord Application 
 - Each skill becomes a Discord slash command (e.g., `/code-review`, `/ascii-art`)
 - Skills accept an optional `args` string parameter
 - Discord has a limit of 100 application commands per bot — if you have more skills than available slots, extra skills are skipped with a warning in the logs
-- Skills are registered during bot startup alongside built-in commands like `/model`, `/reset`, and `/background`
+- Skills are registered during bot startup alongside built-in commands like `/model`, `/reset`, and `/bg`
 
 No extra configuration is needed — any skill installed via `hermes skills install` is automatically registered as a Discord slash command on the next gateway restart.
 
@@ -496,9 +718,9 @@ gateway:
 
 Leaving this at `true` on the "primary" gateway keeps the normal behavior — global `/`-menu commands for built-ins and installed skills.
 
-## Sending Media (`send_message` + `MEDIA:` tags)
+## Sending Media (inline `MEDIA:` tags)
 
-The Discord adapter supports native file uploads for every common media type via the `send_message` tool and inline `MEDIA:/path/to/file` tags emitted by the agent:
+The Discord adapter supports native file uploads for every common media type via inline `MEDIA:/path/to/file` tags emitted in the agent's response — the adapter strips the tag and auto-uploads the file:
 
 | Type | How it's delivered |
 |---|---|
@@ -509,6 +731,48 @@ The Discord adapter supports native file uploads for every common media type via
 | Documents (PDF/ZIP/docx/etc.) | `send_document` — native attachment with download button |
 
 Discord's per-upload size limit depends on the server's boost tier (25 MB free, up to 500 MB). If Hermes gets an HTTP 413, the adapter falls back to a link pointing at the local cache path rather than failing silently.
+
+## Receiving Arbitrary File Types
+
+Any file type a user uploads is accepted. Authorization to message the agent is the gate — not the file extension. Every upload is downloaded, cached under `~/.hermes/cache/documents/`, and surfaced to the agent as a `DOCUMENT`-typed message event so it can inspect the file with `terminal` (`ffprobe`, `unzip`, `file`, `strings`, etc.) or `read_file`.
+
+- Known types (PDF, docx/xlsx/pptx, zip, images/audio/video, etc.) keep their precise MIME.
+- Unknown types fall back to the upload's reported content type, or `application/octet-stream` when none is given.
+- Small UTF-8-decodable files (text, code, config, HTML, CSS, JSON, YAML, ...) have their contents auto-injected into the prompt up to 100 KiB. Binary files that can't be decoded are surfaced as a path-pointing context note only (auto-translated for Docker/Modal sandboxed terminals via `to_agent_visible_cache_path`), so they don't blow up the context window.
+
+The only inbound limit is the per-file size cap (default 32 MiB):
+
+```yaml
+discord:
+  # Optional — raise/disable the per-file size cap. Default is 32 MiB.
+  # The whole file is held in memory while being cached, so unlimited
+  # uploads carry a real memory cost.
+  max_attachment_bytes: 33554432   # bytes; 0 = unlimited
+```
+
+Equivalent env var: `DISCORD_MAX_ATTACHMENT_BYTES=33554432` (or `0` for no cap).
+
+The legacy `discord.allow_any_attachment` flag is now a no-op — any file type is always accepted — and is kept only so existing configs don't error.
+
+:::warning Memory cost of unlimited
+Disabling the size cap (`max_attachment_bytes: 0`) means a user can drop a multi-GB file on the bot and the gateway will dutifully buffer it through memory while caching to disk. Only set this in trusted single-user installs. For shared bots, keep the default 32 MiB or raise it conservatively.
+:::
+
+## Interactive Prompts (clarify)
+
+When the agent calls the `clarify` tool — to ask which approach you prefer, get post-task feedback, or check before a non-trivial decision — Discord renders the question with **one button per choice**:
+
+> Which framework should I use for the dashboard?
+>
+> [1. Next.js] [2. Remix] [3. Astro] [Other (type answer)]
+
+Click a numbered button to answer, or click **Other** to type a free-form response (the next message you send in that channel becomes the answer). Open-ended `clarify` calls (no preset choices) skip the buttons and just capture your next message.
+
+The buttons disable themselves once a choice is made so duplicate clicks don't double-resolve the prompt. Configure the response timeout via `agent.clarify_timeout` in `~/.hermes/config.yaml` (default `3600` seconds; `0` or less = unlimited). If you don't respond within the timeout, the agent unblocks with `"outcome": "timed_out"` and adapts rather than hanging. Reply `skip` to skip a question.
+
+### Prompt layout
+
+Interactive prompts (command approvals, `clarify` questions, and slash-command confirmations) share one layout: the **plain message** carries the full payload — the command and why it was flagged plus the approval deadline, or the question and reply hint — the **embed card** underneath is a header only, and the buttons sit below the card. Everything you need to decide is in the plain text, so the prompt reads correctly on clients that hide or detach embeds, and nothing is shown twice on clients that render them.
 
 ## Home Channel
 
@@ -538,12 +802,45 @@ Hermes Agent supports Discord voice messages:
 - **Discord voice channels**: Hermes can also join a voice channel, listen to users speaking, and talk back in the channel.
 
 For the full setup and operational guide, see:
-- [Voice Mode](/docs/user-guide/features/voice-mode)
-- [Use Voice Mode with Hermes](/docs/guides/use-voice-mode-with-hermes)
+- [Voice Mode](../features/voice-mode.md)
+- [Use Voice Mode with Hermes](../../guides/use-voice-mode-with-hermes.md)
+
+### Voice Channel Audio Effects (ambient + verbal acks)
+
+When the bot is in a voice channel, you can give it a more conversational feel: a short verbal acknowledgement ("let me look into that") before it starts working, and a subtle ambient "thinking" bed that plays underneath while tools run — the speech ducks the ambient down and swells it back when finished, similar to Grok voice mode.
+
+discord.py plays only one audio stream per connection, so Hermes installs a software mixer on the outgoing stream that sums an ambient loop, acknowledgements, and TTS replies into that single stream — they overlap instead of cutting each other off.
+
+This is **off by default**. Enable it in `config.yaml`:
+
+```yaml
+discord:
+  voice_fx:
+    enabled: true          # master switch
+    ambient_enabled: true  # idle "thinking" bed while tools run
+    ambient_path: ""       # custom loop file (any audio format); "" = built-in synthesised pad
+    ambient_gain: 0.18     # idle bed loudness (0.0–1.0)
+    duck_gain: 0.06        # ambient loudness while the bot is speaking
+    speech_gain: 1.0       # TTS / acknowledgement loudness
+    ack_enabled: true      # speak a short phrase before the first tool call of a turn
+    ack_phrases:           # picked at random; set to [] to disable the spoken ack
+      - "Let me look into that."
+      - "One moment."
+      - "Checking on that now."
+```
+
+Notes:
+- Set `voice_channel_inactivity_timeout_seconds: 0` if you want the bot to remain in the voice channel until an explicit `/voice leave` or manual disconnect. The default preserves the historical 300-second idle auto-leave.
+- `voice_playback_timeout_seconds` is a floor, not a hard cap for long TTS. Hermes probes the generated audio duration and waits for `duration + 30s` when that is longer than the configured floor.
+- The acknowledgement fires at most once per turn, only when the bot is in a voice channel and the mixer is active. It uses your configured TTS provider.
+- `ambient_path` accepts any file `ffmpeg` can decode; it's looped seamlessly. Leave it empty to use the built-in synthesised pad (no asset needed).
+- All settings live in `config.yaml` (not `.env`) — they're behavioral, not secrets.
+- When `voice_fx.enabled` is `false`, voice playback uses the original one-shot path and nothing changes.
+
 
 ## Forum Channels
 
-Discord forum channels (type 15) don't accept direct messages — every post in a forum must be a thread. Hermes auto-detects forum channels and creates a new thread post whenever it needs to send there, so `send_message`, TTS, images, voice messages, and file attachments all work without special handling from the agent.
+Discord forum channels (type 15) don't accept direct messages — every post in a forum must be a thread. Hermes auto-detects forum channels and creates a new thread post whenever it needs to send there, so text replies, TTS, images, voice messages, and file attachments all work without special handling from the agent.
 
 - **Thread name** is derived from the first line of the message (markdown heading prefix stripped, capped at 100 chars). When the message is attachment-only, the filename is used as the fallback thread name.
 - **Attachments** ride along on the starter message of the new thread — no separate upload step, no partial sends.
@@ -556,15 +853,46 @@ Refreshing the directory (`/channels refresh` on platforms that expose it, or a 
 
 ### Bot is online but not responding to messages
 
-**Cause**: Message Content Intent is disabled.
+**Cause**: Either Message Content Intent is disabled, or Discord auth is failing closed because no access policy is configured.
 
-**Fix**: Go to [Developer Portal](https://discord.com/developers/applications) → your app → Bot → Privileged Gateway Intents → enable **Message Content Intent** → Save Changes. Restart the gateway.
+**Fix**:
 
-### "Disallowed Intents" error on startup
+1. Go to [Developer Portal](https://discord.com/developers/applications) → your app → Bot → Privileged Gateway Intents → enable **Message Content Intent** → Save Changes.
+2. Verify that at least one Discord access policy is configured:
 
-**Cause**: Your code requests intents that aren't enabled in the Developer Portal.
+   ```bash
+   # recommended: allow specific users
+   DISCORD_ALLOWED_USERS=284102345871466496
 
-**Fix**: Enable all three Privileged Gateway Intents (Presence, Server Members, Message Content) in the Bot settings, then restart.
+   # or allow a trusted guild/dev bot to behave like pre-0.18 Discord
+   DISCORD_ALLOW_ALL_USERS=true
+   ```
+
+3. Restart the gateway:
+
+   ```bash
+   hermes gateway restart
+   ```
+
+If the gateway log says Discord is connected and REST API checks work, but every inbound message is silent, look for this warning in `~/.hermes/logs/gateway.log`:
+
+```text
+No Discord access policy configured; inbound Discord messages will be denied by default.
+```
+
+Hermes 0.18 intentionally fails closed on externally reachable adapters. A Discord bot with no `DISCORD_ALLOWED_USERS`, no `DISCORD_ALLOWED_ROLES`, no `DISCORD_ALLOWED_CHANNELS`, and no explicit allow-all flag will connect successfully but deny inbound users before normal message handling.
+
+### "Privileged intents" / `PrivilegedIntentsRequired` error on startup
+
+**Cause**: Hermes requests privileged Gateway Intents that are not enabled for your bot in the Developer Portal. Discord then rejects the WebSocket connection. Hermes always requests **Message Content Intent**. It also requests **Server Members Intent** when your allowlist uses usernames (not numeric IDs) or when `DISCORD_ALLOWED_ROLES` is set. Presence Intent is not required.
+
+**Fix**:
+
+1. Go to [Developer Portal](https://discord.com/developers/applications) → your app → Bot → Privileged Gateway Intents.
+2. Enable **Message Content Intent** (required). Enable **Server Members Intent** if you use usernames or role allowlists.
+3. Click **Save Changes**, then restart the gateway (`hermes gateway restart`).
+
+The gateway log should name the exact intent(s) Hermes requested. Until they are enabled, Discord will keep rejecting the connection — this is a portal configuration error, not a flaky network issue.
 
 ### Bot can't see messages in a specific channel
 

@@ -1,11 +1,4 @@
-"""Tests for _web_ui_build_needed — staleness check for the web UI dist.
-
-Critical invariant: the Vite build outputs to hermes_cli/web_dist/
-(vite.config.ts: outDir: "../hermes_cli/web_dist"), NOT web/dist/.
-The sentinel must be checked in the correct output directory or the
-freshness check is a no-op and the OOM rebuild always runs.
-"""
-
+"""Web launch keeps freshness/serialization but never masks a failed build."""
 import os
 import time
 from pathlib import Path
@@ -13,7 +6,15 @@ from unittest.mock import patch
 
 import pytest
 
-from hermes_cli.main import _web_ui_build_needed, _build_web_ui
+from hermes_cli.main_web_build import _build_web_ui, _web_ui_build_needed
+from tests.hermes_cli.test_source_build import stamp_product, copy_freshness_scripts, use_host_node_as_pm_node
+from tests.hermes_cli.test_source_build import source_checkout, source_products, _events  # noqa: F401
+
+
+@pytest.fixture(autouse=True)
+def _isolated_hermes_home(tmp_path, monkeypatch):
+    """Keep web-build-stamp writes inside the test's tmp dir, never the real home."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "_hermes_home"))
 
 
 def _touch(path: Path, offset: float = 0.0) -> None:
@@ -26,96 +27,108 @@ def _touch(path: Path, offset: float = 0.0) -> None:
 
 def _make_web_dir(tmp_path: Path) -> tuple[Path, Path]:
     """Return (web_dir, dist_dir) matching real repo layout."""
+    copy_freshness_scripts(tmp_path)
     web_dir = tmp_path / "web"
-    web_dir.mkdir()
+    web_dir.mkdir(parents=True)
     (web_dir / "package.json").touch()
     dist_dir = tmp_path / "hermes_cli" / "web_dist"
     return web_dir, dist_dir
 
 
-class TestWebUIBuildNeeded:
 
-    def test_returns_true_when_dist_missing(self, tmp_path):
-        web_dir, _ = _make_web_dir(tmp_path)
-        assert _web_ui_build_needed(web_dir) is True
-
-    def test_returns_false_when_vite_manifest_fresh(self, tmp_path):
-        web_dir, dist_dir = _make_web_dir(tmp_path)
-        _touch(web_dir / "src" / "App.tsx", offset=-10)
-        _touch(dist_dir / ".vite" / "manifest.json")
-        assert _web_ui_build_needed(web_dir) is False
-
-    def test_returns_true_when_source_newer_than_manifest(self, tmp_path):
-        web_dir, dist_dir = _make_web_dir(tmp_path)
-        _touch(dist_dir / ".vite" / "manifest.json", offset=-10)
-        _touch(web_dir / "src" / "App.tsx")
-        assert _web_ui_build_needed(web_dir) is True
-
-    def test_falls_back_to_index_html_when_manifest_missing(self, tmp_path):
-        web_dir, dist_dir = _make_web_dir(tmp_path)
-        _touch(web_dir / "src" / "main.ts", offset=-10)
-        _touch(dist_dir / "index.html")
-        assert _web_ui_build_needed(web_dir) is False
-
-    def test_web_dist_dir_not_web_dist_subdir(self, tmp_path):
-        """Regression: sentinel must be in hermes_cli/web_dist/, NOT web/dist/."""
-        web_dir, dist_dir = _make_web_dir(tmp_path)
-        _touch(web_dir / "src" / "App.tsx", offset=-10)
-        # Place manifest in wrong location (web/dist/) — should NOT count as fresh
-        wrong_dist = web_dir / "dist" / ".vite" / "manifest.json"
-        _touch(wrong_dist)
-        # Correct location is empty → still needs build
-        assert _web_ui_build_needed(web_dir) is True
-
-    def test_returns_true_when_package_lock_newer_than_dist(self, tmp_path):
-        web_dir, dist_dir = _make_web_dir(tmp_path)
-        _touch(dist_dir / ".vite" / "manifest.json", offset=-10)
-        _touch(web_dir / "package-lock.json")
-        assert _web_ui_build_needed(web_dir) is True
-
-    def test_returns_true_when_vite_config_newer_than_dist(self, tmp_path):
-        web_dir, dist_dir = _make_web_dir(tmp_path)
-        _touch(dist_dir / ".vite" / "manifest.json", offset=-10)
-        _touch(web_dir / "vite.config.ts")
-        assert _web_ui_build_needed(web_dir) is True
-
-    def test_ignores_node_modules(self, tmp_path):
-        web_dir, dist_dir = _make_web_dir(tmp_path)
-        # package.json older than manifest; only node_modules file is newer
-        _touch(web_dir / "package.json", offset=-20)
-        _touch(dist_dir / ".vite" / "manifest.json", offset=-10)
-        _touch(web_dir / "node_modules" / "react" / "index.js")
-        assert _web_ui_build_needed(web_dir) is False
-
-    def test_ignores_dist_subdir_under_web(self, tmp_path):
-        web_dir, dist_dir = _make_web_dir(tmp_path)
-        # package.json older than manifest; only web/dist file is newer
-        _touch(web_dir / "package.json", offset=-20)
-        _touch(dist_dir / ".vite" / "manifest.json", offset=-10)
-        _touch(web_dir / "dist" / "assets" / "index.js")
-        assert _web_ui_build_needed(web_dir) is False
+@pytest.mark.platforms("posix")
+def test_web_build_prepares_once_and_skips_a_current_product(source_products):
+    root, acquired = source_products
+    assert _build_web_ui(root / "web", fatal=True)
+    assert [event["step"] for event in _events(root)] == ["deps", "web"]
+    assert acquired == ["npm"]
+    assert not _web_ui_build_needed(root / "web")
+    assert _build_web_ui(root / "web", fatal=True)
+    assert acquired == ["npm"]
+    assert len(_events(root)) == 2
 
 
-class TestBuildWebUISkipsWhenFresh:
+@pytest.mark.platforms("posix")
+@pytest.mark.parametrize("fatal", [False, True])
+def test_web_failure_is_not_success_even_with_an_old_dist(source_products, fatal):
+    root, acquired = source_products
+    dist = root / "hermes_cli/web_dist/index.html"
+    dist.parent.mkdir(parents=True)
+    dist.write_text("old product")
+    (root / "fail-web").touch()
+    assert not _build_web_ui(root / "web", fatal=fatal)
+    assert acquired == ["npm"]
+    assert [event["step"] for event in _events(root)] == ["deps", "web"]
+    assert dist.read_text() == "old product"
+    assert not (root / "hermes_cli/web_dist/hermes-build.json").exists()
 
-    def test_skips_npm_when_dist_is_fresh(self, tmp_path):
-        web_dir, dist_dir = _make_web_dir(tmp_path)
-        _touch(dist_dir / ".vite" / "manifest.json")
 
-        with patch("hermes_cli.main.shutil.which", return_value="/usr/bin/npm"), \
-             patch("hermes_cli.main.subprocess.run") as mock_run:
-            result = _build_web_ui(web_dir)
+@pytest.mark.platforms("posix")
+def test_failed_preparation_never_runs_web_compilation(source_products):
+    root, acquired = source_products
+    (root / "package-lock.json").write_text("not json")
+    assert not _build_web_ui(root / "web", fatal=True)
+    assert acquired == ["npm"]
+    assert _events(root) == []
+    assert not (root / "hermes_cli/web_dist/hermes-build.json").exists()
 
-        assert result is True
-        mock_run.assert_not_called()
 
-    def test_runs_npm_when_dist_missing(self, tmp_path):
-        web_dir, _ = _make_web_dir(tmp_path)
+@pytest.mark.platforms("linux")
+def test_web_rebuild_reuses_the_existing_desktop_union(source_products):
+    from hermes_cli.source_build import build_update_products
 
-        mock_cp = __import__("subprocess").CompletedProcess([], 0, stdout=b"", stderr=b"")
-        with patch("hermes_cli.main.shutil.which", return_value="/usr/bin/npm"), \
-             patch("hermes_cli.main.subprocess.run", return_value=mock_cp) as mock_run:
-            result = _build_web_ui(web_dir)
+    root, acquired = source_products
+    build_update_products(root, desktop=True)
+    before = _events(root)
+    (root / "web/changed.ts").write_text("changed web source")
+    assert _build_web_ui(root / "web", fatal=True)
+    assert _events(root) == [*before, {"step": "web"}]
+    assert acquired == ["npm", "npm"]
+    assert (root / "node_modules/apps-desktop").exists()
 
-        assert result is True
-        assert mock_run.call_count == 2  # npm install + npm run build
+
+@pytest.mark.platforms("linux")
+@pytest.mark.parametrize('existing', [False, True])
+def test_contended_build_waits_and_rechecks_winner(tmp_path, monkeypatch, existing):
+    import fcntl
+    import threading
+
+    use_host_node_as_pm_node(monkeypatch)
+    web, dist = _make_web_dir(tmp_path)
+    if existing:
+        _touch(dist / 'index.html')
+    holder = open(tmp_path / '.web_ui_build.lock', 'a', encoding='utf-8')
+    fcntl.flock(holder, fcntl.LOCK_EX)
+    real_flock = fcntl.flock
+    contended = threading.Event()
+    def flock(fd, operation):
+        contended.set()
+        return real_flock(fd, operation)
+    monkeypatch.setattr(fcntl, 'flock', flock)
+    def finish():
+        try:
+            assert contended.wait(10), 'waiter never attempted the lock'
+            _touch(dist / 'index.html')
+            (dist / 'index.html').write_text('winner', encoding='utf-8')
+            stamp_product(tmp_path, 'web', dist)
+        finally:
+            holder.close()
+    worker = threading.Thread(target=finish)
+    worker.start()
+    try:
+        with patch('hermes_cli.source_build.source_build_env', side_effect=AssertionError('duplicate preparation')):
+            assert _build_web_ui(web, fatal=True)
+        assert (dist / 'index.html').read_text(encoding='utf-8') == 'winner'
+    finally:
+        worker.join(timeout=15)
+        holder.close()
+    assert not worker.is_alive()
+
+
+@pytest.mark.platforms("posix")
+def test_lock_open_failure_does_not_start_an_unprotected_build(source_products):
+    root, acquired = source_products
+    (root / ".web_ui_build.lock").mkdir()
+    assert not _build_web_ui(root / "web", fatal=True)
+    assert acquired == []
+    assert _events(root) == []

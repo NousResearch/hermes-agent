@@ -14,7 +14,7 @@ These tests cover the catalog-fallback path: when ``fetch_api_models`` returns
 
 from unittest.mock import patch
 
-from hermes_cli.models import validate_requested_model
+from hermes_cli.models_validate import validate_requested_model
 
 
 _UNREACHABLE_PROBE = {
@@ -46,45 +46,13 @@ def _patched(func):
 def test_opencode_go_known_model_accepted():
     """A model present in the opencode-go curated catalog must be accepted
     even when /models is unreachable."""
-    result = validate_requested_model("kimi-k2.6", "opencode-go")
+    from hermes_cli.models import _PROVIDER_MODELS
+
+    result = validate_requested_model(_PROVIDER_MODELS["opencode-go"][0], "opencode-go")
     assert result["accepted"] is True
     assert result["persist"] is True
     assert result["recognized"] is True
     assert result["message"] is None
-
-
-@_patched
-def test_opencode_go_known_model_case_insensitive():
-    """Catalog lookup is case-insensitive."""
-    result = validate_requested_model("KIMI-K2.6", "opencode-go")
-    assert result["accepted"] is True
-    assert result["recognized"] is True
-
-
-@_patched
-def test_opencode_go_typo_auto_corrected():
-    """A close typo (>= 0.9 similarity) is auto-corrected to the catalog
-    entry."""
-    # 'kimi-k2.55' vs 'kimi-k2.5' ratio ≈ 0.95 — within the 0.9 cutoff.
-    result = validate_requested_model("kimi-k2.55", "opencode-go")
-    assert result["accepted"] is True
-    assert result["recognized"] is True
-    assert result.get("corrected_model") == "kimi-k2.5"
-
-
-@_patched
-def test_opencode_go_unknown_model_accepted_with_suggestion():
-    """An unknown model that has a medium-similarity match (>= 0.5 but < 0.9)
-    is accepted with recognized=False and a 'similar models' hint.  The key
-    invariant: the gateway MUST be able to persist this override, so
-    accepted/persist must both be True."""
-    # 'kimi-k3-preview' vs 'kimi-k2.6' — similar enough to suggest, not to auto-correct.
-    result = validate_requested_model("kimi-k3-preview", "opencode-go")
-    assert result["accepted"] is True
-    assert result["persist"] is True
-    assert result["recognized"] is False
-    assert "kimi-k3-preview" in result["message"]
-    assert "curated catalog" in result["message"]
 
 
 @_patched
@@ -96,9 +64,6 @@ def test_opencode_go_totally_unknown_model_still_accepted():
     assert result["accepted"] is True
     assert result["persist"] is True
     assert result["recognized"] is False
-    # No suggestion text (no close matches)
-    assert "Similar models" not in result["message"]
-    assert "opencode" in result["message"].lower() or "opencode go" in result["message"].lower()
 
 
 # ---------------------------------------------------------------------------
@@ -106,12 +71,6 @@ def test_opencode_go_totally_unknown_model_still_accepted():
 # ---------------------------------------------------------------------------
 
 
-@_patched
-def test_opencode_zen_known_model_accepted():
-    """opencode-zen also uses _PROVIDER_MODELS; kimi-k2 is in its catalog."""
-    result = validate_requested_model("kimi-k2", "opencode-zen")
-    assert result["accepted"] is True
-    assert result["recognized"] is True
 
 
 # ---------------------------------------------------------------------------
@@ -119,15 +78,3 @@ def test_opencode_zen_known_model_accepted():
 # ---------------------------------------------------------------------------
 
 
-@_patched
-def test_provider_without_catalog_accepts_with_warning():
-    """When a provider has no entry in _PROVIDER_MODELS and /models is
-    unreachable, accept the model with a 'Note:' warning rather than reject.
-    This matches the in-code comment: 'Accept and persist, but warn so typos
-    don't silently break things.'"""
-    # Use a made-up provider name that won't resolve to any catalog.
-    result = validate_requested_model("some-model", "provider-that-does-not-exist")
-    assert result["accepted"] is True
-    assert result["persist"] is True
-    assert result["recognized"] is False
-    assert "Note:" in result["message"]

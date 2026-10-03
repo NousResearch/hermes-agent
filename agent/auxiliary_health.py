@@ -61,6 +61,7 @@ def fallback_candidate_unavailable_reason(exc: Exception) -> Optional[str]:
 # healthy fallback from every aux task over one transient blip.
 _TRANSIENT_CANDIDATE_QUARANTINE_SECONDS = 60.0
 _CANDIDATE_QUARANTINE_TTL: dict[str, Optional[float]] = {
+    "server error": _TRANSIENT_CANDIDATE_QUARANTINE_SECONDS,
     "rate limit": _TRANSIENT_CANDIDATE_QUARANTINE_SECONDS,
     "connection error": _TRANSIENT_CANDIDATE_QUARANTINE_SECONDS,
     "invalid provider response": _TRANSIENT_CANDIDATE_QUARANTINE_SECONDS,

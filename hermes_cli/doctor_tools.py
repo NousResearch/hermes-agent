@@ -4,6 +4,7 @@ Split out of ``hermes_cli/doctor.py``, which re-exports every name so ``hermes_c
 from __future__ import annotations
 
 import importlib.util
+import logging
 import os
 import shutil
 import subprocess
@@ -14,6 +15,8 @@ from hermes_cli.doctor_report import Finding, _fail_and_issue, check_bool, check
 from hermes_cli.vercel_auth import describe_vercel_auth
 from hermes_constants import is_termux as _is_termux
 from tools.environments.docker import docker_runtime_name, docker_runtime_start_hint, find_docker
+
+logger = logging.getLogger(__name__)
 
 
 def _safe_which(cmd: str) -> str | None:
@@ -135,9 +138,34 @@ def _doctor_web_capability_rows() -> list[tuple[str, str, str]]:
             rows.append(("warn", capability, "(no provider selected or registered)"))
             continue
         name = getattr(provider, "name", None) or type(provider).__name__
-        rows.append(("ok", capability, f"({name})") if _provider_is_ready(provider)
-                    else ("warn", capability, f"({name} selected; provider not configured)"))
+        # A ready keyless route is a real working state but renders identically to a keyed
+        # one; ask the provider why it works so the row does not read as "has credentials".
+        status_detail = f"({name})"
+        if _provider_is_ready(provider):
+            why = _web_provider_credential_status(provider)
+            if why:
+                status_detail = f"({name}; {why})"
+            rows.append(("ok", capability, status_detail))
+        else:
+            rows.append(("warn", capability, f"({name} selected; provider not configured)"))
     return rows
+
+
+def _web_provider_credential_status(provider) -> str:
+    """Optional provider-supplied note for why a ready web provider is ready.
+
+    ``keyless (no credentials)`` is the case worth surfacing: without it a working keyless
+    route is indistinguishable from a keyed one in the doctor report. Absent hook or a
+    raising hook → empty string (the row keeps its existing shape).
+    """
+    probe = getattr(provider, "credential_status", None)
+    if not callable(probe):
+        return ""
+    try:
+        return str(probe() or "")
+    except Exception as exc:  # noqa: BLE001 — optional reporting hook
+        logger.debug("web provider credential_status failed: %s", exc)
+        return ""
 
 
 def _apply_doctor_tool_availability_overrides(available: list[str], unavailable: list[dict]) -> tuple[list[str], list[dict]]:

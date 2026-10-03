@@ -31,7 +31,7 @@ _RAW_URL_PARAM_RE = re.compile(
 )
 _ENCODED_URL_PARAM_RE = re.compile(
     r"(?P<sep>%3[fF]|%23|%26|%3[bB])"
-    r"(?P<key>(?:(?!%3[dD])[^\s\"'<>]){1,160}?)"
+    r"(?P<key>(?:(?!%3[dD]|%3[fF]|%23|%26|%3[bB])[^\s\"'<>]){1,160}?)"
     r"(?P<eq>%3[dD]|=)"
     r"(?P<value>.*?)"
     r"(?=(?:%3[fF]|%26|%23|%3[bB])|[\s\"'<>]|$)",

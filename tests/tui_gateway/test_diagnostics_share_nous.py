@@ -128,7 +128,8 @@ def test_redacted_support_egress_scrubs_structured_values_and_errors(
     structured = (
         f"headers={{'Proxy-Authorization': 'Basic {canaries['header']}'}} "
         f"Command ['provider', '--api-key', '{canaries['argv']}'] "
-        f"Bearer {canaries['bearer']}"
+        f"Bearer {canaries['bearer']} "
+        f"https://a.invalid/?next=%2Fx%3Ffoo%26token%3D{canaries['url']}"
     )
 
     result = _handler()(

@@ -83,7 +83,7 @@ _STDERR_CAP_CHARS = 4000
 _TASK_ID_SAFE_RE = re.compile(r"[^A-Za-z0-9._-]+")  # filesystem-safe task ids
 # Screenshot paths printed by capture_screenshot(): POSIX or Windows drive-letter absolute.
 _IMAGE_PATH_RE = re.compile(
-    r"((?:[A-Za-z]:[\\/]|/)[^\r\n\"\'<>]*?\.(?:png|jpe?g|webp))(?=$|[\r\n\"\'<>])",
+    r"((?:[A-Za-z]:[\\/]|/)[^\r\n\"\'<>]*?\.(?:png|jpe?g|webp))(?=$|\s|[\r\n\"\'<>])",
     re.IGNORECASE | re.MULTILINE,
 )
 # http(s) URL literals in exec code checked against browser_navigate's policy

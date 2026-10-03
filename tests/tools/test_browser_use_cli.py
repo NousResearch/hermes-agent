@@ -796,6 +796,16 @@ class TestNativeScreenshots:
             f"saved screenshot to {shot}\n", since=time.time() - 5
         ) == str(shot)
 
+    def test_find_screenshot_accepts_same_line_prose_and_multiple_paths(self, tmp_path):
+        first = tmp_path / "first shot.png"
+        second = tmp_path / "second shot.png"
+        first.write_bytes(b"\x89PNG first")
+        second.write_bytes(b"\x89PNG second")
+
+        out = f"saved {first} then saved {second} for the next step"
+
+        assert bu_cli._find_screenshot(out, since=time.time() - 5) == str(second)
+
     def test_find_screenshot_rejects_stale_and_missing(self, tmp_path):
         stale = self._shot(tmp_path)
         os.utime(stale, (time.time() - 900, time.time() - 900))

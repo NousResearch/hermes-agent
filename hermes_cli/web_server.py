@@ -899,48 +899,71 @@ _CONFIG_MUTATION_LOCK = threading.RLock()
 # inert. 10s is above the ~3.5s storm spacing and below an operator's retry.
 GATEWAY_RESTART_COOLDOWN_SECONDS = 10.0
 
-# ``(monotonic spawn time, Popen, command)`` of the last restart. Deliberately
-# NOT read from ``_ACTION_PROCS``: entries there vanish when the child exits.
-_LAST_GATEWAY_RESTART: Optional[Tuple[float, subprocess.Popen, Tuple[str, ...]]] = None
+# Per-profile in-flight/coalescing state: profile key ("" = default) ->
+# (monotonic spawn time, Popen, command). Deliberately NOT read from
+# _ACTION_PROCS: entries there vanish when the child exits, and — critically —
+# _ACTION_PROCS/_ACTION_COMMANDS are keyed by the shared action NAME
+# ("gateway-restart") for log/status-polling compatibility with the frontend,
+# not by profile. Restarting profile B while profile A's restart child is
+# still in flight (or, for a profile with no installed service, running
+# forever in the foreground as the new gateway process — #site incident: a
+# stuck/foreground child for profile A permanently blocked every OTHER
+# profile's restart with "gateway restart already in progress for another
+# profile", since the old code compared against one shared slot regardless of
+# profile). Each profile's gateway is an independent process (its own systemd
+# unit when installed), so concurrency across DIFFERENT profiles is safe;
+# only same-profile requests should coalesce/reuse.
+_GATEWAY_RESTARTS_BY_PROFILE: Dict[str, Tuple[float, subprocess.Popen, Tuple[str, ...]]] = {}
 
 
 def _spawn_gateway_restart(profile: Optional[str] = None) -> Tuple[subprocess.Popen, bool]:
-    """Spawn ``hermes gateway restart``, reusing an in-flight or recent restart.
+    """Spawn ``hermes gateway restart``, reusing an in-flight or recent restart
+    FOR THE SAME PROFILE ONLY. Different profiles never block each other —
+    each is an independent gateway process (own systemd unit when installed).
 
-    Concurrent children race each other on the kill-and-start path, so a live
-    child is reused; requests within ``GATEWAY_RESTART_COOLDOWN_SECONDS`` for the
-    same profile coalesce onto the last spawn too (#89034). This process stops
-    nothing itself: the child decides whether the restart is even allowed
-    (``_cmd_restart``'s multiplexer guard), so the orphan reap (#77276) runs
-    there, after that guard — reaping here killed the profile's gateway and then
-    the child refused to start a replacement (#125394). Returns ``(proc, reused)``.
+    Concurrent children for the SAME profile race each other on the
+    kill-and-start path, so a live child is reused; requests within
+    ``GATEWAY_RESTART_COOLDOWN_SECONDS`` for the same profile coalesce onto the
+    last spawn too (#89034). This process stops nothing itself: the child decides
+    whether the restart is even allowed (``_cmd_restart``'s multiplexer guard),
+    so the orphan reap (#77276) runs there, after that guard — reaping here killed
+    the profile's gateway and then the child refused to start a replacement
+    (#125394). Returns ``(proc, reused)``.
     """
-    global _LAST_GATEWAY_RESTART
-
+    profile_key = (profile or "").strip()
     subcommand = _gateway_mod._gateway_subcommand(profile, "restart")
-    existing = _gateway_mod._ACTION_PROCS.get("gateway-restart")
-    if existing is not None and existing.poll() is None:
-        existing_command = _gateway_mod._ACTION_COMMANDS.get("gateway-restart")
-        if existing_command is None or existing_command == tuple(subcommand):
-            return existing, True
-        raise RuntimeError("gateway restart already in progress for another profile")
 
-    recent = _LAST_GATEWAY_RESTART
+    recent = _GATEWAY_RESTARTS_BY_PROFILE.get(profile_key)
     if recent is not None:
         spawned_at, recent_proc, recent_command = recent
-        age = time.monotonic() - spawned_at if recent_command == tuple(subcommand) else None
-        if age is not None and age < GATEWAY_RESTART_COOLDOWN_SECONDS:
+        if recent_proc.poll() is None:
+            # Still running: same profile always reuses the live handle,
+            # regardless of age (mirrors the previous same-command reuse path).
+            return recent_proc, True
+        age = time.monotonic() - spawned_at
+        if age < GATEWAY_RESTART_COOLDOWN_SECONDS:
             _log.info(
-                "Coalescing gateway restart: one was started %.1fs ago "
-                "(pid %s) and the gateway may still be coming back; not "
-                "spawning another (#89034).",
+                "Coalescing gateway restart for profile %r: one was started "
+                "%.1fs ago (pid %s) and the gateway may still be coming back; "
+                "not spawning another (#89034).",
+                profile_key or "default",
                 age,
                 getattr(recent_proc, "pid", "?"),
             )
             return recent_proc, True
 
+    # A restart child registered under the shared action NAME but not in the per-profile map
+    # (spawned through another path, e.g. the webhook/channel auto-restart). Reuse it when it is
+    # this profile's own restart; a live child for ANOTHER profile is not ours to reuse and must
+    # not block us either.
+    existing = _gateway_mod._ACTION_PROCS.get("gateway-restart")
+    if existing is not None and existing.poll() is None:
+        existing_command = _gateway_mod._ACTION_COMMANDS.get("gateway-restart")
+        if existing_command is None or existing_command == tuple(subcommand):
+            return existing, True
+
     proc = _gateway_mod._spawn_hermes_action(subcommand, "gateway-restart")
-    _LAST_GATEWAY_RESTART = (time.monotonic(), proc, tuple(subcommand))
+    _GATEWAY_RESTARTS_BY_PROFILE[profile_key] = (time.monotonic(), proc, tuple(subcommand))
     return proc, False
 
 

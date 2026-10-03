@@ -398,8 +398,7 @@ def _resolve_model_and_provider(cfg: dict, model: Optional[str], provider: Optio
     # base_url) for endpoints outside any catalog (local servers, custom proxies, ...).
     from hermes_cli import model_switch as _ms
     try:
-        _ms._ensure_direct_aliases()
-        direct = _ms.DIRECT_ALIASES.get(explicit_model.strip().lower())
+        direct = _ms._direct_alias_snapshot().get(explicit_model.strip().lower())
     except Exception:
         direct = None
     if direct is None:

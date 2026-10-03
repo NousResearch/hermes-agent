@@ -369,6 +369,16 @@ def _create_thread(
     return json.dumps({"success": True, "thread_id": thread["id"], "name": thread.get("name")})
 
 
+def _set_channel_topic(token: str, channel_id: str, topic: str, **_kwargs: Any) -> str:
+    channel = _discord_request("PATCH", f"/channels/{channel_id}", token, body={"topic": topic})
+    return json.dumps({"success": True, "channel_id": channel["id"], "topic": channel.get("topic")})
+
+
+def _send_channel_message(token: str, channel_id: str, content: str, **_kwargs: Any) -> str:
+    message = _discord_request("POST", f"/channels/{channel_id}/messages", token, body={"content": content})
+    return json.dumps({"success": True, "channel_id": channel_id, "message_id": message["id"]})
+
+
 def _mutation(method: str, path: str, message: str):
     """Body-less write action: ``path``/``message`` are format templates over the action kwargs."""
     def _action(token: str, **kw: Any) -> str:
@@ -405,6 +415,8 @@ _ACTION_MANIFEST = [
     ("unpin_message", _unpin_message, "(channel_id, message_id)", "unpin a message"),
     ("delete_message", _delete_message, "(channel_id, message_id)", "delete a message"),
     ("create_thread", _create_thread, "(channel_id, name)", "create a public thread; optional message_id anchor"),
+    ("set_channel_topic", _set_channel_topic, "(channel_id, topic)", "set a text channel's topic"),
+    ("send_channel_message", _send_channel_message, "(channel_id, content)", "post a message to a channel"),
     ("add_role", _add_role, "(guild_id, user_id, role_id)", "assign a role"),
     ("remove_role", _remove_role, "(guild_id, user_id, role_id)", "remove a role"),
 ]
@@ -480,6 +492,8 @@ _SCHEMA_PROPERTIES: Dict[str, Any] = {
     "message_id": {"type": "string", "description": "Discord message ID."},
     "query": {"type": "string", "description": "Member name prefix to search for (search_members)."},
     "name": {"type": "string", "description": "New thread name (create_thread)."},
+    "topic": {"type": "string", "minLength": 1, "maxLength": 1024, "description": "New channel topic (set_channel_topic)."},
+    "content": {"type": "string", "minLength": 1, "maxLength": 2000, "description": "Message text (send_channel_message)."},
     "limit": {
         "type": "integer",
         "minimum": 1,
@@ -554,6 +568,8 @@ _ACTION_403_HINT = {
     "unpin_message": f"{_NO_MANAGE_MESSAGES}.",
     "delete_message": f"{_NO_MANAGE_MESSAGES}, or cannot view the channel/message.",
     "create_thread": "Bot lacks CREATE_PUBLIC_THREADS in this channel, or cannot view it.",
+    "set_channel_topic": "Bot lacks MANAGE_CHANNELS in this channel, or cannot view it.",
+    "send_channel_message": "Bot lacks VIEW_CHANNEL or SEND_MESSAGES in this channel.",
     "add_role": (
         f"{_ROLE_HIERARCHY} Roles can only be assigned below the bot's own position in the role hierarchy."),
     "remove_role": _ROLE_HIERARCHY,
@@ -581,7 +597,8 @@ def check_discord_tool_requirements() -> bool:
 # ── handlers ─────────────────────────────────────────────────────────────────
 _HANDLER_DEFAULTS = {
     "guild_id": "", "channel_id": "", "user_id": "", "role_id": "", "message_id": "", "query": "",
-    "name": "", "limit": 50, "before": "", "after": "", "auto_archive_duration": 1440}
+    "name": "", "topic": "", "content": "", "limit": 50, "before": "", "after": "",
+    "auto_archive_duration": 1440}
 
 
 def _run_discord_action(action: str, valid_actions: Dict[str, Any], tool_label: str, **params: Any) -> str:

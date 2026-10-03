@@ -1500,11 +1500,41 @@ class GatewayShutdownMixin:
             f"while kill -0 {current_pid} 2>/dev/null && [ $(date +%s) -lt $deadline ]; do sleep 0.2; done; "
             f"{cmd} gateway restart"
         )
+        watcher_env = GatewayShutdownMixin._restart_watcher_env()
+        if sys.platform == "darwin":
+            # setsid(2) creates a POSIX session but stays in the launchd job's process coalition;
+            # bootout of the gateway therefore kills the watcher before it can restart us. A transient
+            # launchd job has independent ownership and survives that bootout.
+            helper_label = f"ai.hermes.gateway.restart.{current_pid}.{int(time.time())}"
+            home = watcher_env.get("HERMES_HOME") or str(Path.home() / ".hermes")
+            helper_home = watcher_env.get("HOME") or str(Path.home())
+            helper_log = str(Path(home) / "logs" / "gateway-restart-helper.log")
+            Path(helper_log).parent.mkdir(parents=True, exist_ok=True)
+            # `launchctl submit` does not carry the client's environment into the submitted job.
+            # Pass only non-secret runtime identity; the CLI reloads credentials from HERMES_HOME.
+            # Remove the one-shot job and force a zero shell status so launchd cannot retry a failed
+            # restart command as a persistent loop. An independent verifier owns failure reporting.
+            shell_cmd = (
+                f"{shell_cmd}; "
+                f"launchctl remove {shlex.quote(helper_label)} >/dev/null 2>&1 || true; exit 0"
+            )
+            subprocess.Popen(
+                [
+                    "launchctl", "submit", "-l", helper_label,
+                    "-o", helper_log, "-e", helper_log,
+                    "--", "/usr/bin/env", f"HERMES_HOME={home}", f"HOME={helper_home}",
+                    "/bin/bash", "-c", shell_cmd,
+                ],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                env=watcher_env,
+            )
+            return
         setsid_bin = shutil.which("setsid")
         argv = [setsid_bin, "bash", "-lc", shell_cmd] if setsid_bin else ["bash", "-lc", shell_cmd]
         subprocess.Popen(
             argv, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-            env=GatewayShutdownMixin._restart_watcher_env(), start_new_session=True,
+            env=watcher_env, start_new_session=True,
         )
 
     def _wedged_agent_count(self) -> int:

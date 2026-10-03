@@ -29,15 +29,19 @@ class GatewayLifecycleBlocked(ValueError):
 # concrete command identifier so it fires only on command-shaped strings, never prose.
 _GATEWAY_LIFECYCLE_PATTERN = re.compile(
     r"(?i)"
-    # Branch A: destructive `hermes gateway` ops. `start` is excluded: starting from inside a
-    # gateway is benign and a job may legitimately start a sibling profile. The lookbehind keeps
+    # Branch A: gateway lifecycle ops. Even `start` can destructively refresh a stale service
+    # definition, terminating the supervised gateway and the descendant issuing this command.
+    # The lookbehind keeps
     # `hermes` from being a path component or word tail (`/docs/hermes gateway restart-notes.md`)
     # while every real command position (text start, whitespace, `;`/`&`/`|`, `$(`, backtick,
     # U+FFFD) still matches.
     # See #77173.
     # Windows spells the CLI with a launcher suffix (`hermes.exe`, npm-style `hermes.cmd`/`.ps1`);
-    # same command, so the suffix is optional here.
-    r"(?:(?<![/\w.\-])hermes(?:\.(?:exe|cmd|bat|com|ps1))?\s+gateway\s+(?:restart|stop|uninstall)\b)"
+    # same command, so the suffix is optional here. Installed/venv commands often invoke an absolute
+    # `.../bin/hermes` or `...\\Scripts\\hermes.exe`; cover those executable-shaped paths without
+    # treating arbitrary prose paths such as `/docs/hermes gateway restart-notes.md` as commands.
+    r"(?:(?<![\w.\-])(?:[^\s\"'`;|&]+[/\\])?(?:bin|scripts)[/\\]hermes(?:\.(?:exe|cmd|bat|com|ps1))?\s+gateway\s+(?:start|restart|stop|uninstall)\b)"
+    r"|(?:(?<![/\w.\-])hermes(?:\.(?:exe|cmd|bat|com|ps1))?\s+gateway\s+(?:start|restart|stop|uninstall)\b)"
     # Branch B: launchctl ops anchored on a hermes-gateway label so unrelated hermes services stay
     # unblocked. `submit`/`bootstrap` register a NEW keepalive job wrapping an arbitrary helper (a
     # laundered restart); neutral-label submissions are caught by
@@ -235,24 +239,26 @@ _SHELL_LINE_CONTINUATION = re.compile(r"\\\r?\n[ \t]*")
 # See #68289.
 _ARGV_LIST_PUNCTUATION = re.compile(r"[\[\],]+")
 
-# Branch A2: `hermes -p <profile> gateway restart|stop` (also `--profile <name>` /
+# Branch A2: `hermes -p <profile> gateway start|restart|stop|uninstall` (also `--profile <name>` /
 # `--profile=<name>`). The selector breaks Branch A's adjacency. A sibling-profile restart is a
 # legitimate fleet operation, so the profile name is captured and blocked only when it equals the
-# profile running the guard. `start` stays excluded as in Branch A.
+# profile running the guard. `start` is included because it may refresh and terminate a live service.
 # Unlike Branch A this form is NOT unconditionally self-targeting: issued from inside gateway `zeus`,
 # `hermes -p venus gateway restart` operates on a sibling profile's gateway and is a legitimate fleet
 # operation. The pattern captures the named profile so `contains_gateway_lifecycle_command` can block only
 # the self-targeting shape (named profile == the profile running the guard). See #78028.
 _PROFILE_FLAG_LIFECYCLE_PATTERN = re.compile(
     r"(?i)"
-    r"hermes\s+"
+    # Bare, path-qualified, quoted paths with spaces, and Windows launcher suffixes.
+    r"(?<![\w.\-])(?:(?:\"[^\"\n]*[/\\])|(?:'[^'\n]*[/\\])|(?:[^\s\"'`;|&]+[/\\]))?"
+    r"hermes(?:\.(?:exe|cmd|bat|com|ps1))?[\"']?\s+"
     # Any global flags before the profile selector (each may carry a value).
     r"(?:-{1,2}\S+(?:\s+\S+)?\s+)*"
     # The selector: exactly the shapes the CLI's `_apply_profile_override` accepts.
     r"(?:--profile=([^\s]+)|(?:-p|--profile)\s+([^\s]+))"
     # Any global flags between the selector and the subcommand.
     r"(?:\s+-{1,2}\S+(?:\s+\S+)?)*"
-    r"\s+gateway\s+(?:restart|stop)"
+    r"\s+gateway\s+(?:start|restart|stop|uninstall)\b"
 )
 
 # Branch B needs the label AFTER the verb in one `[^\n]*` span; a loop that builds the label in an

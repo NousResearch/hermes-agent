@@ -11,6 +11,7 @@ keeps resolving.
 
 import json
 import logging
+import os
 import re
 import shlex
 import stat
@@ -186,21 +187,26 @@ def gateway_lifecycle_block(
 ) -> Optional[str]:
     """Refuse gateway lifecycle commands issued from inside the supervised gateway.
 
-    ``systemctl``/``launchctl``/``hermes gateway restart|stop|uninstall``
+    ``systemctl``/``launchctl``/``hermes gateway start|restart|stop|uninstall``
     targeting hermes-gateway would SIGTERM the gateway — and this very
     subprocess — before completing, so the service may never come back.
     Applies unconditionally (``force=True`` cannot bypass it). Gated on the
-    SUPERVISED-gateway probe, not the raw ``_HERMES_GATEWAY`` marker: that
+    SUPERVISED-gateway probe or the conjunction of the raw ``_HERMES_GATEWAY``
+    marker with an inherited supervisor marker. ``_HERMES_GATEWAY`` alone
     marker leaks into every process that merely imports gateway.run (hermes
     serve, CLI, web server), which must still be able to restart the gateway;
     an unsupervised foreground ``hermes gateway run`` has no KeepAlive to turn
     a self-restart into a respawn loop, so it passes too.
     Returns the JSON error string when blocked, else None.
     """
+    from gateway.restart import is_supervised_gateway_launch
     from tools.process_registry import _is_supervised_gateway_process
     from tools.terminal_tool import _resolve_command_cwd, get_session_cwd
 
-    if not _is_supervised_gateway_process():
+    inherited_supervised_gateway = (
+        os.environ.get("_HERMES_GATEWAY") == "1" and is_supervised_gateway_launch()
+    )
+    if not (_is_supervised_gateway_process() or inherited_supervised_gateway):
         return None
     from cron.lifecycle_guard import (
         _MAX_REFERENCED_SCRIPT_BYTES,
@@ -253,7 +259,7 @@ def gateway_lifecycle_block(
         if lifecycle_scan_root_within_budget(command) and contains_host_interpreter_kill(command):
             return _blocked_json(HOST_INTERPRETER_KILL_REJECTION, "error")
         return _blocked_json(
-            "Blocked: command or referenced script cannot restart, stop, or "
+            "Blocked: command or referenced script cannot start, restart, stop, or "
             "uninstall the gateway from inside the gateway process. The gateway would "
             "kill this command before it could complete (SIGTERM propagates "
             "to child processes). Run `hermes gateway restart` from a "

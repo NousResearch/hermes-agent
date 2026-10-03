@@ -300,6 +300,53 @@ async def test_restart_from_served_profile_chat_restarts_the_host_gateway(monkey
     assert seen == {"stop_home": launch_home, "stop_secret_scope": None}
 
 
+@pytest.mark.platforms("macos")
+@pytest.mark.asyncio
+async def test_macos_detached_restart_uses_independent_launchd_job(monkeypatch, tmp_path):
+    """setsid remains in the gateway's launchd coalition; bootout kills it before it can restart us."""
+    runner, _adapter = make_restart_runner()
+    popen_calls = []
+
+    monkeypatch.setattr(gateway_run, "_resolve_hermes_bin", lambda: ["hermes"])
+    monkeypatch.setattr(gateway_run.os, "getpid", lambda: 321)
+    monkeypatch.setattr(gateway_run.time, "time", lambda: 1234567890)
+    profile_home = tmp_path / "profiles" / "zeus"
+    user_home = tmp_path / "users" / "zeus"
+    monkeypatch.setattr(
+        "gateway.run_shutdown.GatewayShutdownMixin._restart_watcher_env",
+        staticmethod(lambda: {
+            "HERMES_HOME": str(profile_home),
+            "HOME": str(user_home),
+            "_HERMES_GATEWAY": "1",
+            "HERMES_SUPERVISED_CHILD": "1",
+            "SECRET_TOKEN": "must-not-enter-launchd-argv",
+        }),
+    )
+
+    def fake_popen(cmd, **kwargs):
+        popen_calls.append((cmd, kwargs))
+        return MagicMock()
+
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+    await runner._launch_detached_restart_command()
+
+    assert len(popen_calls) == 1
+    cmd, kwargs = popen_calls[0]
+    assert cmd[:3] == ["launchctl", "submit", "-l"]
+    assert cmd[3] == "ai.hermes.gateway.restart.321.1234567890"
+    assert cmd[8:12] == [
+        "--", "/usr/bin/env", f"HERMES_HOME={profile_home}", f"HOME={user_home}",
+    ]
+    assert "SECRET_TOKEN" not in " ".join(cmd)
+    assert "HERMES_SUPERVISED_CHILD" not in " ".join(cmd)
+    assert cmd[-3:-1] == ["/bin/bash", "-c"]
+    assert "kill -0 321" in cmd[-1]
+    assert "hermes gateway restart" in cmd[-1]
+    assert "launchctl remove ai.hermes.gateway.restart.321.1234567890" in cmd[-1]
+    assert cmd[-1].endswith("exit 0")
+    assert kwargs.get("start_new_session") is None
+
+
 @pytest.mark.platforms("windows")
 @pytest.mark.asyncio
 async def test_windows_detached_restart_scrubs_gateway_marker(monkeypatch, tmp_path):

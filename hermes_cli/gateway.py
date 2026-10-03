@@ -4986,9 +4986,14 @@ def _stop_installed_service(system: bool) -> bool:
 
 
 def _refuse_from_inside_gateway(verb: str, reason: str) -> None:
-    """Refuse self-targeting stop/restart/uninstall from inside the gateway process (#92560)."""
+    """Refuse self-targeting lifecycle commands from a supervised gateway coalition (#92560)."""
+    from gateway.restart import is_supervised_gateway_launch
     from tools.process_registry import _is_supervised_gateway_process
-    if _is_supervised_gateway_process():
+
+    inherited_supervised_gateway = (
+        os.environ.get("_HERMES_GATEWAY") == "1" and is_supervised_gateway_launch()
+    )
+    if _is_supervised_gateway_process() or inherited_supervised_gateway:
         print_error(
             f"Refusing to {verb} the gateway from inside the gateway process.\n"
             f"This command was blocked to prevent {reason}.\n"
@@ -5246,10 +5251,17 @@ def _cmd_start(args):
     from hermes_cli.gateway_profile_lifecycle import profile_lifecycle
     if profile_lifecycle("start", args):
         return
+    _refuse_from_inside_gateway("start", "an in-process service refresh terminating its own gateway")
     system = getattr(args, "system", False)
     start_all = getattr(args, "all", False)
     force = getattr(args, "force", False)
     _guard_named_profile_under_multiplexer(force=force)
+    if not start_all:
+        running_pids = find_gateway_pids()
+        if running_pids:
+            print(f"✓ Gateway is already running (PID {running_pids[0]})")
+            print("  `gateway start` will not refresh a live service definition; use an authorized restart path.")
+            return
     if not start_all and _dispatch_via_service_manager_if_s6("start"):
         return
     if start_all:
@@ -5277,10 +5289,10 @@ def _cmd_start(args):
 
 
 def _cmd_stop(args):
-    _refuse_from_inside_gateway("stop", "restart loops")
     from hermes_cli.gateway_profile_lifecycle import profile_lifecycle
     if profile_lifecycle("stop", args):
         return
+    _refuse_from_inside_gateway("stop", "restart loops")
     stop_all = getattr(args, "all", False)
     system = getattr(args, "system", False)
     if not stop_all and not find_gateway_pids() and (
@@ -5389,10 +5401,10 @@ def _restart_all(system: bool) -> None:
 
 
 def _cmd_restart(args):
-    _refuse_from_inside_gateway("restart", "restart loops")
     from hermes_cli.gateway_profile_lifecycle import profile_lifecycle
     if profile_lifecycle("restart", args):
         return
+    _refuse_from_inside_gateway("restart", "restart loops")
     system = getattr(args, "system", False)
     restart_all = getattr(args, "all", False)
     force = getattr(args, "force", False)

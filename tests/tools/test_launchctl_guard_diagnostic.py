@@ -55,3 +55,52 @@ def test_interpreter_kill_rejection_names_the_owned_process_route(tmp_path, monk
     # Absence on the wrong side: a plain foreground `hermes gateway run` carries no launch marker.
     monkeypatch.delenv("HERMES_SUPERVISED_CHILD")
     assert run("pkill -9 python3") is None
+
+
+def test_lifecycle_guard_fails_closed_for_supervised_gateway_descendant(tmp_path, monkeypatch):
+    """Inherited gateway/supervisor markers remain authoritative when the PID-owner probe misses."""
+    from tools import process_registry
+
+    monkeypatch.setenv("_HERMES_GATEWAY", "1")
+    monkeypatch.setenv("HERMES_SUPERVISED_CHILD", "1")
+    monkeypatch.setattr(process_registry, "_is_supervised_gateway_process", lambda: False)
+
+    blocked = gateway_lifecycle_block(
+        command="hermes gateway start",
+        env=None,
+        env_type="local",
+        cwd=str(tmp_path),
+        workdir=None,
+        session_key="diagnostic-test",
+    )
+    assert blocked is not None
+    result = json.loads(blocked)
+    assert result["exit_code"] == 1
+    assert "cannot start, restart, stop" in result["error"]
+
+
+def test_lifecycle_guard_blocks_absolute_hermes_path_hidden_in_osascript(tmp_path, monkeypatch):
+    """A Terminal/osascript hop must not bypass the in-gateway lifecycle fence."""
+    from tools import process_registry
+
+    monkeypatch.setenv("_HERMES_GATEWAY", "1")
+    monkeypatch.setenv("HERMES_SUPERVISED_CHILD", "1")
+    monkeypatch.setattr(process_registry, "_is_supervised_gateway_process", lambda: False)
+
+    command = (
+        "osascript -e 'tell application \"Terminal\" to do script "
+        "\"/opt/hermes/venv/bin/hermes gateway start > /tmp/restart.txt 2>&1\"'"
+    )
+    blocked = gateway_lifecycle_block(
+        command=command,
+        env=None,
+        env_type="local",
+        cwd=str(tmp_path),
+        workdir=None,
+        session_key="diagnostic-test",
+    )
+
+    assert blocked is not None
+    result = json.loads(blocked)
+    assert result["exit_code"] == 1
+    assert "cannot start, restart, stop" in result["error"]

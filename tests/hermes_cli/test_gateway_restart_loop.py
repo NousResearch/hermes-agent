@@ -72,7 +72,6 @@ class TestGatewayLifecyclePattern:
         "pkill -f 'hermes-polis/run.sh'",
         "pkill -f my_hermes_bot.py",
         "pgrep python",
-        "hermes.exe gateway start",
         "my-hermes.exe gateway restart",
         "python -m pytest tests/ -k kill",
         "skill python",
@@ -189,12 +188,7 @@ class TestGatewayLifecyclePattern:
         "echo 'just a normal cron job'",
         "run the backup script",
         "gateway is running fine",
-        # `hermes gateway start` is benign — starting a gateway from inside a
-        # gateway is a no-op / "already running", and a legit cron job may
-        # start a sibling profile's gateway. Only restart/stop/kill are the
-        # foot-gun (#30719 lists only those).
-        "hermes gateway start",
-        "hermes gateway start --all",
+
         # Tightened launchctl/systemctl branches: ops on NON-gateway hermes
         # services must not be falsely blocked (the old `.*hermes` matched any
         # hermes token).
@@ -235,6 +229,9 @@ class TestGatewayLifecyclePattern:
 
     @pytest.mark.parametrize("text", [
         # Trailing-boundary fix must not weaken real commands.
+        "hermes gateway start",
+        "hermes gateway start --all",
+        "hermes.exe gateway start",
         "hermes gateway restart",
         "hermes gateway restart; echo done",
         "hermes gateway stop && echo stopped",
@@ -323,8 +320,15 @@ class TestProfileFlagGatewayLifecycle:
     @pytest.mark.parametrize("text", [
         "hermes -p zeus gateway stop",
         "hermes -p zeus gateway restart",
+        "hermes -p zeus gateway start",
+        "hermes -p zeus gateway uninstall",
         "hermes --profile zeus gateway restart",
         "hermes --profile zeus gateway stop",
+        "/opt/hermes/venv/bin/hermes --profile zeus gateway start",
+        "\"/opt/hermes env/bin/hermes\" --profile zeus gateway start",
+        r"C:\venv\Scripts\hermes.exe -p zeus gateway start",
+        "/opt/hermes/venv/bin/hermes --profile=zeus gateway restart",
+        "osascript -e 'tell application \"Terminal\" to do script \"/opt/hermes/venv/bin/hermes -p zeus gateway start\"'",
         "hermes --profile=zeus gateway restart",
         # Global flags before/after the selector must not hide the shape.
         "hermes -v -p zeus gateway restart",
@@ -348,12 +352,12 @@ class TestProfileFlagGatewayLifecycle:
         assert not _contains_gateway_lifecycle_command(text), f"Should allow: {text!r}"
 
     @pytest.mark.parametrize("text", [
-        "hermes -p zeus gateway start",
-        "hermes -p zeus gateway start --all",
+        "hermes -p venus gateway start",
+        "hermes -p venus gateway start --all",
     ])
-    def test_start_still_allowed(self, text):
-        # `start` is intentionally excluded from the guard, with or without
-        # the profile flag (#30719 rationale).
+    def test_sibling_start_still_allowed(self, text):
+        # Explicit lifecycle operations on a different profile remain legitimate;
+        # only the current supervised gateway's own profile is fenced.
         assert not _contains_gateway_lifecycle_command(text), f"Should allow: {text!r}"
 
 
@@ -446,6 +450,89 @@ class TestCronCreateLifecycleBlock:
 
 class TestGatewaySelfTargetingGuard:
     """Verify destructive gateway commands refuse inside the gateway."""
+
+    def test_restart_refuses_in_gateway_descendant_even_when_pid_owner_probe_is_false(
+        self, monkeypatch
+    ):
+        """A terminal child inherits the supervised gateway markers but does not own
+        gateway.pid.  It is still in the launchd coalition, so allowing it to refresh
+        the service can kill both the command and gateway before bootstrap completes.
+        """
+        from tools import process_registry
+
+        monkeypatch.setenv("_HERMES_GATEWAY", "1")
+        monkeypatch.setenv("HERMES_SUPERVISED_CHILD", "1")
+        monkeypatch.setattr(
+            process_registry, "_is_supervised_gateway_process", lambda: False
+        )
+        from hermes_cli.gateway import gateway_command
+
+        args = Namespace(gateway_command="restart", all=False, system=False)
+        with pytest.raises(SystemExit) as exc_info:
+            gateway_command(args)
+        assert exc_info.value.code == 1
+
+    def test_start_refuses_in_supervised_gateway_descendant(self, monkeypatch):
+        """`gateway start` may refresh a stale plist, which is just as destructive
+        to the caller's launchd coalition as an explicit restart.
+        """
+        from tools import process_registry
+
+        monkeypatch.setenv("_HERMES_GATEWAY", "1")
+        monkeypatch.setenv("HERMES_SUPERVISED_CHILD", "1")
+        monkeypatch.setattr(
+            process_registry, "_is_supervised_gateway_process", lambda: False
+        )
+        from hermes_cli.gateway import gateway_command
+
+        args = Namespace(gateway_command="start", force=False, system=False)
+        with pytest.raises(SystemExit) as exc_info:
+            gateway_command(args)
+        assert exc_info.value.code == 1
+
+    def test_named_profile_lifecycle_is_handled_before_self_target_guard(self, monkeypatch):
+        """A host-served sibling profile uses the control socket, not service mutation."""
+        import hermes_cli.gateway as gw
+
+        monkeypatch.setenv("_HERMES_GATEWAY", "1")
+        monkeypatch.setenv("HERMES_SUPERVISED_CHILD", "1")
+        monkeypatch.setattr(
+            "hermes_cli.gateway_profile_lifecycle.profile_lifecycle",
+            lambda command, args: command == "start",
+        )
+
+        gw.gateway_command(Namespace(gateway_command="start", force=False, system=False))
+
+    def test_start_is_noop_when_gateway_is_already_running(self, monkeypatch):
+        """`start` must not refresh a live service definition and SIGTERM it."""
+        import hermes_cli.gateway as gw
+
+        for marker in (
+            "_HERMES_GATEWAY",
+            "HERMES_SUPERVISED_CHILD",
+            "HERMES_LAUNCHD_LABEL",
+            "HERMES_GATEWAY_EXTERNAL_SUPERVISOR",
+            "HERMES_S6_SUPERVISED_CHILD",
+            "INVOCATION_ID",
+            "XPC_SERVICE_NAME",
+        ):
+            monkeypatch.delenv(marker, raising=False)
+        monkeypatch.setattr("hermes_cli.gateway_profile_lifecycle.profile_lifecycle", lambda *a, **k: False)
+        monkeypatch.setattr(gw, "_guard_named_profile_under_multiplexer", lambda **k: None)
+        monkeypatch.setattr(gw, "find_gateway_pids", lambda *a, **k: [4242])
+
+        called = []
+        monkeypatch.setattr(
+            gw,
+            "_dispatch_via_service_manager_if_s6",
+            lambda *a, **k: called.append("s6") or False,
+        )
+        monkeypatch.setattr(gw, "_service_backend", lambda: called.append("backend") or "launchd")
+        monkeypatch.setattr(gw, "_service_call", lambda *a, **k: called.append("service"))
+
+        gw.gateway_command(Namespace(gateway_command="start", all=False, force=False, system=False))
+
+        assert called == []
 
     def test_stop_refuses_inside_gateway(self, monkeypatch):
         from tools import process_registry

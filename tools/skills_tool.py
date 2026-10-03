@@ -28,6 +28,7 @@ from tools.skills_tool_plugin import (  # noqa: F401
 from tools.skills_tool_dedup import (  # noqa: F401
     _check_skill_view_dedup, _record_skill_view, reset_skill_view_dedup)
 from tools.skill_provenance import is_background_review
+from tools.skills_tool_search import SKILL_SEARCH_SCHEMA, skill_search  # noqa: F401
 
 logger = logging.getLogger(__name__)
 
@@ -683,7 +684,7 @@ def skill_view(
 
 SKILLS_LIST_SCHEMA = {
     "name": "skills_list",
-    "description": "List available skills (name + description). Use skill_view(name) to load full content.",
+    "description": "List available skills (name + description). Use skill_search(query) to find matching skills or skill_view(name) to load full content.",
     "parameters": {
         "type": "object",
         "properties": {
@@ -719,6 +720,13 @@ registry.register(
     name="skills_list", toolset="skills", schema=SKILLS_LIST_SCHEMA,
     handler=lambda args, **kw: skills_list(category=args.get("category"), task_id=kw.get("task_id")),
     check_fn=check_skills_requirements, emoji="📚")
+
+registry.register(
+    name="skill_search", toolset="skills", schema=SKILL_SEARCH_SCHEMA,
+    handler=lambda args, **kw: skill_search(
+        query=args.get("query", ""), source=args.get("source", "all"), limit=args.get("limit", 10),
+        include_installed=args.get("include_installed", True), task_id=kw.get("task_id")),
+    check_fn=check_skills_requirements, emoji="🔎")
 
 
 def _skill_view_with_bump(args, **kw):

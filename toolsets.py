@@ -14,7 +14,7 @@ _HERMES_CORE_TOOLS = [
     "terminal", "process_manage",
     "read_file", "write_file", "patch", "search_files",
     "vision_analyze", "image_generate",
-    "skills_list", "skill_view", "skill_manage",
+    "skills_list", "skill_search", "skill_view", "skill_manage",
     "browser_navigate", "browser_snapshot", "browser_click",
     "browser_type", "browser_scroll", "browser_back",
     "browser_press", "browser_get_images",
@@ -106,7 +106,7 @@ TOOLSETS = {
     "skills": _ts(
         "Access, create, edit, and manage skill documents with specialized "
         "instructions and knowledge",
-        ["skills_list", "skill_view", "skill_manage"],
+        ["skills_list", "skill_search", "skill_view", "skill_manage"],
     ),
     # web_search belongs to `web`/`search` only. Listing it here too let
     # `disabled_toolsets: [browser]` (headless/Docker deployments) strip

@@ -311,6 +311,44 @@ def detect_default_chromium(system: str | None = None) -> str | None:
     return detect.get(system or platform.system(), _detect_default_linux)()
 
 
+def resolve_real_profile_browser() -> tuple[str | None, str | None]:
+    """``(browser, error)``: which installed Chromium's profile the real-profile snapshot copies.
+
+    Without a pin the OS default decides (its result verbatim; the caller fails closed on
+    None / UNSUPPORTED_CHANNEL). With ``browser.real_profile_pin`` set the pin already names
+    the exact identity — it fails closed on a missing dir — so the browser may be resolved by
+    the pin instead of the OS default (#131589): the default still wins when it is a usable
+    stable Chromium whose user-data dir contains the pin; otherwise the installed stable
+    Chromiums whose user-data dir contains the pin are enumerated. Exactly one match wins;
+    zero or several fail closed (never guess a principal, #95549)."""
+    default = detect_default_chromium()
+    pin = _real_profile_pin()
+    if pin is None:
+        return default, None
+    if default not in (None, UNSUPPORTED_CHANNEL):
+        data_dir = real_profile_data_dir(default)
+        if data_dir and os.path.isdir(os.path.join(data_dir, pin)):
+            return default, None
+    data_dirs = {key: real_profile_data_dir(key) for key in _BROWSER_BY_KEY}
+    matches = [(key, d) for key, d in data_dirs.items()
+               if d and chromium_executable(key) and os.path.isdir(os.path.join(d, pin))]
+    if len(matches) == 1:
+        return matches[0][0], None
+    if not matches:
+        checked = "; ".join(f"{key} → {d}" for key, d in data_dirs.items())
+        return None, (
+            f"browser.real_profile_pin is set to '{pin}' but no installed Chromium browser "
+            f"has a '{pin}' profile directory under its user data dir (checked: {checked}). "
+            "Profile directories are named like 'Default' or 'Profile 2' — fix the pin, "
+            "remove it to follow the OS default browser, or turn the toggle off.")
+    listed = ", ".join(f"{key} ({d})" for key, d in matches)
+    return None, (
+        f"browser.real_profile_pin is set to '{pin}' but several installed Chromium browsers "
+        f"have a '{pin}' profile directory: {listed}. Hermes will not guess which identity to "
+        "browse as — set one of them as the OS default browser (its user-data dir then wins), "
+        "remove the pin, or turn the toggle off.")
+
+
 # --- Real-profile SNAPSHOT launch -------------------------------------------------------
 # Never drive the live default user-data-dir: Chromium ≥136 (Google builds) refuses remote
 # debugging on it, and the user's running browser holds it (SingletonLock). Instead snapshot

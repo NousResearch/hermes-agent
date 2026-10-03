@@ -276,6 +276,36 @@ test('platform detection surfaces transport failures as themselves, not unsuppor
   )
 })
 
+test('platform detection preserves typed Windows probe failures', async () => {
+  // `_fail()` (ssh-connection.ts) classifies exec deaths; the kinds that can
+  // reach this catch with a probe error are `unknown` (signal death / stderr
+  // classification) and `superseded` (a newer connection attempt took over).
+  // Either must surface as itself — an operational failure — never as the
+  // "unsupported operating system" verdict.
+  for (const kind of ['unknown', 'superseded'] as const) {
+    const probeErr: any = new Error('PowerShell remote command failed with exit code 1')
+    probeErr.kind = kind
+
+    await assert.rejects(
+      detectRemotePlatform(
+        sshWith(async command => {
+          if (command.startsWith('uname ')) {
+            throw new Error('PowerShell does not recognize uname')
+          }
+
+          throw probeErr
+        })
+      ),
+      (err: any) =>
+        err.kind === kind &&
+        err.cause === probeErr &&
+        /Windows remote probe failed/.test(err.message) &&
+        /PowerShell remote command failed/.test(err.message) &&
+        !/operating system is not supported/.test(err.message)
+    )
+  }
+})
+
 test('helper command uses the fixed remote Python entry point and quotes path data', () => {
   const command = helperCommand({ python: "C:\\Program Files\\Hermes's\\python.exe" }, 'inspect', [
     'C:\\x y\\hermes.exe'

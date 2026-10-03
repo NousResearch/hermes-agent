@@ -12,6 +12,7 @@
 import { computed } from 'nanostores'
 
 import type { HermesActiveWork } from '@/global'
+import { setRendererBusyOverride } from '@/lib/renderer-loop-pause'
 import { $sessions } from '@/store/session'
 import { $workingSessionIds } from '@/store/session-states'
 
@@ -25,6 +26,10 @@ const $activeWork = computed([$workingSessionIds, $sessions], (workingIds, sessi
 })
 
 if (typeof window !== 'undefined') {
+  $workingSessionIds.subscribe(ids => {
+    setRendererBusyOverride(ids.length > 0)
+  })
+
   // `$sessions` republishes on unrelated churn (previews, heartbeats), so only
   // send when the summary itself moved — this crosses a process boundary.
   let lastSent = ''

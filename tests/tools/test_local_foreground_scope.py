@@ -8,6 +8,8 @@ the same heavy build/test could still kill the control plane.
 
 from __future__ import annotations
 
+import fnmatch
+import os
 import shutil
 import subprocess
 from typing import cast
@@ -133,3 +135,14 @@ def test_scope_is_stopped_even_when_the_group_kill_raises_and_survives_adoption(
     session = process_registry.ProcessRegistry().adopt_local(
         cast("subprocess.Popen", proc), command="build", cwd=str(tmp_path))
     assert session.systemd_unit == "hermes-fg-4244-1.scope"
+
+    # A command that exited normally can leave a daemonized descendant holding its scope,
+    # outside the gateway cgroup: the host-exit funnel must stop this process's scopes.
+    from tools import terminal_tool_lifecycle
+    monkeypatch.setattr(terminal_tool_lifecycle, "_scratch_paths", lambda: [])
+    monkeypatch.setattr(local_env, "_foreground_scope_issued", True)
+    stopped.clear()
+    terminal_tool_lifecycle.cleanup_all_environments()
+    assert len(stopped) == 1
+    assert fnmatch.fnmatchcase(f"hermes-fg-{os.getpid()}-0123abcd.scope", stopped[0])
+    assert not fnmatch.fnmatchcase("hermes-fg-1-0123abcd.scope", stopped[0])  # another gateway's

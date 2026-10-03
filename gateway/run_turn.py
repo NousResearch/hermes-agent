@@ -3598,7 +3598,20 @@ class GatewayTurnMixin:
         _result_for_fb = turn_ctx.result_holder[0]
         if _agent is None or not hasattr(_agent, 'model') or (_result_for_fb and _result_for_fb.get("failed")):
             return
-        _cfg_model = _resolve_gateway_model()
+        _src = getattr(turn_ctx, "source", None)
+        _user_cfg = getattr(turn_ctx, "user_config", None)
+        try:
+            if _src is not None and getattr(_src, "platform", None) is not None:
+                _cfg_model = self._resolve_model_for_channel(
+                    _src.platform, str(getattr(_src, "chat_id", "") or ""),
+                    user_config=_user_cfg,
+                    thread_id=str(getattr(_src, "thread_id", "") or "") or None,
+                    parent_id=str(getattr(_src, "parent_chat_id", "") or "") or None,
+                )
+            else:
+                _cfg_model = _resolve_gateway_model(_user_cfg)
+        except Exception:
+            _cfg_model = _resolve_gateway_model(_user_cfg)
         # Normalize as AIAgent.__init__ does (vendor prefix stripped on native providers), else the
         # cached agent is evicted every turn, destroying prompt caching.
         with suppress(Exception):

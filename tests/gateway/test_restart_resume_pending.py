@@ -32,7 +32,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from gateway.config import GatewayConfig, HomeChannel, Platform
+from gateway.config import GatewayConfig, HomeChannel, Platform, PlatformConfig
 from gateway.platforms.base import SendResult
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.run import (
@@ -994,6 +994,95 @@ async def test_restart_notifies_home_channel_even_without_active_sessions():
 
     assert len(adapter.sent) == 1
     assert "restarting" in adapter.sent[0] and "Send any message" in adapter.sent[0]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("chat_type", "home_chat", "home_thread", "expected_targets"),
+    [
+        ("dm", "parent", None, [("parent", "topic-7")]),
+        ("private", "parent", None, [("parent", "topic-7")]),
+        ("group", "parent", None, [("parent", "topic-7"), ("parent", None)]),
+        ("dm", "parent", "home-topic", [("parent", "topic-7"), ("parent", "home-topic")]),
+        ("dm", "other", None, [("parent", "topic-7"), ("other", None)]),
+    ],
+)
+async def test_shutdown_notice_suppresses_only_unthreaded_private_parent_broadcast(
+    chat_type, home_chat, home_thread, expected_targets
+):
+    runner, adapter = make_restart_runner()
+    source = make_restart_source(chat_id="parent", chat_type=chat_type, thread_id="topic-7")
+    key = runner._session_key_for_source(source)
+    runner.session_store._entries[key] = MagicMock(origin=source)
+    runner._running_agents[key] = object()
+    runner.config.platforms[Platform.TELEGRAM].home_channel = HomeChannel(
+        platform=Platform.TELEGRAM, chat_id=home_chat, name="Home", thread_id=home_thread,
+    )
+
+    await runner._notify_active_sessions_of_shutdown()
+
+    assert [(chat, (metadata or {}).get("thread_id")) for chat, _, metadata in adapter.sent_calls] == expected_targets
+
+
+@pytest.mark.asyncio
+async def test_shutdown_private_topic_only_suppresses_own_bots_home(tmp_path, monkeypatch):
+    home = tmp_path / ".hermes"
+    (home / "profiles" / "coder").mkdir(parents=True)
+    monkeypatch.setattr("hermes_cli.profiles._get_default_hermes_home", lambda: home)
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    runner, primary = make_restart_runner()
+    secondary = RestartTestAdapter()
+    runner.config.multiplex_profiles = True
+    runner._profile_adapters = {"coder": {Platform.TELEGRAM: secondary}}
+    runner._profile_configs = {"coder": GatewayConfig(platforms={
+        Platform.TELEGRAM: PlatformConfig(enabled=True, home_channel=HomeChannel(
+            platform=Platform.TELEGRAM, chat_id="4242", name="Coder Home",
+        )),
+    })}
+    runner.config.platforms[Platform.TELEGRAM].home_channel = HomeChannel(
+        platform=Platform.TELEGRAM, chat_id="4242", name="Home",
+    )
+    source = make_restart_source(chat_id="4242", thread_id="topic-7")
+    source.profile = "coder"
+    key = runner._session_key_for_source(source)
+    runner.session_store._entries[key] = MagicMock(origin=source)
+    runner._running_agents[key] = object()
+
+    await runner._notify_active_sessions_of_shutdown()
+
+    assert [(chat, (metadata or {}).get("thread_id")) for chat, _, metadata in secondary.sent_calls] == [
+        ("4242", "topic-7"),
+    ]
+    assert primary.sent_calls == [("4242", secondary.sent_calls[0][1], {"_interim_send": True})], (
+        "the primary bot's DM is a different conversation, so its home still gets a notice"
+    )
+
+
+@pytest.mark.asyncio
+async def test_shutdown_private_topics_remain_distinct_and_failed_delivery_keeps_home():
+    runner, adapter = make_restart_runner()
+    runner.config.platforms[Platform.TELEGRAM].home_channel = HomeChannel(
+        platform=Platform.TELEGRAM, chat_id="parent", name="Home",
+    )
+    for topic in ("topic-7", "topic-8"):
+        source = make_restart_source(chat_id="parent", thread_id=topic)
+        key = runner._session_key_for_source(source)
+        runner.session_store._entries[key] = MagicMock(origin=source)
+        runner._running_agents[key] = object()
+    await runner._notify_active_sessions_of_shutdown()
+    assert [(metadata or {}).get("thread_id") for _, _, metadata in adapter.sent_calls] == [
+        "topic-7", "topic-8",
+    ]
+
+    adapter.sent_calls.clear()
+    async def fail_topic(chat_id, content, reply_to=None, metadata=None):
+        adapter.sent_calls.append((chat_id, content, metadata))
+        return SendResult(success=metadata.get("thread_id") is None)
+    adapter.send = fail_topic
+    await runner._notify_active_sessions_of_shutdown()
+    assert [(metadata or {}).get("thread_id") for _, _, metadata in adapter.sent_calls] == [
+        "topic-7", "topic-8", None,
+    ]
 
 
 @pytest.mark.asyncio

@@ -13,6 +13,7 @@ import threading
 from types import SimpleNamespace
 
 import pytest
+from acp.schema import TextContentBlock
 
 from acp_adapter.server import HermesACPAgent
 from acp_adapter.session import SessionState
@@ -58,7 +59,7 @@ def _running_state() -> SessionState:
         history=[],
         cancel_event=None,
         is_running=True,
-        queued_prompts=["queued-one"],
+        queued_prompts=[[TextContentBlock(type="text", text="queued-one")]],
         runtime_lock=threading.Lock(),
         current_prompt_text="hello",
     )

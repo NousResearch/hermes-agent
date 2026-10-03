@@ -1,6 +1,7 @@
 """Tests for acp_adapter.server — HermesACPAgent ACP server."""
 
 import asyncio
+import threading
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, AsyncMock, patch
@@ -11,14 +12,18 @@ import acp
 from acp.agent.router import build_agent_router
 from acp.schema import (
     AuthenticateResponse,
+    EmbeddedResourceContentBlock,
+    ImageContentBlock,
     InitializeResponse,
     PromptResponse,
+    ResourceContentBlock,
     ResumeSessionResponse,
     SessionModelState,
     SessionModeState,
     SetSessionConfigOptionResponse,
     SessionInfo,
     TextContentBlock,
+    TextResourceContents,
     ToolCallProgress,
     ToolCallStart,
     UsageUpdate,
@@ -400,6 +405,91 @@ class TestPrompt:
         )
 
         assert captured.get("child") == resp.session_id
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("kind", ["resource_link", "embedded_resource"])
+    async def test_resource_only_prompt_runs_a_turn_with_the_file_body(self, agent, mock_manager, tmp_path, kind):
+        """An @-file sent with no typed text still reaches the model instead of ending the turn silently."""
+        attached = tmp_path / "notes.md"
+        attached.write_text("attached file body", encoding="utf-8")
+        if kind == "resource_link":
+            block = ResourceContentBlock(type="resource_link", name="notes.md", uri=attached.as_uri())
+        else:
+            block = EmbeddedResourceContentBlock(
+                type="resource",
+                resource=TextResourceContents(uri=attached.as_uri(), text="attached file body"),
+            )
+        resp = await agent.new_session(cwd=".")
+        state = mock_manager.get_session(resp.session_id)
+        state.agent.run_conversation = MagicMock(return_value={"final_response": "done", "messages": []})
+        state.agent.model = "test-model"
+        state.agent.provider = "openrouter"
+        mock_conn = MagicMock(spec=acp.Client)
+        mock_conn.session_update = AsyncMock()
+        agent._conn = mock_conn
+
+        await agent.prompt(prompt=[block], session_id=resp.session_id)
+
+        state.agent.run_conversation.assert_called_once()
+        kwargs = state.agent.run_conversation.call_args.kwargs
+        assert "attached file body" in kwargs["user_message"]
+        assert "attached file body" in kwargs["persist_user_message"]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("kind", ["resource_link", "image"])
+    async def test_attachment_queued_mid_turn_reaches_the_model_with_a_label_echo(
+        self, agent, mock_manager, tmp_path, kind
+    ):
+        """A prompt carrying an attachment that arrives while a turn is running is queued with
+        its content, reaches the model once the running turn ends, and is echoed to the editor
+        as a label rather than the inlined file body."""
+        if kind == "resource_link":
+            attached = tmp_path / "notes.md"
+            attached.write_text("attached file body", encoding="utf-8")
+            block = ResourceContentBlock(type="resource_link", name="notes.md", uri=attached.as_uri())
+        else:
+            block = ImageContentBlock(type="image", data="aGVsbG8=", mimeType="image/png")
+        resp = await agent.new_session(cwd=".")
+        state = mock_manager.get_session(resp.session_id)
+        started, release = threading.Event(), threading.Event()
+        calls: list[dict] = []
+
+        def _run(**kwargs):
+            calls.append(kwargs)
+            if len(calls) == 1:
+                started.set()
+                release.wait(10)
+            return {"final_response": "done", "messages": []}
+
+        state.agent.run_conversation = _run
+        state.agent.model = "test-model"
+        state.agent.provider = "openrouter"
+        mock_conn = MagicMock(spec=acp.Client)
+        mock_conn.session_update = AsyncMock()
+        agent._conn = mock_conn
+
+        first = asyncio.create_task(
+            agent.prompt(prompt=[TextContentBlock(type="text", text="first")], session_id=resp.session_id)
+        )
+        assert await asyncio.to_thread(started.wait, 10)
+        await agent.prompt(prompt=[block], session_id=resp.session_id)
+        assert len(calls) == 1
+        assert len(state.queued_prompts) == 1
+
+        release.set()
+        await first
+
+        assert len(calls) == 2
+        user_message = calls[1]["user_message"]
+        updates = [call.kwargs.get("update") or call.args[1] for call in mock_conn.session_update.await_args_list]
+        echoes = [update.content.text for update in updates if isinstance(update, UserMessageChunk)]
+        assert len(echoes) == 1
+        if kind == "resource_link":
+            assert "attached file body" in user_message
+            assert "notes.md" in echoes[0] and "attached file body" not in echoes[0]
+        else:
+            assert isinstance(user_message, list)
+            assert any(part.get("type") == "image_url" for part in user_message)
 
     @pytest.mark.asyncio
     async def test_empty_messages_list_replaces_stale_history(self, agent, mock_manager):

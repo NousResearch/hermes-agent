@@ -7,7 +7,7 @@ import logging
 from collections import Counter
 from typing import Any
 
-from acp.schema import AvailableCommand, AvailableCommandsUpdate, UnstructuredCommandInput
+from acp.schema import AvailableCommand, AvailableCommandsUpdate, TextContentBlock, UnstructuredCommandInput
 
 from acp_adapter.session import SessionState, _expand_acp_enabled_toolsets
 
@@ -27,7 +27,7 @@ def _estimate_tokens(history: list, agent: Any, system_prompt: str | None = None
 
 def _queue_prompt(state: SessionState, text: str) -> int:
     with state.runtime_lock:
-        state.queued_prompts.append(text)
+        state.queued_prompts.append([TextContentBlock(type="text", text=text)])
         return len(state.queued_prompts)
 
 

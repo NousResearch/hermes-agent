@@ -3234,8 +3234,9 @@ class SlackAdapter(BasePlatformAdapter):
 
     async def _react(
         self, channel: str, timestamp: str, emoji: str, team_id: str, *, remove: bool) -> bool:
-        """reactions.add / reactions.remove; True on success. Failures (already reacted,
-        missing scope) are debug-logged only."""
+        """reactions.add / reactions.remove; True on success. Routine failures (already
+        reacted, missing scope) are debug-logged; an unknown emoji name warns, since
+        the lifecycle names come from ``extra.reaction_*`` and a typo would otherwise be silent."""
         if not self._app:
             return False
         try:
@@ -3244,8 +3245,13 @@ class SlackAdapter(BasePlatformAdapter):
             await method(channel=channel, timestamp=timestamp, name=emoji)
             return True
         except Exception as e:
-            logger.debug(
-                "[Slack] reactions.%s failed (%s): %s", "remove" if remove else "add", emoji, e)
+            if _slack_error_is(e, "invalid_name"):
+                logger.warning(
+                    "[Slack] Slack rejected reaction emoji %r (invalid_name); check "
+                    "platforms.slack.extra.reaction_ack/reaction_ok/reaction_fail", emoji)
+            else:
+                logger.debug(
+                    "[Slack] reactions.%s failed (%s): %s", "remove" if remove else "add", emoji, e)
             return False
 
     async def _add_reaction(
@@ -3260,6 +3266,11 @@ class SlackAdapter(BasePlatformAdapter):
         """Whether message reactions are enabled (scoped ``SLACK_REACTIONS`` → ``extra.reactions`` → on)."""
         configured = _extra_or_secret(self.config.extra, "reactions", "SLACK_REACTIONS", "true")
         return str(configured).lower() not in {"false", "0", "no"}
+
+    def _reaction_emoji(self, key: str, default: str) -> str:
+        """Lifecycle emoji name from ``extra.<key>`` (YAML only; ``:tada:`` and ``tada`` both work)."""
+        configured = str(_extra_or_secret(self.config.extra, key, "", default)).strip().strip(":")
+        return configured or default
 
     def _reacting_target(self, event: MessageEvent) -> Optional[Tuple[str, str, Any]]:
         """``(ts, team_id, marker)`` when reactions are on and ``event`` is being tracked."""
@@ -3278,7 +3289,8 @@ class SlackAdapter(BasePlatformAdapter):
         ts, team_id, _marker = target
         channel_id = getattr(event.source, "chat_id", None)
         if channel_id:
-            await self._react(channel_id, ts, "eyes", team_id, remove=False)
+            await self._react(
+                channel_id, ts, self._reaction_emoji("reaction_ack", "eyes"), team_id, remove=False)
 
     async def on_processing_complete(self, event: MessageEvent, outcome: ProcessingOutcome) -> None:
         """Swap the in-progress reaction for a final success/failure reaction."""
@@ -3290,8 +3302,10 @@ class SlackAdapter(BasePlatformAdapter):
         channel_id = getattr(event.source, "chat_id", None)
         if not channel_id:
             return
-        await self._react(channel_id, ts, "eyes", team_id, remove=True)
-        final = {ProcessingOutcome.SUCCESS: "white_check_mark", ProcessingOutcome.FAILURE: "x"}
+        await self._react(
+            channel_id, ts, self._reaction_emoji("reaction_ack", "eyes"), team_id, remove=True)
+        final = {ProcessingOutcome.SUCCESS: self._reaction_emoji("reaction_ok", "white_check_mark"),
+                 ProcessingOutcome.FAILURE: self._reaction_emoji("reaction_fail", "x")}
         if outcome in final:
             await self._react(channel_id, ts, final[outcome], team_id, remove=False)
 

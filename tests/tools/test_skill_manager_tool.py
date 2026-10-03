@@ -1261,3 +1261,91 @@ class TestCuratorConsolidationDeleteGuard:
             assert allowed["success"] is True, allowed
 
         _reset_background_review_read_marks()
+
+
+# ---------------------------------------------------------------------------
+# _iter_skill_dirs: symlink following (regression: rglob missed skills behind
+# category symlinks, so _create_skill duplicated them -> "Ambiguous skill name")
+# ---------------------------------------------------------------------------
+
+
+class TestIterSkillDirsSymlinks:
+    """Regression: pathlib.rglob skipped dir symlinks, so skills behind a
+    symlinked category dir were invisible to _find_skill — skill_manage(create)
+    then duplicated them and skill_view(name) hit "Ambiguous skill name"."""
+
+    def test_find_skill_seen_through_category_symlink(self, tmp_path):
+        real_category = tmp_path / "auditor-skills" / "evm-audit"
+        skill_dir = real_category / "evm-audit-erc4626"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text(VALID_SKILL_CONTENT)
+
+        skills_dir = tmp_path / "skills"
+        skills_dir.mkdir()
+        (skills_dir / "evm-audit").symlink_to(real_category, target_is_directory=True)
+
+        with patch("tools.skill_manager_tool.SKILLS_DIR", skills_dir), \
+             patch("agent.skill_utils.get_all_skills_dirs", return_value=[skills_dir]):
+            found = _find_skill("evm-audit-erc4626")
+
+        assert found is not None
+        assert found["path"].resolve() == skill_dir.resolve()
+
+    def test_create_rejects_duplicate_behind_symlink(self, tmp_path):
+        real_category = tmp_path / "other" / "cat"
+        skill_dir = real_category / "linked-skill"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text(VALID_SKILL_CONTENT)
+
+        skills_dir = tmp_path / "skills"
+        skills_dir.mkdir()
+        (skills_dir / "cat").symlink_to(real_category, target_is_directory=True)
+
+        with patch("tools.skill_manager_tool.SKILLS_DIR", skills_dir), \
+             patch("agent.skill_utils.get_all_skills_dirs", return_value=[skills_dir]):
+            result = _create_skill("linked-skill", VALID_SKILL_CONTENT_2)
+
+        assert result["success"] is False
+        assert "already exists" in result["error"]
+
+    def test_iter_skill_dirs_symlink_cycle_terminates(self, tmp_path):
+        skills_dir = tmp_path / "skills"
+        skill_dir = skills_dir / "cat" / "looped-skill"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text(VALID_SKILL_CONTENT)
+        # category dir links back to its own parent -> cycle
+        (skills_dir / "cat" / "self").symlink_to(skills_dir / "cat", target_is_directory=True)
+
+        from tools.skill_manager_tool import _iter_skill_dirs
+        dirs = list(_iter_skill_dirs(skills_dir))
+        assert sorted(d.name for d in dirs) == ["looped-skill"]
+
+    def test_iter_skill_dirs_dangling_symlink_skipped(self, tmp_path):
+        skills_dir = tmp_path / "skills"
+        skill_dir = skills_dir / "cat" / "real-skill"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text(VALID_SKILL_CONTENT)
+        (skills_dir / "dangling").symlink_to(tmp_path / "gone", target_is_directory=True)
+
+        from tools.skill_manager_tool import _iter_skill_dirs
+        dirs = list(_iter_skill_dirs(skills_dir))
+        assert [d.name for d in dirs] == ["real-skill"]
+
+    def test_iter_skill_dirs_skips_support_dirs_with_own_skill_md(self, tmp_path):
+        # A support dir (references/, scripts/, ...) holding its own SKILL.md
+        # must not be yielded as a standalone skill — this is the same
+        # "Ambiguous skill name" class the symlink walker was written to fix.
+        skills_dir = tmp_path / "skills"
+        skill_dir = skills_dir / "cat" / "real-skill"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text(VALID_SKILL_CONTENT)
+        for support in ("references", "scripts", "templates", "assets"):
+            (skill_dir / support).mkdir()
+            (skill_dir / support / "SKILL.md").write_text(VALID_SKILL_CONTENT)
+        # A support dir WITHOUT SKILL.md is also not a skill but must not stop
+        # descent below it.
+        (skill_dir / "assets" / "nested-data").mkdir()
+
+        from tools.skill_manager_tool import _iter_skill_dirs
+        dirs = list(_iter_skill_dirs(skills_dir))
+        assert [d.name for d in dirs] == ["real-skill"]

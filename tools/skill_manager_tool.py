@@ -210,10 +210,66 @@ def _resolve_skill_dir(name: str, category: str = None) -> Path:
 
 
 def _iter_skill_dirs(root: Path):
+    """Yield skill dirs under *root*, following directory symlinks safely.
+
+    ``Path.rglob`` does NOT follow directory symlinks (Python 3.12), so a skill
+    nested behind a category symlink (e.g. profile A symlinking profile B's
+    category dir) was invisible to ``_find_skill`` — ``skill_manage(create)``
+    then duplicated it and ``skill_view(name)`` started failing with
+    "Ambiguous skill name". This walker follows directory symlinks with two
+    guards:
+    - ``seen`` = resolved real paths (``Path.resolve``): breaks symlink cycles
+      AND de-duplicates the same real dir reachable via multiple symlink
+      aliases, so a skill is yielded once per root scan;
+    - ``max_depth``: hard bound on recursion below *root* as a belt-and-braces
+      stop for pathological trees (deep category nesting is 3-4 today).
+    Dangling symlinks fail ``is_dir()`` and are skipped naturally; ``resolve()``
+    failures (permission/mount) skip that entry instead of aborting the scan.
+    """
     from agent.skill_utils import is_excluded_skill_path
-    for skill_md in root.rglob("SKILL.md"):
-        if not is_excluded_skill_path(skill_md):
-            yield skill_md.parent
+
+    max_depth = 6
+    seen: set = set()
+
+    def _walk(dir_path: Path, depth: int):
+        if depth > max_depth:
+            return
+        try:
+            real = dir_path.resolve()
+        except OSError:
+            return
+        if real in seen:
+            return
+        seen.add(real)
+        try:
+            entries = sorted(dir_path.iterdir())
+        except OSError:
+            return
+        for entry in entries:
+            try:
+                if not entry.is_dir():
+                    continue
+            except OSError:
+                continue
+            # Re-check exclusion against the SKILL.md file path, not the dir:
+            # is_skill_support_path only inspects components BEFORE the leaf, so
+            # passing the dir makes the support-dir branch a no-op and support
+            # dirs containing their own SKILL.md get re-advertised as skills.
+            if is_excluded_skill_path(entry / "SKILL.md"):
+                continue
+            skill_md = entry / "SKILL.md"
+            try:
+                md_exists = skill_md.is_file()
+            except OSError:
+                md_exists = False
+            if md_exists:
+                yield entry
+            # Keep descending below a skill dir too: category dirs may nest
+            # (category/subcategory/skill) and support dirs are filtered by
+            # is_excluded_skill_path above.
+            yield from _walk(entry, depth + 1)
+
+    yield from _walk(root, 0)
 
 
 def _find_skill(name: str) -> Optional[Dict[str, Any]]:

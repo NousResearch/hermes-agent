@@ -41,6 +41,22 @@ Record restarts, HMR, and code updates separately: a fresh renderer is not a
 valid after measurement for a long-running renderer. Heap counters alone do not
 prove a leak. Heavy render/atom counters must be stopped before timing.
 
+## Idle cost (`idle-burn`)
+
+```bash
+node scripts/perf/run.mjs idle-burn --spawn --runs 3 --attribute --json ~/.hermes/cache/scratch/idle-burn.json
+```
+
+Before/after evidence for any idle CPU/GPU change (tracker #127647). Run base
+and head on the same machine in the same session and compare medians; the
+absolute numbers depend on the machine. `detail.live` names the animations
+running in each phase, and `detail.attribution` gives each one's cost as the
+drop when it alone is paused. `detail.hidden_method` says whether the hidden
+phase really minimized the window or forced the pause attribute (a
+programmatic minimize is ignored for a background-launched instance on
+macOS); the forced form exercises the CSS pause, not JS loops that read
+window state.
+
 ## Dev vs prod
 
 By default the harness measures the **dev** renderer (fast to spin up, good for
@@ -68,6 +84,7 @@ directly via `window.__PERF_DRIVE__`, so no LLM credits are spent.
 | `transcript` | ci | large-transcript mount + paint cost | (new) |
 | `render-churn` | ci | per-component render attribution + store churn while N tabs stream | (new) |
 | `idle-cost` | report | busy-but-silent tiles: idle commit rate, + fps while resizing / typing | (new) |
+| `idle-burn` | report | per-process CPU (renderer / GPU / browser), style recalcs, layouts and running animations while idle: viewed, viewed with busy sessions, hidden; `--attribute` pauses each animation to price it | (new) |
 | `right-pane` | report | file tree + persistent xterm tabs under chat/terminal output and split dragging | (new) |
 | `cold-start` | cold | launch → CDP → driver → first paint (fresh spawn/run) | (new) |
 | `first-token` | backend | Enter → first assistant token painted (TTFT) | (new) |

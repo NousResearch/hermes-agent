@@ -114,9 +114,17 @@ def _map_positions_norm_to_orig(orig_to_norm: list[int], norm_matches: list[Span
     norm_to_orig_start = _invert_norm_map(orig_to_norm)
     results: list[Span] = []
     for norm_start, norm_end in norm_matches:
-        if norm_start in norm_to_orig_start:
-            orig_start = norm_to_orig_start[norm_start]
-            results.append((orig_start, _norm_end_to_orig(orig_to_norm, orig_start, norm_end)))
+        orig_start = norm_to_orig_start.get(norm_start)
+        if orig_start is None:
+            # Match starts inside a multi-char expansion (em-dash -> '--',
+            # ellipsis -> '...'): snap to the expansion's first original
+            # character instead of silently dropping the span.
+            floor_norm = max(
+                (ns for ns in norm_to_orig_start if ns <= norm_start), default=None)
+            if floor_norm is None:
+                continue
+            orig_start = norm_to_orig_start[floor_norm]
+        results.append((orig_start, _norm_end_to_orig(orig_to_norm, orig_start, norm_end)))
     return results
 
 

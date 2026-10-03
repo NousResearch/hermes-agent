@@ -1158,6 +1158,20 @@ def _(rid, params: dict) -> dict:
         except Exception as e:
             return _ok(rid, {"output": f"Plugin command error: {e}"})
     worker = session.get("slash_worker")
+    # A later session.cwd.set (folder tag, workspace.move) does not restart
+    # the persistent worker. Reusing the spawn cwd would create /worktree
+    # in the previous project (#102268 follow-up). _slash_worker_cwd fails
+    # closed on a stale recorded cwd, so guard the comparison itself. A worker
+    # that never recorded a spawn cwd (pre-migration) is left alone: there is
+    # nothing to compare, and churning it would fork a fresh MCP fleet for
+    # every command.
+    try:
+        wanted_cwd = _slash_worker_cwd(_session_cwd(session))
+    except NotADirectoryError as e:
+        return _err(rid, 5030, f"slash worker start failed: {e}")
+    if worker is not None and getattr(worker, "cwd", None) not in (None, wanted_cwd):
+        _restart_slash_worker(sid, session)
+        worker = session.get("slash_worker")
     if not worker:
         # slash.exec runs on the RPC pool: two concurrent commands could both see slash_worker=None
         # and each fork a full MCP-fleet worker (the loser leaks). Serialize first-use spawn.
@@ -1170,7 +1184,8 @@ def _(rid, params: dict) -> dict:
                     worker = _SlashWorker(
                         session["session_key"], getattr(session.get("agent"), "model", _resolve_model()),
                         profile_home=session.get("profile_home"),
-                        provider=getattr(session.get("agent"), "provider", None) or None)
+                        provider=getattr(session.get("agent"), "provider", None) or None,
+                        cwd=_session_cwd(session))
                     _attach_worker(sid, session, worker)
                 except Exception as e:
                     return _err(rid, 5030, f"slash worker start failed: {e}")
@@ -1181,7 +1196,7 @@ def _(rid, params: dict) -> dict:
             # send dispatch (both Desktop and TUI clients already handle {type:"send"}).
             return _ok(rid, {"type": "send", "message": seed})
         payload = {"output": output or "(no output)"}
-        if warning := _mirror_slash_side_effects(sid, session, cmd):
+        if warning := _mirror_slash_side_effects(sid, session, cmd, output=output):
             payload["warning"] = warning
         if base in _SESSION_CONTROL_SLASHES:
             _publish_session_control_snapshot(sid, session)

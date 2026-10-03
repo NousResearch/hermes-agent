@@ -381,7 +381,7 @@ def check_for_updates(*, install_root: Path | None = None, home: Path | None = N
     target must never inherit the host process's embedded revision or stamp.
     """
     from hermes_cli.config_home import initialize_probe_home
-    initialize_probe_home(Path(home if home is not None else get_hermes_home()).resolve())
+    initialize_probe_home(Path(home if home is not None else get_hermes_home()).absolute())
     from hermes_cli.config import get_project_root, require_readable_config_before_write
     from hermes_cli.steward import read_install_stamp
     from hermes_cli.update_channel import install_id, resolve_update_channel

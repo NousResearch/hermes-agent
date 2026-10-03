@@ -24,9 +24,8 @@ def _operator_owned_links(links: list[Path], home: Path) -> list[Path]:
     return [link for link in links if link == home or home in link.parents]
 
 
-def _ensure_directory(path: Path, *, create: bool, secure: bool, home: Path) -> None:
-    from hermes_cli.config import _secure_dir
-
+def _ensure_directory(path: Path, *, create: bool, secure: bool, home: Path,
+                      secure_dir=None) -> None:
     detail = ""
     try:
         links = _directory_links(path)
@@ -41,7 +40,10 @@ def _ensure_directory(path: Path, *, create: bool, secure: bool, home: Path) -> 
             raise FileNotFoundError(f"Required directory does not exist: {path}")
         # The operator owns permissions beyond a link, including logs/curator.
         if secure and not _operator_owned_links(links, home):
-            _secure_dir(path)
+            if secure_dir is None:
+                from hermes_cli.config import _secure_dir
+                secure_dir = _secure_dir
+            secure_dir(path)
     except OSError as exc:
         raise HomeInitializationError(
             f"Cannot initialize Hermes directory {path}: {exc}. "
@@ -58,9 +60,13 @@ def initialize_probe_home(home: Path) -> None:
     Keep this helper import-light: source checks run before normal config/provider
     discovery and must not seed identity files or the regular home skeleton.
     """
+    from hermes_constants import apply_secure_dir_policy
+
     home = Path(home)
-    home.mkdir(parents=True, exist_ok=True)
-    (home / "cache").mkdir(exist_ok=True)
+    # Share link/mount validation without importing config and triggering discovery.
+    for path in (home, home / "cache"):
+        _ensure_directory(path, create=True, secure=True, home=home,
+                          secure_dir=apply_secure_dir_policy)
 
 
 def initialize_home(home: Path, subdirs: tuple[str, ...], ensured: set[str], *, seed: bool = True) -> None:

@@ -98,7 +98,7 @@ async def test_freeze_refuses_real_grant_approval_but_still_allows_exact_deny(ad
         refused = await cli.post(f"/v1/runs/{run_id}/approval", headers=headers,
             json={"choice": "once", "request_id": "approval-known"})
         body = await refused.json()
-        assert refused.status == 409, body
+        assert refused.status == 403, body
         assert body["error"]["code"] == "group_work_frozen"
         assert not pending.event.is_set()
         denied = await cli.post(f"/v1/runs/{run_id}/approval", headers=headers,

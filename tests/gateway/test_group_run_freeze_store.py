@@ -41,7 +41,7 @@ def test_freeze_replays_receipts_and_commands_without_exposing_status_bodies(sto
     assert store.lookup(scope, "key-run-one", "fingerprint-run-one")[0] == "reused"
     with pytest.raises(storage.GroupRunFrozen) as denied:
         reserve(store, "new-run")
-    assert (denied.value.code, denied.value.status) == ("group_work_frozen", 409)
+    assert (denied.value.code, denied.value.status) == ("group_work_frozen", 403)
     assert store.is_scope_frozen(scope)
     with store.group_control_open(scope) as allowed:
         assert allowed is False

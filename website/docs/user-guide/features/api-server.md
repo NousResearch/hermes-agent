@@ -723,10 +723,12 @@ for another participant. Read back the current result with
 `GET /v1/group-participants/stop/{command_id}` and the same owner credentials.
 
 `admissions_frozen: true` confirms the persistent barrier: that old participant
-scope cannot admit new work, including after restart. An exact retry of a retained
-run receipt can still return its original run ID, but cannot relaunch it. The
-existing local interruption path stops known work; another updated listener
-sharing that store picks up the intent through its existing periodic sweep.
+scope cannot admit new work, including after restart. New work in a frozen scope is
+refused with `403 group_work_frozen`, which a group's home reads as proof the turn
+was not admitted. An exact retry of a retained run receipt can still return its
+original run ID, but cannot relaunch it. The existing local interruption path stops
+known work; another updated listener sharing that store picks up the intent through
+its existing periodic sweep.
 
 Interpret `work_state` separately from the admission barrier:
 

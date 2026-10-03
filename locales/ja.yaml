@@ -2721,6 +2721,7 @@ cli:
       restored: "状態を復元しました: {snapshot_id}"
       restart_recommended: "state.db の変更を反映するため、ゲートウェイ/ダッシュボードのプロセスを再起動することをおすすめします。"
       not_found: "スナップショットが見つかりません: {snapshot_id}"
+      restore_incomplete: "スナップショット {snapshot_id} は完全には復元されませんでした: 一部のファイルが拒否されました（ログを参照）"
       usage_prune: "使い方: /snapshot prune [keep-count]"
       pruned: "古いスナップショット {deleted} 件を削除しました（{keep} 件を保持）。"
     export:

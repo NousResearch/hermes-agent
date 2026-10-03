@@ -20,6 +20,21 @@ _TITLE_INVISIBLE_RE = re.compile(r'[\u200b-\u200f\u2028-\u202e\u2060-\u2069\ufef
 _NUMBERED_TITLE_RE = re.compile(r'^(.*?) #(\d+)$')
 
 
+def next_title_in_lineage(conn, base_title: str) -> str:
+    """Next title in a lineage ("my session" -> "my session #2") as seen by *conn*: strip any
+    " #N" suffix, then increment the highest existing number."""
+    match = _NUMBERED_TITLE_RE.match(base_title)
+    base = match.group(1) if match else base_title
+    rows = conn.execute(
+        "SELECT title FROM sessions WHERE title = ? OR title LIKE ? ESCAPE '\\'",
+        (base, f"{_escape_like(base)} #%")).fetchall()
+    if not rows:
+        return base
+    # The unnumbered original counts as #1.
+    numbers = [int(m.group(2)) for m in (_NUMBERED_TITLE_RE.match(row[0]) for row in rows) if m]
+    return f"{base} #{max([1, *numbers]) + 1}"
+
+
 class SessionTitlesMixin:
     """Sanitizing, ranking auto/user titles, lineage-aware lookups."""
 
@@ -184,15 +199,5 @@ class SessionTitlesMixin:
         return numbered[0]["id"] if numbered else (exact["id"] if exact else None)
 
     def get_next_title_in_lineage(self, base_title: str) -> str:
-        """Next title in a lineage ("my session" -> "my session #2"): strip any " #N" suffix,
-        then increment the highest existing number."""
-        match = _NUMBERED_TITLE_RE.match(base_title)
-        base = match.group(1) if match else base_title
-        rows = self._read_all(
-            "SELECT title FROM sessions WHERE title = ? OR title LIKE ? ESCAPE '\\'",
-            (base, f"{_escape_like(base)} #%"))
-        if not rows:
-            return base
-        # The unnumbered original counts as #1.
-        numbers = [int(m.group(2)) for m in (_NUMBERED_TITLE_RE.match(row["title"]) for row in rows) if m]
-        return f"{base} #{max([1, *numbers]) + 1}"
+        """Next title in a lineage ("my session" -> "my session #2")."""
+        return self._read_retrying_ioerr(lambda conn: next_title_in_lineage(conn, base_title))

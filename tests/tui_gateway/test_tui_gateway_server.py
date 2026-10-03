@@ -20255,8 +20255,7 @@ def test_periodic_trim_runs_once_every_session_is_quiescent(monkeypatch):
 
 
 def test_turn_completion_trim_skips_while_another_session_is_running(monkeypatch):
-    """The finishing session is still marked running when _finish_turn runs, so only OTHER sessions gate its
-    trim: a sole session trims at every turn end; a second in-flight turn defers it (#58576)."""
+    """Only OTHER sessions gate the post-turn trim: a sole session trims at every turn end; a second in-flight turn defers it (#58576)."""
     calls = _periodic_trim_calls(monkeypatch)
     monkeypatch.setattr(server, "_clear_session_context", lambda tokens: None)
     now = time.time()
@@ -20264,12 +20263,12 @@ def test_turn_completion_trim_skips_while_another_session_is_running(monkeypatch
     server._sessions.clear()
     server._sessions["own"] = own
     try:
-        server._finish_turn("own", own, server._TurnRun(agent=None, one_turn_restore=None, terminal_callback=None, receipt_committed=True))
+        server._post_turn_housekeeping("own", own, server._TurnRun(agent=None, one_turn_restore=None, terminal_callback=None, receipt_committed=True))
         assert len(calls) == 1
 
         calls.clear()
         server._sessions["other"] = _idle_evictable_session(now) | {"running": True}
-        server._finish_turn("own", own, server._TurnRun(agent=None, one_turn_restore=None, terminal_callback=None, receipt_committed=True))
+        server._post_turn_housekeeping("own", own, server._TurnRun(agent=None, one_turn_restore=None, terminal_callback=None, receipt_committed=True))
         assert calls == []
     finally:
         server._sessions.clear()

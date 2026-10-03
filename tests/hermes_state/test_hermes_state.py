@@ -16,6 +16,7 @@ import pytest
 import hermes_state
 import hermes_state_wal
 import hermes_state_common
+import hermes_state_schema
 from agent.session_activity import ActivityProvenance, build_activity_snapshot
 from hermes_state import SessionDB
 from hermes_state_common import FTS_SQL, FTS_STORAGE_VERSION, SCHEMA_SQL, SCHEMA_VERSION
@@ -1749,8 +1750,11 @@ class TestSessionTitleIndexRepair:
                 ).fetchall()
             }
             assert set(rows) == {"older", "newer", "unique"}
-            assert rows["older"]["title"] is None
-            assert rows["newer"]["title"] == "shared-title"
+            # NULL title_source ranks as user: neither is dropped; the newer gets "#2" so the
+            # "#N"-preferring title lookup still opens the newest session.
+            assert rows["older"]["title"] == "shared-title"
+            assert rows["newer"]["title"] == "shared-title #2"
+            assert reopened.resolve_session_by_title("shared-title") == "newer"
             assert rows["unique"]["title"] == "unique-title"
             assert reopened.get_messages("older")[0]["content"] == "keep older message"
             assert reopened.get_messages("newer")[0]["content"] == "keep newer message"
@@ -1759,6 +1763,39 @@ class TestSessionTitleIndexRepair:
                 "WHERE type = 'index' AND name = 'idx_sessions_title_unique'"
             ).fetchone()
             assert index is not None
+        finally:
+            reopened.close()
+
+    @pytest.mark.parametrize("broken_rename", [False, True])
+    def test_repair_keeps_highest_ranked_newest_title(self, tmp_path, monkeypatch, broken_rename):
+        # #126764: rank (user > llm > derived) beats recency; within an auto rank the newest
+        # started_at wins even when it has the lower rowid; user rows are renamed oldest-first.
+        # broken_rename: the index still fails after rows were cleared -> the repair is rolled
+        # back whole (no half-repaired store committed without the index).
+        db_path = tmp_path / "ranked_titles.db"
+        db = SessionDB(db_path=db_path)
+        for sid in "abcde":
+            db.create_session(sid, "cli")
+        db.close()
+        seed = {"a": ("Trip", "user", 100), "b": ("Trip", "llm", 300), "c": ("Note", "derived", 200),
+                "d": ("Note", "derived", 100), "e": ("Trip", "user", 200)}
+        with contextlib.closing(sqlite3.connect(db_path)) as conn, conn:
+            conn.execute("DROP INDEX idx_sessions_title_unique")
+            conn.executemany(
+                "UPDATE sessions SET title = ?, title_source = ?, started_at = ? WHERE id = ?",
+                [(*row, sid) for sid, row in seed.items()],
+            )
+        if broken_rename:
+            monkeypatch.setattr(hermes_state_schema, "next_title_in_lineage", lambda conn, title: title)
+        reopened = SessionDB(db_path=db_path)
+        try:
+            titles = dict(reopened._conn.execute("SELECT id, title FROM sessions").fetchall())
+            expected = ({sid: row[0] for sid, row in seed.items()} if broken_rename else
+                        {"a": "Trip", "b": None, "c": "Note", "d": None, "e": "Trip #2"})
+            assert titles == expected
+            assert bool(reopened._conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE name = 'idx_sessions_title_unique'"
+            ).fetchone()) is not broken_rename
         finally:
             reopened.close()
 

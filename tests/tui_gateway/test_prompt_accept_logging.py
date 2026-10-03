@@ -104,3 +104,35 @@ def test_accepted_and_finished_records_on_success(turn_env, caplog):
 
     fin = finished[0].getMessage()
     assert "hunter2" not in fin
+
+
+def test_turn_settles_before_post_turn_trim(monkeypatch, caplog):
+    """A blocked post-turn trim must not hold the session running or its bookend (#131740)."""
+    import hermes_cli.mem_trim as mem_trim
+
+    entered, release = threading.Event(), threading.Event()
+
+    def blocking_trim(**_kw):
+        entered.set()
+        release.wait(timeout=10)
+
+    monkeypatch.setattr(mem_trim, "trim_memory", blocking_trim)
+    for name in ("_emit", "_wire_callbacks", "_register_session_cwd", "_sync_session_key_after_compress"):
+        monkeypatch.setattr(server, name, lambda *a, **k: None)
+    monkeypatch.setattr(server, "_sync_agent_model_with_config", lambda sid, session: None)
+    monkeypatch.setattr(server, "_tts_stream_begin", lambda: None)
+    monkeypatch.setattr(server, "_get_usage", lambda agent: {})
+    agent = types.SimpleNamespace(
+        session_id="agent-sid-1", run_conversation=lambda *a, **k: {"final_response": "done"},
+        clear_interrupt=lambda: None)
+    session = _session(agent=agent, running=True)
+    monkeypatch.setattr(server, "_sessions", {"ui-sid": session})
+    try:
+        with caplog.at_level(logging.INFO, logger="tui_gateway.server"):
+            assert server._run_prompt_submit("rid", "ui-sid", session, "hi")
+            assert entered.wait(timeout=5)
+            assert session["running"] is False
+            assert len(_records(caplog, "tui turn finished")) == 1
+    finally:
+        release.set()
+        session["_run_thread"].join(timeout=5)

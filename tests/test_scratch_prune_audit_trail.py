@@ -136,6 +136,38 @@ def test_prune_summary_logged_at_boot_caller(tmp_path, audit_records):
     assert summary, all_records
 
 
+def test_midprune_resumed_write_is_rescued(tmp_path, audit_records, monkeypatch):
+    """andrexibiza's C1/F1 (issue #132401): a writer (cwd outside scratch) resumes
+    during the prune's reap window — after selection, before the deletion loop.
+    The fresh write must survive: selection is a candidate list, never a verdict.
+    Red on pre-fix code (entry deleted with the fresh write inside), green after."""
+    import hermes_constants_scratch as scratch_mod
+
+    scratch = get_scratch_dir(tmp_path, prune=False)
+    entry = scratch / "resumed-lane"
+    entry.mkdir()
+    (entry / "old-output.md").write_text("stale content\n", encoding="utf-8")
+    _age(entry)
+    _age(entry / "old-output.md")
+    fresh = entry / "resumed-work.md"
+
+    def write_during_reap(root, doomed_list, *args, **kwargs):
+        # The resumed writer lands its fresh write mid-prune: selection is done,
+        # the deletion loop has not started. This is the F1 window.
+        fresh.write_text("FRESH RESUMED WORK\n", encoding="utf-8")
+        return 0
+
+    monkeypatch.setattr(scratch_mod, "reap_processes_rooted_in", write_during_reap)
+
+    assert prune_scratch_dir(scratch) == 0  # rescued — not counted as removed
+    assert fresh.exists(), "fresh mid-prune write was destroyed"
+    assert entry.exists()
+    all_records = [r.message for r in audit_records.records]
+    rescue = [m for m in all_records if "rescued" in m and "resumed-lane" in m]
+    assert rescue, all_records
+    assert not any("removed entry='resumed-lane'" in m for m in all_records)
+
+
 def test_prune_failed_removal_not_counted_and_logged(tmp_path, audit_records, monkeypatch):
     """andrexibiza's C2/F2 (issue #132401): a failed directory removal must not be
     reported as a removal — the count claims confirmed departures only, and the
@@ -163,6 +195,72 @@ def test_prune_failed_removal_not_counted_and_logged(tmp_path, audit_records, mo
     residue = [m for m in all_records if "removal left residue" in m and "locked-lane" in m]
     assert residue, all_records
     assert not any("removed entry='locked-lane'" in m for m in all_records)
+
+
+def test_audit_records_reach_durable_sink_early_boot(tmp_path, audit_records, monkeypatch):
+    """The early-boot sink gap (#132401, andrexibiza): the prune can run before
+    ``setup_logging`` installs the file handler, so a bare logger.info is
+    delivery-by-hope. The audit records must land somewhere durable regardless:
+    with no INFO-capable root handler (the early-boot state), the record is
+    appended to ``<home>/logs/scratch-prune.log`` on disk."""
+    import logging as _logging
+
+    scratch = get_scratch_dir(tmp_path, prune=False)
+    entry = scratch / "early-boot-lane"
+    entry.mkdir()
+    (entry / "f").write_text("x", encoding="utf-8")
+    _age(entry)
+    _age(entry / "f")
+
+    audit_home = tmp_path / "audit-home"
+    monkeypatch.setenv("HERMES_HOME", str(audit_home))
+    # Early-boot state: root logger has NO file handler capturing INFO.
+    monkeypatch.setattr(_logging, "root", _logging.getLogger("probe-no-sink"))
+
+    assert prune_scratch_dir(scratch) == 1
+
+    sink = audit_home / "logs" / "scratch-prune.log"
+    assert sink.exists(), "audit record did not reach the durable sink"
+    content = sink.read_text(encoding="utf-8-sig")
+    assert "removed entry='early-boot-lane'" in content, content
+
+
+def test_audit_no_double_write_when_log_sink_live(tmp_path, audit_records, monkeypatch):
+    """When the normal file handler IS live (post-setup), records go only through
+    the logger — no duplication into the durable sink file."""
+    import logging as _logging
+
+    scratch = get_scratch_dir(tmp_path, prune=False)
+    entry = scratch / "normal-boot-lane"
+    entry.mkdir()
+    (entry / "f").write_text("x", encoding="utf-8")
+    _age(entry)
+    _age(entry / "f")
+
+    audit_home = tmp_path / "audit-home2"
+    monkeypatch.setenv("HERMES_HOME", str(audit_home))
+
+    # Post-setup state: an INFO-capable handler exists at the root.
+    live_root = _logging.getLogger("probe-live-sink")
+    live_root.addHandler(_logging.StreamHandler())
+
+    class _InfoHandler(_logging.NullHandler):
+        level = _logging.INFO
+
+    import hermes_constants_scratch as scratch_mod
+    real_getlogger = _logging.getLogger
+
+    def getlogger_with_live(name=None):
+        lg = real_getlogger(name)
+        if lg is real_getlogger():
+            lg.addHandler(_InfoHandler())
+        return lg
+
+    monkeypatch.setattr(_logging, "getLogger", getlogger_with_live)
+
+    assert prune_scratch_dir(scratch) == 1
+    sink = audit_home / "logs" / "scratch-prune.log"
+    assert not sink.exists(), "record duplicated into durable sink while handler was live"
 
 
 def test_prune_oserror_failure_logged_not_counted(tmp_path, audit_records, monkeypatch):

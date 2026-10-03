@@ -234,6 +234,27 @@ def prune_idle_entries(root: Path, max_idle_hours: float, skip_names: frozenset[
     removed = 0
     for entry, newest, bytes_ in doomed:
         kind = "dir" if (entry.is_dir() and not entry.is_symlink()) else "file"
+        if kind == "dir":
+            repos |= _linked_worktree_repos(entry)
+        # Last-moment re-validation (#132401 C1/F1): the doomed list was snapshotted
+        # before the reap ran, and a resumed writer (cwd outside scratch) can land
+        # fresh work in that window. Anything that became touched since selection is
+        # rescued here, not deleted — the selection snapshot is a candidate list,
+        # never a verdict. Runs after the worktree scan so the re-check sits as
+        # close to the delete as the loop allows.
+        touched, newest, bytes_ = _scan_entry_idleness(entry, cutoff)
+        if touched:
+            if not entry.exists():
+                logger.info(
+                    "scratch prune: entry=%r vanished since selection",
+                    entry.name,
+                )
+            else:
+                logger.info(
+                    "scratch prune: rescued entry=%r — touched since selection, kept",
+                    entry.name,
+                )
+            continue
         try:
             if kind == "dir":
                 repos |= _linked_worktree_repos(entry)

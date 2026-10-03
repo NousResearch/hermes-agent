@@ -696,3 +696,37 @@ class TestPinTargetInsideTheBind:
         argv = ancestor_pin_args([(str(w), str(w))], [str(w)], hidden)
         home, config = str(w / "home"), str(w / "home" / ".config")
         assert argv == ["--bind", home, home, "--bind", config, config]
+
+
+class TestScratchDir:
+    """The scratch dir is bound back on top of the HERMES_HOME overlay."""
+
+    def test_scratch_bind_follows_the_profile(self, paths, tmp_path):
+        scratch = tmp_path / "hermes" / "cache" / "scratch"
+        scratch.mkdir(parents=True)
+        hermes_home = str(tmp_path / "hermes")
+        for profile, flag in (("restricted", "--ro-bind-try"), ("workspace", "--bind-try"), ("network", "--bind-try")):
+            argv = build(BubblewrapConfig(profile=profile), paths=paths, hermes_home=hermes_home, scratch_dir=str(scratch))
+            assert (str(scratch), str(scratch)) in triples(argv, flag)
+
+    def test_scratch_bind_sits_after_the_overlay_and_before_the_state_dir(self, paths, tmp_path):
+        hermes_home = tmp_path / "hermes"
+        scratch = hermes_home / "cache" / "scratch"
+        scratch.mkdir(parents=True)
+        argv = build(paths=paths, hermes_home=str(hermes_home), scratch_dir=str(scratch))
+        i_overlay = next(i for i, a in enumerate(argv) if a == "--tmpfs" and argv[i + 1] == str(hermes_home))
+        i_scratch = next(i for i, a in enumerate(argv) if a == "--bind-try" and argv[i + 1] == str(scratch))
+        i_state = next(i for i, a in enumerate(argv) if a == "--bind" and argv[i + 1] == paths["state_dir"])
+        assert i_overlay < i_scratch < i_state
+
+    def test_scratch_under_home_is_bound_before_home_is_sealed(self, paths):
+        scratch = Path(paths["hermes_home"]) / "cache" / "scratch"
+        scratch.mkdir(parents=True)
+        argv = build(paths=paths, scratch_dir=str(scratch))
+        i_scratch = next(i for i, a in enumerate(argv) if a == "--bind-try" and argv[i + 1] == str(scratch))
+        i_seal = next(i for i, a in enumerate(argv) if a == "--remount-ro" and argv[i + 1] == paths["home"])
+        assert i_scratch < i_seal
+
+    def test_no_scratch_bind_without_a_scratch_dir(self, paths):
+        argv = build(paths=paths)
+        assert not any(a.endswith(os.path.join("cache", "scratch")) for a in argv)

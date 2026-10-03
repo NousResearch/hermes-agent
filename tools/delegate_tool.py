@@ -12,6 +12,7 @@ tool calls or reasoning.
 """
 
 import logging
+import os
 import time
 import weakref
 from pathlib import Path
@@ -491,6 +492,15 @@ def delegate_task(
     if normalized_action and normalized_action != "spawn":
         return tool_error(f"Unknown action '{action}'. Use spawn (default), list, steer, or stop.")
 
+    # An external-profile runner is deliberately a leaf process. Its result is
+    # owned by the parent async ledger; allowing it to spawn another delegation
+    # would create an untracked second delivery lineage.
+    from agent.delegation_context import DELEGATED_CHILD_ENV_MARKER, is_external_profile_leaf_runtime
+    if is_external_profile_leaf_runtime():
+        return tool_error("External-profile Docker leaf runtimes cannot spawn delegate_task children.")
+    if os.environ.get(DELEGATED_CHILD_ENV_MARKER):
+        return tool_error("External-profile child processes cannot spawn delegate_task children.")
+
     # Operator kill switch (TUI / delegation.pause RPC): blocks NEW spawns only.
     if is_spawn_paused():
         return tool_error(
@@ -542,6 +552,20 @@ def delegate_task(
     err = _oneshot_spawn_budget(parent_agent, len(task_list))
     if err:
         return tool_error(err)
+    assert task_list is not None
+
+    external_profiles = [t for t in task_list if t.get("profile")]
+    if external_profiles:
+        if len(task_list) != 1 or len(external_profiles) != 1:
+            return tool_error("An explicit profile delegation accepts exactly one task per call.")
+        if not background:
+            return tool_error("An explicit profile delegation requires background delivery so the origin session owns its completion.")
+        try:
+            from tools.delegate_tool_dispatch import dispatch_external_profile_task
+            return dispatch_external_profile_task(task=external_profiles[0], parent_agent=parent_agent,
+                                                  context=context, role=top_role, origin=_capture_origin())
+        except ValueError as exc:
+            return tool_error(str(exc))
 
     overall_start = time.monotonic()
     # Live transcripts: cache/delegation/live/<id>/task-<n>.log per task, a side channel with zero effect on message
@@ -732,6 +756,10 @@ DELEGATE_TASK_SCHEMA = {
                             "is enabled; otherwise the whole call returns as one message). Tasks sharing a group return "
                             "together in ONE message; ungrouped tasks return individually as each finishes. This does not "
                             "order execution; if B needs A's output, dispatch B after A returns.",
+                        ),
+                        "profile": _p(
+                            "string",
+                            "Optional explicit Hermes profile for this single background task. Its result is delivered through the originating session's durable async-delegation ledger.",
                         ),
                     },
                     "required": ["goal"],

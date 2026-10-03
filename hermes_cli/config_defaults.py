@@ -1380,6 +1380,10 @@ DEFAULT_CONFIG = {
         # Background fan-outs return as ONE message when the whole call finishes. true = each task
         # (or `group`) returns on its own as it finishes — more new turns for the orchestrator.
         "independent_completions": False,
+        # Explicit profile names permitted for Docker-isolated external-profile
+        # delegation. Empty fails closed: a prompt cannot select another
+        # profile's credentials merely because that profile exists.
+        "external_profile_allowlist": [],
         # Orchestrator role controls. Depth floored at 1, no ceiling; each level multiplies cost.
         "max_spawn_depth": 1,  # 1 = flat, 2 = orchestrator→leaf, 3+ = deeper
         "orchestrator_enabled": True,  # kill switch for role="orchestrator"

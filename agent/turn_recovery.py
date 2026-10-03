@@ -500,11 +500,34 @@ def _recover_stale_codex_reasoning(
     return True
 
 
+def _is_reasoning_details_forbidden(api_error: Exception) -> bool:
+    """True when the provider rejected ``reasoning_details`` as an unknown field.
+
+    Strict chat-completions hosts (Mistral, Groq, Cerebras, opencode relays) answer
+    HTTP 400/422 with ``extra_forbidden`` / ``Extra inputs are not permitted`` naming
+    ``messages[i].*.reasoning_details`` (#130757). The transport already drops the field
+    for non-replaying routes; this is the net for any payload that still carries it
+    (stale api_messages across a fallback, middleware/relay re-adding it, a new strict host).
+    """
+    parts = [str(api_error or "").lower()]
+    body = getattr(api_error, "body", None)
+    if body is not None:
+        try:
+            parts.append(str(body).lower())
+        except Exception:
+            pass
+    text = " ".join(p for p in parts if p)
+    if "reasoning_details" not in text:
+        return False
+    return "extra_forbidden" in text or "extra inputs are not permitted" in text
+
+
 def _recover_format_errors(
     agent: Any, api_error: Exception, classified: Any, _retry: TurnRetryState,
     messages: List[Dict[str, Any]], api_messages: Any,
 ) -> bool:
-    """One-shot format-recovery strips: thinking-signature → invalid-encrypted-content
+    """One-shot format-recovery strips: thinking-signature → strict reasoning_details
+    (Mistral 422 extra_forbidden) → invalid-encrypted-content
     replay disable → native-compaction reject → llama.cpp grammar strip. Returns True when
     the request was repaired and should be retried."""
     # Upstream mutation can invalidate a thinking signature. Native Anthropic has multiple replay
@@ -532,6 +555,36 @@ def _recover_format_errors(
             agent.log_prefix, detail, removed,
         )
         return True
+
+    # Strict chat-completions hosts (Mistral, Groq, Cerebras, opencode relays) 400/422 on a
+    # ``reasoning_details`` that survived sanitization (stale api_messages across a fallback,
+    # middleware/relay re-adding it, a new strict host). One-shot: drop the field from the
+    # wire copy and retry; stored history keeps it for a return to a replaying route. (#130757)
+    if (
+        not _retry.reasoning_details_retry_attempted
+        and classified.reason in (FailoverReason.format_error, FailoverReason.unknown)
+        and _is_reasoning_details_forbidden(api_error)
+    ):
+        _retry.reasoning_details_retry_attempted = True
+        removed = 0
+        if isinstance(api_messages, list):
+            for message in api_messages:
+                if isinstance(message, dict) and "reasoning_details" in message:
+                    message.pop("reasoning_details", None)
+                    removed += 1
+        if removed:
+            _vlines(agent, "⚠️  Provider rejected reasoning_details (strict schema) — stripped and retrying...")
+            logger.warning(
+                "%sStrict-provider recovery: stripped reasoning_details from %d message(s) "
+                "(canonical messages unchanged)",
+                agent.log_prefix, removed,
+            )
+            return True
+        logger.info(
+            "%sStrict-provider recovery: 422 named reasoning_details but no wire message carried it; "
+            "surfacing original error.",
+            agent.log_prefix,
+        )
 
     # 400 ``invalid_encrypted_content`` on a stale ``codex_reasoning_items`` blob (the 401
     # ``token_expired`` twin is taken ahead of the credential pool in the caller).

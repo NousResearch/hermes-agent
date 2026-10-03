@@ -167,16 +167,17 @@ def _worker_memory_max_bytes() -> int:
     return min(override_bound, safe_bound) if override_bound else safe_bound
 
 
-def _systemd_scope_argv(binary: str, unit_name: str, *argv: str) -> List[str]:
+def _systemd_scope_argv(binary: str, unit_name: str, *argv: str, memory_max: bool = True) -> List[str]:
     """``systemd-run --user --scope`` argv shared by the probe and real spawns.
     ``--collect`` self-cleans the scope after exit; ``--unit`` names it for systemctl.
     No ``OOMPolicy=``: transient scopes reject it on systemd <253 (#102486).
-    ``--expand-environment=no`` keeps the command byte-identical (#132385)."""
+    ``--expand-environment=no`` keeps the command byte-identical (#132385).
+    ``memory_max=False`` keeps the separate cgroup but no worker cap (foreground commands)."""
     no_expand = ["--expand-environment=no"] if _SYSTEMD_RUN_NO_EXPAND else []
+    limit = ["--property", f"MemoryMax={_worker_memory_max_bytes()}"] if memory_max else []
     return [
         binary, "--user", "--scope", "--quiet", *no_expand, "--unit", unit_name, "--collect",
-        "--property", "MemoryAccounting=yes",
-        "--property", f"MemoryMax={_worker_memory_max_bytes()}",
+        "--property", "MemoryAccounting=yes", *limit,
         "--", *argv,
     ]
 
@@ -318,7 +319,7 @@ def _is_supervised_gateway_process() -> bool:
 
 
 def _build_systemd_scope_argv(shell_argv: List[str], unit_suffix: str, *,
-                              prefix: str = "hermes-worker") -> List[str]:
+                              prefix: str = "hermes-worker", memory_max: bool = True) -> List[str]:
     """Wrap *shell_argv* in a ``systemd-run --user --scope`` invocation with its own
     memory accounting, so an OOM in the worker cannot kill the gateway cgroup.
 
@@ -331,7 +332,7 @@ def _build_systemd_scope_argv(shell_argv: List[str], unit_suffix: str, *,
     if binary is None:
         # Caller should have probed availability; never pass None into Popen anyway.
         return shell_argv
-    return _systemd_scope_argv(binary, f"{prefix}-{unit_suffix}", *shell_argv)
+    return _systemd_scope_argv(binary, f"{prefix}-{unit_suffix}", *shell_argv, memory_max=memory_max)
 
 
 _scope_degraded_warned = False

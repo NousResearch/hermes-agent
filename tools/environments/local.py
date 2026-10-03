@@ -1005,7 +1005,10 @@ def _foreground_scope_argv(args: list[str], run_env: dict) -> "tuple[list[str], 
             _warn_foreground_scope_degraded("systemd-run --user --scope is unavailable")
             return args, None, run_env
         suffix = f"{os.getpid()}-{next(_foreground_scope_counter)}"
-        scoped = _pr._build_systemd_scope_argv(args, unit_suffix=suffix, prefix="hermes-fg")
+        # Own cgroup only, no worker MemoryMax: a foreground build may legitimately need
+        # more than the background cap; the isolation alone protects the gateway.
+        scoped = _pr._build_systemd_scope_argv(args, unit_suffix=suffix, prefix="hermes-fg",
+                                               memory_max=False)
         if scoped == args:
             _warn_foreground_scope_degraded("no systemd-run wrapper could be built")
             return args, None, run_env

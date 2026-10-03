@@ -1162,7 +1162,7 @@ class SessionStore(
         old, new = (old_name or "").strip(), (new_name or "").strip()
         if not old or not new or old == new:
             return 0
-        old_ns, new_ns = f"agent:{old}:", f"agent:{new}:"
+        old_ns, new_ns = _session_key_namespace(old) + ":", _session_key_namespace(new) + ":"
         with self._lock:
             moving = [key for key in self._entries if key.startswith(old_ns)]
             collisions = [
@@ -1194,7 +1194,7 @@ class SessionStore(
         name = (profile or "").strip()
         if not name:
             return 0
-        ns = f"agent:{name}:"
+        ns = _session_key_namespace(name) + ":"
         with self._lock:
             dropped = [key for key in self._entries if key.startswith(ns)]
             for key in dropped:

@@ -221,6 +221,26 @@ def test_flatten_and_non_text_leaves_reject_a_cycle_with_valueerror():
         i18n_layers.non_text_leaves(document)
 
 
+def test_flatten_rejects_a_two_node_cycle():
+    """``first: &a {second: &b {back: *a}}`` — the cycle passes through two distinct mappings."""
+    document = yaml.safe_load("first: &a\n  second: &b\n    back: *a\n")
+    assert document["first"]["second"]["back"] is document["first"]
+    with pytest.raises(ValueError, match="cyclic"):
+        i18n_layers.flatten(document)
+    with pytest.raises(ValueError, match="cyclic"):
+        i18n_layers.non_text_leaves(document)
+
+
+def test_deep_acyclic_mapping_still_flattens():
+    """Deep but acyclic nesting (a hostile locale file shape) flattens normally well past real catalogs."""
+    document: dict = {"leaf": "v"}
+    for i in reversed(range(300)):
+        document = {f"l{i}": document}
+    expected = ".".join(f"l{i}" for i in range(300)) + ".leaf"
+    assert i18n_layers.flatten(document) == {expected: "v"}
+    assert i18n_layers.non_text_leaves(document) == []
+
+
 def test_flatten_keeps_a_shared_anchor_reused_by_sibling_keys():
     shared = {"k": "v"}
     document = {"a": shared, "b": shared}  # what `a: &x {k: v}` / `b: *x` parses into

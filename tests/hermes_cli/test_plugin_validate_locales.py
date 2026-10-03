@@ -96,3 +96,14 @@ def test_cyclic_anchor_is_a_validation_error_not_a_crash(tmp_path):
     assert not report.ok
     ok, detail = _check(report, "locale pl")
     assert not ok and "cyclic" in detail
+
+
+def test_overdeep_nesting_is_a_validation_error_not_a_crash(tmp_path):
+    """Acyclic nesting past Python's recursion limit (libyaml parses it; the walkers cannot walk it)
+    must end validation with a failed check, not an escaped RecursionError traceback."""
+    plugin = _pack(tmp_path, core=None)
+    (plugin / "locales" / "pl.yaml").write_text("{k: " * 1500 + "v" + "}" * 1500, encoding="utf-8")
+    report = validate_plugin_dir(plugin)
+    assert not report.ok
+    ok, detail = _check(report, "locale pl")
+    assert not ok and "failed to flatten" in detail and "recursion" in detail

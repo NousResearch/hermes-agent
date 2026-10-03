@@ -99,7 +99,7 @@ def _check_locale_file(report, lang_id: str, surface: str, path: Path) -> None:
             report.add(label, False, f"{path.name} has non-text value(s) at: {', '.join(sorted(bad_leaves))}")
             return
         flat = flatten(document)
-    except ValueError as exc:  # e.g. a YAML anchor/alias cycle, rejected instead of crashing validation
+    except (ValueError, RecursionError) as exc:  # cyclic anchors, or nesting past Python's recursion limit
         report.add(label, False, f"{path.name} failed to flatten: {exc}")
         return
     reference = reference_keys(surface)

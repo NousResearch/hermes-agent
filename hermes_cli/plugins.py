@@ -397,6 +397,32 @@ class PluginContext:
         return SubagentLifecycleService(get_active_subagent_parent)
 
     @property
+    def runtime(self) -> Any:
+        """Trusted runtime authority surface (``ctx.runtime``).
+
+        Exposes ``verify_cron_execution(expected_job_id=...,
+        purpose_digest=...)`` backed by :mod:`cron.execution_authority`.
+        Verification reads the calling context's process-local grant and the
+        live durable row; model-visible values (``task_id``, hook payloads)
+        are never trusted.  Returns a read-only projection or ``None``.
+        """
+        try:
+            from cron.execution_authority import CronRuntimeAuthority
+
+            return CronRuntimeAuthority(plugin_id=self.plugin_id)
+        except Exception:
+            # Fail-closed without breaking plugin registration when the cron
+            # subsystem is unavailable.
+            class _UnavailableRuntime:
+                def verify_cron_execution(self, *args: Any, **kwargs: Any) -> None:
+                    return None
+
+                def __repr__(self) -> str:  # pragma: no cover - trivial
+                    return "CronRuntimeAuthority(unavailable)"
+
+            return _UnavailableRuntime()
+
+    @property
     def profile_name(self) -> str:
         """Active profile name (``"default"``, the ``~/.hermes/profiles/<name>`` id, or ``"custom"``),
         derived from ``HERMES_HOME`` — not ``_cli_ref``, which is None outside the interactive CLI —

@@ -3323,6 +3323,7 @@ def _run_one_job_body(
 
     _fire_scope_tokens = None
     _terminal_scope_token = None
+    _grant_scope_cm = None
     try:
         # Commit a finite one-shot's dispatch BEFORE its side effect so a tick dying mid-run cannot
         # re-fire it forever on restart. No-op for recurring/infinite jobs (at-most-times).
@@ -3344,6 +3345,20 @@ def _run_one_job_body(
         if not external_owner and mark_execution_running(execution_id) is None:
             logger.warning("Cron job %s lost execution ownership before start; skipping", job["id"])
             return True
+
+        # Authenticated execution principal (#130722): mint a process-local opaque
+        # grant only after durable ``running`` ownership is established.  Only a
+        # genuine ``source == "builtin"`` row with a canonical non-null
+        # ``scheduled_instant`` mints; manual/direct/off-schedule/external rows
+        # hide any outer grant for the block (stack discipline) instead.
+        try:
+            from cron.execution_authority import scoped_execution_grant as _scoped_grant
+
+            _grant_scope_cm = _scoped_grant(execution_id)
+            _grant_scope_cm.__enter__()
+        except Exception:
+            _grant_scope_cm = None
+            logger.debug("Job '%s': execution grant unavailable", job["id"], exc_info=True)
 
         # get_secret() fails closed outside a scope; the ticker thread has none. Delivery adapters
         # resolve credentials, so the scope must span delivery too (reset in the outer finally).
@@ -3523,6 +3538,11 @@ def _run_one_job_body(
     finally:
         # Function-level on purpose: must scope delivery, deferred teardown, claim-loss handling and
         # bookkeeping — not just run_job. Do not move into the run block's finally.
+        if _grant_scope_cm is not None:
+            try:
+                _grant_scope_cm.__exit__(None, None, None)
+            except Exception:
+                pass
         if _fire_scope_tokens is not None:
             _reset_fire_secret_scope(_fire_scope_tokens)
         if _terminal_scope_token is not None:

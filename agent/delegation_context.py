@@ -29,14 +29,33 @@ KANBAN_ENV_KEYS: tuple[str, ...] = (
 def delegated_child_context(session_id: str | None = None) -> Iterator[None]:
     """Mark child execution and isolate its task-local session identity. Even a context
     entered without an id must restore the parent's session ContextVar (child
-    construction calls ``set_current_session_id``)."""
+    construction calls ``set_current_session_id``).
+
+    A delegated child never inherits the cron execution grant: the authority is
+    hidden for the block (stack discipline) so ``verify_cron_execution`` fails
+    inside every subagent turn.
+    """
     token = _DELEGATED_CHILD_CONTEXT.set(True)
+    cron_token = None
     try:
+        try:
+            from cron.execution_authority import suspend_grant_for_child
+
+            cron_token = suspend_grant_for_child()
+        except Exception:
+            cron_token = None
         from gateway.session_context import scoped_current_session_id  # lazy: it calls is_delegated_child_context()
 
         with scoped_current_session_id(session_id):
             yield
     finally:
+        if cron_token is not None:
+            try:
+                from cron.execution_authority import restore_grant_after_child
+
+                restore_grant_after_child(cron_token)
+            except Exception:
+                pass
         _DELEGATED_CHILD_CONTEXT.reset(token)
 
 

@@ -747,6 +747,32 @@ class TestCheckWebApiKey:
             assert _provider_is_ready(unavailable) is False
             assert check_web_api_key() is False
 
+    def test_configured_backend_must_match_available_provider(self):
+        """#78412: an explicitly configured backend that is not available must report
+        broken — no other backend may answer on its behalf.
+
+        `_get_backend()` returns a stored `web.backend` selection as-is (no probe, no
+        fallback), so an unavailable explicit selection fails deterministically at
+        dispatch. The readiness gate must not paint a green check for it just because
+        some UNRELATED built-in happens to have credentials (here: firecrawl), or
+        `hermes doctor` repeats #78412 with the roles reversed.
+        """
+        def _only_firecrawl_available(backend):
+            return backend == "firecrawl"
+
+        with patch("tools.web_tools._load_web_config", return_value={"backend": "parallel"}), \
+             patch("tools.web_tools._is_backend_available", side_effect=_only_firecrawl_available):
+            from tools.web_tools import check_web_api_key
+            assert check_web_api_key() is False
+
+    def test_no_explicit_backend_any_available_builtin_lights_gate(self):
+        """Guard against over-restricting: with no explicit selection stored, one
+        available built-in is still sufficient for the gate (the OR semantics)."""
+        with patch("tools.web_tools._load_web_config", return_value={}), \
+             patch("tools.web_tools._is_backend_available", return_value=True):
+            from tools.web_tools import check_web_api_key
+            assert check_web_api_key() is True
+
     def test_explicit_available_active_provider_is_ready(self):
         """Registry-selected available provider still lights the gate."""
         class _AvailableProvider:

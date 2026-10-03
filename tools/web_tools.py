@@ -477,10 +477,21 @@ def check_web_api_key() -> bool:
 
     See #28651, #31873.
     """
-    # Boolean OR over configured + built-ins — probe order is irrelevant here.
-    candidates = ([c for c in (_configured_backend(),) if c]
-                  + [b for b in _LEGACY_WEB_BACKENDS if b not in _WEB_CHECK_SKIP])
-    if any(_is_backend_available(backend) for backend in candidates):
+    # An EXPLICITLY configured backend answers for itself, and nothing else may answer
+    # for it (#78412). `_get_backend()` returns a stored selection as-is with no
+    # fallback — a broken explicit config fails at dispatch — so this readiness gate
+    # must not let another backend paint a green check for it (tool check_fn,
+    # `hermes doctor`). Its availability is returned directly; we do NOT fall through
+    # to the other built-ins, the keyless ring, or the plugin walk below.
+    configured = _configured_backend()
+    if configured and (
+        configured in _LEGACY_WEB_BACKENDS or _registered_web_provider(configured) is not None
+    ):
+        return _is_backend_available(configured)
+    # No explicit config (or a name nothing recognizes): boolean OR over the built-ins —
+    # probe order is irrelevant here. Non-legacy (plugin) names resolve through
+    # _is_backend_available -> registry is_available().
+    if any(_is_backend_available(backend) for backend in _LEGACY_WEB_BACKENDS if backend not in _WEB_CHECK_SKIP):
         return True
     # Plugin path. Discovery must run first: check_fn fires at tool-registration time, before any dispatch.
     try:

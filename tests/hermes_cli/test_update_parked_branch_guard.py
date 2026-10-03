@@ -175,6 +175,76 @@ def test_missing_origin_ref_is_unverifiable(repo_pair):
     assert reason == "unverifiable"
 
 
+def _treeless_repo_pair(tmp_path):
+    """A treeless clone parked on ``old-feature`` cut from c1, with origin/main
+    two commits ahead whose commits are local but whose trees are not, and a
+    promisor remote that can no longer satisfy a lazy fetch — the #124767
+    shape on a real partial clone.
+
+    Returns ``(clone,)``. Local commits/trees are all present; only the
+    upstream-side trees are missing, which is exactly what ``git cherry``'s
+    patch-id walk needs and ``rev-list`` does not.
+    """
+    origin = tmp_path / "origin"
+    origin.mkdir()
+    _git(origin, "init", "-q", "-b", "main")
+    _git(origin, "config", "user.email", "test@example.com")
+    _git(origin, "config", "user.name", "Test")
+    # file:// (not a plain path) plus allowFilter: a local origin that speaks
+    # the partial-clone protocol, like GitHub does for real tree:0 clones.
+    _git(origin, "config", "uploadpack.allowFilter", "true")
+    (origin / "a.txt").write_text("one\n")
+    _git(origin, "add", "a.txt")
+    _git(origin, "commit", "-qm", "c1")
+
+    clone = tmp_path / "clone"
+    _git(tmp_path, "clone", "-q", f"file://{origin}", str(clone))
+    _git(clone, "config", "user.email", "test@example.com")
+    _git(clone, "config", "user.name", "Test")
+    _git(clone, "checkout", "-qb", "old-feature")
+
+    (origin / "a.txt").write_text("two\n")
+    _git(origin, "commit", "-aqm", "c2")
+    (origin / "b.txt").write_text("three\n")
+    _git(origin, "add", "b.txt")
+    _git(origin, "commit", "-qm", "c3")
+
+    # c2/c3 arrive as commits only (no trees); from here every lazy fetch fails.
+    _git(clone, "fetch", "-q", "--filter=tree:0", "origin", "main")
+    _git(clone, "remote", "set-url", "origin", f"file://{tmp_path / 'nowhere'}")
+    return clone
+
+
+def test_treeless_clone_verifies_merged_parked_branch_from_commit_graph(tmp_path):
+    """Fully merged parked branch on a tree:0 clone with an unreachable promisor
+    remote: ``git cherry`` needs origin/main's trees and its lazy fetch fails,
+    which made the guard call a clean, fully-merged checkout unverifiable and
+    skip the update (#124767). The verdict must come from the commit graph
+    alone."""
+    clone = _treeless_repo_pair(tmp_path)
+    safe, reason = update_cmd._assess_parked_branch_switch(
+        GIT, clone, "old-feature", "main"
+    )
+    assert safe is True
+    assert reason == ""
+
+
+def test_treeless_cherry_failure_degrades_to_conservative_unmerged(tmp_path):
+    """Clean parked branch with local commits whose patch-equivalence cannot be
+    established (cherry's lazy fetch fails): a clean checkout must still reach
+    the target — degrade to the commit-graph count instead of the old
+    "unverifiable" skip (#124767)."""
+    clone = _treeless_repo_pair(tmp_path)
+    (clone / "feature.txt").write_text("unmerged work\n")
+    _git(clone, "add", "feature.txt")
+    _git(clone, "commit", "-qm", "feature work")
+    safe, reason = update_cmd._assess_parked_branch_switch(
+        GIT, clone, "old-feature", "main"
+    )
+    assert safe is True
+    assert reason == "unmerged:1"
+
+
 # ---------------------------------------------------------------------------
 # Skip warning content
 # ---------------------------------------------------------------------------

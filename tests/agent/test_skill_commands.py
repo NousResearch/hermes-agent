@@ -548,6 +548,46 @@ class TestBuildPreloadedSkillsPrompt:
         assert "enabled-skill" in prompt
 
 
+class TestDuplicateNamesAgreeAcrossSurfaces:
+    def test_every_surface_resolves_duplicates_like_skill_view(self, tmp_path, monkeypatch):
+        """#64392: list, prompt index, slash commands, skill_view, -s preload and cron agree. A same-tier
+        duplicate is advertised only by its exact path and every loader names those paths; a cross-tier
+        duplicate (same relative path, local + external) loads the local copy everywhere."""
+        import json
+
+        from agent import prompt_builder as pb, skill_utils
+        from cron.scheduler_prompt import _load_cron_skill_parts
+        from tools.skills_tool import skill_view, skills_list
+        local, ext = tmp_path / "local", tmp_path / "ext"
+        _make_skill(local, "dup-demo", category="a", body="BODY A")
+        (local / "a" / "dup-demo").rename(local / "a" / "one")
+        _make_skill(local, "dup-demo", category="b", body="BODY B")
+        (local / "b" / "dup-demo").rename(local / "b" / "two")
+        _make_skill(local, "xdup", category="productivity", body="LOCAL XDUP")
+        _make_skill(ext, "xdup", category="productivity", body="EXTERNAL XDUP")
+        monkeypatch.setattr(skills_tool_module, "SKILLS_DIR", local)
+        monkeypatch.setattr(skills_tool_module, "_SKILLS_CACHE", {})
+        monkeypatch.setattr(skill_utils, "get_external_skills_dirs", lambda: [ext])
+        monkeypatch.setattr(pb, "get_skills_dir", lambda: local)
+        monkeypatch.setattr(pb, "get_disabled_skill_names", lambda *a, **k: set())
+        monkeypatch.setattr(pb, "_skills_prompt_snapshot_path", lambda: tmp_path / "snap.json")
+        pb.clear_skills_system_prompt_cache()
+
+        ambiguous = "Ambiguous skill name dup-demo: use one of a/one, b/two"
+        assert sorted(s["name"] for s in json.loads(skills_list())["skills"]) == ["a/one", "b/two", "xdup"]
+        index = [ln.strip() for ln in pb.build_skills_system_prompt().splitlines() if ln.startswith("    - ")]
+        assert index == ["- a/one: Description for dup-demo.", "- b/two: Description for dup-demo.",
+                         "- xdup: Description for xdup."]
+        assert sorted(scan_skill_commands()) == ["/xdup"]
+        assert json.loads(skill_view("dup-demo"))["load_names"] == ["a/one", "b/two"]
+        for ident in ("xdup", "productivity/xdup"):
+            assert "LOCAL XDUP" in json.loads(skill_view(ident))["content"]
+        _, loaded, missing = build_preloaded_skills_prompt(["dup-demo", "xdup", "a/one"])
+        assert (loaded, missing) == (["xdup", "dup-demo"], [ambiguous])
+        parts = _load_cron_skill_parts({"id": "j"}, ["dup-demo", "xdup"])
+        assert ambiguous in parts[0] and "LOCAL XDUP" in "\n".join(parts)
+
+
 class TestBuildSkillInvocationMessage:
 
 

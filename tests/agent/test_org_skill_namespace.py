@@ -137,8 +137,11 @@ class TestListingCollisionsAndLabels:
         )
         _mark_active(skills, "org-1")
         out = pb.build_skills_system_prompt()
-        # BOTH entries flagged — neither silently wins.
-        assert out.count("[name collision") == 2
+        # Neither silently wins: the org copy is flagged under the exact path skill_view loads, and the
+        # root-level personal copy (whose only path IS the bare name, so nothing can load it) is called out.
+        assert "- _org/org-1/k8s-debug: [name collision" in out
+        assert "- k8s-debug:" not in out
+        assert "A copy of k8s-debug is not listed" in out
 
     def test_no_collision_flag_when_unique(self, tmp_path, monkeypatch):
         skills, pb = self._render(tmp_path, monkeypatch)

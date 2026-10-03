@@ -879,36 +879,47 @@ class TestSkillViewCollisionDetection:
             ),
         )
 
-    def test_nested_local_collides_with_top_level_external(self, tmp_path):
-        """The original bug scenario: nested local + top-level external,
-        same name. Now refuses with both paths surfaced."""
-        local_dir = tmp_path / "local"
-        external_dir = tmp_path / "external"
-        local_dir.mkdir()
-        external_dir.mkdir()
+    @pytest.mark.parametrize("winner_tier, loser_tier, winner_rel, loser_rel, lookup", [
+        # The original 59da8ec4e scenario (nested local + top-level external) used to refuse; the
+        # documented precedence now picks local, matching skills_list / the prompt index / slash.
+        ("local", "external", "foundations/runtime/explore-codebase", "explore-codebase", "explore-codebase"),
+        # Same relative path in both roots: on main no identifier could load either copy.
+        ("local", "external", "productivity/xdup", "productivity/xdup", "productivity/xdup"),
+        ("local", "external", "productivity/xdup", "productivity/xdup", "xdup"),
+        ("create_dir", "external", "brain/note", "note", "note"),
+        ("local", "create_dir", "note", "brain/note", "note"),
+        ("project", "local", "deploy", "ops/deploy", "deploy"),
+    ])
+    def test_higher_tier_wins_cross_directory_collision(
+            self, tmp_path, caplog, winner_tier, loser_tier, winner_rel, loser_rel, lookup):
+        """project > local > create_dir > external: the higher tier loads, the shadowed copy is
+        reported by skills_list neither as a row nor as a guess, and a warning names it."""
+        from agent import skill_utils
+        tiers = {t: tmp_path / t for t in ("project", "local", "create_dir", "external")}
+        for root in tiers.values():
+            root.mkdir()
+        for tier, rel in ((winner_tier, winner_rel), (loser_tier, loser_rel)):
+            *cat, leaf = rel.split("/")
+            _make_skill(tiers[tier], leaf, category="/".join(cat) or None,
+                        frontmatter_extra=f"x-tier: {tier}\n", body=f"{tier.upper()} VERSION")
+        p1, p2 = self._patch_dirs(tiers["local"], [tiers["external"]])
+        with p1, p2, caplog.at_level("WARNING"), \
+                patch.object(skill_utils, "get_skill_create_dir", return_value=tiers["create_dir"]), \
+                patch.object(skill_utils, "get_project_skills_dirs", return_value=[tiers["project"]]), \
+                patch.object(skill_utils, "iter_project_skill_files",
+                             lambda d: skill_utils.iter_skill_index_files(d, "SKILL.md")):
+            skills_tool_module._SKILLS_CACHE.clear()
+            skill_utils._WARNED_SHADOWS.clear()
+            result = json.loads(skill_view(lookup))
+            listed = json.loads(skills_list())["skills"]
 
-        _make_skill(
-            local_dir,
-            "explore-codebase",
-            category="foundations/runtime",
-            body="LOCAL VERSION",
-        )
-        _make_skill(external_dir, "explore-codebase", body="EXTERNAL VERSION")
-
-        p1, p2 = self._patch_dirs(local_dir, [external_dir])
-        with p1, p2:
-            raw = skill_view("explore-codebase")
-
-        result = json.loads(raw)
-        assert result["success"] is False
-        assert "Ambiguous skill name 'explore-codebase'" in result["error"]
-        assert "matches" in result
-        assert len(result["matches"]) == 2
-        # Both paths surfaced
-        assert any(os.path.join("foundations", "runtime") in p for p in result["matches"])
-        assert any("external" in p for p in result["matches"])
-        assert "hint" in result
-
+        assert result["success"] is True, result
+        assert f"{winner_tier.upper()} VERSION" in result["content"]
+        assert f"{loser_tier.upper()} VERSION" not in result["content"]
+        leaf = winner_rel.rsplit("/", 1)[-1]
+        assert [s["name"] for s in listed if s["name"].endswith(leaf)] == [leaf]
+        assert any("shadowed" in r.getMessage() and str(tiers[loser_tier]) in r.getMessage()
+                   for r in caplog.records)
 
     def test_support_markdown_does_not_collide_with_real_skill(self, tmp_path):
         """Supporting reference docs named <skill>.md are not skills.
@@ -1076,7 +1087,8 @@ class TestSameRootDuplicationResolves:
             result = json.loads(skill_view("dup"))
 
         assert result["success"] is False, result
-        assert "Ambiguous" in result["error"]
+        assert "Ambiguous skill name 'dup': use one of cat-a/dup, cat-b/dup" in result["error"]
+        assert result["load_names"] == ["cat-a/dup", "cat-b/dup"]
         assert len(result["matches"]) == 2
 
 

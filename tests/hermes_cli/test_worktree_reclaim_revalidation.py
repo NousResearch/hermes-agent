@@ -45,7 +45,9 @@ def test_attended_reclaim_preserves_work_added_after_audit(repository, kind):
     assert next(record for record in records if record.path == str(tree)).verdict == "reap"
     _add_work(tree, kind)
 
-    reclaim_worktrees(str(root), records=records)
+    assert reclaim_worktrees(str(root), records=records) == [
+        "kept scratch (state changed since audit: verdict; now uncommitted tracked changes (real work))"
+        if kind == "edit" else "kept scratch (state changed since audit: verdict; now unpushed commits not found upstream)"]
 
     assert tree.is_dir()
     assert (tree / "README.md").read_text(encoding="utf-8") == "new work after audit\n"

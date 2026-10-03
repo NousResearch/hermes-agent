@@ -308,9 +308,12 @@ def reclaim_worktrees(
             verdict, reason, untracked = _classify_tree(
                 _ops, repo_root, entry, merge_cache, remote_heads)
             branch = _git(["branch", "--show-current"], cwd=record.path, timeout=5)
-            if (verdict != record.verdict or untracked != record.untracked
-                    or branch.returncode != 0 or branch.stdout.strip() != record.branch):
-                actions.append(f"kept {record.name} (state changed since audit: {reason})")
+            changed = ("verdict" if verdict != record.verdict
+                       else "untracked files" if untracked != record.untracked
+                       else "branch" if branch.returncode != 0 or branch.stdout.strip() != record.branch
+                       else "")
+            if changed:
+                actions.append(f"kept {record.name} (state changed since audit: {changed}; now {reason})")
                 continue
         except Exception as exc:
             actions.append(f"kept {record.name} (could not revalidate: {exc})")
@@ -322,7 +325,7 @@ def reclaim_worktrees(
                 continue
             actions.append(f"archived {len(record.untracked)} untracked file(s) → {archive}")
 
-        # Dead-pid locks must be unlocked or `remove --force` refuses.
+        # Dead-pid locks must be unlocked or `worktree remove` refuses.
         with contextlib.suppress(Exception):
             _git(["worktree", "unlock", record.path], cwd=repo_root, timeout=10)
         try:

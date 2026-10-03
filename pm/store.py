@@ -433,12 +433,28 @@ class Store:
         return target
 
     @contextmanager
-    def install_lock(self):
-        """Serialize writers using the same advisory lock as runtime publication."""
+    def install_lock(self, *, dry_run: bool = False):
+        """Serialize writers using the same advisory lock as runtime publication.
+
+        A dry run mutates nothing, so it must not initialise the store either:
+        the root is only created and the lock file only opened when a lock is
+        actually taken. When the lock file does not exist yet there is nothing
+        to serialise against, so a dry run simply proceeds unlocked. An
+        installer between its mkdir and its lock open is indistinguishable
+        from that case, so a dry run may briefly report its in-flight staging
+        dirs as removable — the report only, nothing is written.
+        """
         from pm.filesystem import lock_fd
-        self.root.mkdir(parents=True, exist_ok=True)
         lock = self.root / ".install.lock"
-        fd = os.open(lock, os.O_CREAT | os.O_RDWR, 0o600)
+        fd = None
+        if dry_run and not lock.exists():
+            yield
+            return
+        if dry_run:
+            fd = os.open(lock, os.O_RDWR)
+        else:
+            self.root.mkdir(parents=True, exist_ok=True)
+            fd = os.open(lock, os.O_CREAT | os.O_RDWR, 0o600)
         try:
             # A second `hermes pm install` behind an sdist build otherwise sits
             # silent for minutes; say what it is waiting on.

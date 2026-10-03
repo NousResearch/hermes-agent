@@ -271,10 +271,18 @@ def _discard_entry(store: Store, entry_name: str) -> None:
                 entry_name, error)
 
 
-def _reclaim_set_aside(store: Store) -> int:
-    """Delete set-aside trees whose hold is gone; the caller holds the store lock."""
+def _reclaim_set_aside(store: Store, *, dry_run: bool = False) -> int:
+    """Delete set-aside trees whose hold is gone; the caller holds the store lock.
+
+    ``dry_run`` only reports them — set-asides are install leftovers, but a
+    dry run must not unlink anything the operator was promised a preview of.
+    """
     removed = 0
     for item in sorted(store.root.glob(f"{_SET_ASIDE_PREFIX}*")):
+        if dry_run:
+            print(f"would remove {item.name}")
+            removed += 1
+            continue
         try:
             _remove_entry(store, item.name, attempts=1)
         except OSError:

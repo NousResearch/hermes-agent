@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import json
 import logging
+from contextlib import suppress
 from dataclasses import dataclass, replace
 from pathlib import Path
 
@@ -57,6 +58,44 @@ def _asset_path(asset) -> "Path | None":
     return path if path.exists() else None
 
 
+SIDELOAD_ASSETS_FILE = "sideload_assets.json"
+
+
+def sideload_assets_path() -> Path:
+    """Where a user declares companion assets for GGUFs the catalog has never heard of."""
+    from hermes_cli.local_runtime.bootstrap import runtimes_root
+
+    return runtimes_root() / SIDELOAD_ASSETS_FILE
+
+
+def load_sideload_assets() -> dict:
+    """``{model_id: {"mmproj": <name-or-path>, ...}}`` for sideloaded GGUFs.
+
+    The catalog is curated, so a sideloaded GGUF has no entry and nothing would ever attach its
+    vision projector — multimodal calls then fail with HTTP 500 "image input is not supported".
+    A missing or malformed file is not an error: sideloading stays opt-in.
+    """
+    try:
+        with open(sideload_assets_path(), encoding="utf-8-sig") as fh:
+            data = json.load(fh)
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _sideload_asset(model_id: str, kind: str) -> "Path | None":
+    """Resolve one declared companion for a sideloaded model; relative names live in assets/."""
+    from hermes_cli.local_runtime.bootstrap import assets_dir
+
+    declared = (load_sideload_assets().get(model_id) or {}).get(kind)
+    if not declared:
+        return None
+    path = Path(declared)
+    if not path.is_absolute():
+        path = assets_dir() / path
+    return path if path.exists() else None
+
+
 def _draft_fits(path: Path, profile, budget: HardwareBudget, window: int, overhead: int) -> bool:
     """Optional draft never shrinks the advertised window or displaces its GPU buffers.
 
@@ -98,8 +137,15 @@ def preset_for_model(gguf: Path, budget: HardwareBudget,
     is_mtp = entry.mtp if entry is not None else model_id in mtp_capable
 
     mmproj_path = _asset_path(entry.mmproj) if entry is not None else None
-    fixed_overhead = RUNTIME_OVERHEAD_BYTES + (
-        entry.mmproj.size_bytes if entry is not None and mmproj_path is not None else 0)
+    mmproj_bytes = entry.mmproj.size_bytes if entry is not None and mmproj_path is not None else 0
+    if mmproj_path is None and entry is None:
+        # Sideloaded GGUF: the catalog knows nothing about this file, so price whatever projector
+        # the user declared for it instead of launching blind.
+        mmproj_path = _sideload_asset(model_id, "mmproj")
+        if mmproj_path is not None:
+            with suppress(OSError):
+                mmproj_bytes = mmproj_path.stat().st_size
+    fixed_overhead = RUNTIME_OVERHEAD_BYTES + mmproj_bytes
     plan = plan_launch(profile, budget, mtp_capable=is_mtp, fixed_overhead=fixed_overhead,
                        requested_window=(load_window_overrides().get(model_id)
                                          if requested_window is None else requested_window))
@@ -127,11 +173,13 @@ def preset_for_model(gguf: Path, budget: HardwareBudget,
     # carrying neither runs llama.cpp defaults.
     for k, v in header.sampling_defaults.items():
         keys.setdefault(k, v)
+    # The projector is attached independently of the catalog: a sideloaded GGUF has no entry, and
+    # dropping this key is exactly what makes its multimodal calls fail.
+    if mmproj_path is not None:
+        keys["mmproj"] = str(mmproj_path)
     if entry is not None:
         for k, v in (entry.sampling or {}).items():
             keys.setdefault(k, v)
-        if mmproj_path is not None:
-            keys["mmproj"] = str(mmproj_path)
         draft_path = _asset_path(entry.draft) if decision.spilled else None
         if draft_path is not None and _draft_fits(draft_path, profile, budget, decision.window, plan.overhead_bytes):
             keys["model-draft"] = str(draft_path)

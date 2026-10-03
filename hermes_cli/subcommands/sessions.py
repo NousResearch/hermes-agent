@@ -19,6 +19,15 @@ def build_sessions_parser(subparsers, *, cmd_sessions: Callable) -> None:
         description="View and manage the SQLite session store")
     sessions_subparsers = sessions_parser.add_subparsers(dest="sessions_action")
 
+    sessions_recover_context = sessions_subparsers.add_parser(
+        "recover-context", help="Recover blocked model context from a reviewed summary",
+        description="Preview replacing active model context with an operator-reviewed UTF-8 summary. "
+            "With --apply, stop clients first; original history and the system prompt are preserved.")
+    sessions_recover_context.add_argument("session_id", help="Session ID or unique prefix (follows continuation)")
+    sessions_recover_context.add_argument("--summary-file", type=Path, required=True,
+        help="Reviewed UTF-8 continuation summary; no model call is made")
+    _flag(sessions_recover_context, "--apply", help="Apply recovery (default: preview only)")
+
     sessions_list = sessions_subparsers.add_parser("list", help="List recent sessions")
     sessions_list.add_argument("--source", help="Filter by source (cli, telegram, discord, etc.)")
     sessions_list.add_argument("--limit", type=int, default=20, help="Max sessions to show")

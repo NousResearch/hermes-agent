@@ -84,8 +84,9 @@ describe('model-status-label', () => {
     expect(displayModelName('claude-sonnet-5[1m]')).toBe('Sonnet 5 1M')
   })
 
-  it('keeps the model pill to name + Fast; the effort lives on its own pill', () => {
+  it('keeps the model pill to name + speed tier; the effort lives on its own pill', () => {
     expect(formatModelPillLabel('openai/gpt-5.5', { fastMode: true })).toBe('GPT-5.5 · Fast')
+    expect(formatModelPillLabel('openai/gpt-5.5', { fastMode: true, serviceTier: 'ultrafast' })).toBe('GPT-5.5 · Ultrafast')
     expect(formatModelPillLabel('anthropic/claude-opus-4.8-fast')).toBe('Opus 4.8 · Fast')
     expect(formatModelPillLabel('openai/gpt-5.5')).toBe('GPT-5.5')
     expect(formatModelPillLabel('')).toBe('No model')
@@ -144,8 +145,4 @@ describe('model-status-label', () => {
       expect(currentPickerSelection(store, undefined)).toEqual(store)
     })
   })
-})
-
-it('keeps Ultrafast distinct from Fast in the composer label', () => {
-  expect(formatModelPillLabel('gpt-6-astra-900k', { fastMode: true, serviceTier: 'ultrafast' })).toContain('Ultrafast')
 })

@@ -550,3 +550,39 @@ def test_update_import_probe_uses_selected_dependencies(tmp_path, monkeypatch):
     (repo / "hermes_integrity_probe.py").write_text("import selected_probe\n", encoding="utf-8")
     monkeypatch.setattr(update_cmd, "_UPDATE_CRITICAL_MODULES", ("hermes_integrity_probe",))
     assert update_cmd_validation._critical_module_import_failures(repo, report_runtime_errors=True) == {}
+
+
+@pytest.mark.platforms("windows", "posix")
+def test_stage_launcher_refuses_fixture_scratch_store(tmp_path, monkeypatch, caplog):
+    """A scratch fixture's store must not be baked into a real install's launchers.
+
+    A process pointed at an e2e fixture home resolves that fixture's store
+    python (via HERMES_HOME / HERMES_RUNTIME_DIR); publishing it into a real
+    install's bin leaves a launcher that dies with exit 127 once the scratch
+    tree is reaped (#131745).
+    """
+    repo, home, _interpreter = fixture_tree(tmp_path, monkeypatch)
+    scratch_home = home / "cache" / "scratch" / "hermes-e2e-media-overlap-run" / "hermes-home"
+    entry = "python-3.14.7-fixture"
+    python = scratch_home / "tools" / entry / ("python.exe" if os.name == "nt" else "bin/python3")
+    python.parent.mkdir(parents=True)
+    python.write_bytes(b"")
+    (scratch_home / "tools" / "facts.json").write_text(
+        json.dumps({"schema": 1, "packages": {"python": {"version": "fixture", "entry": entry}}}),
+        encoding="utf-8")
+    monkeypatch.setenv("HERMES_RUNTIME_DIR", str(scratch_home / "tools"))
+    resolved = _launchers.resolve_store_python(repo)
+    assert resolved is not None and _launchers._scratch_scope(resolved) is not None
+
+    import logging
+    with caplog.at_level(logging.WARNING, logger="hermes_cli._launchers"):
+        assert _launchers.stage_launcher("hermes", repo, repo / ".hermes/bin") is None
+    assert not (repo / ".hermes" / "bin" / "hermes").exists()
+    assert "scratch root" in caplog.text
+
+    # The same scratch tree publishing its own launcher stays allowed.
+    scratch_repo = scratch_home / "repo"
+    shutil.move(repo, scratch_repo)
+    scratch_bin = scratch_repo / ".hermes/bin"
+    scratch_bin.mkdir(parents=True)
+    assert _launchers.stage_launcher("hermes", scratch_repo, scratch_bin) is not None

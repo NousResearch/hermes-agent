@@ -101,6 +101,20 @@ def _cfgset_guarded(fn):
     return setter
 
 
+def _cfgset_guarded_4002(fn):
+    """Setter variant for a value-shape validator: ``ValueError`` (bad shape) becomes the
+    client-side-fixable ``4002``, not the generic ``5001`` ``_cfgset_guarded`` uses for every
+    other uncaught exception."""
+    def setter(rid, params, key, value, session):
+        try:
+            return fn(rid, params, key, value, session)
+        except ValueError as e:
+            return _err(rid, 4002, str(e))
+        except Exception as e:
+            return _err(rid, 5001, str(e))
+    return setter
+
+
 # ── per-key handlers
 
 @_cfgset_guarded
@@ -468,6 +482,26 @@ def _set_display_toggle(rid, params, key, value, session):
     return _kv(rid, key, on)
 
 
+# Server-side write-through cache for the two desktop settings that localStorage origin
+# changes can orphan. Same value shape the renderer already stores under
+# ``hermes.desktop.pluginDecisions.v2`` / ``hermes.desktop.keybinds`` — this is a mirror,
+# not a new source of truth, so the setter never invents a default when ``value`` is empty.
+@_cfgset_guarded_4002
+def _set_desktop_plugin_decisions(rid, params, key, value, session):
+    from tui_gateway.desktop_settings_schema import validate_plugin_decisions
+    decisions = validate_plugin_decisions(value)
+    _write_config_key("desktop.pluginDecisions", decisions)
+    return _kv(rid, key, decisions)
+
+
+@_cfgset_guarded_4002
+def _set_desktop_keybinds(rid, params, key, value, session):
+    from tui_gateway.desktop_settings_schema import validate_keybinds
+    binds = validate_keybinds(value)
+    _write_config_key("desktop.keybinds", binds)
+    return _kv(rid, key, binds)
+
+
 # ── dispatch
 
 _CONFIG_SETTERS = {
@@ -477,7 +511,9 @@ _CONFIG_SETTERS = {
     "density": _set_toggle, "battery": _set_toggle, "theme": _set_word,
     "statusbar": _set_toggle, "mouse": _set_toggle, "indicator": _set_word, "voice.voice_chat_mode": _set_word,
     "cwd": _set_cwd, "terminal.cwd": _set_cwd, "workdir": _set_cwd,
-    "prompt": _set_prompt, "personality": _set_personality, "skin": _set_skin}
+    "prompt": _set_prompt, "personality": _set_personality, "skin": _set_skin,
+    "desktop.pluginDecisions": _set_desktop_plugin_decisions,
+    "desktop.keybinds": _set_desktop_keybinds}
 
 # Keys whose sessionless branch writes a different, wider scope than the session branch (config.yaml's
 # agent.* for every surface, the process env every later child inherits). A non-empty session_id this

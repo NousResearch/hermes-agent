@@ -8570,12 +8570,16 @@
       },
       "ConfigGetResult": {
         "additionalProperties": false,
-        "description": "Union of every getter's payload: ``value`` for the simple words, ``config`` for ``full``,\n``mtime`` / ``mcp_rev`` for the poller, ``model`` / ``provider`` / ``providers`` for ``provider``,\n``home`` / ``display`` for ``profile``, ``cwd`` / ``branch`` for ``project``, ``prompt``.",
+        "description": "Union of every getter's payload: ``value`` for the simple words, ``config`` for ``full``,\n``mtime`` / ``mcp_rev`` for the poller, ``model`` / ``provider`` / ``providers`` for ``provider``,\n``home`` / ``display`` for ``profile``, ``cwd`` / ``branch`` for ``project``, ``prompt``.\n``value`` is also a ``{id: bool}`` / ``{id: [combo, ...]}`` object for\n``desktop.pluginDecisions`` / ``desktop.keybinds`` (desktop settings server mirror).",
         "properties": {
           "value": {
             "anyOf": [
               {
                 "type": "string"
+              },
+              {
+                "additionalProperties": true,
+                "type": "object"
               },
               {
                 "type": "null"
@@ -8854,7 +8858,7 @@
       },
       "ConfigSetResult": {
         "additionalProperties": false,
-        "description": "``{key, value}`` plus the setter's extras: model switches add ``warning`` /\n``confirm_required`` / ``confirm_message`` / ``scope`` / ``deferred``; ``focus`` adds\n``tool_progress``; ``cwd`` adds ``cwd`` / ``branch``; ``personality`` adds ``history_reset`` /\n``info``; ``yolo`` reports its ``scope``. ``value`` is a bool only for the display toggles.",
+        "description": "``{key, value}`` plus the setter's extras: model switches add ``warning`` /\n``confirm_required`` / ``confirm_message`` / ``scope`` / ``deferred``; ``focus`` adds\n``tool_progress``; ``cwd`` adds ``cwd`` / ``branch``; ``personality`` adds ``history_reset`` /\n``info``; ``yolo`` reports its ``scope``. ``value`` is a bool only for the display toggles, or\na ``{id: bool}`` / ``{id: [combo, ...]}`` object for ``desktop.pluginDecisions`` /\n``desktop.keybinds`` (desktop settings server mirror).",
         "properties": {
           "key": {
             "title": "Key",
@@ -8867,6 +8871,10 @@
               },
               {
                 "type": "boolean"
+              },
+              {
+                "additionalProperties": true,
+                "type": "object"
               },
               {
                 "type": "null"

@@ -288,6 +288,29 @@ class GatewayNotificationsMixin:
             )
             return None
         target_session_id = pinned_session_id
+        if target_session_id != session_entry.session_id:
+            visited = {target_session_id}
+            while True:
+                cfg = pinned_row.get("model_config")
+                if isinstance(cfg, str):
+                    try:
+                        import json
+                        cfg = json.loads(cfg)
+                    except Exception:
+                        cfg = {}
+                delegate_from = cfg.get("_delegate_from") if isinstance(cfg, dict) else None
+                if not delegate_from or delegate_from in visited:
+                    break
+                visited.add(delegate_from)
+                try:
+                    parent_row = await session_db.get_session(delegate_from)
+                except Exception:
+                    break
+                if parent_row is None:
+                    break
+                pinned_row = parent_row
+                pinned_session_id = delegate_from
+                target_session_id = delegate_from
         follows_compression = False
         if pinned_row.get("ended_at"):
             _end_reason = str(pinned_row.get("end_reason") or "")
@@ -1156,9 +1179,12 @@ class GatewayNotificationsMixin:
 
         See #9290.
         """
+        from tools.process_registry import ProcessRegistry
         from gateway.run import _drain_gateway_watch_events, _format_gateway_process_notification
         watch_events = _drain_gateway_watch_events(completion_queue)
         for evt in watch_events:
+            if ProcessRegistry.child_notification_suppressed(evt):
+                continue
             async with self._completion_event_scope(evt):
                 if self._load_background_notifications_mode() == "off":
                     continue
@@ -2000,6 +2026,12 @@ class GatewayNotificationsMixin:
             "parent_session_id": (
                 watcher.get("parent_session_id") or getattr(session, "parent_session_id", "") or ""
             ),
+            "owner_task_id": (
+                watcher.get("owner_task_id")
+                or getattr(session, "owner_task_id", "")
+                or getattr(session, "task_id", "")
+                or ""
+            ),
         }
 
     def _format_process_final_message(self, session_id: str, session, notify_mode: str) -> str:
@@ -2045,7 +2077,7 @@ class GatewayNotificationsMixin:
         (``display.background_process_notifications``): concise (default one-liner; failures append
         the output tail) / all (running updates + final raw) / result (final raw) / error (final raw
         if exit != 0) / off."""
-        from tools.process_registry import process_registry
+        from tools.process_registry import ProcessRegistry, process_registry
         from tools.process_registry_notifications import format_process_notification
         session_id = watcher["session_id"]
         interval = watcher["check_interval"]
@@ -2066,6 +2098,18 @@ class GatewayNotificationsMixin:
             session = process_registry.get(session_id)
             if session is None:
                 break
+            _evt_owner = {
+                "owner_task_id": (
+                    watcher.get("owner_task_id")
+                    or getattr(session, "owner_task_id", "")
+                    or getattr(session, "task_id", "")
+                    or ""
+                ),
+            }
+            if ProcessRegistry.child_notification_suppressed(_evt_owner):
+                if session.exited:
+                    break
+                continue
             if silent:
                 # Still wait for the process to exit so we can log it, but don't push any messages.
                 if session.exited:
@@ -2079,6 +2123,8 @@ class GatewayNotificationsMixin:
                 # wait/log (poll() is read-only and deliberately does NOT mark consumed).
                 if agent_notify and not process_registry.is_completion_consumed(session_id):
                     completion_evt = self._build_process_completion_event(watcher, session, session_id)
+                    if ProcessRegistry.child_notification_suppressed(completion_evt):
+                        break
                     synth_text = format_process_notification(completion_evt)
                     if not synth_text:
                         break

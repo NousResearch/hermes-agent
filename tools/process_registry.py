@@ -1967,6 +1967,17 @@ class ProcessRegistry(ProcessCheckpointMixin):
         finally:
             reset_hermes_home_override(token)
 
+    @classmethod
+    def child_notification_suppressed(cls, evt: dict) -> bool:
+        """true when evt is a subagent-owned process notification that should be suppressed in parent chats.
+        async-delegation result events are the deliverable itself and are never suppressed."""
+        if not isinstance(evt, dict) or evt.get("type") == "async_delegation":
+            return False
+        _evt_task_id = str(evt.get("owner_task_id") or evt.get("task_id") or "")
+        if not _evt_task_id.startswith("sa-"):
+            return False
+        return not cls._surface_child_process_notifications()
+
     def drain_notifications(
         self, session_key: str = "", owns_event=None, *, skip_poll_observed: bool = True,
     ) -> "list[tuple[dict, str]]":
@@ -1981,9 +1992,6 @@ class ProcessRegistry(ProcessCheckpointMixin):
         self.restore_completions()
         results: "list[tuple[dict, str]]" = []
         requeue: "list[dict]" = []
-        # delegation.surface_child_process_notifications, read at most once per drain
-        # and only when an sa- event shows up.
-        surface_child: "bool | None" = None
         while not self.completion_queue.empty():
             try:
                 evt = self.completion_queue.get_nowait()
@@ -2005,17 +2013,13 @@ class ProcessRegistry(ProcessCheckpointMixin):
             # by _resolve_container_task_id). Dropped, NOT requeued: children never
             # drain, so a requeue would pin the event forever. 'async_delegation'
             # is the result itself and is NEVER suppressed.
-            _evt_task_id = str(evt.get("owner_task_id") or evt.get("task_id") or "")
-            if not is_async_delegation and _evt_task_id.startswith("sa-"):
-                if surface_child is None:
-                    surface_child = self._surface_child_process_notifications()
-                if not surface_child:
-                    logger.debug(
-                        "Suppressed subagent-owned process notification "
-                        "(delegation.surface_child_process_notifications=false): "
-                        "type=%s session_id=%s task_id=%s",
-                        evt.get("type", "completion"), _evt_sid, _evt_task_id)
-                    continue
+            if self.child_notification_suppressed(evt):
+                logger.debug(
+                    "Suppressed subagent-owned process notification "
+                    "(delegation.surface_child_process_notifications=false): "
+                    "type=%s session_id=%s task_id=%s",
+                    evt.get("type", "completion"), _evt_sid, evt.get("owner_task_id") or evt.get("task_id") or "")
+                continue
             if text := format_process_notification(evt):
                 results.append((evt, text))
         for evt in requeue:

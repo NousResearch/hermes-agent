@@ -48,6 +48,10 @@ class _FakeRegistry:
     def is_completion_consumed(self, session_id):
         return self._consumed
 
+    def child_notification_suppressed(self, evt):
+        from tools.process_registry import ProcessRegistry
+        return ProcessRegistry.child_notification_suppressed(evt)
+
 
 def _build_runner(monkeypatch, tmp_path, mode: str) -> GatewayRunner:
     """Create a GatewayRunner with a fake config for the given mode."""
@@ -825,3 +829,99 @@ async def test_raw_output_modes_are_human_facing(monkeypatch, tmp_path):
         assert "proc_deadbeef" not in text and "[Background process" not in text and "~" not in text
         assert "\x1b[" not in text
         assert "make -j8 all" in text
+
+
+@pytest.mark.asyncio
+async def test_subagent_process_watcher_completion_suppressed(monkeypatch, tmp_path):
+    """subagent-owned process completions (owner_task_id starting with sa-) are suppressed
+    in _run_process_watcher so they do not get injected into parent chats."""
+    import tools.process_registry as pr_module
+
+    done = SimpleNamespace(
+        output_buffer="build done\n",
+        exited=True,
+        exit_code=0,
+        command="cargo build",
+        started_at=None,
+        owner_task_id="sa-child-agent-1",
+    )
+    monkeypatch.setattr(pr_module, "process_registry", _FakeRegistry([done]))
+
+    async def _instant_sleep(*_a, **_kw):
+        pass
+    monkeypatch.setattr(asyncio, "sleep", _instant_sleep)
+
+    runner = _build_runner(monkeypatch, tmp_path, "concise")
+    adapter = runner.adapters[Platform.TELEGRAM]
+    watcher = _watcher_dict(session_id="proc_subagent")
+    watcher["notify_on_complete"] = True
+    watcher["owner_task_id"] = "sa-child-agent-1"
+
+    await runner._run_process_watcher(watcher)
+
+    adapter.handle_message.assert_not_called()
+    adapter.send.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_subagent_watch_notification_drain_suppressed(monkeypatch, tmp_path):
+    """subagent watch events in the completion queue are suppressed by _drain_watch_notifications."""
+    runner = _build_runner(monkeypatch, tmp_path, "concise")
+    runner._inject_watch_notification = AsyncMock()
+
+    cq = queue.Queue()
+    cq.put({
+        "type": "watch_match",
+        "session_id": "proc_sa",
+        "session_key": "agent:main:telegram:dm:123",
+        "pattern": "READY",
+        "command": "serve",
+        "output": "READY\n",
+        "owner_task_id": "sa-subagent-worker",
+    })
+
+    await runner._drain_watch_notifications(cq)
+
+    runner._inject_watch_notification.assert_not_called()
+    assert cq.empty()
+
+
+@pytest.mark.asyncio
+async def test_subagent_process_watcher_non_agent_notify_all_mode_suppressed(monkeypatch, tmp_path):
+    """subagent watchers in mode 'all' with notify_on_complete=False never push interim or final messages."""
+    import tools.process_registry as pr_module
+
+    running = SimpleNamespace(
+        output_buffer="compiling...\n",
+        exited=False,
+        exit_code=None,
+        command="cargo build",
+        started_at=None,
+        owner_task_id="sa-child-agent-2",
+    )
+    done = SimpleNamespace(
+        output_buffer="compiling...\nbuild finished\n",
+        exited=True,
+        exit_code=0,
+        command="cargo build",
+        started_at=None,
+        owner_task_id="sa-child-agent-2",
+    )
+    monkeypatch.setattr(pr_module, "process_registry", _FakeRegistry([running, done]))
+
+    async def _instant_sleep(*_a, **_kw):
+        pass
+    monkeypatch.setattr(asyncio, "sleep", _instant_sleep)
+
+    runner = _build_runner(monkeypatch, tmp_path, "all")
+    adapter = runner.adapters[Platform.TELEGRAM]
+    watcher = _watcher_dict(session_id="proc_subagent_all")
+    watcher["notify_on_complete"] = False
+    watcher["owner_task_id"] = "sa-child-agent-2"
+
+    await runner._run_process_watcher(watcher)
+
+    adapter.handle_message.assert_not_called()
+    adapter.send.assert_not_called()
+
+

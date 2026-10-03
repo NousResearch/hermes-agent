@@ -257,3 +257,105 @@ async def test_pending_pin_respects_concurrent_boundary(tmp_path, boundary):
         assert result is not None and result.session_id == expected
     else:
         assert result is None
+
+
+@pytest.mark.asyncio
+async def test_subagent_child_session_resolves_to_parent_route(tmp_path):
+    """when a completion is stamped with a subagent child session, _resolve_async_delegation_session
+    walks up _delegate_from to the parent session and preserves the parent chat route without switching."""
+    from types import SimpleNamespace
+
+    from gateway.config import GatewayConfig, Platform
+    from gateway.run import GatewayRunner
+    from gateway.session import AsyncSessionStore, SessionSource, SessionStore
+
+    store = SessionStore(tmp_path / "sessions", GatewayConfig())
+    source = SessionSource(platform=Platform.TELEGRAM, chat_id="chat-1", chat_type="dm", user_id="user-1")
+    parent_entry = store.get_or_create_session(source)
+
+    rows = {
+        "child-subagent-1": {
+            "id": "child-subagent-1",
+            "ended_at": None,
+            "model_config": '{"_delegate_from": "' + parent_entry.session_id + '"}',
+        },
+        parent_entry.session_id: {
+            "id": parent_entry.session_id,
+            "ended_at": None,
+            "model_config": "{}",
+        },
+    }
+
+    runner = object.__new__(GatewayRunner)
+    runner.session_store = store
+    runner._async_session_store = AsyncSessionStore(store)
+    runner._session_db = SimpleNamespace(get_session=AsyncMock(side_effect=lambda sid: rows.get(sid)))
+
+    resolved = await runner._resolve_async_delegation_session(parent_entry, "child-subagent-1")
+    assert resolved is not None
+    assert resolved.session_id == parent_entry.session_id
+    assert store.lookup_by_session_key(parent_entry.session_key).session_id == parent_entry.session_id
+
+
+@pytest.mark.asyncio
+async def test_subagent_nested_child_session_resolves_to_root_parent(tmp_path):
+    """multi-level delegation chains walk _delegate_from recursively to find the root session."""
+    from types import SimpleNamespace
+
+    from gateway.config import GatewayConfig, Platform
+    from gateway.run import GatewayRunner
+    from gateway.session import AsyncSessionStore, SessionSource, SessionStore
+
+    store = SessionStore(tmp_path / "sessions", GatewayConfig())
+    source = SessionSource(platform=Platform.TELEGRAM, chat_id="chat-2", chat_type="dm", user_id="user-2")
+    parent_entry = store.get_or_create_session(source)
+
+    rows = {
+        "grandchild-subagent": {
+            "id": "grandchild-subagent",
+            "ended_at": None,
+            "model_config": {"_delegate_from": "child-subagent"},
+        },
+        "child-subagent": {
+            "id": "child-subagent",
+            "ended_at": None,
+            "model_config": {"_delegate_from": parent_entry.session_id},
+        },
+        parent_entry.session_id: {
+            "id": parent_entry.session_id,
+            "ended_at": None,
+            "model_config": {},
+        },
+    }
+
+    runner = object.__new__(GatewayRunner)
+    runner.session_store = store
+    runner._async_session_store = AsyncSessionStore(store)
+    runner._session_db = SimpleNamespace(get_session=AsyncMock(side_effect=lambda sid: rows.get(sid)))
+
+    resolved = await runner._resolve_async_delegation_session(parent_entry, "grandchild-subagent")
+    assert resolved is not None
+    assert resolved.session_id == parent_entry.session_id
+
+
+@pytest.mark.asyncio
+async def test_unknown_spawning_session_fails_closed(tmp_path):
+    """when the spawning session row is missing from the database, resolution returns none without error."""
+    from types import SimpleNamespace
+
+    from gateway.config import GatewayConfig, Platform
+    from gateway.run import GatewayRunner
+    from gateway.session import AsyncSessionStore, SessionSource, SessionStore
+
+    store = SessionStore(tmp_path / "sessions", GatewayConfig())
+    source = SessionSource(platform=Platform.TELEGRAM, chat_id="chat-3", chat_type="dm", user_id="user-3")
+    parent_entry = store.get_or_create_session(source)
+
+    runner = object.__new__(GatewayRunner)
+    runner.session_store = store
+    runner._async_session_store = AsyncSessionStore(store)
+    runner._session_db = SimpleNamespace(get_session=AsyncMock(return_value=None))
+
+    resolved = await runner._resolve_async_delegation_session(parent_entry, "nonexistent-session")
+    assert resolved is None
+

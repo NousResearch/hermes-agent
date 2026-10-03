@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const apiMocks = vi.hoisted(() => ({
   getSessions: vi.fn(),
+  getLocaleDefault: vi.fn(async () => ({ language: "en" })),
   getSessionMessages: vi.fn(),
   getEmptySessionsCount: vi.fn(),
   getStatus: vi.fn(),

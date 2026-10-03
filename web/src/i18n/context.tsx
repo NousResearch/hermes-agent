@@ -1,6 +1,7 @@
 import { applyDocumentLocale, LOCALE_ENDONYMS } from "@hermes/shared/i18n";
 import { createContext, useContext, useState, useCallback, useEffect, type ReactNode } from "react";
 import type { Locale, Translations } from "./types";
+import { api } from "@/lib/api";
 import { en } from "./en";
 import { zh } from "./zh";
 import { zhHant } from "./zh-hant";
@@ -77,6 +78,45 @@ const I18nContext = createContext<I18nContextValue>({
 
 export function I18nProvider({ children }: { children: ReactNode }) {
   const [locale, setLocaleState] = useState<Locale>(getInitialLocale);
+
+  /**
+   * Server-side fallback for browsers with no stored choice (private windows, cleared
+   * site data, a fresh origin/device): the configured `display.language`. Fetched once;
+   * a failure leaves the initial "en" — i18n must never block startup on it.
+   */
+  useEffect(() => {
+    let cancelled = false;
+    const applyDefault = (language: string): boolean => {
+      if (!isLocale(language)) return false;
+      setLocaleState((current) => {
+        try {
+          if (localStorage.getItem(STORAGE_KEY)) return current;
+        } catch {
+          // no stored choice — apply the fallback
+        }
+        return language;
+      });
+      return true;
+    };
+    // stored → server default (display.language) → navigator.language → "en".
+    // Fire-and-forget: i18n must never block startup on it.
+    api
+      .getLocaleDefault()
+      .then(
+        ({ language }) => {
+          if (cancelled || applyDefault(language)) return;
+          applyDefault(navigator.language.split("-")[0]);
+        },
+        () => {
+          if (cancelled) return;
+          applyDefault(navigator.language.split("-")[0]);
+        },
+      );
+    return () => {
+      cancelled = true;
+    };
+    // Run once per provider mount; api is a stable module object.
+  }, []);
 
   const setLocale = useCallback((l: Locale) => {
     setLocaleState(l);

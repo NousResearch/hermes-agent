@@ -1,0 +1,97 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: brightdata
+description: 'Bright Data: read pages that block ordinary fetches, plus structured platform records.'
+source: https://github.com/brightdata/brightdata-mcp
+
+# Bright Data's official remote MCP server - managed, nothing to install
+# locally. It complements the bundled web providers rather than duplicating
+# them: `web_search` / `web_extract` cover ordinary pages, and this entry is
+# the escalation path for the cases those hit a wall on - pages that answer a
+# datacenter IP with a challenge or a 403, geo-varying content, and platform
+# pages whose useful content is a structured record rather than prose.
+#
+# Why the bare /mcp URL, with no query string:
+# the server picks its tool surface from the URL. With no parameters it
+# serves only its five base tools - search_engine, search_engine_batch,
+# scrape_as_markdown, scrape_batch, discover - which is the whole surface
+# most agent work needs. Its other 60-odd tools are opt-in bundles behind
+# `&groups=<ids>` (ecommerce, social, browser, ...) and `&tools=<names>`.
+# Pinning the bare URL keeps this entry at five tools instead of 69, and
+# leaves the rest as an explicit, documented choice the user makes by
+# editing the URL - the same reasoning as the Cloudflare entry's pinned
+# `?codemode=false`, but in the debloating direction.
+transport:
+  type: http
+  url: https://mcp.brightdata.com/mcp
+
+auth:
+  type: oauth
+  # Native MCP OAuth 2.1 (case 1). Verified live 2026-09-06 against
+  # mcp.brightdata.com:
+  #   - unauthenticated POST /mcp -> 401 with
+  #     WWW-Authenticate: Bearer resource_metadata=".../.well-known/
+  #     oauth-protected-resource/mcp", scope="mcp"
+  #   - /.well-known/oauth-protected-resource/mcp -> 200, authorization
+  #     server https://brightdata.com, bearer_methods_supported: [header]
+  #   - /.well-known/oauth-authorization-server -> 200, advertising
+  #     registration_endpoint, code_challenge_methods_supported: [S256],
+  #     token_endpoint_auth_methods_supported: [none],
+  #     grant_types_supported: [authorization_code, refresh_token]
+  #   - live DCR POST to the registration endpoint -> 201 with a client_id
+  #     for a public (PKCE) client
+  # So Hermes's mcp_oauth_manager handles discovery, DCR, PKCE, token
+  # exchange and refresh with no per-host OAuth app - the property that
+  # keeps GitHub's hosted MCP out of this catalog. Bright Data's own docs
+  # lead with an API token in the query string instead; OAuth is preferred
+  # here so no credential is written into a config.yaml URL.
+
+# No tools filter. The pinned bare URL already serves only the five base
+# tools, so an include list would just freeze that set and block anything
+# Bright Data adds to it later, and an exclude list would have nothing to
+# strip. Users who opt into `&groups=...` get the install-time checklist on
+# the next `hermes mcp configure brightdata`.
+
+suggest:
+  keywords:
+    - bright data
+    - brightdata
+    - web unlocker
+  hosts:
+    - brightdata.com
+
+post_install: |
+  On first connection Hermes opens a browser to authorize with Bright Data
+  (or run `hermes mcp login brightdata`). Sign in (a free account is enough)
+  and approve the "mcp" scope; there is no API token to copy and no OAuth app
+  to register. Restart the session so tools load.
+
+  Every account includes 5,000 requests per month at no cost, renewing on
+  the 1st. That covers web search, fetching pages as Markdown through the
+  unlocker (bot-detection and CAPTCHA handling, proxy rotation),
+  geo-targeting, and relevance-ranked discovery - no credit card.
+
+  This entry ships the five base tools only:
+
+    search_engine        search Google, Bing or Yandex
+    search_engine_batch  up to 10 queries in one call
+    scrape_as_markdown   one page, unlocked, as Markdown
+    scrape_batch         up to 10 pages in one call
+    discover             relevance-ranked web discovery
+
+  Want more? Tool bundles are additive via the url in ~/.hermes/config.yaml:
+
+    mcp_servers:
+      brightdata:
+        url: "https://mcp.brightdata.com/mcp?groups=ecommerce,social"
+
+  Group IDs and their tool counts: ecommerce (11), social (23), browser
+  (13), advanced_scraping (5), business (4), geo (3), app_stores (2), code
+  (2), finance (1), research (1), travel (1). Enabling everything is 69
+  tools - pick the ones you need. Individual tools can be added instead
+  with `&tools=extract,scrape_as_html`. The group id `custom` is reserved.
+
+  Re-run the tool checklist after changing the url with:
+    hermes mcp configure brightdata

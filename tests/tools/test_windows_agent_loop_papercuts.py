@@ -111,28 +111,41 @@ class TestAutocompleteDevicePaths:
         assert files == ["real.txt"]
 
 
-class TestBrowserScreenshotPathRegex:
-    """#83884 — Windows drive-letter screenshot paths must be detected."""
+class TestBrowserScreenshotPathDetection:
+    """#83884 — screenshot paths are detected by their real filesystem identity."""
 
-    def _re(self):
-        from tools.browser_use_cli import _IMAGE_PATH_RE
+    @pytest.mark.platforms("windows")
+    def test_windows_backslash_path(self, tmp_path):
+        path = tmp_path / "shots" / "page.png"
+        path.parent.mkdir()
+        path.write_bytes(b"\x89PNG\r\n\x1a\n")
+        from tools.browser_use_cli import _find_screenshot
 
-        return _IMAGE_PATH_RE
+        assert _find_screenshot(f"Saved screenshot to {path}\n", since=0) == str(path)
 
-    def test_windows_backslash_path(self):
-        m = self._re().findall(r"Saved screenshot to C:\Users\u\shots\page.png done")
-        assert m == [r"C:\Users\u\shots\page.png"]
+    @pytest.mark.platforms("windows")
+    def test_windows_forward_slash_path(self, tmp_path):
+        path = tmp_path / "shots" / "page.jpeg"
+        path.parent.mkdir()
+        path.write_bytes(b"\xff\xd8\xff")
+        emitted_path = path.as_posix()
+        from tools.browser_use_cli import _find_screenshot
 
-    def test_windows_forward_slash_path(self):
-        m = self._re().findall("shot: C:/Users/u/shots/page.jpeg")
-        assert m == ["C:/Users/u/shots/page.jpeg"]
+        assert _find_screenshot(f"Browser output: {emitted_path}\n", since=0) == emitted_path
 
-    def test_posix_path_still_matches(self):
-        m = self._re().findall("wrote /tmp/bu-task/shot.webp")
-        assert m == ["/tmp/bu-task/shot.webp"]
+    @pytest.mark.platforms("posix")
+    def test_posix_path_still_detected(self, tmp_path):
+        path = tmp_path / "bu-task" / "shot.webp"
+        path.parent.mkdir()
+        path.write_bytes(b"webp")
+        from tools.browser_use_cli import _find_screenshot
+
+        assert _find_screenshot(f"wrote {path}\n", since=0) == str(path)
 
     def test_plain_words_do_not_match(self):
-        assert self._re().findall("no images here, just prose.png-like text /x") == []
+        from tools.browser_use_cli import _find_screenshot
+
+        assert _find_screenshot("no images here, just prose.png-like text /x", since=0) is None
 
 
 class TestSkillHashSymmetry:

@@ -82,8 +82,8 @@ _MAX_TIMEOUT_S = 1800
 _STDERR_CAP_CHARS = 4000
 
 _TASK_ID_SAFE_RE = re.compile(r"[^A-Za-z0-9._-]+")  # filesystem-safe task ids
-# Screenshot paths printed by capture_screenshot(): POSIX or Windows drive-letter absolute.
-_IMAGE_PATH_RE = re.compile(r"((?:[A-Za-z]:[\\/]|/)[^\s\"']+?\.(?:png|jpe?g|webp))", re.IGNORECASE)
+# Supported local image types; path candidates come from the line-oriented scanner below.
+_IMAGE_EXTENSIONS = (".png", ".jpg", ".jpeg", ".webp")
 # http(s) URL literals in exec code checked against browser_navigate's policy
 _URL_RE = re.compile(r"https?://[^\s'\"\\)]+", re.IGNORECASE)
 _FHS_BIN_DIRS = ("/usr/local/sbin", "/usr/local/bin", "/usr/sbin", "/usr/bin", "/sbin", "/bin")
@@ -294,16 +294,81 @@ def _workspace_dir(task_id: Optional[str]) -> Optional[str]:
         return None
 
 
+def _iter_screenshot_paths(output: str):
+    """Yield local image-path candidates from line-oriented CLI output.
+
+    Treat the output as prose, not as a path-token grammar: spaces, quotes and
+    other valid filename characters remain part of a candidate. A candidate is
+    accepted later only if that exact file exists and is fresh.
+    """
+    for line in (output or "").splitlines():
+        starts = []
+        index = 0
+        while index < len(line):
+            before = line[index - 1] if index else ""
+            boundary = not before or not (
+                before.isalnum() or before in "._/" or before == chr(92)
+            )
+            is_drive_path = (
+                index + 2 < len(line)
+                and line[index].isascii()
+                and line[index].isalpha()
+                and line[index + 1] == ":"
+                and line[index + 2] in ("/", chr(92))
+            )
+            if boundary and is_drive_path:
+                starts.append(index)
+                index += 3
+                continue
+            if boundary and line.startswith(chr(92) * 2, index):
+                starts.append(index)
+                index += 2
+                continue
+            if line[index] == "/" and boundary:
+                if before == ":" and line.startswith("//", index):
+                    index += 2  # URL scheme separator, not a local path
+                    continue
+                if (
+                    before == ":"
+                    and index >= 2
+                    and line[index - 2].isascii()
+                    and line[index - 2].isalpha()
+                    and (index == 2 or not (line[index - 3].isalnum() or line[index - 3] in "._"))
+                ):
+                    index += 1  # separator already covered by a drive-letter root
+                    continue
+                starts.append(index)
+            index += 1
+        if not starts:
+            continue
+
+        folded = line.casefold()
+        endings = []
+        for extension in _IMAGE_EXTENSIONS:
+            search_from = 0
+            while (match := folded.find(extension, search_from)) >= 0:
+                endings.append((match + len(extension), match))
+                search_from = match + len(extension)
+
+        root_index = 0
+        for end, extension_start in sorted(endings):
+            while root_index + 1 < len(starts) and starts[root_index + 1] < extension_start:
+                root_index += 1
+            if starts[root_index] < extension_start:
+                yield line[starts[root_index]:end]
+
+
 def _find_screenshot(stdout: str, since: float) -> Optional[str]:
     """Last screenshot path printed during this exec that exists and was written after
     the exec started, or None."""
-    for path in reversed(_IMAGE_PATH_RE.findall(stdout or "")):
+    found = None
+    for path in _iter_screenshot_paths(stdout):
         try:
             if os.path.isfile(path) and os.path.getmtime(path) >= since - 1:
-                return path
+                found = path
         except OSError:
             continue
-    return None
+    return found
 
 
 def _native_screenshot_result(result: Dict[str, Any], path: str) -> Optional[Dict[str, Any]]:

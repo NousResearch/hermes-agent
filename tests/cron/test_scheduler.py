@@ -1814,6 +1814,8 @@ class TestDeliverResultTimeoutCancelsFuture:
 
         adapter = MagicMock()
         adapter.send = slow_send
+        update_job = MagicMock()
+        monkeypatch.setattr("cron.jobs.update_job", update_job)
         try:
             result, standalone_send = self._deliver(monkeypatch, adapter, loop)
             time.sleep(0.6)
@@ -1822,6 +1824,7 @@ class TestDeliverResultTimeoutCancelsFuture:
         assert result is None, f"expected the in-flight send to count as delivered, got {result!r}"
         standalone_send.assert_not_awaited()
         assert events == ["started", "finished"], "the in-flight send must not be cancelled mid-way"
+        update_job.assert_called_once_with("timeout-job", {"last_delivery_unverified": ["telegram:123"]})
 
     def test_send_that_never_started_falls_back_to_standalone(self, monkeypatch):
         import asyncio

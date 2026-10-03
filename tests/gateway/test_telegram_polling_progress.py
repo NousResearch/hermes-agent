@@ -75,6 +75,15 @@ class _LifecycleBuilder:
         self.polling_request = request
         return self
 
+    # 2026-09-30: connect() now also chains concurrent_updates(...) and
+    # rate_limiter(...). Without these the chain raised AttributeError inside
+    # connect(), which failed closed and 7 lifecycle tests went red.
+    def concurrent_updates(self, *_args, **_kwargs):
+        return self
+
+    def rate_limiter(self, _limiter):
+        return self
+
     def build(self):
         return self.app
 
@@ -425,6 +434,13 @@ async def test_general_request_success_cannot_record_polling_progress(monkeypatc
 
         def get_updates_request(self, request):
             self.polling_request = request
+            return self
+
+        # 2026-09-30: connect() also chains these now (see _LifecycleBuilder).
+        def concurrent_updates(self, *_args, **_kwargs):
+            return self
+
+        def rate_limiter(self, _limiter):
             return self
 
         def build(self):

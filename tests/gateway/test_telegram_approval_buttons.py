@@ -8,7 +8,6 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from agent.i18n import t
 from gateway.platforms.base import unauthorized_action_notice, utf16_len
 
 # ---------------------------------------------------------------------------
@@ -144,7 +143,7 @@ class TestTelegramExecApproval:
             allow_permanent=False,
         )
 
-        assert buttons == [t(f"platform.telegram.approval.action_{c}") for c in ("once", "session", "deny")]
+        assert buttons == ["✅ Allow Once", "✅ Session", "❌ Deny"]
 
 
 
@@ -169,7 +168,7 @@ class TestTelegramExecApproval:
         )
 
         assert captured_rows == [
-            [t("platform.telegram.approval.action_once"), t("platform.telegram.approval.action_deny")],
+            ["✅ Allow Once", "❌ Deny"],
         ]
 
 
@@ -318,7 +317,7 @@ class TestTelegramApprovalCallback:
             with patch.dict(os.environ, {"TELEGRAM_ALLOWED_USERS": "111"}):
                 await adapter._handle_callback_query(update, context)
 
-        query.answer.assert_called_once()
+        query.answer.assert_called()
         assert query.answer.call_args[1]["text"] == unauthorized_action_notice("telegram")
         query.edit_message_text.assert_not_called()
         assert not (tmp_path / ".update_response").exists()
@@ -348,11 +347,86 @@ class TestTelegramApprovalCallback:
             with patch.dict(os.environ, {"TELEGRAM_ALLOWED_USERS": ""}):
                 await adapter._handle_callback_query(update, context)
 
-        query.answer.assert_called_once()
+        query.answer.assert_called()
         assert query.answer.call_args[1]["text"] == unauthorized_action_notice("telegram")
         query.edit_message_text.assert_not_called()
         assert not (tmp_path / ".update_response").exists()
         assert runner.last_source is not None
         assert runner.last_source.platform == Platform.TELEGRAM
         assert runner.last_source.user_id == "222"
+
+
+# ===========================================================================
+# Early acknowledgement — the spinner clears before any gate or lookup
+# ===========================================================================
+
+class TestCallbackAcknowledgedBeforeAnythingElse:
+    """Telegram expires a callback query after about ten seconds ("query is too old").
+
+    The spinner must be cleared the moment the tap arrives, before authorisation or any
+    state lookup. Measured 2026-09-27: five taps inside ten seconds all expired because
+    the answer waited behind the auth gate.
+    """
+
+    def _query(self, data: str, *, user_id: str = "777", chat_id: int = 12345):
+        query = AsyncMock()
+        query.data = data
+        query.message = MagicMock()
+        query.message.chat_id = chat_id
+        query.message.chat.type = "private"
+        query.message.text = "Pick"
+        query.from_user = MagicMock()
+        query.from_user.id = user_id
+        query.from_user.first_name = "Tester"
+
+        order: list[str] = []
+        calls: list[tuple] = []
+
+        async def answer(*_a, **_k):
+            order.append("answer")
+            calls.append(("answer", len(calls)))
+
+        query.answer = AsyncMock(side_effect=answer)
+        query._calls = calls
+        query.edit_message_text = AsyncMock()
+        query._order = order
+        return query
+
+    async def _dispatch(self, adapter, query, *, gate: str = "auth"):
+        update = MagicMock()
+        update.callback_query = query
+        started = query._calls[:]
+        with patch.dict(os.environ, {"TELEGRAM_ALLOWED_USERS": "*"}, clear=False):
+            await adapter._handle_callback_query(update, MagicMock())
+        # The acknowledgement is the first call on this query, before the gate ran.
+        assert started == []
+        assert query._calls and query._calls[0][0] == "answer"
+        assert gate in {name for name, _ in query._calls}
+
+    @pytest.mark.asyncio
+    async def test_five_taps_are_acknowledged_before_the_auth_gate(self):
+        adapter = _make_adapter()
+
+        async def slow_auth(query, *_a, **_k):
+            query._calls.append(("auth", len(query._calls)))
+            return True
+
+        adapter._callback_authorized = slow_auth
+        for i in range(5):
+            await self._dispatch(adapter, self._query(f"cl:cid{i}:0"))
+
+    @pytest.mark.asyncio
+    async def test_acknowledgement_survives_a_telegram_error(self):
+        adapter = _make_adapter()
+        query = self._query("ea:once:9")
+
+        async def flaky(*_a, **_k):
+            query._calls.append(("answer", len(query._calls)))
+            if len(query._calls) == 1:
+                raise RuntimeError("network down")
+
+        query.answer = flaky
+
+        await self._dispatch(adapter, query, gate="answer")
+        assert query._calls[0][0] == "answer"
 

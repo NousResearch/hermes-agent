@@ -1025,7 +1025,10 @@ def recover_with_credential_pool(
     current_provider = (getattr(agent, "provider", "") or "").strip().lower()
     pool_provider = (getattr(pool, "provider", "") or "").strip().lower()
     if pool_provider and not credential_pool_matches_provider(
-        pool, current_provider, base_url=getattr(agent, "base_url", None)
+        pool, current_provider, base_url=getattr(agent, "base_url", None),
+        # The 429/401 pool-mutation guard must not rotate a same-URL
+        # sibling's pool for a bare-custom runtime (#124593).
+        owner_api_key=getattr(agent, "api_key", None),
     ):
         # Same fail-closed boundary predicate as runtime binding.
         _ra().logger.warning(
@@ -1445,14 +1448,19 @@ def restore_primary_runtime(agent) -> bool:
         # that was never verified and re-fail every turn. Stay on the fallback.
         return False
     primary_runtime_base_url = str((rt or {}).get("base_url") or "")
+    # The snapshot already records the primary key: use it as the ownership
+    # identity so restore never rebinds a same-URL sibling's pool, and fails
+    # closed (pool-less, on the snapshot's own key) instead (#124593). No new
+    # snapshot fields: pool pinning across fallbacks stays maintainer-owned.
+    primary_runtime_api_key = str((rt or {}).get("api_key") or "")
 
     def _matches_primary(candidate) -> bool:
-        return credential_pool_matches_provider(candidate, primary_provider, base_url=primary_runtime_base_url)
+        return credential_pool_matches_provider(candidate, primary_provider, base_url=primary_runtime_base_url, owner_api_key=primary_runtime_api_key or None)
 
     def _load_primary_pool():
         """Load the primary provider's pool; None when absent or provider-mismatched."""
         from agent.credential_pool import load_pool
-        key = resolve_runtime_pool_key(primary_provider, primary_runtime_base_url)
+        key = resolve_runtime_pool_key(primary_provider, primary_runtime_base_url, owner_api_key=primary_runtime_api_key or None)
         loaded = load_pool(key) if key else None
         return loaded if loaded is not None and _matches_primary(loaded) else None
     if _primary_quota_reopened_early(agent, primary_provider, primary_model, _matches_primary, _load_primary_pool):

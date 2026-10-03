@@ -234,7 +234,7 @@ def _pool_serves_endpoint(pool: Any, provider: Optional[str], base_url: Optional
 
 def _resolve_child_credential_pool(
     effective_provider: Optional[str], parent_agent, effective_base_url: Optional[str] = None,
-    effective_requested_provider: Optional[str] = None,
+    effective_requested_provider: Optional[str] = None, owner_api_key: Optional[str] = None,
 ):
     """Credential pool for the child: parent's pool (same provider), that provider's own pool, or None (child keeps
     its fixed credential). Custom endpoints all collapse to ``provider="custom"``, so they are matched by endpoint
@@ -259,11 +259,15 @@ def _resolve_child_credential_pool(
     try:
         if effective_provider == "custom":
             from agent.credential_pool import get_custom_provider_pool_key
-            child_key = get_custom_provider_pool_key(effective_base_url, provider_name=effective_requested_provider)
+            # A bare-custom child must lease its own pool: without the
+            # child's key a same-URL sibling listed first lends its pool
+            # and the child runs on a key only the sibling has (#124593).
+            child_key = get_custom_provider_pool_key(effective_base_url, provider_name=effective_requested_provider, owner_api_key=owner_api_key)
             if child_key is None:
                 return None
             parent_key = get_custom_provider_pool_key(
                 getattr(parent_agent, "base_url", None), provider_name=getattr(parent_agent, "requested_provider", None),
+                owner_api_key=owner_api_key if parent_provider == "custom" else None,
             )
             if parent_pool is not None and parent_provider == "custom" and parent_key is not None and parent_key == child_key:
                 return parent_pool

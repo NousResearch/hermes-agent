@@ -443,6 +443,10 @@ def _finalize_routing(agent, api_mode, credential_pool):
             from agent.credential_pool import credential_pool_matches_provider
             if not credential_pool_matches_provider(
                 credential_pool, agent.provider, base_url=agent.base_url,
+                # A bare-custom runtime must keep its own pool: without the
+                # runtime key a same-URL sibling listed first claims the
+                # match and the own pool is dropped at init (#124593).
+                owner_api_key=getattr(agent, "api_key", None),
             ):
                 agent._credential_pool = None
         except Exception:

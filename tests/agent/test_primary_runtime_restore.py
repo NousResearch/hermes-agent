@@ -381,6 +381,13 @@ class TestRestorePrimaryRuntime:
                 "agent.credential_pool.get_custom_provider_pool_key",
                 return_value="custom:myllm",
             ),
+            # Owner-aware matching (#124593) vouches through the configured
+            # entry: a single credential-less entry on the endpoint serves
+            # any runtime key on it.
+            patch(
+                "agent.credential_pool._iter_custom_providers",
+                return_value=[("myllm", {"name": "MyLLM", "base_url": "https://my-llm.example.com/v1"})],
+            ),
             patch("agent.process_bootstrap.OpenAI", return_value=MagicMock()),
         ):
             result = agent._restore_primary_runtime()

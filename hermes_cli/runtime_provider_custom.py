@@ -367,12 +367,16 @@ def is_routable_provider(provider: Optional[str]) -> bool:
 
 
 def _try_resolve_from_custom_pool(
-    base_url: str, provider_label: str, api_mode_override: Optional[str] = None, provider_name: Optional[str] = None
+    base_url: str, provider_label: str, api_mode_override: Optional[str] = None, provider_name: Optional[str] = None,
+    owner_api_key: Optional[str] = None,
 ) -> Optional[Dict[str, Any]]:
-    """Runtime dict from the first credential pool that owns this custom endpoint, else None."""
+    """Runtime dict from the first credential pool that owns this custom endpoint, else None.
+
+    When ``owner_api_key`` names the runtime's key, a same-URL sibling's pool
+    is skipped instead of borrowed (#124593)."""
     rp = _rp()
     try:
-        raw_keys = list(rp.custom_provider_pool_key_candidates(base_url, provider_name))
+        raw_keys = list(rp.custom_provider_pool_key_candidates(base_url, provider_name, owner_api_key=owner_api_key))
     except Exception:
         raw_keys = []
     # Order-preserving dedupe of normalized keys.
@@ -488,7 +492,10 @@ def _resolve_direct_alias_runtime(requested_provider: str, explicit_api_key: Opt
     base_url = explicit_base_url.strip().rstrip("/")
     # Pool first — mirrors the named-custom path so bare `provider: custom` with a configured
     # custom_providers entry gets its api_key from the pool instead of env fallbacks.
-    pool_result = rp._try_resolve_from_custom_pool(base_url, "custom", None)
+    # With an explicit key, only a pool whose entry can serve that key is used — a
+    # same-URL sibling's pool must not override the alias's own key (#124593).
+    explicit_owner = (explicit_api_key or "").strip() or None
+    pool_result = rp._try_resolve_from_custom_pool(base_url, "custom", None, owner_api_key=explicit_owner)
     if pool_result:
         pool_result["source"] = "direct-alias"
         return pool_result

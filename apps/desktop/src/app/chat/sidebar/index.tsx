@@ -1043,7 +1043,21 @@ export function ChatSidebar({
     // Layer the user's manual drag-order on top of the deterministic sort. Empty
     // (default) returns `sorted` untouched; projects the user hasn't ordered yet
     // keep their sorted position rather than jumping the hand-picked list.
-    return orderProjectsByIds(sorted, projectOrderIds)
+    // Deduplicate by id — safety net for backend merge edge cases
+    // (e.g. Windows path-casing differences across profiles).
+    const seen = new Set<string>()
+
+    const deduped = sorted.filter(project => {
+      if (seen.has(project.id)) {
+        return false
+      }
+
+      seen.add(project.id)
+
+      return true
+    })
+
+    return orderProjectsByIds(deduped, projectOrderIds)
   }, [
     projectTree,
     dismissedAutoProjects,

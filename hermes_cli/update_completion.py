@@ -151,8 +151,14 @@ def _prepare(request: dict, request_path: Path, result_path: Path) -> int:
             # This file runs from the new tree, so its lockfile carries the new
             # pins; tools (incl. bumped uv/python) land before the sync uses them.
             ensure_tools_for_sync()
+            from pm.environments import runtime_facts_path
+            from pm.extras import legacy_selection
+            # A retry after a failed historical takeover still faces a pre-PM
+            # install (no committed facts): carry the old venv's extras instead
+            # of syncing an empty set and recording it as the ledger (#126886).
+            extras = legacy_selection(root) if not runtime_facts_path(root).is_file() else None
             # An update never fails because of a plugin: misfits are disabled and reported.
-            pm.sync_venv(explicit=True, project_root=root, evict_incompatible_plugins=True)
+            pm.sync_venv(extras, explicit=True, project_root=root, evict_incompatible_plugins=True)
             collect_superseded_generations(root)
         finally:
             request["pm_receipt"] = receipt.last_for_update(update_id)

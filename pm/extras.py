@@ -61,6 +61,7 @@ ANCHORS: dict[str, str | tuple[str, ...]] = {
     "web": "fastapi",
     "doc-extract": "anydoc",
     "computer-use": "mcp",
+    "mcp": "mcp",
     "trace-upload": "huggingface_hub",
     # Pillow resize recovery for vision tools (the `vision` extra is a no-op
     # back-compat alias — Pillow is core — but ensure_import("vision") must

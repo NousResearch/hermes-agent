@@ -119,7 +119,13 @@ def sync(project_root: Path | None = None, *, check: bool = False) -> dict:
             return {"state": "would-sync", "ok": True}
         publish_stage("Updating Python dependencies")
         refuse_foreign_owned_venv(root)
-        pm.sync_venv(explicit=True, project_root=root, evict_incompatible_plugins=True)
+        from pm.environments import runtime_facts_path
+        from pm.extras import legacy_selection
+        # A retry after a failed historical takeover still faces a pre-PM
+        # install (no committed facts): carry the old venv's extras instead
+        # of syncing an empty set and recording it as the ledger (#126886).
+        extras = legacy_selection(root) if not runtime_facts_path(root).is_file() else None
+        pm.sync_venv(extras, explicit=True, project_root=root, evict_incompatible_plugins=True)
         collect_superseded_generations(root)
         publish_launchers(root)
         return {"state": "synced", "ok": True}

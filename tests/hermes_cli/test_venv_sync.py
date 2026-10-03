@@ -62,9 +62,9 @@ def _wire_pm(monkeypatch, *, current=False, error=None):
     calls = []
     monkeypatch.setattr(pm, "venv_is_current", lambda *, project_root: current)
 
-    def sync(*, explicit, project_root, evict_incompatible_plugins):
+    def sync(extras=None, *, explicit, project_root, evict_incompatible_plugins):
         assert evict_incompatible_plugins, "an update sync must disable misfit plugins, not fail"
-        calls.append((project_root, explicit))
+        calls.append((project_root, explicit, extras))
         if error:
             raise pm.InstallError("venv", error)
 
@@ -79,7 +79,7 @@ class TestCheckoutSync:
         monkeypatch.setattr(venv_sync, "_project_root", lambda: root)
         calls = _wire_pm(monkeypatch)
         assert venv_sync.sync(root if foreign else None) == {"state": "synced", "ok": True}
-        assert calls == [(root, True)]
+        assert calls == [(root, True, ["all"])]
 
 
     def test_check_is_passive(self, tmp_path, monkeypatch):
@@ -97,7 +97,7 @@ class TestCheckoutSync:
             out = venv_sync.sync(root)
             assert out["state"] == "failed" and not out["ok"]
             assert "resolution failed" in out["detail"]
-        assert calls == [(root, True), (root, True)]
+        assert calls == [(root, True, ["all"]), (root, True, ["all"])]
 
 
 class TestSealedTrees:

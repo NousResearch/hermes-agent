@@ -3307,10 +3307,11 @@ class _StreamingCall(StreamingWaitMonitor):
                     pending = "".join(pending_text_parts)
                     if not (_provider_stream_text_may_be_sse(pending) or router_timeout_shim_may_follow(pending)):
                         _flush_pending_stream_text()
-                    continue
                 else:
                     self._emit_text(delta_content)
 
+            # Holding text back never skips the rest of the chunk: a frame that packs a text
+            # preamble with the first tool-call delta must still feed the accumulator (#126758).
             delta_tool_calls = getattr(delta, "tool_calls", None)
             if delta_tool_calls:
                 _flush_pending_stream_text()

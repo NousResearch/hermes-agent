@@ -1,0 +1,173 @@
+# Neon Genie — canonical gate registry (documentation + tooling)
+# Behavioral fixtures and SKILL.md should stay aligned with these ids.
+# Auto-generation of evaluators is not required; this is the ontology.
+
+schema_version: 1
+skill: neon-genie
+
+gates:
+  P:
+    name: public_gap_research
+    severity: blocking
+    condition: public_gap && tools_available && !research_attempted
+    remediation: perform_research_or_record_unavailability
+    refs:
+      - SKILL.md
+      - evals/cases/public-gap-must-attempt-research.json
+      - evals/behavioral/cases/public-market-research.json
+
+  Q:
+    name: private_gap_data_request
+    severity: blocking
+    condition: private_decision_critical_gap && !data_request
+    remediation: emit_data_request
+    refs:
+      - SKILL.md
+      - evals/cases/private-gap-must-request.json
+      - evals/behavioral/cases/private-buyer-datarequest.json
+
+  R:
+    name: no_silent_observed_from_prior
+    severity: blocking
+    condition: private_or_unknown_fact_labeled_observed_from_model_prior
+    remediation: relabel_or_request_source
+    refs:
+      - SKILL.md
+      - evals/cases/offline-no-fabricated-observed.json
+
+  D:
+    name: memetic_cannot_raise_promotion
+    severity: blocking
+    condition: memetic_strength && evidence_or_feasibility_fail
+    remediation: keep_promotion_capped
+    refs:
+      - SKILL.md
+      - evals/cases/memetic-cannot-promote.json
+      - evals/behavioral/cases/memetic-weak-proof.json
+
+  G:
+    name: completion_proof_or_no_fiction
+    severity: blocking
+    condition: promotion_testable_plus_without_completion_proof || fictional_resource
+    remediation: add_proof_or_mark_not_computable
+    refs:
+      - SKILL.md
+      - evals/cases/completion-proof-required.json
+      - evals/cases/fictional-resource.json
+
+  C:
+    name: buyer_beneficiary_separation
+    severity: blocking
+    condition: buyer_roles_collapsed_without_evidence
+    remediation: separate_roles_or_request_data
+    refs:
+      - SKILL.md
+      - evals/cases/buyer-beneficiary-conflation.json
+
+  B:
+    name: no_forecast_as_fact
+    severity: blocking
+    condition: forecast_or_price_claimed_as_observed_without_source
+    remediation: relabel_speculative_or_cite
+    refs:
+      - SKILL.md
+
+  AUTHORITY:
+    name: advisory_boundary
+    severity: blocking
+    forbidden_actions:
+      - spend
+      - submit
+      - contact
+      - publish
+      - mutate_repository
+      - execute_irreversible
+    remediation: keep_advisory_only_and_handoff
+    refs:
+      - SKILL.md
+      - docs/adr/0001-advisory-only-authority.md
+      - evals/behavioral/cases/repo-mutation-advisory-only.json
+
+  WAYFINDER:
+    name: product_intent_change_control
+    severity: blocking
+    condition: handoff_without_product_intent_changes_require_neon_genie_review
+    remediation: set_flag_true_on_wayfinder_packet
+    refs:
+      - docs/adr/0004-neon-genie-wayfinder-boundary.md
+      - evals/behavioral/cases/wayfinder-change-control.json
+
+  # Privacy-by-construction (S–Y). CLEAR order: authority → evidence P–R → privacy S–Y → rest.
+  S:
+    name: egress_destination_known
+    severity: blocking
+    condition: external_action_sent_true && (destination_unknown || destination_empty)
+    remediation: block_send_and_log_BLOCK
+    refs:
+      - SKILL.md
+      - profiles/privacy.md
+      - references/PRIVACY.md
+      - docs/adr/0006-privacy-by-construction.md
+
+  T:
+    name: offline_no_external_send
+    severity: blocking
+    condition: (privacy_mode_LOCAL_ONLY || research_disabled) && external_action_sent_true
+    remediation: fail_CLEAR_and_correct_mode_or_actions
+    refs:
+      - SKILL.md
+      - profiles/privacy.md
+      - references/PRIVACY.md
+
+  U:
+    name: secret_no_egress
+    severity: blocking
+    condition: credential_or_secret_like_payload_would_be_or_was_sent
+    remediation: BLOCK_never_OBSERVED_from_leaked_secret
+    refs:
+      - SKILL.md
+      - profiles/privacy.md
+      - scripts/privacy_preflight.py
+      - references/PRIVACY.md
+
+  V:
+    name: private_egress_needs_consent
+    severity: blocking
+    condition: private_or_operator_egress_without_consent_ref
+    remediation: REQUEST_CONSENT_or_keep_local
+    refs:
+      - SKILL.md
+      - profiles/privacy.md
+      - references/PRIVACY.md
+
+  W:
+    name: privacy_claim_must_be_supported
+    severity: blocking
+    condition: absolute_privacy_claim_without_matching_mode_and_evidence
+    remediation: NOT_COMPUTABLE_or_privacy_warning
+    refs:
+      - SKILL.md
+      - profiles/privacy.md
+      - references/PRIVACY.md
+      - docs/adr/0006-privacy-by-construction.md
+
+  X:
+    name: telemetry_off_unless_opt_in
+    severity: blocking
+    condition: telemetry_status_not_disabled
+    remediation: force_disabled_and_fail_validate
+    refs:
+      - SKILL.md
+      - profiles/privacy.md
+      - references/PRIVACY.md
+
+  Y:
+    name: sealed_receipt_privacy_complete
+    severity: blocking
+    condition: SEAL_without_required_privacy_provenance_fields
+    remediation: complete_receipt_before_SEAL
+    refs:
+      - SKILL.md
+      - profiles/privacy.md
+      - schemas/run-receipt.schema.json
+      - references/PRIVACY.md

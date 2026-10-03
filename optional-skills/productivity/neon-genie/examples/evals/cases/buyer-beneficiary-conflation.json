@@ -1,0 +1,17 @@
+{
+  "input": {
+    "roles": {
+      "user": "end_user",
+      "beneficiary": "end_user",
+      "buyer": "end_user",
+      "payer": "end_user",
+      "authorizer": "end_user"
+    },
+    "evidence_of_separation": false
+  },
+  "expected": {
+    "status": "GATE_FAIL",
+    "gate": "C",
+    "reason": "Buyer and beneficiary roles conflated without evidence of identity"
+  }
+}

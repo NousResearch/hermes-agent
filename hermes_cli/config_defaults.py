@@ -398,6 +398,8 @@ DEFAULT_CONFIG = {
         "search_backend": "",    # per-capability override for web_search (e.g. "searxng")
         "extract_backend": "",   # per-capability override for web_extract (e.g. "native")
         # per-page char budget for web_extract; larger pages truncate, full text kept in cache/web
+        "search_fallbacks": [],  # ordered keyed backends tried when search_backend fails (e.g. ["firecrawl", "brave-free"])
+        "extract_fallbacks": [], # ordered keyed backends tried when extract_backend raises (e.g. ["tavily", "exa"])
         "extract_char_limit": 15000,
         # Keyless free-tier ring: with NO web backend configured or keyed, web_search/web_extract
         # rotate round-robin across exa, parallel, firecrawl, keenable public free tiers, failing

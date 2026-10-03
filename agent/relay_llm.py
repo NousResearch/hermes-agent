@@ -8,6 +8,7 @@ import contextvars
 import inspect
 import json
 import logging
+import time
 from collections.abc import Callable, Iterator
 from functools import partial
 from types import SimpleNamespace
@@ -289,6 +290,33 @@ def _aclose_on_loop(loop: asyncio.AbstractEventLoop, stream: Any) -> bool:
     return True
 
 
+# A sync generator close() racing a worker still executing the generator raises
+# "generator already executing"; bounded retries cover the window without
+# turning an interrupt into a secondary close failure.
+_GENERATOR_BUSY_RETRY_DELAY = 0.05
+_GENERATOR_BUSY_RETRY_TIMEOUT = 2.0
+
+
+def _close_raw_provider_iterator(raw_iterator: Any) -> None:
+    """Close a raw sync provider iterator, waiting out the "already executing" window.
+
+    ``GeneratorExit`` must be delivered from the closing thread for cleanup
+    (provider ``finally`` blocks) to run, so a busy window is retried briefly
+    rather than abandoned to the garbage collector. On timeout the close is
+    left to GC: the failure is raised and lands in the caller's existing
+    ``_close_error`` first-wins path instead of propagating mid-cleanup.
+    """
+    deadline = time.monotonic() + _GENERATOR_BUSY_RETRY_TIMEOUT
+    while True:
+        try:
+            raw_iterator.close()
+            return
+        except ValueError as exc:
+            if "already executing" not in str(exc) or time.monotonic() >= deadline:
+                raise
+            time.sleep(_GENERATOR_BUSY_RETRY_DELAY)
+
+
 def _next_provider_chunk(callback: Callable[..., Any], raw_iterator: Any) -> tuple[Any, bool]:
     """Read one synchronous provider chunk without leaking StopIteration through a Future."""
     try:
@@ -379,7 +407,7 @@ class ManagedLlmStream(Iterator[Any]):
             close = getattr(raw_stream, "close", None)
             if callable(close):
                 try:
-                    run_callback(close)
+                    _close_raw_provider_iterator(raw_stream)
                 except BaseException as exc:
                     self._close_error = exc
                     raise
@@ -553,7 +581,7 @@ class ManagedLlmStream(Iterator[Any]):
             close = getattr(resource, "close", None)
             try:
                 if callable(close):
-                    close()
+                    _close_raw_provider_iterator(resource)
             except Exception as exc:
                 self._keep_first_close_error(exc)
                 logger.debug("Provider stream cleanup failed", exc_info=True)

@@ -270,7 +270,7 @@ auxiliary:
 | `min_tail_user_messages` | `1` | ≥1 | Minimum number of REAL (actionable) user messages guaranteed to survive in the uncompressed tail. `1` = the existing single last-user anchor (behavior-preserving default). Raise to e.g. `3` to keep the last 3 real user turns verbatim even when bulky tool outputs fill the tail token budget. Blank platform echoes, compaction handoffs, and synthetic continuation rows never count toward N. The guarantee wins over the tail token budget — the tail may exceed the budget when the anchor pulls the cut back |
 | `protect_first_n` | `3` | (hardcoded) | System prompt + first exchange always preserved |
 | `idle_compact_after_seconds` | `0` | ≥0 seconds | Opt-in: compact up front when a session resumes after this many seconds idle (0 = disabled). Skips when context ≤ threshold × target_ratio; honors cooldown/anti-thrash/lock guards |
-| `codex_gpt55_autoraise` | `true` | bool | Raise the trigger to 85% for gpt-5.4/5.5/5.6 and gpt-6 Astra on the ChatGPT Codex OAuth route (see below). Set `false` to keep the global `threshold` |
+| `codex_gpt55_autoraise` | `true` | bool | Raise the trigger to 85% for gpt-5.4/5.5/5.6 and gpt-6 Astra on the ChatGPT Codex OAuth route, or on a custom Responses-wire provider known to carry the same 272K cap (see below). Set `false` to keep the global `threshold` |
 | `codex_gpt55_autoraise_notice` | `true` | bool | Show the one-time Codex gpt-5.5 autoraise notice. Set `false` to keep the 85% autoraise but suppress the banner |
 | `codex_app_server_auto` | `native` | `native`, `hermes`, `off` | Thread-compaction mode for Codex app-server sessions (see below) |
 | `codex_responses_native` | `false` | bool | Opt in to OpenAI's server-side compaction on the Responses API. Engages for gpt-5.6-family models on the direct OpenAI API or a ChatGPT Codex subscription, and `gpt-6-astra` (including its `-900k` picker alias) on official Codex OAuth (see below) |
@@ -362,8 +362,17 @@ trigger to **85%** (~231K) and shows a notice with the opt-out command. The
 notice is shown once per profile — a marker under `$HERMES_HOME`
 (`.codex_gpt55_autoraise_notice`) records that it ran, so repeated agent/session
 inits (e.g. every inbound gateway message) don't re-emit it; if the raised
-threshold later changes it re-notifies once. Only this exact route is affected;
-the same models on any other provider keep your global `threshold`. To opt back down to
+threshold later changes it re-notifies once. The raise is a per-route override,
+re-derived on every `/model` switch: switching onto an eligible route raises
+mid-session, and switching away drops back to the global `threshold` — it never
+sticks to the session. A custom provider speaking the Codex Responses wire
+(`api_mode: codex_responses`) shares the autoraise only when it is known to
+carry the same 272K cap — its base URL is the official Codex endpoint, or the
+provider declares/resolves a `272000` context window (`context_length` on the
+provider entry or its `models` map). The Responses wire format alone is a
+wire-protocol setting, not proof of the cap, so a route with any other (or
+unknown) window keeps the global `threshold`. The same models on OpenAI direct
+and OpenRouter expose a larger window and are never raised. To opt back down to
 the global value:
 
 ```bash

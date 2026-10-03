@@ -51,26 +51,16 @@ def _default_threshold_tokens_cap():
     return (DEFAULT_CONFIG.get("compression") or {}).get("threshold_tokens")
 
 
-def _derived_default_threshold_percent(agent: Any, compression: dict) -> float:
-    """Default compaction threshold when ``compression.threshold`` is unset. Mirrors agent_init: ctor
-    global default, then per-model resolution (Codex autoraise etc.) via the SAME
-    ``_resolve_compression_threshold`` — removing the key restores the model-derived value."""
+def _derived_default_threshold_percent() -> float:
+    """Default compaction threshold when ``compression.threshold`` is unset: the ctor's global
+    default. The per-model/route derivation (Codex autoraise etc.) is layered per derive by
+    ``ContextCompressor._derive_trigger`` — the baseline stays the raw global so removal,
+    restoration and model switches all fall back to the user's configured threshold instead of
+    a stale autoraise (#63009)."""
     try:
-        pct = float(_compressor_ctor_default("threshold_percent", 0.50))
+        return float(_compressor_ctor_default("threshold_percent", 0.50))
     except (TypeError, ValueError):
-        pct = 0.50
-    try:
-        from agent.agent_init import _resolve_compression_threshold
-        from agent.auxiliary_client import _compression_threshold_for_model, _is_codex_gpt54_or_gpt55, _is_codex_spark
-        model, provider = getattr(agent, "model", "") or "", getattr(agent, "provider", "") or ""
-        autoraise_enabled = str(compression.get("codex_gpt55_autoraise", True)).lower() in {"true", "1", "yes"}
-        pct, _notice = _resolve_compression_threshold(
-            pct, _compression_threshold_for_model(model, provider, allow_codex_gpt55_autoraise=autoraise_enabled),
-            model=model, is_codex_autoraise=_is_codex_gpt54_or_gpt55(model, provider) or _is_codex_spark(model, provider),
-        )
-    except Exception:
-        pass
-    return pct
+        return 0.50
 
 
 # (config key == compressor attr, ctor-default fallback, min_value)
@@ -91,7 +81,7 @@ def _apply_live_compression_config(agent: Any, cfg: dict | None) -> None:
     Every adopted key has UNSET semantics (#94724 review finding on the merged #95980): removing a key from
     config.yaml restores the normalized default — or the model-derived value — on the next turn, through the
     same derivation the construction path uses (ContextCompressor ctor defaults read off its real signature,
-    the Codex threshold autoraise via ``_resolve_compression_threshold``, context-length re-inference via
+    the Codex threshold autoraise layered per derive by ``_derive_trigger``, context-length re-inference via
     the deferred ``get_model_context_length`` resolution).
     """
     cfg = cfg if isinstance(cfg, dict) else {}
@@ -132,23 +122,22 @@ def _apply_live_compression_config(agent: Any, cfg: dict | None) -> None:
     cc.model_thresholds = {
         str(k): float(v) for k, v in raw_thresholds.items() if isinstance(v, (int, float)) and not isinstance(v, bool)
     } if isinstance(raw_thresholds, dict) else {}
-    # threshold: present value wins; absence derives via the agent_init resolution (default + autoraise).
-    # resolve_model_threshold returns ``pct`` unchanged when model_thresholds is empty.
-    from agent.context_compressor import resolve_model_threshold
+    # threshold: present value wins; absence restores the ctor default. The per-model/route
+    # autoraise (Codex-cap 0.85 etc.) is layered per derive, never baked into the baseline —
+    # re-deriving from the raw global is what lets a session that switched away from an
+    # autoraised route drop back instead of keeping the stale raise (#63009).
     pct: float | None = None
     if "threshold" in compression:
         with contextlib.suppress(TypeError, ValueError):
             pct = float(compression["threshold"])
     if pct is None:
-        pct = _derived_default_threshold_percent(agent, compression)
-    cc._config_threshold_percent = cc._configured_threshold_percent = pct
-    base = cc._base_threshold_percent = resolve_model_threshold(
-        getattr(agent, "model", "") or "", cc.model_thresholds, pct, getattr(agent, "provider", "") or "",
-    )
+        pct = _derived_default_threshold_percent()
+    cc._config_threshold_percent = pct
     try:
-        cc.threshold_percent = cc._effective_threshold_percent(cc.context_length, base)
+        cc._base_threshold_percent, cc.threshold_percent, _ = cc._derive_trigger(
+            getattr(agent, "model", "") or "", cc.context_length, getattr(agent, "provider", "") or "")
     except Exception:
-        cc.threshold_percent = pct
+        cc._base_threshold_percent = cc.threshold_percent = pct
     # Same scoping rule as construction and the switch path: the pin describes the configured default
     # route, so a session that /model-switched elsewhere must not have it re-applied on a config save
     # (None = absent, invalid, or scoped out).

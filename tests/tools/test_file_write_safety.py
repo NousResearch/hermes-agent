@@ -651,6 +651,34 @@ class TestProtectedInstructionFiles:
         from tools.file_tools import write_file_tool
         return json.loads(write_file_tool(str(path), content))
 
+    def _configure_selected_transport(self, monkeypatch, present, *, fallback=None):
+        from hermes_cli.plugins import PluginContext, PluginManager, PluginManifest
+        from tools import approval_context, approval_prompt
+        manager = PluginManager()
+        manifest = PluginManifest(name="protected-write-transport", version="1.0.0", description="test", source="user", key="protected-write-transport")
+        seen = []
+        def record(request):
+            seen.append(request)
+            return present(request)
+        PluginContext(manifest, manager).register_approval_transport("phone", record)
+        monkeypatch.setattr(approval_prompt, "get_plugin_manager", lambda: manager)
+        monkeypatch.setattr(approval_context, "_get_approval_transport_config", lambda: ("phone", fallback))
+        return seen
+
+    def test_selected_transport_approves_once_only(self, tmp_path, monkeypatch):
+        seen = self._configure_selected_transport(monkeypatch, lambda request: request.respond("once"))
+        target = tmp_path / "AGENTS.md"
+        result = self._write(target, "approved")
+        assert not result.get("error"), result
+        assert len(seen) == 1
+        assert seen[0].allowed_choices == ("once", "deny")
+
+    def test_selected_transport_denial_does_not_use_builtin(self, tmp_path, approvals, monkeypatch):
+        self._configure_selected_transport(monkeypatch, lambda request: request.respond("deny"))
+        result = self._write(tmp_path / "AGENTS.md")
+        assert result.get("error") and "BLOCKED" in result["error"]
+        assert approvals["calls"] == []
+
     # ---- core behavior -------------------------------------------------
 
     @pytest.mark.parametrize(

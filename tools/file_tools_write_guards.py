@@ -281,7 +281,9 @@ def _request_protected_instruction_approval(reasons: list[str], task_id: str = "
         import tools.approval as _approval
         from tools.approval_context import get_current_session_key
         from tools.approval_gateway_wait import _await_gateway_decision
-        from tools.approval_prompt import prompt_dangerous_approval
+        from tools.approval_prompt import (
+            _present_with_selected_transport, _transport_choice, prompt_dangerous_approval,
+        )
     except Exception:
         return blocked.format(why=_APPROVAL_UNAVAILABLE)
 
@@ -293,6 +295,20 @@ def _request_protected_instruction_approval(reasons: list[str], task_id: str = "
             notify_cb = _approval._gateway_notify_cbs.get(session_key)
     except Exception:
         notify_cb = None
+
+    attempt = _present_with_selected_transport(
+        command=display, description=description, pattern_key="protected_instruction_file",
+        pattern_keys=["protected_instruction_file"], session_key=session_key,
+        surface="gateway" if notify_cb is not None else "cli", allow_session=False,
+        allow_permanent=False,
+    )
+    choice, transport_denied = _transport_choice(
+        attempt, pattern_key="protected_instruction_file", description=description,
+    )
+    if transport_denied is not None:
+        return blocked.format(why=f"Selected approval transport failed ({attempt.get('failure')}).")
+    if choice is not None:
+        return None if choice == "once" else (timed_out if choice == "timeout" else denied)
 
     if notify_cb is not None:
         approval_data = {
@@ -326,7 +342,7 @@ def _request_protected_instruction_approval(reasons: list[str], task_id: str = "
                                       f"({getattr(choice, 'cause', 'no answer')}).")
         timed = choice == "timeout"
     # Any tapped scope is a one-operation grant; nothing is persisted.
-    if not timed and choice in {"once", "session", "always"}:
+    if not timed and choice == "once":
         return None
     return timed_out if timed else denied
 

@@ -51,6 +51,7 @@ from agent.turn_iteration_prep import (
     prepare_iteration,
 )
 from agent.turn_loop_errors import handle_outer_loop_error
+from agent.turn_preflight_capabilities import warn_capability_mismatches
 from agent.turn_preflight_gate import run_preflight_gate
 from agent.turn_request_assembly import assemble_api_request
 from agent.turn_response_check import check_api_response
@@ -1511,6 +1512,14 @@ def _run_api_retry_loop(agent, s: _LoopState) -> Optional[Dict[str, Any]]:
             return None
         try:
             _run_phase(build_api_request, agent, s)
+            # Advisory only, and read off the request that is about to be sent: tool
+            # schemas, image content and reasoning params the model declares it lacks get
+            # a note before the provider's opaque "unsupported parameter" 400. Never a
+            # verdict, so no turn can be blocked by it (see turn_preflight_capabilities).
+            # ponytail: warn-once per (provider, model, capability) and no config knob yet —
+            # the issue asked for advisory warnings and nothing in the tree reads a
+            # capability-preference setting, so a threshold would be speculative.
+            warn_capability_mismatches(agent, s.messages, s.api_kwargs)
             if _run_phase(perform_api_call, agent, s).action == "break":
                 return None
             _rc = _run_phase(check_api_response, agent, s)

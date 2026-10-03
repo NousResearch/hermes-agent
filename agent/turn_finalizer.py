@@ -618,6 +618,10 @@ def finalize_turn(
             _micro_compact_after_turn(agent, messages, final_response, logger, effective_task_id)
         agent._persist_session(messages, conversation_history)
 
+    # Fail safe: clear the receipt before the guarded final persist so that if any step in
+    # _persist_step raises before _persist_session commits, turn_persisted reports None (not a stale
+    # True left by an earlier mid-turn flush) — a wake caller must never ack an uncommitted turn.
+    agent._last_turn_persisted = None
     _guarded_cleanup("persist_session", _persist_step, _cleanup_errors, logger)
 
     # Keep the gateway's separate in-memory history snapshot current even on
@@ -699,6 +703,11 @@ def finalize_turn(
             (getattr(agent, "request_overrides", {}) or {}).get("extra_body") or {}
         ).get("service_tier"),
         "session_id": agent.session_id,
+        # Whether this turn's messages committed to the session DB (set by the
+        # persist funnel run just above). A wake caller gates its cursor advance
+        # on this (surfaced as the X-Hermes-Turn-Persisted response header); None
+        # means no flush ran this turn.
+        "turn_persisted": getattr(agent, "_last_turn_persisted", None),
     }
     if agent._tool_guardrail_halt_decision is not None:
         result["guardrail"] = agent._tool_guardrail_halt_decision.to_metadata()

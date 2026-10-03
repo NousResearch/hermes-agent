@@ -806,7 +806,14 @@ class OpenAICompatRoutesMixin:
         # Same #13437 identity contract as the SSE path: an explicit-header client is echoed
         # the stable id it sent; a fingerprint-derived (header-less) turn keeps reporting the
         # id the agent actually resolved, so headerless clients still learn where the turn went.
-        response_headers = {"X-Hermes-Session-Id": (provided_session_id or result.get("session_id", session_id))}
+        response_headers = {
+            "X-Hermes-Session-Id": (provided_session_id or result.get("session_id", session_id)),
+            # Server-generated persistence ack (never reflected from a request header): 'true' ONLY
+            # when this turn's messages actually committed to the session DB
+            # (result['turn_persisted'] is True). A bare 200 is emitted even on a failed flush, so a
+            # durable wake caller gates its cursor advance on this header; missing/false = not durable.
+            "X-Hermes-Turn-Persisted": ("true" if result.get("turn_persisted") is True else "false"),
+        }
         if gateway_session_key:
             response_headers["X-Hermes-Session-Key"] = gateway_session_key
         # Hard fail (no usable text AND a real failure) -> 502 OpenAI error envelope so SDK
@@ -855,12 +862,37 @@ class OpenAICompatRoutesMixin:
         """
         from gateway.platforms.api_server import _error_response, _idem_cache, _make_request_fingerprint
         idempotency_key = request.headers.get("Idempotency-Key")
+        # Persist-gating the idempotency cache is OPT-IN: only a caller that sends
+        # X-Hermes-Require-Persist:1 (the durable wake self-post, see gateway/wake.py) wants an
+        # UNPERSISTED turn kept OUT of the cache so its same-key retry re-runs until the turn
+        # commits. Every other Idempotency-Key client keeps the upstream default (cache any
+        # completed result), so an unpersisted 200 is served from cache on retry.
+        require_persist = request.headers.get("X-Hermes-Require-Persist") == "1"
         try:
             if idempotency_key:
                 principal_scope = self._run_idempotency_scope(request)
                 scoped_key = f"{principal_scope}\0{route}\0{idempotency_key}"
                 fp = _make_request_fingerprint(body, keys=fingerprint_keys)
-                result, usage = await _idem_cache.get_or_set(scoped_key, fp, compute)
+                if require_persist:
+                    # Keep the two cache modes disjoint: a same-key request that flips the mode must
+                    # not be served a result cached under the other mode (a durable retry given a
+                    # non-durable unpersisted answer, or vice versa). Also scope by the target
+                    # session: a persist receipt is per-session-per-turn, so two same-key wakes for
+                    # different X-Hermes-Session-Id must never share one session's cached True.
+                    target_session = request.headers.get("X-Hermes-Session-Id", "").strip()
+                    scoped_key = f"{scoped_key}\0require-persist\0{target_session}"
+
+                def _cache_if_persisted(r):
+                    # compute() returns (result, usage); cache only a committed turn so a durable
+                    # same-key retry re-runs an unpersisted one instead of being served it for the TTL.
+                    return (
+                        isinstance(r, tuple) and len(r) >= 1
+                        and isinstance(r[0], dict) and r[0].get("turn_persisted") is True
+                    )
+
+                result, usage = await _idem_cache.get_or_set(
+                    scoped_key, fp, compute,
+                    cache_if=_cache_if_persisted if require_persist else None)
             else:
                 result, usage = await compute()
             return (result, usage), None

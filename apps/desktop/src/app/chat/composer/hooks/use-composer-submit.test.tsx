@@ -183,10 +183,14 @@ describe('useComposerSubmit external request routing', () => {
   })
 
   it.each([true, false])('runs middleware once for an accepted or rejected busy card steer (%s)', async (accepted: boolean) => {
+    const middleware = vi.fn((draft: Parameters<ComposerMiddleware['handler']>[0]) => ({
+      ...draft,
+      text: `[reply] ${draft.text}`
+    }))
     disposers.push(
       registry.register({
         area: COMPOSER_AREAS.middleware,
-        data: { handler: draft => ({ ...draft, text: `[reply] ${draft.text}` }) } satisfies ComposerMiddleware,
+        data: { handler: middleware } satisfies ComposerMiddleware,
         id: 'card-steer-rewrite'
       })
     )
@@ -198,11 +202,12 @@ describe('useComposerSubmit external request routing', () => {
       expect(requestComposerSubmit('card correction', { target: 'main' })).toBe(true)
     })
 
+    expect(middleware).toHaveBeenCalledExactlyOnceWith({ text: 'card correction' })
     expect(onSteer).toHaveBeenCalledExactlyOnceWith('[reply] card correction')
     expect(getQueuedPrompts('stored-session')).toEqual(
       accepted
         ? []
-        : [expect.objectContaining({ middlewareApplied: true, text: '[reply] card correction' })]
+        : [expect.objectContaining({ attachments: [], middlewareApplied: true, text: '[reply] card correction' })]
     )
   })
 

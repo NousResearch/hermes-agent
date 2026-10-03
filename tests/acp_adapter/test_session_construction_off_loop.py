@@ -52,7 +52,9 @@ async def test_new_session_keeps_the_event_loop_free():
 @pytest.mark.asyncio
 @pytest.mark.parametrize("call", [
     lambda s: s.prompt([TextContentBlock(type="text", text="hi")], "gone"),
-    lambda s: s.cancel("gone"),
+    # cancel is deliberately absent: it only consults live sessions (get_live_session) and
+    # never restores a cold row, so there is no off-loop build to assert. See
+    # test_cancel_never_restores_a_cold_session below.
     lambda s: s.set_session_model("m", "gone"),
     lambda s: s.set_session_mode("ask", "gone"),
     lambda s: s.set_config_option("edit_approval_policy", "gone", "ask"),
@@ -82,6 +84,18 @@ async def test_handlers_restore_unknown_sessions_off_the_loop(call):
     done.set()
     await task
     assert ticks >= 5, f"event loop was blocked during the session restore (ticks={ticks})"
+
+
+@pytest.mark.asyncio
+async def test_cancel_never_restores_a_cold_session():
+    """Cancelling an id that is not live must not trigger a DB restore (which would
+    reopen an ended session just to set an event no worker observes)."""
+    manager = SessionManager(agent_factory=_slow_factory)
+    restores = []
+    manager._restore = lambda session_id: restores.append(session_id)
+    server = HermesACPAgent(session_manager=manager)
+    await server.cancel("gone")
+    assert restores == []
 
 
 def test_concurrent_restores_of_one_session_build_a_single_agent():

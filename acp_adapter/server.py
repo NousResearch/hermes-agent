@@ -613,6 +613,19 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
         self._schedule_mcp_late_refresh(state)
         logger.info(log, *log_args)
 
+    @staticmethod
+    def _claim_state_change(state: SessionState) -> None:
+        """Exclude turns and other state changes while retargeting live session state."""
+        with state.runtime_lock:
+            if state.is_running or state.command_op:
+                raise acp.RequestError(-32603, "Session is busy; retry while the session is idle")
+            state.command_op = True
+
+    @staticmethod
+    def _release_state_change(state: SessionState) -> None:
+        with state.runtime_lock:
+            state.command_op = False
+
     async def new_session(self, cwd: str, mcp_servers: list | None = None, **kwargs: Any) -> NewSessionResponse:
         # Agent construction (config, memory-provider import, SessionDB) is slow and fully
         # blocking; inline it froze the loop serving every JSON-RPC request (#58083).
@@ -623,27 +636,37 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
     async def load_session(
         self, cwd: str, session_id: str, mcp_servers: list | None = None, **kwargs: Any
     ) -> LoadSessionResponse | None:
-        state = await asyncio.to_thread(self.session_manager.update_cwd, session_id, cwd)
+        state = await asyncio.to_thread(self.session_manager.get_session, session_id)
         if state is None:
             logger.warning("load_session: session %s not found", session_id)
             return None
-        await self._attach_session_mcp(state, mcp_servers, "Loaded session %s", session_id)
+        self._claim_state_change(state)
+        try:
+            await asyncio.to_thread(self.session_manager.update_cwd, session_id, cwd)
+            await self._attach_session_mcp(state, mcp_servers, "Loaded session %s", session_id)
+        finally:
+            self._release_state_change(state)
         return LoadSessionResponse(**await self._session_response_fields(state, "load"))
 
     async def resume_session(
         self, cwd: str, session_id: str, mcp_servers: list | None = None, **kwargs: Any
     ) -> ResumeSessionResponse:
-        state = await asyncio.to_thread(self.session_manager.update_cwd, session_id, cwd)
+        state = await asyncio.to_thread(self.session_manager.get_session, session_id)
         if state is None:
-            logger.warning("resume_session: session %s not found, creating new", session_id)
-            state = await asyncio.to_thread(self.session_manager.create_session, cwd=cwd)
-        await self._attach_session_mcp(state, mcp_servers, "Resumed session %s", state.session_id)
+            logger.warning("resume_session: session %s not found", session_id)
+            raise acp.RequestError(-32602, f"Unknown session: {session_id}")
+        self._claim_state_change(state)
+        try:
+            await asyncio.to_thread(self.session_manager.update_cwd, session_id, cwd)
+            await self._attach_session_mcp(state, mcp_servers, "Resumed session %s", state.session_id)
+        finally:
+            self._release_state_change(state)
         return ResumeSessionResponse(**await self._session_response_fields(state, "resume"))
 
     async def cancel(self, session_id: str, **kwargs: Any) -> None:
-        # get_session restores a not-in-memory id from the DB (full AIAgent build) and waits
-        # on the restore lock — off the loop, like new/load/resume/fork (#58083).
-        state = await asyncio.to_thread(self.session_manager.get_session, session_id)
+        # Cancellation is only meaningful for a live turn. Restoring a cold row here would
+        # reopen an ended session merely to set an event no worker observes.
+        state = self.session_manager.get_live_session(session_id)
         if not (state and state.cancel_event):
             return
         with state.runtime_lock:
@@ -1063,11 +1086,15 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
         if state is None:
             logger.warning("Session %s: mode switch requested for missing session", session_id)
             return None
-        normalized_mode = str(mode_id or "").strip()
-        if normalized_mode not in self._MODES:
-            normalized_mode = self._MODE_DEFAULT
-        state.mode = normalized_mode
-        self.session_manager.save_session(session_id)
+        self._claim_state_change(state)
+        try:
+            normalized_mode = str(mode_id or "").strip()
+            if normalized_mode not in self._MODES:
+                normalized_mode = self._MODE_DEFAULT
+            state.mode = normalized_mode
+            self.session_manager.save_session(session_id)
+        finally:
+            self._release_state_change(state)
         logger.info("Session %s: mode switched to %s", session_id, normalized_mode)
         return SetSessionModeResponse()
 
@@ -1080,14 +1107,18 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
             logger.warning("Session %s: config update requested for missing session", session_id)
             return None
 
-        if str(config_id) == self._EDIT_APPROVAL_POLICY_CONFIG_ID:
-            state.mode = self._EDIT_APPROVAL_POLICY_TO_MODE.get(str(value), self._MODE_DEFAULT)
-        else:
-            options = getattr(state, "config_options", None)
-            if not isinstance(options, dict):
-                options = {}
-            options[str(config_id)] = value
-            state.config_options = options
-        self.session_manager.save_session(session_id)
+        self._claim_state_change(state)
+        try:
+            if str(config_id) == self._EDIT_APPROVAL_POLICY_CONFIG_ID:
+                state.mode = self._EDIT_APPROVAL_POLICY_TO_MODE.get(str(value), self._MODE_DEFAULT)
+            else:
+                options = getattr(state, "config_options", None)
+                if not isinstance(options, dict):
+                    options = {}
+                options[str(config_id)] = value
+                state.config_options = options
+            self.session_manager.save_session(session_id)
+        finally:
+            self._release_state_change(state)
         logger.info("Session %s: config option %s updated", session_id, config_id)
         return SetSessionConfigOptionResponse(config_options=[])

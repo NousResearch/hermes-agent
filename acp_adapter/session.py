@@ -194,6 +194,11 @@ class SessionManager:
                 state = self._sessions.get(session_id)  # a concurrent restore may have installed it
             return state if state is not None else self._restore(session_id)
 
+    def get_live_session(self, session_id: str) -> Optional[SessionState]:
+        """Return only an already-open session; never restore or reopen a persisted row."""
+        with self._lock:
+            return self._sessions.get(session_id)
+
     def fork_session(self, session_id: str, cwd: str = ".") -> Optional[SessionState]:
         """Deep-copy a session's history into a new session."""
         cwd = _translate_acp_cwd(cwd)

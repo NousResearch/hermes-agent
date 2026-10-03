@@ -137,6 +137,11 @@ model:
   api_mode: chat_completions
 ```
 
+For a custom endpoint saved under more than one name ("scopes", e.g. a personal and a work
+subscription to the same provider), each scope is its own picker row and the row you pick is
+written as the provider — `model.provider: custom:<scope>` — so the session keeps that scope's
+credential. See [Multiple credentials for one provider](../integrations/providers.md#multiple-credentials-for-one-provider-scopes).
+
 **Auxiliary override (example — vision on gemini-flash):**
 ```yaml
 auxiliary:

@@ -107,6 +107,50 @@ class TestResolveProviderClientNamedCustom:
         assert "beans.local" in str(client.base_url)
 
 
+    def test_two_scopes_of_one_endpoint_resolve_their_own_key(self, tmp_path, monkeypatch):
+        """Aux work pinned to a scope must use THAT scope's key.
+
+        Both scopes share one base_url, so any lookup that identifies the entry by
+        reverse-matching the URL hands every auxiliary call the first entry's
+        credential — titles/compression/vision silently billed to the wrong
+        subscription (#118285).
+        """
+        scope_url = "https://opencode.ai/zen/v1"
+        _write_config(tmp_path, {
+            "model": {"default": "kimi-k2.6"},
+            "providers": {
+                "opencode-zen-work": {
+                    "name": "OpenCode Zen (work)", "api": scope_url,
+                    "key_env": "OPENCODE_ZEN_WORK_API_KEY",
+                },
+                "opencode-zen-personal": {
+                    "name": "OpenCode Zen (personal)", "api": scope_url,
+                    "key_env": "OPENCODE_ZEN_PERSONAL_API_KEY",
+                },
+            },
+        })
+        monkeypatch.setenv("OPENCODE_ZEN_WORK_API_KEY", "sk-work-scope")
+        monkeypatch.setenv("OPENCODE_ZEN_PERSONAL_API_KEY", "sk-personal-scope")
+
+        from agent.auxiliary_client import resolve_provider_client
+
+        client, model = resolve_provider_client("opencode-zen-personal", "kimi-k2.6")
+
+        assert client is not None
+        assert model == "kimi-k2.6"
+        assert str(client.api_key) == "sk-personal-scope"
+
+
+    def test_named_custom_no_api_key_uses_fallback(self, tmp_path):
+        _write_config(tmp_path, {
+            "model": {"default": "test"},
+            "custom_providers": [
+                {"name": "local", "base_url": "http://localhost:8080/v1"},
+            ],
+        })
+        from agent.auxiliary_client import resolve_provider_client
+        client, model = resolve_provider_client("local", "test")
+        assert client is not None
         # no-key-required should be used
 
     def test_providers_dict_uses_durable_pool_when_no_inline_key(self, tmp_path):

@@ -471,19 +471,50 @@ def _custom_provider_base_url_config_value(provider_info, resolved_base_url=""):
 
 def _save_custom_provider(base_url, api_key="", model="", context_length=None, name=None, api_mode=None,
                           key_env=""):
-    """Save a custom endpoint to ``custom_providers`` in config.yaml, deduplicated by base_url (an
-    existing entry gets model / context_length / api_mode updated). *key_env* set means the caller
-    already wrote the key to ``.env``; the entry references it instead of inlining the secret.
+    """Save a custom endpoint to ``custom_providers`` in config.yaml, deduplicated by base_url **and
+    name** (an existing entry gets model / context_length / api_mode / api_key updated).
+
+    A name is the endpoint's scope identity, so two scopes of one provider — same base_url,
+    different names — each get their own entry instead of silently collapsing into the first one
+    (#40977, #81789, #118285). A side with no name has no identity to disagree about, so it still
+    matches on the URL alone: an unnamed caller updates the endpoint in place, and an unnamed
+    legacy entry is updated by a named save rather than duplicated next to itself.
+
+    An unnamed caller only stays supported while the URL is unambiguous. With two or more entries
+    on one URL and at least one of them named, a nameless save has no scope to target, and picking
+    list order would mutate — and bill — the wrong scope, so it raises instead.
+
+    *key_env* set means the caller already wrote the key to ``.env``; the entry references it
+    instead of inlining the secret.
 
     See #69449.
     """
     from hermes_cli.config import load_config, save_config
+    from hermes_cli.providers import custom_provider_aliases
     cfg = load_config()
     providers = cfg.get("custom_providers") or []
     if not isinstance(providers, list):
         providers = []
-    for entry in providers:
-        if not (isinstance(entry, dict) and entry.get("base_url", "").rstrip("/") == base_url.rstrip("/")):
+    requested_name = str(name or "").strip()
+    url_matches = [
+        entry for entry in providers
+        if isinstance(entry, dict) and entry.get("base_url", "").rstrip("/") == base_url.rstrip("/")
+    ]
+    if not requested_name and len(url_matches) > 1 and any(
+        str(entry.get("name") or "").strip() for entry in url_matches
+    ):
+        raise ValueError(
+            f"Cannot save a custom provider for {base_url.rstrip('/')!r} without a scope name: "
+            f"{len(url_matches)} entries share that endpoint and at least one is named, so an "
+            "unnamed save has no scope to target (picking one would silently mutate and bill the "
+            "wrong credential). Pass the scope's name explicitly."
+        )
+    for entry in url_matches:
+        entry_name = str(entry.get("name") or "").strip()
+        if requested_name and entry_name and not (
+            custom_provider_aliases(requested_name, "") &
+            custom_provider_aliases(entry_name, str(entry.get("provider_key") or ""))
+        ):
             continue
         changed = False
         if model and entry.get("model") != model:
@@ -499,16 +530,20 @@ def _save_custom_provider(base_url, api_key="", model="", context_length=None, n
         elif "api_mode" in entry:
             entry.pop("api_mode", None)
             changed = True
-        if key_env and (entry.get("key_env") != key_env or entry.get("api_key")):
-            entry["key_env"] = key_env
-            entry.pop("api_key", None)
+        if key_env:
+            if entry.get("key_env") != key_env or entry.get("api_key"):
+                entry["key_env"] = key_env
+                entry.pop("api_key", None)
+                changed = True
+        elif api_key and entry.get("api_key") != api_key:
+            entry["api_key"] = api_key
             changed = True
         if changed:
             cfg["custom_providers"] = providers
             save_config(cfg)
         return  # already saved, updated if needed
 
-    name = name or _auto_provider_name(base_url)
+    name = requested_name or _auto_provider_name(base_url)
     entry = {"name": name, "base_url": base_url}
     if key_env:
         entry["key_env"] = key_env

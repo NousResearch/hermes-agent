@@ -94,3 +94,50 @@ async def test_process_entry_async_passes_non_dict_through():
     compressor = TrajectoryCompressor.__new__(TrajectoryCompressor)
     entry, metrics = await compressor.process_entry_async(42)
     assert entry == 42
+
+
+def test_load_jsonl_streams_entries(tmp_path):
+    """Large JSONL inputs must not be materialised before processing starts."""
+    from trajectory_compressor import _load_jsonl
+
+    path = tmp_path / "trajectories.jsonl"
+    path.write_text('{"id": 1}\n{"id": 2}\n', encoding="utf-8")
+    entries = _load_jsonl(path)
+    assert not isinstance(entries, list)
+    assert next(entries) == (0, {"id": 1})
+    assert next(entries) == (1, {"id": 2})
+
+
+@pytest.mark.asyncio
+async def test_process_directory_async_writes_streamed_batches(tmp_path):
+    """Streaming directory processing completes and persists metrics."""
+    from trajectory_compressor import AggregateMetrics, CompressionConfig, TrajectoryCompressor, TrajectoryMetrics
+
+    input_dir = tmp_path / "input"
+    output_dir = tmp_path / "output"
+    input_dir.mkdir()
+    (input_dir / "trajectories.jsonl").write_text(
+        ''.join(f'{{"id": {entry_id}}}\n' for entry_id in range(5)),
+        encoding="utf-8",
+    )
+
+    compressor = TrajectoryCompressor.__new__(TrajectoryCompressor)
+    compressor.config = CompressionConfig(max_concurrent_requests=1)
+    compressor.aggregate_metrics = AggregateMetrics()
+    compressor.logger = MagicMock()
+    compressor._print_summary = MagicMock()
+
+    async def fake_process_one(run, file_path, entry_idx, entry):
+        metrics = TrajectoryMetrics()
+        compressor.aggregate_metrics.add_trajectory_metrics(metrics)
+        return dict(entry, processed=True), metrics
+
+    compressor._process_one = fake_process_one
+
+    await compressor._process_directory_async(input_dir, output_dir)
+
+    assert (output_dir / "trajectories.jsonl").read_text(encoding="utf-8").splitlines() == [
+        f'{{"id": {entry_id}, "processed": true}}' for entry_id in range(5)
+    ]
+    assert (output_dir / compressor.config.metrics_output_file).exists()
+    compressor._print_summary.assert_called_once()

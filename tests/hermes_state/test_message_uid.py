@@ -324,6 +324,47 @@ class TestPersistedMergeWitness:
         assert db._conn.execute(
             "SELECT tool_call_uid FROM messages WHERE content = 'stray'").fetchone()[0] is None
 
+    @pytest.mark.parametrize("slots", [["1" * 32, None], [None, "1" * 32]], ids=["mapped-then-legacy",
+                                                                                 "legacy-then-mapped"])
+    def test_a_mixed_era_folds_unmapped_slot_survives_insert_rewrite_and_export_import(self, db, tmp_path, slots):
+        """A fold of a mapped turn with an older build's unmapped one keeps ``None`` for the unmapped
+        occurrence. Every write path keeps that slot (dropping the list would lose the mapped occurrence's
+        uid; minting over it would invent one), and a restore pairs the result with the LAST occurrence's."""
+        db.create_session("s", "cli")
+        survivor = {"role": "assistant", "content": "a", "tool_calls": [_call("call_x"), _call("call_x")],
+                    "_tool_call_uids": {"call_x": list(slots)}}
+        db.append_messages_batch("s", [{"role": "user", "content": "q"}, survivor])
+        db._conn.execute(  # a result stored without a uid: restore derives it from the composite
+            "INSERT INTO messages (session_id, role, content, tool_call_id, tool_name, timestamp) "
+            "VALUES ('s', 'tool', 'r', 'call_x', 't', 9.0)")
+        db._conn.commit()
+        assert survivor["_tool_call_uids"] == {"call_x": slots}
+
+        def check(store, sid="s"):
+            restored = store.get_messages_as_conversation(sid, repair_alternation=False, include_row_ids=True)
+            assert restored[1]["_tool_call_uids"] == {"call_x": slots}
+            assert restored[2].get("_tool_call_uid") == slots[-1]
+
+        check(db)
+        survivor["content"] = "a, rewritten"  # the same dict again: a row-addressed rewrite in place
+        db.append_messages_batch("s", [survivor])
+        assert [r["content"] for r in _rows(db, "s")] == ["q", "a, rewritten", "r"]
+        assert json.loads(db._conn.execute(
+            "SELECT tool_call_uids FROM messages WHERE role = 'assistant'").fetchone()[0]) == {"call_x": slots}
+        check(db)
+        other = SessionDB(db_path=tmp_path / "other.db")
+        try:
+            assert other.import_sessions([db.export_session("s")])["ok"]
+            check(other)
+        finally:
+            other.close()
+
+    def test_an_all_unmapped_occurrence_list_is_no_map(self, db):
+        db.create_session("s", "cli")
+        db.append_messages_batch("s", [{"role": "assistant", "content": "a", "tool_calls": [_call("c1")],
+                                        "_tool_call_uids": {"c1": "1" * 32, "call_x": [None, None]}}])
+        assert json.loads(db._conn.execute("SELECT tool_call_uids FROM messages").fetchone()[0]) == {"c1": "1" * 32}
+
     def test_a_composite_rewind_reports_the_replacement_rows_uid(self, db):
         from agent.context_compressor import HISTORICAL_TASK_HEADING, SUMMARY_PREFIX, _SUMMARY_END_MARKER
 

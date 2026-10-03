@@ -654,6 +654,16 @@ def _stage_first_contact_onboarding_note(session: dict, agent, history_empty: bo
         logger.debug("first-contact onboarding note failed", exc_info=True)
 
 
+def _materialize_voice_state(session: dict) -> None:
+    """Apply per-session voice flags, inheriting unset legacy fields from the process env."""
+    if "voice_enabled" not in session:
+        session["voice_enabled"] = os.environ.get("HERMES_VOICE", "").strip() == "1"
+    if "voice_tts_enabled" not in session:
+        session["voice_tts_enabled"] = os.environ.get("HERMES_VOICE_TTS", "").strip() == "1"
+    os.environ["HERMES_VOICE"] = "1" if session["voice_enabled"] else "0"
+    os.environ["HERMES_VOICE_TTS"] = "1" if session["voice_tts_enabled"] else "0"
+
+
 def _prepare_turn_input(sid: str, session: dict, st: _TurnRun, text: Any, images: list[str]):
     """Bind scopes, sync the agent, snapshot history, build the run message; returns
     ``(prompt, run_message, cols, streamer)`` or None when @-expansion was refused.
@@ -665,8 +675,7 @@ def _prepare_turn_input(sid: str, session: dict, st: _TurnRun, text: Any, images
     # Voice toggles arrive on the RPC process, while the turn may run in a
     # separately spawned interactive agent. Materialize the session state before
     # launching the turn so the child inherits the runtime flags.
-    os.environ["HERMES_VOICE"] = "1" if session.get("voice_enabled") else "0"
-    os.environ["HERMES_VOICE_TTS"] = "1" if session.get("voice_tts_enabled") else "0"
+    _materialize_voice_state(session)
     from tools.approval_context import set_current_session_key
     scopes = st.scopes
     scopes.approval = set_current_session_key(session["session_key"])

@@ -5,6 +5,7 @@ helpers (``_sessions``, ``_ok``, ``_err``, ...) bare; module-level helpers are p
 server.py the same way (tests monkeypatching ``server.X`` still intercept)."""
 
 import contextlib
+import os
 
 from .method_ctx import HandlerRegistry, bind_module
 
@@ -453,6 +454,8 @@ def _create_session(rid, params: dict, *, copy_parent_history: bool = False) -> 
             "follow_profile_config": _flag(params, "follow_profile_config"),
             "profile_home": str(profile_home) if profile_home is not None else None,
             "running": False, "session_key": key, "show_reasoning": _load_show_reasoning(), "source": source,
+            "voice_enabled": os.environ.get("HERMES_VOICE", "").strip() == "1",
+            "voice_tts_enabled": os.environ.get("HERMES_VOICE_TTS", "").strip() == "1",
             "slash_worker": None, "tool_progress_mode": _load_tool_progress_mode(), "tool_started_at": {},
             "transport": current_transport() or _stdio_transport,
             "auth_user_id": _transport_auth_user_id(current_transport())}

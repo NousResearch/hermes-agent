@@ -396,6 +396,8 @@ class ComputeHost:
                 "slash_worker": None, "show_reasoning": server._load_show_reasoning(),
                 "tool_progress_mode": server._load_tool_progress_mode(), "edit_snapshots": {},
                 "tool_started_at": {}, "model_override": frame.get("model_override"),
+                "voice_enabled": os.environ.get("HERMES_VOICE", "").strip() == "1",
+                "voice_tts_enabled": os.environ.get("HERMES_VOICE_TTS", "").strip() == "1",
                 "source": server._sanitize_client_source(frame.get("source")),
                 "transport": self._transport}
         session = server._sessions[sid]

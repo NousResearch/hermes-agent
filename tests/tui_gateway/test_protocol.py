@@ -2044,6 +2044,33 @@ def test_session_create_idempotency_key_dedupes_retry(server, monkeypatch):
     assert len(server._sessions) == 1
 
 
+def test_session_create_seeds_voice_state_from_process_env(server, monkeypatch):
+    _stub_session_create_dependencies(server, monkeypatch)
+    monkeypatch.setenv("HERMES_VOICE", "1")
+    monkeypatch.setenv("HERMES_VOICE_TTS", "0")
+
+    response = server.handle_request({"id": "voice-seed", "method": "session.create", "params": {}})
+
+    assert "error" not in response, response.get("error")
+    session = server._sessions[response["result"]["session_id"]]
+    assert session["voice_enabled"] is True
+    assert session["voice_tts_enabled"] is False
+
+
+def test_materialize_voice_state_preserves_explicit_and_inherits_missing(monkeypatch):
+    from tui_gateway import prompt_turn
+
+    monkeypatch.setenv("HERMES_VOICE", "1")
+    monkeypatch.setenv("HERMES_VOICE_TTS", "1")
+    session = {"voice_enabled": False}
+
+    prompt_turn._materialize_voice_state(session)
+
+    assert session == {"voice_enabled": False, "voice_tts_enabled": True}
+    assert os.environ["HERMES_VOICE"] == "0"
+    assert os.environ["HERMES_VOICE_TTS"] == "1"
+
+
 def test_session_create_no_idempotency_key_creates_distinct_sessions(server, monkeypatch):
     """Without an idempotency_key, repeated creates keep the historic behavior."""
     _stub_session_create_dependencies(server, monkeypatch)

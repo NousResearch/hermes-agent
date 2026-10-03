@@ -398,6 +398,10 @@ class PlatformRegistry:
         and cannot be installed, ``validate_config`` fails, or the factory raises."""
         entry = self.get(name)
         if entry is None:
+            # Every other None path below logs its reason; without this line a platform gated out
+            # by plugins.disabled (#131974) or never registered failed with no trace at all.
+            logger.warning(
+                "No registry entry for platform '%s' (not registered, or gated out by plugins config)", name)
             return None
         def _probe(fn: Callable[[], Any], failure_msg: str) -> bool:
             try:

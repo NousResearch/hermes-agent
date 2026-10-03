@@ -5,15 +5,27 @@
 # wait for them.
 set -u
 
+service_root=${GATEWAY_SERVICE_ROOT:-/run/service}
+s6_setuidgid=${S6_SETUIDGID:-/command/s6-setuidgid}
+s6_svc=${S6_SVC:-/command/s6-svc}
+s6_svwait=${S6_SVWAIT:-/command/s6-svwait}
+
 set --
-for slot in /run/service/gateway-*; do
+for slot in "$service_root"/gateway-*; do
     [ -d "$slot" ] && set -- "$@" "$slot"
 done
 [ "$#" -gt 0 ] || exit 0
 
 # Keep desired_state untouched: this is container shutdown, not a user-requested
 # gateway stop. The next container boot must reconcile and restart the gateways.
-exec /command/s6-setuidgid hermes /bin/sh -c \
-    'for slot do /command/s6-svc -d -- "$slot" || :; done
-     exec /command/s6-svwait -D -t 40000 -- "$@"' \
-    sh "$@"
+# Request every slot first, then wait for every slot concurrently. A stale slot
+# can fail either operation without preventing healthy slots from being stopped
+# and waited on; the per-slot 40-second waits share one overall bound.
+exec "$s6_setuidgid" hermes /bin/sh -c '
+    s6_svc=$1
+    s6_svwait=$2
+    shift 2
+    for slot do "$s6_svc" -d -- "$slot" || :; done
+    for slot do "$s6_svwait" -D -t 40000 -- "$slot" & done
+    wait || :
+' sh "$s6_svc" "$s6_svwait" "$@"

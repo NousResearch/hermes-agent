@@ -378,3 +378,65 @@ def test_staged_hint_keeps_command_for_chat_gateway_platform(hermes_home, monkey
     monkeypatch.setenv("HERMES_SESSION_PLATFORM", "telegram")
     r = _stage_one_memory_write()
     assert "/memory pending" in r["message"], r["message"]
+
+
+# ---------------------------------------------------------------------------
+# security: path traversal and id validation
+# ---------------------------------------------------------------------------
+
+def test_pending_path_rejects_traversal_and_invalid_id(hermes_home):
+    """ensure _pending_path rejects traversal tokens, absolute paths, and bad characters."""
+    from tools import write_approval as wa
+
+    with pytest.raises(ValueError, match="invalid write approval subsystem"):
+        wa._pending_path("bad_subsystem", "abc12345")
+
+    with pytest.raises(ValueError, match="invalid pending_id"):
+        wa._pending_path("memory", "../../../etc/passwd")
+
+    with pytest.raises(ValueError, match="invalid pending_id"):
+        wa._pending_path("memory", "..")
+
+    with pytest.raises(ValueError, match="invalid pending_id"):
+        wa._pending_path("memory", "id/with/slashes")
+
+    with pytest.raises(ValueError, match="invalid pending_id"):
+        wa._pending_path("memory", "id\\with\\backslashes")
+
+    with pytest.raises(ValueError, match="invalid pending_id"):
+        wa._pending_path("memory", "id with spaces")
+
+
+def test_get_and_discard_pending_safe_against_traversal(hermes_home):
+    """verify get_pending and discard_pending do not access or delete out-of-tree files."""
+    from pathlib import Path
+    from tools import write_approval as wa
+
+    # place a json file outside the pending memory folder
+    sensitive_file = Path(hermes_home) / "sensitive.json"
+    sensitive_file.write_text(json.dumps({"id": "secret", "subsystem": "memory"}), encoding="utf-8")
+
+    assert wa.get_pending("memory", "../sensitive") is None
+    assert wa.get_pending("memory", "../../sensitive") is None
+
+    assert wa.discard_pending("memory", "../sensitive") is False
+    assert sensitive_file.exists()
+
+
+def test_cli_subcommands_safe_against_traversal(hermes_home):
+    """ensure /memory and /skills slash subcommands reject traversal IDs cleanly."""
+    from hermes_cli.write_approval_commands import handle_pending_subcommand
+    from tools import write_approval as wa
+
+    wa.stage_write(wa.MEMORY, {"action": "add", "target": "memory", "content": "staged"}, summary="s", origin="foreground")
+    wa.stage_write(wa.SKILLS, {"action": "create", "name": "dummy"}, summary="s", origin="foreground")
+
+    out_app = handle_pending_subcommand(wa.MEMORY, ["approve", "../../sensitive"])
+    assert "No pending memory write with id" in out_app
+
+    out_rej = handle_pending_subcommand(wa.MEMORY, ["reject", "../../sensitive"])
+    assert "No pending memory write with id" in out_rej
+
+    out_diff = handle_pending_subcommand(wa.SKILLS, ["diff", "../../sensitive"])
+    assert "No pending skill write with id" in out_diff
+

@@ -61,7 +61,8 @@ def _dead_pid() -> int:
 def _run(home: Path, *args: str, install: Path | None = None, timeout: int = 120):
     command = ['powershell', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', str(SCRIPT),
                '-InstallRoot', str(install or home / 'hermes-agent'), '-NoUi', *args]
-    proc = subprocess.Popen(command, cwd=home, env={**os.environ, 'HERMES_HOME': str(home)},
+    env = {**os.environ, 'HERMES_HOME': str(home), 'HERMES_RUNTIME_DIR': str(home / 'empty-store')}
+    proc = subprocess.Popen(command, cwd=home, env=env,
                             stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
     try:
         out, _ = proc.communicate(timeout=timeout)

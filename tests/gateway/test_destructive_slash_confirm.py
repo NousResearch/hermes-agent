@@ -145,3 +145,72 @@ async def test_resolve_always_persists_opt_out_and_runs_execute(monkeypatch):
     assert resolved is not None
     assert "✨ fresh" in resolved
     assert "config.yaml" in resolved
+
+
+@pytest.mark.asyncio
+async def test_always_optout_persists_to_home_active_at_gate_time(tmp_path, monkeypatch):
+    """Regression #132187: for a chat routed to a non-default profile, the gate
+    runs inside the routed profile's home override, but the confirm resolves
+    later (button click / /approve reply) with no override active. Resolving
+    "always" must persist the opt-out into the config the gate read — the
+    routed profile's config.yaml — and leave the process (default) home's
+    config untouched. Uses the real cli.save_config_value write path."""
+    import hermes_yaml as yaml
+
+    from hermes_constants import (
+        get_hermes_home,
+        reset_hermes_home_override,
+        set_hermes_home_override,
+    )
+    from tools import slash_confirm as _slash_confirm_mod
+
+    default_home = tmp_path / "default-home"
+    routed_home = tmp_path / "profiles" / "health"
+    default_home.mkdir(parents=True)
+    routed_home.mkdir(parents=True)
+    for home in (default_home, routed_home):
+        (home / "config.yaml").write_text(
+            yaml.safe_dump({"approvals": {"destructive_slash_confirm": True}}),
+            encoding="utf-8",
+        )
+    monkeypatch.setenv("HERMES_HOME", str(default_home))
+
+    runner = _make_runner()
+    runner._read_user_config = lambda: {"approvals": {"destructive_slash_confirm": True}}
+    session_key = build_session_key(_make_source())
+    runner._session_key_for_source = lambda src: session_key
+    _slash_confirm_mod.clear(session_key)
+
+    executed = []
+
+    async def _execute():
+        executed.append(True)
+        return "✨ fresh"
+
+    # Gate inside the routed profile's home override, as a routed turn runs.
+    token = set_hermes_home_override(str(routed_home))
+    try:
+        await runner._maybe_confirm_destructive_slash(
+            event=_make_event("/new"),
+            command="new",
+            title="/new",
+            detail="Discards history.",
+            execute=_execute,
+        )
+    finally:
+        reset_hermes_home_override(token)
+
+    pending = _slash_confirm_mod.get_pending(session_key)
+    assert pending is not None
+    # The resolve path runs without the override: a naive persist lands in the
+    # process (default) home.
+    assert get_hermes_home() == default_home
+
+    resolved = await _slash_confirm_mod.resolve(session_key, pending["confirm_id"], "always")
+
+    assert executed and resolved is not None and "✨ fresh" in resolved
+    routed_cfg = yaml.safe_load((routed_home / "config.yaml").read_text(encoding="utf-8-sig"))
+    default_cfg = yaml.safe_load((default_home / "config.yaml").read_text(encoding="utf-8-sig"))
+    assert routed_cfg["approvals"]["destructive_slash_confirm"] is False
+    assert default_cfg["approvals"]["destructive_slash_confirm"] is True
+    _slash_confirm_mod.clear(session_key)

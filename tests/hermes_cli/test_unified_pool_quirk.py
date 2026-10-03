@@ -208,8 +208,9 @@ def test_memory_probe_carries_identity_without_another_process(monkeypatch):
     def run(argv, **kwargs):
         calls.append(argv)
         assert argv[0] == "nvidia-smi"
-        # Column order matches _cached_nvidia_gpu_query: total, free, name, pci, used, util.
-        output = f"32704, 31423, {name}, 0x2E0310DE, 2048, 7\n"
+        # Column order matches _cached_nvidia_gpu_query: index, uuid, total, free,
+        # name, pci, used, util (the probe folds one row per visible GPU).
+        output = f"0, GPU-ab-01, 32704, 31423, {name}, 0x2E0310DE, 2048, 7\n"
         return SimpleNamespace(returncode=0, stdout=output)
 
     monkeypatch.setattr(hw.subprocess, "run", run)

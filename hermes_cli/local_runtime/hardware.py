@@ -207,6 +207,41 @@ def _nvidia_vram() -> tuple[int, int, str, int | None] | None:
     return query["total_bytes"], query["free_bytes"], query["gpu_name"], query.get("gpu_pci_id")
 
 
+_CUDA_VISIBLE_DEVICES = "CUDA_VISIBLE_DEVICES"
+
+
+def _cuda_visible_admitter(mask: str | None):
+    """Row-admission predicate for SMI rows under a CUDA_VISIBLE_DEVICES value.
+
+    Returns None when the mask is unset (every row admitted). CUDA's own rules are
+    applied to SMI's index/uuid columns: indices may repeat and reorder, GPU-UUIDs
+    may be abbreviated, and an empty or unresolvable value (MIG instance UUIDs name
+    partitions no SMI row identifies) hides every device — the visible set is then
+    unknown, so admitting nothing fails closed instead of budgeting cards the
+    masked runtime cannot allocate.
+    """
+    if mask is None:
+        return None
+    tokens = [t.strip() for t in mask.split(",") if t.strip()]
+    if not tokens:
+        return lambda index, uuid: False  # empty mask: the runtime sees no GPU
+    numeric: set[int] = set()
+    prefixes: list[str] = []
+    for token in tokens:
+        if token.isdigit():
+            numeric.add(int(token))
+        elif token.upper().startswith("GPU-"):
+            prefixes.append(token.lower())
+        else:
+            return lambda index, uuid: False
+    def _admits(index: str, uuid: str) -> bool:
+        idx = index.strip()
+        if idx.isdigit() and int(idx) in numeric:
+            return True
+        return uuid.strip().lower().startswith(tuple(prefixes)) if prefixes else False
+    return _admits
+
+
 _gpu_query_cache: "tuple[float, dict | None] | None" = None
 # The statusbar polls /api/local-models/hardware every 5s and the endpoint needs
 # name/util/vram; the budget probe needs total/free. One shared query (with a TTL
@@ -216,11 +251,78 @@ _gpu_query_cache: "tuple[float, dict | None] | None" = None
 _GPU_QUERY_TTL_S = 4.0
 
 
+def _aggregate_gpu_rows(stdout: str) -> "dict | None":
+    """Fold every visible GPU row of the shared nvidia-smi CSV into one query result.
+
+    One CSV row per GPU and tensor-split engines address the summed VRAM of all VISIBLE
+    cards, so every admitted row must be totaled — reading only GPU 0 budgets a 2x24GiB
+    rig at one card (#118418). Admission follows CUDA_VISIBLE_DEVICES exactly (the
+    managed llama-server inherits it via server_child_env) because NVML ignores the
+    mask: summing masked-away rows would budget VRAM the runtime child cannot
+    allocate, while the statusbar gets the same masked view the runtime sees. A card
+    reporting a per-field "N/A" (driver mismatch, vGPU, WDDM) skips only its own row —
+    letting the ValueError reach the caller would discard the healthy rows already
+    totaled, the silent degradation this aggregation prevents.
+    """
+    admit = _cuda_visible_admitter(os.environ.get(_CUDA_VISIBLE_DEVICES))
+    total_mib = free_mib = used_mib = 0
+    admitted = 0
+    names: list[str] = []
+    utils: list[int] = []
+    identity_id: str | None = None  # PCI ID only identifies a single-card view
+    for row in csv.reader(stdout.strip().splitlines(), skipinitialspace=True):
+        if len(row) < 8:
+            continue
+        index, uuid, raw_total, raw_free, name, raw_id, raw_used, raw_util = row[:8]
+        # Parse all three memory fields before committing any: smi reports "N/A" per
+        # field, so "24576, N/A" must not bump total before its free parse fails — a
+        # row contributes to every aggregate or to none, keeping the sums consistent.
+        try:
+            row_total = int(raw_total)
+            row_free = int(raw_free)
+            row_used = int(raw_used)
+        except ValueError:
+            continue
+        if admit is not None and not admit(index, uuid):
+            continue
+        total_mib += row_total
+        free_mib += row_free
+        used_mib += row_used
+        if not admitted:
+            identity_id = raw_id
+        admitted += 1
+        if name.strip() and name.strip() not in names:
+            names.append(name.strip())
+        with suppress(ValueError):  # utilization is statusbar garnish, never budget
+            utils.append(int(raw_util))
+    if total_mib <= 0:
+        return None
+    if len(names) > 1:
+        gpu_name = " + ".join(names)
+    elif names:
+        gpu_name = f"{names[0]} x{admitted}" if admitted > 1 else names[0]
+    else:
+        gpu_name = ""
+    pci_id = None
+    if admitted == 1 and identity_id is not None:
+        with suppress(ValueError):  # N/A or unsupported identity must not lose memory data.
+            pci_id = int(identity_id, 16)
+    return {
+        "gpu_name": gpu_name,
+        "total_bytes": total_mib << 20,
+        "free_bytes": free_mib << 20,
+        "used_bytes": used_mib << 20,
+        "gpu_util_percent": round(sum(utils) / len(utils)) if utils else 0,
+        "gpu_pci_id": pci_id,
+    }
+
+
 def _cached_nvidia_gpu_query(ttl_s: float = _GPU_QUERY_TTL_S) -> "dict | None":
     """One nvidia-smi read shared by the budget probe and the hardware endpoint.
 
     Returns ``dict(gpu_name=, total_bytes=, free_bytes=, used_bytes=, gpu_util_percent=,
-    gpu_pci_id=)`` or None when nvidia-smi is absent, fails, or is not an NVIDIA card.
+    gpu_pci_id=)`` folded from every CUDA-visible GPU row (see ``_aggregate_gpu_rows``),
+    or None when nvidia-smi is absent, fails, or reports no visible card.
     Cached for ``ttl_s`` (failures too — a missing smi must not spawn per poll).
     """
     global _gpu_query_cache
@@ -236,26 +338,14 @@ def _cached_nvidia_gpu_query(ttl_s: float = _GPU_QUERY_TTL_S) -> "dict | None":
     from hermes_cli._subprocess_compat import windows_hide_flags
     with suppress(OSError, ValueError, subprocess.TimeoutExpired):
         out = subprocess.run(
-            [exe, "--query-gpu=memory.total,memory.free,name,pci.device_id,memory.used,utilization.gpu",
+            [exe, "--query-gpu=index,uuid,memory.total,memory.free,name,pci.device_id,memory.used,utilization.gpu",
              "--format=csv,noheader,nounits"],
             capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10,
             creationflags=windows_hide_flags())
         if out.returncode != 0 or not out.stdout.strip():
             _gpu_query_cache = (now, None)
             return None
-        total_mib, free_mib, name, raw_id, used_mib, util = next(
-            csv.reader(out.stdout.strip().splitlines(), skipinitialspace=True))
-        pci_id = None
-        with suppress(ValueError):  # N/A or unsupported identity must not lose memory data.
-            pci_id = int(raw_id, 16)
-        data = {
-            "gpu_name": name.strip(),
-            "total_bytes": int(total_mib) << 20,
-            "free_bytes": int(free_mib) << 20,
-            "used_bytes": int(used_mib) << 20,
-            "gpu_util_percent": int(util),
-            "gpu_pci_id": pci_id,
-        }
+        data = _aggregate_gpu_rows(out.stdout)
         _gpu_query_cache = (now, data)
         return data
     _gpu_query_cache = (now, None)

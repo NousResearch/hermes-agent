@@ -48,10 +48,10 @@ def test_pci_identity_controls_recommendations_without_changing_memory(
 
     def run(argv, **kwargs):
         calls.append(argv)
-        assert argv[1] == "--query-gpu=memory.total,memory.free,name,pci.device_id,memory.used,utilization.gpu"
+        assert argv[1] == "--query-gpu=index,uuid,memory.total,memory.free,name,pci.device_id,memory.used,utilization.gpu"
         # A second adapter must not supply identity for the first adapter's budget.
-        output = (f'32704, 31423, "{name}", {pci_id}, 2048, 7\n'
-                  '32704, 31423, NVIDIA RTX Spark N1X, 0x2E0310DE, 2048, 7\n')
+        output = (f'0, GPU-aa-00, 32704, 31423, "{name}", {pci_id}, 2048, 7\n'
+                  '1, GPU-aa-01, 32704, 31423, NVIDIA RTX Spark N1X, 0x2E0310DE, 2048, 7\n')
         return SimpleNamespace(returncode=0, stdout=output)
 
     monkeypatch.setattr(hardware.subprocess, "run", run)
@@ -74,7 +74,9 @@ def test_pci_identity_controls_recommendations_without_changing_memory(
         catalog.predicted_decode_tok_s(entry, variant, generic, spilled=True))
     assert budget.total_device_bytes == 48 << 30
     assert budget.usable_vram_bytes == int((48 << 30) * .8)
-    assert budget.gpu_name == name
+    # The query aggregates multi-row output ("A x2" / "A + B", first row's name
+    # first); identity priority is what this test pins, so assert the leading name.
+    assert budget.gpu_name.startswith(name)
     assert len(calls) == 1
 
 
@@ -89,8 +91,8 @@ def test_unavailable_pci_id_preserves_memory_and_name_fallback(monkeypatch, inte
 
     def run(argv, **kwargs):
         calls.append(argv)
-        assert argv[1] == "--query-gpu=memory.total,memory.free,name,pci.device_id,memory.used,utilization.gpu"
-        return SimpleNamespace(returncode=0, stdout=f"32704, 31423, {name}, N/A, 2048, 7\n")
+        assert argv[1] == "--query-gpu=index,uuid,memory.total,memory.free,name,pci.device_id,memory.used,utilization.gpu"
+        return SimpleNamespace(returncode=0, stdout=f"0, GPU-aa-00, 32704, 31423, {name}, N/A, 2048, 7\n")
 
     monkeypatch.setattr(hardware.subprocess, "run", run)
     budget = hardware.probe_budget(planning=True)

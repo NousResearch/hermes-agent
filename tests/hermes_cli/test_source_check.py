@@ -784,3 +784,73 @@ def test_update_in_place_local_head_containing_current_main_is_not_a_false_posit
     assert status["parked"] is True
     assert status["behind"] == 0
     assert status["updateAvailable"] is False
+
+
+# ---------------------------------------------------------------------------
+# A stalled ls-remote must not be misreported as an API failure
+#
+# The commits-API HTTP 422 ("No commit found for SHA: <branch>") is the
+# expected branch-absent signal for a deleted branch, not a probe failure.
+# A stalled git ls-remote is retried once; when it still cannot run, the
+# failure names the git probe instead of resurfacing the benign 422.
+# ---------------------------------------------------------------------------
+
+
+def test_ls_remote_stall_names_the_git_probe_not_the_benign_422(installation, monkeypatch):
+    """'No commit found' (HTTP 422) is the expected branch-absent signal, not a
+    failure. When the ls-remote proof cannot run, report that instead of blaming the API,
+    and retry the stalled probe once before giving up."""
+    import subprocess as sp
+    from hermes_cli.source_check import check_for_updates
+    root, linked, home, base, head, responses, requests, git = installation
+    _in_place_config(home)
+    responses["/repos/fixture/fork/commits/feature%2Fgui"] = (
+        422, {"message": "No commit found for SHA: feature/gui"})
+    original = sp.run
+    stalls = []
+
+    def stalled(args, **kwargs):
+        if "ls-remote" in args:
+            stalls.append(list(args))
+            raise sp.TimeoutExpired(args, kwargs.get("timeout", 10))
+        return original(args, **kwargs)
+
+    monkeypatch.setattr(sp, "run", stalled)
+    status = check_for_updates(install_root=linked, home=home)
+    assert status["error"] == "fetch-failed"
+    assert "ls-remote" in status["message"]
+    assert "422" not in status["message"]
+    assert len(stalls) == 2  # exactly one bounded retry before the failure is reported
+
+
+def test_parked_classification_survives_one_ls_remote_stall(installation, monkeypatch):
+    """One transient ls-remote timeout is retried, so the parked verdict
+    (update_in_place against main) is not dropped by a slow probe."""
+    import subprocess as sp
+    from hermes_cli.source_check import check_for_updates
+    root, linked, home, base, head, responses, requests, git = installation
+    _bare_origin(installation)
+    _in_place_config(home)
+    git("branch", "pushed")
+    _commit_on(git, "pushed", "published work")
+    git("push", "-q", "-u", "origin", "pushed")
+    git("push", "-q", "origin", "--delete", "pushed")
+    git("fetch", "-q", "--prune", "origin")
+    git("checkout", "-q", "pushed")
+    original = sp.run
+    probes = []
+
+    def flaky(args, **kwargs):
+        if "ls-remote" in args:
+            probes.append(list(args))
+            if len(probes) == 1:
+                raise sp.TimeoutExpired(args, kwargs.get("timeout", 10))
+        return original(args, **kwargs)
+
+    monkeypatch.setattr(sp, "run", flaky)
+    status = check_for_updates(install_root=root, home=home)
+    assert "error" not in status, status
+    assert status["parked"] is True
+    assert status["branch"] == "main"
+    assert status["currentBranch"] == "pushed"
+    assert len(probes) == 3  # branch probe: stall + retry; main probe: clean

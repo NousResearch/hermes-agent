@@ -140,10 +140,16 @@ def _request_with(url: str, accept: str, token: str | None) -> str:
 def _branch_tip(repository: str | None, branch: str, root: Path, git: str,
                 remote: str = "origin") -> tuple[str | None, bool, str | None]:
     """``(sha, missing, failure)``: ``missing`` only on a confirmed empty advertisement;
-    ``failure`` names why no tip could be read, for the user-facing message."""
+    ``failure`` names why no tip could be read, for the user-facing message. A stalled
+    ls-remote is retried once before it is named; a benign HTTP 422 ("no commit for the
+    branch") is the expected branch-absent signal, never surfaced as the failure."""
     # A successful empty ref advertisement alone proves a branch was deleted.
     # GitHub 404 can also mean a private repository: it must not heal a branch.
     failure = None
+    # HTTP 422 "No commit found for SHA: <branch>" is the commits API's ref-absent signal
+    # (expected when the tracked branch was deleted), not a probe failure: it must never
+    # be reported as the reason a later probe could not run.
+    api_reports_absent = False
     if repository:
         from hermes_cli.github_api import describe_github_failure, github_token
         try:
@@ -151,6 +157,7 @@ def _branch_tip(repository: str | None, branch: str, root: Path, git: str,
                            "application/vnd.github.sha")
         except Exception as exc:
             sha = None
+            api_reports_absent = isinstance(exc, urllib.error.HTTPError) and exc.code == 422
             failure = describe_github_failure(exc, authenticated=github_token() is not None)
         if _is_full_sha(sha):
             return sha, False, None
@@ -158,18 +165,29 @@ def _branch_tip(repository: str | None, branch: str, root: Path, git: str,
             failure = "api.github.com returned no commit for the branch."
         if branch == "main" and remote == "origin":
             return None, False, failure
-    result = _git_run(["ls-remote", "--exit-code", "--heads", remote, f"refs/heads/{branch}"],
-                      cwd=root, git=git, timeout=10)
+    ls_remote = ["ls-remote", "--exit-code", "--heads", remote, f"refs/heads/{branch}"]
+    result = _git_run(ls_remote, cwd=root, git=git, timeout=10)
     if result is None:
-        return None, False, failure or f"`git ls-remote {remote}` could not run."
+        # git smart-HTTP intermittently stalls past the 10 s probe timeout and answers
+        # within about a second on the next attempt (instrumented runs: 0.7–10.0 s).
+        # One retry survives that transient stall and changes no proof semantics:
+        # ``missing`` still requires the rc=2 empty advertisement below.
+        result = _git_run(ls_remote, cwd=root, git=git, timeout=10)
+    if result is None:
+        cause = f"`git ls-remote {remote}` could not run or timed out."
+        if failure and not api_reports_absent:
+            cause = f"{cause} The GitHub API probe also failed: {failure}"
+        return None, False, cause
     sha = result.stdout.split()[0] if result.returncode == 0 and result.stdout else None
     if _is_full_sha(sha):
         return sha, False, None
     if result.returncode == 2:
         return None, True, None
     detail = (result.stderr or "").strip().splitlines()
-    return None, False, failure or (f"`git ls-remote {remote}` failed: {detail[-1]}" if detail
-                                    else f"`git ls-remote {remote}` returned no tip.")
+    if failure and not api_reports_absent:
+        return None, False, failure
+    return None, False, (f"`git ls-remote {remote}` failed: {detail[-1]}" if detail
+                         else f"`git ls-remote {remote}` returned no tip.")
 
 
 def _commits(payload: dict | None) -> list[dict]:

@@ -12796,6 +12796,20 @@ function hostBackendAttachDeps() {
     // Skip ledger records whose backend is already gone before dialling
     // anything: the ledger survives the process it describes (#123586).
     isPidAlive: isPidAliveWindows,
+    // Attach only to a backend booted from this checkout's HEAD: a CLI/launchd
+    // serve that outlived an update answers 503 "Restart required", and Restart
+    // would re-adopt the same stale process forever.
+    expectedCodeIdentity: async () => {
+      const root = resolveUpdateRoot()
+
+      if (!isGitCheckout(root)) {
+        return null
+      }
+
+      const head = await execGit(resolveGitBinary(), ['rev-parse', 'HEAD'], { cwd: root, timeoutMs: 5000 })
+
+      return head.code === 0 ? head.stdout.trim() || null : null
+    },
     log: rememberLog,
     readLedger: (target: string) => {
       try {

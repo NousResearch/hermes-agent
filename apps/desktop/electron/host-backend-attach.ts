@@ -48,7 +48,34 @@ export interface HostBackendAttachDeps {
    * record is probed as before.
    */
   isPidAlive?: (pid: number) => boolean
+  /**
+   * Commit this Desktop would spawn its own backend from (the checkout HEAD).
+   * A backend that booted from other code — a CLI/launchd `hermes serve` that
+   * outlived an update — answers 503 "Restart required" forever, and Restart
+   * would re-attach it, so it is skipped. Absent or null (packaged/non-git
+   * install): the token-only handshake, as before.
+   */
+  expectedCodeIdentity?: () => Promise<string | null>
+  /** Boot commit a backend reports; defaults to {@link fetchBackendCodeIdentity}. */
+  backendCodeIdentity?: (baseUrl: string) => Promise<string | null>
   log: (message: string) => void
+}
+
+/**
+ * The commit a backend booted from: `commit` on the public `GET /api/health`,
+ * resolved once at import (`get_version_info` is cached), so an update moving
+ * the checkout underneath the process does not change it. Null when the
+ * backend predates the field or does not answer.
+ */
+export async function fetchBackendCodeIdentity(baseUrl: string, timeoutMs = 3000): Promise<string | null> {
+  try {
+    const response = await fetch(`${baseUrl}/api/health`, { signal: AbortSignal.timeout(timeoutMs) })
+    const body: unknown = response.ok ? await response.json() : null
+
+    return body && typeof body === 'object' && 'commit' in body ? nonemptyToken(String(body.commit ?? '')) : null
+  } catch {
+    return null
+  }
 }
 
 export function spawnLedgerPath(hermesHomeRoot: string, join: (...parts: string[]) => string): string {
@@ -72,7 +99,11 @@ function nonemptyToken(value: string | null | undefined): string | null {
  * use, and the caller falls through to the next rung (another record, then
  * spawning). Only a *validated* candidate is ever returned.
  */
-async function validate(record: HostBackendRecord, deps: HostBackendAttachDeps): Promise<AttachedBackend | null> {
+async function validate(
+  record: HostBackendRecord,
+  deps: HostBackendAttachDeps,
+  expectedCommit: string | null
+): Promise<AttachedBackend | null> {
   const baseUrl = recordBaseUrl(record)
   const servedToken = nonemptyToken(await deps.resolveServedToken(baseUrl).catch(() => null))
   let publishedToken: string | null = null
@@ -99,6 +130,22 @@ async function validate(record: HostBackendRecord, deps: HostBackendAttachDeps):
     deps.log(`[attach] ${baseUrl} (pid ${record.pid}) is not ready: ${(error as Error).message}`)
 
     return null
+  }
+
+  if (expectedCommit) {
+    // Unknown backend identity is a mismatch: a backend predating the field is
+    // older code by construction.
+    const resolve = deps.backendCodeIdentity ?? fetchBackendCodeIdentity
+    const theirs = nonemptyToken(await resolve(baseUrl).catch(() => null))
+
+    if (theirs?.toLowerCase() !== expectedCommit.toLowerCase()) {
+      deps.log(
+        `[attach] ${baseUrl} (pid ${record.pid}) runs ${theirs ? `code ${theirs}` : 'code of unknown version'}, ` +
+          `this Desktop expects ${expectedCommit}; not attaching`
+      )
+
+      return null
+    }
   }
 
   const wsUrl = wsUrlFor(baseUrl, token)
@@ -144,8 +191,10 @@ export async function attachToHostBackend(
     )
   ]
 
+  const expectedCommit = nonemptyToken(await deps.expectedCodeIdentity?.().catch(() => null))
+
   for (const record of ordered) {
-    const attached = await validate(record, deps)
+    const attached = await validate(record, deps, expectedCommit)
 
     if (attached) {
       deps.log(

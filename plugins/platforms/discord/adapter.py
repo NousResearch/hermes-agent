@@ -304,6 +304,7 @@ from gateway.platforms.helpers import (
     MessageDeduplicator, ThreadParticipationTracker, convert_table_to_bullets, is_discord_channel_obfuscated,
 )
 from gateway.platforms.helpers import cancel_task
+from gateway.platforms.model_picker import single_provider_for_picker
 from utils import atomic_json_write, env_float
 from gateway.platforms.base import (
     BasePlatformAdapter, ExecApprovalPrompt, SendResult, unauthorized_action_notice,
@@ -5724,18 +5725,18 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                 provider_label = get_label(current_provider)
             except Exception:
                 provider_label = current_provider
-            embed = discord.Embed(
-                title=_t_discord("platform.discord.picker.title", _DISCORD_EMBED_TITLE_LIMIT),
-                description=t(
-                    "platform.discord.picker.select_provider",
-                    model=current_model or t("platform.discord.picker.unknown_model"), provider=provider_label),
-                color=discord.Color.blue(),
-            )
             view = ModelPickerView(
                 providers=providers, current_model=current_model, current_provider=current_provider,
                 session_key=session_key, on_model_selected=on_model_selected,
                 allowed_user_ids=self._allowed_user_ids, allowed_role_ids=self._allowed_role_ids,
             )
+            description = (
+                view._model_description(view._selected_provider)
+                if view._selected_provider else t(
+                    "platform.discord.picker.select_provider",
+                    model=current_model or t("platform.discord.picker.unknown_model"), provider=provider_label)
+            )
+            embed = view._config_embed(description)
             return {"embed": embed, "view": view}, view
         return await self._send_prompt(chat_id, metadata, _build, fail_log="send_model_picker")
 
@@ -6584,9 +6585,13 @@ def _define_discord_view_classes() -> None:
             self.current_provider = current_provider
             self.session_key = session_key
             self.on_model_selected = on_model_selected
-            self._selected_provider: str = ""
+            provider = single_provider_for_picker(providers)
+            self._selected_provider: str = provider["slug"] if provider is not None else ""
             self._pending_expensive_model: str = ""
-            self._build_provider_select()
+            if provider is not None:
+                self._build_model_select(self._selected_provider)
+            else:
+                self._build_provider_select()
 
         def _add_button(self, label: str, style, custom_id: str, callback) -> None:
             btn = discord.ui.Button(label=label, style=style, custom_id=custom_id)
@@ -6651,7 +6656,8 @@ def _define_discord_view_classes() -> None:
                 self._add_select(
                     _truncate_discord_component_text(f"{placeholder_base}{suffix}...", _DISCORD_SELECT_PLACEHOLDER_LIMIT),
                     options, f"model_model_select_{idx}", self._on_model_selected)
-            self._add_button(_t_discord("platform.discord.picker.back", _DISCORD_BUTTON_LABEL_LIMIT), discord.ButtonStyle.grey, "model_back", self._on_back)
+            if single_provider_for_picker(self.providers) is None:
+                self._add_button(_t_discord("platform.discord.picker.back", _DISCORD_BUTTON_LABEL_LIMIT), discord.ButtonStyle.grey, "model_back", self._on_back)
             self._add_button(_t_discord("platform.discord.picker.cancel", _DISCORD_BUTTON_LABEL_LIMIT), discord.ButtonStyle.red, "model_cancel2", self._on_cancel)
 
         def _build_expensive_confirm(self, model_id: str):
@@ -6680,14 +6686,17 @@ def _define_discord_view_classes() -> None:
                 return
             provider_slug = interaction.data["values"][0]
             self._selected_provider = provider_slug
+            self._build_model_select(provider_slug)
+            await self._edit(interaction, self._model_description(provider_slug))
+
+        def _model_description(self, provider_slug: str) -> str:
             provider = next((p for p in self.providers if p["slug"] == provider_slug), None)
             pname = provider.get("name", provider_slug) if provider else provider_slug
-            self._build_model_select(provider_slug)
             # `shown` counts models actually rendered across the partitioned selects (≤ 75).
             total = provider.get("total_models", 0) if provider else 0
             shown = min(len(provider.get("models", [])), _DISCORD_MODEL_SELECT_CAPACITY) if provider else 0
             extra = f"\n*{t('platform.discord.picker.more_available', count=str(total - shown))}*" if total > shown else ""
-            await self._edit(interaction, t("platform.discord.picker.select_model", provider=pname, extra=extra))
+            return t("platform.discord.picker.select_model", provider=pname, extra=extra)
 
         async def _switch_selected_model(self, interaction: discord.Interaction, model_id: str):
             if not await self._gate(interaction, resolved_msg=t("platform.discord.picker.already_resolved"), unauth_msg=_unauthorized()):

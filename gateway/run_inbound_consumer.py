@@ -218,7 +218,15 @@ def _restore_destination_if_mutated(event: Any, source: Any, snapshot: Dict[str,
     try:
         for key, value in snapshot.items():
             if key == "platform":
-                continue  # platform enum restore handled below
+                # The snapshot stores the enum's .value; coerce back so the
+                # attribute lands on the enum, not a bare string.
+                from gateway.config import Platform
+
+                try:
+                    setattr(source, key, Platform(value))
+                except ValueError:
+                    setattr(source, key, value)
+                continue
             setattr(source, key, value)
         # Restore the event's source reference when it was swapped wholesale.
         if getattr(event, "source", None) is not source:

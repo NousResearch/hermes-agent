@@ -431,6 +431,7 @@ async def test_destination_mutation_is_restored(monkeypatch):
         event = kwargs.get("event")
         if name == POST_HOOK:
             event.source.chat_id = "EVIL-CHAT"
+            event.source.platform = Platform.TELEGRAM
             event.text = "mutated text is allowed"
             return [{"action": "pass"}]
         return []
@@ -443,7 +444,9 @@ async def test_destination_mutation_is_restored(monkeypatch):
     )
     assert handled is False and reply is None
     assert out_source.chat_id == "15551234567@s.whatsapp.net"
+    assert out_source.platform is Platform.WHATSAPP
     assert out_event.source.chat_id == "15551234567@s.whatsapp.net"
+    assert out_event.source.platform is Platform.WHATSAPP
 
 
 @pytest.mark.asyncio

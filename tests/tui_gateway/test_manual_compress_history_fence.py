@@ -1,4 +1,5 @@
 """Manual compression must not publish a snapshot invalidated before lease admission."""
+import logging
 import threading
 from unittest.mock import MagicMock
 
@@ -10,7 +11,7 @@ import pytest
     ("", False), ("", True), ("", "validation_error"), ("here 2", True),
 ])
 def test_manual_compress_rejects_history_rewritten_before_admission(
-    tmp_path, monkeypatch, stale, in_place, compress_args,
+    tmp_path, monkeypatch, caplog, stale, in_place, compress_args,
 ):
     from hermes_state import SessionDB
     from run_agent import AIAgent
@@ -71,9 +72,10 @@ def test_manual_compress_rejects_history_rewritten_before_admission(
             assert agent.session_id == parent
             assert db.get_messages_as_conversation(parent) == before
             return
-        removed, _ = server._compress_session_history(
-            session, focus_topic=compress_args, before_messages=before, history_version=1,
-        )
+        with caplog.at_level(logging.INFO, logger="agent.conversation_compression"):
+            removed, _ = server._compress_session_history(
+                session, focus_topic=compress_args, before_messages=before, history_version=1,
+            )
         assert db.get_compression_lock_holder(parent) is None
         if stale is True:
             assert removed == 0
@@ -83,6 +85,7 @@ def test_manual_compress_rejects_history_rewritten_before_admission(
             assert [m["content"] for m in db.get_messages_as_conversation(parent)] == [
                 "edited question", "edited answer"]
             assert session["history"] == replacement
+            assert '"failure_class":"snapshot_stale"' in caplog.text
         else:
             assert removed > 0
             assert (agent.session_id == parent) is in_place

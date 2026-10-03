@@ -4153,6 +4153,7 @@ def compress_context(
     lease.finish_lock_setup()
     try:
         if snapshot_is_current is not None and not snapshot_is_current():
+            _emit_aborted_attempt_telemetry(agent, attempt.started_at, "snapshot_stale")
             lease.release()
             return messages, _existing_system_prompt(agent, system_message)
     except BaseException:

@@ -618,7 +618,7 @@ def _platform_max_length(platform):
         return None
 
 
-# Plugin platforms whose media (Discord: all) sends deliberately bypass the live adapter for the
+# Legacy platforms whose media (Discord: all) sends deliberately bypass the live adapter for the
 # registry ``standalone_sender_fn`` (Discord: forums/threads/multipart; Slack: files_upload_v2;
 # WhatsApp: Baileys /send-media). platform -> (error label, run discover_plugins first,
 # caption-capable, media_files sentinel for non-final chunks, forward force_document)
@@ -626,12 +626,24 @@ _PLUGIN_STANDALONE_MEDIA = {"discord": ("Discord", False, True, [], False), "fei
                             "slack": ("Slack", True, True, [], False), "whatsapp": ("WhatsApp", True, True, None, True)}
 
 
+def _standalone_media_route(platform_name):
+    """Resolve an opted-in plugin's media route, retaining legacy platform defaults."""
+    if platform_name not in _PLUGIN_STANDALONE_MEDIA:
+        from hermes_cli.plugins import discover_plugins
+        discover_plugins()
+    from gateway.platform_registry import platform_registry
+    entry = platform_registry.get(platform_name)
+    if entry is not None and entry.standalone_media:
+        # The standard sender contract accepts media_files and force_document, not caption.
+        return (entry.label, False, False, None, True)
+    return _PLUGIN_STANDALONE_MEDIA.get(platform_name)
+
 async def _send_plugin_standalone(platform_name, pconfig, chat_id, message, chunks, media_files, *, thread_id,
-                                  max_len, force_document, mentions=None):
+                                  max_len, force_document, mentions=None, route=None):
     """Chunked send through a plugin's standalone_sender_fn; one captionable file + short text
     rides as the media caption. WhatsApp re-pings recipients on every message that carries
     ``mentions``, so only the first payload of a logical send gets them."""
-    label, discover, captionable, empty_media, pass_force = _PLUGIN_STANDALONE_MEDIA[platform_name]
+    label, discover, captionable, empty_media, pass_force = route or _PLUGIN_STANDALONE_MEDIA[platform_name]
     sender, err = _plugin_standalone_sender(platform_name, label=label, discover=discover)
     if err:
         return err
@@ -702,11 +714,12 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
     from gateway.platforms.base import BasePlatformAdapter
     max_len = _platform_max_length(platform)
     chunks = BasePlatformAdapter.truncate_message(message, max_len) if max_len else [message]
+    standalone_route = _standalone_media_route(platform_name) if media_files else None
     if (platform_name == "discord" or (platform_name == "whatsapp" and mentions)
-            or (media_files and platform_name in _PLUGIN_STANDALONE_MEDIA)):
+            or (media_files and standalone_route is not None)):
         return await _send_plugin_standalone(platform_name, pconfig, chat_id, message, chunks, media_files,
                                              thread_id=thread_id, max_len=max_len, force_document=force_document,
-                                             mentions=mentions)
+                                             mentions=mentions, route=standalone_route)
     route = _CHUNKED_ROUTES.get(platform_name)
     if route is not None and (media_files or not route[0]):
         _, empty_media, sender = route

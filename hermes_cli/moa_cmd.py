@@ -46,6 +46,28 @@ def _model_options() -> list[dict[str, Any]]:
     return [p for p in providers if p.get("slug") and str(p.get("slug")).strip().lower() != "moa" and p.get("models")]
 
 
+def _slot_reasoning_effort(
+    provider: dict[str, Any], model: str, current_effort: str
+) -> str | None:
+    """Prompt for a per-slot reasoning effort when the picked model supports one.
+
+    Reuses the primary-model setup prompt. "none" (disable) and a picked level
+    are returned as-is; skipping keeps whatever the slot already carries so
+    re-running configure on a preset never silently drops an existing effort.
+    """
+    caps = provider.get("capabilities")
+    entry = caps.get(model) if isinstance(caps, dict) else None
+    if not isinstance(entry, dict) or not entry.get("reasoning"):
+        return None
+    from hermes_constants import VALID_REASONING_EFFORTS
+    from hermes_cli.main import _prompt_reasoning_effort_selection
+
+    selected = _prompt_reasoning_effort_selection(
+        list(VALID_REASONING_EFFORTS), current_effort=current_effort
+    )
+    return selected or (current_effort or None)
+
+
 def _pick_slot(current: dict[str, str] | None = None) -> dict[str, str]:
     providers = _model_options()
     if not providers:
@@ -60,7 +82,13 @@ def _pick_slot(current: dict[str, str] | None = None) -> dict[str, str]:
     current_model = (current or {}).get("model", "")
     model_default = models.index(current_model) if current_model in models else 0
     model = models[_prompt_choice(f"Select model for {provider.get('slug')}", models, model_default)]
-    return {"provider": str(provider.get("slug") or ""), "model": str(model)}
+    slot: dict[str, str] = {"provider": str(provider.get("slug") or ""), "model": str(model)}
+    effort = _slot_reasoning_effort(
+        provider, str(model), str((current or {}).get("reasoning_effort") or "")
+    )
+    if effort:
+        slot["reasoning_effort"] = effort
+    return slot
 
 
 def _format_slot(slot: dict[str, Any]) -> str:

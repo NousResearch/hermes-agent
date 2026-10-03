@@ -3721,7 +3721,7 @@ def _commit_compaction(
 
     Failures roll the live list back and arm the split-failure cooldown; a refused (would-grow) candidate returns
     ``refused_prompt`` so the caller hands back the input unchanged. ``verbatim_tail`` (``/compress here N``) is
-    re-inserted after the compacted head by the in-place commit and stamped once durable; rotation ignores it.
+    re-inserted after the compacted head by either commit and stamped once durable.
     """
     session_commit_succeeded = False
     compacted_in_place = False
@@ -3816,10 +3816,18 @@ def _commit_compaction(
                 # rollback off this name, so anything that fails from here on rolls the transcript back
                 # instead of leaving the failed attempt's compacted snapshot in place.
                 old_session_id = agent.session_id
+                if verbatim_tail:
+                    # Publish the kept exchanges with the head, as the in-place branch stores them: the
+                    # gateway no longer rewrites a published child, so a head-only handoff loses the tail.
+                    from hermes_cli.partial_compress import rejoin_compressed_head_and_tail
+                    compressed = rejoin_compressed_head_and_tail(compressed, verbatim_tail)
                 _publish_rotated_compaction(
                     agent, messages, compressed, new_system_prompt=new_system_prompt, lease=lease,
                     old_session_id=old_session_id, compressed_user_turn_outcome=compressed_user_turn_outcome,
                 )
+                if verbatim_tail:
+                    from agent.context_compressor import stamp_db_persisted_markers
+                    stamp_db_persisted_markers(verbatim_tail)
                 split_status = "rotated_committed"
                 agent._last_flushed_db_idx = len(compressed)
                 agent._flushed_db_message_session_id = agent.session_id

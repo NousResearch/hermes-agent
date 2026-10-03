@@ -123,13 +123,14 @@ class GatewayVoiceMixin:
         except Exception:
             auto_tts_default = False
         if hasattr(adapter, "_auto_tts_default"):
-            # A2A never inherits the global speak default. The flag is written by
-            # Desktop "Read replies aloud" / voice.auto_tts and is meant for human
-            # chat surfaces; an agent peer's replies must stay text (its adapter has
-            # no native send_voice, so auto-TTS would synthesize an MP3 and then
-            # fail delivery) — /voice scoped modes never applied to A2A anyway.
-            if platform.value == "a2a":
+            # voice.auto_tts (Desktop "Read replies aloud") is meant for human chat surfaces. An
+            # adapter that cannot deliver audio never inherits it (A2A: an agent peer with no native
+            # send_voice, #90103); a voice-first adapter speaks by default. ``is`` comparisons:
+            # MagicMock test doubles auto-create truthy attributes.
+            if getattr(adapter, "supports_voice_replies", True) is False:
                 adapter._auto_tts_default = False
+            elif getattr(adapter, "speaks_replies_by_default", False) is True:
+                adapter._auto_tts_default = True
             else:
                 adapter._auto_tts_default = auto_tts_default
         prefix = self._voice_key(platform, "", profile=getattr(adapter, "_owner_profile", None))
@@ -303,17 +304,15 @@ class GatewayVoiceMixin:
         — UNLESS streaming consumed the response (already_sent): then the runner must do it."""
         if not response or response.startswith("Error:"):
             return False
-        # A2A is agent-to-agent text. The adapter has no native send_voice, so
-        # global voice.auto_tts (Desktop "Read replies aloud") would synthesize
-        # an MP3 and then fail delivery with "Couldn't deliver the audio
-        # attachment." — the peer sees the failure instead of the text reply the
-        # agent already produced (#90103). Keep /voice scoped to human platforms.
-        if getattr(event.source.platform, "value", None) == "a2a":
+        adapter = self._delivery_adapter_for(event.source)
+        # An adapter that cannot deliver audio keeps replies text even under /voice or voice.auto_tts:
+        # A2A's synthesized MP3 failed delivery and the peer saw "Couldn't deliver the audio
+        # attachment." instead of the text reply the agent already produced (#90103).
+        if getattr(adapter, "supports_voice_replies", True) is False:
             return False
         chat_id = event.source.chat_id
         voice_mode = self._voice_mode.get(self._voice_key_for_source(event.source))
         is_voice_input = event.message_type == MessageType.VOICE
-        adapter = self._delivery_adapter_for(event.source)
         adapter_auto_tts = False
         with suppress(Exception):  # adapters without the probe read as False
             adapter_auto_tts = bool(adapter._should_auto_tts_for_chat(chat_id))

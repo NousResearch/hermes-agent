@@ -6,10 +6,12 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from gateway.config import Platform
+from gateway.config import Platform, PlatformConfig
+from gateway.platforms.base import BasePlatformAdapter, SendResult
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.run import GatewayRunner
 from gateway.session import SessionSource
+from plugins.platforms.a2a.adapter import A2AAdapter
 
 
 class TestAutoVoiceReplyFormat:
@@ -105,6 +107,7 @@ class TestAutoVoiceReplyFormat:
         runner = _make_runner()
         a2a = Platform("a2a")
         adapter = _make_adapter(a2a)
+        adapter.supports_voice_replies = A2AAdapter.supports_voice_replies
         adapter._should_auto_tts_for_chat = MagicMock(return_value=True)
         runner.adapters[a2a] = adapter
         event = _make_event(a2a, chat_id="ctx-peer")
@@ -129,6 +132,7 @@ class TestAutoVoiceReplyFormat:
         runner = _make_runner()
         a2a = Platform("a2a")
         a2a_adapter = _make_adapter(a2a)
+        a2a_adapter.supports_voice_replies = A2AAdapter.supports_voice_replies
         a2a_adapter._auto_tts_disabled_chats = set()
         a2a_adapter._auto_tts_enabled_chats = set()
 
@@ -142,6 +146,69 @@ class TestAutoVoiceReplyFormat:
 
         assert a2a_adapter._auto_tts_default is False
         assert telegram_adapter._auto_tts_default is True
+
+    def test_should_send_voice_reply_explicit_voice_mode_cannot_voice_a_text_only_adapter(self):
+        """/voice all (not only the global default) stays text where audio cannot be delivered."""
+        runner = _make_runner()
+        a2a = Platform("a2a")
+        adapter = _make_adapter(a2a)
+        adapter.supports_voice_replies = A2AAdapter.supports_voice_replies
+        runner.adapters[a2a] = adapter
+        runner._voice_mode["a2a:ctx-peer"] = "all"
+
+        assert runner._should_send_voice_reply(_make_event(a2a, chat_id="ctx-peer"), "audit findings", []) is False
+
+        runner.adapters[Platform.TELEGRAM] = _make_adapter(Platform.TELEGRAM)
+        runner._voice_mode["telegram:999"] = "all"
+
+        assert runner._should_send_voice_reply(_make_event(Platform.TELEGRAM, chat_id="999"), "hello", []) is True
+
+    def test_sync_voice_mode_state_speaks_by_default_for_a_voice_first_adapter(self):
+        """A voice-first adapter speaks without voice.auto_tts; other adapters keep following it."""
+        runner = _make_runner()
+        device = _VoiceFirstAdapter()
+        telegram_adapter = _make_adapter(Platform.TELEGRAM)
+        telegram_adapter._auto_tts_disabled_chats = set()
+        telegram_adapter._auto_tts_enabled_chats = set()
+
+        with patch("hermes_cli.config.load_config", return_value={"voice": {"auto_tts": False}}):
+            runner._sync_voice_mode_state_to_adapter(device)
+            runner._sync_voice_mode_state_to_adapter(telegram_adapter)
+
+        assert device._auto_tts_default is True
+        assert telegram_adapter._auto_tts_default is False
+
+    def test_voice_off_still_silences_one_chat_of_a_voice_first_adapter(self):
+        runner = _make_runner()
+        device = _VoiceFirstAdapter()
+        runner.adapters[device.platform] = device
+        runner._voice_mode[f"{device.platform.value}:quiet"] = "off"
+
+        with patch("hermes_cli.config.load_config", return_value={"voice": {"auto_tts": False}}):
+            runner._sync_voice_mode_state_to_adapter(device)
+
+        assert runner._should_send_voice_reply(_make_event(device.platform, chat_id="kitchen"), "hello", []) is True
+        assert runner._should_send_voice_reply(_make_event(device.platform, chat_id="quiet"), "hello", []) is False
+
+
+class _VoiceFirstAdapter(BasePlatformAdapter):
+    speaks_replies_by_default = True
+
+    def __init__(self):
+        super().__init__(PlatformConfig(enabled=True), Platform.TELEGRAM)
+
+    async def connect(self, *, is_reconnect: bool = False) -> bool:
+        return True
+
+    async def disconnect(self) -> None:
+        self._mark_disconnected()
+
+    async def send(self, chat_id, content, reply_to=None, metadata=None):
+        return SendResult(success=True, message_id="m1")
+
+    async def get_chat_info(self, chat_id):
+        return {"id": chat_id, "type": "dm"}
+
 
 def _make_runner() -> GatewayRunner:
     with patch("gateway.run.GatewayRunner._load_voice_modes", return_value={}):

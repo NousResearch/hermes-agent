@@ -260,6 +260,9 @@ class A2ARequestHandler(BaseHTTPRequestHandler):
 class A2AAdapter(BasePlatformAdapter):
     """Inbound A2A server adapter."""
 
+    # An agent peer with no native send_voice: replies stay text whatever voice.auto_tts or /voice say.
+    supports_voice_replies = False
+
     def __init__(self, config, **kwargs):
         super().__init__(config=config, platform=Platform("a2a"))
         extra = getattr(config, "extra", {}) or {}

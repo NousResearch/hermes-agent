@@ -86,6 +86,19 @@ def _export_dump_excluding_session_vars(tmp_path: str, excluded_names: Iterable[
         f"> {tmp_path}")
 
 
+def _snapshot_dump_script(tmp_path: str, excluded_names: Iterable[str]) -> str:
+    """Use the same shell-state serializer at bootstrap and after each command."""
+    return (
+        f"{_export_dump_excluding_session_vars(tmp_path, excluded_names)} && {{\n"
+        "__hermes_fns=$(declare -F | awk '{print $3}' | grep -vE '^_[^_]') || true\n"
+        f"[ -n \"$__hermes_fns\" ] && declare -f $__hermes_fns >> {tmp_path} 2>/dev/null || true\n"
+        f"alias -p >> {tmp_path}\n"
+        f"echo 'shopt -s expand_aliases' >> {tmp_path}\n"
+        f"echo 'set +e' >> {tmp_path}\n"
+        f"echo 'set +u' >> {tmp_path}\n"
+        "}")
+
+
 def _snapshot_bootstrap_script(
     *, quoted_cwd: str, quoted_snap: str, snap_tmp_template: str, excluded_names: Iterable[str], cwd_marker: str,
 ) -> str:
@@ -100,13 +113,7 @@ def _snapshot_bootstrap_script(
     return (
         "umask 077\n"
         f"__hermes_snap_tmp=$(mktemp {snap_tmp_template}) || exit 1\n"
-        f"{_export_dump_excluding_session_vars(_SNAP_TMP, excluded_names)}\n"
-        "__hermes_fns=$(declare -F | awk '{print $3}' | grep -vE '^_[^_]') || true\n"
-        f"[ -n \"$__hermes_fns\" ] && declare -f $__hermes_fns >> {_SNAP_TMP} 2>/dev/null || true\n"
-        f"alias -p >> {_SNAP_TMP}\n"
-        f"echo 'shopt -s expand_aliases' >> {_SNAP_TMP}\n"
-        f"echo 'set +e' >> {_SNAP_TMP}\n"
-        f"echo 'set +u' >> {_SNAP_TMP}\n"
+        f"{_snapshot_dump_script(_SNAP_TMP, excluded_names)} && "
         # Publish only if assembly succeeded; otherwise drop the partial temp.
         f"mv -f {_SNAP_TMP} {quoted_snap} || rm -f {_SNAP_TMP}\n"
         f"builtin cd -- {quoted_cwd} 2>/dev/null || true\n"
@@ -159,7 +166,7 @@ def _wrap_command_script(
     if snapshot_ready:
         parts.append(
             f"__hermes_snap_tmp=$(mktemp {snap_tmp_template}) && "
-            f"{{ {_export_dump_excluding_session_vars(_SNAP_TMP, passthrough_names)} "
+            f"{{ {_snapshot_dump_script(_SNAP_TMP, passthrough_names)} "
             f"&& mv -f {_SNAP_TMP} {quoted_snap}; }} "
             f"2>/dev/null || rm -f {_SNAP_TMP} 2>/dev/null || true")
     parts += [_cwd_marker_printf(cwd_marker), "exit $__hermes_ec"]

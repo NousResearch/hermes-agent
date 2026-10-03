@@ -878,6 +878,18 @@ END;
 # ``parent_session_id`` but NOT the marker, so they stay trigram-indexed.
 FTS_TRIGRAM_EXCLUDED_SOURCES = ("cron", "subagent")
 
+# Tool results whose body is a view of ALREADY-INDEXED state, so a search hit on one is never
+# the thing the person was looking for. ``session_search`` returns a JSON dump of snippets from
+# other messages: searching it means searching yesterday's search results, and the messages it
+# quotes are themselves indexed and rank on their own merits. Measured on a 90k-message store,
+# these rows were 10% of top-20 hits overall and 40% on the worst single query.
+# Hidden at QUERY time (``_search_filter_clauses``), deliberately not at index time: the
+# projection feeding the external-content index must stay a stable per-row function, so
+# narrowing it would strand every historical row's tokens in the index and break the
+# delete/update commands — the hazard the v23 notes call out. This costs ~8 MB of index input
+# that stays indexed, and buys a reversible one-line predicate instead of a rebuild migration.
+SEARCH_EXCLUDED_TOOL_NAMES = ("session_search",)
+
 def fts_trigram_session_sql(alias: str = "") -> str:
     """Predicate over a ``sessions`` row selecting sessions whose rows belong in
     the trigram index; ``alias`` qualifies every column for joins. Shared by the

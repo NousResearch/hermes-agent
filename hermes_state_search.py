@@ -15,7 +15,7 @@ from agent.skill_commands import describe_skill_invocation
 from hermes_state_common import (
     FTS_CJK_STALE_KEY, FTS_SQL, FTS_STALE_KEY, FTS_STORAGE_VERSION, FTS_TOOL_CONTENT_PREFIX_CHARS,
     FTS_TRIGRAM_EXCLUDED_SOURCES, FTS_TRIGRAM_SQL,
-    MAX_FTS5_QUERY_CHARS, SCHEMA_VERSION, _FTS_CJK_TRIGGERS,
+    MAX_FTS5_QUERY_CHARS, SCHEMA_VERSION, SEARCH_EXCLUDED_TOOL_NAMES, _FTS_CJK_TRIGGERS,
     escape_like as _escape_like, fts_rebuild_admission, fts_trigram_session_sql, routed_sessions_setting,
 )
 
@@ -172,6 +172,14 @@ def _search_filter_clauses(
         where.append("(m.active = 1 OR m.compacted = 1)")
     # display_kind="hidden" rows are model-facing scaffolding the person never saw; a hit would confuse.
     where.append("COALESCE(m.display_kind, '') <> 'hidden'")
+    # Same reasoning one step further: SEARCH_EXCLUDED_TOOL_NAMES rows restate already-indexed
+    # messages, so they crowd out the originals they quote. Applied on every route, including an
+    # explicit role_filter=['tool'] — someone asking for tool output wants the tool's own work,
+    # not a replay of an earlier search.
+    where.append(
+        "NOT (m.role = 'tool' AND COALESCE(m.tool_name, '') IN "
+        f"({','.join('?' for _ in SEARCH_EXCLUDED_TOOL_NAMES)}))")
+    params.extend(SEARCH_EXCLUDED_TOOL_NAMES)
     if source_filter is not None:
         where.append(f"s.source IN ({','.join('?' for _ in source_filter)})")
         params.extend(source_filter)

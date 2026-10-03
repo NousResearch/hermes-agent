@@ -23,6 +23,7 @@ from typing import Any, Callable, Optional
 
 from gateway.platforms.base import BasePlatformAdapter as _BasePlatformAdapter
 from gateway.platforms.base import _custom_unit_to_cp
+from gateway.platforms.helpers import fence_state_after
 from gateway.config import (
     DEFAULT_STREAMING_EDIT_INTERVAL as _DEFAULT_STREAMING_EDIT_INTERVAL,
     DEFAULT_STREAMING_BUFFER_THRESHOLD as _DEFAULT_STREAMING_BUFFER_THRESHOLD,
@@ -816,7 +817,12 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
             ok = await self._send_or_edit(chunk, finalize=True, is_turn_final=False)
             if self._fallback_final_send or not ok:
                 break  # keep the full text intact for the fallback final send
-            self._accumulated = self._accumulated[split_at:].lstrip("\n")
+            rest = self._accumulated[split_at:].lstrip("\n")
+            # The sealed head went out fence-closed; reopen the block (language tag included)
+            # so the continuation renders as code, as the first-send split does.  The ledger
+            # keeps the raw text.
+            in_code, lang = fence_state_after(chunk)
+            self._accumulated = f"```{lang}\n{rest}" if in_code else rest
             self._message_id = None
             self._last_sent_text = ""
             self._turn_split_delivery = True

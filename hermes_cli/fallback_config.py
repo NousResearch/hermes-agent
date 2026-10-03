@@ -103,7 +103,9 @@ def _entry_identity(entry: dict[str, Any]) -> tuple[str, str, str]:
 def get_fallback_chain(config: dict[str, Any] | None) -> list[dict[str, Any]]:
     """Return the effective fallback chain merged across old and new config keys.
 
-    ``fallback_providers`` remains the primary source of truth and keeps its order. Legacy
+    With ``fallback_to_default: true``, prepend this profile's explicit ``model`` route.
+    The runtime skips the already-failed session primary, including when it is this default.
+    ``fallback_providers`` keeps its relative order. Legacy
     ``fallback_model`` entries are appended afterwards unless they target the same
     provider/model/base_url route as an earlier entry. The returned list always contains fresh dict
     copies.
@@ -111,8 +113,17 @@ def get_fallback_chain(config: dict[str, Any] | None) -> list[dict[str, Any]]:
     config = config or {}
     chain: list[dict[str, Any]] = []
     seen: set[tuple[str, str, str]] = set()
-    for key in ("fallback_providers", "fallback_model"):
-        for entry in _iter_fallback_entries(config.get(key)):
+    sources = []
+    model = config.get("model")
+    if config.get("fallback_to_default") is True and isinstance(model, dict):
+        default = {key: model[key] for key in (
+            "provider", "base_url", "api_key", "key_env", "api_key_env", "api_mode", "reasoning_echo"
+        ) if key in model}
+        default["model"] = model.get("default")
+        sources.append(default)
+    sources.extend(config.get(key) for key in ("fallback_providers", "fallback_model"))
+    for source in sources:
+        for entry in _iter_fallback_entries(source):
             identity = _entry_identity(entry)
             if identity not in seen:
                 seen.add(identity)

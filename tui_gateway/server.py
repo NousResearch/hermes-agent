@@ -413,6 +413,29 @@ def _start_idle_reaper() -> None:
     threading.Thread(target=_loop, daemon=True).start()
 
 
+# Hook-registration parity with the other backend entry points: the CLI
+# (``hermes_cli.main._prepare_agent_startup``) and the messaging gateway
+# (``gateway/run.py``) both register user-configured shell hooks and
+# outbound webhooks at startup. The TUI gateway backends historically did
+# neither, so a webhook configured in config.yaml fired in ``hermes --cli``
+# but silently never fired from ``hermes --tui`` — or from the dashboard
+# chat PTY / desktop WS sidecar, which share these backends.
+#
+# The once-per-process guard, consent semantics (flag / env / config
+# opt-in, fail-closed on non-TTY stdin) and failure isolation live in
+# :mod:`agent.hook_registration`, shared with the serve/dashboard path.
+
+def _register_hooks_from_config() -> None:
+    """Register user shell hooks + outbound webhooks for this backend.
+
+    Thin delegate to ``agent.hook_registration.ensure_hooks_registered``;
+    called from both TUI-gateway entry points (``entry.main`` and
+    ``ws.handle_ws``). Never raises.
+    """
+    from agent.hook_registration import ensure_hooks_registered
+
+    ensure_hooks_registered()
+
 atexit.register(_shutdown_sessions)
 _start_idle_reaper()
 
@@ -2650,9 +2673,10 @@ def _make_agent(
         with contextlib.suppress(Exception):
             importlib.import_module(_mod).wait_for_mcp_discovery()
     cfg = _load_cfg()
-    # Load hooks alongside the same profile config used to construct this agent.
-    from agent.shell_hooks import register_from_config
-    register_from_config(cfg)
+    # The build scope binds this session's HERMES_HOME; register both hook kinds
+    # from the same profile config without a second config read.
+    from agent.hook_registration import ensure_hooks_registered
+    ensure_hooks_registered(cfg)
     system_prompt = _startup_system_prompt(cfg, session_id or key)
     model, runtime = _resolve_agent_model_runtime(model_override, provider_override)
     fallback_notice = runtime.pop("_fallback_notice", None)

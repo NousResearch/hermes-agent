@@ -745,6 +745,16 @@ def _parse_tool_args(args) -> Any:
         return {}
 
 
+def _is_json_or_blank(text: str) -> bool:
+    if not text.strip():
+        return True
+    try:
+        json.loads(text)
+    except json.JSONDecodeError:
+        return False
+    return True
+
+
 def _assistant_blocks(msg: Dict, content) -> List[Dict]:
     """Assistant message → Converse blocks. An ordered ``bedrock_content_blocks`` sidecar is authoritative;
     otherwise redacted thinking from ``reasoning_details`` (byte-for-byte), then text, then tool calls."""
@@ -981,7 +991,12 @@ def stream_converse_with_callbacks(
             current_block_index = None  # a following index-less delta opens a fresh slot, not this one
             if current_tool is not None:
                 input_dict = _parse_tool_args(current_tool["input_json"])  # "" → {} via the JSON-error path
-                parts.tool_calls.append(_tool_call_ns(current_tool["toolUseId"], current_tool["name"], input_dict))
+                tool_call = _tool_call_ns(current_tool["toolUseId"], current_tool["name"], input_dict)
+                if not _is_json_or_blank(current_tool["input_json"]):
+                    # Cut off mid-stream or stopReason malformed_tool_use: pass the raw text on so the
+                    # loop's invalid-JSON check refuses the call, instead of running the tool with {}.
+                    tool_call.function.arguments = current_tool["input_json"]
+                parts.tool_calls.append(tool_call)
                 if "toolUse" in stream_blocks.get(idx, {}):
                     stream_blocks[idx]["toolUse"]["input"] = input_dict
                 current_tool = None

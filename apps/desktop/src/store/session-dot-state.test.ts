@@ -31,12 +31,18 @@ describe('showsRunningArc', () => {
     expect(showsRunningArc('stalled')).toBe(true)
   })
 
+  it('keeps the arc while background work outlives its turn', () => {
+    // Delegated workers and background processes keep producing after the turn
+    // that spawned them ends; the row is what answers "what is still running?",
+    // and a motionless row read as settled.
+    expect(showsRunningArc('background')).toBe(true)
+  })
+
   it('yields to the needs-input treatment rather than running both', () => {
     expect(showsRunningArc('needs-input')).toBe(false)
   })
 
   it('leaves a session that is not running unmarked', () => {
-    expect(showsRunningArc('background')).toBe(false)
     expect(showsRunningArc('idle')).toBe(false)
     expect(showsRunningArc('unread')).toBe(false)
   })
@@ -47,10 +53,15 @@ describe('hasLiveTurn', () => {
     expect(hasLiveTurn('needs-input')).toBe(true)
   })
 
-  it('covers everything the arc covers', () => {
-    for (const state of ['background', 'idle', 'needs-input', 'stalled', 'unread', 'working'] as const) {
+  it('covers every state the arc paints except work that outlived its turn', () => {
+    for (const state of ['idle', 'needs-input', 'stalled', 'unread', 'working'] as const) {
       expect(hasLiveTurn(state) || !showsRunningArc(state)).toBe(true)
     }
+
+    // The one deliberate exception: the arc animates a session whose own turn
+    // has ended, while hasLiveTurn (bright title, live/rest grouping) must not.
+    expect(showsRunningArc('background')).toBe(true)
+    expect(hasLiveTurn('background')).toBe(false)
   })
 
   it('excludes work that outlived the turn', () => {

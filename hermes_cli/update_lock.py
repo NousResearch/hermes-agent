@@ -70,7 +70,12 @@ def update_marker_path() -> Path:
     the hand-off scripts and the Tauri updater all look at the root, so a profile-scoped marker
     would be one the other owners never see.
     """
-    from hermes_constants import get_default_hermes_root
+    try:
+        from hermes_constants import get_default_hermes_root
+    except ImportError:  # a partial tree (an -I -S completion child of a stubbed checkout)
+        home = Path(os.environ.get("HERMES_HOME") or Path.home() / ".hermes")
+        root = home.parent.parent if home.parent.name == "profiles" else home
+        return root / MARKER_NAME
     return get_default_hermes_root() / MARKER_NAME
 
 

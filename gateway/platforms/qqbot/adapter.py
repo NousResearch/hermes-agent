@@ -947,21 +947,24 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
                 continue
 
             is_image = ct.startswith("image/")
+            label = "image" if is_image else ("video" if ct.startswith("video/") else "file")
             try:
                 cached_path = await self._download_and_cache(url, ct, filename)
             except Exception as exc:
-                logger.debug("[%s] Failed to cache %s: %s", self._log_tag, "image" if is_image else "attachment", exc)
+                logger.debug("[%s] Failed to cache %s: %s", self._log_tag, label, exc)
+                other_attachments.append(f"[Attachment download failed: {filename or ct}]")
                 continue
             if not cached_path:
+                other_attachments.append(f"[Attachment download failed: {filename or ct}]")
                 continue
             if not is_image:
-                label = "video" if ct.startswith("video/") else "file"
                 other_attachments.append(f"[{label}: {filename or ct} ({cached_path})]")
             elif os.path.isfile(cached_path):
                 image_urls.append(cached_path)
                 image_media_types.append(ct or "image/jpeg")
             else:
                 logger.warning("[%s] Cached image path does not exist: %s", self._log_tag, cached_path)
+                other_attachments.append(f"[Attachment download failed: {filename or ct}]")
 
         return {
             "image_urls": image_urls,

@@ -3013,8 +3013,9 @@ class FeishuAdapter(BasePlatformAdapter):
         message_id = str(getattr(message, "message_id", "") or "")
         logger.info("[Feishu] Received raw message type=%s message_id=%s", raw_type, message_id)
         normalized = self._normalize(raw_type, raw_content, getattr(message, "mentions", None))
+        failed_downloads: List[str] = []
         media_urls, media_types = await self._download_feishu_message_resources(
-            message_id=message_id, normalized=normalized,
+            message_id=message_id, normalized=normalized, collect_failures=failed_downloads,
         )
         inbound_type = self._resolve_normalized_message_type(normalized, media_types)
         text = normalized.text_content
@@ -3028,26 +3029,39 @@ class FeishuAdapter(BasePlatformAdapter):
         if inlined_parts:
             extracted_text = "\n\n".join(inlined_parts)
             text = f"{text}\n\n{extracted_text}" if text else extracted_text
+        if failed_downloads:
+            # A failed download must not vanish silently: tell the agent a file was
+            # sent even though its bytes never arrived.
+            failed_note = "\n".join(f"[Attachment download failed: {item}]" for item in failed_downloads)
+            text = f"{text}\n\n{failed_note}" if text else failed_note
         return text, inbound_type, media_urls, media_types, media_text_inlined, list(normalized.mentions)
 
     async def _download_feishu_message_resources(
-        self, *, message_id: str, normalized: FeishuNormalizedMessage,
+        self, *, message_id: str, normalized: FeishuNormalizedMessage, collect_failures: Optional[List[str]] = None,
     ) -> tuple[List[str], List[str]]:
+        """Download every image key + media ref on the message.
+
+        Failures are silent by default (the caller cannot tell a file was tried);
+        pass ``collect_failures`` to receive one label per resource that could not
+        be downloaded, so the caller can surface it instead of dropping it.
+        """
         media_urls: List[str] = []
         media_types: List[str] = []
 
-        def _collect(cached_path: str, media_type: str) -> None:
+        def _collect(cached_path: str, media_type: str, label: str) -> None:
             if cached_path:
                 media_urls.append(cached_path)
                 media_types.append(media_type)
+            elif collect_failures is not None:
+                collect_failures.append(label)
 
         for image_key in normalized.image_keys:
-            _collect(*await self._download_feishu_image(message_id=message_id, image_key=image_key))
+            _collect(*await self._download_feishu_image(message_id=message_id, image_key=image_key), label="image")
         for ref in normalized.media_refs:
             _collect(*await self._download_feishu_message_resource(
                 message_id=message_id, file_key=ref.file_key, resource_type=ref.resource_type,
                 fallback_filename=ref.file_name,
-            ))
+            ), label=ref.file_name or ref.resource_type)
         return media_urls, media_types
 
     @staticmethod

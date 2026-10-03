@@ -6,6 +6,7 @@ test patches on ``update_cmd`` stay effective).
 """
 
 import logging
+import os
 from contextlib import suppress
 import subprocess
 import sys
@@ -13,7 +14,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
 
-from hermes_cli._subprocess_compat import windows_hide_flags
+from hermes_cli._subprocess_compat import NO_LAZY_FETCH_ENV, windows_hide_flags
 
 logger = logging.getLogger("hermes_cli.update_cmd")  # log-record parity with the origin module
 
@@ -34,12 +35,12 @@ def _git_ok(git_cmd, args, cwd, **kw) -> bool:
     return _git_stdout(git_cmd, args, cwd, **kw) is not None
 
 
-def _git_run(git_cmd, args, cwd=None, *, check=False):
+def _git_run(git_cmd, args, cwd=None, *, check=False, env=None):
     """Run ``git_cmd + args`` and return the CompletedProcess.
 
     The updater's git runner: capture all output and decode as UTF-8 regardless of the
     Windows ANSI code page (#52649). ``check=True`` raises on non-zero exit. The spawn
-    always hides its console window (#117781).
+    always hides its console window (#117781). ``env`` replaces the child's environment.
     """
     return subprocess.run(
         git_cmd + list(args),
@@ -48,6 +49,7 @@ def _git_run(git_cmd, args, cwd=None, *, check=False):
         text=True, encoding="utf-8", errors="replace",
         check=check,
         creationflags=windows_hide_flags(),
+        env=env,
     )
 
 
@@ -200,7 +202,12 @@ def _assess_parked_branch_switch(git_cmd: list[str], cwd: Path, current_branch: 
     ahead_count = int(ahead.stdout.strip())
     if ahead_count == 0:
         return True, ""
-    cherry = _git_run(git_cmd, ["cherry", f"origin/{target_branch}"], cwd)
+    # The patch-id refinement must never fetch: on a tree:0 clone `git cherry` lazy-fetches
+    # a tree batch per commit and, with nothing bounding it, one such walk wrote 332 packs /
+    # 180 GiB over 7 h on Windows (#131444). With lazy fetch off a missing object fails the
+    # command fast and the commit count below stands in.
+    cherry = _git_run(git_cmd, ["cherry", f"origin/{target_branch}"], cwd,
+                      env={**os.environ, **NO_LAZY_FETCH_ENV})
     if cherry.returncode != 0:
         # Patch-equivalence only refines the count for rebase/squash-merged branches;
         # a partial clone whose lazy fetch failed must not block a clean checkout,

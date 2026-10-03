@@ -175,11 +175,12 @@ def test_missing_origin_ref_is_unverifiable(repo_pair):
     assert reason == "unverifiable"
 
 
-def _treeless_repo_pair(tmp_path):
+def _treeless_repo_pair(tmp_path, *, promisor_reachable=False):
     """A treeless clone parked on ``old-feature`` cut from c1, with origin/main
-    two commits ahead whose commits are local but whose trees are not, and a
-    promisor remote that can no longer satisfy a lazy fetch — the #124767
-    shape on a real partial clone.
+    two commits ahead whose commits are local but whose trees are not — the
+    #124767 shape on a real partial clone. By default the promisor remote can
+    no longer satisfy a lazy fetch; ``promisor_reachable=True`` keeps it live
+    (the #131444 shape, where every lazy fetch succeeds and nothing bounds them).
 
     Returns ``(clone,)``. Local commits/trees are all present; only the
     upstream-side trees are missing, which is exactly what ``git cherry``'s
@@ -209,10 +210,16 @@ def _treeless_repo_pair(tmp_path):
     _git(origin, "add", "b.txt")
     _git(origin, "commit", "-qm", "c3")
 
-    # c2/c3 arrive as commits only (no trees); from here every lazy fetch fails.
+    # c2/c3 arrive as commits only (no trees).
     _git(clone, "fetch", "-q", "--filter=tree:0", "origin", "main")
-    _git(clone, "remote", "set-url", "origin", f"file://{tmp_path / 'nowhere'}")
+    if not promisor_reachable:
+        _git(clone, "remote", "set-url", "origin", f"file://{tmp_path / 'nowhere'}")
     return clone
+
+
+def _pack_count(clone) -> int:
+    """Packfiles in the clone — every lazy fetch from the promisor adds one (#131444)."""
+    return len(list((clone / ".git" / "objects" / "pack").glob("*.pack")))
 
 
 def test_treeless_clone_verifies_merged_parked_branch_from_commit_graph(tmp_path):
@@ -243,6 +250,24 @@ def test_treeless_cherry_failure_degrades_to_conservative_unmerged(tmp_path):
     )
     assert safe is True
     assert reason == "unmerged:1"
+
+
+def test_parked_branch_guard_never_lazy_fetches_from_a_live_promisor(tmp_path):
+    """Clean parked branch with a local commit on a tree:0 clone whose promisor
+    remote IS reachable: ``git cherry`` would lazy-fetch a tree batch per
+    upstream commit, and with nothing bounding that walk one such assessment
+    wrote 332 packs / 180 GiB in 7 h on Windows (#131444). The guard must not
+    add a single pack and settles for the commit-graph count."""
+    clone = _treeless_repo_pair(tmp_path, promisor_reachable=True)
+    (clone / "feature.txt").write_text("unmerged work\n")
+    _git(clone, "add", "feature.txt")
+    _git(clone, "commit", "-qm", "feature work")
+    packs_before = _pack_count(clone)
+    safe, reason = update_cmd._assess_parked_branch_switch(
+        GIT, clone, "old-feature", "main"
+    )
+    assert (safe, reason) == (True, "unmerged:1")
+    assert _pack_count(clone) == packs_before
 
 
 # ---------------------------------------------------------------------------

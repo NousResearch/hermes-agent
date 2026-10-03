@@ -482,6 +482,24 @@ class Nodejs(_BionicDebArm, BinaryPackage, DebPackage):
         # lockfile is written rather than selecting glibc bytes on musl.
         return node_latest_versions()
 
+    def repair_staged_verification(self, entry: Path, target: str, reason: str) -> str:
+        """Repair the host library needed by official Linux Node, then re-probe.
+
+        Keep this out of verify(): doctor/status checks call verify and must
+        never gain permission to install host packages.
+        """
+        if target != current_target() or not target.startswith("linux") or "libatomic.so.1" not in reason:
+            return reason
+        from pm.libatomic import try_install_libatomic
+
+        installed, remedy = try_install_libatomic()
+        if installed:
+            retried = self.verify(entry, target)
+            if "libatomic.so.1" not in retried:
+                return retried
+            reason = retried
+        return reason if not remedy or remedy in reason else f"{reason} — {remedy}"
+
 
 @register
 class TermuxDocker(Package):

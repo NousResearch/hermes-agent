@@ -449,6 +449,8 @@ def _install(
                     progress("verify", 0, 0, "")
                 reason = package.verify(staged, target)
                 if reason:
+                    reason = package.repair_staged_verification(staged, target, reason)
+                if reason:
                     raise InstallError(package.name, f"staged entry failed verification: {reason}")
                 if facts is None:
                     (staged / ".pm-stage-pin.json").write_text(pin, encoding="utf-8")

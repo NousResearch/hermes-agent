@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
-import { cellAt, CellWidth, CharPool, createScreen, HyperlinkPool, setCellAt, StylePool } from './screen.js'
+import Output from './output.js'
+import { cellAt, CellWidth, CharPool, createScreen, HyperlinkPool, setCellAt, type Screen, StylePool } from './screen.js'
 import {
   applySelectionOverlay,
   createSelectionState,
@@ -8,6 +9,7 @@ import {
   startSelection,
   updateSelection
 } from './selection.js'
+import { wrapTextWithTrim } from './wrap-text.js'
 
 const screenWithText = () => {
   const styles = new StylePool()
@@ -78,5 +80,57 @@ describe('selection whitespace handling', () => {
     expect(cellAt(screen, 2, 1)?.styleId).not.toBe(screen.emptyStyleId)
     expect(cellAt(screen, 4, 1)?.styleId).toBe(screen.emptyStyleId)
     expect(cellAt(screen, 0, 2)?.styleId).toBe(screen.emptyStyleId)
+  })
+})
+
+/** Render a wrap-trim paragraph exactly like the markdown path does
+ *  (wrapTextWithTrim → per-line 0/1/2 marks → Output.write), then drag
+ *  across the soft-wrap boundary and read back the copy. */
+function renderWrapTrim(src: string, wrapWidth: number) {
+  const width = 30
+  const height = 5
+  const stylePool = new StylePool()
+  const screen = createScreen(width, height, stylePool, new CharPool(), new HyperlinkPool())
+  const entry = wrapTextWithTrim(src, wrapWidth, 'wrap-trim')
+  const output = new Output({ height, screen, stylePool, width })
+
+  output.write(
+    0,
+    0,
+    entry.text,
+    [0, ...entry.trimmed.map(t => (t ? 2 : 1))]
+  )
+
+  return output.get()
+}
+
+function dragCopy(screen: Screen, from: [number, number], to: [number, number]): string {
+  const selection = createSelectionState()
+
+  startSelection(selection, from[0], from[1])
+  updateSelection(selection, to[0], to[1])
+
+  return getSelectedText(selection, screen)
+}
+
+describe('wrap-trim drag-copy round-trip (#118395)', () => {
+  it('restores the boundary space glued by wrap-trim', () => {
+    const screen = renderWrapTrim('alpha beta', 7)
+
+    expect(dragCopy(screen, [0, 0], [29, 1])).toBe('alpha beta')
+  })
+
+  it('restores a longer paragraph across several boundaries', () => {
+    const src = 'lorem ipsum dolor sit amet'
+    const screen = renderWrapTrim(src, 10)
+
+    expect(dragCopy(screen, [0, 0], [29, 4])).toBe(src)
+  })
+
+  it('keeps hard mid-word splits glued (long tokens, URLs)', () => {
+    const src = 'abcdefghij'
+    const screen = renderWrapTrim(src, 7)
+
+    expect(dragCopy(screen, [0, 0], [29, 1])).toBe(src)
   })
 })

@@ -36,13 +36,15 @@ def _read_controls(messages, pause, fd):
 
 
 def main():
-    import truststore
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+    # Route through the shared guard: a raw inject here can double-inject when
+    # another code path already ran the guarded install (see #126808).
+    from agent.ssl_verify import install_truststore
 
-    truststore.inject_into_ssl()
+    install_truststore()
     # Capture the protocol FD before redirecting even native/subprocess stdout.
     wire = os.fdopen(os.dup(sys.stdout.fileno()), "w", encoding="utf-8", buffering=1)
     os.dup2(sys.stderr.fileno(), sys.stdout.fileno())
-    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
     # A pending read on inherited control stdin can block child Python startup
     # on Windows. Keep the protocol private and give every ordinary child EOF.
     controls = os.dup(0)

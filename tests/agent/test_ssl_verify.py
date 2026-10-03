@@ -74,6 +74,52 @@ with httpx.Client(verify=resolve_httpx_verify()) as client:
     assert "truststore unavailable" in child.stderr
 
 
+def test_install_truststore_is_idempotent_under_repeat_calls():
+    """One injection per process, whichever guarded path runs first.
+
+    pm.launch/pm.worker used to call ``truststore.inject_into_ssl()`` raw,
+    so a direct call plus a guarded call in one process injected twice;
+    routing every entrypoint through ``install_truststore()`` makes the
+    short-circuit the single guard.
+    """
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    pytest.importorskip("truststore")
+    repo = Path(__file__).resolve().parents[2]
+    child = subprocess.run([sys.executable, "-c", """
+import ssl
+from agent.ssl_verify import install_truststore
+assert install_truststore() is True
+bound = ssl.SSLContext
+assert install_truststore() is True
+assert ssl.SSLContext is bound
+"""], cwd=repo, capture_output=True, text=True, timeout=30)
+    assert child.returncode == 0, child.stderr
+
+
+def test_pm_entrypoints_never_inject_truststore_raw():
+    """The no-raw-inject contract for the PM entrypoints (#126808).
+
+    A direct ``truststore.inject_into_ssl()`` beside the guarded
+    ``install_truststore()`` double-injects: raw injection must only ever
+    happen behind ``agent.ssl_verify``'s ``_installed`` guard. Fails on
+    trees where pm.launch/pm.worker still call ``inject_into_ssl()``
+    themselves.
+    """
+    from pathlib import Path
+
+    repo = Path(__file__).resolve().parents[2]
+    for entry in ("pm/launch.py", "pm/worker.py"):
+        source = (repo / entry).read_text(encoding="utf-8")
+        assert "inject_into_ssl" not in source, (
+            f"{entry} injects truststore directly, bypassing the shared "
+            "_installed guard — route it through install_truststore()"
+        )
+        assert "install_truststore" in source, f"{entry} must install platform trust"
+
+
 def test_explicit_provider_ca_replaces_platform_trust_on_real_https(tmp_path):
     """A private endpoint trusts only its provider CA, never a global fallback."""
     from datetime import datetime, timedelta, timezone

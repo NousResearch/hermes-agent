@@ -33,6 +33,15 @@ export interface PoolStopperDeps {
   stopChild: (child: unknown) => void
   /** Bounded wait: resolves when the child exits, escalating to SIGKILL. */
   waitForExit: (child: unknown) => Promise<void>
+  /**
+   * Release anything else the entry held, called once as it leaves the pool.
+   *
+   * A pooled backend can own resources outside its child process — the
+   * Computer Use bridge socket a remote profile opened back to this machine —
+   * and every teardown route funnels through here, which is the only place
+   * that sees the entry on its way out.
+   */
+  onEvict?: (key: string, entry: PoolStopEntry) => void
 }
 
 export interface PoolStopper {
@@ -63,6 +72,7 @@ export function createPoolStopper(deps: PoolStopperDeps): PoolStopper {
     // Evict now: routing must not hand out a dying backend. The stop promise
     // below retains the process handle until the bounded exit completes.
     deps.pool.delete(key)
+    deps.onEvict?.(key, entry)
 
     const stopping = (async () => {
       deps.stopChild(entry.process)

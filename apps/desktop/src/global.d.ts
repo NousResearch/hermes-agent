@@ -818,6 +818,10 @@ export interface DesktopConnectionConfig {
   // connection. Per-profile entries let a profile point at its own backend.
   profile: null | string
   remoteAuthMode: 'oauth' | 'token'
+  remoteComputerUseBridge: boolean
+  // Why the Computer Use bridge cannot run on this install at all (no local
+  // agent runtime to host the sidecar), or null while it can.
+  remoteComputerUseBridgeUnavailable: string | null
   remoteOauthConnected: boolean
   remoteTokenPreview: string | null
   remoteTokenSet: boolean
@@ -848,6 +852,7 @@ export interface DesktopConnectionConfigInput {
   // override instead of the global connection.
   profile?: null | string
   remoteAuthMode?: 'oauth' | 'token'
+  remoteComputerUseBridge?: boolean
   remoteToken?: string
   // When true and secure (OS-keychain) storage is unavailable, persist the
   // remote token as plain text on disk instead of failing. Requires an explicit

@@ -689,14 +689,30 @@ def checkout_lock_fds(install_root: Path | str | None = None) -> tuple[int, ...]
     return () if fd is None else (fd,)
 
 
-def bind_child_to_update_tree(proc: subprocess.Popen) -> None:
+def bind_child_to_update_tree(proc: subprocess.Popen) -> bool:
     """Windows: put an update-tree child in a kill-on-close job owned by this process, so the
     child (and everything it spawns) dies when the lock owner dies and frees the lock.
 
-    POSIX children inherit the lock fd instead (:func:`checkout_lock_fds`).
+    The job allows breakaway: a process the tree starts with ``CREATE_BREAKAWAY_FROM_JOB`` (the
+    gateways an update restarts or resumes, ``gateway_windows._spawn_detached``) leaves it and
+    outlives the update; every other descendant stays bound. Not ``SILENT_BREAKAWAY_OK``, which
+    would let every descendant escape.
+
+    POSIX children inherit the lock fd instead (:func:`checkout_lock_fds`). Returns False (and
+    logs) when the job cannot be set up: the caller runs post-commit work, which must not fail
+    over a weaker lock.
     """
     if sys.platform != "win32":
-        return
+        return True
+    try:
+        _bind_to_kill_on_close_job(proc)
+    except OSError as exc:
+        logger.warning("Could not bind update child %s to the update's job: %s", proc.pid, exc)
+        return False
+    return True
+
+
+def _bind_to_kill_on_close_job(proc: subprocess.Popen) -> None:
     import ctypes
     from ctypes import wintypes
 
@@ -723,7 +739,8 @@ def bind_child_to_update_tree(proc: subprocess.Popen) -> None:
     if not job:
         raise ctypes.WinError(ctypes.get_last_error())
     limits = _Extended()
-    limits.BasicLimitInformation.LimitFlags = 0x2000  # JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+    # JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE | JOB_OBJECT_LIMIT_BREAKAWAY_OK
+    limits.BasicLimitInformation.LimitFlags = 0x2000 | 0x0800
     if not kernel32.SetInformationJobObject(job, 9, ctypes.byref(limits), ctypes.sizeof(limits)) \
             or not kernel32.AssignProcessToJobObject(job, int(proc._handle)):
         raise ctypes.WinError(ctypes.get_last_error())

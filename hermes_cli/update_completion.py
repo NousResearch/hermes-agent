@@ -67,9 +67,11 @@ def run_completion(request: dict) -> dict:
             command, cwd=root, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
             **({"start_new_session": True, "pass_fds": checkout_lock_fds(root)} if os.name == "posix" else
                {"creationflags": subprocess.CREATE_NO_WINDOW}))
-        bind_child_to_update_tree(proc)
         decoder = codecs.getincrementaldecoder("utf-8")("replace")
         try:
+            # Post-commit: an unbindable child only weakens the lock (logged), never fails the
+            # update; anything else unwinds through the cleanup below, never orphans the child.
+            bind_child_to_update_tree(proc)
             while True:
                 chunk = proc.stdout.read1(8192)
                 sys.stdout.write(decoder.decode(chunk, final=not chunk))

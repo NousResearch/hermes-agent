@@ -11,11 +11,15 @@ One install (install.ps1), then, with NEXT published:
     ``hermes update`` of the installed checkout must exit 2 and leave the checkout at HEAD;
 (b) ``taskkill /F`` of the owner (not ``/T``) must take the bound child down with it;
 (c) with the tree gone the lock is free: the real ``hermes update`` lands NEXT.
+
+A second install proves the other direction of the job: a gateway the update RESTARTS is started
+with ``CREATE_BREAKAWAY_FROM_JOB`` and must leave the job, so it outlives a successful update.
 """
 
 from __future__ import annotations
 
 import subprocess
+import time
 
 import psutil
 import pytest
@@ -33,6 +37,7 @@ pytestmark = [pytest.mark.platforms("windows"), pytest.mark.integration,
               pytest.mark.live_system_guard_bypass, REQUIRES_OPT_IN]
 
 REFUSAL = "Another Hermes update is already running"
+SURVIVAL_SECONDS = 30
 
 # Runs on the INSTALLED venv against the installed checkout's own update_lock. Degrades to the
 # marker-only API where the checkout has no install-root lock, so an older tree fails on behaviour.
@@ -129,3 +134,37 @@ def test_free_lock_lets_the_next_update_land(journey) -> None:
     assert run.returncode == 0 and journey["c_head"] == m.next, fail_with(
         m, f"after the whole update tree exited, `hermes update` did not land NEXT "
            f"(rc={run.returncode}, checkout {journey['c_head']}, NEXT {m.next})", run)
+
+
+@pytest.fixture(scope="module")
+def gateway_journey(tmp_path_factory):
+    out: dict = {}
+    with FakeLLMServer() as srv:
+        machine = new_machine(tmp_path_factory.mktemp("lg"), srv.base_url, label="lg", system_git=True)
+        out["machine"] = machine
+        try:
+            install = machine.install()
+            assert install.returncode == 0, fail_with(machine, f"install.ps1 exited {install.returncode}", install)
+            with machine.gateway_phase():
+                machine.spawn_gateway()
+                old_pid = int(machine.wait_gateway_running().get("pid") or 0)
+                machine.advance()
+                out["update"] = machine.update(label="update-with-gateway")
+                exited = time.monotonic()
+                out["relaunched"] = int(machine.wait_gateway_running(not_pid=old_pid).get("pid") or 0)
+                time.sleep(max(0.0, SURVIVAL_SECONDS - (time.monotonic() - exited)))
+                out["alive_after"] = _alive(out["relaunched"])
+                out["status"] = machine.hermes("gateway", "status", label="status-after-30s")
+                machine.kill_owned()
+            yield out
+        finally:
+            machine.teardown()
+
+
+def test_restarted_gateway_outlives_the_update(gateway_journey) -> None:
+    m, run, pid = gateway_journey["machine"], gateway_journey["update"], gateway_journey["relaunched"]
+    assert run.returncode == 0, fail_with(m, f"`hermes update` with a running gateway exited {run.returncode}", run)
+    status = gateway_journey["status"]
+    assert gateway_journey["alive_after"] and str(pid) in status.stdout, fail_with(
+        m, f"the gateway the update restarted (pid {pid}) died with the update's job: alive "
+           f"{SURVIVAL_SECONDS}s after `hermes update` exited = {gateway_journey['alive_after']}", status)

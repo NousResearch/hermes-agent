@@ -70,6 +70,22 @@ def _fold_moa_usage(agent, canonical_usage):
     return _moa_client, canonical_usage, _moa_ref_cost
 
 
+def _queue_call_delta(agent: Any, **delta: Any) -> None:
+    """Enqueue one API call's token/cost delta for state.db (drained at finalize via _persist_session).
+    Gateway/session-store writes use absolute totals and safely overwrite these deltas; enqueued, not
+    written, because a cold state.db UPDATE here stalled the tool loop."""
+    if not (agent._session_db and agent.session_id):
+        return
+    try:
+        # Ensure the row exists: under concurrent SQLite load the initial
+        # _ensure_db_session() may fail, and UPDATE on a missing row affects 0 rows.
+        if not agent._session_db_created:
+            agent._ensure_db_session()
+        agent._session_db.queue_token_counts(agent.session_id, source=_agent_session_source(agent), **delta)
+    except Exception as e:  # silent loss here undercounts analytics
+        logger.debug("Token persistence failed (session=%s): %s", agent.session_id, e)
+
+
 def record_response_usage(
     agent: Any, response: Any, *, messages: List[Dict[str, Any]], api_call_count: int,
     api_duration: float, compression_attempts: int, max_compression_attempts: int,
@@ -96,6 +112,9 @@ def record_response_usage(
             "API call #%d: model=%s provider=%s in=? out=? total=? latency=%.1fs usage=unavailable",
             agent.session_api_calls, agent.model, agent.provider or "unknown", api_duration,
         )
+        # The call still happened (and may be billed): state.db counts it like the in-memory counter.
+        _queue_call_delta(agent, billing_provider=agent.provider, billing_base_url=agent.base_url,
+                          model=agent.model, api_call_count=1)
         return ResponseUsageOutcome(compression_attempts=compression_attempts, rearmed=rearmed)
 
     canonical_usage = with_served_service_tier(
@@ -244,39 +263,23 @@ def record_response_usage(
     agent.session_cost_status = cost_result.status
     agent.session_cost_source = cost_result.source
 
-    # Persist per-call token deltas for any session_id so non-CLI runs can't lose
-    # accounting; gateway/session-store writes use absolute totals and safely overwrite
-    # these deltas. Enqueued, not written (a cold state.db UPDATE here stalled the tool
-    # loop); drained at finalize via _persist_session.
-    if agent._session_db and agent.session_id:
-        try:
-            # Ensure the row exists: under concurrent SQLite load the initial
-            # _ensure_db_session() may fail, and UPDATE on a missing row affects 0 rows.
-            if not agent._session_db_created:
-                agent._ensure_db_session()
-            agent._session_db.queue_token_counts(
-                agent.session_id,
-                source=_agent_session_source(agent),
-                input_tokens=canonical_usage.input_tokens,
-                output_tokens=canonical_usage.output_tokens,
-                cache_read_tokens=canonical_usage.cache_read_tokens,
-                cache_write_tokens=canonical_usage.cache_write_tokens,
-                reasoning_tokens=canonical_usage.reasoning_tokens,
-                estimated_cost_usd=_cost_delta,
-                cost_status=cost_result.status,
-                cost_source=cost_result.source,
-                billing_provider=agent.provider,
-                billing_base_url=agent.base_url,
-                billing_mode="subscription_included"
-                if cost_result.status == "included" else None,
-                model=agent.model,
-                api_call_count=1,
-            )
-        except Exception as e:  # silent loss here undercounts analytics
-            logger.debug(
-                "Token persistence failed (session=%s, tokens=%d): %s",
-                agent.session_id, total_tokens, e,
-            )
+    # Persist per-call token deltas for any session_id so non-CLI runs can't lose accounting.
+    _queue_call_delta(
+        agent,
+        input_tokens=canonical_usage.input_tokens,
+        output_tokens=canonical_usage.output_tokens,
+        cache_read_tokens=canonical_usage.cache_read_tokens,
+        cache_write_tokens=canonical_usage.cache_write_tokens,
+        reasoning_tokens=canonical_usage.reasoning_tokens,
+        estimated_cost_usd=_cost_delta,
+        cost_status=cost_result.status,
+        cost_source=cost_result.source,
+        billing_provider=agent.provider,
+        billing_base_url=agent.base_url,
+        billing_mode="subscription_included" if cost_result.status == "included" else None,
+        model=agent.model,
+        api_call_count=1,
+    )
 
     if agent.verbose_logging:
         logging.debug(f"Token usage: prompt={usage_dict['prompt_tokens']:,}, completion={usage_dict['completion_tokens']:,}, total={usage_dict['total_tokens']:,}")

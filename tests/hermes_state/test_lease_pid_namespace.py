@@ -52,7 +52,7 @@ def test_turn_lease_of_sibling_namespace_is_not_stolen(tmp_path) -> None:
     assert db.try_acquire_session_turn_lease("shared", contender, ttl_seconds=300) is True
 
 
-def test_flock_holder_record_qualifies_pid_namespaces() -> None:
+def test_flock_holder_record_qualifies_pid_namespaces(monkeypatch) -> None:
     dead = _dead_pid()
     provably_dead = hermes_state_common._lock_holder_provably_dead
 
@@ -63,3 +63,10 @@ def test_flock_holder_record_qualifies_pid_namespaces() -> None:
     # Unstamped (pre-upgrade) record: these never expire, so keep probing them.
     assert provably_dead({"pid": dead, "start_ticks": 1, "acquired_at": 0.0}) is True
     assert provably_dead(None) is False
+
+    # Our own namespace lookup failed: a stamped record is unverifiable, but an
+    # unstamped one still breaks (#100108 orphan-lock cleanup must not regress).
+    monkeypatch.setattr(hermes_state_pidns, "_LOCAL_PID_NS", None)
+    monkeypatch.setattr(hermes_state_pidns, "_resolve_local_pid_namespace", lambda: LocalPidNamespace(None, True))
+    assert provably_dead({"pid": dead, "pidns": _OURS, "start_ticks": 1, "acquired_at": 0.0}) is False
+    assert provably_dead({"pid": dead, "start_ticks": 1, "acquired_at": 0.0}) is True

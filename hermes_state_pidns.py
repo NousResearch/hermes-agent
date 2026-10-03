@@ -108,10 +108,10 @@ def _qualify(recorded: Optional[str], *, unstamped_checkable: bool) -> bool:
     local = _local_pid_namespace()
     if not local.supported:
         return True  # single-namespace platform: a pid is evidence on its own
-    if local.id is None:
-        return False  # our own lookup failed: unknown authority is not authority
     if recorded is None:
         return unstamped_checkable
+    if local.id is None:
+        return False  # our own lookup failed: unknown authority is not authority
     return str(recorded) == str(local.id)
 
 

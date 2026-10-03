@@ -206,6 +206,126 @@ class TestSlackApprovalAction:
         mock_resolve.assert_not_called()
 
 
+    @pytest.mark.asyncio
+    async def test_conversation_classification_gates_real_approval_resolution(self):
+        adapter = _make_adapter()
+        client = adapter._team_clients["T1"]
+        client.chat_update = AsyncMock()
+
+        async def conversations_info(*, channel):
+            if channel == "G_DM":
+                return {"ok": True, "channel": {"id": channel, "is_mpim": True, "name": "mpdm"}}
+            if channel == "G_PRIVATE":
+                return {"ok": True, "channel": {"id": channel, "is_mpim": False, "name": "private"}}
+            raise AssertionError(channel)
+
+        client.conversations_info = AsyncMock(side_effect=conversations_info)
+        adapter.set_authorization_check(
+            lambda user, chat_type, _chat:
+                (user == "U_DM" and chat_type == "dm")
+                or (user == "U_GROUP" and chat_type == "group")
+        )
+
+        async def click(channel_id, user_id, ts):
+            adapter._approval_resolved[
+                adapter._workspace_message_marker("T1", ts)
+            ] = False
+            ack = AsyncMock()
+            body = {
+                "team": {"id": "T1"},
+                "message": {
+                    "ts": ts,
+                    "blocks": [{
+                        "type": "section",
+                        "text": {"type": "mrkdwn", "text": "Approve?"},
+                    }],
+                },
+                "channel": {"id": channel_id},
+                "user": {"name": user_id.lower(), "id": user_id},
+            }
+            action = {
+                "action_id": "hermes_approve_once",
+                "value": "agent:main:slack:test",
+            }
+            with patch("tools.approval.resolve_gateway_approval", return_value=1) as resolve:
+                await adapter._handle_approval_action(ack, body, action)
+            ack.assert_awaited_once()
+            return resolve
+
+        assert (await click("G_DM", "U_DM", "1.1")).call_count == 1
+        assert (await click("G_DM", "U_GROUP", "1.2")).call_count == 0
+        assert (await click("G_PRIVATE", "U_GROUP", "1.3")).call_count == 1
+        assert (await click("G_PRIVATE", "U_DM", "1.4")).call_count == 0
+        # A true 1:1 DM is unambiguous and uses the same DM principal policy.
+        assert (await click("D_DIRECT", "U_DM", "1.5")).call_count == 1
+
+        # The prompt may have been posted while DMs were enabled. Authorization is live at click
+        # time, so disabling DMs must prevent that outstanding MPIM approval from resolving.
+        pending_ts = "1.6"
+        adapter._approval_resolved[
+            adapter._workspace_message_marker("T1", pending_ts)
+        ] = False
+        adapter.config.extra["disable_dms"] = True
+        assert (await click("G_DM", "U_DM", pending_ts)).call_count == 0
+        # Private channels are not DMs and remain governed by group policy.
+        assert (await click("G_PRIVATE", "U_GROUP", "1.7")).call_count == 1
+
+
+
+    @pytest.mark.asyncio
+    async def test_approval_button_uses_session_key_when_g_metadata_is_unavailable(self):
+        """The prompt's own session key is authoritative for G... control authorization."""
+        adapter = _make_adapter()
+        client = adapter._team_clients["T1"]
+        client.chat_update = AsyncMock()
+        client.conversations_info = AsyncMock(
+            side_effect=AssertionError("approval click performed conversations.info")
+        )
+        adapter.set_authorization_check(
+            lambda user, chat_type, _chat:
+                (user == "U_GROUP" and chat_type == "group")
+                or (user == "U_DM_ONLY" and chat_type == "dm")
+        )
+
+        async def click(chat_type, user_id, ts):
+            source = adapter.build_source(
+                chat_id="G_PRIVATE" if chat_type == "group" else "G_DM",
+                chat_type=chat_type,
+                user_id="U_SESSION_OWNER",
+                scope_id="T1",
+            )
+            session_key = adapter._source_session_key(source)
+            channel_id = source.chat_id
+            adapter._approval_resolved[
+                adapter._workspace_message_marker("T1", ts)
+            ] = False
+            ack = AsyncMock()
+            body = {
+                "team": {"id": "T1"},
+                "message": {
+                    "ts": ts,
+                    "blocks": [{
+                        "type": "section",
+                        "text": {"type": "mrkdwn", "text": "Approve?"},
+                    }],
+                },
+                "channel": {"id": channel_id},
+                "user": {"name": user_id.lower(), "id": user_id},
+            }
+            action = {"action_id": "hermes_approve_once", "value": session_key}
+            with patch("tools.approval.resolve_gateway_approval", return_value=1) as resolve:
+                await adapter._handle_approval_action(ack, body, action)
+            ack.assert_awaited_once()
+            return resolve
+
+        # Legitimate legacy private-channel approval remains available with zero metadata I/O.
+        assert (await click("group", "U_GROUP", "2.1")).call_count == 1
+        # Negative control: a key proving DM classification must not grant group-only privileges.
+        assert (await click("dm", "U_GROUP", "2.2")).call_count == 0
+        # The DM-authorized principal still succeeds on the exact same DM-classified key path.
+        assert (await click("dm", "U_DM_ONLY", "2.3")).call_count == 1
+        client.conversations_info.assert_not_awaited()
+
 class TestSlackInteractiveAuth:
     def test_delegates_to_gateway_runner_auth(self):
         adapter = _make_adapter()

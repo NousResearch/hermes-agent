@@ -249,6 +249,484 @@ class TestSlashCommandSessionIsolation:
         assert event.source.user_id == "U123"
         assert event.source.scope_id == "T123"
 
+    @pytest.mark.asyncio
+    async def test_slash_turn_matches_message_prompt_inputs(self, adapter):
+        adapter.config.extra.update({
+            "channel_prompts": {"C123": "Answer in haiku."},
+            "channel_skill_bindings": [{"id": "C123", "skill": "triage"}],
+        })
+        adapter._bot_display_name = "HermesBot"
+        adapter._app.client.conversations_info = AsyncMock(
+            return_value={"ok": True, "channel": {"id": "C123", "name": "ops"}})
+        adapter.set_authorization_check(lambda _user, _type, _chat: True)
+
+        await adapter._handle_slash_command({
+            "command": "/hermes", "text": "what broke?", "user_id": "U123",
+            "channel_id": "C123", "team_id": "T123",
+        })
+        slash = adapter.handle_message.await_args.args[0]
+
+        message = await adapter._build_message_event(
+            {"user": "U123", "channel": "C123"},
+            text="what broke?", original_text="what broke?", command_probe_text="what broke?",
+            is_command_text=False, channel_id="C123", team_id="T123", ts="171.001",
+            user_id="U123", thread_ts=None, is_dm=False, media_urls=[], media_types=[],
+            media_text_inlined=[], channel_context=None)
+
+        assert message.channel_prompt
+        assert 'bot "@HermesBot"' in message.channel_prompt
+        assert "Answer in haiku." in message.channel_prompt
+        assert slash.channel_prompt == message.channel_prompt
+        assert slash.auto_skill == message.auto_skill == ["triage"]
+        assert (slash.source.chat_name, slash.source.user_name) == (
+            message.source.chat_name, message.source.user_name) == ("ops", "Test User")
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("behavior", ["pair", "decline", "ignore"])
+    async def test_unauthorized_slash_stops_before_name_enrichment(
+        self, adapter, behavior,
+    ):
+        adapter.config.extra["unauthorized_dm_behavior"] = behavior
+        adapter.set_authorization_check(lambda _user, _type, _chat: False)
+        adapter._app.client.conversations_info = AsyncMock(
+            return_value={"ok": True, "channel": {"id": "C123", "name": "ops"}})
+        adapter._app.client.users_info.reset_mock()
+
+        await adapter._handle_slash_command({
+            "command": "/hermes", "text": "what broke?", "user_id": "U_BAD",
+            "channel_id": "C123", "team_id": "T123",
+        })
+
+        adapter._app.client.conversations_info.assert_not_awaited()
+        adapter._app.client.users_info.assert_not_awaited()
+        adapter.handle_message.assert_not_awaited()
+
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("behavior", ["pair", "decline", "ignore"])
+    async def test_denied_dm_reaches_real_gateway_policy_without_name_enrichment(
+        self, adapter, behavior, tmp_path, monkeypatch, caplog,
+    ):
+        """Denied DMs reach the real pair/decline/ignore sink without Slack metadata I/O."""
+        import logging
+        from gateway.pairing import PairingStore
+
+        monkeypatch.setattr("gateway.pairing.PAIRING_DIR", tmp_path)
+        adapter.config.extra["unauthorized_dm_behavior"] = behavior
+        adapter.set_authorization_check(lambda _user, _type, _chat: False)
+        adapter._app.client.conversations_info = AsyncMock(
+            side_effect=AssertionError("denied DM performed channel metadata I/O")
+        )
+        adapter._app.client.users_info = AsyncMock(
+            side_effect=AssertionError("denied DM performed user metadata I/O")
+        )
+        adapter.send = AsyncMock()
+
+        runner = object.__new__(GatewayRunner)
+        runner.config = GatewayConfig(platforms={Platform.SLACK: adapter.config})
+        runner.adapters = {Platform.SLACK: adapter}
+        runner.pairing_store = PairingStore()
+        runner.pairing_stores = {}
+        runner._intake_adapter_for = lambda _source: adapter
+        runner._delivery_adapter_for = lambda _source: adapter
+        runner._scale_to_zero_note_real_inbound = lambda: None
+
+        async def passthrough(event, _source):
+            return event
+
+        runner._hm_pre_gateway_dispatch_hook = passthrough
+        runner._is_user_authorized_for_source = lambda _source: False
+
+        adapter.handle_message = runner._hm_admit_event
+        with caplog.at_level(logging.WARNING):
+            await adapter._handle_slash_command({
+                "command": "/help",
+                "text": "",
+                "user_id": "U_STRANGER",
+                "channel_id": "D123",
+                "team_id": "T123",
+                "response_url": "https://hooks.slack.test/response",
+            })
+
+        pending = runner.pairing_store.list_pending("slack")
+        declined = runner.pairing_store.has_recent_decline("slack", "U_STRANGER")
+        if behavior == "pair":
+            assert pending and pending[0]["user_id"] == "U_STRANGER"
+            assert declined is False
+            adapter.send.assert_awaited_once()
+        elif behavior == "decline":
+            assert pending == []
+            assert declined is True
+            adapter.send.assert_awaited_once()
+        else:
+            assert pending == []
+            assert declined is False
+            adapter.send.assert_not_awaited()
+            assert any(
+                "Unauthorized user (ignored)" in record.getMessage()
+                for record in caplog.records
+            )
+
+        adapter._app.client.conversations_info.assert_not_awaited()
+        adapter._app.client.users_info.assert_not_awaited()
+        assert adapter._slash_command_contexts
+
+    @pytest.mark.asyncio
+    async def test_stop_dispatches_without_waiting_for_name_metadata(self, adapter):
+        """Interrupt controls must reach BasePlatformAdapter before cosmetic Slack metadata."""
+        adapter.set_authorization_check(lambda _user, _type, _chat: True)
+        adapter._resolve_turn_prompt_inputs = AsyncMock(
+            side_effect=AssertionError("/stop waited for prompt metadata")
+        )
+        adapter._app.client.conversations_info = AsyncMock(
+            side_effect=AssertionError("/stop performed channel metadata I/O")
+        )
+        adapter._app.client.users_info = AsyncMock(
+            side_effect=AssertionError("/stop performed user metadata I/O")
+        )
+
+        await adapter._handle_slash_command({
+            "command": "/stop",
+            "text": "",
+            "user_id": "U123",
+            "channel_id": "C123",
+            "team_id": "T123",
+        })
+
+        adapter.handle_message.assert_awaited_once()
+        event = adapter.handle_message.await_args.args[0]
+        assert event.text == "/stop"
+        assert event.source.chat_name == "C123"
+        assert event.source.user_name == "U123"
+        adapter._resolve_turn_prompt_inputs.assert_not_awaited()
+        adapter._app.client.conversations_info.assert_not_awaited()
+        adapter._app.client.users_info.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_stop_cancels_real_active_session_without_metadata_io(self, adapter):
+        """The real BasePlatformAdapter stop lane cancels work before Slack name I/O can matter."""
+        from gateway.platforms.base import BasePlatformAdapter
+        from gateway.platforms.event import MessageEvent, MessageType
+
+        adapter.set_authorization_check(lambda _user, _type, _chat: True)
+        adapter._app.client.conversations_info = AsyncMock(
+            side_effect=AssertionError("/stop performed channel metadata I/O")
+        )
+        adapter._app.client.users_info = AsyncMock(
+            side_effect=AssertionError("/stop performed user metadata I/O")
+        )
+        adapter._message_handler = AsyncMock()
+        adapter.handle_message = BasePlatformAdapter.handle_message.__get__(
+            adapter, type(adapter)
+        )
+        adapter._dispatch_inline_reply = AsyncMock(return_value=None)
+
+        source = adapter.build_source(
+            chat_id="C123",
+            chat_type="group",
+            user_id="U123",
+            scope_id="T123",
+        )
+        seed = MessageEvent(
+            text="working",
+            message_type=MessageType.TEXT,
+            source=source,
+        )
+        session_key = adapter._event_session_key(seed)
+        blocker = asyncio.Event()
+
+        async def running_work():
+            await blocker.wait()
+
+        task = asyncio.create_task(running_work())
+        await asyncio.sleep(0)
+        adapter._active_sessions[session_key] = asyncio.Event()
+        adapter._session_tasks[session_key] = task
+
+        await adapter._handle_slash_command({
+            "command": "/stop",
+            "text": "",
+            "user_id": "U123",
+            "channel_id": "C123",
+            "team_id": "T123",
+        })
+
+        assert task.done()
+        assert task.cancelled()
+        adapter._dispatch_inline_reply.assert_awaited_once()
+        adapter._app.client.conversations_info.assert_not_awaited()
+        adapter._app.client.users_info.assert_not_awaited()
+
+
+    @pytest.mark.asyncio
+    async def test_approve_dispatches_active_g_private_without_metadata_io(self, adapter):
+        """Approval controls recover a legacy G... private-channel class from the active key."""
+        from gateway.platforms.base import BasePlatformAdapter
+        from gateway.platforms.event import MessageEvent, MessageType
+
+        adapter.set_authorization_check(
+            lambda user, chat_type, _chat: user == "U_GROUP" and chat_type == "group"
+        )
+        adapter._app.client.conversations_info = AsyncMock(
+            side_effect=AssertionError("/approve performed channel metadata I/O")
+        )
+        adapter._app.client.users_info = AsyncMock(
+            side_effect=AssertionError("/approve performed user metadata I/O")
+        )
+        adapter._message_handler = AsyncMock()
+        adapter.handle_message = BasePlatformAdapter.handle_message.__get__(
+            adapter, type(adapter)
+        )
+        adapter._dispatch_inline_reply = AsyncMock(return_value=None)
+
+        source = adapter.build_source(
+            chat_id="G_PRIVATE",
+            chat_type="group",
+            user_id="U_GROUP",
+            scope_id="T123",
+        )
+        seed = MessageEvent(text="working", message_type=MessageType.TEXT, source=source)
+        session_key = adapter._event_session_key(seed)
+        adapter._active_sessions[session_key] = asyncio.Event()
+
+        await adapter._handle_slash_command({
+            "command": "/approve",
+            "text": "session",
+            "user_id": "U_GROUP",
+            "channel_id": "G_PRIVATE",
+            "team_id": "T123",
+        })
+
+        adapter._dispatch_inline_reply.assert_awaited_once()
+        dispatched = adapter._dispatch_inline_reply.await_args.args[0]
+        assert dispatched.source.chat_type == "group"
+        adapter._app.client.conversations_info.assert_not_awaited()
+        adapter._app.client.users_info.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_stop_uses_active_mpim_session_class_without_metadata_io(self, adapter):
+        """A G... MPIM /stop stays lookup-free while retaining DM authorization."""
+        from gateway.platforms.base import BasePlatformAdapter
+        from gateway.platforms.event import MessageEvent, MessageType
+
+        adapter.set_authorization_check(
+            lambda user, chat_type, _chat: user == "U_DM" and chat_type == "dm"
+        )
+        adapter._app.client.conversations_info = AsyncMock(
+            side_effect=AssertionError("/stop performed conversations.info")
+        )
+        adapter._app.client.users_info = AsyncMock(
+            side_effect=AssertionError("/stop performed users.info")
+        )
+        adapter._message_handler = AsyncMock()
+        adapter.handle_message = BasePlatformAdapter.handle_message.__get__(
+            adapter, type(adapter)
+        )
+        adapter._dispatch_inline_reply = AsyncMock(return_value=None)
+
+        source = adapter.build_source(
+            chat_id="G_DM",
+            chat_type="dm",
+            user_id="U_DM",
+            scope_id="T123",
+        )
+        seed = MessageEvent(text="working", message_type=MessageType.TEXT, source=source)
+        session_key = adapter._event_session_key(seed)
+        blocker = asyncio.Event()
+
+        async def running_work():
+            await blocker.wait()
+
+        task = asyncio.create_task(running_work())
+        await asyncio.sleep(0)
+        adapter._active_sessions[session_key] = asyncio.Event()
+        adapter._session_tasks[session_key] = task
+
+        await adapter._handle_slash_command({
+            "command": "/stop",
+            "text": "",
+            "user_id": "U_DM",
+            "channel_id": "G_DM",
+            "team_id": "T123",
+        })
+
+        assert task.done() and task.cancelled()
+        adapter._dispatch_inline_reply.assert_awaited_once()
+        dispatched = adapter._dispatch_inline_reply.await_args.args[0]
+        assert dispatched.source.chat_type == "dm"
+        adapter._app.client.conversations_info.assert_not_awaited()
+        adapter._app.client.users_info.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_native_slash_enforces_allowed_channels_before_enrichment(self, adapter):
+        adapter.config.extra["allowed_channels"] = ["C_ALLOWED"]
+        adapter.set_authorization_check(lambda _user, _type, _chat: True)
+        adapter._app.client.conversations_info = AsyncMock(
+            side_effect=AssertionError("excluded channel performed name enrichment")
+        )
+        adapter._app.client.users_info = AsyncMock(
+            side_effect=AssertionError("excluded channel performed user enrichment")
+        )
+
+        await adapter._handle_slash_command({
+            "command": "/hermes",
+            "text": "what broke?",
+            "user_id": "U123",
+            "channel_id": "C_BLOCKED",
+            "team_id": "T123",
+        })
+
+        adapter.handle_message.assert_not_awaited()
+        adapter._app.client.conversations_info.assert_not_awaited()
+        adapter._app.client.users_info.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_ambiguous_g_conversation_fails_closed(self, adapter):
+        adapter.set_authorization_check(lambda _user, _type, _chat: True)
+        adapter._app.client.conversations_info = AsyncMock(
+            return_value={"ok": True, "channel": {"id": "G_UNKNOWN", "name": "ambiguous"}}
+        )
+        adapter._app.client.users_info = AsyncMock(
+            side_effect=AssertionError("ambiguous conversation performed user enrichment")
+        )
+
+        await adapter._handle_slash_command({
+            "command": "/hermes",
+            "text": "hello",
+            "user_id": "U_OWNER",
+            "channel_id": "G_UNKNOWN",
+            "team_id": "T123",
+        })
+
+        adapter.handle_message.assert_not_awaited()
+        adapter._app.client.users_info.assert_not_awaited()
+        assert not await adapter._authorize_interaction_user(
+            "approval", "U_OWNER", "owner", "G_UNKNOWN", "T123"
+        )
+
+    @pytest.mark.asyncio
+    async def test_mpim_slash_and_interactions_share_dm_classification(self, adapter):
+        """G ids are classified, not prefix-guessed; private channels remain group policy."""
+        async def conversations_info(*, channel):
+            if channel == "G_DM":
+                return {"ok": True, "channel": {"id": channel, "is_mpim": True, "name": "mpdm"}}
+            if channel == "G_PRIVATE":
+                return {"ok": True, "channel": {"id": channel, "is_mpim": False, "name": "private"}}
+            raise AssertionError(channel)
+
+        adapter._app.client.conversations_info = AsyncMock(side_effect=conversations_info)
+        adapter.set_authorization_check(
+            lambda user, chat_type, _chat:
+                (user == "U_DM" and chat_type == "dm")
+                or (user == "U_GROUP" and chat_type == "group")
+        )
+
+        await adapter._handle_slash_command({
+            "command": "/hermes",
+            "text": "hello",
+            "user_id": "U_DM",
+            "channel_id": "G_DM",
+            "team_id": "T123",
+        })
+        slash = adapter.handle_message.await_args.args[0]
+        assert slash.source.chat_type == "dm"
+
+        assert await adapter._authorize_interaction_user(
+            "approval", "U_DM", "dm-user", "G_DM", "T123"
+        )
+        assert not await adapter._authorize_interaction_user(
+            "approval", "U_GROUP", "group-user", "G_DM", "T123"
+        )
+        assert await adapter._authorize_interaction_user(
+            "approval", "U_GROUP", "group-user", "G_PRIVATE", "T123"
+        )
+        assert not await adapter._authorize_interaction_user(
+            "approval", "U_DM", "dm-user", "G_PRIVATE", "T123"
+        )
+
+        adapter.config.extra["disable_dms"] = True
+        assert not await adapter._authorize_interaction_user(
+            "approval", "U_DM", "dm-user", "G_DM", "T123"
+        )
+        assert await adapter._authorize_interaction_user(
+            "approval", "U_GROUP", "group-user", "G_PRIVATE", "T123"
+        )
+
+    @pytest.mark.asyncio
+    async def test_message_slash_message_keep_same_prompt_pins(self, adapter):
+        """Consumer-boundary regression: the same Slack session stays A -> A -> A."""
+        from gateway.session import build_session_context, build_session_key
+
+        adapter.config.extra.update({
+            "channel_prompts": {"C123": "Answer in haiku."},
+            "channel_skill_bindings": [{"id": "C123", "skill": "triage"}],
+        })
+        adapter._bot_display_name = "HermesBot"
+        adapter._app.client.conversations_info = AsyncMock(
+            return_value={"ok": True, "channel": {"id": "C123", "name": "ops"}}
+        )
+        adapter.set_authorization_check(lambda _user, _type, _chat: True)
+
+        async def ordinary(ts):
+            return await adapter._build_message_event(
+                {"user": "U123", "channel": "C123"},
+                text="what broke?", original_text="what broke?",
+                command_probe_text="what broke?", is_command_text=False,
+                channel_id="C123", team_id="T123", ts=ts,
+                user_id="U123", thread_ts=None, is_dm=False,
+                media_urls=[], media_types=[], media_text_inlined=[],
+                channel_context=None,
+            )
+
+        first = await ordinary("171.001")
+        await adapter._handle_slash_command({
+            "command": "/hermes",
+            "text": "what broke?",
+            "user_id": "U123",
+            "channel_id": "C123",
+            "team_id": "T123",
+        })
+        middle = adapter.handle_message.await_args.args[0]
+        last = await ordinary("171.003")
+
+        runner = object.__new__(GatewayRunner)
+        runner._session_ephemeral_pin = {}
+        runner._session_vc_last = {}
+        runner._pending_turn_sidecar_notes = {}
+        runner._session_model_overrides = {}
+        runner._session_reasoning_overrides = {}
+        runner.adapters = {}
+        runner.session_store = MagicMock()
+        runner.config = GatewayConfig(platforms={Platform.SLACK: adapter.config})
+
+        context_pins = []
+        channel_pins = []
+        keys = []
+        for event in (first, middle, last):
+            key = build_session_key(event.source)
+            keys.append(key)
+            context = build_session_context(event.source, runner.config)
+            context_pins.append(
+                runner._pinned_session_context_prompt(context, False, key)
+            )
+            channel_prompt, _source = runner._pinned_channel_inputs(
+                key, event.channel_prompt, event.source, internal=False
+            )
+            channel_pins.append(channel_prompt)
+
+        assert len(set(keys)) == 1
+        assert context_pins[1] is context_pins[0]
+        assert context_pins[2] is context_pins[0]
+        assert channel_pins == [channel_pins[0]] * 3
+        assert channel_pins[0] and "Answer in haiku." in channel_pins[0]
+        assert [event.auto_skill for event in (first, middle, last)] == [
+            ["triage"], ["triage"], ["triage"]
+        ]
+        assert {
+            (event.source.chat_name, event.source.user_name)
+            for event in (first, middle, last)
+        } == {("ops", "Test User")}
+
 
 class TestSlackWorkspaceCollisionIsolation:
     @pytest.mark.asyncio

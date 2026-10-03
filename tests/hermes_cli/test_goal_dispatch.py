@@ -86,6 +86,75 @@ def test_surface_goal_state_matches_cli(surface, command, monkeypatch):
     assert snapshots[0] == snapshots[1]
 
 
+def test_gateway_goal_kickoff_preserves_auto_skill_but_continuation_does_not(monkeypatch):
+    """Only the first queued goal turn consumes the triggering channel skill binding."""
+    from gateway.config import Platform
+    from gateway.platforms.event import MessageEvent, MessageType
+    from gateway.session import SessionSource
+    from gateway.slash_commands_goals import GatewayGoalCommandsMixin
+
+    runner = object.__new__(GatewayGoalCommandsMixin)
+    queued = []
+    adapter = object()
+    runner._adapter_and_key_for = lambda _event: (adapter, "sk")
+    runner._enqueue_fifo = lambda key, turn, target: queued.append((key, turn, target))
+
+    event = MessageEvent(
+        text="/goal build it",
+        message_type=MessageType.COMMAND,
+        source=SessionSource(
+            platform=Platform.SLACK,
+            chat_id="C123",
+            chat_type="group",
+            user_id="U123",
+        ),
+        message_id="171.001",
+        channel_prompt="Answer in haiku.",
+        auto_skill=["triage"],
+    )
+
+    runner._enqueue_goal_turn(event, "kickoff", label="test", kickoff=True)
+    runner._enqueue_goal_turn(event, "continuation", label="test", kickoff=False)
+
+    kickoff = queued[0][1]
+    continuation = queued[1][1]
+    assert kickoff.channel_prompt == "Answer in haiku."
+    assert kickoff.auto_skill == ["triage"]
+    assert kickoff.message_id == "171.001"
+    assert continuation.channel_prompt is None
+    assert continuation.auto_skill is None
+    assert continuation.message_id is None
+
+    # Consumer boundary: the queued kickoff is the event _hmwa_prepare_turn feeds to the
+    # auto-skill loader on a fresh session. Exercise that real loader, not only the copied field.
+    monkeypatch.setattr(
+        "agent.skill_commands._load_skill_payload",
+        lambda name, task_id=None: (object(), "/tmp/triage", name),
+    )
+    monkeypatch.setattr(
+        "agent.skill_commands._build_skill_message",
+        lambda _skill, _skill_dir, _header: "[SKILL SENTINEL: triage]",
+    )
+    from gateway.run import GatewayRunner
+    consumer = object.__new__(GatewayRunner)
+    consumer._hmwa_auto_load_skills(
+        kickoff, kickoff.auto_skill, "quick-key", "session-key"
+    )
+    assert kickoff.text == "[SKILL SENTINEL: triage]\n\nkickoff"
+
+    # Direct free-form turn is the positive sibling through the same consumer.
+    direct = MessageEvent(
+        text="direct",
+        message_type=MessageType.TEXT,
+        source=event.source,
+        auto_skill=["triage"],
+    )
+    consumer._hmwa_auto_load_skills(
+        direct, direct.auto_skill, "quick-key", "session-key"
+    )
+    assert direct.text == "[SKILL SENTINEL: triage]\n\ndirect"
+
+
 @pytest.mark.parametrize('surface', ['cli', 'gateway', 'tui'])
 @pytest.mark.parametrize('draft_result', ['contract', 'unavailable', 'error'])
 def test_drafts_start_work_but_inspection_and_literal_prefixes_do_not_draft(

@@ -276,6 +276,9 @@ def admit_durable_turn_lease(
     def _on_wait(elapsed: float) -> None:
         nonlocal reload_needed, announced
         reload_needed = announced = True
+        # Waiting on another turn is expected progress for this turn. Keep the liveness
+        # watchdog from treating a long lease wait as an unstarted/stalled turn (#131129).
+        agent._touch_activity("waiting for session turn lease")
         agent._emit_status(
             "⏳ Another Hermes process is using this session; "
             "waiting for it to finish before starting your turn..."

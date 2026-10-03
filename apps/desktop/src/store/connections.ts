@@ -135,6 +135,17 @@ export function setConnectionsRegistry(registry: DesktopConnectionsRegistry): vo
   $connectionsRegistry.set(registry)
 }
 
+/** Remove renderer-only state for a connection that no longer exists. */
+export function forgetConnection(connectionId: string): void {
+  if (!$lastProfileByConnection.get()[connectionId]) {
+    return
+  }
+
+  const next = { ...$lastProfileByConnection.get() }
+  delete next[connectionId]
+  $lastProfileByConnection.set(next)
+}
+
 /** Refresh the renderer cache from Electron's local registry. No backend is contacted. */
 export async function refreshConnectionsRegistry(): Promise<DesktopConnectionsRegistry | null> {
   const bridge = window.hermesDesktop?.connections

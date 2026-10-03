@@ -52,6 +52,7 @@ def _make_adapter():
     adapter._held_inbound_events = []
     adapter._held_inbound_redispatch_task = None
     adapter.HELD_INBOUND_MAX = 64
+    adapter._background_tasks = set()
     return adapter
 
 
@@ -590,8 +591,6 @@ async def test_reply_batches_preserve_context_and_pending_delivery(
         )
         return
 
-    redispatch = adapter._held_inbound_redispatch_task
-    if redispatch is not None:
-        await redispatch
-    await asyncio.gather(*adapter._pending_text_batch_tasks.values())
+    assert adapter._held_inbound_redispatch_task is None  # boundary never uses the hold queue
+    await asyncio.gather(*adapter._background_tasks, *adapter._pending_text_batch_tasks.values())
     assert [call.args[0] for call in adapter.handle_message.await_args_list] == expected

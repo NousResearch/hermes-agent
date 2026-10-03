@@ -375,6 +375,21 @@ class TestJsonFields:
         result = redact_sensitive_text(text)
         assert result == text
 
+    def test_escaped_json_field_is_redacted(self):
+        """A tool result is often a JSON *string* (terminal_tool returns json.dumps(...)),
+        so an embedded body reaches the redactor as ``\\"access_token\\": \\"…\\"``. The keyed
+        value must mask even when every quote is backslash-escaped (regression: a Meta
+        Page token rode into a live subagent transcript in exactly this shape)."""
+        secret = "EAAAdz" + "Ab1Cd2Ef3Gh4Ij5Kl6Mn7Op8Qr9St0Uv1Wx2Yz3" * 5
+        text = '{"output": "{\\"access_token\\": \\"%s\\", \\"category\\": \\"x\\"}"}' % secret
+        result = redact_sensitive_text(text, force=True)
+        assert secret not in result
+        assert "access_token" in result, "key name stays; only the value masks"
+
+    def test_escaped_json_non_secret_unchanged(self):
+        text = '{"output": "{\\"name\\": \\"Morning Shepherd\\"}"}'
+        assert redact_sensitive_text(text, force=True) == text
+
 
 class TestPythonReprFields:
     @pytest.mark.parametrize(

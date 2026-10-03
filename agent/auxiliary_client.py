@@ -3451,7 +3451,8 @@ def _without_reasoning_fields(kwargs: dict) -> Optional[dict]:
 
 def _is_model_not_found_error(exc: Exception) -> bool:
     """"Requested model doesn't exist" (404 / invalid model) — typically a long-lived process pinned a
-    since-dropped model. Excludes billing keywords, which :func:`_is_payment_error` owns."""
+    since-dropped model, or a versioned SKU (`:free` previews) the catalog retired. Excludes billing
+    keywords, which :func:`_is_payment_error` owns."""
     status = getattr(exc, "status_code", None)
     err_lower = str(exc).lower()
     if _contains_any(err_lower, (
@@ -3466,6 +3467,13 @@ def _is_model_not_found_error(exc: Exception) -> bool:
         "is not a valid model", "no such model", "model not found",
         "the model `",            # OpenAI-style: "The model `X` does not exist"
         "model_not_found", "unknown model",
+        # MODEL-LEVEL RETIREMENT. A versioned SKU that leaves the catalog (`:free` previews are
+        # retired routinely) answers 404 with a model-scoped body — not the account-level credit
+        # wording :func:`_is_payment_error` owns. Left unclassified it is admitted to NO fallback
+        # reason, so a retired aux pin fails for days (title generation did in practice).
+        "no longer free", "is no longer free",           # Nous free-tier retirement
+        "has been retired", "model has been retired", "model is retired", "model retired",
+        "model has been discontinued", "model is no longer available", "model no longer available",
     ))
 
 
@@ -7480,7 +7488,12 @@ class _LadderStep(NamedTuple):
 # wins, so a payment-flavoured 429 reads as "payment error", not "rate limit".
 _FALLBACK_REASONS: Tuple[Tuple[Callable[[Exception], bool], str], ...] = (
     (_is_auth_error, "auth error"), (_is_payment_error, "payment error"),
-    (_is_rate_limit_error, "rate limit"), (_is_model_incompatible_error, "model incompatible with route"),
+    (_is_rate_limit_error, "rate limit"),
+    # A dead model id is a dead PIN, not a dead provider: the lane is still healthy, the request
+    # can be served elsewhere. Before this entry a retired/renamed model matched NO reason and
+    # the ladder returned before ever touching the configured chain.
+    (_is_model_not_found_error, "model not found"),
+    (_is_model_incompatible_error, "model incompatible with route"),
     (_is_invalid_aux_response_error, "invalid provider response"),
     # A status-less in-stream ``error`` event (SSE committed 200) is a route failure (#101538).
     (_is_statusless_structured_provider_error, "structured provider error"),
@@ -7766,8 +7779,8 @@ def _ladder_provider_fallback(first_err: Exception, route: _LadderRoute):
     chain, explicit: main-agent-model net). Returns the response or None.
     Capacity errors (payment/quota, connection, exhausted 429, model incompatible, malformed
     response) bypass the explicit-provider gate — the provider cannot serve this request
-    regardless of user intent. Auth errors from an explicit provider may only use the task's
-    own configured fallback_chain; they never imply an unconfigured provider hop."""
+    regardless of user intent. Auth and model-not-found errors from an explicit provider may only use
+    the task's own configured fallback_chain; they never imply an unconfigured provider hop."""
     task, tag, resolved_provider = route.task, route.tag, route.resolved_provider
     # Respect explicit provider choice for transient errors (auth, request validation, etc.) but allow
     # fallback when the provider clearly cannot serve the request due to capacity: payment/quota exhaustion
@@ -7777,14 +7790,20 @@ def _ladder_provider_fallback(first_err: Exception, route: _LadderRoute):
     # #52228. See #26803: daily token quota must fall back like a 402 credit error.
     is_auto = resolved_provider in {"auto", "", None}
     reason = next((label for predicate, label in _FALLBACK_REASONS if predicate(first_err)), None)
+    # ``model not found`` keeps the explicit-provider rule (like auth): a dead MODEL ID says
+    # nothing about the provider's other models, so a pinned task may only use its own configured
+    # chain — never an unasked hop to a different provider or to the main agent model (a retired
+    # free SKU must not silently re-route the task elsewhere, and ``payment error`` semantics would
+    # wrongly quarantine the whole provider for every aux task).
     is_capacity_error = any(
-        predicate(first_err) for predicate, label in _FALLBACK_REASONS if label != "auth error")
+        predicate(first_err) for predicate, label in _FALLBACK_REASONS
+        if label not in ("auth error", "model not found"))
     task_chain = _get_auxiliary_task_config(task).get("fallback_chain") if task else None
     has_task_fallback_chain = isinstance(task_chain, list) and bool(task_chain)
-    explicit_auth_with_task_chain = (
-        reason == "auth error" and not is_auto and has_task_fallback_chain
+    explicit_pin_with_task_chain = (
+        reason in ("auth error", "model not found") and not is_auto and has_task_fallback_chain
     )
-    if reason is None or not (is_auto or is_capacity_error or explicit_auth_with_task_chain):
+    if reason is None or not (is_auto or is_capacity_error or explicit_pin_with_task_chain):
         return None
     if reason == "payment error":
         # Mark the concrete backend (not the "auto" label) unhealthy so later aux calls skip
@@ -7823,7 +7842,7 @@ def _ladder_provider_fallback(first_err: Exception, route: _LadderRoute):
             fb_client, fb_model, fb_label = _try_payment_fallback(
                 resolved_provider, task, reason=reason, failed_base_url=route.base_info,
                 failure_scope=_chain_failure_scope, main_runtime=route.main_runtime)
-    elif fb_client is None and not explicit_auth_with_task_chain:
+    elif fb_client is None and not explicit_pin_with_task_chain:
         fb_client, fb_model, fb_label = _try_main_agent_model_fallback(
             resolved_provider, task, reason=reason, failed_model=_chain_failed_model,
             failed_base_url=route.base_info, failure_scope=_chain_failure_scope)
@@ -7844,7 +7863,7 @@ def _ladder_provider_fallback(first_err: Exception, route: _LadderRoute):
             return fb_resp
         fb_client, fb_model, fb_label = _next_fallback_after_quarantine(
             task, resolved_provider, is_auto, route, _chain_failed_model, _chain_failure_scope,
-            task_chain_only=explicit_auth_with_task_chain)
+            task_chain_only=explicit_pin_with_task_chain)
     # All fallback layers exhausted — one user-visible warning, then re-raise.
     logger.warning("Auxiliary %s%s: %s on %s and all fallbacks exhausted "
                    # All fallback layers exhausted — emit a single user-visible warning so the operator

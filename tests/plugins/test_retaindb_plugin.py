@@ -137,8 +137,10 @@ class TestWriteQueue:
         conn.close()
         assert rows == 0
 
-    def test_crash_recovery_replays_pending(self, tmp_path):
+    def test_crash_recovery_replays_pending(self, tmp_path, monkeypatch):
         """Simulate crash: create rows, then new queue should replay them."""
+        from plugins.memory import retaindb
+        monkeypatch.setattr(retaindb, "_RETRY_STEP", 0.0)  # the failed row's backoff has elapsed by the restart
         db_path = tmp_path / "recovery_test.db"
         # First: create a queue and insert rows, but don't let them flush
         client1 = MagicMock()
@@ -172,6 +174,72 @@ class TestWriteQueue:
         client2.ingest_session.assert_called_once()
         call_args = client2.ingest_session.call_args
         assert call_args[0][0] == "user1"  # user_id
+
+    @staticmethod
+    def _pending_count(db_path):
+        conn = sqlite3.connect(str(db_path))
+        try:
+            return conn.execute("SELECT COUNT(*) FROM pending").fetchone()[0]
+        finally:
+            conn.close()
+
+    def test_live_writer_retries_failures_and_drains_backlog(self, tmp_path, monkeypatch):
+        """Every pending row reaches RetainDB while the writer lives: a failed ingest is retried and
+        a backlog longer than one replay batch drains, with no process restart."""
+        from plugins.memory import retaindb
+        monkeypatch.setattr(retaindb, "_RETRY_STEP", 0.0, raising=False)
+        monkeypatch.setattr(retaindb, "_RESCAN_INTERVAL", 0.05, raising=False)
+        db_path = tmp_path / "backlog.db"
+        _WriteQueue(MagicMock(), db_path).shutdown()
+        conn = sqlite3.connect(str(db_path))
+        conn.executemany("INSERT INTO pending (user_id, session_id, messages_json, created_at) VALUES (?,?,?,?)",
+                         [("u", "s", json.dumps([{"role": "user", "content": f"turn {i}"}]), "t") for i in range(201)])
+        conn.commit()
+        conn.close()
+        ingested, calls = set(), []
+
+        def ingest(user_id, session_id, messages):
+            calls.append(1)
+            if len(calls) == 1:
+                raise RuntimeError("503 temporarily unavailable")
+            ingested.add(messages[0]["content"])
+
+        q = _WriteQueue(MagicMock(ingest_session=ingest), db_path)
+        deadline = time.time() + 5.0
+        while time.time() < deadline and self._pending_count(db_path):
+            time.sleep(0.05)
+        q.shutdown()
+        assert self._pending_count(db_path) == 0
+        assert ingested == {f"turn {i}" for i in range(201)}
+
+    def test_writers_sharing_a_queue_file_ingest_each_row_once(self, tmp_path, monkeypatch):
+        """Two writers on one queue file (two gateway sessions of a profile, or CLI + gateway): the second
+        one's replay must not resend the row the first is sending, nor the first resend what the second sent."""
+        import threading
+        from plugins.memory import retaindb
+        monkeypatch.setattr(retaindb, "_RESCAN_INTERVAL", 0.05, raising=False)
+        db_path = tmp_path / "shared.db"
+        started, release, sent = threading.Event(), threading.Event(), []
+
+        def slow_ingest(user_id, session_id, messages):
+            started.set()
+            release.wait(5.0)
+            sent.append(messages[0]["content"])
+
+        first = _WriteQueue(MagicMock(ingest_session=slow_ingest), db_path)
+        first.enqueue("u", "s1", [{"role": "user", "content": "turn one"}])
+        assert started.wait(5.0)
+        first.enqueue("u", "s1", [{"role": "user", "content": "turn two"}])  # waits behind turn one
+        second = _WriteQueue(MagicMock(ingest_session=lambda u, s, m: sent.append(m[0]["content"])), db_path)
+        deadline = time.time() + 5.0
+        while time.time() < deadline and "turn two" not in sent:
+            time.sleep(0.05)
+        time.sleep(0.2)  # several more rescans by the second writer
+        release.set()
+        first.shutdown()
+        second.shutdown()
+        assert sorted(sent) == ["turn one", "turn two"]
+        assert self._pending_count(db_path) == 0
 
 # ===========================================================================
 # _build_overlay tests

@@ -31,6 +31,9 @@ logger = logging.getLogger(__name__)
 
 _DEFAULT_BASE_URL = "https://api.retaindb.com"
 _ASYNC_SHUTDOWN = object()
+# Write queue timing (seconds). The claim lease outlives an ingest request so a live writer's
+# in-flight row is never re-claimed; failed rows back off linearly up to the cap.
+_CLAIM_LEASE, _RETRY_STEP, _RETRY_MAX, _RESCAN_INTERVAL = 120.0, 30.0, 900.0, 30.0
 _TEXT_EXTS = (".txt", ".md", ".json", ".csv", ".yaml", ".yml", ".xml", ".html")
 
 
@@ -182,7 +185,10 @@ class _Client:
 
 
 class _WriteQueue:
-    """SQLite-backed async write queue. Survives crashes — pending rows replay on startup."""
+    """SQLite-backed async write queue. A row stays in SQLite until ingested: failed rows retry with
+    backoff, and rows left by a crash, an evicted sibling or a past backlog are picked up by the
+    writer's rescan. Every writer on the file (one per gateway session, plus other processes of the
+    profile) claims a row before sending it, so a row is never ingested twice."""
 
     def __init__(self, client: _Client, db_path: Path):
         self._client, self._db_path, self._q = client, db_path, queue.Queue()
@@ -192,11 +198,15 @@ class _WriteQueue:
         self._connections: set[sqlite3.Connection] = set()
         self._connections_lock, self._shutdown_lock, self._shutdown = threading.Lock(), threading.Lock(), False
         conn = self._execute("CREATE TABLE IF NOT EXISTS pending (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id TEXT, "
-                             "session_id TEXT, messages_json TEXT, created_at TEXT, last_error TEXT)").connection
+                             "session_id TEXT, messages_json TEXT, created_at TEXT, last_error TEXT, "
+                             "attempts INTEGER NOT NULL DEFAULT 0, claimed_until REAL NOT NULL DEFAULT 0)").connection
+        columns = {row["name"] for row in conn.execute("PRAGMA table_info(pending)")}
+        for column in ("attempts INTEGER NOT NULL DEFAULT 0", "claimed_until REAL NOT NULL DEFAULT 0"):
+            if column.split()[0] not in columns:  # queue file from an older version
+                with suppress(sqlite3.OperationalError):  # a sibling writer migrated it first
+                    self._execute(f"ALTER TABLE pending ADD COLUMN {column}")
+        self._queue_due_rows()  # before the writer starts, so its idle rescan cannot queue the same rows again
         self._thread.start()
-        replay = conn.execute("SELECT id, user_id, session_id, messages_json FROM pending ORDER BY id ASC LIMIT 200").fetchall()
-        for row_id, user_id, session_id, msgs_json in replay:  # rows left from a previous crash
-            self._q.put((row_id, user_id, session_id, json.loads(msgs_json)))
 
     def _get_conn(self) -> sqlite3.Connection:
         conn = getattr(self._local, "conn", None)
@@ -232,18 +242,51 @@ class _WriteQueue:
                                 (user_id, session_id, json.dumps(messages, ensure_ascii=False), now))
             self._q.put((cur.lastrowid, user_id, session_id, messages))
 
+    def _queue_due_rows(self, *, untried_only: bool = False) -> int:
+        due = self._get_conn().execute("SELECT id, user_id, session_id, messages_json FROM pending WHERE claimed_until <= ?"
+                                       + (" AND attempts = 0" if untried_only else "") + " ORDER BY id ASC LIMIT 200",
+                                       (time.time(),)).fetchall()
+        for row_id, user_id, session_id, msgs_json in due:
+            self._q.put((row_id, user_id, session_id, json.loads(msgs_json)))
+        return len(due)
+
     def _flush_row(self, row_id: int, user_id: str, session_id: str, messages: list) -> None:
+        now = time.time()
+        if not self._execute("UPDATE pending SET claimed_until = ? WHERE id = ? AND claimed_until <= ?",
+                             (now + _CLAIM_LEASE, row_id, now)).rowcount:
+            return  # already ingested, in flight on another writer, or backing off
         try:
             self._client.ingest_session(user_id, session_id, messages)
             self._execute("DELETE FROM pending WHERE id = ?", (row_id,))
         except Exception as exc:
             logger.warning("RetainDB ingest failed (will retry): %s", exc)
-            self._execute("UPDATE pending SET last_error = ? WHERE id = ?", (str(exc), row_id))
+            self._execute("UPDATE pending SET last_error = ?, attempts = attempts + 1, claimed_until = ? + MIN(?, ? * (attempts + 1)) "
+                          "WHERE id = ?", (str(exc), time.time(), _RETRY_MAX, _RETRY_STEP, row_id))
             time.sleep(2)
 
     def _loop(self) -> None:
+        drained = False
         try:
-            while (item := self._q.get()) is not _ASYNC_SHUTDOWN:
+            while True:
+                try:
+                    if self._q.empty():  # rescan only when idle, so queued rows are not queued again
+                        self._queue_due_rows()
+                    item = self._q.get(timeout=_RESCAN_INTERVAL)
+                except queue.Empty:
+                    continue
+                except Exception as exc:
+                    logger.error("RetainDB writer rescan error: %s", exc)
+                    time.sleep(2)
+                    continue
+                if item is _ASYNC_SHUTDOWN:
+                    # One pass over the untried backlog, each row one attempt: an outage cannot stall exit, and a
+                    # row whose claim cannot be written (read-only file) cannot keep the drain spinning. The rest
+                    # stays in SQLite for the next writer.
+                    if not drained and _quiet("shutdown drain", lambda: self._queue_due_rows(untried_only=True)):
+                        drained = True
+                        self._q.put(_ASYNC_SHUTDOWN)
+                        continue
+                    break
                 try:
                     self._flush_row(*item)
                 except Exception as exc:

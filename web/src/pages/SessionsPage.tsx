@@ -102,7 +102,6 @@ const SOURCE_CONFIG: Record<string, { icon: typeof Terminal; color: string }> =
 const AUTOMATION_SESSION_SOURCES = [
   "cron",
   "tool",
-  "oneshot",
   "api_server",
   "acp",
   "hermes_flow",

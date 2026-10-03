@@ -56,20 +56,21 @@ _LIKE_COALESCED_COLUMN_SQL = (
 # ``sort`` -> ORDER BY for the FTS routes; unknown values are rank-only (user input passes through).
 _FTS_ORDER_BY = {"newest": "ORDER BY m.timestamp DESC, rank", "oldest": "ORDER BY m.timestamp ASC, rank"}
 # Indexed neighbor seeks avoid scanning whole sessions for a sparse set of hits.
+# Follow transcript insertion order: wall clocks can regress between messages.
 _CONTEXT_WINDOW_SQL = """WITH target AS (
-    SELECT session_id, timestamp, id FROM messages WHERE id IN ({ids})
+    SELECT session_id, id FROM messages WHERE id IN ({ids})
 )
 SELECT t.id AS match_id, m.role, m.content
 FROM target t JOIN messages m ON m.id IN (
     t.id,
     (SELECT p.id FROM messages p
-     WHERE p.session_id = t.session_id AND (p.timestamp, p.id) < (t.timestamp, t.id)
-     ORDER BY p.timestamp DESC, p.id DESC LIMIT 1),
+     WHERE p.session_id = t.session_id AND p.id < t.id
+     ORDER BY p.id DESC LIMIT 1),
     (SELECT n.id FROM messages n
-     WHERE n.session_id = t.session_id AND (n.timestamp, n.id) > (t.timestamp, t.id)
-     ORDER BY n.timestamp, n.id LIMIT 1)
+     WHERE n.session_id = t.session_id AND n.id > t.id
+     ORDER BY n.id LIMIT 1)
 )
-ORDER BY t.id, m.timestamp, m.id"""
+ORDER BY t.id, m.id"""
 # Unified Ideographs, Extension A, Extension B, CJK Symbols, Hiragana, Katakana, Hangul Syllables.
 _CJK_RANGES = (
     (0x4E00, 0x9FFF), (0x3400, 0x4DBF), (0x20000, 0x2A6DF), (0x3000, 0x303F), (0x3040, 0x309F),

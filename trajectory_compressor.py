@@ -656,15 +656,6 @@ Write only the summary, starting with "[CONTEXT SUMMARY]:" prefix."""
                             if outcome is not None: output.write(json.dumps(outcome[0], ensure_ascii=False) + "\n")
             progress.remove_task(run.status_task)
 
-        console.print("\n[dim]Writing output files...[/dim]")
-        output_dir.mkdir(parents=True, exist_ok=True)
-        results = {f: [] for f in jsonl_files}
-        for (file_path, _, _), outcome in zip(all_entries, outcomes):
-            if outcome is not None:
-                results[file_path].append(outcome[0])
-        for file_path in jsonl_files:
-            _write_jsonl(output_dir / file_path.name, results[file_path])
-
         self.aggregate_metrics.processing_end_time = datetime.now().isoformat()
         self.aggregate_metrics.processing_duration_seconds = time.time() - start_time
         self._print_summary()

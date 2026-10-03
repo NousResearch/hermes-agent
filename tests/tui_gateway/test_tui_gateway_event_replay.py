@@ -269,3 +269,30 @@ def test_truncation_detection_semantics():
     assert event_replay.is_truncated("s1", 5)
     # Unknown session: nothing evicted, nothing truncated.
     assert not event_replay.is_truncated("nope", 0)
+
+
+def test_evicted_live_session_keeps_its_seq_and_reports_the_gap():
+    """A live session whose ring was evicted continues its numbering, and a reconnecting
+    client that missed frames is told to refetch instead of getting an empty replay."""
+    for _ in range(3):
+        event_replay._stamp_event(_frame("main"))
+    client_watermark = 2  # the socket dropped before seq 3 arrived
+    for i in range(event_replay._REPLAY_SESSIONS_MAX):
+        event_replay._stamp_event(_frame(f"other-{i}"))
+    event_replay._stamp_event(_frame("main", "message.complete"))
+
+    assert latest_seq("main") == 4
+    assert [event["seq"] for event in events_since("main", client_watermark)] == [4]
+    assert event_replay.is_truncated("main", client_watermark)
+    assert not event_replay.is_truncated("main", 3)
+
+
+def test_session_eviction_spares_the_recently_active_session():
+    event_replay._stamp_event(_frame("main"))
+    for i in range(event_replay._REPLAY_SESSIONS_MAX - 1):
+        event_replay._stamp_event(_frame(f"idle-{i}"))
+    event_replay._stamp_event(_frame("main"))  # the oldest session is the active one
+    event_replay._stamp_event(_frame("new"))  # one over the cap
+
+    assert [event["seq"] for event in events_since("main", 0)] == [1, 2]
+    assert events_since("idle-0", 0) == []

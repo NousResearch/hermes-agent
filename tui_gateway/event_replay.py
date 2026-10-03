@@ -6,10 +6,10 @@ with its last seen seq and gets everything newer. Invariants: stdio TUI unaffect
 event frames; Ink ignores unknown keys); one lock guards counters + buffers, and write_json already
 serializes per-transport writes so stamping cannot reorder frames; memory bound =
 _REPLAY_BUFFER_MAX events AND _REPLAY_BUFFER_BYTES_MAX serialized bytes per session,
-_REPLAY_PROCESS_BYTES_MAX bytes across at most _REPLAY_SESSIONS_MAX sessions, oldest evicted
-FIFO (their seq/truncation counters are retained so a revisited session stays monotonic within
-the epoch, #100122). Evicted or never-retained (oversized) frames leave a truncation watermark so a
-reconnecting client refetches instead of trusting a replay with holes.
+_REPLAY_PROCESS_BYTES_MAX bytes across at most _REPLAY_SESSIONS_MAX sessions, the least recently
+active evicted first (their seq/truncation counters are retained so a revisited session stays
+monotonic within the epoch, #100122). Evicted or never-retained (oversized) frames leave a
+truncation watermark so a reconnecting client refetches instead of trusting a replay with holes.
 """
 
 from __future__ import annotations
@@ -73,9 +73,9 @@ def _stamp_event(obj: dict) -> None:
             buf = _replay_buffers[sid] = deque()
             _replay_buffer_bytes[sid] = 0
             while len(_replay_buffers) > _REPLAY_SESSIONS_MAX:
-                oldest_sid, _oldest_buf = _replay_buffers.popitem(last=False)
-                _replay_total_bytes -= _replay_buffer_bytes.pop(oldest_sid, 0)
-                # FIFO eviction drops the ring, not the session's seq numbering
+                idle_sid, _idle_buf = _replay_buffers.popitem(last=False)
+                _replay_total_bytes -= _replay_buffer_bytes.pop(idle_sid, 0)
+                # Eviction drops the ring, not the session's seq numbering
                 # (#100122). Keep the counter so a revisited session continues
                 # from its high seq instead of restarting at 1 under clients'
                 # still-held watermarks (a reset seq is invisible to
@@ -86,8 +86,10 @@ def _stamp_event(obj: dict) -> None:
                 # history instead of trusting the new tail. Both counters are
                 # one int per session id seen this process (bounded by distinct
                 # sessions, not by traffic).
-                _replay_evicted_through[oldest_sid] = max(
-                    _replay_evicted_through.get(oldest_sid, 0), _replay_next_seq.get(oldest_sid, 0))
+                _replay_evicted_through[idle_sid] = max(
+                    _replay_evicted_through.get(idle_sid, 0), _replay_next_seq.get(idle_sid, 0))
+        else:
+            _replay_buffers.move_to_end(sid)
         if size > _REPLAY_BUFFER_BYTES_MAX or size > _REPLAY_PROCESS_BYTES_MAX:
             _replay_evicted_through[sid] = seq
             return

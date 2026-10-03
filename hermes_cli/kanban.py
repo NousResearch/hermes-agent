@@ -96,17 +96,21 @@ def _parse_branch_flag(value: Optional[str]) -> Optional[str]:
     return branch
 
 
-def _check_dispatcher_presence(hermes_home: Optional[Path] = None) -> tuple[bool, str]:
+def _check_dispatcher_presence(hermes_home: Optional[Path] = None, status: str = "ready") -> tuple[bool, str]:
     """``(running, message)`` for the "will anything dispatch this?" warning: True when a gateway is
     alive for this HERMES_HOME with ``kanban.dispatch_in_gateway`` on, else False + human guidance.
     Fails OPEN (probe/config errors -> ``(True, "")``) — a missed warning beats crying wolf.
     ``hermes_home`` scopes the probe to a profile dir (dashboard backend); CLI callers pass None.
+    ``status`` is the waiting task's column: ``triage`` only moves on its own through the gateway
+    dispatcher's auto-decompose step, which the dispatch nudge and the standalone daemon never run.
 
     The dashboard plugin API passes it because the dashboard backend process can be running under a
     different HERMES_HOME than the profile the request targets, which otherwise produced a "no gateway is
     running" warning against a perfectly healthy profile gateway (#71211). CLI callers leave it ``None`` and
     keep the existing process-level behavior.
     """
+    if status == "triage" and not _kanban_config().get("auto_decompose", True):
+        return (True, "")  # triage waits for a manual specify/decompose by design
     try:
         from gateway.status import resolve_gateway_liveness  # type: ignore
 
@@ -121,16 +125,18 @@ def _check_dispatcher_presence(hermes_home: Optional[Path] = None) -> tuple[bool
     # Even if the gateway is up, dispatch_in_gateway may be off (can't tell -> assume default).
     if pid and bool(_kanban_config().get("dispatch_in_gateway", True)):
         return (True, f"gateway pid={pid}, dispatch enabled")
+    manual = ("decompose it by hand (`hermes kanban decompose <id>` or the card's Decompose button)"
+              if status == "triage" else "run the legacy standalone daemon (`hermes kanban daemon --force`)")
     if pid:
         return (False, "Gateway is running but kanban.dispatch_in_gateway=false in "
-                "config.yaml — the task will sit in 'ready' until you flip it "
-                "back on and restart the gateway, OR run the legacy "
-                "standalone daemon (`hermes kanban daemon --force`).")
-    return (False, "No gateway is running — the task will sit in 'ready' until you "
+                f"config.yaml — the task will sit in '{status}' until you flip it "
+                f"back on and restart the gateway, OR {manual}.")
+    return (False, f"No gateway is running — the task will sit in '{status}' until you "
             "start it. Run:\n    hermes gateway start\n"
             "The gateway hosts an embedded dispatcher (tick interval 60s by "
             "default); your task will be picked up on the next tick after "
-            "the gateway comes up.")
+            "the gateway comes up."
+            + (f" Without a gateway, {manual}." if status == "triage" else ""))
 
 
 # --- Command dispatch ---
@@ -382,10 +388,11 @@ def _cmd_create(args: argparse.Namespace) -> int:
         _print_json(_task_to_dict(task))
     else:
         print(f"Created {task_id}  ({task.status}, assignee={task.assignee or '-'})")
-        # Warn only for ready+assigned tasks that would sit without a dispatcher (triage/todo idle
-        # by design, unassigned can't dispatch); skipped under --json so stdout stays parseable.
-        if task.status == "ready" and task.assignee:
-            running, message = _check_dispatcher_presence()
+        # Warn for tasks only the gateway dispatcher moves: ready+assigned (spawn) and triage
+        # (auto-decompose). todo waits on parents, unassigned can't dispatch; skipped under --json
+        # so stdout stays parseable.
+        if (task.status == "ready" and task.assignee) or task.status == "triage":
+            running, message = _check_dispatcher_presence(status=task.status)
             if not running and message:
                 print(f"\n⚠  {message}", file=sys.stderr)
     return 0

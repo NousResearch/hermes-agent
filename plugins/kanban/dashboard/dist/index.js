@@ -1320,7 +1320,11 @@
           search, setSearch,
           onNudgeDispatch: function () {
             SDK.fetchJSON(withBoard(`${API}/dispatch?max=8`, board), { method: "POST" })
-              .then(loadBoard)
+              .then(function (res) {
+                // Triage tasks need the gateway's auto-decomposer; say so when it is absent.
+                if (res && res.warning) setError(res.warning);
+                loadBoard();
+              })
               .catch(function (e) { setError(String(e.message || e)); });
           },
           onRefresh: loadBoard,

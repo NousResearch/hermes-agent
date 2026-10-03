@@ -1171,3 +1171,30 @@ def test_board_card_exposes_current_run_start(client):
     # The detail endpoint carries the same contract.
     detail = client.get(f"/api/plugins/kanban/tasks/{t}").json()["task"]
     assert detail["current_run_started_at"] == retry_start
+
+
+# ---------------------------------------------------------------------------
+# Triage tasks without a gateway dispatcher (regression for #90277)
+# ---------------------------------------------------------------------------
+
+def test_triage_without_gateway_warns_on_create_and_nudge(client):
+    """Regression for #90277: only the gateway dispatcher auto-decomposes triage tasks, so with
+    no gateway both creating a triage card and pressing "Nudge dispatcher" must say why the card
+    will not move instead of silently doing nothing."""
+    created = client.post("/api/plugins/kanban/tasks", json={"title": "idea", "triage": True}).json()
+    assert created["task"]["status"] == "triage"
+    assert "triage" in created.get("warning", "")
+
+    nudge = client.post("/api/plugins/kanban/dispatch")
+    assert nudge.status_code == 200, nudge.text
+    assert "triage" in nudge.json().get("warning", "")
+
+
+def test_nudge_does_not_warn_when_triage_is_manual(client, kanban_home):
+    """With ``kanban.auto_decompose`` off, triage waits for a human by design: no warning."""
+    (kanban_home / "config.yaml").write_text("kanban:\n  auto_decompose: false\n", encoding="utf-8")
+    client.post("/api/plugins/kanban/tasks", json={"title": "idea", "triage": True})
+
+    nudge = client.post("/api/plugins/kanban/dispatch")
+    assert nudge.status_code == 200, nudge.text
+    assert "warning" not in nudge.json()

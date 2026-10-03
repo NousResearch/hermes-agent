@@ -494,6 +494,56 @@ def _approval_key_aliases(pattern_key: str) -> set[str]:
 
 
 # ---- Detection ----------------------------------------------------------------------------
+_ANSI_C_QUOTED_RE = re.compile(r"\$'([^']*)'")
+_ANSI_C_SIMPLE_ESCAPES = {
+    "a": "\a", "b": "\b", "e": "\x1b", "f": "\f", "n": "\n", "r": "\r", "t": "\t", "v": "\v",
+    "\\": "\\", "'": "'", '"': '"', "?": "?",
+}
+_ANSI_C_HEX_TAIL_RE = re.compile(r"[0-9a-fA-F]{1,2}")
+_ANSI_C_OCTAL_TAIL_RE = re.compile(r"[0-7]{1,3}")
+
+
+def _decode_ansi_c_body(body: str) -> str:
+    """Decode the escapes bash recognizes inside ``$'...`` (non-executing): \\xNN hex, \\NNN
+    octal, and the simple control-char set. Unknown escapes keep their backslash, as bash does."""
+    out: list[str] = []
+    i = 0
+    while i < len(body):
+        ch = body[i]
+        if ch != "\\" or i + 1 >= len(body):
+            out.append(ch)
+            i += 1
+            continue
+        nxt = body[i + 1]
+        if nxt == "x":
+            m = _ANSI_C_HEX_TAIL_RE.match(body, i + 2)
+            if m:
+                out.append(chr(int(m.group(0), 16)))
+                i = m.end()
+                continue
+        elif nxt in "01234567":
+            m = _ANSI_C_OCTAL_TAIL_RE.match(body, i + 1)
+            if m:
+                out.append(chr(int(m.group(0), 8)))
+                i = m.end()
+                continue
+        elif nxt in _ANSI_C_SIMPLE_ESCAPES:
+            out.append(_ANSI_C_SIMPLE_ESCAPES[nxt])
+            i += 2
+            continue
+        out.append(ch)
+        i += 1
+    return "".join(out)
+
+
+def _decode_ansi_c_quoting(command: str) -> str:
+    if "$'" not in command:
+        return command
+    return _ANSI_C_QUOTED_RE.sub(
+        lambda m: "'" + _decode_ansi_c_body(m.group(1)) + "'", command
+    )
+
+
 def _normalize_command_for_detection(command: str) -> str:
     """Normalize a command before pattern matching so ANSI escapes, null bytes, Unicode fullwidth
     forms, and shell splicing tricks cannot bypass detection."""
@@ -509,6 +559,12 @@ def _normalize_command_for_detection(command: str) -> str:
     # first: on Windows it nests under the user home, and folding the user home first would eat the prefix it needs.
     command = _rewrite_resolved_hermes_home(command)
     command = _rewrite_resolved_user_home(command)
+    # Decode ANSI-C quoting ($'\x72\x6d' spells `rm`) to the plain single-quoted spelling of
+    # the same word BEFORE the generic escape strip, which would otherwise eat the marker and
+    # leave `x72x6d` — garbage no pattern can match. Keeping the single-quote wrappers hands
+    # the decoded word to the existing command-position deobfuscator, so quoted-data masking
+    # semantics are identical to a plain '...' word (#132191).
+    command = _decode_ansi_c_quoting(command)
     # Strip backslash-escapes (r\m -> rm) and empty-string literals (r''m -> rm).
     command = re.sub(r'\\([^\n])', r'\1', command)
     command = re.sub(r"''|\"\"", '', command)
@@ -1126,9 +1182,24 @@ def _strip_shell_word_syntax(word: str) -> str:
     )
 
 
+# A brace word in COMMAND position expands to its comma-separated alternatives as separate
+# words: `{rm,-rf,/}` runs as `rm -rf /`. Scoped to the command-position deobfuscator so an
+# argument-position brace (`find / -{delete,print}`, `echo x{a,b}`) keeps its literal shape and
+# the dynamic-word rules keying on it still trigger. The element charset is deliberately
+# conservative (no quotes/$/whitespace/nesting): quoted data and parameter expansions are never
+# re-split. See #132191.
+_BRACE_ALTERNATION_RE = re.compile(
+    r"\{([A-Za-z0-9_./:%@+=^-]+(?:,[A-Za-z0-9_./:%@+=^-]+)+)\}")
+
+
 def _deobfuscate_shell_word_for_detection(word: str) -> str:
     """Approximate how shell syntax can spell a command word: collapses quoting/escaping plus
     simple literal command substitutions in the word itself. Intentionally narrow and non-executing."""
+    brace = _BRACE_ALTERNATION_RE.fullmatch(word)
+    if brace:
+        # The expansion is several words, not one; return it as-is — every caller feeds it to
+        # basename-style checks or splices it back into the full command as a detection variant.
+        return brace.group(1).replace(",", " ")
     for _ in range(2):
         previous = word
         word = _strip_shell_word_syntax(_replace_simple_shell_expansions(word))

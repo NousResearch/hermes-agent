@@ -221,7 +221,7 @@ class PlatformRegistry:
             if event is None and name not in entries and self._loading.get():
                 from hermes_cli.plugins_loader import in_plugin_load_worker
                 if in_plugin_load_worker():
-                    return  # nested walk on a deadline worker: the outer walk resolves siblings
+                    return  # on a deadline worker: never block on a sibling load the parent may hold the lock for; caller sees it unloaded
             if event is None and name not in entries:
                 loader = deferred.pop(name, None)
             if event is None and loader is None and name not in entries:

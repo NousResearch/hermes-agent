@@ -292,3 +292,136 @@ def resolve_allowlist(
         else:
             units.add(unit)
     return tuple(sorted(units))
+
+
+def resolve_home_root(home: str) -> str | None:
+    """The real path of *home* when a layout can be built over it, else None with one warning.
+
+    bwrap resolves a mount destination inside the sandbox root, and newer
+    releases refuse a destination that is a symlink, so the layout works on
+    the real path only. A HOME of ``/`` or one that is not a directory gets
+    no layout: the caller keeps its plain overlays for the denied paths.
+    """
+    real = os.path.realpath(os.path.abspath(os.path.expanduser(home))) if home else ""
+    if not real or real == os.sep or not os.path.isdir(real):
+        logger.warning(
+            "bubblewrap: HOME (%r) is not a usable directory, so dot entries under it are not hidden by default",
+            home,
+        )
+        return None
+    return real
+
+
+def _entry_args(path: str, flag: str, visible: list[str], link_targets: list[str] | None = None) -> list[str]:
+    """Mount directive that shows the host entry at *path*, or a symlink made again.
+
+    A symlink is never bound through: bwrap would follow it and mount its
+    target, which can be a hidden directory. Made again as a link, it
+    resolves inside the sandbox, where a hidden target does not exist.
+    The real target is noted in *link_targets* when the caller wants it
+    kept read-only.
+    """
+    if os.path.islink(path):
+        if link_targets is not None:
+            link_targets.append(os.path.realpath(path))
+        return ["--symlink", os.readlink(path), path]
+    visible.append(path)
+    return [flag, path, path]
+
+
+def home_layout_args(
+    home: str | None,
+    allowlist: tuple[str, ...] | list[str],
+    hidden_paths: tuple[str, ...] | list[str],
+    *,
+    empty_file: str,
+    writable_roots: tuple[str, ...] | list[str] = (),
+    listing: tuple[str, ...] | list[str] | None = None,
+    binds: tuple[tuple[str, str, str], ...] | list[tuple[str, str, str]] = (),
+    late_args: list[str] | tuple[str, ...] = (),
+) -> list[str]:
+    """Mount directives that make *home* default-deny for dot entries.
+
+    *home* is the result of resolve_home_root; None gives no directives.
+    The order is what makes the layout hold:
+
+    1. a tmpfs over HOME, so nothing of the host HOME shows by default;
+    2. each visible top-level entry: every non-dot entry, and each dot
+       entry on *allowlist*. A dot entry is read-only always. A non-dot
+       entry is writable only when a root in *writable_roots* covers HOME;
+    3. for HOME/.config, HOME/.local and HOME/.local/share that exist as
+       plain directories: a tmpfs, then the allowed children read-only;
+    4. *binds*, (flag, source, destination) directives of the caller that
+       land under HOME (the cwd, operator binds), on top of the entries,
+       then a read-only pin on the target of each allowed dot symlink;
+    5. an overlay for each of *hidden_paths* that is visible through the
+       steps above: a tmpfs for a directory, *empty_file* for a file;
+    6. *late_args*, directives of the caller that must sit above the
+       overlays and still need a mount point made (the state directory);
+    7. a read-only remount of each tmpfs, innermost first. From here no
+       name can be made at the top of HOME or of a default-deny directory,
+       so a credential path that is absent on the host cannot be created.
+
+    *listing* is the names at the top of HOME; it is read from the host
+    when omitted. A top-level entry that is itself hidden is left out.
+    """
+    if home is None:
+        return []
+    hidden = tuple(hidden_paths)
+    units = set(allowlist)
+    home_writable = any(_is_within(home, os.path.abspath(root)) for root in writable_roots)
+    names = sorted(os.listdir(home) if listing is None else listing)
+
+    argv: list[str] = ["--tmpfs", home]
+    visible: list[str] = []
+    link_targets: list[str] = []
+    for name in names:
+        path = os.path.join(home, name)
+        if any(_is_within(path, root) for root in hidden):
+            continue
+        if name.startswith("."):
+            if name in units:
+                argv += _entry_args(path, "--ro-bind-try", visible, link_targets)
+        else:
+            argv += _entry_args(path, "--bind-try" if home_writable else "--ro-bind-try", visible)
+
+    sealed: list[str] = []
+    for rel in DEFAULT_DENY_DIRS:
+        path = os.path.join(home, rel.replace("/", os.sep))
+        if os.path.islink(path) or not os.path.isdir(path) or os.path.realpath(path) != path:
+            continue
+        argv += ["--tmpfs", path]
+        sealed.append(path)
+        for unit in sorted(units):
+            parent, _sep, child = unit.rpartition("/")
+            if parent != rel:
+                continue
+            child_path = os.path.join(path, child)
+            if os.path.lexists(child_path) and not any(_is_within(child_path, root) for root in hidden):
+                argv += _entry_args(child_path, "--ro-bind-try", visible, link_targets)
+
+    for flag, src, dest in binds:
+        argv += [flag, src, dest]
+        visible.append(dest)
+
+    # An allowed dot entry is read-only. One that is a symlink (a shell rc
+    # file kept in a dotfiles directory) points at a target that a writable
+    # bind may cover, so the target is pinned read-only on top of the binds.
+    for target in link_targets:
+        if os.path.exists(target) and any(_is_within(target, root) for root in visible) \
+                and not any(_is_within(target, root) for root in hidden):
+            argv += ["--ro-bind-try", target, target]
+
+    for path in hidden:
+        if os.path.islink(path) or not any(path != root and _is_within(path, root) for root in visible):
+            continue
+        if os.path.isdir(path):
+            argv += ["--tmpfs", path]
+        elif os.path.exists(path):
+            argv += ["--ro-bind", empty_file, path]
+
+    argv += list(late_args)
+    for path in reversed(sealed):
+        argv += ["--remount-ro", path]
+    argv += ["--remount-ro", home]
+    return argv

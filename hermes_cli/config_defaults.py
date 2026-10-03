@@ -942,6 +942,13 @@ DEFAULT_CONFIG = {
         # "separate" one message per tool (noisier). Needs tool_progress enabled. Per-platform:
         # display.platforms.<platform>.tool_progress_grouping.
         "tool_progress_grouping": "accumulate",
+        # Gateway only: an elapsed-timer line under the edited tool-progress bubble, updating at
+        # whole multiples of progress_timer_interval seconds since that bubble's first progress event
+        # ("5s", "10s", ...). Costs an extra message edit per tick, so it is opt-in. Needs
+        # tool_progress enabled and tool_progress_grouping: accumulate. Per-platform:
+        # display.platforms.<platform>.progress_timer.
+        "progress_timer": False,
+        "progress_timer_interval": 5,  # seconds between timer updates (floored at 2)
         # Custom long-running status phrases. Defaults: gateway/assets/status_phrases.yaml.
         # `path`/`paths` = HERMES_HOME-relative YAML files/dirs (or conventional status_phrases.yaml
         # / status_phrases/*.yaml). Keys: status, generic. mode: "append" (default) | "replace".

@@ -40,6 +40,14 @@ logger = logging.getLogger("gateway.run")
 # _load_turn_history escalates the lag line from WARNING to ERROR (#114266: 11 days of WARNING).
 _TRANSCRIPT_LAG_ESCALATION_TURNS = 3
 
+# Minimum seconds between progress-bubble edits (Telegram flood control). Tool lines and
+# elapsed-timer ticks share it, so a fast configured timer interval cannot buy extra API calls
+# (#4885).
+_PROGRESS_EDIT_INTERVAL_S = 1.5
+# Elapsed-timer marker. The value beside it is a bare formatted duration, so the line carries no
+# label and needs no translation.
+_PROGRESS_TIMER_PREFIX = "\u23f1\ufe0f"
+
 # Exact refusals retained for older adapters/connectors without destination preflight.
 # Substring matching would also silence transient thread-resolution errors.
 _CARD_DESTINATION_REFUSALS = {
@@ -545,6 +553,13 @@ class TurnRunner:
         _progress_len_fn: Any
         _PROGRESS_TEXT_LIMIT: int
         _edit_accepts_metadata: bool
+        # Elapsed timer (#4885). ``timer_interval`` is 0 when the operator did not opt in or the
+        # bubble is not editable. ``bubble_started_at`` is the monotonic stamp of the first progress
+        # event folded into THIS bubble; ``timer_index`` is the whole interval last rendered (0 means
+        # nothing has been rendered yet, which also suppresses the pre-boundary "0s").
+        timer_interval: float
+        bubble_started_at: Optional[float]
+        timer_index: int
 
     def _progress_edit_state(self, adapter) -> "TurnRunner._ProgressEditState":
         ctx = self._ctx
@@ -568,6 +583,12 @@ class TurnRunner:
             _PROGRESS_TEXT_LIMIT=max(1, raw_limit - (64 if raw_limit > 128 else 0)),
             # Overflow edits pass metadata (Telegram topic/thread routing) only when edit_message takes it.
             _edit_accepts_metadata=bool(ctx._progress_metadata) and _accepts_keyword(adapter.edit_message, "metadata"),
+            timer_interval=(
+                max(float(ctx.progress_timer_interval or 0.0), 0.0)
+                if ctx.progress_timer and ctx.progress_grouping != "separate" else 0.0
+            ),
+            bubble_started_at=None,
+            timer_index=0,
         )
 
     async def _edit_progress_message(self, st, message_id: str, content: str):
@@ -582,6 +603,50 @@ class TurnRunner:
     @staticmethod
     def _progress_text(lines: list) -> str:
         return "\n".join(str(line) for line in lines)
+
+    @staticmethod
+    def _progress_timer_index(started_at: float, now: float, interval: float) -> int:
+        """Whole *interval*s of wall clock between *started_at* and *now* (0 before the first boundary).
+
+        Floor, never round: the rendered value is the last boundary the clock actually reached, so a
+        value only ever appears at a whole multiple and never counts up to the next one early.
+        """
+        return int((now - started_at) // interval)
+
+    def _progress_timer_due(self, st, now: float) -> bool:
+        """Whether *now* has crossed a timer boundary this bubble has not rendered yet."""
+        if not st.timer_interval or st.bubble_started_at is None:
+            return False
+        return self._progress_timer_index(st.bubble_started_at, now, st.timer_interval) > st.timer_index
+
+    def _progress_timer_line(self, st, now: float) -> str:
+        """The bubble's current timer value: the last whole *interval* its clock reached.
+
+        Only a boundary crossing moves the value, but every render re-emits it — the number must
+        persist under a tool line that lands between ticks rather than blinking out and back. A
+        bubble that has not reached its first boundary yet has no value (never a premature "0s").
+        """
+        if not st.timer_interval or st.bubble_started_at is None:
+            return ""
+        index = self._progress_timer_index(st.bubble_started_at, now, st.timer_interval)
+        if index > st.timer_index:
+            st.timer_index = index
+        if st.timer_index < 1:
+            return ""
+        from agent.usage_pricing import format_duration_compact
+        return f"{_PROGRESS_TIMER_PREFIX} {format_duration_compact(st.timer_index * st.timer_interval)}"
+
+    def _progress_body(self, st, now: Optional[float] = None) -> str:
+        """The bubble's text: accumulated tool lines, then the elapsed timer when one has a value.
+
+        The timer is composed at render time and never joins ``progress_lines``, so it cannot be
+        deduped, counted toward the dedup suffix, or replayed into a rolled-over continuation bubble.
+        ponytail: an overflow roll keeps the timer measuring from the FIRST bubble, so a very long
+        turn reports total elapsed progress work rather than restarting per continuation message.
+        """
+        body = self._progress_text(st.progress_lines)
+        line = self._progress_timer_line(st, time.monotonic() if now is None else now)
+        return f"{body}\n{line}" if line else body
 
     def _split_progress_groups(self, st, lines: list) -> list[list]:
         """Partition progress lines into platform-sized editable bubbles."""
@@ -641,23 +706,31 @@ class TurnRunner:
         """Content bubble landed — close the tool-progress bubble so the next tool starts fresh
         below it; else tool edits hit the ORIGINAL message above (out of order)."""
         st.progress_msg_id, st.progress_lines = None, []
+        # A new bubble restarts the timer from its own first progress event; it is not the turn's age.
+        st.bubble_started_at, st.timer_index = None, 0
         self._ctx.last_progress_msg[0], self._ctx.repeat_count[0] = None, 0
 
-    def _progress_absorb(self, st, raw) -> Any:
-        """Fold a queue item into the bubble buffer; returns the line to render this tick."""
+    def _progress_absorb(self, st, raw, now: Optional[float] = None) -> Any:
+        """Fold a queue item into the bubble buffer; returns the line to render this tick.
+
+        The first item into an empty buffer opens the bubble, which is where the elapsed timer takes
+        its baseline (#4885) — a bubble that has rendered nothing yet measures no time.
+        """
         if isinstance(raw, tuple) and len(raw) == 3 and raw[0] == "__dedup__":
             _, base_msg, count = raw
             if not st.progress_lines:
                 return base_msg
-            st.progress_lines[-1] = f"{base_msg} (×{count + 1})"
+            st.progress_lines[-1] = f"{base_msg} (\u00d7{count + 1})"
             return st.progress_lines[-1]
+        if not st.progress_lines:
+            st.bubble_started_at = time.monotonic() if now is None else now
         st.progress_lines.append(raw)
         return raw
 
     async def _flush_progress_edit(self, st) -> None:
         if st.can_edit and st.progress_lines and st.progress_msg_id:
             with suppress(Exception):
-                await self._edit_progress_message(st, st.progress_msg_id, self._progress_text(st.progress_lines))
+                await self._edit_progress_message(st, st.progress_msg_id, self._progress_body(st))
 
     async def _drain_progress_on_cancel(self, st) -> None:
         ctx = self._ctx
@@ -678,6 +751,21 @@ class TurnRunner:
             await self._roll_progress_overflow_if_needed(st)
         await self._flush_progress_edit(st)
 
+    async def _progress_timer_tick(self, st, last_edit_ts: float, now: Optional[float] = None) -> bool:
+        """Timer-only bubble edit on a boundary crossing. True when an edit was sent.
+
+        Shares ``send_progress_messages``' edit throttle with tool lines, and only edits a bubble
+        that already exists — the first send opens the bubble and carries no timer. Returns False
+        without consuming the boundary, so the next poll picks the value up.
+        """
+        if st.progress_msg_id is None:
+            return False
+        stamp = time.monotonic() if now is None else now
+        if stamp - last_edit_ts < _PROGRESS_EDIT_INTERVAL_S or not self._progress_timer_due(st, stamp):
+            return False
+        await self._flush_progress_edit(st)
+        return True
+
     async def _progress_restore_typing(self, st) -> None:
         ctx = self._ctx
         await asyncio.sleep(0.3)
@@ -691,7 +779,7 @@ class TurnRunner:
         failures (not found, permissions) set can_edit=False. Flood control backs off but keeps editing.
         """
         if st.can_edit and st.progress_msg_id is not None:
-            result = await self._edit_progress_message(st, st.progress_msg_id, "\n".join(st.progress_lines))
+            result = await self._edit_progress_message(st, st.progress_msg_id, self._progress_body(st))
             if result.success:
                 return True
             if getattr(result, "retryable", False):
@@ -704,7 +792,7 @@ class TurnRunner:
             await self._send_progress_text(st, msg)
             return True
         # First tool: send all accumulated text as a new message; editing unsupported: just this line.
-        result = await self._send_progress_text(st, "\n".join(st.progress_lines) if st.can_edit else msg)
+        result = await self._send_progress_text(st, self._progress_body(st) if st.can_edit else msg)
         if result.success and result.message_id:
             st.progress_msg_id = result.message_id
         return True
@@ -726,7 +814,6 @@ class TurnRunner:
             return
         st = self._progress_edit_state(adapter)
         last_edit_ts = 0.0
-        EDIT_INTERVAL = 1.5  # Minimum seconds between edits (Telegram flood control)
         while True:
             try:
                 if not ctx._run_still_current():
@@ -746,7 +833,7 @@ class TurnRunner:
                     # Throttle edits: batch rapid tool updates into fewer API calls (grammY pattern:
                     # proactively rate-limit rather than react to 429s). Loop back to drain further
                     # queued messages before sending a single batched edit.
-                    remaining = EDIT_INTERVAL - (time.monotonic() - last_edit_ts)
+                    remaining = _PROGRESS_EDIT_INTERVAL_S - (time.monotonic() - last_edit_ts)
                     if remaining > 0:
                         await asyncio.sleep(remaining)
                         continue
@@ -757,6 +844,10 @@ class TurnRunner:
                 last_edit_ts = time.monotonic()
                 await self._progress_restore_typing(st)
             except queue.Empty:
+                # The timer advances on its own clock, so a quiet stretch with no tool events is
+                # exactly when it must still tick (#4885).
+                if await self._progress_timer_tick(st, last_edit_ts):
+                    last_edit_ts = time.monotonic()
                 await asyncio.sleep(0.3)
             except asyncio.CancelledError:
                 await self._drain_progress_on_cancel(st)

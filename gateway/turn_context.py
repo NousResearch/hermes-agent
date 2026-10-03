@@ -25,6 +25,10 @@ class TurnContext:
     _thinking_enabled: bool = False
     progress_mode: str = "off"
     progress_grouping: str = "grouped"
+    # Elapsed timer line under the edited tool-progress bubble (#4885). Opt-in; the interval is
+    # seconds between whole-value timer updates (already floored above the progress-edit throttle).
+    progress_timer: bool = False
+    progress_timer_interval: float = 5.0
     tool_progress_enabled: bool = False
     progress_queue: Any = None
     log_queue: Any = None

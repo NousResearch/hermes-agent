@@ -39,6 +39,14 @@ import json
 import sys
 
 from pptx import Presentation
+
+try:
+    from pptx_overflow import estimate_bullets_overflow
+except ImportError:  # direct-script import fallback
+    import os as _os
+    import sys as _sys
+    _sys.path.insert(0, _os.path.dirname(_os.path.abspath(__file__)))
+    from pptx_overflow import estimate_bullets_overflow
 from pptx.chart.data import CategoryChartData
 from pptx.dml.color import RGBColor
 from pptx.enum.chart import XL_CHART_TYPE
@@ -100,8 +108,9 @@ def copy_layout_placeholder(slide, ph_idx):
     return None
 
 
-def build_slide(prs, spec):
-    layout_idx = LAYOUTS.get(spec.get("layout", "title_content"), 1)
+def build_slide(prs, spec, warnings=None):
+    layout_name = spec.get("layout", "title_content")
+    layout_idx = LAYOUTS.get(layout_name, 1)
     slide = prs.slides.add_slide(prs.slide_layouts[layout_idx])
 
     if spec.get("background"):
@@ -126,9 +135,30 @@ def build_slide(prs, spec):
         body = next((ph for ph in slide.placeholders
                      if ph.placeholder_format.idx != 0), None)
         if body is None:
+            # Fallback textbox: python-pptx gives it spAutoFit + wrap=none,
+            # so it GROWS with content instead of clipping — no overflow
+            # warning applies (the estimator models fixed frames only).
             body = slide.shapes.add_textbox(Inches(0.5), Inches(1.5),
                                             Inches(9), Inches(5))
-        add_bullets(body.text_frame, spec["bullets"])
+            add_bullets(body.text_frame, spec["bullets"])
+        else:
+            add_bullets(body.text_frame, spec["bullets"])
+            # Only the master-body sizing model (32/28/24/20/20pt by level)
+            # is supported by the estimator. Other layouts override level
+            # styles in their layout XML (`title` subtitle is 18pt, `section`
+            # uses 20/18/16..., `two_content` 28/24/20...), so estimating
+            # them with master sizes produces false positives. Gate on the
+            # RESOLVED index: unknown layout names fall back to layout 1.
+            if warnings is not None and layout_idx == LAYOUTS["title_content"]:
+                est = estimate_bullets_overflow(
+                    spec["bullets"],
+                    frame_width_in=(body.width or 0) / 914400 or None,
+                    frame_height_in=(body.height or 0) / 914400 or None)
+                if est:
+                    warnings.append({"slide_index":
+                                     len(prs.slides._sldIdLst) - 1,
+                                     "title": spec.get("title", ""),
+                                     **est})
 
     for img in spec.get("images", []):
         kwargs = {}
@@ -201,12 +231,17 @@ def main(argv=None):
     else:
         prs.slide_width, prs.slide_height = Inches(10), Inches(7.5)
 
+    overflow_warnings = []
     for slide_spec in spec.get("slides", []):
-        build_slide(prs, slide_spec)
+        build_slide(prs, slide_spec, warnings=overflow_warnings)
 
     prs.save(args.output)
-    print(json.dumps({"ok": True, "output": args.output,
-                      "slides": len(prs.slides._sldIdLst)}))
+    result = {"ok": True, "output": args.output,
+              "slides": len(prs.slides._sldIdLst),
+              # slide_index values are zero-based; empty when every
+              # placeholder fits its estimated rendered height.
+              "overflow_warnings": overflow_warnings}
+    print(json.dumps(result))
     return 0
 
 

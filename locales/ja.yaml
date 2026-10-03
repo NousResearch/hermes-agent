@@ -1389,7 +1389,7 @@ platform:
       host_path: "それまでの間、ファイルはホスト上にあります: `{path}`"
     setup_files:
       not_configured: "🔧 ネイティブの添付ファイル配信は**未設定**です。\n**ステップ 1（初回のみ、ホスト上で）:** https://console.cloud.google.com/apis/credentials で OAuth クライアント認証情報を作成します → *認証情報を作成* → *OAuth クライアント ID* → *デスクトップアプリ*。JSON をダウンロードし、ホスト上で次を実行します:\n```\npython -m plugins.platforms.google_chat.oauth --client-secret /path/to/client_secret.json\n```\n**ステップ 2:** ここに戻って `/setup-files start` を送信してください。"
-      start_instructions: "1. ブラウザでこの URL を開いて認可します:\n{auth_url}\n\n2. *許可* をクリックすると、ブラウザは `http://localhost:1/?...&code=...` の読み込みに失敗します。これは想定どおりの動作です。\n\n3. ブラウザの URL バーから失敗した URL 全体をコピーし、`/setup-files <PASTE_URL>`（または `code=...` の値のみ）としてここに貼り付けてください。\n\nヒント: この URL にはアクセス権限が含まれます — 他人に共有しないでください。"
+      start_instructions: "1. ブラウザでこの URL を開いて認可します:\n{auth_url}\n\n2. *許可* をクリックすると、ブラウザは `http://localhost:53135/?...&code=...` の読み込みに失敗します。これは想定どおりの動作です。\n\n3. ブラウザの URL バーから失敗した URL 全体をコピーし、`/setup-files <PASTE_URL>`（または `code=...` の値のみ）としてここに貼り付けてください。\n\nヒント: この URL にはアクセス権限が含まれます — 他人に共有しないでください。"
       start_failed: "❌ OAuth URL を生成できませんでした。ゲートウェイのログを確認し、client_secret.json が有効か確認してください。"
       exchange_failed: "❌ トークンの交換に失敗しました。コードの有効期限が切れたか、URL の形式が正しくない可能性があります。`/setup-files start` を送信して新しい OAuth URL を取得してください。"
       revoke_completed: "取り消しが完了しました（一部のステップはスキップされた可能性があります）。"

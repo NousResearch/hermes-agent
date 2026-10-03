@@ -1389,7 +1389,7 @@ platform:
       host_path: "Тим часом файл лежить на хості: `{path}`"
     setup_files:
       not_configured: "🔧 Нативна доставка вкладень **не налаштована**.\n**Крок 1 (одноразово, на хості):** створіть облікові дані клієнта OAuth на https://console.cloud.google.com/apis/credentials → *Create credentials* → *OAuth client ID* → *Desktop app*. Завантажте JSON. Потім на хості виконайте:\n```\npython -m plugins.platforms.google_chat.oauth --client-secret /path/to/client_secret.json\n```\n**Крок 2:** поверніться сюди й надішліть `/setup-files start`."
-      start_instructions: "1. Відкрийте цей URL у браузері й авторизуйтеся:\n{auth_url}\n\n2. Після натискання *Allow* браузер не зможе завантажити `http://localhost:1/?...&code=...`. Це очікувано.\n\n3. Скопіюйте весь URL, що не завантажився, з адресного рядка браузера і вставте його сюди як: `/setup-files <PASTE_URL>` (або лише значення `code=...`).\n\nПорада: URL містить ваш дозвіл на доступ — не діліться ним."
+      start_instructions: "1. Відкрийте цей URL у браузері й авторизуйтеся:\n{auth_url}\n\n2. Після натискання *Allow* браузер не зможе завантажити `http://localhost:53135/?...&code=...`. Це очікувано.\n\n3. Скопіюйте весь URL, що не завантажився, з адресного рядка браузера і вставте його сюди як: `/setup-files <PASTE_URL>` (або лише значення `code=...`).\n\nПорада: URL містить ваш дозвіл на доступ — не діліться ним."
       start_failed: "❌ Не вдалося згенерувати URL OAuth. Перевірте журнали шлюзу та переконайтеся, що client_secret.json коректний."
       exchange_failed: "❌ Не вдалося обміняти токен. Можливо, код застарів або URL пошкоджений. Надішліть `/setup-files start`, щоб отримати новий URL OAuth."
       revoke_completed: "Відкликання завершено (деякі кроки могли бути пропущені)."

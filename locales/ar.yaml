@@ -1389,7 +1389,7 @@ platform:
       host_path: "في هذه الأثناء، الملف موجود على المضيف: `{path}`"
     setup_files:
       not_configured: "🔧 تسليم المرفقات الأصلي **غير مهيّأ**.\n**الخطوة 1 (مرة واحدة، على المضيف):** أنشئ بيانات اعتماد عميل OAuth من https://console.cloud.google.com/apis/credentials ← *Create credentials* ← *OAuth client ID* ← *Desktop app*. نزّل ملف JSON. ثم شغّل على المضيف:\n```\npython -m plugins.platforms.google_chat.oauth --client-secret /path/to/client_secret.json\n```\n**الخطوة 2:** عد إلى هنا وأرسل `/setup-files start`."
-      start_instructions: "1. افتح هذا الرابط في متصفحك وامنح التصريح:\n{auth_url}\n\n2. بعد النقر على *Allow*، سيفشل متصفحك في تحميل `http://localhost:1/?...&code=...`. هذا متوقع.\n\n3. انسخ عنوان URL الفاشل كاملًا من شريط عناوين المتصفح وألصقه هنا بالصيغة: `/setup-files <PASTE_URL>` (أو قيمة `code=...` فقط).\n\nنصيحة: يحتوي الرابط على منحة وصولك — أبقه سريًا."
+      start_instructions: "1. افتح هذا الرابط في متصفحك وامنح التصريح:\n{auth_url}\n\n2. بعد النقر على *Allow*، سيفشل متصفحك في تحميل `http://localhost:53135/?...&code=...`. هذا متوقع.\n\n3. انسخ عنوان URL الفاشل كاملًا من شريط عناوين المتصفح وألصقه هنا بالصيغة: `/setup-files <PASTE_URL>` (أو قيمة `code=...` فقط).\n\nنصيحة: يحتوي الرابط على منحة وصولك — أبقه سريًا."
       start_failed: "❌ تعذّر إنشاء رابط OAuth. راجع سجلات البوّابة وتحقق من صلاحية ملف client_secret.json."
       exchange_failed: "❌ فشل تبادل رمز الوصول. ربما انتهت صلاحية الرمز أو أن الرابط غير سليم. أرسل `/setup-files start` للحصول على رابط OAuth جديد."
       revoke_completed: "اكتمل الإلغاء (ربما تم تخطّي بعض الخطوات)."

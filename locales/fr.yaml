@@ -1625,7 +1625,7 @@ platform:
         1. Ouvrez cette URL dans votre navigateur et autorisez l'accès :
         {auth_url}
 
-        2. Après avoir cliqué sur *Autoriser*, votre navigateur n'arrivera pas à charger `http://localhost:1/?...&code=...`. C'est normal.
+        2. Après avoir cliqué sur *Autoriser*, votre navigateur n'arrivera pas à charger `http://localhost:53135/?...&code=...`. C'est normal.
 
         3. Copiez l'URL complète en échec depuis la barre d'adresse du navigateur et collez-la ici sous la forme : `/setup-files <PASTE_URL>` (ou seulement la valeur `code=...`).
 

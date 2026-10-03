@@ -32,6 +32,8 @@ logger = logging.getLogger(__name__)
 TOUCH_PROMPT = "Reply with exactly one word: the capital of France."
 TOUCH_EXPECT = "paris"
 _RESTART_BACKOFF_S = (1, 5, 15, 60)
+_MAX_CONSECUTIVE_RESTARTS = 5
+_RESTART_BUDGET_RESET_S = 10 * 60
 _RESIDENT = ("loaded", "ready")
 
 # Chosen once and reused across restarts: sessions persist the resolved base_url as a snapshot, and
@@ -120,7 +122,8 @@ class LlamaServerSupervisor:
                  models_max: int = 4, port: int | None = None,
                  extra_args: list[str] | None = None,
                  log_path: Path | None = None,
-                 preset_path: Path | None = None):
+                 preset_path: Path | None = None,
+                 restart_when_disabled: bool = False):
         # The exact engine binary (PM store path, backend-selected), handed
         # in by boot — the supervisor never discovers binaries itself: a
         # legacy-directory scan could resurrect bytes pm did not pin.
@@ -132,10 +135,12 @@ class LlamaServerSupervisor:
         self.extra_args = list(extra_args or [])
         self.log_path = log_path or (self.models_dir.parent / "logs" / "llama-server.log")
         self.preset_path = preset_path
+        self._restart_when_disabled = restart_when_disabled
         self.proc: subprocess.Popen | None = None
         self._job = None
         self.primary_model: str | None = None
         self._restarts = 0
+        self._last_healthy_at: float | None = None
         self._stopping = False
         self._stop_event = threading.Event()
         self._lifecycle_lock = threading.RLock()
@@ -217,6 +222,7 @@ class LlamaServerSupervisor:
             self._stop_event.clear()
             self._spawn()
         self._wait_health(timeout_s)
+        self._last_healthy_at = time.monotonic()
         self._watchdog = threading.Thread(target=self._watch, daemon=True, name="llamacpp-supervisor")
         self._watchdog.start()
 
@@ -262,6 +268,19 @@ class LlamaServerSupervisor:
                 continue
             if self._stopping:
                 return
+            if (self._last_healthy_at is not None
+                    and time.monotonic() - self._last_healthy_at >= _RESTART_BUDGET_RESET_S):
+                self._restarts = 0
+            if self._restarts >= _MAX_CONSECUTIVE_RESTARTS:
+                logger.error("llama-server restart limit reached after %s consecutive failures; giving up",
+                             self._restarts)
+                return
+            if not self._restart_when_disabled and not self._runtime_enabled():
+                logger.info("local runtime disabled; not restarting llama-server")
+                return
+            if self._port_is_occupied():
+                logger.warning("port %s is already in use; not restarting llama-server", self.port)
+                return
             backoff = _RESTART_BACKOFF_S[min(self._restarts, len(_RESTART_BACKOFF_S) - 1)]
             logger.warning("llama-server exited rc=%s; restart #%s in %ss", rc, self._restarts + 1, backoff)
             if self._stop_event.wait(backoff):
@@ -274,10 +293,23 @@ class LlamaServerSupervisor:
                     self._reap_orphaned_children()
                     self._spawn()
                 self._wait_health(120)
+                self._last_healthy_at = time.monotonic()
                 if self.primary_model:
                     self.ensure_model_ready(self.primary_model)
             except Exception as exc:  # noqa: BLE001
                 logger.error("llama-server restart failed: %s", exc)
+
+    @staticmethod
+    def _runtime_enabled() -> bool:
+        from hermes_cli.config import load_config
+
+        section = (load_config() or {}).get("local_runtime") or {}
+        return isinstance(section, dict) and bool(section.get("enabled"))
+
+    def _port_is_occupied(self) -> bool:
+        with socket.socket() as probe:
+            probe.settimeout(0.2)
+            return probe.connect_ex(("127.0.0.1", self.port)) == 0
 
     def stop(self) -> None:
         with self._lifecycle_lock:

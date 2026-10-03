@@ -1262,6 +1262,8 @@ platform:
       title: "Model Configuration"
       provider_label: "Provider: {provider}"
       select_model: "Select a model:"
+      models_pricing: "Models & Pricing:"
+      select_model_below: "Select a model below:"
       current_model: "Current model: {model}"
       select_provider: "Select a provider:"
       unknown_model: "unknown"

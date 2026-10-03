@@ -27,6 +27,8 @@ from agent.prompt_builder import (
 )
 from agent import prompt_builder as _pb
 from agent.runtime_cwd import resolve_agent_cwd, resolve_context_cwd
+from agent.tool_discovery import TOOL_DISCOVERY_GUIDANCE, session_deferred_tools
+from tools.tool_search_catalog import BRIDGE_TOOL_NAMES
 from hermes_constants import get_default_hermes_root, get_hermes_home
 from utils import is_truthy_value
 
@@ -551,8 +553,10 @@ def _identity_parts(agent: Any, ctx_len: Optional[int]) -> Tuple[List[str], bool
 
 
 def _guidance_parts(agent: Any) -> List[str]:
-    """Universal + tool-aware + model-gated guidance blocks, each gated by its config.yaml key."""
+    """Universal, tool-aware and model-gated guidance; discovery follows the session toolset."""
     parts: List[str] = []
+    if BRIDGE_TOOL_NAMES.issubset(agent.valid_tool_names):
+        parts.append(TOOL_DISCOVERY_GUIDANCE)
     if agent.valid_tool_names:
         parts += [
             text for flag, text in (
@@ -684,7 +688,8 @@ def _coding_parts(agent: Any) -> Tuple[List[str], List[str], List[str]]:
         # "" is a real pinned value (no workspace here) — only a cwd mismatch re-probes.
         replay = pinned[1] if pinned is not None and pinned[0] == cwd_key else None
         parts = coding_system_prompt_parts(platform=agent.platform, cwd=cwd, model=agent.model,
-                                           valid_tool_names=agent.valid_tool_names, workspace_block=replay)
+                                           valid_tool_names=agent.valid_tool_names, workspace_block=replay,
+                                           deferred_tool_names=session_deferred_tools(agent))
         if replay is None:
             agent._frozen_workspace_snapshot = (cwd_key, parts[1][0] if parts[1] else "")
         return parts

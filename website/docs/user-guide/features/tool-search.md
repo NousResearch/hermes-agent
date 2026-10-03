@@ -10,21 +10,18 @@ session, their JSON schemas can consume a substantial fraction of the
 context window on every turn — even when only a few of them are relevant
 to what the user actually asked for.
 
-**Tool Search** is Hermes' opt-in progressive-disclosure layer for that
-problem. When activated, MCP and plugin tools are replaced in the
-model-visible tools array by three bridge tools, and the model loads each
-specific tool's schema on demand.
+**Tool Search** is Hermes' progressive-disclosure layer for that problem.
+By default, MCP tools, non-core plugin tools, and a curated set of built-in
+tools are replaced in the model-visible array by three bridge tools. The
+model loads each deferred tool's schema on demand.
 
-:::info Built-in tools and explicit deferral
-Hermes keeps its working-set core tools (`terminal`, `read_file`, `write_file`,
-`patch`, `search_files`, `todo`, `memory`, `browser_*`, `web_search`,
-`web_extract`, `clarify`, `execute_code`, `delegate_task`, and the rest of
-`_HERMES_CORE_TOOLS`) loaded directly by default. Cold, event-triggered built-ins
-may be deferred when they are named in `tools.tool_search.defer`; the shipped
-curated list covers tools such as `computer_use`, `session_search`, and selected
-desktop helpers. MCP and non-core plugin tools remain eligible automatically.
-An explicit `defer` list replaces the curated list, and `defer: []` keeps every
-tool eager.
+:::info Deferred does not mean disabled
+Frequently used tools such as `terminal`, `read_file`, and `clarify` stay
+directly callable. Other built-ins, including `todo_list` and
+`process_manage`, are deferred by default. Deferred tools remain available
+through the bridge, subject to the session's enabled and disabled toolsets.
+`tools.tool_search.defer` replaces the curated list; an empty list keeps
+core and GUI tools direct while MCP and non-core plugin tools still defer.
 :::
 
 ## How it works
@@ -80,6 +77,16 @@ directly. Pre-tool-call hooks, guardrails, approval prompts, and
 post-tool-call hooks all run against the real tool name — not against
 `tool_call`. The activity feed in the CLI and gateway also unwraps so you
 see the underlying tool, not the bridge.
+
+When the bridge is present, the initial system prompt instructs the model
+to search for capabilities missing from its direct tools. Coding guidance
+routes task tracking through the bridge when `todo_list` is deferred, and
+background-command results explain how to reach deferred `process_manage`.
+A direct call to a deferred tool returns instructions to describe and invoke
+it through the bridge. Disabled tools are not advertised as available.
+These hints do not promote tools into the direct tool array or change the
+system prompt during a conversation. Described tools continue to use
+`tool_call`; their schemas can be reused from conversation history.
 
 ## When does it activate?
 

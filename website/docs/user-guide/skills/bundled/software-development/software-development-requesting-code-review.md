@@ -16,7 +16,7 @@ Pre-commit review: security scan, quality gates, auto-fix.
 |---|---|
 | Source | Bundled (installed by default) |
 | Path | `skills/software-development/requesting-code-review` |
-| Version | `2.1.0` |
+| Version | `2.1.1` |
 | Author | Hermes Agent (adapted from obra/superpowers + MorAlekss) |
 | License | MIT |
 | Platforms | linux, macos, windows |
@@ -47,6 +47,16 @@ quality gates, an independent reviewer subagent, and an auto-fix loop.
 
 **This skill vs github:** This skill verifies YOUR changes before committing.
 `github` reviews OTHER people's PRs on GitHub with inline comments.
+
+## Authorization gate — read-only by default
+
+Review, inspection, verification, and audit requests are read-only. Do NOT
+modify files, stage changes, or commit unless the user explicitly requested it:
+
+- Report findings and stop. Do not proceed to Step 7 (auto-fix) unless the
+  user explicitly asked for fixes.
+- Do not proceed to Step 8 (commit) unless the user explicitly asked for a
+  commit, or the enclosing workflow already establishes that authorization.
 
 ## Step 1 — Get the diff
 
@@ -200,9 +210,11 @@ Return ONLY this JSON:
 
 Combine results from Steps 2, 3, and 5.
 
-**All passed:** Proceed to Step 8 (commit).
+**All passed:** Report the verdict and stop. Proceed to Step 8 only if the
+authorization gate above is satisfied.
 
-**Any failures:** Report what failed, then proceed to Step 7 (auto-fix).
+**Any failures:** Report what failed, then proceed to Step 7 only if the
+authorization gate above is satisfied.
 
 ```
 VERIFICATION FAILED
@@ -214,7 +226,7 @@ New lint errors: [details]
 Suggestions (non-blocking): [list]
 ```
 
-## Step 7 — Auto-fix loop
+## Step 7 — Auto-fix loop (only when the user explicitly requested fixes)
 
 **Maximum 2 fix-and-reverify cycles. Interactive sessions only (see Step 5).**
 
@@ -248,12 +260,16 @@ After the fix agent completes, re-run Steps 1-6 (full verification cycle).
 - Failed after 2 attempts: escalate to user with the remaining issues and
   suggest `git stash` or `git reset` to undo
 
-## Step 8 — Commit
+## Step 8 — Commit (only when explicitly authorized)
 
-If verification passed:
+Commit only when the user explicitly requested a commit, or the enclosing
+workflow already establishes that authorization. Otherwise stop after
+reporting the verdict.
+
+When committing, stage only the reviewed paths — never the whole tree:
 
 ```bash
-git add -A && git commit -m "[verified] <description>"
+git add <reviewed-file-1> <reviewed-file-2> && git commit -m "[verified] <description>"
 ```
 
 The `[verified]` prefix indicates an independent reviewer approved this change.

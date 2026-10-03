@@ -532,6 +532,10 @@ _stale_base_url_warned = False
 # ``provider: ollama`` aux lane matches no registry entry and raises a misleading
 # ``OLLAMA_API_KEY`` error instead of using the lane's base_url (#106010).
 _LOCAL_SERVER_ALIASES = {
+    # ``local`` is in hermes_cli.auth._PROVIDER_ALIASES (same "local server" group) but was
+    # missing here, so ``provider: local`` skipped the /v1 tail and the no-key-borrow rule
+    # this group exists for (#124897 review).
+    "local": "custom",
     "ollama": "custom", "vllm": "custom", "llamacpp": "custom",
     "llama.cpp": "custom", "llama-cpp": "custom",
 }
@@ -5142,6 +5146,27 @@ def _resolve_custom_branch(req: _ResolveRequest) -> _ResolveResult:
         client = _create_openai_client(api_key=custom_key, base_url=_clean_base, **extra)
         client = _wrap_transport(req, client, final_model, wrap_base or custom_base, custom_key)
         return _route_client(req, client, final_model)
+    # The global custom endpoint is the only fallback for an explicit custom
+    # request. Never fall through to unrelated API-key providers here: that
+    # silently bills a paid lane when the user configured `provider: custom`
+    # with no endpoint (#124597). The outer fallback chain logs the loud INFO
+    # fallback to the main model from the (None, None) below.
+    # ponytail: explicit-custom stops at the custom endpoint; add per-task
+    # fallback_chain entries if a paid fallback is ever wanted explicitly.
+    # ``original_provider`` is the pre-alias spelling, so match the whole explicit-custom
+    # group: ``custom``, ``custom:`` (empty suffix, also normalized to ``custom``) and the
+    # local-server aliases. ``main`` with nothing configured normalizes to ``custom`` too
+    # and deliberately keeps its old fall-through.
+    if req.original_provider in ("custom", "custom:") or req.original_provider in _LOCAL_SERVER_ALIASES:
+        client, default = _try_custom_endpoint()
+        if client is not None:
+            final_model = _normalize_resolved_model(model or default, provider)
+            _raw_ckey = getattr(client, "api_key", "")
+            _ckey = "" if (callable(_raw_ckey) and not isinstance(_raw_ckey, str)) else str(_raw_ckey or "")
+            client = _wrap_transport(req, client, final_model, str(getattr(client, "base_url", "") or ""), _ckey)
+            return _route_client(req, client, final_model)
+        logger.warning("resolve_provider_client: custom requested but no custom endpoint is configured")
+        return None, None
     # Try custom first, then API-key providers (Codex excluded here:
     # falling through to Codex with no model is a stale-constant trap).
     for try_fn in (_try_custom_endpoint, _resolve_api_key_provider):

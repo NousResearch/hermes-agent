@@ -162,6 +162,19 @@ def _create_whisper_model(model_name: str, *, device: str, compute_type: str):
         ) from exc
 
 
+class CpuBaselineError(RuntimeError):
+    """Raised instead of letting numpy/ctranslate2 SIGILL the process on pre-x86-64-v2 CPUs."""
+
+
+def _cpu_unsupported_reason() -> Optional[str]:
+    """Why faster-whisper cannot run on this host (SIGILL-class, not exception-class)."""
+    try:
+        from tools.native_cpu_compat import x86_64_local_voice_native_unsupported_reason
+        return x86_64_local_voice_native_unsupported_reason()
+    except Exception:
+        return None
+
+
 def _load_local_whisper_model(model_name: str, device: str = "auto", compute_type: str = "auto"):
     """Load faster-whisper with graceful CUDA → CPU fallback. ``device="auto"`` picks CUDA
     whenever the ctranslate2 wheel ships CUDA libs, even on hosts without the NVIDIA runtime (WSL2,
@@ -171,6 +184,10 @@ def _load_local_whisper_model(model_name: str, device: str = "auto", compute_typ
     ``device`` / ``compute_type`` default to ``"auto"`` so the historical behaviour is unchanged; pass
     explicit values from ``stt.local.device`` / ``stt.local.compute_type`` to pin a configuration (#9088).
     """
+    # SIGILL cannot be caught: a pre-x86-64-v2 core dies inside the native import
+    # before Python sees anything, so refuse before the import rather than restart-loop.
+    if unsupported := _cpu_unsupported_reason():
+        raise CpuBaselineError(unsupported)
     force_cpu = _should_force_faster_whisper_cpu()
     if force_cpu:
         # Importing ctranslate2 can itself abort on Apple Silicon/Rosetta when

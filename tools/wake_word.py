@@ -371,6 +371,14 @@ def check_wake_word_requirements(cfg: Optional[Dict[str, Any]] = None, *,
     deps_ok = pm.available(feature)
     platform_ok = deps_ok or supported(feature)
     lazy_ok = lazy_installs_allowed()
+    # SIGILL-class: the wake engines pull numpy/tflite/ctranslate2 wheels with the
+    # x86-64-v2 baseline — on pre-v2 cores the import kills the process instead of
+    # raising, so the requirements probe must refuse before any install can run.
+    try:
+        from tools.native_cpu_compat import x86_64_local_voice_native_unsupported_reason
+        cpu_unsupported = x86_64_local_voice_native_unsupported_reason()
+    except Exception:
+        cpu_unsupported = None
     # The audio probe imports sounddevice + numpy — two of the very packages
     # the lazy installer would fetch — so it can only be trusted once the
     # feature's deps are installed. On a fresh install (deps missing, lazy
@@ -396,6 +404,8 @@ def check_wake_word_requirements(cfg: Optional[Dict[str, Any]] = None, *,
     elif provider == "porcupine" and not (os.getenv("PORCUPINE_ACCESS_KEY") or "").strip():
         key_ok = False
         hint = "Set PORCUPINE_ACCESS_KEY (free key at https://console.picovoice.ai)."
+    elif cpu_unsupported is not None:
+        hint = f"Wake word unavailable: {cpu_unsupported}"
     elif not deps_ok and not lazy_ok:
         hint = install_hint(feature)
     elif deps_ok and not audio_ok and resolve_capture_mode(cfg) == "local":
@@ -420,7 +430,8 @@ def check_wake_word_requirements(cfg: Optional[Dict[str, Any]] = None, *,
                     "build with client-capture wake support.")
 
     return {
-        "available": platform_ok and key_ok and stt_ok and tts_ok and mic_ok, "provider": provider,
+        "available": cpu_unsupported is None and platform_ok and key_ok and stt_ok and tts_ok and mic_ok,
+        "provider": provider,
         "deps_available": deps_ok, "audio_available": audio_ok,
         "local_input_available": _local_input_device_ready() if deps_ok else False,
         "capture": capture_mode, "access_key_set": key_ok, "stt_available": stt_ok, "tts_available": tts_ok,

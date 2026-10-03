@@ -169,6 +169,15 @@ def _detect_local_backend() -> Optional[str]:
     the per-install lock, so ``wake.status`` and ``/voice status`` could hold a sibling profile's
     backend off its port for the length of a venv rebuild. A missing faster-whisper now reports
     unavailable; the install happens on first transcription, in ``_transcribe_local``."""
+    from tools.native_cpu_compat import x86_64_local_voice_native_unsupported_reason
+
+    # SIGILL-class CPU guard: the wheels this backend would import (numpy 2.4 /
+    # ctranslate2) require the x86-64-v2 baseline and kill the process on pre-v2
+    # cores — skip faster-whisper so auto-detection falls to local_command/cloud.
+    unsupported_reason = x86_64_local_voice_native_unsupported_reason()
+    if unsupported_reason:
+        logger.warning("Local faster-whisper disabled: %s", unsupported_reason)
+        return "local_command" if _has_local_command() else None
     if _HAS_FASTER_WHISPER:
         return "local"
     return "local_command" if _has_local_command() else None
@@ -185,6 +194,14 @@ def _resolve_explicit_local() -> str:
 def _resolve_explicit_local_command() -> str:
     if _has_local_command():
         return "local_command"
+    from tools.native_cpu_compat import x86_64_local_voice_native_unsupported_reason
+
+    # The fallback below installs/imports faster-whisper; on a pre-x86-64-v2 CPU
+    # that import SIGILLs the process — refuse instead of falling through to it.
+    if x86_64_local_voice_native_unsupported_reason():
+        logger.warning("STT provider 'local_command' configured but unavailable "
+                       "(CPU cannot run the faster-whisper native wheels)")
+        return "none"
     if _HAS_FASTER_WHISPER:
         logger.info("Local STT command unavailable, using local faster-whisper")
         return "local"
@@ -367,6 +384,14 @@ def _transcribe_local(
     file_path: str, model_name: str, *, language: Optional[str] = None, prompt: Optional[str] = None
 ) -> Dict[str, Any]:
     """Transcribe using faster-whisper (local, free)."""
+    # SIGILL-class CPU check first: lazy-install would either fetch wheels that
+    # crash the process on import (numpy on pre-x86-64-v2 cores) or install an
+    # unloadable ctranslate2 — refuse with the remediation hint up front.
+    from tools.native_cpu_compat import x86_64_local_voice_native_unsupported_reason
+
+    unsupported_reason = x86_64_local_voice_native_unsupported_reason()
+    if unsupported_reason:
+        return _error_result(unsupported_reason)
     if not _HAS_FASTER_WHISPER and not _try_lazy_install_stt():
         return _error_result("faster-whisper not installed")
     try:

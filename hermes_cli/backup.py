@@ -407,10 +407,20 @@ DEFAULT_INTEGRITY_CHECK_MAX_BYTES = 2 << 30  # 2 GiB
 def verify_sqlite_integrity(
     path: Path, *, check_header: bool = True, run_pragma: bool = True,
     max_bytes: int = DEFAULT_INTEGRITY_CHECK_MAX_BYTES) -> dict:
-    """Verify a SQLite database: existence + minimum size, header magic, then a read-only
-    ``PRAGMA integrity_check`` (or a cheap structural probe above ``max_bytes``)."""
-    def _done(message: str, valid: bool = False, size: Optional[int] = None) -> dict:
+    """Verify a SQLite database, returning an indeterminate verdict on SQLite contention.
+
+    ``valid`` is True for a passing check, False for a failed check, and None when a
+    BUSY/LOCKED error prevented the read-only schema or integrity probe from running.
+    """
+    def _done(message: str, valid: Optional[bool] = False, size: Optional[int] = None) -> dict:
         return {"valid": valid, "message": message, "size": size}
+
+    def _query_failure(message: str, exc: Exception, size: int) -> dict:
+        # Extended SQLite result codes retain the primary code in the low byte.
+        code = getattr(exc, "sqlite_errorcode", None)
+        if isinstance(code, int) and (code & 0xFF) in (sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED):
+            return _done(message, valid=None, size=size)
+        return _done(message, size=size)
     try:
         st = path.stat()
     except FileNotFoundError:
@@ -437,7 +447,7 @@ def verify_sqlite_integrity(
             c.execute("SELECT count(*) FROM sqlite_master").fetchone()))
         if exc is not None:
             kind = "failed" if isinstance(exc, sqlite3.DatabaseError) else "error"
-            return _done(f"schema probe {kind}: {exc}", size=size)
+            return _query_failure(f"schema probe {kind}: {exc}", exc, size)
         return _done(
             f"size {size:,} bytes exceeds max_bytes {max_bytes:,}; "
             "skipped PRAGMA integrity_check (header + schema probe passed)",
@@ -447,7 +457,7 @@ def verify_sqlite_integrity(
             path, lambda c: [str(r[0]) for r in c.execute("PRAGMA integrity_check")])
         if exc is not None:
             kind = "cannot open database" if isinstance(exc, sqlite3.DatabaseError) else "integrity check error"
-            return _done(f"{kind}: {exc}", size=size)
+            return _query_failure(f"{kind}: {exc}", exc, size)
         if rows == ["ok"]:
             return _done("integrity check passed", valid=True, size=size)
         return _done(f"integrity check failed: {'; '.join(rows[:5])}", size=size)

@@ -966,6 +966,78 @@ class TestTranscribeXAI:
         assert url == "https://api.x.ai/v1/stt"
         assert call_args.kwargs["headers"]["Authorization"] == "Bearer oauth-bearer-token"
 
+    def test_oauth_credentials_never_fall_back_to_stt_env_constant(
+        self, monkeypatch, sample_ogg, mock_xai_http_module
+    ):
+        """_resolve_base_url's `or XAI_STT_BASE_URL` tail also ran on the OAuth arm,
+        so an empty resolver base_url would have substituted the import-time env
+        value for the bearer. The OAuth contract is pinned origin only."""
+        monkeypatch.delenv("XAI_API_KEY", raising=False)
+        monkeypatch.setenv("XAI_STT_BASE_URL", "https://attacker.example/v1")
+        monkeypatch.setattr(
+            "tools.transcription_cloud.XAI_STT_BASE_URL", "https://attacker.example/v1")
+        mock_xai_http_module.resolve_xai_http_credentials.return_value = {
+            "provider": "xai-oauth",
+            "api_key": "oauth-bearer-token",
+            "base_url": "",
+        }
+
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {"text": "test", "language": "en", "duration": 1.0}
+
+        with patch(
+            "tools.transcription_tools._load_stt_config",
+            return_value={"xai": {"base_url": "https://attacker.example/config"}},
+        ), patch("requests.post", return_value=mock_response) as mock_post:
+            from tools.transcription_tools import _transcribe_xai
+
+            result = _transcribe_xai(sample_ogg, "grok-stt")
+
+        assert result["success"] is True
+        url = mock_post.call_args[0][0]
+        assert url == "https://api.x.ai/v1/stt"
+        assert mock_post.call_args.kwargs["headers"]["Authorization"] == "Bearer oauth-bearer-token"
+
+    @pytest.mark.parametrize("override_url,expected_url", [
+        # Foreign origins are refused: the env pair is origin-pinned for the
+        # API key just like the OAuth bearer.
+        ("https://attacker.example/v1", "https://api.x.ai/v1/stt"),
+        # An on-origin override is still honored.
+        ("https://staging.x.ai/v1", "https://staging.x.ai/v1/stt"),
+    ])
+    def test_api_key_credentials_pin_shared_env_base_url(
+        self, monkeypatch, sample_ogg, override_url, expected_url
+    ):
+        """The direct-key branch used to read XAI_BASE_URL raw, so a hostile
+        env/.env value would receive the XAI_API_KEY bearer. It must go through
+        the same origin pinning the resolver applies. No xai_http mock: the real
+        override helper and validator have to run for this to be load-bearing."""
+        from hermes_cli.config import invalidate_env_cache
+
+        monkeypatch.setenv("XAI_API_KEY", "xai-test-key")
+        monkeypatch.delenv("HERMES_XAI_BASE_URL", raising=False)
+        monkeypatch.setenv("XAI_BASE_URL", override_url)
+        monkeypatch.delenv("XAI_STT_BASE_URL", raising=False)
+        invalidate_env_cache()
+
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {"text": "ok", "language": "en", "duration": 1.0}
+
+        try:
+            with patch("tools.transcription_tools._load_stt_config", return_value={}), \
+                 patch("requests.post", return_value=mock_response) as mock_post:
+                from tools.transcription_tools import _transcribe_xai
+                result = _transcribe_xai(sample_ogg, "grok-stt")
+        finally:
+            invalidate_env_cache()
+
+        assert result["success"] is True
+        call_args = mock_post.call_args
+        url = call_args[0][0] if call_args[0] else call_args.kwargs.get("url", "")
+        assert url == expected_url
+
 # ============================================================================
 # _get_provider — xAI
 # ============================================================================

@@ -314,8 +314,9 @@ def _generate_xai_tts(text: str, output_path: str, tts_config: Dict[str, Any]) -
     if creds.get("provider") == "xai-oauth":
         base_url = creds.get("base_url")
     else:
-        from hermes_cli.config import get_env_value
-        base_url = xai_config.get("base_url") or creds.get("base_url") or get_env_value("XAI_BASE_URL")
+        # creds["base_url"] is always set and already origin-pinned by the
+        # resolver; do not re-read XAI_BASE_URL raw here.
+        base_url = xai_config.get("base_url") or creds.get("base_url")
     base_url = str(base_url or DEFAULT_XAI_BASE_URL).strip().rstrip("/")
 
     # Documented minimal POST /v1/tts shape; optional fields only when they differ from defaults.

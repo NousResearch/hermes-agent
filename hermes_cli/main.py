@@ -72,6 +72,20 @@ if _argv_is_gateway_run(sys.argv[1:]):
     except Exception:
         pass
 
+    # Deadman's switch (LAG-677): second layer of defense for the transcriber
+    # stack. If its watchdog is itself dead, the gateway startup notices and
+    # notifies once. Never raises; inert on machines without the heartbeat
+    # file (see hermes_gateway_deadmans_switch.py).
+    try:
+        from hermes_gateway_deadmans_switch import (
+            run_gateway_deadmans_switch as _run_deadman,
+        )
+
+        _run_deadman()
+        del _run_deadman
+    except Exception:
+        pass
+
 
 def _exit_after_oneshot(rc: object) -> None:
     """Exit one-shot mode without letting late native finalizers change rc.

@@ -48,6 +48,14 @@ import {
 } from '@/lib/events-reconnect'
 import { credentialWarning, sidecarErrorMessage } from '@/lib/chat-sidebar-banner'
 import { titleFromSessionInfoPayload } from '@/lib/chat-title'
+import {
+  applyDashboardSubagentEvent,
+  formatDashboardSubagentElapsed,
+  isDashboardSubagentEventType,
+  isDashboardSubagentTerminal,
+  listDashboardSubagents,
+  type DashboardSubagentRoster
+} from '@/lib/dashboard-subagents'
 
 import { cn } from '@/lib/utils'
 import { AlertCircle, ChevronDown, KeyRound, RefreshCw } from 'lucide-react'
@@ -61,18 +69,6 @@ interface SessionInfo {
   credential_warning?: string
   title?: string
 }
-
-// Auto-redial budget for the JSON-RPC sidecar (#95951). After this many
-// bounded-backoff attempts the manual Reconnect affordance stays the only
-// path, mirroring the events feed's give-up contract.
-const SIDE_CAR_MAX_RECONNECT_ATTEMPTS = 5;
-
-// Surfaced once when the redial budget is exhausted. Only this module may
-// clear it (on the next successful open), matching how the events feed
-// owns its own banner messages.
-const SIDE_CAR_GAVE_UP_MESSAGE =
-  "gateway sidecar disconnected — gave up after " +
-  `${SIDE_CAR_MAX_RECONNECT_ATTEMPTS} attempts, use Reconnect`;
 
 const STATE_LABEL: Record<ConnectionState, string> = {
   idle: 'idle',
@@ -130,12 +126,6 @@ export function ChatSidebar({
   const [version, setVersion] = useState(0)
   const gw = useMemo(() => new GatewayClient(), [])
   const feed = useMemo(() => new EventsFeedClient(), [])
-  // Sidecar auto-redial budget (#95951). A ref, NOT effect state: the counter
-  // must survive the [gw, version] effect re-runs a redial triggers, or the
-  // budget resets every attempt and never exhausts.
-  // Reset on a successful open and on scope switches.
-  const sidecarRedialAttemptRef = useRef(0)
-  const sidecarGaveUpRef = useRef(false)
 
   const [state, setState] = useState<ConnectionState>('idle')
   const [info, setInfo] = useState<SessionInfo>({})
@@ -164,6 +154,9 @@ export function ChatSidebar({
   // Short name of a just-saved model awaiting confirm to reload (a fresh chat
   // session is how the running chat adopts it; we confirm before discarding it).
   const [pendingReloadModel, setPendingReloadModel] = useState<string | null>(null)
+  const [roster, setRoster] = useState<DashboardSubagentRoster>({})
+  const [expandedSubagentId, setExpandedSubagentId] = useState<string | null>(null)
+  const [nowMs, setNowMs] = useState(() => Date.now())
 
   const refreshEffectiveModel = useCallback(() => {
     void api
@@ -193,9 +186,8 @@ export function ChatSidebar({
     if (prevScopeKey.current === scopeKey) return
     prevScopeKey.current = scopeKey
     setError(null)
-    // Fresh scope, fresh sidecar redial budget (#95951).
-    sidecarRedialAttemptRef.current = 0
-    sidecarGaveUpRef.current = false
+    setRoster({})
+    setExpandedSubagentId(null)
     setVersion(v => v + 1)
   }, [scopeKey])
 
@@ -226,57 +218,6 @@ export function ChatSidebar({
       }
     })
 
-    // Auto-redial after a transient drop (#95951): a dashboard service
-    // restart closes the sidecar's WebSocket with 1012, and GatewayClient
-    // deliberately delegates reconnect policy to this connection owner.
-    // Bounded exponential backoff — the same shape the PTY pane uses —
-    // capped at SIDE_CAR_MAX_RECONNECT_ATTEMPTS; after that the manual
-    // Reconnect affordance stays the only path. A successful open resets
-    // the counter; unmount or a scope switch (version bump) cancels the
-    // pending timer because this effect tears down with the old client.
-    let redialTimer: ReturnType<typeof setTimeout> | null = null;
-    const offRedial = gw.onState((s) => {
-      if (s === "open") {
-        sidecarRedialAttemptRef.current = 0;
-        if (sidecarGaveUpRef.current) {
-          sidecarGaveUpRef.current = false;
-          setError((current) =>
-            current === SIDE_CAR_GAVE_UP_MESSAGE ? null : current,
-          );
-        }
-        return;
-      }
-      if (s !== "closed" && s !== "error") {
-        return;
-      }
-      if (cancelled || redialTimer) {
-        return;
-      }
-      // The attempt counter lives in a ref: each redial rebuilds the client
-      // and re-runs this effect, so a closure-local counter would reset and
-      // the budget would never exhaust (#95951).
-      if (sidecarRedialAttemptRef.current >= SIDE_CAR_MAX_RECONNECT_ATTEMPTS) {
-        // Mirror the events feed's give-up contract: say so once, then the
-        // manual Reconnect affordance stays the only path. Cleared again if
-        // a later connection does open (manual reconnect followed by a
-        // within-budget drop).
-        if (!sidecarGaveUpRef.current) {
-          sidecarGaveUpRef.current = true;
-          setError((current) => current ?? SIDE_CAR_GAVE_UP_MESSAGE);
-        }
-        return;
-      }
-      const attempt = sidecarRedialAttemptRef.current;
-      sidecarRedialAttemptRef.current += 1;
-      const delayMs = Math.min(250 * 2 ** attempt, 3000);
-      redialTimer = setTimeout(() => {
-        redialTimer = null;
-        if (!cancelled) {
-          setVersion((v) => v + 1);
-        }
-      }, delayMs);
-    });
-
     // Create the sidecar session so the gateway surfaces session-scoped
     // signals (connection state, credential warnings). It's independent of the
     // PTY pane's session by design. The model picker no longer rides this
@@ -299,16 +240,12 @@ export function ChatSidebar({
 
     return () => {
       cancelled = true
-      if (redialTimer) {
-        clearTimeout(redialTimer)
-        redialTimer = null
-      }
-      offRedial()
       offState()
       offSessionInfo()
       offError()
       gw.close()
     }
+    // `profile` is read from render; scope changes bump `version` → redial.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [gw, version])
 
@@ -411,6 +348,11 @@ export function ChatSidebar({
     const offNewSession = feed.on('dashboard.new_session_requested', () => {
       onDashboardNewSessionRequest?.()
     })
+    const offSubagents = feed.onAny(ev => {
+      if (isDashboardSubagentEventType(ev.type)) {
+        setRoster(prev => applyDashboardSubagentEvent(prev, { type: ev.type, payload: ev.payload }))
+      }
+    })
 
     void connect()
 
@@ -424,6 +366,7 @@ export function ChatSidebar({
       offState()
       offSessionInfo()
       offNewSession()
+      offSubagents()
       feed.close()
     }
   }, [channel, feed, onDashboardNewSessionRequest, onSessionTitleChange, version])
@@ -434,10 +377,24 @@ export function ChatSidebar({
     refreshEffectiveModel()
   }, [refreshEffectiveModel, version])
 
+  const subagentRows = listDashboardSubagents(roster);
+  const hasLiveSubagent = subagentRows.some(
+    (row) => !isDashboardSubagentTerminal(row.status),
+  );
+  useEffect(() => {
+    if (!hasLiveSubagent) {
+      return;
+    }
+    const timer = window.setInterval(() => setNowMs(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, [hasLiveSubagent]);
+
   const reconnect = useCallback(() => {
     setError(null)
     setModelNotice(null)
     setPendingReloadModel(null)
+    setRoster({})
+    setExpandedSubagentId(null)
     setVersion(v => v + 1)
   }, [])
 
@@ -483,6 +440,45 @@ export function ChatSidebar({
           {STATE_LABEL[state]}
         </Badge>
       </Card>
+
+      {subagentRows.length > 0 && (
+        <section aria-label="Subagents">
+          <Card className="flex flex-col gap-2 px-3 py-2">
+            <div className="text-display text-xs tracking-wider text-text-tertiary">
+              subagents
+            </div>
+            {subagentRows.map((row) => {
+              const open = expandedSubagentId === row.id;
+              return (
+                <div key={row.id} className="min-w-0">
+                  <button
+                    type="button"
+                    aria-expanded={open}
+                    aria-label={row.goal}
+                    className="flex w-full min-w-0 items-center gap-2 text-left text-xs"
+                    onClick={() =>
+                      setExpandedSubagentId((cur) =>
+                        cur === row.id ? null : row.id,
+                      )
+                    }
+                  >
+                    <span className="shrink-0 text-text-tertiary">{row.status}</span>
+                    <span className="min-w-0 flex-1 truncate">{row.goal}</span>
+                    <span className="shrink-0 tabular-nums text-text-tertiary">
+                      {formatDashboardSubagentElapsed(row.startedAt, nowMs)}
+                    </span>
+                  </button>
+                  {open && (
+                    <pre className="mt-1 max-h-40 overflow-auto whitespace-pre-wrap text-[11px] text-text-secondary">
+                      {row.transcript.join("\n")}
+                    </pre>
+                  )}
+                </div>
+              );
+            })}
+          </Card>
+        </section>
+      )}
 
       {supportsReasoning && (
         <Card className="py-0">

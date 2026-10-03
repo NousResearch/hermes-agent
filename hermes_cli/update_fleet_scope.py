@@ -137,11 +137,10 @@ def systemd_unit_in_update_scope(scope_cmd: list, svc_name: str, scope: set[Path
     return home_in_update_scope(home, scope)
 
 
-def launchd_label_foreign_home(label: str, scope: set[Path] | None = None) -> str | None:
-    """The HERMES_HOME a derived launchd label's installed plist pins when that home is NOT one of
-    this update's — labels are account-global, so root B's default profile derives the same bare
-    ``ai.hermes.gateway`` root A installed. ``None`` = ours, or no/unreadable plist (the locate step
-    decides whether a job exists; only a proven foreign home is refused)."""
+def launchd_label_pinned_home(label: str) -> str | None:
+    """The ``HERMES_HOME`` a derived launchd label's installed plist pins, or ``None`` when no
+    plist exists for the label or it names no home (the locate step decides whether a job
+    exists; ownership checks treat an unreadable home as "not provably foreign")."""
     import plistlib
     with suppress(Exception):
         from hermes_cli.gateway import get_launchd_plist_path
@@ -150,8 +149,19 @@ def launchd_label_foreign_home(label: str, scope: set[Path] | None = None) -> st
             return None
         data = plistlib.loads(plist_path.read_bytes())
         pinned = str(data["EnvironmentVariables"]["HERMES_HOME"])
-        return None if home_in_update_scope(pinned, scope) else pinned
+        return pinned or None
     return None
+
+
+def launchd_label_foreign_home(label: str, scope: set[Path] | None = None) -> str | None:
+    """The HERMES_HOME a derived launchd label's installed plist pins when that home is NOT one of
+    this update's — labels are account-global, so root B's default profile derives the same bare
+    ``ai.hermes.gateway`` root A installed. ``None`` = ours, or no/unreadable plist (the locate step
+    decides whether a job exists; only a proven foreign home is refused)."""
+    pinned = launchd_label_pinned_home(label)
+    if pinned is None:
+        return None
+    return None if home_in_update_scope(pinned, scope) else pinned
 
 
 def describe_skipped_runtime(kind: str, name: str, home: str | None) -> str:

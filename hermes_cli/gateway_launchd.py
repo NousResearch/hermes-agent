@@ -534,6 +534,96 @@ def _spawn_deferred_launchd_reload(
     return True
 
 
+def launchd_job_drain_target(home, supervised_pid: int | None) -> int | None:
+    """PID a sibling launchd job's drain should signal: the gateway that ``home``'s control
+    socket actually answers on, else the launchd-supervised PID.
+
+    ``launchctl`` reports the job's *supervised* process, and under the current
+    ``generate_launchd_plist`` template that is the ``osascript`` wrapper macOS Local Network
+    Privacy needs (#71206), not the gateway it ``system()``-spawns. SIGUSR1ing the wrapper
+    kills only the wrapper — the gateway child is orphaned on pre-update code holding the
+    socket, and fleet verification then reports the STALE that fails the update (#126883).
+    The control-socket ``identify`` answer is the gateway itself (#92091). No answer (a
+    gateway too old for the socket, or wedged before binding) falls back to the supervised
+    PID: the best candidate left, and the pre-fix behavior.
+    """
+    from gateway.control_socket import identify_gateway
+
+    answer = identify_gateway(Path(home))
+    pid = answer.get("pid") if isinstance(answer, dict) else None
+    if isinstance(pid, int) and pid > 0:
+        return pid
+    return supervised_pid if supervised_pid and supervised_pid > 0 else None
+
+
+# Outcome of refresh_launchd_plist_for_label(). Compare with ``==``, never test for
+# truthiness — all three are non-empty strings and the loop must route FAILED_TO_REGISTER
+# differently from NO_CHANGE (a kickstart cannot work on an unregistered job, #126883).
+REFRESH_PLIST_RELOADED = "reloaded"
+REFRESH_PLIST_NO_CHANGE = "no-change"
+REFRESH_PLIST_FAILED_TO_REGISTER = "failed-to-register"
+
+
+def refresh_launchd_plist_for_label(label: str, home, *, domain: str) -> str:
+    """Refresh the installed plist for a SIBLING launchd label pinned to ``home``, reloading the
+    job in ``domain``; returns a ``REFRESH_PLIST_*`` outcome, not a bool.
+
+    The update's sibling restart loop needs the invoking path's invariant (see
+    ``launchd_restart``: "restarting without refreshing first faithfully revives a stale
+    service") for labels that are NOT the current profile's. ``refresh_launchd_plist_if_needed``
+    resolves everything — plist path, comparison basis, reload target — from the current
+    profile, so this scopes the home the same way ``_prepare_service_launcher`` does: the
+    context-local ``HERMES_HOME`` override (never ``os.environ`` — the updater process keeps
+    running against the invoking profile and threads read its env concurrently). The label's
+    plist path comes from ``get_launchd_plist_path()``, which derives the name from the
+    account home + the overridden home's profile suffix; a label that disagrees with the
+    derivation is refused rather than written to the derived path, so a home whose suffix
+    resolution differs can never edit another job's definition (#41403 fail-closed).
+
+    Unlike the self-profile refresh, the reload targets ``domain`` — the domain the caller
+    located the job in — because a fleet mixes ``gui/<uid>`` and ``user/<uid>`` and the
+    process-cached ``_launchd_domain()`` answers for the invoking profile only (#41403 review).
+    The updater never runs inside a sibling gateway's process tree, so the deferred-reload
+    helper's coalition-survival dance does not apply; the bounded in-process bootout/bootstrap
+    is the whole reload.
+    """
+    from hermes_constants import (
+        reset_hermes_home_override,
+        set_hermes_home_override,
+    )
+
+    home = Path(home)
+    token = set_hermes_home_override(home)
+    try:
+        plist_path = _gw().get_launchd_plist_path()
+        if plist_path.name != f"{label}.plist":
+            return REFRESH_PLIST_NO_CHANGE
+        if not plist_path.exists() or _gw().launchd_plist_is_current():
+            return REFRESH_PLIST_NO_CHANGE
+        new_plist = _gw().generate_launchd_plist()
+        if _gw()._refuse_temp_home_service_write(new_plist, "launchd plist"):
+            return REFRESH_PLIST_NO_CHANGE
+        _gw()._prepare_service_launcher()
+        plist_path.write_text(new_plist, encoding="utf-8")
+        target = f"{domain}/{label}"
+        # Captured: best-effort (a drained job may already be unloaded), keep expected noise off.
+        subprocess.run(["launchctl", "bootout", target], check=False, timeout=90, **_gw()._CAPTURE_TEXT)
+        deadline = time.monotonic() + _launchd_reload_budget()
+        if not _gw()._retry_launchctl_bootstrap_until_registered(domain, plist_path, label, deadline=deadline):
+            _gw()._append_launchd_reload_log(
+                f"FAILED launchd reload of {target} — service NOT registered after "
+                f"{int(_launchd_reload_budget())}s of retries"
+            )
+            # Distinct from NO_CHANGE: the plist was rewritten and the job was
+            # booted out — kickstart -k cannot work on an unregistered job, so
+            # the caller owes it launchd_restart's bounded bootstrap revival.
+            return REFRESH_PLIST_FAILED_TO_REGISTER
+        print(f"↻ Updated {label} service definition to match the current Hermes install")
+        return REFRESH_PLIST_RELOADED
+    finally:
+        reset_hermes_home_override(token)
+
+
 def refresh_launchd_plist_if_needed() -> bool:
     """Rewrite the installed plist when the generated one differs, then bootout/bootstrap so launchd
     re-reads it immediately."""
@@ -725,6 +815,25 @@ def _launchd_ok(message: str) -> None:
     """Print a launchd success line and clear the unsupported marker (an OS fix recovers automatically)."""
     print(message)
     _gw()._clear_launchd_unsupported_marker()
+
+
+def launchd_reload_unregistered_job(label: str, domain: str, plist_path) -> None:
+    """Bootout (best-effort) + bootstrap + kickstart a job that is NOT registered; raises
+    CalledProcessError/TimeoutExpired on failure so the caller owns the accounting.
+
+    ``kickstart -k`` only works on a REGISTERED job — after a failed plist refresh (bootout
+    ran, bootstrap never registered) it fails outright and the naive hint ("recover with
+    kickstart") provably cannot work (#126883). bootstrap is the bounded revival the job
+    actually needs; the bootout first clears a stale registration so bootstrap can't hit
+    EIO. ``plist_path`` is explicit because the sibling loop knows the label's plist, and
+    ``_launchd_domain()``'s cache answers for the invoking profile only (#41403).
+    """
+    target = f"{domain}/{label}"
+    # Captured: best-effort (a refresh that failed to re-register already booted it out),
+    # so an expected Boot-out failed: 3 must not leak to the terminal.
+    subprocess.run(["launchctl", "bootout", target], check=False, timeout=90, **_gw()._CAPTURE_TEXT)
+    _launchctl_bootstrap(domain, plist_path, label, timeout=30)
+    subprocess.run(["launchctl", "kickstart", target], check=True, timeout=30, **_gw()._CAPTURE_TEXT)
 
 
 def launchd_stop():

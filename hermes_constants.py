@@ -235,6 +235,8 @@ def get_default_hermes_root(*, home: str | Path | None = None) -> Path:
 
 # Tombstone lives beside the profile dir (not inside) so a stale mkdir or rmtree cannot erase it.
 _DELETED_PROFILES_DIR = ".deleted"
+_PROFILE_DELETE_PENDING = "deleting"
+_PROFILE_DELETE_SETTLED = "deleted"
 # Files marking a real Hermes home; arbitrary dirs with a ``profiles`` segment lack them.
 _HERMES_HOME_MARKERS = ("config.yaml", ".env", "state.db")
 
@@ -311,6 +313,22 @@ def named_profile_is_deleted(profile_home: str | Path) -> bool:
     return profile_tombstone_path(Path(profile_home)).exists()
 
 
+def named_profile_deletion_pending(profile_home: str | Path) -> bool:
+    """Whether deletion/identity settlement still owns this profile name.
+
+    Old tombstones contain ``deleted`` and permit explicit same-name recreation. Any other
+    content (including a torn/unreadable marker) fails closed so a replacement cannot inherit
+    routing identity from an unfinished delete.
+    """
+    marker = profile_tombstone_path(Path(profile_home))
+    try:
+        return marker.read_text(encoding="utf-8-sig").strip() != _PROFILE_DELETE_SETTLED
+    except FileNotFoundError:
+        return False
+    except (OSError, UnicodeError):
+        return True
+
+
 # A directory under profiles/ is a profile only when something identifies it as one.
 # Runtime side-effects (cron heartbeats, log rotation, caches) create dirs that carry
 # none of these; a pre-tombstone ghost shell or a stray infrastructure dir must never be
@@ -360,7 +378,13 @@ def named_profile_is_live(profile_home: str | Path) -> bool:
 def mark_named_profile_deleted(profile_home: str | Path) -> None:
     marker = profile_tombstone_path(Path(profile_home))
     marker.parent.mkdir(parents=True, exist_ok=True)
-    marker.write_text("deleted\n", encoding="utf-8")
+    marker.write_text(f"{_PROFILE_DELETE_SETTLED}\n", encoding="utf-8")
+
+
+def mark_named_profile_deleting(profile_home: str | Path) -> None:
+    marker = profile_tombstone_path(Path(profile_home))
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    marker.write_text(f"{_PROFILE_DELETE_PENDING}\n", encoding="utf-8")
 
 
 def clear_named_profile_deleted(profile_home: str | Path) -> None:

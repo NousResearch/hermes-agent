@@ -67,22 +67,37 @@ def purge_profile_identity(profile: str) -> bool:
     times out, predates the verb, or fails the purge is reported with a retry command instead of
     being silently assumed. With no live multiplexer nothing else holds the store and the durable
     delete happens here. Session history rows are not part of this purge — it settles identity only.
-    Refuses a name that is a live profile again: the purge keys off the name alone, so a same-name
-    profile created after the delete (the very case a failed settlement leaves behind) would
-    otherwise have the new incarnation's routing/heartbeat identity deleted from under it. The
-    delete path tombstones the directory before calling this, so the guard never blocks it.
+    Refuses while the profile directory still exists, even if it is tombstoned or marker-less: the
+    purge keys off the name alone, so a failed/partial rmtree must not discard identity that still
+    belongs to the old home. The delete path calls this only after rmtree commits; a same-name
+    replacement remains fenced until this settlement succeeds.
     Idempotent: purging an already-purged profile succeeds. Returns False only when the identity was
     not settled — by this process or by the live gateway.
     """
-    from hermes_cli.profiles import _canon_valid, _live_default_multiplexer, profile_exists
+    from hermes_cli.profiles import _canon_valid, _live_default_multiplexer, get_profile_dir
     canon = _canon_valid(profile)
     if canon == "default":
         raise ValueError("Identity purge applies to named profiles only.")
-    if profile_exists(canon):
+    profile_dir = get_profile_dir(canon)
+    if profile_dir.exists():
         raise ValueError(
-            f"Profile '{canon}' exists; purge-identity only settles the identity of a delete that "
-            "has already completed.")
-    return _purge_profile_identity(canon, _live_default_multiplexer())
+            f"Profile home '{profile_dir}' still exists; finish or retry its filesystem deletion "
+            "before purging identity.")
+    purged = _purge_profile_identity(canon, _live_default_multiplexer())
+    if purged:
+        # ``deleting`` is an admission fence, not just an enumeration hint. Finalize it only
+        # after both filesystem removal and identity settlement, including this retry path.
+        from hermes_constants import mark_named_profile_deleted
+        try:
+            mark_named_profile_deleted(profile_dir)
+        except OSError as exc:
+            print(
+                f"⚠ Profile identity was purged, but its deletion fence could not be finalized "
+                f"for {profile_dir}: {type(exc).__name__}: {exc}",
+                file=sys.stderr,
+            )
+            return False
+    return purged
 
 
 def _purge_profile_identity(canon: str, live_mux: bool) -> bool:

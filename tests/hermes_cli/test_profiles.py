@@ -12,6 +12,7 @@ import socket
 import stat
 import sys
 import tarfile
+import threading
 import types
 from pathlib import Path
 from unittest.mock import patch, MagicMock
@@ -545,18 +546,89 @@ class TestDeleteProfile:
     """Tests for delete_profile()."""
 
 
-    def test_rmtree_failure_raises(self, profile_env):
+    def test_rmtree_failure_restores_profile_and_defers_identity_purge(self, profile_env):
+        from hermes_constants import named_profile_is_deleted
+        from hermes_state import SessionDB
+
         profile_dir = create_profile("coder", no_alias=True)
         set_active_profile("coder")
+        notifications = []
+        scope = str(profile_env / ".hermes" / "sessions")
+        db = SessionDB(profile_env / ".hermes" / "state.db")
+        db.save_gateway_routing_entry(
+            "agent:coder:feishu:dm:chatA",
+            json.dumps({"session_key": "agent:coder:feishu:dm:chatA"}),
+            scope=scope,
+        )
+        db.close()
 
         with patch("hermes_cli.profiles._cleanup_gateway_service"), \
-             patch("hermes_cli.profiles.time.sleep"), \
-             patch("hermes_cli.profiles.shutil.rmtree", side_effect=PermissionError("locked")):
+             patch("hermes_cli.profiles._notify_multiplexer",
+                   side_effect=lambda name: notifications.append(name)), \
+             patch("hermes_cli.profiles._live_default_multiplexer", return_value=False), \
+             patch("hermes_cli.profiles._rmtree_with_retry",
+                   side_effect=PermissionError("locked")):
             with pytest.raises(RuntimeError, match="Could not remove profile directory"):
                 delete_profile("coder", yes=True)
 
         assert profile_dir.is_dir()
-        assert get_active_profile() == "default"
+        assert profiles.profile_exists("coder")
+        assert not named_profile_is_deleted(profile_dir)
+        assert get_active_profile() == "coder"
+        assert notifications == ["coder", "coder"]  # unserve, then rollback/re-serve
+        check = SessionDB(profile_env / ".hermes" / "state.db")
+        try:
+            assert set(check.load_gateway_routing_entries(scope=scope)) == {
+                "agent:coder:feishu:dm:chatA"
+            }
+        finally:
+            check.close()
+
+    def test_delete_fences_same_name_create_during_failed_removal(self, profile_env):
+        """A partial rmtree must not admit a replacement before the failed delete rolls back."""
+        from hermes_constants import named_profile_is_deleted
+
+        profile_dir = create_profile("coder", no_alias=True)
+        removal_entered = threading.Event()
+        release_removal = threading.Event()
+        delete_errors = []
+
+        def fail_after_removing_identity(path, _onexc):
+            # Deterministic partial-rmtree shape: the directory survives but no longer carries a
+            # profile identity marker. Without the operation fence, create_profile treats this
+            # tombstoned shell as replaceable and publishes a same-name profile into the old route.
+            for marker in ("config.yaml", ".env", "SOUL.md", "profile.yaml", "auth.json", "state.db"):
+                (path / marker).unlink(missing_ok=True)
+            removal_entered.set()
+            assert release_removal.wait(5), "test did not release the injected removal failure"
+            raise PermissionError("locked remainder")
+
+        def run_delete():
+            try:
+                delete_profile("coder", yes=True)
+            except Exception as exc:
+                delete_errors.append(exc)
+
+        with patch("hermes_cli.profiles._cleanup_gateway_service"), \
+             patch("hermes_cli.profiles._notify_multiplexer"), \
+             patch("hermes_cli.profiles._purge_identity", return_value=True), \
+             patch("hermes_cli.profiles._rmtree_with_retry",
+                   side_effect=fail_after_removing_identity):
+            delete_thread = threading.Thread(target=run_delete)
+            delete_thread.start()
+            assert removal_entered.wait(5), "delete did not reach the injected removal failure"
+            try:
+                with pytest.raises(FileExistsError, match="operation is already in progress"):
+                    create_profile("coder", no_alias=True)
+            finally:
+                release_removal.set()
+                delete_thread.join(timeout=5)
+
+        assert not delete_thread.is_alive()
+        assert len(delete_errors) == 1
+        assert isinstance(delete_errors[0], RuntimeError)
+        assert profile_dir.is_dir()
+        assert not named_profile_is_deleted(profile_dir)
 
     def test_delete_purges_profile_keyed_identity(self, profile_env):
         """A deleted profile must not keep routing/heartbeat/delivery identity (#111926, delete side).

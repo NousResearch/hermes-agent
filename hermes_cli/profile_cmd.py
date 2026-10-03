@@ -295,7 +295,7 @@ def _profile_delete(args):
     from hermes_cli.profiles import delete_profile
     try:
         delete_profile(args.profile_name, yes=getattr(args, "yes", False))
-    except (ValueError, FileNotFoundError, RuntimeError) as e:
+    except (ValueError, FileExistsError, FileNotFoundError, RuntimeError) as e:
         _die(f"Error: {e}")
 
 

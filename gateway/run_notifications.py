@@ -587,10 +587,14 @@ class GatewayNotificationsMixin:
 
     def _pending_marker_metadata(self, platform, chat_id, data: dict, adapter):
         """Thread metadata for a persisted update/restart marker (thread_id/chat_type/message_id keys)."""
-        return self._thread_metadata_for_target(
+        metadata = self._thread_metadata_for_target(
             platform, chat_id, data.get("thread_id"), chat_type=data.get("chat_type"),
             reply_to_message_id=data.get("message_id"), adapter=adapter,
         )
+        if platform == Platform.TELEGRAM and data.get("user_id") is not None:
+            metadata = dict(metadata or {})
+            metadata["requester_user_id"] = str(data["user_id"])
+        return metadata
 
     async def _watch_update_completion_only(self, paths: "_UpdatePaths", deadline: float, poll_interval: float) -> None:
         """Fallback when no adapter/chat can be resolved: wait for the exit code, then notify."""
@@ -637,11 +641,11 @@ class GatewayNotificationsMixin:
         adapter = target.adapter
         if getattr(type(adapter), "send_update_prompt", None) is not None:
             with _log_suppressed(logging.DEBUG, "Button-based update prompt failed: %s"):
-                await adapter.send_update_prompt(
+                result = await adapter.send_update_prompt(
                     chat_id=target.chat_id, prompt=prompt_text, default=default,
                     session_key=target.session_key, metadata=target.send_metadata(),
                 )
-                sent_buttons = True
+                sent_buttons = bool(result and getattr(result, "success", False))
         if not sent_buttons:
             default_hint = t("gateway.update.prompt_default", default=default) if default else ""
             _p = getattr(adapter, "typed_command_prefix", "/")

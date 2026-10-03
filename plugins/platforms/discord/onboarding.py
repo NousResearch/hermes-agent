@@ -55,15 +55,6 @@ class DiscordBotCheck:
     def bot_settings_url(self) -> str:
         return f"https://discord.com/developers/applications/{self.app_id}/bot"
 
-    def as_payload(self) -> dict:
-        return {
-            "app_id": self.app_id, "bot_name": self.bot_name,
-            "owners": [{"id": uid, "username": name} for uid, name in self.owners],
-            "message_content": self.message_content, "server_members": self.server_members,
-            "server_count": self.server_count, "invite_url": self.invite_url,
-            "bot_settings_url": self.bot_settings_url,
-        }
-
 
 def _owners(app: dict) -> tuple[tuple[str, str], ...]:
     team = app.get("team")
@@ -117,7 +108,7 @@ def _discord_token_shape_error(token: str) -> Optional[str]:
 
     Users routinely paste the application ID from the Developer Portal's General Information page
     instead of the bot token (Bot page). A real bot token is dot-separated base64 and never purely
-    numeric, so this is a safe, narrow shape check (port of openclaw/openclaw#140531).
+    numeric, so this is a safe, narrow shape check.
     """
     if token and token.strip().isdigit():
         return ("That looks like a numeric application ID, not a bot token. "

@@ -34,8 +34,7 @@ import {
   setSelectedStoredSessionId,
   setSessions
 } from '@/store/session'
-import { $focusedStoredSessionId } from '@/store/session-focus'
-import { $sessionTiles, clearAllSessionStates } from '@/store/session-states'
+import { $focusedStoredSessionId, $sessionTiles, clearAllSessionStates } from '@/store/session-states'
 import type { SessionInfo } from '@/types/hermes'
 
 import { useSessionActions } from './use-session-actions'

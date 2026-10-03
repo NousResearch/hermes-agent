@@ -189,36 +189,6 @@ it('keeps a live body continuously connected across replacement IDs, ancestry an
   expect(disconnected).not.toContain(page)
 })
 
-// `inert` does not move focus off an element that already holds it: a hidden
-// session's kept Browser would keep taking the keystrokes meant for the chat
-// now on screen. A host going hidden hands focus back to the document.
-it('releases focus held inside a live body when its host is hidden', () => {
-  registerPane('live')
-  registerPane('plain', false)
-  setTree(group(['live'], { id: 'shown' }))
-  render(<LayoutTreeRoot />)
-  const page = guest()!
-  const input = page.querySelector('input')!
-  const doc = page.ownerDocument
-
-  input.focus()
-  expect(doc.activeElement).toBe(input)
-
-  setTree(group(['plain'], { id: 'other-session' }))
-  expect(guest()).toBe(page)
-  expect(page.closest('[data-pane-hidden]')?.hasAttribute('inert')).toBe(true)
-  expect(page.contains(doc.activeElement)).toBe(false)
-
-  // Focus elsewhere is not the hidden host's to take: hiding again leaves it.
-  setTree(group(['live'], { id: 'shown-again' }))
-  const outside = doc.createElement('button')
-  doc.body.append(outside)
-  outside.focus()
-  setTree(group(['plain'], { id: 'other-session-again' }))
-  expect(doc.activeElement).toBe(outside)
-  outside.remove()
-})
-
 it('destroys removed contributions and does not revive their old activation on re-registration', () => {
   const remove = registerPane('live')
   registerPane('plain', false)

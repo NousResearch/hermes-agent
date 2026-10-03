@@ -740,18 +740,9 @@ class BaseEnvironment(ABC):
             pass
 
     def _prepare_command(self, command: str) -> tuple[str, str | None]:
-        """Rewrite sudo for a piped password, or leave it alone when this backend has NOPASSWD.
-
-        Also applies the macOS ``open`` frontmost raise-ladder (a pure string
-        rewrite, no-op on non-Darwin) so files opened via tool calls are
-        brought to the front instead of landing behind the Hermes window.
-        """
-        from tools.terminal_tool_macos_open import _transform_macos_open_command
+        """Rewrite sudo for a piped password, or leave it alone when this backend has NOPASSWD."""
         from tools.terminal_tool_sudo import _transform_sudo_command
-        return _transform_sudo_command(
-            _transform_macos_open_command(command),
-            sudo_nopasswd_check=self._sudo_nopasswd_works,
-        )
+        return _transform_sudo_command(command, sudo_nopasswd_check=self._sudo_nopasswd_works)
 
     _SUDO_PROBE_TIMEOUT_S = 3
 

@@ -29,7 +29,6 @@
 
 import { actEngineSource, type PreviewActAction, type PreviewActResult } from '@/lib/preview-act/act-in-page'
 import { watchInPage } from '@/lib/preview-act/watch-in-page'
-import type { PreviewOwner } from '@/store/preview-ownership'
 
 import {
   clearCharsBack,
@@ -751,19 +750,17 @@ async function driveScroll(
   return { ...after.result, acted: 'scrolled the page', success: true }
 }
 
-/** Run one action against the page of the ACTIVE tab among those `owner`
- *  (the requesting session's stored id; omitted = the focused session) may
- *  see. `kind` is a bare string: the verb arrives off the wire, and the
- *  history ones never reach the in-page engine. */
+/** Run one action against the ACTIVE preview tab's page. `kind` is a bare
+ *  string: the verb arrives off the wire, and the history ones never reach
+ *  the in-page engine. */
 export async function actOnActivePreview(
   action: Omit<PreviewActAction, 'kind'> & { kind: string },
-  signal?: AbortSignal,
-  owner?: PreviewOwner
+  signal?: AbortSignal
 ): Promise<PreviewActResult> {
   const nav = NAV_ACTIONS.find(verb => verb === action.kind)
 
   if (nav) {
-    const handle = activePreviewNav(owner)
+    const handle = activePreviewNav()
 
     if (!handle) {
       return { error: NOTHING_OPEN, success: false }
@@ -776,7 +773,7 @@ export async function actOnActivePreview(
     return { acted: nav, note: 'Page is loading — call elements to see what is on it.', success: true }
   }
 
-  const run = activePreviewScriptRunner(owner)
+  const run = activePreviewScriptRunner()
 
   if (!run) {
     return { error: NOTHING_OPEN, success: false }
@@ -805,7 +802,7 @@ export async function actOnActivePreview(
     return trip.kind === 'answered' ? trip.result : { acted: typed.kind, note: NAVIGATED, success: true }
   }
 
-  const input = activePreviewInput(owner)
+  const input = activePreviewInput()
 
   if (input && DRIVEN.indexOf(typed.kind) !== -1) {
     return driveAction(run, input, typed, signal)

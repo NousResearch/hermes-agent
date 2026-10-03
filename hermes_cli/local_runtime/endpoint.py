@@ -131,19 +131,17 @@ def _kick_managed_boot(config: dict | None) -> None:
         finally:
             _KICK_LOCK.release()
 
-    from agent.memory_provider import spawn_context_thread
-
-    # The caller's profile scope: ``config=None`` resolves (and the boot prices) under it.
-    spawn_context_thread(_boot, name="lr-on-demand-boot").start()
+    threading.Thread(target=_boot, daemon=True,
+                     name="lr-on-demand-boot").start()
 
 
 def _boot_in_flight(config: dict | None) -> bool:
     """True when the managed runtime is enabled and PM holds an installed engine."""
     with suppress(Exception):
-        section = (_load_config_if_none(config) or {}).get("local_runtime") or {}
-        if not section.get("enabled"):
+        config = _load_config_if_none(config)
+        if not ((config or {}).get("local_runtime") or {}).get("enabled"):
             return False
         from hermes_cli.local_runtime.binaries import installed_engine
 
-        return installed_engine(section.get("backend") or "auto") is not None
+        return installed_engine() is not None
     return False

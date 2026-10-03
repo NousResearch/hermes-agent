@@ -72,16 +72,9 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # Two slices on the free standard runner (3 cores, 3 workers): one lane ran
-          # ~7.5 min and became the slowest required job once the Linux suite split.
-          - name: macOS-only tests (1/2)
+          - name: macOS-only tests
             runner: macos-latest
             marker: macos
-            slice: 1/2
-          - name: macOS-only tests (2/2)
-            runner: macos-latest
-            marker: macos
-            slice: 2/2
           - name: Windows-only tests
             runner: windows-latest-32-core
             marker: windows
@@ -182,7 +175,6 @@ jobs:
           # These files spawn nested PowerShell trees. CPU-count parallelism
           # starves cold child startup before the fixture's idle deadline.
           HERMES_TEST_WORKERS: ${{ matrix.marker == 'windows' && (runner.arch == 'ARM64' && '16' || '16') || '' }}
-          HERMES_TEST_SLICE: ${{ matrix.slice || '' }}
           # Belt-and-suspenders with tests/conftest.py's env blanking: no
           # test may reach a real provider API.
           OPENROUTER_API_KEY: ''

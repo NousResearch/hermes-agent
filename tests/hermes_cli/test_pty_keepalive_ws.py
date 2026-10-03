@@ -24,9 +24,6 @@ class FakeBridge:
     def resize(self, cols, rows):
         pass
 
-    def is_alive(self):
-        return self.alive
-
     def close(self):
         self.alive = False
 

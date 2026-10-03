@@ -255,8 +255,7 @@ class _SlashWorker:
         # ``--provider`` pins the child to the parent agent's virtual provider: without it the
         # worker re-resolves provider from config, so a MoA session (provider=moa, model=<preset>)
         # dispatched its preset NAME to the configured real provider and 402/503'd (#57283).
-        argv = [sys.executable, "-m", "tui_gateway.slash_worker", "--session-key", session_key,
-                "--parent-pid", str(os.getpid())] \
+        argv = [sys.executable, "-m", "tui_gateway.slash_worker", "--session-key", session_key] \
             + (["--model", model] if model else []) \
             + (["--provider", provider] if provider else [])
         self._closed = False
@@ -812,9 +811,9 @@ def _emit_approval_request(sid: str, data: dict | None) -> None:
     would otherwise echo verbatim to the TUI (third egress alongside chat platforms and the SSE/API stream).
     See #48456, #50767.
 
-    The wait is owned by ``tools.approval``'s queue (its own timeout, ``/approve all``, coalescing), so the request
-    is queue-backed: the response resolves the queue entry, and the entry's own resolution (any surface, timeout,
-    interrupt) withdraws the request with ``request.cancel``."""
+    The wait is owned by ``tools.approval``'s queue (no deadline on TUI/Desktop turns, ``/approve all``, coalescing),
+    so the request is queue-backed: the response resolves the queue entry, and the entry's own resolution (any
+    surface, interrupt, session close) withdraws the request with ``request.cancel``."""
     from tui_gateway import server_requests
     from tools import approval as _approval
     payload = _approval_request_payload(data)
@@ -825,8 +824,8 @@ def _emit_approval_request(sid: str, data: dict | None) -> None:
         if result is None:
             # No client can answer this prompt: the request was never sent (the only attached client predates
             # server→client requests) or the client answered -32601 (no handler). Without withdrawing the
-            # queue entry the agent would idle for the whole approvals.timeout with no prompt anywhere
-            # (#112548). A withdrawal, not a deny: nobody refused the command.
+            # queue entry the agent would idle on a prompt shown nowhere (#112548). A withdrawal, not a deny:
+            # nobody refused the command.
             if request_id:
                 _approval.withdraw_gateway_approval(session_key, request_id,
                                                     "the attached client cannot answer approval requests "
@@ -1075,24 +1074,17 @@ def _await_resume_history(sid: str, current: dict) -> bool:
         return _sessions.get(sid) is current
 
 
-def _attach_built_agent(sid: str, current: dict, agent) -> bool:
-    """Attach a freshly built agent to its live record (session DB row deferred to first run_conversation()).
-    False when ``session.close`` popped this record mid-build: teardown saw ``agent=None`` and closed
-    nothing, so the caller owns closing the orphan (#49852)."""
+def _attach_built_agent(current: dict, agent) -> None:
+    """Attach a freshly built agent to its live record (session DB row deferred to first run_conversation())."""
     # Bot Mode gate hint: the DB title lands post-first-turn but the system prompt builds at turn START.
     if _title_hint := str(current.get("pending_title") or "").strip():
         agent._session_title_hint = _title_hint
-    # Under the same lock session.close takes to pop the record: no window between "still live" and "attached".
-    with _sessions_lock:
-        if _sessions.get(sid) is not current:
-            return False
-        current["agent"] = agent
+    current["agent"] = agent
     # A workspace move can land while construction is still in flight.
     _register_session_cwd(current)
     _session_todo_state(current)
     # Baseline for the per-turn config sync (profile home override still active).
     current["config_model_seen"] = _config_model_target()
-    return True
 
 
 def _announce_built_agent(sid: str, key: str, current: dict, agent) -> None:
@@ -1114,8 +1106,8 @@ def _finish_agent_build(sid: str, key: str, current: dict, *, notify_registered:
     """Release build scopes and settle ownership of the late notify registration + dedicated db handle."""
     if scopes is not None:
         _release_build_profile_scopes(scopes)
-    # Reaped after the agent was attached: _attach_worker closed the worker; only a late notify
-    # registration can still leak (session.close unregistered before _build registered).
+    # Reaped mid-build: _attach_worker closed the worker; only a late notify registration can still
+    # leak (session.close unregistered before _build registered).
     with _sessions_lock:
         replaced = _sessions.get(sid) is not current
     if replaced and notify_registered:
@@ -1181,18 +1173,7 @@ def _start_agent_build(sid: str, session: dict) -> None:
                 agent = _make_agent(sid, key, **_deferred_build_agent_kwargs(current, session_db))
             finally:
                 _clear_session_context(tokens)
-            # Attach atomically against session teardown: ``session.close`` may have popped this
-            # session while the expensive build was in flight, in which case teardown could not close
-            # an agent that did not exist yet. Release the orphan immediately and do not keep wiring
-            # workers/callbacks for a dead session (#49852).
-            if not _attach_built_agent(sid, current, agent):
-                # Same contract as the replaced-before-attach exit above: a turn admitted against
-                # this record must refuse with the real reason rather than a generic missing agent.
-                current["agent_error"] = AGENT_BUILD_ABANDONED
-                with contextlib.suppress(Exception):
-                    if hasattr(agent, "close"):
-                        agent.close()
-                return
+            _attach_built_agent(current, agent)
             # No eager slash-worker pre-warm (slash.exec spawns on demand): each worker forks the full stdio
             # MCP fleet, and live-transport sessions are never reaped, so fleets would accumulate.
             notify_registered = _wire_session_agent(sid, key, agent)
@@ -1396,24 +1377,16 @@ def _ask(method: str, sid: str, params: dict, timeout: float | None = 300) -> st
 
 
 
-def _clarify_timeout_seconds() -> float | None:
-    """Clarify wait for the TUI/desktop bridge from the canonical config (gateway/CLI parity); 300s
-    historical default if config can't be read; ``<= 0`` = unlimited → None (never auto-skip)."""
-    with contextlib.suppress(Exception):
-        from tools.clarify_gateway import get_clarify_timeout
-        timeout = get_clarify_timeout()
-        return timeout if timeout > 0 else None
-    return 300
-
-
 def _clarify_block(sid: str, questions: list[dict]) -> dict:
     """Bridge the clarify tool callback onto one ``clarify`` server request carrying only the wire fields
-    (tool-side entries carry result-assembly keys too). Answers lock one at a time through ``clarify.lock``
-    (``null`` = skipped); the tool gets ``{"answers", "outcome"}`` — ``undelivered`` when no client took it."""
+    (tool-side entries carry result-assembly keys too). No deadline: the TUI/Desktop card stays until the
+    user answers, the turn is interrupted, or the session closes. Answers lock one at a time through
+    ``clarify.lock`` (``null`` = skipped); the tool gets ``{"answers", "outcome"}`` — ``undelivered`` when no
+    client took it."""
     from tui_gateway import server_requests
     wire = [{"qid": e["qid"], "question": e["question"], "choices": e["choices"], "multi_select": bool(e["multi_select"])}
             for e in questions]
-    result = server_requests.send("clarify", sid, {"questions": wire}, timeout=_clarify_timeout_seconds(),
+    result = server_requests.send("clarify", sid, {"questions": wire}, timeout=None,
                                   qids=[e["qid"] for e in questions])
     return result or {"answers": {}, "outcome": "undelivered"}
 
@@ -2373,8 +2346,7 @@ def _session_info(agent, session: dict | None = None) -> dict:
     # Hermes-internal step (#61634) as a wire level the route does not have.
     reasoning_effort_wire = ""
     if reasoning_effort and reasoning_effort != "none":
-        reasoning_effort_wire = str(clamp_effort(reasoning_effort, route_supported_efforts(
-            pending_provider or provider, model, getattr(agent, "api_mode", None))) or "")
+        reasoning_effort_wire = str(clamp_effort(reasoning_effort, route_supported_efforts(pending_provider or provider, model)) or "")
     info: dict = {
         "model": model,
         "provider": pending_provider or provider,

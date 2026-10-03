@@ -53,13 +53,6 @@ vi.mock('@/store/session', async () => {
     setResumeExhaustedSessionId: vi.fn()
   }
 })
-// The focused session is driven directly; everything else in session-focus
-// stays real.
-vi.mock('@/store/session-focus', async importOriginal => {
-  const { atom } = await import('nanostores')
-
-  return { ...(await importOriginal<Record<string, unknown>>()), $focusedStoredSessionId: atom(null) }
-})
 vi.mock('@/store/session-states', async () => {
   const { atom } = await import('nanostores')
 
@@ -68,6 +61,7 @@ vi.mock('@/store/session-states', async () => {
     $draftSessionIds: atom([]),
     $focusedRuntimeId: atom(null),
     $focusedSessionState: atom(null),
+    $focusedStoredSessionId: atom(null),
     $sessionTiles: atom([]),
     $sessionStates: atom({}),
     $stalledSessionIds: atom([]),
@@ -161,10 +155,14 @@ const {
   setShowAllProfiles
 } = await import('@/store/profile')
 
-const { $focusedRuntimeId, $focusedSessionState, $sessionStates, $sessionTiles, sessionTileDelegate } =
-  await import('@/store/session-states')
-
-const { $focusedStoredSessionId } = await import('@/store/session-focus')
+const {
+  $focusedRuntimeId,
+  $focusedSessionState,
+  $focusedStoredSessionId,
+  $sessionStates,
+  $sessionTiles,
+  sessionTileDelegate
+} = await import('@/store/session-states')
 
 const { dropTilesForProfile } = await import('@/store/session-states')
 

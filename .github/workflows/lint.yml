@@ -8,7 +8,8 @@ name: Lint (ruff + ty)
 #      Separate job so the advisory diff still runs even when enforcement
 #      fails.
 #
-# CI-sensitive file review is enforced by .github/CODEOWNERS, not a CI job.
+# CI-sensitive file review was previously here as a ``ci-review`` job but
+# has moved to ``review-labels.yml`` so it can be rerun independently.
 
 on:
   workflow_call:

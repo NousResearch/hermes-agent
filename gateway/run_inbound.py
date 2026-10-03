@@ -329,9 +329,7 @@ class GatewayInboundMixin:
         self, event: "MessageEvent", source: SessionSource, is_internal: bool
     ) -> Optional[str]:
         """Global emergency-stop (`hermes pause`) notice when this turn must be blocked, else None.
-        Placed after auth so unauthorized senders can't probe pause state. A synthetic heartbeat that
-        slipped past the poller's pause check gets "" (blocked, nothing sent): nobody typed it, and
-        settle_heartbeat_attempt leaves its tick due for after resume."""
+        Placed after auth so unauthorized senders can't probe pause state."""
         if is_internal:
             return None
         try:
@@ -341,9 +339,6 @@ class GatewayInboundMixin:
         _paused_notice = _estop_paused_reply()
         if _paused_notice is None or self._hm_estop_turn_allowed(event, source):
             return None
-        if getattr(event, "_heartbeat_session_id", None):
-            logger.debug("Heartbeat turn dropped by global emergency stop")
-            return ""
         logger.info(
             "Gateway turn paused by global emergency stop (platform=%s chat=%s)",
             getattr(getattr(source, "platform", None), "value", "unknown"),

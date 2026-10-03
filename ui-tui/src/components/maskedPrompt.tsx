@@ -6,7 +6,7 @@ import type { Theme } from '../theme.js'
 
 import { TextInput } from './textInput.js'
 
-export function MaskedPrompt({ cols = 80, icon, label, onSubmit, reveal, sub, t }: MaskedPromptProps) {
+export function MaskedPrompt({ cols = 80, icon, label, onSubmit, sub, t }: MaskedPromptProps) {
   const [value, setValue] = useState('')
 
   return (
@@ -22,7 +22,7 @@ export function MaskedPrompt({ cols = 80, icon, label, onSubmit, reveal, sub, t 
         <TextInput
           color={t.color.text}
           columns={Math.max(20, cols - 6)}
-          mask={reveal ? undefined : '*'}
+          mask="*"
           onChange={setValue}
           onSubmit={onSubmit}
           value={value}
@@ -37,8 +37,6 @@ interface MaskedPromptProps {
   icon: string
   label: string
   onSubmit: (v: string) => void
-  /** Show what's typed (a username, not a secret). */
-  reveal?: boolean
   sub?: string
   t: Theme
 }
@@ -89,64 +87,6 @@ export function VaultUnlockPrompt({ cols, displayName, onSubmit, t }: SecureProm
       label={T.secure.vault.unlockTitle(displayName)}
       onSubmit={onSubmit}
       sub={T.secure.vault.unlockHint}
-      t={t}
-    />
-  )
-}
-
-/**
- * `vault.save_login`: the identifier as typed, then the masked password. Either
- * step left empty declines; the pair goes only to the encrypted vault.
- */
-export function VaultSaveLoginPrompt({
-  cols,
-  onReady,
-  site,
-  t
-}: Omit<SecurePromptProps, 'onSubmit'> & { onReady: (identifier: string, password: string) => void; site: string }) {
-  const T = useT()
-  const [identifier, setIdentifier] = useState('')
-
-  if (identifier) {
-    return (
-      <MaskedPrompt
-        cols={cols}
-        icon="🔑"
-        key="password"
-        label={T.secure.vault.savePasswordTitle(identifier)}
-        onSubmit={password => onReady(identifier, password)}
-        sub={T.secure.vault.savePasswordHint(site)}
-        t={t}
-      />
-    )
-  }
-
-  return (
-    <MaskedPrompt
-      cols={cols}
-      icon="🔑"
-      key="identifier"
-      label={T.secure.vault.saveTitle(site)}
-      onSubmit={value => (value ? setIdentifier(value) : onReady('', ''))}
-      reveal
-      sub={T.secure.vault.saveIdentifierHint}
-      t={t}
-    />
-  )
-}
-
-/** `vault.code`: a one-time sign-in code; it is typed into the page, never shown to the model. */
-export function VaultCodePrompt({ cols, hint, onSubmit, site, t }: SecurePromptProps & { hint: string; site: string }) {
-  const T = useT()
-
-  return (
-    <MaskedPrompt
-      cols={cols}
-      icon="🔢"
-      label={T.secure.vault.codeTitle(site)}
-      onSubmit={onSubmit}
-      reveal
-      sub={hint ? `${hint} · ${T.secure.vault.codeHint}` : T.secure.vault.codeHint}
       t={t}
     />
   )

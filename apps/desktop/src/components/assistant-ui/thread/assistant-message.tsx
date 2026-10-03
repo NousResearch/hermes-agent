@@ -23,7 +23,6 @@ import {
   messageContentText,
   pickPrimaryPreviewTarget
 } from '@/components/assistant-ui/thread/content'
-import { MessageHoverTime } from '@/components/assistant-ui/thread/message-hover-time'
 import { MESSAGE_PARTS_COMPONENTS } from '@/components/assistant-ui/thread/message-parts'
 import { ReactionPicker } from '@/components/assistant-ui/thread/message-reactions'
 import { ResponseMessageIds } from '@/components/assistant-ui/thread/response-group'
@@ -1044,7 +1043,6 @@ const AssistantActionBar: FC<MessageActionProps & { durationS?: number }> = ({
         }
         data-slot="aui_msg-actions"
       >
-        <MessageHoverTime className="mr-1 px-0.5" />
         {onBranchInNewChat && (
           <TooltipIconButton
             onClick={() => {

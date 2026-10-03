@@ -238,3 +238,35 @@ def test_yuanbao_active_adapter_resolves_per_profile(homes, monkeypatch):
     unscoped = YuanbaoAdapter(cfg)
     YuanbaoAdapter.set_active(unscoped)
     assert YuanbaoAdapter.get_active() is unscoped
+
+
+def test_honcho_loopback_flow_status_is_per_profile(homes, monkeypatch):
+    """Profile B's connect must not be refused as 'pending' because profile A's flow is running."""
+    import plugins.memory.honcho.oauth_flow as flow
+
+    a, b = homes
+    gate = threading.Event()
+    started: list[Path] = []
+
+    def fake_authorize(**kwargs):
+        started.append(kwargs["config_path"])
+        gate.wait(5)
+
+    monkeypatch.setattr(flow, "authorize_via_loopback", fake_authorize)
+    monkeypatch.setattr(flow, "_status", flow.FlowStatus())
+    monkeypatch.setattr(flow, "_flow_thread", None)
+    for home in (a, b):
+        (home / "honcho.json").write_text("{}", encoding="utf-8")
+    try:
+        with scoped(a):
+            assert flow.start_loopback_flow_background()["state"] == "pending"
+        with scoped(b):
+            assert flow.get_flow_status()["state"] == "idle"
+            assert flow.start_loopback_flow_background()["state"] == "pending"
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline and len(started) < 2:
+            time.sleep(0.02)
+        assert sorted(started) == sorted([a / "honcho.json", b / "honcho.json"])
+    finally:
+        gate.set()
+        getattr(flow, "_flows_by_target", {}).clear()

@@ -23,7 +23,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-from hermes_cli.plugin_validate_core_override import check_core_override
 from hermes_cli.plugin_validate_desktop import check_desktop_surface
 from hermes_cli.plugin_validate_locales import check_language_packs
 from hermes_cli.plugins_manifest import _CONFIG_SCHEMA_TYPES
@@ -42,7 +41,6 @@ class ValidationReport:
 
     checks: List[Tuple[str, bool, str]] = field(default_factory=list)
     warnings: List[str] = field(default_factory=list)
-    isolation: Optional[Dict[str, Any]] = None  # plugin-host readiness; informational, never fails
 
     @property
     def failures(self) -> List[str]:
@@ -70,7 +68,6 @@ class ValidationReport:
                 for name, ok, detail in self.checks
             ],
             "warnings": list(self.warnings),
-            "isolation": self.isolation,
         }
 
 
@@ -519,11 +516,8 @@ def validate_plugin_dir(plugin_dir: Path) -> ValidationReport:
     recorded = _check_capabilities(report, manifest, plugin_dir)
     _check_builtin_collisions(report, manifest, recorded)
     _check_security_scan(report, plugin_dir)
-    check_core_override(report, plugin_dir)
     check_desktop_surface(report, plugin_dir)
     check_language_packs(report, manifest, plugin_dir)
-    from hermes_cli.plugin_isolation_audit import audit_plugin_dir
-    report.isolation = audit_plugin_dir(plugin_dir, manifest).to_dict()
     return report
 
 
@@ -628,6 +622,4 @@ def _validate_portable_plugin(report: ValidationReport, plugin_dir: Path) -> Val
         report.add(f"server availability: {server_name}", True, detail)
     _check_security_scan(report, plugin_dir)
     check_desktop_surface(report, plugin_dir)
-    from hermes_cli.plugin_isolation_audit import audit_plugin_dir
-    report.isolation = audit_plugin_dir(plugin_dir, manifest).to_dict()
     return report

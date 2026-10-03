@@ -62,7 +62,7 @@ Check what's active at any time:
 ```bash
 hermes portal info        # Portal auth + Tool Gateway routing summary
 hermes portal tools       # Gateway catalog with current routing per tool
-hermes status --full      # Full system status (Tool Gateway is one section)
+hermes status             # Full system status (Tool Gateway is one section)
 ```
 
 `hermes portal info` shows a section like:

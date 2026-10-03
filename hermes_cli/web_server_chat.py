@@ -183,13 +183,10 @@ def _ws_host_origin_reason(ws: "WebSocket") -> Optional[str]:
     origin = ws.headers.get("origin", "")
     if not origin:
         return None
-    try:
-        parsed = urllib.parse.urlparse(origin)
-    except ValueError:  # malformed authority, e.g. "http://[::1" — fail closed
-        parsed = None
-    if parsed is not None and parsed.scheme not in {"http", "https"}:
+    parsed = urllib.parse.urlparse(origin)
+    if parsed.scheme not in {"http", "https"}:
         return None
-    if parsed is None or not parsed.netloc or not _is_accepted_host(parsed.netloc, bound_host, trusted_public_hosts):
+    if not parsed.netloc or not _is_accepted_host(parsed.netloc, bound_host, trusted_public_hosts):
         return f"origin_mismatch origin={origin} bound={bound_host}"
     return None
 

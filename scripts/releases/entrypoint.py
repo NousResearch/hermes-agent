@@ -376,40 +376,25 @@ def publish(version: str, *, repository: str, dispatch, inspect=None, head_versi
     return {"requested": tag, "version": version, "repository": repository}
 
 
-def _in_progress_runs(inspect, repository: str, tag: str) -> list[dict]:
-    """Release runs of ``tag`` that have not completed, as ``gh run list`` rows."""
-    rows = json.loads(inspect([
-        "gh", "run", "list", "--repo", repository, "--workflow", WORKFLOW,
-        "--branch", tag, "--json", "databaseId,url,status", "--limit", "100",
-    ]) or "[]")
-    return [row for row in rows if row["status"] != "completed"]
-
-
-def abandon(version: str, *, repo: Path, remote: str, repository: str, execute, inspect=None) -> dict:
+def abandon(version: str, *, repo: Path, remote: str, repository: str, delete, inspect=None) -> dict:
     """Clear the outstanding attempt of ``version``. The attempt ref stays; the marker is the record.
 
-    Its in-progress runs are cancelled and its draft deleted before the marker
-    exists: a live run can autopublish the draft, a cleared attempt with a live
-    draft could still be published by hand, and once the marker is written
-    there is no outstanding attempt left to retry the cleanup against. This
-    reads every outstanding attempt, not the one-attempt view, so it still
-    clears one when a concurrent cut left two.
+    The draft goes first: a cleared attempt with a live draft could still be
+    published by hand, while a draftless outstanding attempt is just abandoned
+    again. This reads every outstanding attempt, not the one-attempt view, so
+    it still clears one when a concurrent cut left two.
     """
     _refresh_claims(repo, remote)
     matching = [found for found in _outstanding_attempts(repo, remote) if found[0] == version]
     if len(matching) != 1:
         raise ReleaseRefused(f"stable {version} has no outstanding attempt to abandon")
     _version, attempt, tag = matching[0]
-    cancelled: list[str] = []
     if inspect is not None:
         draft = _release_view(tag, repository, inspect)
-        if draft is not None and draft.get("isDraft") is not True:
-            raise ReleaseRefused(f"{tag} is published and cannot be abandoned")
-        for run in _in_progress_runs(inspect, repository, tag):
-            execute(["gh", "run", "cancel", str(run["databaseId"]), "--repo", repository, "--force"])
-            cancelled.append(run["url"])
         if draft is not None:
-            execute(["gh", "release", "delete", tag, "--repo", repository, "--yes"])
+            if draft.get("isDraft") is not True:
+                raise ReleaseRefused(f"{tag} is published and cannot be abandoned")
+            delete(["gh", "release", "delete", tag, "--repo", repository, "--yes"])
     marker = marker_ref(version, attempt)
     message = json.dumps({"schema": 1, "version": version, "attempt": attempt, "attemptRef": tag},
                          sort_keys=True, separators=(",", ":"))
@@ -418,8 +403,7 @@ def abandon(version: str, *, repo: Path, remote: str, repository: str, execute, 
         _git(repo, "push", remote, f"refs/tags/{marker}")
     except subprocess.CalledProcessError as error:
         raise _claim_collision(repo, remote, marker, error) from error
-    return {"version": version, "tag": tag, "marker": marker, "repository": repository,
-            "cancelled": cancelled}
+    return {"version": version, "tag": tag, "marker": marker, "repository": repository}
 
 
 def next_steps(result: dict, *, bold: bool = False) -> str:
@@ -521,7 +505,6 @@ def abandon_steps(result: dict) -> str:
     _version, attempt = parse_attempt_ref(tag)
     return "\n".join([
         f"Cleared {tag}. The marker {result['marker']} records it.",
-        *(f"Cancelled {url}" for url in result.get("cancelled", [])),
         f"v{version} is not spent. The next cut is rc.{attempt + 1}-v{version}.",
     ])
 
@@ -544,6 +527,6 @@ def cmd_publish(args) -> None:
 def cmd_abandon(args) -> None:
     repo, remote, repository = _command_repository(args)
     result = abandon(args.version, repo=repo, remote=remote, repository=repository,
-                     execute=lambda command: _execute(repo, command),
+                     delete=lambda command: _execute(repo, command),
                      inspect=lambda command: _inspect(repo, command))
     print(abandon_steps(result))

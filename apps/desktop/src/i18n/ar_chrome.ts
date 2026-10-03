@@ -255,7 +255,6 @@ export const arChrome = {
       reveal: 'إظهار في المجلد',
       copyPath: 'نسخ المسار',
       removeFromSidebar: 'إخفاء من الشريط الجانبي',
-      createdInPreviousContext: 'أُنشئ المشروع على الاتصال أو الملف الشخصي السابق. عُد إليه؛ لم يُكتب ملف IDEA.md.',
       createFailed: 'تعذّر إنشاء المشروع',
       deleteConfirm: 'هذا يزيل المشروع المحفوظ من Hermes. تبقى الملفات ومستودعات git وأشجار العمل دون تغيير.',
       startWork: 'شجرة عمل جديدة',

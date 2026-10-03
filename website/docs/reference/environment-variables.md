@@ -21,7 +21,7 @@ Hermes reads environment variables from the process environment and, for user-ma
 | `NOUS_INFERENCE_BASE_URL` | Override Nous inference endpoint directly |
 | `AI_GATEWAY_API_KEY` | Vercel AI Gateway API key ([ai-gateway.vercel.sh](https://ai-gateway.vercel.sh)) |
 | `AI_GATEWAY_BASE_URL` | Override AI Gateway base URL (default: `https://ai-gateway.vercel.sh/v1`) |
-| `OPENAI_API_KEY` | OpenAI API key (`openai-api` provider), or the key for a custom OpenAI-compatible endpoint when `OPENAI_BASE_URL` is set; bound that way, it is sent only to that URL's exact origin (scheme, host and port), never to another port or to `http://` on the same host. Counts as an OpenRouter key only when it starts with `sk-or-`; put OpenRouter keys in `OPENROUTER_API_KEY` |
+| `OPENAI_API_KEY` | OpenAI API key (`openai-api` provider), or the key for a custom OpenAI-compatible endpoint when `OPENAI_BASE_URL` is set. Counts as an OpenRouter key only when it starts with `sk-or-`; put OpenRouter keys in `OPENROUTER_API_KEY` |
 | `OPENAI_BASE_URL` | Base URL for custom endpoint (VLLM, SGLang, etc.) |
 | `HERMES_CODEX_BASE_URL` | Route the `openai-codex` (ChatGPT subscription) provider through a proxy instead of the default Codex backend. Applies everywhere the credential is used: pool resolution, auxiliary/raw clients, and 401/429 credential rotation. `model.base_url` under `model.provider: openai-codex` is the secondary override when this is unset. |
 | `LM_API_KEY` | API key for LM Studio (`lmstudio` provider). Often a placeholder for local servers |
@@ -402,7 +402,7 @@ These are set automatically by the Docker terminal backend when `proxy.enabled: 
 | `WHATSAPP_CLOUD_ALLOWED_USERS` | Comma-separated `wa_id`s (phone numbers with country code, no `+`) allowed to message the bot |
 | `WHATSAPP_CLOUD_ALLOW_ALL_USERS` | Allow all WhatsApp Cloud senders without an allowlist (`true`/`false`) |
 | `WHATSAPP_CLOUD_APP_ID` | Optional Meta App ID (for future analytics integration) |
-| `WHATSAPP_CLOUD_WABA_ID` | Optional WhatsApp Business Account ID; when set, inbound webhooks must match it |
+| `WHATSAPP_CLOUD_WABA_ID` | Optional WhatsApp Business Account ID (for future analytics integration) |
 | `WHATSAPP_CLOUD_WEBHOOK_HOST` | Interface the inbound webhook server binds to (default `0.0.0.0`) |
 | `WHATSAPP_CLOUD_WEBHOOK_PORT` | Port the inbound webhook server binds to (default `8090`) |
 | `WHATSAPP_CLOUD_WEBHOOK_PATH` | URL path Meta posts inbound messages to (default `/whatsapp/webhook`) |

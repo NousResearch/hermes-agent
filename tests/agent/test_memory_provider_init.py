@@ -43,13 +43,18 @@ def test_shutdown_memory_provider_is_idempotent():
     manager.shutdown_all.assert_called_once()
 
 
-def test_blank_memory_provider_stays_opt_out():
-    """Blank memory.provider loads no external provider and never rewrites the config."""
+def test_blank_memory_provider_does_not_auto_enable_honcho():
+    """Blank memory.provider should remain opt-out even if Honcho fallback looks configured."""
     cfg = {"memory": {"provider": ""}, "agent": {}}
+    honcho_cfg = SimpleNamespace(enabled=True, api_key="stale-key", base_url=None)
 
     with (
         patch("hermes_cli.config.load_config", return_value=cfg), patch("hermes_cli.config.load_config_readonly", return_value=cfg),
         patch("hermes_cli.config.save_config") as save_config,
+        patch(
+            "plugins.memory.honcho.client.HonchoClientConfig.from_global_config",
+            return_value=honcho_cfg,
+        ) as from_global_config,
         patch("plugins.memory.load_memory_provider") as load_memory_provider,
         patch("agent.model_metadata.get_model_context_length", return_value=204_800),
         patch("model_tools.get_tool_definitions", return_value=[]),
@@ -67,6 +72,7 @@ def test_blank_memory_provider_stays_opt_out():
         )
 
     assert agent._memory_manager is None
+    from_global_config.assert_not_called()
     load_memory_provider.assert_not_called()
     save_config.assert_not_called()
 

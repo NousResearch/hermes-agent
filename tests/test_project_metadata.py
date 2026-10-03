@@ -119,7 +119,8 @@ def test_lazy_installable_extras_excluded_from_all():
         "telegram", "discord",
         "wake", "wake-openwakeword", "wake-sherpa", "wake-porcupine",
         "google-chat",
-        "mem0",
+        "honcho",
+        "supermemory", "mem0",
         "mistral",  # mistralai — Voxtral STT/TTS, lazy-installed (stt.mistral / tts.mistral)
     }
     all_extra_specs = optional_dependencies["all"]

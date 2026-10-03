@@ -154,15 +154,6 @@ def _find_provider(providers: list, provider_name: str):
     return next((p for p in providers if p[0] == provider_name), None)
 
 
-def _catalog_install_hint(provider_name: str):
-    """The install command for a catalog memory provider that resolves nowhere, else None."""
-    from plugins.memory import find_provider_dir
-    from hermes_cli.memory_provider_migration import catalog_install_hint
-    if not provider_name or find_provider_dir(provider_name) is not None:
-        return None
-    return catalog_install_hint(provider_name, category="memory")
-
-
 def _post_setup_hook(provider, config: dict) -> bool:
     """Normalize the ``memory`` block; True when the provider's ``post_setup`` took over (it owns
     config, connection test and activation), so the caller must stop."""
@@ -181,11 +172,7 @@ def cmd_setup_provider(provider_name: str) -> None:
     match = _find_provider(_get_available_providers(), provider_name)
     if not match:
         print(f"\n  Memory provider '{provider_name}' not found.")
-        install = _catalog_install_hint(provider_name)
-        if install:
-            print(f"  It is a catalog plugin that is not installed. Install it with: {install}\n")
-        else:
-            print("  Run 'hermes memory setup' to see available providers.\n")
+        print("  Run 'hermes memory setup' to see available providers.\n")
         return
     name, _, provider = match
 
@@ -425,11 +412,7 @@ def cmd_status(args) -> None:
                 print("        set any variables above in the service environment.")
         else:
             print("\n  Plugin:    NOT installed ✗")
-            install = _catalog_install_hint(provider_name)
-            if install:
-                print(f"  Install it with: {install}")
-            else:
-                print(f"  Install the '{provider_name}' memory plugin to ~/.hermes/plugins/")
+            print(f"  Install the '{provider_name}' memory plugin to ~/.hermes/plugins/")
 
     if providers:
         print("\n  Installed plugins:")

@@ -37,10 +37,14 @@ import { resolveSessionOwner } from '@/app/session/hooks/use-session-actions/uti
 import type { ClientSessionState } from '@/app/types'
 import { isSessionGoneForBackgroundPolling } from '@/store/runtime-gone'
 import { getSessionOwnerHint, knownSessionOwner, ownerLookupSessionRows, requestSessionResume } from '@/store/session'
-import { $focusedStoredSessionId } from '@/store/session-focus'
 import { assertSessionOwnerResolved } from '@/store/session-owner-resolution'
 import { requestForSessionProfile, type SessionOwnerScope } from '@/store/session-request-router'
-import { runtimeSessionOwner, sessionTileOwnerRoute, storedSessionIdForRuntimeId } from '@/store/session-states'
+import {
+  $focusedStoredSessionId,
+  runtimeSessionOwner,
+  sessionTileOwnerRoute,
+  storedSessionIdForRuntimeId
+} from '@/store/session-states'
 
 import { findStoredIdForRuntimeId, resolveRoutingSessionId, resolveSessionRpcOwner } from './wiring-routing'
 

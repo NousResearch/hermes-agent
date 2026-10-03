@@ -14,7 +14,6 @@ import re
 import signal
 import subprocess
 import sys
-import threading
 import time
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
@@ -204,17 +203,6 @@ def get_browser_backend() -> str:
     unquoted ``off`` as False — that must mean BACKEND_DISABLED, not "unset"."""
     raw = _read_browser_cfg().get("backend")
     return (BACKEND_DISABLED if raw is False else "") if isinstance(raw, bool) else str(raw or "").strip().lower()
-
-
-def set_browser_use_mode(enabled: bool) -> None:
-    """``/browser use [off]`` on every surface: persist ``browser.backend`` for the current profile and drop
-    cached tool availability. A live agent keeps its tools (prompt cache); the next one built gets the swap."""
-    from hermes_cli.config import load_config, save_config
-    from tools.registry import invalidate_check_fn_cache
-    config = load_config()
-    config.setdefault("browser", {})["backend"] = _BACKEND_KEY if enabled else BACKEND_DISABLED
-    save_config(config)
-    invalidate_check_fn_cache()
 
 
 def is_legacy_browser_use_cloud_config(browser_cfg: dict) -> bool:
@@ -602,28 +590,6 @@ def _run_cli_killing_process_group(cmd, code, env, timeout):
     return subprocess.CompletedProcess(cmd, proc.returncode, stdout, stderr)
 
 
-# BU_NAMEs whose harness daemon this process has driven. The daemon reads BU_CDP_* once, at start, and
-# outlives every call, so a backend swap (/browser connect|disconnect) that only changes the resolved
-# endpoint leaves later browser_exec calls in the old browser until these are stopped.
-_driven_daemons: set = set()
-_driven_daemons_lock = threading.Lock()
-
-
-def stop_harness_daemons() -> None:
-    """Stop every harness daemon this process drove, through the harness's own identity-checked
-    ``--reload``; the next browser_exec respawns one on the endpoint it resolves then."""
-    with _driven_daemons_lock:
-        names = sorted(_driven_daemons)
-        _driven_daemons.clear()
-    cmd = _find_cli() if names else None
-    if not cmd:
-        return
-    env = _base_subprocess_env()
-    for name in names:
-        with contextlib.suppress(OSError, subprocess.SubprocessError):
-            _run_cli_killing_process_group([*cmd, "--reload"], "", {**env, "BU_NAME": name}, 15)
-
-
 def browser_exec(code: str, session: str = "", timeout_s: int = _DEFAULT_TIMEOUT_S,
                  task_id: Optional[str] = None, local: bool = False):
     """Run Python code through the browser-use CLI, and return its output"""
@@ -672,8 +638,6 @@ def browser_exec(code: str, session: str = "", timeout_s: int = _DEFAULT_TIMEOUT
 
     def dispatch() -> Dict[str, Any]:
         _attach_vault_supervisor(env, task_id)
-        with _driven_daemons_lock:
-            _driven_daemons.add(env.get("BU_NAME", "default"))
         try:
             return {"proc": _run_cli_killing_process_group(cmd, code, env, timeout)}
         except subprocess.TimeoutExpired:

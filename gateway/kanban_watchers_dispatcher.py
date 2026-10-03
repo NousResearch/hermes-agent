@@ -138,9 +138,7 @@ class _KanbanDispatcher:
         return _board_slugs(self.kb)
 
     def board_db_fingerprint(self, slug: str) -> tuple[str, int | None, int | None]:
-        from hermes_cli import kanban_db as _kb
-        with _kb.pin_first_board_resolution():
-            path = self.kb.kanban_db_path(slug)
+        path = self.kb.kanban_db_path(slug)
         try:
             resolved = str(path.expanduser().resolve())
         except Exception:
@@ -187,13 +185,8 @@ class _KanbanDispatcher:
         try:
             # No explicit init_db(): connect() runs the migration once per
             # process (see the matching note in the notifier collector).
-            # Pin-first: the tick is machine flow — on a box whose env pins
-            # HERMES_KANBAN_DB every enumerated slug must resolve to the pinned
-            # file, or the dispatcher reads per-slug DBs nobody writes.
-            from hermes_cli import kanban_db as _kb
-            with _kb.pin_first_board_resolution():
-                conn = _kbc().connect(board=slug)
-                return _kbd().dispatch_once(conn, board=slug, **kwargs)
+            conn = _kbc().connect(board=slug)
+            return _kbd().dispatch_once(conn, board=slug, **kwargs)
         except Exception as exc:
             if self.is_corrupt_board_db_error(exc):
                 self.disabled_corrupt_boards[slug] = (fingerprint, time.monotonic())
@@ -228,20 +221,18 @@ class _KanbanDispatcher:
         """
         kbd = _kbd()
         _review_probe = kbd.review_dispatch_enabled()
-        from hermes_cli import kanban_db as _kb
-        with _kb.pin_first_board_resolution():
-            for slug in self._board_slugs():
-                conn = None
-                try:
-                    conn = _kbc().connect(board=slug)
-                    if kbd.has_spawnable_ready(conn) or (_review_probe and kbd.has_spawnable_review(conn)):
-                        return True
-                except Exception:
-                    continue
-                finally:
-                    if conn is not None:
-                        with contextlib.suppress(Exception):
-                            conn.close()
+        for slug in self._board_slugs():
+            conn = None
+            try:
+                conn = _kbc().connect(board=slug)
+                if kbd.has_spawnable_ready(conn) or (_review_probe and kbd.has_spawnable_review(conn)):
+                    return True
+            except Exception:
+                continue
+            finally:
+                if conn is not None:
+                    with contextlib.suppress(Exception):
+                        conn.close()
         return False
 
     def auto_decompose_tick(self, auto_decompose_per_tick: int) -> int:
@@ -257,8 +248,7 @@ class _KanbanDispatcher:
             return 0
         attempted = 0
         successes = 0
-        from hermes_cli import kanban_db as _kb
-        with _default_profile_secret_scope(), _kb.pin_first_board_resolution():
+        with _default_profile_secret_scope():
             for slug in self._board_slugs():
                 if attempted >= auto_decompose_per_tick:
                     break

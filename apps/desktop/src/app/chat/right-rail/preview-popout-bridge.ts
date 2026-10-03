@@ -16,9 +16,7 @@
  */
 
 import type { PreviewActAction, PreviewActResult } from '@/lib/preview-act/act-in-page'
-import { previewTabIdsVisibleTo } from '@/store/preview'
-import type { PreviewOwner } from '@/store/preview-ownership'
-import { isBrowserWindow, windowBrowserTabId } from '@/store/windows'
+import { isBrowserWindow } from '@/store/windows'
 
 import { actOnActivePreview } from './preview-act'
 import { activePreviewNav } from './preview-nav'
@@ -32,12 +30,8 @@ const READ_TIMEOUT_MS = 8_000
 
 type ActPayload = Omit<PreviewActAction, 'kind'> & { kind: string }
 
-/** `tabIds`: the tabs the requesting session may see, resolved in the chat
- *  window (it alone knows compression rotations and session tiles). A pop-out
- *  answers only when the tab it shows is among them; absent = unscoped. */
-type BridgeRequest = { id: string; tabIds?: string[] } & (
-  { kind: 'act'; payload: ActPayload } | { kind: 'read'; payload: PreviewReadOptions }
-)
+type BridgeRequest =
+  { id: string; kind: 'act'; payload: ActPayload } | { id: string; kind: 'read'; payload: PreviewReadOptions }
 
 type BridgeResponse =
   | { id: string; kind: 'act'; result: PreviewActResult }
@@ -88,15 +82,10 @@ function getBus(): RelayBus | null {
   return cachedBus
 }
 
-/** True when this renderer has a live webview (or nav handle) for the active
- *  tab among those `owner` (omitted = the focused session) may see. */
-export function hasLivePreviewSurface(owner?: PreviewOwner): boolean {
-  return Boolean(activePreviewScriptRunner(owner) || activePreviewNav(owner))
+/** True when this renderer has a live webview (or nav handle) for the active tab. */
+export function hasLivePreviewSurface(): boolean {
+  return Boolean(activePreviewScriptRunner() || activePreviewNav())
 }
-
-/** Scope a request to `owner`'s tabs (undefined = an unscoped request). */
-const scopeFor = (owner: PreviewOwner | undefined): { tabIds?: string[] } =>
-  owner === undefined ? {} : { tabIds: previewTabIdsVisibleTo(owner) }
 
 function nextId(prefix: string): string {
   seq += 1
@@ -156,21 +145,16 @@ function askPopout<T>(
   })
 }
 
-/** Ask the browser pop-out to run drive_preview for `owner` (the requesting
- *  session's stored id). Null when no pop-out showing one of its tabs answers. */
-export function requestPopoutPreviewAct(payload: ActPayload, owner?: PreviewOwner): Promise<PreviewActResult | null> {
-  return askPopout({ id: nextId('act'), kind: 'act', payload, ...scopeFor(owner) }, ACT_TIMEOUT_MS, response =>
+/** Ask the browser pop-out to run drive_preview. Null when no pop-out answers. */
+export function requestPopoutPreviewAct(payload: ActPayload): Promise<PreviewActResult | null> {
+  return askPopout({ id: nextId('act'), kind: 'act', payload }, ACT_TIMEOUT_MS, response =>
     response.kind === 'act' ? response.result : undefined
   )
 }
 
-/** Ask the browser pop-out to run read_preview for `owner`. Null when no
- *  pop-out showing one of its tabs answers. */
-export function requestPopoutPreviewRead(
-  payload: PreviewReadOptions = {},
-  owner?: PreviewOwner
-): Promise<PreviewReadResult | null> {
-  return askPopout({ id: nextId('read'), kind: 'read', payload, ...scopeFor(owner) }, READ_TIMEOUT_MS, response =>
+/** Ask the browser pop-out to run read_preview. Null when no pop-out answers. */
+export function requestPopoutPreviewRead(payload: PreviewReadOptions = {}): Promise<PreviewReadResult | null> {
+  return askPopout({ id: nextId('read'), kind: 'read', payload }, READ_TIMEOUT_MS, response =>
     response.kind === 'read' ? response.result : undefined
   )
 }
@@ -202,12 +186,6 @@ export function installPopoutPreviewResponder(): () => void {
       (request.kind !== 'act' && request.kind !== 'read') ||
       !('payload' in request)
     ) {
-      return
-    }
-
-    // Another session's request: stay silent (an answer — even an error —
-    // would win the race against a pop-out that does show that session's tab).
-    if (Array.isArray(request.tabIds) && !request.tabIds.includes(windowBrowserTabId() ?? '')) {
       return
     }
 

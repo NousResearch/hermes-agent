@@ -15,8 +15,7 @@ from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
 from agent.message_metadata import append_message
-from agent.message_sanitization import (close_interrupted_tool_sequence, coalesce_tool_call_id,
-                                          normalize_provider_tool_call_ids)
+from agent.message_sanitization import close_interrupted_tool_sequence, coalesce_tool_call_id
 from agent.turn_failure_copy import site_copy, stamp_failure
 from hermes_constants import FINISH_REASON_LENGTH
 
@@ -89,7 +88,6 @@ def validate_tool_calls(
     # Uniquify duplicate tool-call ids BEFORE any downstream consumer: the
     # pre-API sanitizer keeps only the first call/result per id.
     agent._uniquify_tool_call_ids(tool_calls)
-    normalize_provider_tool_call_ids(tool_calls)
 
     # Repair mismatched tool names before validating (model hallucinations).
     repaired_ids = set()

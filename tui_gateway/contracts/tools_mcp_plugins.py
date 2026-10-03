@@ -644,7 +644,6 @@ class PluginServerState(WireEnum):
     no_interactive_session = "no_interactive_session"
     version_too_old = "version_too_old"
     missing_app = "missing_app"
-    unsupported_gpu = "unsupported_gpu"
     unknown = "unknown"
 
 

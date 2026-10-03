@@ -161,17 +161,6 @@ class TestReplaceAll:
         assert count == 2
         assert new == "ccc bbb ccc"
 
-    def test_unicode_normalized_preserves_each_matches_own_unicode(self):
-        """Each normalized match keeps ITS typographic characters; the regions were
-        once concatenated, which spliced both matches' text into every replacement."""
-        content = "Price \u2018old\u2019\u2014ready\nPrice 'old'\u2014ready\n"
-        new, count, strategy, err = fuzzy_find_and_replace(
-            content, "Price 'old'--ready", "Price 'new'--ready", replace_all=True)
-        assert err is None
-        assert count == 2
-        assert strategy == "unicode_normalized"
-        assert new == "Price \u2018new\u2019\u2014ready\nPrice 'new'\u2014ready\n"
-
     def test_self_overlapping_pattern_non_overlapping_matches(self):
         """Self-overlapping patterns must produce non-overlapping spans.
 

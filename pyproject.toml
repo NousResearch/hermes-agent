@@ -323,6 +323,7 @@ wake = [
   "sounddevice==0.5.5",
   "numpy==2.4.3",
 ]
+honcho = ["honcho-ai==2.2.0"]
 # Platform sub-extras / alias extras — declared so pm.extras.ANCHORS names
 # only real extras (contract: tests/pm/test_extras.py). Each is
 # lazy-installed at first use via pm.ensure_import(name) and therefore
@@ -364,8 +365,9 @@ google-chat = [
 # can re-sync exactly the pin from core.
 doc-extract = ["firecrawl-anydoc==0.2.4"]
 trace-upload = ["huggingface-hub==1.24.0"]
-# Cloud memory providers are opt-in PM extras. They stay outside [all]
-# so a quarantined release cannot break fresh installs.
+# Cloud memory providers are opt-in PM extras. They stay outside [all],
+# like honcho, so a quarantined release cannot break fresh installs.
+supermemory = ["supermemory==3.50.0"]
 # mem0ai pulls qdrant-client → grpcio, which has no win_arm64 wheel — same
 # win32-arm64 gate as google-chat. mem0 is lazy-installed, so on arm64 the
 # provider is simply unavailable.
@@ -446,12 +448,13 @@ termux = [
   "python-telegram-bot[webhooks]==22.8",
   "hermes-agent[cron]",
   "hermes-agent[mcp]",
+  "hermes-agent[honcho]",
   "hermes-agent[acp]",
 ]
 termux-all = [
   # Best-effort "install all" profile for Termux. Same policy as [all]:
   # only includes extras that are not prepared on demand by PM.
-  # Backends like telegram/slack/dingtalk/feishu lazy-install at
+  # Backends like telegram/slack/dingtalk/feishu/honcho lazy-install at
   # first use, so they're no longer eager-installed here.
   "hermes-agent[termux]",
   "hermes-agent[google]",
@@ -725,6 +728,7 @@ google-auth-httplib2 = false
 google-auth-oauthlib = false
 google-cloud-pubsub = false
 h2 = false
+honcho-ai = false
 httplib2 = false
 httpx = false
 httpx2 = false
@@ -782,6 +786,7 @@ snowballstemmer = false
 sounddevice = false
 soundfile = "2026-06-06T08:58:48Z"
 starlette = false
+supermemory = false
 tenacity = false
 ty = false
 tzdata = false

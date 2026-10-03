@@ -1,4 +1,4 @@
-"""Cheap content-sanity checks for model output, completed or still streaming.
+"""Cheap content-sanity checks for completed model output.
 
 A model in a degenerate repetition loop can spend its ENTIRE output budget echoing one fragment;
 the ``finish_reason=length`` continuation would then stitch it into the final response with a
@@ -44,10 +44,6 @@ _RUNAWAY_DISTINCT_LINE_RATIO = 0.5
 # real stop-path loops (#100716) run 80k-350k chars, while asked-for repeats ("say X 50 times",
 # identical table rows, templated YAML) stay in the low KB and must be delivered.
 STOP_PATH_MIN_CHARS = 16_000
-
-# A live stream is judged on at most this much of its latest text, so one check stays bounded
-# however long the reply grows.
-_STREAM_TAIL_CHARS = 4 * STOP_PATH_MIN_CHARS
 
 
 def is_repetition_dominated(text: str) -> bool:
@@ -158,37 +154,3 @@ def _line_repetition_dominated(text: str, n: int) -> bool:
     """True when a single normalized line covers half the fragment via repeats."""
     counts = Counter(norm for norm in (line.strip() for line in text.splitlines()) if norm)
     return any(c >= _MIN_REPEAT_COUNT and c * len(line) >= n * _DOMINANCE_RATIO for line, c in counts.items())
-
-
-class RunawayStreamWatch:
-    """The stop-path criterion applied WHILE one channel (visible text or reasoning) streams.
-
-    A stream that keeps producing never reaches a completion check, and endpoints without an
-    output cap (#127234) keep a looping model going for as long as the turn lives. The first
-    check runs at ``STOP_PATH_MIN_CHARS`` (asked-for repeats stay below it, as on the stop path)
-    and the gap doubles until it reaches one tail window, then stays there. A fixed stride keeps a
-    loop that starts late in a long reply from streaming as long as the reply already was before
-    a check sees it; each check reads only the tail, so the total work stays linear in the output.
-    Each check also trims the held text to the tail, and checks are at most one tail window apart,
-    so the watch never holds more than two tail windows plus the latest delta.
-    """
-
-    __slots__ = ("_parts", "_chars", "_next_check")
-
-    def __init__(self) -> None:
-        self._parts: list[str] = []
-        self._chars = 0
-        self._next_check = STOP_PATH_MIN_CHARS
-
-    def feed(self, text: str) -> bool:
-        """Add one delta; True once the channel has become a runaway loop."""
-        if not text:
-            return False
-        self._parts.append(text)
-        self._chars += len(text)
-        if self._chars < self._next_check:
-            return False
-        self._next_check = self._chars + min(self._chars, _STREAM_TAIL_CHARS)
-        tail = "".join(self._parts)[-_STREAM_TAIL_CHARS:]
-        self._parts = [tail]
-        return is_runaway_repetition(tail)

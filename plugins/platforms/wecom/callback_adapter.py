@@ -34,7 +34,7 @@ except ImportError:
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import BasePlatformAdapter, SendResult
 from gateway.platforms.event import MessageEvent, MessageType
-from gateway.platforms.helpers import MessageDeduplicator, send_chunks
+from gateway.platforms.helpers import MessageDeduplicator
 from plugins.platforms.wecom.wecom_crypto import WXBizMsgCrypt, WeComCryptoError
 
 logger = logging.getLogger(__name__)
@@ -47,10 +47,6 @@ ACCESS_TOKEN_TTL_SECONDS = 7200
 MESSAGE_DEDUP_TTL_SECONDS = 300
 _SEND_URL = "https://qyapi.weixin.qq.com/cgi-bin/message/send?access_token="
 _TOKEN_URL = "https://qyapi.weixin.qq.com/cgi-bin/gettoken"
-
-
-def _utf8_len(text: str) -> int:
-    return len(text.encode("utf-8"))
 
 
 def check_wecom_callback_requirements() -> bool:
@@ -90,9 +86,6 @@ def _ack():
 class WecomCallbackAdapter(BasePlatformAdapter):
     # Answers /p/<profile>/... on the default listener for a served secondary (shared_ingress).
     serves_profile_prefix: bool = True
-    # message/send keeps only the first 2048 BYTES of text.content and drops the rest silently.
-    MAX_MESSAGE_LENGTH = 2048
-    splits_long_messages = True  # send() chunks via truncate_message(MAX_MESSAGE_LENGTH, _utf8_len)
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.WECOM_CALLBACK)
         extra = config.extra or {}
@@ -188,14 +181,9 @@ class WecomCallbackAdapter(BasePlatformAdapter):
         self._http_client = None
 
     async def send(self, chat_id: str, content: str, reply_to: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None) -> SendResult:
-        """One text message per MAX_MESSAGE_LENGTH-byte chunk; stops at the first failure."""
         app = self._resolve_app_for_chat(chat_id)
-        chunks = self.truncate_message(content, self.MAX_MESSAGE_LENGTH, len_fn=_utf8_len)
-        return await send_chunks(chunks, lambda chunk: self._send_text(app, chat_id, chunk))
-
-    async def _send_text(self, app: Dict[str, Any], chat_id: str, content: str) -> SendResult:
         try:
-            payload = {"touser": chat_id.split(":", 1)[-1], "msgtype": "text", "agentid": int(str(app.get("agent_id") or 0)), "text": {"content": content}, "safe": 0}
+            payload = {"touser": chat_id.split(":", 1)[-1], "msgtype": "text", "agentid": int(str(app.get("agent_id") or 0)), "text": {"content": content[:2048]}, "safe": 0}
             for _attempt in range(2):
                 token = await self._get_access_token(app)
                 resp = await self._http_client.post(f"{_SEND_URL}{token}", json=payload)

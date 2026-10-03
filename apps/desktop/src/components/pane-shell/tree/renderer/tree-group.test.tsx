@@ -1,7 +1,6 @@
 import { fireEvent, screen } from '@testing-library/react'
 import { act, type ReactNode } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
-import { MemoryRouter } from 'react-router'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { registry } from '@/contrib/registry'
@@ -25,7 +24,7 @@ function render(ui: ReactNode) {
   }
 
   act(() => {
-    root!.render(<MemoryRouter>{ui}</MemoryRouter>)
+    root!.render(ui)
   })
 }
 
@@ -358,8 +357,5 @@ describe('TreeGroup', () => {
     // own close-flavored row) — what matters is that the BODY opens A menu
     // offering a Close verb.
     expect(screen.getAllByRole('menuitem', { name: /close/i }).length).toBeGreaterThan(0)
-    expect(screen.getByRole('menuitem', { name: /new (chat|session)/i })).toBeTruthy()
-    expect(screen.getByRole('menuitem', { name: /settings/i })).toBeTruthy()
-    expect(screen.getByRole('menuitem', { name: /update/i })).toBeTruthy()
   })
 })

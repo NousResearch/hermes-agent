@@ -16,7 +16,7 @@ description: "Hermes Agent 工具概览——可用工具、工具集工作方�
 Hermes 内置了丰富的工具注册表，涵盖网页搜索、浏览器自动化、终端执行、文件编辑、记忆、委托、RL 训练、消息投递、Home Assistant 等功能。
 
 :::note
-**Honcho 跨会话记忆**作为插件目录中的记忆提供者插件提供（`hermes plugins install honcho`），而非内置工具集。参见 [Memory Providers](./memory-providers.md#honcho)。
+**Honcho 跨会话记忆**作为记忆提供者插件（`plugins/memory/honcho/`）提供，而非内置工具集。安装方式请参阅 [Plugins](./plugins.md)。
 :::
 
 高层分类：

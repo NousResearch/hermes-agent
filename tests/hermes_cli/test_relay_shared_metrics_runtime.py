@@ -215,17 +215,6 @@ class _Relay:
         self.events.append(("subscribers.flush",))
 
 
-_EXPORT_WORKER = "hermes-shared-metrics-flush"
-
-
-def _join_export_workers() -> None:
-    """Task/session exports run on a background worker; wait for it before reading the store."""
-    while workers := [t for t in threading.enumerate() if t.name == _EXPORT_WORKER]:
-        for worker in workers:
-            worker.join(timeout=10)
-            assert not worker.is_alive()
-
-
 @pytest.fixture
 def direct_runtime(tmp_path, monkeypatch):
     fake = _Relay()
@@ -349,10 +338,6 @@ def test_direct_runtime_records_without_enabling_a_plugin(direct_runtime, tmp_pa
         interrupted=False,
         turn_exit_reason="text_response(stop)",
     )
-    # The daily package is cut by the first export that runs. Let the one the task
-    # close scheduled finish before the session closes, so the package holds exactly the
-    # task's metrics instead of racing the session-summary rows.
-    _join_export_workers()
     lifecycle.finalize_session(session_id=base["session_id"])
 
     starts = [event for event in direct_runtime.events if event[0] == "llm.call"]
@@ -591,8 +576,6 @@ def test_real_binding_drives_lifecycle_aggregation_export_and_snapshot(
         turn_exit_reason="text_response(stop)",
     )
     lifecycle.finalize_session(session_id=success["session_id"])
-    # The daily package forms after the first session; later sessions land in the next one.
-    _join_export_workers()
 
     failed = base(2)
     lifecycle.invoke_hook("on_session_start", **failed)
@@ -665,7 +648,6 @@ def test_real_binding_drives_lifecycle_aggregation_export_and_snapshot(
 
     from hermes_cli.observability.shared_metrics import SharedMetricsStore
 
-    _join_export_workers()
     root = tmp_path / "hermes-home" / "telemetry" / "shared_metrics"
     store = SharedMetricsStore(root / "metrics.sqlite3", root / "outbox")
     tomorrow = datetime.now(timezone.utc) + timedelta(days=1)
@@ -881,7 +863,6 @@ def test_real_binding_correlates_plugin_approval_denial_to_tool_metric(
     )
     lifecycle.finalize_session(session_id=base["session_id"])
 
-    _join_export_workers()
     root = tmp_path / "hermes-home" / "telemetry" / "shared_metrics"
     store = SharedMetricsStore(root / "metrics.sqlite3", root / "outbox")
     snapshot = store.counter_snapshot()
@@ -961,7 +942,6 @@ def test_real_binding_aggregates_tool_and_approval_timeouts(
     )
     lifecycle.finalize_session(session_id=base["session_id"])
 
-    _join_export_workers()
     root = tmp_path / "hermes-home" / "telemetry" / "shared_metrics"
     snapshot = SharedMetricsStore(
         root / "metrics.sqlite3",
@@ -2494,7 +2474,6 @@ def test_failed_flush_keeps_daily_export_open_for_later_task(
             interrupted=False,
             turn_exit_reason="text_response(stop)",
         )
-        _join_export_workers()
 
     finish_desktop_task("t1")
 
@@ -2515,75 +2494,6 @@ def test_failed_flush_keeps_daily_export_open_for_later_task(
     assert metrics["hermes.task_run.finished"]["value"] == 2
     assert flush_attempts == 2
     assert "Hermes shared-metrics task flush failed" in caplog.text
-
-
-def _finish_desktop_task(session_id: str, task_id: str) -> None:
-    hook = dict(session_id=session_id, task_id=task_id, platform="desktop")
-    lifecycle.invoke_hook("pre_llm_call", **hook)
-    lifecycle.invoke_hook(
-        "on_session_end", **hook,
-        completed=True, failed=False, interrupted=False,
-        turn_exit_reason="text_response(stop)",
-    )
-
-
-@pytest.fixture
-def parked_flush(direct_runtime, monkeypatch):
-    """A flush that blocks like the real barrier does while another session's tool runs."""
-    monkeypatch.setattr(
-        "hermes_cli.observability.shared_metrics._utc_now",
-        lambda: datetime(2026, 7, 28, 9, tzinfo=timezone.utc),
-    )
-    state = SimpleNamespace(attempts=0, entered=threading.Event(), release=threading.Event())
-
-    def parked() -> None:
-        state.attempts += 1
-        state.entered.set()
-        state.release.wait(3)
-
-    direct_runtime.subscribers.flush = parked
-    yield state
-    state.release.set()
-    _join_export_workers()
-
-
-def test_task_ends_do_not_wait_on_the_process_wide_flush_barrier(parked_flush, tmp_path):
-    _finish_desktop_task("s1", "t1")
-
-    # The turn thread is back while the barrier is still parked, so nothing is exported yet.
-    assert parked_flush.entered.wait(3)
-    outbox = tmp_path / "hermes-home" / "telemetry" / "shared_metrics" / "outbox"
-    assert list(outbox.glob("*.json")) == []
-
-    # Task ends behind the parked barrier coalesce into one more pass, not one each.
-    for task_id in ("t2", "t3", "t4"):
-        _finish_desktop_task("s1", task_id)
-    parked_flush.release.set()
-    _join_export_workers()
-    assert parked_flush.attempts == 2
-    assert len(list(outbox.glob("*.json"))) == 1
-
-
-def test_background_flush_runs_under_the_finishing_turns_profile(
-    direct_runtime, tmp_path, monkeypatch
-):
-    from hermes_constants import get_hermes_home, reset_hermes_home_override, set_hermes_home_override
-
-    seen: list[Any] = []
-    monkeypatch.setattr(
-        relay_shared_metrics._Runtime,
-        "_export",
-        lambda self: seen.append(get_hermes_home()),
-    )
-    profile_home = tmp_path / "other-profile"
-    token = set_hermes_home_override(profile_home)
-    try:
-        _finish_desktop_task("s1", "t1")
-        _join_export_workers()
-    finally:
-        reset_hermes_home_override(token)
-
-    assert seen == [profile_home]
 
 
 def test_skill_lifecycle_flows_through_relay_to_a_privacy_safe_package(

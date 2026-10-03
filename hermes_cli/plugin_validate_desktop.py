@@ -33,28 +33,9 @@ _FORBIDDEN: Tuple[Tuple[str, "re.Pattern[str]"], ...] = (
      re.compile(r"\bimport\s+(?:[^;'\"]*?\bfrom\s*)?['\"][a-zA-Z][\w+.-]*:")),
     ("script injection",
      re.compile(r"createElement\(\s*['\"]script['\"]\s*\)|<script\b")),
-    # The app's own markup (`data-slot` / `data-tour` / `data-sidebar` / `data-testid`) is not plugin
-    # surface: a plugin that queries it to restyle, hide, click or rewrite core UI collides with every
-    # other plugin doing the same and breaks on any Desktop release. Use a slot, route or SDK hook.
-    ("app DOM reach",
-     re.compile(r"\bdocument\.(?:querySelector(?:All)?|getElementsBy\w+|getElementById)\(\s*[`'\"][^`'\"]*"
-                r"\[data-(?:slot|tour|sidebar|testid)\b")),
-    ("app DOM reach",
-     re.compile(r"\.observe\(\s*document\.body\s*,\s*\{[^}]*\b(?:childList|subtree)\b")),
 )
 
-# String literals are matched first and kept, so a ``/*`` or ``//`` INSIDE a string (a glob such as
-# ``'**/*.md'``, a URL) cannot open a "comment" that blanks every line up to the next ``*/`` and
-# hides whatever forbidden construct sits there.
-_COMMENT = re.compile(
-    r"(\"(?:[^\"\\\n]|\\.)*\"|'(?:[^'\\\n]|\\.)*'|`(?:[^`\\]|\\.)*`)"
-    r"|/\*.*?\*/|(?<![:\w])//[^\n]*",
-    re.S,
-)
-
-
-def _strip_comments(source: str) -> str:
-    return _COMMENT.sub(lambda m: m.group(1) or "\n" * m.group(0).count("\n"), source)
+_COMMENT = re.compile(r"/\*.*?\*/|(?<![:\w])//[^\n]*", re.S)
 
 # A JS regex literal (``/<script[\s\S]*?<\/script>/gi``) matches markup, it cannot inject any: a
 # feed sanitiser that STRIPS script tags is the opposite of the move the rule refuses. Regex
@@ -81,7 +62,7 @@ def _mask_regex_literals(source: str) -> str:
 
 def desktop_surface_findings(source: str) -> List[Tuple[str, int]]:
     """Return ``[(rule, line)]`` for every forbidden construct in a plugin.js source."""
-    stripped = _strip_comments(source)
+    stripped = _COMMENT.sub(lambda m: "\n" * m.group(0).count("\n"), source)
     no_regex = _mask_regex_literals(stripped)
     findings: List[Tuple[str, int]] = []
     for rule, pattern in _FORBIDDEN:

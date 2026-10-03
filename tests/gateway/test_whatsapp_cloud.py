@@ -13,7 +13,6 @@ exercised with synthetic ``Request`` objects.
 from __future__ import annotations
 
 import asyncio
-import copy
 import json
 from unittest.mock import AsyncMock, MagicMock
 
@@ -53,11 +52,11 @@ def _make_adapter(**overrides):
     adapter.config.extra = {}
 
     # Cloud-API-specific attributes
-    adapter._phone_number_id = overrides.pop("phone_number_id", "7794189252778687")
+    adapter._phone_number_id = overrides.pop("phone_number_id", "1234567890")
     adapter._access_token = overrides.pop("access_token", "test-token")
     adapter._app_id = overrides.pop("app_id", "")
     adapter._app_secret = overrides.pop("app_secret", "")
-    adapter._waba_id = overrides.pop("waba_id", "215589313241560883")
+    adapter._waba_id = overrides.pop("waba_id", "")
     adapter._verify_token = overrides.pop("verify_token", "")
     adapter._webhook_host = "127.0.0.1"
     adapter._webhook_port = 8090
@@ -470,13 +469,13 @@ class TestWebhookDispatch:
             "object": "whatsapp_business_account",
             "entry": [
                 {
-                    "id": "215589313241560883",
+                    "id": "x",
                     "changes": [
                         {
                             "field": "messages",
                             "value": {
                                 "messaging_product": "whatsapp",
-                                "metadata": {"phone_number_id": "7794189252778687"},
+                                "metadata": {"phone_number_id": "1"},
                                 "contacts": [
                                     {"profile": {"name": "U"}, "wa_id": "1555"}
                                 ],
@@ -510,37 +509,6 @@ class TestWebhookDispatch:
         assert response.status == 200
         assert len(captured) == 1
         assert captured[0].text == "Yes please"
-
-    @pytest.mark.asyncio
-    @pytest.mark.parametrize(
-        ("waba_id", "entry_id", "phone_number_id", "dispatched"),
-        [
-            ("215589313241560883", "999999999999999", "7794189252778687", False),
-            ("215589313241560883", "215589313241560883", "200000000000002", False),
-            ("215589313241560883", "999999999999999", "200000000000002", False),
-            ("215589313241560883", "215589313241560883", "7794189252778687", True),
-            ("", "999999999999999", "7794189252778687", True),
-        ],
-        ids=["foreign-waba", "foreign-phone", "foreign-both", "matching", "waba-unset"],
-    )
-    async def test_signed_webhook_bound_to_configured_identity(
-        self, waba_id, entry_id, phone_number_id, dispatched
-    ):
-        """A valid app-secret signature only proves the payload came from the shared
-        Meta app; another number/WABA on that app must not reach this adapter."""
-        adapter = _make_adapter(app_secret="key", waba_id=waba_id)
-        adapter.handle_message = AsyncMock()
-        payload = copy.deepcopy(_SAMPLE_INBOUND_TEXT_PAYLOAD)
-        payload["entry"][0]["id"] = entry_id
-        payload["entry"][0]["changes"][0]["value"]["metadata"]["phone_number_id"] = phone_number_id
-        body = json.dumps(payload).encode("utf-8")
-
-        response = await adapter._handle_webhook(
-            _post_request(body, {"X-Hub-Signature-256": _sign("key", body)})
-        )
-
-        assert response.status == 200
-        assert adapter.handle_message.await_count == (1 if dispatched else 0)
 
 
 # ---------------------------------------------------------------------------
@@ -853,12 +821,12 @@ class TestInboundMediaDispatch:
         payload = {
             "object": "whatsapp_business_account",
             "entry": [{
-                "id": "215589313241560883",
+                "id": "x",
                 "changes": [{
                     "field": "messages",
                     "value": {
                         "messaging_product": "whatsapp",
-                        "metadata": {"phone_number_id": "7794189252778687"},
+                        "metadata": {"phone_number_id": "1"},
                         "contacts": [{"profile": {"name": "U"}, "wa_id": "1555"}],
                         "messages": [{
                             "from": "1555",

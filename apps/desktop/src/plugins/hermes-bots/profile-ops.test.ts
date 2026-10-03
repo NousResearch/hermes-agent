@@ -54,8 +54,7 @@ beforeEach(() => {
   hostMock.request.mockImplementation(async (method: string, params: Record<string, unknown>) => {
     calls.push({ method, params: structuredClone(params ?? {}) })
 
-    // A save reads the bot's server namespace (profiles.list) before writing it.
-    return method === 'profiles.list' ? { profiles: [{ name: 'researcher' }, { name: 'researcher-2' }] } : { ok: true }
+    return { ok: true }
   })
 })
 

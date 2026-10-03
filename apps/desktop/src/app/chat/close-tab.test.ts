@@ -25,7 +25,11 @@ vi.mock('@/components/pane-shell/tree/store', () => ({
 
 vi.mock('@/store/session-states', () => ({
   closeSessionTile: (...args: unknown[]) => closeSessionTile(...args),
-  nextSessionTileForWorkspace: () => nextSessionTileForWorkspace()
+  nextSessionTileForWorkspace: () => nextSessionTileForWorkspace(),
+  // preview.ts reads the focused session when stamping/deriving tabs; this
+  // suite drives the writable $selectedStoredSessionId instead, so a static
+  // null stub is enough.
+  $focusedStoredSessionId: atom<string | null>(null)
 }))
 
 vi.mock('@/store/profile', () => ({

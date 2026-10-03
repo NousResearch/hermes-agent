@@ -64,8 +64,8 @@ class TestPlatformNameCaseInsensitivity:
 class _RelayDeliveryTransport:
     """Relay transport that advertises Slack and records outbound wire frames."""
 
-    def __init__(self, platform="slack"):
-        self._identities = [(platform, "bot-1")]
+    def __init__(self):
+        self._identities = [("slack", "bot-1")]
         self.sent = []
 
     async def send_outbound(self, action, *, platform=None):
@@ -75,18 +75,18 @@ class _RelayDeliveryTransport:
         return {"success": True, "message_id": "relay-message-1"}
 
 
-def _make_relay(transport, platform="slack", max_message_length=4000):
+def _make_relay(transport):
     return RelayAdapter(
         PlatformConfig(enabled=True),
         CapabilityDescriptor(
             contract_version=CONTRACT_VERSION,
-            platform=platform,
-            label=platform.capitalize(),
-            max_message_length=max_message_length,
+            platform="slack",
+            label="Slack",
+            max_message_length=4000,
             supports_draft_streaming=False,
             supports_edit=True,
             supports_threads=True,
-            markdown_dialect=platform,
+            markdown_dialect="slack",
             len_unit="chars",
         ),
         transport=cast(Any, transport),
@@ -94,9 +94,8 @@ def _make_relay(transport, platform="slack", max_message_length=4000):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("content", ["scheduled result", "x" * 5000], ids=["short", "oversized"])
-async def test_relay_fronted_target_delivers_without_prior_inbound_chat_state(tmp_path, monkeypatch, content):
-    """A persisted Slack home receives the complete payload from the gateway."""
+async def test_relay_fronted_target_delivers_without_prior_inbound_chat_state(tmp_path, monkeypatch):
+    """A persisted Slack home must work immediately after a gateway restart."""
     monkeypatch.setattr("gateway.delivery.get_hermes_home", lambda: tmp_path)
     transport = _RelayDeliveryTransport()
     relay = _make_relay(transport)
@@ -118,23 +117,16 @@ async def test_relay_fronted_target_delivers_without_prior_inbound_chat_state(tm
 
     result = await router._deliver_to_platform(
         DeliveryTarget(platform=Platform.SLACK, chat_id="D123"),
-        content,
+        "scheduled result",
         metadata={"job_id": "cron-1", "user_id": "stale-user"},
     )
 
     assert getattr(result, "success", False) is True
-    assert transport.sent
+    assert len(transport.sent) == 1
     action, wire_platform = transport.sent[0]
     assert wire_platform == "slack"
     assert action["chat_id"] == "D123"
     assert action["metadata"] == {"job_id": "cron-1", "user_id": "U123"}
-    assert action["content"] == content
-    saved_files = list(tmp_path.glob("cron/output/cron-1_*.txt"))
-    if len(content) > 4000:
-        assert len(saved_files) == 1
-        assert saved_files[0].read_text(encoding="utf-8") == content
-    else:
-        assert saved_files == []
 
 
 class RecordingAdapter:
@@ -410,46 +402,3 @@ def test_local_delivery_writes_non_ascii_on_windows_codepage(tmp_path, monkeypat
     written = Path(result["path"]).read_text(encoding="utf-8")
     assert "完了 ✅ café" in written
     assert "日次レポート" in written
-
-
-@pytest.mark.asyncio
-async def test_relay_fronted_telegram_target_receives_payload_above_its_own_limit(tmp_path, monkeypatch):
-    """The gateway does not pre-truncate for a relay-fronted Telegram chat.
-
-    The connector splits egress against the negotiated max_message_length
-    (4096 for Telegram), so the full payload must reach the transport intact.
-    """
-    monkeypatch.setattr("gateway.delivery.get_hermes_home", lambda: tmp_path)
-    transport = _RelayDeliveryTransport(platform="telegram")
-    relay = _make_relay(transport, platform="telegram", max_message_length=4096)
-    config = GatewayConfig(
-        platforms={
-            Platform.RELAY: PlatformConfig(enabled=True),
-            Platform.TELEGRAM: PlatformConfig(
-                enabled=False,
-                home_channel=HomeChannel(
-                    platform=Platform.TELEGRAM,
-                    chat_id="12345",
-                    name="Owner",
-                    user_id="777",
-                ),
-            ),
-        },
-    )
-    router = DeliveryRouter(config, adapters={Platform.RELAY: relay})
-    content = "y" * 30_000
-
-    result = await router._deliver_to_platform(
-        DeliveryTarget(platform=Platform.TELEGRAM, chat_id="12345"),
-        content,
-        metadata={"job_id": "cron-2", "user_id": "stale-user"},
-    )
-
-    assert getattr(result, "success", False) is True
-    action, wire_platform = transport.sent[0]
-    assert wire_platform == "telegram"
-    assert action["content"] == content
-    assert len(action["content"]) > 4096
-    saved_files = list(tmp_path.glob("cron/output/cron-2_*.txt"))
-    assert len(saved_files) == 1
-    assert saved_files[0].read_text(encoding="utf-8") == content

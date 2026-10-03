@@ -1,19 +1,14 @@
 """Store update contracts use the actual API's sequence and result shapes."""
 from __future__ import annotations
 
-import importlib
-import json
-import os
-import subprocess
-import sys
+import importlib.util
 from enum import IntEnum
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
-REPO = Path(__file__).resolve().parents[2]
-MODULE = "hermes_cli.windows_store_update"
+SCRIPT = Path(__file__).resolve().parents[2] / "apps/desktop/scripts/check-store-update.py"
 
 
 class State(IntEnum):
@@ -52,7 +47,10 @@ class Context:
 
 @pytest.fixture
 def checker():
-    return importlib.import_module(MODULE)
+    spec = importlib.util.spec_from_file_location("store_update_checker", SCRIPT)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 @pytest.mark.parametrize("mode", ["check", "download", "install"])
@@ -76,6 +74,9 @@ def test_store_operation_passes_update_sequence_and_requires_completed(checker, 
 
 @pytest.mark.platforms("windows")
 def test_native_projection_has_required_update_contract(tmp_path):
+    import subprocess
+    import sys
+
     code = (
         "from winrt.runtime import init_apartment,uninit_apartment,ApartmentType; "
         "from winrt.runtime.interop import initialize_with_window; "
@@ -100,16 +101,3 @@ def test_native_projection_has_required_update_contract(tmp_path):
                             capture_output=True, text=True, timeout=30)
     assert result.returncode == 0, result.stderr
     assert result.stdout.strip() == "store projection ready"
-
-
-def test_entry_reports_json_when_the_projection_is_unavailable(tmp_path):
-    # The desktop spawns `python -P -m <module>` and parses stdout as JSON; a
-    # failure inside the checker must still reach it as JSON, never as nothing.
-    (tmp_path / "winrt.py").write_text("raise ImportError('fixture unavailable')", encoding="utf-8")
-    child = subprocess.run([sys.executable, "-P", "-m", MODULE, "--mode", "check"], capture_output=True,
-                           text=True, timeout=30,
-                           env={**os.environ, "PYTHONPATH": os.pathsep.join([str(REPO), str(tmp_path)])})
-    assert child.returncode == 1, child.stderr
-    payload = json.loads(child.stdout)
-    assert payload["ok"] is False and payload["available"] is None
-    assert "fixture unavailable" in payload["error"]

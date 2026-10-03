@@ -94,11 +94,8 @@ def test_non_expired_lock_from_dead_pid_is_reclaimed(
     # No ``os.name`` pin: the probe below injects a fake ``psutil``, and
     # ``_process_is_gone`` consults psutil *before* its POSIX/nt split — the
     # nt early-return is unreachable here on any host, so faking the platform
-    # bought nothing.  The holder is stamped with this process's own PID
-    # namespace (same-namespace kernel proof is still proof; foreign and
-    # unstamped holders defer to TTL — see test_lease_pid_namespace.py).
-    from hermes_state_pidns import holder_namespace_token
-    dead_holder = f"pid=424242{holder_namespace_token()}:tid=1:agent=abc:nonce=deadbeef"
+    # bought nothing.
+    dead_holder = "pid=424242:tid=1:agent=abc:nonce=deadbeef"
     assert db.try_acquire_compression_lock(
         "sess1", dead_holder, ttl_seconds=300
     ) is True
@@ -125,11 +122,7 @@ def test_probe_doubt_keeps_lease_until_ttl(
     db: SessionDB, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A probe that errors out is doubt, not proof of death → TTL protects."""
-    # Stamped with this process's own namespace so the probe path is actually
-    # reached (unstamped holders are gated before the probe — see
-    # test_lease_pid_namespace.py).
-    from hermes_state_pidns import holder_namespace_token
-    holder = f"pid=424242{holder_namespace_token()}:tid=1:agent=abc:nonce=doubt"
+    holder = "pid=424242:tid=1:agent=abc:nonce=doubt"
     assert db.try_acquire_compression_lock(
         "sess1", holder, ttl_seconds=300
     ) is True

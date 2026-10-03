@@ -8,7 +8,7 @@ result objects::
 
     [
       {
-        "source": "supply chain",
+        "source": "review-label-gate",
         "results": [
           {"kind": "action_required", "title": "...", "summary": "...",
            "how_to_fix": "..."},
@@ -170,7 +170,7 @@ def collect_failed_jobs(
         return []
 
     # Pre-normalize exclude sources once: lowercase + hyphens→spaces, so
-    # "supply-chain" matches "Supply-chain scan / ...".
+    # "review-label-gate" matches "Review label gate / Review label gate".
     norm_sources = {
         src.lower().replace("-", " ") for src in (exclude_sources or set())
     }
@@ -378,7 +378,7 @@ def assemble(
     """Assemble the full comment body from all available inputs."""
     items: list[ReviewItem] = []
 
-    # 1. Structured statuses from workflow_call jobs (supply-chain, etc.)
+    # 1. Structured statuses from workflow_call jobs (review-labels, etc.)
     status_items, sources = collect_from_statuses(review_statuses_json)
     items.extend(status_items)
 

@@ -2261,7 +2261,6 @@ cli:
   clarify:
     bell_context: "esclarecimento"
     label: "Esclarecer"
-    timed_out_locked_answers: "(esclarecimento expirou após {timeout}s — respostas travadas retornadas)"
   connect:
     bell_context: "configuração de conexão"
     cannot_restart: "Esta conexão não pode ser iniciada novamente. Cancele e peça ao agente de novo."
@@ -2355,7 +2354,6 @@ cli:
     removed: "Item {index} removido da fila: {preview}"
     item_not_found: "Item {index} da fila não encontrado. Tamanho atual: {size}"
     usage_edit: "Uso: /queue edit <número> <novo prompt>"
-    usage_remove: "Uso: /queue rm <número>"
     updated: "Item {index} da fila atualizado: {preview}"
     usage_move: "Uso: /queue move <origem> <destino>"
     move_out_of_range: "Movimento na fila fora do intervalo. Tamanho atual: {size}"
@@ -2721,7 +2719,6 @@ cli:
       restored: "Estado restaurado de: {snapshot_id}"
       restart_recommended: "Recomenda-se reiniciar os processos do gateway/painel para que carreguem as alterações do state.db."
       not_found: "Instantâneo não encontrado: {snapshot_id}"
-      restore_incomplete: "O instantâneo {snapshot_id} não foi totalmente restaurado; alguns arquivos foram recusados (veja os logs)"
       usage_prune: "Uso: /snapshot prune [quantidade-a-manter]"
       pruned: "{deleted} instantâneo(s) antigo(s) removido(s) (mantendo {keep})."
     export:
@@ -3289,7 +3286,6 @@ cli:
     shallow_clone_keeping: "⚠ Clone superficial — não é possível verificar o estado de push; mantendo: {path}"
     next_session_deepens: "A próxima sessão `hermes -w` aprofunda o clone e remove worktrees já mescladas automaticamente."
     unpushed_keeping: "⚠ A worktree tem commits não enviados (push); mantendo: {path}"
-    uncommitted_keeping: "⚠ A worktree tem alterações não commitadas; mantendo: {path}"
     clean_up_manually: "Para limpar manualmente: git worktree remove --force {path}"
     cleaned_up: "✓ Worktree limpa: {path}"
 display:
@@ -3676,7 +3672,7 @@ tips:
   t197: "O salvamento de trajetórias (--save-trajectories) captura rastros completos de uso de ferramentas para treinar modelos."
   t198: "Três tipos de plugin: geral (ferramentas/hooks), fornecedores de memória e motores de contexto."
   t199: "hermes plugins install owner/repo instala plugins diretamente do GitHub."
-  t200: "Fornecedores de memória externos: OpenViking e Mem0 incluídos; Honcho, Hindsight e outros via hermes plugins install."
+  t200: "Fornecedores de memória externos: Honcho, OpenViking e Mem0 incluídos; Hindsight e outros via hermes plugins install."
   t201: "Os hooks de plugin incluem pre/post_tool_call, pre/post_llm_call e transform_terminal_output para canonicalizar a saída."
   t202: "O cache de prompt (Anthropic) reduz custos ao reutilizar prefixos de prompt do sistema em cache."
   t203: "O agente gera títulos de sessão automaticamente em um tópico em segundo plano — sem impacto na latência."

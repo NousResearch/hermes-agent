@@ -119,11 +119,6 @@ _REPETITION_DOMINATED = repetition_copy(
     "so continuing would only produce more repeated text. The partial response was discarded.",
     " and was truncated mid-loop; refusing to continue a",
 )
-_REPETITION_STREAM_CUT = repetition_copy(
-    "the stream mid-loop",
-    "so the stream was stopped instead of running on. The partial response was discarded.",
-    " and the stream was cut mid-loop; discarding the",
-)
 _CEILING_NO_TEXT = (
     "⚠️ **No visible answer was produced.** The model hit its output-token limit on every "
     "continuation attempt — its reasoning consumed the entire budget each time.\n\nTo fix this:\n"
@@ -465,12 +460,6 @@ def recover_from_truncation(
         truncated_tool_call_retries=truncated_tool_call_retries, retry_count=retry_count,
         compression_attempts=compression_attempts,
     )
-    if getattr(response, "_runaway_repetition", False):
-        # The streaming call cut a live repetition loop: a continuation would only re-enter it,
-        # whatever the partial or its tool calls look like.
-        line, user_response, error = _REPETITION_STREAM_CUT
-        agent._vprint(f"{agent.log_prefix}{line}", force=True, diagnostic=True)
-        return st.end_turn(user_response, error)
     st.window_filled = _prompt_filled_window(agent, response)
     if st.is_stub and getattr(response, "_clean_eof", False):
         _banner = ("Response truncated — server ended the stream without ever sending finish_reason "

@@ -21,11 +21,11 @@ import {
   $sessions,
   $sessionsLoading
 } from '@/store/session'
-import { $focusedStoredSessionId } from '@/store/session-focus'
 import {
   $attentionSessionIds,
   $focusedRuntimeId,
   $focusedSessionState,
+  $focusedStoredSessionId,
   $sessionStates,
   $sessionTiles,
   $stalledSessionIds,

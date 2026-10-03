@@ -15,7 +15,7 @@ export async function requestSkillInstallFromDeepLink(identifier: string): Promi
 
   const connectionLabel =
     !connectionId || connectionId === 'local'
-      ? translateNow('skillDeepLink.thisComputer')
+      ? translateNow('catalog.thisComputer')
       : $connectionsRegistry.get()?.connections.find(connection => connection.id === connectionId)?.label ||
         connectionId
 
@@ -23,20 +23,20 @@ export async function requestSkillInstallFromDeepLink(identifier: string): Promi
 
   const assertDestination = () => {
     if (connectionId !== getApiRequestConnection() || profile !== getApiRequestProfile()) {
-      throw new Error(translateNow('skillDeepLink.destinationChanged'))
+      throw new Error(translateNow('catalog.destinationChanged'))
     }
   }
 
   await confirm({
-    title: translateNow('skillDeepLink.installTitle', name),
-    description: translateNow('skillDeepLink.installDescription'),
+    title: translateNow('catalog.installTitle', name),
+    description: translateNow('catalog.installDescription'),
     details: [
-      { label: translateNow('skillDeepLink.source'), value: identifier },
-      { label: translateNow('skillDeepLink.installTo'), value: destination }
+      { label: translateNow('catalog.source'), value: identifier },
+      { label: translateNow('catalog.installTo'), value: destination }
     ],
     confirmLabel: translateNow('skills.hub.install'),
-    busyLabel: translateNow('skillDeepLink.installing'),
-    doneLabel: translateNow('skillDeepLink.installed'),
+    busyLabel: translateNow('catalog.installing'),
+    doneLabel: translateNow('catalog.installed'),
     onConfirm: async () => {
       // Recheck on retries too: a link must never follow a changed destination.
       assertDestination()
@@ -56,7 +56,7 @@ export async function requestSkillInstallFromDeepLink(identifier: string): Promi
       assertDestination()
       notify({
         kind: 'success',
-        title: translateNow('skillDeepLink.installComplete', name),
+        title: translateNow('catalog.installComplete', name),
         message: translateNow('skills.changesApplyNewSessions')
       })
     }

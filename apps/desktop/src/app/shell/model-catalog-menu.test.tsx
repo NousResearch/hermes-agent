@@ -15,7 +15,6 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-libra
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { DropdownMenu, DropdownMenuContent } from '@/components/ui/dropdown-menu'
-import { registry } from '@/contrib/registry'
 import { queryClient } from '@/lib/query-client'
 import { $favoriteModels, favoriteModelKey, toggleFavoriteModel } from '@/store/favorite-models'
 import { $localModelsEnabled } from '@/store/local-models-flag'
@@ -32,7 +31,6 @@ import { $defaultReasoningEffort } from '@/store/session'
 import type { LocalRuntimeJob } from '@/types/hermes'
 
 import { ModelCatalogMenu, ModelMenuCloseContext, type ModelMenuController } from './model-catalog-menu'
-import { MODEL_MENU_ROW_AREA, type ModelMenuRowContribution } from './model-menu-row-decorations'
 
 // Radix calls these on open; jsdom doesn't implement them.
 beforeAll(() => {
@@ -86,48 +84,6 @@ afterEach(() => {
   queryClient.setQueryData(localModelsKey(localModelsOwner(), 'jobs'), [])
   $defaultReasoningEffort.set('')
   vi.clearAllMocks()
-})
-
-describe('model menu row decorations (MODEL_MENU_ROW_AREA)', () => {
-  it('paints a contributed icon and badge in the row slots, skipping a throwing decorator', async () => {
-    const dispose = [
-      registry.register({
-        area: MODEL_MENU_ROW_AREA,
-        data: {
-          decorate: () => {
-            throw new Error('broken plugin')
-          }
-        } satisfies ModelMenuRowContribution,
-        id: 'broken'
-      }),
-      registry.register({
-        area: MODEL_MENU_ROW_AREA,
-        data: {
-          decorate: ({ model, provider }) =>
-            model === 'gemini-3.1-pro' ? { badge: 'new', icon: <img alt="" data-testid={`mark-${provider}`} /> } : null
-        } satisfies ModelMenuRowContribution,
-        id: 'marks'
-      })
-    ]
-
-    try {
-      renderMenu()
-
-      const row = (await screen.findByText('Gemini 3.1 Pro')).closest('[role="menuitem"]')!
-      const icon = row.querySelector('[data-slot="model-menu-row-icon"]')
-
-      expect(icon?.querySelector('[data-testid="mark-google"]')).toBeTruthy()
-      expect(row.querySelector('[data-model-menu-row-badge]')?.textContent).toBe('new')
-
-      // A decorator returning null leaves its row bare.
-      const bare = screen.getByText('Gemini 2.5').closest('[role="menuitem"]')!
-
-      expect(bare.querySelector('[data-slot="model-menu-row-icon"]')).toBeNull()
-      expect(bare.querySelector('[data-model-menu-row-badge]')).toBeNull()
-    } finally {
-      dispose.forEach(release => release())
-    }
-  })
 })
 
 describe('the current row effort', () => {
@@ -273,49 +229,19 @@ describe('the catalog owns favorite models', () => {
 
     renderMenu()
 
-    await screen.findByText(/Gemini 2\.5/i)
+    const rows = (await screen.findAllByText(/Gemini 2\.5/i)).map(node => node.closest('[role="menuitem"]')!)
 
+    // The section label comes before the provider group heading (the LAST
+    // 'Google' text — the favorite row's provider chip paints one first).
     const label = screen.getByText('Favorites')
-    const googleHeading = screen.getByText('Google')
+    const googleTexts = screen.getAllByText('Google')
+    const googleHeading = googleTexts[googleTexts.length - 1]
 
     expect(label.compareDocumentPosition(googleHeading) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
-  })
 
-  it('names each provider once over its favorites when the section mixes providers', async () => {
-    getGlobalModelOptions.mockResolvedValue({
-      providers: [
-        { models: ['gemini-3.1-pro', 'gemini-2.5-flash'], name: 'Google', slug: 'google' },
-        { models: ['gemini-3.1-pro'], name: 'OpenRouter', slug: 'openrouter' }
-      ]
-    })
-    // Starred out of provider order: the section still gathers each
-    // provider's favorites under one label, in the order they were starred.
-    toggleFavoriteModel('google', 'gemini-3.1-pro')
-    toggleFavoriteModel('openrouter', 'gemini-3.1-pro')
-    toggleFavoriteModel('google', 'gemini-2.5-flash')
-
-    renderMenu()
-
-    await screen.findByText('Favorites')
-
-    const rows = screen.getAllByText(/Gemini (3\.1|2\.5)/).map(node => node.textContent)
-
-    // One label per provider, never one per row, and each provider's
-    // favorites sit together under it.
-    expect(screen.getAllByText('Google')).toHaveLength(1)
-    expect(screen.getAllByText('OpenRouter')).toHaveLength(1)
-    expect(rows).toEqual(['Gemini 3.1 Pro', 'Gemini 2.5', 'Gemini 3.1 Pro'])
-  })
-
-  it('does not label the provider when every favorite shares one', async () => {
-    toggleFavoriteModel('google', 'gemini-2.5-flash')
-
-    renderMenu()
-
-    await screen.findByText('Favorites')
-
-    // Only Google's own group heading, never a label inside Favorites.
-    expect(screen.getAllByText('Google')).toHaveLength(1)
+    // The provider chip names the row's provider, so two labs sharing a model
+    // id stay apart in the mixed section.
+    expect(rows.some(row => row.textContent?.includes('Google'))).toBe(true)
   })
 
   it('does not also list a favorite under its provider', async () => {

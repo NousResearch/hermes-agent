@@ -7,8 +7,6 @@ import json
 import os
 import urllib.request
 
-from hermes_cli.debug_redaction import redact_debug_support_text
-
 # Overridable via env so the feature can be pointed at staging / a local dev NAS instance.
 NAS_BASE = os.environ.get("HERMES_DIAGNOSTICS_BASE_URL", "https://portal.nousresearch.com")
 _REQUEST_TIMEOUT = 30
@@ -40,11 +38,9 @@ def request_upload_url(content_type: str = "application/gzip", size_bytes: int |
     try:
         result = json.loads(body)
     except (ValueError, json.JSONDecodeError) as exc:
-        safe_body = redact_debug_support_text(body, max_chars=200)
-        raise RuntimeError(f"diagnostics upload-url returned non-JSON response: {safe_body}") from exc
+        raise RuntimeError(f"diagnostics upload-url returned non-JSON response: {body[:200]}") from exc
     if not isinstance(result, dict) or not result.get("uploadUrl"):
-        safe_body = redact_debug_support_text(body, max_chars=200)
-        raise RuntimeError(f"diagnostics upload-url response missing 'uploadUrl': {safe_body}")
+        raise RuntimeError(f"diagnostics upload-url response missing 'uploadUrl': {body[:200]}")
     return result
 
 

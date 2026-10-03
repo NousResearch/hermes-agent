@@ -60,8 +60,13 @@ import {
   idsShareLineage,
   sessionMatchesStoredId
 } from '@/store/session'
-import { $focusedStoredSessionId } from '@/store/session-focus'
-import { $focusedRuntimeId, $focusedSessionState, $sessionTiles, isSessionRemote } from '@/store/session-states'
+import {
+  $focusedRuntimeId,
+  $focusedSessionState,
+  $focusedStoredSessionId,
+  $sessionTiles,
+  isSessionRemote
+} from '@/store/session-states'
 import { $statusbarHiddenIds } from '@/store/statusbar-prefs'
 import { $subagentsBySession, activeSubagentCount, failedSubagentCount } from '@/store/subagents'
 import { $gatewayRestarting } from '@/store/system-actions'

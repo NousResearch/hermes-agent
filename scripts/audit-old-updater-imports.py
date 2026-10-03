@@ -257,18 +257,6 @@ def _string_constants(tree: ast.AST) -> dict[str, list[str]]:
     return out
 
 
-def _suppresses(expr: ast.expr, caught_by: set[str]) -> bool:
-    """``suppress(...)`` / ``contextlib.suppress(...)`` naming an exception in *caught_by*."""
-    if not isinstance(expr, ast.Call):
-        return False
-    func = expr.func
-    name = func.id if isinstance(func, ast.Name) else func.attr if isinstance(func, ast.Attribute) else None
-    return name == "suppress" and any(
-        (arg.id if isinstance(arg, ast.Name) else arg.attr if isinstance(arg, ast.Attribute) else None) in caught_by
-        for arg in expr.args
-    )
-
-
 def _guarded_spans(func: _AnyFunc, failure: str = "ImportError") -> list[tuple[int, int]]:
     """Try bodies whose first matching handler swallows this load failure.
 
@@ -281,11 +269,6 @@ def _guarded_spans(func: _AnyFunc, failure: str = "ImportError") -> list[tuple[i
         caught_by.add("ImportError")
     spans: list[tuple[int, int]] = []
     for node in ast.walk(func):
-        # ``with contextlib.suppress(Exception):`` swallows the failure exactly like a
-        # non-raising ``except`` arm does.
-        if isinstance(node, ast.With) and node.body and any(_suppresses(item.context_expr, caught_by) for item in node.items):
-            spans.append((node.body[0].lineno, max(stmt.end_lineno or stmt.lineno for stmt in node.body)))
-            continue
         if not isinstance(node, ast.Try):
             continue
         for handler in node.handlers:

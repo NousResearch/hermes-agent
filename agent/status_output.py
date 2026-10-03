@@ -105,35 +105,6 @@ class StatusOutputMixin:
         """Emit a user-visible warning for degraded side paths where the turn continues but the user must know."""
         self._emit_status_kind("warn", message, origin="_emit_warning")
 
-    def _emit_startup_warning(self, message: str) -> None:
-        """A warning raised during ``__init__`` that the user must see (e.g. a memory provider that
-        could not be recovered). The CLI prints it. Other drivers get a sticky warn ``AgentNotice``:
-        Desktop renders notices but no warn-kind ``status.update``, and the messaging gateway wires
-        its callbacks per turn, after init, so a notice raised before then waits for
-        :meth:`_replay_startup_warnings` on the first turn."""
-        message = message.strip()
-        if (getattr(self, "platform", None) or "cli") == "cli":
-            self._emit_warning(message)
-            return
-        import zlib
-
-        from agent.credits_tracker import AgentNotice
-
-        key = f"startup-warning.{zlib.crc32(message.encode()):08x}"
-        level = "success" if message.startswith("✓") else "warn"  # a recovered provider is good news
-        notice = AgentNotice(text=message, level=level, kind="sticky", key=key, id=key)
-        if getattr(self, "notice_callback", None):
-            self._emit_notice(notice)
-        else:
-            self._pending_startup_notices = [*getattr(self, "_pending_startup_notices", ()), notice]
-
-    def _replay_startup_warnings(self) -> None:
-        pending = getattr(self, "_pending_startup_notices", None)
-        if pending and getattr(self, "notice_callback", None):
-            self._pending_startup_notices = []
-            for notice in pending:
-                self._emit_notice(notice)
-
     def _warn_context_overflow_blocked(self, reason: str, preflight_tokens: int, threshold_tokens: int) -> None:
         """Warn (deduped on the block *kind* — ``cooldown`` / ``ineffective`` — not the countdown string;
         cleared by ``_clear_context_overflow_warn``) when context is over the threshold but compression is blocked."""

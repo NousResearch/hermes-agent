@@ -252,17 +252,6 @@ def _posix_roots(roots: List[str]) -> bool:
         not re.match(r"^[A-Za-z]:[\\/]", root) and "\\" not in root for root in roots)
 
 
-def _find_literal_path_expressions(roots: List[str]) -> List[str]:
-    """Escape each search root for find's ``-path`` test, which matches its PATTERN
-    (glob) against the path find echoes — the operand verbatim. The operand reaches
-    the shell already single-quoted; ``-path`` must compare literally, so ``*?[]``
-    in a root's own name need escaping (a directory literally named ``a[1]`` must
-    be excluded by identity, not treated as a character class). Backslashes are
-    left alone: find does not read them as escapes inside a bracket-free pattern,
-    and doubling them would break matching on backslash-shaped roots."""
-    return [re.sub(r"([*?\[\]])", r"\\\1", root) for root in roots]
-
-
 class SearchMixin:
     """File-name and content search via rg with find/grep fallbacks. Requires
     ``_exec``, ``_has_command``, ``_expand_path``, ``_escape_shell_arg``,
@@ -666,124 +655,6 @@ class SearchMixin:
             return False
         return root == home or common == root
 
-    def _filter_hidden_descendants(self, paths: List[str], root: Path) -> List[str]:
-        """Drop hidden descendants while allowing an explicit hidden search root."""
-        normalized_root = root.resolve()
-        filtered = []
-        for item_path in paths:
-            try:
-                rel_parts = Path(item_path).resolve().relative_to(normalized_root).parts
-            except ValueError:
-                rel_parts = Path(item_path).parts
-            if any(part not in {".", ".."} and part.startswith(".") for part in rel_parts):
-                continue
-            filtered.append(item_path)
-        return filtered
-
-    def _filter_gitignored_paths(self, paths: List[str], root: str) -> List[str]:
-        """Drop paths ignored by git when *root* is inside a git worktree."""
-        if not paths:
-            return paths
-
-        escaped_root = self._escape_shell_arg(root)
-        probe = self._exec(
-            f"git -C {escaped_root} rev-parse --is-inside-work-tree >/dev/null 2>&1",
-            timeout=10,
-        )
-        if probe.exit_code != 0:
-            return paths
-
-        result = self._exec(
-            f"git -C {escaped_root} check-ignore --stdin",
-            timeout=10,
-            stdin_data="\n".join(paths),
-        )
-        ignored = set(result.stdout.splitlines())
-        return [item_path for item_path in paths if item_path not in ignored]
-
-    def _sort_paths_by_mtime(self, paths: List[str]) -> List[str]:
-        """Sort paths newest-first using metadata from the active backend."""
-        if len(paths) < 2:
-            return paths
-
-        script = (
-            'while IFS= read -r item || [ -n "$item" ]; do '
-            'mtime="$(stat -c%Y "$item" 2>/dev/null '
-            '|| stat -f%m "$item" 2>/dev/null || true)"; '
-            "printf '%s\\n' \"${mtime:-0}\"; "
-            "done"
-        )
-        result = self._exec(script, timeout=60, stdin_data="\n".join(paths))
-
-        mtimes = []
-        for line in result.stdout.splitlines()[:len(paths)]:
-            try:
-                mtimes.append(float(line))
-            except ValueError:
-                mtimes.append(0.0)
-        # A path can disappear between traversal and stat. Keep such paths at
-        # the end, preserving their existing relative order as a stable fallback.
-        mtimes.extend([0.0] * (len(paths) - len(mtimes)))
-        return [
-            item
-            for _, item in sorted(
-                zip(mtimes, paths), key=lambda pair: pair[0], reverse=True
-            )
-        ]
-
-    def _search_directories_with_find(
-        self, pattern: str, path: str, fetch_limit: int
-    ) -> tuple[List[str], Optional[str]]:
-        """Return matching descendant directories using find, if available.
-
-        ``rg --files`` and ``find -type f`` both enumerate files only, so
-        directories — especially empty ones — are invisible (#54347). rg stays
-        authoritative for which *files* survive ignore processing; this adds
-        the matching directory entries so the tool honours its documented
-        ls-replacement contract.
-        """
-        if fetch_limit <= 0 or not self._has_command("find"):
-            return [], None
-
-        escaped_path = self._escape_shell_arg(path)
-        escaped_pattern = self._escape_shell_arg(pattern)
-        q_roots = [escaped_path]
-        hidden_prune = self._hidden_prune_expr(q_roots)
-        cmd = (
-            f"find -H {escaped_path} -mindepth 1 {hidden_prune} -o -type d "
-            f"! -name '.*' -name {escaped_pattern} -printf '%T@ %p\\n' "
-            f"2>/dev/null | sort -rn"
-        )
-        result = self._exec(cmd, timeout=30)
-        stdout, limit_reason = _search_stdout_and_limit(result)
-
-        if not stdout.strip() and not limit_reason:
-            # Try without -printf (BSD find compatibility -- macOS)
-            cmd_simple = (
-                f"find -H {escaped_path} -mindepth 1 {hidden_prune} -o -type d "
-                f"! -name '.*' -name {escaped_pattern} 2>/dev/null"
-            )
-            result = self._exec(cmd_simple, timeout=30)
-            stdout, limit_reason = _search_stdout_and_limit(result)
-
-        dirs = []
-        for line in stdout.strip().split('\n'):
-            if not line:
-                continue
-            parts = line.split(' ', 1)
-            if len(parts) == 2 and parts[0].replace('.', '').isdigit():
-                dirs.append(parts[1])
-            else:
-                dirs.append(line)
-
-        if dirs:
-            # An explicitly selected hidden root keeps its (hidden) subtree;
-            # any other hidden descendants stay invisible, matching rg.
-            if self._root_under_hidden_dir(path):
-                dirs = self._filter_hidden_descendants(dirs, Path(path))
-            dirs = self._filter_gitignored_paths(dirs, path)
-        return self._sort_paths_by_mtime(dirs)[:fetch_limit], limit_reason
-
     def _search_files(self, pattern: str, path: str | List[str], limit: int, offset: int,
                       order: str = "discovery") -> SearchResult:
         """Search for files by name (glob-like) across one or more roots: rg --files,
@@ -841,19 +712,8 @@ class SearchMixin:
         # indistinguishable from an empty directory - while ``rg --files`` followed the
         # same argument (#116270). Following the operand inside the command is also what
         # covers a link that only exists on the execution host (SSH/container), with no
-        # probe of its own. That contract forbids ``-mindepth 1`` here: with ``-H`` the
-        # followed operand IS depth 0, so it would exclude the root itself — the only
-        # match when the root is a symlink to a file. The root directory itself is
-        # excluded by path identity instead, inside the ``-type d`` arm (the ``-type f``
-        # arm must keep the depth-0 match). ``-path`` matching is literal against the
-        # path as find echoes it, which is the operand verbatim, so the operand needs
-        # its glob metacharacters escaped.
-        root_exemptions = "".join(
-            f" ! -path {self._escape_shell_arg(root)}"
-            for root in _find_literal_path_expressions(find_roots)
-        )
-        base = (f"find -H {' '.join(q_roots)}{protected_prune}{hidden_prune} "
-                f"\\( -type f -o \\( -type d{root_exemptions} \\) \\) "
+        # probe of its own.
+        base = (f"find -H {' '.join(q_roots)}{protected_prune}{hidden_prune} -type f "
                 f"! -name '.*' -name {self._escape_shell_arg(search_pattern)}")
         if order == "modified":
             cmd = "set -o pipefail; " + base + f" -printf '%T@ %p\\n' 2>/dev/null | sort -rn | head -n {fetch_limit}"
@@ -955,21 +815,6 @@ class SearchMixin:
                     "Exact modification-time order failed; ripgrep 14+ is "
                     "required. Upgrade ripgrep or use order='discovery'."))
             return SearchResult(error="File search failed while running ripgrep.")
-        # rg --files lists files only; supplement with matching directories so
-        # empty directories stay discoverable (#54347). Skip the extra traversal
-        # when rg already timed out — partial file results must not be presented
-        # as a coherent page. Only the single-root path supplements (a multi-root
-        # walk is already the merged view across roots).
-        if limit_reason != "search_timeout" and isinstance(path, str) and self._has_command("find"):
-            dirs, directory_limit_reason = self._search_directories_with_find(glob_pattern, path, fetch_limit)
-            if dirs:
-                existing = set(all_files)
-                merged_entries = self._sort_paths_by_mtime(
-                    all_files + [d for d in dirs if d not in existing])
-                # Under exact modified order rg is authoritative for files;
-                # the merged view keeps the newest-first contract globally.
-                all_files = merged_entries
-                limit_reason = limit_reason or directory_limit_reason
         return SearchResult(
             files=all_files[offset:offset + limit], total_count=len(all_files),
             truncated=len(all_files) > offset + limit or bool(limit_reason), limit_reason=limit_reason)

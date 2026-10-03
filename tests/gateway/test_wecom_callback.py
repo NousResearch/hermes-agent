@@ -211,28 +211,4 @@ class TestWecomCallbackBodySizeLimit:
         response = await adapter._handle_callback(self._request(oversized))
         assert response.status == 413
 
-@pytest.mark.asyncio
-async def test_oversized_cron_output_is_split_under_the_2048_byte_text_limit():
-    """message/send keeps only the first 2048 BYTES of text.content; CJK output used to lose
-    everything past ~680 characters. The router now hands over the full payload and send()
-    splits it by UTF-8 bytes."""
-    from gateway.config import GatewayConfig
-    from gateway.delivery import DeliveryRouter
 
-    adapter = WecomCallbackAdapter(_config())
-    adapter._access_tokens["test-app"] = {"token": "tok", "expires_at": 9999999999}
-    sent = []
-
-    class _Client:
-        async def post(self, url, json):
-            sent.append(json["text"]["content"])
-            return type("R", (), {"json": lambda self: {"errcode": 0, "msgid": "m"}})()
-
-    adapter._http_client = _Client()
-    content = "\n\n".join(f"第{i}段 " + "数据" * 100 for i in range(40))
-    payload = DeliveryRouter(GatewayConfig())._cap_oversized_output(adapter, content, "job")
-    result = await adapter.send("test-app:user1", payload)
-
-    assert result.success
-    assert len(sent) > 1 and max(len(s.encode()) for s in sent) <= 2048
-    assert "第39段" in sent[-1]

@@ -6,9 +6,8 @@ inside each function so ``hermes_cli.auth.<name>`` patches still intercept (and 
 
 from __future__ import annotations
 
-import copy
-import json
 import logging
+import json
 import os
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -62,147 +61,6 @@ def _is_oauth_pool_payload(entry: Any) -> bool:
         or bool(str(entry.get("refresh_token") or "").strip())
         or str(entry.get("access_token") or "").startswith("sk-ant-oat"))
 
-
-def merge_snapshot_auth_preserving_live_single_use_grants(
-    snapshot_store: Dict[str, Any], live_store: Dict[str, Any],
-) -> Dict[str, Any]:
-    """Restore historical auth state without reviving spent single-use OAuth generations.
-
-    Snapshot metadata may be restored onto a live grant only when its stable row id proves the
-    lineage. Historical single-use refresh material with no live counterpart is dropped because
-    there is no local evidence that it is still redeemable. Current live grants always survive.
-    """
-    from hermes_cli.auth import _credential_token_pair, _merge_pool_row_generation
-
-    restored = copy.deepcopy(snapshot_store)
-    snapshot_pool = restored.get("credential_pool")
-    live_pool = live_store.get("credential_pool")
-
-    for provider_id in SINGLE_USE_REFRESH_POOL_PROVIDERS:
-        live_rows = live_pool.get(provider_id) if isinstance(live_pool, dict) else None
-        if not isinstance(live_rows, list):
-            live_rows = []
-        snapshot_rows = (
-            snapshot_pool.get(provider_id) if isinstance(snapshot_pool, dict) else None
-        )
-        if not isinstance(snapshot_rows, list):
-            snapshot_rows = []
-
-        live_grants = [
-            row for row in live_rows if _is_forkable_pool_row(provider_id, row)
-        ]
-        snapshot_has_grants = any(
-            _is_forkable_pool_row(provider_id, row) for row in snapshot_rows
-        )
-        if not live_grants and not snapshot_has_grants:
-            continue
-
-        if not isinstance(snapshot_pool, dict):
-            snapshot_pool = restored["credential_pool"] = {}
-
-        live_rows_by_id = {
-            row.get("id"): row
-            for row in live_rows
-            if isinstance(row, dict)
-            and isinstance(row.get("id"), str)
-            and row.get("id")
-        }
-        live_grants_by_id = {
-            row_id: row
-            for row_id, row in live_rows_by_id.items()
-            if _is_forkable_pool_row(provider_id, row)
-        }
-        live_without_id = [
-            copy.deepcopy(row)
-            for row in live_grants
-            if not (isinstance(row.get("id"), str) and row.get("id"))
-        ]
-        merged_snapshot: List[Dict[str, Any]] = []
-        consumed_ids: set[str] = set()
-
-        for snapshot_row in snapshot_rows:
-            row_id = snapshot_row.get("id") if isinstance(snapshot_row, dict) else None
-            live_row = (
-                live_rows_by_id.get(row_id)
-                if isinstance(row_id, str) and row_id
-                else None
-            )
-            live_is_grant = _is_forkable_pool_row(provider_id, live_row)
-            snapshot_is_grant = _is_forkable_pool_row(provider_id, snapshot_row)
-
-            if snapshot_is_grant:
-                # A snapshot-only generation may already have spent its refresh token upstream.
-                # Stable id + a current row is the only local proof of which credential identity
-                # replaced it. Current non-OAuth state wins as a unit; current OAuth state keeps
-                # the snapshot metadata while substituting its authoritative token generation.
-                if live_row is None or row_id in consumed_ids:
-                    continue
-                consumed_ids.add(row_id)
-                if live_is_grant:
-                    merged_snapshot.append(
-                        _merge_pool_row_generation(
-                            snapshot_row,
-                            live_row,
-                            provider_id,
-                            base_pair=_credential_token_pair(snapshot_row),
-                        )
-                    )
-                else:
-                    merged_snapshot.append(copy.deepcopy(live_row))
-                continue
-
-            if live_is_grant:
-                if row_id in consumed_ids:
-                    continue
-                consumed_ids.add(row_id)
-                # The historical row changed auth shape but still claims a live OAuth row's stable
-                # identity. Keep the live row as a unit rather than manufacturing two credentials.
-                merged_snapshot.append(copy.deepcopy(live_row))
-            else:
-                # Ordinary credentials are historical state: restore the snapshot's version.
-                merged_snapshot.append(snapshot_row)
-
-        live_only = [
-            copy.deepcopy(row)
-            for row_id, row in live_grants_by_id.items()
-            if row_id not in consumed_ids
-        ]
-        snapshot_pool[provider_id] = live_without_id + live_only + merged_snapshot
-
-    snapshot_providers = restored.get("providers")
-    live_providers = live_store.get("providers")
-    for provider_id in _DEVICE_CODE_BLOCK_PROVIDERS:
-        snapshot_block = (
-            snapshot_providers.get(provider_id)
-            if isinstance(snapshot_providers, dict)
-            else None
-        )
-        live_block = (
-            live_providers.get(provider_id)
-            if isinstance(live_providers, dict)
-            else None
-        )
-        snapshot_has_refresh = (
-            isinstance(snapshot_block, dict)
-            and bool(_block_tokens(snapshot_block).get("refresh_token"))
-        )
-        live_has_refresh = (
-            isinstance(live_block, dict)
-            and bool(_block_tokens(live_block).get("refresh_token"))
-        )
-        if not snapshot_has_refresh and not live_has_refresh:
-            continue
-
-        if not isinstance(snapshot_providers, dict):
-            snapshot_providers = restored["providers"] = {}
-        if isinstance(live_block, dict):
-            snapshot_providers[provider_id] = copy.deepcopy(live_block)
-        else:
-            # No current generation exists. Restoring the historical refresh token would
-            # resurrect a credential whose single-use token may already be spent.
-            snapshot_providers.pop(provider_id, None)
-
-    return restored
 
 def _is_pkce_row(row: Dict[str, Any]) -> bool:
     return str(row.get("source") or "").endswith("hermes_pkce")

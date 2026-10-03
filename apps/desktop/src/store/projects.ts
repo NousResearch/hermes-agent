@@ -348,12 +348,6 @@ function stillOnProjectsContext(context: ActiveProjectsContext): boolean {
   return activeGateway() === context.gateway && projectProfile() === context.profile
 }
 
-// Writes follow the selected gateway/profile even if the sidebar is showing
-// All profiles. That filter changes the view, not the destination.
-function stillOnWritableProjectOwner(context: ActiveProjectsContext): boolean {
-  return activeGateway() === context.gateway && normalizeProfileKey($activeGatewayProfile.get()) === context.profile
-}
-
 async function activeProjectsContext(profile = projectProfile()): Promise<ActiveProjectsContext> {
   if (!profile || profile === ALL_PROFILES) {
     throw new Error('Projects are unavailable while viewing all profiles')
@@ -365,7 +359,7 @@ async function activeProjectsContext(profile = projectProfile()): Promise<Active
     gateway = await ensureActiveGatewayOpen()
   }
 
-  if (!gateway || !stillOnWritableProjectOwner({ gateway, profile })) {
+  if (!gateway || gateway !== activeGateway() || profile !== normalizeProfileKey($activeGatewayProfile.get())) {
     throw new Error('Active Hermes profile changed while connecting')
   }
 
@@ -1027,12 +1021,11 @@ export async function createProject(input: CreateProjectInput): Promise<ProjectI
   }
 
   let res: { project: ProjectInfo | null }
-  let context: ActiveProjectsContext | null = null
 
   try {
     // All profiles filters the sidebar, not the owner of a new project.
     // Capture the live route so reconnecting cannot retarget the write.
-    context = await activeProjectsContext(writableProjectProfile())
+    const context = await activeProjectsContext(writableProjectProfile())
 
     res = await gatewayRequestOn<{ project: ProjectInfo | null }>(
       context.gateway,
@@ -1054,25 +1047,11 @@ export async function createProject(input: CreateProjectInput): Promise<ProjectI
     )
   } catch (err) {
     if (isMissingRpcMethod(err)) {
-      if (context && stillOnWritableProjectOwner(context)) {
-        $projectsRpcAvailable.set(false)
-      }
-
+      $projectsRpcAvailable.set(false)
       throw projectsStaleBackendError()
     }
 
     throw err
-  }
-
-  // The RPC may have created the project on A while the window moved to B.
-  // The IDEA.md writer and cached/sidebar state below use the current owner;
-  // publishing A's result there can overwrite B's file at the same path.
-  if (!stillOnWritableProjectOwner(context)) {
-    if (res.project) {
-      notify({ kind: 'info', message: translateNow('sidebar.projects.createdInPreviousContext') })
-    }
-
-    return null
   }
 
   markProjectsRpcSuccess()

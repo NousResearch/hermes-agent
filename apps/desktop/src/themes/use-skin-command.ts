@@ -2,15 +2,13 @@ import { useCallback } from 'react'
 
 import { useTheme } from './context'
 
-// Old names land on a shipped theme so muscle memory works. `gold`/`hermes`
-// only ever meant the classic gold look, so they reach Classic Hermes; `default`
-// stays Nous because it is also the stock config value, which Desktop reads as
-// "the Desktop default" everywhere else (boot, backend sync, setTheme).
+// Retired skin names land on a still-shipped theme so old muscle memory works.
+// `default` is intentionally NOT aliased: when the backend registers the classic
+// Hermes gold palette under that name (#76579) it must be selectable.
 const ALIASES: Record<string, string> = {
   ares: 'ember',
-  default: 'nous',
-  gold: 'classic',
-  hermes: 'classic',
+  gold: 'default',
+  hermes: 'default',
   'nous-light': 'nous'
 }
 

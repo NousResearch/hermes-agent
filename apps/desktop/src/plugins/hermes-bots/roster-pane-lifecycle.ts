@@ -4,7 +4,7 @@ import { useEffect } from 'react'
 import { $lastRoster } from './data'
 import type { useRoster } from './data'
 import { displayName } from './labels'
-import { pullServerAvatars } from './profile-ops'
+import { mergeServerMeta, pullServerAvatars } from './profile-ops'
 import { trackInboundActivity } from './roster-actions'
 import { botRosterMeta, botWorkspaceOwnerKey } from './routing'
 import { backfillMessagingProtocol } from './soul'
@@ -43,8 +43,7 @@ export function usePublishRosterSnapshot({ data, live, roster, allMeta, activeSo
       $lastSources.set(data.sources)
     }
 
-    // Names were already reconciled when the snapshot was fetched
-    // (data.ts::fetchRosterSnapshot), for every reader, pane open or not.
+    mergeServerMeta(activeSourceRoster, data?.fetchedAt || 0)
     pullServerAvatars(activeSourceRoster)
     trackInboundActivity(roster)
     backfillMessagingProtocol(activeSourceRoster)

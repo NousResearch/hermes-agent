@@ -2261,7 +2261,6 @@ cli:
   clarify:
     bell_context: "уточняющий вопрос"
     label: "Уточнение"
-    timed_out_locked_answers: "(уточняющий вопрос: тайм-аут через {timeout} с — возвращены зафиксированные ответы)"
   connect:
     bell_context: "настройка подключения"
     cannot_restart: "Это подключение нельзя запустить повторно. Отмените и попросите агента ещё раз."
@@ -2355,7 +2354,6 @@ cli:
     removed: "Удалён элемент очереди {index}: {preview}"
     item_not_found: "Элемент очереди {index} не найден. Текущий размер: {size}"
     usage_edit: "Использование: /queue edit <номер> <новый промпт>"
-    usage_remove: "Использование: /queue rm <номер>"
     updated: "Обновлён элемент очереди {index}: {preview}"
     usage_move: "Использование: /queue move <откуда> <куда>"
     move_out_of_range: "Перемещение выходит за границы очереди. Текущий размер: {size}"
@@ -2721,7 +2719,6 @@ cli:
       restored: "Состояние восстановлено из: {snapshot_id}"
       restart_recommended: "Рекомендуется перезапустить процессы шлюза/дашборда, чтобы они подхватили изменения state.db."
       not_found: "Снимок не найден: {snapshot_id}"
-      restore_incomplete: "Снимок {snapshot_id} восстановлен не полностью: некоторые файлы отклонены (см. логи)"
       usage_prune: "Использование: /snapshot prune [сколько-оставить]"
       pruned: "Удалено старых снимков: {deleted} (оставлено {keep})."
     export:
@@ -3289,7 +3286,6 @@ cli:
     shallow_clone_keeping: "⚠ Неглубокий клон (shallow) — не могу проверить состояние push, оставляю: {path}"
     next_session_deepens: "Следующий сеанс `hermes -w` углубит клон и автоматически удалит слитые worktree."
     unpushed_keeping: "⚠ В worktree есть неотправленные коммиты, оставляю: {path}"
-    uncommitted_keeping: "⚠ В worktree есть незакоммиченные изменения, оставляю: {path}"
     clean_up_manually: "Чтобы очистить вручную: git worktree remove --force {path}"
     cleaned_up: "✓ Worktree очищен: {path}"
 display:
@@ -3676,7 +3672,7 @@ tips:
   t197: "Сохранение траекторий (--save-trajectories) записывает полные трассы использования инструментов для обучения моделей."
   t198: "Три типа плагинов: общие (инструменты/хуки), провайдеры памяти и движки контекста."
   t199: "hermes plugins install owner/repo устанавливает плагины напрямую с GitHub."
-  t200: "Внешние провайдеры памяти: OpenViking, Mem0 встроены; Honcho, Hindsight и другие — через hermes plugins install."
+  t200: "Внешние провайдеры памяти: Honcho, OpenViking, Mem0 встроены; Hindsight и другие — через hermes plugins install."
   t201: "Хуки плагинов включают pre/post_tool_call, pre/post_llm_call и transform_terminal_output для нормализации вывода."
   t202: "Кэширование промптов (Anthropic) снижает стоимость за счёт повторного использования кэшированных префиксов системного промпта."
   t203: "Агент генерирует названия сеансов в фоновом потоке — без влияния на задержку."

@@ -21,7 +21,7 @@ import { atom } from 'nanostores'
 
 import { readJson, writeJson } from '@/lib/storage'
 
-import { BUILTIN_THEMES, DEFAULT_SKIN_NAME, RETIRED_SKINS } from './presets'
+import { BUILTIN_THEMES, DEFAULT_SKIN_NAME } from './presets'
 import { skinToDesktopTheme } from './skin'
 import { type DesktopTheme, isValidTheme } from './types'
 
@@ -41,26 +41,12 @@ export const localDisplaySkinProfile = localDisplaySkinName
   ? (localSkinPayload?.profile ?? '').trim() || 'default'
   : null
 
-// Built-in names keep their desktop palette and retired names resolve to the
-// default skin, so a cached theme under either is a shadow nothing should list.
-const cacheable = (name: string) => !BUILTIN_THEMES[name] && !RETIRED_SKINS.has(name)
-
-// Dropped entries are written back out, so a stale shadow (the reverted #130015
-// build cached the CLI `default` skin as a second "Classic Hermes") is gone from
-// disk on the first launch, not only hidden until the next registry change.
-const readCached = (): Record<string, DesktopTheme> => {
-  const stored = Object.entries(readJson<Record<string, unknown>>(BACKEND_THEMES_KEY) ?? {})
-
-  const kept = Object.fromEntries(
-    stored.filter((entry): entry is [string, DesktopTheme] => cacheable(entry[0]) && isValidTheme(entry[1]))
+const readCached = (): Record<string, DesktopTheme> =>
+  Object.fromEntries(
+    Object.entries(readJson<Record<string, unknown>>(BACKEND_THEMES_KEY) ?? {}).filter(
+      (entry): entry is [string, DesktopTheme] => !BUILTIN_THEMES[entry[0]] && isValidTheme(entry[1])
+    )
   )
-
-  if (Object.keys(kept).length !== stored.length) {
-    writeJson(BACKEND_THEMES_KEY, kept)
-  }
-
-  return kept
-}
 
 /** Skins pushed by the backend, keyed by name. Merged by `listAllThemes`. */
 export const $backendThemes = atom<Record<string, DesktopTheme>>(typeof window === 'undefined' ? {} : readCached())
@@ -105,25 +91,34 @@ export function ingestBackendSkin(skin: HermesSkin | undefined | null, { apply }
     return
   }
 
-  // `default` (like every retired name) is "no opinion" on the PALETTE — the
-  // desktop keeps its own default (nous), so we never register a converted theme
-  // under `default`. It is still a
-  // valid apply TARGET though: a runtime switch back to `default` must repaint the
-  // desktop to its own default (setTheme normalizes `default` → nous). So we only
-  // skip the registry step here and let it flow through the apply logic below.
-  // Built-in names (mono/slate/…) already have a hand-tuned desktop palette — we
-  // never shadow it, but the name is still a valid apply target.
-  if (cacheable(name)) {
+  // Built-in names (mono/slate/…) already have a hand-tuned desktop palette —
+  // never shadow them, but they remain valid apply targets. The CLI `default`
+  // skin ("Classic Hermes — gold and kawaii") is *not* a desktop built-in, so
+  // we register the converted palette under `default` and let it appear in the
+  // Appearance grid / `/skin list` (#76579). Desktop's own boot default remains
+  // `nous` via DEFAULT_SKIN_NAME; selecting `default` paints the classic gold.
+  if (!BUILTIN_THEMES[name]) {
     const theme = skinToDesktopTheme(skin as HermesSkin)
 
     if (!theme) {
       return
     }
 
+    // Prefer the CLI description for the classic default skin so the grid
+    // shows "Classic Hermes — gold and kawaii" rather than a bare "Default".
+    const description =
+      name === 'default' && typeof (skin as HermesSkin).description === 'string'
+        ? String((skin as HermesSkin).description).trim() || theme.description
+        : theme.description
+
+    const label = name === 'default' ? 'Classic Hermes' : theme.label
+
+    const registered = { ...theme, description, label }
+
     const current = $backendThemes.get()
 
-    if (JSON.stringify(current[name]) !== JSON.stringify(theme)) {
-      $backendThemes.set({ ...current, [name]: theme })
+    if (JSON.stringify(current[name]) !== JSON.stringify(registered)) {
+      $backendThemes.set({ ...current, [name]: registered })
     }
   } else {
     // Built-in/default-named user skins never shadow the desktop palette, but

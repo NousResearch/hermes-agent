@@ -294,17 +294,6 @@ def _job_warnings(job: Dict[str, Any]) -> List[str]:
     fire_err = job.get("last_fire_error")
     if isinstance(fire_err, dict) and fire_err.get("detail"):
         lines.append(color(f"⚠ {_missed_fire_issue(job, fire_err)}", Colors.RED))
-    # Sticky last-failure stamp (#118354): survives a later success, so a job that
-    # self-healed still shows that a run failed recently. While last_status itself
-    # reports the failure this is redundant-but-consistent; after recovery it is the
-    # only job-level trace left.
-    last_failure = job.get("last_failure")
-    if isinstance(last_failure, dict) and last_failure.get("detail"):
-        recovered = str(job.get("last_status") or "") in {"ok", "delivery_queued"}
-        lines.append(color(
-            f"⚠ Last failure at {last_failure.get('at', '?')}: "
-            f"{_short_reason(last_failure['detail'])}" + (" — recovered since" if recovered else ""),
-            Colors.YELLOW if recovered else Colors.RED))
     return lines
 
 

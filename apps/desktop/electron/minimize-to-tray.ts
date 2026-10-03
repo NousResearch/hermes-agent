@@ -61,9 +61,9 @@ export function createMinimizeToTray(options: Options) {
     }
   }
 
-  const released = (win: BrowserWindow): boolean => {
+  const released = (win: BrowserWindow) => {
     if (!hidden.delete(win)) {
-      return false
+      return
     }
 
     if (process.platform === 'win32') {
@@ -71,8 +71,6 @@ export function createMinimizeToTray(options: Options) {
     }
 
     showDock()
-
-    return true
   }
 
   const restoreHidden = () => {
@@ -270,27 +268,14 @@ export function createMinimizeToTray(options: Options) {
     win.on('query-session-end', () => {
       quitting = true
     })
-
-    // A relaunch, a deep link or a notification click can restore a tray-hidden
-    // window without the tray. restore() alone paints the window on Windows but
-    // does not make it the foreground window, so it drops all input (#127349).
-    // Finish the activation like restoreHidden() does. Defer it, because the
-    // native restore must finish first (same reason as the deferred hide).
-    const release = () => {
-      if (released(win) && process.platform === 'win32') {
-        setImmediate(() => {
-          if (!win.isDestroyed() && !win.isMinimized() && win.isVisible()) {
-            win.show()
-            win.focus()
-          }
-        })
-      }
-
+    win.on('show', () => {
+      released(win)
       syncDock()
-    }
-
-    win.on('show', release)
-    win.on('restore', release)
+    })
+    win.on('restore', () => {
+      released(win)
+      syncDock()
+    })
     win.on('closed', () => {
       windows.delete(win)
       hidden.delete(win)

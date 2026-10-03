@@ -32,16 +32,6 @@ _FAST_SELECTIONS = {
     "ultrafast": ("ultrafast", "ultrafast", None),
 }
 
-
-def _fast_route_supports(model: str, runtime: dict, tier: Optional[str] = None) -> bool:
-    """The turn's own gate (``run_turn.py::_resolve_turn_agent_config``): a tier /fast accepts must be
-    one the session's next request actually carries, so proxies and other providers are refused."""
-    from hermes_cli.models import resolve_fast_mode_overrides
-
-    return resolve_fast_mode_overrides(
-        model, provider=runtime.get("provider"), base_url=runtime.get("base_url"), tier=tier) is not None
-
-
 # /reasoning display-toggle arguments -> show_reasoning value.
 _REASONING_DISPLAY_TOGGLES = {"show": True, "on": True, "hide": False, "off": False}
 
@@ -760,7 +750,6 @@ class GatewayModelCommandsMixin:
         # clamps is shown as "ultra (sends max on this route)" instead of a distinct level (#61634).
         from agent.reasoning_effort import effort_display_label
         from gateway.run import _load_gateway_config
-        from hermes_cli.codex_runtime_switch import get_current_runtime
         _session_route = ((getattr(self, "_session_model_overrides", {}) or {}).get(session_key) or {})
         _model_cfg = {}
         with contextlib.suppress(Exception):  # fail-open on config read errors, like /model does
@@ -768,7 +757,6 @@ class GatewayModelCommandsMixin:
         _route = (
             _session_route.get("provider") or _model_cfg.get("provider"),
             _session_model or _model_cfg.get("default") or _model_cfg.get("model"),
-            get_current_runtime({"model": _model_cfg}),
         )
         if rc is None:
             level, current_effort = t("gateway.reasoning.level_default"), "medium"
@@ -823,25 +811,16 @@ class GatewayModelCommandsMixin:
         (persists agent.service_tier, parity with /model)."""
         from agent.fast_mode import service_tier_word
         from gateway.run import _load_gateway_config, _resolve_gateway_model
+        from hermes_cli.models import model_supports_fast_mode, model_supports_ultrafast
 
         # The /reasoning parser strips --global (any position) and normalizes unicode dashes.
         args, persist_global = self._parse_reasoning_command_args(event.get_command_args().strip().lower())
-        # Normalized like /model and /reasoning (#30479): the tier override must land under the key
-        # the next turn reads, and the eligibility check must see that turn's route.
-        source = await asyncio.to_thread(self._normalize_source_for_session_key, event.source)
-        session_key = self._session_key_for_source(source)
+        session_key = self._session_key_for_source(event.source)
         self._service_tier = self._resolve_session_service_tier(session_key=session_key)
-        user_config = _load_gateway_config()
-        try:
-            # Off the loop: credential resolution can refresh an OAuth token, as the turn does.
-            model, runtime = await asyncio.to_thread(
-                self._resolve_session_agent_runtime, source=source, session_key=session_key, user_config=user_config)
-        except Exception:
-            # No usable route at all (the turn fails too): judge the configured model alone.
-            model, runtime = _resolve_gateway_model(user_config), {}
-        if not _fast_route_supports(model, runtime):
+        model = _resolve_gateway_model(_load_gateway_config())
+        if not model_supports_fast_mode(model):
             return t("gateway.fast.not_supported")
-        ultrafast = _fast_route_supports(model, runtime, tier="ultrafast")
+        ultrafast = model_supports_ultrafast(model)
         if args == "ultrafast" and not ultrafast:
             return t("gateway.fast.ultrafast_not_supported", model=model)
         if args and args != "status":

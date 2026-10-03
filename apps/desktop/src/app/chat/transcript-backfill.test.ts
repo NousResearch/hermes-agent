@@ -165,57 +165,6 @@ describe('mergeOlderTranscriptPage', () => {
 
     expect(mergeOlderTranscriptPage(existing, [chat('a', 1)])).toBe(existing)
   })
-
-  // Hydration folds a turn into one bubble addressed by its FIRST source row,
-  // with the final reply (52203) riding inside as a text part. A drifting
-  // older-page fetch that overlaps the just-persisted turn must not paint that
-  // reply twice, but must not drop rows the store does not hold either.
-  const narration = { type: 'text', text: 'earlier tool narration', sourceRowId: 52201 } as const
-  const answer = { type: 'text', text: 'the answer', sourceRowId: 52203 } as const
-
-  const toolCall = {
-    type: 'tool-call',
-    toolCallId: 't1',
-    toolName: 'read_file',
-    args: {}
-  } as unknown as ChatMessage['parts'][number]
-
-  it.each([
-    {
-      name: 'drops a fold whose every row is already held live',
-      live: { parts: [narration, answer], rowId: 52203 },
-      foldParts: [narration, answer],
-      expected: ['prompt', 'assistant-stream-1']
-    },
-    {
-      name: 'keeps a fold carrying a tool call and unheld narration',
-      live: { parts: [answer], rowId: 52203 },
-      foldParts: [toolCall, narration, answer],
-      expected: ['prompt', '1770000000000-4-assistant', 'assistant-stream-1']
-    },
-    {
-      name: 'keeps a fold whose first row is held only as a part of another bubble',
-      live: { parts: [narration], rowId: 52202 },
-      foldParts: [narration, answer],
-      expected: ['prompt', '1770000000000-4-assistant', 'assistant-stream-1']
-    }
-  ])('$name (#123801)', ({ live, foldParts, expected }) => {
-    const existing: ChatMessage[] = [
-      chat('prompt', 52200),
-      { id: 'assistant-stream-1', role: 'assistant', ...live, parts: [...live.parts] }
-    ]
-
-    const fold: ChatMessage = {
-      id: '1770000000000-4-assistant',
-      role: 'assistant',
-      parts: [...foldParts],
-      rowId: 52201
-    }
-
-    expect(
-      mergeOlderTranscriptPage(existing, [chat('prompt-refetch', 52200), fold]).map(message => message.id)
-    ).toEqual(expected)
-  })
 })
 
 describe('graftRefreshedTailOntoBackfill', () => {

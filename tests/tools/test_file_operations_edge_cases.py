@@ -176,30 +176,6 @@ class TestCheckLintInproc:
         assert "TOMLDecodeError" in result.output
 
 
-@pytest.mark.parametrize("token", ["NaN", "Infinity", "-Infinity"])
-def test_json_write_refuses_only_introduced_nonstandard_constants(tmp_path, token):
-    """NaN/Infinity are refused when the write introduces them (strict JSON
-    consumers reject them), but a file already holding one still takes edits."""
-    from tools.environments.local import LocalEnvironment
-
-    ops = ShellFileOperations(LocalEnvironment(cwd=str(tmp_path)), cwd=str(tmp_path))
-    clean = tmp_path / "clean.json"
-    clean.write_text('{"value": 1}\n', encoding="utf-8")
-    result = ops.write_file(str(clean), '{"value": %s}\n' % token)
-    assert result.error and token in result.error
-    assert clean.read_text(encoding="utf-8") == '{"value": 1}\n'
-
-    quoted = '{"value": ["%s", 1.5, null]}\n' % token
-    assert ops.write_file(str(clean), quoted).error is None
-    assert clean.read_text(encoding="utf-8") == quoted
-
-    legacy = tmp_path / "legacy.json"
-    legacy.write_text('{"value": %s, "n": 1}\n' % token, encoding="utf-8")
-    edited = '{"value": %s, "n": 2}\n' % token
-    assert ops.write_file(str(legacy), edited).error is None
-    assert legacy.read_text(encoding="utf-8") == edited
-
-
 class TestCheckLintDelta:
     """Verify _check_lint_delta() filters pre-existing errors from post-edit output."""
 

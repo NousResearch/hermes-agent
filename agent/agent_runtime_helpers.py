@@ -467,8 +467,6 @@ def _remember_absorbed_row(survivor: Dict[str, Any], dropped: Dict[str, Any], *,
     text survives). An empty incoming turn still merges; stamping an empty list would change a message that
     absorbed nothing. A dropped id that equals the survivor's own live id (the display-marker merge adopts
     the plain row's id, #94486) is not an absorbed row: the survivor IS that row."""
-    from agent.conversation_compression_archive import OWN_ROW, RETIRED_DURABLE_ROWS, UNNAMED_DURABLE_ROWS
-
     own_id = survivor.get("_row_id")
     ids = []
     row_id = dropped.get("_row_id")
@@ -482,67 +480,10 @@ def _remember_absorbed_row(survivor: Dict[str, Any], dropped: Dict[str, Any], *,
         for row_id in ids:
             if row_id not in absorbed:
                 absorbed.append(row_id)
-    # The rows the retired dict counted are behind the survivor now.
-    if dropped.get(UNNAMED_DURABLE_ROWS):
-        survivor[UNNAMED_DURABLE_ROWS] = int(survivor.get(UNNAMED_DURABLE_ROWS) or 0) + int(dropped[UNNAMED_DURABLE_ROWS])
-    # Its own row is behind the survivor now too.
-    if dropped.get(RETIRED_DURABLE_ROWS):
-        survivor.setdefault(RETIRED_DURABLE_ROWS, []).extend(
-            {k: v for k, v in row.items() if k != OWN_ROW} for row in dropped[RETIRED_DURABLE_ROWS])
     # The uid witness claims the dropped dict's TEXT lives on in the survivor: only a fold earns it. A
     # superseded row (``folded=False``) is retired like any absorbed row but its content is discarded.
     if folded:
         record_absorbed_message(survivor, dropped)
-
-
-def _count_unnamed_row(survivor: Dict[str, Any], retired: Dict[str, Any]) -> None:
-    """On a reload without row ids nothing names *retired*'s durable row once the repair takes the dict
-    out of the list, so *survivor* counts it. A dict that counts rows was loaded too: a merge may have
-    popped its marker since. Call before the merge rewrites the survivor: *retired*'s own fields are
-    recorded so the commit can name its row."""
-    from agent.context_compressor import _DB_PERSISTED_MARKER
-    from agent.conversation_compression_archive import (
-        OWN_ROW, RETIRED_DURABLE_ROWS, UNNAMED_DURABLE_ROWS, retired_row_payload)
-
-    def loaded(message: Dict[str, Any]) -> bool:
-        return bool(message.get(_DB_PERSISTED_MARKER) or message.get(UNNAMED_DURABLE_ROWS))
-
-    if loaded(survivor) and loaded(retired) and not isinstance(retired.get("_row_id"), int):
-        survivor[UNNAMED_DURABLE_ROWS] = int(survivor.get(UNNAMED_DURABLE_ROWS) or 0) + 1
-        # A previously folded dict already records its original row. The transfer in
-        # _remember_absorbed_row retires that record; its synthetic text/calls never existed in storage.
-        if not any(row.get(OWN_ROW) for row in retired.get(RETIRED_DURABLE_ROWS) or ()):
-            survivor.setdefault(RETIRED_DURABLE_ROWS, []).append(retired_row_payload(retired))
-
-
-def _remember_own_row(survivor: Dict[str, Any]) -> None:
-    """An assistant fold rewrites *survivor*'s text, so on a reload without row ids its own row no longer
-    matches it by content. Record its loaded fields first, once."""
-    from agent.context_compressor import _DB_PERSISTED_MARKER
-    from agent.conversation_compression_archive import OWN_ROW, RETIRED_DURABLE_ROWS, retired_row_payload
-
-    recorded = survivor.get(RETIRED_DURABLE_ROWS) or ()
-    if (survivor.get(_DB_PERSISTED_MARKER) and not isinstance(survivor.get("_row_id"), int)
-            and not any(isinstance(row, dict) and row.get(OWN_ROW) for row in recorded)):
-        survivor.setdefault(RETIRED_DURABLE_ROWS, []).append({**retired_row_payload(survivor), OWN_ROW: True})
-
-
-def _retire_dropped_row(kept: List[Dict], dropped: Dict[str, Any], leading: List[Dict]) -> None:
-    """A durable row the repair drops was still handed to the caller, so the survivor before it stands
-    for it. Left unnamed, an in-place compaction takes it for a row another surface appended and
-    re-sequences it behind the running turn. A drop with no survivor before it waits in *leading*."""
-    if not kept:
-        leading.append(dropped)
-    elif isinstance(kept[-1], dict):
-        _count_unnamed_row(kept[-1], dropped)
-        _remember_absorbed_row(kept[-1], dropped, folded=False)
-
-
-def _retire_leading_drops(kept: List[Dict], leading: List[Dict]) -> None:
-    """Rows dropped ahead of the first survivor sit right before its own row, so it stands for them."""
-    for dropped in leading if kept and isinstance(kept[0], dict) else ():
-        _count_unnamed_row(kept[0], dropped)
-        _remember_absorbed_row(kept[0], dropped, folded=False)
 
 
 def _merge_consecutive_assistants(messages: List[Dict]) -> Tuple[List[Dict], int]:
@@ -558,12 +499,9 @@ def _merge_consecutive_assistants(messages: List[Dict]) -> Tuple[List[Dict], int
         ):
             # A provisional verification candidate is superseded, not unioned.
             if prev.get("finish_reason") in {"verification_required", "verify_hook_continue"}:
-                _count_unnamed_row(msg, prev)
                 _remember_absorbed_row(msg, prev, folded=False)
                 collapsed[-1] = msg
             else:
-                _count_unnamed_row(prev, msg)
-                _remember_own_row(prev)
                 _remember_absorbed_row(prev, msg, folded=_merge_assistant_into(prev, msg))
             repairs += 1
             continue
@@ -585,7 +523,6 @@ def _drop_stray_tool_results(messages: List[Dict]) -> Tuple[List[Dict], int]:
     matched_tool_groups: set = set()
     next_tool_group = 0
     filtered: List[Dict] = []
-    leading: List[Dict] = []
     for msg in messages:
         role = msg.get("role") if isinstance(msg, dict) else None
         if role in ("assistant", "user"):
@@ -606,13 +543,11 @@ def _drop_stray_tool_results(messages: List[Dict]) -> Tuple[List[Dict], int]:
                 if tc_id in known_tool_ids and known_tool_ids[tc_id] not in matched_tool_groups
             }
             if result_variants and not candidate_groups:
-                _retire_dropped_row(filtered, msg, leading)
                 repairs += 1
                 continue
             if candidate_groups:
                 matched_tool_groups.add(min(candidate_groups))
         filtered.append(msg)
-    _retire_leading_drops(filtered, leading)
     return filtered, repairs
 
 
@@ -624,7 +559,6 @@ def _prune_unanswered_tool_calls(messages: List[Dict]) -> Tuple[List[Dict], int]
 
     repairs = 0
     pruned: List[Dict] = []
-    leading: List[Dict] = []
     for i, msg in enumerate(messages):
         if not (
             isinstance(msg, dict) and msg.get("role") == "assistant" and msg.get("tool_calls")
@@ -644,7 +578,6 @@ def _prune_unanswered_tool_calls(messages: List[Dict]) -> Tuple[List[Dict], int]
             repairs += 1
             if not kept_calls and not _msg_has_payload({k: v for k, v in msg.items() if k != "tool_calls"}):
                 # Pruned calls were the only payload; drop the turn (empty assistant messages 400).
-                _retire_dropped_row(pruned, msg, leading)
                 continue
             if kept_calls:
                 msg["tool_calls"] = kept_calls
@@ -654,19 +587,12 @@ def _prune_unanswered_tool_calls(messages: List[Dict]) -> Tuple[List[Dict], int]
             # marker, so pop it or the flush scan skips the dict and the DB keeps the old calls.
             msg.pop(_DB_PERSISTED_MARKER, None)
         pruned.append(msg)
-    _retire_leading_drops(pruned, leading)
     return pruned, repairs
 
 
 def _merge_consecutive_users(messages: List[Dict]) -> Tuple[List[Dict], int]:
     """Pass 3: merge consecutive plain-text user messages (no user input lost)."""
     from agent.context_compressor import _DB_PERSISTED_MARKER, split_user_originated_turn
-    from agent.conversation_compression_archive import MERGED_DURABLE_ROWS
-    from hermes_state import SessionDB
-
-    def _plain_text(content: Any) -> bool:
-        # never rewrite the persisted row around undecodable content
-        return isinstance(content, str) and not content.startswith(SessionDB._CONTENT_JSON_PREFIX)
 
     repairs = 0
     merged: List[Dict] = []
@@ -681,20 +607,14 @@ def _merge_consecutive_users(messages: List[Dict]) -> Tuple[List[Dict], int]:
             # A /steer row that ended the previous run is already persisted; merging the next
             # prompt into it would rewrite it in place and re-break replay parity.
             and prev.get("display_kind") != STEER_DISPLAY_KIND
-            # Only merge plain-text content; leave multimodal (list or undecodable sentinel) content alone.
-            and _plain_text(prev.get("content", "")) and _plain_text(msg.get("content", ""))
+            # Only merge plain-text content; leave multimodal (list) content alone.
+            and isinstance(prev.get("content", ""), str) and isinstance(msg.get("content", ""), str)
         ):
             prev_content, new_content = prev.get("content", ""), msg.get("content", "")
             merged_content = (
                 (prev_content + "\n\n" + new_content) if prev_content and new_content else (prev_content or new_content)
             )
             had_api_sidecar = "api_content" in prev
-            # Read before the marker is popped below. An unpersisted turn folded in ends the claim:
-            # the dict no longer stands for durable rows only.
-            if (prev.get(_DB_PERSISTED_MARKER) or prev.get(MERGED_DURABLE_ROWS)) and msg.get(_DB_PERSISTED_MARKER):
-                prev[MERGED_DURABLE_ROWS] = int(prev.get(MERGED_DURABLE_ROWS) or 1) + 1
-            else:
-                prev.pop(MERGED_DURABLE_ROWS, None)
             prev["content"] = merged_content
             # The clean-text persist override must replace only the absorbed turn, never the
             # unanswered text before it; kept across replay passes (an empty turn absorbs too).
@@ -743,36 +663,17 @@ _SEQUENCE_REPAIR_PASSES = (
     _merge_consecutive_users,
 )
 
-def _normalize_sentinel_encoded_content(messages: List[Dict]) -> None:
-    """Decode any sentinel-encoded row content in place before the alternation passes run, so an
-    image-bearing turn is never merged as text (#125299). A multimodal turn can re-enter the working set
-    as its ``\\x00json:[…]`` string (e.g. after a proactive prune re-inserts history, #124102). A body
-    that no longer parses stays a sentinel string; ``_merge_consecutive_users`` refuses to weld it."""
-    from hermes_state import SessionDB  # lazy: the persistence layer owns the sentinel codec
-
-    for msg in messages:
-        if not isinstance(msg, dict):
-            continue
-        content = msg.get("content")
-        decoded = SessionDB._decode_content(content)
-        if decoded is not content:
-            msg["content"] = decoded
-            # Keep any `_db_persisted` marker: re-encoding reproduces the stored scalar, and dropping
-            # it makes the append-only flush re-append this user turn as a duplicate (#125331).
-
 
 def repair_message_sequence(agent, messages: List[Dict]) -> int:
     """Collapse malformed role-alternation left in the live history; returns repair count.
     Providers require strict alternation after the system message (violations: silent empty
     responses or 400s); this is the pre-call belt for host-fed, resumed or replayed histories.
-    Passes in order: decode any sentinel-encoded multimodal rows (so an image is not merged as text);
-    merge consecutive assistant turns (BEFORE orphan detection so the merged tool_call-id union is
-    known); drop stray tool results; prune unanswered tool_calls; merge consecutive user turns. A user
-    turn directly after an assistant turn is valid and left alone.
+    Passes in order: merge consecutive assistant turns (BEFORE orphan detection so the merged
+    tool_call-id union is known); drop stray tool results; prune unanswered tool_calls; merge
+    consecutive user turns. A user turn directly after an assistant turn is valid and left alone.
     """
     if not messages:
         return 0
-    _normalize_sentinel_encoded_content(messages)
     repairs = 0
     current = messages
     for repair_pass in _SEQUENCE_REPAIR_PASSES:
@@ -1472,8 +1373,6 @@ def restore_primary_runtime(agent) -> bool:
     provider_fallback_active = bool(getattr(agent, "_provider_fallback_active", False))
     try:
         _apply_primary_runtime_fields(agent, rt)
-        from agent.turn_recovery import reset_codex_reasoning_replay
-        reset_codex_reasoning_replay(agent)
         _restore_runtime_capabilities(agent, rt)
         agent._use_prompt_caching = rt["use_prompt_caching"]
         # Default to native layout for snapshots predating the native-vs-proxy split.
@@ -2156,7 +2055,6 @@ _SWITCH_SNAPSHOT_FIELDS = (
     "_anthropic_client", "_anthropic_api_key", "_anthropic_base_url", "_is_anthropic_oauth",
     "_config_context_length", "_reasoning_echo_flag", "runtime_capabilities",
     "_credential_pool", "_credential_pool_entry_id",
-    "_codex_reasoning_replay_enabled", "_codex_reasoning_replay_rejected",
 )
 _MISSING = object()
 
@@ -2315,8 +2213,6 @@ def _swap_switch_runtime(agent, new_model, new_provider, api_key, base_url, api_
     # New api_mode may need a different transport.
     if hasattr(agent, "_transport_cache"):
         agent._transport_cache.clear()
-    from agent.turn_recovery import reset_codex_reasoning_replay
-    reset_codex_reasoning_replay(agent)
     if api_key:
         agent.api_key = api_key
     # Reload the credential pool on provider change: a pool with a mismatched provider makes
@@ -3484,21 +3380,6 @@ def _socket_from_candidate(candidate: Any):
     stream = getattr(candidate, "_network_stream", None) or getattr(candidate, "_stream", None)
     sock = _socket_from_stream(stream) if stream is not None else None
     return sock if sock is not None else _socket_from_stream(candidate)
-
-
-def _socket_from_response(response: Any):
-    """Raw socket behind an httpx response's network stream (``extensions["network_stream"]``
-    first, then ``response.stream``), or None. Callers own their error handling."""
-    exts = getattr(response, "extensions", None) or {}
-    direct = exts.get("network_stream") if isinstance(exts, dict) else None
-    for start in (direct, getattr(response, "stream", None)):
-        if start is None:
-            continue
-        for candidate in _connection_candidates(start):
-            sock = _socket_from_candidate(candidate)
-            if sock is not None:
-                return sock
-    return None
 
 
 def _socket_from_stream(stream: Any):

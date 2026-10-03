@@ -20,6 +20,6 @@ test('the committed locales/_keys.desktop.json matches the English catalog (run 
   const committed = JSON.parse(readFileSync(out, 'utf8'))
   assert.equal(committed.surface, SURFACE)
   assert.ok(committed.keys.includes('common.save'))
-  assert.ok(committed.keys.includes('connectorsPage.searchPlaceholder'), 'function-valued entries are keys too')
+  assert.ok(committed.keys.includes('catalog.results'), 'function-valued entries are keys too')
   await emitDesktopKeys({ source: repoRoot, out, check: true })
 })

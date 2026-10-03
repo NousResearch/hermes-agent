@@ -22,11 +22,11 @@ import {
   setSessionOwnerHint,
   setSessions
 } from '@/store/session'
-import { $focusedStoredSessionId } from '@/store/session-focus'
 import type { SessionProfileRoute } from '@/store/session-request-router'
 import type { SessionTile } from '@/store/session-states'
 import type * as SessionStatesModule from '@/store/session-states'
 import {
+  $focusedStoredSessionId,
   $focusedWorkspaceCwd,
   $sessionStates,
   $sessionTiles,
@@ -1350,7 +1350,6 @@ describe('reopenLastClosedTile focuses the restored tab', () => {
     const { registry } = await import('@/contrib/registry')
     const session = await import('@/store/session')
     const states = await import('@/store/session-states')
-    const { $focusedStoredSessionId } = await import('@/store/session-focus')
 
     registry.register({
       area: 'panes',
@@ -1382,11 +1381,11 @@ describe('reopenLastClosedTile focuses the restored tab', () => {
     tree.noteActiveTreeGroup('grp-main')
     expect(findGroupOfPane(tree.$layoutTree.get()!, tilePane('closed'))?.active).toBe(tilePane('closed'))
 
-    return { $focusedStoredSessionId, states, tree }
+    return { states, tree }
   }
 
   it('restores the live strip slot after reordering and retains the exact owner', async () => {
-    const { $focusedStoredSessionId, states, tree } = await setup()
+    const { states, tree } = await setup()
     states.openSessionTile('after', 'center', 'workspace')
     tree.moveTreePane(tilePane('closed'), { groupId: 'grp-main', pos: 'center', before: 'workspace' })
     const order = findGroupOfPane(tree.$layoutTree.get()!, 'workspace')!.panes
@@ -1396,17 +1395,17 @@ describe('reopenLastClosedTile focuses the restored tab', () => {
     tree.noteActiveTreeGroup(null)
     states.reopenLastClosedTile()
     expect(findGroupOfPane(tree.$layoutTree.get()!, 'workspace')!.panes).toEqual(order)
-    expect($focusedStoredSessionId.get()).toBe('closed')
+    expect(states.$focusedStoredSessionId.get()).toBe('closed')
     expect(states.sessionTileOwnerRoute('closed')).toEqual(ownerRoute)
   })
 
   it('fronts a palette-opened tab from sidebar focus without replacing main', async () => {
-    const { $focusedStoredSessionId, tree } = await setup()
+    const { states, tree } = await setup()
     const { openSession } = await import('@/app/open-session')
     const navigate = vi.fn()
     tree.noteActiveTreeGroup('sidebar')
     openSession('palette-result', navigate, 'stack')
-    expect($focusedStoredSessionId.get()).toBe('palette-result')
+    expect(states.$focusedStoredSessionId.get()).toBe('palette-result')
     expect(findGroupOfPane(tree.$layoutTree.get()!, 'workspace')!.active).toBe(tilePane('palette-result'))
     expect(navigate).not.toHaveBeenCalled()
   })

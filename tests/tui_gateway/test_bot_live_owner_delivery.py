@@ -36,8 +36,7 @@ def test_refused_input_commits_failed_mailbox_receipt(tmp_path):
         "_TurnRun": prompt_turn._TurnRun,
         "_record_turn_marker": lambda *args, **kwargs: "marker",
         "_prepare_turn_input": lambda *args: None,
-        "_release_turn_scopes": noop, "_post_turn_housekeeping": noop,
-        "_clear_inflight_turn": noop,
+        "_finish_turn": noop, "_clear_inflight_turn": noop,
         # Hosted room member sessions drop their bot_room slot at turn end (#106847); a canonical chat is not one.
         "_release_hosted_room_turn_slot": noop,
         "_retire_turn_marker": lambda *args: retired.append(args),

@@ -23,7 +23,7 @@ from typing import Any, Dict, Optional
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import gateway_trust_env, BasePlatformAdapter, SendResult
 from gateway.platforms.event import MessageEvent, MessageType
-from gateway.platforms.helpers import redact_phone, send_chunks, strip_markdown
+from gateway.platforms.helpers import redact_phone, strip_markdown
 from gateway.platforms._shared import (
     env_is_connected as _env_is_connected, get_scoped_secret as _get_scoped_secret, send_error
 )
@@ -88,8 +88,6 @@ class SmsAdapter(BasePlatformAdapter):
     serves_profile_prefix: bool = True
 
     MAX_MESSAGE_LENGTH = MAX_SMS_LENGTH
-    # send() splits at MAX_MESSAGE_LENGTH, so cron delivery hands over the full payload.
-    splits_long_messages = True
 
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.SMS)
@@ -161,27 +159,29 @@ class SmsAdapter(BasePlatformAdapter):
     async def send(
         self, chat_id: str, content: str, reply_to: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
+        last_result = SendResult(success=True)
         url, headers = _messages_endpoint(self._account_sid, self._auth_token)
         session = self._http_session or _new_session(trust_env=gateway_trust_env())
-
-        async def _send_one(chunk: str) -> SendResult:
-            try:
-                async with session.post(url, data=_twilio_form(self._from_number, chat_id, chunk), headers=headers) as resp:
-                    body = await resp.json()
-                    if resp.status >= 400:
-                        error_msg = body.get("message", str(body))
-                        logger.error("[sms] send failed to %s: %s %s", redact_phone(chat_id), resp.status, error_msg)
-                        return SendResult(success=False, error=f"Twilio {resp.status}: {error_msg}")
-                    return SendResult(success=True, message_id=body.get("sid", ""))
-            except Exception as e:
-                logger.error("[sms] send error to %s: %s", redact_phone(chat_id), e)
-                return SendResult(success=False, error=str(e))
-
         try:
-            return await send_chunks(self.truncate_message(self.format_message(content), self.MAX_MESSAGE_LENGTH), _send_one)
+            for chunk in self.truncate_message(self.format_message(content)):
+                form_data = _twilio_form(self._from_number, chat_id, chunk)
+                try:
+                    async with session.post(url, data=form_data, headers=headers) as resp:
+                        body = await resp.json()
+                        if resp.status >= 400:
+                            error_msg = body.get("message", str(body))
+                            logger.error(
+                                "[sms] send failed to %s: %s %s", redact_phone(chat_id), resp.status, error_msg,
+                            )
+                            return SendResult(success=False, error=f"Twilio {resp.status}: {error_msg}")
+                        last_result = SendResult(success=True, message_id=body.get("sid", ""))
+                except Exception as e:
+                    logger.error("[sms] send error to %s: %s", redact_phone(chat_id), e)
+                    return SendResult(success=False, error=str(e))
         finally:
             if not self._http_session and session:  # close only a fallback session we created
                 await session.close()
+        return last_result
 
     async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
         return {"name": chat_id, "type": "dm"}

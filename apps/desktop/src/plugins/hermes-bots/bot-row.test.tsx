@@ -69,10 +69,7 @@ beforeEach(() => {
   vi.clearAllMocks()
   ensureBotMetadata.mockResolvedValue({ pinned: true })
   openRosterBot.mockResolvedValue(true)
-  // A save reads the bot's server namespace (profiles.list) before writing it.
-  requestProfile.mockImplementation(async (_route: unknown, method: string) =>
-    method === 'profiles.list' ? { profiles: [{ name: 'backend-worker' }] } : {}
-  )
+  requestProfile.mockResolvedValue({})
 })
 
 describe('group-turn presence', () => {

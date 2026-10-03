@@ -75,9 +75,7 @@ export async function applyModelPreset(
   } else if (ctx.sessionId) {
     sessionTileDelegate()?.updateSession(ctx.sessionId, state => ({
       ...state,
-      // Like setCurrentReasoningEffort: the wire level belongs to the previous
-      // effort, so it stays unknown until the next session.info re-stamps it.
-      ...(effort !== undefined ? { reasoningEffort: effort, reasoningEffortWire: '' } : {}),
+      ...(effort !== undefined ? { reasoningEffort: effort } : {}),
       ...(fast !== undefined ? { fast } : {})
     }))
   }

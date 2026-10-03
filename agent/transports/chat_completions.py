@@ -258,7 +258,7 @@ def _model_consumes_thought_signature(model: Any) -> bool:
 
 def _route_replays_reasoning_details(base_url: Any) -> bool:
     """True when the target route reads replayed ``reasoning_details`` (OpenRouter's unified
-    reasoning array).
+    reasoning array, also consumed by the Nous Portal).
 
     Every other chat-completions endpoint either ignores the field or, when its schema is
     strict (Groq, Mistral, Cerebras, opencode relays: ``property 'reasoning_details' is
@@ -266,16 +266,10 @@ def _route_replays_reasoning_details(base_url: Any) -> bool:
     request with HTTP 400/422 — so a reasoning turn produced earlier in the session wedges every
     later turn once the model is switched (#70233). The stored history keeps the field; only the
     wire copy drops it.
-
-    The Nous Portal read the field too (multi-turn reasoning continuity), but it enforces a
-    cumulative replayed-reasoning budget: replaying stored reasoning_details wedges long
-    sessions with a non-retryable 400 (#118182), so the Portal now strips like every other
-    route. Stored history keeps the field, so a route that genuinely replays it (OpenRouter,
-    #129037) still receives it.
     """
     from utils import base_url_host_matches
 
-    return base_url_host_matches(base_url, "openrouter.ai")
+    return base_url_host_matches(base_url, "openrouter.ai") or base_url_host_matches(base_url, "nousresearch.com")
 
 
 def _has_replayable_thought_signature(extra_content: Any) -> bool:

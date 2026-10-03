@@ -574,19 +574,3 @@ def test_off_host_note_names_platforms_specs_that_exclude_this_host(tmp_path: Pa
         off_host.add("posix")
     assert {n.split("platforms(")[1].split(")")[0].strip("'") for n in notes} == off_host, proc.stdout
     assert all("they run on the" in n for n in notes), proc.stdout
-
-
-def test_slices_partition_the_suite_exactly_even_with_different_duration_caches(capsys) -> None:
-    """Each CI slice job restores its own duration cache; the slices must still cover every file once."""
-    import importlib.util
-
-    spec = importlib.util.spec_from_file_location(
-        "rtp_slices", Path(__file__).resolve().parents[2] / "scripts" / "run_tests_parallel.py")
-    rtp = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(rtp)
-    root = Path("/repo")
-    files = [root / f"tests/t_{i:03d}.py" for i in range(101)]
-    caches = [{f"tests/t_{i:03d}.py": float(i) for i in range(101)}, {"tests/t_000.py": 500.0}, {}]
-    slices = [rtp._slice_files(list(reversed(files)) if i % 2 else files, i % 3 + 1, 3, caches[i % 3], root)
-              for i in range(3)]
-    assert sorted(f for s in slices for f in s) == sorted(files)

@@ -512,19 +512,16 @@ def test_publish_preflight_finds_the_draft_on_the_outstanding_attempt(source):
                 repo=source, remote="origin")
 
 
-def _abandon(repo, version, *, draft=None, runs=(), calls=None):
+def _abandon(repo, version, *, draft=None, calls=None):
     from scripts.releases.entrypoint import ReleaseRefused, abandon
 
     def inspect(command):
-        if command[1] == "run":
-            assert command[command.index("--branch") + 1] == f"rc.1-v{version}"
-            return json.dumps(list(runs))
         if draft is None or command[3] != draft["tagName"]:
             raise ReleaseRefused("release not found")
         return json.dumps(draft)
 
     return abandon(version, repo=repo, remote="origin", repository="example/hermes-agent",
-                   execute=(calls if calls is not None else []).append, inspect=inspect)
+                   delete=(calls if calls is not None else []).append, inspect=inspect)
 
 
 def test_abandon_of_a_draft_deletes_it_writes_the_marker_and_frees_the_version(source):
@@ -535,8 +532,7 @@ def test_abandon_of_a_draft_deletes_it_writes_the_marker_and_frees_the_version(s
                       draft={"tagName": "rc.1-v0.21.5", "isDraft": True, "isPrerelease": False})
 
     assert result == {"version": "0.21.5", "tag": "rc.1-v0.21.5",
-                      "marker": "abandoned-rc.1-v0.21.5", "repository": "example/hermes-agent",
-                      "cancelled": []}
+                      "marker": "abandoned-rc.1-v0.21.5", "repository": "example/hermes-agent"}
     assert calls == [["gh", "release", "delete", "rc.1-v0.21.5", "--repo", "example/hermes-agent", "--yes"]]
     remote = git(source, "ls-remote", "origin", "refs/tags/*")
     assert "refs/tags/abandoned-rc.1-v0.21.5" in remote
@@ -546,41 +542,6 @@ def test_abandon_of_a_draft_deletes_it_writes_the_marker_and_frees_the_version(s
     assert git(source, "rev-parse", "abandoned-rc.1-v0.21.5^{commit}") == git(
         source, "rev-parse", "rc.1-v0.21.5^{commit}")
     assert _release(source, _advance(source, "fix"))["tag"] == "rc.2-v0.21.5"
-
-
-def test_abandon_force_cancels_in_progress_runs_before_the_draft_and_the_marker(source):
-    _claim(source, "0.21.5", git(source, "rev-parse", "HEAD"))
-    calls = []
-    runs = [{"databaseId": 11, "url": "https://example.test/runs/11", "status": "in_progress"},
-            {"databaseId": 12, "url": "https://example.test/runs/12", "status": "completed"},
-            {"databaseId": 13, "url": "https://example.test/runs/13", "status": "queued"}]
-
-    result = _abandon(source, "0.21.5", calls=calls, runs=runs,
-                      draft={"tagName": "rc.1-v0.21.5", "isDraft": True, "isPrerelease": False})
-
-    assert calls == [
-        ["gh", "run", "cancel", "11", "--repo", "example/hermes-agent", "--force"],
-        ["gh", "run", "cancel", "13", "--repo", "example/hermes-agent", "--force"],
-        ["gh", "release", "delete", "rc.1-v0.21.5", "--repo", "example/hermes-agent", "--yes"],
-    ]
-    assert result["cancelled"] == ["https://example.test/runs/11", "https://example.test/runs/13"]
-    assert "abandoned-rc.1-v0.21.5" in git(source, "ls-remote", "origin", "refs/tags/*")
-
-
-def test_abandon_that_cannot_cancel_a_run_writes_no_marker_so_it_can_be_retried(source):
-    from scripts.releases.entrypoint import ReleaseRefused, abandon
-
-    _claim(source, "0.21.5", git(source, "rev-parse", "HEAD"))
-    run = {"databaseId": 11, "url": "https://example.test/runs/11", "status": "in_progress"}
-
-    def refuse(_command):
-        raise ReleaseRefused("HTTP 403")
-
-    with pytest.raises(ReleaseRefused, match="HTTP 403"):
-        abandon("0.21.5", repo=source, remote="origin", repository="example/hermes-agent",
-                execute=refuse, inspect=lambda command: json.dumps([run]) if command[1] == "run"
-                else (_ for _ in ()).throw(ReleaseRefused("release not found")))
-    assert "abandoned-rc" not in git(source, "ls-remote", "origin", "refs/tags/*")
 
 
 def test_abandon_of_a_draftless_burned_attempt_writes_the_marker(source):
@@ -607,12 +568,9 @@ def test_abandon_refuses_a_release_that_was_published(source):
     from scripts.releases.entrypoint import ReleaseRefused
 
     _claim(source, "0.21.5", git(source, "rev-parse", "HEAD"))
-    calls = []
     with pytest.raises(ReleaseRefused, match="published and cannot be abandoned"):
-        _abandon(source, "0.21.5", calls=calls,
-                 runs=[{"databaseId": 11, "url": "https://example.test/runs/11", "status": "in_progress"}],
+        _abandon(source, "0.21.5",
                  draft={"tagName": "rc.1-v0.21.5", "isDraft": False, "isPrerelease": False})
-    assert calls == []
     assert "abandoned-rc" not in git(source, "ls-remote", "origin", "refs/tags/*")
 
 

@@ -19,14 +19,12 @@ import {
   $activeSessionId,
   $currentModel,
   $currentProvider,
-  $currentReasoningEffortWire,
   getComposerSelectionGeneration,
   getCurrentModelSource,
   markComposerSelectionManual,
   setCurrentModel,
   setCurrentModelSource,
-  setCurrentProvider,
-  setCurrentReasoningEffortWire
+  setCurrentProvider
 } from '@/store/session'
 import { $sessionStates, sessionTileDelegate } from '@/store/session-states'
 
@@ -263,10 +261,6 @@ export function useModelControls({
         ? $currentProvider.get()
         : ($sessionStates.get()[liveSessionId!]?.provider ?? '')
 
-      const prevWire = touchesPrimary
-        ? $currentReasoningEffortWire.get()
-        : ($sessionStates.get()[liveSessionId!]?.reasoningEffortWire ?? '')
-
       const prevSource = getCurrentModelSource()
       const liveGatewayProfile = cacheProfile || $activeGatewayProfile.get()
 
@@ -276,13 +270,11 @@ export function useModelControls({
           setCurrentProvider(selection.provider)
           markComposerSelectionManual()
         } else if (liveSessionId) {
-          // Optimistic tile paint — session.info will confirm; rollback on error. The wire stamp
-          // belongs to the old route, so it is withdrawn until session.info re-stamps it.
+          // Optimistic tile paint — session.info will confirm; rollback on error.
           sessionTileDelegate()?.updateSession(liveSessionId, state => ({
             ...state,
             model: selection.model,
-            provider: selection.provider,
-            reasoningEffortWire: ''
+            provider: selection.provider
           }))
         }
       }
@@ -295,15 +287,12 @@ export function useModelControls({
         if (touchesPrimary) {
           setCurrentModel(prevModel)
           setCurrentProvider(prevProvider)
-          // The setters withdraw the wire stamp on a change; the old route's stamp is still true.
-          setCurrentReasoningEffortWire(prevWire)
           setCurrentModelSource(prevSource)
         } else if (liveSessionId) {
           sessionTileDelegate()?.updateSession(liveSessionId, state => ({
             ...state,
             model: prevModel,
-            provider: prevProvider,
-            reasoningEffortWire: prevWire
+            provider: prevProvider
           }))
         }
 

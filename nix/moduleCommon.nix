@@ -474,10 +474,10 @@ let
           dependencies — no PYTHONPATH patching or collision risk.
 
           Use this for optional extras already declared in hermes-agent's
-          pyproject.toml (e.g. "exa", "voice").
+          pyproject.toml (e.g. "honcho", "voice").
           Use extraPythonPackages for external packages not in pyproject.toml.
         '';
-        example = [ "voice" ];
+        example = [ "honcho" ];
       };
 
       # ── Service behaviour ──────────────────────────────────────────────

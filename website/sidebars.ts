@@ -835,7 +835,6 @@ const sidebars: SidebarsConfig = {
                 'developer-guide/browser-provider-plugin',
                 'developer-guide/terminal-environment-plugin',
                 'developer-guide/plugins/application-declarations',
-                'developer-guide/plugins/catalog-submission',
               ],
             },
             'developer-guide/creating-skills',

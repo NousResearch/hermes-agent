@@ -285,6 +285,7 @@ class TestDoctorToolAvailabilityOverrides:
 
 
     def test_marks_kanban_available_only_when_missing_worker_env_gate(self, monkeypatch):
+        monkeypatch.setattr(doctor_state, "_honcho_is_configured_for_doctor", lambda: False)
         monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
 
         available, unavailable = doctor_tools._apply_doctor_tool_availability_overrides(

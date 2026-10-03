@@ -14,7 +14,7 @@ export const instagram: EmbedMatcher = url => {
 
   return {
     embedUrl: `https://www.instagram.com/${type}/${code}/embed`,
-    // Placeholder height until the embed page reports its own (social-embed.tsx).
+    // Placeholder height for content-visibility; embed.js self-sizes in-document.
     height: 450,
     id: `instagram:${code}`,
     label: 'Instagram',

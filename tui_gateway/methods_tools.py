@@ -1285,15 +1285,11 @@ def _container_checkpoint_refusal(session, mgr, cwd) -> str | None:
 
 
 @method("browser.manage")
-@_profile_scoped
 def _(rid, params: dict) -> dict:
     action = params.get("action", "status")
-    if action in {"status", "use"}:
-        from tools.browser_use_cli import is_browser_use_cli_mode, set_browser_use_mode
-        if action == "use":
-            set_browser_use_mode(params.get("enabled", True) is not False)
+    if action == "status":
         url = _resolve_browser_cdp_url()
-        return _ok(rid, {"connected": bool(url), "url": url, "browser_use": is_browser_use_cli_mode()})
+        return _ok(rid, {"connected": bool(url), "url": url})
     if action == "disconnect":
         return _browser_disconnect(rid)
     if action == "connect":

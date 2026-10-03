@@ -171,6 +171,9 @@ def _bundled_memory_providers() -> frozenset[str]:
         return frozenset()
 
 
+MEMORY_PROVIDERS = _bundled_memory_providers() | {"builtin", "plugin"}
+
+
 class _CatalogValues:
     """A closed enum backed by a public catalog (see shared_metrics_catalog), loaded on first use."""
 
@@ -185,10 +188,6 @@ class _CatalogValues:
     def __contains__(self, value: object) -> bool:
         return value in self.extra or value in self.values()
 
-
-# A provider that moved from plugins/memory/ to the plugin catalog keeps its public name; any other
-# third-party provider reports as "plugin".
-MEMORY_PROVIDERS = _CatalogValues("plugin_catalog_names", extra=_bundled_memory_providers() | {"builtin", "plugin"})
 
 # ---- decision-data taxonomies ----------------------------------------------------------------
 SESSION_DURATION_BUCKETS = frozenset({"lt_1m", "1m_to_5m", "5m_to_30m", "30m_to_2h", "2h_to_8h", "gte_8h"})

@@ -16,14 +16,6 @@ from pathlib import Path
 from typing import Dict, Optional, Tuple
 from urllib.parse import urljoin
 
-# Generated deliverables live in ``cache/generated/<media>/``, OUTSIDE the transient
-# inbound caches the gateway housekeeping sweeps (#126445): for base64-returning
-# providers the cached file is the ONLY copy of the output.
-GENERATED_SUBDIR = "generated"
-# Age (hours) past which the gateway sweeps transient media caches; remote sync of the
-# unswept ``cache/generated`` tree uses the same window so it stays bounded.
-MEDIA_CACHE_MAX_AGE_HOURS = 24
-
 _REDIRECT_STATUS_CODES = {301, 302, 303, 307, 308}
 _MAX_SAVE_URL_REDIRECTS = 5
 

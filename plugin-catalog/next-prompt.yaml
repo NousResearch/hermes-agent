@@ -9,7 +9,7 @@ version: "0.3.0"
 requires_hermes: ">=0.21"
 docs_url: https://github.com/soymarketing/hermes-plugin-next-prompt#readme
 platforms: [windows, macos, linux]
-image: https://raw.githubusercontent.com/soymarketing/hermes-plugin-next-prompt/ec58f9b298b0bb0c182f909a0014432b1dc898a8/docs/media/banner.png
+image: https://raw.githubusercontent.com/soymarketing/hermes-plugin-next-prompt/eff647b44fc81153f5220d505e5f8a5c642330e8/docs/media/banner.png
 screenshots:
   - https://raw.githubusercontent.com/soymarketing/hermes-plugin-next-prompt/eff647b44fc81153f5220d505e5f8a5c642330e8/docs/media/likely-answer.png
   - https://raw.githubusercontent.com/soymarketing/hermes-plugin-next-prompt/eff647b44fc81153f5220d505e5f8a5c642330e8/docs/media/next-step.png

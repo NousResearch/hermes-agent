@@ -29,8 +29,8 @@ import type { UpdaterApplyResultWire, UpdaterStatusWire } from './index'
 export interface AppInstallerStrategyDeps {
   /** Absolute path to the bundled payload python (tools/<entry>/python.exe). */
   python: string
-  /** The checker's module name, run with the payload python. */
-  module: string
+  /** The checker script's absolute path (payload repo snapshot). */
+  script: string
   run: PayloadPythonRunner['run']
   /** Channel + variant from the baked install stamp. */
   channel: string
@@ -111,7 +111,7 @@ export class AppInstallerStrategy {
       }
     }
 
-    const { code, stdout } = await this.deps.run(this.deps.python, this.deps.module)
+    const { code, stdout } = await this.deps.run(this.deps.python, this.deps.script)
     const check = parseCheckOutput(code, stdout)
 
     return appInstallerCheckToStatus(check, this.deps.appVersion)
@@ -136,7 +136,7 @@ export class AppInstallerStrategy {
     }
 
     if (!feedBaseUrl && !sourceUri) {
-      const { code, stdout } = await this.deps.run(this.deps.python, this.deps.module)
+      const { code, stdout } = await this.deps.run(this.deps.python, this.deps.script)
       sourceUri = parseCheckOutput(code, stdout).sourceUri
 
       if (sourceUri) {

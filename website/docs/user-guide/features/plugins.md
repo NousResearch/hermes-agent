@@ -207,10 +207,11 @@ plugin; choose a new exact commit explicitly with
 profile-local install metadata contains no config values, environment values,
 secrets, or capability grants.
 
-The same pin is available in Hermes Desktop: **Skills → Plugins → Install from
-Git** has a *Pin to commit* field that takes the full 40-character SHA, and the
-plugins list shows a `pinned @ <sha8>` badge on every pinned install so a team
-can confirm everyone is running the same commit. `hermes plugins list` prints
+The same agent-plugin pin is available in Hermes Desktop: **Capabilities →
+Plugins → Install from Git** has a *Pin to commit* field that takes the full
+40-character SHA, and **Installed** shows a `pinned @ <sha8>` badge on pinned
+agent plugins. This does not guarantee a pinned standalone desktop-plugin
+install. `hermes plugins list` prints
 the pin in its Source column (`git pinned@<sha8>`). Pins work for private
 repositories too, through the same stored credentials described below.
 
@@ -456,6 +457,25 @@ Ordinary Hermes application updates preserve user plugin directories, including
 wrapper files and external sidecar links. Explicit plugin updates or removals
 can change those files. See [Package management](../../reference/package-management.md)
 and the [plugin authoring guide](../../developer-guide/plugins/index.md#lazy-install-optional-python-dependencies).
+
+### Installed and Browse in Desktop
+
+Open **Capabilities → Plugins**. **Installed** reads the app's desktop-plugin
+registry and the selected profile's actual agent-plugin state, combining both
+halves in one row where appropriate. It is not a list of catalog entries
+assumed to be installed. **Browse** is a native catalog view, not an embedded
+website; it uses the same **Installed / Browse** tabs as Skills, with search
+at the top and the tab switch and actions on one row.
+
+Desktop and the public [Plugin Catalog](/plugins) consume the same CDN
+snapshot, [`/docs/api/plugins.json`](https://hermes-agent.nousresearch.com/docs/api/plugins.json).
+The public alias serves the same data as Desktop's fetch URL,
+`https://nousresearch.github.io/hermes-agent/docs/api/plugins.json`. The docs
+build generates it from `plugin-catalog/*.yaml` and cached star counts. The
+same publish also supplies the removed-entry list used by the installer.
+Browsing does not query GitHub live or fetch source repos;
+the installer retrieves code only as part of the separate install flow.
+
 ### One-click install links (Desktop)
 
 Hermes Desktop registers the `hermes://` URL scheme, so a website, README, or
@@ -466,18 +486,22 @@ hermes://plugin/install?catalog=NAME               # catalog entry, installs the
 hermes://plugin/install?repo=owner/repo            # any git repo
 hermes://plugin/install?repo=owner/repo&enable=1   # enable the agent plugin after install
 hermes://plugin/install?repo=owner/repo&force=1    # replace an existing install
-hermes://plugin/install?catalog=<name>             # reviewed catalog entry at its pinned commit
 ```
 
 The `catalog=<name>` form is what the **Open in Hermes Desktop** button on
 every [Plugin Catalog](./plugin-catalog.md) card uses. Desktop resolves the
-name against the live catalog (the same feed the **Capabilities → Plugins**
-picker shows) and opens the same **reviewed catalog entry** dialog an in-app
+name against the live catalog (the same feed **Capabilities → Plugins → Browse**
+shows) and opens the same **reviewed catalog entry** dialog an in-app
 pick does: the agent half installs at the catalog's pinned commit, never the
 branch tip. The link carries no repo URL, and a name that is not in the
 catalog shows an error toast and nothing else — it is never reinterpreted as a
 git path, so a link cannot smuggle an unreviewed repo behind a
 familiar-looking name.
+
+Use an updated Desktop build for catalog links and the Skills Hub's
+`hermes://skill/install?identifier=...` route. If the app is missing or too old,
+use the card's copyable `hermes plugins install <catalog-name>` command to
+retain catalog resolution.
 
 For a `repo=` link, clicking one opens Hermes and shows a **confirmation dialog** — the repo id,
 a "Before you install" note, and GitHub browse + clone links — then
@@ -787,57 +811,6 @@ Scanning is on by default; disable it in `config.yaml`:
 plugins:
   scan_on_install: false
 ```
-
-### Running plugins out of process (`plugins.isolation`)
-
-By default third-party Python plugins are imported into the Hermes process, as they always have been.
-Setting `plugins.isolation: host` moves them into a **plugin host**: one separate Python process per
-profile, started on demand, that imports the profile's user-installed plugins and talks to Hermes over a
-private pipe.
-
-```yaml
-plugins:
-  isolation: host        # default: in_process
-  host:
-    launcher: []         # optional argv prefix for the host, e.g. a sandbox runner
-```
-
-Plugins do not change. They receive the same `ctx` and register tools, hooks, slash commands, skills and
-provider objects (image/video generation, web search, browser, TTS/STT, memory, context engines,
-model-provider profiles) exactly as before; Hermes registers matching entries on its side that call into
-the host. Dashboard plugin APIs are served by the host too. Bundled plugins keep running in-process.
-
-What changes in `host` mode:
-
-- **No shared interpreter.** A plugin's module never enters the Hermes process, so it cannot read
-  another profile's data from memory or patch Hermes internals. Under the multiplex gateway every
-  profile gets its own host, started with only that profile's environment and secrets.
-- **Crashes stay contained.** A plugin that crashes or exits kills its host, not Hermes; the call in
-  flight returns a tool error and Hermes restarts the host and reloads its plugins (bounded retries).
-- **A few surfaces need in-process code** and fail that plugin with a clear reason instead of loading:
-  gateway platform adapters (`register_platform`), approval transports, Telegram/platform handlers,
-  model-provider profiles that build their own SDK client (`create_client`), streaming dashboard
-  endpoints, and plugins that monkeypatch Hermes modules. Run those with `isolation: in_process`.
-
-**Locking it for a shared deployment.** `plugins.isolation` is ordinary profile config, so whoever can
-edit a profile's `config.yaml` can turn it off. When the profiles belong to people you are isolating from
-each other, pin it in the [managed scope](../managed-scope.md) instead; the managed value wins over every
-profile's own config and `hermes config set` refuses to change it:
-
-```yaml
-# /etc/hermes/config.yaml (root-owned, read by every profile on the machine)
-plugins:
-  isolation: host
-  host:
-    launcher: [...]      # pin the sandbox runner too, if you use one
-```
-
-Run the agents' terminal on an isolated backend (Docker, SSH, ...) as well, so the agent itself cannot
-reach the operator's files.
-
-`hermes plugins validate <dir>` and `hermes plugins show <name>` report whether a plugin runs in the host
-and, if not, why. Across the plugin catalog at the time of writing, 299 of 348 entries run in the host
-unchanged.
 
 ### Interactive UI
 

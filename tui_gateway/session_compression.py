@@ -244,13 +244,8 @@ def _compress_session_history(
     # RPC thread: bind the session cwd, or the boundary prompt rebuild resolves the backend's cwd and
     # persists a prompt every other process then rejects as stale runtime (fresh build, no tools pin).
     tokens = _set_session_context(session.get("session_key") or "", cwd=_session_cwd(session))
-    def snapshot_is_current():
-        with session["history_lock"]:
-            return int(session.get("history_version", 0)) == history_version
-
     try:
-        result = compress_now(agent, before_messages, request, task_id=session.get("session_key") or "default",
-                              snapshot_is_current=snapshot_is_current)
+        result = compress_now(agent, before_messages, request, task_id=session.get("session_key") or "default")
     finally:
         _clear_session_context(tokens)
     if result.status == "preview":

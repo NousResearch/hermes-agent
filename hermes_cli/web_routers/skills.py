@@ -416,14 +416,13 @@ async def get_skill_content(name: str, profile: Optional[str] = None):
 
 
 @router.post("/api/skills")
-async def create_skill(body: SkillCreate, profile: Optional[str] = None):
+async def create_skill(body: SkillCreate):
     """Create a skill via the agent's ``skill_manage`` write path, minus the
-    write-approval gate — an authenticated dashboard write IS the user.
-    Profile from the body or ``?profile=``, like the rest of ``/api/skills``."""
+    write-approval gate — an authenticated dashboard write IS the user."""
     from tools.skill_manager_tool import _create_skill
 
     result = await scoped_to_thread(
-        body.profile or profile, lambda: _create_skill(body.name, body.content, body.category or None))
+        body.profile, lambda: _create_skill(body.name, body.content, body.category or None))
     if not result.get("success"):
         raise HTTPException(status_code=400, detail=result.get("error", "Failed to create skill."))
     _clear_skills_prompt_cache()
@@ -431,11 +430,11 @@ async def create_skill(body: SkillCreate, profile: Optional[str] = None):
 
 
 @router.put("/api/skills/content")
-async def update_skill_content(body: SkillContentUpdate, profile: Optional[str] = None):
+async def update_skill_content(body: SkillContentUpdate):
     """Replace the SKILL.md of an existing skill (full rewrite) from the editor."""
     from tools.skill_manager_tool import _edit_skill
 
-    result = await scoped_to_thread(body.profile or profile, lambda: _edit_skill(body.name, body.content))
+    result = await scoped_to_thread(body.profile, lambda: _edit_skill(body.name, body.content))
     if not result.get("success"):
         err = result.get("error", "Failed to update skill.")
         status = 404 if "not found" in str(err).lower() else 400

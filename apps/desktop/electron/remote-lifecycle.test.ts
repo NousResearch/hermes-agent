@@ -1141,11 +1141,8 @@ test('connect() spawns fresh when there is no lockfile, adopts the served token'
     [/python3 -c/, ''], // token file write
     [/printf '%s\\n'/, ''],
     [/setsid/, '777\n'],
-    // The wrapper may exit before the detached daemon writes READY; startup
-    // must rely on the bounded log wait rather than kill -0 on this pid.
-    [/cat .*\.log/, 'HERMES_DASHBOARD_READY port=51999\n'],
-    // The post-readiness served-token adoption still verifies the daemon.
-    [/kill -0 777/, 'ALIVE']
+    [/kill -0 777/, 'ALIVE'],
+    [/cat .*\.log/, 'HERMES_DASHBOARD_READY port=51999\n']
   ])
 
   const result = await connect(
@@ -1847,7 +1844,7 @@ test('connect removes the token file when a fresh backend fails after returning 
     [/kill -0 999/, 'DEAD']
   ])
 
-  await assert.rejects(() => connect(connectDeps(ssh)), /Timed out waiting for the remote dashboard/i)
+  await assert.rejects(() => connect(connectDeps(ssh)), /exited before announcing/i)
   assert.ok(ssh.calls.some(command => /rm -f .*\.token/.test(command)))
 })
 

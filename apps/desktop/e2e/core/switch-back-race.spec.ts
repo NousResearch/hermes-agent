@@ -13,13 +13,6 @@
  * fixed in "render a reply once when it completes during the switch-back
  * hydrate". Oracle: every message exactly once, DOM == persisted, at every
  * sampled frame.
- *
- * Each order also runs with a tool turn (narration, a tool, then the held
- * answer). History folds that turn into one bubble keyed by its first row
- * while the live reply is keyed by its last (#128809), and the folded text
- * carries the narration too. complete-before-hydrate (tool turn) was red on
- * base (the settled live reply painted beside the folded bubble); the overlay
- * now matches the reply's stored row instead of its words.
  */
 
 import { expect, type Page, test } from '@playwright/test'
@@ -45,18 +38,13 @@ const nonce = Math.random()
 
 const U = (n: number) => `U${n}-${nonce}`
 const A = (n: number) => `A${n}-${nonce}`
-const AI = (n: number) => `A${n}i-${nonce}`
 
 function viewport(page: Page) {
   return page.locator('[data-slot="aui_thread-viewport"]').filter({ visible: true }).first()
 }
 
-const cases = (['complete-before-hydrate', 'hydrate-before-complete'] as const).flatMap(order =>
-  (['reply', 'tool turn'] as const).map(shape => ({ order, shape }))
-)
-
-for (const { order, shape } of cases) {
-  test(`switch back while away session completes: ${order}${shape === 'reply' ? '' : ` (${shape})`}`, async () => {
+for (const order of ['complete-before-hydrate', 'hydrate-before-complete'] as const) {
+  test(`switch back while away session completes: ${order}`, async () => {
     const provider = await startScriptedProvider()
     const sandbox = createCoreSandbox('race')
     writeProviderHome(sandbox.hermesHome, provider.url)
@@ -78,21 +66,9 @@ for (const { order, shape } of cases) {
       })
       await expect.poll(() => currentSessionId(page)).toBe('')
       const hold = gate()
-      const answer = { text: [`${A(2)} `, 'finished ', 'while ', 'away'], holdAfterFirstChunk: hold }
-      provider.script(
-        U(2),
-        shape === 'reply'
-          ? [answer]
-          : [
-              {
-                text: [`${AI(2)} `, 'checking'],
-                toolCalls: [{ name: 'terminal', args: { command: 'echo core-race-tool' } }]
-              },
-              answer
-            ]
-      )
+      provider.script(U(2), [{ text: [`${A(2)} `, 'finished ', 'while ', 'away'], holdAfterFirstChunk: hold }])
       await send(page, `${U(2)} b`, 'Enter', ws)
-      await provider.streamStarted(U(2), shape === 'reply' ? 0 : 1)
+      await provider.streamStarted(U(2))
       await expect.poll(() => currentSessionId(page)).not.toBe('')
       const b = await currentSessionId(page)
       await expect(viewport(page)).toContainText(A(2))

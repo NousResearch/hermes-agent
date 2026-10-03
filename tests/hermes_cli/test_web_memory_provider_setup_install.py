@@ -138,17 +138,3 @@ def test_malformed_candidate_manifest_is_not_a_successful_noop(tmp_path, monkeyp
     monkeypatch.setattr("plugins.memory.find_provider_dir", lambda name: tmp_path)
     [row] = mp._install_memory_provider_python_dependencies("broken")
     assert row["status"] == "failed"
-
-@pytest.mark.parametrize("manifest_lists", [False, True])
-def test_setup_lists_the_requirements_pm_would_install(tmp_path, monkeypatch, manifest_lists):
-    """An authored pyproject.toml wins over the manifest lists, so it is what the setup UI must show."""
-    (tmp_path / "plugin.yaml").write_text(json.dumps({
-        "name": "provider", **({"pip_dependencies": ["stale-manifest-dep"]} if manifest_lists else {}),
-    }))
-    (tmp_path / "pyproject.toml").write_text(
-        '[project]\nname = "provider"\nversion = "1"\ndependencies = ["provider_dep>=1,<2", "hermes-agent"]\n')
-    monkeypatch.setattr("plugins.memory.find_provider_dir", lambda name: tmp_path)
-    monkeypatch.setattr("pm.venv_is_current", lambda **inputs: True)
-    from hermes_cli.web_server_memory import _memory_provider_setup_info
-
-    assert _memory_provider_setup_info("provider")["pip_dependencies"] == ["provider_dep>=1,<2"]

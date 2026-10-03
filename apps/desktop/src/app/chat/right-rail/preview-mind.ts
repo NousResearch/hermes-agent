@@ -11,7 +11,7 @@
  * to poke the overlay the last action left behind. See preview-nudge.ts.
  */
 
-import { $busy, $selectedStoredSessionId } from '@/store/session'
+import { $busy } from '@/store/session'
 
 import { nudgeOverlay } from './preview-nudge'
 
@@ -25,7 +25,5 @@ $busy.subscribe(busy => {
   }
 
   running = busy
-  // $busy is the primary's turn, so the pulse goes to the primary's page,
-  // not whichever session's tab holds focus.
-  nudgeOverlay(busy ? 'think' : 'rest', $selectedStoredSessionId.get())
+  nudgeOverlay(busy ? 'think' : 'rest')
 })

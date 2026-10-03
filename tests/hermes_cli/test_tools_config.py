@@ -29,21 +29,19 @@ from hermes_cli.tools_config import (
 
 def test_all_invalid_platform_toolsets_logs_runtime_warning(caplog):
     """#38798: an explicit platform config whose toolset names are all invalid
-    (e.g. 'not-a-real-toolset' instead of 'hermes-cli') must warn at resolve
-    time so an already-corrupted config is caught at runtime, not just during
-    migration. (The legacy 'hermes' alias resolves via _LEGACY_TOOLSET_ALIASES
-    since #41579, so it is no longer an invalid name.)"""
+    (e.g. 'hermes' instead of 'hermes-cli') must warn at resolve time so an
+    already-corrupted config is caught at runtime, not just during migration."""
     import hermes_cli.tools_config as _tc
     # The runtime warning fires once per platform per process; clear the guard
     # so this test is deterministic regardless of prior resolutions.
     _tc._warned_invalid_platform_toolsets.discard("cli")
-    config = {"platform_toolsets": {"cli": ["not-a-real-toolset"]}}
+    config = {"platform_toolsets": {"cli": ["hermes"]}}
 
     with caplog.at_level(logging.WARNING, logger="hermes_cli.tools_config"):
         _get_platform_tools(config, "cli")
 
     warnings = [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING]
-    assert any("#38798" in m and "not-a-real-toolset" in m for m in warnings), warnings
+    assert any("#38798" in m and "hermes" in m for m in warnings), warnings
 
 
 def test_valid_platform_toolsets_no_runtime_warning(caplog):
@@ -185,41 +183,6 @@ def test_discord_toolsets_do_not_leak_to_other_platforms():
 
 
 
-def test_get_platform_tools_legacy_hermes_alias_expands():
-    """Legacy ``"hermes"`` toolset name must expand to ``"hermes-cli"`` and
-    ``"hermes-api-server"`` so that tools are not silently dropped.
-
-    Regression test for issue #41579.
-    """
-    config = {"platform_toolsets": {"cli": ["hermes", "kanban"]}}
-
-    enabled = _get_platform_tools(config, "cli", include_default_mcp_servers=False)
-
-    # Must resolve to the same toolset as a plain "hermes-cli" config.
-    reference = _get_platform_tools(
-        {"platform_toolsets": {"cli": ["hermes-cli", "kanban"]}},
-        "cli",
-        include_default_mcp_servers=False,
-    )
-    assert enabled == reference
-    # Sanity: something was actually enabled. ``kanban`` IS in _DEFAULT_OFF_TOOLSETS
-    # on current main (#3d7f773bb4) but an explicitly listed name is an opt-in that
-    # survives the subtraction, so disjointness no longer holds here.
-    assert enabled
-
-
-def test_get_platform_tools_legacy_hermes_alias_alone():
-    """``"hermes"`` alone (no other toolsets) must still produce tools."""
-    config = {"platform_toolsets": {"cli": ["hermes"]}}
-
-    enabled = _get_platform_tools(config, "cli", include_default_mcp_servers=False)
-    reference = _get_platform_tools(
-        {"platform_toolsets": {"cli": ["hermes-cli", "hermes-api-server"]}},
-        "cli",
-        include_default_mcp_servers=False,
-    )
-    assert enabled == reference
-    assert enabled
 
 
 def test_toolset_has_keys_for_vision_accepts_codex_auth(tmp_path, monkeypatch):

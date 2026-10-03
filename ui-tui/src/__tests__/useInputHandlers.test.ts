@@ -212,32 +212,4 @@ describe('dismissSensitivePrompt', () => {
     expect(getOverlayState().secret).toBeNull()
     expect(sys).toHaveBeenCalled()
   })
-
-  it('declines a vault save-login overlay with an empty value so the blocked wait resolves', () => {
-    resetOverlayState()
-    resetServerRequestsForTests()
-    patchOverlayState({ vaultSaveLogin: { origin: 'https://example.com', requestId: 'save-1', site: 'example.com' } })
-    const respond = openRequest('save-1', 'vault.save_login')
-    const sys = vi.fn()
-
-    dismissSensitivePrompt(getOverlayState(), vi.fn(), sys)
-
-    expect(getOverlayState().vaultSaveLogin).toBeNull()
-    expect(sys).toHaveBeenCalledWith('login for example.com not saved')
-    expect(respond).toHaveBeenCalledWith({ value: '' })
-  })
-
-  it('skips a vault verification-code overlay with an empty value', () => {
-    resetOverlayState()
-    resetServerRequestsForTests()
-    patchOverlayState({ vaultCode: { hint: '', requestId: 'code-1', site: 'github.com' } })
-    const respond = openRequest('code-1', 'vault.code')
-    const sys = vi.fn()
-
-    dismissSensitivePrompt(getOverlayState(), vi.fn(), sys)
-
-    expect(getOverlayState().vaultCode).toBeNull()
-    expect(sys).toHaveBeenCalledWith('verification code for github.com skipped')
-    expect(respond).toHaveBeenCalledWith({ value: '' })
-  })
 })

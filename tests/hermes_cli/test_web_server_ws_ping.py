@@ -71,32 +71,20 @@ def _stub_uvicorn(monkeypatch):
     return captured
 
 
-def test_start_server_applies_process_local_ssh_bootstrap_state(monkeypatch, tmp_path):
+def test_start_server_applies_process_local_ssh_bootstrap_state(monkeypatch):
     captured = _stub_uvicorn(monkeypatch)
-    owner_watchdogs: list[dict] = []
-    monkeypatch.setattr("hermes_cli.web_server_owner_exit.start_owner_watchdog",
-                        lambda server, **kw: owner_watchdogs.append(kw))
-    lock_path = tmp_path / "backend.lock.json"
 
-    def serve(**extra):
-        web_server.start_server(
-            host="127.0.0.1",
-            port=0,
-            open_browser=False,
-            ssh_session_token="s" * 64,
-            ssh_owner_nonce="0123456789abcdef",
-            **extra,
-        )
-
-    serve(ssh_lock_path=lock_path)
+    web_server.start_server(
+        host="127.0.0.1",
+        port=0,
+        open_browser=False,
+        ssh_session_token="s" * 64,
+        ssh_owner_nonce="0123456789abcdef",
+    )
 
     assert web_server._SESSION_TOKEN == "s" * 64
     assert web_server._SSH_OWNER_NONCE == "0123456789abcdef"
     assert captured["port"] == 0
-    # The Desktop's ownership lock arms supersession retirement (#132034); no lock path, no watchdog.
-    assert owner_watchdogs == [{"lock_path": lock_path, "nonce": "0123456789abcdef"}]
-    serve()
-    assert len(owner_watchdogs) == 1
 
 
 def test_start_server_disables_ws_ping_on_loopback(monkeypatch):

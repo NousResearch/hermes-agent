@@ -243,16 +243,6 @@ def _memory_tool(action, target, content, old_text, new_text, operations, store)
         if gate_result is not None:
             return "rejected", gate_result
         return _applied(store.apply_batch(target, operations))
-    # Reject calls that provide neither action (single-op) nor operations
-    # (batch).  Without this guard the dispatch falls through to the generic
-    # "Unknown action 'None'" error, which gives the model no signal about
-    # *why* the call was malformed and can trigger repeated retries. (#64291)
-    if not action and not operations:
-        return "rejected", tool_error(
-            "Missing required parameter: provide 'action' (add/replace/remove) "
-            "or 'operations' (batch list). Got neither.",
-            success=False,
-        )
     if action not in _STORE_ACTIONS:
         return "rejected", tool_error(f"Unknown action '{action}'. Use: add, replace, remove", success=False)
     invalid = (_validate_single_op(store, action, target, content, old_text)

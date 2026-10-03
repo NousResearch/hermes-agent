@@ -507,14 +507,19 @@ def test_late_response_and_lock_are_dropped_quietly(server):
 
 
 def _start_batch_clarify(server, buf, qids, timeout=None):
+    """Open a batch ``clarify`` request: through ``_clarify_block`` (no deadline) by default, or straight
+    through ``server_requests.send`` with *timeout* to exercise the generic batch-deadline semantics."""
     from tui_gateway import server_requests
     box = {}
     normalized = [{"qid": q, "id": "", "question": q, "choices": None, "choices_offered": [], "multi_select": False}
                   for q in qids]
-    if timeout is not None:
-        server._clarify_timeout_seconds = lambda: timeout
-    thread = threading.Thread(
-        target=lambda: box.__setitem__("answer", server._clarify_block("s1", normalized)), daemon=True)
+    if timeout is None:
+        target = lambda: box.__setitem__("answer", server._clarify_block("s1", normalized))  # noqa: E731
+    else:
+        wire = [{"qid": q, "question": q, "choices": None, "multi_select": False} for q in qids]
+        target = lambda: box.__setitem__("answer", server_requests.send(  # noqa: E731
+            "clarify", "s1", {"questions": wire}, timeout=timeout, qids=list(qids)))
+    thread = threading.Thread(target=target, daemon=True)
     thread.start()
     return thread, box, _wait_open(server_requests, buf)
 
@@ -543,16 +548,12 @@ def test_clarify_batch_locks_resolve_in_order_and_keep_partial_on_timeout(captur
     thread.join(timeout=5)
     assert box["answer"] == {"answers": {"q0": "y", "q1": ""}, "outcome": "submitted"}
 
-    # Deadline: locked answers survive, outcome timed_out, one request.cancel.
-    original_timeout = server._clarify_timeout_seconds
-    try:
-        thread, box, req = _start_batch_clarify(server, buf, ["q0", "q1"], timeout=1.5)
-        locked = server.handle_request({"id": "b1", "method": "clarify.lock",
-                                        "params": {"request_id": req.id, "question_id": "q0", "answer": "kept"}})
-        assert locked["result"]["status"] == "ok"
-        thread.join(timeout=5)
-    finally:
-        server._clarify_timeout_seconds = original_timeout
+    # Deadline (generic server-request semantics): locked answers survive, outcome timed_out, one request.cancel.
+    thread, box, req = _start_batch_clarify(server, buf, ["q0", "q1"], timeout=1.5)
+    locked = server.handle_request({"id": "b1", "method": "clarify.lock",
+                                    "params": {"request_id": req.id, "question_id": "q0", "answer": "kept"}})
+    assert locked["result"]["status"] == "ok"
+    thread.join(timeout=5)
     assert box["answer"] == {"answers": {"q0": "kept"}, "outcome": "timed_out"}
     cancels = [f for f in _frames(buf) if f.get("method") == "event" and f["params"]["type"] == "request.cancel"]
     assert [c["params"]["payload"]["id"] for c in cancels] == [req.id]

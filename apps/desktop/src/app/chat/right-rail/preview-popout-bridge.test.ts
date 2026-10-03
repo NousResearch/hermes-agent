@@ -171,43 +171,6 @@ describe('preview pop-out bridge', () => {
     }
   })
 
-  it('answers only for the session whose tab the pop-out shows (#73890)', async () => {
-    isBrowserWindow.mockReturnValue(true)
-    actOnActivePreview.mockResolvedValue({ acted: 'click', success: true })
-    window.history.replaceState(null, '', '/?win=browser&tab=url:browser-a')
-    const { $previewTabs } = await import('@/store/preview')
-    const url = (u: string) => ({ kind: 'url' as const, label: u, source: u, url: u })
-
-    $previewTabs.set([
-      { id: 'url:browser-a', pinned: false, sessionId: 'sess-a', target: url('https://a.example') },
-      { id: 'url:browser-b', pinned: false, sessionId: 'sess-b', target: url('https://b.example') }
-    ])
-
-    const { installPopoutPreviewResponder, requestPopoutPreviewAct } = await import('./preview-popout-bridge')
-    const stop = installPopoutPreviewResponder()
-    vi.useFakeTimers()
-
-    try {
-      // sess-b's agent: the pop-out shows sess-a's tab, so it stays silent.
-      const refused = requestPopoutPreviewAct({ kind: 'click', ref: 'btn-1' }, 'sess-b')
-      await vi.advanceTimersByTimeAsync(20_100)
-
-      expect(await refused).toBeNull()
-      expect(actOnActivePreview).not.toHaveBeenCalled()
-
-      // sess-a's agent is answered.
-      expect(await requestPopoutPreviewAct({ kind: 'click', ref: 'btn-1' }, 'sess-a')).toEqual({
-        acted: 'click',
-        success: true
-      })
-    } finally {
-      vi.useRealTimers()
-      stop()
-      $previewTabs.set([])
-      window.history.replaceState(null, '', '/')
-    }
-  })
-
   it('installs no responder outside the browser pop-out window', async () => {
     isBrowserWindow.mockReturnValue(false)
 

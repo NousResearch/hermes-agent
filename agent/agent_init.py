@@ -49,38 +49,28 @@ logger = logging.getLogger("run_agent")
 
 
 # Deduped: the gateway builds a fresh AIAgent per message, so it would warn every turn.
-_warned_unavailable_providers: set[tuple[str, str]] = set()
+_warned_unavailable_providers: set[str] = set()
 
 
-def _unavailable_warning_key(name: str) -> tuple[str, str]:
-    """Once per profile home and provider: one multiplexed gateway/Desktop backend serves several
-    profiles, and each one running without its memory must be told."""
-    from hermes_constants import get_hermes_home, hermes_home_key
-    return hermes_home_key(get_hermes_home()), name
-
-
-def _warn_memory_provider_unavailable(name: str, reason: str = "", say=None) -> None:
-    """Warn once per home and provider that a configured memory provider is unavailable.
+def _warn_memory_provider_unavailable(name: str, reason: str = "") -> None:
+    """Warn once per provider that a configured memory provider is unavailable.
 
     ``is_available()`` is a side-effect-free hot-path check and can't log itself; without this
     the provider is silently dropped. ``reason`` (the provider's ``unavailable_reason()`` hint)
-    can only reach the user here, so it is appended when present. *say* is the agent's
-    user-facing sink: a log line alone leaves the user running without memory unaware.
+    can only reach the user here, so it is appended when present.
     """
-    key = _unavailable_warning_key(name)
-    if key in _warned_unavailable_providers:
+    if name in _warned_unavailable_providers:
         return
-    _warned_unavailable_providers.add(key)
-    message = (
-        f"⚠ Memory provider {name!r} is selected but reports unavailable — external memory "
+    _warned_unavailable_providers.add(name)
+    logger.warning(
+        "Memory provider %r is selected but reports unavailable — external memory "
         "is disabled for this session (built-in memory still works). Check the "
         "provider's credentials/config with 'hermes memory status'. Note: "
         "systemd/gateway services do not inherit ~/.hermes/.env automatically; set "
-        f"any required variables in the service environment.{f' {reason}' if reason else ''}"
+        "any required variables in the service environment.%s",
+        name,
+        f" {reason}" if reason else "",
     )
-    logger.warning(message)
-    if say is not None:
-        say(message)
 
 
 def _provider_default_routes(provider: str) -> set[str]:
@@ -596,11 +586,9 @@ _TURN_STATE: Dict[str, Any] = {
 # Session persistence state.
 _SESSION_STATE: Dict[str, Any] = {
     "_session_messages": list,
-    # Responses encrypted-reasoning replay. The first ``invalid_encrypted_content`` rejection only
-    # strips the stale blobs (a rotated sealing key); a second one means the route cannot round-trip
-    # its own fresh blobs, so replay is disabled for the session (stateless continuity).
+    # Responses encrypted-reasoning replay: routes that 400 with ``invalid_encrypted_content``
+    # make the loop disable it for the session (stateless continuity).
     "_codex_reasoning_replay_enabled": True,
-    "_codex_reasoning_replay_rejected": False,
     "_memory_write_origin": "assistant_tool",
     "_memory_write_context": "foreground",
     # Cached system prompt (built once, rebuilt on compression) + its cross-session-stable
@@ -1377,17 +1365,16 @@ def _init_memory(agent, _agent_cfg, skip_memory, platform, memory_manager=None):
                 if _mp is None:
                     # The provider left core for the catalog (or was never installed): fetch it once.
                     from hermes_cli.memory_provider_migration import recover_at_startup
-                    if recover_at_startup(_mem_provider_name, say=agent._emit_startup_warning):
+                    if recover_at_startup(_mem_provider_name):
                         _mp = _load_mem(_mem_provider_name)
                 if _mp and _mp.is_available():
                     agent._memory_manager.add_provider(_mp)
-                elif _mp is not None and _unavailable_warning_key(_mem_provider_name) not in _warned_unavailable_providers:
+                elif _mp is not None and _mem_provider_name not in _warned_unavailable_providers:
                     # unavailable_reason() reads config/probes importlib — skip it once warned.
                     _unavailable_reason = ""
                     with suppress(Exception):
                         _unavailable_reason = _mp.unavailable_reason()
-                    _warn_memory_provider_unavailable(
-                        _mem_provider_name, _unavailable_reason, say=agent._emit_startup_warning)
+                    _warn_memory_provider_unavailable(_mem_provider_name, _unavailable_reason)
                 if agent._memory_manager.providers:
                     agent._memory_manager.initialize_all(**_memory_provider_init_kwargs(agent, platform))
                     _ra().logger.info("Memory provider '%s' activated", _mem_provider_name)

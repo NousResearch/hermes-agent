@@ -2261,7 +2261,6 @@ cli:
   clarify:
     bell_context: "澄清"
     label: "澄清"
-    timed_out_locked_answers: "（澄清已在 {timeout} 秒後逾時 — 已回傳鎖定的答案）"
   connect:
     bell_context: "連線設定"
     cannot_restart: "此連線無法再次啟動。請取消後再向代理提出一次。"
@@ -2355,7 +2354,6 @@ cli:
     removed: "已移除佇列項目 {index}：{preview}"
     item_not_found: "找不到佇列項目 {index}。目前佇列長度：{size}"
     usage_edit: "用法：/queue edit <number> <new prompt>"
-    usage_remove: "用法：/queue rm <number>"
     updated: "已更新佇列項目 {index}：{preview}"
     usage_move: "用法：/queue move <from> <to>"
     move_out_of_range: "佇列移動超出範圍。目前佇列長度：{size}"
@@ -2721,7 +2719,6 @@ cli:
       restored: "已從 {snapshot_id} 還原狀態"
       restart_recommended: "建議重新啟動閘道／儀表板程序，以套用 state.db 的變更。"
       not_found: "找不到快照：{snapshot_id}"
-      restore_incomplete: "快照 {snapshot_id} 未完全還原：部分檔案被拒絕（請查看日誌）"
       usage_prune: "用法：/snapshot prune [keep-count]"
       pruned: "已清除 {deleted} 個舊快照（保留 {keep} 個）。"
     export:
@@ -3289,7 +3286,6 @@ cli:
     shallow_clone_keeping: "⚠ 淺層複製 — 無法確認推送狀態，保留：{path}"
     next_session_deepens: "下一次 `hermes -w` 工作階段會加深複製並自動清理已合併的工作樹。"
     unpushed_keeping: "⚠ 工作樹有未推送的提交，保留：{path}"
-    uncommitted_keeping: "⚠ 工作樹有未提交的變更，保留：{path}"
     clean_up_manually: "手動清理方式：git worktree remove --force {path}"
     cleaned_up: "✓ 工作樹已清理：{path}"
 display:
@@ -3676,7 +3672,7 @@ tips:
   t197: "軌跡儲存（--save-trajectories）會記錄完整的工具使用軌跡，供模型訓練使用。"
   t198: "外掛有三種類型：一般（工具／hook）、記憶提供方，以及上下文引擎。"
   t199: "hermes plugins install owner/repo 可直接從 GitHub 安裝外掛。"
-  t200: "外部記憶提供方：內建 OpenViking、Mem0；Honcho、Hindsight 等更多可透過 hermes plugins install 安裝。"
+  t200: "外部記憶提供方：內建 Honcho、OpenViking、Mem0；Hindsight 等更多可透過 hermes plugins install 安裝。"
   t201: "外掛 hook 包含 pre/post_tool_call、pre/post_llm_call，以及用來標準化輸出的 transform_terminal_output。"
   t202: "提示快取（Anthropic）透過重用已快取的系統提示詞前綴來降低費用。"
   t203: "代理會在背景執行緒中自動產生工作階段標題 — 完全不影響延遲。"

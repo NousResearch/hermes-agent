@@ -6,7 +6,7 @@ import path from 'node:path'
 import { test, vi } from 'vitest'
 
 import type { InstallStamp, PayloadRuntime } from './install-stamp'
-import { bundledPayload, installIdForRoot, payloadPythonPath } from './payload-backend'
+import { bundledPayload, installIdForRoot } from './payload-backend'
 
 function stamp(runtime: PayloadRuntime, payload: InstallStamp['payload'] = 'bundled'): InstallStamp {
   return {
@@ -78,12 +78,5 @@ test('installIdForRoot matches the Python install id (sha16 of the canonical pat
   assert.equal(
     installIdForRoot('/link/hermes-agent', () => '/real/hermes-agent'),
     installIdForRoot('/real/hermes-agent')
-  )
-})
-
-test('bundled core code precedes the dependencies, as the bin launchers order them', () => {
-  assert.equal(
-    payloadPythonPath({ repoDir: 'payload/hermes-agent', sitePackages: 'payload/venv/site-packages' }),
-    ['payload/hermes-agent', 'payload/venv/site-packages'].join(path.delimiter)
   )
 })

@@ -1767,7 +1767,7 @@ profile's `HERMES_HOME`. `tool_name` and `tool_input` are `null` for non-tool ev
 // Silent no-op — any empty / non-matching output is fine:
 ```
 
-Except for `pre_tool_call` exit code 2 described below, malformed JSON, ordinary non-zero exit codes, and timeouts fail open by default: they log a warning but do not abort the agent loop. A `fail_closed` hook changes the behavior as described below.
+Malformed JSON, non-zero exit codes, and timeouts log a warning but never abort the agent loop.
 
 ### Exit code 2 = block (Claude Code / Cursor compatible)
 
@@ -1808,7 +1808,6 @@ With `fail_closed: true`, each of these now **blocks** the tool call with `hook 
 |---------|--------------------|--------------------|
 | Command not found / not executable | warn, proceed | **block** |
 | Timeout | warn, proceed | **block** |
-| Non-zero exit with no recognized directive | warn, proceed | **block** |
 | Non-JSON stdout (e.g. a stack trace) | warn, proceed | **block** |
 | Clean exit, valid no-op JSON (`{}`) | proceed | proceed |
 

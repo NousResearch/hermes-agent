@@ -162,32 +162,6 @@ def test_a_multiplexing_owner_is_still_refused(host_lock_dir, monkeypatch):
     assert exc.value.code == GATEWAY_SERVICE_RESTART_EXIT_CODE
 
 
-@pytest.mark.platforms("posix")
-def test_standalone_lock_loss_uses_profile_discovery_when_host_probe_is_empty(
-    host_lock_dir, monkeypatch
-):
-    """A transiently unavailable owner channel must not erase standalone coexistence."""
-    from gateway import host_rendezvous as hr
-    from gateway.host_attach import HostAttachDecision, START
-    from gateway.run import _claim_host_gateway_role
-
-    calls = []
-
-    def standalone_decision(home, owner):
-        calls.append(owner)
-        return HostAttachDecision(START, "")
-
-    monkeypatch.setattr("gateway.host_attach.standalone_attach_decision", standalone_decision)
-    monkeypatch.setattr("hermes_cli.profiles.profile_is_standalone", lambda home: True)
-    monkeypatch.setattr("gateway.host_attach.host_gateway", lambda **kw: None)
-    handle = _hold_host_lock_from_another_description(hr)
-    try:
-        _claim_host_gateway_role()
-    finally:
-        handle.close()
-    assert calls == [None, None]
-
-
 @pytest.mark.skipif(sys.platform == "win32", reason="flock-based contention setup")
 @pytest.mark.asyncio
 async def test_a_replace_unit_that_replaced_nothing_is_still_refused_when_it_loses_the_lock(

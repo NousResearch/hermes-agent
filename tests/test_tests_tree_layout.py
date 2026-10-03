@@ -31,7 +31,7 @@ TESTS_ROOT = REPO_ROOT / "tests"
 _NON_MIRROR_DIRS = {
     "compat", "installation", "_fixtures",
     "ci", "conformance", "dashboard", "desktop", "docker", "e2e", "evals",
-    "fakes", "fixtures", "install", "integration", "manual",
+    "fakes", "fixtures", "honcho_plugin", "install", "integration", "manual",
     "monitoring", "openviking_plugin", "perf_guards", "scripts", "secret_sources",
     "security", "skills", "verify", "website", "computer_use", "hermes_state",
 }

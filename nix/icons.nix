@@ -6,8 +6,6 @@ let
     fileset = lib.fileset.unions [
       ../scripts/generate_icons.py
       (lib.fileset.fileFilter (file: file.hasExt "svg") ../assets)
-      # The DMG volume icon is hand-made raster artwork, not rendered from the svgs.
-      ../assets/dmg-volume.png
     ];
   };
 in

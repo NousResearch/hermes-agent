@@ -55,10 +55,10 @@ export interface AppInstallerCheck {
 export interface PayloadPythonRunner {
   /** Absolute path to the bundled payload python (tools/<entry>/python.exe). */
   python: string
-  /** The checker's module name. */
-  module: string
-  /** Run the module; resolve with {code, stdout}. */
-  run: (python: string, module: string) => Promise<{ code: number; stdout: string }>
+  /** The checker script's absolute path. */
+  script: string
+  /** Run the script; resolve with {code, stdout}. */
+  run: (python: string, script: string) => Promise<{ code: number; stdout: string }>
 }
 
 /**
@@ -68,7 +68,7 @@ export interface PayloadPythonRunner {
  * installed version; it does NOT download anything.
  */
 export async function checkAppInstallerUpdate(runner: PayloadPythonRunner): Promise<AppInstallerCheck> {
-  const { code, stdout } = await runner.run(runner.python, runner.module)
+  const { code, stdout } = await runner.run(runner.python, runner.script)
 
   return parseCheckOutput(code, stdout)
 }

@@ -829,8 +829,8 @@ services.hermes-agent.extraDependencyGroups = [ "messaging" ];
 ```nix
 # Enable a memory provider
 services.hermes-agent = {
-  extraDependencyGroups = [ "mem0" ];
-  settings.memory.provider = "mem0";
+  extraDependencyGroups = [ "honcho" ];
+  settings.memory.provider = "honcho";
 };
 ```
 
@@ -850,7 +850,7 @@ requirements can still fail that resolution. The table lists common groups;
 | `anthropic` | Native Anthropic SDK (not needed via OpenRouter) |
 | `bedrock` | AWS Bedrock (boto3) |
 | `azure-identity` | Azure Entra ID auth |
-| `mem0` | Mem0 memory provider |
+| `honcho` | Honcho memory provider |
 | `modal` | Modal terminal backend |
 | `daytona` | Daytona terminal backend |
 | `exa` | Exa web search |
@@ -893,7 +893,7 @@ External flakes can override the package directly:
     nixpkgs.overlays = [ hermes-agent.overlays.default ];
     # Then:
     #   pkgs.hermes-agent.override { extraPythonPackages = [...]; }
-    #   pkgs.hermes-agent.override { extraDependencyGroups = [ "voice" ]; }
+    #   pkgs.hermes-agent.override { extraDependencyGroups = [ "honcho" ]; }
   };
 }
 ```
@@ -1038,7 +1038,7 @@ nix build .#checks.x86_64-linux.config-roundtrip    # merge script preserves use
 | `extraPackages` | `listOf package` | `[]` | Extra packages available to the agent. Added to the hermes user's per-user profile so terminal commands, skills, and cron jobs all see them |
 | `extraPlugins` | `listOf package` | `[]` | Directory plugin packages to symlink into `$HERMES_HOME/plugins/`. Each must contain `plugin.yaml` |
 | `extraPythonPackages` | `listOf package` | `[]` | Python packages added to PYTHONPATH for entry-point plugin discovery. Use the selected package’s `python.pkgs` |
-| `extraDependencyGroups` | `listOf str` | `[]` | pyproject.toml optional extras to include in the sealed venv (e.g. `["voice"]`). Resolved by uv — no collisions |
+| `extraDependencyGroups` | `listOf str` | `[]` | pyproject.toml optional extras to include in the sealed venv (e.g. `["honcho"]`). Resolved by uv — no collisions |
 | `restart` | `str` | `"always"` | The systemd `Restart=` policy. macOS does not use it. |
 | `restartSec` | `int` | `5` | The systemd `RestartSec=` value. macOS does not use it. |
 

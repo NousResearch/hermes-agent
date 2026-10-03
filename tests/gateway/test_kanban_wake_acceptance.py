@@ -35,10 +35,6 @@ def setup_route(raft=False):
 async def drain(adapter):
     while adapter._background_tasks:
         await asyncio.gather(*list(adapter._background_tasks))
-        # gather() over tasks that are ALL already done completes without yielding (3.12+), so a
-        # finished task whose queued _background_tasks.discard callback has not run yet would spin
-        # this loop forever; yield once so those done-callbacks run before re-checking.
-        await asyncio.sleep(0)
 
 
 @pytest.mark.asyncio

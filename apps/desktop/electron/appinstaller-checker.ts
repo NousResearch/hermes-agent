@@ -2,7 +2,7 @@
  * appinstaller-checker.ts
  *
  * Bounded child run for the App Installer update checker
- * (hermes_cli/windows_appinstaller_update.py). The checker runs on the
+ * (scripts/check-appinstaller-update.py). The checker runs on the
  * update-check path, so a wedged child must never hang the check: the
  * deadline resolves the promise AT the deadline with an honest unknown,
  * while execFile's own timeout performs the bounded kill. Two independent
@@ -41,14 +41,14 @@ export type ExecFileImpl = (
 ) => unknown
 
 /**
- * Run `python -P -m <module>` with a hard deadline. Resolves (never rejects):
+ * Run `python <script>` with a hard deadline. Resolves (never rejects):
  * exit code and stdout map through unchanged so the checker's own JSON
  * contract survives; a deadline hit or an unspawnable interpreter resolves
  * the caller's "unknown" shape instead of a fake "no update".
  */
 export function runAppInstallerChecker(
   python: string,
-  module: string,
+  script: string,
   deps: AppInstallerCheckerDeps = {}
 ): Promise<AppInstallerCheckResult> {
   const timeoutMs = deps.timeoutMs ?? APPINSTALLER_CHECK_TIMEOUT_MS
@@ -79,8 +79,7 @@ export function runAppInstallerChecker(
     try {
       exec(
         python,
-        // -P: the working directory never joins sys.path ahead of the bundle.
-        ['-P', '-m', module, ...(deps.args ?? [])],
+        [script, ...(deps.args ?? [])],
         { encoding: 'utf8', timeout: timeoutMs, windowsHide: true, env: deps.env },
         (error, stdout, stderr) => {
           if (stderr) {

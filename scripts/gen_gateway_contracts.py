@@ -1,4 +1,4 @@
-#!/usr/bin/env -S bash -c 'exec "$BASH" "$(dirname "$0")/run-in-hermes-env" python3 "$0" "$@"'
+#!/usr/bin/env -S bash -c 'exec "$BASH" "$(dirname "$0")/_hermes-python" "$0" "$@"'
 """Render ``tui_gateway/contracts`` into TypeScript and OpenRPC.
 
 Python-only (the Python CI lane has no Node): Pydantic's ``model_json_schema()`` output is walked

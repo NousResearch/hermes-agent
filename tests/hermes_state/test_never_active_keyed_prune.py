@@ -10,7 +10,6 @@ These tests pin the narrow selector that reaches them, and — more importantly
 """
 
 import json
-import os
 import time
 
 import pytest
@@ -110,7 +109,7 @@ class TestPrune:
         _insert(db, "keeper-young", age_days=1)
         _insert(db, "keeper-used", age_days=45, message_count=3)
 
-        deleted, _, _ = db.prune_never_active_keyed_sessions(older_than_days=30)
+        deleted, _ = db.prune_never_active_keyed_sessions(older_than_days=30)
 
         assert deleted == 2
         surviving = {
@@ -134,9 +133,11 @@ class TestPrune:
             scope="/home/dev/project",
         )
 
-        result = db.prune_never_active_keyed_sessions(older_than_days=30)
+        deleted, routing_deleted = db.prune_never_active_keyed_sessions(
+            older_than_days=30
+        )
 
-        assert result == (1, 1, 0)
+        assert (deleted, routing_deleted) == (1, 1)
         remaining = db._conn.execute(
             "SELECT session_key FROM gateway_routing"
         ).fetchall()
@@ -144,48 +145,5 @@ class TestPrune:
 
     def test_no_candidates_is_a_no_op(self, db):
         _insert(db, "keeper", age_days=1)
-        assert db.prune_never_active_keyed_sessions(older_than_days=30) == (0, 0, 0)
+        assert db.prune_never_active_keyed_sessions(older_than_days=30) == (0, 0)
         assert db._conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 1
-
-
-class TestPruneSkipsLiveTurns:
-    """#123583 on the never-active selector: the predicate reads committed state, so a
-    keyed row whose first turn lease is already held — messages not yet flushed — looks
-    empty. The prune must skip it (and keep its routing entry) instead of deleting it
-    mid-turn."""
-
-    def test_guarded_row_survives_and_keeps_its_routing_entry(self, db, monkeypatch):
-        _insert(db, "live-junk", age_days=45)
-        _insert(db, "dead-junk", age_days=45)
-        _insert(db, "gone-junk", age_days=45)
-        for sid, scope in (("live-junk", "/tmp/pytest-live"), ("gone-junk", "/tmp/pytest-gone")):
-            db.save_gateway_routing_entry(
-                f"agent:main:telegram:dm:{sid}", json.dumps({"session_id": sid}), scope=scope)
-        holder = f"pid={os.getpid()}:turn=1"
-        assert db.try_acquire_session_turn_lease("live-junk", holder, ttl_seconds=300.0) is True
-
-        # gone-junk vanishes between listing and the sweep (a concurrent delete): it is not
-        # counted as deleted or skipped, but its routing entry must still go — a stale entry
-        # would have the gateway resume a nonexistent id.
-        real_list = db.list_never_active_keyed_sessions
-
-        def list_then_vanish(**kw):
-            rows = real_list(**kw)
-            db._conn.execute("DELETE FROM sessions WHERE id = 'gone-junk'")
-            db._conn.commit()
-            return rows
-
-        monkeypatch.setattr(db, "list_never_active_keyed_sessions", list_then_vanish)
-        # dead-junk deleted; the guarded row is skipped (counted), not fatal
-        assert db.prune_never_active_keyed_sessions(older_than_days=30) == (1, 1, 1)
-        monkeypatch.undo()
-        assert db.get_session("live-junk") is not None
-        remaining = {
-            r[0]
-            for r in db._conn.execute("SELECT session_key FROM gateway_routing").fetchall()
-        }
-        assert remaining == {"agent:main:telegram:dm:live-junk"}
-
-        db.release_session_turn_lease("live-junk", holder)
-        assert db.prune_never_active_keyed_sessions(older_than_days=30) == (1, 1, 0)
-        assert db.get_session("live-junk") is None

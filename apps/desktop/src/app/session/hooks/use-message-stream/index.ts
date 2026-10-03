@@ -36,12 +36,7 @@ import { broadcastTranscriptChanged } from '@/store/transcript-sync'
 
 import type { ClientSessionState } from '../../../types'
 
-import {
-  collapseDuplicateFinalAfterToolInterim,
-  collapseDuplicateFinalOntoIdenticalInterim,
-  type DuplicateFinalCollapse,
-  identicalInterimSiblingIndex
-} from './collapse-duplicate-final'
+import { collapseDuplicateFinalAfterToolInterim, type DuplicateFinalCollapse } from './collapse-duplicate-final'
 import { useGatewayEventHandler } from './gateway-event'
 import { handleServerRequest as dispatchServerRequest } from './gateway-event/server-requests'
 import { extendInterruptedReply } from './interrupted-reply'
@@ -867,27 +862,13 @@ export function useMessageStream({
 
         let collapsed: DuplicateFinalCollapse | null = null
 
-        const hasFailure = Boolean(failure) || Boolean(completionError)
-
-        // #123801 — see identicalInterimSiblingIndex.
-        const identicalInterimIndex = identicalInterimSiblingIndex(prev, lastUserIndex, finalText, {
-          excludeIndex: streamIndex,
-          hasFailure,
-          interimBoundaryPending
-        })
-
         if (streamIndex >= 0) {
-          collapsed =
-            collapseDuplicateFinalAfterToolInterim(prev, streamIndex, {
-              completeMessage,
-              finalText,
-              hasFailure,
-              interimBoundaryPending
-            }) ??
-            collapseDuplicateFinalOntoIdenticalInterim(prev, streamIndex, identicalInterimIndex, {
-              completeMessage,
-              finalText
-            })
+          collapsed = collapseDuplicateFinalAfterToolInterim(prev, streamIndex, {
+            completeMessage,
+            finalText,
+            hasFailure: Boolean(failure) || Boolean(completionError),
+            interimBoundaryPending
+          })
           nextMessages = collapsed?.messages ?? settleAt(streamIndex)
         } else {
           const fallbackIndex = prev.findLastIndex(
@@ -987,10 +968,6 @@ export function useMessageStream({
               //   force an append of a duplicate bubble (#74560). This also
               //   closes the non-previewed tool-call gap from #63679.
               nextMessages = settleAt(index)
-            } else if (identicalInterimIndex >= 0) {
-              // The reply is already on screen as the sealed interim: settle it
-              // instead of appending the same text a second time (#123801).
-              nextMessages = settleAt(identicalInterimIndex)
             } else if (finalText) {
               nextMessages = [...prev, newAssistantFromCompletion()]
             }

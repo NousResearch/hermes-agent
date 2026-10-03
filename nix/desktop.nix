@@ -117,7 +117,7 @@ let
 
       pushd apps/desktop
 
-        node scripts/assert-dist-built.mjs
+        npm run postbuild
 
         # validate staged node-pty native binary is present.
         STAGED_PTY_NODE="./dist/node_modules/node-pty/build/Release/pty.node"

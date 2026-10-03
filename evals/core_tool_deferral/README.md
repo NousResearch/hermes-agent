@@ -20,10 +20,7 @@ Original verdict + full numbers: `results/SUMMARY.md` and the PR #97979 body
   OPENROUTER_API_KEY survives), seeded session DB (targets + decoys),
   deterministic desktop-surface stubs (desktop_ui emitter + agent
   callbacks), computer_use/image_generate stubbed at the registry
-  handler. Terminal/files/cron/process/session-DB are REAL, but host
-  side effects stay in the run dir (`sandbox.py`): HOME is the profile
-  home (`TERMINAL_HOME_MODE=profile`), `crontab` is a file-backed shim
-  first on PATH, and the systemd user bus is unset.
+  handler. Terminal/files/cron/process/session-DB are REAL.
   Exit 3 = infra/config error (never scored).
 - `orchestrator.py` — battery runner: resume-safe, per-task wall
   timeouts, parallel cells, errored-record retry, 3-infra-abort fuse.
@@ -34,15 +31,15 @@ Original verdict + full numbers: `results/SUMMARY.md` and the PR #97979 body
 
 ```bash
 # 1. Two plain checkouts pinned to the SHAs under test (never pip install -e)
-git worktree add "$TMPDIR/abdefer-base" <baseline-sha>
-git worktree add "$TMPDIR/abdefer-pr"   <pr-sha>
+git worktree add /tmp/abdefer-base <baseline-sha>
+git worktree add /tmp/abdefer-pr   <pr-sha>
 
-export ABDEFER_BASE_TREE="$TMPDIR/abdefer-base"
-export ABDEFER_PR_TREE="$TMPDIR/abdefer-pr"
+export ABDEFER_BASE_TREE=/tmp/abdefer-base
+export ABDEFER_PR_TREE=/tmp/abdefer-pr
 export OPENROUTER_API_KEY=...   # the only key the worker keeps
 
 # 2. Smoke one cheap cell first
-python3 worker.py base openai/gpt-5.6-terra config_grep_distractor 1 "$TMPDIR/smoke.json"
+python3 worker.py base openai/gpt-5.6-terra config_grep_distractor 1 /tmp/smoke.json
 
 # 3. Battery (per model; start with the STRONGEST model to validate variance)
 python3 orchestrator.py openai/gpt-5.6-terra 3 --parallel=5

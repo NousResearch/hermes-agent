@@ -1162,7 +1162,6 @@ class GatewayStartupMixin:
         """Create + wire an adapter per enabled platform (no connects). Returns
         (aborted, enabled_platform_count, multiplex_skipped_platforms, pending_connects)."""
         from gateway.run import _platform_has_bot_credential
-        from gateway.run_adapters import _adapter_unavailable_message
         enabled_platform_count = 0
         _multiplex_on = self._multiplex_on()
         _multiplex_skipped_platforms: list[Platform] = []
@@ -1197,17 +1196,6 @@ class GatewayStartupMixin:
                         "No adapter for '%s' -- is the plugin installed? "
                         "(platform is enabled in config.yaml but no plugin registered it)", platform.value,
                     )
-                # Only a platform that can heal on its own is queued for the reconnect watcher; either way
-                # flag it so the unserved enabled platform is visible.
-                heals = self._adapter_may_heal(platform, platform_config)
-                self._update_platform_runtime_status(
-                    platform.value, platform_state="retrying" if heals else "fatal",
-                    error_code="adapter_unavailable",
-                    error_message=_adapter_unavailable_message(platform, retrying=heals),
-                    needs_attention=True,
-                )
-                if heals:
-                    self._failed_platforms[platform] = self._startup_retry_entry(platform, None, platform_config)
                 continue
             # Under multiplexing the default profile needs the same whole-handler runtime scope as a
             # secondary (authorization and prompt rendering run before the agent-turn scope).
@@ -1430,7 +1418,7 @@ class GatewayStartupMixin:
             # All retryable: stay alive (cron runs, watcher recovers) rather than systemd restart-loop.
             logger.warning(
                 "Gateway started with no connected platforms — %d platform(s) queued for retry: %s",
-                len(startup_retryable_errors), "; ".join(startup_retryable_errors),
+                len(self._failed_platforms), "; ".join(startup_retryable_errors),
             )
             _write_runtime_status_quiet(gateway_state="degraded", exit_reason=None)
         # No adapter for any enabled platform: fleet nodes share one config.yaml but hold a subset of
@@ -1442,8 +1430,7 @@ class GatewayStartupMixin:
             # (#5196).
             "No adapter could be created for any of the %d configured platform(s). "
             "Check that required dependencies are installed and credentials are set. "
-            "Gateway will continue for cron job execution; platforms whose plugin may still register "
-            "are queued for background retry.", enabled_platform_count,
+            "Gateway will continue for cron job execution.", enabled_platform_count,
         )
         return False
 

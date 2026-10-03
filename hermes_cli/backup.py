@@ -24,7 +24,6 @@ from hermes_constants import (
 from hermes_state_dbfile import RETIRED_GENERATION_DIR_SUFFIX
 from hermes_state_holders import read_only_db_uri
 
-from agent.provider_media import GENERATED_SUBDIR
 from hermes_cli.archive_safe import normalize_archive_parts
 from hermes_cli.backup_sqlite import _close_quietly, _safe_copy_db
 from hermes_cli.home_data_layout import PM_RUNTIME_ROOT_DIRS, profile_root_entry
@@ -36,7 +35,6 @@ from hermes_cli.backup_restore import (
     _detect_prefix,
     _extract_member_atomically,
     _import_db_member,
-    _restore_auth_json,
     _safe_restore_db,
     _validate_backup_zip,
 )
@@ -102,8 +100,7 @@ _EXCLUDED_BACKUP_ROOT_DIRS = frozenset({"browser_profiles"})
 # profiles with locked SQLite, tool-output spill) with durable artifacts nothing can rebuild: media
 # the gateway delivered to or received from the user (``gateway.platforms.base``'s media-delivery
 # subdirs) and the grounded-citations evidence ledger. Only these subdirs are archived.
-_KEPT_CACHE_SUBDIRS = {
-    "images", "audio", "videos", "documents", "screenshots", "citations", GENERATED_SUBDIR}
+_KEPT_CACHE_SUBDIRS = {"images", "audio", "videos", "documents", "screenshots", "citations"}
 
 
 def _in_excluded_root_dir(rel_path: Path) -> bool:
@@ -1480,21 +1477,6 @@ def list_quick_snapshots(
     return results
 
 
-def _is_trusted_root_auth_alias(path: Path, home: Path) -> bool:
-    """True only for a file symlink resolving to this restore home's default-root auth store."""
-    if not path.is_symlink():
-        return False
-    try:
-        root = get_default_hermes_root(home=home).resolve(strict=False)
-        if home.resolve(strict=False) == root:
-            return False
-        trusted = (root / "auth.json").resolve(strict=False)
-        trusted.relative_to(root)
-        return path.resolve(strict=False) == trusted
-    except (OSError, RuntimeError, ValueError):
-        return False
-
-
 def restore_quick_snapshot(
     snapshot_id: str,
     hermes_home: Optional[Path] = None,
@@ -1502,8 +1484,7 @@ def restore_quick_snapshot(
     """Restore state from a quick snapshot.
 
     Overwrites current state files with the snapshot's copies.
-    Returns True if at least one file was restored and the listed auth.json
-    was not refused or skipped.
+    Returns True if at least one file was restored.
     """
     home = hermes_home or get_hermes_home()
     root = _quick_snapshot_root(home)
@@ -1534,7 +1515,6 @@ def restore_quick_snapshot(
         meta = json.load(f)
 
     restored = 0
-    auth_restore_failed = False
     for rel in meta.get("files", {}):
         # Security: reject absolute paths and traversals in manifest entries
         src = snap_dir / rel
@@ -1542,27 +1522,16 @@ def restore_quick_snapshot(
             src.resolve().relative_to(snap_dir.resolve())
         except ValueError:
             logger.error("Manifest path traversal blocked: %s", rel)
-            if rel == "auth.json":
-                auth_restore_failed = True
             continue
 
         dst = home / rel
         try:
             dst.resolve().relative_to(home.resolve())
         except ValueError:
-            # Named profiles may deliberately share the machine-root auth store via an
-            # auth.json symlink. Let only that exact trusted alias reach _restore_auth_json;
-            # every other manifest destination outside the profile remains a traversal.
-            if rel != "auth.json" or not _is_trusted_root_auth_alias(dst, home):
-                logger.error("Manifest path traversal blocked: %s", rel)
-                if rel == "auth.json":
-                    auth_restore_failed = True
-                continue
+            logger.error("Manifest path traversal blocked: %s", rel)
+            continue
 
         if not src.exists():
-            if rel == "auth.json":
-                logger.error("Snapshot auth.json listed in manifest is missing: %s", src)
-                auth_restore_failed = True
             continue
 
         dst.parent.mkdir(parents=True, exist_ok=True)
@@ -1578,25 +1547,14 @@ def restore_quick_snapshot(
                     # dst left as it was. Count as a failure, not a restore.
                     logger.error("Failed to restore %s: refused or source integrity check failed (see previous log)", rel)
                     continue
-            elif rel == "auth.json":
-                # Refresh tokens for these OAuth providers rotate on use. A historical
-                # snapshot can therefore contain a spent pair even though the current
-                # auth.json has the live successor. Restore the historical auth state
-                # while retaining that live single-use grant under the auth-store lock.
-                if not _restore_auth_json(src, dst):
-                    logger.error("Failed to restore %s safely", rel)
-                    auth_restore_failed = True
-                    continue
             else:
                 shutil.copy2(src, dst)
             restored += 1
         except (OSError, PermissionError) as exc:
             logger.error("Failed to restore %s: %s", rel, exc)
-            if rel == "auth.json":
-                auth_restore_failed = True
 
     logger.info("Restored %d files from snapshot %s", restored, snapshot_id)
-    return restored > 0 and not auth_restore_failed
+    return restored > 0
 
 
 def _count_cron_jobs(path: Path) -> Optional[int]:

@@ -566,26 +566,14 @@ def _rebuild_session_agent(sid: str, session: dict, **kwargs):
     # Only a DEDICATED handle carries ownership; the shared launch handle outlives every agent and
     # _transfer_db_to_agent refuses it.
     with _sessions_lock:
-        # session.close claimed this record (``_pop_session_by_id``) while _make_agent ran: its teardown
-        # already closed the agent it saw, so one installed now is never closed (#49852).
-        closed_midbuild = bool(session.get("_closing"))
-        if not closed_midbuild:
-            session.update(agent=agent, config_model_seen=config_model_seen)
-            owned = opened or bool(getattr(old_agent, "_owns_session_db", False))
-            if owned and _transfer_db_to_agent(agent, session_db):
-                if old_agent is not None:
-                    old_agent._owns_session_db = False
-            elif opened:
-                with contextlib.suppress(Exception):
-                    session_db.close()
-    if closed_midbuild:
-        with contextlib.suppress(Exception), _session_profile_runtime_scope(session):
-            if hasattr(agent, "close"):
-                agent.close()
-        if opened:
+        session.update(agent=agent, config_model_seen=config_model_seen)
+        owned = opened or bool(getattr(old_agent, "_owns_session_db", False))
+        if owned and _transfer_db_to_agent(agent, session_db):
+            if old_agent is not None:
+                old_agent._owns_session_db = False
+        elif opened:
             with contextlib.suppress(Exception):
                 session_db.close()
-        raise RuntimeError("session was closed while its agent was being rebuilt")
     return agent
 
 

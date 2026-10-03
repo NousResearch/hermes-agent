@@ -8,7 +8,7 @@ from dataclasses import dataclass, field
 import json
 import logging
 import shutil
-import sys
+import tempfile
 import threading
 import time
 import os
@@ -37,35 +37,24 @@ logger = logging.getLogger(__name__)
 from hermes_time import now as _hermes_now
 from hermes_time import get_timezone
 from hermes_cli.observability.shared_metrics_gateway import record_cron_missed
-from utils import atomic_replace, atomic_write_text, fsync_directory, mkstemp_beside
+from utils import atomic_replace, atomic_write_text, fsync_directory
 
 # croniter is imported lazily (slow import, only needed for cron exprs). HAS_CRONITER stays a
-# module attribute: a monkeypatched value wins because _ensure_croniter only probes while None
-# (and past `_croniter_retry_at`).
+# module attribute: a monkeypatched value wins because _ensure_croniter only probes while None.
 croniter = None
 HAS_CRONITER: Optional[bool] = None
-# Monotonic deadline before the next croniter import probe after an ImportError (not latched).
-_CRONITER_RETRY_SECONDS = 60.0
-_croniter_retry_at: float = 0.0
 
 
 def _ensure_croniter() -> bool:
-    """Import croniter on first use; honor a pre-set HAS_CRONITER override.
-
-    An ImportError is NOT latched: caching False would pin a single transient failure
-    (wrong interpreter, shadowed path) for the whole process lifetime, leaving every
-    recurring job's next_run_at None until a gateway restart (#127182). Stay None and
-    re-probe once ``_CRONITER_RETRY_SECONDS`` have passed (so a genuinely absent package does
-    not cost a finder walk per call on every due-scan tick), and due-scan recovery re-arms the
-    schedules as soon as the import succeeds. An explicit True/False override always wins."""
-    global croniter, HAS_CRONITER, _croniter_retry_at
-    if HAS_CRONITER is None and time.monotonic() >= _croniter_retry_at:
+    """Import croniter on first use; honor a pre-set HAS_CRONITER override."""
+    global croniter, HAS_CRONITER
+    if HAS_CRONITER is None:
         try:
             from croniter import croniter as _croniter
             croniter = _croniter
             HAS_CRONITER = True
         except ImportError:
-            _croniter_retry_at = time.monotonic() + _CRONITER_RETRY_SECONDS
+            HAS_CRONITER = False
     return bool(HAS_CRONITER)
 
 
@@ -1197,9 +1186,8 @@ def compute_next_run(schedule: Dict[str, Any], last_run_at: Optional[str] = None
             logger.warning(
                 "Cannot compute next run for cron schedule %r: 'croniter' is "
                 "not installed. croniter is a core dependency as of v0.9.x; "
-                "reinstall hermes-agent or run 'pip install croniter' in your runtime env "
-                "(interpreter: %s).",
-                expr, sys.executable)
+                "reinstall hermes-agent or run 'pip install croniter' in your runtime env.",
+                expr)
             return None
         # Anchor cron matching to the CONFIGURED IANA timezone's WALL CLOCK,
         # not to the UTC offset carried by ``base_time``. croniter ignores
@@ -1546,8 +1534,8 @@ def _unlink_quiet(path: Optional[str]) -> None:
 
 
 def _stage_jobs_payload(jobs_file: Path, jobs: List[Dict[str, Any]]) -> str:
-    """Serialize the store payload to a fsynced temp file beside the resolved *jobs_file*; return its path."""
-    fd, tmp_path = mkstemp_beside(jobs_file, suffix=".tmp", prefix=".jobs_")
+    """Serialize the store payload to a fsynced temp file next to *jobs_file*; return its path."""
+    fd, tmp_path = tempfile.mkstemp(dir=str(jobs_file.parent), suffix=".tmp", prefix=".jobs_")
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             json.dump(
@@ -1919,8 +1907,6 @@ def create_job(
         "last_delivery_error": None,
         # Targets acked without message_id/raw_response (accepted but UNVERIFIED).
         "last_delivery_unverified": None,
-        # Most recent failed run ({at, detail}); NOT cleared by a later success (#118354).
-        "last_failure": None,
         "failure_streak": 0,
         "deliver": deliver,
         "origin": origin,  # Tracks where job was created for "origin" delivery
@@ -2398,12 +2384,6 @@ def _record_run_outcome(
         # Consecutive agent-failure streak; delivery failures do NOT count
         # (scheduler._failure_streak_nudge).
         job["failure_streak"] = int(job.get("failure_streak") or 0) + 1
-        # Sticky last-failure stamp (#118354): the next success resets last_status and
-        # failure_streak, which erases the only job-level trace that a run ever failed —
-        # a monitor sampling jobs.json then sees a permanently green job. last_failure
-        # survives success (latest failure wins); the recency window is the consumer's
-        # call. Delivery failures keep their own sticky last_delivery_error.
-        job["last_failure"] = {"at": now, "detail": error or (status or "run failed")}
     job["last_delivery_error"] = delivery_error
     # Clear both claims: the run is over, so the job is claimable again.
     job["fire_claim"] = None
@@ -2412,12 +2392,9 @@ def _record_run_outcome(
         job["run_claim"] = None
 
 
-def _advance_after_run(job: Dict[str, Any], now: str, *, ladder_rung: bool = False) -> None:
+def _advance_after_run(job: Dict[str, Any], now: str) -> None:
     """Bump ``repeat.completed`` and recompute ``next_run_at``; retire the record as a terminal
-    completion when the repeat limit is reached or a one-shot has no further run.
-
-    ``ladder_rung``: this run re-ran an occurrence that already counted (an unreachable-model
-    re-run, ``cron.unreachable_retry.is_retry_run``), so ``repeat.completed`` is left as is."""
+    completion when the repeat limit is reached or a one-shot has no further run."""
     # If no next run, decide whether this is terminal completion (one-shot) or a transient failure
     # (recurring schedule couldn't compute — e.g. 'croniter' missing from the runtime env). Recurring jobs
     # must NEVER be silently disabled: that turns a missing runtime dep into "job completed" and the user's
@@ -2431,10 +2408,9 @@ def _advance_after_run(job: Dict[str, Any], now: str, *, ladder_rung: bool = Fal
         times = repeat.get("times")
         finite = times is not None and times > 0
         completed = repeat.get("completed", 0)
-        # Count each occurrence once. A ladder re-run's occurrence already counted, and finite
-        # one-shots were pre-claimed by claim_dispatch() (completed already incremented); every
-        # other run, recurring or direct, gets the increment.
-        if not ladder_rung and not (kind == "once" and finite and completed > 0):
+        # Finite one-shots were pre-claimed by claim_dispatch() (completed already incremented) —
+        # do not double-count; recurring jobs and direct callers still get the increment.
+        if not (kind == "once" and finite and completed > 0):
             completed += 1
             repeat["completed"] = completed
         if finite and completed >= times:
@@ -2472,7 +2448,6 @@ def mark_job_run(
     *,
     expected_fire_owner: Optional[str] = None,
     model_unreachable: bool = False,
-    ladder_rung: bool = False,
     quota_hold_seconds: Optional[float] = None,
     recover_consumed_fire: bool = False,
 ) -> bool:
@@ -2487,9 +2462,7 @@ def mark_job_run(
     ``model_unreachable``: this failed run never reached the model (transient network/DNS error,
     zero API calls). Recurring jobs then get a bounded automatic re-run — ``next_run_at`` is pulled
     earlier per ``cron.unreachable_retry.RETRY_DELAYS_SECONDS`` — instead of waiting a full period
-    (Cowork-style; see cron/unreachable_retry.py). ``ladder_rung``: this run IS one of those
-    re-runs (``is_retry_run``); its occurrence already counted, so ``repeat.completed`` is not
-    bumped again.
+    (Cowork-style; see cron/unreachable_retry.py).
 
     ``quota_hold_seconds``: the provider said it stays closed for this long (a quota 429 with
     ``retry after <N>s``). Recurring jobs are parked through the window instead of re-firing into
@@ -2507,7 +2480,7 @@ def mark_job_run(
                 return False
         now = _hermes_now().isoformat()
         _record_run_outcome(job, success, error, delivery_error, status, now)
-        _advance_after_run(job, now, ladder_rung=ladder_rung)
+        _advance_after_run(job, now)
         from cron import quota_hold
         from cron.unreachable_retry import clear_state, plan_retry
 
@@ -2970,9 +2943,8 @@ def _self_disable_half_paused(job: Dict[str, Any], scan: _DueScan) -> None:
 
 def _recover_missing_next_run(job: Dict[str, Any], scan: _DueScan) -> Optional[str]:
     """Recompute and persist a missing ``next_run_at``; None when unrecoverable. One-shots use the
-    grace window; recurring jobs get here after a direct jobs.json edit bypassed add_job() or a
-    transient croniter ImportError left them in state 'error' (#127182) — re-armed ones go back
-    to 'scheduled', otherwise they would be silently skipped forever."""
+    grace window; recurring jobs only get here after a direct jobs.json edit bypassed add_job(),
+    and would otherwise be silently skipped forever."""
     schedule = job.get("schedule", {})
     kind = schedule.get("kind")
     recovered_next = _recoverable_oneshot_run_at(
@@ -2984,14 +2956,11 @@ def _recover_missing_next_run(job: Dict[str, Any], scan: _DueScan) -> Optional[s
             recovery_kind = kind
     if not recovered_next:
         return None
+    job["next_run_at"] = recovered_next
     logger.info(
         "Job '%s' had no next_run_at; recovering %s run at %s",
         job.get("name", job.get("id", "?")), recovery_kind, recovered_next)
-    fields: Dict[str, Any] = {"next_run_at": recovered_next}
-    if _is_recoverable_error_job(job):
-        fields["state"] = "scheduled"
-    job.update(fields)
-    scan.persist(job["id"], **fields)
+    scan.persist(job["id"], next_run_at=recovered_next)
     return recovered_next
 
 

@@ -175,7 +175,7 @@ def test_provider_context_is_strictly_sanitized_before_plugin_engine(monkeypatch
     assert encoded_hyphen_secret not in context
     assert network_userinfo_secret not in context
     assert "access_token=***" in context
-    assert "https://***:***@example.test/private" in context
+    assert "https://user:***@example.test/private" in context
     assert "https://x.test/#access_token=***&view=public" in context
     assert "/resume?token=***&view=public" in context
     assert "client%5Fsecret=***&view=public" in context
@@ -183,7 +183,7 @@ def test_provider_context_is_strictly_sanitized_before_plugin_engine(monkeypatch
     assert "Access-Token=***&view=public" in context
     assert "api-key=***&view=public" in context
     assert "client%2Dsecret=***&view=public" in context
-    assert "//***:***@x.test/path" in context
+    assert "//user:***@x.test/path" in context
 
 
 def test_provider_context_is_bounded_before_plugin_engine():

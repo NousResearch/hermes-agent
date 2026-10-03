@@ -75,9 +75,6 @@ class _LifecycleBuilder:
         self.polling_request = request
         return self
 
-    def concurrent_updates(self, _processor):
-        return self
-
     def build(self):
         return self.app
 
@@ -428,9 +425,6 @@ async def test_general_request_success_cannot_record_polling_progress(monkeypatc
 
         def get_updates_request(self, request):
             self.polling_request = request
-            return self
-
-        def concurrent_updates(self, _processor):
             return self
 
         def build(self):

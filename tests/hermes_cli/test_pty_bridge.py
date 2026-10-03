@@ -261,65 +261,21 @@ class TestPtyBridgeClose:
         fake = _FakeProc()
 
         def fake_killpg(pgid, sig):
-            if not fake.alive:
-                raise ProcessLookupError  # the whole group exited with its leader
             sent.append((pgid, sig))
             fake.alive = False
 
+        monkeypatch.setattr(os, "getpgid", lambda pid: 67890)
         monkeypatch.setattr(os, "killpg", fake_killpg)
 
         bridge = PtyBridge.__new__(PtyBridge)
         bridge._proc = fake
         bridge._fd = -1
-        bridge._pgid = 67890
         bridge._closed = False
 
         bridge.close()
 
         assert sent == [(67890, signal.SIGHUP)]
         assert bridge._closed is True
-
-    def test_close_ends_helpers_that_outlive_a_dead_leader(self):
-        # #76759: the helper ignores SIGHUP and keeps the PTY slave open, so the leader's death
-        # never produces EOF. close() must still end it.
-        bridge = PtyBridge.spawn(["/bin/sh", "-c", "trap '' HUP; sleep 60 & echo helper=$!; exec sleep 60"])
-        out = _read_until(bridge, b"\n", timeout=5.0)
-        helper = int(out.split(b"helper=")[1].split()[0])
-        os.kill(bridge.pid, signal.SIGKILL)
-        deadline = time.monotonic() + 3.0
-        while bridge.is_alive() and time.monotonic() < deadline:
-            time.sleep(0.02)
-
-        bridge.close()
-
-        deadline = time.monotonic() + 3.0
-        while time.monotonic() < deadline:
-            try:
-                os.kill(helper, 0)
-            except ProcessLookupError:
-                return
-            time.sleep(0.05)
-        os.kill(helper, signal.SIGKILL)
-        pytest.fail(f"helper pid {helper} survived close() after its leader died")
-
-    def test_close_lets_a_helper_finish_its_sighup_shutdown(self, tmp_path):
-        # The TUI gateway saves its sessions on SIGHUP within a 1 s grace. Once the group got
-        # SIGHUP, close() must wait for it, not re-signal or SIGKILL it early.
-        marker = tmp_path / "saved"
-        # The trap ignores further SIGHUPs (the kernel may re-send one when the session leader
-        # exits), so only an early SIGKILL from close() can stop the save.
-        script = tmp_path / "helper.sh"
-        script.write_text(
-            f"trap 'trap \"\" HUP; sleep 0.6; echo ok > {marker}; exit 0' HUP\n"
-            "echo armed\n"
-            "while :; do sleep 0.05; done\n"
-        )
-        bridge = PtyBridge.spawn(["/bin/sh", "-c", f"/bin/sh {script} & exec sleep 60"])
-        _read_until(bridge, b"armed", timeout=10.0)  # the helper's trap is installed
-
-        bridge.close()
-
-        assert marker.read_text().strip() == "ok"
 
 @skip_on_windows
 class TestPtyBridgeEnv:

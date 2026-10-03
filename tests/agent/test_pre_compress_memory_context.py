@@ -135,7 +135,7 @@ def test_memory_context_is_strictly_redacted_before_summary_llm(monkeypatch):
     assert hyphen_api_secret not in prompt
     assert encoded_hyphen_secret not in prompt
     assert "token=***" in prompt
-    assert "https://***:***@example.test/private" in prompt
+    assert "https://user:***@example.test/private" in prompt
     assert "client-secret=***" in prompt
     assert "Access-Token=***" in prompt
     assert "api-key=***" in prompt

@@ -10,7 +10,7 @@ from typing import Any, Callable, Dict, List, Mapping
 
 from agent.context_compressor import _DB_PERSISTED_MARKER
 from agent.message_metadata import (
-    CANONICAL_ROW, DB_ROW_SNAPSHOT, MESSAGE_UID, copy_identity_fields, message_uid_or_none)
+    CANONICAL_ROW, DB_ROW_SNAPSHOT, MESSAGE_UID, copy_identity_fields)
 from hermes_state_common import _id_chunks, _placeholders
 from hermes_state_identity import _fill_missing_tool_call_uids, _restore_row_identity
 from hermes_state_messages import _MESSAGE_WRITE_COLUMNS
@@ -88,25 +88,6 @@ def is_content_blank(content: Any) -> bool:
     return False
 
 
-def _active_logical_message_row(
-    conn: sqlite3.Connection, session_id: str, role: str, message_uid: str | None,
-) -> Mapping[str, Any] | None:
-    """Newest active physical row for one durable logical message.
-
-    A ``message_uid`` names a logical message, not a physical row: compaction/copy paths deliberately
-    keep it while re-issuing row ids. The later active row is the current version. Callers use this only
-    when the live dict also carries a stored-row snapshot, so a fresh message that merely resembles an
-    older one can never be adopted here.
-    """
-    if message_uid is None:
-        return None
-    return conn.execute(
-        "SELECT * FROM messages WHERE session_id = ? AND active = 1 AND role = ? AND message_uid = ? "
-        "ORDER BY id DESC LIMIT 1",
-        (session_id, role, message_uid),
-    ).fetchone()
-
-
 def resolve_and_repair_transcript_batch(
     conn: sqlite3.Connection,
     session_id: str,
@@ -118,24 +99,17 @@ def resolve_and_repair_transcript_batch(
 ) -> List[Dict[str, Any]]:
     """Resolve row-addressed rewrites without appending duplicates or replacing concurrent winners.
 
-    A durable row snapshot is a compare-and-swap version for sanitizer rewrites. When a live replay loses
-    its physical ``_row_id``, the pair (logical ``message_uid``, stored-row snapshot) recovers the newest
-    active generation without matching mutable payload. Watermark-compaction clones are matched by their
-    copied payload identity, not timestamp alone. Legacy blank assistant rows retain the narrow interrupted-
-    stream content repair. Returns only rows that need fresh inserts.
+    A durable row snapshot is a compare-and-swap version for sanitizer rewrites. Watermark-compaction clones
+    are matched by their copied payload identity, not timestamp alone. Legacy blank assistant rows retain the
+    narrow interrupted-stream content repair. Returns only rows that need fresh inserts.
     """
     inserted_rows: List[Dict[str, Any]] = []
     for msg in messages:
         existing_row_id = msg.get("_row_id") if isinstance(msg, dict) else None
         role = msg.get("role", "unknown") if isinstance(msg, dict) else "unknown"
-        expected = msg.get(DB_ROW_SNAPSHOT) if isinstance(msg, dict) else None
         target_row = None
         if isinstance(existing_row_id, int):
             target_row = _active_message_row(conn, session_id, existing_row_id, role)
-        elif isinstance(expected, str):
-            # Logical identity + the CAS version prove this dict came from durable replay. A new message
-            # has neither proof, even when role/content/timestamp happen to equal an older message exactly.
-            target_row = _active_logical_message_row(conn, session_id, role, message_uid_or_none(msg))
         if target_row is None:
             inserted_rows.append(msg)
             continue
@@ -143,6 +117,7 @@ def resolve_and_repair_transcript_batch(
         target_id = int(target_row["id"])
         msg["_row_id"] = target_id
         _fill_missing_tool_call_uids(target_row, msg)  # a dict that lost its uids must not rewrite them away
+        expected = msg.get(DB_ROW_SNAPSHOT)
         canonical = None
         adopt = wrote = False
         if isinstance(expected, str):
@@ -155,10 +130,6 @@ def resolve_and_repair_transcript_batch(
             adopt = transcript_row_snapshot(target_row) != expected
             if not adopt:
                 serialized = serialize_message_fn(msg, float(target_row["timestamp"]))
-                if serialized["token_count"] is None:
-                    # Replays never decode token_count (the agent flush row sets it to None): None means
-                    # "unknown", not NULL.
-                    serialized = {**serialized, "token_count": target_row["token_count"]}
                 if any(target_row[column] != serialized[column] for column in _OWNED_COLUMNS):
                     _rewrite_row(conn, session_id, target_row, serialized)
                     wrote = True
@@ -175,10 +146,10 @@ def resolve_and_repair_transcript_batch(
                 (encode_content_fn(msg.get("content")), target_id, session_id, target_row["content"]),
             ).rowcount > 0
         else:
-            # Legacy dict (no digest: a row-addressed resume, a clone, or a repair_alternation=False
-            # projection) over a non-blank assistant row: another writer already filled it. Adopt its content
-            # only, never the whole row: the live tool_calls / reasoning* / codex_* fields may be sanitizer-fixed
-            # while the durable JSON still holds the raw escaped surrogate, and live-only fields must survive.
+            # Legacy dict (no digest: a resumed or cloned dict) over a non-blank assistant row: another writer
+            # already filled it. Adopt its content only, never the whole row: the live tool_calls /
+            # reasoning* / codex_* fields may be sanitizer-fixed while the durable JSON still holds the raw
+            # escaped surrogate, and live-only fields must survive.
             if role == "assistant":
                 canonical = {"content": decode_content_fn(target_row["content"]), _CONTENT_ONLY: True}
 

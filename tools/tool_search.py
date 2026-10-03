@@ -311,9 +311,9 @@ def bridge_tool_schemas(deferred_count: int, listing: Optional[str] = None,
             TOOL_CALL_NAME,
             "Invoke deferred tools. Takes `calls`, an array of {name, arguments} "
             "— one entry per invocation; a single call is an array of one. "
-            "Independent calls may be batched together. Local entries are split "
-            "into individual tool calls by the agent and follow each tool's "
-            "concurrency policy. Results are returned in input order. "
+            "Local tools require one entry per tool_call. Only connectors__ names "
+            "may be batched together; mixed and multi-local batches are rejected. "
+            "Connector entries execute individually with results in input order. "
             f"Argument shapes match each tool's schema (see `{TOOL_DESCRIBE_NAME}`). "
             "Policy, hooks, and approvals run as for directly-listed tools.",
             {
@@ -327,7 +327,7 @@ def bridge_tool_schemas(deferred_count: int, listing: Optional[str] = None,
                         },
                         "required": ["name", "arguments"],
                     },
-                    "description": "One or more independent deferred tool invocations.",
+                    "description": "One local invocation, or one or more connector invocations. Never mix local and connector tools.",
                 },
             },
             ["calls"],

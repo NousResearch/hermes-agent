@@ -106,8 +106,9 @@ class GatewayAgentCacheMixin:
         freezes them at init; omitting them in shared-thread keys would cross-attribute messages.
 
         ``user_id`` and ``user_id_alt`` are the runtime user identities carried by the current message's
-        gateway source. They participate in the cache key because memory providers freeze them at
-        first-message init (the Honcho plugin resolves its user peer from them once). Without them in the signature, a
+        gateway source. They participate in the cache key because the Honcho memory provider freezes them
+        into ``HonchoSessionManager`` at first-message init (see
+        ``plugins/memory/honcho/__init__.py::_do_session_init``). Without them in the signature, a
         shared-thread session_key (one in which ``build_session_key`` intentionally omits the participant
         ID, e.g. ``thread_sessions_per_user=False``) would reuse the cached AIAgent across distinct users,
         causing the second user's messages to be attributed to the first user's resolved Honcho peer. This

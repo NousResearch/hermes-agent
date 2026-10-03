@@ -243,8 +243,8 @@ def env_is_connected(*names: str) -> Callable[[Any], bool]:
 
 
 def coerce_port(value: Any, default: int) -> int:
-    """``int(value)`` or ``default`` when unparseable (incl. non-finite YAML like ``.inf``)."""
+    """``int(value)`` or ``default`` when unparseable."""
     try:
         return int(value)
-    except (TypeError, ValueError, OverflowError):
+    except (TypeError, ValueError):
         return default

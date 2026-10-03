@@ -1,4 +1,5 @@
 import { remoteRequestMatchesBaseUrl } from './connection-config'
+import { withEmbedRefererStamp } from './embed-referer'
 import { registryGatewayWsUrl } from './plugin-profile-routes'
 
 export interface RegistryGatewayWsConnection {
@@ -18,7 +19,6 @@ interface RegistryGatewayWsUrlDependencies {
 }
 
 interface RemoteRequestDetails {
-  id?: number
   url: string
   requestHeaders?: Record<string, string>
 }
@@ -34,8 +34,6 @@ export interface RemoteHeaderSource {
 interface SessionLike {
   webRequest?: {
     onBeforeSendHeaders?: (listener: (details: RemoteRequestDetails, callback: RemoteRequestCallback) => void) => void
-    onCompleted?: (listener: (details: { id?: number }) => void) => void
-    onErrorOccurred?: (listener: (details: { id?: number }) => void) => void
   }
 }
 
@@ -115,25 +113,14 @@ export function attachRemoteRequestHeaderListener(
   sessionLike: SessionLike,
   headersForRequest: (requestUrl: string) => Record<string, string>
 ) {
-  // Chromium carries app-set headers across redirects, so a configured secret
-  // injected into one hop rides along to the next. Track the header names we
-  // injected per request id: an out-of-scope hop of THAT request gets them
-  // stripped, while an unrelated request carrying the same name (even the
-  // same value) is left alone.
-  const injectedByRequest: InjectedHeadersByRequest = new Map()
-
-  sessionLike?.webRequest?.onBeforeSendHeaders?.((details, callback) => {
-    applyRemoteRequestHeaders(details, callback, headersForRequest, injectedByRequest)
-  })
-
-  const forget = (details: { id?: number }) => {
-    if (details?.id !== undefined) {
-      injectedByRequest.delete(details.id)
-    }
-  }
-
-  sessionLike?.webRequest?.onCompleted?.(forget)
-  sessionLike?.webRequest?.onErrorOccurred?.(forget)
+  // The YouTube embed Referer stamp composes onto this same listener: Electron
+  // allows a single onBeforeSendHeaders listener per session, so the default
+  // session (where chat embeds' iframes live) gets both behaviors here.
+  sessionLike?.webRequest?.onBeforeSendHeaders?.(
+    withEmbedRefererStamp((details, callback) => {
+      applyRemoteRequestHeaders(details, callback, headersForRequest)
+    })
+  )
 }
 
 export function createRemoteWsHeaderStore(limit = 100) {
@@ -174,53 +161,20 @@ export function createRemoteWsHeaderStore(limit = 100) {
   return { headersFor, remember }
 }
 
-/** Lower-cased header names this session injected, keyed by webRequest id. */
-export type InjectedHeadersByRequest = Map<number, Set<string>>
-
 export function applyRemoteRequestHeaders(
   details: RemoteRequestDetails,
   callback: RemoteRequestCallback,
-  headersForRequest: (requestUrl: string) => Record<string, string>,
-  injectedByRequest: InjectedHeadersByRequest
+  headersForRequest: (requestUrl: string) => Record<string, string>
 ) {
   const headers = headersForRequest(details.url)
-  const headerEntries = Object.entries(headers)
-  const tracked = details.id === undefined ? undefined : injectedByRequest.get(details.id)
 
-  if (headerEntries.length === 0 && !tracked) {
+  if (Object.keys(headers).length === 0) {
     callback({})
 
     return
   }
 
-  // Names to drop from the outgoing request: whatever an earlier hop of this
-  // request had injected (it may be out of scope now) plus the names we are
-  // about to set (so a differently-cased copy does not survive alongside).
-  const strip = new Set(tracked)
-  const requestHeaders: Record<string, string> = {}
-
-  for (const [name, value] of headerEntries) {
-    strip.add(name.toLowerCase())
-    requestHeaders[name] = value
-  }
-
-  const outgoing: Record<string, string> = {}
-
-  for (const [name, value] of Object.entries(details.requestHeaders || {})) {
-    if (!strip.has(name.toLowerCase())) {
-      outgoing[name] = value
-    }
-  }
-
-  if (details.id !== undefined) {
-    if (headerEntries.length > 0) {
-      injectedByRequest.set(details.id, new Set(headerEntries.map(([name]) => name.toLowerCase())))
-    } else {
-      injectedByRequest.delete(details.id)
-    }
-  }
-
-  callback({ requestHeaders: { ...outgoing, ...requestHeaders } })
+  callback({ requestHeaders: { ...details.requestHeaders, ...headers } })
 }
 
 export function createRegistryGatewayWsUrlHandler(dependencies: RegistryGatewayWsUrlDependencies) {

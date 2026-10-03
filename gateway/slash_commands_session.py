@@ -621,16 +621,15 @@ class GatewaySessionCommandsMixin:
 
     async def _persist_manual_compression(self, tmp_agent, session_entry, source, compressed) -> None:
         """Commit a manual /compress result to the session store.  Rotation (new continuation id)
-        makes the NEW session durable (already published, else rewritten) so the original stays searchable;
+        writes the compressed messages into the NEW session so the original stays searchable;
         persist BEFORE repointing so a failed write is fatal and old history stays reachable.
         In-place compaction already archived + inserted rows, and a rewrite would DELETE the
         archive; an unchanged id without in-place means rotation FAILED."""
         new_session_id = tmp_agent.session_id
         if new_session_id != session_entry.session_id:
-            # Published child is already durable; a rewrite would drop rows cloned at publish.
-            if not await self.async_session_store.persist_rotated_compression_child(
-                    session_entry.session_id, new_session_id, compressed):
-                raise RuntimeError(f"failed to persist compressed transcript for session {new_session_id}")
+            if not await self.async_session_store.rewrite_transcript(new_session_id, compressed):
+                raise RuntimeError(
+                    f"failed to persist compressed transcript for session {new_session_id}")
             session_entry.session_id = new_session_id
             await self.async_session_store._save()
             await asyncio.to_thread(self._sync_telegram_topic_binding, source, session_entry,
@@ -716,8 +715,8 @@ class GatewaySessionCommandsMixin:
         """Handle /save — export the current session and send it as a document."""
         import tempfile
         from hermes_cli.session_export import (
-            SAVE_TRANSCRIPT_FORMATS, SAVE_USAGE, default_save_filename, drop_undone_rows, export_projection,
-            normalize_save_format, render_session_for_save)
+            SAVE_TRANSCRIPT_FORMATS, SAVE_USAGE, default_save_filename, normalize_save_format,
+            render_session_for_save)
 
         parts = event.get_command_args().split()
         redact = bool(parts) and parts[-1].lower() in ("redact", "--redact")
@@ -738,17 +737,9 @@ class GatewaySessionCommandsMixin:
         # Never trust path separators from chat input; the filename is only echoed to the platform.
         filename = parts[1] if len(parts) > 1 else default_save_filename(session_id, fmt)
         filename = os.path.basename(filename) or default_save_filename(session_id, fmt)
-        if fmt not in SAVE_TRANSCRIPT_FORMATS:
-            from hermes_state import SessionExportTooLargeError
-            try:
-                await self._session_db.assert_export_safe(session_id)  # the JSON backup loads every stored row
-            except SessionExportTooLargeError as e:
-                return str(e)
-        export_data = await self._session_db.export_session(session_id, **export_projection(fmt in SAVE_TRANSCRIPT_FORMATS))
+        export_data = await self._session_db.export_session(session_id, include_compacted=fmt in SAVE_TRANSCRIPT_FORMATS)
         if not export_data:
             return t("gateway.save.no_messages", session_id=session_id)
-        if fmt not in SAVE_TRANSCRIPT_FORMATS:
-            drop_undone_rows(export_data)
         if redact:
             from hermes_cli.session_export_md import redact_session_data
             export_data = redact_session_data(export_data)

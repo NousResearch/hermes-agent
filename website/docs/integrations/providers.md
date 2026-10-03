@@ -1270,10 +1270,6 @@ Hermes no longer reads `model.max_tokens`, `HERMES_MAX_TOKENS`, provider output-
 settings, or `model_overrides.*.*.max_output_tokens`. Remove these legacy settings.
 Custom OpenAI-compatible endpoints receive no automatic catalog-sized output cap.
 Their server defaults apply; these can be lower than the model maximum.
-A reply that degenerates into a repetition loop is still stopped: within about 130,000
-characters of the loop starting (visible or reasoning text), Hermes closes the stream
-and ends the turn with a "Repetition Detected" notice, so an uncapped endpoint cannot keep a
-looping model running.
 
 Native Anthropic Messages (including the native Anthropic Bedrock path) requires
 `max_tokens`, so Hermes supplies an internal value. Bedrock Converse is a separate

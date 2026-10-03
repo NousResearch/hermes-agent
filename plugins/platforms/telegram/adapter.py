@@ -176,6 +176,32 @@ _MEDIA_KIND_KEYS = {
     "voice message": "platform.telegram.media.kind_voice", "audio file": "platform.telegram.media.kind_audio",
     "video file": "platform.telegram.media.kind_video"}
 
+# consent_request.py (an external consent-resolution hook) is a standalone script, not a package on this
+# process's sys.path — loaded lazily via importlib and cached, so a box without the skill
+# installed just fails soft (the callback answers "unavailable") instead of crashing the
+# whole adapter. Path is env-overridable so tests/other installs can point elsewhere.
+_CONSENT_REQUEST_SCRIPT_ENV = "CONSENT_REQUEST_SCRIPT"
+_DEFAULT_CONSENT_REQUEST_SCRIPT = "/etc/hermes-agent/resident-guard/consent_request.py"
+_consent_request_module = None
+
+
+def _load_consent_request_module():
+    """Lazily import consent_request.py's resolve_via_button (module-level singleton,
+    cached after the first successful import). Raises on failure — callers must catch."""
+    global _consent_request_module
+    if _consent_request_module is not None:
+        return _consent_request_module
+    import importlib.util
+    script_path = os.environ.get(_CONSENT_REQUEST_SCRIPT_ENV, _DEFAULT_CONSENT_REQUEST_SCRIPT)
+    spec = importlib.util.spec_from_file_location("_consent_request_lib", script_path)
+    if spec is None or spec.loader is None:
+        raise ImportError(f"consent_request.py not found at {script_path}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    _consent_request_module = module
+    return module
+
+
 from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
 from plugins.platforms.telegram.telegram_entities import expand_link_entities
 from plugins.platforms.telegram.telegram_ids import normalize_telegram_chat_id
@@ -4804,7 +4830,7 @@ class TelegramAdapter(BasePlatformAdapter):
         for prefix, handler in (
             ("gt:", self._handle_gmail_triage_callback), ("ea:", self._handle_exec_approval_callback),
             ("sc:", self._handle_slash_confirm_callback), ("cl:", self._handle_clarify_callback),
-            ("update_prompt:", self._handle_update_prompt_callback)):
+            ("cr:", self._handle_consent_callback), ("update_prompt:", self._handle_update_prompt_callback)):
             if data.startswith(prefix):
                 await handler(query, data, cb)
                 return
@@ -4993,6 +5019,65 @@ class TelegramAdapter(BasePlatformAdapter):
             logger.info("Telegram update prompt answered '%s' by user %s", answer, getattr(query.from_user, "id", "unknown"))
         except Exception as exc:
             logger.error("Failed to write update response from callback: %s", exc)
+
+    async def _handle_consent_callback(self, query, data: str, cb: Dict[str, Any]) -> None:
+        """``cr:<yes|no>:<request_id>`` — resolve a consent_request.py (an external consent-resolution hook)
+        ledger entry via a button tap.
+
+        Equivalent to, NOT a replacement for, that script's plain-text ``YES <id>`` /
+        ``NO <id>`` reply path: same append-only ledger, same one-writer-wins guarantee
+        under flock (see resolve_via_button's docstring) — this is just a second way to
+        reach the same resolution. The text-reply path keeps working unchanged whether or
+        not this handler ever fires (e.g. the consent-resolution hook isn't installed, or the
+        consent_request.py script moved) — that failure mode answers the tap with a
+        friendly error rather than raising into the dispatcher.
+        """
+        parts = data.split(":", 2)
+        if len(parts) != 3:
+            return
+        choice = parts[1]
+        request_id = parts[2]
+        if choice not in ("yes", "no"):
+            await query.answer(text="Invalid consent button.")
+            return
+        if not await self._callback_authorized(query, cb, _unauthorized()):
+            return
+        user_display = getattr(query.from_user, "first_name", "User")
+        decision = "approved" if choice == "yes" else "denied"
+        try:
+            module = _load_consent_request_module()
+            result = module.resolve_via_button(
+                request_id, decision,
+                expected_chat_id=str(cb["chat_id"]) if cb["chat_id"] is not None else None,
+                user_display=user_display)
+        except Exception as exc:
+            logger.error("[%s] consent-request button resolve failed: %s", self.name, exc, exc_info=True)
+            await query.answer(text="Could not resolve this via the button — try the text reply instead.")
+            return
+        status = result.get("status")
+        if status == "unknown":
+            await query.answer(text="Unknown or expired consent request.")
+            return
+        if status == "chat_mismatch":
+            # Belt-and-suspenders: Telegram itself already scopes callback_query delivery
+            # to the chat holding the message, so this should be unreachable in practice.
+            await query.answer(text=_unauthorized())
+            logger.warning("[%s] consent button chat_id mismatch for %s", self.name, request_id)
+            return
+        effective = (result.get("event") or {}).get("decision") or decision
+        if status == "already_resolved":
+            label = "✅ Already approved" if effective == "approved" else "❌ Already denied"
+            detail = "no change — this request was already resolved."
+        else:
+            label = "✅ Approved" if effective == "approved" else "❌ Denied"
+            detail = f"by {user_display}"
+        await query.answer(text=label)
+        original_text = query.message.text if query.message else ""
+        await self._edit_html_quiet(
+            query, f"{_html.escape(original_text or '')}\n\n<b>{label}</b> ({_html.escape(detail)})")
+        logger.info(
+            "Telegram consent button resolved request %s (status=%s, decision=%s, user=%s)",
+            request_id, status, effective, user_display)
 
     # `gt:<verb>` -> (script in ~/.hermes/scripts/gmail-triage/, extra-args, success-label, is_state). The callback
     # `arg` is always the first positional arg. is_state=True keeps the keyboard tappable (sticky sender rule);

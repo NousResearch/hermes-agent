@@ -184,6 +184,30 @@ def _handle_react(args, remove=False):
     if _relay_denial:
         return tool_error(_relay_denial)
 
+    # resident-session guard: same requirement as _handle_send — only the live Telegram session
+    # for the TARGET chat_id may react to messages in that chat.  _live_adapter() is keyed by
+    # PROFILE, not chat_id, so its non-None result only proves a live gateway connection exists
+    # for the profile — it does NOT prove the caller is the resident session for this specific
+    # chat_id.  Two principals share one TelegramAdapter under the default profile; without this
+    # check a non-resident session could react to either principal's messages.
+    if platform_name == "telegram" and chat_id:
+        try:
+            _rg = _load_resident_guard()
+            _rg.check_resident_or_raise(str(chat_id))
+        except PermissionError as _guard_err:
+            return tool_error(str(_guard_err))
+        except ImportError as _guard_err:
+            return tool_error(
+                f"Resident-session guard module unavailable ({_guard_err}); "
+                "refusing Telegram reaction to prevent unguarded principal push. "
+                "Set HERMES_RESIDENT_GUARD_DIR or install the guard module."
+            )
+        except Exception as _guard_err:
+            return tool_error(
+                f"Resident-session guard check failed unexpectedly ({_guard_err}); "
+                "refusing Telegram reaction (fail-closed policy)."
+            )
+
     _, adapter = _live_adapter(platform)
     if adapter is None:
         return tool_error(f"Reactions require a live {platform_name} adapter in the running "
@@ -197,6 +221,97 @@ def _handle_react(args, remove=False):
     except Exception as e:
         return json.dumps(_error(f"Reaction failed: {e}"))
     return json.dumps(result if isinstance(result, dict) else {"success": bool(result)})
+
+
+def _load_resident_guard():
+    """Load ``resident_guard`` via explicit file path (never ``sys.path`` manipulation).
+
+    Resolves the module file from ``HERMES_RESIDENT_GUARD_DIR`` (env var) or the
+    install-default directory.  Refuses to load a file that is group- or world-writable
+    so an env-var redirect cannot silently substitute a stub module.
+
+    Deployment note: ``HERMES_RESIDENT_GUARD_DIR`` must be set in the hermes systemd
+    service units before this code is deployed, pointing at the directory that contains
+    ``resident_guard.py``.  Without it the hardcoded default is used.
+
+    Returns the loaded module.  Raises ``ImportError`` when the file is missing, and
+    ``PermissionError`` when the file permissions are too permissive.
+    """
+    import importlib.util
+    import os as _os
+    import stat as _stat
+    _GUARD_DIR = _os.environ.get(
+        "HERMES_RESIDENT_GUARD_DIR",
+        "/etc/hermes-agent/resident-guard",
+    )
+    _guard_file = _os.path.join(_GUARD_DIR, "resident_guard.py")
+    if not _os.path.isfile(_guard_file):
+        raise ImportError(
+            f"Resident-session guard module not found at {_guard_file}. "
+            "Set HERMES_RESIDENT_GUARD_DIR to the directory containing resident_guard.py."
+        )
+    # Refuse a group- or world-writable file: an attacker who can write it can
+    # no-op check_resident_or_raise and bypass the guard silently.
+    try:
+        _st = _os.stat(_guard_file)
+        if _st.st_mode & (_stat.S_IWGRP | _stat.S_IWOTH):
+            raise PermissionError(
+                f"Resident-session guard file {_guard_file} is group- or world-writable "
+                "(mode {oct(_st.st_mode)}); refusing to load."
+            )
+    except OSError as _e:
+        raise ImportError(f"Cannot stat resident-session guard file {_guard_file}: {_e}") from _e
+    _spec = importlib.util.spec_from_file_location("_resident_guard_lib", _guard_file)
+    if _spec is None or _spec.loader is None:
+        raise ImportError(f"Cannot load resident-session guard from {_guard_file}.")
+    _mod = importlib.util.module_from_spec(_spec)
+    _spec.loader.exec_module(_mod)
+    return _mod
+
+
+
+def _validate_buttons(buttons, platform_name):
+    """Normalize the ``buttons`` tool arg to ``[(label, callback_data), ...]`` or a list of such
+    rows; ``None`` when absent. Returns ``(buttons_or_none, error_or_none)``. Telegram-only today
+    — the standalone senders for every other platform have no reply-markup support, and a
+    silently-dropped button is worse than a loud error telling the caller it never went out.
+
+    Security: ``callback_data`` values that start with a reserved adapter prefix (``cr:``, ``ea:``,
+    ``sc:``, ``cl:``, ``gt:``, ``update_prompt:``, ``mp:``, ``mpg:``, ``mpv:``, ``mm:``, ``mc:``,
+    ``mb``, ``mx``, ``mg:``, ``cp:``) are rejected.  Those prefixes are dispatched by the Telegram
+    adapter to real state-changing handlers (consent resolution, exec approval, slash confirmation,
+    etc.).  Generic callers of ``send_message`` must not be able to forge them — the internal code
+    paths that legitimately mint reserved-prefix buttons construct their own ``InlineKeyboardMarkup``
+    directly and never go through this function.
+    """
+    # Prefixes reserved for the adapter's own internal button handlers.
+    # Keep in sync with the ``for prefix, handler in (...)`` dispatch table in
+    # ``plugins/platforms/telegram/adapter.py::_handle_callback_query``.
+    _RESERVED_PREFIXES = (
+        "cr:", "ea:", "sc:", "cl:", "gt:", "update_prompt:",
+        "mp:", "mpg:", "mpv:", "mm:", "mc:", "mb", "mx", "mg:", "cp:",
+    )
+    if not buttons:
+        return None, None
+    if platform_name != "telegram":
+        return None, f"'buttons' is only supported for target platform 'telegram' (got '{platform_name}')"
+    try:
+        first = buttons[0]
+        rows = buttons if isinstance(first, (list, tuple)) and first and isinstance(first[0], (list, tuple)) else [buttons]
+        normalized = [[(str(label), str(data)) for label, data in row] for row in rows]
+    except (TypeError, ValueError, IndexError):
+        return None, "'buttons' must be a list of [label, callback_data] pairs, or a list of such rows"
+    for row in normalized:
+        for _label, data in row:
+            if len(data.encode("utf-8")) > 64:
+                return None, f"button callback_data exceeds Telegram's 64-byte limit: {data!r}"
+            if data.startswith(_RESERVED_PREFIXES):
+                return None, (
+                    f"button callback_data {data!r} starts with a reserved adapter prefix. "
+                    "Reserved prefixes are dispatched to internal state-changing handlers and "
+                    "may not be set by generic callers."
+                )
+    return normalized, None
 
 
 def _handle_send(args):
@@ -215,6 +330,9 @@ def _handle_send(args):
     platform_name, chat_id, thread_id, resolution_error = _resolve_tool_target(target)
     if resolution_error:
         return tool_error(resolution_error)
+    buttons, buttons_error = _validate_buttons(args.get("buttons"), platform_name)
+    if buttons_error:
+        return tool_error(buttons_error)
     from tools.interrupt import is_interrupted
     if is_interrupted():
         return tool_error("Interrupted")
@@ -262,6 +380,34 @@ def _handle_send(args):
     if _relay_denial:
         return tool_error(_relay_denial)
 
+    # resident-session guard: only the live Telegram session for a principal
+    # chat_id may push to it; cron sessions are exempt (see resident_guard.py).
+    # grep -n resident_guard tools/send_message_tool.py  <- recovery marker
+    #
+    # Path resolution: HERMES_RESIDENT_GUARD_DIR env var (see _load_resident_guard).
+    # Deployment note: set HERMES_RESIDENT_GUARD_DIR in hermes systemd units before
+    # deploying this code.  See _load_resident_guard() docstring.
+    # Fail-closed: any error loading or running the guard refuses the push.
+    if platform_name == "telegram" and chat_id:
+        try:
+            _rg = _load_resident_guard()
+            _rg.check_resident_or_raise(str(chat_id))
+        except PermissionError as _guard_err:
+            return tool_error(str(_guard_err))
+        except ImportError as _guard_err:
+            # Guard module not installed — fail closed with a clear warning.
+            return tool_error(
+                f"Resident-session guard module unavailable ({_guard_err}); "
+                "refusing Telegram send to prevent unguarded principal push. "
+                "Set HERMES_RESIDENT_GUARD_DIR or install the guard module."
+            )
+        except Exception as _guard_err:
+            # Any other unexpected error while checking residency — fail closed.
+            return tool_error(
+                f"Resident-session guard check failed unexpectedly ({_guard_err}); "
+                "refusing Telegram send (fail-closed policy)."
+            )
+
     try:
         from model_tools import _run_async
         # Only custom plugin handlers receive the complete typed request. ``mentions`` is a WhatsApp-only
@@ -272,7 +418,7 @@ def _handle_send(args):
             handler_args["mentions"] = [mentions] if isinstance(mentions, str) else list(mentions)
         result = _run_async(_send_to_platform(platform, pconfig, chat_id, cleaned_message, thread_id=thread_id,
                                               media_files=media_files, force_document=force_document_attachments,
-                                              **handler_args))
+                                              buttons=buttons, **handler_args))
         if isinstance(result, dict) and result.get("success"):
             if used_home_channel:
                 result["note"] = f"Sent to {platform_name} home channel (chat_id: {chat_id})"
@@ -685,10 +831,12 @@ _MEDIA_PLATFORMS_NOTE = "telegram, discord, matrix, weixin, signal, yuanbao, fei
 
 
 async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None, media_files=None,
-                            force_document=False, mentions=None, args=None):
+                            force_document=False, mentions=None, args=None, buttons=None):
     """Route to the platform sender, chunking long text with the adapters' splitter. Order matters:
     Weixin first (its native helper must not be blocked by unrelated optional imports such as
-    lark-oapi), Telegram (chunks itself), plugin standalone media, native chunked, generic text."""
+    lark-oapi), Telegram (chunks itself), plugin standalone media, native chunked, generic text.
+    ``buttons`` (Telegram-only, validated by ``_validate_buttons`` before this is called) becomes
+    a real inline keyboard on the standalone send."""
     from gateway.config import Platform
     platform_name = platform.value if hasattr(platform, "value") else str(platform)
     media_files = media_files or []
@@ -698,7 +846,8 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
     if platform == Platform.TELEGRAM:
         return await _send_telegram(
             pconfig.token, chat_id, message, media_files=media_files, thread_id=thread_id, force_document=force_document,
-            disable_link_previews=bool(getattr(pconfig, "extra", {}) and pconfig.extra.get("disable_link_previews")))
+            disable_link_previews=bool(getattr(pconfig, "extra", {}) and pconfig.extra.get("disable_link_previews")),
+            buttons=buttons)
     from gateway.platforms.base import BasePlatformAdapter
     max_len = _platform_max_length(platform)
     chunks = BasePlatformAdapter.truncate_message(message, max_len) if max_len else [message]
@@ -743,3 +892,70 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
             and not last_result.get("media_delivered")):
         last_result["warnings"] = [*last_result.get("warnings", []), warning]
     return last_result
+
+
+# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
+# Names external plugins imported from this module before the Sep 2026 decomposition.
+# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
+# The whole block is removed by reverting the commit that added it.
+import re  # noqa: F401,E402
+import time  # noqa: F401,E402
+
+SEND_MESSAGE_SCHEMA = {
+    "name": "send_message",
+    "description": (
+        "Send a message to a connected messaging platform, or list available targets.\n\n"
+        "IMPORTANT: When the user asks to send to a specific channel or person "
+        "(not just a bare platform name), call send_message(action='list') FIRST to see "
+        "available targets, then send to the correct one.\n"
+        "If the user just says a platform name like 'send to telegram', send directly "
+        "to the home channel without listing first."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "action": {
+                "type": "string",
+                "enum": ["send", "list", "react", "unreact"],
+                "description": "Action to perform. 'send' (default) sends a message. 'list' returns all available channels/contacts across connected platforms. 'react' attaches an emoji reaction to a message (platforms that support it, e.g. photon/iMessage tapbacks). 'unreact' retracts a previously-added reaction."
+            },
+            "target": {
+                "type": "string",
+                "description": "Delivery target. Format: 'platform' (uses home channel), 'platform:#channel-name', 'platform:chat_id', or 'platform:chat_id:thread_id' for Telegram topics and Discord threads. Examples: 'telegram', 'telegram:-1001234567890:17585', 'discord:999888777:555444333', 'discord:#bot-home', 'slack:#engineering', 'signal:+155****4567', 'matrix:!roomid:server.org', 'matrix:@user:server.org', 'ntfy:alerts-channel' (explicit ntfy topic), 'yuanbao:direct:<account_id>' (DM), 'yuanbao:group:<group_code>' (group chat)"
+            },
+            "message": {
+                "type": "string",
+                "description": "The message text to send. To send an image or file, include MEDIA:<local_path> (e.g. 'MEDIA:~/.hermes/cache/scratch/report.pdf') in the message — the platform will deliver it as a native media attachment."
+            },
+            "emoji": {
+                "type": "string",
+                "description": "For action='react': the emoji to react with (e.g. '❤️'). On iMessage, ❤️👍👎😂‼️❓ render as native tapbacks; other emoji use custom-emoji reactions."
+            },
+            "message_id": {
+                "type": "string",
+                "description": "For action='react'/'unreact': id of the message to react to. Omit to target the most recent message received in that chat (usually the one being replied to)."
+            },
+            "buttons": {
+                "type": "array",
+                "description": "Telegram only: a real inline keyboard. Either a flat list of [label, callback_data] pairs (one row) or a list of such rows for multiple rows. callback_data must be <=64 bytes; the receiving TelegramAdapter._handle_callback_query must recognize its prefix or the tap is ignored."
+            }
+        },
+        "required": []
+    }
+}
+
+
+_PLUGIN_COMPAT_LAZY = {
+    'redact_sensitive_text': ('agent.redact', 'redact_sensitive_text'),
+}
+
+
+def __getattr__(name):  # PEP 562 — lazy so no import cycles
+    target = _PLUGIN_COMPAT_LAZY.get(name)
+    if target is None:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    import importlib
+    from hermes_cli.plugin_compat import warn_once
+    warn_once(__name__, name, *target)
+    return getattr(importlib.import_module(target[0]), target[1])
+# ---- END PLUGIN-COMPAT ----

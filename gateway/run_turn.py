@@ -2565,7 +2565,7 @@ class GatewayTurnMixin:
                         continue
                     _agent = _entry[0] if isinstance(_entry, tuple) else _entry
                     if _agent is not None:
-                        refresh_agent_mcp_tools(_agent, quiet_mode=True)
+                        refresh_agent_mcp_tools(_agent, quiet_mode=True, content_aware=True)
         except Exception as _exc:
             logger.debug("Failed to update cached agent tools after MCP reload: %s", _exc)
 

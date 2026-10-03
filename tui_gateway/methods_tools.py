@@ -305,7 +305,8 @@ def _mcp_reload_confirm_required() -> bool:
         return True
 
 
-def _refresh_live_sessions(home=None, *, preserve_prefix: bool = False, note: str = "") -> None:
+def _refresh_live_sessions(home=None, *, preserve_prefix: bool = False, note: str = "",
+                           content_aware: bool = False) -> None:
     """Rebuild live sessions' cached tool snapshots from the registry and push session.info (agents
     never re-read the registry). The MCP pool is process-global, so refreshing only the requester
     would leave sibling sessions on stale tools until /new — and a request without a resolvable
@@ -329,7 +330,7 @@ def _refresh_live_sessions(home=None, *, preserve_prefix: bool = False, note: st
                 enabled = _load_enabled_toolsets(getattr(agent, "platform", None))
                 disabled = _load_disabled_toolsets()
                 refresh(agent, enabled_override=enabled, disabled_override=disabled,
-                        quiet_mode=True, preserve_prefix=preserve_prefix)
+                        quiet_mode=True, preserve_prefix=preserve_prefix, content_aware=content_aware)
         except Exception as _exc:
             logger.warning("Failed to refresh cached agent tools (session %s): %s", sid, _exc)
         if note:
@@ -372,7 +373,9 @@ def _(rid, params: dict) -> dict:
 
     def _refresh_session_agent() -> None:
         """Runs under _mcp_reload_lock so a concurrent reload can't tear the registry down mid-refresh."""
-        _refresh_live_sessions()
+        # Explicit reload already passed the cache-invalidation gate. Tool names may be
+        # unchanged while parameters/descriptions changed on the server.
+        _refresh_live_sessions(content_aware=True)
 
     def _do_full_reload() -> None:
         """shutdown+discover+refresh under the lock, then mark a completed generation. Config

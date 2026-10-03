@@ -64,7 +64,9 @@ import {
 import {
   MOBILE_REPLACEMENT_WINDOW_MS,
   normalizePtyMobileInput,
+  resolveMobileSoftDelete,
   shouldTreatInputAsMobileReplacement,
+  updatePtyInputLine,
 } from "@/lib/pty-mobile-input";
 import { computeKeyboardInset, keyboardRevealScrollDelta } from "@/lib/keyboard-inset";
 import {
@@ -924,10 +926,37 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
         compositionForwarder.onCompositionEnd(ev.data);
       };
 
+      // Mobile soft keyboards (Gboard et al.) don't emit a Backspace keydown
+      // xterm can translate; they fire `beforeinput` with a `delete*`
+      // inputType on the hidden textarea, which xterm's `_inputEvent` only
+      // handles for `insertText` — so backspace silently does nothing on
+      // Android. Translate soft deletes into the control bytes the
+      // server-side line editor understands and stop the event before xterm
+      // (or the browser's editing pipeline) mangles it. Capture phase puts
+      // this ahead of xterm's own bubble-phase input listener. Gated on
+      // isMobileLike so desktop IME flows (which also use delete*
+      // beforeinput types mid-composition) keep their native path.
+      const handleSoftDelete = (ev: Event) => {
+        if (!isMobileLike) return;
+        const input = ev as InputEvent;
+        const bytes = resolveMobileSoftDelete(input.inputType);
+        if (bytes === null) return;
+        ev.preventDefault();
+        ev.stopImmediatePropagation();
+        if (sendPtyShortcutSequence(wsRef.current, ptyStateRef.current, bytes)) {
+          ptyInputLineRef.current = updatePtyInputLine(
+            ptyInputLineRef.current,
+            bytes,
+          );
+        }
+      };
+
       textarea.addEventListener("beforeinput", markReplacementInput, true);
+      textarea.addEventListener("beforeinput", handleSoftDelete, true);
       textarea.addEventListener("compositionend", markCompositionEnd, true);
       mobileInputCleanup = () => {
         textarea.removeEventListener("beforeinput", markReplacementInput, true);
+        textarea.removeEventListener("beforeinput", handleSoftDelete, true);
         textarea.removeEventListener("compositionend", markCompositionEnd, true);
       };
     }

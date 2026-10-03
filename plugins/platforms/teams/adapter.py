@@ -635,7 +635,7 @@ class TeamsAdapter(BasePlatformAdapter):
     async def _on_card_action(
         self, ctx: "ActivityContext[AdaptiveCardInvokeActivity]"
     ) -> "InvokeResponse[AdaptiveCardActionMessageResponse]":
-        from tools.approval import resolve_gateway_approval, has_blocking_approval
+        from tools.approval import resolve_gateway_approval
 
         data = ctx.activity.value.action.data or {}
         hermes_action = data.get("hermes_action", "")
@@ -648,9 +648,8 @@ class TeamsAdapter(BasePlatformAdapter):
         choice = _APPROVAL_CHOICES.get(hermes_action)
         if not choice:
             return self._invoke_message(t("platform.teams.approval.unknown_action"))
-        if not has_blocking_approval(session_key):
+        if not resolve_gateway_approval(session_key, choice):
             return self._invoke_card([TextBlock(text=t("platform.shared.approval_expired"), wrap=True)])
-        resolve_gateway_approval(session_key, choice)
         body = _approval_body(data.get("cmd", ""), data.get("desc", ""))
         body.append(TextBlock(text=t(_APPROVAL_LABEL_KEYS[choice]), wrap=True, weight="Bolder"))
         return self._invoke_card(body)

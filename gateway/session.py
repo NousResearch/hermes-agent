@@ -94,6 +94,9 @@ class SessionSource:
     # Discord auto-thread continuity: the thread id a CHANNEL message WILL be delivered into, so
     # the initiating message and later in-thread follow-ups share ONE session.
     prospective_thread_id: Optional[str] = None
+    # The adapter declares this chat's session shared by every participant even though the
+    # sender id is kept (Telegram observe mode: commands keep user_id for slash access checks).
+    shared_session: bool = False
     # Wire-INVISIBLE trust signal (never in to_dict/from_dict, so a peer cannot forge it): came
     # over the authenticated relay WebSocket. ``platform`` is the UNDERLYING platform, not
     # ``relay``, so authz must key upstream trust off THIS flag.
@@ -144,6 +147,8 @@ class SessionSource:
         if self.auto_thread_created:
             d["auto_thread_created"] = True
         _optional(self._OPTIONAL_TAIL)
+        if self.shared_session:
+            d["shared_session"] = True
         return d
 
     @classmethod
@@ -157,7 +162,8 @@ class SessionSource:
             platform=Platform(data["platform"]), chat_id=str(data["chat_id"]),
             chat_type=data.get("chat_type", "dm"),
             scope_id=data.get("scope_id", data.get("guild_id")),
-            auto_thread_created=bool(data.get("auto_thread_created", False)), **plain,
+            auto_thread_created=bool(data.get("auto_thread_created", False)),
+            shared_session=bool(data.get("shared_session", False)), **plain,
         )
 
 
@@ -647,6 +653,8 @@ def is_shared_multi_user_session(
     isolation rules in :func:`build_session_key`)."""
     if source.chat_type == "dm":
         return False
+    if getattr(source, "shared_session", False):
+        return True
     return not (thread_sessions_per_user if source.thread_id else group_sessions_per_user)
 
 
@@ -707,7 +715,10 @@ def build_session_key(
     else:
         # Threads are shared by default; per-user isolation only via thread_sessions_per_user or
         # outside a thread.
-        isolate_user = group_sessions_per_user and not (thread_id and not thread_sessions_per_user)
+        isolate_user = (
+            group_sessions_per_user and not (thread_id and not thread_sessions_per_user)
+            and not getattr(source, "shared_session", False)
+        )
     # Duck-typed sources may lack user_id_alt: read the participant only when it matters.
     participant_id = _canonical_participant(source) if (isolate_user or not is_dm) else None
 

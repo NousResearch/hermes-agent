@@ -1,0 +1,89 @@
+{
+  "skill": "x-growth",
+  "version": "1.0.0",
+  "description": "The X/Twitter growth playbook for 2026 — conversation-driven reach via native posts, strategic replies, first-hour velocity, and Premium/format leverage. Uses the SPARK framework. Reads brand-profile + voice-builder first. The agent drafts posts + reply copy; a human does the live replying/quote-posts/community engagement; WoopSocial schedules posts; metrics come from native X analytics; nothing is fabricated. Complements thread-writer (the thread-format craft).",
+  "evals": [
+    {
+      "name": "conversation_not_broadcast",
+      "input": "How do I grow on X?",
+      "context": "brand-profile and voice-builder exist.",
+      "expect": [
+        "Frames conversation as the engine: per the open-sourced algorithm a reply is worth ~27x a like and an author-reply chain ~150x (verify-quarterly)",
+        "Prescribes native, contestable, reply-worthy posts + strategic replies + first-hour engagement velocity",
+        "Introduces the SPARK framework (Spark conversation, Premium & profile, Amplify via replies, Race the first hour, Keep it credible & compounding)",
+        "Reads brand-profile + voice-builder first and notes X fits B2B/tech/finance/real-time better than consumer-under-25 brands"
+      ]
+    },
+    {
+      "name": "reads_brand_and_voice_first",
+      "input": "Write me some X posts for this week.",
+      "context": "brand-profile and voice-builder exist.",
+      "expect": [
+        "Pulls brand-profile and voice-builder before writing",
+        "Writes native, on-brand posts designed to spark replies (a contestable take or a question), not bare broadcasts",
+        "Keeps any external link out of the main post (link in the first reply)",
+        "Plans 2-3 quality posts/day spaced out, in the brand voice"
+      ]
+    },
+    {
+      "name": "premium_is_baseline_honest",
+      "input": "Can I grow on X for free, or do I need to pay?",
+      "expect": [
+        "States honestly that in 2026 X Premium is effectively a baseline for serious reach (a significant multiplier; free accounts see near-zero median reach) (verify-quarterly)",
+        "Clarifies Premium amplifies quality but does not replace it — a Premium account posting mediocre content still underperforms",
+        "Notes Premium also unlocks 25k-char long-form, higher-ranked replies, edit, and analytics",
+        "Frames the spend as a channel-priority decision (worth it if X is a priority for this brand)"
+      ]
+    },
+    {
+      "name": "reply_afterburner",
+      "input": "I post every day but get almost no reach.",
+      "expect": [
+        "Explains strategic replies are the afterburner: a standout reply on a bigger account's post surfaces in For You to people who engaged with it (often multiples of your baseline)",
+        "Recommends a reply split weighted toward larger accounts in your niche (e.g. ~60/30/10) to enter high-traffic conversations and the right topic cluster",
+        "Adds first-hour velocity on your own posts (engage your own replies fast; post when your audience is online)",
+        "Reminds to keep posts native (long-form/video/image) with links in a reply, not the post"
+      ]
+    },
+    {
+      "name": "pushback_on_pods_bots_and_bait",
+      "input": "Get me in an engagement pod, buy some interactions, add 'RT if you agree', and repost viral tweets word-for-word to grow fast.",
+      "expect": [
+        "Refuses engagement pods, purchased/coordinated interactions, engagement-bait, and copy-paste reposting — all detected and penalized with reduced distribution",
+        "Notes copy-paste/duplicate content triggers a spam filter and verbatim reposts severely limit reach",
+        "Will not fabricate engagement or guarantee virality",
+        "Redirects to the durable path: genuine conversation, original commentary on quotes, and the SPARK approach"
+      ]
+    },
+    {
+      "name": "edge_case_links_and_accuracy",
+      "input": "Put our blog link right in the tweet, and post a spicy hot take even if the facts are a bit shaky.",
+      "expect": [
+        "Warns an external link in the main post cuts reach ~30-50% (near-zero for non-Premium) and recommends putting the link in the first reply instead",
+        "Notes accuracy has a direct distribution consequence — an active Community Note correction penalizes reach — so shaky claims backfire",
+        "Advises a native post with a verified, genuinely contestable point (not a false one)",
+        "Keeps the take on-brand and defensible"
+      ]
+    },
+    {
+      "name": "honest_scope_drafts_human_engages_analytics",
+      "input": "Auto-post and auto-reply to everyone to grow my X, and tell me my impressions.",
+      "expect": [
+        "States the agent drafts posts and reply copy, but a human does the live replying, quote-posts, and community engagement (the conversational core is human; replies/X Chat aren't a WoopSocial surface)",
+        "Notes WoopSocial schedules the posts; it has no analytics, so impressions/engagement are read from native X analytics (Premium)",
+        "Refuses to fabricate any metric and refuses auto-reply spam",
+        "Frames authentic, timely engagement as the growth driver, not automation volume"
+      ]
+    },
+    {
+      "name": "distinct_from_thread_writer",
+      "input": "Isn't this just thread-writer?",
+      "expect": [
+        "Distinguishes x-growth (the platform growth engine: what/when to post, Premium, the reply strategy, velocity, monetization reality) from thread-writer (how to write a single thread well)",
+        "Notes long-form single posts now often out-distribute multi-tweet threads in 2026, so threads are one format choice, not the whole strategy",
+        "Routes the user to thread-writer for thread craft, trend-jacking for timely moments, and social-strategy for the overall plan",
+        "Frames x-growth as the X-specific growth strategy"
+      ]
+    }
+  ]
+}

@@ -1,0 +1,95 @@
+{
+  "skill": "talking-head-and-piece-to-camera",
+  "version": "1.0.0",
+  "description": "The on-camera delivery craft for a real human filming themselves — using the TAKES framework: tape the setup (eye-level phone, window light, close audio), anchor the map not the lines, kick the first 3 seconds, embrace the retake rules (per-beat, three-strike, good-enough), stack the batch. Phone-first, presence over polish; the agent coaches but never judges footage it can't see; camera-shy users route honestly to heygen/synthesia or faceless formats.",
+  "evals": [
+    {
+      "name": "core-first-shoot-setup",
+      "input": "I'm filming my first talking-head video on my phone tomorrow. How do I set it up so it doesn't look amateur?",
+      "context": "First-timer, phone only, no gear.",
+      "expect": [
+        "Phone-first setup: lens at eye level (books under a cheap tripod), face the biggest window (never behind), arm's-length-plus distance, 9:16 with eyes in the top third and caption-safe zones clear",
+        "Prioritizes audio over image: quiet room, mic/phone within ~60cm or a $15-25 wired lav — viewers forgive soft video, not bad audio (attribute)",
+        "Explicitly does NOT prescribe buying a camera — gear is not the bottleneck; clean-but-real background with depth",
+        "States scope: the agent coaches setup, the human films and picks the take, WoopSocial only publishes the finished file"
+      ]
+    },
+    {
+      "name": "core-look-natural-on-camera",
+      "input": "I look stiff and sound like a robot in every video. How do I look natural on camera?",
+      "context": "Has filmed a few videos; delivery reads flat and read-y.",
+      "expect": [
+        "Diagnoses the usual cause: reading word-for-word — prescribes memorizing the map (3-5 beats + verbatim first/last lines) and riffing the middle in their own words",
+        "Energy coaching: deliver ~20% more than feels natural (camera flattens energy; attribute), talk to ONE specific person behind the lens, smile before speaking, hands visible/gesturing",
+        "Notes reading eyes are visible; descript's Eye Contact patches a read but doesn't replace delivery",
+        "Applies the good-enough doctrine: ship the take where they sound like themselves, not the smoothest one"
+      ]
+    },
+    {
+      "name": "core-teleprompter-vs-memorize",
+      "input": "Should I use a teleprompter? I keep forgetting my lines halfway through.",
+      "context": "Scripted 45s pieces; keeps blanking mid-take.",
+      "expect": [
+        "Default answer: don't read — memorize the map not the lines (beats on a sticky note by the lens, first and last lines verbatim, riff the middle)",
+        "If a prompter is unavoidable (dense/legal copy): text in a narrow column tight to the camera dot, big type, slow scroll, rehearse twice before rolling; or the line-at-a-time method with jump-cuts (a native style, not a flaw)",
+        "Names the deeper fix: lines that won't stick are a writing problem — send the script back to short-form-video-script to be made more spoken",
+        "Keeps it phone-first: a free prompter app or sticky note, not a hardware purchase"
+      ]
+    },
+    {
+      "name": "core-retake-strategy",
+      "input": "I did 25 full takes of one 30-second video yesterday and I still hate all of them. What am I doing wrong?",
+      "context": "Perfectionist spiral; nothing published.",
+      "expect": [
+        "Retake per beat, not per video: keep rolling, pause, say the flubbed line again (clap to mark takes), jump-cut later — whole-video take quality peaks by take 2-3 then decays with energy (attribute)",
+        "Applies the three-strike rule: a line that fails 3x is a writing problem — rewrite it in their own words or send it back to the script",
+        "Invokes the good-enough doctrine: cap takes per beat at ~3 and ship the take where they sound like themselves; presence beats polish, a published take gathers data",
+        "Does not fabricate judgment of the existing takes (can't see them); offers the self-review checklist and lets the human verdict stand"
+      ]
+    },
+    {
+      "name": "core-batch-filming-day",
+      "input": "I want to film a month of talking-head videos in one afternoon. Give me the plan.",
+      "context": "Has 6 scripts ready from short-form-video-script.",
+      "expect": [
+        "Builds a real batch day: one setup, 4-8 scripts as beat maps, hardest script first while energy is highest, hooks delivered first and fresh, ~10 min cap per short script",
+        "Swap tops between scripts so posts don't look same-day; 60s reset + water between scripts; log the keeper take",
+        "Hard stop at ~60-90 minutes when energy dies (attribute, verify-quarterly) — a dead-eyed take costs more than an empty slot",
+        "Routes the handoff: footage to captions-and-clipping/capcut/descript for the edit, then scheduling-and-queue → WoopSocial to publish; slots via batch-content-plan/content-calendar"
+      ]
+    },
+    {
+      "name": "edge-camera-shy-route-honestly",
+      "input": "Honestly, I hate seeing myself on camera and I don't want to film my face. But everyone says video is mandatory. What do I do?",
+      "context": "Camera-shy founder; feels pressured.",
+      "expect": [
+        "Treats not filming as a valid choice — no shaming, no authenticity lecture",
+        "Offers the avatar route with honest trade-offs: heygen (creator/social lane) or synthesia (enterprise/L&D lane), disclosed, noting avatars read polished-but-clinical and trust-led content genuinely favors a real face",
+        "Offers faceless formats as a first-class option: screen-records/B-roll + their real voice or ai-voiceover (disclosed)",
+        "Offers the gentle on-ramp (voice-only → hands/desk shots → one 15s face piece) as optional, never mandatory; mentions the hybrid (human trust layer + avatar volume layer)"
+      ]
+    },
+    {
+      "name": "pushback-gear-snobbery",
+      "input": "I've decided I can't start posting until I buy a proper mirrorless camera, a key light kit, and a shotgun mic — probably $2,500 total. Which ones should I get?",
+      "context": "User treats gear as the prerequisite; hasn't filmed anything yet.",
+      "expect": [
+        "Refuses the premise: gear is not the bottleneck — a recent phone out-resolves every social feed (attribute), and the feed compresses everything anyway",
+        "Redirects the $2,500 to the actual fix stack: eye-level phone, window light, quiet room, a $15-25 wired lav — and names the upgrade path only for named limits actually hit",
+        "Gets them filming now (batch a first session this week) rather than shopping; presence and reps beat polish",
+        "Holds the line if pushed, without mocking the user"
+      ]
+    },
+    {
+      "name": "edge-cannot-judge-take-or-fake-praise",
+      "input": "I just filmed three takes of my launch video. Watch them and tell me take 2 looks natural enough to post, then post it for me.",
+      "context": "User wants the agent to judge footage and auto-publish.",
+      "expect": [
+        "Honest scope: the agent cannot see or judge footage — it never fabricates 'that looks natural'; the human picks the take",
+        "Provides the self-review checklist instead (hook lands in first 2s, audio clean on headphones, eyes on lens, sounds like themselves, works on mute)",
+        "Publishing is real but bounded: once the human picks and edits the take, route file → scheduling-and-queue → WoopSocial — which publishes only (no filming, editing, or footage analysis)",
+        "Flags consent if anyone else appears in the footage, and disclosure rules if AI enhancement (e.g. eye-contact fix) was applied"
+      ]
+    }
+  ]
+}

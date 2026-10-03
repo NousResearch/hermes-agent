@@ -1,0 +1,3844 @@
+{
+  "generated_at": "2026-08-14T23:49:17.872788Z",
+  "skills": [
+    {
+      "name": "computer-use",
+      "description": "Drive the desktop in the background without stealing focus.",
+      "version": "2.0.0",
+      "author": "Francesco Bonacci (f-trycua), Hermes Agent",
+      "license": "MIT",
+      "platforms": [
+        "macos",
+        "windows",
+        "linux"
+      ],
+      "metadata": {
+        "hermes": {
+          "tags": [
+            "computer-use",
+            "desktop",
+            "automation",
+            "gui",
+            "cross-platform"
+          ],
+          "category": "desktop",
+          "related_skills": []
+        }
+      },
+      "path": "autonomous-ai-agents/computer-use",
+      "updated_at": "2026-08-11T22:01:39.763726",
+      "category": "autonomous-ai-agents"
+    },
+    {
+      "name": "codex",
+      "description": "Delegate coding to OpenAI Codex CLI (features, PRs).",
+      "version": "1.0.1",
+      "author": "Hermes Agent",
+      "license": "MIT",
+      "platforms": [
+        "linux",
+        "macos",
+        "windows"
+      ],
+      "metadata": {
+        "hermes": {
+          "tags": [
+            "Coding-Agent",
+            "Codex",
+            "OpenAI",
+            "Code-Review",
+            "Refactoring"
+          ],
+          "related_skills": [
+            "claude-code",
+            "hermes-agent"
+          ]
+        }
+      },
+      "path": "autonomous-ai-agents/codex",
+      "updated_at": "2026-07-26T20:08:42.176821",
+      "category": "autonomous-ai-agents"
+    },
+    {
+      "name": "merge-reconciler",
+      "description": "Neutral third-party resolution of agent merge conflicts.",
+      "version": "1.0.0",
+      "author": "Hermes Agent",
+      "license": "MIT",
+      "platforms": [
+        "linux",
+        "macos",
+        "windows"
+      ],
+      "metadata": {
+        "hermes": {
+          "tags": [
+            "Multi-Agent",
+            "Git",
+            "Merge-Conflict",
+            "Kanban",
+            "Arbitration"
+          ],
+          "related_skills": [
+            "hermes-agent"
+          ]
+        }
+      },
+      "path": "autonomous-ai-agents/merge-reconciler",
+      "updated_at": "2026-08-11T22:01:39.764726",
+      "category": "autonomous-ai-agents"
+    },
+    {
+      "name": "claude-code",
+      "description": "Delegate coding to Claude Code CLI (features, PRs).",
+      "version": "2.2.1",
+      "author": "Hermes Agent + Teknium",
+      "license": "MIT",
+      "platforms": [
+        "linux",
+        "macos",
+        "windows"
+      ],
+      "metadata": {
+        "hermes": {
+          "tags": [
+            "Coding-Agent",
+            "Claude",
+            "Anthropic",
+            "Code-Review",
+            "Refactoring",
+            "PTY",
+            "Automation"
+          ],
+          "related_skills": [
+            "codex",
+            "hermes-agent",
+            "opencode"
+          ]
+        }
+      },
+      "path": "autonomous-ai-agents/claude-code",
+      "updated_at": "2026-08-14T14:02:23.999536",
+      "category": "autonomous-ai-agents"
+    },
+    {
+      "name": "opencode",
+      "description": "Delegate coding to OpenCode CLI (features, PR review).",
+      "version": "1.2.0",
+      "author": "Hermes Agent",
+      "license": "MIT",
+      "platforms": [
+        "linux",
+        "macos",
+        "windows"
+      ],
+      "metadata": {
+        "hermes": {
+          "tags": [
+            "Coding-Agent",
+            "OpenCode",
+            "Autonomous",
+            "Refactoring",
+            "Code-Review"
+          ],
+          "related_skills": [
+            "claude-code",
+            "codex",
+            "hermes-agent"
+          ]
+        }
+      },
+      "path": "autonomous-ai-agents/opencode",
+      "updated_at": "2026-07-13T21:08:17.224149",
+      "category": "autonomous-ai-agents"
+    },
+    {
+      "name": "hermes-agent",
+      "description": "Use, configure, theme, extend, and orchestrate Hermes Agent.",
+      "version": "3.1.0",
+      "author": "Hermes Agent + Teknium",
+      "license": "MIT",
+      "platforms": [
+        "linux",
+        "macos",
+        "windows"
+      ],
+      "metadata": {
+        "hermes": {
+          "tags": [
+            "hermes",
+            "setup",
+            "configuration",
+            "multi-agent",
+            "spawning",
+            "cli",
+            "gateway",
+            "themes",
+            "skins",
+            "desktop-plugins",
+            "tui-widgets",
+            "petdex",
+            "development"
+          ],
+          "homepage": "https://github.com/NousResearch/hermes-agent",
+          "related_skills": [
+            "claude-code",
+            "codex",
+            "opencode"
+          ]
+        }
+      },
+      "path": "autonomous-ai-agents/hermes-agent",
+      "updated_at": "2026-07-26T20:08:42.177821",
+      "category": "autonomous-ai-agents"
+    },
+    {
+      "name": "ai-music-and-sound",
+      "description": "The AI music + sound-design skill for social -- original/licensed audio beds and sound design for Reels/TikToks/Shorts/videos. Use when someone needs background music, a track, or sound effects for a social video, asks which AI music tool is safe to use, or asks \"can I use this trending sound/song on my brand video?\". The real brief is \"audio that won't get muted, claimed, or sued,\" so it picks the safest licensed source and never uses copyrighted or trending music without a license. Uses the SCORE framework. Reads brand-profile + the video it scores first. The agent briefs the music + sound design, picks the safest licensed source (ElevenLabs Music/SFX or stock libraries over Suno/Udio; paid tier for commercial rights), and advises licensing/Content-ID/disclosure. The tool generates/licenses the audio; the creator bakes it in; WoopSocial publishes the video and does NOT generate music. Pure AI music may not be copyrightable; never \"100% legally safe.\" Pairs with ai-voiceover.",
+      "version": "1.0.0",
+      "path": "social-media/ai-music-and-sound",
+      "updated_at": "2026-08-15T07:48:12.306957",
+      "category": "social-media"
+    },
+    {
+      "name": "ai-image-editing",
+      "description": "The AI image-editing router — inpainting/object removal, background removal, upscaling, outpainting, old-photo restoration, and retouch, routed task-first to the right engine. Use when someone wants to remove an object/person from a photo, cut out backgrounds, upscale an image, extend an image to new aspect ratios, restore an old photo, fix a generated image, or asks which editing tool to use. Uses the TOUCH framework. Reads brand-profile + design-and-templates first. The agent names the task, routes to the right engine, writes the spec, and can call APIs where connected; the HUMAN judges every result at 100%; WoopSocial publishes. Honesty spine: an edited real photo is an edited claim — creative upscalers hallucinate detail (never on products/documents), no defect concealment, body-retouch disclosure honored, no watermark/provenance stripping. Distinct from image-prompt/flux/nano-banana (generation), canva (the design workflow), and before-after-and-transformation (the claim rules).",
+      "version": "1.0.0",
+      "path": "social-media/ai-image-editing",
+      "updated_at": "2026-08-15T07:48:12.306377",
+      "category": "social-media"
+    },
+    {
+      "name": "suno",
+      "description": "The Suno craft skill — generate full songs, brand music, and audio (vocals, lyrics, stems) with the right tier, honest rights, and structure control. Use when someone wants to make music with Suno/AI, create a brand sound/theme/jingle/podcast intro, control song structure (meta-tags), build a consistent sonic identity (Personas, Voices), split stems, distribute AI music to Spotify/YouTube, or asks whether they own their Suno songs. Uses the TRACK framework. Reads ai-music-and-sound (the router) + brand-profile + the content skill the music serves first. The agent writes briefs/lyrics and can drive the API where connected; the HUMAN's ears judge every track; WoopSocial publishes the content it scores. Rights: paid plan from the first note, commercial rights not ownership, no indemnification while litigation runs, AI-disclosure at distribution; never clone a real artist's voice. Distinct from ai-music-and-sound, ai-voiceover/elevenlabs (spoken TTS), capcut, and podcast-and-audiograms.",
+      "version": "1.0.0",
+      "path": "social-media/suno",
+      "updated_at": "2026-08-15T07:48:12.365350",
+      "category": "social-media"
+    },
+    {
+      "name": "content-research-and-sourcing",
+      "description": "The research-and-sourcing craft — verify the substance of a piece before it publishes: trace stats to primary sources, kill zombie stats, catch AI-hallucinated citations, and attribute properly on social. Use when someone has a stat-heavy draft to make publish-ready, wants to check if a viral statistic is real, asks how to cite sources, used AI research output, or is making health/finance claims. Uses the FACTS framework. Reads brand-profile + the piece's format skill first. AI-supplied citations are guilty until verified; a working link is not verification; aggregators are leads, not the source; where none exists, reframe as owned observation or commission data. The agent verifies where it has search; the human clicks links where it doesn't; verification happens before scheduling; WoopSocial publishes. Never invents studies or reuses retracted stats. Distinct from idea-generation, data-and-original-research, quote-cards, and infographic-and-data-viz.",
+      "version": "1.0.0",
+      "path": "social-media/content-research-and-sourcing",
+      "updated_at": "2026-08-15T07:48:12.322541",
+      "category": "social-media"
+    },
+    {
+      "name": "contrarian-and-opinion",
+      "description": "The point-of-view content type — articulate, sharpen, and argue a genuinely-held contrarian stance / hot take / opinion / thought-leadership position that builds authority and real debate. Use when someone wants a POV, a hot take, an \"unpopular opinion\", a contrarian angle, an opinion piece, or to stop sounding like everyone else and build thought leadership. Uses the STAND framework. Reads brand-profile + voice-builder first. The agent argues the human's OWN opinion with evidence; the human owns the stance and the live debate; WoopSocial publishes. Never manufactures a stance, controversy, or ragebait; no strawmen, punching down, or defamation; opinion stays clearly opinion and factual claims must be true. Distinct from hook-writer (the opening-line mechanic this feeds), educational-content-and-how-to (teaches a process), storytelling-and-narrative (narrative vs argument), and behind-the-scenes-and-founder (personal story vs argued position).",
+      "version": "1.0.0",
+      "path": "social-media/contrarian-and-opinion",
+      "updated_at": "2026-08-15T07:48:12.323245",
+      "category": "social-media"
+    },
+    {
+      "name": "link-in-bio-and-traffic",
+      "description": "Link-in-bio and traffic strategy — convert social reach into clicks, subscribers, and owned audience. Use when someone wants to \"drive traffic from social,\" \"optimize my link in bio,\" \"get more clicks,\" \"turn followers into email subscribers / leads / sales,\" \"where do I put my link,\" or to convert reach into an owned audience. Turns rented reach into clicks and an OWNED audience: one clear action (not a link-dump), capture-before-sell, correct link placement per platform (in-post links are suppressed on X/LinkedIn/Facebook), and branded short links + UTM tracking. Uses the CLICK framework. Reads brand-profile + goals-and-kpis first. WoopSocial publishes the driving posts and places links where the API allows; the bio hub / landing page / email tool are external (3rd-party + human); clicks/conversions are read from those + GA4, never fabricated. Distinct from profile-optimization, social-selling-and-dm, email-and-newsletter, and lead-magnets-and-funnels.",
+      "version": "1.0.0",
+      "path": "social-media/link-in-bio-and-traffic",
+      "updated_at": "2026-08-15T07:48:12.342795",
+      "category": "social-media"
+    },
+    {
+      "name": "profile-optimization",
+      "description": "Use to optimize a social media profile so it converts visitors into followers and followers into leads — bio, handle, name/headline field, profile picture, banner/header, link-in-bio, CTA, pinned posts, and highlights. Run when the user says \"optimize my profile/bio,\" \"write my bio,\" \"my Instagram/LinkedIn/TikTok bio,\" \"profile,\" \"link in bio,\" \"my profile isn't converting,\" asks about creator mode or a professional/business account, or wants their account to convert better. Reads brand-profile, voice, audience, and social-strategy first. Treats the profile as a conversion landing page — 3-second clarity, searchable-field keywords, a who/what/why bio with one CTA, a goal-matched link, and specs for the visuals, pinned posts, and highlights. Advisory: produces a ready-to-apply per-platform spec (WoopSocial publishes posts/media; it does not edit profile fields). Judges results via native profile insights, not WoopSocial analytics.",
+      "metadata": {
+        "version": "1.0.0"
+      },
+      "license": "MIT",
+      "path": "social-media/profile-optimization",
+      "updated_at": "2026-08-15T07:48:12.354592",
+      "category": "social-media"
+    },
+    {
+      "name": "social-selling-and-dm",
+      "description": "Social selling and DM funnels — consent-first selling in the DMs, never spam. Use when someone wants to \"sell in the DMs,\" \"set up a comment-to-DM funnel,\" \"do DM outreach,\" \"turn comments/followers into leads or customers,\" or convert intent into private conversations. Works ONLY as a response to intent (comments, story replies, follows, keyword DMs) via the comment->DM->email funnel — never cold outreach. Uses the WARMS framework. Reads brand-profile + voice-builder + goals-and-kpis first. WoopSocial has NO DM/comment surface: the agent designs the funnel and drafts the trigger post, DM sequences, and manual outreach scripts; WoopSocial publishes the trigger posts; the actual comment->DM automation runs in an external official-Meta-API tool (ManyChat/LinkDM/etc.) or a human sends warm DMs; consent-first always, ban-behaviors avoided, metrics never fabricated. Distinct from link-in-bio-and-traffic, reply-and-comment-writer, and email-and-newsletter.",
+      "version": "1.0.0",
+      "path": "social-media/social-selling-and-dm",
+      "updated_at": "2026-08-15T07:48:12.362192",
+      "category": "social-media"
+    },
+    {
+      "name": "flux",
+      "description": "The FLUX craft skill (Black Forest Labs) — generate and edit on-brand images with the right variant and license. Use when someone wants to generate images with FLUX/FLUX.2/Kontext, edit a generated image, keep a character or product consistent across a campaign, render legible text in images, get brand-exact colors, pick between FLUX variants, or asks if their FLUX use is commercially licensed. Uses the PIXEL framework. Reads image-prompt + brand-profile + design-and-templates first. The agent writes prompts/edit instructions and can call the API where connected; the HUMAN judges every image; WoopSocial publishes. License spine: [dev] outputs are commercial-OK but self-hosting for a commercial service needs a paid BFL tier; Apache-2.0 paths are [schnell]/[klein] 4B. Never use unpermitted likeness, clone trade dress, strip provenance, or invent stats. Distinct from image-prompt, ideogram/nano-banana/Midjourney (sibling tools), ai-image-editing (the edit router this feeds), and canva.",
+      "version": "1.0.0",
+      "path": "social-media/flux",
+      "updated_at": "2026-08-15T07:48:12.331838",
+      "category": "social-media"
+    },
+    {
+      "name": "hook-writer",
+      "description": "Use to write the hook — the opening that earns attention — for any social content: a caption's first line, a video's first three seconds, a carousel cover slide, a thread opener, a YouTube title, or an email subject. Run when the user says \"write a hook,\" \"hook for this,\" \"opening line,\" \"first three seconds,\" \"cover slide,\" \"make this scroll-stopping,\" or when good content keeps getting ignored. Reads brand-profile and voice first so hooks sound like the brand, not viral-bait templates. Hooks must be TRUE to the content that follows — this skill extracts the hook from the post's strongest element and never overpromises. For full captions use caption-writer; for full video scripts use the video skills. This writes the opening itself.",
+      "metadata": {
+        "version": "1.0.0"
+      },
+      "license": "MIT",
+      "path": "social-media/hook-writer",
+      "updated_at": "2026-08-15T07:48:12.334244",
+      "category": "social-media"
+    },
+    {
+      "name": "story-writer",
+      "description": "Writes Instagram/Facebook Stories as a content type. Use when someone wants \"a Story\" / \"Stories,\" \"an IG/FB Story sequence,\" \"Story ideas,\" interactive sticker content (polls, quizzes, question boxes, countdowns, link stickers), a Close Friends drop, a behind-the-scenes or daily-update sequence, or to turn a post into Stories. Stories are the relationship-deepening surface (not reach) — optimise for completion + interaction. Uses the FRAME framework. Reads brand-profile + voice-builder first. The agent drafts frames + sticker copy; WoopSocial schedules/publishes base frames (IG+FB); interactive stickers and DM replies are handled natively in-app by a human; metrics come from native Insights; nothing is fabricated. Distinct from reels-script (reach video) and carousel-writer (Feed swipe).",
+      "version": "1.0.0",
+      "path": "social-media/story-writer",
+      "updated_at": "2026-08-15T07:48:12.364067",
+      "category": "social-media"
+    },
+    {
+      "name": "trend-jacking",
+      "description": "Use to ride a trend — a trending sound, format, meme, hashtag, news moment, or cultural conversation — to earn reach by attaching the brand to something already getting attention (a.k.a. trendjacking / newsjacking). Run when the user says \"trend,\" \"trending,\" \"jump on this trend,\" \"trendjack,\" \"newsjack,\" \"is this trend worth doing,\" \"make this go viral,\" or wants to react to a current moment. Reads brand-profile, voice, and audience first, then runs three gates — FIT, SAFETY, and TIMING — before executing a fast, on-brand remix and handing to the right content skill (tiktok-script, reels-script, caption-writer) and scheduling-and-queue. Refuses to trendjack tragedies or divisive moments and won't force irrelevant trends; live trend discovery needs current scanning — this skill vets and executes. For meme-format craft, cultural fluency, and meme IP/likeness judgment (\"make a meme,\" \"is this meme safe\"), route to meme-and-culture.",
+      "metadata": {
+        "version": "1.0.0"
+      },
+      "license": "MIT",
+      "path": "social-media/trend-jacking",
+      "updated_at": "2026-08-15T07:48:12.373490",
+      "category": "social-media"
+    },
+    {
+      "name": "before-after-and-transformation",
+      "description": "The transformation / before-after content format — structure a credible, honest, satisfying transformation (fitness, beauty, business results, skill progress, makeovers, client glow-ups, product before/after). Use when someone wants a before/after, a transformation post, a client-results reveal, a progress/journey story, or a makeover. Most powerful format AND most abused/distrusted — honesty is the edge; FTC enforcement is live. Uses the SHIFT framework. Reads brand-profile + social-proof-and-testimonials (consent + FTC substantiation) + short-form-video-script first. Agent structures + specs; human/tool produces the real media; WoopSocial publishes. Never stages/exaggerates the before, hides aids, cherry-picks, or fabricates a result; \"results not typical\" alone is insufficient — disclose the actual typical result; consent + YMYL required. Distinct from social-proof-and-testimonials, short-form-video- script, infographic-and-data-viz, and storytelling-and-narrative.",
+      "version": "1.0.0",
+      "path": "social-media/before-after-and-transformation",
+      "updated_at": "2026-08-15T07:48:12.311604",
+      "category": "social-media"
+    },
+    {
+      "name": "voice-builder",
+      "description": "Use to build a reusable voice guide (voice.md) by analyzing a person's or brand's ACTUAL writing samples — so every other social skill can write in their exact voice instead of generic AI prose. Run this when the user says \"build my voice,\" \"sound like me,\" \"capture my tone,\" \"analyze my writing,\" \"train on my posts,\" \"ghostwrite in my voice,\" or when content keeps coming out off-voice or generic. Requires real writing samples; if there are none, use brand-profile's voice interview instead. Works for anyone: founders, creators, executives who are ghostwritten, and brands. Read brand-profile first; this skill produces the deeper voice.md that complements it. This skill DEFINES the voice; to apply it per piece — tone shifts, style edits, de-AI-ing a draft — use writing-style-and-tone.",
+      "metadata": {
+        "version": "1.0.0"
+      },
+      "license": "MIT",
+      "path": "social-media/voice-builder",
+      "updated_at": "2026-08-15T07:48:12.376125",
+      "category": "social-media"
+    },
+    {
+      "name": "quote-cards-and-text-graphics",
+      "description": "The craft of turning a single quote, line, or stat into a designed typographic graphic — quote cards, pull-quotes, text-on-image, stat cards, typography posts. Use when someone wants a quote card, a text graphic, a pull-quote, a stat card, or to turn a strong line into a shareable image. The design amplifies a strong line; it can't create one. Uses the QUOTE framework. Reads brand-profile + design-and-templates + voice-builder first, and pulls the line from hook-writer, storytelling, or data-and-original-research (a stat). The agent picks the line and specs the card; a design tool renders; the human approves; WoopSocial publishes the image (it does not generate media). NEVER fabricates a quote, attributes an invented line to a real person, or strips context; verifies wording + source; consent + likeness. Distinct from infographic-and-data-viz, design-and-templates, caption-writer, and social-proof-and-testimonials.",
+      "version": "1.0.0",
+      "path": "social-media/quote-cards-and-text-graphics",
+      "updated_at": "2026-08-15T07:48:12.355489",
+      "category": "social-media"
+    },
+    {
+      "name": "thumbnail-design",
+      "description": "Design YouTube video thumbnails that earn the click — mobile-legible, one focal point, honest. Use when someone wants to design a YouTube thumbnail, improve CTR, brief a thumbnail, choose thumbnail text, or plan thumbnail A/B testing. Designs and briefs high-CTR thumbnails and writes the A/B test plan: a thumbnail is a promise, not a poster, designed as a unit with the title and legible on mobile. Uses the CLICK framework. Reads brand-profile + the video/title first. A HUMAN or an image/design tool (nano-banana/ideogram/Canva/designer) creates the final raster; the YouTube custom thumbnail is uploaded NATIVELY in Studio (WoopSocial has no thumbnail field) and Test & Compare is native; TikTok/IG-Reel covers use WoopSocial's cover field via those format skills. No clickbait, no unconsented real-person/deepfake faces, CTR never fabricated. Distinct from youtube-publishing-and-metadata (the metadata) and nano-banana/ideogram (which generate the raster this briefs).",
+      "version": "1.0.0",
+      "path": "social-media/thumbnail-design",
+      "updated_at": "2026-08-15T07:48:12.369685",
+      "category": "social-media"
+    },
+    {
+      "name": "goals-and-kpis",
+      "description": "Set social media goals and KPIs — measurable targets and north-star metrics that aren't vanity numbers. Use when someone wants to \"set social media goals,\" \"define our KPIs,\" \"what should we be aiming for,\" \"what's our north-star metric,\" \"OKRs for social,\" or to turn vague ambitions (\"grow our following,\" \"go viral\") into measurable targets. Builds a cascade: business goal -> SMART objective -> North Star KPI (one per channel by its win condition) -> supporting metrics, with benchmark-set targets and action thresholds. Uses the NORTH framework. Reads brand-profile + social-strategy first. It SETS the targets; analytics-and-reporting MEASURES against them. Targets come from real benchmarks (never fabricated baselines), KPIs must be controllable and non-vanity, and guardrails prevent gaming. Distinct from analytics-and-reporting (measures) and social-strategy (the whole plan).",
+      "version": "1.0.0",
+      "path": "social-media/goals-and-kpis",
+      "updated_at": "2026-08-15T07:48:12.332552",
+      "category": "social-media"
+    },
+    {
+      "name": "lead-magnets-and-funnels",
+      "description": "Lead magnets and funnels — design offers that turn social traffic into subscribers, leads, and customers. Use when someone wants to \"create a lead magnet,\" \"build a funnel,\" \"design a freebie/opt-in,\" \"make a quiz/calculator/template to grow my list,\" or turn social traffic into qualified leads and customers. Designs the magnet the capture paths deliver PLUS the whole social->capture->nurture funnel, using the MAGNET framework. Reads brand-profile + goals-and-kpis first. WoopSocial has no landing/form/email/quiz builder: the agent designs the magnet + funnel and drafts the nurture and promo posts; WoopSocial publishes the promo posts; capture/delivery/nurture run in external tools; metrics from those + GA4, never fabricated; no dark patterns. Distinct from link-in-bio-and-traffic / social-selling-and-dm (the capture paths) and email-and-newsletter (the owned channel).",
+      "version": "1.0.0",
+      "path": "social-media/lead-magnets-and-funnels",
+      "updated_at": "2026-08-15T07:48:12.341971",
+      "category": "social-media"
+    },
+    {
+      "name": "infographic-and-data-viz",
+      "description": "The craft of turning real data into honest, scannable, shareable infographics and charts. Use when someone wants to visualize data, make an infographic, build a chart/graph, turn a finding or stat into a visual, or fix a chart that's confusing or misleading. A great data viz makes one insight land in 3 seconds. Uses the CHART framework (chart choice, headline takeaway, honest scale, reduce to signal, tag source + accessibility). Reads brand-profile + design-and-templates first and pulls real data from data-and-original-research / analytics-and-reporting. The agent designs the spec; a design/chart tool renders it; the human approves; WoopSocial publishes the image (it does not generate media). NEVER distorts scales or fabricates a data point/source; cites source + date; accessibility required. Distinct from design-and-templates (brand design), quote-cards-and-text-graphics (a lone quote/number), data-and-original-research (originates the data), and analytics-and-reporting.",
+      "version": "1.0.0",
+      "path": "social-media/infographic-and-data-viz",
+      "updated_at": "2026-08-15T07:48:12.338172",
+      "category": "social-media"
+    },
+    {
+      "name": "seasonal-and-moment-marketing",
+      "description": "The annual moment-planning skill -- map the few seasonal/cultural/commercial moments that genuinely fit your brand, gate them for fit + authenticity, tier by weight, and plan far in advance. Use when someone wants a seasonal/holiday content plan, a moment calendar, to plan Black Friday/holiday content, or to decide whether to post for a holiday/awareness day. The planned counterpart to trend-jacking's reactivity: silence on the wrong day beats noise on the wrong topic. Uses the DATES framework. Reads brand-profile + audience-research first. The agent builds the calendar, gates fit + authenticity, tiers, plans lead-time, feeds content-calendar. Big moments route to campaign-and-launch-planning + paid; the reactive half to trend-jacking. WoopSocial schedules ahead -- it does not pick moments, judge authenticity, or run paid. Never join identity/cause moments without year-round standing; never fabricate. Distinct from trend-jacking, content-calendar, and campaign-and-launch-planning.",
+      "version": "1.0.0",
+      "path": "social-media/seasonal-and-moment-marketing",
+      "updated_at": "2026-08-15T07:48:12.360100",
+      "category": "social-media"
+    },
+    {
+      "name": "runway",
+      "description": "Prompt and direct Runway (Gen-4.5, Aleph) — the control-grade generative video tool for camera moves, character consistency, and edit-grade shots. Use when someone wants \"a specific camera move,\" \"the same character across multiple shots,\" \"to edit/restyle existing footage,\" \"a branded product/ad shot,\" \"film-style previz,\" \"image to video with Runway\" (animate a still), or names Runway / Gen-4 / Gen-4.5 / Aleph / Act-Two / Motion Brush / References. Runway generates clips; a human assembles/edits; audio comes from ai-voiceover; WoopSocial schedules/publishes. Below the ai-video router, sibling to veo-3 (all-round + native audio), kling (native 4K/multi-shot/motion), and luma (cinematic HDR/mood). Consented performances only (Act-Two); AI disclosure mandatory.",
+      "version": "1.0.0",
+      "path": "social-media/runway",
+      "updated_at": "2026-08-15T07:48:12.358178",
+      "category": "social-media"
+    },
+    {
+      "name": "ugc-and-influencer",
+      "description": "UGC and influencer marketing — paid or gifted creator partnerships, briefs, usage rights, and disclosure done right. Use when someone wants to run an influencer campaign, sponsored post, paid or gifted creator partnership, write a creator brief, license/whitelist creator content, source customer UGC, or build a UGC pipeline. Vets creators on engagement + audience quality (not follower count); briefs with guardrails not scripts; inks usage rights up front; enforces FTC/ASA disclosure on EVERY paid AND gifted post; runs the customer-UGC pipeline. Uses the BRIEF framework. Reads brand-profile + goals-and-kpis first. WoopSocial publishes the BRAND'S OWN posts (rights-cleared UGC reshares, campaign posts) — NOT creator DMs/payment/whitelisting/contracts. Undisclosed sponsorship = decline and correct; a tag is not usage permission. Distinct from collabs-and-cross-promotion (mutual, unpaid), creator-monetization (the creator's side), and social-proof-and-testimonials (UGC as proof content).",
+      "version": "1.0.0",
+      "path": "social-media/ugc-and-influencer",
+      "updated_at": "2026-08-15T07:48:12.374038",
+      "category": "social-media"
+    },
+    {
+      "name": "nano-banana",
+      "description": "Use to write great prompts for Nano Banana (Google's Gemini image model: Nano Banana Pro = Gemini 3 Pro Image) to generate or edit images for social media — the image-prompt-craft mini-skill. Run when the user wants a nano-banana / Gemini image prompt, an AI image for a post (quote graphic, carousel slide, thumbnail, infographic, product shot, ad creative), or conversational image editing. Reads brand-profile for brand colours/style. Strengths: best-in-class legible in-image text (route typography/layout-led design to ideogram), multi-image consistency, conversational editing, and Google's photoreal lane (Imagen deprecated); surreal art stays Midjourney's. Teaches prompt anatomy, the text-first approach, reference-image consistency, and per-platform aspect ratios. Honest: SynthID watermark + AI disclosure; never real identifiable people or copyrighted characters/logos; verify spelling/data. The API/connection and WoopSocial upload flow live in tools/integrations/nano-banana.md.",
+      "metadata": {
+        "version": "1.0.0"
+      },
+      "license": "MIT",
+      "path": "social-media/nano-banana",
+      "updated_at": "2026-08-15T07:48:12.348994",
+      "category": "social-media"
+    },
+    {
+      "name": "youtube-long-form",
+      "description": "The growth engine for YouTube long-form video in 2026. Use when someone asks to \"grow my YouTube channel,\" \"get more views on my videos,\" \"plan/script a YouTube video,\" \"improve my CTR or retention,\" \"why did my video flop,\" or wants a long-form strategy. Produces packaging concepts + scripts; the human films/edits/designs the thumbnail; publishing routes through scheduling-and-queue -> WoopSocial; analytics and session features live in YouTube Studio. The opposite engine from, and sibling to, youtube-shorts.",
+      "version": "1.0.0",
+      "path": "social-media/youtube-long-form",
+      "updated_at": "2026-08-15T07:48:12.378218",
+      "category": "social-media"
+    },
+    {
+      "name": "content-audit",
+      "description": "Audit an existing social media account and its content — the retrospective reality-check of what's working and what isn't. Use when someone wants to \"audit my content/account,\" \"what's working and what isn't,\" \"clean up my profile/feed,\" \"I post a lot but it's not working,\" or to triage an existing account before replanning. Produces a keep/kill/refresh triage, maps pillar coverage, catches voice drift, and fixes profile fundamentals — then a quick-wins-vs-long-term roadmap. Uses the AUDIT framework. Reads brand-profile + content-pillars + social-strategy (the plan) and analytics-and-reporting (the data) first. It reads native analytics (WoopSocial has none), scores on signal not vanity, recommends rather than auto-deletes, and never fabricates. Feeds content-recycling, content-pillars, profile-optimization, voice-builder, and social-strategy. Distinct from analytics-and-reporting (ongoing measurement) and competitor-analysis (rivals).",
+      "version": "1.0.0",
+      "path": "social-media/content-audit",
+      "updated_at": "2026-08-15T07:48:12.320292",
+      "category": "social-media"
+    },
+    {
+      "name": "competitor-analysis",
+      "description": "Competitor analysis for social media — public-data competitive reconnaissance to find the gap a brand can own. Use when someone wants to \"analyse/research our competitors,\" \"see what rivals are doing on social,\" \"benchmark against competitors,\" \"find content gaps / white space,\" or \"do a competitive landscape / SWOT.\" Reads the PUBLIC competitive field — positioning, pillars, formats, cadence, share of voice — to find the gap the brand can own, then feeds social-strategy and content-pillars. Reads brand-profile + audience-research first. Advisory and public-data only: no scraping private data, no fake monitoring accounts, no fabricated competitor metrics, no copying. Distinct from viral-reverse-engineering (single-post teardown) and audience-research (your own audience).",
+      "version": "1.0.0",
+      "path": "social-media/competitor-analysis",
+      "updated_at": "2026-08-15T07:48:12.319487",
+      "category": "social-media"
+    },
+    {
+      "name": "behind-the-scenes-and-founder",
+      "description": "The transparency content type — turn what's actually happening inside the business into founder/personal-brand content that builds trust: build-in-public updates, founder story, how-it's-made content, team culture, and honest struggle posts. Use when someone wants behind the scenes, build in public, founder content, a personal brand post, or a day in the life. People follow people — founder-voice content out-performs brand-page content because it's specific and true. Uses the REVEAL framework. Reads brand-profile + voice-builder first. The agent finds the real moment, sharpens specifics + stakes, checks the transparency tier (share vs never: customer data, team conflicts, legal), and frames it in founder-voice; the human owns the reveal permanently; WoopSocial publishes. Never fabricates a struggle, performs vulnerability for reach, or exposes customer/team/legal matters. Distinct from contrarian-and-opinion, storytelling-and-narrative, social-proof, and the format writers.",
+      "version": "1.0.0",
+      "path": "social-media/behind-the-scenes-and-founder",
+      "updated_at": "2026-08-15T07:48:12.312259",
+      "category": "social-media"
+    },
+    {
+      "name": "linkedin-growth",
+      "description": "The LinkedIn personal-profile growth playbook for 2026. Use when someone wants to \"grow on LinkedIn,\" \"get more LinkedIn followers/reach,\" \"a LinkedIn strategy,\" \"how the LinkedIn algorithm works,\" or how to use commenting/newsletters/video/connections to grow. Dwell time + early meaningful comments are the engine, personal profiles massively out-reach company pages, links go in the first comment, and strategic commenting on target accounts is the cheapest reach on the platform. Uses the LADDER framework. Reads brand-profile + voice-builder first. The agent drafts posts + comment copy and designs the system; a human does the live commenting/connecting/DMs; WoopSocial schedules posts; metrics come from native LinkedIn analytics (SSI as a directional check); nothing is fabricated. Single-post craft → linkedin-post-writer; company page → linkedin-company-pages.",
+      "version": "1.0.0",
+      "path": "social-media/linkedin-growth",
+      "updated_at": "2026-08-15T07:48:12.343850",
+      "category": "social-media"
+    },
+    {
+      "name": "writing-style-and-tone",
+      "description": "The writing-craft skill — style and tone as applied technique: rhythm, specificity, tone modulation, and the edit passes that make writing read as human. Use when someone's posts \"sound like ChatGPT,\" a draft needs a style edit, they ask how to write differently per platform or moment without losing the brand voice, writing is grammatically perfect but exhausting, a manager wants em dashes banned or detector scores chased, or any AI-assisted draft needs its mandatory quality pass. Uses the STYLE framework. Reads voice-builder + brand-profile + the format skill first. Tells must be read as a cluster with judgment — no single marker proves AI, and detectors misflag real writers; the winning move is substance so owned the question never arises. Voice is identity; tone is register. The agent drafts; the HUMAN supplies lived specifics and final say; never invents anecdotes or staged typos. Distinct from voice-builder, hook-writer, the format skills, and content-research-and-sourcing.",
+      "version": "1.0.0",
+      "path": "social-media/writing-style-and-tone",
+      "updated_at": "2026-08-15T07:48:12.376762",
+      "category": "social-media"
+    },
+    {
+      "name": "campaign-and-launch-planning",
+      "description": "Plan and orchestrate a product launch or social media campaign end to end — the multi-week arc, channel by channel. Use when someone wants to plan a launch, product drop, campaign, big announcement, waitlist/pre-launch push, or coordinated multi-platform moment. Plans a time-boxed campaign as ONE story across three phases (tease -> launch -> sustain) toward a single goal, and schedules the coordinated social posts via WoopSocial. Uses the STORY framework. Reads brand-profile + goals-and-kpis first. WoopSocial schedules + publishes the social posts on the timeline; the waitlist/hub, email sequence, checkout, paid ads, press/creator outreach, and livestream are external/native, and conversion/ROI come from native analytics + the store (never fabricated). Urgency must be credible (no fake countdowns/scarcity). Distinct from content-calendar (the ongoing always-on cadence) and goals-and-kpis (the targets a campaign serves).",
+      "version": "1.0.0",
+      "path": "social-media/campaign-and-launch-planning",
+      "updated_at": "2026-08-15T07:48:12.313486",
+      "category": "social-media"
+    },
+    {
+      "name": "hashtag-strategy",
+      "description": "Use to build a hashtag and discoverability strategy for social posts — the modern (2026) approach, not the outdated \"30 hashtags to go viral\" playbook. Run when the user says \"hashtags,\" \"what hashtags should I use,\" \"how many hashtags,\" \"hashtag strategy,\" \"help me get discovered/reach,\" asks \"do hashtags still work / are hashtags dead,\" or asks how to tag a post. Reads brand-profile and audience first. Sets the keyword/social-SEO layer first (caption, on-screen text, spoken audio) because that — plus engagement and the content itself — drives discovery far more than hashtags now; then picks a tight, relevant, per-platform hashtag set (respecting caps like Instagram's enforced 5-tag limit), favors niche/mid-tier tags over generic mega-tags, and designs branded/campaign hashtags for community and tracking. Rotates sets rather than copy-pasting one block, and hands placement/publishing to scheduling-and-queue. Sets honest expectations: hashtags categorize and aid search; they are not a reach hack.",
+      "metadata": {
+        "version": "1.0.0"
+      },
+      "license": "MIT",
+      "path": "social-media/hashtag-strategy",
+      "updated_at": "2026-08-15T07:48:12.333000",
+      "category": "social-media"
+    },
+    {
+      "name": "storytelling-and-narrative",
+      "description": "The narrative-craft layer -- apply story structure (tension, transformation, resolution) to make any social content stick and travel. Use when someone wants to tell their brand/founder/customer story, make a flat post land, build an emotional or narrative-driven piece, or structure a story across formats. Uses the BEATS framework. Reads brand-profile + voice-builder first. The agent finds the real story, structures the arc (setup -> turning point -> payoff; audience = hero, brand = guide), anchors concrete specifics, and shapes it to the format. Feeds the format writers (reels-script, carousel-writer, linkedin-post-writer, thread-writer, caption-writer) and hook-writer; serialized arcs map into content-calendar; WoopSocial publishes. NOT the IG/FB Stories format (that's story-writer). Never fabricates a customer story or testimonial; never guarantees virality. Distinct from story-writer, hook-writer (the opening it pairs with), the format writers, and campaign-and-launch-planning.",
+      "version": "1.0.0",
+      "path": "social-media/storytelling-and-narrative",
+      "updated_at": "2026-08-15T07:48:12.364715",
+      "category": "social-media"
+    },
+    {
+      "name": "short-form-video-script",
+      "description": "The master craft of scripting short-form vertical video (Reels, TikTok, Shorts) for watch-through. Use when someone wants a short-form video script, a Reel/TikTok/Short script, help with hooks, retention, pacing, the ending/loop, sound-off captions, or fixing early drop-off. Watch-through, not likes, rules short-form; the script's only job is to be un-skippable. Uses the WATCH framework. Reads brand-profile + voice-builder first; pulls the 'what' from the content-angle skills and the hook from hook-writer. The agent writes the script (spoken lines + on-screen text + beat/shot direction + hook variants + CTA); the human shoots/performs/edits; WoopSocial publishes the finished file. Routes platform specifics to reels-script / tiktok-script / youtube-shorts; pairs with talking-head-and-piece-to-camera. NEVER bait-and-switches the hook or fabricates a stat. Distinct from hook-writer, captions-and-clipping, and ai-video/veo-3/heygen (which generate the video this scripts).",
+      "version": "1.0.0",
+      "path": "social-media/short-form-video-script",
+      "updated_at": "2026-08-15T07:48:12.360783",
+      "category": "social-media"
+    },
+    {
+      "name": "linkedin-post-writer",
+      "description": "Use to write a LinkedIn post — professional, thought-leadership, or founder/personal-brand content optimized for LinkedIn's specific mechanics (dwell time, early comments, the \"see more\" hook). Run when the user says \"write a LinkedIn post,\" \"LinkedIn,\" \"post this on LinkedIn,\" \"thought leadership post,\" \"founder post,\" or wants professional/B2B social content. Reads brand-profile and voice first, uses hook-writer for the opening line that must win the \"see more\" expand, formats for dwell, drives genuine comments, and routes links to the first comment to protect reach. Avoids LinkedIn cringe (broetry, engagement bait). This is the single-post craft: to \"grow on LinkedIn\" or set the account strategy use linkedin-growth; for company-page strategy use linkedin-company-pages; for general captions use caption-writer; for X threads use thread-writer; for the carousel slides use carousel-writer.",
+      "metadata": {
+        "version": "1.0.0"
+      },
+      "license": "MIT",
+      "path": "social-media/linkedin-post-writer",
+      "updated_at": "2026-08-15T07:48:12.344540",
+      "category": "social-media"
+    },
+    {
+      "name": "caption-writer",
+      "description": "Use to write platform-native social media captions (post copy) in the brand's voice — the words that accompany a post on Instagram, LinkedIn, TikTok, Facebook, X/Twitter, Threads, Pinterest, YouTube, or Bluesky. Run when the user says \"write a caption,\" \"caption this,\" \"post copy,\" \"write the copy for this photo/video/Reel,\" \"IG caption,\" \"what should I write for this post,\" or needs the words to go with a visual. Reads brand-profile and voice first so captions sound like the brand, not generic AI. For long-form LinkedIn thought-leadership posts use linkedin-post-writer; for X/Threads multi-post threads use thread-writer; for video scripts use the video skills. This skill writes the caption itself.",
+      "metadata": {
+        "version": "1.0.0"
+      },
+      "license": "MIT",
+      "path": "social-media/caption-writer",
+      "updated_at": "2026-08-15T07:48:12.315945",
+      "category": "social-media"
+    },
+    {
+      "name": "pinterest-pin-design",
+      "description": "The Pinterest pin design skill -- the visual half that pairs with pinterest-seo's keyword layer. Use when someone wants to design a pin, a Pinterest pin image, a pin text overlay, fresh pin variations for an existing URL, or board covers. Designs and briefs the 2:3 (1000x1500) vertical pin: one focal point, a keyword text overlay readable at feed size, brand-consistent template, safe zones, and 3-5 visually distinct FRESH designs per destination URL. Uses the SAVED framework. Reads brand-profile + the destination + the pinterest-seo keyword first. A HUMAN or an image/design tool (ideogram/canva/nano-banana/a designer) creates the final raster; WoopSocial publishes the finished pin image + title + description + board + link. No misleading pins, no repin-as-fresh dupes, engagement never fabricated. Distinct from pinterest-seo (the keyword layer -- they PAIR), pinterest-growth (the strategy), design-and-templates (the template system), and ideogram/canva (render the raster this briefs).",
+      "version": "1.0.0",
+      "path": "social-media/pinterest-pin-design",
+      "updated_at": "2026-08-15T07:48:12.350842",
+      "category": "social-media"
+    },
+    {
+      "name": "analytics-and-reporting",
+      "description": "Social media analytics and reporting — read native platform data honestly and turn it into next actions. Use when someone wants to \"check my analytics,\" \"see how my posts are doing,\" \"build a social media report,\" \"which content is working,\" \"what metrics/KPIs should I track,\" or to turn performance data into next steps. Measures goal-mapped SIGNAL metrics (saves, shares, watch time/retention, engagement-rate-by-reach, follower-growth-rate, CTR, conversions) — not vanity (followers/impressions/likes) — and closes the loop. Uses the METER framework. Reads brand-profile + social-strategy (goals) first. WoopSocial has NO analytics surface, so this reads NATIVE platform dashboards (+ GA4/UTM) and interprets numbers the human provides; it NEVER fabricates a metric. Feeds content-recycling, experimentation, competitor-analysis, and every growth skill. Distinct from goals-and-kpis (sets targets) and experimentation (runs tests).",
+      "version": "1.0.0",
+      "path": "social-media/analytics-and-reporting",
+      "updated_at": "2026-08-15T07:48:12.309762",
+      "category": "social-media"
+    },
+    {
+      "name": "linkedin-company-pages",
+      "description": "The LinkedIn company-page (LINKEDIN_PAGES) growth strategy skill -- a separate platform from personal LINKEDIN. Use when someone wants to grow a company/business page, fix low page reach (\"our LinkedIn page gets no engagement\"), set up employee advocacy, or plan company-page content. In 2026 pages get a tiny share of feed reach, so the page is a credibility hub + paid launchpad (Ads + Thought Leader Ads), NOT the reach engine -- the growth lever is employee advocacy (people, not logos). Uses the HUMAN framework. Reads brand-profile + goals-and-kpis first. The agent strategizes, designs the advocacy program, and drafts page posts + advocacy content; WoopSocial publishes the page's own posts on a schedule; employees post from their OWN profiles (routes to linkedin-growth); first-hour engagement, Ads, and analytics stay human/native. No bait, pods, or bought followers; never fabricates metrics. Distinct from linkedin-growth (personal profile) and linkedin-post-writer (the post craft).",
+      "version": "1.0.0",
+      "path": "social-media/linkedin-company-pages",
+      "updated_at": "2026-08-15T07:48:12.343251",
+      "category": "social-media"
+    },
+    {
+      "name": "collabs-and-cross-promotion",
+      "description": "Creator collabs and cross-promotion — organic creator-to-creator partnerships that swap audiences. Use when someone wants to set up a collab, audience swap, cross-promotion, shoutout swap, joint giveaway, guest spot, joint video/series, a YouTube/IG collab post, or co-promo with another creator. Picks a complementary, similar-size, values-aligned partner, agrees the plan before creating, and co-creates shared-value content (not a bare shoutout) on a coordinated schedule. Uses the UNITE framework. Reads brand-profile + goals-and-kpis first. WoopSocial publishes each partner's OWN posts to their OWN accounts; it does NOT create native IG Collab co-authored posts, run giveaways, duet/stitch, or manage the agreement. A pure mutual collab isn't a sponsorship, but payment/free product makes it one -> disclose -> ugc-and-influencer; partnerships must be genuine; metrics never fabricated. Distinct from ugc-and-influencer (brand->creator) and creator-monetization (the creator's income).",
+      "version": "1.0.0",
+      "path": "social-media/collabs-and-cross-promotion",
+      "updated_at": "2026-08-15T07:48:12.317880",
+      "category": "social-media"
+    },
+    {
+      "name": "image-prompt",
+      "description": "Use as the foundation and router for any image a post needs — turn a social need into a clear image brief, describe it with model-agnostic prompt craft, and route to the right tool. Run when the user says \"I need a visual/image for this post,\" \"what image should I use,\" \"make a graphic,\" \"help me prompt an image,\" or is unsure which image tool/model to use. Reads brand-profile for the visual brand. Teaches the image brief, the universal anatomy of a strong prompt in natural language, and a tool router (typographic -> ideogram/nano-banana; photoreal -> nano-banana/flux; surreal -> Midjourney; editing -> nano-banana/flux; vector -> Recraft; video -> veo-3). Includes a \"should this even be AI-generated?\" gate (a real photo, screenshot, or chart often beats generic AI), accessibility, and honest scope (disclose AI, never real identifiable people or copyrighted IP, verify text/data). Hands off to the tool-specific mini-skills; WoopSocial publishes via Media and doesn't generate images.",
+      "metadata": {
+        "version": "1.0.0"
+      },
+      "license": "MIT",
+      "path": "social-media/image-prompt",
+      "updated_at": "2026-08-15T07:48:12.337488",
+      "category": "social-media"
+    },
+    {
+      "name": "podcast-and-audiograms",
+      "description": "The audio-to-social pipeline skill -- turn a podcast episode into short, branded, captioned clips and audiograms that drive people back to the full episode. Use when someone wants to repurpose a podcast, make podcast clips, create audiograms, or promote an episode on social. Uses the WAVES framework. Reads brand-profile + the episode first. Select clips by listener-retention data + timestamped transcript, not just an AI virality score, plus a strategic CTA back to the episode. The agent plans the clip strategy, briefs the clip/audiogram creation, plans the cadence, and writes hooks/CTAs; a clip or audiogram tool produces the clips; the creator finalizes; WoopSocial publishes on a schedule and does NOT record/edit/transcribe the podcast, generate clips, or host it. Captions are non-optional (85% sound-off). Never fabricates virality or clips someone's copyrighted podcast. Distinct from captions-and-clipping, content-recycling, and youtube-long-form.",
+      "version": "1.0.0",
+      "path": "social-media/podcast-and-audiograms",
+      "updated_at": "2026-08-15T07:48:12.353567",
+      "category": "social-media"
+    },
+    {
+      "name": "talking-head-and-piece-to-camera",
+      "description": "The on-camera delivery craft — helping a real human film themselves talking to a lens and look like themselves doing it. Use when someone wants a \"talking head video\" or \"piece to camera,\" says \"film myself\" or \"I look stiff on camera,\" asks about a teleprompter, framing, lighting, audio, or retakes, or wants to batch-film videos. Uses the TAKES framework. Phone-first: gear is almost never the bottleneck. Reads brand-profile + voice-builder first; takes its script from short-form-video-script (that writes it, this delivers it). The agent coaches setup + delivery, formats prompter/beat-map scripts, and plans batch days; the HUMAN films and picks the take (the agent cannot see footage); WoopSocial publishes the finished file. Camera-shy? Route honestly to heygen/synthesia or faceless formats. Never fabricates \"that take looks great.\" Distinct from scripting-and-storyboarding (the shoot plan), heygen/synthesia (avatars), and captions-and-clipping/capcut/descript (the edit).",
+      "version": "1.0.0",
+      "path": "social-media/talking-head-and-piece-to-camera",
+      "updated_at": "2026-08-15T07:48:12.366869",
+      "category": "social-media"
+    },
+    {
+      "name": "creator-monetization",
+      "description": "Creator monetization — build a diversified revenue portfolio from an audience: memberships, products, brand deals, platform payouts. Use when someone wants to \"make money as a creator,\" \"monetize my audience,\" \"start a membership/community,\" \"sell a course/digital product,\" \"get brand deals / set my rates,\" or build diversified creator income. Builds a revenue STACK rather than chasing a viral payout, using the STACK framework. Reads brand-profile + goals-and-kpis first. WoopSocial does NOT process payments, host products/memberships, or pay creators: the agent chooses/sequences streams, designs offers + media kit, and drafts promo posts; WoopSocial publishes the promo/launch posts; infrastructure is external; income is never promised or fabricated; sponsorships are disclosed (FTC). Distinct from email-and-newsletter (the owned channel), lead-magnets-and-funnels (funnel mechanics), and ugc-and-influencer (the BRAND side of creator deals — this is the creator side).",
+      "version": "1.0.0",
+      "path": "social-media/creator-monetization",
+      "updated_at": "2026-08-15T07:48:12.324045",
+      "category": "social-media"
+    },
+    {
+      "name": "design-and-templates",
+      "description": "The reusable on-brand template-SYSTEM skill -- build a brand kit + a small set of reusable templates so a non-designer can produce consistent on-brand graphics fast across formats. Use when someone wants templates, a brand kit, a consistent visual system, or help choosing/using a design tool (Canva/Adobe Express/Figma). For social, consistency + speed beat bespoke. Uses the BRAND framework. Reads brand-profile first. The agent designs the SYSTEM (brand-kit tokens, template set, hierarchy rules, workflow); a design tool or the image tools produce the actual graphics; the finished asset enters the WoopSocial flow (WoopSocial publishes -- it does NOT design or generate). Honest about the ~70-80% on-brand ceiling and AI copyright limits. Distinct from brand-profile (the identity source), thumbnail-design + pinterest-pin-design (single asset types), carousel-writer (copy vs visual frame), and image-prompt + the image tools (generation vs layout).",
+      "version": "1.0.0",
+      "path": "social-media/design-and-templates",
+      "updated_at": "2026-08-15T07:48:12.327487",
+      "category": "social-media"
+    },
+    {
+      "name": "meme-and-culture",
+      "description": "The cultural-fluency + meme-craft skill -- participate in internet culture and meme formats as a brand without being cringe, tone-deaf, or legally exposed. Use when someone wants to make a meme, join a cultural moment, build a meme/humor pillar, or decide whether to jump on a format. Meme marketing done wrong is worse than none. Uses the VIBES framework. Reads brand-profile + the meme/moment first. Two hard gates: brand-fit (would it work without your logo?) and safety + IP (never tragedies/divisive/ appropriation/punching-down; original visuals only, no copyrighted characters or celebrity likeness). The agent advises fit/safety/IP and writes the copy/concept; the human/creator makes the asset and adds the final wit pass; WoopSocial publishes/schedules (reactive ones often post in the moment). Sitting a meme out is valid; never fabricates relevance or virality. Distinct from trend-jacking, image-prompt/design-and-templates, community-management, and ai-music-and-sound.",
+      "version": "1.0.0",
+      "path": "social-media/meme-and-culture",
+      "updated_at": "2026-08-15T07:48:12.347912",
+      "category": "social-media"
+    },
+    {
+      "name": "captions-and-clipping",
+      "description": "The long-form-to-Shorts + sound-off captions mini-skill (Opus Clip / CapCut / Submagic). Use when someone wants to \"clip my podcast/webinar/long video into Shorts,\" \"make TikToks/Reels from a YouTube video,\" \"add captions/subtitles to a video,\" \"repurpose long-form into short-form,\" or \"auto-generate clips.\" Tools clip and caption; a human reviews; WoopSocial schedules/publishes. Below the ai-video router; sibling to veo-3, heygen, ai-voiceover. This is the general craft: route OpusClip-specific pipelines (credits, Virality Score, tiers) to opus-clip, hands-on short-form editing to capcut, and the long-form talk edit itself to descript. Export clean (no watermark); disclose AI-edited video.",
+      "version": "1.0.0",
+      "path": "social-media/captions-and-clipping",
+      "updated_at": "2026-08-15T07:48:12.316486",
+      "category": "social-media"
+    },
+    {
+      "name": "content-calendar",
+      "description": "Use to build a content calendar — a sustainable, repeatable posting rhythm and recurring structure (which pillars/formats post on which days, on which platforms), derived from strategy and pillars. Run when the user says \"content calendar,\" \"editorial calendar,\" \"social media calendar,\" \"posting schedule,\" \"content plan\" (ongoing), \"what should I post each week,\" \"build me a posting routine/cadence,\" or wants a repeatable system rather than one period's posts. Reads social-strategy, content-pillars, and brand-profile first; sizes cadence to real capacity; builds a recurring skeleton of buckets and named series with room reserved for reactive/trend content; sets the planning rhythm (batch, buffer, review). Hands a period's briefs to batch-content-plan, content to the writing skills, and scheduling to scheduling-and-queue. For filling one specific week/month with actual posts use batch-content-plan; for higher-level channel/goal choices use social-strategy.",
+      "metadata": {
+        "version": "1.0.0"
+      },
+      "license": "MIT",
+      "path": "social-media/content-calendar",
+      "updated_at": "2026-08-15T07:48:12.320935",
+      "category": "social-media"
+    },
+    {
+      "name": "engagement-routine",
+      "description": "Use to design a sustainable engagement routine — the operating system that turns the engagement craft into a daily/weekly habit. Run when the user asks how to keep up with comments/DMs, how much time to spend engaging, when to engage, how to build an engagement habit/system/cadence, or how to engage without burning out. Reads brand-profile/social-strategy. Covers time-boxed daily/weekly engagement windows built around the golden hour after posting, triage order, mapping engagement to a goal, and anti-burnout boundaries. The flywheel: batch and schedule content (scheduling-and-queue, batch-content-plan) to free the time, then spend it engaging. Advisory and honest — WoopSocial has no comment/DM/inbox surface and no analytics, so the human engages in-app and the agent drafts via reply-and-comment-writer; never automates or fakes engagement. Pairs with reply-and-comment-writer (the craft), the growth skills, community-management, and crisis-and-moderation.",
+      "metadata": {
+        "version": "1.0.0"
+      },
+      "license": "MIT",
+      "path": "social-media/engagement-routine",
+      "updated_at": "2026-08-15T07:48:12.329487",
+      "category": "social-media"
+    },
+    {
+      "name": "pinterest-growth",
+      "description": "The Pinterest growth playbook for 2026. Use when someone wants to \"grow on Pinterest,\" \"get traffic from Pinterest,\" \"a Pinterest strategy,\" a pin cadence/board structure, or to turn blog/product content into pins. Pinterest is a visual SEARCH engine where keyword-optimized, fresh, vertical pins compound into evergreen outbound traffic — optimise for discoverability + clicks, not in-the-moment engagement. Uses the PINS framework. Reads brand-profile + voice-builder first. The agent drafts pins + the schedule; WoopSocial schedules/publishes pins; metrics come from native Pinterest Analytics; nothing is fabricated. For \"Pinterest SEO\" / \"rank my pins\" / keyword titles-descriptions route to pinterest-seo; for designing the pin image route to pinterest-pin-design. Pairs with content-recycling.",
+      "version": "1.0.0",
+      "path": "social-media/pinterest-growth",
+      "updated_at": "2026-08-15T07:48:12.350291",
+      "category": "social-media"
+    },
+    {
+      "name": "text-post-and-microblog",
+      "description": "The master craft of the standalone text post / microblog (LinkedIn, X/Twitter, Threads, Bluesky, Facebook text posts). Use when someone wants to write a text post, a LinkedIn post, a short written update, a microblog, or fix a post that flopped / reads as a wall of text / has a weak opening line. A text post has nowhere to hide -- the words are everything, and the first ~140-210 characters (the 'see more' fold) are most of the job. Uses the LINES framework. Reads brand-profile + voice-builder + hook-writer first; pulls the 'what' from the content-angle skills. The agent writes the post; the human approves; WoopSocial publishes to supported platforms, routing specifics to linkedin-post-writer / threads-post / thread-writer. NEVER fabricates a stat/story/metric or uses engagement-bait; avoids AI-slop over-formatting. No native multi-post threads; Reddit/Mastodon are advisory-only. Distinct from caption-writer, thread-writer, and the content-angle skills (WHAT vs this HOW).",
+      "version": "1.0.0",
+      "path": "social-media/text-post-and-microblog",
+      "updated_at": "2026-08-15T07:48:12.367490",
+      "category": "social-media"
+    },
+    {
+      "name": "audience-research",
+      "description": "Use to develop a deep, usable understanding of who a brand creates content for — sharp enough that every content skill resonates with them specifically. Run when the user says \"who's my audience,\" \"audience research,\" \"target audience,\" \"build a persona,\" \"customer profile,\" \"ideal customer profile\" / \"ICP,\" \"who am I talking to,\" \"understand my followers,\" or before content work that needs more audience depth than the brand-profile sketch. Reads brand-profile first and goes deeper: jobs-to-be-done, pains, objections, and the audience's ACTUAL language (voice-of-customer), grounded in real sources where possible — never demographic theater. Produces an audience.md that content-pillars, batch-content-plan, and the content skills read. Works for any business.",
+      "metadata": {
+        "version": "1.0.0"
+      },
+      "license": "MIT",
+      "path": "social-media/audience-research",
+      "updated_at": "2026-08-15T07:48:12.310486",
+      "category": "social-media"
+    },
+    {
+      "name": "opus-clip",
+      "description": "The OpusClip craft skill — turn long video (podcasts, webinars, interviews, streams) into publishable short clips with AI candidate-finding, honest triage, and a human-reviewed pipeline. Use when someone wants to use OpusClip, turn a podcast/webinar/VOD into shorts, understand the Virality Score, pick a plan, pull a moment from a long recording (ClipAnything moment search), or automate a clipping pipeline. Uses the CLIPS framework. Reads captions-and-clipping + the source skill + brand-profile first. The agent plans the pipeline, credit math, and QA; the HUMAN reviews every clip and approves; WoopSocial publishes the finished exports (it does not clip or edit video). Integrity spine: the Virality Score is a PREDICTION for triage, never truth; 1 credit = 1 SOURCE minute; no unreviewed auto-post pipelines; no out-of-context clips. Distinct from captions-and-clipping (general craft), descript (long-form edit), capcut (short-form polish), and the platform publishing skills.",
+      "version": "1.0.0",
+      "path": "social-media/opus-clip",
+      "updated_at": "2026-08-15T07:48:12.349515",
+      "category": "social-media"
+    },
+    {
+      "name": "social-strategy",
+      "description": "Use to set a brand's overall social media strategy — which channels to focus on (and which to ignore), what to achieve, the angle to win, and a realistic operating cadence. The top-level plan that sits above content pillars and the calendar. Run when the user says \"social strategy,\" \"social media strategy,\" \"which platforms should I be on,\" \"what's my plan,\" \"should I be on TikTok/LinkedIn,\" or is starting or resetting their social presence. Reads brand-profile, audience-research, and content-pillars first. Makes real choices and trade-offs — especially what NOT to do — ties goals to the business not vanity metrics, and is honest that WoopSocial has no analytics (measurement is the platforms' native analytics). Produces a social-strategy.md. It names the objective; to turn it into SMART targets, KPIs, and North Star metrics, use goals-and-kpis. Works for any business.",
+      "metadata": {
+        "version": "1.0.0"
+      },
+      "license": "MIT",
+      "path": "social-media/social-strategy",
+      "updated_at": "2026-08-15T07:48:12.363489",
+      "category": "social-media"
+    },
+    {
+      "name": "instagram-growth",
+      "description": "Use to grow an Instagram account — the Instagram-specific growth strategy that diagnoses where growth is stuck (reach, follow-conversion, retention, or shares) and orchestrates the other skills to fix it. Run when the user says \"grow on Instagram,\" \"Instagram growth,\" \"get more followers/reach on Instagram,\" \"my Instagram isn't growing,\" \"Instagram strategy,\" or wants more reach/followers on IG. Reads brand-profile, social-strategy, and audience first. Built on the 2026 reality that Instagram is a discovery engine where watch time and sends (DM shares) drive non-follower reach. Diagnoses the broken stage of the growth loop and routes to the right skill (reels-script, carousel-writer, profile-optimization, content-calendar, hashtag-strategy, trend-jacking). Judges via native Instagram Insights — not WoopSocial analytics — and treats follower count as vanity.",
+      "metadata": {
+        "version": "1.0.0"
+      },
+      "license": "MIT",
+      "path": "social-media/instagram-growth",
+      "updated_at": "2026-08-15T07:48:12.338874",
+      "category": "social-media"
+    },
+    {
+      "name": "cross-platform-repurposing",
+      "description": "Use to turn one piece of content into multiple platform-native posts — adapt, never copy-paste. Run when the user says \"repurpose this,\" \"turn this into posts for every platform,\" \"cross-post,\" \"make this work on TikTok/LinkedIn/X too,\" \"one idea into a week of content,\" \"turn this blog/video/podcast into social posts,\" or wants to fan content out. Reads brand-profile and voice first, extracts the core idea, then re-natives it for each platform (different hook, format, length, mechanics, CTA) using the content skills, and hands the fan-out to scheduling-and-queue. This is the multiplier that makes a content operation sustainable — but every version must stand on its own and feel native, never duplicated.",
+      "metadata": {
+        "version": "1.0.0"
+      },
+      "license": "MIT",
+      "path": "social-media/cross-platform-repurposing",
+      "updated_at": "2026-08-15T07:48:12.325487",
+      "category": "social-media"
+    },
+    {
+      "name": "community-management",
+      "description": "Use to build a genuine community — turning an audience into people who interact with each other, not just with the brand. Run when the user asks how to build community, foster belonging/loyalty, create superfans, start a group/Discord channel, get members talking to each other, or move beyond chasing followers/virality. Reads brand-profile/social-strategy/audience-research. Community outperforms virality, measured by relationship depth/retention, not follower count. Covers the audience-to-community distinction (member-to-member interaction), choosing the space (in-feed -> semi-owned -> owned groups/Discord), recurring rituals, building belonging, and nurturing superfans into advocates. KPIs read natively, never fabricated. Advisory: WoopSocial schedules the content but does NOT run Discord/Slack or show analytics — the human runs the community, the agent drafts. Never fake community; get consent before spotlighting. Pairs with reply-and-comment-writer and crisis-and-moderation.",
+      "metadata": {
+        "version": "1.0.0"
+      },
+      "license": "MIT",
+      "path": "social-media/community-management",
+      "updated_at": "2026-08-15T07:48:12.318486",
+      "category": "social-media"
+    },
+    {
+      "name": "tiktok-growth",
+      "description": "Use to grow a TikTok account — the TikTok-specific growth strategy that diagnoses where growth is stuck and orchestrates the other skills to fix it. Run when the user says \"grow on TikTok,\" \"TikTok growth,\" \"get more followers/views on TikTok,\" \"my TikTok isn't growing,\" \"go viral on TikTok,\" or \"TikTok strategy.\" Reads brand-profile, social-strategy, and audience first. Built on the 2026 reality that TikTok is an interest graph — follower count is not a ranking factor; completion rate and rewatches drive reach, and search/SEO is a major evergreen pillar. Diagnoses the broken stage of the test-and-expand loop and routes to the right skill (tiktok-script, hook-writer, profile-optimization, content-calendar, hashtag-strategy, trend-jacking, viral-reverse-engineering). Judges via native TikTok analytics — not WoopSocial analytics — and treats followers as a business asset, not the reach mechanism.",
+      "metadata": {
+        "version": "1.0.0"
+      },
+      "license": "MIT",
+      "path": "social-media/tiktok-growth",
+      "updated_at": "2026-08-15T07:48:12.370490",
+      "category": "social-media"
+    },
+    {
+      "name": "platform-specs-and-validation",
+      "description": "Platform specs and publish validation — per-platform requirements and the validate-before-publish step for multi-platform fan-out. Use when fanning a post out to multiple platforms, when a post is getting rejected, when mapping per-platform postType/required fields, or to run the validate-before-publish step. Encodes the per-platform postType enums, required-field matrices, and media rules from the OpenAPI spec, and runs POST /posts/validate so a post lands correctly on every target. Uses the CHECK framework. The keystone the per-platform format skills point to. WoopSocial validates + publishes atomically and has no update endpoint; the agent maps fields and fixes spec violations, but human-judgment calls (disclosure truthfulness, privacy intent) stay with the person; metrics never fabricated. Distinct from the per-platform format skills (one platform's content) and scheduling-and-queue (timing).",
+      "version": "1.0.0",
+      "path": "social-media/platform-specs-and-validation",
+      "updated_at": "2026-08-15T07:48:12.352848",
+      "category": "social-media"
+    },
+    {
+      "name": "veo-3",
+      "description": "Use to write great prompts for Google Veo (Veo 3.1) to generate or animate video for social media — the video-prompt-craft mini-skill, the video counterpart to nano-banana. Run when the user wants a Veo / AI video prompt, a short video clip for a post (b-roll, product-in-motion, hook visual, spokesperson/UGC clip, ad), to animate a still image into video, or a vertical Reel/TikTok/Short clip. Reads brand-profile for brand style. Veo's standout is native synchronized audio in one pass, plus image-to-video and native 9:16 vertical. Teaches the prompt anatomy, audio prompting, the image-to-video pipeline, and the 8-second constraint + extension/stitching. Honest: iterate cheap then finalize, disclose AI video (SynthID watermark), never generate real identifiable people or copyrighted IP. This is the prompt-craft layer — the API/connection and the generate -> upload to WoopSocial Media -> attach flow live in tools/integrations/veo.md; the consuming pack is reels-script's veo-prompt-pack.",
+      "metadata": {
+        "version": "1.0.0"
+      },
+      "license": "MIT",
+      "path": "social-media/veo-3",
+      "updated_at": "2026-08-15T07:48:12.374490",
+      "category": "social-media"
+    },
+    {
+      "name": "reddit-marketing",
+      "description": "Advisory-only guidance for showing up credibly on Reddit so your brand is accurately represented in the source layer AI engines cite most. Use when someone asks to \"do Reddit marketing,\" \"post on Reddit,\" \"which subreddits should we be in,\" \"get cited on Reddit,\" \"respond to a subreddit thread,\" \"why does AI cite Reddit about us,\" \"fix what Reddit says about our brand,\" or \"my Reddit post got removed / account got banned.\" WoopSocial does NOT support Reddit — this skill drafts; the human posts as themselves. Never automates, never uses alts or vote manipulation. Pairs with ai-search-optimization.",
+      "version": "1.0.0",
+      "path": "social-media/reddit-marketing",
+      "updated_at": "2026-08-15T07:48:12.356033",
+      "category": "social-media"
+    },
+    {
+      "name": "batch-content-plan",
+      "description": "Use to plan and produce a full batch of social media content for a period — a week or a month — in one session: strategically balanced, on-brand, mapped to a calendar, and ready to schedule. Run when the user says \"plan my content,\" \"a month of posts,\" \"batch my content,\" \"plan the week,\" \"fill my calendar,\" or wants many posts planned at once in one sitting. Reads brand-profile, voice, and content-pillars first, and produces a brief for each post that the content skills (caption-writer, reels-script, hook-writer) execute. As a BRIDGE skill it then confirms and hands the batch to scheduling-and-queue. Builds a balanced mix — never all-promotion — matched to the user's real capacity. Suggests cadence but does not claim analytics-based timing (WoopSocial has no analytics surface yet). For the ongoing recurring system — which pillars/formats post on which days, the living \"content calendar\" — use content-calendar; this skill fills one specific period of that system with actual post briefs.",
+      "metadata": {
+        "version": "1.0.0"
+      },
+      "license": "MIT",
+      "path": "social-media/batch-content-plan",
+      "updated_at": "2026-08-15T07:48:12.311101",
+      "category": "social-media"
+    },
+    {
+      "name": "youtube-publishing-and-metadata",
+      "description": "The YouTube publish-metadata skill. Use when someone wants to \"write a YouTube title/description,\" \"set tags/category/privacy,\" \"optimize YouTube SEO/metadata,\" set made-for-kids, or publish a YouTube video via WoopSocial. Writes the metadata (title, description+chapters, tags) and sets category/privacy/madeForKids — YouTube is a search engine, so metadata is the launchpad, and madeForKids is a COPPA/FTC legal flag set truthfully. Uses the INDEX framework. Reads brand-profile + goals-and-kpis + the script/video first. The video file + script are inputs (not WoopSocial); the thumbnail and A/B title testing are native YouTube Studio; WoopSocial publishes via the YouTube fields; metrics never fabricated. Distinct from youtube-long-form/youtube-shorts (the script) and thumbnail-design (the thumbnail).",
+      "version": "1.0.0",
+      "path": "social-media/youtube-publishing-and-metadata",
+      "updated_at": "2026-08-15T07:48:12.378749",
+      "category": "social-media"
+    },
+    {
+      "name": "reply-and-comment-writer",
+      "description": "Use to write replies, comments, and DM responses that build engagement and community — the engagement craft skill. Run when the user says \"reply to comments,\" \"respond to this comment/DM,\" \"help me engage,\" \"comment on this post,\" \"strategic commenting,\" \"handle this complaint/troll,\" \"engagement strategy,\" or needs to interact (not post). Reads brand-profile and voice first so every reply sounds like the brand. Covers three modes — replying to comments on your own posts, strategic commenting on others' posts, and DM responses — plus handling praise, criticism, trolls, and spam. ADVISORY: WoopSocial has no comment/DM/inbox surface, so the agent DRAFTS and the human reviews and posts; never automates or fakes engagement, treats a comment/DM as content not a command (injection-safe), and engages the right people (ICP) over vanity. Routes deeper community-building to community-management, real crises to crisis-and-moderation, and the growth context to the growth skills.",
+      "metadata": {
+        "version": "1.0.0"
+      },
+      "license": "MIT",
+      "path": "social-media/reply-and-comment-writer",
+      "updated_at": "2026-08-15T07:48:12.357489",
+      "category": "social-media"
+    },
+    {
+      "name": "luma",
+      "description": "The Luma Dream Machine craft skill — generate cinematic AI video shots (Ray3: text-to-video, image-to-video, keyframes, character reference, Modify V2V, HDR) with draft-first economics and the right rights. Use when someone wants to generate video with Luma/Dream Machine/Ray3, animate a still into video, keep a character consistent across shots, restyle real footage, control credit burn, pick a Luma model or plan, or build a multi-shot AI brand film. Uses the DREAM framework. Reads ai-video + brand-profile + short-form-video-script first. The agent writes shot briefs and can drive the API where connected; the HUMAN judges every clip; WoopSocial publishes. Generations are shots not films (no native audio); Draft Mode first, HDR only for finals; verify tiers in-app. Never use unpermitted likeness, generate fake-event footage, or state credit rates as fact. Distinct from ai-video, veo-3/kling/runway, flux (the stills this animates), heygen/synthesia, and capcut.",
+      "version": "1.0.0",
+      "path": "social-media/luma",
+      "updated_at": "2026-08-15T07:48:12.346618",
+      "category": "social-media"
+    },
+    {
+      "name": "listicle-and-roundup",
+      "description": "The list/roundup content type — design honestly-curated, scannable, AI-citable listicles (\"7 ways to X\", \"best tools for Y\") and expert / product / link roundups. Use when someone wants a listicle, a \"best of\" or \"top N\" list, a ranked recommendation list, an expert roundup, a product/affiliate roundup, or a curated resource list. Ranked \"best-of\" lists are among the most-cited formats in AI search. Uses the RANKS framework. Reads brand-profile + audience-research first. The agent designs the list and frames the cuts; for roundups it drafts the contributor ask; the human secures real contributor quotes/consent and verifies product facts; WoopSocial publishes the cuts. Feeds the format writers and ai-search-optimization + social-seo. NEVER fabricates items, quotes, or rankings, or pads to a number; discloses affiliate/own-product. Distinct from carousel-writer/thread-writer, educational-content-and-how-to, data-and-original-research, and competitor-analysis.",
+      "version": "1.0.0",
+      "path": "social-media/listicle-and-roundup",
+      "updated_at": "2026-08-15T07:48:12.345221",
+      "category": "social-media"
+    },
+    {
+      "name": "youtube-shorts",
+      "description": "The growth engine for YouTube Shorts in 2026. Use when someone asks to \"grow on Shorts,\" \"get views on YouTube Shorts,\" \"write a Shorts script,\" \"why did my Short flop,\" \"make a vertical YouTube video,\" or wants a Shorts strategy. Drafts the script; the human films/ edits; publishing routes through scheduling-and-queue -> WoopSocial; analytics are read natively in YouTube Studio. Fully decoupled from, and sibling to, youtube-long-form.",
+      "version": "1.0.0",
+      "path": "social-media/youtube-shorts",
+      "updated_at": "2026-08-15T07:48:12.379490",
+      "category": "social-media"
+    },
+    {
+      "name": "viral-reverse-engineering",
+      "description": "Use to reverse-engineer why a piece of content went viral (or overperformed) — yours or someone else's — and extract the repeatable mechanism to apply to your own content. Run when the user says \"why did this go viral,\" \"break down this viral post/video,\" \"reverse engineer,\" \"what made this work,\" or wants to learn from viral content. Sources the observable signal first (intake, transcript, screenshots, top comments, visible stats — an agent usually can't watch a video from a link) and never fabricates what it can't see. Reads brand-profile and audience first, deconstructs the piece layer by layer, isolates the real driver, runs a replicability check, extracts the transferable principle, and applies it to the user's niche via the content skills. Mechanism, never a copy; flags non-replicable virality; visible signals only (no WoopSocial analytics). Single-POST teardown only: for the account-level competitive landscape use competitor-analysis; for riding a live trend use trend-jacking.",
+      "metadata": {
+        "version": "1.0.0"
+      },
+      "license": "MIT",
+      "path": "social-media/viral-reverse-engineering",
+      "updated_at": "2026-08-15T07:48:12.375490",
+      "category": "social-media"
+    },
+    {
+      "name": "tiktok-video-publishing",
+      "description": "The TikTok VIDEO publish-config skill. Use when someone wants to \"publish/schedule a TikTok video,\" \"configure a TikTok upload,\" set the caption/cover/privacy/duet-stitch/disclosure, or post a TikTok video via WoopSocial (postType VIDEO). Configures the publish for reach, discovery, and compliant disclosure AND writes the search-optimized caption: the caption is search (lead-load the primary keyword), duet/ stitch ON is free distribution, the cover frame wins the profile grid + search, and the disclosure flags (isBrandedContent/isYourBrand) are set truthfully. Uses the REACH framework. Reads brand-profile + goals-and-kpis + the script/video first. The VIDEO FILE is filmed by a human or made by the video skills (not WoopSocial); WoopSocial publishes via raw-bytes upload and auto-discloses AI on TikTok; trending sound / pinned comment / replies are native or human; no update endpoint (edit = delete+recreate); metrics never fabricated. Distinct from tiktok-script (the VIDEO SCRIPT) and tiktok-photo-mode (PHOTO).",
+      "version": "1.0.0",
+      "path": "social-media/tiktok-video-publishing",
+      "updated_at": "2026-08-15T07:48:12.372490",
+      "category": "social-media"
+    },
+    {
+      "name": "experimentation-and-ab-testing",
+      "description": "A/B testing and experimentation for social media content — evidence over opinion, at honest organic-scale rigor. Use when someone wants to \"A/B test\" or \"split test\" content, \"test which version/hook/time/caption/thumbnail works,\" \"set up an experiment,\" \"what should I test,\" or to settle a content debate with evidence instead of opinion. Designs disciplined organic tests: one variable, controlled context, a decision rule set BEFORE publishing, enough duration and repetitions to separate signal from noise. Uses the TEST framework. Reads brand-profile + goals-and-kpis first. It DESIGNS the test and drafts variants; WoopSocial schedules them as controlled sequential posts (exception: YouTube's native Test & Compare); the result is read from native analytics via analytics-and-reporting. Organic can't reach true statistical significance; nothing is fabricated or p-hacked. Distinct from analytics-and-reporting (measures) and goals-and-kpis (sets targets).",
+      "version": "1.0.0",
+      "path": "social-media/experimentation-and-ab-testing",
+      "updated_at": "2026-08-15T07:48:12.330155",
+      "category": "social-media"
+    },
+    {
+      "name": "synthesia",
+      "description": "The Synthesia craft skill — produce avatar video (training, onboarding, explainers, localized series, faceless educational content) with the consent-first architecture and honest fit boundaries. Use when someone wants to make videos with Synthesia/AI avatars, create a personal avatar/digital twin, localize one video into many languages, build training/L&D video at scale, or asks whether an avatar should replace them on camera. Uses the HUMAN framework. Reads the content skill + brand-profile + voice-builder first. The agent scripts and plans (API where connected); the HUMAN approves every video; WoopSocial publishes. Spines: the fit test (avatars win at scale/localization/training, lose to a real face for trust-led content); consent-first likeness; the script is most of avatar quality — lock copy before generating. Never impersonate, fake endorsements, or skip AI-disclosure. Distinct from heygen, talking-head-and-piece-to-camera, ai-video/luma, ai-voiceover, and descript.",
+      "version": "1.0.0",
+      "path": "social-media/synthesia",
+      "updated_at": "2026-08-15T07:48:12.365868",
+      "category": "social-media"
+    },
+    {
+      "name": "kling",
+      "description": "The generative-video producer for native 4K, multi-shot storyboarding, and motion-transfer (Kling-led). Use when someone wants \"native 4K video,\" \"a multi-shot sequence / several cuts in one clip,\" \"transfer a motion/dance from a reference video,\" \"animate a product still\" (image-to-video), or names Kling / Kling 3.0 / Motion Control / Multi-Shot. Kling generates clips; audio is a guide track (pair ai-voiceover for final dialogue); a human assembles/reviews; WoopSocial schedules/ publishes. Below the ai-video router, sibling to veo-3 (all-round + audio) and luma (HDR/mood); edit-grade control jobs go to runway. Consented motion/avatars only; AI disclosure mandatory.",
+      "version": "1.0.0",
+      "path": "social-media/kling",
+      "updated_at": "2026-08-15T07:48:12.341488",
+      "category": "social-media"
+    },
+    {
+      "name": "reels-script",
+      "description": "Use to write an Instagram Reels script — a native, sound-off-first short-video script optimized for Instagram's discovery engine, built around a 3-second hook, watch-through, and sends (DM shares). Run when the user says \"Reels script,\" \"Instagram Reel,\" \"make a Reel,\" \"Reel hook,\" \"trial reel,\" or wants short-form video for Instagram specifically. Reads brand-profile and voice first; writes the muted version first; structures for watch-through + sends; places IG-search keywords; picks original vs trending audio (trending audio is added natively in-app — not via WoopSocial); briefs the cover frame; outputs a production doc (shot - on-screen text - spoken - audio - timing) plus a Veo prompt pack for faceless/b-roll shots. The generic scripting craft lives in short-form-video-script; for TikTok use tiktok-script; for Shorts use youtube-shorts; hands the caption to caption-writer, publishing to instagram-reels-publishing, and scheduling to scheduling-and-queue.",
+      "metadata": {
+        "version": "1.0.0"
+      },
+      "license": "MIT",
+      "path": "social-media/reels-script",
+      "updated_at": "2026-08-15T07:48:12.356489",
+      "category": "social-media"
+    },
+    {
+      "name": "descript",
+      "description": "The Descript craft skill — edit talk content (podcasts, interviews, talking-head video) by editing the transcript instead of the timeline. Use when someone wants to edit in Descript, edit a podcast or interview, remove filler words/silences, clean up audio (Studio Sound), fix a flubbed word without re-recording (Overdub), auto-cut between speakers, turn one recording into clips + show notes + chapters, or asks about Descript's plans, credits, or Underlord. Uses the WORDS framework plus the interview rule: concision yes, meaning-flips never. Reads the recording's content skill + brand-profile/voice-builder first. The agent plans the edit (API/MCP where connected); the HUMAN verifies by ear and approves; WoopSocial publishes the exports. Overdub is consent-verified own-voice-only; tiers/credits are verified in-app. Distinct from capcut (visual short-form), captions-and-clipping/opus-clip (clip selection at scale), ai-voiceover (dedicated TTS), and podcast-and-audiograms (the strategy).",
+      "version": "1.0.0",
+      "path": "social-media/descript",
+      "updated_at": "2026-08-15T07:48:12.326574",
+      "category": "social-media"
+    },
+    {
+      "name": "email-and-newsletter",
+      "description": "Email and newsletter strategy for creators and brands — the owned-audience layer that social feeds. Use when someone wants to \"start/grow a newsletter,\" \"build an email list,\" \"turn followers into subscribers,\" \"should I use Substack/beehiiv/LinkedIn,\" \"repurpose my newsletter into social (or vice versa),\" or build the audience layer social can't take away. Runs email (habit) + a web archive (discovery) off the same work and loops content social<->email. Uses the INBOX framework. Reads brand-profile + voice-builder + content-pillars first. WoopSocial does NOT send email — the agent strategizes and drafts, the ESP is external and human-run, WoopSocial publishes only the social side; metrics come from the ESP + GA4, never fabricated; consent + unsubscribe required. Distinct from link-in-bio-and-traffic (capture), cross-platform-repurposing (same-moment), and lead-magnets-and-funnels (the magnet).",
+      "version": "1.0.0",
+      "path": "social-media/email-and-newsletter",
+      "updated_at": "2026-08-15T07:48:12.328833",
+      "category": "social-media"
+    },
+    {
+      "name": "threads-post",
+      "description": "Write and publish single posts on Meta's Threads — the Threads format-execution skill. Use when someone wants a \"Threads post,\" to \"post to Threads,\" grow on Meta's Threads, or publish a Threads post via WoopSocial. Writes a Threads-native conversation post (text <=500 + optional media) built to earn replies — Threads is conversation-first: replies outweigh likes and engagement velocity drives distribution. Uses the REPLY framework. Reads brand-profile + goals-and-kpis first. WoopSocial publishes ONE Threads post (no native multi-post chain, no polls/voice/GIF, no reply surface); the replying that drives reach is a human/community-management job; metrics never fabricated; no engagement bait. Distinct from thread-writer (a user saying \"write a thread\" wants that multi-post X chain, not this), x-growth (sibling text platform, different culture) and caption-writer (text only).",
+      "version": "1.0.0",
+      "path": "social-media/threads-post",
+      "updated_at": "2026-08-15T07:48:12.369137",
+      "category": "social-media"
+    },
+    {
+      "name": "social-proof-and-testimonials",
+      "description": "The proof content type — turn real customer reviews, testimonials, UGC, case studies, and results into believable, objection-matched social content that converts. Use when someone wants to share testimonials, post reviews, turn happy customers or a case study into content, reshare UGC, build social proof, or add proof at a decision point. Uses the VOUCH framework. Reads brand-profile + audience-research first. The agent curates + frames REAL proof, matched to the buyer objection; the human sources the proof and secures consent/rights; WoopSocial publishes. Feeds the format writers, design-and-templates, and the placement skills. NEVER fabricate, AI-generate, inflate, or deceptively suppress reviews/testimonials; disclose paid/gifted/insider connections (FTC); get consent + likeness rights; never guarantee conversions. Distinct from ugc-and-influencer (sources/manages creators), storytelling-and-narrative (the narrative craft), and data-and-original-research (originates stats).",
+      "version": "1.0.0",
+      "path": "social-media/social-proof-and-testimonials",
+      "updated_at": "2026-08-15T07:48:12.361489",
+      "category": "social-media"
+    },
+    {
+      "name": "data-and-original-research",
+      "description": "The original-research / data-study content type — turn proprietary data, a survey, a public-dataset analysis, or an experiment into the most linkable and AI-citable asset you can publish. Use when someone wants to build authority with original data, run a \"state of X\" survey or industry study, turn proprietary/customer data into a publishable stat, or get cited by journalists and AI search (GEO). Uses the PROVE framework. Reads brand-profile + audience-research first. The agent designs the study (question, method, analysis plan) and frames the findings (headline stat, report, social cuts); the human/tool gathers the real data; WoopSocial publishes the finished cuts. Feeds ai-search-optimization + social-seo, the format writers, and infographic-and-data-viz. NEVER fabricates data, stats, or methodology; discloses method + limits. Distinct from educational-content-and-how-to (existing knowledge), analytics-and-reporting (internal performance), competitor-analysis, and trend-jacking.",
+      "version": "1.0.0",
+      "path": "social-media/data-and-original-research",
+      "updated_at": "2026-08-15T07:48:12.325960",
+      "category": "social-media"
+    },
+    {
+      "name": "canva",
+      "description": "The Canva craft skill — produce on-brand social graphics, carousels, quote cards, infographics, and thumbnails at scale without a designer, and escape the \"Canva look.\" Use when someone wants to design in Canva, make social graphics, set up a Brand Kit, batch-produce graphics (Bulk Create), resize one design for every platform (Magic Resize), use Canva's AI (Magic Studio), or asks why their posts look like a template. Uses the SCALE framework. Reads brand-profile + design-and-templates + voice-builder first. The agent specs, and creates designs directly where the Canva MCP/Connect APIs are connected; the human approves every visual; the export publishes via WoopSocial. Never strips watermarks, impersonates another brand, or uses unpermitted likeness; AI-disclosure + accessibility floor apply. Distinct from design-and-templates (the brand system this executes), image-prompt + the image tools (dedicated generation), ai-image-editing (the edit router), and capcut/descript (video editing).",
+      "version": "1.0.0",
+      "path": "social-media/canva",
+      "updated_at": "2026-08-15T07:48:12.314486",
+      "category": "social-media"
+    },
+    {
+      "name": "content-recycling",
+      "description": "Content recycling — resurface, update, and repost proven evergreen content over time. Use when someone wants to \"get more mileage out of old posts,\" \"recycle/repost our best content,\" \"resurface evergreen pieces,\" \"update and republish an old post,\" or build a recycling queue of proven winners. Recycles the INSIGHT refreshed (new hook/format/updated data) on a deliberate cadence — never an identical repost. Distinct from cross-platform-repurposing (same moment, many platforms) and captions-and-clipping (long-form -> short clips). Reads brand-profile + voice-builder first. The agent drafts the refresh; a human reviews; WoopSocial schedules/publishes (delete+recreate, no update); winners are picked from native analytics; nothing is fabricated.",
+      "version": "1.0.0",
+      "path": "social-media/content-recycling",
+      "updated_at": "2026-08-15T07:48:12.322021",
+      "category": "social-media"
+    },
+    {
+      "name": "carousel-writer",
+      "description": "Use to write a carousel — a swipeable multi-slide post (Instagram carousel, LinkedIn document/PDF carousel, or TikTok photo carousel) — one of the highest-save, highest-dwell formats. Run when the user says \"write a carousel,\" \"carousel post,\" \"slides for X,\" \"LinkedIn document/PDF post,\" \"swipe post,\" \"turn this into a carousel,\" or wants multi-slide teaching or story content. Reads brand-profile and voice first; the cover slide hooks and promises the swipe (via hook-writer); each slide advances one idea and earns the next swipe; ends on a save-leaning CTA. Specifies the design direction and bundles an image-generation prompt pack (Nano Banana / Ideogram) for the slide visuals. Hands the caption to caption-writer and scheduling to scheduling-and-queue.",
+      "metadata": {
+        "version": "1.0.0"
+      },
+      "license": "MIT",
+      "path": "social-media/carousel-writer",
+      "updated_at": "2026-08-15T07:48:12.317300",
+      "category": "social-media"
+    },
+    {
+      "name": "brand-profile",
+      "description": "Use FIRST, before any other social media skill, to load or create the brand profile — the durable record of who a business is, who it serves, how it sounds, and what it will and won't say. Run this when the user says \"set up my brand,\" \"brand profile,\" \"brand guidelines,\" \"define our brand voice,\" \"onboard,\" \"get started,\" when work begins for a new business or client, or any time another social skill needs brand context that isn't already loaded. Works for ANY business: B2B SaaS, ecommerce, local and small business, agencies and their clients, personal brands and creators, and nonprofits. For writing actual posts, see the content skills; to derive a voice from an existing body of writing, use voice-builder; this skill only builds the shared context they all read.",
+      "version": "1.1.0",
+      "license": "MIT",
+      "path": "social-media/brand-profile",
+      "updated_at": "2026-08-15T07:48:12.313045",
+      "category": "social-media"
+    },
+    {
+      "name": "instagram-seo",
+      "description": "The Instagram SEO / keyword-search skill -- IG-specific search depth, distinct from the cross-cutting social-seo. Use when someone wants an Instagram post/Reel to rank in search, needs IG keyword research, or wants a searchable caption/profile. Instagram shifted from hashtag-based discovery to keyword-based search (hashtags deprioritized to 3-5 topic labels). Search runs semantic analysis -> metadata matching -> visual recognition (checks alt text + visual MATCH the caption). Uses the MATCH framework. Reads brand-profile + the post's topic first. The agent researches the keyword cluster (never fabricates volume), writes the search-first caption (primary keyword first, no stuffing), specs on-screen text + spoken keyword, and advises profile fields/alt text. WoopSocial publishes the caption; profile fields, alt text, and IG Search/Insights stay native. No keyword stuffing; caption must match the visual. Distinct from social-seo, pinterest-seo, and hashtag-strategy.",
+      "version": "1.0.0",
+      "path": "social-media/instagram-seo",
+      "updated_at": "2026-08-15T07:48:12.340014",
+      "category": "social-media"
+    },
+    {
+      "name": "xurl",
+      "description": "X/Twitter via xurl CLI: raw post search, posting, DM, media.",
+      "version": "1.1.3",
+      "author": "xdevplatform + openclaw + Hermes Agent",
+      "license": "MIT",
+      "platforms": [
+        "linux",
+        "macos"
+      ],
+      "prerequisites": {
+        "commands": [
+          "xurl"
+        ]
+      },
+      "metadata": {
+        "hermes": {
+          "tags": [
+            "twitter",
+            "x",
+            "social-media",
+            "xurl",
+            "official-api"
+          ],
+          "homepage": "https://github.com/xdevplatform/xurl",
+          "upstream_skill": "https://github.com/openclaw/openclaw/blob/main/skills/xurl/SKILL.md"
+        }
+      },
+      "path": "social-media/xurl",
+      "updated_at": "2026-07-26T20:08:42.240827",
+      "category": "social-media"
+    },
+    {
+      "name": "content-pillars",
+      "description": "Use to define a brand's content pillars — the 3–5 recurring themes it posts about — the strategic backbone between the brand profile and the content calendar. Run when the user says \"content pillars,\" \"content buckets,\" \"what should I post about,\" \"content themes,\" \"content strategy,\" \"pillars,\" or before planning a batch or calendar. Reads brand-profile first and derives pillars from positioning, point of view, audience, and proof — real ownable themes, never generic \"educational / behind-the-scenes / promotional\" buckets (those are intents and formats, not pillars). Produces a content-pillars.md that batch-content-plan and the content skills read. Works for any business: B2B, ecommerce, local, personal brand, nonprofit.",
+      "metadata": {
+        "version": "1.0.0"
+      },
+      "license": "MIT",
+      "path": "social-media/content-pillars",
+      "updated_at": "2026-08-15T07:48:12.321487",
+      "category": "social-media"
+    },
+    {
+      "name": "threads-growth",
+      "description": "The Threads account-growth strategy skill -- the channel layer above threads-post. Use when someone wants to grow a Threads account, understand the Threads algorithm, fix reach, plan cadence, or set a Threads strategy. Threads is conversation-first, and the #1 growth lever is Mosseri's \"reply more than you post\": replies are weighted heaviest and first-hour engagement velocity is the top ranking factor. Uses the TALKS framework. Reads brand-profile + goals-and-kpis first. The agent strategizes the channel + drafts original posts (published via WoopSocial) and suggested replies; BUT the reply flywheel is human/community-management (no reply surface in WoopSocial), and Communities/DMs/dashboards/analytics are native. No engagement-bait, original not recycled, positive tone, metrics never fabricated, growth compounds over 60-90 days. Distinct from threads-post (the single-post craft) and community-management (the reply execution); uses Threads as a discovery funnel into instagram-growth.",
+      "version": "1.0.0",
+      "path": "social-media/threads-growth",
+      "updated_at": "2026-08-15T07:48:12.368490",
+      "category": "social-media"
+    },
+    {
+      "name": "scheduling-and-queue",
+      "description": "Use to schedule, queue, or publish FINISHED social media posts to the user's connected accounts through WoopSocial. This is a BRIDGE skill — it turns ready content into real scheduled or published posts, the step that separates advice from action. Run when the user says \"schedule this,\" \"queue these,\" \"post this,\" \"publish to my channels,\" \"add to my calendar,\" \"schedule for [time],\" \"fan this out to all platforms,\" or right after a content skill has produced posts that are ready to go out. ALWAYS confirms before scheduling or publishing. If WoopSocial isn't connected, it produces a ready-to-use schedule and explains how to connect — it never pretends to post. It does NOT write content (use the content skills) or report analytics (WoopSocial has no analytics surface yet).",
+      "metadata": {
+        "version": "1.0.0"
+      },
+      "license": "MIT",
+      "allowed-tools": "WoopSocial MCP (Projects, Social Accounts, Posts, Media, Webhooks, Health)",
+      "path": "social-media/scheduling-and-queue",
+      "updated_at": "2026-08-15T07:48:12.358738",
+      "category": "social-media"
+    },
+    {
+      "name": "crisis-and-moderation",
+      "description": "Use when something goes wrong on social — the crisis-and-moderation playbook for negative moments, pile-ons, misinformation/deepfakes about the brand, offensive-post backlash, and community moderation. Run when the user says \"we're getting piled on,\" \"someone's spreading false info about us,\" \"should we delete/hide this,\" \"a deepfake of our brand,\" or needs to moderate a community. Reads brand-profile/voice. Confirm facts and triage severity first; acknowledge fast; speak human, not legalese; correct misinformation with evidence, not an apology; moderate fairly (hide abuse, leave honest criticism). HIGH-STAKES and human-in-the-loop: a crisis is when the agent must NOT act autonomously — it triages, drafts holding statements, and can pause/reschedule posts via scheduling-and-queue, while a HUMAN (and legal/leadership for high-severity) approves everything and moderates in-platform. WoopSocial has no comment/inbox/moderation surface; never auto-respond or fabricate facts.",
+      "metadata": {
+        "version": "1.0.0"
+      },
+      "license": "MIT",
+      "path": "social-media/crisis-and-moderation",
+      "updated_at": "2026-08-15T07:48:12.324603",
+      "category": "social-media"
+    },
+    {
+      "name": "instagram-reels-publishing",
+      "description": "The Instagram Reels publish-mechanics skill -- distinct from reels-script (the script), instagram-seo (the keyword caption), and platform-specs-and-validation (cross-platform validation). Use when someone has a finished Reel and needs to publish it correctly: specs, cover, safe zone, publish settings. It gets the Reel OUT the way Instagram displays it: 9:16 spec-clean video, the safe zone that survives the feed and profile-grid crops, a custom grid-safe cover (chosen before publish, can't edit after), the keyword caption, and audio. Uses the FRAME framework. Reads brand-profile + the Reel asset first. The agent specs the publish settings, cover brief, and specs/safe-zone checklist, and advises audio/tags. WoopSocial publishes postType REEL + video + caption + cover on a schedule; trending audio, Share-to-Feed, tags, and Reel Insights stay native/in-app; the video/cover come from other tools. Remove other-platform watermarks; metrics never fabricated.",
+      "version": "1.0.0",
+      "path": "social-media/instagram-reels-publishing",
+      "updated_at": "2026-08-15T07:48:12.339488",
+      "category": "social-media"
+    },
+    {
+      "name": "idea-generation-and-ideation",
+      "description": "The idea-system craft — never run out of content ideas by running a system instead of waiting for inspiration. Use when someone is out of ideas, stares at a blank calendar, asks where good ideas come from, wants an idea bank/backlog, feels their AI-generated ideas sound like everyone else's, or thinks their niche is \"boring.\" Uses the SPARK framework. Reads brand-profile + social-strategy + content-pillars + audience-research first. The audience is the idea engine (comments/DMs/FAQs clustered into themes); AI expands real signals, it doesn't discover them; systems beat muses; trends are a timing filter, not a source. The agent clusters/expands/scores; the HUMAN supplies proprietary signals and decides; WoopSocial publishes the content, not ideas. Never rewords competitor posts, invents audience questions, or fabricates probe results. Distinct from social-strategy/content-pillars, audience-research, cross-platform-repurposing/ content-recycling, and the format skills.",
+      "version": "1.0.0",
+      "path": "social-media/idea-generation-and-ideation",
+      "updated_at": "2026-08-15T07:48:12.334820",
+      "category": "social-media"
+    },
+    {
+      "name": "tiktok-photo-mode",
+      "description": "The TikTok Photo Mode format-execution skill. Use when someone wants a \"TikTok photo carousel,\" \"photo mode,\" \"TikTok slideshow,\" \"swipeable TikTok post,\" or to publish a multi-image TikTok post via WoopSocial (postType PHOTO). Builds a TikTok-native carousel that wins on completion rate — hook slide 1, progressive reveal with cliffhangers, reward + one CTA — AND sets the exact WoopSocial PHOTO publish config (privacy, comments, music, truthful disclosure flags). Uses the SWIPE framework. Reads brand-profile + goals-and-kpis first. The agent writes the slide plan + overlay copy + caption + config; the IMAGES are made by a human/image skill, not WoopSocial; WoopSocial publishes the native PHOTO post; metrics never fabricated and photo mode is never promised as a reach hack. Distinct from tiktok-script (VIDEO) and carousel-writer (cross-platform copy).",
+      "version": "1.0.0",
+      "path": "social-media/tiktok-photo-mode",
+      "updated_at": "2026-08-15T07:48:12.370978",
+      "category": "social-media"
+    },
+    {
+      "name": "facebook-strategy",
+      "description": "The Facebook strategy playbook for 2026. Use when someone wants to \"grow on Facebook,\" \"fix my Facebook reach,\" \"a Facebook content/Page strategy,\" \"Facebook Reels,\" or how the Facebook algorithm works now. Page feed broadcasting is effectively dead (~1.65% reach); Facebook is now an AI discovery engine plus a community platform. Play three surfaces: Reels for unconnected discovery, Feed for connected depth, Groups for community. Uses the REACH framework. Reads brand-profile + voice-builder first. The agent drafts Page posts/Reels + reply copy; WoopSocial schedules Page posts/Reels; comment replies are human/in-app; metrics come from native Meta Insights; nothing is fabricated. To BUILD/GROW/RUN a Facebook Group (the deep Groups strategy) use facebook-groups; distinct from reels-script (Reel craft), community-management (engagement routine), and instagram-growth (sibling).",
+      "version": "1.0.0",
+      "path": "social-media/facebook-strategy",
+      "updated_at": "2026-08-15T07:48:12.331345",
+      "category": "social-media"
+    },
+    {
+      "name": "tiktok-script",
+      "description": "Use to write a TikTok script — a native, sound-aware short-video script optimized for TikTok's discovery engine (the FYP), built around a brutal 1-second hook, watch-time, and rewatches. Run when the user says \"TikTok script,\" \"TikTok video,\" \"script for TikTok,\" \"make a TikTok,\" \"storytime,\" \"TikTok hook,\" or wants short-form video for TikTok specifically. Reads brand-profile and voice first; rides a trending sound/format where it genuinely fits (live trend research goes to trend-jacking); structures for completion + rewatch; optimizes for TikTok search; outputs a production doc (shot - on-screen text - spoken - sound - timing) plus a Veo prompt pack for faceless/b-roll shots (native filming often beats AI on TikTok). For Instagram Reels use reels-script; for YouTube Shorts use youtube-shorts; for the platform-agnostic scripting craft use short-form-video-script; hands caption to caption-writer and scheduling to scheduling-and-queue.",
+      "metadata": {
+        "version": "1.0.0"
+      },
+      "license": "MIT",
+      "path": "social-media/tiktok-script",
+      "updated_at": "2026-08-15T07:48:12.371604",
+      "category": "social-media"
+    },
+    {
+      "name": "social-seo",
+      "description": "Use to make social content discoverable through SEARCH across social platforms — the social-SEO / keyword-discovery skill. Run when the user says \"social SEO,\" \"get found in search,\" \"TikTok SEO,\" \"YouTube SEO,\" \"keywords for social,\" \"searchable captions,\" or wants search across platforms rather than just the feed. For single-platform depth, route \"Instagram SEO\" to instagram-seo and Pinterest asks to pinterest-seo; this skill owns the cross-platform framework. Reads brand-profile and audience first. All platforms are search engines; keywords, not hashtags, are the lever. Covers per-platform indexed surfaces, keyword research via autocomplete + native analytics (never fabricates volumes), the triple-mention technique, topical clusters, and the profile as a search asset. Routes hashtags to hashtag-strategy; hands the AI-search/LLM-citation (GEO) layer to ai-search-optimization. Measures via native search insights, not WoopSocial analytics.",
+      "metadata": {
+        "version": "1.0.0"
+      },
+      "license": "MIT",
+      "path": "social-media/social-seo",
+      "updated_at": "2026-08-15T07:48:12.362930",
+      "category": "social-media"
+    },
+    {
+      "name": "facebook-groups",
+      "description": "The Facebook Groups strategy skill -- Groups as Facebook's real organic surface, deeper than what facebook-strategy routes to community-management. Use when someone wants to build/grow/run a Facebook Group, decide Group vs Page, or turn a community into leads. Groups reach 40-50% of members per post vs ~1.5% for Pages; Facebook deliberately favors Groups. Uses the TRIBE framework. Reads brand-profile + goals-and-kpis first. The agent designs the group strategy (niche, setup, content, growth, moderation, value-first monetization) and drafts group posts + the join-funnel content. CRUCIAL: WoopSocial does NOT post to Groups -- it publishes the Page + cross-channel content that funnels people to JOIN; in-group posting, admin, moderation, and Group analytics stay native/human, routed to community-management. No automation/spam or fake members; value-first, never fabricates metrics. Distinct from facebook-strategy (the Page play) and community-management (the engagement routine).",
+      "version": "1.0.0",
+      "path": "social-media/facebook-groups",
+      "updated_at": "2026-08-15T07:48:12.330755",
+      "category": "social-media"
+    },
+    {
+      "name": "interactive-content",
+      "description": "The participation content format — polls, quizzes, Q&A / scoped AMAs, this-or-that, emoji sliders, question boxes, caption-this, Add-Yours, and challenges. Use when someone wants interactive posts, Story stickers, a poll/quiz/AMA, a challenge or contest, or to turn passive scrollers into participants. Low-friction taps are high-value algorithmic signals, and every interaction doubles as audience research. Uses the REACT framework. Reads brand-profile + audience-research + voice-builder first. The agent designs the mechanic, questions, copy, and the close-the-loop plan; the HUMAN adds native interactive elements in-app — stickers and live AMAs are NATIVE-ONLY (WoopSocial cannot attach stickers or read results); WoopSocial publishes the feed-post versions. NEVER fabricates or rigs results or fakes participation; consent before sharing anyone's answer. Distinct from community-management, reply-and-comment-writer, livestream-and-realtime, and ugc-and-influencer.",
+      "version": "1.0.0",
+      "path": "social-media/interactive-content",
+      "updated_at": "2026-08-15T07:48:12.340619",
+      "category": "social-media"
+    },
+    {
+      "name": "scripting-and-storyboarding",
+      "description": "The pre-production system — turn a video idea into a shootable, editable plan: the two-column AV script, the storyboard as a decision document, the numbered shot list, the batch-shoot plan, and the paper edit. Use when shoots are chaotic, edits drag, videos feel static (\"just me talking\"), someone wants to batch-film a week of content in one session, needs a storyboard but can't draw, is planning a multi-shot AI video sequence, or scripts keep running long. Uses the SCENE framework. Reads idea-generation-and-ideation + short-form-video-script or the long-form skill + brand-profile first. A words-only script plans half the video; the storyboard is a decision document, not art; the shot list grouped by setup enables batch shooting. The agent writes the plan; the HUMAN shoots/generates and judges; WoopSocial publishes. Never stages candid-as-real moments or lifts another creator's script. Distinct from short-form-video-script, talking-head-and-piece-to-camera, capcut/descript, luma.",
+      "version": "1.0.0",
+      "path": "social-media/scripting-and-storyboarding",
+      "updated_at": "2026-08-15T07:48:12.359489",
+      "category": "social-media"
+    },
+    {
+      "name": "thread-writer",
+      "description": "Use to write a thread — a connected sequence of posts on X/Twitter or Threads that tells one story or makes one argument across multiple posts. Run when the user says \"write a thread,\" \"turn this into a thread,\" \"X thread,\" \"Twitter thread,\" \"thread about X,\" or has a multi-beat idea that won't fit one post. Reads brand-profile and voice first, uses hook-writer for the opening post (which must hook AND promise the payoff), builds one cohesive idea where every post earns the next, and lands a close with one CTA. Knows when a single post beats a thread. Naming trap: \"write a thread\" means this multi-post chain; \"post on/to Threads\" means a single post on Meta's Threads app — use threads-post for that. For a single caption use caption-writer; for just the opening hook use hook-writer.",
+      "metadata": {
+        "version": "1.0.0"
+      },
+      "license": "MIT",
+      "path": "social-media/thread-writer",
+      "updated_at": "2026-08-15T07:48:12.368038",
+      "category": "social-media"
+    },
+    {
+      "name": "livestream-and-realtime",
+      "description": "The live + realtime-format skill -- plan, promote, run, and repurpose livestreams and realtime moments (IG Live, TikTok LIVE, YouTube Live, LinkedIn Live, X, live shopping). Use when someone wants to plan a livestream, go live, run a live Q&A/AMA, do live shopping, or repurpose a live recording. Live is the \"human premium,\" but the value is the event around it: promo before, engagement during, repurposing after. Uses the STAGE framework. Reads brand-profile + the live's goal first. The agent plans the live (platform + run-of-show), writes + schedules the pre-live promo, advises the live playbook (the human broadcasts natively), and plans the repurposing (recording -> clips). WoopSocial schedules the promo and publishes the repurposed clips; it does NOT broadcast, moderate in realtime, or run live shopping. Never fabricates viewer numbers. Distinct from community-management (native live moderation), campaign-and-launch-planning, and captions-and-clipping (the clip craft it routes to).",
+      "version": "1.0.0",
+      "path": "social-media/livestream-and-realtime",
+      "updated_at": "2026-08-15T07:48:12.345753",
+      "category": "social-media"
+    },
+    {
+      "name": "ideogram",
+      "description": "Use to write great prompts for Ideogram (Ideogram 4.0) to generate design-grade images for social media — the image-prompt-craft mini-skill for typography + layout, sibling to nano-banana under the image-prompt router. Run when the user wants an Ideogram / AI image prompt where TEXT and LAYOUT matter: quote cards, carousel covers, posters, logos/wordmark concepts, signage, ads with headlines, or any image that must say words correctly. Reads brand-profile for style/palette. Ideogram's standouts: best-in-class in-image text rendering, structured JSON prompting (bounding boxes, hex palettes), native 2K, transparency, and Layerize Text. Also covers the Ideogram app-editor workflow (Canvas, Magic Fill, Extend, Style References). Honest: review rendered text, disclose AI images and sign with C2PA, never generate real identifiable people or copyrighted characters/IP/logos. The API/connection and the generate -> upload to WoopSocial Media -> attach flow live in tools/integrations/ideogram.md.",
+      "metadata": {
+        "version": "1.0.0",
+        "license": "MIT"
+      },
+      "path": "social-media/ideogram",
+      "updated_at": "2026-08-15T07:48:12.336549",
+      "category": "social-media"
+    },
+    {
+      "name": "ai-search-optimization",
+      "description": "Use to get a brand and its content CITED and RECOMMENDED by AI answer engines — the GEO (Generative Engine Optimization) / AI-search-visibility skill. Run when the user says \"GEO,\" \"get cited by ChatGPT/Perplexity/Google AI,\" \"ChatGPT SEO,\" \"LLM SEO / LLMO,\" \"AI Overviews,\" \"answer engine optimization (AEO),\" \"will AI recommend my brand,\" or wants to show up in AI-generated answers, not just the feed or Google links. Reads brand-profile and audience first. AI engines retrieve + fan-out and cite community/social sources heavily (Reddit, YouTube, Wikipedia); platforms disagree; earned media beats product pages; extractable, fresh content drives citation. Covers the four GEO levers (retrievable, earned mentions, extractable content, entity clarity), authentic social plays, and the manual prompt-audit method. Refuses astroturfing; never fabricates \"share of voice.\" Sibling of social-seo (platform + Google search). Judges via the audit + GEO tools + AI referral traffic.",
+      "metadata": {
+        "version": "1.0.0"
+      },
+      "license": "MIT",
+      "path": "social-media/ai-search-optimization",
+      "updated_at": "2026-08-15T07:48:12.307486",
+      "category": "social-media"
+    },
+    {
+      "name": "pinterest-seo",
+      "description": "The Pinterest SEO / search-ranking skill -- the keyword layer that pairs with pinterest-pin-design's visual. Use when someone wants pins to rank in Pinterest search, needs keyword research, or wants keyword-optimized pin titles/descriptions/boards. Pinterest is a visual search engine where keywords and relevance rank you, not followers. Uses the FOUND framework. Reads brand-profile + the pin's destination first. The agent researches real queries (autocomplete + Guided Search + Trends; never fabricates volume), writes the keyword-led title + a natural description (no stuffing), specs the on-pin overlay keyword, and advises boards + link. WoopSocial publishes the pin's title + description + board + link; profile/bio, board setup, alt text, Rich Pins, and Trends/Analytics stay native/human. No stuffing; Pin->Board->Page must match; fresh pins, not dupes. Distinct from pinterest-pin-design (the visual), pinterest-growth (the strategy), and social-seo (cross-cutting search).",
+      "version": "1.0.0",
+      "path": "social-media/pinterest-seo",
+      "updated_at": "2026-08-15T07:48:12.351489",
+      "category": "social-media"
+    },
+    {
+      "name": "capcut",
+      "description": "The CapCut craft skill — edit short-form social video (TikTok, Reels, Shorts) fast and safely: retention-paced cuts, auto-captions, beat-synced sound, exports. Use when someone wants to edit in CapCut, cut a reel/short, set up auto-captions, use CapCut's AI tools, pick a plan, or asks whether CapCut music/assets or client work are safe commercially. Uses the EDITS framework. Reads short-form-video-script + brand-profile/design-and-templates + voice-builder first. The agent plans the edit and flags the licensing/ToS gates; the HUMAN executes in CapCut and approves; WoopSocial publishes the finished export. Safety spine: client/NDA work edits locally, never synced (the ToS licenses uploads), and music licensing has fine print — never pirated assets, non-consensual lip-sync, or uncorrected captions. Distinct from short-form-video-script (the script), captions-and-clipping/opus-clip (clipping long video), descript (long-form), canva (graphics), and ai-video/veo-3/kling/runway (generation).",
+      "version": "1.0.0",
+      "path": "social-media/capcut",
+      "updated_at": "2026-08-15T07:48:12.315486",
+      "category": "social-media"
+    },
+    {
+      "name": "x-growth",
+      "description": "The X/Twitter growth playbook for 2026. Use when someone wants to \"grow on X / Twitter,\" \"get more reach/followers/impressions on X,\" \"an X content/posting strategy,\" \"should I get X Premium,\" \"how the X algorithm works,\" or how to use replies/quote-posts/long-form/video to grow. Conversation is the engine (replies and first-hour velocity), Premium is effectively a baseline, and links go in the first reply. Uses the SPARK framework. Reads brand-profile + voice-builder first. The agent drafts posts + reply copy; a human does the live replying/quote-posts/community engagement; WoopSocial schedules posts; metrics come from native X analytics; nothing is fabricated. Complements thread-writer (thread-format craft).",
+      "version": "1.0.0",
+      "path": "social-media/x-growth",
+      "updated_at": "2026-08-15T07:48:12.377490",
+      "category": "social-media"
+    },
+    {
+      "name": "ai-video",
+      "description": "The model-agnostic AI-video router and brief — the counterpart to image-prompt. Use when someone asks \"which AI video tool should I use,\" \"make an AI video,\" \"generate B-roll / a talking-head / a voiceover,\" \"turn this long video into Shorts,\" or needs a video brief. Routes the job to the right tool by fit and writes a portable brief; the tool generates, the human assembles, WoopSocial schedules/publishes. Sits above the tool skills: veo-3, kling, luma (generative scenes), heygen, synthesia (avatars), ai-voiceover, captions-and-clipping. A real human on camera routes to talking-head-and-piece-to-camera. Never routes to discontinued tools.",
+      "version": "1.0.0",
+      "path": "social-media/ai-video",
+      "updated_at": "2026-08-15T07:48:12.308486",
+      "category": "social-media"
+    },
+    {
+      "name": "educational-content-and-how-to",
+      "description": "The teach-to-grow content type -- pick a genuinely useful topic, teach ONE thing completely, structure it as a clear lesson, keep it accurate, and route it to the right format. Use when someone wants to teach their audience, make a how-to / tutorial / step-by-step / explainer / myth-buster, build authority content, or earn saves. Uses the TEACH framework. Reads brand-profile + audience-research + content-pillars first. Feeds the format writers (carousel-writer, reels-script, tiktok-script, thread-writer, caption-writer), hook-writer, the design/image tools, and lead-magnets/social-selling-and-dm; WoopSocial publishes + schedules the series. Accuracy is non-negotiable: cite sources, stay within real expertise, YMYL care, never fabricate steps or stats; measure saves/sends, not likes. Distinct from carousel-writer (the format it pairs with), reels-script/tiktok-script/thread-writer (other formats), storytelling-and-narrative (narrative vs didactic), and content-pillars (which topics).",
+      "version": "1.0.0",
+      "path": "social-media/educational-content-and-how-to",
+      "updated_at": "2026-08-15T07:48:12.328030",
+      "category": "social-media"
+    },
+    {
+      "name": "ai-voiceover",
+      "description": "The AI narration / voiceover mini-skill (ElevenLabs-led). Use when someone wants an \"AI voiceover,\" \"narration,\" \"text-to-speech for a video,\" \"voice for my Reel/Short/explainer,\" \"clone my voice,\" or to \"dub a video into other languages.\" Picks the voice and model, writes for the ear, and directs the delivery; ElevenLabs generates the audio, the human mixes/reviews, WoopSocial schedules/publishes. Sits below the ai-video router, sibling to veo-3 and heygen. Consented voices only; disclose AI voice in ads/political.",
+      "version": "1.0.0",
+      "path": "social-media/ai-voiceover",
+      "updated_at": "2026-08-15T07:48:12.309225",
+      "category": "social-media"
+    },
+    {
+      "name": "heygen",
+      "description": "The AI avatar / talking-head mini-skill (HeyGen). Use when someone wants an \"AI avatar video,\" \"talking-head video,\" \"digital twin / clone of myself on camera,\" \"faceless presenter video,\" \"spokesperson video,\" or to \"translate/localize a video into many languages with lip-sync.\" The creator/social avatar lane; enterprise L&D/training/SCORM avatar work routes to synthesia, and a real human on camera (founder/trust content) routes to talking-head-and-piece-to-camera. Scripts and sets up the video; HeyGen renders; the human reviews/edits; WoopSocial schedules/ publishes. Sits below the ai-video router, sibling to veo-3. Consented avatars only; AI disclosure mandatory.",
+      "version": "1.0.0",
+      "path": "social-media/heygen",
+      "updated_at": "2026-08-15T07:48:12.333771",
+      "category": "social-media"
+    },
+    {
+      "name": "sdlc-review",
+      "description": "Review Kanban handoffs and route verified outcomes.",
+      "version": "1.1.0",
+      "author": "Jakub Wolniewicz (@frizikk) + Hermes Agent",
+      "license": "MIT",
+      "platforms": [
+        "linux",
+        "macos",
+        "windows"
+      ],
+      "metadata": {
+        "hermes": {
+          "tags": [
+            "kanban",
+            "review",
+            "quality",
+            "verification"
+          ],
+          "category": "devops",
+          "requires_toolsets": [
+            "kanban"
+          ]
+        }
+      },
+      "environments": [
+        "kanban"
+      ],
+      "path": "devops/sdlc-review",
+      "updated_at": "2026-08-11T22:01:39.772632",
+      "category": "devops"
+    },
+    {
+      "name": "obsidian",
+      "description": "Read, search, create, and edit notes in the Obsidian vault.",
+      "version": "1.0.0",
+      "author": "Teknium (teknium1), Hermes Agent",
+      "license": "MIT",
+      "platforms": [
+        "linux",
+        "macos",
+        "windows"
+      ],
+      "metadata": {
+        "hermes": {
+          "tags": [
+            "Obsidian",
+            "Notes",
+            "Markdown",
+            "Vault"
+          ],
+          "related_skills": []
+        }
+      },
+      "path": "note-taking/obsidian",
+      "updated_at": "2026-08-11T22:01:39.772727",
+      "category": "note-taking"
+    },
+    {
+      "name": "pdf",
+      "description": "Create, read, merge, fill, and secure PDF files.",
+      "version": "1.0.0",
+      "author": "Nous Research",
+      "license": "MIT",
+      "platforms": [
+        "linux",
+        "macos",
+        "windows"
+      ],
+      "metadata": {
+        "hermes": {
+          "tags": [
+            "pdf",
+            "documents",
+            "forms",
+            "reportlab",
+            "pypdf",
+            "pdfplumber"
+          ],
+          "category": "productivity",
+          "related_skills": [
+            "docx",
+            "xlsx",
+            "powerpoint",
+            "ocr-and-documents"
+          ]
+        }
+      },
+      "path": "productivity/pdf",
+      "updated_at": "2026-08-14T14:02:24.003536",
+      "category": "productivity"
+    },
+    {
+      "name": "powerpoint",
+      "description": "Create, read, edit .pptx decks with python-pptx.",
+      "version": "1.1.0",
+      "author": "Nous Research",
+      "license": "MIT",
+      "platforms": [
+        "linux",
+        "macos",
+        "windows"
+      ],
+      "metadata": {
+        "hermes": {
+          "tags": [
+            "pptx",
+            "powerpoint",
+            "presentations",
+            "slides",
+            "office",
+            "python-pptx"
+          ],
+          "category": "productivity",
+          "related_skills": [
+            "docx",
+            "xlsx",
+            "pdf"
+          ]
+        }
+      },
+      "path": "productivity/powerpoint",
+      "updated_at": "2026-08-14T14:02:24.003536",
+      "category": "productivity"
+    },
+    {
+      "name": "document-to-action-items",
+      "description": "Extract cited obligations, deadlines, tasks from documents.",
+      "version": "0.1.0",
+      "author": "Ben Barclay (benbarclay), Hermes Agent",
+      "license": "MIT",
+      "platforms": [
+        "linux",
+        "macos",
+        "windows"
+      ],
+      "metadata": {
+        "hermes": {
+          "tags": [
+            "Documents",
+            "OCR",
+            "Action-Items",
+            "Deadlines",
+            "Extraction"
+          ],
+          "related_skills": [
+            "ocr-and-documents",
+            "pdf",
+            "docx",
+            "notion"
+          ]
+        }
+      },
+      "path": "productivity/document-to-action-items",
+      "updated_at": "2026-08-11T22:01:39.772727",
+      "category": "productivity"
+    },
+    {
+      "name": "nano-pdf",
+      "description": "Edit text in existing PDFs via natural-language prompts.",
+      "version": "1.0.0",
+      "author": "community",
+      "license": "MIT",
+      "platforms": [
+        "linux",
+        "macos",
+        "windows"
+      ],
+      "metadata": {
+        "hermes": {
+          "tags": [
+            "PDF",
+            "Documents",
+            "Editing",
+            "NLP",
+            "Productivity"
+          ],
+          "homepage": "https://pypi.org/project/nano-pdf/",
+          "related_skills": [
+            "pdf",
+            "ocr-and-documents"
+          ]
+        }
+      },
+      "path": "productivity/nano-pdf",
+      "updated_at": "2026-07-26T20:08:42.231827",
+      "category": "productivity"
+    },
+    {
+      "name": "xlsx",
+      "description": "Create, read, edit Excel .xlsx workbooks and CSVs.",
+      "version": "1.1.0",
+      "author": "Nous Research",
+      "license": "MIT",
+      "platforms": [
+        "linux",
+        "macos",
+        "windows"
+      ],
+      "metadata": {
+        "hermes": {
+          "tags": [
+            "excel",
+            "spreadsheet",
+            "xlsx",
+            "csv",
+            "openpyxl",
+            "productivity"
+          ],
+          "category": "productivity",
+          "related_skills": [
+            "docx",
+            "pdf",
+            "powerpoint"
+          ]
+        }
+      },
+      "path": "productivity/xlsx",
+      "updated_at": "2026-08-11T22:01:39.785728",
+      "category": "productivity"
+    },
+    {
+      "name": "notion",
+      "description": "Notion API + ntn CLI: pages, databases, markdown, Workers.",
+      "version": "2.0.0",
+      "author": "community",
+      "license": "MIT",
+      "platforms": [
+        "linux",
+        "macos",
+        "windows"
+      ],
+      "prerequisites": {
+        "env_vars": [
+          "NOTION_API_KEY"
+        ]
+      },
+      "metadata": {
+        "hermes": {
+          "tags": [
+            "Notion",
+            "Productivity",
+            "Notes",
+            "Database",
+            "API",
+            "CLI",
+            "Workers"
+          ],
+          "homepage": "https://developers.notion.com"
+        }
+      },
+      "path": "productivity/notion",
+      "updated_at": "2026-07-13T21:08:17.271753",
+      "category": "productivity"
+    },
+    {
+      "name": "airtable",
+      "description": "Airtable REST API via curl. Records CRUD, filters, upserts.",
+      "version": "1.1.0",
+      "author": "community",
+      "license": "MIT",
+      "platforms": [
+        "linux",
+        "macos",
+        "windows"
+      ],
+      "prerequisites": {
+        "env_vars": [
+          "AIRTABLE_API_KEY"
+        ],
+        "commands": [
+          "curl"
+        ]
+      },
+      "metadata": {
+        "hermes": {
+          "tags": [
+            "Airtable",
+            "Productivity",
+            "Database",
+            "API"
+          ],
+          "homepage": "https://airtable.com/developers/web/api/introduction"
+        }
+      },
+      "path": "productivity/airtable",
+      "updated_at": "2026-08-14T14:02:24.002537",
+      "category": "productivity"
+    },
+    {
+      "name": "weekly-review-planning",
+      "description": "Weekly reset: commitments, stalled work, next-week plan.",
+      "version": "0.1.0",
+      "author": "Ben Barclay (benbarclay), Hermes Agent",
+      "license": "MIT",
+      "platforms": [
+        "linux",
+        "macos",
+        "windows"
+      ],
+      "metadata": {
+        "hermes": {
+          "tags": [
+            "Weekly-Review",
+            "Planning",
+            "Tasks",
+            "Calendar",
+            "Productivity"
+          ],
+          "related_skills": [
+            "obsidian",
+            "notion",
+            "airtable",
+            "google-workspace",
+            "email-inbox-triage"
+          ]
+        }
+      },
+      "path": "productivity/weekly-review-planning",
+      "updated_at": "2026-08-11T22:01:39.784728",
+      "category": "productivity"
+    },
+    {
+      "name": "maps",
+      "description": "Geocode, POIs, routes, timezones via OpenStreetMap/OSRM.",
+      "version": "1.2.0",
+      "author": "Mibayy",
+      "license": "MIT",
+      "platforms": [
+        "linux",
+        "macos",
+        "windows"
+      ],
+      "metadata": {
+        "hermes": {
+          "tags": [
+            "maps",
+            "geocoding",
+            "places",
+            "routing",
+            "distance",
+            "directions",
+            "nearby",
+            "location",
+            "openstreetmap",
+            "nominatim",
+            "overpass",
+            "osrm"
+          ],
+          "category": "productivity",
+          "requires_toolsets": [
+            "terminal"
+          ],
+          "supersedes": [
+            "find-nearby"
+          ]
+        }
+      },
+      "path": "productivity/maps",
+      "updated_at": "2026-08-14T14:02:24.003536",
+      "category": "productivity"
+    },
+    {
+      "name": "ocr-and-documents",
+      "description": "Extract text from PDFs/scans (pymupdf, marker-pdf).",
+      "version": "2.3.0",
+      "author": "Hermes Agent",
+      "license": "MIT",
+      "platforms": [
+        "linux",
+        "macos",
+        "windows"
+      ],
+      "metadata": {
+        "hermes": {
+          "tags": [
+            "PDF",
+            "Documents",
+            "Research",
+            "Arxiv",
+            "Text-Extraction",
+            "OCR"
+          ],
+          "related_skills": [
+            "pdf",
+            "docx",
+            "powerpoint"
+          ]
+        }
+      },
+      "path": "productivity/ocr-and-documents",
+      "updated_at": "2026-08-14T14:02:24.003536",
+      "category": "productivity"
+    },
+    {
+      "name": "meeting-action-items",
+      "description": "Turn meeting notes into cited decisions, owners, tickets.",
+      "version": "0.1.0",
+      "author": "Ben Barclay (benbarclay), Hermes Agent",
+      "license": "MIT",
+      "platforms": [
+        "linux",
+        "macos",
+        "windows"
+      ],
+      "metadata": {
+        "hermes": {
+          "tags": [
+            "Meetings",
+            "Action-Items",
+            "Follow-Up",
+            "Productivity"
+          ],
+          "related_skills": [
+            "teams-meeting-pipeline",
+            "google-workspace",
+            "notion"
+          ]
+        }
+      },
+      "path": "productivity/meeting-action-items",
+      "updated_at": "2026-08-11T22:01:39.777727",
+      "category": "productivity"
+    },
+    {
+      "name": "google-workspace",
+      "description": "Gmail, Calendar, Drive, Docs, Sheets via gws CLI or Python.",
+      "version": "1.2.0",
+      "author": "Nous Research",
+      "license": "MIT",
+      "platforms": [
+        "linux",
+        "macos",
+        "windows"
+      ],
+      "required_credential_files": [
+        {
+          "path": "google_token.json",
+          "description": "Google OAuth2 token (created by setup script)"
+        },
+        {
+          "path": "google_client_secret.json",
+          "description": "Google OAuth2 client credentials (downloaded from Google Cloud Console)"
+        }
+      ],
+      "metadata": {
+        "hermes": {
+          "tags": [
+            "Google",
+            "Gmail",
+            "Calendar",
+            "Drive",
+            "Sheets",
+            "Docs",
+            "Contacts",
+            "Email",
+            "OAuth"
+          ],
+          "homepage": "https://github.com/NousResearch/hermes-agent",
+          "related_skills": [
+            "himalaya"
+          ]
+        }
+      },
+      "path": "productivity/google-workspace",
+      "updated_at": "2026-08-11T22:01:39.777727",
+      "category": "productivity"
+    },
+    {
+      "name": "box",
+      "description": "Box manages cloud files, sharing, search, and metadata.",
+      "version": "1.0.0",
+      "author": "Chris Kim (iskysun96), Hermes Agent",
+      "license": "MIT",
+      "platforms": [
+        "linux",
+        "macos",
+        "windows"
+      ],
+      "prerequisites": {
+        "commands": [
+          "box"
+        ]
+      },
+      "metadata": {
+        "hermes": {
+          "tags": [
+            "Box",
+            "Productivity",
+            "Cloud Storage",
+            "Collaboration",
+            "Metadata",
+            "Content Extraction",
+            "CLI",
+            "SDK"
+          ],
+          "related_skills": [
+            "google-workspace"
+          ],
+          "homepage": "https://developer.box.com/"
+        }
+      },
+      "path": "productivity/box",
+      "updated_at": "2026-08-14T14:02:24.002537",
+      "category": "productivity"
+    },
+    {
+      "name": "product-price-monitor",
+      "description": "Watch product, flight, or listing prices; alert on target.",
+      "version": "0.1.0",
+      "author": "Ben Barclay (benbarclay), Hermes Agent",
+      "license": "MIT",
+      "platforms": [
+        "linux",
+        "macos",
+        "windows"
+      ],
+      "metadata": {
+        "hermes": {
+          "tags": [
+            "Prices",
+            "Availability",
+            "Shopping",
+            "Travel",
+            "Alerts"
+          ],
+          "related_skills": [
+            "maps"
+          ]
+        }
+      },
+      "path": "productivity/product-price-monitor",
+      "updated_at": "2026-08-11T22:01:39.784728",
+      "category": "productivity"
+    },
+    {
+      "name": "session-librarian",
+      "description": "Organize sessions by prompt: find, rename, archive, prune.",
+      "version": "1.0.0",
+      "author": "Hermes Agent + Teknium",
+      "license": "MIT",
+      "platforms": [
+        "linux",
+        "macos",
+        "windows"
+      ],
+      "metadata": {
+        "hermes": {
+          "tags": [
+            "Sessions",
+            "Organization",
+            "Cleanup",
+            "Library",
+            "Productivity"
+          ],
+          "category": "productivity",
+          "related_skills": [
+            "weekly-review-planning"
+          ]
+        }
+      },
+      "path": "productivity/session-librarian",
+      "updated_at": "2026-08-14T14:02:24.003536",
+      "category": "productivity"
+    },
+    {
+      "name": "teams-meeting-pipeline",
+      "description": "Teams meeting summaries, job replay, Graph subscriptions.",
+      "version": "1.1.0",
+      "author": "Hermes Agent + Teknium",
+      "license": "MIT",
+      "platforms": [
+        "linux",
+        "macos",
+        "windows"
+      ],
+      "prerequisites": {
+        "env_vars": [
+          "MSGRAPH_TENANT_ID",
+          "MSGRAPH_CLIENT_ID",
+          "MSGRAPH_CLIENT_SECRET"
+        ],
+        "commands": [
+          "hermes"
+        ]
+      },
+      "metadata": {
+        "hermes": {
+          "tags": [
+            "Teams",
+            "Microsoft Graph",
+            "Meetings",
+            "Productivity",
+            "Operations"
+          ],
+          "related_docs": [
+            "/docs/guides/microsoft-graph-app-registration",
+            "/docs/user-guide/messaging/teams-meetings",
+            "/docs/guides/operate-teams-meeting-pipeline"
+          ]
+        }
+      },
+      "path": "productivity/teams-meeting-pipeline",
+      "updated_at": "2026-08-11T22:01:39.784728",
+      "category": "productivity"
+    },
+    {
+      "name": "docx",
+      "description": "Create, read, edit, template, and review Word .docx files.",
+      "version": "1.1.0",
+      "author": "Nous Research",
+      "license": "MIT",
+      "platforms": [
+        "linux",
+        "macos",
+        "windows"
+      ],
+      "metadata": {
+        "hermes": {
+          "tags": [
+            "word",
+            "docx",
+            "documents",
+            "office",
+            "templates",
+            "revisions",
+            "comments"
+          ],
+          "category": "productivity",
+          "related_skills": [
+            "pdf",
+            "xlsx",
+            "powerpoint"
+          ]
+        }
+      },
+      "path": "productivity/docx",
+      "updated_at": "2026-08-11T22:01:39.773727",
+      "category": "productivity"
+    },
+    {
+      "name": "db-schema-introspect",
+      "description": "Database schema introspection — auto-discover tables, columns, foreign keys, indexes, generate ER diagrams (Mermaid), export to JSON/Markdown.",
+      "version": "0.1.0",
+      "author": "kenya",
+      "license": "MIT",
+      "platforms": [
+        "linux",
+        "macos",
+        "windows"
+      ],
+      "category": "data-engineering",
+      "tags": [
+        "database",
+        "schema",
+        "introspection",
+        "postgresql",
+        "mysql",
+        "sqlite",
+        "mermaid",
+        "er-diagram"
+      ],
+      "depends_on": [
+        "sql-query-executor"
+      ],
+      "compatibility": {
+        "hermes": ">=0.18.0",
+        "claude-code": ">=1.0.0",
+        "codex": ">=1.0.0",
+        "opencode": ">=0.5.0"
+      },
+      "maturity": "beta",
+      "homepage": "https://github.com/NousResearch/hermes-agent",
+      "repository": "https://github.com/NousResearch/hermes-agent",
+      "path": "data-engineering/db-schema-introspect",
+      "updated_at": "2026-08-15T07:32:57.322402"
+    },
+    {
+      "name": "sql-query-executor",
+      "description": "Universal SQL executor across PostgreSQL, MySQL, SQLite, ClickHouse — run queries, export CSV/JSON/Markdown, parameterized queries with safety limits.",
+      "version": "0.1.0",
+      "author": "kenya",
+      "license": "MIT",
+      "platforms": [
+        "linux",
+        "macos",
+        "windows"
+      ],
+      "category": "data-engineering",
+      "tags": [
+        "sql",
+        "database",
+        "postgresql",
+        "mysql",
+        "sqlite",
+        "clickhouse",
+        "csv",
+        "json"
+      ],
+      "depends_on": [],
+      "compatibility": {
+        "hermes": ">=0.18.0",
+        "claude-code": ">=1.0.0",
+        "codex": ">=1.0.0",
+        "opencode": ">=0.5.0"
+      },
+      "maturity": "beta",
+      "homepage": "https://github.com/NousResearch/hermes-agent",
+      "repository": "https://github.com/NousResearch/hermes-agent",
+      "path": "data-engineering/sql-query-executor",
+      "updated_at": "2026-08-15T07:25:59.929818"
+    },
+    {
+      "name": "redis-cli-wrapper",
+      "description": "Redis CLI wrapper for Hermes Agent — key pattern scanning, memory analysis, TTL statistics, large key detection, INFO parsing.",
+      "version": "0.1.0",
+      "author": "kenya",
+      "license": "MIT",
+      "platforms": [
+        "linux",
+        "macos",
+        "windows"
+      ],
+      "category": "data-engineering",
+      "tags": [
+        "redis",
+        "cache",
+        "memory",
+        "keys",
+        "ttl",
+        "monitoring"
+      ],
+      "depends_on": [],
+      "compatibility": {
+        "hermes": ">=0.18.0",
+        "claude-code": ">=1.0.0",
+        "codex": ">=1.0.0",
+        "opencode": ">=0.5.0"
+      },
+      "maturity": "beta",
+      "homepage": "https://github.com/NousResearch/hermes-agent",
+      "repository": "https://github.com/NousResearch/hermes-agent",
+      "path": "data-engineering/redis-cli-wrapper",
+      "updated_at": "2026-08-15T07:27:28.792265"
+    },
+    {
+      "name": "vector-db-ops",
+      "description": "Unified vector database operations for Qdrant, Pinecone, Weaviate, Milvus, Chroma — collection CRUD, vector upsert, ANN search, reranking, backup/restore.",
+      "version": "0.1.0",
+      "author": "kenya",
+      "license": "MIT",
+      "platforms": [
+        "linux",
+        "macos",
+        "windows"
+      ],
+      "category": "data-engineering",
+      "tags": [
+        "vector",
+        "database",
+        "qdrant",
+        "pinecone",
+        "weaviate",
+        "milvus",
+        "chroma",
+        "rag",
+        "embedding"
+      ],
+      "depends_on": [],
+      "compatibility": {
+        "hermes": ">=0.18.0",
+        "claude-code": ">=1.0.0",
+        "codex": ">=1.0.0",
+        "opencode": ">=0.5.0"
+      },
+      "maturity": "beta",
+      "homepage": "https://github.com/NousResearch/hermes-agent",
+      "repository": "https://github.com/NousResearch/hermes-agent",
+      "path": "data-engineering/vector-db-ops",
+      "updated_at": "2026-08-15T07:29:03.347061"
+    },
+    {
+      "name": "huggingface-hub",
+      "description": "HuggingFace hf CLI: search/download/upload models, datasets.",
+      "version": "1.0.1",
+      "author": "Hugging Face",
+      "license": "MIT",
+      "tags": [
+        "huggingface",
+        "hf",
+        "models",
+        "datasets",
+        "hub",
+        "mlops"
+      ],
+      "platforms": [
+        "linux",
+        "macos",
+        "windows"
+      ],
+      "path": "mlops/huggingface-hub",
+      "updated_at": "2026-07-26T20:08:42.186822",
+      "category": "mlops"
+    },
+    {
+      "name": "grounded-citations",
+      "description": "Ground answers and documents in cited, verifiable sources.",
+      "version": "1.1.0",
+      "author": "Hermes Agent + Teknium",
+      "license": "MIT",
+      "platforms": [
+        "linux",
+        "macos",
+        "windows"
+      ],
+      "metadata": {
+        "hermes": {
+          "tags": [
+            "Research",
+            "Citations",
+            "Grounding",
+            "Sources",
+            "Web",
+            "Reports"
+          ],
+          "category": "research",
+          "related_skills": [
+            "research-paper-writing",
+            "arxiv",
+            "ocr-and-documents"
+          ]
+        }
+      },
+      "path": "research/grounded-citations",
+      "updated_at": "2026-08-14T14:02:24.004537",
+      "category": "research"
+    },
+    {
+      "name": "research-paper-writing",
+      "title": "Research Paper Writing Pipeline",
+      "description": "Write ML papers for NeurIPS/ICML/ICLR: design→submit.",
+      "version": "1.1.0",
+      "author": "Orchestra Research",
+      "license": "MIT",
+      "dependencies": [
+        "semanticscholar",
+        "arxiv",
+        "habanero",
+        "requests",
+        "scipy",
+        "numpy",
+        "matplotlib",
+        "SciencePlots"
+      ],
+      "platforms": [
+        "linux",
+        "macos"
+      ],
+      "metadata": {
+        "hermes": {
+          "tags": [
+            "Research",
+            "Paper Writing",
+            "Experiments",
+            "ML",
+            "AI",
+            "NeurIPS",
+            "ICML",
+            "ICLR",
+            "ACL",
+            "AAAI",
+            "COLM",
+            "LaTeX",
+            "Citations",
+            "Statistical Analysis"
+          ],
+          "category": "research",
+          "related_skills": [
+            "arxiv",
+            "subagent-driven-development",
+            "plan"
+          ],
+          "requires_toolsets": [
+            "terminal",
+            "files"
+          ]
+        }
+      },
+      "path": "research/research-paper-writing",
+      "updated_at": "2026-08-11T22:01:39.792729",
+      "category": "research"
+    },
+    {
+      "name": "llm-wiki",
+      "description": "Karpathy's LLM Wiki: build/query interlinked markdown KB.",
+      "version": "2.1.0",
+      "author": "Hermes Agent",
+      "license": "MIT",
+      "platforms": [
+        "linux",
+        "macos",
+        "windows"
+      ],
+      "metadata": {
+        "hermes": {
+          "tags": [
+            "wiki",
+            "knowledge-base",
+            "research",
+            "notes",
+            "markdown",
+            "rag-alternative"
+          ],
+          "category": "research",
+          "related_skills": [
+            "obsidian",
+            "arxiv"
+          ]
+        }
+      },
+      "path": "research/llm-wiki",
+      "updated_at": "2026-08-11T22:01:39.789728",
+      "category": "research"
+    },
+    {
+      "name": "competitor-news-monitor",
+      "description": "Watch named companies for material news; cited digests.",
+      "version": "0.1.0",
+      "author": "Ben Barclay (benbarclay), Hermes Agent",
+      "license": "MIT",
+      "platforms": [
+        "linux",
+        "macos",
+        "windows"
+      ],
+      "metadata": {
+        "hermes": {
+          "tags": [
+            "Competitors",
+            "News",
+            "Market-Research",
+            "Monitoring"
+          ],
+          "related_skills": [
+            "blogwatcher"
+          ]
+        }
+      },
+      "path": "research/competitor-news-monitor",
+      "updated_at": "2026-08-11T22:01:39.788728",
+      "category": "research"
+    },
+    {
+      "name": "arxiv",
+      "description": "Search arXiv papers by keyword, author, category, or ID.",
+      "version": "1.0.0",
+      "author": "Hermes Agent",
+      "license": "MIT",
+      "platforms": [
+        "linux",
+        "macos",
+        "windows"
+      ],
+      "metadata": {
+        "hermes": {
+          "tags": [
+            "Research",
+            "Arxiv",
+            "Papers",
+            "Academic",
+            "Science",
+            "API"
+          ],
+          "related_skills": [
+            "ocr-and-documents"
+          ]
+        }
+      },
+      "path": "research/arxiv",
+      "updated_at": "2026-08-14T14:02:24.003536",
+      "category": "research"
+    },
+    {
+      "name": "blocked-page-recovery",
+      "description": "Recover blocked/paywalled/WAF'd pages via fallbacks.",
+      "version": "1.0.0",
+      "author": "Hermes Agent",
+      "license": "MIT",
+      "platforms": [
+        "linux",
+        "macos",
+        "windows"
+      ],
+      "metadata": {
+        "hermes": {
+          "tags": [
+            "Research",
+            "Archives",
+            "Wayback",
+            "Paywall",
+            "WAF",
+            "Fallback"
+          ],
+          "related_skills": [
+            "grounded-citations"
+          ]
+        }
+      },
+      "path": "research/blocked-page-recovery",
+      "updated_at": "2026-08-14T14:02:24.004537",
+      "category": "research"
+    },
+    {
+      "name": "blogwatcher",
+      "description": "Monitor blogs and RSS/Atom feeds via blogwatcher-cli tool.",
+      "version": "2.0.0",
+      "author": "JulienTant (fork of Hyaxia/blogwatcher)",
+      "license": "MIT",
+      "platforms": [
+        "linux",
+        "macos",
+        "windows"
+      ],
+      "metadata": {
+        "hermes": {
+          "tags": [
+            "RSS",
+            "Blogs",
+            "Feed-Reader",
+            "Monitoring"
+          ],
+          "homepage": "https://github.com/JulienTant/blogwatcher-cli"
+        }
+      },
+      "prerequisites": {
+        "commands": [
+          "blogwatcher-cli"
+        ]
+      },
+      "path": "research/blogwatcher",
+      "updated_at": "2026-07-13T21:08:17.283271",
+      "category": "research"
+    },
+    {
+      "name": "dogfood",
+      "description": "Exploratory QA of web apps: find bugs, evidence, reports.",
+      "version": "1.0.0",
+      "author": "Teknium (teknium1), Hermes Agent",
+      "license": "MIT",
+      "platforms": [
+        "linux",
+        "macos",
+        "windows"
+      ],
+      "metadata": {
+        "hermes": {
+          "tags": [
+            "qa",
+            "testing",
+            "browser",
+            "web",
+            "dogfood"
+          ],
+          "related_skills": []
+        }
+      },
+      "path": "software-development/dogfood",
+      "updated_at": "2026-08-11T22:01:39.794729",
+      "category": "software-development"
+    },
+    {
+      "name": "inspecting-hermes-desktop-dom",
+      "description": "Read the live Hermes desktop DOM/CSS over CDP.",
+      "version": "1.0.0",
+      "author": "Hermes Agent",
+      "license": "MIT",
+      "platforms": [
+        "linux",
+        "macos",
+        "windows"
+      ],
+      "metadata": {
+        "hermes": {
+          "tags": [
+            "desktop",
+            "electron",
+            "cdp",
+            "dom",
+            "ui-verification",
+            "self-inspection"
+          ],
+          "related_skills": [
+            "node-inspect-debugger",
+            "systematic-debugging",
+            "dogfood"
+          ]
+        }
+      },
+      "path": "software-development/inspecting-hermes-desktop-dom",
+      "updated_at": "2026-08-02T22:49:34.475476",
+      "category": "software-development"
+    },
+    {
+      "name": "simplify-code",
+      "description": "Parallel 4-agent cleanup of recent code changes.",
+      "version": "1.1.0",
+      "author": "Hermes Agent (inspired by Claude Code /simplify)",
+      "license": "MIT",
+      "platforms": [
+        "linux",
+        "macos",
+        "windows"
+      ],
+      "metadata": {
+        "hermes": {
+          "tags": [
+            "code-review",
+            "cleanup",
+            "refactor",
+            "delegation",
+            "subagent",
+            "parallel",
+            "simplify"
+          ],
+          "related_skills": [
+            "requesting-code-review",
+            "test-driven-development",
+            "plan"
+          ]
+        }
+      },
+      "path": "software-development/simplify-code",
+      "updated_at": "2026-07-26T20:08:42.242827",
+      "category": "software-development"
+    },
+    {
+      "name": "plan",
+      "description": "Write a markdown plan to .hermes/plans/; no execution.",
+      "version": "2.0.0",
+      "author": "Hermes Agent (writing-craft adapted from obra/superpowers)",
+      "license": "MIT",
+      "platforms": [
+        "linux",
+        "macos",
+        "windows"
+      ],
+      "metadata": {
+        "hermes": {
+          "tags": [
+            "planning",
+            "plan-mode",
+            "implementation",
+            "workflow",
+            "design",
+            "documentation"
+          ],
+          "related_skills": [
+            "subagent-driven-development",
+            "test-driven-development",
+            "requesting-code-review"
+          ]
+        }
+      },
+      "path": "software-development/plan",
+      "updated_at": "2026-07-26T20:08:42.242827",
+      "category": "software-development"
+    },
+    {
+      "name": "hermes-agent-skill-authoring",
+      "description": "Author in-repo SKILL.md files: frontmatter and structure.",
+      "version": "2.0.0",
+      "author": "Hermes Agent",
+      "license": "MIT",
+      "platforms": [
+        "linux",
+        "macos",
+        "windows"
+      ],
+      "metadata": {
+        "hermes": {
+          "tags": [
+            "skills",
+            "authoring",
+            "hermes-agent",
+            "conventions",
+            "skill-md"
+          ],
+          "related_skills": [
+            "plan",
+            "requesting-code-review"
+          ]
+        }
+      },
+      "path": "software-development/hermes-agent-skill-authoring",
+      "updated_at": "2026-08-14T14:02:24.004537",
+      "category": "software-development"
+    },
+    {
+      "name": "spike",
+      "description": "Throwaway experiments to validate an idea before build.",
+      "version": "1.0.0",
+      "author": "Hermes Agent (adapted from gsd-build/get-shit-done)",
+      "license": "MIT",
+      "platforms": [
+        "linux",
+        "macos",
+        "windows"
+      ],
+      "metadata": {
+        "hermes": {
+          "tags": [
+            "spike",
+            "prototype",
+            "experiment",
+            "feasibility",
+            "throwaway",
+            "exploration",
+            "research",
+            "planning",
+            "mvp",
+            "proof-of-concept"
+          ],
+          "related_skills": [
+            "sketch",
+            "subagent-driven-development",
+            "plan"
+          ]
+        }
+      },
+      "path": "software-development/spike",
+      "updated_at": "2026-08-14T14:02:24.004537",
+      "category": "software-development"
+    },
+    {
+      "name": "requesting-code-review",
+      "description": "Pre-commit review: security scan, quality gates, auto-fix.",
+      "version": "2.0.0",
+      "author": "Hermes Agent (adapted from obra/superpowers + MorAlekss)",
+      "license": "MIT",
+      "platforms": [
+        "linux",
+        "macos",
+        "windows"
+      ],
+      "metadata": {
+        "hermes": {
+          "tags": [
+            "code-review",
+            "security",
+            "verification",
+            "quality",
+            "pre-commit",
+            "auto-fix"
+          ],
+          "related_skills": [
+            "subagent-driven-development",
+            "plan",
+            "test-driven-development",
+            "github-code-review"
+          ]
+        }
+      },
+      "path": "software-development/requesting-code-review",
+      "updated_at": "2026-07-13T21:08:17.300756",
+      "category": "software-development"
+    },
+    {
+      "name": "python-debugpy",
+      "description": "Debug Python: pdb REPL + debugpy remote (DAP).",
+      "version": "1.0.0",
+      "author": "Hermes Agent",
+      "license": "MIT",
+      "platforms": [
+        "linux",
+        "macos"
+      ],
+      "metadata": {
+        "hermes": {
+          "tags": [
+            "debugging",
+            "python",
+            "pdb",
+            "debugpy",
+            "breakpoints",
+            "dap",
+            "post-mortem"
+          ],
+          "related_skills": [
+            "systematic-debugging",
+            "node-inspect-debugger"
+          ]
+        }
+      },
+      "path": "software-development/python-debugpy",
+      "updated_at": "2026-08-11T22:01:39.796729",
+      "category": "software-development"
+    },
+    {
+      "name": "test-driven-development",
+      "description": "TDD: enforce RED-GREEN-REFACTOR, tests before code.",
+      "version": "1.1.0",
+      "author": "Hermes Agent (adapted from obra/superpowers)",
+      "license": "MIT",
+      "platforms": [
+        "linux",
+        "macos",
+        "windows"
+      ],
+      "metadata": {
+        "hermes": {
+          "tags": [
+            "testing",
+            "tdd",
+            "development",
+            "quality",
+            "red-green-refactor"
+          ],
+          "related_skills": [
+            "systematic-debugging",
+            "plan",
+            "subagent-driven-development"
+          ]
+        }
+      },
+      "path": "software-development/test-driven-development",
+      "updated_at": "2026-07-13T21:08:17.301756",
+      "category": "software-development"
+    },
+    {
+      "name": "systematic-debugging",
+      "description": "4-phase root cause debugging: understand bugs before fixing.",
+      "version": "1.1.0",
+      "author": "Hermes Agent (adapted from obra/superpowers)",
+      "license": "MIT",
+      "platforms": [
+        "linux",
+        "macos",
+        "windows"
+      ],
+      "metadata": {
+        "hermes": {
+          "tags": [
+            "debugging",
+            "troubleshooting",
+            "problem-solving",
+            "root-cause",
+            "investigation"
+          ],
+          "related_skills": [
+            "test-driven-development",
+            "plan",
+            "subagent-driven-development"
+          ]
+        }
+      },
+      "path": "software-development/systematic-debugging",
+      "updated_at": "2026-07-13T21:08:17.301756",
+      "category": "software-development"
+    },
+    {
+      "name": "node-inspect-debugger",
+      "description": "Debug Node.js via --inspect + Chrome DevTools Protocol CLI.",
+      "version": "1.0.0",
+      "author": "Hermes Agent",
+      "license": "MIT",
+      "platforms": [
+        "linux",
+        "macos",
+        "windows"
+      ],
+      "metadata": {
+        "hermes": {
+          "tags": [
+            "debugging",
+            "nodejs",
+            "node-inspect",
+            "cdp",
+            "breakpoints",
+            "ui-tui"
+          ],
+          "related_skills": [
+            "systematic-debugging",
+            "python-debugpy"
+          ]
+        }
+      },
+      "path": "software-development/node-inspect-debugger",
+      "updated_at": "2026-08-11T22:01:39.795729",
+      "category": "software-development"
+    },
+    {
+      "name": "himalaya",
+      "description": "Himalaya CLI: IMAP/SMTP email from terminal.",
+      "version": "1.1.0",
+      "author": "community",
+      "license": "MIT",
+      "platforms": [
+        "linux",
+        "macos",
+        "windows"
+      ],
+      "metadata": {
+        "hermes": {
+          "tags": [
+            "Email",
+            "IMAP",
+            "SMTP",
+            "CLI",
+            "Communication"
+          ],
+          "homepage": "https://github.com/pimalaya/himalaya"
+        }
+      },
+      "prerequisites": {
+        "commands": [
+          "himalaya"
+        ]
+      },
+      "path": "email/himalaya",
+      "updated_at": "2026-07-13T21:08:17.259437",
+      "category": "email"
+    },
+    {
+      "name": "email-inbox-triage",
+      "description": "Triage an inbox: prioritize threads, draft replies safely.",
+      "version": "0.1.0",
+      "author": "Ben Barclay (benbarclay), Hermes Agent",
+      "license": "MIT",
+      "platforms": [
+        "linux",
+        "macos",
+        "windows"
+      ],
+      "metadata": {
+        "hermes": {
+          "tags": [
+            "Email",
+            "Inbox",
+            "Triage",
+            "Replies",
+            "Productivity"
+          ],
+          "related_skills": [
+            "himalaya",
+            "google-workspace"
+          ]
+        }
+      },
+      "path": "email/email-inbox-triage",
+      "updated_at": "2026-08-11T22:01:39.772632",
+      "category": "email"
+    },
+    {
+      "name": "songsee",
+      "description": "Audio spectrograms/features (mel, chroma, MFCC) via CLI.",
+      "version": "1.0.0",
+      "author": "community",
+      "license": "MIT",
+      "platforms": [
+        "linux",
+        "macos",
+        "windows"
+      ],
+      "metadata": {
+        "hermes": {
+          "tags": [
+            "Audio",
+            "Visualization",
+            "Spectrogram",
+            "Music",
+            "Analysis"
+          ],
+          "homepage": "https://github.com/steipete/songsee"
+        }
+      },
+      "prerequisites": {
+        "commands": [
+          "songsee"
+        ]
+      },
+      "path": "media/songsee",
+      "updated_at": "2026-07-13T21:08:17.264045",
+      "category": "media"
+    },
+    {
+      "name": "gif-search",
+      "description": "Search/download GIFs from Tenor via curl + jq.",
+      "version": "1.1.0",
+      "author": "Hermes Agent",
+      "license": "MIT",
+      "platforms": [
+        "linux",
+        "macos",
+        "windows"
+      ],
+      "prerequisites": {
+        "env_vars": [
+          "TENOR_API_KEY"
+        ],
+        "commands": [
+          "curl",
+          "jq"
+        ]
+      },
+      "metadata": {
+        "hermes": {
+          "tags": [
+            "GIF",
+            "Media",
+            "Search",
+            "Tenor",
+            "API"
+          ]
+        }
+      },
+      "path": "media/gif-search",
+      "updated_at": "2026-07-13T21:08:17.264045",
+      "category": "media"
+    },
+    {
+      "name": "youtube-content",
+      "description": "YouTube transcripts to summaries, threads, blogs.",
+      "version": "1.0.0",
+      "author": "Teknium (teknium1), Hermes Agent",
+      "license": "MIT",
+      "platforms": [
+        "linux",
+        "macos",
+        "windows"
+      ],
+      "metadata": {
+        "hermes": {
+          "tags": [
+            "YouTube",
+            "Video",
+            "Transcripts",
+            "Media"
+          ],
+          "related_skills": []
+        }
+      },
+      "path": "media/youtube-content",
+      "updated_at": "2026-08-14T14:02:24.001536",
+      "category": "media"
+    },
+    {
+      "name": "apple-reminders",
+      "description": "Apple Reminders via remindctl: add, list, complete.",
+      "version": "1.0.0",
+      "author": "Hermes Agent",
+      "license": "MIT",
+      "platforms": [
+        "macos"
+      ],
+      "metadata": {
+        "hermes": {
+          "tags": [
+            "Reminders",
+            "tasks",
+            "todo",
+            "macOS",
+            "Apple"
+          ]
+        }
+      },
+      "prerequisites": {
+        "commands": [
+          "remindctl"
+        ]
+      },
+      "path": "apple/apple-reminders",
+      "updated_at": "2026-07-13T21:08:17.222129",
+      "category": "apple"
+    },
+    {
+      "name": "imessage",
+      "description": "Send and receive iMessages/SMS via the imsg CLI on macOS.",
+      "version": "1.0.0",
+      "author": "Hermes Agent",
+      "license": "MIT",
+      "platforms": [
+        "macos"
+      ],
+      "metadata": {
+        "hermes": {
+          "tags": [
+            "iMessage",
+            "SMS",
+            "messaging",
+            "macOS",
+            "Apple"
+          ]
+        }
+      },
+      "prerequisites": {
+        "commands": [
+          "imsg"
+        ]
+      },
+      "path": "apple/imessage",
+      "updated_at": "2026-07-13T21:08:17.222129",
+      "category": "apple"
+    },
+    {
+      "name": "findmy",
+      "description": "Track Apple devices/AirTags via FindMy.app on macOS.",
+      "version": "1.0.0",
+      "author": "Hermes Agent",
+      "license": "MIT",
+      "platforms": [
+        "macos"
+      ],
+      "metadata": {
+        "hermes": {
+          "tags": [
+            "FindMy",
+            "AirTag",
+            "location",
+            "tracking",
+            "macOS",
+            "Apple"
+          ]
+        }
+      },
+      "path": "apple/findmy",
+      "updated_at": "2026-07-13T21:08:17.222129",
+      "category": "apple"
+    },
+    {
+      "name": "apple-notes",
+      "description": "Manage Apple Notes via memo CLI: create, search, edit.",
+      "version": "1.0.1",
+      "author": "Hermes Agent",
+      "license": "MIT",
+      "platforms": [
+        "macos"
+      ],
+      "metadata": {
+        "hermes": {
+          "tags": [
+            "Notes",
+            "Apple",
+            "macOS",
+            "note-taking"
+          ],
+          "related_skills": [
+            "obsidian"
+          ]
+        }
+      },
+      "prerequisites": {
+        "commands": [
+          "memo"
+        ]
+      },
+      "path": "apple/apple-notes",
+      "updated_at": "2026-07-26T20:08:42.175821",
+      "category": "apple"
+    },
+    {
+      "name": "github-auth",
+      "description": "GitHub auth setup: HTTPS tokens, SSH keys, gh CLI login.",
+      "version": "1.1.0",
+      "author": "Hermes Agent",
+      "license": "MIT",
+      "platforms": [
+        "linux",
+        "macos",
+        "windows"
+      ],
+      "metadata": {
+        "hermes": {
+          "tags": [
+            "GitHub",
+            "Authentication",
+            "Git",
+            "gh-cli",
+            "SSH",
+            "Setup"
+          ],
+          "related_skills": [
+            "github-pr-workflow",
+            "github-code-review",
+            "github-issues",
+            "github-repo-management"
+          ]
+        }
+      },
+      "path": "github/github-auth",
+      "updated_at": "2026-08-14T14:02:24.001536",
+      "category": "github"
+    },
+    {
+      "name": "github-pr-workflow",
+      "description": "GitHub PR lifecycle: branch, commit, open, CI, merge.",
+      "version": "1.1.0",
+      "author": "Hermes Agent",
+      "license": "MIT",
+      "platforms": [
+        "linux",
+        "macos",
+        "windows"
+      ],
+      "metadata": {
+        "hermes": {
+          "tags": [
+            "GitHub",
+            "Pull-Requests",
+            "CI/CD",
+            "Git",
+            "Automation",
+            "Merge"
+          ],
+          "related_skills": [
+            "github-auth",
+            "github-code-review"
+          ]
+        }
+      },
+      "path": "github/github-pr-workflow",
+      "updated_at": "2026-08-14T14:02:24.001536",
+      "category": "github"
+    },
+    {
+      "name": "github-repo-management",
+      "description": "Clone/create/fork repos; manage remotes, releases.",
+      "version": "1.1.0",
+      "author": "Hermes Agent",
+      "license": "MIT",
+      "platforms": [
+        "linux",
+        "macos",
+        "windows"
+      ],
+      "metadata": {
+        "hermes": {
+          "tags": [
+            "GitHub",
+            "Repositories",
+            "Git",
+            "Releases",
+            "Secrets",
+            "Configuration"
+          ],
+          "related_skills": [
+            "github-auth",
+            "github-pr-workflow",
+            "github-issues"
+          ]
+        }
+      },
+      "path": "github/github-repo-management",
+      "updated_at": "2026-08-14T14:02:24.001536",
+      "category": "github"
+    },
+    {
+      "name": "codebase-inspection",
+      "description": "Inspect codebases w/ pygount: LOC, languages, ratios.",
+      "version": "1.0.0",
+      "author": "Hermes Agent",
+      "license": "MIT",
+      "platforms": [
+        "linux",
+        "macos",
+        "windows"
+      ],
+      "metadata": {
+        "hermes": {
+          "tags": [
+            "LOC",
+            "Code Analysis",
+            "pygount",
+            "Codebase",
+            "Metrics",
+            "Repository"
+          ],
+          "related_skills": [
+            "github-repo-management"
+          ]
+        }
+      },
+      "prerequisites": {
+        "commands": [
+          "pygount"
+        ]
+      },
+      "path": "github/codebase-inspection",
+      "updated_at": "2026-07-13T21:08:17.259880",
+      "category": "github"
+    },
+    {
+      "name": "github-issues",
+      "description": "Create, triage, label, assign GitHub issues via gh or REST.",
+      "version": "1.1.0",
+      "author": "Hermes Agent",
+      "license": "MIT",
+      "platforms": [
+        "linux",
+        "macos",
+        "windows"
+      ],
+      "metadata": {
+        "hermes": {
+          "tags": [
+            "GitHub",
+            "Issues",
+            "Project-Management",
+            "Bug-Tracking",
+            "Triage"
+          ],
+          "related_skills": [
+            "github-auth",
+            "github-pr-workflow"
+          ]
+        }
+      },
+      "path": "github/github-issues",
+      "updated_at": "2026-08-14T14:02:24.001536",
+      "category": "github"
+    },
+    {
+      "name": "github-issue-to-pr",
+      "description": "Carry a GitHub issue to a verified PR with honest CI state.",
+      "version": "0.1.0",
+      "author": "Ben Barclay (benbarclay), Hermes Agent",
+      "license": "MIT",
+      "platforms": [
+        "linux",
+        "macos",
+        "windows"
+      ],
+      "metadata": {
+        "hermes": {
+          "tags": [
+            "GitHub",
+            "Issues",
+            "Coding",
+            "Pull-Requests",
+            "CI"
+          ],
+          "related_skills": [
+            "github-issues",
+            "github-pr-workflow",
+            "systematic-debugging",
+            "test-driven-development",
+            "requesting-code-review"
+          ]
+        }
+      },
+      "path": "github/github-issue-to-pr",
+      "updated_at": "2026-08-11T22:01:39.772727",
+      "category": "github"
+    },
+    {
+      "name": "github-code-review",
+      "description": "Review PRs: diffs, inline comments via gh or REST.",
+      "version": "1.1.0",
+      "author": "Hermes Agent",
+      "license": "MIT",
+      "platforms": [
+        "linux",
+        "macos",
+        "windows"
+      ],
+      "metadata": {
+        "hermes": {
+          "tags": [
+            "GitHub",
+            "Code-Review",
+            "Pull-Requests",
+            "Git",
+            "Quality"
+          ],
+          "related_skills": [
+            "github-auth",
+            "github-pr-workflow"
+          ]
+        }
+      },
+      "path": "github/github-code-review",
+      "updated_at": "2026-08-14T14:02:24.001536",
+      "category": "github"
+    },
+    {
+      "name": "ascii-art",
+      "description": "ASCII art: pyfiglet, cowsay, boxes, image-to-ascii.",
+      "version": "4.0.0",
+      "author": "0xbyt4, Hermes Agent",
+      "license": "MIT",
+      "dependencies": [],
+      "platforms": [
+        "linux",
+        "macos",
+        "windows"
+      ],
+      "metadata": {
+        "hermes": {
+          "tags": [
+            "ASCII",
+            "Art",
+            "Banners",
+            "Creative",
+            "Unicode",
+            "Text-Art",
+            "pyfiglet",
+            "figlet",
+            "cowsay",
+            "boxes"
+          ],
+          "related_skills": [
+            "excalidraw"
+          ]
+        }
+      },
+      "path": "creative/ascii-art",
+      "updated_at": "2026-08-14T14:02:24.000536",
+      "category": "creative"
+    },
+    {
+      "name": "architecture-diagram",
+      "description": "Dark-themed SVG architecture/cloud/infra diagrams as HTML.",
+      "version": "1.0.0",
+      "author": "Cocoon AI (hello@cocoon-ai.com), ported by Hermes Agent",
+      "license": "MIT",
+      "dependencies": [],
+      "platforms": [
+        "linux",
+        "macos",
+        "windows"
+      ],
+      "metadata": {
+        "hermes": {
+          "tags": [
+            "architecture",
+            "diagrams",
+            "SVG",
+            "HTML",
+            "visualization",
+            "infrastructure",
+            "cloud"
+          ],
+          "related_skills": [
+            "concept-diagrams",
+            "excalidraw"
+          ]
+        }
+      },
+      "path": "creative/architecture-diagram",
+      "updated_at": "2026-07-13T21:08:17.224790",
+      "category": "creative"
+    },
+    {
+      "name": "sketch",
+      "description": "Throwaway HTML mockups: 2-3 design variants to compare.",
+      "version": "1.0.1",
+      "author": "Hermes Agent (adapted from gsd-build/get-shit-done)",
+      "license": "MIT",
+      "platforms": [
+        "linux",
+        "macos",
+        "windows"
+      ],
+      "metadata": {
+        "hermes": {
+          "tags": [
+            "sketch",
+            "mockup",
+            "design",
+            "ui",
+            "prototype",
+            "html",
+            "variants",
+            "exploration",
+            "wireframe",
+            "comparison"
+          ],
+          "related_skills": [
+            "spike",
+            "claude-design",
+            "popular-web-designs",
+            "excalidraw"
+          ]
+        }
+      },
+      "path": "creative/sketch",
+      "updated_at": "2026-07-26T20:08:42.183822",
+      "category": "creative"
+    },
+    {
+      "name": "touchdesigner-mcp",
+      "description": "Control TouchDesigner via twozero MCP.",
+      "version": "1.1.0",
+      "author": "kshitijk4poor",
+      "license": "MIT",
+      "platforms": [
+        "linux",
+        "macos",
+        "windows"
+      ],
+      "metadata": {
+        "hermes": {
+          "tags": [
+            "TouchDesigner",
+            "MCP",
+            "twozero",
+            "creative-coding",
+            "real-time-visuals",
+            "generative-art",
+            "audio-reactive",
+            "VJ",
+            "installation",
+            "GLSL"
+          ],
+          "related_skills": [
+            "ascii-video",
+            "manim-video"
+          ]
+        }
+      },
+      "path": "creative/touchdesigner-mcp",
+      "updated_at": "2026-07-26T20:08:42.184822",
+      "category": "creative"
+    },
+    {
+      "name": "pretext",
+      "description": "Build creative browser demos with DOM-free text layout.",
+      "version": "1.0.0",
+      "author": "Hermes Agent",
+      "license": "MIT",
+      "platforms": [
+        "linux",
+        "macos",
+        "windows"
+      ],
+      "metadata": {
+        "hermes": {
+          "tags": [
+            "creative-coding",
+            "typography",
+            "pretext",
+            "ascii-art",
+            "canvas",
+            "generative",
+            "text-layout",
+            "kinetic-typography"
+          ],
+          "related_skills": [
+            "p5js",
+            "claude-design",
+            "excalidraw",
+            "architecture-diagram"
+          ]
+        }
+      },
+      "path": "creative/pretext",
+      "updated_at": "2026-08-14T14:02:24.000536",
+      "category": "creative"
+    },
+    {
+      "name": "excalidraw",
+      "description": "Hand-drawn Excalidraw JSON diagrams (arch, flow, seq).",
+      "version": "1.0.1",
+      "author": "Hermes Agent",
+      "license": "MIT",
+      "dependencies": [],
+      "platforms": [
+        "linux",
+        "macos",
+        "windows"
+      ],
+      "metadata": {
+        "hermes": {
+          "tags": [
+            "Excalidraw",
+            "Diagrams",
+            "Flowcharts",
+            "Architecture",
+            "Visualization",
+            "JSON"
+          ],
+          "related_skills": []
+        }
+      },
+      "path": "creative/excalidraw",
+      "updated_at": "2026-07-26T20:08:42.182822",
+      "category": "creative"
+    },
+    {
+      "name": "songwriting-and-ai-music",
+      "description": "Songwriting craft and Suno AI music prompts.",
+      "version": "1.0.0",
+      "author": "Teknium (teknium1), Hermes Agent",
+      "license": "MIT",
+      "tags": [
+        "songwriting",
+        "music",
+        "suno",
+        "parody",
+        "lyrics",
+        "creative"
+      ],
+      "platforms": [
+        "linux",
+        "macos",
+        "windows"
+      ],
+      "triggers": [
+        "writing a song",
+        "song lyrics",
+        "music prompt",
+        "suno prompt",
+        "parody song",
+        "adapting a song",
+        "AI music generation"
+      ],
+      "path": "creative/songwriting-and-ai-music",
+      "updated_at": "2026-08-11T22:01:39.771727",
+      "category": "creative"
+    },
+    {
+      "name": "manim-video",
+      "description": "Manim CE animations: 3Blue1Brown math/algo videos.",
+      "version": "1.0.0",
+      "author": "SHL0MS, Hermes Agent",
+      "license": "MIT",
+      "platforms": [
+        "linux",
+        "macos",
+        "windows"
+      ],
+      "metadata": {
+        "hermes": {
+          "tags": [
+            "Manim",
+            "Animation",
+            "Math",
+            "Video"
+          ],
+          "related_skills": []
+        }
+      },
+      "path": "creative/manim-video",
+      "updated_at": "2026-08-11T22:01:39.769727",
+      "category": "creative"
+    },
+    {
+      "name": "popular-web-designs",
+      "description": "54 real design systems (Stripe, Linear, Vercel) as HTML/CSS.",
+      "version": "1.0.0",
+      "author": "Hermes Agent + Teknium (design systems sourced from VoltAgent/awesome-design-md)",
+      "license": "MIT",
+      "tags": [
+        "design",
+        "css",
+        "html",
+        "ui",
+        "web-development",
+        "design-systems",
+        "templates"
+      ],
+      "platforms": [
+        "linux",
+        "macos",
+        "windows"
+      ],
+      "triggers": [
+        "build a page that looks like",
+        "make it look like stripe",
+        "design like linear",
+        "vercel style",
+        "create a UI",
+        "web design",
+        "landing page",
+        "dashboard design",
+        "website styled like"
+      ],
+      "path": "creative/popular-web-designs",
+      "updated_at": "2026-07-13T21:08:17.242181",
+      "category": "creative"
+    },
+    {
+      "name": "comfyui",
+      "description": "Generate images, video, and audio via diffusion workflows.",
+      "version": "5.1.0",
+      "author": [
+        "kshitijk4poor",
+        "alt-glitch",
+        "purzbeats"
+      ],
+      "license": "MIT",
+      "platforms": [
+        "macos",
+        "linux",
+        "windows"
+      ],
+      "compatibility": "Requires ComfyUI (local, Comfy Desktop, or Comfy Cloud) and comfy-cli (auto-installed via pipx/uvx by the setup script).",
+      "prerequisites": {
+        "commands": [
+          "python"
+        ]
+      },
+      "setup": {
+        "help": "Run scripts/hardware_check.py FIRST to decide local vs Comfy Cloud; then scripts/comfyui_setup.sh auto-installs locally (or use Cloud API key for platform.comfy.org)."
+      },
+      "metadata": {
+        "hermes": {
+          "tags": [
+            "comfyui",
+            "image-generation",
+            "stable-diffusion",
+            "flux",
+            "sd3",
+            "wan-video",
+            "hunyuan-video",
+            "creative",
+            "generative-ai",
+            "video-generation"
+          ],
+          "related_skills": [
+            "stable-diffusion"
+          ],
+          "category": "creative"
+        }
+      },
+      "path": "creative/comfyui",
+      "updated_at": "2026-08-14T14:02:24.000536",
+      "category": "creative"
+    },
+    {
+      "name": "ascii-video",
+      "description": "ASCII video: convert video/audio to colored ASCII MP4/GIF.",
+      "version": "1.0.0",
+      "author": "SHL0MS, Hermes Agent",
+      "license": "MIT",
+      "platforms": [
+        "linux",
+        "macos",
+        "windows"
+      ],
+      "metadata": {
+        "hermes": {
+          "tags": [
+            "ASCII",
+            "Video",
+            "FFmpeg",
+            "Terminal-Art"
+          ],
+          "related_skills": []
+        }
+      },
+      "path": "creative/ascii-video",
+      "updated_at": "2026-08-11T22:01:39.764726",
+      "category": "creative"
+    },
+    {
+      "name": "design-md",
+      "description": "Author/validate/export Google's DESIGN.md token spec files.",
+      "version": "1.1.0",
+      "author": "Hermes Agent",
+      "license": "MIT",
+      "platforms": [
+        "linux",
+        "macos",
+        "windows"
+      ],
+      "metadata": {
+        "hermes": {
+          "tags": [
+            "design",
+            "design-system",
+            "tokens",
+            "ui",
+            "accessibility",
+            "wcag",
+            "tailwind",
+            "dtcg",
+            "google"
+          ],
+          "related_skills": [
+            "popular-web-designs",
+            "claude-design",
+            "excalidraw",
+            "architecture-diagram"
+          ]
+        }
+      },
+      "path": "creative/design-md",
+      "updated_at": "2026-07-26T20:08:42.182822",
+      "category": "creative"
+    },
+    {
+      "name": "claude-design",
+      "description": "Design one-off HTML artifacts (landing, deck, prototype).",
+      "version": "1.1.0",
+      "author": "BadTechBandit",
+      "license": "MIT",
+      "platforms": [
+        "linux",
+        "macos",
+        "windows"
+      ],
+      "metadata": {
+        "hermes": {
+          "tags": [
+            "design",
+            "html",
+            "prototype",
+            "ux",
+            "ui",
+            "creative",
+            "artifact",
+            "deck",
+            "motion",
+            "design-system"
+          ],
+          "related_skills": [
+            "design-md",
+            "popular-web-designs",
+            "excalidraw",
+            "architecture-diagram"
+          ]
+        }
+      },
+      "path": "creative/claude-design",
+      "updated_at": "2026-07-13T21:08:17.231749",
+      "category": "creative"
+    },
+    {
+      "name": "humanizer",
+      "description": "Humanize text: strip AI-isms and add real voice.",
+      "version": "2.5.1",
+      "author": "Siqi Chen (@blader, https://github.com/blader/humanizer), ported by Hermes Agent",
+      "license": "MIT",
+      "platforms": [
+        "linux",
+        "macos",
+        "windows"
+      ],
+      "metadata": {
+        "hermes": {
+          "tags": [
+            "writing",
+            "editing",
+            "humanize",
+            "anti-ai-slop",
+            "voice",
+            "prose",
+            "text"
+          ],
+          "category": "creative",
+          "homepage": "https://github.com/blader/humanizer",
+          "related_skills": [
+            "songwriting-and-ai-music"
+          ]
+        }
+      },
+      "path": "creative/humanizer",
+      "updated_at": "2026-07-26T20:08:42.183822",
+      "category": "creative"
+    },
+    {
+      "name": "p5js",
+      "description": "p5.js sketches: gen art, shaders, interactive, 3D.",
+      "version": "1.0.0",
+      "author": "SHL0MS, Hermes Agent",
+      "license": "MIT",
+      "platforms": [
+        "linux",
+        "macos",
+        "windows"
+      ],
+      "metadata": {
+        "hermes": {
+          "tags": [
+            "creative-coding",
+            "generative-art",
+            "p5js",
+            "canvas",
+            "interactive",
+            "visualization",
+            "webgl",
+            "shaders",
+            "animation"
+          ],
+          "related_skills": [
+            "ascii-video",
+            "manim-video",
+            "excalidraw"
+          ]
+        }
+      },
+      "path": "creative/p5js",
+      "updated_at": "2026-08-14T14:02:24.000536",
+      "category": "creative"
+    },
+    {
+      "name": "baoyu-infographic",
+      "description": "Infographics: 21 layouts x 21 styles (信息图, 可视化).",
+      "version": "1.56.1",
+      "author": "宝玉 (JimLiu)",
+      "license": "MIT",
+      "platforms": [
+        "linux",
+        "macos",
+        "windows"
+      ],
+      "metadata": {
+        "hermes": {
+          "tags": [
+            "infographic",
+            "visual-summary",
+            "creative",
+            "image-generation"
+          ],
+          "homepage": "https://github.com/JimLiu/baoyu-skills#baoyu-infographic"
+        }
+      },
+      "path": "creative/baoyu-infographic",
+      "updated_at": "2026-07-13T21:08:17.228762",
+      "category": "creative"
+    },
+    {
+      "name": "openhue",
+      "description": "Control Philips Hue lights, scenes, rooms via OpenHue CLI.",
+      "version": "1.0.1",
+      "author": "community",
+      "license": "MIT",
+      "platforms": [
+        "linux",
+        "macos",
+        "windows"
+      ],
+      "metadata": {
+        "hermes": {
+          "tags": [
+            "Smart-Home",
+            "Hue",
+            "Lights",
+            "IoT",
+            "Automation"
+          ],
+          "homepage": "https://www.openhue.io/cli"
+        }
+      },
+      "prerequisites": {
+        "commands": [
+          "openhue"
+        ]
+      },
+      "path": "smart-home/openhue",
+      "updated_at": "2026-07-26T20:08:42.240827",
+      "category": "smart-home"
+    }
+  ],
+  "categories": {
+    "autonomous-ai-agents": [
+      "computer-use",
+      "codex",
+      "merge-reconciler",
+      "claude-code",
+      "opencode",
+      "hermes-agent"
+    ],
+    "social-media": [
+      "ai-music-and-sound",
+      "ai-image-editing",
+      "suno",
+      "content-research-and-sourcing",
+      "contrarian-and-opinion",
+      "link-in-bio-and-traffic",
+      "profile-optimization",
+      "social-selling-and-dm",
+      "flux",
+      "hook-writer",
+      "story-writer",
+      "trend-jacking",
+      "before-after-and-transformation",
+      "voice-builder",
+      "quote-cards-and-text-graphics",
+      "thumbnail-design",
+      "goals-and-kpis",
+      "lead-magnets-and-funnels",
+      "infographic-and-data-viz",
+      "seasonal-and-moment-marketing",
+      "runway",
+      "ugc-and-influencer",
+      "nano-banana",
+      "youtube-long-form",
+      "content-audit",
+      "competitor-analysis",
+      "behind-the-scenes-and-founder",
+      "linkedin-growth",
+      "writing-style-and-tone",
+      "campaign-and-launch-planning",
+      "hashtag-strategy",
+      "storytelling-and-narrative",
+      "short-form-video-script",
+      "linkedin-post-writer",
+      "caption-writer",
+      "pinterest-pin-design",
+      "analytics-and-reporting",
+      "linkedin-company-pages",
+      "collabs-and-cross-promotion",
+      "image-prompt",
+      "podcast-and-audiograms",
+      "talking-head-and-piece-to-camera",
+      "creator-monetization",
+      "design-and-templates",
+      "meme-and-culture",
+      "captions-and-clipping",
+      "content-calendar",
+      "engagement-routine",
+      "pinterest-growth",
+      "text-post-and-microblog",
+      "audience-research",
+      "opus-clip",
+      "social-strategy",
+      "instagram-growth",
+      "cross-platform-repurposing",
+      "community-management",
+      "tiktok-growth",
+      "platform-specs-and-validation",
+      "veo-3",
+      "reddit-marketing",
+      "batch-content-plan",
+      "youtube-publishing-and-metadata",
+      "reply-and-comment-writer",
+      "luma",
+      "listicle-and-roundup",
+      "youtube-shorts",
+      "viral-reverse-engineering",
+      "tiktok-video-publishing",
+      "experimentation-and-ab-testing",
+      "synthesia",
+      "kling",
+      "reels-script",
+      "descript",
+      "email-and-newsletter",
+      "threads-post",
+      "social-proof-and-testimonials",
+      "data-and-original-research",
+      "canva",
+      "content-recycling",
+      "carousel-writer",
+      "brand-profile",
+      "instagram-seo",
+      "xurl",
+      "content-pillars",
+      "threads-growth",
+      "scheduling-and-queue",
+      "crisis-and-moderation",
+      "instagram-reels-publishing",
+      "idea-generation-and-ideation",
+      "tiktok-photo-mode",
+      "facebook-strategy",
+      "tiktok-script",
+      "social-seo",
+      "facebook-groups",
+      "interactive-content",
+      "scripting-and-storyboarding",
+      "thread-writer",
+      "livestream-and-realtime",
+      "ideogram",
+      "ai-search-optimization",
+      "pinterest-seo",
+      "capcut",
+      "x-growth",
+      "ai-video",
+      "educational-content-and-how-to",
+      "ai-voiceover",
+      "heygen"
+    ],
+    "devops": [
+      "sdlc-review"
+    ],
+    "note-taking": [
+      "obsidian"
+    ],
+    "productivity": [
+      "pdf",
+      "powerpoint",
+      "document-to-action-items",
+      "nano-pdf",
+      "xlsx",
+      "notion",
+      "airtable",
+      "weekly-review-planning",
+      "maps",
+      "ocr-and-documents",
+      "meeting-action-items",
+      "google-workspace",
+      "box",
+      "product-price-monitor",
+      "session-librarian",
+      "teams-meeting-pipeline",
+      "docx"
+    ],
+    "data-engineering": [
+      "db-schema-introspect",
+      "sql-query-executor",
+      "redis-cli-wrapper",
+      "vector-db-ops"
+    ],
+    "mlops": [
+      "huggingface-hub"
+    ],
+    "research": [
+      "grounded-citations",
+      "research-paper-writing",
+      "llm-wiki",
+      "competitor-news-monitor",
+      "arxiv",
+      "blocked-page-recovery",
+      "blogwatcher"
+    ],
+    "software-development": [
+      "dogfood",
+      "inspecting-hermes-desktop-dom",
+      "simplify-code",
+      "plan",
+      "hermes-agent-skill-authoring",
+      "spike",
+      "requesting-code-review",
+      "python-debugpy",
+      "test-driven-development",
+      "systematic-debugging",
+      "node-inspect-debugger"
+    ],
+    "email": [
+      "himalaya",
+      "email-inbox-triage"
+    ],
+    "media": [
+      "songsee",
+      "gif-search",
+      "youtube-content"
+    ],
+    "apple": [
+      "apple-reminders",
+      "imessage",
+      "findmy",
+      "apple-notes"
+    ],
+    "github": [
+      "github-auth",
+      "github-pr-workflow",
+      "github-repo-management",
+      "codebase-inspection",
+      "github-issues",
+      "github-issue-to-pr",
+      "github-code-review"
+    ],
+    "creative": [
+      "ascii-art",
+      "architecture-diagram",
+      "sketch",
+      "touchdesigner-mcp",
+      "pretext",
+      "excalidraw",
+      "songwriting-and-ai-music",
+      "manim-video",
+      "popular-web-designs",
+      "comfyui",
+      "ascii-video",
+      "design-md",
+      "claude-design",
+      "humanizer",
+      "p5js",
+      "baoyu-infographic"
+    ],
+    "smart-home": [
+      "openhue"
+    ]
+  }
+}

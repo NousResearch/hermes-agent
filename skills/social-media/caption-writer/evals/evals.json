@@ -1,0 +1,86 @@
+{
+  "skill": "caption-writer",
+  "version": "1.0.0",
+  "description": "Scenario tests for caption-writer. A run passes only when every item in 'expect' is satisfied. Written before the skill body (test-first).",
+  "evals": [
+    {
+      "name": "happy-path-instagram-saves",
+      "input": "Write an Instagram caption for this photo of our team shipping a feature. Goal is saves.",
+      "expect": [
+        "reads brand-profile.md and voice.md before writing",
+        "writes a first line that hooks within Instagram's ~125-char preview cutoff",
+        "the body pays off the hook and is on-voice (fingerprint hit, 'never' list respected)",
+        "exactly one CTA, matched to the saves goal",
+        "uses a handful of relevant hashtags, not a wall, placed correctly",
+        "delivers 2-3 distinct options and recommends one with a rationale"
+      ]
+    },
+    {
+      "name": "reads-foundation-and-guardrails",
+      "input": "Caption this.",
+      "context": "voice.md bans exclamation marks and the word 'excited'; brand-profile says never hard-sell.",
+      "expect": [
+        "loads voice.md and brand-profile.md",
+        "uses no exclamation marks and does not use 'excited'",
+        "does not write a hard-sell CTA",
+        "asks for platform/goal if not provided (at most 1-2 questions)"
+      ]
+    },
+    {
+      "name": "platform-adaptation",
+      "input": "Give me this same post as an Instagram caption, a LinkedIn post, and an X post.",
+      "expect": [
+        "does NOT paste the same caption across all three",
+        "adapts the first line, length, hashtags, and CTA to each platform's mechanics",
+        "Instagram routes any link to 'link in bio'; X uses 0-2 hashtags; LinkedIn formats for dwell",
+        "each version still sounds like the same brand voice"
+      ]
+    },
+    {
+      "name": "goal-drives-structure",
+      "input": "Write two captions for this post — one to get comments, one to drive clicks.",
+      "expect": [
+        "the comments version ends on a genuine, low-effort question or open loop",
+        "the clicks version teases value and uses a traffic CTA appropriate to the platform",
+        "structure and CTA visibly differ based on the goal",
+        "each has only one CTA"
+      ]
+    },
+    {
+      "name": "complements-not-describes",
+      "input": "Caption for a photo of latte art at our cafe.",
+      "expect": [
+        "does NOT merely describe what's in the photo",
+        "adds an angle, story, or hook the image alone doesn't convey",
+        "first line earns attention rather than narrating the visual"
+      ]
+    },
+    {
+      "name": "thin-input-asks-minimal",
+      "input": "write a caption",
+      "expect": [
+        "asks at most 1-2 essential questions (platform, goal) rather than a long form",
+        "does not invent brand specifics not in the profile",
+        "proceeds to a usable draft once it has enough"
+      ]
+    },
+    {
+      "name": "no-link-platform-cta",
+      "input": "Write an Instagram feed caption to drive people to our new blog post.",
+      "expect": [
+        "recognizes links aren't clickable in IG feed captions",
+        "routes the CTA to 'link in bio' rather than writing a clickable-link CTA",
+        "still makes the click feel worth it"
+      ]
+    },
+    {
+      "name": "first-line-quality",
+      "input": "Caption for our product launch.",
+      "expect": [
+        "does NOT open with 'We're thrilled/excited to announce'",
+        "leads with the benefit or a hook, not fanfare",
+        "first line creates curiosity, stakes, or recognition within the cutoff"
+      ]
+    }
+  ]
+}

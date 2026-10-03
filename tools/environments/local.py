@@ -302,8 +302,16 @@ def _scrubbed_env(parts, plugin_strip: frozenset, fix_path) -> dict:
     # Keep bare ``hermes`` invocations available to child jobs even when the gateway was launched by a
     # service manager or cron without the console script's directory on PATH. The terminal environment
     # already applies this invariant; Cron scripts use this sanitizer directly (#92998).
+    # ``terminal.user_env_dirs`` (#126460) is applied last so user-declared dirs win over every
+    # managed entry — the channel for routing bare ``python``/``pip`` at a user environment.
     if path_key is not None:
-        out[path_key] = _prepend_hermes_bin_dir(fix_path(out.get(path_key, "")))
+        out[path_key] = _prepend_user_env_dirs(
+            _prepend_hermes_bin_dir(fix_path(out.get(path_key, ""))))
+    # git-bash login shells rebuild PATH from ORIGINAL_PATH when that var is present
+    # (etc/profile: ``ORIGINAL_PATH="${ORIGINAL_PATH:-${PATH}}"``), so the user dirs
+    # must lead there too or the login snapshot silently drops them (#126460).
+    if "ORIGINAL_PATH" in out:
+        out["ORIGINAL_PATH"] = _prepend_user_env_dirs(out["ORIGINAL_PATH"])
     return _finalize_child_env(out)
 
 
@@ -788,6 +796,84 @@ def _resolve_shell_init_files() -> list[str]:
         except Exception:
             continue
     return resolved
+
+
+def _read_user_env_dirs() -> list[str]:
+    """Directories from ``terminal.user_env_dirs`` (config.yaml), prepended to
+    the child PATH with top priority. Best-effort — [] on any failure so
+    terminal execution never breaks; mirrors the ``shell_init_files`` read
+    pattern. This is the channel for pointing the Windows chat-terminal at a
+    user-managed environment (e.g. ``C:/Program Files/Python313`` +
+    ``.../Scripts``) so bare ``python`` and ``pip`` agree (#126460); it works
+    for any user toolchain (node, ...), the name carries no python-specific
+    behavior.
+    """
+    try:
+        from hermes_cli.config import load_config
+
+        terminal_cfg = (load_config() or {}).get("terminal") or {}
+        entries = terminal_cfg.get("user_env_dirs") or []
+        if not isinstance(entries, list):
+            return []
+        cleaned: list[str] = []
+        seen: set[str] = set()
+        for entry in entries:
+            if not entry:
+                continue
+            text = str(entry).strip()
+            if not text:
+                continue
+            # ~ and ${VAR} expand like shell_init_files entries, so the same
+            # spelling works in both keys.
+            text = os.path.expandvars(os.path.expanduser(text))
+            norm = os.path.normcase(os.path.normpath(text))
+            if norm in seen:
+                continue
+            seen.add(norm)
+            cleaned.append(text)
+        return cleaned
+    except Exception:
+        return []
+
+
+def _prepend_user_env_dirs(existing_path: str) -> str:
+    """Prepend configured ``terminal.user_env_dirs`` entries, in config order.
+
+    Every entry lands in the PATH prefix **in the order the user declared
+    it**: an entry already present anywhere in PATH is *moved* to its config
+    position (the original occurrence is dropped, keeping the PATH-side
+    spelling), an absent one is inserted. Priority, not presence: on a
+    typical Windows box the user Python is already in PATH, just after the
+    managed toolchain dirs, so a presence-only prepend would no-op on exactly
+    the case this exists for. Comparison normalizes (normcase + normpath) so
+    slash-spelling variants don't duplicate. Idempotent — applying twice
+    changes nothing.
+    # ponytail: O(n*m) norm scan, fine for PATH lengths; config re-read
+    # per spawn, but a login-shell terminal sources a session snapshot whose
+    # PATH was dumped at init_session, so an edit lands on the next session
+    # there (every spawn for non-snapshot callers).
+    """
+    extra = _read_user_env_dirs()
+    if not extra:
+        return existing_path
+    sep = os.pathsep
+
+    def _norm(path: str) -> str:
+        return os.path.normcase(os.path.normpath(path.strip()))
+
+    existing = [e for e in existing_path.split(sep) if e] if existing_path else []
+    prefix: list[str] = []
+    used_norms: set[str] = set()
+    for entry in extra:
+        entry_norm = _norm(entry)
+        hit = next((e for e in existing if _norm(e) == entry_norm), None)
+        if hit is not None:
+            prefix.append(hit)          # keep the PATH-side spelling
+        else:
+            prefix.append(entry)
+        used_norms.add(entry_norm)
+    remaining = [e for e in existing if _norm(e) not in used_norms]
+    return sep.join([*prefix, *remaining])
 
 
 def _prepend_shell_init(cmd_string: str, files: list[str]) -> str:

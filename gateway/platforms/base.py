@@ -47,6 +47,13 @@ _AUDIO_EXTS = frozenset(_AUDIO_MIME_TYPES)
 # Outbound dispatch partition for MEDIA/local files (image batch vs send_video).
 _VIDEO_EXTS = frozenset({".mp4", ".mov", ".avi", ".mkv", ".webm", ".3gp"})
 _IMAGE_EXTS = frozenset({".jpg", ".jpeg", ".png", ".webp", ".gif"})
+# Document/other extensions consulted by classify_media before trusting a platform's
+# MIME label (a .dxf reported as image/* once walked the image path and was dropped).
+_DOCUMENT_EXTS = frozenset({
+    ".pdf", ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx", ".txt", ".md", ".csv",
+    ".zip", ".tar", ".gz", ".7z", ".rar", ".json", ".xml", ".html", ".log",
+    ".dxf", ".dwg", ".step", ".stp", ".iges", ".igs",
+})
 # Telegram sendAudio accepts only MP3 / M4A; others go via sendVoice (Opus/OGG) or as a document.
 _TELEGRAM_AUDIO_ATTACHMENT_EXTS = frozenset({'.mp3', '.m4a'})
 _TELEGRAM_VOICE_EXTS = frozenset({'.ogg', '.opus'})
@@ -616,6 +623,40 @@ def _looks_like_image(data: bytes) -> bool:
     return len(data) >= 4 and (data[:8] == b"\x89PNG\r\n\x1a\n" or data[:3] == b"\xff\xd8\xff"
                or data[:6] in {b"GIF87a", b"GIF89a"} or data[:2] == b"BM"
                or (data[:4] == b"RIFF" and len(data) >= 12 and data[8:12] == b"WEBP"))
+
+
+def classify_media(content_type: str, filename: str = "", raw_bytes: Optional[bytes] = None) -> str:
+    """Arbitrate a platform-reported media type into image/audio/video/document.
+
+    Platform APIs occasionally mislabel uploads: a ``.dxf`` CAD file arriving as
+    ``image/*`` once walked the image path, where the magic-byte check rejected it,
+    and the file was silently dropped. Signals, strongest first: the file extension,
+    the magic bytes, then the reported content type as a last resort. Non-image
+    bytes labelled ``image/*`` classify as a document and are never cached as images.
+    """
+    ext = Path(filename or "").suffix.lower()
+    if ext in _IMAGE_EXTS:
+        return "image"
+    if ext in _AUDIO_EXTS:
+        return "audio"
+    if ext in _VIDEO_EXTS:
+        return "video"
+    if ext in _DOCUMENT_EXTS:
+        return "document"
+    reported = (content_type or "").split(";", 1)[0].strip().lower()
+    data = raw_bytes or b""
+    if data:
+        if _looks_like_image(data):
+            return "image"
+        if reported.startswith("image/"):
+            return "document"
+    if reported.startswith("image/"):
+        return "image"
+    if reported.startswith("audio/"):
+        return "audio"
+    if reported.startswith("video/"):
+        return "video"
+    return "document"
 
 
 def _secure_media_cache_dir(cache_dir: Path) -> None:

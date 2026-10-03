@@ -89,6 +89,7 @@ from gateway.platforms.base import (
     BasePlatformAdapter, ExecApprovalPrompt, SendResult,
     SUPPORTED_DOCUMENT_TYPES, cache_document_from_bytes_async, cache_image_from_url,
     cache_audio_from_bytes_async, cache_image_from_bytes_async,
+    classify_media, _looks_like_image,
 )
 from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
 from gateway.status import acquire_scoped_lock, release_scoped_lock
@@ -3116,6 +3117,11 @@ class FeishuAdapter(BasePlatformAdapter):
                 return "", ""
             content_type = self._get_response_header(response, "Content-Type")
             filename = getattr(response, "file_name", None) or f"{image_key}.jpg"
+            if not _looks_like_image(raw_bytes):
+                # The platform's "image" is not actually an image (mislabeled upload):
+                # keep the bytes as a document instead of failing the download.
+                cached_path = await cache_document_from_bytes_async(raw_bytes, filename)
+                return cached_path, self._guess_document_media_type(filename)
             ext = self._guess_extension(filename, content_type, ".jpg", allowed=_IMAGE_EXTENSIONS)
             cached_path = await cache_image_from_bytes_async(raw_bytes, ext=ext)
             return cached_path, self._normalize_media_type(content_type, default=self._default_image_media_type(ext))
@@ -3151,7 +3157,7 @@ class FeishuAdapter(BasePlatformAdapter):
                     content_type, default=self._guess_media_type_from_filename(filename),
                 )
 
-                if media_type.startswith("image/"):
+                if classify_media(media_type, filename, raw_bytes) == "image":
                     ext = self._guess_extension(filename, content_type, ".jpg", allowed=_IMAGE_EXTENSIONS)
                     kind, cached_path = "image", await cache_image_from_bytes_async(raw_bytes, ext=ext)
                     media_type = media_type or self._default_image_media_type(ext)

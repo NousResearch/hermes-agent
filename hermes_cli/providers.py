@@ -337,6 +337,13 @@ def host_mandated_api_mode(base_url: str = "") -> Optional[str]:
     return None
 
 
+_NOUS_PROVIDER_NAMES = frozenset({"nous", "nous-portal", "nousresearch"})
+
+
+def is_nous_provider(provider: Optional[str]) -> bool:
+    return (provider or "").strip().lower() in _NOUS_PROVIDER_NAMES
+
+
 def nous_api_mode(model: str = "") -> str:
     """Wire protocol for a Nous Portal model. Portal serves its ``anthropic/*`` catalog on a native
     Messages route alongside OpenAI-compatible chat/completions for everything else.
@@ -377,7 +384,7 @@ def determine_api_mode(provider: str, base_url: str = "", model: str = "") -> st
     mandated = host_mandated_api_mode(base_url)
     if mandated is not None:
         return mandated
-    if (provider or "").strip().lower() in {"nous", "nous-portal", "nousresearch"}:
+    if is_nous_provider(provider):
         return nous_api_mode(model)
     pdef = get_provider(provider)
     if pdef is not None:

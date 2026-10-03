@@ -6136,8 +6136,10 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             chat_name = getattr(message.channel, "name", str(message.channel.id))
             if hasattr(message.channel, "guild") and message.channel.guild:
                 chat_name = f"{message.channel.guild.name} / #{chat_name}"
-        # Channel topic (TextChannels only); forum-parented threads inherit the parent topic.
-        chat_topic = self._get_effective_topic(message.channel, is_thread=is_thread)
+        # Channel topic: read from the effective channel (the auto-thread itself on
+        # turn 1) so turn 2 in the thread renders the same pin. Threads have no
+        # topic of their own; only forum-parented threads inherit (fixes #131118).
+        chat_topic = self._get_effective_topic(effective_channel, is_thread=is_thread)
         guild = getattr(message, "guild", None)
         source = self.build_source(
             chat_id=str(effective_channel.id),

@@ -209,8 +209,11 @@ jobs:
     needs: detect
     # apps/desktop/e2e/update: a real install.sh install + packaged Desktop,
     # first run, "Update now" hand-off/relaunch, concurrent-update refusal.
-    # Advisory until it has proven stable on CI: its shards run with continue-on-error, so a
-    # red shard shows on the PR but does not fail all-checks-pass.
+    # Required when it runs: a PR that touches the Desktop update path (the
+    # classifier's e2e_desktop_update lane) cannot merge on a red shard. Like
+    # the Linux e2e-upgrade shards and the Windows install + update journey
+    # (tests / tests-os, gated on e2e_upgrade), it is skipped — and the skip
+    # counts as success — when the PR does not touch that path.
     if: needs.detect.outputs.e2e_desktop_update == 'true'
     uses: ./.github/workflows/e2e-desktop-update.yml
 

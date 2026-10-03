@@ -542,6 +542,44 @@ def _iter_if_expressions(job: object):
             yield cond
 
 
+# (caller workflow, job, called workflow, lane input) for every real-update
+# suite: each runs on a PR exactly when its lane fires and then gates the merge.
+_REAL_UPDATE_LANES = (
+    ("ci.yaml", "tests", "tests.yml", "e2e_upgrade"),
+    ("ci.yaml", "tests-os", "tests-os.yml", "e2e_upgrade"),
+    ("ci.yaml", "e2e-desktop-update", "e2e-desktop-update.yml", "e2e_desktop_update"),
+    ("tests-os.yml", "install-update-e2e", "windows-install-update-e2e.yml", "e2e_upgrade"),
+)
+
+
+@pytest.mark.parametrize("caller,job,called,lane", _REAL_UPDATE_LANES)
+def test_real_update_suites_gate_the_merge_when_their_lane_fires(caller, job, called, lane):
+    """A real-update suite that runs but cannot fail the merge is decoration.
+
+    Each one must reach ``all-checks-pass`` (directly, or through the
+    reusable workflow that calls it), be gated on its lane, and never be
+    ``continue-on-error``: a red shard has to block the PR it ran for.
+    """
+    ci = _yaml(".github/workflows/ci.yaml")
+    caller_jobs = _yaml(f".github/workflows/{caller}")["jobs"]
+    assert caller_jobs[job]["uses"] == f"./.github/workflows/{called}"
+    gate = caller_jobs[job].get("if", "") + json.dumps(caller_jobs[job].get("with") or {})
+    assert lane in gate, f"{caller}::{job} is not gated on {lane}"
+    root = job if caller == "ci.yaml" else "tests-os"
+    assert root in ci["jobs"]["all-checks-pass"]["needs"]
+    for name, body in _yaml(f".github/workflows/{called}")["jobs"].items():
+        assert not body.get("continue-on-error"), f"{called}::{name} cannot fail the merge"
+
+
+def test_windows_venv_e2e_runs_only_test_files_that_exist():
+    """``run_tests.sh`` drops a missing path (or a ``::node`` selector) without
+    a word, so a stale entry silently stops running on every wine2e push."""
+    text = (_REPO / ".github/workflows/windows-venv-e2e.yml").read_text(encoding="utf-8")
+    paths = re.findall(r"(tests/[\w/.:-]+)", text)
+    assert paths
+    assert [p for p in paths if "::" in p or not (_REPO / p).is_file()] == []
+
+
 def _write_event(tmp_path, number: int | None = 88442) -> Path:
     payload = {"pull_request": {"number": number}} if number is not None else {}
     path = tmp_path / "event.json"

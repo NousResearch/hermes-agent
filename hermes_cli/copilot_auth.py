@@ -31,6 +31,12 @@ _CLASSIC_PAT_PREFIX = "ghp_"  # rejected by the Copilot API
 # to pass validation and then fail downstream with an opaque auth error (#12650).
 _SUPPORTED_PREFIXES = ("gho_", "github_pat_", "ghu_")
 COPILOT_ENV_VARS = ("COPILOT_GITHUB_TOKEN", "GH_TOKEN", "GITHUB_TOKEN")
+
+# Copilot-dedicated env vars: an unsupported token here is a genuine Copilot
+# misconfiguration worth a warning. The remaining COPILOT_ENV_VARS are shared,
+# general-purpose GitHub vars whose classic PATs are demoted to debug (#75687).
+_DEDICATED_COPILOT_ENV_VARS = frozenset({"COPILOT_GITHUB_TOKEN"})
+
 _DEVICE_CODE_POLL_INTERVAL = 5  # seconds
 _DEVICE_CODE_POLL_SAFETY_MARGIN = 3  # seconds
 
@@ -68,7 +74,14 @@ def resolve_copilot_token() -> tuple[str, str]:
         valid, msg = validate_copilot_token(val)
         if valid:
             return val, env_var
-        logger.warning("Token from %s is not supported: %s", env_var, msg)
+        # ``GH_TOKEN``/``GITHUB_TOKEN`` are general-purpose GitHub vars commonly
+        # set for the ``gh`` CLI or API scripts, so a classic PAT there is
+        # expected and not a Copilot misconfiguration — resolution just skips to
+        # the next candidate. Warning loudly on every catalog probe is pure noise
+        # (#75687), so only the Copilot-dedicated ``COPILOT_GITHUB_TOKEN``
+        # warrants a warning; the shared vars are logged at debug.
+        log = logger.warning if env_var in _DEDICATED_COPILOT_ENV_VARS else logger.debug
+        log("Token from %s is not supported: %s", env_var, msg)
     # `gh auth token` fallback ONLY when no Copilot env var was set: an exported GITHUB_TOKEN
     # (even a classic PAT) means the user intends *that* token; skipping also avoids a slow
     # subprocess (up to 5s on Windows) on every cold start.

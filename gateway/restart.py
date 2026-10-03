@@ -238,6 +238,21 @@ def is_global_startup_conflict(error_code: str | None) -> bool:
     return bool(code) and (code == "lock_conflict" or code.endswith("_lock"))
 
 
+def lock_conflict_with_own_predecessor(adapter: object) -> bool:
+    """True when an adapter's ``{scope}_lock`` fatal was raised by a holder record stamped with
+    THIS process's HERMES_HOME — a restart race with our own predecessor, not a foreign gateway.
+
+    A supervised restart (launchd ``kickstart -k``, systemd, s6) starts the replacement while the
+    old gateway is still draining and holding the platform lock. Parking that as a non-retryable
+    startup conflict exits 78, which supervisors treat as "clean, do not relaunch" — leaving no
+    gateway at all (#131875). The predecessor is exiting by contract (drain bounded by
+    ExitTimeOut), so the adapter keeps its retry and the reconnect watcher takes the lock over
+    once the old process lands."""
+    if not is_global_startup_conflict(getattr(adapter, "fatal_error_code", None)):
+        return False
+    return bool(getattr(adapter, "_platform_lock_conflict_own_home", False))
+
+
 def is_gateway_supervisor_process(environ: Mapping[str, str] | None = None) -> bool:
     """Return whether this gateway process is owned by a supervisor that RESTARTS it.
 

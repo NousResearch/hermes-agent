@@ -299,6 +299,23 @@ def scoped_lock_owner_label(record: Optional[dict[str, Any]]) -> Optional[str]:
     return _profile_label_for_home(home) if isinstance(home, str) and home.strip() else None
 
 
+def scoped_lock_record_is_own_home(record: Optional[dict[str, Any]]) -> bool:
+    """True when a scoped-lock conflict record was written by a process serving THIS home.
+
+    A gateway restart races its own predecessor: the replacement connects while the old process
+    still drains and holds the platform lock, so the conflict record it reads back carries this
+    same canonical ``hermes_home`` (#131875). Records without a usable home stamp (older writers)
+    compare False — callers keep treating them as a foreign holder."""
+    if not isinstance(record, dict):
+        return False
+    home = record.get("hermes_home")
+    return (
+        isinstance(home, str)
+        and bool(home.strip())
+        and _same_hermes_home(home, _get_process_hermes_home())
+    )
+
+
 def _get_pid_path() -> Path:
     return _get_process_hermes_home() / "gateway.pid"
 

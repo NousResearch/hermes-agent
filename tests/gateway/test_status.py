@@ -1102,6 +1102,31 @@ class TestScopedLockOwnerLabel:
         assert status.scoped_lock_owner_label(None) is None
         assert status.scoped_lock_owner_label("not-a-dict") is None
 
+    def test_own_home_detection_matches_restart_race_predecessor(self, monkeypatch, tmp_path):
+        # #131875: a supervised restart's replacement reads back its OWN predecessor's lock
+        # record — same canonical home. That holder is exiting by contract, so the startup
+        # router may treat the conflict as retryable instead of exit-78 parking the gateway.
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        assert status.scoped_lock_record_is_own_home(
+            {"pid": 424242, "hermes_home": str(tmp_path)}
+        ) is True
+        # A non-canonical spelling of the same home still matches: the comparison resolves
+        # both sides (symlinked /var vs /private/var, trailing "..", ...).
+        assert status.scoped_lock_record_is_own_home(
+            {"pid": 424242, "hermes_home": str(tmp_path / "sub" / "..")}
+        ) is True
+
+    def test_own_home_detection_rejects_foreign_and_unstamped_records(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        assert status.scoped_lock_record_is_own_home(
+            {"pid": 424242, "hermes_home": "/opt/other/home"}
+        ) is False
+        # Records from older writers carry no home stamp: keep the conservative foreign reading.
+        assert status.scoped_lock_record_is_own_home({"pid": 424242}) is False
+        assert status.scoped_lock_record_is_own_home({"hermes_home": "  "}) is False
+        assert status.scoped_lock_record_is_own_home(None) is False
+        assert status.scoped_lock_record_is_own_home("not-a-dict") is False
+
 
 class TestTakeoverMarker:
     """Tests for the --replace takeover marker.

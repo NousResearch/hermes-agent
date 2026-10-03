@@ -233,7 +233,9 @@ _ENV_ASSIGN_LOWER_RE = re.compile(
 # line-start ``password=x``). Carve-outs vs prose/code/URLs: values stop at
 # whitespace AND ``&`` (form bodies go pair-by-pair via _redact_form_body);
 # _CFG_DOTTED_RE needs a NAMESPACED key; _CFG_ANCHORED_RE needs line start
-# (optionally after ``export``). The ``://`` URL guard lives at the call site.
+# (optionally after ``export``). The ``=`` separator tolerates horizontal whitespace
+# on both sides (``password = x``): the aligned layout INI/TOML files use, same
+# tolerance _YAML_ASSIGN_RE gives ``:``. The ``://`` URL guard lives at the call site.
 # The uppercase _ENV_ASSIGN_RE above never matched these, so config-file passwords leaked verbatim (issue
 # #16413). These run only in a config-file context, NOT in prose, code, or URLs — three carve-outs preserved
 # from the original design (#4367 + the documented web-URL passthrough below): 1. The value is bounded by
@@ -264,7 +266,7 @@ _CFG_DOTTED_RE = re.compile(
     rf"(?<![A-Za-z0-9_.\-])"
     rf"([A-Za-z0-9_\-]++\.[A-Za-z0-9_.\-]*{_SECRET_CFG_NAMES}[A-Za-z0-9_.\-]*+"
     rf"|[A-Za-z0-9_.\-]*{_SECRET_CFG_NAMES}[A-Za-z0-9_.\-]*\.[A-Za-z0-9_.\-]++)"
-    rf"={_CFG_VALUE}",
+    rf"[ \t]*+=[ \t]*+{_CFG_VALUE}",
     re.IGNORECASE,
 )
 # Line-anchored bare key: ``password=…`` / ``export api_key=…`` at start of line.
@@ -273,7 +275,7 @@ _CFG_DOTTED_RE = re.compile(
 # and ``cat -n`` emits ``     7\tADS_API_TOKEN: …``. Anchored at ``^`` without it, none of those
 # matched, so the rendered read of a secret-bearing file leaked what the raw text masked.
 _CFG_ANCHORED_RE = re.compile(
-    rf"(^[ \t]*{_LINE_NUMBER_GUTTER}(?:export[ \t]+)?[A-Za-z0-9_\-]*{_SECRET_CFG_NAMES}[A-Za-z0-9_\-]*)={_CFG_VALUE}",
+    rf"(^[ \t]*{_LINE_NUMBER_GUTTER}(?:export[ \t]+)?[A-Za-z0-9_\-]*{_SECRET_CFG_NAMES}[A-Za-z0-9_\-]*)[ \t]*+=[ \t]*+{_CFG_VALUE}",
     re.IGNORECASE | re.MULTILINE,
 )
 

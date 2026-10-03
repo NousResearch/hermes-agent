@@ -72,7 +72,23 @@ class FactRetriever:
         results = sorted(candidates, key=lambda x: x["score"], reverse=True)[:limit]
         for fact in results:
             fact.pop("hrr_vector", None)  # callers expect JSON-serializable dicts
+        self._record_retrieval(results)
         return results
+
+    def _record_retrieval(self, results: list[dict]) -> None:
+        """Bump retrieval_count for facts handed back to a caller.
+
+        Wrapped in a single place because every public query path funnels through
+        either search() or _vector_query(). Failure here must never break a read:
+        losing a usage tick is acceptable, losing the user's answer is not.
+        """
+        if not results:
+            return
+        try:
+            ids = [f["fact_id"] for f in results if f.get("fact_id") is not None]
+            self.store.record_retrieval(ids)
+        except Exception:  # noqa: BLE001 - instrumentation is best-effort by design
+            pass
 
     def _vector_query(self, fallback: str, category: str | None, limit: int, sim_fn: Callable) -> list[dict]:
         """Rank every fact vector (optionally per category) by sim_fn; FTS5 fallback when no vectors exist."""
@@ -164,7 +180,12 @@ class FactRetriever:
         scored = [dict(row) for row in rows]
         for fact in scored:
             fact["score"] = _shift(sim_fn(fact, self._phases(fact.pop("hrr_vector")))) * fact["trust_score"]
-        return sorted(scored, key=lambda x: x["score"], reverse=True)[:limit]
+        results = sorted(scored, key=lambda x: x["score"], reverse=True)[:limit]
+        # Counted here (not in probe/related/reason) because all three converge on this
+        # method. The FTS5 fallback path is already counted inside search(), so a query
+        # that degrades to keywords is still counted exactly once.
+        self._record_retrieval(results)
+        return results
 
     def _fts_candidates(self, query: str, category: str | None, min_trust: float, limit: int) -> list[dict]:
         """Raw FTS5 MATCH candidates with rank normalized to [0, 1] as 'fts_rank'."""

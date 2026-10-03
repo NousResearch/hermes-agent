@@ -2074,6 +2074,14 @@ def _dispatch_lane_task(
         # worker's system prompt via KANBAN_GUIDANCE.
         claimed.skills = list(dict.fromkeys([*(claimed.skills or []), "sdlc-review"]))
     try:
+        from hermes_cli.sii_worker_availability import ensure_ai1_available
+
+        # Opt-in, assignee-scoped readiness gate. This runs after workspace
+        # repair but before spawning the worker, so infrastructure plumbing is
+        # complete before the model sees the card. Any failure follows the
+        # normal dispatch failure/explicit block path below; no fallback route
+        # is selected here.
+        ensure_ai1_available(claimed)
         pid = _call_spawn_fn(spawn_fn if spawn_fn is not None else _default_spawn, claimed, str(workspace), board)
         if pid:
             _set_worker_pid(conn, claimed.id, int(pid))
@@ -2086,17 +2094,22 @@ def _dispatch_lane_task(
         _count_spawn(claimed.assignee)
         return True
     except Exception as exc:
+        from hermes_cli.sii_worker_availability import AI1Unavailable
         from tools.process_registry import RestartSafeScopeUnavailable
 
-        # The host refused the spawn (no restart-safe scope): nothing about the
-        # card ran, so it must not spend the card's retry budget (#114720).
+        # AI1 is a hard routing prerequisite for the explicitly configured SII
+        # Worker. Retrying without a wake/readiness change only churns the card,
+        # so block it immediately and expose the exact infrastructure cause.
+        ai1_unavailable = isinstance(exc, AI1Unavailable)
         infrastructure = isinstance(exc, RestartSafeScopeUnavailable)
         if infrastructure:
             _kb._log.warning("kanban dispatcher: spawn of %s deferred, host cannot place the worker: %s", claimed.id, exc)
         if _record_task_failure(
             conn, claimed.id, str(exc),
-            outcome="spawn_failed", failure_limit=failure_limit, release_claim=True, end_run=True,
+            outcome="spawn_failed", failure_limit=failure_limit,
+            force_trip=ai1_unavailable, release_claim=True, end_run=True,
             infrastructure=infrastructure,
+            event_payload_extra={"block_kind": "ai1_unavailable"} if ai1_unavailable else None,
         ):
             result.auto_blocked.append(claimed.id)
         return False

@@ -129,5 +129,44 @@ def test_resolve_worktree_falls_back_when_path_occupied(kanban_home, tmp_path):
     assert head == "wt/sibling"
 
 
+def test_resolve_deleted_shared_worktree_recreates_existing_branch(kanban_home, tmp_path):
+    """A correction may deliberately reuse an implementation worktree path.
+
+    If completion already removed that checkout, orchestration must restore the
+    same path on the same existing product branch before the correction worker
+    starts; it must not create a replacement task branch.
+    """
+    repo = _make_repo(tmp_path)
+    target = _add_worktree(
+        repo,
+        repo / ".worktrees" / "implementation",
+        "circuit/product-slice",
+    )
+    subprocess.run(
+        ["git", "-C", str(repo), "worktree", "remove", str(target)],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+
+    with kbc.connect() as conn:
+        tid = kb.create_task(
+            conn,
+            title="correction",
+            workspace_kind="worktree",
+            workspace_path=str(target),
+            branch_name="circuit/product-slice",
+        )
+        task = kb.get_task(conn, tid)
+        assert task is not None
+
+    workspace, branch = kbw._resolve_worktree_workspace(task)
+
+    assert workspace == target
+    assert branch == "circuit/product-slice"
+    assert kbw._is_linked_worktree_checkout(target)
+    assert kbw._git_current_branch(target) == "circuit/product-slice"
+
+
 
 

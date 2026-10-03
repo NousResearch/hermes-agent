@@ -179,6 +179,10 @@ class GatewayShutdownMixin:
         started_at: Optional[float] = None
         active_agents: dict = dataclasses.field(default_factory=dict)
         timed_out: bool = False
+        # Sessions still running when the drain timed out: the only ones a restart counts as stuck.
+        # Those whose durable turn marker outlives the unwind are left for the next boot to count.
+        stuck_keys: set = dataclasses.field(default_factory=set)
+        stuck_marked: set = dataclasses.field(default_factory=set)
         drain_elapsed: float = 0.0
         # API-server runs still live when the adapters were released; the adapter map is empty by the
         # time the SessionDB close gate runs, so the count has to be taken before ``adapters.clear()``.
@@ -1333,30 +1337,47 @@ class GatewayShutdownMixin:
 
     @staticmethod
     def _read_json_counts(path: Path) -> Optional[dict]:
-        """Parsed counter dict, or None when the file is missing/unreadable (no exists() pre-check needed)."""
+        """Parsed ``{key: int}`` counters, or None when the file is missing, unreadable or not a
+        counter map (no exists() pre-check needed)."""
         try:
-            return json.loads(path.read_text(encoding="utf-8-sig"))
+            data = json.loads(path.read_text(encoding="utf-8-sig"))
         except Exception:
             return None
+        return {k: v for k, v in data.items() if isinstance(v, int)} if isinstance(data, dict) else None
 
-    def _increment_restart_failure_counts(self, active_session_keys: set) -> None:
-        """Increment persisted restart-failure counters for active sessions; drop the rest (loop broken)."""
+    def _write_stuck_loop_counts(self, counts: dict) -> None:
+        """Persist the counters; an empty map removes the file."""
         from utils import atomic_json_write
         path = self._stuck_loop_counts_path()
-        counts = self._read_json_counts(path) or {}
         with suppress(Exception):
-            atomic_json_write(path, {key: counts.get(key, 0) + 1 for key in active_session_keys}, indent=None)
+            if counts:
+                atomic_json_write(path, counts, indent=None)
+            else:
+                path.unlink(missing_ok=True)
+
+    def _increment_restart_failure_counts(self, active_session_keys: set, *, carry: set = frozenset()) -> None:
+        """Increment the counters of *active_session_keys*, keep those in *carry* as they are, and
+        drop the rest (loop broken)."""
+        counts = self._read_json_counts(self._stuck_loop_counts_path()) or {}
+        kept = {key: counts[key] for key in carry if key in counts}
+        self._write_stuck_loop_counts({**kept, **{key: counts.get(key, 0) + 1 for key in active_session_keys}})
+
+    def _add_restart_failure_counts(self, session_keys: set) -> None:
+        """Increment the counters of *session_keys* and keep every other one: after an unclean exit
+        nothing ran shutdown's rewrite, so no other session is known to have broken its loop."""
+        counts = self._read_json_counts(self._stuck_loop_counts_path()) or {}
+        self._write_stuck_loop_counts({**counts, **{key: counts.get(key, 0) + 1 for key in session_keys}})
 
     def _suspend_stuck_loop_sessions(self) -> int:
-        """Suspend sessions active across too many restarts (startup, AFTER crash-turn recovery)."""
-        path = self._stuck_loop_counts_path()
-        if not path.exists():
-            return 0
-        counts = self._read_json_counts(path)
-        if counts is None:
+        """Suspend sessions active across too many restarts (startup, AFTER crash-turn recovery).
+        Only the suspended sessions' counters are cleared; the rest must survive this boot or no
+        count ever reaches the threshold."""
+        counts = self._read_json_counts(self._stuck_loop_counts_path())
+        if not counts:
             return 0
         suspended = 0
-        for session_key in [k for k, v in counts.items() if v >= self._STUCK_LOOP_THRESHOLD]:
+        stuck_keys = [k for k, v in counts.items() if v >= self._STUCK_LOOP_THRESHOLD]
+        for session_key in stuck_keys:
             with suppress(Exception):
                 entry = self.session_store._entries.get(session_key)
                 if entry and not entry.suspended:
@@ -1366,32 +1387,19 @@ class GatewayShutdownMixin:
                         "Auto-suspended stuck session %s (active across %d consecutive restarts — likely a stuck loop)",
                         session_key, counts[session_key],
                     )
+            counts.pop(session_key)
         if suspended:
             with suppress(Exception):
                 self.session_store._save()
-        # Clear the file — counters start fresh after suspension
-        with suppress(Exception):
-            path.unlink(missing_ok=True)
+        if stuck_keys:
+            self._write_stuck_loop_counts(counts)
         return suspended
 
     async def _clear_restart_failure_count(self, session_key: str) -> None:
         """Clear a completed session's restart-failure counter off-loop (atomic_json_write fsyncs)."""
-        from utils import atomic_json_write
-        path = self._stuck_loop_counts_path()
-        if not path.exists():
-            return
-        # The whole read/mutate/write is guarded (as on main): a corrupt counters file
-        # (non-dict JSON) must never raise out of a session-completion path.
-        try:
-            counts = self._read_json_counts(path) or {}
-            if session_key in counts:
-                del counts[session_key]
-                if counts:
-                    await asyncio.to_thread(atomic_json_write, path, counts, indent=None)
-                else:
-                    path.unlink(missing_ok=True)
-        except Exception:
-            pass
+        counts = self._read_json_counts(self._stuck_loop_counts_path())
+        if counts and counts.pop(session_key, None) is not None:
+            await asyncio.to_thread(self._write_stuck_loop_counts, counts)
 
     # Restart orchestration
     @staticmethod
@@ -1949,6 +1957,7 @@ class GatewayShutdownMixin:
         )
         # Mark resume_pending BEFORE interrupting so the next message auto-resumes (stuck sessions
         # still escalate via .restart_failure_counts). CURRENT _running_agents, not the drain snapshot.
+        ctx.stuck_keys = set(self._snapshot_running_agents())
         await GatewayRunner._mark_running_sessions_resume_pending(self, "mark_resume_pending")
         reason = GatewayRunner._shutdown_interrupt_reason(self)
         self._interrupt_running_agents(reason)
@@ -1973,6 +1982,10 @@ class GatewayShutdownMixin:
         # Off-loop: the sweep does blocking kills that must not monopolize the event loop (#116327).
         _interrupted_cron_jobs = await GatewayRunner._stop_kill_tool_subprocesses_off_loop("post-interrupt")
         logger.info("Shutdown phase: post-interrupt tool kill done at +%.2fs", ctx.elapsed())
+        if ctx.stuck_keys:  # read before the SessionDBs close; must never abort the teardown
+            with _log_suppressed(logging.DEBUG, "Stuck-loop marker read failed: %s"):
+                ctx.stuck_marked = ctx.stuck_keys & await self.async_session_store.live_turn_marker_keys(
+                    max_age_seconds=0)
         # Last window with the transport up (the cron worker's own notice arrives after teardown).
         with _log_suppressed(logging.DEBUG, "Cron interrupt notification failed: %s"):
             # The cron worker whose run we just killed will try to deliver its own "interrupted" notice, but
@@ -2163,8 +2176,10 @@ class GatewayShutdownMixin:
                 "interrupted agents; next startup will recover their interrupted turns."
             )
         # Stuck-loop counter: sessions active across 3 consecutive restarts are auto-suspended next boot.
-        if ctx.active_agents:
-            self._increment_restart_failure_counts(set(ctx.active_agents.keys()))
+        # Every stop rewrites it: only turns the drain could not finish count, the rest are dropped
+        # (loop broken). A turn whose durable marker survives is counted by the next boot's crash
+        # recovery instead, not twice.
+        self._increment_restart_failure_counts(ctx.stuck_keys - ctx.stuck_marked, carry=ctx.stuck_marked)
         if self._restart_requested and self._restart_command_source is None:
             with _log_suppressed(logging.DEBUG, "Failed to write planned restart notification marker: %s"):
                 atomic_json_write(

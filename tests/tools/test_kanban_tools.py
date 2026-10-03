@@ -71,6 +71,49 @@ def worker_env(monkeypatch, tmp_path):
     return tid
 
 
+@pytest.mark.parametrize("context", ["delegate", "cron", "descendant"])
+def test_non_owner_activity_preserves_worker_heartbeat_window(worker_env, monkeypatch, context):
+    """Inherited worker identity does not grant liveness or consume its rate limit."""
+    from contextlib import nullcontext
+    from unittest.mock import Mock
+
+    from agent.delegation_context import delegated_child_context, non_dispatcher_owned_context
+    from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_connect as kbc
+    from tools import kanban_tools as kt
+
+    monkeypatch.setattr(kt.time, "monotonic", lambda: 100.0)
+    monkeypatch.setattr(kt, "_auto_heartbeat_last_attempt", 0.0)
+    monkeypatch.setattr(kt, "_auto_heartbeat_fence_warned", False)
+    board = Mock(wraps=kt._board)
+    monkeypatch.setattr(kt, "_board", board)
+    conn = kbc.connect()
+    try:
+        before = kb.get_task(conn, worker_env)
+        events = kb.list_events(conn, worker_env)
+        scope = {"delegate": delegated_child_context, "cron": non_dispatcher_owned_context,
+                 "descendant": nullcontext}[context]
+        with monkeypatch.context() as child_env:
+            if context == "descendant":
+                child_env.setenv("HERMES_DELEGATED_CHILD_CONTEXT", "1")
+            with scope():
+                assert kt.heartbeat_current_worker_from_env() is False
+        board.assert_not_called()
+        assert kt._auto_heartbeat_last_attempt == 0.0
+        after = kb.get_task(conn, worker_env)
+        assert (after.claim_expires, after.last_heartbeat_at) == (
+            before.claim_expires, before.last_heartbeat_at,
+        )
+        assert kb.list_events(conn, worker_env) == events
+        assert kt.heartbeat_current_worker_from_env() is True
+        board.assert_called_once()
+        assert kt.heartbeat_current_worker_from_env() is False
+        board.assert_called_once()
+        assert any(event.kind == "heartbeat" for event in kb.list_events(conn, worker_env))
+    finally:
+        conn.close()
+
+
 def test_show_defaults_to_env_task_id(worker_env):
     from tools import kanban_tools as kt
     out = kt._handle_show({})

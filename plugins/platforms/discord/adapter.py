@@ -3743,10 +3743,16 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             self._reset_voice_timeout(guild_id)
 
     def voice_member_display_name(self, guild_id: int, user_id) -> Optional[str]:
-        """Display name of a guild member, as text messages carry it (``author.display_name``)."""
-        guild = self._client.get_guild(int(guild_id)) if self._client else None
-        member = guild.get_member(int(user_id)) if guild else None
-        return getattr(member, "display_name", None) or None
+        """Display name of a guild member, as text messages carry it (``author.display_name``).
+        ``get_member`` is cache-only; a speaker who never typed here can still be a cached global
+        user, whose display name (global name / username, no guild nick) is what their text turn
+        would carry when they have no nick, and in any case a name rather than a bare id."""
+        if not self._client:
+            return None
+        guild = self._client.get_guild(int(guild_id))
+        who = (guild.get_member(int(user_id)) if guild else None) or self._client.get_user(int(user_id))
+        name = getattr(who, "display_name", None)
+        return name if isinstance(name, str) and name else None
 
     async def get_user_voice_channel(self, guild_id: int, user_id: str):
         """Return the voice channel the user is currently in, or None."""

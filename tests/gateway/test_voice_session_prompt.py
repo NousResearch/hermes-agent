@@ -95,8 +95,11 @@ def test_discord_adapter_looks_up_the_member_display_name():
     adapter = object.__new__(DiscordAdapter)
     adapter._client = MagicMock()
     members = {USER: SimpleNamespace(display_name="Matt")}
+    users = {USER: SimpleNamespace(display_name="matt_global"), FRIEND: SimpleNamespace(display_name="Sam")}
     adapter._client.get_guild.return_value = SimpleNamespace(get_member=members.get)
-    assert adapter.voice_member_display_name(GUILD, USER) == "Matt"
-    assert adapter.voice_member_display_name(GUILD, FRIEND) is None  # not cached
+    adapter._client.get_user.side_effect = users.get
+    assert adapter.voice_member_display_name(GUILD, USER) == "Matt"  # member cached: guild nick wins
+    assert adapter.voice_member_display_name(GUILD, FRIEND) == "Sam"  # member miss, global user cached
+    assert adapter.voice_member_display_name(GUILD, 44) is None  # cached nowhere
     adapter._client.get_guild.return_value = None
-    assert adapter.voice_member_display_name(GUILD, USER) is None
+    assert adapter.voice_member_display_name(GUILD, USER) == "matt_global"

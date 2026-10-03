@@ -99,12 +99,10 @@ def _append_exit_diag(record: Dict[str, Any], home: Optional[Path]) -> None:
     """Append a JSON line to gateway-exit-diag.log (same format as the CLI's ``_exit_diag``)."""
     try:
         path = _home_path(home, "logs", "gateway-exit-diag.log")
-        from hermes_constants import mkdir_under_hermes_home
+        from hermes_logging import append_json_line_rotating
 
-        mkdir_under_hermes_home(path.parent)
-        with path.open("a", encoding="utf-8") as fh:
-            fh.write(json.dumps(record, default=str) + "\n")
-    except OSError:
+        append_json_line_rotating(path, record)
+    except Exception:
         logger.debug("Failed to append unclean-exit record", exc_info=True)
 
 

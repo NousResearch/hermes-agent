@@ -10,6 +10,7 @@ import atexit
 import contextlib
 import copy
 import io
+import json
 import logging
 import os
 import queue
@@ -594,6 +595,58 @@ def _new_file_handler(
     handler.setLevel(level)
     handler.setFormatter(formatter)
     return handler
+
+
+class _RawLineFormatter(logging.Formatter):
+    """Emit ``record.msg`` verbatim — no ``%``-style interpolation.
+
+    The exit-diagnostic recorder writes pre-serialized JSON lines whose payloads
+    routinely contain literal ``%`` (tracebacks, paths); the default formatter's
+    ``getMessage()`` would interpolate them and corrupt or drop the line.
+    """
+
+    def format(self, record: logging.LogRecord) -> str:
+        return record.msg
+
+
+def append_json_line_rotating(
+    path: Path,
+    payload: object,
+    *,
+    max_bytes: int = 2 * 1024 * 1024,
+    backup_count: int = 2,
+) -> None:
+    """Append one JSON line to *path*, rotating it like the other ``logs/`` files.
+
+    Best-effort: never raises. The gateway exit-diagnostic recorder
+    (``gateway-exit-diag.log``) previously appended through a bare
+    ``open(path, "a")``, so a crash loop grew it without bound (130 MB on one
+    host). Routing it through the same rotating handler factory the other
+    ``logs/`` files use caps it at ``max_bytes`` × ``backup_count`` and reuses
+    their rollover machinery.
+    """
+    try:
+        handler = _new_file_handler(
+            path,
+            level=logging.INFO,
+            max_bytes=max_bytes,
+            backup_count=backup_count,
+            formatter=_RawLineFormatter(),
+        )
+        handler.emit(
+            logging.LogRecord(
+                name="hermes.exit_diag",
+                level=logging.INFO,
+                pathname="",
+                lineno=0,
+                msg=json.dumps(payload, default=str),
+                args=(),
+                exc_info=None,
+            )
+        )
+        handler.close()
+    except Exception:
+        pass
 
 
 # A routed profile home is re-checked for an out-of-band delete (missing dir or tombstone) at

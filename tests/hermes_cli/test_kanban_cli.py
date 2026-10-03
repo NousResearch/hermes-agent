@@ -12,6 +12,7 @@ import pytest
 from hermes_cli import kanban as kc
 from hermes_cli import kanban_db as kb
 from hermes_cli import kanban_db_connect as kbc
+from hermes_cli import kanban_db_notify as kbn
 
 
 @pytest.fixture
@@ -27,7 +28,6 @@ def kanban_home(tmp_path, monkeypatch):
 # ---------------------------------------------------------------------------
 # Workspace flag parsing
 # ---------------------------------------------------------------------------
-
 
 
 
@@ -186,7 +186,6 @@ def test_board_override_is_isolated_per_concurrent_call(kanban_home, monkeypatch
 
 
 
-
 # ---------------------------------------------------------------------------
 # reclaim + reassign CLI smoke tests
 # ---------------------------------------------------------------------------
@@ -230,6 +229,93 @@ def test_run_slash_reclaim_running_task(kanban_home):
 
 
 
+# ---------------------------------------------------------------------------
+# /kanban notify-subscribe — omitted --thread-id (issue #87281)
+# ---------------------------------------------------------------------------
+
+
+def test_notify_subscribe_without_thread_id_inherits_existing_subscription(kanban_home):
+    """A manual re-subscribe for a chat that already has a threaded
+    subscription (e.g. from auto-subscribe-on-create) must not silently
+    fall back to the chat's DM root when --thread-id is omitted.
+    """
+    with kb.connect_closing() as conn:
+        tid = kb.create_task(conn, title="dm topic task")
+        kbn.add_notify_sub(
+            conn, task_id=tid, platform="telegram", chat_id="chat1",
+            thread_id="topic1",
+        )
+
+    out = kc.run_slash(f"notify-subscribe {tid} --platform telegram --chat-id chat1")
+
+    assert "inherited thread_id=topic1" in out, out
+    with kb.connect_closing() as conn:
+        subs = kbn.list_notify_subs(conn, tid)
+    threaded = [s for s in subs if s["chat_id"] == "chat1"]
+    assert len(threaded) == 1, threaded
+    assert threaded[0]["thread_id"] == "topic1"
+
+
+def test_notify_subscribe_without_thread_id_warns_with_no_precedent(kanban_home):
+    """With no existing subscription to infer a thread from, a Telegram DM
+    subscribe without --thread-id must warn instead of silently routing to
+    the DM root.
+    """
+    with kb.connect_closing() as conn:
+        tid = kb.create_task(conn, title="fresh dm task")
+
+    out = kc.run_slash(f"notify-subscribe {tid} --platform telegram --chat-id chat9")
+
+    assert "warning" in out.lower(), out
+    assert "DM root" in out, out
+    with kb.connect_closing() as conn:
+        subs = kbn.list_notify_subs(conn, tid)
+    assert len(subs) == 1
+    assert subs[0]["thread_id"] == ""
+
+
+def test_notify_subscribe_without_thread_id_does_not_warn_when_thread_given(kanban_home):
+    """Sanity: explicit --thread-id never warns, regardless of platform.
+    """
+    with kb.connect_closing() as conn:
+        tid = kb.create_task(conn, title="explicit thread task")
+
+    out = kc.run_slash(
+        f"notify-subscribe {tid} --platform telegram --chat-id chatE --thread-id tE"
+    )
+
+    assert "warning" not in out.lower(), out
+    assert "inherited" not in out, out
+    with kb.connect_closing() as conn:
+        subs = kbn.list_notify_subs(conn, tid)
+    assert len(subs) == 1
+    assert subs[0]["thread_id"] == "tE"
+
+
+def test_notify_subscribe_without_thread_id_is_deterministic_across_topics(kanban_home):
+    """A chat can legitimately hold several threaded subs (the PK is the full
+    4-tuple), and ``list_notify_subs`` has no ORDER BY: the inherited pick must
+    be deterministic and must name the alternatives rather than silently
+    taking table-scan order.
+    """
+    with kb.connect_closing() as conn:
+        tid = kb.create_task(conn, title="two topic task")
+        for topic in ("topic2", "topic1"):
+            kbn.add_notify_sub(
+                conn, task_id=tid, platform="telegram", chat_id="chatT",
+                thread_id=topic,
+            )
+
+    out = kc.run_slash(f"notify-subscribe {tid} --platform telegram --chat-id chatT")
+
+    assert "threads: topic1, topic2" in out, out
+    assert "inheriting thread_id=topic1" in out, out
+    with kb.connect_closing() as conn:
+        subs = [s for s in kbn.list_notify_subs(conn, tid) if s["chat_id"] == "chatT"]
+    # Inherited topic1 already had a row: no third row, no root-lane row.
+    assert sorted(s["thread_id"] for s in subs) == ["topic1", "topic2"]
+
+
 
 # ---------------------------------------------------------------------------
 # /kanban specify — slash surface (same entry point CLI + gateway use)
@@ -239,5 +325,3 @@ def test_run_slash_reclaim_running_task(kanban_home):
 # ---------------------------------------------------------------------------
 # /kanban help / no-args / unknown-action UX (issue #21794)
 # ---------------------------------------------------------------------------
-
-

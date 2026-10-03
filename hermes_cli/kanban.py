@@ -1160,18 +1160,65 @@ def _cmd_notify_subscribe(args: argparse.Namespace) -> int:
         )
         if value
     }
+    thread_id = args.thread_id
+    inherited_from = None
     with kbc.connect_closing() as conn:
         if kb.get_task(conn, args.task_id) is None:
             return _err(f"no such task: {args.task_id}")
+        if thread_id is None:
+            # Omitting --thread-id defaults to '' (the chat's root lane, not
+            # any topic/thread). If this task already has a subscription for
+            # the same platform+chat (e.g. the auto-subscribe made at task
+            # creation from that exact chat), reuse its thread_id instead of
+            # silently dropping back to the root lane. Issue #87281.
+            matches = [
+                sub for sub in kbn.list_notify_subs(conn, args.task_id)
+                if (
+                    str(sub.get("platform", "")).lower() == args.platform.lower()
+                    and str(sub.get("chat_id", "")) == str(args.chat_id)
+                    and sub.get("thread_id")
+                )
+            ]
+            if matches:
+                # Several threaded rows per chat are normal by design (the
+                # subscription PK is the full 4-tuple, so a task used from two
+                # topics of one chat holds both) and `list_notify_subs` has no
+                # ORDER BY — sort so the pick is deterministic rather than
+                # table-scan order, and name the alternatives when it was
+                # ambiguous instead of choosing one silently.
+                matches.sort(key=lambda sub: str(sub["thread_id"]))
+                thread_id = matches[0]["thread_id"]
+                inherited_from = matches[0]
+                if len(matches) > 1:
+                    candidates = ", ".join(str(sub["thread_id"]) for sub in matches)
+                    print(
+                        f"warning: {len(matches)} existing subscriptions to pick "
+                        f"from for {args.platform}:{args.chat_id} on {args.task_id} "
+                        f"(threads: {candidates}); inheriting thread_id={thread_id} "
+                        "— pass --thread-id to choose another.",
+                        file=sys.stderr,
+                    )
         kbn.add_notify_sub(
             conn, task_id=args.task_id, platform=args.platform, chat_id=args.chat_id,
-            chat_type=args.chat_type, thread_id=args.thread_id, user_id=args.user_id,
+            chat_type=args.chat_type, thread_id=thread_id, user_id=args.user_id,
             user_id_alt=getattr(args, "user_id_alt", None),
             notifier_profile=args.notifier_profile or _profile_author(),
             delivery_mode=getattr(args, "delivery_mode", None),
             delivery_metadata=delivery_metadata or None,
         )
-    print(f"Subscribed {args.platform}:{args.chat_id}" + (f":{args.thread_id}" if args.thread_id else "")
+    if inherited_from is not None:
+        print(f"(no --thread-id given; inherited thread_id={thread_id} from this "
+              f"task's existing {args.platform}:{args.chat_id} subscription)",
+              file=sys.stderr)
+    elif (
+        thread_id is None
+        and args.platform.lower() == "telegram"
+        and args.chat_type in (None, "dm")
+    ):
+        print("warning: no --thread-id given and no existing subscription to "
+              "infer one from; the completion ping will be delivered to the "
+              "chat's DM root, not a specific topic", file=sys.stderr)
+    print(f"Subscribed {args.platform}:{args.chat_id}" + (f":{thread_id}" if thread_id else "")
           + f" to {args.task_id}")
     return 0
 

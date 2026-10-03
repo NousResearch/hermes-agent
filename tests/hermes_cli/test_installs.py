@@ -376,6 +376,16 @@ class TestRemovalPlan:
         assert plan.action == "refuse"
         assert "running" in plan.refusal
 
+    def test_git_folder_that_is_not_a_hermes_tree_is_refused(self, home, running, tmp_path):
+        stray = tmp_path / "stray"
+        (stray / ".git").mkdir(parents=True)
+
+        plan = self._plan(self._install(stray), home, running.resolve())
+
+        assert plan.action == "refuse"
+        assert "not a Hermes source tree" in plan.refusal
+        assert stray.exists()
+
     def test_running_package_install_is_not_removable(self, home, tmp_path):
         bundle = _sealed(tmp_path / "pkg" / "hermes-agent")
         install = self._install(bundle, steward="desktop-app", package="Nous.Hermes_1_arm64__abc")
@@ -458,6 +468,73 @@ class TestRemovalPlan:
 
     def test_elevation_is_never_reported_off_windows(self):
         assert installs._is_elevated(windows=False) is False
+
+    def _packaged_app(self, tmp_path, *, uninstaller=None):
+        app = tmp_path / "Programs" / "HermesBundled"
+        (app / "resources").mkdir(parents=True)
+        (app / "resources" / "app.asar").write_text("x", encoding="utf-8")
+        if uninstaller:
+            (app / uninstaller).write_text("x", encoding="utf-8")
+        return app
+
+    def _packaged(self, app):
+        return installs.Install(
+            id=installs.install_id(app), root=app.resolve(), steward="unknown",
+            sources=("packaged-app",), current=False)
+
+    def test_packaged_app_folder_without_an_uninstaller_is_removed_on_windows(self, home, running, tmp_path):
+        app = self._packaged_app(tmp_path)
+        (home / "config.yaml").write_text("model: x\n", encoding="utf-8")
+        install = self._packaged(app)
+
+        on_windows = self._plan(install, home, running.resolve(), windows=True)
+        elsewhere = self._plan(install, home, running.resolve(), windows=False)
+
+        assert on_windows.action == "tree"
+        assert elsewhere.action == "refuse"
+        assert installs.execute_removal(on_windows) == 0
+        assert not app.exists()
+        assert (home / "config.yaml").exists()
+
+    def test_packaged_app_with_its_own_uninstaller_is_left_to_that_uninstaller(self, home, running, tmp_path):
+        app = self._packaged_app(tmp_path, uninstaller="Uninstall Hermes.exe")
+
+        plan = self._plan(self._packaged(app), home, running.resolve(), windows=True)
+
+        assert plan.action == "refuse"
+        assert "Uninstall Hermes.exe" in plan.refusal
+        assert app.exists()
+
+    def test_unknown_folder_found_another_way_stays_refused(self, home, running, tmp_path):
+        app = self._packaged_app(tmp_path)
+        install = installs.Install(
+            id=installs.install_id(app), root=app.resolve(), steward="unknown",
+            sources=("registry",), current=False)
+
+        plan = self._plan(install, home, running.resolve(), windows=True)
+
+        assert plan.action == "refuse"
+
+    def test_packaged_app_folder_that_holds_hermes_home_is_refused(self, tmp_path, monkeypatch, running):
+        app = self._packaged_app(tmp_path)
+        inner_home = app / "state"
+        inner_home.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(inner_home))
+
+        plan = self._plan(self._packaged(app), inner_home, running.resolve(), windows=True)
+
+        assert plan.action == "refuse"
+        assert "HERMES_HOME" in plan.refusal
+
+    def test_packaged_app_folder_that_holds_the_running_install_is_refused(self, home, tmp_path):
+        app = self._packaged_app(tmp_path)
+        inside = app / "resources" / "agent-payload" / "repo"
+        inside.mkdir(parents=True)
+
+        plan = self._plan(self._packaged(app), home, inside.resolve(), windows=True)
+
+        assert plan.action == "refuse"
+        assert "running" in plan.refusal
 
     def test_unsafe_package_name_is_refused(self, home, running, tmp_path):
         bundle = _sealed(tmp_path / "pkg" / "hermes-agent")

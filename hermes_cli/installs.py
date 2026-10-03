@@ -424,8 +424,8 @@ def path_launchers(
 # --- removal ----------------------------------------------------------------
 
 
-def _tree_guard(root: Path, current: Path, protected: Iterable[Path]) -> str | None:
-    if not (root / "hermes_cli").is_dir():
+def _tree_guard(root: Path, current: Path, protected: Iterable[Path], *, source_tree: bool = True) -> str | None:
+    if source_tree and not (root / "hermes_cli").is_dir():
         return "it is not a Hermes source tree"
     if current.resolve().is_relative_to(root):
         return "it contains the running install"
@@ -466,6 +466,16 @@ def _work_at_risk(install: Install, found: Sequence[Install], run: Runner | None
         if probe.stdout.strip():
             return reason
     return None
+
+
+def _nsis_uninstaller(root: Path) -> Path | None:
+    """The ``Uninstall <name>.exe`` that an NSIS installer writes beside the app, if it is there."""
+    try:
+        return next(iter(sorted(root.glob("Uninstall*.exe"))), None)
+    except OSError:
+        return None
+
+
 def _is_elevated(windows: bool | None = None) -> bool:
     """True when this process runs as an administrator on Windows."""
     if not _windows(windows):
@@ -503,7 +513,13 @@ def classify_removal(
                 "not removed: removing a package for all users needs an elevated terminal. "
                 "Open PowerShell as Administrator and run this command again.")
         return "appx", None
-
+    if install.steward == "unknown" and "packaged-app" in install.sources and _windows(windows):
+        uninstaller = _nsis_uninstaller(install.root)
+        if uninstaller is not None:
+            return "refuse", f"not removed: this app has its own uninstaller. Run {uninstaller} instead."
+        reason = (_tree_guard(install.root, current, (hermes_home, default_root), source_tree=False)
+                  or _work_at_risk(install, found, run))
+        return ("refuse", f"not removed: {reason}") if reason else ("tree", None)
     return "refuse", steward_uninstall_message(install.steward)
 
 

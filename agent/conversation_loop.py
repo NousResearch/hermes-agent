@@ -1263,6 +1263,51 @@ def _redecorate_prompt_cache_for_provider(
     return messages, prepared, planned_tools
 
 
+_VALID_CONTEXT_SELECTION_ROLES = frozenset(
+    {"system", "user", "assistant", "tool", "function", "developer"}
+)
+
+
+def _context_engine_selection_is_safe(
+    selected: List[Dict[str, Any]],
+    system_prefix: List[Dict[str, Any]],
+) -> bool:
+    """Return True when ``selected`` may safely replace the request.
+
+    Enforces the protected-system-prefix and role/tool-field contract for
+    ``ContextEngine.select_context()`` replacements
+    (SECURITY-CLASS-963645940f301b6e): an engine may reorder, drop, or add
+    *conversation* messages, but it must not inject a ``system``-role message
+    (an attacker-controlled policy) or replace the host's protected system
+    prefix, and it must emit structurally valid roles and tool fields.
+    """
+    if len(selected) < len(system_prefix):
+        return False
+    # Preserve the entire system message, including provider/cache fields.
+    for idx, orig in enumerate(system_prefix):
+        sel = selected[idx]
+        if not isinstance(sel, dict):
+            return False
+        if without_persistence_fields(sel) != without_persistence_fields(orig):
+            return False
+    # Every message after the preserved prefix must be a conversation/tool
+    # message with a valid role; a stray ``system`` message is an injection.
+    for msg in selected[len(system_prefix):]:
+        if not isinstance(msg, dict):
+            return False
+        role = msg.get("role")
+        if not isinstance(role, str) or role not in _VALID_CONTEXT_SELECTION_ROLES:
+            return False
+        if role == "system":
+            return False
+        required_field = "tool_call_id" if role == "tool" else "name" if role == "function" else None
+        if required_field is not None:
+            value = msg.get(required_field)
+            if not isinstance(value, str) or not value.strip():
+                return False
+    return True
+
+
 def _engine_overrides_hook(engine: Any, name: str) -> bool:
     """True when ``engine`` implements ContextEngine hook ``name`` itself.
 
@@ -1293,7 +1338,7 @@ def _apply_context_engine_selection(
     # containers into persisted history; only the request list is acted on (#80498).
     try:
         selected = engine.select_context(
-            api_messages,
+            [_clone_message_for_send(m) for m in api_messages],
             conversation_messages=(
                 [_clone_message_for_send(m) for m in conversation_messages]
                 if conversation_messages is not None else None
@@ -1313,17 +1358,31 @@ def _apply_context_engine_selection(
 
     if selected is None:
         return api_messages
-    # Require a NON-EMPTY list of dicts: ``all([])`` is ``True``, so a ``[]`` from a
-    # buggy engine would otherwise replace the request instead of failing open.
-    if isinstance(selected, list) and selected and all(isinstance(m, dict) for m in selected):
-        # The engine may hand back the ``conversation_messages`` clones (or its own dicts) that still
-        # carry persistence-only fields; the request copy was stripped BEFORE this hook, so strip the
-        # selection too or those fields reach the provider. Dicts without them pass through as-is.
-        stripped = [without_persistence_fields(m) for m in selected]
-        return selected if all(a is b for a, b in zip(stripped, selected)) else stripped
+    # Require a NON-EMPTY list of dicts. An empty list must fall open to the
+    # original request: ``all([])`` is ``True``, so without the emptiness check
+    # a ``[]`` returned by a buggy/failing engine would replace a valid request
+    # with an empty message list that the downstream sanitizers cannot restore,
+    # reaching the provider as an invalid request instead of failing open.
+    if isinstance(selected, list) and selected:
+        # Extract the leading system messages from the original request so an
+        # engine cannot inject or replace a ``system``-role policy message
+        # (SECURITY-CLASS-963645940f301b6e). Fail open to the original request
+        # on any structural or provenance violation.
+        _system_prefix = []
+        for _m in api_messages:
+            if isinstance(_m, dict) and _m.get("role") == "system":
+                _system_prefix.append(_m)
+            else:
+                break
+        if _context_engine_selection_is_safe(selected, _system_prefix):
+            # Preserve the upstream strip of persistence-only fields from selections.
+            stripped = [without_persistence_fields(m) for m in selected]
+            return selected if all(a is b for a, b in zip(stripped, selected)) else stripped
     logger.warning(
-        "Context engine select_context returned an invalid value "
-        "(not a non-empty list of dicts); ignoring (session=%s)", session_label,
+        "Context engine select_context returned an invalid or unsafe value "
+        "(not a non-empty list of valid message dicts, or it injected/replaced "
+        "a system-role message); ignoring (session=%s)",
+        session_label,
     )
     return api_messages
 

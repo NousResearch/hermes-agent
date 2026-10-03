@@ -12,6 +12,7 @@ import sys
 import threading
 import time
 import os
+import socket
 import re
 import uuid
 
@@ -2232,14 +2233,18 @@ def _claim_owner_is_dead(claim: Dict[str, Any]) -> bool:
     ``_machine_id()`` stamps ``host:pid[:token]``; a foreign host, an explicit HERMES_MACHINE_ID,
     or any liveness-probe failure returns False (fail safe: only a proven death shortens the TTL)."""
     parts = str(claim.get("by") or "").split(":")
-    if len(parts) < 2 or not parts[1].isdigit():
-        return False
     try:
         import socket
-        if parts[0] != socket.gethostname():
+        host = claim.get("host")
+        pid = claim.get("pid")
+        if host is None or pid is None:
+            if len(parts) < 2 or not parts[1].isdigit():
+                return False
+            host, pid = parts[0], int(parts[1])
+        if host != socket.gethostname() or not isinstance(pid, int) or pid <= 0:
             return False
         from gateway.status import _pid_exists
-        return not _pid_exists(int(parts[1]))
+        return not _pid_exists(pid)
     except Exception:
         return False
 
@@ -2802,7 +2807,12 @@ def claim_job_for_fire(
             _activate_job_record(job)
         # Per-acquisition token: a process may legitimately reclaim its own stale lease, and the
         # previous runner must not heartbeat the new claim merely because hostname + PID match.
-        job["fire_claim"] = {"at": now.isoformat(), "by": f"{_machine_id()}:{uuid.uuid4().hex}"}
+        job["fire_claim"] = {
+            "at": now.isoformat(),
+            "by": f"{_machine_id()}:{uuid.uuid4().hex}",
+            "host": socket.gethostname(),
+            "pid": os.getpid(),
+        }
         # Claimed: the occurrence is now owned by a run (its ledger row + fire claim carry it).
         job.pop("pending_slot", None)
         if job.get("schedule", {}).get("kind") in {"cron", "interval"}:

@@ -356,6 +356,9 @@ def test_fresh_claim_from_a_dead_same_host_owner_is_reclaimable(temp_home):
 
     jid = create_job(prompt="x", schedule="every 5m", name="s")["id"]
     assert claim_job_for_fire(jid) is True
+    persisted = next(j for j in load_jobs() if j["id"] == jid)["fire_claim"]
+    assert persisted["host"] == socket.gethostname()
+    assert persisted["pid"] == os.getpid()
 
     # Live same-host owner (this process) → still blocked.
     jobs = load_jobs()
@@ -369,7 +372,9 @@ def test_fresh_claim_from_a_dead_same_host_owner_is_reclaimable(temp_home):
     child.wait()
     jobs = load_jobs()
     job = next(j for j in jobs if j["id"] == jid)
-    job["fire_claim"]["by"] = f"{socket.gethostname()}:{child.pid}:tok"
+    job["fire_claim"]["by"] = "configured-machine:tok"
+    job["fire_claim"]["host"] = socket.gethostname()
+    job["fire_claim"]["pid"] = child.pid
     save_jobs(jobs)
     assert claim_job_for_fire(jid) is True
 

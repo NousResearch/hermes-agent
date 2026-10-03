@@ -717,6 +717,24 @@ export interface Translations {
   }
 
   settings: {
+    remoteControl: {
+      title: string
+      description: string
+      authorize: string
+      revoke: string
+      origin: string
+      refresh: string
+      authorized: string
+      off: string
+      devices: string
+      originDescription: string
+      approves: string
+      receives: string
+      offline: string
+      openChat: string
+      revoked: string
+      cleanupPending: string
+    }
     subpages: Record<string, string>
     closeSettings: string
     exportConfig: string

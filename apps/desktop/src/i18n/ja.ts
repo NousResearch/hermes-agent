@@ -356,6 +356,25 @@ export const ja = defineLocale({
   },
 
   settings: {
+    remoteControl: {
+      title: 'デバイス間の操作',
+      description:
+        'ここでターミナルとファイルのコマンドを許可し、送信元デバイスで承認します。Desktop を閉じるかゲートウェイを変更すると登録は終了します。',
+      authorize: 'リモート操作を許可',
+      revoke: 'リモート操作を取り消す',
+      origin: 'このデバイスで要求を承認',
+      refresh: 'デバイスを更新',
+      authorized: '許可された送信元デバイス',
+      off: 'リモート操作は無効です',
+      devices: 'このゲートウェイのデバイス',
+      originDescription: '別のデバイスにコマンド受信を許可する前に、このデバイスを登録してください。',
+      approves: '要求を承認',
+      receives: 'コマンドを受信',
+      offline: 'オフライン',
+      openChat: '登録を管理するには、このゲートウェイのチャットを開いてください。',
+      revoked: 'このデバイスのリモート操作を取り消しました。',
+      cleanupPending: 'ローカルのアクセスは取り消しました。ゲートウェイ側の処理は確認できませんでした。'
+    },
     uninstallSection: {
       dangerZone: '危険ゾーン',
       checkingInstalled: 'インストール内容を確認中…',

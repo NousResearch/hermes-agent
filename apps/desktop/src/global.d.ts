@@ -32,6 +32,25 @@ export type DesktopMachineProfile = MachineProfile
 declare global {
   interface Window {
     hermesDesktop: {
+      desktop: {
+        remote: (options: { sessionId: string; action: string; arguments: Record<string, unknown> }) => Promise<Record<string, unknown>>
+        pc: (options: { sessionId: string; action: string; arguments: Record<string, unknown> }) => Promise<Record<string, unknown>>
+        exec: (options: {
+          command: string
+          cwd?: string
+          shell?: 'bash'
+          timeout?: number
+        }) => Promise<{
+          success: boolean
+          returncode?: number
+          output?: string
+          cwd?: string
+          shell?: 'bash'
+          shell?: string
+          error?: string
+          timed_out?: boolean
+        }>
+      }
       // Resolve a backend connection. Omit `profile` (or pass the primary) for
       // the window's backend; pass a named profile to lazily spawn/reuse that
       // profile's backend from the pool.
@@ -1697,3 +1716,4 @@ export interface BackendExit {
   code: number | null
   signal: string | null
 }
+

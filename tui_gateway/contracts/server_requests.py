@@ -224,3 +224,22 @@ class RequestCancelPayload(Payload):
 
 event("request.cancel", RequestCancelPayload,
       doc="The backend withdrew an open server→client request; clear the matching card only.")
+
+
+# ── local desktop execution ──────────────────────────────────────────────────
+
+
+class DesktopExecRequestParams(ServerRequestParams):
+    """Execute one command on the physical machine running Hermes Desktop."""
+
+    command: str
+    cwd: str | None = None
+    timeout: int = 10
+
+
+server_request(
+    "desktop.exec",
+    params=DesktopExecRequestParams,
+    result=ValueResult,
+    doc="Execute one command on the physical machine running Hermes Desktop.",
+)

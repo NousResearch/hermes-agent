@@ -811,6 +811,25 @@ export const en: Translations = {
   },
 
   settings: {
+    remoteControl: {
+      title: 'Cross-device control',
+      description:
+        'Allow terminal and file commands here, with approvals on the originating device. Enrollment ends when Desktop closes or changes gateway.',
+      authorize: 'Authorize remote control',
+      revoke: 'Revoke remote control',
+      origin: 'Use this device to approve requests',
+      refresh: 'Refresh devices',
+      authorized: 'Authorized source devices',
+      off: 'Remote control is off',
+      devices: 'Devices on this gateway',
+      originDescription: 'Register this device before authorizing another device to receive commands.',
+      approves: 'Approves requests',
+      receives: 'Receives commands',
+      offline: 'Offline',
+      openChat: 'Open a chat on this gateway to manage enrollment.',
+      revoked: 'Remote control revoked on this device.',
+      cleanupPending: 'Access is revoked locally. Gateway cleanup could not be confirmed.'
+    },
     subpages: {
       appearanceTheme: 'Theme',
       appearanceTypography: 'Typography',

@@ -809,6 +809,25 @@ export const esOverrides = {
     noResults: 'No se encontraron idiomas'
   },
   settings: {
+    remoteControl: {
+      title: 'Control entre dispositivos',
+      description:
+        'Permitir comandos de terminal y archivos aquí, con aprobación en el dispositivo de origen. La autorización termina al cerrar Desktop o cambiar de pasarela.',
+      authorize: 'Autorizar control remoto',
+      revoke: 'Revocar control remoto',
+      origin: 'Usar este dispositivo para aprobar',
+      refresh: 'Actualizar dispositivos',
+      authorized: 'Dispositivos de origen autorizados',
+      off: 'El control remoto está desactivado',
+      devices: 'Dispositivos en esta pasarela',
+      originDescription: 'Registra este dispositivo antes de autorizar otro para recibir comandos.',
+      approves: 'Aprueba solicitudes',
+      receives: 'Recibe comandos',
+      offline: 'Sin conexión',
+      openChat: 'Abre un chat en esta pasarela para gestionar la autorización.',
+      revoked: 'Control remoto revocado en este dispositivo.',
+      cleanupPending: 'Acceso revocado localmente. No se pudo confirmar la limpieza de la pasarela.'
+    },
     subpages: {
       appearanceTheme: 'Tema',
       appearanceTypography: 'Tipografía',

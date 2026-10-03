@@ -53,6 +53,34 @@ let os: null | PluginOs = null
 /** Selected board slug ('' = the server's current board). Persisted. */
 export const $boardSlug = atom<string>('')
 
+/** Device-local quick switches, in display order, for the active gateway. */
+export const $pinnedBoards = atom<string[]>([])
+
+export function setBoardPinned(slug: string, pinned: boolean): void {
+  const current = $pinnedBoards.get()
+
+  if (!slug || current.includes(slug) === pinned) {
+    return
+  }
+
+  $pinnedBoards.set(pinned ? [...current, slug] : current.filter(item => item !== slug))
+}
+
+export function movePinnedBoard(slug: string, target: string): void {
+  const current = $pinnedBoards.get()
+  const from = current.indexOf(slug)
+  const to = current.indexOf(target)
+
+  if (from < 0 || to < 0 || from === to) {
+    return
+  }
+
+  const next = [...current]
+  next.splice(from, 1)
+  next.splice(to, 0, slug)
+  $pinnedBoards.set(next)
+}
+
 /** Whether the "how this board works" intro was dismissed. Persisted. */
 export const $introDismissed = atom<boolean>(false)
 
@@ -70,6 +98,7 @@ const LOCAL_SCOPE = 'local'
 const KANBAN_KEY_ROOT = ['kanban'] as const
 
 const BOARD_SLUG_KEY = 'boardSlug'
+const PINNED_BOARDS_KEY = 'pinnedBoards'
 const INTRO_KEY = 'introDismissed'
 const LANES_KEY = 'lanesByProfile'
 const COLLAPSED_KEY = 'collapsedLanes'
@@ -307,12 +336,26 @@ export function bindApi(
   // lib/connection-scoped: byte-identical storage for single-backend users, and
   // the slug picked before per-connection keys existed survives the upgrade).
   // Remotes are suffixed by registry id.
-  const slugStorageKey = () => {
+  const scopedStorageKey = (key: string) => {
     const scope = kanbanConnectionScope()
 
-    return scope === LOCAL_SCOPE ? BOARD_SLUG_KEY : `${BOARD_SLUG_KEY}.${scope}`
+    return scope === LOCAL_SCOPE ? key : `${key}.${scope}`
   }
 
+  const slugStorageKey = () => scopedStorageKey(BOARD_SLUG_KEY)
+
+  const restorePins = () => {
+    const stored = storage.get<unknown>(scopedStorageKey(PINNED_BOARDS_KEY), [])
+
+    const slugs = Array.isArray(stored)
+      ? stored.filter((item): item is string => typeof item === 'string' && !!item)
+      : []
+
+    $pinnedBoards.set([...new Set(slugs)])
+  }
+
+  restorePins()
+  unsubs.push($pinnedBoards.listen(pins => storage.set(scopedStorageKey(PINNED_BOARDS_KEY), pins)))
   $boardSlug.set(storage.get(slugStorageKey(), ''))
   unsubs.push($boardSlug.listen(slug => storage.set(slugStorageKey(), slug)))
   open($boardSlug.get())
@@ -328,6 +371,7 @@ export function bindApi(
         return
       }
 
+      restorePins()
       const previous = $boardSlug.get()
       $boardSlug.set(storage.get(slugStorageKey(), ''))
 

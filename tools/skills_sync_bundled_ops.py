@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import List, Optional, Tuple
 
 from tools.skills_sync_optional import _skill_file_list, _ss
+from tools.skills_sync_link import is_link_manifest_entry, owns_symlink
 
 
 def _bundled_state():
@@ -30,6 +31,9 @@ def reset_bundled_skill(name: str, restore: bool = False) -> dict:
     if not in_manifest and not is_bundled:
         return _fail("not_in_manifest", f"'{name}' is not a tracked bundled skill. Nothing to reset. "
                      f"(Hub-installed skills use `hermes skills uninstall`.)")
+    if in_manifest and is_link_manifest_entry(manifest[name]) and not restore:
+        return _fail("not_reset", f"'{name}' is managed as a symlink; use `--restore` to replace "
+                     f"the link with a bundled copy. Manifest entry preserved — nothing was changed.")
     # Step 1 (optional): delete the user's copy so next sync re-copies bundled. Must happen BEFORE manifest
     # deletion so that a failed rmtree does not leave the skill in a manifest-less limbo state (see #34972).
     deleted_user_copy = False
@@ -38,10 +42,19 @@ def reset_bundled_skill(name: str, restore: bool = False) -> dict:
             return _fail("bundled_missing", f"'{name}' has no bundled source — manifest entry preserved "
                          f"but cannot restore from bundled (skill was removed upstream).")
         dest = ss._compute_relative_dest(bundled_by_name[name], bundled_dir)
-        if deleted_user_copy := dest.exists():
+        if deleted_user_copy := (dest.exists() or dest.is_symlink()):
             try:
-                ss._rmtree_writable(dest)
-            except OSError as e:
+                if dest.is_symlink():
+                    if not owns_symlink(dest, manifest.get(name, ""), bundled_by_name[name]):
+                        return _fail("not_reset", f"Refusing to replace unowned symlink at {dest}. "
+                                     f"Manifest entry preserved — nothing was changed.")
+                    dest.unlink()
+                elif is_link_manifest_entry(manifest.get(name, "")):
+                    return _fail("not_reset", f"Refusing to replace non-symlink content at {dest}. "
+                                 f"Manifest entry preserved — nothing was changed.")
+                else:
+                    ss._rmtree_writable(dest)
+            except (OSError, ValueError) as e:
                 return _fail("not_reset", f"Could not delete user copy at {dest}: {e}. "
                              f"Manifest entry preserved — nothing was changed.")
     if in_manifest:
@@ -69,7 +82,10 @@ def list_user_modified_bundled_skills() -> List[dict]:
     for skill_name, skill_dir in ss._discover_bundled_skills(bundled_dir):
         origin_hash = manifest.get(skill_name, "")  # empty = untracked/un-baselined v1: next sync handles it
         dest = ss._compute_relative_dest(skill_dir, bundled_dir)
-        if origin_hash and dest.exists() and not ss._matches_origin_hash(dest, origin_hash):
+        if is_link_manifest_entry(origin_hash):
+            if not owns_symlink(dest, origin_hash, skill_dir):
+                modified.append({"name": skill_name, "dest": dest, "bundled_src": skill_dir})
+        elif origin_hash and dest.exists() and not ss._matches_origin_hash(dest, origin_hash):
             modified.append({"name": skill_name, "dest": dest, "bundled_src": skill_dir})
     return sorted(modified, key=lambda e: e["name"])
 
@@ -170,9 +186,22 @@ def remove_pristine_bundled_skills(dry_run: bool = False) -> dict:
             skipped.append({"name": name, "reason": "no bundled source (removed upstream)"})
             continue
         dest = ss._compute_relative_dest(src, bundled_dir)
-        if not dest.exists():
+        if not dest.exists() and not dest.is_symlink():
             if not dry_run:  # already gone from disk; forget the stale manifest entry
                 manifest.pop(name, None)
+            continue
+        if is_link_manifest_entry(origin_hash):
+            if not owns_symlink(dest, origin_hash, src):
+                skipped.append({"name": name, "reason": "managed symlink was replaced or retargeted (kept)"})
+                continue
+            if not dry_run:
+                try:
+                    dest.unlink()
+                except OSError as e:
+                    skipped.append({"name": name, "reason": f"delete failed: {e}"})
+                    continue
+                manifest.pop(name, None)
+            removed.append(name)
             continue
         if not ss._matches_origin_hash(dest, origin_hash):
             skipped.append({"name": name, "reason": "user-modified (kept)"})

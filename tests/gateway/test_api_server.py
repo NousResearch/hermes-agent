@@ -444,7 +444,9 @@ def auth_adapter():
 
 
 @pytest.mark.asyncio
-async def test_chat_completions_explicit_runtime_is_locked_and_reported(adapter, monkeypatch):
+@pytest.mark.parametrize("require_model_lock, expected_lock", [(None, False), (True, True)])
+async def test_chat_completions_runtime_is_reported_and_lock_is_explicit(
+    adapter, monkeypatch, require_model_lock, expected_lock):
     captured = {}
 
     async def run_agent(**kwargs):
@@ -456,15 +458,18 @@ async def test_chat_completions_explicit_runtime_is_locked_and_reported(adapter,
 
     monkeypatch.setattr(adapter, "_run_agent", run_agent)
     async with TestClient(TestServer(_create_app(adapter))) as client:
-        response = await client.post("/v1/chat/completions", json={
+        body = {
             "model": "requested-model",
             "provider": "requested-provider",
             "messages": [{"role": "user", "content": "hello"}],
-        })
+        }
+        if require_model_lock is not None:
+            body["require_model_lock"] = require_model_lock
+        response = await client.post("/v1/chat/completions", json=body)
         payload = await response.json()
 
     assert response.status == 200
-    assert captured["confirmed_runtime_lock"] is True
+    assert captured["confirmed_runtime_lock"] is expected_lock
     assert captured["requested_runtime"] == {
         "provider": "requested-provider", "model": "requested-model",
     }

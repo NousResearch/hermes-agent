@@ -737,7 +737,8 @@ class OpenAICompatRoutesMixin:
             },
             route_source=("model_routes" if route else
                           "raw_request" if agent_overrides else "global"),
-            confirmed_runtime_lock=bool(route or agent_overrides),
+            confirmed_runtime_lock=_coerce_request_bool(
+                body.get("require_model_lock"), default=False),
             relay_metadata=relay_metadata,
             # #98619: only an explicitly provided X-Hermes-Session-Id is wake-capable (the
             # header is 403-gated on API_SERVER_KEY, so the wake self-post can authenticate

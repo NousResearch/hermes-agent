@@ -172,10 +172,6 @@ class BackupInProgressError(RuntimeError):
     """Raised when another process already owns the Hermes backup slot."""
 
 
-class _SQLiteSnapshotError(RuntimeError):
-    pass
-
-
 @contextmanager
 def _backup_operation_lock(hermes_home: Path, timeout_seconds: float = 0.25):
     """Acquire one cross-process backup slot for full and quick snapshots."""
@@ -2187,11 +2183,14 @@ def _write_full_zip_backup_locked(out_path: Path, hermes_root: Path) -> Optional
     logger.info("automatic backup phase=scan status=complete duration_ms=%.1f files=%d",
                 (time.monotonic() - scan_started) * 1000, len(files_to_add))
 
-    def _db_failure(rel_path: Path) -> None:
-        logger.warning("Full-zip backup aborted: SQLite snapshot failed for %s", rel_path)
-        raise _SQLiteSnapshotError(str(rel_path))
-
     errors: list[str] = []
+
+    def _db_failure(rel_path: Path) -> None:
+        # One locked/unreadable .db (e.g. a running browser's own profile database under
+        # HERMES_HOME) is recorded like any other unreadable entry, so the rest is salvaged
+        # instead of the whole automatic backup being discarded.
+        logger.warning("Full-zip backup: SQLite snapshot failed for %s", rel_path)
+        errors.append(f"{rel_path}: SQLite snapshot failed")
 
     def _capped_errors() -> str:
         # Cap the logged list: a broken tree can fail thousands of entries in one run.
@@ -2224,7 +2223,7 @@ def _write_full_zip_backup_locked(out_path: Path, hermes_root: Path) -> Optional
                 on_error=lambda rel, exc: errors.append(f"{rel}: {exc}"),
                 on_progress=lambda i: logger.info(
                     "automatic backup phase=archive status=progress completed=%d total=%d", i, len(files_to_add)))
-    except (OSError, _SQLiteSnapshotError) as exc:
+    except OSError as exc:
         # The hidden partial is already gone; ``out_path`` may be a previous valid backup: keep it.
         logger.warning("Full-zip backup: zip write failed: %s", exc)
         return None

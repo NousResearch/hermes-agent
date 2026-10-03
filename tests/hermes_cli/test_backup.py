@@ -1972,6 +1972,42 @@ class TestPreUpdateBackup:
             assert all(zf.read(name) != b"outside secret\n" for name in names)
 
 
+    def test_one_locked_db_is_salvaged_not_fatal(self, hermes_home, monkeypatch):
+        """One locked/unreadable .db (e.g. a running browser's own profile database under
+        HERMES_HOME) must not discard the whole automatic backup: the run is kept as a salvage
+        archive holding everything else, and a previous complete backup is left untouched."""
+        import hermes_cli.backup as backup_mod
+        from hermes_cli.backup import create_pre_update_backup
+
+        good = create_pre_update_backup(hermes_home=hermes_home)
+        assert good is not None and good.exists()
+
+        locked_dir = hermes_home / "chrome-profile" / "Default"
+        locked_dir.mkdir(parents=True)
+        locked_db = locked_dir / "declarative_performance_observer.db"
+        locked_db.write_bytes(b"SQLite format 3\x00")
+        real_safe_copy_db = backup_mod._safe_copy_db
+
+        def fake_safe_copy_db(src, dst, **kwargs):
+            if src == locked_db:
+                return False  # simulates "database is locked" / unreadable
+            return real_safe_copy_db(src, dst, **kwargs)
+
+        monkeypatch.setattr(backup_mod, "_safe_copy_db", fake_safe_copy_db)
+        _advance_backup_clock()
+        assert create_pre_update_backup(hermes_home=hermes_home) is None
+
+        assert good.exists(), "an incomplete run must not replace the last complete backup"
+        salvages = list((hermes_home / "backups").glob("pre-update-*.incomplete.zip"))
+        assert len(salvages) == 1, "the rest of the backup must be salvaged, not discarded"
+        with zipfile.ZipFile(salvages[0]) as zf:
+            names = set(zf.namelist())
+            assert zf.testzip() is None
+        assert not any("declarative_performance_observer.db" in n for n in names)
+        for name in ("config.yaml", "sessions/abc123.json", "memory_store.db", "hermes_state.db"):
+            assert name in names
+
+
 class TestRunPreUpdateBackup:
     """Tests for the ``_run_pre_update_backup`` wrapper in main.py —
     covers the consolidated off/quick/full mode gate, CLI flags, and

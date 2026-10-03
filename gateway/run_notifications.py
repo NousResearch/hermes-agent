@@ -1469,6 +1469,16 @@ class GatewayNotificationsMixin:
             if adapter is not None and adapter_supports_push(adapter):
                 return False
         if adapter is None:
+            if source is not None:
+                # The watcher requeues silently every tick; say once which lane has no transport.
+                key = (getattr(source, "profile", None), platform)
+                warned = self.__dict__.setdefault("_completion_no_transport_warned", set())
+                if key not in warned:
+                    warned.add(key)
+                    logger.warning(
+                        "Async completion held: no live %s transport for profile %r; "
+                        "the row stays pending until one connects", platform, key[0] or "default",
+                    )
             return False
         if not adapter_supports_push(adapter):
             ensure = getattr(adapter, "_ensure_session_db", None)

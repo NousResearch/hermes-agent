@@ -73,6 +73,18 @@ def test_normalize_spotify_uri_accepts_urls() -> None:
     assert uri == "spotify:track:7ouMYWpwJ422jRcDASZB7P"
 
 
+def test_every_track_reference_form_normalizes_to_the_same_uri() -> None:
+    """URI, share link and localized share link name one track, with or without an expected type
+    (spotify_queue / spotify_playlists pass none, and Spotify accepts only ``spotify:`` URIs there)."""
+    track_id = "4uLU6hMCjMI75M1A2tKUQC"
+    forms = [f"spotify:track:{track_id}",
+             f"https://open.spotify.com/track/{track_id}?si=abc123",
+             f"https://open.spotify.com/intl-de/track/{track_id}?si=abc123"]
+    for expected_type in (None, "track"):
+        assert set(spotify_mod.normalize_spotify_uris(forms, expected_type)) == {f"spotify:track:{track_id}"}
+        assert {spotify_mod.normalize_spotify_id(form, expected_type) for form in forms} == {track_id}
+
+
 def test_get_currently_playing_returns_explanatory_empty_payload(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         spotify_mod,

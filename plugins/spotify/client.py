@@ -124,23 +124,31 @@ def _check_type(item_type: str, expected_type: Optional[str]) -> None:
         raise SpotifyError(f"Expected a Spotify {expected_type}, got {item_type}.")
 
 
+def _split_spotify_ref(cleaned: str, expected_type: Optional[str]) -> tuple[Optional[str], str]:
+    """``(type, id)`` of a ``spotify:<type>:<id>`` URI or open.spotify.com URL (type-checked against
+    *expected_type*); ``(None, cleaned)`` for a bare id or malformed ref, which passes through."""
+    parts = cleaned.split(":")[1:] if cleaned.startswith("spotify:") else []
+    if len(parts) < 2 and "open.spotify.com" in cleaned:
+        parts = [part for part in urlparse(cleaned).path.split("/") if part]
+        # Localized share links (/intl-de/track/<id>) and embeds (/embed/track/<id>) prefix the path.
+        while parts and (parts[0].startswith("intl-") or parts[0] == "embed"):
+            parts = parts[1:]
+    if len(parts) < 2:
+        return None, cleaned
+    _check_type(parts[0], expected_type)
+    return parts[0], parts[1]
+
+
 def normalize_spotify_id(value: str, expected_type: Optional[str] = None) -> str:
     """Accept a bare id, ``spotify:<type>:<id>`` URI, or open.spotify.com URL; return the id."""
     cleaned = (value or "").strip()
     if not cleaned:
         raise SpotifyError("Spotify id/uri/url is required.")
-    # (type, id) segments of a URI or URL; a bare id (or malformed ref) has no segments and passes through.
-    parts = cleaned.split(":")[1:] if cleaned.startswith("spotify:") else []
-    if len(parts) < 2 and "open.spotify.com" in cleaned:
-        parts = [part for part in urlparse(cleaned).path.split("/") if part]
-    if len(parts) >= 2:
-        _check_type(parts[0], expected_type)
-        return parts[1]
-    return cleaned
+    return _split_spotify_ref(cleaned, expected_type)[1]
 
 
 def normalize_spotify_uri(value: str, expected_type: Optional[str] = None) -> str:
-    """Like normalize_spotify_id but returns a URI; bare ids need *expected_type* to become one."""
+    """Like normalize_spotify_id but returns a URI (URLs carry their type); bare ids need *expected_type*."""
     cleaned = (value or "").strip()
     if not cleaned:
         raise SpotifyError("Spotify URI/url/id is required.")
@@ -149,8 +157,9 @@ def normalize_spotify_uri(value: str, expected_type: Optional[str] = None) -> st
         if expected_type and len(parts) >= 3:
             _check_type(parts[1], expected_type)
         return cleaned
-    item_id = normalize_spotify_id(cleaned, expected_type)
-    return f"spotify:{expected_type}:{item_id}" if expected_type else cleaned
+    item_type, item_id = _split_spotify_ref(cleaned, expected_type)
+    item_type = item_type or expected_type
+    return f"spotify:{item_type}:{item_id}" if item_type else cleaned
 
 
 def normalize_spotify_uris(values: Iterable[str], expected_type: Optional[str] = None) -> list[str]:

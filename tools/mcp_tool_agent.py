@@ -62,7 +62,8 @@ def _drop_side_agent_tools(agent, new_defs: list, new_names: set) -> tuple:
 
 def _publish_tool_snapshot(
     agent, new_defs: list, new_names: set, *, snapshot_generation: int,
-    staged_engine_names: set, content_aware: bool, prefix_registered: Optional[set]) -> Optional[set]:
+    staged_engine_names: set, content_aware: bool, prefix_registered: Optional[set],
+    prefix_permitted: Optional[set]) -> Optional[set]:
     """Single atomic read-diff-publish under ``_agent_tools_lock`` so ``added`` matches what
     was published and a stale (older-generation) rebuild can't overwrite a newer one. Returns
     the added names, or None when nothing was published (unchanged, or a newer snapshot won)."""
@@ -75,7 +76,21 @@ def _publish_tool_snapshot(
         current_defs = _agent_tool_defs(agent)
         current = {_def_name(t) for t in current_defs}
         if prefix_registered is not None:
+            assert prefix_permitted is not None
+            fresh_names = set(new_names)
             new_defs, new_names = _merge_preserving_prefix(current_defs, new_defs, prefix_registered)
+            # A prefix carry may preserve a transient check_fn miss, but it must not
+            # override this session's current toolset policy. Re-apply the same
+            # config + dynamic-schema postconditions used by restore_agent_tool_prefix:
+            # e.g. disabling terminal must also keep browser_exec (host Python) out.
+            carried = (new_names - fresh_names) & prefix_registered
+            if carried:
+                denied = carried - prefix_permitted
+                if denied:
+                    new_defs = [t for t in new_defs if _def_name(t) not in denied]
+                    carried -= denied
+                new_defs = _drop_gated_carried_tools(new_defs, carried)
+                new_names = {_def_name(t) for t in new_defs}
         new_defs, new_names = _drop_side_agent_tools(agent, new_defs, new_names)
         # Record the generation even when unchanged so an in-flight older caller can't clobber.
         agent._tool_snapshot_generation = max(published_gen, snapshot_generation)
@@ -124,14 +139,20 @@ def refresh_agent_mcp_tools(
     # Registry membership is read OUTSIDE ``_agent_tools_lock``: taking ``registry._lock``
     # under the tools lock would be the first nesting of the two.
     prefix_registered: Optional[set] = None
+    prefix_permitted: Optional[set] = None
     if preserve_prefix:
         try:
+            # Both reads happen outside _agent_tools_lock: toolset resolution may
+            # consult the registry, and this file deliberately never nests that
+            # lock underneath the agent snapshot lock.
             prefix_registered = {entry.name for entry in registry.get_all_entries()}
+            prefix_permitted = _toolset_permitted_names(enabled, disabled)
         except Exception:  # noqa: BLE001
-            pass  # fail open to the plain rebuild
+            prefix_registered = prefix_permitted = None  # fail open to the plain rebuild
     added = _publish_tool_snapshot(
         agent, new_defs, new_names, snapshot_generation=snapshot_generation,
-        staged_engine_names=staged_engine_names, content_aware=content_aware, prefix_registered=prefix_registered)
+        staged_engine_names=staged_engine_names, content_aware=content_aware,
+        prefix_registered=prefix_registered, prefix_permitted=prefix_permitted)
     if added is None:
         return set()
     persist_agent_tool_names(agent)  # re-pin so a rebuild after agent-cache eviction restores this order
@@ -170,16 +191,25 @@ def persist_agent_tool_names(agent) -> None:
         logger.debug("tool_names persist skipped", exc_info=True)
 
 
-def _config_permitted_names(agent) -> set:
-    """Tool names this agent's toolset selection allows before ``check_fn``: all a pin may carry
-    forward. A client-surface toolset counts as allowed (only its client can add it, so its absence
-    here is no config choice); ``disabled_toolsets`` and role reservations still strip it."""
+def _toolset_permitted_names(enabled, disabled) -> set:
+    """Names a resolved toolset policy permits before ``check_fn``.
+
+    Client-surface toolsets count as allowed because only their client can add
+    them; explicit disabled toolsets and role reservations still win.
+    """
     from model_tools import _select_tool_names
     from toolsets import CLIENT_SURFACE_TOOLSETS
-    enabled = getattr(agent, "enabled_toolsets", None)
     if enabled is not None:
         enabled = [*enabled, *CLIENT_SURFACE_TOOLSETS]
-    return _select_tool_names(enabled, getattr(agent, "disabled_toolsets", None), True)
+    return _select_tool_names(enabled, disabled, True)
+
+
+def _config_permitted_names(agent) -> set:
+    """Tool names this agent's persisted toolset policy permits."""
+    return _toolset_permitted_names(
+        getattr(agent, "enabled_toolsets", None),
+        getattr(agent, "disabled_toolsets", None),
+    )
 
 
 def _drop_gated_carried_tools(merged: list, carried: set) -> list:

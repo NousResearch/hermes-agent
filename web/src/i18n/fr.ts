@@ -226,6 +226,8 @@ export const fr: Translations = {
     component: "Composant",
     lines: "Lignes",
     noLogLines: "Aucune ligne de journal trouvée",
+    copy: "Copier",
+    copied: "Copié",
   },
 
   cron: {

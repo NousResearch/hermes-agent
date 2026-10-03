@@ -202,6 +202,8 @@ export const ar = defineLocale({
     component: "المكوِّن",
     lines: "الأسطر",
     noLogLines: "لم يُعثر على أسطر سجل",
+    copy: "نسخ",
+    copied: "تم النسخ",
   },
 
   cron: {

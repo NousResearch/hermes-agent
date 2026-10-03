@@ -226,6 +226,8 @@ export const ko: Translations = {
     component: "구성 요소",
     lines: "줄 수",
     noLogLines: "로그 줄을 찾을 수 없습니다",
+    copy: "복사",
+    copied: "복사됨",
   },
 
   cron: {

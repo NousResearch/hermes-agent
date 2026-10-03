@@ -226,6 +226,8 @@ export const ja: Translations = {
     component: "コンポーネント",
     lines: "行数",
     noLogLines: "ログ行が見つかりません",
+    copy: "コピー",
+    copied: "コピーしました",
   },
 
   cron: {

@@ -226,6 +226,8 @@ export const zhHant: Translations = {
     component: "元件",
     lines: "行數",
     noLogLines: "找不到日誌記錄",
+    copy: "複製",
+    copied: "已複製",
   },
 
   cron: {

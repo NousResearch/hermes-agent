@@ -2776,7 +2776,12 @@ class Migrator:
             browser_hermes["cdp_url"] = browser["cdpUrl"]
             changed = True
         if browser.get("headless") is not None:
-            browser_hermes["headless"] = browser["headless"]
+            # OpenClaw headless is the inverse of Hermes headed (the only reader,
+            # _is_headed_mode, reads browser.headed); invert, coercing non-bool
+            # values the same way the reader does.
+            raw = browser["headless"]
+            headless = raw if isinstance(raw, bool) else str(raw).strip().lower() in ("true", "1", "yes")
+            browser_hermes["headed"] = not headless
             changed = True
 
         if changed:

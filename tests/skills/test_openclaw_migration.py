@@ -696,5 +696,59 @@ def test_messaging_settings_handles_invalid_utf8_in_telegram_allowlist(tmp_path:
     assert "123456789" in env_text
 
 
+def _browser_headless_migrator(mod, tmp_path: Path, headless):
+    """Migrator with an OpenClaw config carrying browser.headless."""
+    source = tmp_path / ".openclaw"
+    target = tmp_path / ".hermes"
+    source.mkdir()
+    target.mkdir()
+    (source / "openclaw.json").write_text(
+        json.dumps({"browser": {"headless": headless}}), encoding="utf-8"
+    )
+    (target / "config.yaml").write_text("model: hermes-4-405b\n", encoding="utf-8")
+    migrator = mod.Migrator(
+        source_root=source, target_root=target, execute=True,
+        workspace_target=None, overwrite=False, migrate_secrets=False, output_dir=None,
+    )
+    return migrator, target / "config.yaml"
+
+
+def test_browser_headless_true_migrates_to_unheaded(tmp_path: Path):
+    """OpenClaw browser.headless=true must become browser.headed=false.
+
+    Hermes only reads browser.headed (_is_headed_mode); writing the unread
+    headless key loses the choice while reporting success.
+    """
+    mod = load_module()
+    migrator, config_path = _browser_headless_migrator(mod, tmp_path, True)
+    migrator.migrate_browser_config({"browser": {"headless": True}})
+    text = config_path.read_text(encoding="utf-8")
+    assert "headed: false" in text
+    assert "headless" not in text
+
+
+def test_browser_headless_false_migrates_to_headed(tmp_path: Path):
+    mod = load_module()
+    migrator, config_path = _browser_headless_migrator(mod, tmp_path, False)
+    migrator.migrate_browser_config({"browser": {"headless": False}})
+    text = config_path.read_text(encoding="utf-8")
+    assert "headed: true" in text
+    assert "headless" not in text
+
+
+def test_browser_headless_string_false_migrates_to_headed(tmp_path: Path):
+    """A non-bool headless value must be coerced, not inverted as a truthy string.
+
+    `not "false"` is False, which would silently keep the browser headless for a
+    user who asked for headless=false — the same lossy-migration failure mode.
+    """
+    mod = load_module()
+    migrator, config_path = _browser_headless_migrator(mod, tmp_path, "false")
+    migrator.migrate_browser_config({"browser": {"headless": "false"}})
+    text = config_path.read_text(encoding="utf-8")
+    assert "headed: true" in text
+    assert "headless" not in text
+
+
 
 

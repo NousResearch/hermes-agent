@@ -61,7 +61,15 @@ The receipt is durable while the run is open: `begin_update_receipt` writes it a
 boundary refreshes it, so a killed update leaves its own record. The next update marks a
 `running` record whose processes are gone `interrupted` (naming its last stage) and reports
 it. Receipts and the `update.log` tee resolve to the root home
-(`hermes_constants.get_default_hermes_root()`), never a sticky profile's.
+(`hermes_constants.get_default_hermes_root()`), never a sticky profile's; so do their readers
+(`hermes logs update`, the debug bundle, the dashboard's update status, pm's sync receipts).
+
+The completion bootstrap's dependency preparation (`ensure_tools_for_sync`, `pm.sync_venv`) also
+runs after the tree moved: its failure is a `dependencies` follow-up ("dependencies not installed
+yet — the next launch retries"), exit 0, with the tail obligation armed; a prepared child that
+dies without a result is a `completion` follow-up. A Ctrl-C after the commit point closes the run
+as `interrupted` (exit 130, never `failed`) and says the new code is in place with its remaining
+steps owed.
 
 ## Parent lifecycle and failures
 

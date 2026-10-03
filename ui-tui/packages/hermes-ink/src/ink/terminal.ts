@@ -346,9 +346,35 @@ export function hasCursorUpViewportYankBug(): boolean {
   return process.platform === 'win32' || !!process.env.WT_SESSION
 }
 
-// Computed once at module load — terminal capabilities don't change mid-session.
-// Exported so callers can pass a sync-skip hint gated to specific modes.
-export const SYNC_OUTPUT_SUPPORTED = isSynchronizedOutputSupported()
+// Seeded at module load from env vars, then upgraded by the DECRQM probe.
+//
+// Env detection alone is blind over SSH: sshd forwards TERM but not
+// TERM_PROGRAM, KITTY_WINDOW_ID, VTE_VERSION, WT_SESSION or ZED_TERM, so a
+// remote session on a DEC 2026-capable terminal reads as unsupported
+// (TERM normalizes to xterm-256color) and every frame paints un-atomically —
+// visible tearing/flicker on exactly the terminals that could avoid it.
+// DECRQM goes through the pty, so the query reaches the *client* terminal and
+// the reply comes back on stdin — the same trick XTVERSION already uses.
+// Readers must call isSyncOutputSupported() at use time, not snapshot it.
+let syncOutputSupported = isSynchronizedOutputSupported()
+
+/** True when frames may be wrapped in BSU/ESU (DEC 2026). */
+export function isSyncOutputSupported(): boolean {
+  return syncOutputSupported
+}
+
+/** Record the DECRQM mode-2026 probe result. Called from App.tsx when the
+ *  reply arrives. Multiplexers are never upgraded: tmux/Zellij proxy the
+ *  query to the outer terminal, so an affirmative reply describes the OUTER
+ *  terminal while the multiplexer has already broken frame atomicity by
+ *  re-chunking the stream (#66490). Downgrades always apply. */
+export function setSynchronizedOutputSupported(supported: boolean): void {
+  if (supported && (process.env.TMUX || process.env.ZELLIJ)) {
+    return
+  }
+
+  syncOutputSupported = supported
+}
 
 export type Terminal = {
   stdout: Writable

@@ -362,7 +362,6 @@ def browser_vault_enter_code(handle: str = "", task_id: Optional[str] = None,
                            "error": ("No one-time-code field on the current page. If the site wants a passkey, hardware key or "
                                      "an approval tap in an app, tell the user to complete it on their device and wait for the page to move on.")})
 
-    code: Optional[str] = None
     source = "user"
     backend = backend_for_handle(handle) if handle else None
     if backend is not None:
@@ -372,20 +371,19 @@ def browser_vault_enter_code(handle: str = "", task_id: Optional[str] = None,
             code = None
         if code:
             source = backend.name
-    if not code:
+    if code is not None and source == "user":
         from hermes_cli.config import load_config_readonly
         relay = (load_config_readonly().get("vault") or {}).get("relay_one_time_codes") or {}
-        if code is not None and not relay.get("enabled", False):
+        if not relay.get("enabled", False):
             return json.dumps({"success": False, "error_type": "relay_disabled",
                                "error": "Relaying one-time codes from chat is disabled for this profile."})
-        if code is not None:
-            now = time.time()
-            max_age = float(relay.get("max_age_seconds", 300))
-            if relayed_at is None or now - float(relayed_at) > max_age or float(relayed_at) > now + 30:
-                return json.dumps({"success": False, "error_type": "stale_relay",
-                                   "error": "The relayed one-time code is missing a fresh timestamp or has expired."})
-            code = str(code).strip().replace(" ", "").replace("-", "")
-            source = "chat_relay"
+        now = time.time()
+        max_age = float(relay.get("max_age_seconds", 300))
+        if relayed_at is None or now - float(relayed_at) > max_age or float(relayed_at) > now + 30:
+            return json.dumps({"success": False, "error_type": "stale_relay",
+                               "error": "The relayed one-time code is missing a fresh timestamp or has expired."})
+        code = str(code).strip().replace(" ", "").replace("-", "")
+        source = "chat_relay"
     if not code:
         prompt = get_code_prompt_callback()
         if prompt is None or not can_prompt_here():

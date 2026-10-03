@@ -48,6 +48,16 @@ def _drain_truncation_warnings():
 # =========================================================================
 
 
+def test_kanban_worker_terminal_envelope_guidance():
+    import json
+
+    from agent.prompt_builder import KANBAN_GUIDANCE
+    from tools.terminal_tool import _handle_terminal
+
+    assert "foreground `terminal` calls, omit `notify` and `heartbeat`" in KANBAN_GUIDANCE
+    assert "never repeat an unchanged rejected call" in KANBAN_GUIDANCE
+    rejected = json.loads(_handle_terminal({"command": "true", "background": False, "heartbeat": 60}))
+    assert "background commands" in rejected["error"]
 
 
 # =========================================================================

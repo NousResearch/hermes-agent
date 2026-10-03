@@ -129,9 +129,8 @@ def add_suggestion(
         return record
 
 
-def get_suggestion(ref: str) -> Optional[Dict[str, Any]]:
+def _resolve_suggestion(suggestions: List[Dict[str, Any]], ref: str) -> Optional[Dict[str, Any]]:
     """Resolve a suggestion by id, 1-based pending index, or exact (case-insensitive) title."""
-    suggestions = load_suggestions()
     for s in suggestions:
         if s.get("id") == ref:
             return s
@@ -146,16 +145,25 @@ def get_suggestion(ref: str) -> Optional[Dict[str, Any]]:
     return None
 
 
+def get_suggestion(ref: str) -> Optional[Dict[str, Any]]:
+    """Resolve a suggestion by id, 1-based pending index, or exact (case-insensitive) title."""
+    return _resolve_suggestion(load_suggestions(), ref)
+
+
+def _mark_status(suggestions: List[Dict[str, Any]], suggestion_id: str, status: str) -> bool:
+    """Set a suggestion's status in an already-loaded list and persist it. Caller holds the lock."""
+    for s in suggestions:
+        if s.get("id") == suggestion_id:
+            s["status"] = status
+            s["resolved_at"] = _hermes_now().isoformat()
+            _save_raw(suggestions)
+            return True
+    return False
+
+
 def _set_status(suggestion_id: str, status: str) -> bool:
     with _suggestions_lock:
-        suggestions = _load_raw().get("suggestions", [])
-        for s in suggestions:
-            if s.get("id") == suggestion_id:
-                s["status"] = status
-                s["resolved_at"] = _hermes_now().isoformat()
-                _save_raw(suggestions)
-                return True
-        return False
+        return _mark_status(_load_raw().get("suggestions", []), suggestion_id, status)
 
 
 def dismiss_suggestion(ref: str) -> bool:
@@ -167,27 +175,33 @@ def dismiss_suggestion(ref: str) -> bool:
 def accept_suggestion(ref: str, *, origin: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
     """Accept a suggestion: create the real cron job from its ``job_spec``. Returns the job dict, or
     None if not found / not pending. ``origin`` (platform/chat) is merged so "origin" delivery
-    routes back to the chat where the user accepted."""
-    s = get_suggestion(ref)
-    if not s or s.get("status") != _STATUS_PENDING:
-        return None
+    routes back to the chat where the user accepted.
 
+    The pending check, the durable create and the accepted transition are one critical section,
+    so a concurrent accept (double-click, retried request) sees the resolved suggestion and
+    creates no second job."""
     from cron.scheduler import (
         CronSchedulerRegistrationError, create_job_with_scheduler_registration,
     )
 
-    spec = dict(s.get("job_spec") or {})
-    if origin is not None and "origin" not in spec:
-        spec["origin"] = origin
+    with _suggestions_lock:
+        suggestions = _load_raw().get("suggestions", [])
+        s = _resolve_suggestion(suggestions, ref)
+        if not s or s.get("status") != _STATUS_PENDING:
+            return None
 
-    try:
-        job = create_job_with_scheduler_registration(**spec)
-    except CronSchedulerRegistrationError:
-        # The job is already durable: resolve the suggestion so a retry cannot create a second copy.
-        _set_status(s["id"], _STATUS_ACCEPTED)
-        raise
-    _set_status(s["id"], _STATUS_ACCEPTED)
-    return job
+        spec = dict(s.get("job_spec") or {})
+        if origin is not None and "origin" not in spec:
+            spec["origin"] = origin
+
+        try:
+            job = create_job_with_scheduler_registration(**spec)
+        except CronSchedulerRegistrationError:
+            # The job is already durable: resolve the suggestion so a retry cannot create a second copy.
+            _mark_status(suggestions, s["id"], _STATUS_ACCEPTED)
+            raise
+        _mark_status(suggestions, s["id"], _STATUS_ACCEPTED)
+        return job
 
 
 def clear_resolved() -> int:

@@ -777,6 +777,23 @@ Once an epoch is fenced here:
   epoch or a later one, control passes to that successor instead, so a candidate
   that lost never gains it. Neither can approve those runs or start them again.
 
+In a group that moves automatically, a voting computer also grants the group's
+host a short **lease** with each heartbeat. While it runs, this gateway promises
+no later epoch to anyone (`409 room_lease_active`), so a successor can gather a
+majority of promises only once the host's majority of leases has run out.
+- A lease goes only to the host of an epoch this gateway hasn't fenced, promised
+  or learned past. A renewal never shortens it, and a planned restart can extend
+  it by at most five minutes.
+- It is measured on a clock that keeps counting while the computer sleeps
+  (`CLOCK_BOOTTIME` on Linux, `CLOCK_MONOTONIC` on macOS, interrupt time on
+  Windows).
+- It survives restarts. That clock starts again at boot, so after a reboot (told
+  apart by the operating system's boot id) a lease counts as running its full
+  length less the time since boot; the wall clock, which can be stepped, never
+  shortens it.
+- It ends early only for the host's own signed handover (#105197), and only when
+  the host last asked for it before signing, in the same boot.
+
 The owner freeze above is a separate record and behaves exactly as described:
 a frozen scope stays frozen, whatever its room's fence.
 

@@ -462,7 +462,11 @@ def _resize_image_for_vision(image_path: Path, mime_type: Optional[str] = None,
     is_png = (mime_type or _determine_mime_type(image_path)) == "image/png" and not force_jpeg
     pil_format, out_mime = ("PNG", "image/png") if is_png else ("JPEG", "image/jpeg")
     try:
-        img = Image.open(image_path)
+        from PIL import ImageOps
+
+        # Re-encoding drops the EXIF Orientation tag, so bake it into the pixels first or a
+        # portrait phone photo reaches the model sideways.
+        img = ImageOps.exif_transpose(Image.open(image_path))
     except Exception as exc:
         logger.info("Pillow cannot open image for resizing: %s", exc)
         return _raw()

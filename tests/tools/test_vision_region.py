@@ -59,6 +59,32 @@ class TestCropImageRegion:
         with Image.open(cropped_path) as img:
             assert img.size == (100, 50)
 
+    def test_crop_uses_display_orientation_for_exif_rotated_jpeg(self, tmp_path):
+        from PIL import ImageOps
+
+        from tools.vision_tools import _crop_image_region
+
+        src = tmp_path / "oriented.jpg"
+        image = Image.new("RGB", (80, 40))
+        for x in range(image.width):
+            for y in range(image.height):
+                image.putpixel((x, y), (x * 3, y * 6, (x + y) * 2))
+        exif = Image.Exif()
+        exif[274] = 6  # Rotate 90 degrees clockwise for display.
+        image.save(src, format="JPEG", quality=95, exif=exif)
+
+        region = [0, 0, 40, 60]
+        with Image.open(src) as encoded:
+            expected = ImageOps.exif_transpose(encoded).crop(region).convert("RGB")
+
+        cropped_path, mime, err = _crop_image_region(src, region)
+
+        assert err is None
+        assert mime == "image/png"
+        with Image.open(cropped_path) as actual:
+            assert actual.size == (40, 60)
+            assert list(actual.convert("RGB").getdata()) == list(expected.getdata())
+
     def test_zero_area_rejected_with_actual_dims_in_error(self, tmp_path):
         from tools.vision_tools import _crop_image_region
 

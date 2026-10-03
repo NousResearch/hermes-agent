@@ -684,6 +684,7 @@ class OpenAICompatRoutesMixin:
         # X-Hermes-Session-Id continues an existing session (history from state.db, not the body);
         # requires a configured API key or any client could read history by guessing ids.
         provided_session_id = request.headers.get("X-Hermes-Session-Id", "").strip()
+        history_watermark = None
         if provided_session_id:
             if not self._api_key:
                 logger.warning(
@@ -709,10 +710,11 @@ class OpenAICompatRoutesMixin:
                     # the delivery writer (gateway/wake.py) and /v1/runs use; fails open.
                     from gateway.platforms.api_server_runs import _resolve_live_session_id
                     session_id = await _resolve_live_session_id(self, provided_session_id)
+                    history_watermark = await self._history_watermark_for_session(session_id)
                     history = await asyncio.to_thread(db.get_messages_as_conversation, session_id)
             except Exception as e:
                 logger.warning("Failed to load session history for %s: %s", session_id, e)
-                history = []
+                history, history_watermark = [], None
         else:
             # Stable id from the conversation fingerprint so Open WebUI-style clients map onto
             # one Hermes session; namespaced by the routed profile (#123989).
@@ -729,6 +731,7 @@ class OpenAICompatRoutesMixin:
             return selection_error
         run_kwargs = dict(
             user_message=user_message, conversation_history=history,
+            history_watermark=history_watermark,
             ephemeral_system_prompt=system_prompt, session_id=session_id,
             gateway_session_key=gateway_session_key, **agent_overrides, route=route,
             relay_metadata=relay_metadata,

@@ -501,6 +501,8 @@ class _RunLaunch:
     browser_control_principal: Any
     browser_control_transport_family: Any
     turn_author: Optional[Dict[str, Any]] = None  # memory-attribution label only; grants nothing
+    # Set only when conversation_history is the stored transcript (_history_watermark_for_session).
+    history_watermark: Optional[int] = None
 
     @property
     def approval_session_key(self) -> str:
@@ -595,6 +597,7 @@ async def run_internal_session_turn(self, *, session_id: str, text: str, profile
             if err is not None or not session:
                 raise RuntimeError(
                     f"internal wake target session {resolved!r} is not in the active profile store")
+            watermark = await self._history_watermark_for_session(resolved)
             history = await self._conversation_history_for_session(resolved)
             # Same route resolution as the HTTP self-post (/v1/chat/completions): a model_routes
             # alias for the virtual model applies to the wake turn too.
@@ -604,8 +607,8 @@ async def run_internal_session_turn(self, *, session_id: str, text: str, profile
             if err is not None:
                 raise RuntimeError(f"internal wake route conflict for session {resolved!r}")
             await self._run_agent(
-                user_message=text, conversation_history=history, session_id=resolved,
-                gateway_session_key=None, **overrides, route=route, requested_runtime={},
+                user_message=text, conversation_history=history, history_watermark=watermark,
+                session_id=resolved, gateway_session_key=None, **overrides, route=route, requested_runtime={},
                 route_source="global", session_history_delivery="1",
                 notification_category=notification_category,
             )
@@ -710,7 +713,9 @@ async def _handle_runs(self, request: "web.Request", *, _api_server) -> "web.Res
     # overwrite ``conversation_history``: a caller-supplied history is authoritative for this
     # turn, never consumes the SessionDB delivery row, and is denied on the same contract.
     session_history_delivery = not previous_response_id and not conversation_history
+    history_watermark = None
     if not conversation_history and selected_session_id and not previous_response_id:
+        history_watermark = await self._history_watermark_for_session(str(selected_session_id))
         conversation_history = await self._conversation_history_for_session(str(selected_session_id))
     q = self._run_streams[run_id] = _RunStream()
     created_at = self._run_streams_created[run_id] = time.time()
@@ -738,7 +743,7 @@ async def _handle_runs(self, request: "web.Request", *, _api_server) -> "web.Res
         request_profile=_api_server._api_request_profile.get(),
         browser_control_principal=_api_server._api_request_browser_control_principal.get(),
         browser_control_transport_family=_api_server._api_request_browser_control_transport_family.get(),
-        turn_author=turn_author)
+        turn_author=turn_author, history_watermark=history_watermark)
     self._activate_admitted_request()
     # A canonical Bot Chat that a Desktop holds live is that Desktop's to run: executing here would
     # be a second writer beside its lease (#114959). The owner's mailbox takes the turn and its
@@ -827,6 +832,10 @@ def _run_agent_sync(self, run: _RunLaunch, agent, approval_notify, *, _api_serve
             _api_server._publish_turn_process_ownership(agent, effective_task_id)
             # Passed only when set: a human turn keeps today's call shape.
             author_kwargs = {"turn_author": run.turn_author} if run.turn_author is not None else {}
+            if run.history_watermark is not None:
+                from agent.turn_facade_lease import declare_history_snapshot
+
+                declare_history_snapshot(agent, run.history_watermark)
             r = agent.run_conversation(
                 user_message=run.user_message, conversation_history=run.conversation_history,
                 task_id=effective_task_id, **author_kwargs)

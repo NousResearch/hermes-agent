@@ -300,6 +300,37 @@ def test_first_turn_on_fresh_session_serializes_a_second_writer(tmp_path, monkey
     assert observed["history"] == ["first", "first answer"]
 
 
+def test_only_a_declared_snapshot_is_replaced_when_the_transcript_moved(tmp_path, monkeypatch):
+    """#84235: an uncontended admission reloads a history declared as a stored-transcript read once
+    the transcript has moved past it; a caller that declared nothing keeps its own history."""
+    from agent.turn_facade_lease import declare_history_snapshot
+
+    db = SessionDB(tmp_path / "state.db")
+    db.create_session("client-id", source="api_server")
+    db.append_message("client-id", "user", "first")
+    observed = []
+
+    def fake_run(_agent, _message, _system, history, *_args, **_kwargs):
+        observed.append(history)
+        return {"final_response": "ok", "messages": history, "failed": False}
+
+    monkeypatch.setattr("agent.conversation_loop.run_conversation", fake_run)
+    agent = _agent_with_db(db, session_id="client-id", platform="api_server")
+    try:
+        watermark = db.get_active_message_watermark("client-id")
+        snapshot = db.get_messages_as_conversation("client-id")
+        db.append_message("client-id", "assistant", "first answer")
+
+        declare_history_snapshot(agent, watermark)
+        AIAgent.run_conversation(agent, "second", conversation_history=snapshot)
+        AIAgent.run_conversation(agent, "third", conversation_history=snapshot)
+    finally:
+        db.close()
+
+    assert [m.get("content") for m in observed[0]] == ["first", "first answer"]
+    assert observed[1] is snapshot
+
+
 def test_run_conversation_lease_timeout_returns_resend_notice(monkeypatch):
     db = _DB(acquire_result=False)
     agent = _agent_with_db(db)

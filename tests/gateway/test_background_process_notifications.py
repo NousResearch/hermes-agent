@@ -89,6 +89,91 @@ def _watch_event(session_id="proc_watch", thread_id="42"):
     }
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("count", [1, 2])
+async def test_agent_process_completions_carry_no_news_contract(monkeypatch, tmp_path, count):
+    """Both single and batched watcher turns reach admission with the silence contract."""
+    import tools.process_registry as pr_module
+    from tools.process_registry_notifications import PROCESS_NOTIFICATION_NO_REPLY_CONTRACT
+
+    class Registry:
+        def get(self, session_id):
+            return SimpleNamespace(
+                output_buffer=f"result for {session_id}", exited=True,
+                exit_code=0, command="build",
+            )
+
+        def is_completion_consumed(self, session_id):
+            return False
+
+    monkeypatch.setattr(pr_module, "process_registry", Registry())
+    runner = _build_runner(monkeypatch, tmp_path, "all")
+    runner._completion_notification_batch_window = 0.01
+    adapter = runner.adapters[Platform.TELEGRAM]
+    watchers = [
+        dict(_watcher_dict(f"proc_{i}"), notify_on_complete=True,
+             session_key="agent:main:telegram:dm:123")
+        for i in range(count)
+    ]
+
+    await asyncio.gather(*(runner._run_process_watcher(watcher) for watcher in watchers))
+
+    adapter.handle_message.assert_awaited_once()
+    event = adapter.handle_message.await_args.args[0]
+    assert event.internal is True
+    assert PROCESS_NOTIFICATION_NO_REPLY_CONTRACT in event.text
+    for i in range(count):
+        assert f"result for proc_{i}" in event.text
+    adapter.send.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("event_type", [
+    "watch_match", "watch_disabled", "watch_overflow_tripped", "watch_overflow_released",
+])
+async def test_watch_admission_carries_no_news_contract(monkeypatch, tmp_path, event_type):
+    from tools.process_registry_notifications import PROCESS_NOTIFICATION_NO_REPLY_CONTRACT
+
+    runner = _build_runner(monkeypatch, tmp_path, "all")
+    adapter = runner.adapters[Platform.TELEGRAM]
+    events = queue.Queue()
+    event = dict(_watch_event(), type=event_type, message="watch status")
+    events.put(event)
+
+    await runner._drain_watch_notifications(events)
+
+    adapter.handle_message.assert_awaited_once()
+    assert PROCESS_NOTIFICATION_NO_REPLY_CONTRACT in adapter.handle_message.await_args.args[0].text
+
+
+def test_shared_formatter_keeps_no_news_contract_opt_in():
+    from gateway.run import _format_gateway_process_notification
+    from tools.process_registry_notifications import (
+        PROCESS_NOTIFICATION_NO_REPLY_CONTRACT, format_process_notification,
+    )
+
+    event = _watch_event()
+    ordinary = format_process_notification(event)
+    gateway = _format_gateway_process_notification(event)
+    assert PROCESS_NOTIFICATION_NO_REPLY_CONTRACT not in ordinary
+    assert PROCESS_NOTIFICATION_NO_REPLY_CONTRACT in gateway
+    assert event["output"].strip() in ordinary
+    assert event["output"].strip() in gateway
+
+
+@pytest.mark.parametrize("event_type", ["heartbeat", "async_delegation"])
+def test_gateway_preserves_non_process_completion_formatting(event_type):
+    from gateway.run import _format_gateway_process_notification
+    from tools.process_registry_notifications import (
+        PROCESS_NOTIFICATION_NO_REPLY_CONTRACT, format_process_notification,
+    )
+
+    event = dict(_watch_event(), type=event_type)
+    text = _format_gateway_process_notification(event)
+    assert text == format_process_notification(event)
+    assert PROCESS_NOTIFICATION_NO_REPLY_CONTRACT not in text
+
+
 # ---------------------------------------------------------------------------
 # _load_background_notifications_mode unit tests
 # ---------------------------------------------------------------------------

@@ -3771,6 +3771,7 @@ export interface RollbackDiffResult {
 }
 export interface CronManageParams {
   action?: CronAction
+  job_id?: string | null
   name?: string | null
   include_disabled?: boolean | string | null
   schedule?: string | null
@@ -3780,8 +3781,8 @@ export interface CronManageParams {
   deliver?: string | null
   profile?: string | null
 }
-export type CronAction = 'list' | 'add' | 'remove' | 'pause' | 'resume'
-/** Pass-through of ``tools/cronjob_tools.py::cronjob`` JSON: ``list`` → ``jobs``/``count`` (+ ``scoped`` when profile-scoped); ``add`` → the created job's summary + ``job``; ``remove`` → ``removed_job``; ``pause``/``resume`` → ``job``. A tool-level failure lands in ``error``. */
+export type CronAction = 'list' | 'add' | 'update' | 'remove' | 'pause' | 'resume'
+/** Pass-through of ``tools/cronjob_tools.py::cronjob`` JSON: ``list`` → ``jobs``/``count`` (+ ``scoped`` when profile-scoped); ``add`` → the created job's summary + ``job``; ``update`` → ``job``; ``remove`` → ``removed_job``; ``pause``/``resume`` → ``job``. A tool-level failure lands in ``error``. */
 export interface CronManageResult {
   success?: boolean | null
   error?: string | null
@@ -4960,7 +4961,7 @@ export interface RpcMethods {
   'connectors.policy.set': { params: ConnectorPolicySetParams; result: ConnectorPolicySetResult }
   /** The scoped profile's cached or current tool list for one connector. */
   'connectors.tools': { params: ConnectorToolsParams; result: ConnectorToolsResult }
-  /** List/add/remove/pause/resume cron jobs in the (optionally profile-scoped) cron store. */
+  /** List/add/update/remove/pause/resume cron jobs in the (optionally profile-scoped) cron store. */
   'cron.manage': { params: CronManageParams; result: CronManageResult }
   /** Block/unblock NEW spawns globally (active children keep running); returns the new state. */
   'delegation.pause': { params: DelegationPauseParams; result: DelegationPauseResult }

@@ -2903,7 +2903,13 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
         proactive_prune_tokens: int = 0, proactive_prune_min_result_chars: int = 8000,
         proactive_prune_min_reclaim_tokens: int = 4096, min_tail_user_messages: int = 1, tail_mode: str = "lean",
         custom_providers: list | None = None,
+        hygiene_hard_message_limit: int = 0,
     ):
+        # Hard message-count safety valve: force compression when the message count
+        # reaches this limit, regardless of token estimates. Mirrors the gateway
+        # hygiene hard limit (gateway/run.py, #2153/#4750). 0 = disabled. Bounded
+        # recovery contract: agent.turn_context_compaction.hard_message_limit_breached.
+        self.hygiene_hard_message_limit = max(0, int(hygiene_hard_message_limit or 0))
         self.model, self.base_url, self.api_key, self.provider, self.api_mode = model, base_url, api_key, provider, api_mode
         # "lean" = small clamped tail + verbatim-user summary section; "legacy" = 0.20*window tail.
         self.tail_mode = tail_mode if tail_mode in ("legacy", "lean") else "lean"
@@ -5666,7 +5672,9 @@ Write only the summary body. Do not include any preamble or prefix."""
         everything else. Inspired by Claude Code's ``/compact``. force: If True, clear any active
         summary-failure cooldown before running so a manual ``/compress`` can retry immediately after an
         auto-compression abort, and bypass the pre-LLM feasibility skip so an explicit user request always
-        exercises the full summary path. Auto-compress callers pass False. memory_context: Optional
+        exercises the full summary path. Also set by the hard message-count safety valve (bounded recovery
+        contract in ``agent.turn_context_compaction.hard_message_limit_breached``). Auto-compress callers
+        pass False. memory_context: Optional
         provider-supplied context to preserve in the summary prompt. Whitespace-only values are ignored.
         bypass_cooldown: If True, run the summary LLM even while the summary-failure cooldown is armed,
         WITHOUT clearing it (#100661). Set by provider-proven overflow recovery, which is already bounded by

@@ -600,6 +600,36 @@ class TestPreflightDeferral:
         compressor.update_from_response({"prompt_tokens": 65_000})
         assert compressor.awaiting_real_usage_after_compression is False
 
+class TestHygieneHardMessageLimit:
+    """Tests for the hard message-count safety valve (#2153/#4750 parity
+    for the TUI/CLI preflight path)."""
+
+    def test_defaults_to_disabled(self, compressor):
+        assert compressor.hygiene_hard_message_limit == 0
+
+    def test_set_via_constructor(self):
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(
+                model="test/model",
+                threshold_percent=0.85,
+                protect_first_n=2,
+                protect_last_n=2,
+                quiet_mode=True,
+                hygiene_hard_message_limit=400,
+            )
+        assert c.hygiene_hard_message_limit == 400
+
+    def test_zero_disables(self):
+        """0 means disabled — only token-based triggers apply."""
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(
+                model="test/model",
+                quiet_mode=True,
+                hygiene_hard_message_limit=0,
+            )
+        assert c.hygiene_hard_message_limit == 0
+
+
 
 class TestCompress:
     def _make_messages(self, n):

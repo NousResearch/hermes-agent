@@ -2496,7 +2496,10 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                 gateway_running=True, gateway_state=gw_state),
             "exit_reason": runtime.get("exit_reason"),
             # Contract: RFC3339 string | null, never a number (legacy epoch floats exist).
-            "updated_at": normalize_updated_at(runtime.get("updated_at")), "pid": os.getpid()})
+            # start_time pairs with pid as the exact writer identity the deploy
+            # health gate filters platform rows on (peer_deploy.owned_platforms).
+            "updated_at": normalize_updated_at(runtime.get("updated_at")), "pid": os.getpid(),
+            "start_time": runtime.get("start_time")})
 
     @_require_auth
     async def _handle_models(self, request: "web.Request") -> "web.Response":

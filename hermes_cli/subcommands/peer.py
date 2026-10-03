@@ -394,11 +394,92 @@ _REGISTRY_ACTIONS = {
     "list": _peer_list, "ls": _peer_list, None: _peer_list}
 
 
+def _peer_deploy(args) -> int:
+    """``hermes peer deploy <peer>`` — health-gate a peer after a code swap / restart.
+
+    Polls the peer's authenticated ``GET /health/detailed`` until both tiers
+    pass (Tier 1: live gateway_state + fresh heartbeat; Tier 2: every
+    writer-identity-owned platform connected) or ``--wait-seconds`` runs out.
+    Exit 0 healthy, 1 gate failed / peer never healthy, 2 usage error.
+
+    There is no remote rollback transport: on failure the operator rolls the
+    peer's deploy back with the missing-platform evidence printed here.
+    """
+    from hermes_cli import peer_deploy as gate
+
+    wait_s = getattr(args, "wait_seconds", gate.HEALTH_TIMEOUT_S)
+    try:
+        wait_s = float(wait_s)
+    except (TypeError, ValueError):
+        print("--wait-seconds must be a number.", file=sys.stderr)
+        return 2
+    if wait_s < 0:
+        print("--wait-seconds must not be negative.", file=sys.stderr)
+        return 2
+    try:
+        peer_name, profile, peer, key = _resolve_peer_target(args.target)
+    except ValueError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+    except (LookupError, PermissionError) as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+    base = _base_url(peer, profile)
+    import time as _time
+    import urllib.error as _urlerror
+
+    deadline = _time.monotonic() + wait_s
+    last_result: dict | None = None
+    last_error: str | None = None
+    attempts = 0
+    while True:
+        attempts += 1
+        try:
+            payload = _request(f"{base}/health/detailed", key, timeout=10)
+        except (_urlerror.URLError, TimeoutError, OSError, RuntimeError) as exc:
+            last_error = str(exc)
+            last_result = None
+        else:
+            last_error = None
+            last_result = gate.evaluate_remote_gate(payload)
+            if last_result["healthy"]:
+                break
+        if _time.monotonic() >= deadline:
+            break
+        _time.sleep(min(5.0, max(0.0, deadline - _time.monotonic())))
+    result_payload = {
+        "peer": peer_name, "profile": profile, "attempts": attempts,
+        "gate": last_result, "transport_error": last_error,
+    }
+    if last_result is not None and last_result["healthy"]:
+        lines = [
+            f"Peer '{peer_name}' is healthy "
+            f"({', '.join(last_result['connected_owned']) or 'no owned platforms'} connected).",
+        ]
+        return _emit(args, result_payload, lines)
+    if last_result is not None:
+        missing = ", ".join(last_result["missing"]) or "Tier-1 freshness"
+        detail = last_result["tier1_reason"] if not last_result["tier1_fresh"] else (
+            f"platforms not connected: {missing}")
+        print(
+            f"Peer '{peer_name}' failed the deploy health gate after {wait_s:g}s "
+            f"({attempts} checks): {detail}. Roll back the peer's deploy, then retry.",
+            file=sys.stderr)
+    else:
+        print(
+            f"Peer '{peer_name}' never answered its health endpoint after {wait_s:g}s "
+            f"({attempts} checks; last error: {last_error}). Roll back the peer's deploy, then retry.",
+            file=sys.stderr)
+    if getattr(args, "json", False):
+        print(json.dumps(result_payload))
+    return 1
+
+
 def cmd_peer(args) -> int:
     action = getattr(args, "peer_action", None)
     if action in _REGISTRY_ACTIONS:
         return _REGISTRY_ACTIONS[action](args)
-    if action not in {"dm", "run", "status", "stop"}:
+    if action not in {"dm", "run", "status", "stop", "deploy"}:
         print("Unknown peer action. See: hermes peer --help", file=sys.stderr)
         return 2
     try:
@@ -412,6 +493,8 @@ def cmd_peer(args) -> int:
     base = _base_url(peer, profile)
     if action in {"status", "stop"}:
         return _peer_run_ctl(args, action, peer_name, profile, base, key)
+    if action == "deploy":
+        return _peer_deploy(args)
     message = _message_from_args(args)
     if not message:
         print("Message required (argument or stdin).", file=sys.stderr)
@@ -439,6 +522,7 @@ def build_peer_parser(subparsers) -> None:
             "  hermes peer run spark --idempotency-key ticket-123 < long-task.txt\n"
             "  hermes peer status spark run_abc123\n"
             "  hermes peer stop spark run_abc123\n"
+            "  hermes peer deploy spark --wait-seconds 90\n"
             "  hermes peer remove spark\n"
             "\n"
             "Exit codes: 0 ok, 1 delivery/peer error, 2 usage error."),
@@ -472,5 +556,17 @@ def build_peer_parser(subparsers) -> None:
     _remote("run", "Start a long peer turn asynchronously and return its run ID", run_id=False)
     _remote("status", "Read the status and final output of an asynchronous peer run", run_id=True)
     _remote("stop", "Stop one asynchronous peer run without affecting another turn", run_id=True)
+
+    dep_p = peer_sub.add_parser(
+        "deploy",
+        help="Health-gate a peer after a code swap / restart (Tier-1 freshness + Tier-2 owned platforms)",
+        description="Poll the peer's authenticated /health/detailed until the deploy health gate "
+            "passes or --wait-seconds runs out. Exit 0 healthy, 1 gate failed, 2 usage error. "
+            "On failure roll the peer's deploy back with the printed evidence.",
+    )
+    dep_p.add_argument("target", help="<peer> or <peer>/<agent> (named profile on a multiplexed peer)")
+    dep_p.add_argument(
+        "--wait-seconds", default=90, help="How long to wait for the peer to become healthy (default: 90)")
+    dep_p.add_argument("--json", action="store_true", default=False, help="Emit a JSON result")
 
     parser.set_defaults(func=cmd_peer)

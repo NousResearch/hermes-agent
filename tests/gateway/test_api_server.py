@@ -836,6 +836,8 @@ class TestHealthDetailedEndpoint:
             "platforms": {"telegram": {"state": "connected"}},
             "active_agents": 2,
             "exit_reason": None,
+            "pid": 4242,
+            "start_time": 1700000000.0,
             "updated_at": "2026-04-14T00:00:00Z",
         }), patch("gateway.run._resolve_gateway_model", return_value="test/model"), patch(
             "gateway.readiness.shutil.disk_usage",
@@ -859,6 +861,9 @@ class TestHealthDetailedEndpoint:
                 assert data["gateway_drainable"] is True
                 assert isinstance(data["pid"], int)
                 assert "updated_at" in data
+                # Writer identity for the deploy health gate: the exact
+                # (pid, start_time) the gate filters platform rows on.
+                assert data["start_time"] == 1700000000.0
 
 
     @pytest.mark.asyncio

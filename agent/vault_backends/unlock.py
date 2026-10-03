@@ -159,8 +159,21 @@ def is_unlocked(backend: str) -> bool:
     return _live(backend, touch=False) is not None
 
 
+def any_prompt_callback_registered() -> bool:
+    """True when the surface installed at least one vault prompt."""
+    return any(cb is not None for cb in (
+        get_unlock_prompt_callback(), get_save_login_prompt_callback(), get_code_prompt_callback(),
+    ))
+
+
 def can_prompt_here() -> bool:
-    """False in contexts where no human can answer (cron, webhook, api_server, -q)."""
+    """False in contexts where no human can answer (cron, webhook, api_server, -q).
+
+    Asks whether the surface installed ANY vault prompt, not just the unlock one:
+    the save-login and one-time-code tools call this alongside their own callback
+    check, and a surface that offers those without offering an unlock would
+    otherwise be told nobody is there to answer.
+    """
     from tools.approval_context import (
         _is_cron_approval_context,
         _is_single_query_approval_context,
@@ -168,4 +181,4 @@ def can_prompt_here() -> bool:
     )
     if _is_cron_approval_context() or _is_unattended_platform_approval_context() or _is_single_query_approval_context():
         return False
-    return get_unlock_prompt_callback() is not None
+    return any_prompt_callback_registered()

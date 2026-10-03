@@ -24,6 +24,11 @@ class _ClarifyEntry:
     question: str
     choices: Optional[List[str]]
     multi_select: bool = False
+    # A prompt whose answer is a secret (vault master password, saved login,
+    # one-time code). The reply is still read normally, but the adapter deletes
+    # the user's own message once it has been consumed, so the secret does not
+    # sit in the chat scrollback after the agent has it.
+    secret: bool = False
     event: threading.Event = field(default_factory=threading.Event)
     response: Optional[str] = None
     awaiting_text: bool = False  # set when user picked "Other" or clarify is open-ended
@@ -47,11 +52,13 @@ CANCELLED = "\x00cancelled"
 
 
 def register(clarify_id: str, session_key: str, question: str, choices: Optional[List[str]],
-             multi_select: bool = False) -> _ClarifyEntry:
+             multi_select: bool = False, secret: bool = False) -> _ClarifyEntry:
     """Register a pending clarify request; caller then blocks on ``wait_for_response``.
-    Open-ended (no choices) entries start in text mode: the next message IS the response."""
+    Open-ended (no choices) entries start in text mode: the next message IS the response.
+    ``secret`` marks an answer the adapter should delete from the chat once read."""
     entry = _ClarifyEntry(clarify_id, session_key, question, list(choices) if choices else None,
-                          bool(multi_select) and bool(choices), awaiting_text=not bool(choices))
+                          bool(multi_select) and bool(choices), secret=bool(secret),
+                          awaiting_text=not bool(choices))
     with _lock:
         _entries[clarify_id] = entry
         _session_index.setdefault(session_key, []).append(clarify_id)

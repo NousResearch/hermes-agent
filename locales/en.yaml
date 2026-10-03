@@ -659,6 +659,7 @@ gateway:
     option_line: "  {index}. {choice}"
     question: "❓ {question}"
     answered: "✅ answered: {response}"
+    answered_secret: "✅ answered"
     cancelled: "↩️ Clarification cancelled — your message will be handled as a follow-up."
     expired: "⏳ This prompt expired — please send a new request."
     native_stream_placeholder: "💬 Waiting for your choice..."

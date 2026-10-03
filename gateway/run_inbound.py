@@ -456,14 +456,22 @@ class GatewayInboundMixin:
                 # A typed answer to a native card (numeric pick, or text after "Other") never
                 # reaches the click handler, so the card would keep its buttons forever.
                 if callable(getattr(type(_clarify_adapter), "retire_clarify_card", None)):
+                    # A secret answer is never echoed back into the chat, not even inside the
+                    # retired card's summary line — that would print the password we just went
+                    # to the trouble of keeping out of history.
+                    _summary = (
+                        t("gateway.clarify.answered_secret") if _pending_clarify.secret else
+                        t("gateway.clarify.answered",
+                          response=_raw_clarify_reply if _pending_clarify.response == _clarify_mod.SKIPPED
+                          else _pending_clarify.response or _raw_clarify_reply))
                     try:
                         await _clarify_adapter.retire_clarify_card(
-                            _pending_clarify.clarify_id,
-                            t("gateway.clarify.answered",
-                              response=_raw_clarify_reply if _pending_clarify.response == _clarify_mod.SKIPPED
-                              else _pending_clarify.response or _raw_clarify_reply))
+                            _pending_clarify.clarify_id, _summary)
                     except Exception:
                         logger.debug("Failed to retire clarify card after typed answer", exc_info=True)
+                if _pending_clarify.secret:
+                    # Best-effort scrub of the user's own message now that its value is read.
+                    await self._scrub_secret_reply(_clarify_adapter, source, event)
             return ""
         if _text_outcome == _clarify_mod.TEXT_REJECTED_SELECTION:
             # Selection-shaped but invalid (out-of-range number, bad comma-list): keep the clarify
@@ -488,6 +496,22 @@ class GatewayInboundMixin:
                     except Exception:
                         logger.debug("Failed to retire clarify card after prose cancellation", exc_info=True)
         return None
+
+    async def _scrub_secret_reply(self, adapter, source, event) -> None:
+        """Delete the user's message that carried a secret, now that it has been read.
+
+        Best-effort by design: platforms without a deletion API, and platforms that refuse it
+        (Telegram's 48h window, a bot without the right), simply keep the message. The secret
+        has still been consumed without ever entering conversation history, which is the part
+        that matters — this only cleans the chat scrollback.
+        """
+        message_id = getattr(event, "message_id", None)
+        if not message_id:
+            return
+        try:
+            await adapter.delete_message(chat_id=source.chat_id, message_id=str(message_id))
+        except Exception:
+            logger.debug("Failed to scrub secret clarify reply", exc_info=True)
 
     # Reply → choice for a pending slash-confirm prompt; the command spelling wins over the
     # bang/slash-stripped free-text spelling.

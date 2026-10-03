@@ -3025,13 +3025,21 @@ class _StreamingCall(StreamingWaitMonitor):
 
     def _stream_timeouts(self) -> tuple[float, float, float]:
         """``(write, read, connect/pool)`` socket timeouts. Per-provider
-        ``request_timeout_seconds`` wins over HERMES_API_TIMEOUT (1800s) and
-        HERMES_STREAM_READ_TIMEOUT (120s); connect/pool cover the handshake, not
-        inference: 30s, or capped at 60s when configured."""
+        ``request_timeout_seconds`` wins for the overall request budget; the
+        stream idle bound remains independent except for the local-provider
+        prefill exception. Connect/pool cover the handshake, not inference:
+        30s, or capped at 60s when configured."""
         cfg = get_provider_request_timeout(self.agent.provider, self.agent.model)
         base = cfg if cfg is not None else env_float("HERMES_API_TIMEOUT", 1800.0)
         if cfg is not None:
-            return base, cfg, min(base, 60.0)
+            # Keep local-provider prefill behavior even when a provider-specific
+            # overall request budget is configured; explicit stream overrides win.
+            read = env_float("HERMES_STREAM_READ_TIMEOUT", 120.0)
+            if read == 120.0 and self.agent.base_url and is_local_endpoint(self.agent.base_url):
+                read = base
+            else:
+                read = min(cfg, read)
+            return base, read, min(base, 60.0)
         read = env_float("HERMES_STREAM_READ_TIMEOUT", 120.0)
         stale = self._stream_stale_timeout
         if read == 120.0 and self.agent.base_url and is_local_endpoint(self.agent.base_url):

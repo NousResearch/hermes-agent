@@ -248,6 +248,72 @@ class TestCollisionsAndClobbering:
         assert (dest / "bin" / "gh").is_file()
 
 
+class TestTransientLockRetry:
+    """Windows holds a just-extracted tree for a moment (Defender scanning it, the indexer, a
+    lingering handle from whatever unpacked it), so the hoist's renames fail with EACCES where
+    POSIX would have succeeded. ffmpeg and agent-browser installs died on ``[WinError 5]``
+    renaming ``package/bin``; every mutation in the hoist must ride the lock out.
+    """
+
+    @pytest.fixture(autouse=True)
+    def no_retry_sleep(self, monkeypatch):
+        """The backoff is real but the test must not spend it."""
+        from pm import store
+
+        monkeypatch.setattr(store, "_RETRY_BASE_DELAY", 0)
+
+    def test_the_hoist_retries_a_transient_lock(self, tmp_path, monkeypatch):
+        archive = _tar(tmp_path / "wrapped.tar.gz", {"pkg/bin/tool": b"x", "pkg/README.md": b"docs"})
+        dest = tmp_path / "dest"
+        extract(archive, dest)
+
+        real_rename = Path.rename
+        failures = 3
+
+        def flaky_rename(self, target):
+            nonlocal failures
+            if failures and self.name == "bin":
+                failures -= 1
+                raise PermissionError(13, "Access is denied (simulated scanner hold)")
+            return real_rename(self, target)
+
+        monkeypatch.setattr(Path, "rename", flaky_rename)
+        flatten_single_dir(dest)
+
+        assert failures == 0
+        assert (dest / "bin" / "tool").is_file()
+        assert (dest / "README.md").is_file()
+
+    def test_a_permanent_failure_still_propagates(self, tmp_path, monkeypatch):
+        """Retrying must not swallow a real refusal into a silently unflattened tree."""
+        archive = _tar(tmp_path / "wrapped.tar.gz", {"pkg/bin/tool": b"x"})
+        dest = tmp_path / "dest"
+        extract(archive, dest)
+
+        def always_denied(self, target):
+            raise PermissionError(13, "Access is denied (simulated)")
+
+        monkeypatch.setattr(Path, "rename", always_denied)
+        with pytest.raises(PermissionError):
+            flatten_single_dir(dest)
+
+    def test_a_non_transient_error_is_not_retried(self, tmp_path, monkeypatch):
+        archive = _tar(tmp_path / "wrapped.tar.gz", {"pkg/bin/tool": b"x"})
+        dest = tmp_path / "dest"
+        extract(archive, dest)
+
+        calls = []
+
+        def cross_device(self, target):
+            calls.append(self.name)
+            raise OSError(18, "Invalid cross-device link")
+
+        monkeypatch.setattr(Path, "rename", cross_device)
+        with pytest.raises(OSError):
+            flatten_single_dir(dest)
+        assert calls == ["bin"]
+
+
 class TestStoreIsolation:
     def test_extract_replaces_only_its_own_entry_directory(self, tmp_path):
         """Each staged entry owns exactly its dest dir. Neighbouring

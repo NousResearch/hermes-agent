@@ -256,6 +256,16 @@ _APPROVAL_UNAVAILABLE = "requires approval but the approval subsystem is unavail
 _NO_HUMAN = "requires approval but no interactive user or gateway is present to approve it."
 
 
+def _is_human_approval_callback(callback) -> bool:
+    """True when *callback* is a real human-channel prompt, not an auto-approve/deny
+    that answers by itself (subagent auto-approve, bg-review). The latter have no
+    human on the other end and must be treated as 'no channel' by gates that fail
+    closed (#120000)."""
+    if callback is None:
+        return False
+    return not getattr(callback, "_non_interactive", False)
+
+
 def _request_protected_instruction_approval(reasons: list[str], task_id: str = "default") -> str | None:
     """Ask the human to approve a write to protected instruction file(s); ``None`` when approved.
 
@@ -315,9 +325,10 @@ def _request_protected_instruction_approval(reasons: list[str], task_id: str = "
             callback = _get_approval_callback()
         except Exception:
             callback = None
-        if callback is None:
-            # No human channel (script, cron, background thread): fail closed —
-            # auto-approving here would recreate the persistence vector.
+        if not _is_human_approval_callback(callback):
+            # No human channel (script, cron, background thread, or a
+            # non-interactive auto-callback): fail closed — auto-approving
+            # here would recreate the persistence vector.
             return blocked.format(why=_NO_HUMAN)
         choice = prompt_dangerous_approval(
             display, description, allow_permanent=False, allow_session=False, approval_callback=callback)

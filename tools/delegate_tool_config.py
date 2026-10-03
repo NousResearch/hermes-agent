@@ -47,10 +47,17 @@ def _subagent_auto_deny(command: str, description: str, **kwargs) -> str:
     )
     return "deny"
 
+
+_subagent_auto_deny._non_interactive = True  # type: ignore[attr-defined]  # non-interactive auto-callback (no human channel)
+
+
 def _subagent_auto_approve(command: str, description: str, **kwargs) -> str:
     """Auto-approve (opt-in YOLO via delegation.subagent_auto_approve): returns 'once'."""
     logger.warning("Subagent auto-approved dangerous command: %s (%s)", command, description)
     return "once"
+
+
+_subagent_auto_approve._non_interactive = True  # type: ignore[attr-defined]  # non-interactive auto-callback (no human channel)
 
 def _get_subagent_approval_callback():
     """Callback for subagent worker threads per delegation.subagent_auto_approve (default False)."""

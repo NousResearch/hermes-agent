@@ -158,7 +158,7 @@ const routedScope = (): string => host.activeConnectionId() ?? LOCAL_SCOPE
 export const routedToScope = (query: { queryKey: readonly unknown[] }): boolean => query.queryKey[2] === routedScope()
 
 /** One live `task_events` frame → precise cache invalidation: the board, plus
- *  each touched task's detail. The polls (8s board / 4s drawer) stay as the
+ *  each touched task's detail. The polls (60s board / 30s drawer) stay as the
  *  fallback — the socket just makes the board feel instant. */
 function onEventsFrame(scope: string, slug: string, data: unknown, selectedSlug = slug): void {
   const frame = data as { cursor?: unknown; events?: CompletionEvent[] }

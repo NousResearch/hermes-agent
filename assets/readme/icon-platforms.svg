@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 96 96" width="96" height="96"><style>
+g{fill:none;stroke:#ffe6cb;stroke-width:2.6;stroke-linecap:round;stroke-linejoin:round}.a{stroke:#ffbd38}.af{fill:#ffbd38;stroke:none}.d{animation:hop 1.4s ease-in-out infinite}@keyframes hop{0%,60%,100%{transform:none}30%{transform:translateY(-3px)}}@media (prefers-reduced-motion: reduce){*{animation:none!important}}</style>
+<defs><radialGradient id="h" cx=".3" cy=".25" r=".9"><stop offset="0" stop-color="#0d3a36"/><stop offset="1" stop-color="#041c1c"/></radialGradient></defs>
+<rect x="2" y="2" width="92" height="92" rx="24" fill="url(#h)" stroke="#ffe6cb" stroke-opacity=".2" stroke-width="1.5"/>
+<g transform="translate(16 16)"><path d="M10 16h32a4 4 0 0 1 4 4v16a4 4 0 0 1-4 4H26l-9 7v-7h-7a4 4 0 0 1-4-4V20a4 4 0 0 1 4-4z"/><path d="M50 26h4a4 4 0 0 1 4 4v14a4 4 0 0 1-4 4h-4v6l-8-6H32"/><circle class="af d" cx="18" cy="28" r="2"/><circle class="af d" cx="26" cy="28" r="2" style="animation-delay:.2s"/><circle class="af d" cx="34" cy="28" r="2" style="animation-delay:.4s"/></g></svg>

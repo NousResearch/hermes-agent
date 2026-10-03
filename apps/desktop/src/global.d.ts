@@ -581,6 +581,8 @@ declare global {
         identifier?: string
         repo?: string
         force?: boolean
+        ref?: string
+        catalogName?: string
       }) => Promise<{ ok: boolean; pluginName?: string; path?: string; error?: string }>
       /** Delete a STANDALONE desktop plugin folder (`<desktop-plugins root>/<name>`);
        *  Electron re-checks containment and refuses unified-package halves. */

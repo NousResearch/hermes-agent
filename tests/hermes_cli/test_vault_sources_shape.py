@@ -47,3 +47,22 @@ def test_vault_command_surfaces_corrupt_store_as_clean_error(tmp_path, monkeypat
     out = capsys.readouterr().out
     assert "Error" in out
     assert "corrupted" in out
+
+
+def test_register_cli_builds_and_routes_set_password():
+    """argparse raises on a duplicate subparser name at build time, and main.py
+    builds the tree eagerly for every invocation — so a doubled `set-password`
+    registration breaks `hermes` itself, not just the new subcommand."""
+    import argparse
+
+    from hermes_cli.subcommands.vault import build_vault_parser
+    from hermes_cli.vault import _cmd_set_password
+
+    parser = argparse.ArgumentParser(prog="hermes")
+    subs = parser.add_subparsers(dest="cmd")
+    build_vault_parser(subs)  # must not raise "conflicting subparser: set-password"
+
+    args = parser.parse_args(["vault", "set-password", "h-1"])
+    assert args.vault_action == "set-password"
+    assert args.handle == "h-1"
+    assert args._vault_handler is _cmd_set_password

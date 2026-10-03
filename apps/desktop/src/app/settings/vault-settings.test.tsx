@@ -47,6 +47,14 @@ const LOGIN_ITEM = {
   identifier_type: 'email'
 }
 
+const PAYMENT_ITEM = {
+  id: 'vault_card9',
+  kind: 'payment',
+  label: 'Visa',
+  origin: 'https://shop.example.com',
+  created_at: '2026-08-01T12:00:00+00:00'
+}
+
 beforeEach(() => {
   requestGateway.mockReset()
   requestGatewayForAgent.mockReset()
@@ -146,6 +154,31 @@ describe('VaultSettings', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Delete' }))
 
     await waitFor(() => expect(requestGateway).toHaveBeenCalledWith('vault.remove', { id: 'vault_abc123' }))
+  })
+
+  it('replaces a login password in place through vault.set_password (never delete + re-add)', async () => {
+    requestGateway.mockImplementation(async (method: string) =>
+      method === 'vault.list' ? { items: [LOGIN_ITEM, PAYMENT_ITEM] } : { id: 'vault_abc123' }
+    )
+    renderVault()
+
+    await waitFor(() => expect(screen.getByText('GitHub work')).toBeTruthy())
+    // Only the login row offers replacement: a card has no password, and re-adding would drop the 2FA seed.
+    expect(screen.getAllByRole('button', { name: 'Replace password' })).toHaveLength(1)
+    fireEvent.click(screen.getByRole('button', { name: 'Replace password' }))
+
+    await waitFor(() => expect(screen.getByLabelText('New password')).toBeTruthy())
+    // The old secret is never shown: the field always starts empty.
+    expect((screen.getByLabelText('New password') as HTMLInputElement).value).toBe('')
+    fireEvent.change(screen.getByLabelText('New password'), { target: { value: 'rotated-789' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Replace' }))
+
+    await waitFor(() =>
+      expect(requestGateway).toHaveBeenCalledWith('vault.set_password', {
+        id: 'vault_abc123',
+        password: 'rotated-789'
+      })
+    )
   })
 
   it('unlocks a password manager from Settings; the master password leaves only via vault.unlock', async () => {

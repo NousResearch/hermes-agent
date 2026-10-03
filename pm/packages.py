@@ -387,6 +387,51 @@ class Venv(StatePackage):
         from pm.workspace import enabled_member_dirs, members_stamp
 
         h.update(members_stamp(enabled_member_dirs() if plugin_dirs is None else plugin_dirs).encode())
+        # The editable install maps root single-file modules by name at build
+        # time (setup.py derives ``py_modules`` from the tree), so a module a
+        # source update adds (``hermes_yaml``) stays invisible to an existing
+        # venv until the editable is rebuilt. Track the name set only: edited
+        # module bodies load from source and need no rebuild. Filter to what
+        # the build snapshot ships — ``_copy_core_inputs`` copies plain files
+        # only — so a symlinked module can't read as covered while the install
+        # misses it.
+        try:
+            modules = sorted(
+                entry.name
+                for entry in self.project_root().iterdir()
+                if entry.suffix == ".py" and entry.name != "setup.py"
+                and entry.is_file() and not entry.is_symlink()
+            )
+        except OSError:
+            # A failed listing must not read as an empty set: updating with
+            # b"" is a no-op, reproducing the pre-fix stamp and skipping the
+            # owed rebuild. The sentinel forces a resync instead.
+            h.update(b"\0listing-error")
+        else:
+            h.update("\0".join(modules).encode())
+        # The build snapshot also ships whole top-level packages named by
+        # ``[tool.setuptools.packages.find].include`` (``_copy_core_inputs``
+        # matches directories against those patterns), and the editable
+        # finder freezes that directory list at install time — an update that
+        # ships a new package (``hermes_platform``) stays missing until the
+        # editable is rebuilt. Track the roots at the granularity the
+        # snapshot matches them: the first ``.``-segment of each pattern, so
+        # widening ``foo`` to ``foo.sub`` (same top-level tree) demands no
+        # rebuild.
+        import tomllib
+        try:
+            metadata = tomllib.loads(
+                (self.project_root() / "pyproject.toml").read_text(encoding="utf-8-sig"))
+            patterns = (metadata.get("tool", {}).get("setuptools", {})
+                        .get("packages", {}).get("find", {}).get("include", ["*"]))
+            roots = sorted({pattern.split(".", 1)[0] for pattern in patterns})
+        except (OSError, tomllib.TOMLDecodeError):
+            # A pyproject the build could not parse must not read as the
+            # default ``["*"]`` shape — same sentinel contract as the root
+            # listing above: unreadable forces a resync, never "unchanged".
+            h.update(b"\0pyproject-unreadable")
+        else:
+            h.update("\0".join(roots).encode())
         return h.hexdigest()
 
     def apply(self, extras: list[str], *, plugin_dirs=None, repair: bool = False, explicit: bool = False,

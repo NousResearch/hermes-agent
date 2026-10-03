@@ -279,7 +279,7 @@ class TestCompactionRollupReproduction:
     summary-handoff tail message (the compressor's double-collision
     fallback path; the WebUI re-splits these on the END marker so the
     reply renders as a separate bubble — see ``splitCompactionContent``
-    in ``web/src/pages/SessionsPage.tsx``)."""
+    in ``web/src/pages/session-transcript.tsx``)."""
 
     def test_compress_keeps_visible_reply_text(self, compressor):
         from agent.context_compressor import (

@@ -10,12 +10,21 @@ import importlib.machinery
 import importlib.util
 import logging
 import sys
+import threading
 from pathlib import Path
 from typing import Any, Callable, List, Optional, Tuple
 
 _log = logging.getLogger(__name__)
 
 _PLUGINS_ROOT = Path(__file__).parent
+
+# ``load_plugin_module`` registers a module in ``sys.modules`` BEFORE executing it (so the
+# plugin's relative imports resolve) and reuses any entry that already has a ``__file__``.
+# Concurrent callers share one ``sys.modules`` (child agents in a ThreadPoolExecutor), so
+# without serialization a second caller can be handed the half-executed shell — no
+# ``register``, no provider class — and silently fall back. Re-entrant: a plugin's own
+# imports may call back into the loader on the same thread.
+_LOAD_LOCK = threading.RLock()
 
 
 def register_synthetic_package(name: str, search_locations: List[str]) -> None:
@@ -95,7 +104,16 @@ def load_plugin_module(module_name: str, plugin_dir: Path, *, parents: Tuple[str
     """Import ``plugin_dir/__init__.py`` as *module_name* (reusing sys.modules when loaded).
     Order matters: parents first (relative imports need them), then siblings as ``module_name.<stem>``
     (so ``from ._x import Y`` resolves), then the module. Finally child is bound onto parent and
-    siblings onto module — the shape normal imports produce, which monkeypatch relies on."""
+    siblings onto module — the shape normal imports produce, which monkeypatch relies on.
+    Serialized under ``_LOAD_LOCK`` so a concurrent caller never observes the module between
+    its ``sys.modules`` registration and the end of ``exec_module``."""
+    with _LOAD_LOCK:
+        return _load_plugin_module_locked(module_name, plugin_dir, parents=parents, logger=logger,
+                                          synthetic_namespace=synthetic_namespace)
+
+
+def _load_plugin_module_locked(module_name: str, plugin_dir: Path, *, parents: Tuple[str, ...],
+                               logger: logging.Logger, synthetic_namespace: Optional[str] = None) -> Optional[Any]:
     init_file = plugin_dir / "__init__.py"
     if not init_file.exists():
         return None

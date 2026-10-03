@@ -2972,7 +2972,14 @@ def _schedule_resume_hydration(sid: str, stored_id: str, db, *, close_db: bool =
             if session is None:
                 return
             _emit("session.resume_progress", sid, {"phase": "history", "status": "loading"})
-            db.reopen_session(stored_id)
+            # Read-only mount (#85303): hydration is a read; an ended row stays ended —
+            # the first real turn (prompt.submit) reopens it. But a restart discarded the
+            # busy-queue, so retire never-drained accept rows (#125577) before the read —
+            # with #128508 the reopen (and its retire) no longer runs on this path.
+            # Best-effort like the resume guard: a handle without the method skips it.
+            retire = getattr(db, "retire_undrained_queue_rows", None)
+            if callable(retire):
+                retire(stored_id)
             raw_history, display_history, prefix = _load_resume_transcript(
                 db, stored_id, model_history_only=model_history_only)
             # Display keeps the full transcript; the model-fed history uses the

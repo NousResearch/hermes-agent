@@ -706,8 +706,19 @@ class _Resume:
 
     def read_history(self) -> tuple:
         """One lineage SELECT, two projections: model-fed copy alternation-repaired (healed once
-        here instead of every turn's pre-request repair), display copy verbatim."""
-        self.db.reopen_session(self.target)
+        here instead of every turn's pre-request repair), display copy verbatim.
+
+        Read-only mount: an ended row stays ended — resume must not clear ``ended_at``/``end_reason``
+        with no new activity, or the DB-derived liveness paints a finalized session live the moment
+        it is opened (#85303). The first real turn (``prompt.submit``) reopens it. Still read-only
+        for the session row, but NOT for stale queue residue: the restart that made this resume
+        necessary also discarded the busy-queue, so retire never-drained accept rows (#125577)
+        here — with #128508 the reopen no longer runs on this path and the marked row would stay
+        active and visible until the next send. Best-effort like the resume guard: a handle
+        without the method (duck-typed doubles) skips the cleanup, a real error still fails."""
+        retire = getattr(self.db, "retire_undrained_queue_rows", None)
+        if callable(retire):
+            retire(self.target)
         if self.omit_messages:
             return self.child_history(repair=True), []
         return self.db.get_resume_conversations(self.target)
@@ -922,7 +933,13 @@ def _resume_lazy(ctx: _Resume) -> dict:
     inside the parent's turn, so the window needs stored history + a transport; prompt.submit upgrades it."""
     sid, source, cwd = ctx.mint(prompts=False)
     try:
-        ctx.db.reopen_session(ctx.target)
+        # Read-only mount (#85303): an ended row stays ended; the first real turn reopens it.
+        # But a restart discarded the busy-queue — retire never-drained accept rows (#125577)
+        # or the marked row stays active and visible until the next send. Best-effort like
+        # the resume guard: a handle without the method (duck-typed doubles) skips it.
+        retire = getattr(ctx.db, "retire_undrained_queue_rows", None)
+        if callable(retire):
+            retire(ctx.target)
         # repair_alternation heals a durable ``user;user`` once here.
         history = ctx.child_history(repair=True)
     except Exception as e:

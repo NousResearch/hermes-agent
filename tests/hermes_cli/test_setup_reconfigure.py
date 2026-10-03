@@ -83,6 +83,7 @@ def _enter_fresh_install_patches(stack, **extra):
         ("hermes_cli.setup.save_config", {}),
         ("hermes_cli.auth.get_active_provider", {"return_value": None}),
         ("hermes_cli.setup.get_env_value", {"return_value": None}),
+        ("hermes_cli.main._has_any_provider_configured", {"return_value": False}),
         ("hermes_cli.setup._offer_openclaw_migration", {"return_value": False}),
     ]:
         stack.enter_context(patch(target, **kwargs))
@@ -129,6 +130,72 @@ class TestExistingInstallDefault:
         m["agent"].assert_not_called()
         m["gateway"].assert_called_once()
         m["tools"].assert_called_once()
+
+
+class TestExistingInstallApiKeyProviders:
+    """``_run_setup_wizard_impl`` recognises API-key providers via ``_has_any_provider_configured``
+    so installs configured with e.g. ANTHROPIC_API_KEY / Z.AI / MiniMax / Kimi are no longer
+    misclassified as first-time setups (#13024)."""
+
+    def test_anthropic_api_key_treated_as_existing_install(self, existing_install):
+        """The previous narrow check (``OPENROUTER_API_KEY`` / ``OPENAI_BASE_URL`` / OAuth) missed
+        API-key providers like Anthropic / Z.AI / MiniMax / Kimi. After the fix the wizard defers
+        to ``_has_any_provider_configured()`` which scans ``PROVIDER_REGISTRY.api_key_env_vars``."""
+        args = _make_setup_args()
+
+        with ExitStack() as stack:
+            # ``get_active_provider`` is None (no OAuth) and the two legacy env keys are
+            # unset — the OLD check would have routed this to the first-time-setup path.
+            m = _enter_existing_install_patches(
+                stack,
+                provider="hermes_cli.auth.get_active_provider",
+                env_value="hermes_cli.setup.get_env_value",
+                has_provider="hermes_cli.main._has_any_provider_configured",
+                prompt_choice="hermes_cli.setup.prompt_choice",
+                quick="hermes_cli.setup._run_quick_setup",
+                model="hermes_cli.setup.setup_model_provider",
+                terminal="hermes_cli.setup.setup_terminal_backend",
+                gateway="hermes_cli.setup.setup_gateway",
+                tools="hermes_cli.setup.setup_tools",
+            )
+            from hermes_cli.setup import run_setup_wizard
+            run_setup_wizard(args)
+
+        # The new check saw a provider configured (e.g. ANTHROPIC_API_KEY).
+        m["has_provider"].assert_called_once()
+        # Wizard took the existing-install path: full reconfigure sections run, no first-time menu.
+        m["prompt_choice"].assert_not_called()
+        m["model"].assert_called_once()
+        m["terminal"].assert_called_once()
+        m["gateway"].assert_called_once()
+        m["tools"].assert_called_once()
+        m["quick"].assert_not_called()
+
+
+    def test_no_provider_anywhere_treated_as_fresh_install(self, fresh_install):
+        """Counter-test: with no provider configured anywhere, the wizard must still fall
+        through to the first-time-setup path. This pins that the helper delegation hasn't
+        flipped the polarity (#13024)."""
+        args = _make_setup_args()
+
+        with ExitStack() as stack:
+            # The standard fresh-install patches + explicit False on the new check so
+            # ``is_existing = bool(_has_any_provider_configured())`` evaluates to False.
+            m = _enter_fresh_install_patches(
+                stack,
+                provider="hermes_cli.auth.get_active_provider",
+                env_value="hermes_cli.setup.get_env_value",
+                has_provider=("hermes_cli.main._has_any_provider_configured", {"return_value": False}),
+                prompt=("hermes_cli.setup.prompt_choice", {"return_value": 0}),
+                first="hermes_cli.setup_quick._run_first_time_quick_setup",
+            )
+            from hermes_cli.setup import run_setup_wizard
+            run_setup_wizard(args)
+
+        # The new check returned False; wizard fell through to first-time-setup.
+        m["has_provider"].assert_called_once()
+        m["first"].assert_called_once()
+        m["prompt"].assert_called_once()
 
 
 class TestQuickFlag:

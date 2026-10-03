@@ -1279,6 +1279,14 @@ class ProcessRegistry(ProcessCheckpointMixin):
         """Sanitized child env; PYTHONUNBUFFERED so tqdm/datasets-style buffering
         doesn't hide progress from process(action="poll")."""
         env = _sanitize_subprocess_env(os.environ, env_vars)
+        # Parity with the foreground terminal (#124820): the same PATH augmentation —
+        # ``_SANE_PATH``, the managed runtime dirs (``$HERMES_HOME/bin`` managed uv, pm
+        # node/npm) and ``~/.local/bin`` — so a background job resolves the runtimes the
+        # foreground resolves. User entries keep precedence (first wins).
+        from tools.environments.local import _append_missing_sane_path_entries, _path_env_key
+        path_key = _path_env_key(env)
+        if path_key:
+            env[path_key] = _append_missing_sane_path_entries(env[path_key])
         env["PYTHONUNBUFFERED"] = "1"
         return env
 

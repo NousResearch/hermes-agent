@@ -15,6 +15,7 @@ import {
   $projects,
   $projectsRpcAvailable,
   $projectTree,
+  $projectTreeLoading,
   addProjectFolder,
   applyRenamedSessionTitle,
   createProject,
@@ -1181,7 +1182,7 @@ describe('project read result contract', () => {
     gatewayAtom.set(gateway as never)
   }
 
-  it('resolves true when the list and tree land, false when either read fails for the current owner', async () => {
+  it('completes when the list and tree land, fails when either read fails for the current owner', async () => {
     openGateway(
       vi.fn((method: string) =>
         method === 'projects.list'
@@ -1190,27 +1191,27 @@ describe('project read result contract', () => {
       )
     )
 
-    await expect(refreshProjects()).resolves.toBe(true)
-    await expect(refreshProjectTree()).resolves.toBe(true)
+    await expect(refreshProjects()).resolves.toBe('complete')
+    await expect(refreshProjectTree()).resolves.toBe('complete')
 
     $projects.set([{ id: 'p_cached', name: 'Cached' }] as never)
     openGateway(vi.fn().mockRejectedValue(new Error('gateway read failed')))
 
-    await expect(refreshProjects()).resolves.toBe(false)
-    await expect(refreshProjectTree()).resolves.toBe(false)
+    await expect(refreshProjects()).resolves.toBe('failed')
+    await expect(refreshProjectTree()).resolves.toBe('failed')
     // A failed read still keeps the last good cache.
     expect($projects.get().map(project => project.id)).toEqual(['p_cached'])
   })
 
-  it('resolves false when no gateway can be reached for the read', async () => {
+  it('fails when no gateway can be reached for the read', async () => {
     activeGateway.mockReturnValue(null as never)
     vi.mocked(gw.ensureActiveGatewayOpen).mockResolvedValue(null as never)
 
-    await expect(refreshProjects()).resolves.toBe(false)
-    await expect(refreshProjectTree()).resolves.toBe(false)
+    await expect(refreshProjects()).resolves.toBe('failed')
+    await expect(refreshProjectTree()).resolves.toBe('failed')
   })
 
-  it('leaves the outcome to the newer owner when the owner moves while the gateway connects', async () => {
+  it('reports a departed owner when the owner moves while the gateway connects', async () => {
     const listConnect = deferred<never>()
     const treeConnect = deferred<never>()
     activeGateway.mockReturnValue(null as never)
@@ -1224,11 +1225,11 @@ describe('project read result contract', () => {
     listConnect.reject(new Error('Active Hermes profile changed while connecting'))
     treeConnect.reject(new Error('Active Hermes profile changed while connecting'))
 
-    await expect(pendingList).resolves.toBe(true)
-    await expect(pendingTree).resolves.toBe(true)
+    await expect(pendingList).resolves.toBe('departed')
+    await expect(pendingTree).resolves.toBe('departed')
   })
 
-  it('leaves the outcome to the newer read when a failure is superseded by an owner switch', async () => {
+  it('reports a departed owner when a failure is superseded by an owner switch', async () => {
     const { promise: defaultResponse, reject: rejectDefault } = deferred<unknown>()
 
     openGateway(
@@ -1241,21 +1242,37 @@ describe('project read result contract', () => {
 
     const pendingDefault = refreshProjectTree()
     $activeGatewayProfile.set('profile-b')
-    await expect(refreshProjectTree()).resolves.toBe(true)
+    await expect(refreshProjectTree()).resolves.toBe('complete')
     rejectDefault(new Error('gateway read failed'))
 
-    await expect(pendingDefault).resolves.toBe(true)
+    await expect(pendingDefault).resolves.toBe('departed')
+  })
+
+  it('settles the tree loading flag when the newest read cannot reach a gateway', async () => {
+    const inFlight = deferred<unknown>()
+    openGateway(vi.fn().mockReturnValueOnce(inFlight.promise))
+    const pendingFirst = refreshProjectTree()
+    await waitFor(() => expect($projectTreeLoading.get()).toBe(true))
+
+    // A newer read for the same owner can't connect; it supersedes the first.
+    activeGateway.mockReturnValue(null as never)
+    vi.mocked(gw.ensureActiveGatewayOpen).mockResolvedValue(null as never)
+    await expect(refreshProjectTree()).resolves.toBe('failed')
+    inFlight.resolve({ active_id: null, projects: [], scoped_session_ids: [] })
+
+    await expect(pendingFirst).resolves.toBe('failed')
+    expect($projectTreeLoading.get()).toBe(false)
   })
 
   it('reports an All Profiles tree fan-out failure', async () => {
     setShowAllProfiles(true)
     vi.mocked(hermes.hermesApi).mockRejectedValueOnce(new Error('fan-out failed'))
 
-    await expect(refreshProjectTree()).resolves.toBe(false)
+    await expect(refreshProjectTree()).resolves.toBe('failed')
 
     vi.mocked(hermes.hermesApi).mockResolvedValueOnce({ active_id: null, projects: [], scoped_session_ids: [] })
 
-    await expect(refreshProjectTree()).resolves.toBe(true)
+    await expect(refreshProjectTree()).resolves.toBe('complete')
   })
 
   it('never publishes a departed All Profiles failure over the current owner', async () => {
@@ -1273,13 +1290,13 @@ describe('project read result contract', () => {
         scoped_session_ids: []
       })
     )
-    await expect(refreshProjectTree()).resolves.toBe(true)
+    await expect(refreshProjectTree()).resolves.toBe('complete')
     expect($projectsRpcAvailable.get()).toBe(true)
 
     // The departed fan-out then fails as if the route were missing.
     fanOut.reject(new Error('Method not found: -32601'))
 
-    await expect(pendingAllProfiles).resolves.toBe(true)
+    await expect(pendingAllProfiles).resolves.toBe('departed')
     expect($projectsRpcAvailable.get()).toBe(true)
     expect($projectTree.get().map(project => project.id)).toEqual(['p_current'])
   })

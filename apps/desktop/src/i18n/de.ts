@@ -3937,6 +3937,8 @@ export const deOverrides = {
     loadFailedDesc:
       'Hermes hat die Projektliste nicht geliefert. Prüfen Sie die Verbindung und versuchen Sie es erneut.',
     partialFailed: 'Nicht alle Projektdetails konnten aktualisiert werden. Angezeigt wird der zuletzt geladene Stand.',
+    incompleteProfiles:
+      'Einige Profile konnten nicht gelesen werden, daher ist diese Liste möglicherweise unvollständig.',
     selectTitle: 'Projekt auswählen',
     selectDesc: 'Wählen Sie ein Projekt, um seine Ordner, Repositorys und Sessions zu sehen.',
     autoDiscovered: 'Automatisch erkanntes Repository',
@@ -3952,6 +3954,8 @@ export const deOverrides = {
     laneKanban: 'Kanban-Aufgaben-Worktrees',
     activeSessions: 'Gerade aktiv',
     noActiveSessions: 'Gerade arbeiten keine Agenten in diesem Projekt.',
+    activityUnknown:
+      'Welche Agenten gerade arbeiten, lässt sich erst bestätigen, wenn alle Sitzungen dieses Projekts geladen sind.',
     sessions: 'Sessions',
     noSessions: 'Noch keine Sessions in diesem Projekt.',
     sessionsFailed: 'Nicht alle Sessions dieses Projekts konnten geladen werden. Die neuesten werden angezeigt.',

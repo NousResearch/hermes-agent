@@ -3927,6 +3927,7 @@ export const esOverrides = {
     loadFailedTitle: 'No se pudieron cargar los proyectos',
     loadFailedDesc: 'Hermes no devolvió la lista de proyectos. Comprueba la conexión e inténtalo de nuevo.',
     partialFailed: 'No se pudieron actualizar todos los detalles de los proyectos. Se muestra lo último que se cargó.',
+    incompleteProfiles: 'No se pudieron leer algunos perfiles, así que esta lista puede estar incompleta.',
     selectTitle: 'Selecciona un proyecto',
     selectDesc: 'Elige un proyecto para ver sus carpetas, repositorios y sesiones.',
     autoDiscovered: 'Repositorio detectado automáticamente',
@@ -3942,6 +3943,8 @@ export const esOverrides = {
     laneKanban: 'Worktrees de tareas Kanban',
     activeSessions: 'Activas ahora',
     noActiveSessions: 'Ningún agente está trabajando en este proyecto ahora mismo.',
+    activityUnknown:
+      'No se puede confirmar qué agentes están trabajando hasta que se carguen todas las sesiones de este proyecto.',
     sessions: 'Sesiones',
     noSessions: 'Este proyecto aún no tiene sesiones.',
     sessionsFailed: 'No se pudieron cargar todas las sesiones de este proyecto. Se muestran las más recientes.',

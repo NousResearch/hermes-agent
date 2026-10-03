@@ -107,7 +107,9 @@ export function ProjectDetail({
         <>
           <DetailSection title={p.activeSessions}>
             {active.length === 0 ? (
-              <DetailNote>{p.noActiveSessions}</DetailNote>
+              // Only the complete lanes can confirm nothing is running; a
+              // preview (or a failed read) may be missing the live session.
+              <DetailNote>{sessionsStatus === 'hydrated' ? p.noActiveSessions : p.activityUnknown}</DetailNote>
             ) : (
               <ul className="grid gap-px">
                 {active.map(({ session, state }) => (

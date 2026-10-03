@@ -5,8 +5,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { SidebarProjectTree } from '@/app/chat/sidebar/projects/workspace-groups'
 import type { SessionInfo } from '@/hermes'
-import type * as ConnectionsStore from '@/store/connections'
 import type * as ProjectsStore from '@/store/projects'
+import type { ProjectsReadOutcome } from '@/store/projects'
 import type * as SessionDotStateStore from '@/store/session-dot-state'
 import type { SessionDotState } from '@/store/session-dot-state'
 import { deferred } from '@/test/deferred'
@@ -14,28 +14,14 @@ import { deferred } from '@/test/deferred'
 const projectsStore = vi.hoisted(() => ({
   fetchProjectSessions:
     vi.fn<(id: string, options?: { supersedable?: boolean }) => Promise<null | SidebarProjectTree>>(),
-  refreshProjects: vi.fn(async () => true),
-  refreshProjectTree: vi.fn(async () => true)
+  refreshProjects: vi.fn(async (): Promise<ProjectsReadOutcome> => 'complete'),
+  refreshProjectTree: vi.fn(async (): Promise<ProjectsReadOutcome> => 'complete')
 }))
 
 vi.mock('@/store/projects', async importOriginal => ({
   ...(await importOriginal<typeof ProjectsStore>()),
   ...projectsStore
 }))
-
-// The published connection identity is derived from Electron's descriptor; the
-// cockpit only reads it, so the test drives it directly.
-const connection = vi.hoisted(() => ({
-  atom: null as unknown as ReturnType<typeof atom<null | string>>
-}))
-
-vi.mock('@/store/connections', async importOriginal => {
-  const actual = await importOriginal<typeof ConnectionsStore>()
-  const { atom: makeAtom } = await import('nanostores')
-  connection.atom = makeAtom<null | string>('local')
-
-  return { ...actual, $activeConnectionId: connection.atom }
-})
 
 // The live-status map is derived from several session atoms; the cockpit only
 // reads the result, so the test drives that result directly.
@@ -51,8 +37,11 @@ vi.mock('@/store/session-dot-state', async importOriginal => {
   return { ...actual, $sessionDotStateById: dotStates.atom }
 })
 
-const { $projects, $projectsRpcAvailable, $projectTree } = await import('@/store/projects')
+const { $projects, $projectsOwner, $projectsOwnerKey, $projectsRpcAvailable, $projectTree, $projectTreeOwner } =
+  await import('@/store/projects')
+
 const { $activeGatewayProfile, setShowAllProfiles } = await import('@/store/profile')
+const { $connection } = await import('@/store/session')
 const { ProjectsView } = await import('.')
 
 const session = (id: string, title: string, lastActive: number, extra: Partial<SessionInfo> = {}): SessionInfo =>
@@ -85,10 +74,28 @@ function renderView(initialPath = '/projects') {
   )
 }
 
+// The connection identity Electron publishes; the cockpit only reads it.
+const setConnection = (connectionId: string) => $connection.set({ connectionId } as never)
+
+// A successful read leaves the shared caches tagged with the owner it was made
+// for, as the real store does; the fixtures stand in for that owner's answer.
+const listLandsForCurrentOwner = async (): Promise<ProjectsReadOutcome> => {
+  $projectsOwner.set($projectsOwnerKey.get())
+
+  return 'complete'
+}
+
+const treeLandsForCurrentOwner = async (): Promise<ProjectsReadOutcome> => {
+  $projectTreeOwner.set($projectsOwnerKey.get())
+
+  return 'complete'
+}
+
 beforeEach(() => {
+  setConnection('local')
   projectsStore.fetchProjectSessions.mockResolvedValue(null)
-  projectsStore.refreshProjects.mockResolvedValue(true)
-  projectsStore.refreshProjectTree.mockResolvedValue(true)
+  projectsStore.refreshProjects.mockImplementation(listLandsForCurrentOwner)
+  projectsStore.refreshProjectTree.mockImplementation(treeLandsForCurrentOwner)
   $projectsRpcAvailable.set(true)
 })
 
@@ -97,9 +104,11 @@ afterEach(() => {
   vi.clearAllMocks()
   $projectTree.set([])
   $projects.set([])
+  $projectTreeOwner.set(null)
+  $projectsOwner.set(null)
   $projectsRpcAvailable.set(null)
   dotStates.atom.set({})
-  connection.atom.set('local')
+  $connection.set(null)
   $activeGatewayProfile.set('default')
   setShowAllProfiles(false)
 })
@@ -188,10 +197,10 @@ describe('ProjectsView', () => {
     expect(screen.queryByRole('button', { name: /Kanban|New project|Rename|Delete|Archive/ })).toBeNull()
   })
 
-  it.each([
-    ['the tree read', { list: true, tree: false }],
-    ['both reads', { list: false, tree: false }],
-    ['the list read with no tree yet', { list: false, tree: true }]
+  it.each<[string, Record<'list' | 'tree', ProjectsReadOutcome>]>([
+    ['the tree read', { list: 'complete', tree: 'failed' }],
+    ['both reads', { list: 'failed', tree: 'failed' }],
+    ['the list read with no tree yet', { list: 'failed', tree: 'complete' }]
   ])('ends a failed first load of %s in an error state with a retry that recovers in place', async (_label, ok) => {
     // A stale backend probe never answered: availability stays unknown.
     $projectsRpcAvailable.set(null)
@@ -207,7 +216,7 @@ describe('ProjectsView', () => {
     projectsStore.refreshProjectTree.mockImplementationOnce(async () => {
       $projectTree.set([atlas])
 
-      return true
+      return treeLandsForCurrentOwner()
     })
     fireEvent.click(screen.getByRole('button', { name: 'Retry' }))
 
@@ -216,7 +225,7 @@ describe('ProjectsView', () => {
   })
 
   it('keeps cached projects visible with a notice when only the list read fails', async () => {
-    projectsStore.refreshProjects.mockResolvedValueOnce(false)
+    projectsStore.refreshProjects.mockResolvedValueOnce('failed')
     $projectTree.set([atlas])
 
     renderView()
@@ -255,6 +264,35 @@ describe('ProjectsView', () => {
     expect(projectsStore.fetchProjectSessions).toHaveBeenCalledTimes(3)
   })
 
+  it('never claims no agents are working when hydration failed and a live session is outside the preview', async () => {
+    const preview = [
+      session('s-idle-1', 'Idle preview one', 30),
+      session('s-idle-2', 'Idle preview two', 29),
+      session('s-idle-3', 'Idle preview three', 28)
+    ]
+
+    $projectTree.set([{ ...atlas, sessionCount: 5, previewSessions: preview }])
+    dotStates.atom.set({ 's-idle-1': 'idle', 's-idle-2': 'idle', 's-idle-3': 'idle', 's-live': 'working' })
+    projectsStore.fetchProjectSessions.mockRejectedValueOnce(new Error('gateway read failed'))
+    renderView('/projects?project=p_atlas')
+
+    const detail = await screen.findByRole('region', { name: 'Atlas' })
+    const activeSection = () => within(detail).getByRole('heading', { name: 'Active now' }).parentElement!
+
+    expect(await within(detail).findByText(/Couldn't load every session/)).toBeTruthy()
+    expect(within(activeSection()).getByText(/Can't confirm which agents are working/)).toBeTruthy()
+    expect(within(detail).queryByText(/No agents are working/)).toBeNull()
+
+    projectsStore.fetchProjectSessions.mockResolvedValueOnce(
+      hydratedAtlas([...preview, session('s-live', 'Live outside the preview', 10), session('s-old', 'Old chat', 5)])
+    )
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh projects' }))
+
+    await waitFor(() => expect(within(activeSection()).getByText('Live outside the preview')).toBeTruthy())
+    expect(within(activeSection()).getByText('Working')).toBeTruthy()
+    expect(within(detail).queryByText(/Can't confirm which agents are working/)).toBeNull()
+  })
+
   it('never reports a null session answer as a complete hydration', async () => {
     // `fetchProjectSessions` answers null when its owner moved mid-read or the
     // project is gone: no answer, not "these are all the sessions".
@@ -281,29 +319,30 @@ describe('ProjectsView', () => {
       .mockReturnValueOnce(alphaAgain.promise)
 
     renderView('/projects?project=p_atlas')
-    const detail = await screen.findByRole('region', { name: 'Atlas' })
+    await screen.findByRole('region', { name: 'Atlas' })
 
-    // On B, B's own sessions are correct to show.
+    // On B (whose tree also holds a `p_atlas`), B's own sessions are correct to show.
     act(() => $activeGatewayProfile.set('beta'))
     await waitFor(() => expect(projectsStore.fetchProjectSessions).toHaveBeenCalledTimes(2))
     await act(async () => beta.resolve(hydratedAtlas([session('s-beta', 'Beta private plan', 99)])))
-    expect(within(detail).getByText('Beta private plan')).toBeTruthy()
+    expect(within(await screen.findByRole('region', { name: 'Atlas' })).getByText('Beta private plan')).toBeTruthy()
 
     // Back on A, with A's read still in flight: B's rows are gone at once.
     act(() => $activeGatewayProfile.set('alpha'))
+    expect(screen.queryByText('Beta private plan')).toBeNull()
     await waitFor(() => expect(projectsStore.fetchProjectSessions).toHaveBeenCalledTimes(3))
+    const detail = await screen.findByRole('region', { name: 'Atlas' })
     expect(within(detail).queryByText('Beta private plan')).toBeNull()
-    expect(within(detail).getByText('Plan the launch')).toBeTruthy()
 
     // A's departed first read lands late and is dropped.
     await act(async () => alphaFirst.resolve(hydratedAtlas([session('s-alpha-old', 'Alpha stale read', 50)])))
-    expect(within(detail).queryByText('Alpha stale read')).toBeNull()
+    expect(screen.queryByText('Alpha stale read')).toBeNull()
 
-    // A's current read fails: the preview plus the notice — never B's rows.
+    // A's current read fails: A's preview plus the notice — never B's rows.
     await act(async () => alphaAgain.reject(new Error('gateway read failed')))
 
     expect(await within(detail).findByText(/Couldn't load every session/)).toBeTruthy()
-    expect(within(detail).queryByText('Beta private plan')).toBeNull()
+    expect(screen.queryByText('Beta private plan')).toBeNull()
     expect(within(detail).getByText('Plan the launch')).toBeTruthy()
   })
 
@@ -317,10 +356,13 @@ describe('ProjectsView', () => {
     const detail = await screen.findByRole('region', { name: 'Atlas' })
     await waitFor(() => expect(within(detail).getByText('Local machine chat')).toBeTruthy())
 
-    act(() => connection.atom.set('remote-box'))
+    act(() => setConnection('remote-box'))
 
-    await waitFor(() => expect(within(detail).queryByText('Local machine chat')).toBeNull())
-    expect(within(detail).getByText('Plan the launch')).toBeTruthy()
+    expect(screen.queryByText('Local machine chat')).toBeNull()
+    // The remote tree also holds a `p_atlas`; only its own preview may stand in.
+    const remoteDetail = await screen.findByRole('region', { name: 'Atlas' })
+    expect(within(remoteDetail).queryByText('Local machine chat')).toBeNull()
+    expect(within(remoteDetail).getByText('Plan the launch')).toBeTruthy()
   })
 
   it("states the All Profiles limitation instead of passing a preview off as the project's sessions", async () => {

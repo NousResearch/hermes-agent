@@ -2,9 +2,8 @@ import { useStore } from '@nanostores/react'
 import { useEffect, useState } from 'react'
 
 import type { SidebarProjectTree } from '@/app/chat/sidebar/projects/workspace-groups'
-import { $activeConnectionId } from '@/store/connections'
 import { $profileScope, ALL_PROFILES } from '@/store/profile'
-import { fetchProjectSessions } from '@/store/projects'
+import { $projectsOwnerKey, fetchProjectSessions } from '@/store/projects'
 
 /**
  * - `preview`: nothing hydrated for this owner yet; the tree's preview stands in.
@@ -45,12 +44,11 @@ export function useProjectSessions(project: null | SidebarProjectTree, refreshTo
   // The connection + profile view the id belongs to. Project ids repeat across
   // profiles (auto-projects are folder paths), so an id alone never names
   // whose sessions these are.
-  const connectionId = useStore($activeConnectionId)
-  const profileScope = useStore($profileScope)
-  const allProfiles = profileScope === ALL_PROFILES
+  const owner = useStore($projectsOwnerKey)
+  const allProfiles = useStore($profileScope) === ALL_PROFILES
   const [state, setState] = useState<null | ProjectSessionsState>(null)
   const projectId = project?.id ?? null
-  const key = projectId ? `${connectionId ?? ''}\u0000${profileScope}\u0000${projectId}` : null
+  const key = projectId ? `${owner}\u0000${projectId}` : null
   // Refetch when the tree reports new activity for this project; the tree keeps
   // unchanged nodes by reference, so a no-op refresh doesn't refetch.
   const activityKey = project ? `${project.sessionCount}:${project.lastActive ?? 0}` : ''

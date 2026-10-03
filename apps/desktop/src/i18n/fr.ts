@@ -3949,6 +3949,7 @@ export const frOverrides = {
     loadFailedDesc: "Hermes n'a pas renvoyé la liste des projets. Vérifiez la connexion et réessayez.",
     partialFailed:
       'Impossible d’actualiser tous les détails des projets. Les dernières informations chargées sont affichées.',
+    incompleteProfiles: "Certains profils n'ont pas pu être lus, cette liste est donc peut-être incomplète.",
     selectTitle: 'Sélectionnez un projet',
     selectDesc: 'Choisissez un projet pour voir ses dossiers, dépôts et sessions.',
     autoDiscovered: 'Dépôt détecté automatiquement',
@@ -3964,6 +3965,8 @@ export const frOverrides = {
     laneKanban: 'Worktrees des tâches Kanban',
     activeSessions: 'Actives maintenant',
     noActiveSessions: "Aucun agent ne travaille sur ce projet pour l'instant.",
+    activityUnknown:
+      'Impossible de confirmer quels agents travaillent tant que toutes les sessions de ce projet ne sont pas chargées.',
     sessions: 'Sessions',
     noSessions: 'Aucune session dans ce projet pour le moment.',
     sessionsFailed: 'Impossible de charger toutes les sessions de ce projet. Les plus récentes sont affichées.',

@@ -2938,6 +2938,7 @@ export interface Translations {
     loadFailedTitle: string
     loadFailedDesc: string
     partialFailed: string
+    incompleteProfiles: string
     selectTitle: string
     selectDesc: string
     autoDiscovered: string
@@ -2953,6 +2954,7 @@ export interface Translations {
     laneKanban: string
     activeSessions: string
     noActiveSessions: string
+    activityUnknown: string
     sessions: string
     noSessions: string
     sessionsFailed: string

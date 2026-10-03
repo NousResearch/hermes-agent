@@ -3,6 +3,7 @@ import type * as React from 'react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useLocation, useNavigate } from 'react-router'
 
+import type { SidebarProjectTree } from '@/app/chat/sidebar/projects/workspace-groups'
 import { TitlebarIcon } from '@/app/shell/titlebar-icon'
 import { PageLoader } from '@/components/page-loader'
 import { Button } from '@/components/ui/button'
@@ -10,19 +11,23 @@ import { EmptyState } from '@/components/ui/empty-state'
 import { ErrorBanner, ErrorState } from '@/components/ui/error-state'
 import { RowButton } from '@/components/ui/row-button'
 import { Tip } from '@/components/ui/tooltip'
+import type { ProjectInfo } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { cn } from '@/lib/utils'
-import { $activeConnectionId } from '@/store/connections'
 import { $dismissedAutoProjectIds } from '@/store/layout'
 import { $profileScope, ALL_PROFILES } from '@/store/profile'
 import {
   $activeProjectId,
   $projects,
+  $projectsOwner,
+  $projectsOwnerKey,
   $projectsRpcAvailable,
   $projectTree,
-  goToProject,
+  $projectTreeOwner,
+  type ProjectsReadOutcome,
   refreshProjects,
-  refreshProjectTree
+  refreshProjectTree,
+  showProjectInSidebar
 } from '@/store/projects'
 import { $sessionDotStateById } from '@/store/session-dot-state'
 import { $removedSessionIds } from '@/store/session-removal'
@@ -53,6 +58,8 @@ interface ProjectsViewProps extends React.ComponentProps<'section'> {
  *  view) it was made under — another owner's failure is not this one's. */
 interface ProjectsLoad {
   failed: boolean
+  /** An answer landed, but some profiles in it couldn't be read. */
+  incomplete: boolean
   owner: string
 }
 
@@ -62,14 +69,17 @@ interface ProjectsLoad {
 export function ProjectsView({ setStatusbarItemGroup: _setStatusbarItemGroup, ...props }: ProjectsViewProps) {
   const { t } = useI18n()
   const p = t.projects
-  const connectionId = useStore($activeConnectionId)
-  const profileScope = useStore($profileScope)
-  const allProfiles = profileScope === ALL_PROFILES
-  const owner = `${connectionId ?? ''}\u0000${profileScope}`
+  const allProfiles = useStore($profileScope) === ALL_PROFILES
+  const owner = useStore($projectsOwnerKey)
   const navigate = useNavigate()
   const { search } = useLocation()
-  const tree = useStore($projectTree)
-  const infos = useStore($projects)
+  // The caches are shared with the sidebar and keep a departed owner's rows
+  // until the new owner's read lands (or forever, if it fails). Project ids
+  // repeat across owners, so only rows read for THIS owner may paint here.
+  const sharedTree = useStore($projectTree)
+  const sharedInfos = useStore($projects)
+  const tree = useStore($projectTreeOwner) === owner ? sharedTree : NO_TREE
+  const infos = useStore($projectsOwner) === owner ? sharedInfos : NO_INFOS
   const activeProjectId = useStore($activeProjectId)
   const rpcAvailable = useStore($projectsRpcAvailable)
   const dotStates = useStore($sessionDotStateById)
@@ -83,18 +93,25 @@ export function ProjectsView({ setStatusbarItemGroup: _setStatusbarItemGroup, ..
 
   // Re-read on mount and whenever the owner changes. Both reads keep the
   // cached atoms on failure and settle (never reject), so every run ends in a
-  // ready, empty, or error state — never an open-ended loader. Only the newest
-  // run may publish its outcome.
+  // ready, empty, or error state — never an open-ended loader. A read another
+  // same-owner refresh took over reports THAT read's outcome. Only the newest
+  // run may publish, and a departed owner's outcome is the next owner's run to
+  // report.
   const refresh = useCallback(async () => {
     const run = ++refreshRun.current
     setRefreshing(true)
 
     // `projects.list` answers for one profile; All Profiles has only the tree.
-    const [listOk, treeOk] = await Promise.all([allProfiles || refreshProjects(), refreshProjectTree()])
+    const [list, tree] = await Promise.all([allProfiles ? LIST_NOT_READ : refreshProjects(), refreshProjectTree()])
 
-    if (run === refreshRun.current) {
-      setRefreshing(false)
-      setLoad({ failed: !listOk || !treeOk, owner })
+    if (run !== refreshRun.current) {
+      return
+    }
+
+    setRefreshing(false)
+
+    if (list !== 'departed' && tree !== 'departed') {
+      setLoad({ failed: list === 'failed' || tree === 'failed', incomplete: tree === 'incomplete', owner })
     }
   }, [allProfiles, owner])
 
@@ -153,16 +170,19 @@ export function ProjectsView({ setStatusbarItemGroup: _setStatusbarItemGroup, ..
         return <PageLoader label={p.loading} />
       }
 
+      // Nothing to show after a failed or partial read is not "no projects".
+      const unsettled = loaded.failed || loaded.incomplete
+
       // The search header (and its refresh) is hidden with nothing to search,
       // so the way out lives in the body.
       const retry = (
         <Button disabled={refreshing} onClick={reload} size="sm" variant="secondary">
           {refreshing ? <TitlebarIcon name="loading" spinning /> : <TitlebarIcon name="refresh" />}
-          {loaded.failed ? t.common.retry : refreshLabel}
+          {unsettled ? t.common.retry : refreshLabel}
         </Button>
       )
 
-      if (loaded.failed) {
+      if (unsettled) {
         return (
           <div className="grid h-full place-items-center px-6">
             <ErrorState description={p.loadFailedDesc} title={p.loadFailedTitle}>
@@ -185,7 +205,11 @@ export function ProjectsView({ setStatusbarItemGroup: _setStatusbarItemGroup, ..
     return (
       <MasterDetail>
         <ListColumn>
-          {loaded?.failed && <ErrorBanner className="mb-2">{p.partialFailed}</ErrorBanner>}
+          {loaded?.failed ? (
+            <ErrorBanner className="mb-2">{p.partialFailed}</ErrorBanner>
+          ) : (
+            loaded?.incomplete && <ErrorBanner className="mb-2">{p.incompleteProfiles}</ErrorBanner>
+          )}
           {visibleProjects.length === 0 ? (
             <EmptyState title={p.noMatchesTitle} />
           ) : (
@@ -221,7 +245,7 @@ export function ProjectsView({ setStatusbarItemGroup: _setStatusbarItemGroup, ..
               onOpenSession={(sessionId, event) =>
                 openSessionFromPicker(sessionId, navigate, openSessionIntentFromModifiers(event))
               }
-              onShowInSidebar={() => goToProject(selected.id)}
+              onShowInSidebar={() => showProjectInSidebar(selected.id)}
               project={selected}
               recent={recent}
               sessionsStatus={sessionsStatus}
@@ -262,3 +286,6 @@ export function ProjectsView({ setStatusbarItemGroup: _setStatusbarItemGroup, ..
 }
 
 const EMPTY_SPLIT = { active: [], recent: [] }
+const LIST_NOT_READ: ProjectsReadOutcome = 'complete'
+const NO_TREE: SidebarProjectTree[] = []
+const NO_INFOS: ProjectInfo[] = []

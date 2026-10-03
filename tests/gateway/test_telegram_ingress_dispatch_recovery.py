@@ -130,6 +130,7 @@ async def test_dispatch_stall_marks_degraded_and_goes_fatal():
             await task
         assert adapter.has_fatal_error
         assert adapter.fatal_error_retryable is True
+        assert "PTB dispatcher made no progress" in adapter.fatal_error_message
         adapter._notify_fatal_error.assert_awaited_once()
         adapter._mark_degraded.assert_called_once()
         updater.start_polling.assert_not_awaited()

@@ -804,6 +804,7 @@ def convert_messages_to_converse(messages: List[Dict]) -> Tuple[Optional[List[Di
 # Bedrock stopReason → OpenAI finish_reason (unknown → "stop").
 _STOP_REASON_TO_FINISH_REASON = {
     "end_turn": "stop", "stop_sequence": "stop", "tool_use": "tool_calls", "max_tokens": "length",
+    "model_context_window_exceeded": "length",
     "content_filtered": "content_filter", "guardrail_intervened": "content_filter",
 }
 

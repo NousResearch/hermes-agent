@@ -76,6 +76,29 @@ def is_loopback_host(host: str | None) -> bool:
     return host == "localhost" or (ip is not None and ip.is_loopback)
 
 
+def urlopen_bypass_proxy_for_loopback(request, *, timeout):
+    """Open an internal HTTP probe directly only when its host is loopback.
+
+    Accept a URL string or Request; remote endpoints retain urllib's normal
+    proxy policy. Do not mutate process-wide NO_PROXY or the global opener.
+    """
+    import urllib.request
+
+    url = request.full_url if isinstance(request, urllib.request.Request) else request
+    if is_loopback_host(split_host_port(url)[0]):
+        class LoopbackProxyHandler(urllib.request.ProxyHandler):
+            def proxy_open(self, req, proxy, scheme):
+                # Redirects reuse this opener: only bypass the current target,
+                # never carry a loopback exception onto a remote destination.
+                if is_loopback_host(split_host_port(req.full_url)[0]):
+                    return None
+                return super().proxy_open(req, proxy, scheme)
+
+        opener = urllib.request.build_opener(LoopbackProxyHandler())
+        return opener.open(request, timeout=timeout)
+    return urllib.request.urlopen(request, timeout=timeout)
+
+
 def loopback_connect_kwargs(url: str) -> dict:
     """``websockets.connect`` kwargs for an in-process dial: ``{"proxy": None}`` when ``url``
     targets loopback (skip the library's system-proxy auto-detection), else ``{}`` so remote

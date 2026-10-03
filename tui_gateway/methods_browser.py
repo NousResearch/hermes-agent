@@ -37,11 +37,11 @@ def _is_default_local_cdp(parsed) -> bool:
 
 def _cdp_http_reachable(parsed, timeout: float = 2.0) -> bool:
     """True when ``/json/version`` or ``/json`` on the CDP host answers 2xx."""
-    import urllib.request
+    from agent.proxy_bypass import urlopen_bypass_proxy_for_loopback
     scheme = {"ws": "http", "wss": "https"}.get(parsed.scheme, parsed.scheme)
     root = f"{scheme}://{parsed.netloc}".rstrip("/")
     for url in (f"{root}/json/version", f"{root}/json"):
-        with contextlib.suppress(Exception), urllib.request.urlopen(url, timeout=timeout) as resp:
+        with contextlib.suppress(Exception), urlopen_bypass_proxy_for_loopback(url, timeout=timeout) as resp:
             if 200 <= getattr(resp, "status", 200) < 300:
                 return True
     return False

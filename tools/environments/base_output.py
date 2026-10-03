@@ -248,12 +248,21 @@ def _pipe_stdin(proc: subprocess.Popen, data: str) -> None:
     thread.start()
 
 
+def _spawn_kill_on_exit(cmd, **kwargs):
+    """Process-lifetime job, or plain Popen if local_runtime cannot be imported."""
+    try:
+        from hermes_cli.local_runtime.processes import kill_on_exit_job, spawn_contained
+    except ImportError:
+        return subprocess.Popen(cmd, **kwargs)
+    return spawn_contained(cmd, job=kill_on_exit_job(), **kwargs)
+
+
 def _popen_bash(cmd: list[str], stdin_data: str | None = None, **kwargs) -> subprocess.Popen:
     """Spawn a subprocess with standard stdout/stderr/stdin setup; *stdin_data* is written
     asynchronously via :func:`_pipe_stdin`. Backends with special Popen needs (e.g. local's
     ``preexec_fn``) can bypass this and call :func:`_pipe_stdin` directly."""
     kwargs.setdefault("creationflags", windows_hide_flags())
-    proc = subprocess.Popen(
+    proc = _spawn_kill_on_exit(
         cmd,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,

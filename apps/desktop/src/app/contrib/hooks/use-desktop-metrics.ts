@@ -109,7 +109,7 @@ export function useDesktopMetrics({
   const request = useMemo(
     () =>
       <T>(method: string, params: Record<string, unknown> = {}) =>
-        requestGatewayForAgent<T>(connectionId, profileKey, method, params),
+        requestGatewayForAgent<T>(connectionId, profileKey, method, { ...params, profile: profileKey }),
     [connectionId, profileKey]
   )
 

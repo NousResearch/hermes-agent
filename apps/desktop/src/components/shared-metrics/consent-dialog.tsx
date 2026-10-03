@@ -1,5 +1,5 @@
 import { useStore } from '@nanostores/react'
-import { useEffect, useId, useState } from 'react'
+import { useCallback, useEffect, useId, useState } from 'react'
 
 import { DocsLink } from '@/components/onboarding/flow'
 import { Button } from '@/components/ui/button'
@@ -59,6 +59,10 @@ export function SharedMetricsConsentDialog({ enabled, profile, requestGateway }:
   const detailsOpen = useStore($sharedMetricsDetailsOpen)
   const [expanded, setExpanded] = useState(true)
   const [saving, setSaving] = useState(false)
+  const scopedRequest = useCallback<SharedMetricsRequester>(
+    (method, params = {}) => requestGateway(method, { ...params, profile }),
+    [profile, requestGateway]
+  )
 
   // Never over the provider picker, the free-tier welcome or the guided chat:
   // the question belongs to the moment after setup.
@@ -79,7 +83,7 @@ export function SharedMetricsConsentDialog({ enabled, profile, requestGateway }:
 
     let cancelled = false
 
-    void readSharedMetricsConsent(requestGateway).then(next => {
+    void readSharedMetricsConsent(scopedRequest).then(next => {
       if (!cancelled) {
         $sharedMetricsConsent.set(next)
       }
@@ -100,7 +104,7 @@ export function SharedMetricsConsentDialog({ enabled, profile, requestGateway }:
     setSaving(true)
 
     try {
-      await answerSharedMetricsOffer(requestGateway, choice)
+      await answerSharedMetricsOffer(scopedRequest, choice)
     } catch (err) {
       notifyError(err, copy.saveFailed)
     } finally {

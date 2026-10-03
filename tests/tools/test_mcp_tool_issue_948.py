@@ -1,5 +1,6 @@
 import asyncio
 import os
+import subprocess
 import sys
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -40,6 +41,36 @@ def test_resolve_stdio_command_keeps_the_child_path_order(tmp_path):
 
     assert command == str(tool)
     assert env["PATH"] == path
+
+
+@pytest.mark.platforms("posix")
+@pytest.mark.parametrize(("spelling", "absolute", "expected"), [
+    ("trailing-slash", False, "FIRST"),
+    ("trailing-slash", True, "FIRST"),
+    ("empty-entry", False, "CWD"),
+])
+def test_resolve_stdio_command_keeps_every_configured_path_entry(tmp_path, spelling, absolute, expected):
+    """Another spelling of an entry the command's directory already has (``later/``) or an
+    empty entry (a cwd lookup) must survive: the spawned child's own ``node`` lookup
+    follows the configured PATH, exactly as it would without the resolver."""
+    first, later, cwd, empty = (tmp_path / name for name in ("first", "later", "cwd", "empty"))
+    for directory in (first, later, cwd, empty):
+        directory.mkdir()
+    for directory, identity in ((first, "FIRST"), (later, "LATER"), (cwd, "CWD")):
+        node = directory / "node"
+        node.write_text(f"#!/bin/sh\necho {identity}\n", encoding="utf-8")
+        node.chmod(0o755)
+    launcher = later / "mytool"
+    launcher.write_text("#!/bin/sh\nexec node\n", encoding="utf-8")
+    launcher.chmod(0o755)
+    parts = [str(first), f"{later}/"] if spelling == "trailing-slash" else [str(empty), "", str(later)]
+    path = os.pathsep.join(parts)
+
+    command, env = _resolve_stdio_command(str(launcher) if absolute else "mytool", {"PATH": path})
+    ran = subprocess.run([command], env=env, cwd=cwd, capture_output=True, text=True, timeout=10)
+
+    assert env["PATH"] == path
+    assert ran.stdout.strip() == expected
 
 
 def test_resolve_stdio_command_skips_unknown_commands():

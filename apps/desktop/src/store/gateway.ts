@@ -382,10 +382,6 @@ export function dispatchPrimaryServerRequest(request: ServerRequest, profile: st
   return dispatchServerRequest(request, profile, g.config?.activeConnectionId?.() ?? null)
 }
 
-/** The source the last primary connect/reconnect named, published or not:
- *  diverges from `g.primaryConnectionId` only when the publish was refused. */
-let primaryDialedConnectionId: null | string = null
-
 export function setPrimaryGateway(gateway: HermesGateway | null, profile = 'default'): void {
   const next = normKey(profile)
 
@@ -416,25 +412,13 @@ export function setPrimaryGatewayConnectionId(
   connectionId: null | string | undefined,
   mode: 'local' | 'remote' | null | undefined = undefined
 ): void {
-  // Hardening for #95628: while the active route is a secondary scope, the
-  // window is looking at a NON-primary socket — any connection id flowing
-  // through presentation-layer code at that moment describes the secondary,
-  // not the primary. Accepting it would relabel the primary socket, so every
-  // ambient API/WebSocket helper (and new-session routing) silently lands on
-  // the wrong backend. The primary's own identity is (re)published by its
-  // boot/reconnect path, which runs with the primary route active.
-  primaryDialedConnectionId = (connectionId ?? '').trim() || null
-
-  if (!isActivePrimary()) {
-    traceIdentityChange(
-      'gateway-route',
-      'primary-publish',
-      `refused ${primaryDialedConnectionId ?? '-'} keeping=${g.primaryConnectionId ?? '-'} active=${g.activeKey}`
-    )
-
-    return
-  }
-
+  // Every caller publishes the window's OWN primary socket (boot, reconnect,
+  // connection apply, HMR survivor), so record it even while a secondary is
+  // foregrounded. Refusing it there left primaryConnectionId naming the
+  // machine the primary socket had just left, and owner routing then sent
+  // that machine's requests to the other one. What belongs to the active
+  // scope is the AMBIENT request connection (#95628), which moves only while
+  // the primary is in front.
   g.primaryConnectionId = (connectionId ?? '').trim() || null
   g.primaryConnectionMode = mode === 'local' || mode === 'remote' ? mode : null
 
@@ -470,7 +454,7 @@ function traceAgentRoute(scope: string, via: string): void {
   traceIdentityChange(
     'gateway-route',
     scope,
-    `via=${via} primary=${g.primaryConnectionId ?? '-'}/${g.primaryProfile} dialed=${primaryDialedConnectionId ?? '-'}`
+    `via=${via} primary=${g.primaryConnectionId ?? '-'}/${g.primaryProfile}`
   )
 }
 

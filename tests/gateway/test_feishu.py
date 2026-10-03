@@ -100,6 +100,80 @@ class TestFeishuMessageNormalization(unittest.TestCase):
             "Build Failed\nService: payments-api\nBranch: main\nView Logs\nRetry\nActions: View Logs, Retry",
         )
 
+class TestFeishuCardDepthBudget(unittest.TestCase):
+    """#132003 — interactive/card ``message.content`` is sender-authored JSON that
+    ``json.loads`` nests ~10k levels deep, while the Feishu card walkers (``_walk_nodes``,
+    ``_collect_text_segments``) recursed shape-blind, so a remote sender raised an unhandled
+    ``RecursionError`` in inbound normalization (~995 levels on Py3.14). Each walker now
+    carries a depth budget and stops descending past it; payloads within the budget normalize
+    exactly as before. The walkers are exercised with ready-made objects because the entry
+    ``json.loads`` has its own recursion budget before ours is ever reached."""
+
+    @staticmethod
+    def _deep_dict(n: int, marker: str = "") -> dict:
+        node: object = {"title": marker} if marker else 1
+        for _ in range(n):
+            node = {"a": node}
+        return node  # type: ignore[return-value]
+
+    def test_deeply_nested_card_no_longer_crashes_normalization(self):
+        # 4000 levels is ~4x past the pre-fix RecursionError boundary; past the budget the
+        # card degrades to the fallback text instead of unwinding the stack.
+        from plugins.platforms.feishu.adapter import (
+            FALLBACK_INTERACTIVE_TEXT,
+            _normalize_interactive_message,
+        )
+
+        normalized = _normalize_interactive_message(
+            "interactive", self._deep_dict(4000)
+        )
+
+        self.assertEqual(normalized.relation_kind, "interactive")
+        self.assertEqual(normalized.text_content, FALLBACK_INTERACTIVE_TEXT)
+
+    def test_marker_beyond_the_budget_is_unreachable(self):
+        # Deterministic contract: a title buried past the budget is dropped and the walk
+        # itself stays alive (pre-fix the walker unwound the stack before reaching it).
+        from plugins.platforms.feishu.adapter import _find_first_text
+
+        self.assertEqual(
+            _find_first_text(
+                self._deep_dict(4000, marker="Deep Title"), keys=("title",)
+            ),
+            "",
+        )
+
+    def test_shallow_fields_survive_a_deep_sibling_subtree(self):
+        # Pre-fix, the walker exhausted the stack inside the deep sibling and the whole
+        # interactive normalization crashed, taking the shallow header/body down with it.
+        from plugins.platforms.feishu.adapter import _normalize_interactive_message
+
+        payload = {
+            "header": {"title": {"tag": "plain_text", "content": "Build Failed"}},
+            "elements": [
+                {"tag": "div", "text": {"tag": "lark_md", "content": "Service: payments-api"}},
+                {"tag": "div", "deep": self._deep_dict(4000)},
+            ],
+        }
+
+        normalized = _normalize_interactive_message("interactive", payload)
+
+        self.assertEqual(normalized.text_content, "Build Failed\nService: payments-api")
+
+    def test_nesting_within_the_budget_normalizes_as_before(self):
+        # 50 levels is beyond any client-authored card yet well inside the budget.
+        from plugins.platforms.feishu.adapter import _normalize_interactive_message
+
+        payload = {
+            "elements": [
+                {"tag": "div", "deep": self._deep_dict(50, marker="Deep Title")}
+            ]
+        }
+
+        normalized = _normalize_interactive_message("interactive", payload)
+
+        self.assertIn("Deep Title", normalized.text_content)
+
 class TestFeishuAdapterMessaging(unittest.TestCase):
 
     def test_disconnect_sends_websocket_close_frame(self):

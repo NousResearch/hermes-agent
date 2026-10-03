@@ -440,6 +440,34 @@ def test_builders_strip_runtime_markers_and_owned_paths(child_env, monkeypatch, 
     assert dict(os.environ) == before
 
 
+def test_conda_state_companions_follow_the_prefix():
+    # After the strip the child must not claim an active conda environment (#125278):
+    # CONDA_PREFIX gone AND its shell-state companions gone, while the vars conda's
+    # hook re-emits (so `conda` stays runnable) are preserved byte-for-byte.
+    env = {"CONDA_PREFIX": "/unrelated/conda", "CONDA_SHLVL": "1",
+           "CONDA_DEFAULT_ENV": "base", "CONDA_PROMPT_MODIFIER": "(base) ",
+           "CONDA_EXE": "/unrelated/conda/bin/conda",
+           "CONDA_PYTHON_EXE": "/unrelated/conda/bin/python",
+           "_CE_CONDA": "", "_CE_M": ""}
+    pp._strip_hermes_owned_pythonpath_and_runtime_markers(env)
+    assert "CONDA_PREFIX" not in env
+    assert "CONDA_SHLVL" not in env
+    assert "CONDA_DEFAULT_ENV" not in env
+    assert "CONDA_PROMPT_MODIFIER" not in env
+    assert env["CONDA_EXE"] == "/unrelated/conda/bin/conda"
+    assert env["CONDA_PYTHON_EXE"] == "/unrelated/conda/bin/python"
+    assert env["_CE_CONDA"] == "" and env["_CE_M"] == ""
+
+
+def test_stray_conda_shlvl_without_prefix_is_also_cleared():
+    # A parent with half-state (SHLVL set, PREFIX never set) must not pass it on either.
+    env = {"CONDA_SHLVL": "1", "CONDA_DEFAULT_ENV": "base", "CONDA_PROMPT_MODIFIER": "(base) "}
+    pp._strip_hermes_owned_pythonpath_and_runtime_markers(env)
+    assert "CONDA_SHLVL" not in env
+    assert "CONDA_DEFAULT_ENV" not in env
+    assert "CONDA_PROMPT_MODIFIER" not in env
+
+
 @pytest.mark.parametrize("builder,base_force,extra_force", [
     ("foreground", "base-forced", "extra-forced"),
     ("background", None, "extra-forced"),

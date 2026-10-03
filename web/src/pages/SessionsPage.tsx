@@ -293,6 +293,18 @@ function splitCompactionContent(content: string): CompactionSplit | null {
   };
 }
 
+function messageContentText(content: unknown): null | string {
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return null;
+  return content
+    .flatMap((part) =>
+      part && typeof part === "object" && typeof (part as { text?: unknown }).text === "string"
+        ? [(part as { text: string }).text]
+        : [],
+    )
+    .join("\n");
+}
+
 
 function MessageBubble({
   msg,
@@ -302,6 +314,7 @@ function MessageBubble({
   highlight?: string;
 }) {
   const { t } = useI18n();
+  const content = messageContentText(msg.content);
 
   const ROLE_STYLES: Record<
     string,
@@ -345,8 +358,8 @@ function MessageBubble({
   // rows here so the operator's actual answer survives as a readable
   // bubble next to the (clearly-labelled) handoff metadata (#29824).
   const compactionSplit =
-    typeof msg.content === "string"
-      ? splitCompactionContent(msg.content)
+    content !== null
+      ? splitCompactionContent(content)
       : null;
 
   if (compactionSplit && compactionSplit.remainder) {
@@ -384,10 +397,10 @@ function MessageBubble({
 
   // Check if any search term appears as a prefix of any word in content
   const isHit = (() => {
-    if (!highlight || !msg.content) return false;
-    const content = msg.content.toLowerCase();
+    if (!highlight || !content) return false;
+    const lowerContent = content.toLowerCase();
     const terms = highlight.toLowerCase().split(/\s+/).filter(Boolean);
-    return terms.some((term) => content.includes(term));
+    return terms.some((term) => lowerContent.includes(term));
   })();
 
   // Split search query into terms for inline highlighting
@@ -412,13 +425,13 @@ function MessageBubble({
           </span>
         )}
       </div>
-      {msg.content &&
+      {content &&
         (msg.role === "system" ? (
           <div className="text-sm text-foreground whitespace-pre-wrap leading-relaxed">
-            {msg.content}
+            {content}
           </div>
         ) : (
-          <Markdown content={msg.content} highlightTerms={highlightTerms} />
+          <Markdown content={content} highlightTerms={highlightTerms} />
         ))}
       {msg.tool_calls && msg.tool_calls.length > 0 && (
         <div className="mt-1">

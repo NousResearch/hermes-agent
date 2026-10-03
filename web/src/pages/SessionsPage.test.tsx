@@ -29,7 +29,9 @@ vi.mock("@/lib/api", () => ({
   getManagementProfile: vi.fn(() => ""),
 }));
 vi.mock("@/components/PlatformsCard", () => ({ PlatformsCard: () => null }));
-vi.mock("@/components/Markdown", () => ({ Markdown: () => null }));
+vi.mock("@/components/Markdown", () => ({
+  Markdown: ({ content }: { content: string }) => <>{content}</>,
+}));
 
 let container: HTMLDivElement;
 let root: Root;
@@ -119,6 +121,31 @@ afterEach(async () => {
 });
 
 describe("SessionsPage per-row profile routing (#99387)", () => {
+  it("renders multimodal tool-result content returned by a session detail", async () => {
+    apiMocks.getSessionMessages.mockResolvedValue({
+      messages: [
+        {
+          id: 1,
+          role: "tool",
+          content: [
+            { type: "image_url" },
+            { type: "text", text: "Image loaded into your context" },
+          ],
+          timestamp: 1,
+        },
+      ],
+    });
+    await renderSessionsPage([
+      { id: "sid-multimodal", profile: "paiport", source: "cli", model: null, title: "Multimodal", started_at: 1,
+        ended_at: null, last_active: 1, is_active: false, message_count: 1, tool_call_count: 0,
+        input_tokens: 1, output_tokens: 1, preview: "image" },
+    ]);
+
+    await act(async () => click(button("Delete session")!.closest("div.cursor-pointer")));
+    await waitFor(() => apiMocks.getSessionMessages.mock.calls.length > 0);
+    await waitFor(() => document.body.textContent?.includes("Image loaded into your context") === true);
+  });
+
   it("sends every per-row request to the row's owning profile, not the management default", async () => {
     await renderSessionsPage([
       { id: "sid-guanli", profile: "guanli", source: "cli", model: null, title: "Managed", started_at: 1, ended_at: null,

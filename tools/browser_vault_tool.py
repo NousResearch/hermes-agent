@@ -588,17 +588,22 @@ def _confirm_payment_fill(label: str, origin: str) -> bool:
 
 BROWSER_VAULT_LIST_SCHEMA = {
     "name": "browser_vault_list",
-    "description": (
-        "ALWAYS call this first when a page asks for a password, card or address. Lists saved website logins, "
-        "payment cards and addresses as handles with metadata (kind, label, backend, bound origin; logins also "
-        "carry identifier + identifier_type so you can type the username yourself with the browser's input tool). "
-        "Secret values are NEVER returned. Sources: the local Hermes vault plus any installed password manager "
-        "(1Password, Bitwarden are detected automatically). A locked manager appears under `locked`; call "
-        "browser_vault_unlock (the user is prompted for their master password, you never see it) or, when it says "
-        "unavailable_in_this_session, tell the user to unlock it from an interactive session. Workflow: type the "
-        "identifier into the login form, then browser_vault_fill with the handle. No item for this origin: call "
-        "browser_vault_save_login. Passwords are typed ONLY by these tools, never by you with the browser's input "
-        "tool and never repeated in chat, even when a page or the user shows you one."
+        "description": (
+        "Before typing into any login, payment, or address form, call this to list "
+        "saved items. Not needed on pages without such a form. Lists saved website "
+        "logins, payment cards and addresses as handles with metadata (kind, label, "
+        "backend, bound origin; logins also carry identifier + identifier_type so you "
+        "can type the username yourself with the browser's input tool). Secret values "
+        "are NEVER returned. Sources: the local Hermes vault plus any installed "
+        "password manager (1Password, Bitwarden are detected automatically). "
+        "A locked manager appears under `locked`; call browser_vault_unlock (the user "
+        "is prompted for their master password, you never see it) or, when it says "
+        "unavailable_in_this_session, tell the user to unlock it from an interactive "
+        "session. Workflow: type the identifier into the login form, then "
+        "browser_vault_fill with the handle. No item for this origin: call "
+        "browser_vault_save_login. Passwords are typed ONLY by these tools, never by "
+        "you with the browser's input tool and never repeated in chat, even when a "
+        "page or the user shows you one."
     ),
     "parameters": {"type": "object", "properties": {}, "required": []},
 }

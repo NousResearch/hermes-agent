@@ -289,7 +289,7 @@ def reclaim_worktrees(
 
     if records is None:
         records = audit_worktrees(repo_root, with_sizes=False)
-    merge_cache = {}
+    merge_cache = _ops._load_worktree_merge_cache()
     remote_heads = (
         _ops._fetch_remote_branch_heads(repo_root)
         if not dry_run and any(r.verdict == "reap-keep-branch" for r in records) else None)

@@ -64,6 +64,37 @@ def _valid_credential_pair(api_key: Any, base_url: Any) -> bool:
     return bool(isinstance(api_key, str) and api_key.strip() and isinstance(base_url, str) and base_url.strip())
 
 
+def _apply_route_transport_config(client_kwargs: dict, base_url: str) -> bool:
+    """Attach the route's config-keyed transport policy to *client_kwargs*; True when it attached anything.
+
+    ``providers.<name>.ssl_ca_cert`` / ``ssl_verify`` / ``extra_headers`` are keyed by route
+    identity, so EVERY assembly that can move ``base_url`` must pass through here — primary
+    init, credential rotation and fallback activation. Skipping it dials the new endpoint with
+    the previous route's trust store and header set: an internal-CA gateway then answers with a
+    bare ``APIConnectionError`` and the run ends without a model even though the fallback leg
+    resolves fine.
+    """
+    client_kwargs.pop("ssl_verify", None)
+    client_kwargs.pop("ssl_ca_cert", None)
+    attached = False
+    try:
+        from hermes_cli.config import (
+            apply_custom_provider_extra_headers_to_client_kwargs, apply_custom_provider_tls_to_client_kwargs,
+            get_compatible_custom_providers, load_config_readonly,
+        )
+        providers = get_compatible_custom_providers(load_config_readonly())
+        apply_custom_provider_tls_to_client_kwargs(client_kwargs, str(base_url or ""), providers)
+        if "ssl_ca_cert" in client_kwargs or "ssl_verify" in client_kwargs:
+            attached = True
+        before = dict(client_kwargs.get("default_headers") or {})
+        apply_custom_provider_extra_headers_to_client_kwargs(client_kwargs, str(base_url or ""), providers)
+        if dict(client_kwargs.get("default_headers") or {}) != before:
+            attached = True
+    except Exception:
+        logger.debug("custom-provider route transport config skipped", exc_info=True)
+    return attached
+
+
 def _swap_fallback_clients(agent, fb_client, fb_provider: str, fb_model: str, fb_base_url: str, fb_api_mode: str) -> None:
     """Install the fallback client(s) in place, honoring request_timeout_seconds (None = SDK default)."""
     timeout = get_provider_request_timeout(fb_provider, fb_model)
@@ -94,10 +125,18 @@ def _swap_fallback_clients(agent, fb_client, fb_provider: str, fb_model: str, fb
     agent._client_kwargs = {"api_key": credential, "base_url": fb_base_url}
     if fb_headers:
         agent._client_kwargs["default_headers"] = dict(fb_headers)
+    rebuild_reason = None
     if timeout is not None:
         agent._client_kwargs["timeout"] = timeout
-        # Rebuild now so the timeout applies to the very next request, not only after a rotation rebuild.
-        agent._replace_primary_openai_client(reason="fallback_timeout_apply")
+        rebuild_reason = "fallback_timeout_apply"
+    # Last, so the route's own settings win over the carried-over client headers. Without this the
+    # fallback leg inherits the *previous* route's trust store and header set (see
+    # _apply_route_transport_config) and dies as an unattributable APIConnectionError.
+    if _apply_route_transport_config(agent._client_kwargs, fb_base_url):
+        rebuild_reason = rebuild_reason or "fallback_transport_apply"
+    if rebuild_reason is not None:
+        # Rebuild now so the timeout/transport apply to the very next request, not only after a rotation rebuild.
+        agent._replace_primary_openai_client(reason=rebuild_reason)
 
 
 class ClientLifecycleMixin:
@@ -993,17 +1032,7 @@ class ClientLifecycleMixin:
 
         Any rebuild that may have moved ``base_url`` must call this or the new endpoint inherits the old config.
         """
-        self._client_kwargs.pop("ssl_verify", None)
-        self._client_kwargs.pop("ssl_ca_cert", None)
-        try:
-            from hermes_cli.config import (
-                apply_custom_provider_tls_to_client_kwargs, get_compatible_custom_providers, load_config_readonly,
-            )
-            apply_custom_provider_tls_to_client_kwargs(
-                self._client_kwargs, str(self.base_url or ""), get_compatible_custom_providers(load_config_readonly()),
-            )
-        except Exception:
-            logger.debug("custom-provider TLS resolution skipped on credential rotation", exc_info=True)
+        _apply_route_transport_config(self._client_kwargs, str(self.base_url or ""))
         self._apply_client_headers_for_base_url(self.base_url, apply_user_headers=not route_changed)
 
     def _anthropic_messages_create(self, api_kwargs: dict, *, client: Any = None):

@@ -28,7 +28,7 @@ from tools.file_operations_common import (
     ExecuteResult, PatchResult, ReadResult, SearchResult, WriteResult,
     _UTF8_BOM, _detect_line_ending, _has_bom, _normalize_line_endings, _strip_bom,
     _strip_terminal_fence_leaks, normalize_read_pagination, normalize_search_pagination)
-from tools.file_operations_lint import LINTERS_INPROC, LintMixin, _FAIL_CLOSED_INPROC_EXTS
+from tools.file_operations_lint import LINTERS, LINTERS_INPROC, LintMixin, _FAIL_CLOSED_INPROC_EXTS
 from tools.file_operations_search import SearchMixin
 
 logger = logging.getLogger(__name__)
@@ -1529,6 +1529,10 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
             content = _normalize_line_endings(content, "\r\n")
         if has_bom and not _has_bom(content):
             content = _UTF8_BOM + content
+        # External linters inspect the on-disk file, not pre_content. Capture
+        # their baseline before replacing it, while the old bytes still exist.
+        pre_lint = self._check_lint(path) if (
+            pre_content is not None and ext in LINTERS and ext not in LINTERS_INPROC) else None
         # Best-effort snapshot so the LSP tier reports only this edit's diagnostics.
         self._snapshot_lsp_baseline(path)
         # ``dirs_created`` means "parent dirs ensured" (mkdir -p is folded into
@@ -1545,7 +1549,8 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
         if verify_error is not None:
             return verify_error
 
-        lint_result = self._check_lint_delta(path, pre_content=pre_content, post_content=content)
+        lint_result = self._check_lint_delta(
+            path, pre_content=pre_content, post_content=content, pre_lint=pre_lint)
         # LSP diagnostics are a separate channel, fired only when the syntax tier is
         # clean (no point asking an LSP about a file that won't parse).
         lsp_diagnostics: Optional[str] = None
@@ -1634,10 +1639,9 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
         verify_error = self._verify_patch_persisted(path, new_content)
         if verify_error is not None:
             return verify_error
-        lint_result = self._check_lint_delta(path, pre_content=content, post_content=new_content)
         return PatchResult(
             success=True, diff=self._unified_diff(content, new_content, path), files_modified=[path],
-            lint=lint_result.to_dict() if lint_result else None,
+            lint=write_result.lint,
             # From the internal write_file call, whose baseline was the pre-patch content.
             lsp_diagnostics=write_result.lsp_diagnostics)
 

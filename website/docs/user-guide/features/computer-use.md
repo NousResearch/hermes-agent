@@ -348,6 +348,32 @@ Asking for the **desktop** instead targets the OS shell surface itself —
 wallpaper, desktop icons, taskbar — with its clickable elements, so requests
 like "open the Recycle Bin on my desktop" still work.
 
+### Driving a remote desktop or a canvas-hosted VM
+
+A VM console streamed into a browser `<canvas>` (Lab-on-Demand, VNC-in-a-tab,
+a video call) is a capture target like any other, but it does not repaint on
+its own. It draws when it receives input or a real screen event, so a session
+that only *looks* at it can sit on one frame indefinitely while the machine
+behind the canvas moves on. Two consequences:
+
+- **A byte-identical capture there means stale, not idle.** Hermes omits the
+  image when consecutive captures of a window match exactly (it saves context
+  and the element indices are still fresh), and after a few such repeats in a
+  row it replaces the "screen unchanged" note with an explicit one: the frame
+  may be a capture pipeline that stopped repainting, and it tells the agent to
+  click something harmless and capture again before treating the pixels as
+  current. If the frame is still identical after real input reached the
+  window, the image is stale — the clicks are landing on a frozen frame, and
+  no amount of further clicking on those coordinates will help.
+- **Give it a real input event before believing a frame.** Move the mouse
+  inside the window, click empty background, or scroll — anything that makes
+  the host redraw — then capture. Re-authentication after a page reload can
+  also drop the console back to a login prompt, so re-check the state after
+  any reload.
+
+The same caution applies to video and animation: a paused or stalled stream
+produces an unchanged frame by design.
+
 ## Provider compatibility
 
 | Provider | Vision? | Works? | Notes |

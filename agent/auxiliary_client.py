@@ -3772,7 +3772,9 @@ def _recoverable_pool_provider(
     return None
 
 
-def _recover_provider_pool(provider: str, exc: Exception, *, failed_api_key: str = "") -> bool:
+def _recover_provider_pool(
+    provider: str, exc: Exception, *, failed_api_key: str = "", model: Optional[str] = None,
+) -> bool:
     """Try same-provider credential-pool recovery for auxiliary calls.
 
     ``failed_api_key`` lets mark_exhausted_and_rotate identify the right pool entry even if
@@ -3794,7 +3796,7 @@ def _recover_provider_pool(provider: str, exc: Exception, *, failed_api_key: str
             error_context["status_code"] = status_code
         next_entry = pool.mark_exhausted_and_rotate(
             status_code=status_code if status_code is not None else fallback_status,
-            error_context=error_context, api_key_hint=failed_api_key or None,
+            error_context=error_context, api_key_hint=failed_api_key or None, model=model,
         )
         if next_entry is None:
             return False
@@ -7839,7 +7841,10 @@ def _ladder_credential_rungs(
                 _LadderStep("call", (client, kwargs)), _credential_rung_accepts)
             if recovery_err is None:
                 return resp, None
-        if _recover_provider_pool(pool_provider, recovery_err, failed_api_key=_client_api_key):
+        if _recover_provider_pool(
+            pool_provider, recovery_err, failed_api_key=_client_api_key,
+            model=route.resolved_model or route.final_model,
+        ):
             logger.info("Auxiliary %s%s: recovered %s via credential-pool rotation after %s",
                         task or "call", tag, pool_provider, type(recovery_err).__name__)
             try:
@@ -7850,7 +7855,9 @@ def _ladder_credential_rungs(
                 # then fall through to the provider fallback.
                 if (_is_payment_error(retry2_err) or _is_auth_error(retry2_err)
                         or _is_rate_limit_error(retry2_err)):
-                    _recover_provider_pool(pool_provider, retry2_err)
+                    _recover_provider_pool(
+                        pool_provider, retry2_err, model=route.resolved_model or route.final_model,
+                    )
                     first_err = retry2_err
                 else:
                     raise

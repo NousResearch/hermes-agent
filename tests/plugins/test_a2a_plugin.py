@@ -337,8 +337,13 @@ class TestAgentCardV1:
 class TestV1Parts:
     def test_text_part_has_no_kind(self):
         part = protocol.text_part("Hello")
-        assert part == {"text": "Hello", "mediaType": "text/plain"}
+        assert part == {"text": "Hello"}
         assert "kind" not in part
+
+    def test_text_part_carries_no_media_type(self):
+        """Strict A2A 1.0 peers reject a text part that also sets mediaType."""
+        part = protocol.text_part("Hello")
+        assert set(part) == {"text"}
 
     def test_text_message_roundtrip(self):
         msg = protocol.text_message(protocol.ROLE_USER, "hi there")
@@ -402,7 +407,7 @@ class TestV1Task:
     def test_completed_task_shape(self):
         task = protocol.build_task("t1", "c1", protocol.STATE_COMPLETED, "the answer")
         assert task["status"]["state"] == "TASK_STATE_COMPLETED"
-        assert task["artifacts"][0]["parts"][0] == {"text": "the answer", "mediaType": "text/plain"}
+        assert task["artifacts"][0]["parts"][0] == {"text": "the answer"}
         assert "kind" not in task
         # A2A v1.0 Task proto (lf.a2a.v1.Task) has no createdAt/lastModified.
         # Strict ProtoJSON parsers (a2a-sdk) reject unknown fields.
@@ -516,7 +521,7 @@ class TestClientTools:
         assert msg["role"] == "ROLE_USER"
         part = msg["parts"][0]
         assert "kind" not in part
-        assert part["mediaType"] == "text/plain"
+        assert "mediaType" not in part
         # Outbound redaction applied before sending.
         assert "sk-abcdefghij" not in part["text"]
 

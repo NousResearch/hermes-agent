@@ -1039,9 +1039,11 @@ ctx.os.openExternal(url)                   // OS default handler (browser, mail,
 ctx.os.revealPath(path)                    // reveal in Finder / Explorer → Promise<boolean>
 ctx.os.writeClipboard(text)                // system clipboard → Promise<boolean>
 host.navigate('/route')                    // hash-route navigation
-host.openSession(id, { profile?, intent? }) // open a stored session core-style;
+host.openSession(id, { profile?, intent?, dock? }) // open a stored session core-style;
                                            //   profile: soft-swap to that profile's backend first
                                            //   intent: 'in-place' (default) | 'stack' | 'tab' | 'window'
+                                           //   dock: { pane, pos, before? }; edge pos opens or moves
+                                           //   an in-window split; center/invalid omit it, window ignores it
 host.newChat(profile?)                     // fresh chat draft, optionally in another profile
 host.openWorkspace(id, { render, title?, minWidth?, onClose? })
                                            // dock a plugin-rendered tab into the MAIN

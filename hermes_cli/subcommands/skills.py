@@ -66,6 +66,10 @@ def build_skills_parser(subparsers, *, cmd_skills: Callable) -> None:
         "inspect", help="Preview a skill without installing")
     skills_inspect.add_argument("identifier", help="Skill identifier")
 
+    skills_view = skills_subparsers.add_parser(
+        "view", help="View an installed local skill's details and content")
+    skills_view.add_argument("name", help="Local skill name")
+
     skills_list = skills_subparsers.add_parser("list", help="List installed skills")
     skills_list.add_argument("--source", default="all", choices=["all", "hub", "builtin", "local"])
     _flag(skills_list, "--enabled-only",

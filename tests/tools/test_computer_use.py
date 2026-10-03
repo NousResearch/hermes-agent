@@ -2011,6 +2011,18 @@ class TestElementTokenAttachment:
         # The matching token rode along — cua-driver will prefer it.
         assert args["element_token"] == "s0001:5"
 
+    def test_token_attached_when_legacy_driver_omits_capability_metadata(self):
+        """Older cua-driver releases accept tokens but do not advertise the
+        capability; a bare element_index is rejected by those releases."""
+        backend = self._backend_with_session({})
+        backend._session.supports_input_property = lambda tool, prop: False
+        backend._snapshot_tokens = {5: "legacy-snapshot:5"}
+        backend.click(element=5, button="left")
+        _, args = backend._session.call_tool.call_args.args
+        assert args["element_index"] == 5
+        assert args["element_token"] == "legacy-snapshot:5"
+
+
     def test_token_attached_when_only_input_schema_advertises_it(self):
         """cua-driver >= 0.21 dropped the per-tool `capabilities[]` array from tools/list but advertises
         `element_token` in `click`'s inputSchema and REFUSES a bare element_index (`snapshot_id_required`).

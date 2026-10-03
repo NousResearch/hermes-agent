@@ -1629,10 +1629,6 @@ async def cache_media_bytes_async(
     )
 
 
-
-
-
-
 @dataclass
 class _ExtractedResponse:
     """Deliverable parts of a handler response (see ``_extract_response_content``)."""
@@ -1786,8 +1782,6 @@ class EphemeralReply(str):
     def text(self) -> str:
         """The underlying text (explicit form of ``str(reply)``)."""
         return str.__str__(self)
-
-
 
 
 # Transient *connection* failures worth retrying. Plain/read/write "timeout" excluded on purpose:
@@ -3755,13 +3749,6 @@ class BasePlatformAdapter(BaseTextDebounceMixin, ABC):
         if new_text.strip() in [c.strip() for c in existing_text.split("\n\n")]:
             return existing_text
         return f"{existing_text}\n\n{new_text}".strip()
-
-
-
-
-
-
-
 
 
     # ── Session task + guard ownership helpers: paired with the _session_tasks owner map so

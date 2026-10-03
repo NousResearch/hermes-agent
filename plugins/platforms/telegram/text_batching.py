@@ -20,7 +20,6 @@ class TelegramTextBatchingMixin:
         self._apply_topic_recovery(event)
         return super()._text_batch_key(event)
 
-
     def _enqueue_text_event(self: TelegramAdapter, event: MessageEvent) -> None:
         """Buffer a text chunk, or hold it while delayed delivery must be dropped."""
         if self._should_drop_delayed_delivery():
@@ -48,7 +47,6 @@ class TelegramTextBatchingMixin:
         self._background_tasks.add(task)
         task.add_done_callback(self._background_tasks.discard)
         return None
-
 
     async def _flush_buffered(self: TelegramAdapter, pending: dict, tasks: dict, key: str, delay: float, where: str, log_fn=None) -> None:
         """Shared delayed-flush body: sleep, pop, hold if teardown started, else dispatch. A cancel after
@@ -80,7 +78,6 @@ class TelegramTextBatchingMixin:
         finally:
             if tasks.get(key) is current_task:
                 tasks.pop(key, None)
-
 
     async def _flush_text_batch(self: TelegramAdapter, key: str) -> None:
         """Telegram keeps its own flush body: a cancel after the pop must HOLD the event and re-raise

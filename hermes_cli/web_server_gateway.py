@@ -366,6 +366,7 @@ def _profile_action_environment(
         from hermes_cli.env_loader import (
             _PROFILE_MANAGED_ENV_KEYS, _env_keys_defined_in_dotenv, get_secret_source_values,
         )
+        from tools.env_passthrough import get_all_passthrough
         from hermes_cli.web_server_profiles import _resolve_profile_dir
         from hermes_constants import apply_subprocess_home_env, get_default_hermes_root
         from tools.environments.local import build_subprocess_env, strip_launch_profile_env
@@ -387,9 +388,13 @@ def _profile_action_environment(
             profile_keys.update(get_secret_source_values(source_home).keys())
         for key in profile_keys:
             action_env.pop(key, None)
-        # Authorization gates that reached this process outside any dotenv (unit-file
-        # ``Environment=``, an operator export) are not in ``profile_keys``; the target
-        # profile's ``.env`` rarely defines them, so they would survive into the child (#113270).
+        # A registered passthrough name may have been injected into the launch process by a
+        # service manager, shell, or another profile's startup. It is not represented by the
+        # dotenv/source key sets above, so remove it explicitly before a named child starts;
+        # otherwise the child's own startup cannot replace the inherited value (#130671).
+        passthrough_names = {name.upper() for name in get_all_passthrough()}
+        for key in [key for key in action_env if key.upper() in passthrough_names]:
+            action_env.pop(key, None)
         strip_launch_profile_env(action_env, target_home)
 
         # Pin the child before import-time startup runs; the explicit -p flag stays authoritative

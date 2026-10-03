@@ -259,6 +259,7 @@ def validate_roster(value: Any, *, local_profiles: Iterable[str]) -> tuple[Discu
             f"members must contain between {MIN_DISCUSSION_MEMBERS} and {MAX_DISCUSSION_MEMBERS} entries")
     known_profiles = {_identifier(profile, label="local profile") for profile in local_profiles}
     members: list[DiscussionMember] = []
+    profiles: set[str] = set()
     targets: set[str] = set()
     handles: set[str] = {"all", "everyone"}  # reserved mention handles
     member_ids: set[str] = set()
@@ -266,6 +267,7 @@ def validate_roster(value: Any, *, local_profiles: Iterable[str]) -> tuple[Discu
         member = _validate_member(raw, index, known_profiles)
         unique = "profiles" if member.target.get("kind") == "local" else "targets"
         for key, seen, message in (
+            (member.profile.casefold(), profiles, "member profiles must be unique"),
             (compact_json(member.target, ensure_ascii=False).casefold(), targets, f"member {unique} must be unique"),
             (member.handle.casefold(), handles, "member handles must be unique and cannot reserve @all or @everyone"),
             (member.member_id.casefold(), member_ids, "member ids must be unique")):
@@ -512,7 +514,8 @@ def _format_message(event: _ValidatedEvent, room: DiscussionRoom) -> str:
     if event.kind == "message.user":
         opener = _opener_member(event, room)
         if opener is not None:
-            return f"@{opener.handle} (opened this thread): {event.payload['text']}"
+            text = _MEMBER_CONTROL_FRAME_RE.sub(_MEMBER_CONTROL_FRAME_RELABEL, event.payload["text"])
+            return f"@{opener.handle} (opened this thread): {text}"
         return f"User (user): {event.payload['text']}"
     text = _MEMBER_CONTROL_FRAME_RE.sub(_MEMBER_CONTROL_FRAME_RELABEL, event.payload["text"])
     return f"@{_member_by_id(room, event.payload['member_id']).handle}: {text}"

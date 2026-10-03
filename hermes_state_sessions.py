@@ -45,10 +45,7 @@ _MODEL_CONFIG_ROW_MISSING = object()
 # Desktop-generated large pastes are the only files under this managed directory
 # that are safe to reclaim as part of conversation deletion. Keep this matcher
 # deliberately narrow: ordinary attachments and user-created lookalikes must stay.
-_COMPOSER_PASTE_REF_RE = re.compile(
-    r"@file:(?:`([^`\n]+)`|\"([^\"\n]+)\"|'([^'\n]+)'|(\S+))"
-)
-_COMPOSER_PASTE_NAME_RE = re.compile(r"pasted_content_[\w.-]+\.txt")
+_COMPOSER_PASTE_NAME_RE = re.compile(r"pasted_content_[\w-]+\.txt")
 
 # ``lineage(id)``: the compression lineage of the session bound twice as ``(?, ?)`` —
 # ancestors through compression-ended parents plus compression continuations after it.
@@ -215,10 +212,14 @@ def _composer_paste_names_from_content(content: Any) -> set[str]:
     """Return only generated Desktop paste names referenced by message text."""
     if not isinstance(content, str):
         return set()
+    # Share the expansion parser's quoting, punctuation and line-range semantics.
+    from agent.context_references import parse_context_references
+
     names: set[str] = set()
-    for groups in _COMPOSER_PASTE_REF_RE.findall(content):
-        raw = next((value for value in groups if value), "")
-        parts = re.split(r"[\\/]", raw)
+    for ref in parse_context_references(content):
+        if ref.kind != "file":
+            continue
+        parts = re.split(r"[\\/]", ref.target)
         if len(parts) >= 2 and parts[-2] == "composer-pastes" and _COMPOSER_PASTE_NAME_RE.fullmatch(parts[-1]):
             names.add(parts[-1])
     return names
@@ -1675,12 +1676,13 @@ class SessionSessionsMixin:
                 for covered_id, expected in expected_display_messages.items()
             ):
                 return False
-            placeholders = _session_ids_placeholders(cascade_ids)
-            for row in conn.execute(
-                f"SELECT content FROM messages WHERE session_id IN ({placeholders}) AND content IS NOT NULL",
-                cascade_ids,
-            ).fetchall():
-                composer_paste_names.update(_composer_paste_names_from_content(row["content"]))
+            for chunk in _id_chunks(cascade_ids):
+                placeholders = _session_ids_placeholders(chunk)
+                for row in conn.execute(
+                    f"SELECT content FROM messages WHERE session_id IN ({placeholders}) AND content IS NOT NULL",
+                    chunk,
+                ).fetchall():
+                    composer_paste_names.update(_composer_paste_names_from_content(row["content"]))
             removed_ids.extend(_delete_delegate_children(conn, [session_id]))
             conn.execute(  # orphan remaining children (branches) so FK is satisfied
                 "UPDATE sessions SET parent_session_id = NULL WHERE parent_session_id = ?", (session_id,),

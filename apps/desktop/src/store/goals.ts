@@ -55,6 +55,15 @@ function goalTitleFromLine(line: string, pattern: RegExp): string {
   return (line.match(pattern)?.[1] ?? '').trim()
 }
 
+// Lines that name a goal as active. Table, not a ladder — the backend adds new
+// active phrasings (resume, crash-restart continuation) over time.
+const ACTIVE_TITLE_PATTERNS: readonly RegExp[] = [
+  /^⊙ Goal set(?:\s*\([^)]*\))?:\s*(.+)$/,
+  /^⊙ Goal\s*\([^)]*active[^)]*\):\s*(.+)$/,
+  /^▶ Goal resumed:\s*(.+)$/,
+  /^▶ Goal continuing after restart:\s*(.+)$/
+]
+
 function nextGoalFromText(text: string, previous?: SessionGoal): SessionGoal | null | undefined {
   const body = clean(text)
   const line = firstLine(body)
@@ -72,12 +81,10 @@ function nextGoalFromText(text: string, previous?: SessionGoal): SessionGoal | n
   }
 
   const now = Date.now()
-  const fromSet = goalTitleFromLine(line, /^⊙ Goal set(?:\s*\([^)]*\))?:\s*(.+)$/)
-  const fromActive = goalTitleFromLine(line, /^⊙ Goal\s*\([^)]*active[^)]*\):\s*(.+)$/)
-  const fromResume = goalTitleFromLine(line, /^▶ Goal resumed:\s*(.+)$/)
+  const activeTitle = ACTIVE_TITLE_PATTERNS.map(pattern => goalTitleFromLine(line, pattern)).find(Boolean)
 
-  if (fromSet || fromActive || fromResume) {
-    return { status: 'active', title: fromSet || fromActive || fromResume, updatedAt: now }
+  if (activeTitle) {
+    return { status: 'active', title: activeTitle, updatedAt: now }
   }
 
   const fromWaiting = goalTitleFromLine(line, /^⏳ Goal\s*\([^)]*(?:parked|active)[^)]*\):\s*(.+)$/)

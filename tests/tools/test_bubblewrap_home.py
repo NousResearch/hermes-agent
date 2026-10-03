@@ -18,6 +18,7 @@ from tools.environments.bubblewrap_home import (
     denied_home_names,
     denied_home_paths,
     home_layout_args,
+    link_protection,
     resolve_allowlist,
     resolve_home_root,
 )
@@ -305,16 +306,6 @@ class TestLayout:
         binds = [dest for flag, dest in mounts if "bind" in flag]
         assert os.path.join(home, ".bashrc") not in binds and os.path.join(home, "df") not in binds
 
-    def test_layout_pins_the_target_of_an_allowed_dot_symlink_read_only(self, home):
-        target = _touch(home, "dotfiles/bashrc")
-        os.symlink("dotfiles/bashrc", os.path.join(home, ".bashrc"))
-        os.symlink("dotfiles", os.path.join(home, "df"))
-        mounts = _mounts(_layout(home, writable_roots=(home,)))
-        assert ("--bind-try", os.path.join(home, "dotfiles")) in mounts
-        assert ("--ro-bind-try", target) in mounts
-        assert mounts.index(("--bind-try", os.path.join(home, "dotfiles"))) < mounts.index(("--ro-bind-try", target))
-        assert ("--ro-bind-try", os.path.join(home, "dotfiles")) not in mounts
-
     def test_layout_allowed_entry_linked_to_a_hidden_directory_yields_only_a_symlink(self, home):
         _touch(home, ".zz-secret/key")
         os.symlink(".zz-secret", os.path.join(home, ".cargo"))
@@ -412,3 +403,63 @@ class TestLayout:
         assert ("--bind", config) in mounts
         assert ("--remount-ro", config) not in mounts
         assert ("--remount-ro", home) in mounts
+
+
+class TestLinkProtection:
+    """What must be read-only so the content behind an allowed dot symlink cannot change."""
+
+    def test_link_plain_entry_needs_nothing(self, home):
+        _touch(home, ".bashrc")
+        assert link_protection(home, (".bashrc",)) == ()
+
+    def test_link_target_file_is_protected(self, home):
+        target = _touch(home, "dotfiles/bash/bashrc")
+        os.symlink("dotfiles/bash/bashrc", os.path.join(home, ".bashrc"))
+        assert link_protection(home, (".bashrc", ".gitconfig")) == (target,)
+
+    def test_link_chain_protects_the_directory_of_each_middle_link_and_the_last_target(self, home):
+        real = _touch(home, "dotfiles/real")
+        os.symlink("real", os.path.join(home, "dotfiles", "bashrc"))
+        os.symlink("dotfiles/bashrc", os.path.join(home, ".bashrc"))
+        protected = link_protection(home, (".bashrc",))
+        assert os.path.join(home, "dotfiles") in protected
+        # The target lies inside the protected directory, so it is covered.
+        assert real not in protected
+
+    def test_link_through_a_symlinked_directory_protects_the_directory_that_holds_that_link(self, home):
+        _touch(home, "store/rc/bashrc")
+        os.makedirs(os.path.join(home, "dotfiles"))
+        os.symlink("../store/rc", os.path.join(home, "dotfiles", "rc"))
+        os.symlink("dotfiles/rc/bashrc", os.path.join(home, ".bashrc"))
+        protected = link_protection(home, (".bashrc",))
+        assert os.path.join(home, "dotfiles") in protected
+        assert os.path.join(home, "store", "rc", "bashrc") in protected
+
+    def test_link_hop_at_the_top_of_home_adds_no_directory(self, home):
+        target = _touch(home, "bashrc.real")
+        os.symlink("bashrc.real", os.path.join(home, "bashrc.link"))
+        os.symlink("bashrc.link", os.path.join(home, ".bashrc"))
+        assert link_protection(home, (".bashrc",)) == (target,)
+
+    def test_link_target_outside_home_is_protected(self, home, tmp_path):
+        target = tmp_path / "proj" / "gitconfig"
+        target.parent.mkdir()
+        target.write_text("x")
+        os.symlink(str(target), os.path.join(home, ".gitconfig"))
+        assert link_protection(home, (".gitconfig",)) == (str(target),)
+
+    def test_link_dangling_or_looping_entry_gives_nothing(self, home):
+        os.symlink("nowhere", os.path.join(home, ".bashrc"))
+        os.symlink(".profile", os.path.join(home, ".zprofile"))
+        os.symlink(".zprofile", os.path.join(home, ".profile"))
+        assert link_protection(home, (".bashrc", ".profile", ".zprofile")) == ()
+
+    def test_link_nested_allowed_child_is_followed(self, home, tmp_path):
+        target = tmp_path / "gitconf"
+        target.mkdir()
+        os.makedirs(os.path.join(home, ".config"))
+        os.symlink(str(target), os.path.join(home, ".config", "git"))
+        assert link_protection(home, (".config/git",)) == (str(target),)
+
+    def test_link_protection_is_empty_without_a_home_root(self):
+        assert link_protection(None, (".bashrc",)) == ()

@@ -351,6 +351,7 @@ class TestConstructionTimeMounts:
         assert params == [
             "config", "initial_cwd", "state_dir", "home", "hermes_home", "tracked_cwd", "bwrap_path", "hidden_paths",
             "home_root", "home_allow", "scratch_dir", "staged_roots",
+            "readonly_paths",
         ]
 
     def test_chdir_follows_tracked_cwd_with_fixed_mounts(self, sandbox_root, work_dir):

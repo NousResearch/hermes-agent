@@ -598,6 +598,7 @@ def build_bwrap_args(
     home_allow: Sequence[str] | None = None,
     scratch_dir: str | None = None,
     staged_roots: Sequence[str] = (),
+    readonly_paths: Sequence[str] = (),
 ) -> list[str]:
     """Build the bwrap argv prefix; the caller appends the shell argv after the trailing ``--``.
 
@@ -610,7 +611,10 @@ def build_bwrap_args(
     which suits tests of the pure builder only. *scratch_dir* is the Hermes
     scratch directory, bound back on top of the HERMES_HOME overlay; None
     binds nothing. *staged_roots* are the staged data directories under
-    HERMES_HOME, bound back read-only. The listing of the top of
+    HERMES_HOME, bound back read-only. *readonly_paths* are the paths
+    behind the allowed dot symlinks (bubblewrap_home.link_protection): each
+    one that lies in a writable part of the sandbox is bound read-only and
+    its parents are pinned. The listing of the top of
     HOME is the one input read from the host at each call, so a directory
     made on the host later shows in the next spawn.
     """
@@ -696,6 +700,24 @@ def build_bwrap_args(
             late.append(("--bind", profile_home, profile_home))
     late.append(("--bind", state_dir, state_dir))
 
+    # What lies behind an allowed dot symlink stays read-only. Only a path
+    # a command could write to needs a mount, and one under a hidden path
+    # must never get one: the bind would show it.
+    def writable_here(path: str) -> bool:
+        if any(_is_within(path, root) for root in hidden_paths):
+            return False
+        for _src, dest in writable:
+            if not _is_within(path, dest):
+                continue
+            if home_root is None or not _is_within(home_root, dest) or not _is_within(path, home_root):
+                return True
+            # Under a bind that covers HOME only a non-dot entry is writable.
+            if not os.path.relpath(path, home_root).split(os.sep)[0].startswith("."):
+                return True
+        return False
+
+    held = [path for path in readonly_paths if writable_here(path)]
+
     if home_root is None:
         for mount in mounts:
             argv += mount
@@ -728,13 +750,21 @@ def build_bwrap_args(
         plain = [pair for pair in writable if pair not in covering]
         hidden_in = [path for path in hidden_paths if in_home(path)]
         hidden_out = [path for path in hidden_paths if not in_home(path)]
-        pins = ancestor_pin_args(plain, mount_points, hidden_paths)
-        pins += ancestor_pin_args(covering, mount_points, hidden_out)
+        # A held path is pinned like a hidden one: with its parents
+        # renameable, a command could move it aside and put new content
+        # at the path the host reads.
+        pins = ancestor_pin_args(plain, mount_points, [*hidden_paths, *held])
+        pins += ancestor_pin_args(covering, mount_points, [*hidden_out, *(p for p in held if not in_home(p))])
         if covering:
             entries = [os.path.join(root, name) for name in listing if not name.startswith(".")]
             entries = [path for path in entries if os.path.isdir(path) and not os.path.islink(path)]
-            pins += ancestor_pin_args([(path, path) for path in entries], [*mount_points, *entries], hidden_in)
+            pins += ancestor_pin_args(
+                [(path, path) for path in entries], [*mount_points, *entries],
+                [*hidden_in, *(p for p in held if in_home(p))],
+            )
         mounts += [(pins[i], pins[i + 1], pins[i + 2]) for i in range(0, len(pins), 3)]
+        # After the pins, so the read-only bind lands on top of them.
+        mounts += [("--ro-bind-try", path, path) for path in held]
 
         for mount in mounts:
             if not in_home(mount[2]):
@@ -1057,6 +1087,9 @@ class BubblewrapEnvironment(LocalEnvironment):
         # the directory; pruning stays with the process that owns the home.
         self._scratch_dir = os.path.realpath(str(get_scratch_dir(self._hermes_home, prune=False)))
         self._staged_roots = staged_data_roots()
+        # The chain of each allowed dot symlink, resolved once: a link
+        # swapped later moves no mount.
+        self._link_readonly = bubblewrap_home.link_protection(self._home_root, self._home_allow)
         self._check_profile_home()
         # The mount paths are fixed here; only --chdir follows the tracked cwd.
         self._initial_cwd = os.path.realpath(_resolve_local_initial_cwd(cwd))
@@ -1156,6 +1189,14 @@ class BubblewrapEnvironment(LocalEnvironment):
                         "HERMES_HOME and the hidden dotfiles (a checkout under ~/.hermes "
                         "needs to be launched from elsewhere or moved)."
                     )
+        for held in self._link_readonly:
+            if os.path.isdir(held) and _is_within(cwd, held) and resolve_profile(self._config.profile).writable_cwd:
+                logger.warning(
+                    "bubblewrap cwd %s is read-only inside the sandbox: an allowed dot entry of the "
+                    "home directory links through %s, and a command that could write there could "
+                    "change what that entry points at.",
+                    self._initial_cwd, held,
+                )
         home = os.path.abspath(self._home).rstrip(os.sep) or os.sep
         if cwd == home or _is_within(home, cwd):
             logger.warning(
@@ -1364,6 +1405,7 @@ class BubblewrapEnvironment(LocalEnvironment):
             home_allow=self._home_allow,
             scratch_dir=self._scratch_dir,
             staged_roots=self._staged_roots,
+            readonly_paths=self._link_readonly,
         )
 
     def _reset_masked_cwd(self) -> str | None:

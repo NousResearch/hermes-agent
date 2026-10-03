@@ -77,6 +77,7 @@ def test_gateway_command_is_wrapped_recorded_and_given_the_bus_env(monkeypatch, 
     monkeypatch.setattr(process_registry, "_stop_systemd_unit", lambda unit: True)
     env = local_env.LocalEnvironment()
     caplog.set_level("WARNING", logger=local_env.logger.name)
+    monkeypatch.setattr(local_env, "_foreground_scope_issued", False)
 
     proc = env._run_bash("true")
 
@@ -85,6 +86,7 @@ def test_gateway_command_is_wrapped_recorded_and_given_the_bus_env(monkeypatch, 
         assert argv == ["/bin/bash", "-c", "true"]
         assert getattr(proc, "_hermes_scope_unit", None) is None
         assert kwargs["env"] == local_env._make_run_env(env.env)
+        assert local_env._foreground_scope_issued is False  # nothing for the host-exit sweep
         # Every fallback after the gateway check is a degraded failure domain, reported once.
         assert ("share the gateway cgroup" in caplog.text) is (case in ("no_scope", "no_wrapper", "bus_gone"))
         return
@@ -102,6 +104,7 @@ def test_gateway_command_is_wrapped_recorded_and_given_the_bus_env(monkeypatch, 
     # too or a system-level unit would fail where the probe succeeded.
     assert kwargs["env"]["DBUS_SESSION_BUS_ADDRESS"] == "unix:path=/run/user/1/bus"
     assert "share the gateway cgroup" not in caplog.text
+    assert local_env._foreground_scope_issued is True  # arms the host-exit sweep
     # A scope left over from an earlier gateway with the same PID must not collide.
     assert env._run_bash("true")._hermes_scope_unit != proc._hermes_scope_unit
 

@@ -32,6 +32,7 @@ from agent.auxiliary_client import (
     extract_content_or_reasoning,
 )
 from agent.context_engine import ContextEngine, sanitize_memory_context
+from agent.delegation_context import owned_kanban_task
 from agent.context_compressor_summary import SummaryDispatchMixin
 from agent.error_classifier import FailoverReason, classify_api_error
 from agent.micro_compaction import MicroCompactionMixin
@@ -853,6 +854,17 @@ _MICRO_COMPACT_MAX_CONSECUTIVE_FAILURES = 3
 _SUMMARY_INPUT_MAX_CHARS = 160_000
 
 _PRUNED_TOOL_PLACEHOLDER = "[Old tool output cleared to save context space]"
+
+# A dispatcher-owned worker's OWN kanban_show card survives compression under this
+# prefix (#126702); the soft demotion readers spare it via ``_is_kept_own_card``.
+_KANBAN_OWN_CARD_PREFIX = "[kanban_show own-card:"
+_KANBAN_OWN_CARD_MAX_CHARS = 4000
+
+
+def _is_kept_own_card(content: str) -> bool:
+    """True for a kept dispatcher-owned own-card summary (#126702). Distinct from
+    ``_is_summary_stub`` so readers can spare the card without conflating the two shapes."""
+    return content.startswith(_KANBAN_OWN_CARD_PREFIX)
 
 
 def _is_summary_stub(content: str) -> bool:
@@ -1972,9 +1984,27 @@ def _sum_template(template: str, **defaults):
     return summarize
 
 
+def _sum_kanban_show(name, args, content, content_len, line_count):
+    """Keep a dispatcher-owned worker's OWN card (title+body, truncated) so compression never
+    strips the worker's goal/write-set/done-when (#126702); all other kanban_show results get
+    the generic stub. Fail-open: unparseable results fall through to the stub shape.
+    Re-summarizing a row that is already in kept form yields the generic stub: a demotion
+    pass reaching it via ``keep_own_card=False`` must land on a stub, not on a fresh copy
+    of the kept text (the documented pressure escape must stay reachable)."""
+    if content.startswith(_KANBAN_OWN_CARD_PREFIX):
+        return f"[kanban_show] own card ({content_len:,} chars result)"
+    task = _json_dict(content).get("task") or {}
+    task_id = task.get("id") if isinstance(task, dict) else None
+    if task_id and task_id == owned_kanban_task():
+        text = f"{task.get('title', '')}\n{task.get('body', '')}".strip()
+        return f"{_KANBAN_OWN_CARD_PREFIX} {task_id}] {text}"[:_KANBAN_OWN_CARD_MAX_CHARS]
+    return f"[kanban_show] task={task_id or '?'} ({content_len:,} chars result)"
+
+
 # tool_name -> (name, args, content, content_len, line_count) -> one-line summary.
 _TOOL_RESULT_SUMMARIZERS = {
     "terminal": _sum_terminal,
+    "kanban_show": _sum_kanban_show,
     "read_file": _sum_template("[read_file] read {path} from line {offset} ({content_len:,} chars)", path="?", offset=1),
     "write_file": _sum_write_file,
     "search_files": _sum_search_files,
@@ -3269,9 +3299,13 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
     def _demote_tool_result_at(
         result: List[Dict[str, Any]], idx: int, call_id_to_tool: Dict[str, tuple[str, str]],
         min_prune_chars: int, protected_skills: Optional[set[str]] = None,
+        keep_own_card: bool = True,
     ) -> bool:
         """Replace the tool result at ``idx`` with a 1-line summary; True if modified.
-        ``protected_skills`` (lower-cased) spares matching skill_view bodies; None (pressure pass) overrides the guard."""
+        ``protected_skills`` (lower-cased) spares matching skill_view bodies; None (pressure pass)
+        overrides the guard. ``keep_own_card=False`` (pressure pass) overrides the own-card keep
+        (#126702) — same shape as the skill guard: a soft keep must stay overridable by the hard
+        budget-backstop channel (the #32106 dead-end rule)."""
         msg = result[idx]
         if msg.get("role") != "tool":
             return False
@@ -3285,7 +3319,8 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
         if (
             not isinstance(content, str) or not content or content == _PRUNED_TOOL_PLACEHOLDER
             or content.startswith(("[Duplicate tool output", "[screenshot removed"))
-            or _is_summary_stub(content) or len(content) <= min_prune_chars
+            or _is_summary_stub(content) or (keep_own_card and _is_kept_own_card(content))
+            or len(content) <= min_prune_chars
         ):
             return False
         tool_name, tool_args = call_id_to_tool.get(msg.get("tool_call_id", ""), ("unknown", ""))
@@ -3327,7 +3362,10 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
             nonlocal demoted
             if i in spared:
                 return
-            if self._demote_tool_result_at(result, i, call_id_to_tool, min_prune_chars):
+            # Pressure pass: the own-card keep is an overridable guard, not an
+            # absolute one — pass keep_own_card=False so a huge kept card can
+            # never wedge the hard budget backstop (#126702 review).
+            if self._demote_tool_result_at(result, i, call_id_to_tool, min_prune_chars, keep_own_card=False):
                 demoted += 1
 
         if demote_end <= prune_boundary or _protected_region_tokens() <= soft_ceiling:
@@ -3346,7 +3384,9 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
             if (
                 last_tool_idx is not None and last_tool_idx not in spared and last_tool_idx >= prune_boundary
                 and _protected_region_tokens() > soft_ceiling
-            ) and self._demote_tool_result_at(result, last_tool_idx, call_id_to_tool, min_prune_chars):
+            ) and self._demote_tool_result_at(
+                result, last_tool_idx, call_id_to_tool, min_prune_chars, keep_own_card=False,
+            ):
                 demoted += 1
         if demoted and not self.quiet_mode:
             logger.info(
@@ -3763,7 +3803,7 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
             content = msg.get("content")
             if msg.get("role") != "tool" or i in protected or not isinstance(content, str):
                 continue
-            if len(content) < _LEAN_TAIL_DEMOTE_MIN_CHARS or SKILL_PRUNED_MARKER_PREFIX in content or _is_summary_stub(content):
+            if len(content) < _LEAN_TAIL_DEMOTE_MIN_CHARS or SKILL_PRUNED_MARKER_PREFIX in content or _is_summary_stub(content) or _is_kept_own_card(content):
                 continue
             result[i] = _rewritten(msg, _lean_recovery_stub(msg.get("tool_name") or "", len(content), session_id))
             demoted += 1

@@ -25,7 +25,9 @@ class BaseTextBatchingMixin:
         if self._drop_unresolved(event):
             return
         key = self._text_batch_key(event)
-        existing = self._pending_text_batches.get(key)
+        existing = self._text_batch_boundary(
+            key, self._pending_text_batches.get(key), event
+        )
         if existing is None:
             existing = self._pending_text_batches[key] = event
         else:
@@ -42,6 +44,15 @@ class BaseTextBatchingMixin:
         if prior_task and not prior_task.done():
             prior_task.cancel()
         self._pending_text_batch_tasks[key] = asyncio.create_task(self._flush_text_batch(key))
+
+    def _text_batch_boundary(
+        self: BasePlatformAdapter,
+        key: str,
+        existing: Optional[MessageEvent],
+        event: MessageEvent,
+    ) -> Optional[MessageEvent]:
+        """Return the pending batch that the event may join."""
+        return existing
 
     def _text_batch_delay_for(
         self: BasePlatformAdapter, pending: Optional[MessageEvent]

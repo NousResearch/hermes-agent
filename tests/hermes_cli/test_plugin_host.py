@@ -105,6 +105,7 @@ def test_plugin_runs_out_of_process_with_ctx_round_trips_and_survives_host_crash
         manager._plugin_host().shutdown()
 
 
+@pytest.mark.platforms("any")  # the host is a child process: its env/home resolution is per-OS
 def test_isolation_host_keeps_every_user_import_path_out_of_process(tmp_path, monkeypatch):
     from hermes_cli.plugin_isolation_audit import audit_plugin_dir
     from plugins import plugin_loader
@@ -136,6 +137,7 @@ register_provider(HostModel(name="hostmodel", base_url="https://hostmodel.exampl
 '''
 
 
+@pytest.mark.platforms("any")  # the host is a child process: its env/home resolution is per-OS
 def test_model_provider_profile_data_is_local_and_overrides_run_in_the_host(tmp_path, monkeypatch):
     import providers
 
@@ -172,6 +174,7 @@ def register(ctx):
 '''
 
 
+@pytest.mark.platforms("any")  # the host is a child process: its env/home resolution is per-OS
 def test_async_plugin_code_calls_back_in_the_callers_session(tmp_path, monkeypatch):
     import contextvars
     from tools.registry import registry

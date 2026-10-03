@@ -19,14 +19,13 @@ from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
 import hermes_yaml as yaml
 
+from hermes_cli.config_defaults import DEFAULT_CONFIG
 from utils import atomic_write_text, atomic_yaml_write
 
 logger = logging.getLogger(__name__)
 
 # Entry delimiter of the Hermes memory store (memories/MEMORY.md) and the openclaw script.
 ENTRY_DELIMITER = "\n§\n"
-# Character budget for merged memory files (openclaw script default).
-MEMORY_CHAR_LIMIT = 20_000
 SUPPORTED_AGENTS = ("claude-code", "codex")
 _AGENT_DEFAULT_DIRS = {"claude-code": ".claude", "codex": ".codex"}
 _SKILL_CATEGORY = {"claude-code": "claude-code-imports", "codex": "codex-imports"}
@@ -354,6 +353,20 @@ class AgentImporter:
             self.record(kind, path, None, "error", non_mapping_error)
         return {}
 
+    def _memory_char_limit(self) -> int:
+        """The destination's ``memory.memory_char_limit``, the budget ``MemoryStore`` enforces on
+        every write: a merge past it leaves a store whose every ``add`` is refused, and an entry
+        longer than it reads as external drift, refusing ``replace``/``remove`` as well."""
+        default = DEFAULT_CONFIG["memory"]["memory_char_limit"]
+        try:
+            memory = load_yaml_file(self.target_root / "config.yaml").get("memory")
+        except ConfigReadError:
+            return default
+        try:
+            return int(memory.get("memory_char_limit", default)) if isinstance(memory, dict) else default
+        except (TypeError, ValueError):
+            return default
+
     def import_context_file(self, source: Path, kind: str) -> None:
         """CLAUDE.md / AGENTS.md → memory entries in memories/MEMORY.md."""
         self._import_markdown_files(kind, source, [source] if source.exists() else None,
@@ -381,12 +394,15 @@ class AgentImporter:
                 self.record(kind, source, destination, "skipped", "No importable entries found")
             return
         existing = parse_existing_memory_entries(destination)
-        merged, stats = merge_entries(existing, incoming, MEMORY_CHAR_LIMIT)
+        limit = self._memory_char_limit()
+        merged, stats = merge_entries(existing, incoming, limit)
         details = {"existing_entries": stats["existing"], "added_entries": stats["added"],
                    "duplicate_entries": stats["duplicates"],
-                   "overflowed_entries": stats["overflowed"]}
+                   "overflowed_entries": stats["overflowed"], "char_limit": limit}
         if stats["added"] == 0:
-            self.record(kind, source, destination, "skipped", "No new entries to import", **details)
+            reason = (f"No room: {stats['overflowed']} entries do not fit memory.memory_char_limit ({limit})"
+                      if stats["overflowed"] else "No new entries to import")
+            self.record(kind, source, destination, "skipped", reason, **details)
             return
 
         def write() -> Optional[str]:
@@ -651,6 +667,9 @@ def print_import_report(report: Dict[str, Any], dry_run: bool) -> None:
         for item in group_items:
             tail = ("→ " + str(item.get("destination") or "").replace(str(Path.home()), "~")
                     if status == "imported" else f" {item.get('reason', '')}")
+            if status == "imported" and item.get("overflowed_entries"):
+                tail += (f"  ({item['overflowed_entries']} entries left out: over "
+                         f"memory.memory_char_limit {item.get('char_limit')})")
             print(f"      {item.get('kind', 'unknown'):<22s} {tail}")
         print()
     if stripped := report.get("stripped_secrets"):

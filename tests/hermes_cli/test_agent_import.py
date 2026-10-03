@@ -400,6 +400,34 @@ class TestMergeSemantics:
         assert memory_items[0]["status"] == "skipped"
 
 
+    @pytest.mark.parametrize("configured_limit", [None, 3000])
+    def test_import_stays_within_the_memory_stores_limit(
+            self, profile_env, hermes_home, configured_limit):
+        """The importer and MemoryStore share one budget: whatever the import writes, the
+        memory tool must still load under its limit and accept writes (remove, then add)."""
+        import json as _json
+        from tools.memory_tool import load_on_disk_store, memory_tool
+
+        if configured_limit is not None:
+            (hermes_home / "config.yaml").write_text(
+                yaml.safe_dump({"memory": {"memory_char_limit": configured_limit}}), encoding="utf-8")
+        source = profile_env / ".claude"
+        source.mkdir()
+        (source / "CLAUDE.md").write_text("# Rules\n" + "".join(
+            f"- Rule {i}: run the linter and the unit tests before committing module {i}\n"
+            for i in range(80)), encoding="utf-8")
+
+        report = run_import("claude-code", source, hermes_home, execute=True)
+
+        store = load_on_disk_store()
+        assert 0 < len(ENTRY_DELIMITER.join(store.memory_entries)) <= store.memory_char_limit
+        item = next(i for i in report["items"] if i["kind"] == "claude-md")
+        assert item["status"] == "imported" and item["overflowed_entries"] > 0
+        for args in ({"action": "remove", "old_text": "Rule 0:"}, {"action": "add", "content": "ok"}):
+            result = _json.loads(memory_tool(target="memory", store=store, **args))
+            assert result["success"] is True, result
+
+
 # ---------------------------------------------------------------------------
 # The DESTINATION memories/MEMORY.md is a §-delimited store, not a document
 # ---------------------------------------------------------------------------

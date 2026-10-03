@@ -18,7 +18,6 @@ PRIOR = {"provider": "openrouter", "model": "gpt-4"}
 def _runner_with_pending_once():
     runner = object.__new__(GatewayRunner)
     runner._evict_cached_agent = lambda session_key: None
-    runner._pending_model_notes = {}
     state = runner._session_state(KEY)
     state.conversation.model_override = {"provider": "moa", "model": "default"}
     state.conversation.one_turn_restore = {"had_override": True, "override": dict(PRIOR)}
@@ -27,6 +26,7 @@ def _runner_with_pending_once():
 
 def test_restore_runs_from_finally_even_when_turn_raises():
     runner, state = _runner_with_pending_once()
+    assert not hasattr(runner, "_pending_model_notes")
     gen = runner._begin_session_run_generation(KEY)
 
     with pytest.raises(RuntimeError):

@@ -421,8 +421,9 @@ class SessionGatewayMixin:
 
     def list_gateway_sessions(
         self, *, platform: Optional[str] = None, active_only: bool = True) -> List[Dict[str, Any]]:
-        """List gateway sessions (rows with a session_key): newest row per key, one live
-        mapping per routing key. ``platform`` filters on ``source``."""
+        """List gateway sessions (rows with a session_key): one row per routing key, the newest
+        live row, else the newest row. ``platform`` filters on ``source``. Live wins over newest
+        because ``/resume`` ends the current row and reopens an OLDER one for the same key."""
         # Full rows carry token/cost totals — drain queued async accounting deltas first.
         self.flush_token_counts()
         query = f"""
@@ -434,9 +435,11 @@ class SessionGatewayMixin:
             LEFT JOIN system_prompts sp
               ON sp.hash = sessions.system_prompt_hash
             WHERE session_key IS NOT NULL
-              AND started_at = (
-                  SELECT MAX(s2.started_at) FROM sessions s2
+              AND id = (
+                  SELECT s2.id FROM sessions s2
                   WHERE s2.session_key = sessions.session_key
+                  ORDER BY (s2.ended_at IS NULL) DESC, s2.started_at DESC, s2.id DESC
+                  LIMIT 1
               )
         """
         params: list = [platform] if platform else []

@@ -89,6 +89,8 @@ hermes-acp
 python -m acp_adapter
 ```
 
+All three serve the active profile (`hermes profile use`); add `-p <name>` to run another one, e.g. `hermes-acp -p work`.
+
 Hermes logs to stderr so stdout remains reserved for ACP JSON-RPC traffic.
 
 For non-interactive checks:

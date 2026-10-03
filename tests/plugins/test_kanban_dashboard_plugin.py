@@ -1124,6 +1124,29 @@ def test_touch_card_tap_opens_instead_of_dragging():
     assert "PASS" in result.stdout
 
 
+# ---------------------------------------------------------------------------
+# /kanban?search=<query> deep link
+# ---------------------------------------------------------------------------
+
+def test_search_query_param_prefills_search_filter():
+    """/kanban?search=<query> must seed the board's search filter so external tools
+    (chat notifications, CRMs, task trackers) can link straight to a filtered card view.
+    The bundle has no build step, so this runs the real readUrlParam() (extracted verbatim)
+    against stubbed window.location values and checks the search state is seeded from it.
+    """
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("node not available")
+    bundle = Path(__file__).resolve().parents[2] / "plugins" / "kanban" / "dashboard" / "dist" / "index.js"
+    probe = Path(__file__).parent / "fixtures" / "kanban_search_param_probe.js"
+    result = subprocess.run(
+        [node, str(probe), str(bundle)],
+        capture_output=True, text=True, timeout=30,
+    )
+    assert result.returncode == 0, f"stdout={result.stdout!r} stderr={result.stderr!r}"
+    assert "PASS" in result.stdout
+
+
 # Run clock: current run start, not first-ever start
 # ---------------------------------------------------------------------------
 

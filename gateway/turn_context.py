@@ -54,6 +54,9 @@ class TurnContext:
     event_message_id: Optional[str] = None
     # Raw inbound platform id (not the event_message_id reply anchor); stamped on the user turn.
     inbound_message_id: Optional[str] = None
+    # Non-human author for this turn (a plugin injection), overriding the restored source. The
+    # source of a plugin-injected turn IS the human, so only this keeps the two distinguishable.
+    turn_author_override: Optional[dict] = None
     moa_config: Optional[dict] = None
     title_user_message: Optional[str] = None
     persist_user_message: Optional[Any] = None

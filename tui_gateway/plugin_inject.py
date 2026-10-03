@@ -21,15 +21,20 @@ _TUI_INJECT_OWNER = object()
 _atexit_registered = False
 
 
-def inject_tui_session_message(*, session_key: str, content: str, plugin_id: str = "") -> bool:
+def inject_tui_session_message(
+    *, session_key: str, content: str, plugin_id: str = "", author: dict | None = None,
+) -> bool:
     """Queue *content* on the live session whose ``session_key`` matches.
 
     Returns False when this process has no such session, so the caller can fall
     through to the messaging-gateway slot. Never reroutes to a different session.
     A busy session only queues (a notice must not cancel in-flight work). An idle
     session drains so the queued prompt starts a turn.
+
+    The queued turn carries the plugin as its author: plugin text is the plugin's
+    own words, so a memory provider must not record it as something the human said.
+    An explicit ``author`` (a chat bridge relaying a real person) wins over that default.
     """
-    del plugin_id  # accepted so the host matches the gateway injector kwargs
     if not isinstance(session_key, str) or not session_key:
         return False
     if not isinstance(content, str) or not content.strip():
@@ -50,11 +55,13 @@ def inject_tui_session_message(*, session_key: str, content: str, plugin_id: str
         return False
     if session.get("history_lock") is None:
         return False
+    from agent.turn_author import parse_turn_author, plugin_turn_author
+    turn_author = parse_turn_author(author) or plugin_turn_author(plugin_id)
     with session["history_lock"]:
         queued = session.get("queued_prompt") or {}
         keep_transport = queued.get("transport") if isinstance(queued, dict) else None
         running = bool(session.get("running"))
-        _enqueue_prompt(session, content, keep_transport)
+        _enqueue_prompt(session, content, keep_transport, turn_author=turn_author)
         session["last_active"] = time.time()
         if running:
             return True

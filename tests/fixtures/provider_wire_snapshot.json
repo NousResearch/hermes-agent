@@ -2773,7 +2773,8 @@
    "model": "gpt-5.5",
    "parallel_tool_calls": true,
    "reasoning": {
-    "effort": "high"
+    "effort": "high",
+    "summary": "auto"
    },
    "store": false,
    "timeout": 1800.0,
@@ -2877,7 +2878,8 @@
    "model": "gpt-5.5",
    "parallel_tool_calls": true,
    "reasoning": {
-    "effort": "medium"
+    "effort": "medium",
+    "summary": "auto"
    },
    "store": false,
    "timeout": 1800.0,

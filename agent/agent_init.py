@@ -23,6 +23,7 @@ from typing import Any, Callable, Dict, List, Optional
 from urllib.parse import parse_qs, urlparse, urlunparse
 
 from agent.context_compressor import ContextCompressor
+from agent.agent_init_fallback import _fallback_entries, _init_fallback_chain, recompute_init_fallback_api_mode
 from agent.agent_runtime_helpers import _ra
 from agent.iteration_budget import IterationBudget, normalize_budget_warning_ratio
 from agent.memory_manager import StreamingContextScrubber
@@ -899,6 +900,7 @@ def _routed_client_kwargs(agent, fallback_model, _provider_timeout) -> Optional[
             return None
         agent.provider = agent.requested_provider = _fb["provider"]
         agent.model = _fb_model or _fb["model"]
+        recompute_init_fallback_api_mode(agent, _fb_client)
         return _client_kwargs_from_routed(_fb_client, _provider_timeout)
     # A burned credential pool (#119533) is otherwise indistinguishable from missing config,
     # so name it even when no fallback entries are configured.
@@ -1086,38 +1088,6 @@ def _client_kwargs_from_routed(client, timeout) -> Dict[str, Any]:
     if headers:
         kwargs["default_headers"] = dict(headers)
     return kwargs
-
-
-def _fallback_entries(fallback_model) -> List[Dict[str, Any]]:
-    """Normalize legacy single-dict ``fallback_model`` / list ``fallback_providers``."""
-    if isinstance(fallback_model, dict):
-        fallback_model = [fallback_model]
-    if not isinstance(fallback_model, list):
-        return []
-    return [
-        f for f in fallback_model if isinstance(f, dict) and f.get("provider") and f.get("model")
-    ]
-
-
-def _init_fallback_chain(agent, fallback_model):
-    # Stable pool-entry identity: OAuth refreshes can replace the token before a failed
-    # request is recovered, so the key value alone can't attribute the failure.
-    from agent.agent_runtime_helpers import sync_credential_pool_entry_id
-    sync_credential_pool_entry_id(agent)
-
-    # Ordered backups tried when the primary is exhausted (legacy single-dict or list).
-    agent._fallback_chain = _fallback_entries(fallback_model)
-    agent._fallback_index = 0
-    agent._fallback_activated = getattr(agent, "_fallback_activated", False)
-    # Legacy attribute kept for backward compat (tests, external callers)
-    agent._fallback_model = agent._fallback_chain[0] if agent._fallback_chain else None
-    chain = agent._fallback_chain
-    if chain and not agent.quiet_mode:
-        labels = [f"{f['model']} ({f['provider']})" for f in chain]
-        if len(chain) == 1:
-            print(f"🔄 Fallback model: {labels[0]}")
-        else:
-            print(f"🔄 Fallback chain ({len(chain)} providers): " + " → ".join(labels))
 
 
 def _load_tools(agent, enabled_toolsets, disabled_toolsets):

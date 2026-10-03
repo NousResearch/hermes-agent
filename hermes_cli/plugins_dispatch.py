@@ -599,4 +599,6 @@ class PluginDispatchMixin:
             except (Exception, SystemExit) as exc:
                 # Runs once per tool call like a hook, so a mis-declared callback floods identically.
                 self._report_hook_failure(kind, cb, kwargs, exc, surface="Middleware")
+                if getattr(cb, "_hermes_failure_mode", "open") == "closed":
+                    raise
         return results

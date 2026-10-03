@@ -347,6 +347,35 @@ def finish_text_response(
         else:
             final_msg["content"] = final_response
 
+    # llm_final_output_commit hook: plugins may drop the final output BEFORE it is
+    # appended/durable. DROP skips append_message + flush; a fail-closed
+    # LLMStreamMiddlewareRefusal propagates to the outer error handler.
+    from hermes_cli.middleware import run_llm_final_output_commit_middleware
+    _commit_context = {
+        "session_id": getattr(agent, "session_id", ""),
+        "turn_id": getattr(agent, "_current_turn_id", "") or "",
+        "api_request_id": getattr(agent, "_current_api_request_id", "") or "",
+        "provider": getattr(agent, "provider", ""),
+        "model": getattr(agent, "model", ""),
+    }
+    _commit_candidate = {
+        "content": final_response,
+        "role": "assistant",
+        "tool_calls": assistant_message.tool_calls or [],
+        "finish_reason": finish_reason,
+    }
+    _commit_verdict = run_llm_final_output_commit_middleware(
+        _commit_candidate, _commit_context,
+    )
+    if _commit_verdict != "allow":
+        logger.warning(
+            "llm_final_output_commit hook dropped final output "
+            "(turn_id=%s, content_length=%d) — skipping append_message and flush",
+            _commit_context["turn_id"],
+            len(final_response) if isinstance(final_response, str) else 0,
+        )
+        return _verdict("break")
+
     append_message(messages, final_msg)
     # Make the answer durable before leaving the loop (_DB_PERSISTED_MARKER keeps
     # _persist_session idempotent). Failure must NOT abort the turn: finalize retries.

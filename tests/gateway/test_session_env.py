@@ -76,6 +76,53 @@ def test_set_session_env_sets_contextvars(monkeypatch):
     runner._clear_session_env(tokens)
 
 
+def test_set_session_env_binds_durable_session_id(monkeypatch):
+    """The turn's durable session_id must reach the task-local HERMES_SESSION_ID.
+
+    set_session_vars() binds every var it knows, so omitting session_id did not
+    leave the var _UNSET (env fallback) — it bound the empty default, which masks
+    the fallback outright.  Tools and the terminal child-env bridge then read a
+    blank id for the whole turn.  The bound value must be SessionContext.session_id
+    itself, not the empty default and not an alias of session_key.
+    """
+    runner = object.__new__(GatewayRunner)
+    source = SessionSource(
+        platform=Platform.TELEGRAM,
+        chat_id="2144471399",
+        chat_type="dm",
+        user_id="123456",
+        user_name="alice",
+    )
+    context = SessionContext(
+        source=source,
+        connected_platforms=[],
+        home_channels={},
+        session_key="agent:main:telegram:dm:2144471399",
+        session_id="20260921_031412_thisturn",
+    )
+
+    # Another turn's id in the process mirror, plus the _UNSET entry state a freshly
+    # create_task()'d handler starts from: the binding, not the mirror, must decide.
+    monkeypatch.setenv("HERMES_SESSION_ID", "20260921_000000_otherturn")
+    reset_session_vars()
+    assert get_session_env("HERMES_SESSION_ID") == "20260921_000000_otherturn"
+
+    tokens = runner._set_session_env(context)
+    try:
+        assert get_session_env("HERMES_SESSION_ID") == context.session_id
+        # Bound from its own field: the routing key is a different value and must
+        # not be what HERMES_SESSION_ID reports.
+        assert get_session_env("HERMES_SESSION_KEY") == context.session_key
+        assert get_session_env("HERMES_SESSION_ID") != context.session_key
+        # Task-local only; the process mirror stays as the other turn left it.
+        assert os.getenv("HERMES_SESSION_ID") == "20260921_000000_otherturn"
+    finally:
+        runner._clear_session_env(tokens)
+
+    # A cleared context reports "" rather than falling back to the other turn's id.
+    assert get_session_env("HERMES_SESSION_ID") == ""
+
+
 def test_clear_session_env_restores_previous_state(monkeypatch):
     """_clear_session_env should restore contextvars to their pre-handler values."""
     runner = object.__new__(GatewayRunner)

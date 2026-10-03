@@ -122,13 +122,15 @@ export function readLiveUpdateMarker(
     kill,
     now = Date.now,
     maxAgeMs = UPDATE_MARKER_MAX_AGE_MS,
-    processState = posixProcessState
+    processState = posixProcessState,
+    deadOwnerGraceMs = 0
   }: {
     now?: () => number
     maxAgeMs?: number
     kill?: typeof process.kill
     /** Injectable override of the zombie/state probe (see posixProcessState). */
     processState?: (pid: number) => string | null
+    deadOwnerGraceMs?: number
   } = {}
 ) {
   const file = markerPath(hermesHome)
@@ -145,8 +147,26 @@ export function readLiveUpdateMarker(
   const startedAt = Number.parseInt((startedLine || '').trim(), 10)
   const ageMs = Number.isFinite(startedAt) ? now() - startedAt * 1000 : Infinity
   const alive = Number.isInteger(pid) && isPidAlive(pid, kill)
+  // Zombie owners are as dead as ESRCH ones — a dead-but-unreaped wrapper pid
+  // answers signal 0 like a live one, so the state probe is what reveals it.
+  const ownerDead = !alive || isZombieState(processState(pid))
 
-  if (!alive || isZombieState(processState(pid)) || ageMs > maxAgeMs) {
+  // A marker whose owner pid is dead is stale — EXCEPT for the moment right
+  // after a hand-off spawns. On Windows the desktop pre-writes the marker with
+  // the pid of the short-lived `cmd /c start` WRAPPER
+  // (updater-process.ts wrapHandoffForDetachedConsole), which is dead on
+  // arrival; the real script only adopts the marker with its own live pid a
+  // few hundred ms later. Reading that gap as "no live update" let the boot
+  // gate start a backend INSIDE the hand-off it exists to protect — the
+  // desktop then never exited and the hand-off aborted itself at its own
+  // desktop-exit gate ("the Hermes window did not exit within 30s"). Callers
+  // that must park on that hand-off pass a grace; the default 0 keeps the
+  // strict semantics everywhere else (a crashed updater self-heals at once).
+  if (deadOwnerGraceMs > 0 && ownerDead && Number.isFinite(ageMs) && ageMs <= deadOwnerGraceMs) {
+    return { pid, ageMs }
+  }
+
+  if (ownerDead || ageMs > maxAgeMs) {
     try {
       fs.unlinkSync(file)
     } catch {

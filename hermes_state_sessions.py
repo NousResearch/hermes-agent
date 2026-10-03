@@ -1159,6 +1159,7 @@ class SessionSessionsMixin:
                 COALESCE(child.model_config, '{{}}'), '$._branched_from'
             ) IS NULL
             AND {_delegate_from_json('child.model_config')} IS NULL
+            AND NOT ({_RESET_CHILD_SQL.format(a='child')})
             AND COALESCE(child.source, '') != 'tool'
         """
 

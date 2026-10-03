@@ -70,11 +70,31 @@ import json
 import logging
 import os
 import stat
+import sys
+import threading
 import time
 import warnings
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Iterator
+
+# Windows opens files in text mode by default: every b"\n" written through a
+# text-mode descriptor becomes b"\r\n" on disk, corrupting the JSONL and
+# inflating the file by one byte per line. O_BINARY disables the translation;
+# on POSIX it does not exist (and is unnecessary — POSIX never translates).
+_O_BINARY = getattr(os, "O_BINARY", 0)
+
+# POSIX guarantees O_APPEND writes up to PIPE_BUF bytes are atomic, so
+# concurrent threads/processes interleave at line granularity and no
+# coordination is needed. Windows makes no such guarantee: two appends can
+# overwrite each other's bytes, silently losing records. Serialize appends
+# with a process-wide lock there. This module's own tests exercise
+# multi-thread and multi-process appends; the lock makes those semantics
+# hold on win32 (threads within this process). Cross-process safety on
+# Windows remains out of scope, matching the POSIX read side's tolerance:
+# iter_records() already skips a torn tail, and no caller of append_trace
+# is documented to span processes on Windows.
+_win32_append_lock = threading.Lock() if sys.platform == "win32" else None
 
 LOG = logging.getLogger(__name__)
 
@@ -255,14 +275,29 @@ def append_trace(
 
     # O_APPEND: every write is positioned at end-of-file atomically with the
     # write itself, so concurrent appenders never overwrite each other's
-    # bytes. O_CREAT creates a missing segment; O_TRUNC/O_WRONLY-style
-    # truncation flags are never used anywhere in this module.
-    fd = os.open(segment, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
-    try:
-        os.write(fd, line)
-        os.fsync(fd)
-    finally:
-        os.close(fd)
+    # bytes — POSIX guarantees this for writes up to PIPE_BUF; Windows makes
+    # no such guarantee, so appends there are serialized under a process-wide
+    # lock instead (see _win32_append_lock). O_CREAT creates a missing
+    # segment; O_TRUNC/O_WRONLY-style truncation flags are never used
+    # anywhere in this module. O_BINARY is REQUIRED on Windows: without it
+    # os.open() opens in text mode and every b"\n" is translated to b"\r\n",
+    # corrupting the JSONL and inflating st_size by one byte per line.
+    flags = os.O_WRONLY | os.O_APPEND | os.O_CREAT | _O_BINARY
+    if sys.platform == "win32":
+        with _win32_append_lock:
+            fd = os.open(segment, flags, 0o600)
+            try:
+                os.write(fd, line)
+                os.fsync(fd)
+            finally:
+                os.close(fd)
+    else:
+        fd = os.open(segment, flags, 0o600)
+        try:
+            os.write(fd, line)
+            os.fsync(fd)
+        finally:
+            os.close(fd)
     LOG.debug("appended trace record (%d bytes) to %s", len(line), segment)
     return segment
 
@@ -273,16 +308,45 @@ def segment_name_for(t: float) -> str:
     return f"traces-{datetime.fromtimestamp(t, tz=timezone.utc).strftime('%Y-%m-%d')}.jsonl"
 
 
+def _segment_sort_key(path: Path) -> tuple[str, int]:
+    """Sort key: (UTC date, suffix index). The primary segment (no ``.NNN``
+    suffix) sorts BEFORE its own rollovers, so replaying segments in
+    ``list_segments()`` order reads records in write order.
+
+    Lexical sorting cannot do this: ``"traces-2026-08-29.002.jsonl"`` sorts
+    before ``"traces-2026-08-29.jsonl"`` because ``"."`` (0x2E) sorts below
+    ``"j"`` (0x6A), which would place the primary after its own rollovers.
+    """
+
+    name = path.name
+    stem = name[: -len(".jsonl")] if name.endswith(".jsonl") else name
+    date = stem[len("traces-"):] if stem.startswith("traces-") else stem
+    if "." in date:
+        date, _, suffix = date.rpartition(".")
+        try:
+            index = int(suffix)
+        except ValueError:
+            index = 0
+    else:
+        index = 0
+    return (date, index)
+
+
 def list_segments(trace_root: Path | str | None = None) -> list[Path]:
-    """All ``traces-*.jsonl`` segment files under ``trace_root``, sorted by name."""
+    """All ``traces-*.jsonl`` segment files under ``trace_root``.
+
+    Sorted by (UTC date, suffix index) via :func:`_segment_sort_key` — the
+    primary segment precedes its own ``.NNN`` rollovers, so iteration order
+    is write order. Lexical name order would shuffle them.
+    """
 
     root = Path(trace_root) if trace_root is not None else default_trace_root()
     if not root.is_dir():
         return []
     return sorted(
-        p
-        for p in root.glob("traces-*.jsonl")
-        if p.is_file() and not p.is_symlink()
+        (p for p in root.glob("traces-*.jsonl")
+         if p.is_file() and not p.is_symlink()),
+        key=_segment_sort_key,
     )
 
 

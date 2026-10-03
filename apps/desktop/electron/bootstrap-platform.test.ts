@@ -28,8 +28,9 @@ test('isWindowsBinaryPathInWsl blocks Windows binary types on WSL', () => {
 
 test('detectRemoteDisplay keeps GPU on for local sessions', () => {
   // Plain local X11, Wayland, native Windows, native macOS — no remote signal.
-  assert.equal(detectRemoteDisplay({ env: { DISPLAY: ':0' }, platform: 'linux' }), null)
-  assert.equal(detectRemoteDisplay({ env: { WAYLAND_DISPLAY: 'wayland-0' }, platform: 'linux' }), null)
+  // arch is pinned so the result doesn't depend on the machine running the test.
+  assert.equal(detectRemoteDisplay({ env: { DISPLAY: ':0' }, platform: 'linux', arch: 'x64' }), null)
+  assert.equal(detectRemoteDisplay({ env: { WAYLAND_DISPLAY: 'wayland-0' }, platform: 'linux', arch: 'x64' }), null)
   assert.equal(detectRemoteDisplay({ env: { SESSIONNAME: 'Console' }, platform: 'win32' }), null)
   assert.equal(detectRemoteDisplay({ env: {}, platform: 'darwin' }), null)
 })
@@ -37,11 +38,37 @@ test('detectRemoteDisplay keeps GPU on for local sessions', () => {
 test('detectRemoteDisplay does not treat WSLg as remote', () => {
   // WSLg renders locally via vGPU and doesn't show the flicker, so a WSL
   // session with a local DISPLAY keeps hardware acceleration on.
-  assert.equal(detectRemoteDisplay({ env: { WSL_DISTRO_NAME: 'Ubuntu', DISPLAY: ':0' }, platform: 'linux' }), null)
   assert.equal(
-    detectRemoteDisplay({ env: { WSL_INTEROP: '/run/WSL/1_interop', DISPLAY: ':0' }, platform: 'linux' }),
+    detectRemoteDisplay({ env: { WSL_DISTRO_NAME: 'Ubuntu', DISPLAY: ':0' }, platform: 'linux', arch: 'x64' }),
     null
   )
+  assert.equal(
+    detectRemoteDisplay({ env: { WSL_INTEROP: '/run/WSL/1_interop', DISPLAY: ':0' }, platform: 'linux', arch: 'x64' }),
+    null
+  )
+})
+
+test('detectRemoteDisplay disables GPU on Apple-Silicon Linux (16K pages)', () => {
+  // Stock Electron aarch64 builds assume 4K pages; the GPU process can't spawn
+  // on Asahi's 16K kernel and the app aborts at launch.
+  assert.match(
+    String(
+      detectRemoteDisplay({
+        env: { WAYLAND_DISPLAY: 'wayland-0' },
+        platform: 'linux',
+        arch: 'arm64',
+        deviceTreeCompatible: 'apple,j316c\0apple,t6001\0apple,arm-platform\0'
+      })
+    ),
+    /apple-silicon/
+  )
+  // arm64 without an Apple device tree (e.g. a Raspberry Pi) keeps the GPU.
+  assert.equal(
+    detectRemoteDisplay({ env: {}, platform: 'linux', arch: 'arm64', deviceTreeCompatible: 'raspberrypi,4-model-b\0brcm,bcm2711\0' }),
+    null
+  )
+  // arm64 with no device tree at all keeps the GPU.
+  assert.equal(detectRemoteDisplay({ env: {}, platform: 'linux', arch: 'arm64', deviceTreeCompatible: null }), null)
 })
 
 test('detectRemoteDisplay flags SSH sessions on any platform', () => {
@@ -56,7 +83,7 @@ test('detectRemoteDisplay flags SSH sessions on any platform', () => {
 test('detectRemoteDisplay flags forwarded X11 displays but not local ones', () => {
   assert.match(String(detectRemoteDisplay({ env: { DISPLAY: 'localhost:10.0' }, platform: 'linux' })), /x11-forwarding/)
   assert.match(String(detectRemoteDisplay({ env: { DISPLAY: '192.168.1.5:0' }, platform: 'linux' })), /x11-forwarding/)
-  assert.equal(detectRemoteDisplay({ env: { DISPLAY: ':1' }, platform: 'linux' }), null)
+  assert.equal(detectRemoteDisplay({ env: { DISPLAY: ':1' }, platform: 'linux', arch: 'x64' }), null)
 })
 
 test('detectRemoteDisplay flags RDP sessions', () => {

@@ -44,11 +44,12 @@ const GPU_OVERRIDE_ON = new Set(['1', 'true', 'yes', 'on'])
 const GPU_OVERRIDE_OFF = new Set(['0', 'false', 'no', 'off'])
 
 /**
- * Decide whether the app is being shown over a remote/forwarded display, where
- * Chromium's GPU compositor produces an unstable, flickering surface (it can't
- * present accelerated layers cleanly over the wire). Native local Windows/macOS
- * sessions composite locally and never hit this, so we only fall back to
- * software rendering when a remote display is detected.
+ * Decide whether the app's GPU process is likely to fail or misbehave in this
+ * environment — remote/forwarded displays where Chromium's compositor produces
+ * an unstable, flickering surface, and Apple-Silicon Linux where stock 4K-page
+ * Electron binaries can't spawn the GPU process at all. Native local
+ * Windows/macOS sessions never hit either, so we only fall back to software
+ * rendering where needed.
  *
  * Returns a short reason string when GPU acceleration should be disabled, or
  * null to keep it enabled. `HERMES_DESKTOP_DISABLE_GPU` overrides detection
@@ -56,9 +57,17 @@ const GPU_OVERRIDE_OFF = new Set(['0', 'false', 'no', 'off'])
  *
  * Pure + dependency-free so it can be unit-tested and called before app ready.
  */
-function detectRemoteDisplay(options: { env?: NodeJS.ProcessEnv; platform?: NodeJS.Platform } = {}) {
+function detectRemoteDisplay(
+  options: {
+    env?: NodeJS.ProcessEnv
+    platform?: NodeJS.Platform
+    arch?: NodeJS.Architecture
+    deviceTreeCompatible?: string | null
+  } = {}
+) {
   const env = options.env ?? process.env
   const platform = options.platform ?? process.platform
+  const arch = options.arch ?? process.arch
 
   const override = String(env.HERMES_DESKTOP_DISABLE_GPU || '')
     .trim()
@@ -87,6 +96,27 @@ function detectRemoteDisplay(options: { env?: NodeJS.ProcessEnv; platform?: Node
 
     if (display.includes(':') && display.split(':')[0]) {
       return `x11-forwarding (DISPLAY=${display})`
+    }
+
+    // Apple Silicon Linux (Asahi) runs a 16K-page kernel; stock Electron
+    // binaries are built for 4K pages and their GPU process fails to launch
+    // (error_code=1002), then aborts the app ("GPU process isn't usable").
+    // The device-tree compatible string lists Apple SoC entries like
+    // "apple,t6001" / "apple,j316c" and only exists on ARM hardware.
+    if (arch === 'arm64') {
+      let compatible = options.deviceTreeCompatible
+
+      if (compatible === undefined) {
+        try {
+          compatible = fs.readFileSync('/proc/device-tree/compatible', 'latin1')
+        } catch {
+          compatible = null
+        }
+      }
+
+      if (compatible && compatible.includes('apple,')) {
+        return 'apple-silicon 16K pages'
+      }
     }
   }
 

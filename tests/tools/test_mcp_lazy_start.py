@@ -102,12 +102,36 @@ class TestLazyMcpRegistration:
         with patch("tools.mcp_tool._MCP_AVAILABLE", True), \
              patch("tools.mcp_schema_cache.get_cached_entry") as mock_get, \
              patch("tools.mcp_tool_loop._ensure_mcp_loop"), \
-             patch("tools.mcp_tool_loop._run_on_mcp_loop") as mock_run:
+             patch("tools.mcp_tool_loop._run_on_mcp_loop"):
 
             _mcp_discovery.register_mcp_servers(config)
 
         mock_get.assert_not_called()
+
+    def test_empty_cached_manifest_falls_back_to_eager_connect(self):
+        """A cache entry that registers NO tools is a miss, not a hit.
+
+        ``_register_from_cache_sync`` only records the lazy state
+        (``_lazy_server_configs`` / ``_lazy_server_tool_names``) when something
+        actually registered. Treating an empty manifest as a cache hit dropped
+        the server from eager discovery AND from the lazy registry at once, so
+        it had no tools, no live session and nothing left to trigger a
+        connect — it silently never came back.
+        """
+        config = _lazy_config()
+        empty_entry = {"fingerprint": "abc", "tools": [], "utility_tools": []}
+        with patch("tools.mcp_tool._MCP_AVAILABLE", True), \
+             patch("tools.mcp_schema_cache.config_fingerprint", return_value="abc"), \
+             patch("tools.mcp_schema_cache.get_cached_entry", return_value=empty_entry), \
+             patch("tools.mcp_tool_registration._register_from_cache_sync", return_value=[]), \
+             patch("tools.mcp_tool_loop._ensure_mcp_loop"), \
+             patch("tools.mcp_tool_loop._run_on_mcp_loop") as mock_run:
+
+            _mcp_discovery.register_mcp_servers(config)
+
+        # Fell through to the eager connect rather than being dropped.
         mock_run.assert_called_once()
+        assert "playwright" not in mcp._lazy_server_configs
 
     def test_lazy_server_not_reregistered_on_second_pass(self):
         config = _lazy_config()
